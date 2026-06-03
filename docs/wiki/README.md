@@ -20,4 +20,4 @@ The **living** reference for how each shipped system works **today** — one pag
 | Tasks + Projects (kanban, audit) | [tasks-projects.md](tasks-projects.md) | shipped |
 | Memory system (ingest, enrich, dedup, semantic search) | [memory.md](memory.md) | shipped |
 | MCP server (agent tools: memories/docs/projects/tasks) | [mcp.md](mcp.md) | shipped |
-| _Clipboard_ | _created when its cycle starts_ | planned |
+| Clipboard (device-sync paste, live SSE, rich copy) | [clipboard.md](clipboard.md) | shipped |
