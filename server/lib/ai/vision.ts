@@ -1,4 +1,5 @@
 import { aiProvider } from './provider'
+import { capTags } from '../../../shared/utils/cap-tags'
 
 export interface VisionResult {
   ocrText: string
@@ -48,7 +49,7 @@ export async function describeImage(dataUrl: string): Promise<VisionResult> {
         content: [
           {
             type: 'text' as const,
-            text: 'Extract any text in this image (OCR) and suggest concise lowercase kebab-case tags describing its content. Respond as STRICT JSON only: {"ocrText": string, "tags": string[]}. No prose.'
+            text: 'Extract ALL text visible in this image using Markdown faithful to the source layout. Preserve headings (#, ##), bullet lists (- ), numbered lists (1. ), checkboxes (- [ ] / - [x]), and bold (**bold**). Do NOT flatten structure into plain paragraphs. Also suggest 5–7 concise lowercase kebab-case tags describing the content (max 10). Respond as STRICT JSON only: {"ocrText": string, "tags": string[]}. No prose.'
           },
           {
             type: 'image_url' as const,
@@ -81,9 +82,10 @@ export async function describeImage(dataUrl: string): Promise<VisionResult> {
     }
 
     const ocrText = typeof parsed.ocrText === 'string' ? parsed.ocrText : ''
-    const tags = Array.isArray(parsed.tags)
+    const rawTags = Array.isArray(parsed.tags)
       ? (parsed.tags as unknown[]).filter((t): t is string => typeof t === 'string')
       : []
+    const tags = capTags(rawTags, 10)
 
     return { ocrText, tags }
   } catch (err) {

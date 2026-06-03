@@ -22,7 +22,7 @@ ShareX/CleanShot-compatible image host: uploads auto-convert to webp, get OCR te
 - Service: `server/services/images.ts`.
 
 ## OCR — `server/lib/ai/vision.ts` + `server/services/image-ocr.ts`
-`describeImage(dataUrl)` → vision model (qwen3-vl-8b, OpenAI-spec structured content) → `{ ocrText, tags }` (tolerant JSON). `runImageOcr()` fills `ocr_text` and sets `recommended_tags = splitTags(suggested, library).recommended` (library = distinct tags across documents+images). Never sets `tags`. Nitro task `ocr-images` (*/7) + `POST /api/admin/ocr-run`. Per-image failure-tolerant.
+`describeImage(dataUrl)` → vision model (qwen3-vl-8b, OpenAI-spec structured content; prompt requests **markdown** + 5–7 tags) → `{ ocrText, tags }` (tolerant JSON). `runImageOcr()` fills `ocr_text` and sets `recommended_tags = capTags(splitTags(...).recommended, 10)` (library = distinct tags across documents+images). Never sets `tags`. Nitro task `ocr-images` (*/7) + `POST /api/admin/ocr-run`. **Bounded retries (cycle 7):** candidate query requires `ocr_attempts < 3` + `kind in (image,gif)`; success sets `ocr_text` (`''` sentinel = attempted), failure/empty increments `ocr_attempts` — no infinite re-scan when the vision model blips.
 
 ## Gallery — `app/pages/gallery.vue` / `app/composables/useImages.ts`
 Thumbnail grid + detail modal: OCR text, removable confirmed tags, recommended tags (Approve → moves to `tags`; Dismiss), public toggle + copy URL, delete, upload.

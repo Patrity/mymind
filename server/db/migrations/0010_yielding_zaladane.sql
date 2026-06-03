@@ -1,0 +1,1 @@
+ALTER TABLE "images" ADD COLUMN "ocr_attempts" integer DEFAULT 0 NOT NULL;

@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { documents, images } from '../db/schema'
 import { storage } from '../utils/storage'
 import { describeImage } from '../lib/ai/vision'
+import { capTags } from '../../shared/utils/cap-tags'
 
 /** Max image size (bytes) to attempt OCR on — skip anything larger. */
 const OCR_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -95,7 +96,9 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
           isNull(images.ocrText),
           isNull(images.deletedAt),
           // Only scan images and gifs — skip videos and unknown kinds
-          inArray(images.kind, ['image', 'gif'])
+          inArray(images.kind, ['image', 'gif']),
+          // Cap retries: stop selecting after 3 failed attempts
+          lt(images.ocrAttempts, 3)
         )
       )
       .limit(limit)
@@ -130,29 +133,47 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
       const dataUrl = `data:${img.mime};base64,${b64}`
 
       const result = await describeImage(dataUrl)
+
+      // Soft-failure: model returned nothing useful — increment attempts rather than marking done
+      if (!result.ocrText && result.tags.length === 0) {
+        console.warn(`[image-ocr] empty result for ${img.id}, incrementing attempts`)
+        await db
+          .update(images)
+          .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+          .where(eq(images.id, img.id))
+        failed++
+        continue
+      }
+
       const { recommended } = splitTags(result.tags, library)
+      const cappedRecommended = capTags(recommended, 10)
 
       await db
         .update(images)
         .set({
-          ocrText: result.ocrText || null,
-          recommendedTags: recommended
+          // Empty string = "attempted, don't re-select" (ocrText IS NOT NULL)
+          ocrText: result.ocrText || '',
+          recommendedTags: cappedRecommended
         })
         .where(eq(images.id, img.id))
 
-      console.log(`[image-ocr] processed ${img.id}: ocrText=${result.ocrText.slice(0, 60)}, recommended=${recommended.join(',')}`)
+      console.log(`[image-ocr] processed ${img.id}: ocrText=${result.ocrText.slice(0, 60)}, recommended=${cappedRecommended.join(',')}`)
       ocred++
     } catch (err) {
       console.warn(`[image-ocr] failed to process image ${img.id}:`, err)
+      await db
+        .update(images)
+        .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+        .where(eq(images.id, img.id))
       failed++
     }
   }
 
-  // Count remaining un-processed images
+  // Count remaining un-processed images (same filter as candidate query)
   const remainingRows = await db
     .select({ remaining: sql<number>`count(*)::int` })
     .from(images)
-    .where(and(isNull(images.ocrText), isNull(images.deletedAt)))
+    .where(and(isNull(images.ocrText), isNull(images.deletedAt), inArray(images.kind, ['image', 'gif']), lt(images.ocrAttempts, 3)))
 
   const remaining = remainingRows[0]?.remaining ?? 0
 

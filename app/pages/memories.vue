@@ -21,6 +21,7 @@ const scopeItems = [
 // ── Data ──────────────────────────────────────────────────────────────────────
 const memories = ref<MemoryDTO[]>([])
 const loading = ref(false)
+const isSearching = computed(() => q.value.trim().length > 0)
 
 async function load() {
   loading.value = true
@@ -116,9 +117,9 @@ function formatDate(iso: string) {
     </template>
 
     <template #body>
-      <div class="p-4 space-y-4 max-w-3xl mx-auto">
+      <div class="p-4 space-y-4 max-w-4xl mx-auto w-full">
         <!-- Filters -->
-        <div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+        <div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center w-full">
           <UInput
             v-model="q"
             placeholder="Search memories…"
@@ -194,7 +195,14 @@ function formatDate(iso: string) {
                   size="xs"
                 />
                 <UBadge
-                  v-if="mem.confidence !== null"
+                  v-if="isSearching && mem.relevance !== undefined"
+                  :label="`rel ${Math.round(mem.relevance * 100)}%`"
+                  color="info"
+                  variant="outline"
+                  size="xs"
+                />
+                <UBadge
+                  v-else-if="!isSearching && mem.confidence !== null"
                   :label="`${Math.round(mem.confidence * 100)}% confidence`"
                   color="neutral"
                   variant="outline"

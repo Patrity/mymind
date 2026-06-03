@@ -24,7 +24,9 @@ Reimplements the bridget memory service in TS: ingest AI-session transcripts, en
 ## Enrichment — `server/services/memory-enrich.ts` + `enrich-memories` task (*/15)
 Selects sessions with ≥4 messages and new content since last run; assembles a transcript; `chat('reasoning', ...)` with a strict atomic-memory JSON prompt; `parseMemories` (tolerant); each candidate → `createMemory` (tagged `enrichment`,`unreviewed`); records `mem_enrichment_state`. Manual: `POST /api/admin/memory-enrich-run`.
 
+**Cycle 7 — review threshold + relevance:** `createMemory` auto-reviews when `confidence >= memoryAutoReviewThreshold` (default 0.75) — sets `reviewed_at` and strips the `unreviewed` tag; `reviewMemory` also strips `unreviewed`. Only low-confidence memories need human review. `searchMemories` attaches a `relevance` score (rank-based `1/(1+rank)`, or the optional Qwen3-Reranker at `:8883` behind `AI_RERANK_BASE_URL`, OFF by default).
+
 ## UI — `app/pages/memories.vue`
-Search (hybrid), scope filter, unreviewed toggle, cards (content/scope/tags/confidence/source), Mark reviewed (the human gate) + Archive. Sidebar "Memory" nav with unreviewed badge.
+Search (hybrid), scope filter, unreviewed toggle, cards (content/scope/tags/source). Search results show a **relevance** badge; list mode shows **confidence**. Mark reviewed (the human gate; strips the `unreviewed` chip) + Archive. Sidebar "Memory" nav with unreviewed badge.
 
 See [mcp.md](mcp.md) for the agent-facing tools.
