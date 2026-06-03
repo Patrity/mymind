@@ -36,7 +36,7 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 
 | # | Cycle | Status | Spec | Plan | Handover |
 |---|---|---|---|---|---|
-| 1 | **Foundation + Content Spine** — app shell, dual auth, Drizzle/pg/pgvector, storage, document model, path-tree browser + CodeMirror/MDC editor (edit/preview/split), manual frontmatter, trigram search, public-slug sharing, env provider scaffold. Ships a manual-but-complete doc manager. | spec'd | [spec](../specs/2026-06-02-foundation-content-spine.md) | — | — |
+| 1 | **Foundation + Content Spine** — app shell, dual auth, Drizzle/pg/pgvector, storage, document model, path-tree browser + CodeMirror/MDC editor (edit/preview/split), manual frontmatter, trigram search, public-slug sharing, env provider scaffold. Ships a manual-but-complete doc manager. | in-progress | [spec](../specs/2026-06-02-foundation-content-spine.md) | [plan](2026-06-02-foundation-content-spine.md) | — |
 | 2 | **AI Enrichment + Notification Queue** — embedding worker (fills `halfvec`), semantic + RRF search, `/input` auto-tag/sort/frontmatter, AI-action review surface, human-needed notification queue. | planned | — | — | — |
 | 3 | **Quick Capture + Image Hosting/Gallery** — quick note/todo/idea capture, image/gif/video upload (ShareX/CleanShot endpoints), sharp→webp/webm, OCR tags (confirmed + recommended), gallery, public/private. | planned | — | — | — |
 | 4 | **Tasks + Projects (Kanban)** — projects (name/desc/active), kanban (todo/in-progress/completed/blocked), task fields + audit log, doc↔project↔domain relations. | planned | — | — | — |
