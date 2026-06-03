@@ -55,7 +55,8 @@ export default defineNuxtConfig({
       vision: { baseURL: process.env.AI_VISION_BASE_URL, apiKey: process.env.AI_VISION_API_KEY, model: process.env.AI_VISION_MODEL },
       stt: { baseURL: process.env.AI_STT_BASE_URL, apiKey: process.env.AI_STT_API_KEY },
       tts: { baseURL: process.env.AI_TTS_BASE_URL, apiKey: process.env.AI_TTS_API_KEY },
-      rerankBaseUrl: process.env.AI_RERANK_BASE_URL ?? ''
+      rerankBaseUrl: process.env.AI_RERANK_BASE_URL ?? '',
+      rerankApiKey: process.env.AI_RERANK_API_KEY ?? ''
     },
     memoryAutoReviewThreshold: Number(process.env.MEMORY_AUTO_REVIEW_THRESHOLD ?? 0.75)
   },

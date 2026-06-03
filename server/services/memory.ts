@@ -139,7 +139,7 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
   // content_hash unique index (Postgres error 23505).
   try {
     const autoReview = shouldAutoReview(input.confidence, threshold)
-    const finalTags = autoReview ? stripUnreviewed(input.tags ?? []) : (input.tags ?? [])
+    const finalTags = (autoReview || input.reviewed) ? stripUnreviewed(input.tags ?? []) : (input.tags ?? [])
     const finalReviewedAt = (input.reviewed || autoReview) ? new Date() : null
 
     const [inserted] = await db.insert(memories).values({
@@ -260,7 +260,7 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
   const rerankBaseUrl = (config.ai as { rerankBaseUrl?: string }).rerankBaseUrl ?? ''
   if (rerankBaseUrl) {
     try {
-      const rerankApiKey = process.env.AI_RERANK_API_KEY ?? ''
+      const rerankApiKey = (config.ai as { rerankApiKey?: string }).rerankApiKey ?? ''
       const docs = withRelevance.map(dto => ({ id: dto.id, text: dto.content }))
       const reranked = await rerank(q, docs, rerankBaseUrl, rerankApiKey)
       if (reranked.length === withRelevance.length) {

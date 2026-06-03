@@ -32,7 +32,7 @@ export default defineEventHandler(async (event) => {
   // Clean OCR output into faithful Markdown and infer a human title
   const { title, markdown } = await cleanToMarkdown(ocrText || '')
 
-  const effectiveTitle = body.title ?? title
+  const effectiveTitle = body.title?.trim() || title
   const slug = slugify(effectiveTitle)
   const path = `/input/${slug}-${nanoid(8)}.md`
 
