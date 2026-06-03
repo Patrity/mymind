@@ -1,7 +1,8 @@
-import { eq, sql } from 'drizzle-orm'
+import { asc, desc, eq, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { sessions, messages } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
+import type { SessionListItem, SessionDetail, SessionMessageDTO } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,6 +151,105 @@ export async function ingestTranscript(input: IngestTranscriptInput): Promise<In
     .where(eq(sessions.id, session.id))
 
   return { ingested, total }
+}
+
+// ---------------------------------------------------------------------------
+// Read-only views
+// ---------------------------------------------------------------------------
+
+export interface ListSessionsOptions {
+  source?: string
+  project?: string
+  limit?: number
+}
+
+export async function listSessions(opts: ListSessionsOptions = {}): Promise<SessionListItem[]> {
+  const db = useDb()
+  const { source, project, limit = 50 } = opts
+
+  const rows = await db
+    .select({
+      id: sessions.id,
+      source: sessions.source,
+      project: sessions.project,
+      title: sessions.title,
+      summary: sessions.summary,
+      messageCount: sessions.messageCount,
+      toolCount: sessions.toolCount,
+      inputTokens: sessions.inputTokens,
+      outputTokens: sessions.outputTokens,
+      startedAt: sessions.startedAt,
+      lastActive: sessions.lastActive
+    })
+    .from(sessions)
+    .where(
+      source && project
+        ? sql`${sessions.source} = ${source} AND ${sessions.project} = ${project}`
+        : source
+          ? eq(sessions.source, source)
+          : project
+            ? eq(sessions.project, project)
+            : undefined
+    )
+    .orderBy(desc(sessions.lastActive))
+    .limit(limit)
+
+  return rows.map((r) => ({
+    id: r.id,
+    source: r.source,
+    project: r.project,
+    title: r.title,
+    summary: r.summary,
+    messageCount: r.messageCount,
+    toolCount: r.toolCount,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    startedAt: r.startedAt.toISOString(),
+    lastActive: r.lastActive.toISOString()
+  }))
+}
+
+export async function getSession(id: string): Promise<SessionDetail | null> {
+  const db = useDb()
+
+  const [session] = await db
+    .select()
+    .from(sessions)
+    .where(eq(sessions.id, id))
+    .limit(1)
+
+  if (!session) return null
+
+  const msgs = await db
+    .select()
+    .from(messages)
+    .where(eq(messages.sessionId, id))
+    .orderBy(asc(messages.createdAt))
+
+  const messageDTOs: SessionMessageDTO[] = msgs.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    metadata: (m.metadata as Record<string, unknown>) ?? {},
+    createdAt: m.createdAt.toISOString()
+  }))
+
+  return {
+    id: session.id,
+    source: session.source,
+    project: session.project,
+    title: session.title,
+    summary: session.summary,
+    messageCount: session.messageCount,
+    toolCount: session.toolCount,
+    inputTokens: session.inputTokens,
+    outputTokens: session.outputTokens,
+    startedAt: session.startedAt.toISOString(),
+    lastActive: session.lastActive.toISOString(),
+    cwd: session.cwd,
+    metadata: (session.metadata as Record<string, unknown>) ?? {},
+    messages: messageDTOs
+  }
 }
 
 async function countMessages(sessionId: string): Promise<number> {
