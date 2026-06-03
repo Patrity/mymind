@@ -13,7 +13,8 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
 
   routeRules: {
-    '/': { redirect: '/documents' }
+    '/': { redirect: '/documents' },
+    '/share/**': { ssr: true }
   },
 
   compatibilityDate: '2025-01-15',
