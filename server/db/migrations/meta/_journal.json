@@ -15,6 +15,13 @@
       "when": 1780459829661,
       "tag": "0001_wise_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780460022326,
+      "tag": "0002_jittery_union_jack",
+      "breakpoints": true
     }
   ]
 }
