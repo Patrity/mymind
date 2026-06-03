@@ -25,3 +25,5 @@ logs
 
 .claude/skills/*/cache/**
 .claude/skills/*/manifest.json
+# playwright-cli artifacts
+.playwright-cli

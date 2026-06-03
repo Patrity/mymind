@@ -250,29 +250,35 @@ onUnmounted(() => {
 
       <div class="ml-auto flex items-center gap-1 shrink-0">
         <!-- View mode toggle (markdown only) -->
-        <UButtonGroup
+        <div
           v-if="isMarkdown"
-          size="xs"
+          class="flex items-center rounded-md overflow-hidden border border-default"
         >
           <UButton
             icon="i-lucide-pencil"
-            :variant="mode === 'edit' ? 'solid' : 'soft'"
+            size="xs"
+            :variant="mode === 'edit' ? 'solid' : 'ghost'"
             :color="mode === 'edit' ? 'primary' : 'neutral'"
+            class="rounded-none"
             @click="mode = 'edit'"
           />
           <UButton
             icon="i-lucide-columns-2"
-            :variant="mode === 'split' ? 'solid' : 'soft'"
+            size="xs"
+            :variant="mode === 'split' ? 'solid' : 'ghost'"
             :color="mode === 'split' ? 'primary' : 'neutral'"
+            class="rounded-none border-x border-default"
             @click="mode = 'split'"
           />
           <UButton
             icon="i-lucide-eye"
-            :variant="mode === 'preview' ? 'solid' : 'soft'"
+            size="xs"
+            :variant="mode === 'preview' ? 'solid' : 'ghost'"
             :color="mode === 'preview' ? 'primary' : 'neutral'"
+            class="rounded-none"
             @click="mode = 'preview'"
           />
-        </UButtonGroup>
+        </div>
 
         <!-- Share toggle -->
         <UButton
