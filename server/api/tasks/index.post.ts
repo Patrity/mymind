@@ -13,8 +13,16 @@ const Body = z.object({
 
 export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
+
+  let dueDate: Date | null = null
+  if (body.dueDate) {
+    const d = new Date(body.dueDate)
+    if (isNaN(d.getTime())) throw createError({ statusCode: 400, statusMessage: 'Invalid dueDate' })
+    dueDate = d
+  }
+
   return createTask({
     ...body,
-    dueDate: body.dueDate ? new Date(body.dueDate) : null
+    dueDate
   })
 })

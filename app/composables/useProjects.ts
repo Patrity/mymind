@@ -5,7 +5,7 @@ export function useProjects() {
   const list = (activeOnly = false) =>
     ofetch<ProjectDTO[]>('/api/projects', { query: activeOnly ? { active: 'true' } : {} })
 
-  const create = (body: { name: string, description?: string, active?: boolean }) =>
+  const create = (body: { name: string, description?: string }) =>
     ofetch<ProjectDTO>('/api/projects', { method: 'POST', body })
 
   const update = (slug: string, body: { name?: string, description?: string, active?: boolean }) =>

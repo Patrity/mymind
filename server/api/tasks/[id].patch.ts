@@ -15,10 +15,22 @@ const Body = z.object({
 export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
   const { dueDate, ...rest } = body
+
+  let parsedDueDate: Date | null | undefined
+  if (dueDate !== undefined) {
+    if (dueDate) {
+      const d = new Date(dueDate)
+      if (isNaN(d.getTime())) throw createError({ statusCode: 400, statusMessage: 'Invalid dueDate' })
+      parsedDueDate = d
+    } else {
+      parsedDueDate = null
+    }
+  }
+
   const task = await updateTask(getRouterParam(event, 'id')!, {
     ...rest,
     // Only include dueDate when it was explicitly provided in the body
-    ...(dueDate !== undefined ? { dueDate: dueDate ? new Date(dueDate) : null } : {})
+    ...(dueDate !== undefined ? { dueDate: parsedDueDate as Date | null } : {})
   })
   if (!task) throw createError({ statusCode: 404 })
   return task
