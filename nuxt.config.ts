@@ -10,11 +10,37 @@ export default defineNuxtConfig({
     enabled: true
   },
 
+  // Hybrid rendering: authed app routes are SPA (ssr:false), public /share/** stays SSR.
+  //
+  // Mechanism: SSR remains enabled globally (default). routeRules disables SSR for every
+  // authed app route, making them serve a minimal SPA shell so the auth middleware never
+  // runs on the server (eliminates the pre-login /documents flash + hydration mismatches).
+  // /share/** is left as the default (ssr:true) so public share pages remain server-rendered
+  // for OG/SEO.
+  //
+  // NOTE: Global ssr:false + per-route ssr:true was attempted but does NOT work in Nuxt 4.
+  // When ssr:false is set globally the renderer is compiled to always use getSPARenderer()
+  // regardless of routeRules — the per-route override only goes the other direction
+  // (SSR→SPA via routeRules ssr:false). Verified empirically in preview build.
+  // The correct supported hybrid mode is: ssr:true globally + ssr:false per route.
+
   css: ['~/assets/css/main.css'],
 
   routeRules: {
     '/': { redirect: '/documents' },
-    '/share/**': { ssr: true }
+    // Authed app routes: SPA shell only — no server rendering.
+    // Auth middleware runs client-side only; no pre-login flash.
+    '/documents': { ssr: false },
+    '/documents/**': { ssr: false },
+    '/clipboard': { ssr: false },
+    '/capture': { ssr: false },
+    '/gallery': { ssr: false },
+    '/memories': { ssr: false },
+    '/projects': { ssr: false },
+    '/review': { ssr: false },
+    '/tasks': { ssr: false },
+    '/login': { ssr: false },
+    // /share/** is intentionally left out — default ssr:true keeps it server-rendered.
   },
 
   compatibilityDate: '2025-01-15',
