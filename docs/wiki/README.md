@@ -17,4 +17,5 @@ The **living** reference for how each shipped system works **today** — one pag
 | AI enrichment + review queue (embeddings, hybrid search, /input proposals, login) | [enrichment.md](enrichment.md) | shipped |
 | Image hosting + gallery (ShareX upload, webp, OCR tags, public/private) | [image-hosting.md](image-hosting.md) | shipped |
 | Quick capture (notes/image/transcribe → /input) | [quick-capture.md](quick-capture.md) | shipped |
-| _Tasks/Projects, Memory, Clipboard_ | _created when their cycle starts_ | planned |
+| Tasks + Projects (kanban, audit) | [tasks-projects.md](tasks-projects.md) | shipped |
+| _Memory, Clipboard_ | _created when their cycle starts_ | planned |
