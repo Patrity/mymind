@@ -10,13 +10,12 @@ export default defineNuxtConfig({
     enabled: true
   },
 
-  // Hybrid rendering: authed app routes are SPA (ssr:false), public /share/** stays SSR.
+  // Hybrid rendering: catch-all SPA with SSR carved out for public pages.
   //
-  // Mechanism: SSR remains enabled globally (default). routeRules disables SSR for every
-  // authed app route, making them serve a minimal SPA shell so the auth middleware never
-  // runs on the server (eliminates the pre-login /documents flash + hydration mismatches).
-  // /share/** is left as the default (ssr:true) so public share pages remain server-rendered
-  // for OG/SEO.
+  // Mechanism: SSR remains enabled globally (default). routeRules sets ssr:false for
+  // every route via catch-all '/**', so new app pages automatically get the SPA shell
+  // without needing to be listed explicitly (no pre-login flash or hydration mismatches).
+  // /share/** overrides back to ssr:true, which works because the more-specific rule wins.
   //
   // NOTE: Global ssr:false + per-route ssr:true was attempted but does NOT work in Nuxt 4.
   // When ssr:false is set globally the renderer is compiled to always use getSPARenderer()
@@ -28,19 +27,10 @@ export default defineNuxtConfig({
 
   routeRules: {
     '/': { redirect: '/documents' },
-    // Authed app routes: SPA shell only — no server rendering.
-    // Auth middleware runs client-side only; no pre-login flash.
-    '/documents': { ssr: false },
-    '/documents/**': { ssr: false },
-    '/clipboard': { ssr: false },
-    '/capture': { ssr: false },
-    '/gallery': { ssr: false },
-    '/memories': { ssr: false },
-    '/projects': { ssr: false },
-    '/review': { ssr: false },
-    '/tasks': { ssr: false },
-    '/login': { ssr: false },
-    // /share/** is intentionally left out — default ssr:true keeps it server-rendered.
+    // Catch-all: every route is SPA by default so new pages never forget.
+    '/**': { ssr: false },
+    // Public share pages keep SSR for OG/SEO — more-specific rule wins.
+    '/share/**': { ssr: true }
   },
 
   compatibilityDate: '2025-01-15',
