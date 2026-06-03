@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, sql } from 'drizzle-orm'
+import { and, arrayOverlaps, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm'
 import { Readable } from 'node:stream'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
@@ -36,8 +36,35 @@ export async function createImage(buffer: Buffer, mime: string, originalName?: s
   return row!
 }
 
-export async function listImages(): Promise<(Image & { url: string })[]> {
-  const rows = await useDb().select().from(images).where(live()).orderBy(desc(images.createdAt))
+export interface ListImagesParams {
+  q?: string
+  tags?: string[]
+}
+
+export async function listImages(params: ListImagesParams = {}): Promise<(Image & { url: string })[]> {
+  const conditions = [live()]
+
+  if (params.q?.trim()) {
+    const term = `%${params.q.trim()}%`
+    conditions.push(
+      or(
+        ilike(images.ocrText, term),
+        sql`exists (select 1 from unnest(${images.tags}) as t where t ilike ${term})`,
+        sql`exists (select 1 from unnest(${images.recommendedTags}) as t where t ilike ${term})`
+      )!
+    )
+  }
+
+  if (params.tags && params.tags.length > 0) {
+    conditions.push(arrayOverlaps(images.tags, params.tags))
+  }
+
+  const rows = await useDb()
+    .select()
+    .from(images)
+    .where(and(...conditions))
+    .orderBy(desc(images.createdAt))
+
   return rows.map(r => ({ ...r, url: serveUrl(r) }))
 }
 
