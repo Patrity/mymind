@@ -70,10 +70,10 @@ function msgKind(msg: SessionMessageDTO): MsgKind {
 }
 
 function toolNames(msg: SessionMessageDTO): string[] {
-  const tools = msg.metadata?.tools
+  const tools = (msg.metadata as { tools?: unknown }).tools
   if (Array.isArray(tools)) {
-    return (tools as Array<{ name?: string; input?: { name?: string } }>)
-      .map(t => t?.name ?? (t?.input as { name?: string } | undefined)?.name ?? 'tool')
+    return tools
+      .map(t => typeof t === 'string' ? t : (t && typeof t === 'object' ? ((t as { name?: string }).name ?? 'tool') : 'tool'))
       .filter(Boolean)
   }
   if (msg.metadata?.type === 'tool_result') {
