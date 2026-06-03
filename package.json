@@ -32,6 +32,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@nuxt/ui": "^4.8.1",
     "@nuxtjs/mdc": "^0.22.0",
+    "@vueuse/core": "^14.3.0",
+    "@vueuse/nuxt": "^14.3.0",
     "better-auth": "^1.6.13",
     "codemirror": "^6.0.2",
     "drizzle-orm": "^0.45.2",

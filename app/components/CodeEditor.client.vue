@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { EditorView, basicSetup } from 'codemirror'
-import { EditorState, Compartment, type Extension } from '@codemirror/state'
+import { EditorState, EditorSelection, Compartment, type Extension } from '@codemirror/state'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { markdown } from '@codemirror/lang-markdown'
 import { javascript } from '@codemirror/lang-javascript'
@@ -16,10 +16,14 @@ const props = withDefaults(defineProps<{
   language?: CodeLanguage
   readOnly?: boolean
   autoHeight?: boolean
+  /** Called when the user pastes or drops an image file into the editor.
+   *  The caller is responsible for uploading and inserting the result. */
+  onImage?: (file: File) => void
 }>(), {
   language: 'plaintext',
   readOnly: false,
-  autoHeight: false
+  autoHeight: false,
+  onImage: undefined
 })
 
 const emit = defineEmits<{
@@ -82,6 +86,37 @@ onMounted(() => {
           return true
         }
         return false
+      },
+      paste(e) {
+        if (!props.onImage) return false
+        const items = e.clipboardData?.items
+        if (!items) return false
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]!
+          if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const file = item.getAsFile()
+            if (file) {
+              e.preventDefault()
+              props.onImage(file)
+              return true
+            }
+          }
+        }
+        return false
+      },
+      drop(e) {
+        if (!props.onImage) return false
+        const files = e.dataTransfer?.files
+        if (!files) return false
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i]!
+          if (file.type.startsWith('image/')) {
+            e.preventDefault()
+            props.onImage(file)
+            return true
+          }
+        }
+        return false
       }
     })
   ]
@@ -117,6 +152,50 @@ onUnmounted(() => {
   view?.destroy()
   view = null
 })
+
+// ---------------------------------------------------------------------------
+// Exposed API — used by MarkdownToolbar to apply transforms
+// ---------------------------------------------------------------------------
+export interface EditorSelection2 {
+  text: string
+  from: number
+  to: number
+}
+
+function getSelection(): EditorSelection2 {
+  if (!view) return { text: '', from: 0, to: 0 }
+  const state = view.state
+  const { from, to } = state.selection.main
+  return { text: state.doc.toString(), from, to }
+}
+
+function applyTransform(fn: (s: EditorSelection2) => EditorSelection2): void {
+  if (!view) return
+  const s = getSelection()
+  const result = fn(s)
+  const docLen = view.state.doc.length
+
+  view.dispatch({
+    changes: { from: 0, to: docLen, insert: result.text },
+    selection: EditorSelection.range(
+      Math.max(0, Math.min(result.from, result.text.length)),
+      Math.max(0, Math.min(result.to, result.text.length))
+    )
+  })
+  view.focus()
+}
+
+function insertText(snippet: string): void {
+  if (!view) return
+  const { from, to } = view.state.selection.main
+  view.dispatch({
+    changes: { from, to, insert: snippet },
+    selection: EditorSelection.cursor(from + snippet.length)
+  })
+  view.focus()
+}
+
+defineExpose({ getSelection, applyTransform, insertText })
 </script>
 
 <template>

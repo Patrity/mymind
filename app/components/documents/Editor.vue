@@ -5,12 +5,15 @@ type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'js
 type Mode = 'edit' | 'preview' | 'split'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
+import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
+
 const props = defineProps<{
   documentId: string | null
 }>()
 
 const toast = useToast()
 const { get, update, share } = useDocuments()
+const { upload: uploadImage } = useImages()
 
 // Document state
 const doc = ref<DocumentDTO | null>(null)
@@ -19,6 +22,31 @@ const loading = ref(false)
 const saveStatus = ref<SaveStatus>('idle')
 let savedContent = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+// CodeEditor ref — used to wire toolbar transforms
+const codeEditorRef = ref<{ applyTransform: (fn: (s: EditorSelection2) => EditorSelection2) => void, insertText: (s: string) => void } | null>(null)
+
+function toolbarApplyTransform(fn: (s: EditorSelection2) => EditorSelection2) {
+  codeEditorRef.value?.applyTransform(fn)
+}
+
+function toolbarInsertText(snippet: string) {
+  codeEditorRef.value?.insertText(snippet)
+}
+
+/** Called by CodeEditor when the user pastes or drops an image file. */
+async function onEditorImage(file: File) {
+  const toastId = toast.add({ color: 'neutral', title: 'Uploading image…' })
+  try {
+    const result = await uploadImage(file, true)
+    codeEditorRef.value?.insertText(`![](${result.url})`)
+    toast.remove(toastId.id)
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.remove(toastId.id)
+    toast.add({ color: 'error', title: 'Upload failed', description: err.data?.statusMessage ?? err.message })
+  }
+}
 
 // Metadata form fields (separate from content)
 const metaPath = ref('')
@@ -190,6 +218,32 @@ const publicUrl = computed(() =>
     : null
 )
 
+async function copyPublicLink() {
+  if (!doc.value?.publicSlug) return
+  const url = `${window.location.origin}/share/${doc.value.publicSlug}`
+  let copied = false
+  if (window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(url)
+      copied = true
+    } catch { /* fall through */ }
+  }
+  if (!copied) {
+    const ta = document.createElement('textarea')
+    ta.value = url
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '0'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    ta.setSelectionRange(0, url.length)
+    try { copied = document.execCommand('copy') } catch { copied = false }
+    document.body.removeChild(ta)
+  }
+  toast.add({ color: copied ? 'success' : 'warning', title: copied ? 'Link copied' : 'Could not copy — link shown above' })
+}
+
 onUnmounted(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (metaSaveTimer.value) clearTimeout(metaSaveTimer.value)
@@ -293,21 +347,41 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Public URL notice -->
+    <!-- Public URL notice — click anywhere to copy the absolute URL -->
     <div
       v-if="publicUrl"
-      class="flex items-center gap-2 px-3 py-1.5 bg-success/5 border-b border-success/20 text-xs text-success shrink-0"
+      class="flex items-center gap-2 px-3 py-1.5 bg-success/5 border-b border-success/20 text-xs text-success shrink-0 cursor-pointer hover:bg-success/10 transition-colors select-none"
+      title="Click to copy link"
+      @click="copyPublicLink"
     >
       <UIcon
-        name="i-lucide-link"
+        name="i-lucide-copy"
         class="size-3.5 shrink-0"
       />
       <span>Public at:</span>
+      <span class="underline underline-offset-2 font-mono">{{ publicUrl }}</span>
+      <UIcon
+        name="i-lucide-external-link"
+        class="size-3 shrink-0 ml-auto opacity-60"
+        @click.stop
+      />
       <NuxtLink
         :to="publicUrl"
-        class="underline underline-offset-2 font-mono"
-      >{{ publicUrl }}</NuxtLink>
+        target="_blank"
+        class="opacity-60 hover:opacity-100"
+        title="Open in new tab"
+        @click.stop
+      >
+        <span class="sr-only">Open</span>
+      </NuxtLink>
     </div>
+
+    <!-- Markdown toolbar (edit/split mode only, markdown files only) -->
+    <DocumentsMarkdownToolbar
+      v-if="isMarkdown && mode !== 'preview'"
+      :apply-transform="toolbarApplyTransform"
+      :insert-text="toolbarInsertText"
+    />
 
     <!-- Editor + Preview area -->
     <div class="flex-1 min-h-0 flex">
@@ -319,8 +393,10 @@ onUnmounted(() => {
       >
         <!-- CodeEditor.client.vue — browser-only, no hydration concerns under SPA -->
         <CodeEditor
+          ref="codeEditorRef"
           :model-value="content"
           :language="language"
+          :on-image="onEditorImage"
           @update:model-value="onContentUpdate"
           @save="onSaveShortcut"
         />

@@ -7,6 +7,15 @@ definePageMeta({ title: 'Documents' })
 const { tree, create, search } = useDocuments()
 const toast = useToast()
 
+/** Check if a doc id exists anywhere in the loaded tree */
+function docExistsInTree(nodes: TreeNode[], id: string): boolean {
+  for (const n of nodes) {
+    if (n.type === 'file' && (n.id === id || n.path === id)) return true
+    if (n.children && docExistsInTree(n.children, id)) return true
+  }
+  return false
+}
+
 // Tree state
 const treeData = ref<TreeNode[]>([])
 const treeLoading = ref(false)
@@ -14,6 +23,9 @@ const treeLoading = ref(false)
 // Selected document
 const route = useRoute()
 const selectedId = ref<string | null>(null)
+
+// Last-open cookie — persists selected doc across sessions
+const lastDoc = useCookie<string | null>('mm.lastDoc', { default: () => null })
 
 // Search
 const searchQuery = ref('')
@@ -98,7 +110,23 @@ watch(
   { immediate: true }
 )
 
-onMounted(() => loadTree())
+// Persist selected doc to cookie so we can reopen it next visit
+watch(selectedId, (id) => {
+  if (id) lastDoc.value = id
+})
+
+onMounted(async () => {
+  await loadTree()
+
+  // Restore last-open doc if no ?doc= query param and no selection yet
+  if (!route.query.doc && !selectedId.value && lastDoc.value) {
+    // Verify the doc still exists in the tree before selecting
+    const exists = docExistsInTree(treeData.value, lastDoc.value)
+    if (exists) {
+      selectedId.value = lastDoc.value
+    }
+  }
+})
 
 onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer)
