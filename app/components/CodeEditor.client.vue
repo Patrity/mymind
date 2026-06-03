@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { EditorView, basicSetup } from 'codemirror'
-import { EditorState, Compartment, type Extension } from '@codemirror/state'
+import { EditorState, EditorSelection, Compartment, type Extension } from '@codemirror/state'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { markdown } from '@codemirror/lang-markdown'
 import { javascript } from '@codemirror/lang-javascript'
@@ -117,6 +117,50 @@ onUnmounted(() => {
   view?.destroy()
   view = null
 })
+
+// ---------------------------------------------------------------------------
+// Exposed API — used by MarkdownToolbar to apply transforms
+// ---------------------------------------------------------------------------
+export interface EditorSelection2 {
+  text: string
+  from: number
+  to: number
+}
+
+function getSelection(): EditorSelection2 {
+  if (!view) return { text: '', from: 0, to: 0 }
+  const state = view.state
+  const { from, to } = state.selection.main
+  return { text: state.doc.toString(), from, to }
+}
+
+function applyTransform(fn: (s: EditorSelection2) => EditorSelection2): void {
+  if (!view) return
+  const s = getSelection()
+  const result = fn(s)
+  const docLen = view.state.doc.length
+
+  view.dispatch({
+    changes: { from: 0, to: docLen, insert: result.text },
+    selection: EditorSelection.range(
+      Math.min(result.from, result.text.length),
+      Math.min(result.to, result.text.length)
+    )
+  })
+  view.focus()
+}
+
+function insertText(snippet: string): void {
+  if (!view) return
+  const { from, to } = view.state.selection.main
+  view.dispatch({
+    changes: { from, to, insert: snippet },
+    selection: EditorSelection.cursor(from + snippet.length)
+  })
+  view.focus()
+}
+
+defineExpose({ getSelection, applyTransform, insertText })
 </script>
 
 <template>

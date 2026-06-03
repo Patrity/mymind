@@ -5,6 +5,8 @@ type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'js
 type Mode = 'edit' | 'preview' | 'split'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
+import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
+
 const props = defineProps<{
   documentId: string | null
 }>()
@@ -19,6 +21,17 @@ const loading = ref(false)
 const saveStatus = ref<SaveStatus>('idle')
 let savedContent = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+// CodeEditor ref — used to wire toolbar transforms
+const codeEditorRef = ref<{ applyTransform: (fn: (s: EditorSelection2) => EditorSelection2) => void, insertText: (s: string) => void } | null>(null)
+
+function toolbarApplyTransform(fn: (s: EditorSelection2) => EditorSelection2) {
+  codeEditorRef.value?.applyTransform(fn)
+}
+
+function toolbarInsertText(snippet: string) {
+  codeEditorRef.value?.insertText(snippet)
+}
 
 // Metadata form fields (separate from content)
 const metaPath = ref('')
@@ -348,6 +361,13 @@ onUnmounted(() => {
       </NuxtLink>
     </div>
 
+    <!-- Markdown toolbar (edit/split mode only, markdown files only) -->
+    <DocumentsMarkdownToolbar
+      v-if="isMarkdown && mode !== 'preview'"
+      :apply-transform="toolbarApplyTransform"
+      :insert-text="toolbarInsertText"
+    />
+
     <!-- Editor + Preview area -->
     <div class="flex-1 min-h-0 flex">
       <!-- Code editor pane -->
@@ -358,6 +378,7 @@ onUnmounted(() => {
       >
         <!-- CodeEditor.client.vue — browser-only, no hydration concerns under SPA -->
         <CodeEditor
+          ref="codeEditorRef"
           :model-value="content"
           :language="language"
           @update:model-value="onContentUpdate"
