@@ -28,7 +28,9 @@ These hold across all cycles. Change them here (with a dated note) if they ever 
 | Auth | better-auth. Two surfaces: session (web) + bearer API tokens (machine clients: ShareX, CC/Hermes hooks, MCP). |
 | Storage | Local-disk/S3 abstraction (ported from `copipasta`). |
 | Backups | Handled **out-of-band** (nightly DB dump to an external service). Not an in-app concern. In-app markdown export is an optional future feature, not core. |
-| AI safety | Every AI mutation (tags, frontmatter, filing, memories) is reviewable/reversible via a `reviewed_at`-style surface. |
+| AI safety | Every AI mutation (tags, frontmatter, filing, memories) is reviewable/reversible via a `reviewed_at`-style surface. Auto-review high-confidence items; only low-confidence needs human review (2026-06-03). |
+| Render mode (2026-06-03) | **SPA** (`ssr: false`) for the authed app; **SSR/prerender** only for public `/share/**` + `/i/**` via routeRules. Decided after the first-pass `/documents` pre-login flash. |
+| Reranker (2026-06-03) | `Qwen3-Reranker-0.6B` at `192.168.2.25:8883` available for relevance scoring (memory/doc search). |
 
 ## Cycle status
 
@@ -43,7 +45,17 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 | 5 | **Memory + MCP Server + Hook Endpoints** — mem schema, hybrid search, enrichment loop (env provider), HTTP hooks for CC/Hermes, MCP tools (memories/docs/projects/tasks), scheduler tasks, GitHub-commit→memory. Deprecates the Python service. | ✅ shipped | [spec](../specs/2026-06-03-memory-mcp.md) | [plan](2026-06-03-memory-mcp.md) | [handover](../../handovers/2026-06-03-memory-mcp.md) |
 | 6 | **Clipboard** — port `copipasta` as a page (self-contained; can slot in anytime). | ✅ shipped | [spec](../specs/2026-06-03-clipboard.md) | [plan](2026-06-03-clipboard.md) | [handover](../../handovers/2026-06-03-clipboard.md) |
 
-> Cycle ordering reflects dependencies: the spine underpins everything; enrichment makes it smart; capture/images/tasks are features on the spine; memory depends on docs/projects/tasks existing as MCP targets; clipboard is independent.
+### Round 2 — feedback after first-pass acceptance ([source](../../scope-feedback.md))
+
+| # | Cycle | Status | Spec | Plan | Handover |
+|---|---|---|---|---|---|
+| 7 | **Backend fixes & AI quality** — OCR retry-loop fix, tag cap (5–7), md-first transcription + title inference, memory auto-review threshold + relevance scores + reviewed-tag removal. | planned | — | — | — |
+| 8 | **Global UX & architecture** — SPA conversion (SSR only for public pages), command palette (`UDashboardSearch`) with semantic search across docs/memories/gallery/tasks. | planned | — | — | — |
+| 9 | **Documents power-editor** — custom MDC components + markdown toolbar (.md only), inline image paste→upload→embed, drag-drop move, context menu (rename/move/share/delete), copy-link, last-open cookie. | planned | — | — | — |
+| 10 | **Interaction polish** — Capture (paste/camera/drag-drop), Gallery (paste/DnD/video/filetype/search+tag-filter), Tasks (drag-drop + project/priority filters), Memories (add modal + tag filter), Clipboard (machine attribution). | planned | — | — | — |
+| 11 | **Sessions view** — browse raw CC/Hermes transcripts + token usage / message count / tool-use stats. | planned | — | — | — |
+
+> Cycle ordering reflects dependencies: the spine underpins everything; enrichment makes it smart; capture/images/tasks are features on the spine; memory depends on docs/projects/tasks existing as MCP targets; clipboard is independent. Round 2 = polish/fixes on the shipped base; backend fixes (7) first, then architecture (8) before the UI-heavy editor/interaction work (9–10).
 
 ## Reference repos (read-only sources)
 
