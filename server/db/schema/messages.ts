@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, jsonb, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core'
 
 export const messages = pgTable('messages', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -7,6 +7,7 @@ export const messages = pgTable('messages', {
   role: text('role'),
   content: text('content').notNull().default(''),
   externalUuid: text('external_uuid'),
+  metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   index('messages_session_idx').on(t.sessionId),

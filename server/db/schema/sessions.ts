@@ -10,6 +10,9 @@ export const sessions = pgTable('sessions', {
   title: text('title'),
   summary: text('summary'),
   messageCount: integer('message_count').notNull().default(0),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  toolCount: integer('tool_count').notNull().default(0),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   lastActive: timestamp('last_active', { withTimezone: true }).notNull().defaultNow(),
   metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`)

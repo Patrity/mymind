@@ -78,6 +78,13 @@
       "when": 1780508891783,
       "tag": "0010_yielding_zaladane",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1780527746684,
+      "tag": "0011_colorful_hobgoblin",
+      "breakpoints": true
     }
   ]
 }
