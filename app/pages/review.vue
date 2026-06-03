@@ -2,13 +2,13 @@
 definePageMeta({ title: 'Review' })
 
 interface Proposed {
-  title?: string
-  project?: string
-  domain?: string
-  type?: string
-  tags?: string[]
-  path?: string
-  reasoning?: string
+  title?: string | null
+  project?: string | null
+  domain?: string | null
+  type?: string | null
+  tags?: string[] | null
+  path?: string | null
+  reasoning?: string | null
 }
 
 interface ReviewItem {

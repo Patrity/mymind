@@ -72,7 +72,7 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
         kind: 'enrichment',
         proposed: proposal as unknown as string,
         status: 'pending'
-      })
+      }).onConflictDoNothing()
 
       console.log(`[enrichment] queued proposal for ${doc.path}`)
       proposed++

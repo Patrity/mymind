@@ -10,13 +10,13 @@ export default defineEventHandler(async (event) => {
   if (!item || item.status !== 'pending') throw createError({ statusCode: 404 })
 
   const p = item.proposed as {
-    title?: string
-    project?: string
-    domain?: string
-    type?: string
-    tags?: string[]
-    path?: string
-    reasoning?: string
+    title?: string | null
+    project?: string | null
+    domain?: string | null
+    type?: string | null
+    tags?: string[] | null
+    path?: string | null
+    reasoning?: string | null
   }
 
   const doc = await getDoc(item.docId)

@@ -36,6 +36,13 @@
       "when": 1780477867953,
       "tag": "0004_watery_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780479472226,
+      "tag": "0005_slimy_satana",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "review_queue_one_pending_per_doc" ON "review_queue" USING btree ("doc_id") WHERE status = 'pending';
