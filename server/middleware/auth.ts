@@ -7,8 +7,8 @@ const PUBLIC_PREFIXES = ['/api/auth', '/api/share']
 
 export default defineEventHandler(async (event) => {
   const url = getRequestURL(event).pathname
-  if (!url.startsWith('/api')) return
-  if (PUBLIC_PREFIXES.some(p => url.startsWith(p))) return
+  if (!url.startsWith('/api/') && url !== '/api') return
+  if (PUBLIC_PREFIXES.some(p => url === p || url.startsWith(p + '/'))) return
 
   // 1) bearer API token (machine clients)
   const authz = getHeader(event, 'authorization')
@@ -23,6 +23,8 @@ export default defineEventHandler(async (event) => {
       db.update(apiTokens).set({ lastUsedAt: new Date() }).where(eq(apiTokens.id, row.id)).execute().catch(() => {})
       return
     }
+    setResponseHeader(event, 'www-authenticate', 'Bearer')
+    throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
   }
 
   // 2) session (web app)
@@ -35,5 +37,6 @@ export default defineEventHandler(async (event) => {
     return
   }
 
+  setResponseHeader(event, 'www-authenticate', 'Bearer')
   throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
 })
