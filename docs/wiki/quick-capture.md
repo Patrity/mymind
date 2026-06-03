@@ -17,7 +17,7 @@ Three tabs (sidebar nav "Capture", `i-lucide-plus`, top of menu):
 
 ## Endpoints
 - `server/api/capture/note.post.ts` — `{ text, title? }` → `createDoc({ path: '/input/<slug>.md', title, content: text })`. Slug derived from title (kebab, ≤64) or nanoid.
-- `server/api/capture/transcribe.post.ts` — `{ imageId, title? }` → `getImage` → blob → data URL → `describeImage` → `createDoc({ path:'/input/transcribed-<nanoid>.md', content: ocrText })`. Blank/no-text images create a stub gracefully.
+- `server/api/capture/transcribe.post.ts` — `{ imageId, title? }` → `getImage` → blob → data URL → `describeImage` (markdown-first OCR) → **`cleanToMarkdown` (cycle 7)** runs the raw OCR through the reasoning model (`server/lib/ai/transcribe.ts`) to produce faithful markdown (headings/lists/checkboxes/bold) + an inferred title → `createDoc({ path:'/input/<title-slug>-<nanoid>.md', title, content: markdown })`. Blank/no-text images create a stub gracefully.
 
 ## Why /input
 Everything dropped here is automatically embedded and gets LLM-proposed frontmatter (project/domain/type/tags + a destination path) into the review queue — so capture is fast and organization happens later via Approve. See [enrichment.md](enrichment.md).

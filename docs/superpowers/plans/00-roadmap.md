@@ -49,7 +49,7 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 
 | # | Cycle | Status | Spec | Plan | Handover |
 |---|---|---|---|---|---|
-| 7 | **Backend fixes & AI quality** — OCR retry-loop fix, tag cap (5–7), md-first transcription + title inference, memory auto-review threshold + relevance scores + reviewed-tag removal. | in-progress | [spec](../specs/2026-06-03-backend-fixes.md) | [plan](2026-06-03-backend-fixes.md) | — |
+| 7 | **Backend fixes & AI quality** — OCR retry-loop fix, tag cap (5–7), md-first transcription + title inference, memory auto-review threshold + relevance scores + reviewed-tag removal. | ✅ shipped | [spec](../specs/2026-06-03-backend-fixes.md) | [plan](2026-06-03-backend-fixes.md) | [handover](../../handovers/2026-06-03-backend-fixes.md) |
 | 8 | **Global UX & architecture** — SPA conversion (SSR only for public pages), command palette (`UDashboardSearch`) with semantic search across docs/memories/gallery/tasks. | planned | — | — | — |
 | 9 | **Documents power-editor** — custom MDC components + markdown toolbar (.md only), inline image paste→upload→embed, drag-drop move, context menu (rename/move/share/delete), copy-link, last-open cookie. | planned | — | — | — |
 | 10 | **Interaction polish** — Capture (paste/camera/drag-drop), Gallery (paste/DnD/video/filetype/search+tag-filter), Tasks (drag-drop + project/priority filters), Memories (add modal + tag filter), Clipboard (machine attribution). | planned | — | — | — |
