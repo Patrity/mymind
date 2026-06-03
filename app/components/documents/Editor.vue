@@ -190,6 +190,32 @@ const publicUrl = computed(() =>
     : null
 )
 
+async function copyPublicLink() {
+  if (!doc.value?.publicSlug) return
+  const url = `${window.location.origin}/share/${doc.value.publicSlug}`
+  let copied = false
+  if (window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(url)
+      copied = true
+    } catch { /* fall through */ }
+  }
+  if (!copied) {
+    const ta = document.createElement('textarea')
+    ta.value = url
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '0'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    ta.setSelectionRange(0, url.length)
+    try { copied = document.execCommand('copy') } catch { copied = false }
+    document.body.removeChild(ta)
+  }
+  toast.add({ color: copied ? 'success' : 'warning', title: copied ? 'Link copied' : 'Could not copy — link shown above' })
+}
+
 onUnmounted(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (metaSaveTimer.value) clearTimeout(metaSaveTimer.value)
@@ -293,20 +319,33 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Public URL notice -->
+    <!-- Public URL notice — click anywhere to copy the absolute URL -->
     <div
       v-if="publicUrl"
-      class="flex items-center gap-2 px-3 py-1.5 bg-success/5 border-b border-success/20 text-xs text-success shrink-0"
+      class="flex items-center gap-2 px-3 py-1.5 bg-success/5 border-b border-success/20 text-xs text-success shrink-0 cursor-pointer hover:bg-success/10 transition-colors select-none"
+      title="Click to copy link"
+      @click="copyPublicLink"
     >
       <UIcon
-        name="i-lucide-link"
+        name="i-lucide-copy"
         class="size-3.5 shrink-0"
       />
       <span>Public at:</span>
+      <span class="underline underline-offset-2 font-mono">{{ publicUrl }}</span>
+      <UIcon
+        name="i-lucide-external-link"
+        class="size-3 shrink-0 ml-auto opacity-60"
+        @click.stop
+      />
       <NuxtLink
         :to="publicUrl"
-        class="underline underline-offset-2 font-mono"
-      >{{ publicUrl }}</NuxtLink>
+        target="_blank"
+        class="opacity-60 hover:opacity-100"
+        title="Open in new tab"
+        @click.stop
+      >
+        <span class="sr-only">Open</span>
+      </NuxtLink>
     </div>
 
     <!-- Editor + Preview area -->
