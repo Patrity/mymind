@@ -173,7 +173,7 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
   const remainingRows = await db
     .select({ remaining: sql<number>`count(*)::int` })
     .from(images)
-    .where(and(isNull(images.ocrText), isNull(images.deletedAt), lt(images.ocrAttempts, 3)))
+    .where(and(isNull(images.ocrText), isNull(images.deletedAt), inArray(images.kind, ['image', 'gif']), lt(images.ocrAttempts, 3)))
 
   const remaining = remainingRows[0]?.remaining ?? 0
 
