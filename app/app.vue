@@ -1,4 +1,6 @@
-<script setup>
+<script setup lang="ts">
+import type { NavigationMenuItem } from '@nuxt/ui'
+
 useHead({
   meta: [
     { name: 'viewport', content: 'width=device-width, initial-scale=1' }
@@ -11,67 +13,67 @@ useHead({
   }
 })
 
-const title = 'Nuxt Starter Template'
-const description = 'A production-ready starter template powered by Nuxt UI. Build beautiful, accessible, and performant applications in minutes, not hours.'
-
 useSeoMeta({
-  title,
-  description,
-  ogTitle: title,
-  ogDescription: description,
-  ogImage: 'https://ui.nuxt.com/assets/templates/nuxt/starter-light.png',
-  twitterCard: 'summary_large_image'
+  title: 'MyMind',
+  description: 'Personal document management, memories, and project tracking.'
 })
+
+const mainItems: NavigationMenuItem[] = [
+  { label: 'Documents', icon: 'i-lucide-files', to: '/documents' }
+]
 </script>
 
 <template>
   <UApp>
-    <UHeader>
-      <template #left>
-        <NuxtLink to="/">
-          <AppLogo class="w-auto h-6 shrink-0" />
-        </NuxtLink>
+    <UDashboardGroup unit="rem">
+      <UDashboardSidebar
+        id="mymind-sidebar"
+        collapsible
+        resizable
+        :default-size="14"
+        :min-size="11"
+        :max-size="20"
+        class="bg-elevated/25"
+        :ui="{ footer: 'lg:border-t lg:border-default' }"
+      >
+        <template #header="{ collapsed }">
+          <ULink
+            to="/documents"
+            class="flex items-center gap-2 mx-1"
+          >
+            <UIcon
+              name="i-lucide-brain"
+              class="size-6 text-primary shrink-0"
+            />
+            <span
+              v-if="!collapsed"
+              class="text-sm font-semibold tracking-tight"
+            >MyMind</span>
+          </ULink>
+        </template>
 
-        <TemplateMenu />
-      </template>
+        <template #default="{ collapsed }">
+          <UNavigationMenu
+            :collapsed="collapsed"
+            :items="mainItems"
+            orientation="vertical"
+            tooltip
+          />
+          <div class="mt-auto" />
+        </template>
 
-      <template #right>
-        <UColorModeButton />
+        <template #footer="{ collapsed }">
+          <UColorModeButton
+            v-if="!collapsed"
+            size="xs"
+            variant="ghost"
+            color="neutral"
+            class="mx-2 mb-2"
+          />
+        </template>
+      </UDashboardSidebar>
 
-        <UButton
-          to="https://github.com/nuxt-ui-templates/starter"
-          target="_blank"
-          icon="i-simple-icons-github"
-          aria-label="GitHub"
-          color="neutral"
-          variant="ghost"
-        />
-      </template>
-    </UHeader>
-
-    <UMain>
       <NuxtPage />
-    </UMain>
-
-    <USeparator icon="i-simple-icons-nuxtdotjs" />
-
-    <UFooter>
-      <template #left>
-        <p class="text-sm text-muted">
-          Built with Nuxt UI • © {{ new Date().getFullYear() }}
-        </p>
-      </template>
-
-      <template #right>
-        <UButton
-          to="https://github.com/nuxt-ui-templates/starter"
-          target="_blank"
-          icon="i-simple-icons-github"
-          aria-label="GitHub"
-          color="neutral"
-          variant="ghost"
-        />
-      </template>
-    </UFooter>
+    </UDashboardGroup>
   </UApp>
 </template>
