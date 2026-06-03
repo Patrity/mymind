@@ -5,7 +5,30 @@ import { memories } from '../db/schema'
 import type { MemoryDTO, MemoryScope } from '../../shared/types/memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
+import { rerank } from '../lib/ai/rerank'
 import { dedupDecision, type DedupCandidate } from './memory-dedup'
+
+// ---------------------------------------------------------------------------
+// Pure helpers (exported for tests)
+// ---------------------------------------------------------------------------
+
+/** True if confidence is a number and >= threshold. */
+export function shouldAutoReview(confidence: number | null | undefined, threshold: number): boolean {
+  return confidence != null && confidence >= threshold
+}
+
+/** Remove 'unreviewed' from tags, deduplicate remaining, preserve order. */
+export function stripUnreviewed(tags: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const tag of tags) {
+    if (tag === 'unreviewed') continue
+    if (seen.has(tag)) continue
+    seen.add(tag)
+    result.push(tag)
+  }
+  return result
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +71,8 @@ export interface CreateMemoryInput {
 
 export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO> {
   const db = useDb()
+  const config = useRuntimeConfig()
+  const threshold = config.memoryAutoReviewThreshold as number ?? 0.75
   const scope = input.scope ?? 'user'
   const contentHash = createHash('sha256').update(input.content).digest('hex')
   const vec = await embedOne(input.content)
@@ -113,10 +138,14 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
   // Wrap in try/catch for the race where a concurrent insert wins the
   // content_hash unique index (Postgres error 23505).
   try {
+    const autoReview = shouldAutoReview(input.confidence, threshold)
+    const finalTags = autoReview ? stripUnreviewed(input.tags ?? []) : (input.tags ?? [])
+    const finalReviewedAt = (input.reviewed || autoReview) ? new Date() : null
+
     const [inserted] = await db.insert(memories).values({
       scope,
       content: input.content,
-      tags: input.tags ?? [],
+      tags: finalTags,
       source: input.source ?? null,
       embedding: vec,
       contentHash,
@@ -125,7 +154,7 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
       project: input.project ?? null,
       sessionId: input.sessionId ?? null,
       enrichedAt: null,
-      reviewedAt: input.reviewed ? new Date() : null
+      reviewedAt: finalReviewedAt
     }).returning()
 
     return toDTO(inserted!)
@@ -213,10 +242,39 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
   const fetched = await db.select().from(memories)
     .where(and(live(), inArray(memories.id, fusedIds)))
   const byId = new Map(fetched.map(r => [r.id, r]))
-  return fusedIds.flatMap(id => {
+
+  // Build DTOs in fused order (baseline: rank-based relevance)
+  const dtos = fusedIds.flatMap(id => {
     const r = byId.get(id)
     return r ? [toDTO(r)] : []
   })
+
+  // Attach rank-based relevance scores: relevance = 1/(1+rank), rounded to 3dp
+  const withRelevance = dtos.map((dto, rank) => ({
+    ...dto,
+    relevance: Math.round((1 / (1 + rank)) * 1000) / 1000
+  }))
+
+  // Optional: reranker (OFF by default — aiRerankBaseUrl must be set in config)
+  const config = useRuntimeConfig()
+  const rerankBaseUrl = (config.ai as { rerankBaseUrl?: string }).rerankBaseUrl ?? ''
+  if (rerankBaseUrl) {
+    try {
+      const rerankApiKey = process.env.AI_RERANK_API_KEY ?? ''
+      const docs = withRelevance.map(dto => ({ id: dto.id, text: dto.content }))
+      const reranked = await rerank(q, docs, rerankBaseUrl, rerankApiKey)
+      if (reranked.length === withRelevance.length) {
+        const rerankedById = new Map(reranked.map(r => [r.id, r.score]))
+        return withRelevance
+          .map(dto => ({ ...dto, relevance: rerankedById.get(dto.id) ?? dto.relevance }))
+          .sort((a, b) => (b.relevance ?? 0) - (a.relevance ?? 0))
+      }
+    } catch (err) {
+      console.warn('[searchMemories] reranker failed, using RRF order:', err)
+    }
+  }
+
+  return withRelevance
 }
 
 // ---------------------------------------------------------------------------
@@ -294,8 +352,14 @@ export async function updateMemory(id: string, patch: UpdateMemoryInput): Promis
 }
 
 export async function reviewMemory(id: string): Promise<MemoryDTO | null> {
-  const [r] = await useDb().update(memories)
-    .set({ reviewedAt: new Date(), updatedAt: new Date() })
+  const db = useDb()
+  // Fetch current tags so we can strip 'unreviewed'
+  const [current] = await db.select({ tags: memories.tags }).from(memories)
+    .where(and(eq(memories.id, id), live())).limit(1)
+  if (!current) return null
+
+  const [r] = await db.update(memories)
+    .set({ reviewedAt: new Date(), updatedAt: new Date(), tags: stripUnreviewed(current.tags) })
     .where(and(eq(memories.id, id), live()))
     .returning()
   return r ? toDTO(r) : null

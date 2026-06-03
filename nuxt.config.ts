@@ -54,8 +54,10 @@ export default defineNuxtConfig({
       embeddings: { baseURL: process.env.AI_EMBEDDINGS_BASE_URL, apiKey: process.env.AI_EMBEDDINGS_API_KEY, model: process.env.AI_EMBEDDINGS_MODEL },
       vision: { baseURL: process.env.AI_VISION_BASE_URL, apiKey: process.env.AI_VISION_API_KEY, model: process.env.AI_VISION_MODEL },
       stt: { baseURL: process.env.AI_STT_BASE_URL, apiKey: process.env.AI_STT_API_KEY },
-      tts: { baseURL: process.env.AI_TTS_BASE_URL, apiKey: process.env.AI_TTS_API_KEY }
-    }
+      tts: { baseURL: process.env.AI_TTS_BASE_URL, apiKey: process.env.AI_TTS_API_KEY },
+      rerankBaseUrl: process.env.AI_RERANK_BASE_URL ?? ''
+    },
+    memoryAutoReviewThreshold: Number(process.env.MEMORY_AUTO_REVIEW_THRESHOLD ?? 0.75)
   },
 
   nitro: {

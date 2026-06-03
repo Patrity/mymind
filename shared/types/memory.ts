@@ -13,4 +13,6 @@ export interface MemoryDTO {
   reviewedAt: string | null
   createdAt: string
   updatedAt: string
+  /** Search relevance score [0–1], only present on search results (q non-empty). */
+  relevance?: number
 }
