@@ -32,6 +32,7 @@ export default defineNuxtConfig({
     databaseUrl: process.env.DATABASE_URL,
     betterAuthSecret: process.env.BETTER_AUTH_SECRET,
     betterAuthUrl: process.env.BETTER_AUTH_URL,
+    allowSignup: process.env.ALLOW_SIGNUP,
     storageDriver: process.env.STORAGE_DRIVER ?? 'local',
     storageLocalDir: process.env.STORAGE_LOCAL_DIR ?? './.data/uploads',
     storageS3: {
