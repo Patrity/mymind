@@ -12,8 +12,10 @@ const tasks = ref<TaskDTO[]>([])
 const projects = ref<ProjectDTO[]>([])
 const loading = ref(false)
 
-// ── Project filter ────────────────────────────────────────────────────────────
-const filterProject = ref<string | null>(null)
+// ── Filters ───────────────────────────────────────────────────────────────────
+const FILTER_ALL = '__all__'
+const filterProject = ref<string>(FILTER_ALL)
+const filterPriority = ref<string>(FILTER_ALL)
 
 // ── Column definitions ────────────────────────────────────────────────────────
 const COLUMNS: { key: TaskStatus, label: string }[] = [
@@ -23,9 +25,17 @@ const COLUMNS: { key: TaskStatus, label: string }[] = [
   { key: 'blocked', label: 'Blocked' }
 ]
 
+const filteredTasks = computed(() => {
+  return tasks.value.filter(t => {
+    const projectMatch = filterProject.value === FILTER_ALL || t.project === filterProject.value
+    const priorityMatch = filterPriority.value === FILTER_ALL || t.priority === filterPriority.value
+    return projectMatch && priorityMatch
+  })
+})
+
 const tasksByStatus = computed(() => {
   const map = Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]])) as Record<TaskStatus, TaskDTO[]>
-  for (const t of tasks.value) {
+  for (const t of filteredTasks.value) {
     if (map[t.status]) map[t.status].push(t)
   }
   return map
@@ -35,7 +45,9 @@ const tasksByStatus = computed(() => {
 async function loadTasks() {
   loading.value = true
   try {
-    tasks.value = await listTasks(filterProject.value ? { project: filterProject.value } : undefined)
+    // Pass project server-side if filtered; priority is client-side only
+    const projectParam = filterProject.value !== FILTER_ALL ? filterProject.value : undefined
+    tasks.value = await listTasks(projectParam ? { project: projectParam } : undefined)
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Failed to load tasks', description: err.data?.statusMessage ?? err.message })
@@ -57,7 +69,55 @@ onMounted(() => {
   loadProjects()
 })
 
+// Re-fetch when project filter changes (server-side); priority is client-side
 watch(filterProject, loadTasks)
+
+// ── Drag-and-drop state ───────────────────────────────────────────────────────
+const dragTaskId = ref<string | null>(null)
+const dragTaskStatus = ref<TaskStatus | null>(null)
+const dragOverColumn = ref<TaskStatus | null>(null)
+
+function onDragStart(event: DragEvent, task: TaskDTO) {
+  dragTaskId.value = task.id
+  dragTaskStatus.value = task.status
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', task.id)
+  }
+}
+
+function onDragEnd() {
+  dragTaskId.value = null
+  dragTaskStatus.value = null
+  dragOverColumn.value = null
+}
+
+function onDragOver(event: DragEvent, colStatus: TaskStatus) {
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverColumn.value = colStatus
+}
+
+function onDragLeave(colStatus: TaskStatus) {
+  if (dragOverColumn.value === colStatus) dragOverColumn.value = null
+}
+
+async function onDrop(event: DragEvent, colStatus: TaskStatus) {
+  event.stopPropagation()
+  dragOverColumn.value = null
+  const id = dragTaskId.value
+  const fromStatus = dragTaskStatus.value
+  dragTaskId.value = null
+  dragTaskStatus.value = null
+  if (!id || fromStatus === colStatus) return
+  try {
+    await moveTask(id, { status: colStatus })
+    await loadTasks()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Failed to move task', description: err.data?.statusMessage ?? err.message })
+  }
+}
 
 // ── New task modal ────────────────────────────────────────────────────────────
 const showNewModal = ref(false)
@@ -162,18 +222,6 @@ async function deleteTask() {
   }
 }
 
-// ── Move task ─────────────────────────────────────────────────────────────────
-async function moveToStatus(task: TaskDTO, status: TaskStatus) {
-  if (task.status === status) return
-  try {
-    await moveTask(task.id, { status })
-    await loadTasks()
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to move task', description: err.data?.statusMessage ?? err.message })
-  }
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const priorityColor: Record<TaskPriority, 'neutral' | 'warning' | 'error'> = {
   low: 'neutral',
@@ -199,6 +247,13 @@ const priorityItems = [
   { label: 'High', value: 'high' as TaskPriority }
 ]
 
+const filterPriorityItems = [
+  { label: 'All priorities', value: FILTER_ALL },
+  { label: 'Low', value: 'low' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'High', value: 'high' }
+]
+
 const PROJECT_NONE = '__none__'
 
 const projectItems = computed(() => [
@@ -207,7 +262,7 @@ const projectItems = computed(() => [
 ])
 
 const filterProjectItems = computed(() => [
-  { label: 'All projects', value: PROJECT_NONE },
+  { label: 'All projects', value: FILTER_ALL },
   ...projects.value.map(p => ({ label: p.name, value: p.slug }))
 ])
 </script>
@@ -224,14 +279,19 @@ const filterProjectItems = computed(() => [
           <UDashboardSidebarCollapse />
         </template>
         <template #right>
+          <!-- Priority filter -->
+          <USelect
+            v-model="filterPriority"
+            :items="filterPriorityItems"
+            size="xs"
+            class="w-36"
+          />
           <!-- Project filter -->
           <USelect
-            v-if="projects.length > 0"
-            :model-value="filterProject ?? PROJECT_NONE"
+            v-model="filterProject"
             :items="filterProjectItems"
             size="xs"
             class="w-36"
-            @update:model-value="filterProject = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
           />
           <UButton
             icon="i-lucide-plus"
@@ -272,7 +332,11 @@ const filterProjectItems = computed(() => [
         <div
           v-for="col in COLUMNS"
           :key="col.key"
-          class="flex flex-col gap-3 min-w-64 w-64 shrink-0"
+          class="flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg transition-colors"
+          :class="dragOverColumn === col.key ? 'bg-primary/5 ring-2 ring-primary/30' : ''"
+          @dragover="onDragOver($event, col.key)"
+          @dragleave="onDragLeave(col.key)"
+          @drop="onDrop($event, col.key)"
         >
           <!-- Column header -->
           <div class="flex items-center gap-2 px-1">
@@ -285,19 +349,24 @@ const filterProjectItems = computed(() => [
             />
           </div>
 
-          <!-- Empty state -->
+          <!-- Empty state / drop zone -->
           <div
             v-if="tasksByStatus[col.key].length === 0"
-            class="flex items-center justify-center h-20 rounded-lg border border-dashed border-muted text-sm text-muted"
+            class="flex items-center justify-center h-20 rounded-lg border border-dashed transition-colors"
+            :class="dragOverColumn === col.key ? 'border-primary/50 text-primary' : 'border-muted text-muted'"
           >
-            No tasks
+            <span class="text-sm">{{ dragTaskId ? 'Drop here' : 'No tasks' }}</span>
           </div>
 
           <!-- Task cards -->
           <div
             v-for="task in tasksByStatus[col.key]"
             :key="task.id"
-            class="rounded-lg border border-default bg-elevated/50 p-3 flex flex-col gap-2 cursor-pointer hover:bg-elevated transition-colors"
+            draggable="true"
+            class="rounded-lg border border-default bg-elevated/50 p-3 flex flex-col gap-2 cursor-grab active:cursor-grabbing hover:bg-elevated transition-all select-none"
+            :class="dragTaskId === task.id ? 'opacity-40 ring-2 ring-primary/50' : ''"
+            @dragstart="onDragStart($event, task)"
+            @dragend="onDragEnd"
             @click="openEditModal(task)"
           >
             <!-- Title -->
@@ -325,20 +394,6 @@ const filterProjectItems = computed(() => [
                 color="neutral"
                 variant="outline"
                 size="xs"
-              />
-            </div>
-
-            <!-- Move status select (stop propagation so click on select doesn't open edit modal) -->
-            <div
-              class="mt-1"
-              @click.stop
-            >
-              <USelect
-                :model-value="task.status"
-                :items="statusItems"
-                size="xs"
-                class="w-full"
-                @update:model-value="moveToStatus(task, $event as TaskStatus)"
               />
             </div>
           </div>
