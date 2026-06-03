@@ -180,8 +180,18 @@ export async function listMessages(opts: {
   const db = useDb()
   const { threadId, since, limit = 100 } = opts
 
-  const whereClause = since
-    ? and(eq(clipMessages.threadId, threadId), gt(clipMessages.createdAt, new Date(since)))
+  // FIX 3: Guard against invalid `since` values (e.g. a UUID instead of an ISO
+  // string). new Date(uuid) produces Invalid Date which causes Drizzle to throw.
+  // Also add 1ms to the cursor: DTO ISO strings are truncated to milliseconds but
+  // Postgres stores microseconds, so gt(createdAt, "...068Z") would still include
+  // a row whose actual DB time is "...068768µs". Adding 1ms makes the cursor
+  // exclusive at the millisecond boundary the caller observed.
+  const sinceRaw = since ? new Date(since) : null
+  const sinceDate = sinceRaw && !isNaN(sinceRaw.getTime())
+    ? new Date(sinceRaw.getTime() + 1)
+    : null
+  const whereClause = sinceDate
+    ? and(eq(clipMessages.threadId, threadId), gt(clipMessages.createdAt, sinceDate))
     : eq(clipMessages.threadId, threadId)
 
   const msgs = await db

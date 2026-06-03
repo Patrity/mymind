@@ -20,7 +20,11 @@ const POLL_INTERVAL_MS = 4000
 export function useThreadStream(threadId: Ref<string>, onMessage: (m: MessageRow) => void) {
   let es: EventSource | null = null
   let pollTimer: ReturnType<typeof setInterval> | null = null
-  let lastId: string | null = null
+  // FIX 3: Track a timestamp cursor (ISO string) instead of a UUID id so that
+  // listMessages' `gt(createdAt, new Date(since))` receives a parseable value.
+  let lastCreatedAt: string | null = null
+  // Dedup set so a message isn't shown twice when SSE and poll overlap.
+  const seenIds = new Set<string>()
   let reconnectTimes: number[] = []
   let pollingPermanent = false
 
@@ -30,11 +34,13 @@ export function useThreadStream(threadId: Ref<string>, onMessage: (m: MessageRow
     pollTimer = setInterval(async () => {
       try {
         const r = await $fetch<MessageRow[]>(`/api/clipboard/threads/${threadId.value}/messages`, {
-          query: { since: lastId ?? '' }
+          query: { since: lastCreatedAt ?? '' }
         })
         for (const m of r) {
+          if (seenIds.has(m.id)) continue
+          seenIds.add(m.id)
+          if (typeof m.createdAt === 'string') lastCreatedAt = m.createdAt
           onMessage(m)
-          lastId = m.id
         }
       } catch {
         // Swallow transient errors — next tick will retry.
@@ -55,7 +61,9 @@ export function useThreadStream(threadId: Ref<string>, onMessage: (m: MessageRow
     es.onmessage = (e) => {
       try {
         const m = JSON.parse(e.data) as MessageRow
-        lastId = m.id
+        if (seenIds.has(m.id)) return
+        seenIds.add(m.id)
+        if (typeof m.createdAt === 'string') lastCreatedAt = m.createdAt
         onMessage(m)
       } catch {
         // Ignore non-JSON frames (e.g. heartbeat comments).
@@ -99,7 +107,8 @@ export function useThreadStream(threadId: Ref<string>, onMessage: (m: MessageRow
     pollTimer = null
     pollingPermanent = false
     reconnectTimes = []
-    lastId = null
+    lastCreatedAt = null
+    seenIds.clear()
     startSSE()
   })
 }
