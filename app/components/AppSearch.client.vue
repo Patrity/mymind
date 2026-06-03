@@ -73,7 +73,7 @@ const groups = computed<CommandPaletteGroup[]>(() => {
       ignoreFilter: true,
       items: r.images.map(img => ({
         id: img.id,
-        label: img.tags.join(', ') || img.id,
+        label: img.tags.join(', ') || 'Untitled image',
         icon: 'i-lucide-image',
         onSelect: () => navigateTo(img.to)
       }))

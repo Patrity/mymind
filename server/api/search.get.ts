@@ -11,6 +11,6 @@ const emptyResults: SearchResults = {
 
 export default defineEventHandler(async (event) => {
   const q = getQuery(event).q
-  if (typeof q !== 'string' || !q.trim()) return emptyResults
+  if (typeof q !== 'string' || !q.trim() || q.length > 200) return emptyResults
   return searchAll(q.trim())
 })

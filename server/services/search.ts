@@ -44,7 +44,7 @@ export async function searchAll(q: string, perGroup = 5): Promise<SearchResults>
           snippet: r.content.slice(0, 120),
           scope: r.scope,
           relevance: r.relevance,
-          to: '/memories?focus=' + r.id
+          to: '/memories'
         }))
       } catch {
         return []
@@ -73,7 +73,7 @@ export async function searchAll(q: string, perGroup = 5): Promise<SearchResults>
           id: r.id,
           url: serveUrl(r),
           tags: r.tags,
-          to: '/gallery?img=' + r.id
+          to: '/gallery'
         }))
       } catch {
         return []
@@ -101,7 +101,7 @@ export async function searchAll(q: string, perGroup = 5): Promise<SearchResults>
           id: r.id,
           title: r.title,
           status: r.status,
-          to: '/tasks?task=' + r.id
+          to: '/tasks'
         }))
       } catch {
         return []
