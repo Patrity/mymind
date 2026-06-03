@@ -28,6 +28,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Gallery', icon: 'i-lucide-image', to: '/gallery' },
   { label: 'Tasks', icon: 'i-lucide-square-kanban', to: '/tasks' },
   { label: 'Projects', icon: 'i-lucide-folder-kanban', to: '/projects' },
+  { label: 'Sessions', icon: 'i-lucide-history', to: '/sessions' },
   {
     label: 'Memory',
     icon: 'i-lucide-brain',
