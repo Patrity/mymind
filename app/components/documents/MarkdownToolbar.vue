@@ -35,10 +35,10 @@ function doCodeBlock() {
 // Insert MDC block snippets
 function insertMDC(type: 'callout-info' | 'callout-warning' | 'callout-success' | 'callout-error' | 'note' | 'collapsible') {
   const snippets: Record<string, string> = {
-    'callout-info': '\n::callout{type="info"}\nYour text here.\n::\n',
-    'callout-warning': '\n::callout{type="warning"}\nYour text here.\n::\n',
-    'callout-success': '\n::callout{type="success"}\nYour text here.\n::\n',
-    'callout-error': '\n::callout{type="error"}\nYour text here.\n::\n',
+    'callout-info': '\n::mc-callout{type="info"}\nYour text here.\n::\n',
+    'callout-warning': '\n::mc-callout{type="warning"}\nYour text here.\n::\n',
+    'callout-success': '\n::mc-callout{type="success"}\nYour text here.\n::\n',
+    'callout-error': '\n::mc-callout{type="error"}\nYour text here.\n::\n',
     'note': '\n::note\nYour note here.\n::\n',
     'collapsible': '\n::collapsible{title="Details"}\nYour content here.\n::\n'
   }

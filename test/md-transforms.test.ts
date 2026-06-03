@@ -85,6 +85,15 @@ describe('toggleLinePrefix', () => {
     const result = toggleLinePrefix(s, '- [ ] ')
     expect(result.text).toBe('- [ ] task one')
   })
+
+  it('toggle OFF with cursor at offset 0 returns non-negative from and to', () => {
+    // Regression: toggling off a prefix when cursor is at offset 0 must not
+    // produce a negative from/to (would cause a RangeError in CodeMirror).
+    const s = sel('- foo', 0, 0)
+    const result = toggleLinePrefix(s, '- ')
+    expect(result.from).toBeGreaterThanOrEqual(0)
+    expect(result.to).toBeGreaterThanOrEqual(0)
+  })
 })
 
 // ---------------------------------------------------------------------------

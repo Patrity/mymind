@@ -60,10 +60,13 @@ export function toggleLinePrefix(s: Selection, prefix: string): Selection {
   const delta = newRegion.length - region.length
 
   const text = full.slice(0, lineStart) + newRegion + full.slice(lineEnd)
-  const from = Math.max(lineStart, s.from + (allHave ? -prefix.length : prefix.length))
-  const to = s.to + delta
+  const rawFrom = Math.max(lineStart, s.from + (allHave ? -prefix.length : prefix.length))
+  const rawTo = s.to + delta
 
-  return { text, from: Math.min(from, to), to: Math.max(from, to) }
+  const from = Math.max(0, Math.min(rawFrom, rawTo))
+  const to = Math.max(0, Math.max(rawFrom, rawTo))
+
+  return { text, from, to }
 }
 
 /**

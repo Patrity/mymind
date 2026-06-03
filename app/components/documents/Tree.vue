@@ -193,9 +193,14 @@ function promptMove(id: string, path: string, label: string) {
 
 async function confirmMove() {
   if (!moveTarget.value || !moveDestFolder.value) return
-  moveLoading.value = true
   const base = basenameOf(moveTarget.value.path)
   const dest = moveDestFolder.value === '/' ? '/' + base : moveDestFolder.value + '/' + base
+  // Same-folder no-op: destination equals current path — just close.
+  if (dest === moveTarget.value.path) {
+    showMoveModal.value = false
+    return
+  }
+  moveLoading.value = true
   try {
     await move(moveTarget.value.id, dest)
     toast.add({ color: 'success', title: `Moved to "${moveDestFolder.value}"` })

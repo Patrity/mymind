@@ -178,8 +178,8 @@ function applyTransform(fn: (s: EditorSelection2) => EditorSelection2): void {
   view.dispatch({
     changes: { from: 0, to: docLen, insert: result.text },
     selection: EditorSelection.range(
-      Math.min(result.from, result.text.length),
-      Math.min(result.to, result.text.length)
+      Math.max(0, Math.min(result.from, result.text.length)),
+      Math.max(0, Math.min(result.to, result.text.length))
     )
   })
   view.focus()
