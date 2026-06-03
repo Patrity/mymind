@@ -12,6 +12,7 @@ export const images = pgTable('images', {
   height: integer('height'),
   size: integer('size').notNull(),
   ocrText: text('ocr_text'),
+  ocrAttempts: integer('ocr_attempts').notNull().default(0),
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   recommendedTags: text('recommended_tags').array().notNull().default(sql`'{}'::text[]`),
   isPublic: boolean('is_public').notNull().default(false),

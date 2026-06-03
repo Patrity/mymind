@@ -1,5 +1,6 @@
 import { chat } from './chat'
 import type { DocumentDTO } from '../../../shared/types/documents'
+import { capTags } from '../../../shared/utils/cap-tags'
 
 export interface Proposed {
   title?: string
@@ -63,7 +64,7 @@ export function parseProposal(raw: string): Proposed | null {
       project: (typeof obj.project === 'string' || obj.project === null) ? obj.project as string | null : undefined,
       domain: typeof obj.domain === 'string' ? obj.domain : undefined,
       type: typeof obj.type === 'string' ? obj.type : undefined,
-      tags: Array.isArray(obj.tags) ? (obj.tags as string[]) : undefined,
+      tags: Array.isArray(obj.tags) ? capTags(obj.tags as string[], 10) : undefined,
       path: typeof obj.path === 'string' ? obj.path : undefined,
       reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : undefined
     }
