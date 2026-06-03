@@ -292,6 +292,69 @@ function findNodeId(nodes: TreeNode[], path: string): string | null {
   }
   return null
 }
+
+// ---- Drag-and-drop ----
+
+/** Currently dragged file; shared across all recursive tree instances */
+const draggedFile = ref<{ id: string; path: string } | null>(null)
+
+/** Path of the folder currently being hovered during a drag */
+const dropTargetPath = ref<string | null>(null)
+
+function onDragStart(e: DragEvent, item: TreeItem) {
+  draggedFile.value = { id: item.id, path: item.path }
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/mymind-file', JSON.stringify({ id: item.id, path: item.path }))
+  }
+}
+
+function onDragEnd() {
+  draggedFile.value = null
+  dropTargetPath.value = null
+}
+
+function onFolderDragOver(e: DragEvent, folderPath: string) {
+  // Only highlight if we have a file being dragged (intra-tree)
+  if (!draggedFile.value) return
+  e.preventDefault()
+  dropTargetPath.value = folderPath
+}
+
+function onFolderDragLeave(folderPath: string) {
+  if (dropTargetPath.value === folderPath) {
+    dropTargetPath.value = null
+  }
+}
+
+async function onFolderDrop(e: DragEvent, folderPath: string) {
+  e.stopPropagation() // prevent bubbling to ancestor folder drop handlers
+  dropTargetPath.value = null
+
+  const file = draggedFile.value
+  draggedFile.value = null
+
+  if (!file) return
+
+  const base = basenameOf(file.path)
+  const dest = folderPath === '/' ? '/' + base : folderPath + '/' + base
+
+  // Same folder — no-op
+  if (dest === file.path) return
+
+  try {
+    await move(file.id, dest)
+    toast.add({ color: 'success', title: 'Moved', description: `"${base}" → ${folderPath}` })
+    emit('refresh')
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }; message?: string }
+    toast.add({
+      color: 'error',
+      title: "Couldn't move",
+      description: err.data?.statusMessage ?? err.message ?? 'Name collision?'
+    })
+  }
+}
 </script>
 
 <template>
@@ -320,14 +383,17 @@ function findNodeId(nodes: TreeNode[], path: string): string | null {
         @select="onSelect"
       >
         <template #item="{ item, expanded }">
-          <!-- File nodes get context menu; folder nodes are plain -->
+          <!-- File nodes get context menu + draggable -->
           <UContextMenu
             v-if="item.nodeType === 'file'"
             :items="contextMenuItems(item)"
           >
             <div
-              class="flex items-center gap-2 w-full rounded px-1 -mx-1 transition-colors group"
+              draggable="true"
+              class="flex items-center gap-2 w-full rounded px-1 -mx-1 transition-colors group cursor-grab active:cursor-grabbing"
               :class="selectedId === item.id ? 'bg-primary/10' : ''"
+              @dragstart="onDragStart($event, item)"
+              @dragend="onDragEnd"
             >
               <UIcon
                 v-if="item.icon"
@@ -347,14 +413,19 @@ function findNodeId(nodes: TreeNode[], path: string): string | null {
             </div>
           </UContextMenu>
 
-          <!-- Folder row (no context menu) -->
+          <!-- Folder row — drop target -->
           <div
             v-else
             class="flex items-center gap-2 w-full rounded px-1 -mx-1 transition-colors"
+            :class="dropTargetPath === item.path ? 'bg-primary/20 ring-1 ring-primary/40' : ''"
+            @dragover="onFolderDragOver($event, item.path)"
+            @dragleave="onFolderDragLeave(item.path)"
+            @drop.stop="onFolderDrop($event, item.path)"
           >
             <UIcon
-              :name="expanded ? 'i-lucide-folder-open' : 'i-lucide-folder'"
-              class="size-4 shrink-0 text-dimmed"
+              :name="dropTargetPath === item.path ? 'i-lucide-folder-open' : (expanded ? 'i-lucide-folder-open' : 'i-lucide-folder')"
+              class="size-4 shrink-0"
+              :class="dropTargetPath === item.path ? 'text-primary' : 'text-dimmed'"
             />
             <span class="truncate text-sm flex-1">{{ item.label }}</span>
           </div>
