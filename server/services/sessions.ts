@@ -1,4 +1,5 @@
 import { eq, sql } from 'drizzle-orm'
+import { createHash } from 'node:crypto'
 import { useDb } from '../db'
 import { sessions, messages } from '../db/schema'
 
@@ -62,9 +63,12 @@ function parseTranscriptLine(line: string): { role: string; content: string; ext
   const content = extractContent(rawContent)
   if (!content.trim()) return null
 
-  // Extract external UUID
+  // Extract external UUID — fall back to a stable synthetic key so that
+  // identical messages without a uuid don't re-insert on every transcript POST
+  // (Postgres NULLs are distinct in a unique index, causing duplicates).
   const externalUuid = (typeof obj.uuid === 'string' ? obj.uuid : null)
     ?? (typeof msg?.id === 'string' ? msg.id : null)
+    ?? ('h:' + createHash('sha256').update(role + '|' + content).digest('hex').slice(0, 16))
 
   return { role, content, externalUuid }
 }

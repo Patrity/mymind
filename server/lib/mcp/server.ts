@@ -35,7 +35,7 @@ export function buildMcpServer() {
     'save_memory',
     'Store a new memory (with deduplication)',
     {
-      content: z.string().describe('Memory content to store'),
+      content: z.string().max(20_000).describe('Memory content to store'),
       scope: z.enum(['user', 'agent', 'world']).describe('Memory scope'),
       project: z.string().optional().describe('Associated project slug'),
       tags: z.array(z.string()).optional().describe('Tags for the memory'),
@@ -136,8 +136,8 @@ export function buildMcpServer() {
     'create_task',
     'Create a new task',
     {
-      title: z.string().min(1).describe('Task title'),
-      description: z.string().optional().describe('Task description'),
+      title: z.string().min(1).max(500).describe('Task title'),
+      description: z.string().max(20_000).optional().describe('Task description'),
       status: z.enum(['todo', 'in_progress', 'completed', 'blocked']).optional().describe('Initial status (default: todo)'),
       priority: z.enum(['low', 'medium', 'high']).optional().describe('Priority (default: low)'),
       project: z.string().optional().describe('Project slug'),
@@ -175,8 +175,8 @@ export function buildMcpServer() {
     'Update an existing task',
     {
       id: z.string().describe('Task ID'),
-      title: z.string().optional().describe('New title'),
-      description: z.string().optional().describe('New description'),
+      title: z.string().max(500).optional().describe('New title'),
+      description: z.string().max(20_000).optional().describe('New description'),
       status: z.enum(['todo', 'in_progress', 'completed', 'blocked']).optional().describe('New status'),
       priority: z.enum(['low', 'medium', 'high']).optional().describe('New priority'),
       project: z.string().optional().describe('New project slug'),

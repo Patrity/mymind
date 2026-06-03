@@ -60,10 +60,13 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
   const projectFilter = input.project ? eq(memories.project, input.project) : isNull(memories.project)
 
   const [exactRows, vectorRows] = await Promise.all([
+    // Exact-hash lookup is GLOBAL (no scope/project filter) — the unique index
+    // is on content_hash alone (where archived_at is null), so we must match it.
     db.select({ id: memories.id, contentHash: memories.contentHash, embedding: memories.embedding })
       .from(memories)
-      .where(and(live(), scopeFilter, projectFilter, eq(memories.contentHash, contentHash)))
+      .where(and(live(), eq(memories.contentHash, contentHash)))
       .limit(1),
+    // Semantic near-dup search stays scoped to (scope, project) for relevance.
     db.select({ id: memories.id, contentHash: memories.contentHash, embedding: memories.embedding })
       .from(memories)
       .where(and(live(), scopeFilter, projectFilter, isNotNull(memories.embedding)))
@@ -107,22 +110,49 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
   }
 
   // action === 'insert'
-  const [inserted] = await db.insert(memories).values({
-    scope,
-    content: input.content,
-    tags: input.tags ?? [],
-    source: input.source ?? null,
-    embedding: vec,
-    contentHash,
-    confidence: input.confidence ?? null,
-    evidence: (input.evidence ?? []) as unknown as string,
-    project: input.project ?? null,
-    sessionId: input.sessionId ?? null,
-    enrichedAt: null,
-    reviewedAt: input.reviewed ? new Date() : null
-  }).returning()
+  // Wrap in try/catch for the race where a concurrent insert wins the
+  // content_hash unique index (Postgres error 23505).
+  try {
+    const [inserted] = await db.insert(memories).values({
+      scope,
+      content: input.content,
+      tags: input.tags ?? [],
+      source: input.source ?? null,
+      embedding: vec,
+      contentHash,
+      confidence: input.confidence ?? null,
+      evidence: (input.evidence ?? []) as unknown as string,
+      project: input.project ?? null,
+      sessionId: input.sessionId ?? null,
+      enrichedAt: null,
+      reviewedAt: input.reviewed ? new Date() : null
+    }).returning()
 
-  return toDTO(inserted!)
+    return toDTO(inserted!)
+  } catch (err: unknown) {
+    // Unique-violation on content_hash: a concurrent insert beat us.
+    // Fetch the winning row and merge evidence into it.
+    if ((err as NodeJS.ErrnoException & { code?: string }).code === '23505') {
+      const evidenceEntry = {
+        sessionId: input.sessionId ?? null,
+        mergedAt: new Date().toISOString(),
+        ...(input.evidence ? { evidence: input.evidence } : {})
+      }
+      const [raceRow] = await db.update(memories)
+        .set({
+          evidence: sql`${memories.evidence} || ${JSON.stringify([evidenceEntry])}::jsonb`,
+          updatedAt: new Date()
+        })
+        .where(and(live(), eq(memories.contentHash, contentHash)))
+        .returning()
+      if (raceRow) return toDTO(raceRow)
+      // Fallback: fetch without update (archived between our check and update)
+      const [existing] = await db.select().from(memories)
+        .where(eq(memories.contentHash, contentHash)).limit(1)
+      return toDTO(existing!)
+    }
+    throw err
+  }
 }
 
 // ---------------------------------------------------------------------------

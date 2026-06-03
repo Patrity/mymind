@@ -139,13 +139,14 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
     } catch (err) {
       console.error(`[memory-enrich] error processing session ${session.id}:`, err)
 
-      // Record error in state so we don't retry endlessly without progress
+      // Record error in state — advance watermark to current messageCount so
+      // this session is NOT re-picked on the next run unless new messages arrive.
       try {
         await db
           .insert(memEnrichmentState)
           .values({
             sessionId: session.id,
-            lastEnrichedMessageCount: 0,
+            lastEnrichedMessageCount: session.messageCount,
             lastRun: new Date(),
             status: 'error',
             error: String(err)
@@ -153,6 +154,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
           .onConflictDoUpdate({
             target: memEnrichmentState.sessionId,
             set: {
+              lastEnrichedMessageCount: session.messageCount,
               lastRun: new Date(),
               status: 'error',
               error: String(err)
