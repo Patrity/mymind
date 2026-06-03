@@ -8,6 +8,13 @@
       "when": 1780459627122,
       "tag": "0000_nifty_eternals",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1780459829661,
+      "tag": "0001_wise_supernaut",
+      "breakpoints": true
     }
   ]
 }
