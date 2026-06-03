@@ -12,6 +12,7 @@ const treeData = ref<TreeNode[]>([])
 const treeLoading = ref(false)
 
 // Selected document
+const route = useRoute()
 const selectedId = ref<string | null>(null)
 
 // Search
@@ -85,6 +86,17 @@ function openNewModal() {
   newPath.value = '/input/untitled.md'
   showNewModal.value = true
 }
+
+// Open document from ?doc=<id> deep-link (e.g. from the command palette)
+watch(
+  () => route.query.doc,
+  (docId) => {
+    if (docId && typeof docId === 'string') {
+      selectedId.value = docId
+    }
+  },
+  { immediate: true }
+)
 
 onMounted(() => loadTree())
 
