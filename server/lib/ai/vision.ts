@@ -63,6 +63,7 @@ export async function describeImage(dataUrl: string): Promise<VisionResult> {
       {
         method: 'POST',
         headers: cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : undefined,
+        signal: AbortSignal.timeout(60000),
         body: {
           model: cfg.model,
           messages,

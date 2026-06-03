@@ -1,8 +1,11 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { documents, images } from '../db/schema'
 import { storage } from '../utils/storage'
 import { describeImage } from '../lib/ai/vision'
+
+/** Max image size (bytes) to attempt OCR on — skip anything larger. */
+const OCR_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
 
 // ---------------------------------------------------------------------------
 // Tag splitting utility
@@ -83,10 +86,18 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
       .select({
         id: images.id,
         storageKey: images.storageKey,
-        mime: images.mime
+        mime: images.mime,
+        size: images.size
       })
       .from(images)
-      .where(and(isNull(images.ocrText), isNull(images.deletedAt)))
+      .where(
+        and(
+          isNull(images.ocrText),
+          isNull(images.deletedAt),
+          // Only scan images and gifs — skip videos and unknown kinds
+          inArray(images.kind, ['image', 'gif'])
+        )
+      )
       .limit(limit)
   ])
 
@@ -94,6 +105,16 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
   let failed = 0
 
   for (const img of candidates) {
+    // Skip oversized images — mark with empty sentinel so they aren't re-scanned every run
+    if (img.size > OCR_MAX_SIZE) {
+      console.log(`[image-ocr] skipping oversized image ${img.id} (${img.size} bytes)`)
+      await db
+        .update(images)
+        .set({ ocrText: '' })
+        .where(eq(images.id, img.id))
+      continue
+    }
+
     try {
       const { stream } = await storage().get(img.storageKey)
 

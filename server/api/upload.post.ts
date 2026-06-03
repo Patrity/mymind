@@ -1,8 +1,17 @@
 import { createImage, serveUrl, setImagePublic } from '../services/images'
 
 export default defineEventHandler(async (event) => {
+  const config = useRuntimeConfig()
+  const MAX_UPLOAD_BYTES: number = config.maxUploadBytes as number
+
   const contentType = getHeader(event, 'content-type') ?? ''
   const makePublic = getQuery(event).public === '1' || getHeader(event, 'x-public') === '1'
+
+  // Check Content-Length before reading the body (content-length can lie; buffer.length is the real guard below)
+  const contentLength = Number(getHeader(event, 'content-length') ?? 0)
+  if (contentLength > MAX_UPLOAD_BYTES) {
+    throw createError({ statusCode: 413, statusMessage: 'Payload Too Large' })
+  }
 
   let buffer: Buffer
   let mime: string
@@ -26,7 +35,21 @@ export default defineEventHandler(async (event) => {
     originalName = getHeader(event, 'x-filename') ?? undefined
   }
 
-  let row = await createImage(buffer, mime, originalName)
+  // Real size guard — content-length header can lie
+  if (buffer.length > MAX_UPLOAD_BYTES) {
+    throw createError({ statusCode: 413, statusMessage: 'Payload Too Large' })
+  }
+
+  let row: Awaited<ReturnType<typeof createImage>>
+  try {
+    row = await createImage(buffer, mime, originalName)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.startsWith('Unsupported')) {
+      throw createError({ statusCode: 415, statusMessage: 'Unsupported media type' })
+    }
+    throw err
+  }
 
   if (makePublic) {
     row = (await setImagePublic(row.id, true)) ?? row
