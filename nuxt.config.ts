@@ -34,6 +34,11 @@ export default defineNuxtConfig({
     betterAuthUrl: process.env.BETTER_AUTH_URL,
     allowSignup: process.env.ALLOW_SIGNUP,
     maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 52428800),
+    public: {
+      // Whether the /login page surfaces a "create account" toggle. Mirrors the
+      // server-side disableSignUp gate so the UI only shows what the API allows.
+      allowSignup: process.env.ALLOW_SIGNUP === 'true'
+    },
     storageDriver: process.env.STORAGE_DRIVER ?? 'local',
     storageLocalDir: process.env.STORAGE_LOCAL_DIR ?? './.data/uploads',
     storageS3: {

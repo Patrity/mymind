@@ -5,14 +5,29 @@ import { authClient } from '~/lib/auth-client'
 definePageMeta({ layout: false })
 
 interface LoginForm {
+  name?: string
   email: string
   password: string
 }
 
+const allowSignup = useRuntimeConfig().public.allowSignup
+const mode = ref<'signin' | 'register'>('signin')
+const isRegister = computed(() => mode.value === 'register')
+
 const error = ref<string | null>(null)
 const loading = ref(false)
 
-const fields = [
+const fields = computed(() => [
+  ...(isRegister.value
+    ? [{
+        name: 'name',
+        type: 'text' as const,
+        label: 'Name',
+        placeholder: 'Your name',
+        required: true,
+        autocomplete: 'name'
+      }]
+    : []),
   {
     name: 'email',
     type: 'email' as const,
@@ -27,25 +42,36 @@ const fields = [
     label: 'Password',
     placeholder: '••••••••',
     required: true,
-    autocomplete: 'current-password'
+    autocomplete: isRegister.value ? 'new-password' : 'current-password'
   }
-]
+])
+
+function toggleMode() {
+  error.value = null
+  mode.value = isRegister.value ? 'signin' : 'register'
+}
 
 async function onSubmit(event: FormSubmitEvent<LoginForm>) {
   error.value = null
   loading.value = true
   try {
-    const result = await authClient.signIn.email({
-      email: event.data.email,
-      password: event.data.password
-    })
+    const result = isRegister.value
+      ? await authClient.signUp.email({
+          name: event.data.name ?? '',
+          email: event.data.email,
+          password: event.data.password
+        })
+      : await authClient.signIn.email({
+          email: event.data.email,
+          password: event.data.password
+        })
     if (result.error) {
-      error.value = result.error.message ?? 'Invalid credentials'
+      error.value = result.error.message ?? (isRegister.value ? 'Could not create account' : 'Invalid credentials')
     } else {
       await navigateTo('/documents')
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Sign in failed'
+    error.value = e instanceof Error ? e.message : (isRegister.value ? 'Sign up failed' : 'Sign in failed')
   } finally {
     loading.value = false
   }
@@ -72,12 +98,27 @@ async function onSubmit(event: FormSubmitEvent<LoginForm>) {
       />
 
       <UAuthForm
-        title="Sign in"
-        description="Enter your credentials to continue."
+        :title="isRegister ? 'Create account' : 'Sign in'"
+        :description="isRegister ? 'Register the first user to get started.' : 'Enter your credentials to continue.'"
         :fields="fields"
-        :submit="{ label: 'Sign in', loading }"
+        :submit="{ label: isRegister ? 'Create account' : 'Sign in', loading }"
         @submit="onSubmit"
       />
+
+      <p
+        v-if="allowSignup"
+        class="text-center text-sm text-muted"
+      >
+        {{ isRegister ? 'Already have an account?' : 'Need to register the first user?' }}
+        <UButton
+          variant="link"
+          :padded="false"
+          class="p-0"
+          @click="toggleMode"
+        >
+          {{ isRegister ? 'Sign in' : 'Create account' }}
+        </UButton>
+      </p>
     </div>
   </div>
 </template>
