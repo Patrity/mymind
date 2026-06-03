@@ -32,6 +32,13 @@ export default defineNuxtConfig({
     betterAuthUrl: process.env.BETTER_AUTH_URL,
     storageDriver: process.env.STORAGE_DRIVER ?? 'local',
     storageLocalDir: process.env.STORAGE_LOCAL_DIR ?? './.data/uploads',
+    storageS3: {
+      endpoint: process.env.STORAGE_S3_ENDPOINT,
+      region: process.env.STORAGE_S3_REGION,
+      bucket: process.env.STORAGE_S3_BUCKET,
+      accessKeyId: process.env.STORAGE_S3_ACCESS_KEY_ID,
+      secretAccessKey: process.env.STORAGE_S3_SECRET_ACCESS_KEY
+    },
     ai: {
       reasoning: { baseURL: process.env.AI_REASONING_BASE_URL, apiKey: process.env.AI_REASONING_API_KEY, model: process.env.AI_REASONING_MODEL },
       bulk: { baseURL: process.env.AI_BULK_BASE_URL, apiKey: process.env.AI_BULK_API_KEY, model: process.env.AI_BULK_MODEL },
