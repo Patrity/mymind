@@ -1,4 +1,4 @@
-import { and, asc, eq, gt } from 'drizzle-orm'
+import { and, asc, eq, gt, getTableColumns } from 'drizzle-orm'
 import { useDb } from '../db'
 import { clipThreads, clipMessages, clipAttachments, clipDevices } from '../db/schema'
 import { sanitizeHtml } from '../../shared/utils/sanitize-html'
@@ -31,6 +31,7 @@ export interface ClipMessageDTO {
   id: string
   threadId: string
   deviceId: string | null
+  deviceLabel: string | null
   kind: string
   bodyText: string | null
   bodyHtml: string | null
@@ -75,12 +76,14 @@ function toAttachmentDTO(r: typeof clipAttachments.$inferSelect): ClipAttachment
 
 function toMessageDTO(
   r: typeof clipMessages.$inferSelect,
-  attachment?: typeof clipAttachments.$inferSelect
+  attachment?: typeof clipAttachments.$inferSelect,
+  deviceLabel?: string | null
 ): ClipMessageDTO {
   const dto: ClipMessageDTO = {
     id: r.id,
     threadId: r.threadId,
     deviceId: r.deviceId ?? null,
+    deviceLabel: deviceLabel ?? null,
     kind: r.kind,
     bodyText: r.bodyText ?? null,
     bodyHtml: r.bodyHtml ?? null,
@@ -194,17 +197,21 @@ export async function listMessages(opts: {
     ? and(eq(clipMessages.threadId, threadId), gt(clipMessages.createdAt, sinceDate))
     : eq(clipMessages.threadId, threadId)
 
-  const msgs = await db
-    .select()
+  const rows = await db
+    .select({
+      ...getTableColumns(clipMessages),
+      deviceLabel: clipDevices.label
+    })
     .from(clipMessages)
+    .leftJoin(clipDevices, eq(clipMessages.deviceId, clipDevices.id))
     .where(whereClause)
     .orderBy(asc(clipMessages.createdAt))
     .limit(limit)
 
-  if (msgs.length === 0) return []
+  if (rows.length === 0) return []
 
   // Fetch attachments for file messages
-  const fileMessageIds = msgs
+  const fileMessageIds = rows
     .filter(m => m.kind === 'file')
     .map(m => m.id)
 
@@ -221,7 +228,7 @@ export async function listMessages(opts: {
     }
   }
 
-  return msgs.map(m => toMessageDTO(m, attachmentsByMessageId.get(m.id)))
+  return rows.map(({ deviceLabel, ...m }) => toMessageDTO(m, attachmentsByMessageId.get(m.id), deviceLabel))
 }
 
 export async function createTextMessage(input: {
