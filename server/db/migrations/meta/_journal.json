@@ -64,6 +64,13 @@
       "when": 1780486464765,
       "tag": "0008_foamy_black_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1780490492115,
+      "tag": "0009_numerous_silverclaw",
+      "breakpoints": true
     }
   ]
 }
