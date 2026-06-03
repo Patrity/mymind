@@ -14,7 +14,14 @@ shipped:
   - storage abstraction (local default, S3 dormant) ported from copipasta
   - CodeMirror editor + MDC view; split document browser/editor page (edit/preview/split, autosave, metadata form, search, share); public /share/[slug] page; default/public layout split
   - env-configured OpenAI-spec AI provider factory (scaffold, unused)
+  - "SECURITY (final review): public sign-up disabled by default (ALLOW_SIGNUP gate); trustedOrigins derived from BETTER_AUTH_URL"
 deferred:
+  - "FAST-FOLLOW (review #2): no login page / client auth guard — APIs enforce auth but pages render for anon and there's no sign-in UI"
+  - "FAST-FOLLOW (review #4): duplicate/invalid path on create/move returns raw 500; map unique-violation (23505) to 409"
+  - "CYCLE-2 (review #5): autosave is last-writer-wins; add optimistic concurrency via contentHash/updatedAt precondition"
+  - "CYCLE-2 (review #6): harden halfvec.fromDriver for empty/malformed vectors before the column is read"
+  - "CYCLE-2 (review #7): search is a seq-scan (leading-% ilike); trigram GIN won't accelerate it — revisit with semantic search"
+  - "CYCLE-2 (review #8): verify MDC sanitizes untrusted markdown on the public page once AI-generated content flows"
   - All AI behaviour (embedding worker, semantic/RRF search, /input auto-tag/sort/frontmatter, OCR, enrichment) -> cycle 2
   - HNSW index on documents.embedding -> cycle 2 (added once column is populated)
   - Deep-linking ?doc=<id> auto-load (selectedId is local state, not URL-synced) -> polish
