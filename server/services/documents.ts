@@ -45,7 +45,11 @@ export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Pro
   for (const k of ['title', 'content', 'frontmatter', 'project', 'domain', 'type', 'tags', 'topic', 'path'] as const) {
     if (input[k] !== undefined) patch[k] = input[k]
   }
-  if (input.path !== undefined) patch.language = getLanguageFromPath(input.path)
+  if (input.path !== undefined) {
+    patch.language = getLanguageFromPath(input.path)
+    // Sync title to the new basename when a path-rename happens and title wasn't explicitly set
+    if (input.title === undefined) patch.title = input.path.split('/').filter(Boolean).pop() ?? null
+  }
   if (input.content !== undefined) patch.contentHash = createHash('sha256').update(input.content).digest('hex')
   const [r] = await useDb().update(documents).set(patch as Partial<typeof documents.$inferInsert>).where(and(eq(documents.id, id), live())).returning()
   return r ? toDTO(r) : null
