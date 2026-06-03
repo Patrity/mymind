@@ -51,7 +51,7 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 |---|---|---|---|---|---|
 | 7 | **Backend fixes & AI quality** — OCR retry-loop fix, tag cap (5–7), md-first transcription + title inference, memory auto-review threshold + relevance scores + reviewed-tag removal. | ✅ shipped | [spec](../specs/2026-06-03-backend-fixes.md) | [plan](2026-06-03-backend-fixes.md) | [handover](../../handovers/2026-06-03-backend-fixes.md) |
 | 8 | **Global UX & architecture** — SPA conversion (SSR only for public pages), command palette (`UDashboardSearch`) with semantic search across docs/memories/gallery/tasks. | ✅ shipped | [spec](../specs/2026-06-03-spa-search.md) | [plan](2026-06-03-spa-search.md) | [handover](../../handovers/2026-06-03-spa-search.md) |
-| 9 | **Documents power-editor** — custom MDC components + markdown toolbar (.md only), inline image paste→upload→embed, drag-drop move, context menu (rename/move/share/delete), copy-link, last-open cookie. | planned | — | — | — |
+| 9 | **Documents power-editor** — custom MDC components + markdown toolbar (.md only), inline image paste→upload→embed, drag-drop move, context menu (rename/move/share/delete), copy-link, last-open cookie. | in-progress | [spec](../specs/2026-06-03-doc-editor.md) | [plan](2026-06-03-doc-editor.md) | — |
 | 10 | **Interaction polish** — Capture (paste/camera/drag-drop), Gallery (paste/DnD/video/filetype/search+tag-filter), Tasks (drag-drop + project/priority filters), Memories (add modal + tag filter), Clipboard (machine attribution). | planned | — | — | — |
 | 11 | **Sessions view** — browse raw CC/Hermes transcripts + token usage / message count / tool-use stats. | planned | — | — | — |
 
