@@ -52,5 +52,11 @@ export default defineNuxtConfig({
     }
   },
 
-  nitro: { experimental: { tasks: true } }
+  nitro: {
+    experimental: { tasks: true },
+    scheduledTasks: {
+      '*/5 * * * *': ['embed-documents'],
+      '*/10 * * * *': ['enrich-input']
+    }
+  }
 })

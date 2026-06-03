@@ -24,7 +24,7 @@ All document access goes through `server/services/documents.ts`: `listTree`, `ge
 `app/pages/documents.vue` — `UDashboardPanel` split: left `DocumentsTree` (browse/select/delete, search box) + right `DocumentsEditor`. Editor: CodeMirror (`CodeEditor.client.vue`) + MDC preview (`MdView.vue`), `edit|preview|split` toggle (cookie-persisted), ~1.5s debounced autosave, metadata form (title/project/domain/type/tags), share toggle showing `/share/<slug>`. Public read-only page: `app/pages/share/[slug].vue` (`layout: false`).
 
 ## Search
-pg_trgm: `ilike` filter + `similarity()` ordering over the trigram indexes. Semantic + RRF fusion arrives in cycle 2 once `embedding` is populated.
+**Hybrid (cycle 2):** `searchDocs` fuses a trigram lane (`ilike` + `similarity()`) and a vector cosine lane (`embedding <=> query::halfvec` over the HNSW index) via RRF, falling back to trigram-only if embeddings are unavailable. See [enrichment.md](enrichment.md).
 
 ## Known gaps (see handover)
 Deep-link `?doc=<id>` doesn't auto-load; no tree drag-drop UI (move API exists); `useDocuments` uses raw ofetch.

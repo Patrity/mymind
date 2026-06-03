@@ -1,9 +1,25 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
-const mainItems: NavigationMenuItem[] = [
-  { label: 'Documents', icon: 'i-lucide-files', to: '/documents' }
-]
+const { data: reviewCount, refresh: refreshCount } = await useFetch('/api/review/count', {
+  key: 'review-count',
+  default: () => ({ pending: 0 })
+})
+
+// Refresh count every 60 seconds
+let countTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => { countTimer = setInterval(refreshCount, 60_000) })
+onUnmounted(() => { if (countTimer) clearInterval(countTimer) })
+
+const mainItems = computed<NavigationMenuItem[]>(() => [
+  { label: 'Documents', icon: 'i-lucide-files', to: '/documents' },
+  {
+    label: 'Review',
+    icon: 'i-lucide-inbox',
+    to: '/review',
+    badge: reviewCount.value.pending > 0 ? reviewCount.value.pending : undefined
+  }
+])
 </script>
 
 <template>

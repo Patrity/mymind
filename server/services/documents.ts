@@ -1,4 +1,4 @@
-import { and, eq, isNull, ilike, or, sql } from 'drizzle-orm'
+import { and, eq, isNull, ilike, or, sql, inArray, isNotNull } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
@@ -6,6 +6,8 @@ import { documents } from '../db/schema'
 import { getLanguageFromPath } from '../../shared/utils/languages'
 import { buildTree, type TreeNode } from './tree'
 import type { DocumentDTO, DocumentUpsert } from '../../shared/types/documents'
+import { embedOne } from '../lib/ai/embeddings'
+import { rrfFuse } from '../lib/ai/rrf'
 
 const live = () => isNull(documents.deletedAt)
 const toDTO = (r: typeof documents.$inferSelect): DocumentDTO => ({
@@ -58,11 +60,45 @@ export async function deleteDoc(id: string): Promise<boolean> {
 }
 
 export async function searchDocs(q: string): Promise<DocumentDTO[]> {
-  const rows = await useDb().select().from(documents)
+  if (!q.trim()) return []
+
+  const db = useDb()
+
+  // Lane 1: trigram — ILIKE filter + similarity ordering
+  const trigramRows = await db.select({ id: documents.id }).from(documents)
     .where(and(live(), or(ilike(documents.title, `%${q}%`), ilike(documents.content, `%${q}%`))))
     .orderBy(sql`similarity(coalesce(${documents.title},'') || ' ' || ${documents.content}, ${q}) desc`)
     .limit(50)
-  return rows.map(toDTO)
+  const trigramIds = trigramRows.map(r => r.id)
+
+  // Lane 2: vector — cosine distance via HNSW index, with fallback if rig is unavailable
+  let vectorIds: string[] = []
+  try {
+    const qv = await embedOne(q)
+    const lit = `[${qv.join(',')}]`
+    const vecRows = await db.select({ id: documents.id })
+      .from(documents)
+      .where(and(live(), isNotNull(documents.embedding)))
+      .orderBy(sql`${documents.embedding} <=> ${lit}::halfvec`)
+      .limit(50)
+    vectorIds = vecRows.map(r => r.id)
+  } catch (err) {
+    console.warn('[searchDocs] vector lane failed, falling back to trigram-only:', err)
+  }
+
+  // Fuse the two ranked lanes with RRF
+  const fusedIds = rrfFuse([trigramIds, vectorIds]).slice(0, 50)
+
+  if (fusedIds.length === 0) return []
+
+  // Hydrate full rows and re-order by fused rank (inArray doesn't preserve order)
+  const fetched = await db.select().from(documents)
+    .where(and(live(), inArray(documents.id, fusedIds)))
+  const byId = new Map(fetched.map(r => [r.id, r]))
+  return fusedIds.flatMap(id => {
+    const r = byId.get(id)
+    return r ? [toDTO(r)] : []
+  })
 }
 
 export async function setPublic(id: string, isPublic: boolean): Promise<DocumentDTO | null> {
