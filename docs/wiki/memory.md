@@ -26,6 +26,8 @@ Selects sessions with ≥4 messages and new content since last run; assembles a 
 
 **Cycle 7 — review threshold + relevance:** `createMemory` auto-reviews when `confidence >= memoryAutoReviewThreshold` (default 0.75) — sets `reviewed_at` and strips the `unreviewed` tag; `reviewMemory` also strips `unreviewed`. Only low-confidence memories need human review. `searchMemories` attaches a `relevance` score (rank-based `1/(1+rank)`, or the optional Qwen3-Reranker at `:8883` behind `AI_RERANK_BASE_URL`, OFF by default).
 
+**Cycle 10:** a manual **Add memory** modal (`POST /api/memories` → `createMemory({...,source:'manual',reviewed:true})`, so it's not unreviewed) + a `USelectMenu` tag filter.
+
 ## UI — `app/pages/memories.vue`
 Search (hybrid), scope filter, unreviewed toggle, cards (content/scope/tags/source). Search results show a **relevance** badge; list mode shows **confidence**. Mark reviewed (the human gate; strips the `unreviewed` chip) + Archive. Sidebar "Memory" nav with unreviewed badge.
 

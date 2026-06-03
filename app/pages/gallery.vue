@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useDebounceFn } from '@vueuse/core'
 import type { ImageDTO } from '~~/shared/types/images'
 
 definePageMeta({ title: 'Gallery' })
@@ -10,10 +11,10 @@ const toast = useToast()
 const items = ref<ImageDTO[]>([])
 const loading = ref(false)
 
-async function loadImages() {
+async function loadImages(params?: { q?: string; tags?: string[] }) {
   loading.value = true
   try {
-    items.value = await images.list()
+    items.value = await images.list(params)
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Failed to load images', description: err.data?.statusMessage ?? err.message })
@@ -22,7 +23,35 @@ async function loadImages() {
   }
 }
 
-onMounted(loadImages)
+onMounted(() => loadImages())
+
+// ── Search + tag filter ───────────────────────────────────────────────────────
+const searchQuery = ref('')
+const selectedTags = ref<string[]>([])
+
+// Derive distinct tags from loaded items (from confirmed tags only)
+const allTagOptions = computed(() => {
+  const set = new Set<string>()
+  for (const img of items.value) {
+    for (const t of img.tags) set.add(t)
+  }
+  return [...set].sort()
+})
+
+const debouncedSearch = useDebounceFn(() => {
+  applyFilters()
+}, 300)
+
+watch(searchQuery, () => debouncedSearch())
+
+watch(selectedTags, () => applyFilters(), { deep: true })
+
+function applyFilters() {
+  const params: { q?: string; tags?: string[] } = {}
+  if (searchQuery.value.trim()) params.q = searchQuery.value.trim()
+  if (selectedTags.value.length) params.tags = [...selectedTags.value]
+  loadImages(params)
+}
 
 // ── Upload ───────────────────────────────────────────────────────────────────
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -33,22 +62,50 @@ function triggerUpload() {
   fileInput.value?.click()
 }
 
-async function onFileSelected(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (!file) return
+async function uploadFile(file: File) {
   uploading.value = true
   try {
     await images.upload(file, uploadPublic.value)
     toast.add({ color: 'success', title: 'Uploaded', description: file.name })
-    await loadImages()
+    await applyFilters()
   } catch (err: unknown) {
-    const error = err as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Upload failed', description: error.data?.statusMessage ?? error.message })
+    const error = err as { data?: { statusCode?: number; statusMessage?: string }, message?: string }
+    if (error.data?.statusCode === 415) {
+      toast.add({ color: 'error', title: 'Unsupported file type', description: `${file.type || file.name} is not supported.` })
+    } else {
+      toast.add({ color: 'error', title: 'Upload failed', description: error.data?.statusMessage ?? error.message })
+    }
   } finally {
     uploading.value = false
-    // Reset so the same file can be selected again
     if (fileInput.value) fileInput.value.value = ''
   }
+}
+
+async function onFileSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  await uploadFile(file)
+}
+
+// ── Drag-drop upload (page-level) ─────────────────────────────────────────────
+const galleryRoot = ref<HTMLElement | null>(null)
+
+const { isOverDropZone } = useDropZone(galleryRoot, {
+  dataTypes: types => types.some(t => t.startsWith('image/') || t.startsWith('video/')),
+  onDrop: async (files) => {
+    if (!files) return
+    for (const file of files) {
+      await uploadFile(file)
+    }
+  }
+})
+
+// ── Paste upload (page-level) ─────────────────────────────────────────────────
+function onPagePaste(e: ClipboardEvent) {
+  const items = Array.from(e.clipboardData?.items ?? [])
+  const imageItem = items.find(i => i.type.startsWith('image/'))
+  const file = imageItem?.getAsFile()
+  if (file) uploadFile(file)
 }
 
 // ── Detail modal ─────────────────────────────────────────────────────────────
@@ -125,6 +182,10 @@ async function onDelete() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+function isVideo(img: ImageDTO): boolean {
+  return img.kind === 'video' || (img.mime?.startsWith('video/') ?? false)
+}
+
 function publicUrl(img: ImageDTO): string {
   if (!img.publicSlug) return ''
   return `${window.location.origin}/api/i/${img.publicSlug}`
@@ -145,352 +206,443 @@ function formatBytes(n: number): string {
 </script>
 
 <template>
-  <UDashboardPanel
-    id="gallery"
-    grow
-    :ui="{ body: '!p-0' }"
+  <div
+    ref="galleryRoot"
+    class="contents"
+    tabindex="-1"
+    @paste="onPagePaste"
   >
-    <template #header>
-      <UDashboardNavbar title="Gallery">
-        <template #leading>
-          <UDashboardSidebarCollapse />
-        </template>
-        <template #right>
-          <div class="flex items-center gap-2">
-            <USwitch
-              v-model="uploadPublic"
-              label="Public"
-              size="xs"
-            />
-            <UButton
-              icon="i-lucide-upload"
-              size="sm"
-              :loading="uploading"
-              @click="triggerUpload"
-            >
-              Upload
-            </UButton>
-          </div>
-          <!-- Hidden file input -->
-          <input
-            ref="fileInput"
-            type="file"
-            accept="image/*,video/*,.gif"
-            class="hidden"
-            @change="onFileSelected"
-          >
-        </template>
-      </UDashboardNavbar>
-    </template>
-
-    <template #body>
-      <!-- Loading skeletons -->
+    <!-- Drag overlay -->
+    <Transition name="fade">
       <div
-        v-if="loading"
-        class="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3"
+        v-if="isOverDropZone"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-primary/20 border-4 border-dashed border-primary pointer-events-none"
       >
-        <USkeleton
-          v-for="i in 12"
-          :key="i"
-          class="aspect-square rounded-lg"
-        />
-      </div>
-
-      <!-- Empty state -->
-      <div
-        v-else-if="items.length === 0"
-        class="flex flex-col items-center justify-center h-full py-32 gap-4 text-center"
-      >
-        <UIcon
-          name="i-lucide-image"
-          class="size-14 text-muted"
-        />
-        <div>
-          <p class="text-sm font-medium text-default">
-            No images yet — upload or use Quick Capture
-          </p>
-          <p class="text-xs text-muted mt-1">
-            Images will appear here once added.
+        <div class="bg-default rounded-xl px-8 py-6 flex flex-col items-center gap-3 shadow-xl">
+          <UIcon
+            name="i-lucide-upload-cloud"
+            class="size-12 text-primary"
+          />
+          <p class="text-lg font-semibold text-default">
+            Drop to upload
           </p>
         </div>
-        <UButton
-          icon="i-lucide-upload"
-          size="sm"
-          variant="soft"
-          :loading="uploading"
-          @click="triggerUpload"
-        >
-          Upload an image
-        </UButton>
       </div>
+    </Transition>
 
-      <!-- Grid -->
-      <div
-        v-else
-        class="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3"
-      >
-        <button
-          v-for="img in items"
-          :key="img.id"
-          class="group relative aspect-square rounded-lg overflow-hidden bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          @click="openDetail(img)"
-        >
-          <img
-            :src="img.url"
-            :alt="img.originalName ?? img.id"
-            loading="lazy"
-            class="w-full h-full object-cover transition-opacity group-hover:opacity-80"
-          >
-          <!-- Public/private badge -->
-          <div class="absolute top-1.5 right-1.5">
-            <UBadge
-              v-if="img.isPublic"
-              icon="i-lucide-globe"
-              color="success"
-              variant="solid"
-              size="xs"
-            />
-            <UBadge
-              v-else
-              icon="i-lucide-lock"
-              color="neutral"
-              variant="solid"
-              size="xs"
-            />
-          </div>
-          <!-- Recommended tags indicator -->
-          <div
-            v-if="img.recommendedTags.length > 0"
-            class="absolute bottom-1.5 left-1.5"
-          >
-            <UBadge
-              :label="`${img.recommendedTags.length} suggested`"
-              color="warning"
-              variant="solid"
-              size="xs"
-            />
-          </div>
-        </button>
-      </div>
-    </template>
-  </UDashboardPanel>
-
-  <!-- Detail modal -->
-  <UModal
-    v-model:open="detailOpen"
-    :ui="{ content: 'max-w-2xl' }"
-    @update:open="(v) => { if (!v) closeDetail() }"
-  >
-    <template #content>
-      <div
-        v-if="selected"
-        class="flex flex-col gap-0"
-      >
-        <!-- Image preview -->
-        <div class="bg-muted rounded-t-lg overflow-hidden max-h-80 flex items-center justify-center">
-          <img
-            :src="selected.url"
-            :alt="selected.originalName ?? selected.id"
-            class="max-h-80 max-w-full object-contain"
-          >
-        </div>
-
-        <div class="p-4 space-y-4">
-          <!-- Meta row -->
-          <div class="flex items-center gap-2 flex-wrap text-xs text-muted">
-            <span>{{ selected.mime }}</span>
-            <span>·</span>
-            <span>{{ formatBytes(selected.size) }}</span>
-            <template v-if="selected.width && selected.height">
-              <span>·</span>
-              <span>{{ selected.width }}×{{ selected.height }}</span>
-            </template>
-            <span>·</span>
-            <span>{{ new Date(selected.createdAt).toLocaleString() }}</span>
-          </div>
-
-          <!-- OCR text -->
-          <div
-            v-if="selected.ocrText"
-            class="p-3 rounded-md bg-muted text-xs text-default leading-relaxed max-h-28 overflow-y-auto"
-          >
-            <span class="font-semibold text-muted block mb-1">OCR text</span>
-            {{ selected.ocrText }}
-          </div>
-
-          <!-- Confirmed tags -->
-          <div class="space-y-1.5">
-            <p class="text-xs font-medium text-muted">
-              Tags
-            </p>
-            <div
-              v-if="selected.tags.length > 0"
-              class="flex flex-wrap gap-1.5"
-            >
-              <span
-                v-for="tag in selected.tags"
-                :key="tag"
-                class="inline-flex items-center gap-1"
+    <UDashboardPanel
+      id="gallery"
+      grow
+      :ui="{ body: '!p-0' }"
+    >
+      <template #header>
+        <UDashboardNavbar title="Gallery">
+          <template #leading>
+            <UDashboardSidebarCollapse />
+          </template>
+          <template #right>
+            <div class="flex items-center gap-2 flex-wrap">
+              <!-- Search -->
+              <UInput
+                v-model="searchQuery"
+                icon="i-lucide-search"
+                placeholder="Search OCR & tags…"
+                size="sm"
+                class="w-44"
+                :ui="{ trailing: 'pr-1' }"
+              />
+              <!-- Tag multiselect -->
+              <USelectMenu
+                v-model="selectedTags"
+                :items="allTagOptions"
+                multiple
+                placeholder="Filter tags…"
+                size="sm"
+                class="w-40"
+              />
+              <USwitch
+                v-model="uploadPublic"
+                label="Public"
+                size="xs"
+              />
+              <UButton
+                icon="i-lucide-upload"
+                size="sm"
+                :loading="uploading"
+                @click="triggerUpload"
               >
-                <UBadge
-                  :label="tag"
-                  color="primary"
-                  variant="subtle"
-                  size="sm"
-                />
-                <button
-                  class="text-muted hover:text-error transition-colors"
-                  :disabled="mutating"
-                  aria-label="Remove tag"
-                  @click="onRemoveTag(tag)"
-                >
-                  <UIcon
-                    name="i-lucide-x"
-                    class="size-3"
-                  />
-                </button>
-              </span>
+                Upload
+              </UButton>
             </div>
-            <p
-              v-else
-              class="text-xs text-dimmed"
+            <!-- Hidden file input -->
+            <input
+              ref="fileInput"
+              type="file"
+              accept="image/*,video/mp4,video/webm,video/quicktime"
+              class="hidden"
+              @change="onFileSelected"
             >
-              No tags yet.
+          </template>
+        </UDashboardNavbar>
+      </template>
+
+      <template #body>
+        <!-- Loading skeletons -->
+        <div
+          v-if="loading"
+          class="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3"
+        >
+          <USkeleton
+            v-for="i in 12"
+            :key="i"
+            class="aspect-square rounded-lg"
+          />
+        </div>
+
+        <!-- Empty state -->
+        <div
+          v-else-if="items.length === 0"
+          class="flex flex-col items-center justify-center h-full py-32 gap-4 text-center"
+        >
+          <UIcon
+            name="i-lucide-image"
+            class="size-14 text-muted"
+          />
+          <div>
+            <p class="text-sm font-medium text-default">
+              {{ searchQuery || selectedTags.length ? 'No results match your filters' : 'No images yet — upload, drag & drop, or paste' }}
+            </p>
+            <p class="text-xs text-muted mt-1">
+              {{ searchQuery || selectedTags.length ? 'Try adjusting your search or tag filter.' : 'Images will appear here once added.' }}
             </p>
           </div>
-
-          <!-- Recommended tags -->
-          <div
-            v-if="selected.recommendedTags.length > 0"
-            class="space-y-1.5"
+          <UButton
+            v-if="!searchQuery && !selectedTags.length"
+            icon="i-lucide-upload"
+            size="sm"
+            variant="soft"
+            :loading="uploading"
+            @click="triggerUpload"
           >
-            <p class="text-xs font-medium text-muted">
-              Suggested tags
-            </p>
-            <div class="flex flex-wrap gap-1.5">
-              <span
-                v-for="tag in selected.recommendedTags"
-                :key="tag"
-                class="inline-flex items-center gap-1"
+            Upload an image
+          </UButton>
+        </div>
+
+        <!-- Grid -->
+        <div
+          v-else
+          class="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3"
+        >
+          <button
+            v-for="img in items"
+            :key="img.id"
+            class="group relative aspect-square rounded-lg overflow-hidden bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            @click="openDetail(img)"
+          >
+            <!-- Video thumbnail -->
+            <video
+              v-if="isVideo(img)"
+              :src="img.url"
+              class="w-full h-full object-cover transition-opacity group-hover:opacity-80"
+              preload="metadata"
+              muted
+            />
+            <!-- Image thumbnail -->
+            <img
+              v-else
+              :src="img.url"
+              :alt="img.originalName ?? img.id"
+              loading="lazy"
+              class="w-full h-full object-cover transition-opacity group-hover:opacity-80"
+            >
+            <!-- Video indicator -->
+            <div
+              v-if="isVideo(img)"
+              class="absolute inset-0 flex items-center justify-center pointer-events-none"
+            >
+              <div class="bg-black/50 rounded-full p-2">
+                <UIcon
+                  name="i-lucide-play"
+                  class="size-5 text-white"
+                />
+              </div>
+            </div>
+            <!-- Public/private badge -->
+            <div class="absolute top-1.5 right-1.5">
+              <UBadge
+                v-if="img.isPublic"
+                icon="i-lucide-globe"
+                color="success"
+                variant="solid"
+                size="xs"
+              />
+              <UBadge
+                v-else
+                icon="i-lucide-lock"
+                color="neutral"
+                variant="solid"
+                size="xs"
+              />
+            </div>
+            <!-- Recommended tags indicator -->
+            <div
+              v-if="img.recommendedTags.length > 0"
+              class="absolute bottom-1.5 left-1.5"
+            >
+              <UBadge
+                :label="`${img.recommendedTags.length} suggested`"
+                color="warning"
+                variant="solid"
+                size="xs"
+              />
+            </div>
+          </button>
+        </div>
+      </template>
+    </UDashboardPanel>
+
+    <!-- Detail modal -->
+    <UModal
+      v-model:open="detailOpen"
+      :ui="{ content: 'max-w-2xl' }"
+      @update:open="(v) => { if (!v) closeDetail() }"
+    >
+      <template #content>
+        <div
+          v-if="selected"
+          class="flex flex-col gap-0"
+        >
+          <!-- Video preview -->
+          <div
+            v-if="isVideo(selected)"
+            class="bg-muted rounded-t-lg overflow-hidden max-h-80 flex items-center justify-center"
+          >
+            <video
+              controls
+              :src="selected.url"
+              class="max-h-80 max-w-full"
+            />
+          </div>
+          <!-- Image preview -->
+          <div
+            v-else
+            class="bg-muted rounded-t-lg overflow-hidden max-h-80 flex items-center justify-center"
+          >
+            <img
+              :src="selected.url"
+              :alt="selected.originalName ?? selected.id"
+              class="max-h-80 max-w-full object-contain"
+            >
+          </div>
+
+          <div class="p-4 space-y-4">
+            <!-- Meta row -->
+            <div class="flex items-center gap-2 flex-wrap text-xs text-muted">
+              <span>{{ selected.mime }}</span>
+              <span>·</span>
+              <span>{{ formatBytes(selected.size) }}</span>
+              <template v-if="selected.width && selected.height">
+                <span>·</span>
+                <span>{{ selected.width }}×{{ selected.height }}</span>
+              </template>
+              <span>·</span>
+              <span>{{ new Date(selected.createdAt).toLocaleString() }}</span>
+            </div>
+
+            <!-- OCR text -->
+            <div
+              v-if="selected.ocrText"
+              class="p-3 rounded-md bg-muted text-xs text-default leading-relaxed max-h-28 overflow-y-auto"
+            >
+              <span class="font-semibold text-muted block mb-1">OCR text</span>
+              {{ selected.ocrText }}
+            </div>
+
+            <!-- Confirmed tags -->
+            <div class="space-y-1.5">
+              <p class="text-xs font-medium text-muted">
+                Tags
+              </p>
+              <div
+                v-if="selected.tags.length > 0"
+                class="flex flex-wrap gap-1.5"
               >
-                <UBadge
-                  :label="tag"
-                  color="warning"
-                  variant="subtle"
-                  size="sm"
-                />
+                <span
+                  v-for="tag in selected.tags"
+                  :key="tag"
+                  class="inline-flex items-center gap-1"
+                >
+                  <UBadge
+                    :label="tag"
+                    color="primary"
+                    variant="subtle"
+                    size="sm"
+                  />
+                  <button
+                    class="text-muted hover:text-error transition-colors"
+                    :disabled="mutating"
+                    aria-label="Remove tag"
+                    @click="onRemoveTag(tag)"
+                  >
+                    <UIcon
+                      name="i-lucide-x"
+                      class="size-3"
+                    />
+                  </button>
+                </span>
+              </div>
+              <p
+                v-else
+                class="text-xs text-dimmed"
+              >
+                No tags yet.
+              </p>
+            </div>
+
+            <!-- Recommended tags -->
+            <div
+              v-if="selected.recommendedTags.length > 0"
+              class="space-y-1.5"
+            >
+              <p class="text-xs font-medium text-muted">
+                Suggested tags
+              </p>
+              <div class="flex flex-wrap gap-1.5">
+                <span
+                  v-for="tag in selected.recommendedTags"
+                  :key="tag"
+                  class="inline-flex items-center gap-1"
+                >
+                  <UBadge
+                    :label="tag"
+                    color="warning"
+                    variant="subtle"
+                    size="sm"
+                  />
+                  <UButton
+                    icon="i-lucide-check"
+                    size="xs"
+                    color="success"
+                    variant="ghost"
+                    :loading="mutating"
+                    aria-label="Approve tag"
+                    @click="onApproveTag(tag)"
+                  />
+                  <UButton
+                    icon="i-lucide-x"
+                    size="xs"
+                    color="neutral"
+                    variant="ghost"
+                    :loading="mutating"
+                    aria-label="Dismiss tag"
+                    @click="onDismissTag(tag)"
+                  />
+                </span>
+              </div>
+            </div>
+
+            <!-- Public toggle -->
+            <div class="space-y-2">
+              <USwitch
+                :model-value="selected.isPublic"
+                label="Public"
+                :loading="mutating"
+                @update:model-value="onTogglePublic"
+              />
+              <div
+                v-if="selected.isPublic && selected.publicSlug"
+                class="flex items-center gap-2"
+              >
+                <code class="text-xs bg-muted px-2 py-1 rounded flex-1 truncate text-muted font-mono">
+                  {{ publicUrl(selected) }}
+                </code>
                 <UButton
-                  icon="i-lucide-check"
-                  size="xs"
-                  color="success"
-                  variant="ghost"
-                  :loading="mutating"
-                  aria-label="Approve tag"
-                  @click="onApproveTag(tag)"
-                />
-                <UButton
-                  icon="i-lucide-x"
+                  icon="i-lucide-copy"
                   size="xs"
                   color="neutral"
                   variant="ghost"
-                  :loading="mutating"
-                  aria-label="Dismiss tag"
-                  @click="onDismissTag(tag)"
+                  aria-label="Copy URL"
+                  @click="copyUrl(selected!)"
                 />
-              </span>
+              </div>
             </div>
-          </div>
 
-          <!-- Public toggle -->
-          <div class="space-y-2">
-            <USwitch
-              :model-value="selected.isPublic"
-              label="Public"
-              :loading="mutating"
-              @update:model-value="onTogglePublic"
-            />
-            <div
-              v-if="selected.isPublic && selected.publicSlug"
-              class="flex items-center gap-2"
-            >
-              <code class="text-xs bg-muted px-2 py-1 rounded flex-1 truncate text-muted font-mono">
-                {{ publicUrl(selected) }}
-              </code>
+            <!-- Actions -->
+            <div class="flex justify-between items-center pt-1 border-t border-default">
               <UButton
-                icon="i-lucide-copy"
-                size="xs"
+                icon="i-lucide-trash-2"
+                color="error"
+                variant="ghost"
+                size="sm"
+                :loading="deleting"
+                @click="confirmDelete = true"
+              >
+                Delete
+              </UButton>
+              <UButton
                 color="neutral"
                 variant="ghost"
-                aria-label="Copy URL"
-                @click="copyUrl(selected!)"
-              />
+                size="sm"
+                @click="closeDetail"
+              >
+                Close
+              </UButton>
             </div>
           </div>
-
-          <!-- Actions -->
-          <div class="flex justify-between items-center pt-1 border-t border-default">
-            <UButton
-              icon="i-lucide-trash-2"
-              color="error"
-              variant="ghost"
-              size="sm"
-              :loading="deleting"
-              @click="confirmDelete = true"
-            >
-              Delete
-            </UButton>
-            <UButton
-              color="neutral"
-              variant="ghost"
-              size="sm"
-              @click="closeDetail"
-            >
-              Close
-            </UButton>
-          </div>
         </div>
-      </div>
-    </template>
-  </UModal>
+      </template>
+    </UModal>
 
-  <!-- Delete confirmation modal -->
-  <UModal v-model:open="confirmDelete">
-    <template #content>
-      <UCard>
-        <template #header>
-          <div class="flex items-center gap-2">
-            <UIcon
-              name="i-lucide-trash-2"
-              class="size-5 text-error"
-            />
-            <span class="font-semibold">Delete image?</span>
-          </div>
-        </template>
+    <!-- Delete confirmation modal -->
+    <UModal v-model:open="confirmDelete">
+      <template #content>
+        <UCard>
+          <template #header>
+            <div class="flex items-center gap-2">
+              <UIcon
+                name="i-lucide-trash-2"
+                class="size-5 text-error"
+              />
+              <span class="font-semibold">Delete image?</span>
+            </div>
+          </template>
 
-        <p class="text-sm text-muted">
-          This action cannot be undone. The image will be permanently removed.
-        </p>
+          <p class="text-sm text-muted">
+            This action cannot be undone. The image will be permanently removed.
+          </p>
 
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <UButton
-              color="neutral"
-              variant="ghost"
-              :disabled="deleting"
-              @click="confirmDelete = false"
-            >
-              Cancel
-            </UButton>
-            <UButton
-              color="error"
-              :loading="deleting"
-              @click="onDelete"
-            >
-              Delete
-            </UButton>
-          </div>
-        </template>
-      </UCard>
-    </template>
-  </UModal>
+          <template #footer>
+            <div class="flex justify-end gap-2">
+              <UButton
+                color="neutral"
+                variant="ghost"
+                :disabled="deleting"
+                @click="confirmDelete = false"
+              >
+                Cancel
+              </UButton>
+              <UButton
+                color="error"
+                :loading="deleting"
+                @click="onDelete"
+              >
+                Delete
+              </UButton>
+            </div>
+          </template>
+        </UCard>
+      </template>
+    </UModal>
+  </div>
 </template>
+
+<style scoped>
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>

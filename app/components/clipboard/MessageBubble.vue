@@ -4,14 +4,15 @@
 //   2. Right/left split: messages sent from the current device land on the
 //      right with a primary tint; everything else lands on the left in the
 //      neutral elevated tone.
-//   3. Show a "time" caption above each bubble (simplified from copipasta:
-//      no device list needed — single-user, device label omitted).
+//   3. Show a "device · time" caption above each bubble (copipasta-style)
+//      so the user can tell at a glance which machine produced what.
 //
 // The wrapping `id="message-:id"` is the anchor used by Thread.vue's
 // auto-scroll on new arrivals.
 interface Message {
   id: string
   deviceId: string
+  deviceLabel?: string | null
   kind: 'text' | 'file'
   bodyText: string | null
   bodyHtml: string | null
@@ -42,6 +43,10 @@ const formattedTime = computed(() => {
     : new Date(props.message.createdAt)
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 })
+const caption = computed(() => {
+  const label = props.message.deviceLabel ?? 'Unknown device'
+  return `${label} · ${formattedTime.value}`
+})
 </script>
 
 <template>
@@ -51,7 +56,7 @@ const formattedTime = computed(() => {
     :class="isCurrent ? 'items-end' : 'items-start'"
   >
     <div v-if="props.showCaption" class="text-xs text-muted px-1">
-      {{ formattedTime }}
+      {{ caption }}
     </div>
     <div
       class="max-w-[80%] rounded-2xl px-3 py-2"

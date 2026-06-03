@@ -26,5 +26,8 @@ A simple kanban for todos and a light project shell. No AI.
 - `app/pages/projects.vue` — list, create, inline active toggle, edit, delete.
 - Note: the "no project" select option uses a `__none__` sentinel (reka-ui USelect rejects empty-string values), mapped to `null` on submit.
 
+## Cycle 10 polish
+Kanban cards move via native drag-and-drop between columns (the per-card status dropdown was removed); a filter row adds project + priority `USelect`s (non-empty sentinels).
+
 ## Relations
 Tasks link to a project via `project` (slug). Documents also carry a `project` column (cycle 1), so a project groups both — full cross-view (a project page listing its docs + tasks) is a future enhancement.

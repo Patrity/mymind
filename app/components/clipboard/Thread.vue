@@ -19,6 +19,7 @@ interface AttachmentRow {
 interface MessageRow {
   id: string
   deviceId: string
+  deviceLabel?: string | null
   kind: 'text' | 'file'
   bodyText: string | null
   bodyHtml: string | null

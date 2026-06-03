@@ -1,8 +1,19 @@
 import { $fetch as ofetch } from 'ofetch'
 import type { ImageDTO } from '~~/shared/types/images'
 
+export interface ListImagesParams {
+  q?: string
+  tags?: string[]
+}
+
 export function useImages() {
-  const list = () => ofetch<ImageDTO[]>('/api/images')
+  const list = (params?: ListImagesParams) => {
+    const query: Record<string, string> = {}
+    if (params?.q?.trim()) query.q = params.q.trim()
+    if (params?.tags?.length) query.tags = params.tags.join(',')
+    const qs = new URLSearchParams(query).toString()
+    return ofetch<ImageDTO[]>(`/api/images${qs ? `?${qs}` : ''}`)
+  }
 
   const upload = (file: File, isPublic = false) => {
     const fd = new FormData()

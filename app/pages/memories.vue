@@ -3,13 +3,14 @@ import type { MemoryDTO, MemoryScope } from '~~/shared/types/memory'
 
 definePageMeta({ title: 'Memories' })
 
-const { search: searchMemories, list: listMemories, review: reviewMemory, archive: archiveMemory } = useMemories()
+const { search: searchMemories, list: listMemories, create: createMemory, review: reviewMemory, archive: archiveMemory } = useMemories()
 const toast = useToast()
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 const q = ref('')
 const scopeFilter = ref<MemoryScope | 'all'>('all')
 const unreviewedOnly = ref(false)
+const tagFilter = ref<string[]>([])
 
 const scopeItems = [
   { label: 'All scopes', value: 'all' },
@@ -22,6 +23,23 @@ const scopeItems = [
 const memories = ref<MemoryDTO[]>([])
 const loading = ref(false)
 const isSearching = computed(() => q.value.trim().length > 0)
+
+/** All unique tags from the loaded set, for the filter selectmenu */
+const availableTags = computed(() => {
+  const seen = new Set<string>()
+  for (const m of memories.value) {
+    for (const t of m.tags) seen.add(t)
+  }
+  return [...seen].sort()
+})
+
+/** Client-side tag filter applied after server fetch */
+const filteredMemories = computed(() => {
+  if (!tagFilter.value.length) return memories.value
+  return memories.value.filter(m =>
+    tagFilter.value.some(t => m.tags.includes(t))
+  )
+})
 
 async function load() {
   loading.value = true
@@ -90,6 +108,57 @@ async function doArchive(id: string) {
   }
 }
 
+// ── Add memory modal ──────────────────────────────────────────────────────────
+const addOpen = ref(false)
+const addForm = ref({
+  content: '',
+  scope: 'user' as MemoryScope,
+  project: '',
+  tagsRaw: '' as string
+})
+const addLoading = ref(false)
+
+const addScopeItems = [
+  { label: 'User', value: 'user' },
+  { label: 'Agent', value: 'agent' },
+  { label: 'World', value: 'world' }
+]
+
+function openAddModal() {
+  addForm.value = { content: '', scope: 'user', project: '', tagsRaw: '' }
+  addOpen.value = true
+}
+
+/** Parse comma-separated tags input into a trimmed, non-empty array */
+function parseTags(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(t => t.trim())
+    .filter(Boolean)
+}
+
+async function submitAdd() {
+  if (!addForm.value.content.trim()) return
+  addLoading.value = true
+  try {
+    await createMemory({
+      content: addForm.value.content.trim(),
+      scope: addForm.value.scope,
+      project: addForm.value.project.trim() || null,
+      tags: parseTags(addForm.value.tagsRaw)
+    })
+    addOpen.value = false
+    toast.add({ color: 'success', title: 'Memory added' })
+    await load()
+    await refreshNuxtData('memory-count')
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Failed to add memory', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    addLoading.value = false
+  }
+}
+
 // ── Scope badge colors ────────────────────────────────────────────────────────
 const scopeColor: Record<MemoryScope, 'primary' | 'info' | 'warning'> = {
   user: 'primary',
@@ -113,13 +182,22 @@ function formatDate(iso: string) {
         <template #leading>
           <UDashboardSidebarCollapse />
         </template>
+        <template #trailing>
+          <UButton
+            label="Add memory"
+            icon="i-lucide-plus"
+            color="primary"
+            size="sm"
+            @click="openAddModal"
+          />
+        </template>
       </UDashboardNavbar>
     </template>
 
     <template #body>
       <div class="p-4 space-y-4 max-w-4xl mx-auto w-full">
         <!-- Filters -->
-        <div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center w-full">
+        <div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center w-full flex-wrap">
           <UInput
             v-model="q"
             placeholder="Search memories…"
@@ -133,6 +211,13 @@ function formatDate(iso: string) {
             :items="scopeItems"
             value-key="value"
             class="w-40 shrink-0"
+          />
+          <USelectMenu
+            v-model="tagFilter"
+            :items="availableTags"
+            multiple
+            placeholder="Filter by tag…"
+            class="w-48 shrink-0"
           />
           <div class="flex items-center gap-2 shrink-0">
             <USwitch
@@ -157,7 +242,7 @@ function formatDate(iso: string) {
 
         <!-- Empty state -->
         <div
-          v-else-if="!memories.length"
+          v-else-if="!filteredMemories.length"
           class="flex flex-col items-center justify-center py-24 gap-3 text-center"
         >
           <UIcon
@@ -168,13 +253,13 @@ function formatDate(iso: string) {
             No memories found
           </p>
           <p class="text-xs text-dimmed">
-            {{ q.trim() ? 'Try a different search term.' : 'Memories will appear here after enrichment.' }}
+            {{ q.trim() ? 'Try a different search term.' : tagFilter.length ? 'No memories match the selected tags.' : 'Memories will appear here after enrichment.' }}
           </p>
         </div>
 
         <!-- Memory cards -->
         <UCard
-          v-for="mem in memories"
+          v-for="mem in filteredMemories"
           v-else
           :key="mem.id"
         >
@@ -294,4 +379,72 @@ function formatDate(iso: string) {
       </div>
     </template>
   </UDashboardPanel>
+
+  <!-- Add memory modal -->
+  <UModal v-model:open="addOpen" title="Add memory">
+    <template #body>
+      <div class="space-y-4">
+        <UFormField label="Content" required>
+          <UTextarea
+            v-model="addForm.content"
+            placeholder="What do you want to remember?"
+            :rows="4"
+            autoresize
+            class="w-full"
+          />
+        </UFormField>
+
+        <div class="grid grid-cols-2 gap-3">
+          <UFormField label="Scope">
+            <USelect
+              v-model="addForm.scope"
+              :items="addScopeItems"
+              value-key="value"
+              class="w-full"
+            />
+          </UFormField>
+
+          <UFormField label="Project (optional)">
+            <UInput
+              v-model="addForm.project"
+              placeholder="e.g. mymind"
+              class="w-full"
+            />
+          </UFormField>
+        </div>
+
+        <UFormField
+          label="Tags (optional)"
+          description="Comma-separated, e.g. deployment, infra"
+        >
+          <UInput
+            v-model="addForm.tagsRaw"
+            placeholder="tag1, tag2, tag3"
+            class="w-full"
+          />
+        </UFormField>
+      </div>
+    </template>
+
+    <template #footer>
+      <div class="flex justify-end gap-2">
+        <UButton
+          color="neutral"
+          variant="ghost"
+          :disabled="addLoading"
+          @click="addOpen = false"
+        >
+          Cancel
+        </UButton>
+        <UButton
+          color="primary"
+          :loading="addLoading"
+          :disabled="!addForm.content.trim()"
+          @click="submitAdd"
+        >
+          Save memory
+        </UButton>
+      </div>
+    </template>
+  </UModal>
 </template>

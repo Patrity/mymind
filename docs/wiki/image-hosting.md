@@ -27,5 +27,8 @@ ShareX/CleanShot-compatible image host: uploads auto-convert to webp, get OCR te
 ## Gallery — `app/pages/gallery.vue` / `app/composables/useImages.ts`
 Thumbnail grid + detail modal: OCR text, removable confirmed tags, recommended tags (Approve → moves to `tags`; Dismiss), public toggle + copy URL, delete, upload.
 
+## Cycle 10 polish
+Gallery supports page-level drag-drop + clipboard-paste upload, renders `<video controls>` for `kind:'video'` items (file picker accepts mp4/webm/quicktime), and has an OCR+tag search box + `USelectMenu` multiselect tag filter (server `GET /api/images?q=&tags=`, parameterized).
+
 ## Follow-ups
 Video→webm transcode; EXIF privacy scrub; OCR-failure → notification queue.

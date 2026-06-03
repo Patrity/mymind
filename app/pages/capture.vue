@@ -36,15 +36,18 @@ async function captureNote() {
 
 // ── Image tab ─────────────────────────────────────────────────────────────────
 const imageFileInput = ref<HTMLInputElement | null>(null)
+const imageDropZoneRef = ref<HTMLElement | null>(null)
 const imagePublic = ref(false)
 const imageUploading = ref(false)
 const imageCreated = ref<ImageDTO | null>(null)
+const imageCameraOpen = ref(false)
+const imagePreviewUrl = ref<string | null>(null)
 
-async function onImageSelected(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (!file) return
+async function uploadImage(file: File) {
+  if (!file.type.startsWith('image/')) return
   imageUploading.value = true
   imageCreated.value = null
+  imagePreviewUrl.value = URL.createObjectURL(file)
   try {
     const img = await images.upload(file, imagePublic.value)
     imageCreated.value = img
@@ -58,20 +61,43 @@ async function onImageSelected(e: Event) {
   }
 }
 
+function onImageSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (file) uploadImage(file)
+}
+
+function onImagePaste(e: ClipboardEvent) {
+  const item = Array.from(e.clipboardData?.items ?? []).find(i => i.type.startsWith('image/'))
+  const file = item?.getAsFile()
+  if (file) uploadImage(file)
+}
+
+// Drag-drop for Image tab via VueUse useDropZone
+const { isOverDropZone: imageIsOver } = useDropZone(imageDropZoneRef, {
+  dataTypes: types => types.some(t => t.startsWith('image/')),
+  onDrop: (files) => {
+    const file = files?.[0]
+    if (file) uploadImage(file)
+  }
+})
+
 // ── Transcribe tab ────────────────────────────────────────────────────────────
 const transcribeFileInput = ref<HTMLInputElement | null>(null)
+const transcribeDropZoneRef = ref<HTMLElement | null>(null)
 const transcribeTitle = ref('')
 const transcribeUploading = ref(false)
 const transcribing = ref(false)
 const transcribedDoc = ref<DocumentDTO | null>(null)
 const transcribedText = ref('')
+const transcribeCameraOpen = ref(false)
+const transcribePreviewUrl = ref<string | null>(null)
 
-async function onTranscribeSelected(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (!file) return
+async function uploadTranscribe(file: File) {
+  if (!file.type.startsWith('image/')) return
   transcribeUploading.value = true
   transcribedDoc.value = null
   transcribedText.value = ''
+  transcribePreviewUrl.value = URL.createObjectURL(file)
   try {
     // Step 1: upload image to get id
     const img = await images.upload(file, false)
@@ -99,6 +125,26 @@ async function onTranscribeSelected(e: Event) {
     if (transcribeFileInput.value) transcribeFileInput.value.value = ''
   }
 }
+
+function onTranscribeSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (file) uploadTranscribe(file)
+}
+
+function onTranscribePaste(e: ClipboardEvent) {
+  const item = Array.from(e.clipboardData?.items ?? []).find(i => i.type.startsWith('image/'))
+  const file = item?.getAsFile()
+  if (file) uploadTranscribe(file)
+}
+
+// Drag-drop for Transcribe tab via VueUse useDropZone
+const { isOverDropZone: transcribeIsOver } = useDropZone(transcribeDropZoneRef, {
+  dataTypes: types => types.some(t => t.startsWith('image/')),
+  onDrop: (files) => {
+    const file = files?.[0]
+    if (file) uploadTranscribe(file)
+  }
+})
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 const tabs = [
@@ -165,7 +211,11 @@ const tabs = [
 
           <!-- ── Image ── -->
           <template #image>
-            <div class="mt-4 space-y-3">
+            <div
+              class="mt-4 space-y-3"
+              tabindex="0"
+              @paste="onImagePaste"
+            >
               <div class="flex items-center gap-3">
                 <USwitch
                   v-model="imagePublic"
@@ -173,34 +223,61 @@ const tabs = [
                   size="sm"
                 />
               </div>
+
+              <!-- Drop zone -->
               <div
-                class="border-2 border-dashed border-default rounded-lg p-8 flex flex-col items-center gap-3 text-center"
+                ref="imageDropZoneRef"
+                class="border-2 border-dashed rounded-lg p-8 flex flex-col items-center gap-3 text-center transition-colors"
+                :class="imageIsOver ? 'border-primary bg-primary/5' : 'border-default'"
               >
-                <UIcon
-                  name="i-lucide-image-plus"
-                  class="size-10 text-muted"
-                />
-                <p class="text-sm text-muted">
-                  Pick an image from your device or camera
-                </p>
-                <UButton
-                  icon="i-lucide-upload"
-                  variant="soft"
-                  :loading="imageUploading"
-                  @click="imageFileInput?.click()"
+                <!-- Preview thumbnail -->
+                <img
+                  v-if="imagePreviewUrl"
+                  :src="imagePreviewUrl"
+                  alt="Preview"
+                  class="max-h-40 rounded-md object-contain"
                 >
-                  Choose file
-                </UButton>
+                <template v-else>
+                  <UIcon
+                    name="i-lucide-image-plus"
+                    class="size-10 text-muted"
+                  />
+                  <p class="text-sm text-muted">
+                    Drop an image here, paste (Ctrl+V), or choose below
+                  </p>
+                </template>
+
+                <div class="flex flex-wrap items-center justify-center gap-2">
+                  <UButton
+                    icon="i-lucide-upload"
+                    variant="soft"
+                    :loading="imageUploading"
+                    @click="imageFileInput?.click()"
+                  >
+                    Choose file
+                  </UButton>
+                  <UButton
+                    icon="i-lucide-camera"
+                    variant="soft"
+                    color="neutral"
+                    :disabled="imageUploading"
+                    @click="imageCameraOpen = true"
+                  >
+                    Use camera
+                  </UButton>
+                </div>
               </div>
-              <!-- Hidden input — capture="environment" triggers rear camera on mobile -->
+
+              <!-- Hidden file input -->
               <input
                 ref="imageFileInput"
                 type="file"
                 accept="image/*"
-                capture="environment"
                 class="hidden"
                 @change="onImageSelected"
               >
+
+              <!-- Success -->
               <div
                 v-if="imageCreated"
                 class="flex items-center gap-2 text-xs text-success"
@@ -217,43 +294,79 @@ const tabs = [
                 </NuxtLink>
               </div>
             </div>
+
+            <!-- Camera modal for Image tab -->
+            <CameraCapture
+              v-model:open="imageCameraOpen"
+              @capture="uploadImage"
+            />
           </template>
 
           <!-- ── Transcribe ── -->
           <template #transcribe>
-            <div class="mt-4 space-y-3">
+            <div
+              class="mt-4 space-y-3"
+              tabindex="0"
+              @paste="onTranscribePaste"
+            >
               <UInput
                 v-model="transcribeTitle"
                 placeholder="Document title (optional)"
                 :disabled="transcribeUploading || transcribing"
               />
+
+              <!-- Drop zone -->
               <div
-                class="border-2 border-dashed border-default rounded-lg p-8 flex flex-col items-center gap-3 text-center"
+                ref="transcribeDropZoneRef"
+                class="border-2 border-dashed rounded-lg p-8 flex flex-col items-center gap-3 text-center transition-colors"
+                :class="transcribeIsOver ? 'border-primary bg-primary/5' : 'border-default'"
               >
-                <UIcon
-                  name="i-lucide-scan-text"
-                  class="size-10 text-muted"
-                />
-                <p class="text-sm text-muted">
-                  Upload a photo of handwriting or printed text
-                </p>
-                <UButton
-                  icon="i-lucide-camera"
-                  variant="soft"
-                  :loading="transcribeUploading || transcribing"
-                  @click="transcribeFileInput?.click()"
+                <!-- Preview thumbnail -->
+                <img
+                  v-if="transcribePreviewUrl"
+                  :src="transcribePreviewUrl"
+                  alt="Preview"
+                  class="max-h-40 rounded-md object-contain"
                 >
-                  {{ transcribing ? 'Transcribing…' : 'Choose image' }}
-                </UButton>
+                <template v-else>
+                  <UIcon
+                    name="i-lucide-scan-text"
+                    class="size-10 text-muted"
+                  />
+                  <p class="text-sm text-muted">
+                    Drop an image here, paste (Ctrl+V), or choose below
+                  </p>
+                </template>
+
+                <div class="flex flex-wrap items-center justify-center gap-2">
+                  <UButton
+                    icon="i-lucide-camera"
+                    variant="soft"
+                    :loading="transcribeUploading || transcribing"
+                    @click="transcribeFileInput?.click()"
+                  >
+                    {{ transcribing ? 'Transcribing…' : 'Choose image' }}
+                  </UButton>
+                  <UButton
+                    icon="i-lucide-camera"
+                    variant="soft"
+                    color="neutral"
+                    :disabled="transcribeUploading || transcribing"
+                    @click="transcribeCameraOpen = true"
+                  >
+                    Use camera
+                  </UButton>
+                </div>
               </div>
+
               <input
                 ref="transcribeFileInput"
                 type="file"
                 accept="image/*"
-                capture="environment"
                 class="hidden"
                 @change="onTranscribeSelected"
               >
+
               <!-- Result -->
               <div
                 v-if="transcribedDoc"
@@ -286,6 +399,12 @@ const tabs = [
                 </p>
               </div>
             </div>
+
+            <!-- Camera modal for Transcribe tab -->
+            <CameraCapture
+              v-model:open="transcribeCameraOpen"
+              @capture="uploadTranscribe"
+            />
           </template>
         </UTabs>
       </div>
