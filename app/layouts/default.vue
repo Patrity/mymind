@@ -13,6 +13,7 @@ onUnmounted(() => { if (countTimer) clearInterval(countTimer) })
 
 const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Documents', icon: 'i-lucide-files', to: '/documents' },
+  { label: 'Gallery', icon: 'i-lucide-image', to: '/gallery' },
   {
     label: 'Review',
     icon: 'i-lucide-inbox',
