@@ -18,5 +18,8 @@ A copipasta-style device-sync clipboard: paste text/HTML/images/files on one dev
 ## UI (`app/pages/clipboard.vue`, `app/components/clipboard/*`)
 Ported chat components: Thread (history + live stream + dedup), Composer (paste text+HTML, drag-drop upload, ⌘↵ send), MessageBubble (device left/right split), MessageText (MDC/sanitized HTML), MessageImage/MessageFile, CopyButtons. Composables: `useClipboard` (copy-rich/raw/image with legacy fallback), `useThreadStream` (SSE + polling fallback), `useClipDevice` (cookie-based device register). Sidebar "Clipboard" nav.
 
+## Cycle 10 polish
+Message bubbles show the originating **machine/device label** in the caption (`"<label> · HH:MM"`) — `listMessages` left-joins `clip_devices` to include `deviceLabel`.
+
 ## Notes / follow-ups
 Single-user (no invites/multi-user); single in-process EventEmitter (Redis for multi-instance); single default thread in the UI (schema supports many); a hydration warning from the client-only thread resolve (consider `<ClientOnly>`).
