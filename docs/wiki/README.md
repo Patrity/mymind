@@ -14,4 +14,5 @@ The **living** reference for how each shipped system works **today** — one pag
 | Auth (session + API tokens) | [auth.md](auth.md) | shipped |
 | AI model providers (env, OpenAI-spec) | [ai-providers.md](ai-providers.md) | shipped (scaffold) |
 | Document spine (model, browser, editor, sharing, search) | [document-spine.md](document-spine.md) | shipped |
-| _Enrichment, Quick Capture, Image Hosting, Tasks/Projects, Memory, Clipboard_ | _created when their cycle starts_ | planned |
+| AI enrichment + review queue (embeddings, hybrid search, /input proposals, login) | [enrichment.md](enrichment.md) | shipped |
+| _Quick Capture, Image Hosting, Tasks/Projects, Memory, Clipboard_ | _created when their cycle starts_ | planned |

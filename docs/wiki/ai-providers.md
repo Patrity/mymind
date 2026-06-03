@@ -24,5 +24,7 @@ Each role: `AI_<ROLE>_BASE_URL` / `AI_<ROLE>_API_KEY` / `AI_<ROLE>_MODEL`.
 | `stt` | Speaches `192.168.2.25:8881/v1` | |
 | `tts` | Kokoro `192.168.2.25:8880/v1` | |
 
-## Next (cycle 2)
-The embedding worker imports `aiProvider('embeddings')` to populate `documents.embedding`; enrichment imports `aiProvider('reasoning')`. Embeddings must be exposed via the OpenAI `/v1/embeddings` shape (front TEI with LiteLLM or use the rig gateway).
+## Live (cycle 2)
+- **Embeddings**: `server/lib/ai/embeddings.ts` posts to TEI's native `/embed` (NOT OpenAI `/v1/embeddings`) — documented deviation; only this adapter changes if LiteLLM is added later. Used by the embedding worker.
+- **Reasoning/chat**: `server/lib/ai/chat.ts` `chat(role, messages)` → OpenAI-spec `/v1/chat/completions` on the configured role; the enrichment proposer uses `reasoning` (local coder model).
+- `vision`/`stt`/`tts` remain configured-but-unused until later cycles.
