@@ -58,7 +58,8 @@ export default defineNuxtConfig({
     scheduledTasks: {
       '*/5 * * * *': ['embed-documents'],
       '*/10 * * * *': ['enrich-input'],
-      '*/7 * * * *': ['ocr-images']
+      '*/7 * * * *': ['ocr-images'],
+      '*/15 * * * *': ['enrich-memories']
     }
   }
 })

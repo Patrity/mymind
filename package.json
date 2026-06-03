@@ -29,6 +29,7 @@
     "@codemirror/view": "^6.43.0",
     "@iconify-json/lucide": "^1.2.111",
     "@iconify-json/simple-icons": "^1.2.84",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@nuxt/ui": "^4.8.1",
     "@nuxtjs/mdc": "^0.22.0",
     "better-auth": "^1.6.13",

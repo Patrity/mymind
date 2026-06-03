@@ -57,6 +57,13 @@
       "when": 1780483373191,
       "tag": "0007_soft_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1780486464765,
+      "tag": "0008_foamy_black_tarantula",
+      "breakpoints": true
     }
   ]
 }

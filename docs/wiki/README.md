@@ -18,4 +18,6 @@ The **living** reference for how each shipped system works **today** — one pag
 | Image hosting + gallery (ShareX upload, webp, OCR tags, public/private) | [image-hosting.md](image-hosting.md) | shipped |
 | Quick capture (notes/image/transcribe → /input) | [quick-capture.md](quick-capture.md) | shipped |
 | Tasks + Projects (kanban, audit) | [tasks-projects.md](tasks-projects.md) | shipped |
-| _Memory, Clipboard_ | _created when their cycle starts_ | planned |
+| Memory system (ingest, enrich, dedup, semantic search) | [memory.md](memory.md) | shipped |
+| MCP server (agent tools: memories/docs/projects/tasks) | [mcp.md](mcp.md) | shipped |
+| _Clipboard_ | _created when its cycle starts_ | planned |
