@@ -49,7 +49,7 @@ export async function describeImage(dataUrl: string): Promise<VisionResult> {
         content: [
           {
             type: 'text' as const,
-            text: 'Extract any text in this image (OCR) and suggest 5–7 concise lowercase kebab-case tags describing its content (max 10). Respond as STRICT JSON only: {"ocrText": string, "tags": string[]}. No prose.'
+            text: 'Extract ALL text visible in this image using Markdown faithful to the source layout. Preserve headings (#, ##), bullet lists (- ), numbered lists (1. ), checkboxes (- [ ] / - [x]), and bold (**bold**). Do NOT flatten structure into plain paragraphs. Also suggest 5–7 concise lowercase kebab-case tags describing the content (max 10). Respond as STRICT JSON only: {"ocrText": string, "tags": string[]}. No prose.'
           },
           {
             type: 'image_url' as const,

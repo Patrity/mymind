@@ -3,7 +3,9 @@ import { nanoid } from 'nanoid'
 import { getImage } from '../../services/images'
 import { storage } from '../../utils/storage'
 import { describeImage } from '../../lib/ai/vision'
+import { cleanToMarkdown } from '../../lib/ai/transcribe'
 import { createDoc } from '../../services/documents'
+import { slugify } from '../../../shared/utils/slugify'
 
 const Body = z.object({
   imageId: z.string().min(1, 'imageId is required'),
@@ -25,13 +27,20 @@ export default defineEventHandler(async (event) => {
   const buf = Buffer.concat(chunks)
   const dataUrl = `data:${image.mime};base64,${buf.toString('base64')}`
 
-  const { ocrText } = await describeImage(dataUrl)
+  const { ocrText, tags } = await describeImage(dataUrl)
+
+  // Clean OCR output into faithful Markdown and infer a human title
+  const { title, markdown } = await cleanToMarkdown(ocrText || '')
+
+  const effectiveTitle = body.title ?? title
+  const slug = slugify(effectiveTitle)
+  const path = `/input/${slug}-${nanoid(8)}.md`
 
   const doc = await createDoc({
-    path: `/input/transcribed-${nanoid(8)}.md`,
-    title: body.title ?? 'Transcribed note',
-    content: ocrText || '(no text recognized)'
+    path,
+    title: effectiveTitle,
+    content: markdown || '(no text recognized)'
   })
 
-  return { ...doc, ocrText }
+  return { ...doc, ocrText, markdown, tags }
 })
