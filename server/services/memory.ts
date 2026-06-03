@@ -1,4 +1,4 @@
-import { and, eq, isNull, isNotNull, ilike, or, sql, inArray, arrayContains } from 'drizzle-orm'
+import { and, eq, isNull, isNotNull, ilike, or, sql, inArray, arrayContains, count } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { useDb } from '../db'
 import { memories } from '../db/schema'
@@ -277,4 +277,12 @@ export async function archiveMemory(id: string): Promise<MemoryDTO | null> {
     .where(and(eq(memories.id, id), live()))
     .returning()
   return r ? toDTO(r) : null
+}
+
+export async function countUnreviewedMemories(): Promise<number> {
+  const [result] = await useDb()
+    .select({ n: count() })
+    .from(memories)
+    .where(and(live(), isNull(memories.reviewedAt)))
+  return result?.n ?? 0
 }

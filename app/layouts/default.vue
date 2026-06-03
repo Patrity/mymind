@@ -1,14 +1,24 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
-const { data: reviewCount, refresh: refreshCount } = await useFetch('/api/review/count', {
+const { data: reviewCount, refresh: refreshReviewCount } = await useFetch('/api/review/count', {
   key: 'review-count',
   default: () => ({ pending: 0 })
 })
 
-// Refresh count every 60 seconds
+const { data: memoryCount, refresh: refreshMemoryCount } = await useFetch('/api/memories/count', {
+  key: 'memory-count',
+  default: () => ({ unreviewed: 0 })
+})
+
+// Refresh counts every 60 seconds
 let countTimer: ReturnType<typeof setInterval> | null = null
-onMounted(() => { countTimer = setInterval(refreshCount, 60_000) })
+onMounted(() => {
+  countTimer = setInterval(() => {
+    refreshReviewCount()
+    refreshMemoryCount()
+  }, 60_000)
+})
 onUnmounted(() => { if (countTimer) clearInterval(countTimer) })
 
 const mainItems = computed<NavigationMenuItem[]>(() => [
@@ -17,6 +27,12 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Gallery', icon: 'i-lucide-image', to: '/gallery' },
   { label: 'Tasks', icon: 'i-lucide-square-kanban', to: '/tasks' },
   { label: 'Projects', icon: 'i-lucide-folder-kanban', to: '/projects' },
+  {
+    label: 'Memory',
+    icon: 'i-lucide-brain',
+    to: '/memories',
+    badge: memoryCount.value.unreviewed > 0 ? memoryCount.value.unreviewed : undefined
+  },
   {
     label: 'Review',
     icon: 'i-lucide-inbox',
