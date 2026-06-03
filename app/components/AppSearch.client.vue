@@ -118,6 +118,8 @@ const groups = computed<CommandPaletteGroup[]>(() => {
     v-model:search-term="searchTerm"
     :groups="groups"
     :loading="loading"
+    title="Search"
+    description="Search documents, memories, images, tasks and projects"
     placeholder="Search documents, memories, tasks…"
     :color-mode="false"
   />
