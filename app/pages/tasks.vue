@@ -199,13 +199,15 @@ const priorityItems = [
   { label: 'High', value: 'high' as TaskPriority }
 ]
 
+const PROJECT_NONE = '__none__'
+
 const projectItems = computed(() => [
-  { label: '— none —', value: '' },
+  { label: '— none —', value: PROJECT_NONE },
   ...projects.value.map(p => ({ label: p.name, value: p.slug }))
 ])
 
 const filterProjectItems = computed(() => [
-  { label: 'All projects', value: '' },
+  { label: 'All projects', value: PROJECT_NONE },
   ...projects.value.map(p => ({ label: p.name, value: p.slug }))
 ])
 </script>
@@ -225,11 +227,11 @@ const filterProjectItems = computed(() => [
           <!-- Project filter -->
           <USelect
             v-if="projects.length > 0"
-            :model-value="filterProject ?? ''"
+            :model-value="filterProject ?? PROJECT_NONE"
             :items="filterProjectItems"
             size="xs"
             class="w-36"
-            @update:model-value="filterProject = ($event as string) || null"
+            @update:model-value="filterProject = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
           />
           <UButton
             icon="i-lucide-plus"
@@ -411,11 +413,10 @@ const filterProjectItems = computed(() => [
 
             <UFormField label="Project">
               <USelect
-                :model-value="newForm.project ?? ''"
+                :model-value="newForm.project ?? PROJECT_NONE"
                 :items="projectItems"
-                placeholder="— none —"
                 class="w-full"
-                @update:model-value="newForm.project = ($event as string) || null"
+                @update:model-value="newForm.project = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
               />
             </UFormField>
           </div>
@@ -509,11 +510,10 @@ const filterProjectItems = computed(() => [
 
             <UFormField label="Project">
               <USelect
-                :model-value="editForm.project ?? ''"
+                :model-value="editForm.project ?? PROJECT_NONE"
                 :items="projectItems"
-                placeholder="— none —"
                 class="w-full"
-                @update:model-value="editForm.project = ($event as string) || null"
+                @update:model-value="editForm.project = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
               />
             </UFormField>
           </div>
