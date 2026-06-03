@@ -1,19 +1,30 @@
 ---
 title: Document Spine
-status: planned
+status: shipped
 cycle: 1
-updated: 2026-06-02
+updated: 2026-06-03
 ---
 
 # Document Spine
 
-The shared content core that every feature is a view over: documents stored in Postgres with a hybrid path-tree + frontmatter model, browsed and edited in a split file-tree/editor UI, keyword-searchable, and publicly shareable.
+The shared content core every feature is a view over: documents stored in Postgres with a hybrid path-tree + frontmatter model, browsed/edited in a split file-tree/editor UI, keyword-searchable, and publicly shareable.
 
-> Status: **planned** — design in `docs/superpowers/specs/` (cycle 1). This page gets real schema, routes, and behaviour when cycle 1 ships.
+## Data model — `documents` (`server/db/schema/documents.ts`)
+`id` uuid PK · `path` text (canonical tree location, e.g. `/input/x.md`; unique where `deleted_at is null`) · `title` · `content` · `language` (from `getLanguageFromPath`) · `frontmatter` jsonb · **promoted queryable columns** `project` / `domain` / `type` / `tags` text[] / `topic` ltree · `content_hash` · `is_public` + `public_slug` (unique) · `embedding` halfvec(2560) (**NULL until cycle 2**) · `created_at` / `updated_at` / `deleted_at` (soft delete).
+Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `project`, GIN trigram on `title` and `content`, GiST on `topic`.
+Minimal `projects` table: `slug` PK, `name`, `description`, `active`.
 
-## Will document (once built)
-- `documents` table schema (path, content, frontmatter jsonb, promoted columns `project`/`domain`/`type`/`tags`/`topic`, `public_slug`, `embedding halfvec(2560)` placeholder).
-- The DB seam: `server/services/documents.ts` → `server/api/documents/*` → `useDocuments()`.
-- Editor: CodeMirror 6 + MDC, edit/preview/split, auto-save.
-- Public sharing: `public_slug` + `/share/[slug]`.
-- Search: pg_trgm keyword (semantic/RRF added in cycle 2).
+## The seam
+All document access goes through `server/services/documents.ts`: `listTree`, `getDoc`, `createDoc`, `updateDoc`, `moveDoc`, `deleteDoc` (soft), `searchDocs`, `setPublic`, `getByPublicSlug`. Nothing else touches the table. Tree shaping: `server/services/tree.ts` `buildTree()` (folders before files, alphabetical).
+
+## API (`server/api/documents/*`, `server/api/share/*`)
+`GET tree` · `POST /` (create) · `GET|PUT|DELETE [id]` · `POST [id]/move` · `POST [id]/share` · `GET search?q=` · public `GET /api/share/[slug]` (auth-exempt, read-only). Client wrapper: `app/composables/useDocuments.ts`.
+
+## UI
+`app/pages/documents.vue` — `UDashboardPanel` split: left `DocumentsTree` (browse/select/delete, search box) + right `DocumentsEditor`. Editor: CodeMirror (`CodeEditor.client.vue`) + MDC preview (`MdView.vue`), `edit|preview|split` toggle (cookie-persisted), ~1.5s debounced autosave, metadata form (title/project/domain/type/tags), share toggle showing `/share/<slug>`. Public read-only page: `app/pages/share/[slug].vue` (`layout: false`).
+
+## Search
+pg_trgm: `ilike` filter + `similarity()` ordering over the trigram indexes. Semantic + RRF fusion arrives in cycle 2 once `embedding` is populated.
+
+## Known gaps (see handover)
+Deep-link `?doc=<id>` doesn't auto-load; no tree drag-drop UI (move API exists); `useDocuments` uses raw ofetch.

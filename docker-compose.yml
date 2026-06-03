@@ -1,0 +1,15 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: mymind-db
+    environment:
+      POSTGRES_USER: mymind
+      POSTGRES_PASSWORD: mymind
+      POSTGRES_DB: mymind
+    ports:
+      - "5433:5432"
+    volumes:
+      - mymind-pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+volumes:
+  mymind-pgdata:
