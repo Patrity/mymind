@@ -50,6 +50,13 @@
       "when": 1780480075127,
       "tag": "0006_eager_scourge",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1780483373191,
+      "tag": "0007_soft_madrox",
+      "breakpoints": true
     }
   ]
 }

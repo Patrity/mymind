@@ -15,6 +15,8 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
   { label: 'Documents', icon: 'i-lucide-files', to: '/documents' },
   { label: 'Gallery', icon: 'i-lucide-image', to: '/gallery' },
+  { label: 'Tasks', icon: 'i-lucide-square-kanban', to: '/tasks' },
+  { label: 'Projects', icon: 'i-lucide-folder-kanban', to: '/projects' },
   {
     label: 'Review',
     icon: 'i-lucide-inbox',
