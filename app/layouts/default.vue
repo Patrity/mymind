@@ -12,7 +12,9 @@ onMounted(() => { countTimer = setInterval(refreshCount, 60_000) })
 onUnmounted(() => { if (countTimer) clearInterval(countTimer) })
 
 const mainItems = computed<NavigationMenuItem[]>(() => [
+  { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
   { label: 'Documents', icon: 'i-lucide-files', to: '/documents' },
+  { label: 'Gallery', icon: 'i-lucide-image', to: '/gallery' },
   {
     label: 'Review',
     icon: 'i-lucide-inbox',

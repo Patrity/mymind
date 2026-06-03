@@ -1,0 +1,496 @@
+<script setup lang="ts">
+import type { ImageDTO } from '~~/shared/types/images'
+
+definePageMeta({ title: 'Gallery' })
+
+const images = useImages()
+const toast = useToast()
+
+// ── List state ───────────────────────────────────────────────────────────────
+const items = ref<ImageDTO[]>([])
+const loading = ref(false)
+
+async function loadImages() {
+  loading.value = true
+  try {
+    items.value = await images.list()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Failed to load images', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(loadImages)
+
+// ── Upload ───────────────────────────────────────────────────────────────────
+const fileInput = ref<HTMLInputElement | null>(null)
+const uploadPublic = ref(false)
+const uploading = ref(false)
+
+function triggerUpload() {
+  fileInput.value?.click()
+}
+
+async function onFileSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  uploading.value = true
+  try {
+    await images.upload(file, uploadPublic.value)
+    toast.add({ color: 'success', title: 'Uploaded', description: file.name })
+    await loadImages()
+  } catch (err: unknown) {
+    const error = err as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Upload failed', description: error.data?.statusMessage ?? error.message })
+  } finally {
+    uploading.value = false
+    // Reset so the same file can be selected again
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
+
+// ── Detail modal ─────────────────────────────────────────────────────────────
+const selected = ref<ImageDTO | null>(null)
+const detailOpen = ref(false)
+const mutating = ref(false)
+
+function openDetail(img: ImageDTO) {
+  selected.value = { ...img }
+  detailOpen.value = true
+}
+
+function closeDetail() {
+  detailOpen.value = false
+  selected.value = null
+}
+
+async function withMutate(fn: () => Promise<ImageDTO>) {
+  mutating.value = true
+  try {
+    const updated = await fn()
+    // Patch in-place in list
+    const idx = items.value.findIndex(i => i.id === updated.id)
+    if (idx !== -1) items.value[idx] = updated
+    // Keep modal in sync
+    selected.value = { ...updated }
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Action failed', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    mutating.value = false
+  }
+}
+
+async function onTogglePublic(val: boolean) {
+  if (!selected.value) return
+  await withMutate(() => images.setPublic(selected.value!.id, val))
+}
+
+async function onApproveTag(tag: string) {
+  if (!selected.value) return
+  await withMutate(() => images.approveTag(selected.value!, tag))
+}
+
+async function onDismissTag(tag: string) {
+  if (!selected.value) return
+  await withMutate(() => images.dismissTag(selected.value!, tag))
+}
+
+async function onRemoveTag(tag: string) {
+  if (!selected.value) return
+  await withMutate(() => images.removeTag(selected.value!, tag))
+}
+
+// ── Delete ───────────────────────────────────────────────────────────────────
+const confirmDelete = ref(false)
+const deleting = ref(false)
+
+async function onDelete() {
+  if (!selected.value) return
+  deleting.value = true
+  try {
+    await images.remove(selected.value.id)
+    items.value = items.value.filter(i => i.id !== selected.value!.id)
+    toast.add({ color: 'success', title: 'Image deleted' })
+    closeDetail()
+    confirmDelete.value = false
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Delete failed', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    deleting.value = false
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function publicUrl(img: ImageDTO): string {
+  if (!img.publicSlug) return ''
+  return `${window.location.origin}/api/i/${img.publicSlug}`
+}
+
+async function copyUrl(img: ImageDTO) {
+  const url = publicUrl(img)
+  if (!url) return
+  await navigator.clipboard.writeText(url)
+  toast.add({ color: 'success', title: 'URL copied' })
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+</script>
+
+<template>
+  <UDashboardPanel
+    id="gallery"
+    grow
+    :ui="{ body: '!p-0' }"
+  >
+    <template #header>
+      <UDashboardNavbar title="Gallery">
+        <template #leading>
+          <UDashboardSidebarCollapse />
+        </template>
+        <template #right>
+          <div class="flex items-center gap-2">
+            <USwitch
+              v-model="uploadPublic"
+              label="Public"
+              size="xs"
+            />
+            <UButton
+              icon="i-lucide-upload"
+              size="sm"
+              :loading="uploading"
+              @click="triggerUpload"
+            >
+              Upload
+            </UButton>
+          </div>
+          <!-- Hidden file input -->
+          <input
+            ref="fileInput"
+            type="file"
+            accept="image/*,video/*,.gif"
+            class="hidden"
+            @change="onFileSelected"
+          >
+        </template>
+      </UDashboardNavbar>
+    </template>
+
+    <template #body>
+      <!-- Loading skeletons -->
+      <div
+        v-if="loading"
+        class="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3"
+      >
+        <USkeleton
+          v-for="i in 12"
+          :key="i"
+          class="aspect-square rounded-lg"
+        />
+      </div>
+
+      <!-- Empty state -->
+      <div
+        v-else-if="items.length === 0"
+        class="flex flex-col items-center justify-center h-full py-32 gap-4 text-center"
+      >
+        <UIcon
+          name="i-lucide-image"
+          class="size-14 text-muted"
+        />
+        <div>
+          <p class="text-sm font-medium text-default">
+            No images yet — upload or use Quick Capture
+          </p>
+          <p class="text-xs text-muted mt-1">
+            Images will appear here once added.
+          </p>
+        </div>
+        <UButton
+          icon="i-lucide-upload"
+          size="sm"
+          variant="soft"
+          :loading="uploading"
+          @click="triggerUpload"
+        >
+          Upload an image
+        </UButton>
+      </div>
+
+      <!-- Grid -->
+      <div
+        v-else
+        class="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3"
+      >
+        <button
+          v-for="img in items"
+          :key="img.id"
+          class="group relative aspect-square rounded-lg overflow-hidden bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          @click="openDetail(img)"
+        >
+          <img
+            :src="img.url"
+            :alt="img.originalName ?? img.id"
+            loading="lazy"
+            class="w-full h-full object-cover transition-opacity group-hover:opacity-80"
+          >
+          <!-- Public/private badge -->
+          <div class="absolute top-1.5 right-1.5">
+            <UBadge
+              v-if="img.isPublic"
+              icon="i-lucide-globe"
+              color="success"
+              variant="solid"
+              size="xs"
+            />
+            <UBadge
+              v-else
+              icon="i-lucide-lock"
+              color="neutral"
+              variant="solid"
+              size="xs"
+            />
+          </div>
+          <!-- Recommended tags indicator -->
+          <div
+            v-if="img.recommendedTags.length > 0"
+            class="absolute bottom-1.5 left-1.5"
+          >
+            <UBadge
+              :label="`${img.recommendedTags.length} suggested`"
+              color="warning"
+              variant="solid"
+              size="xs"
+            />
+          </div>
+        </button>
+      </div>
+    </template>
+  </UDashboardPanel>
+
+  <!-- Detail modal -->
+  <UModal
+    v-model:open="detailOpen"
+    :ui="{ content: 'max-w-2xl' }"
+    @update:open="(v) => { if (!v) closeDetail() }"
+  >
+    <template #content>
+      <div
+        v-if="selected"
+        class="flex flex-col gap-0"
+      >
+        <!-- Image preview -->
+        <div class="bg-muted rounded-t-lg overflow-hidden max-h-80 flex items-center justify-center">
+          <img
+            :src="selected.url"
+            :alt="selected.originalName ?? selected.id"
+            class="max-h-80 max-w-full object-contain"
+          >
+        </div>
+
+        <div class="p-4 space-y-4">
+          <!-- Meta row -->
+          <div class="flex items-center gap-2 flex-wrap text-xs text-muted">
+            <span>{{ selected.mime }}</span>
+            <span>·</span>
+            <span>{{ formatBytes(selected.size) }}</span>
+            <template v-if="selected.width && selected.height">
+              <span>·</span>
+              <span>{{ selected.width }}×{{ selected.height }}</span>
+            </template>
+            <span>·</span>
+            <span>{{ new Date(selected.createdAt).toLocaleString() }}</span>
+          </div>
+
+          <!-- OCR text -->
+          <div
+            v-if="selected.ocrText"
+            class="p-3 rounded-md bg-muted text-xs text-default leading-relaxed max-h-28 overflow-y-auto"
+          >
+            <span class="font-semibold text-muted block mb-1">OCR text</span>
+            {{ selected.ocrText }}
+          </div>
+
+          <!-- Confirmed tags -->
+          <div class="space-y-1.5">
+            <p class="text-xs font-medium text-muted">
+              Tags
+            </p>
+            <div
+              v-if="selected.tags.length > 0"
+              class="flex flex-wrap gap-1.5"
+            >
+              <span
+                v-for="tag in selected.tags"
+                :key="tag"
+                class="inline-flex items-center gap-1"
+              >
+                <UBadge
+                  :label="tag"
+                  color="primary"
+                  variant="subtle"
+                  size="sm"
+                />
+                <button
+                  class="text-muted hover:text-error transition-colors"
+                  :disabled="mutating"
+                  aria-label="Remove tag"
+                  @click="onRemoveTag(tag)"
+                >
+                  <UIcon
+                    name="i-lucide-x"
+                    class="size-3"
+                  />
+                </button>
+              </span>
+            </div>
+            <p
+              v-else
+              class="text-xs text-dimmed"
+            >
+              No tags yet.
+            </p>
+          </div>
+
+          <!-- Recommended tags -->
+          <div
+            v-if="selected.recommendedTags.length > 0"
+            class="space-y-1.5"
+          >
+            <p class="text-xs font-medium text-muted">
+              Suggested tags
+            </p>
+            <div class="flex flex-wrap gap-1.5">
+              <span
+                v-for="tag in selected.recommendedTags"
+                :key="tag"
+                class="inline-flex items-center gap-1"
+              >
+                <UBadge
+                  :label="tag"
+                  color="warning"
+                  variant="subtle"
+                  size="sm"
+                />
+                <UButton
+                  icon="i-lucide-check"
+                  size="xs"
+                  color="success"
+                  variant="ghost"
+                  :loading="mutating"
+                  aria-label="Approve tag"
+                  @click="onApproveTag(tag)"
+                />
+                <UButton
+                  icon="i-lucide-x"
+                  size="xs"
+                  color="neutral"
+                  variant="ghost"
+                  :loading="mutating"
+                  aria-label="Dismiss tag"
+                  @click="onDismissTag(tag)"
+                />
+              </span>
+            </div>
+          </div>
+
+          <!-- Public toggle -->
+          <div class="space-y-2">
+            <USwitch
+              :model-value="selected.isPublic"
+              label="Public"
+              :loading="mutating"
+              @update:model-value="onTogglePublic"
+            />
+            <div
+              v-if="selected.isPublic && selected.publicSlug"
+              class="flex items-center gap-2"
+            >
+              <code class="text-xs bg-muted px-2 py-1 rounded flex-1 truncate text-muted font-mono">
+                {{ publicUrl(selected) }}
+              </code>
+              <UButton
+                icon="i-lucide-copy"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                aria-label="Copy URL"
+                @click="copyUrl(selected!)"
+              />
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="flex justify-between items-center pt-1 border-t border-default">
+            <UButton
+              icon="i-lucide-trash-2"
+              color="error"
+              variant="ghost"
+              size="sm"
+              :loading="deleting"
+              @click="confirmDelete = true"
+            >
+              Delete
+            </UButton>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              @click="closeDetail"
+            >
+              Close
+            </UButton>
+          </div>
+        </div>
+      </div>
+    </template>
+  </UModal>
+
+  <!-- Delete confirmation modal -->
+  <UModal v-model:open="confirmDelete">
+    <template #content>
+      <UCard>
+        <template #header>
+          <div class="flex items-center gap-2">
+            <UIcon
+              name="i-lucide-trash-2"
+              class="size-5 text-error"
+            />
+            <span class="font-semibold">Delete image?</span>
+          </div>
+        </template>
+
+        <p class="text-sm text-muted">
+          This action cannot be undone. The image will be permanently removed.
+        </p>
+
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <UButton
+              color="neutral"
+              variant="ghost"
+              :disabled="deleting"
+              @click="confirmDelete = false"
+            >
+              Cancel
+            </UButton>
+            <UButton
+              color="error"
+              :loading="deleting"
+              @click="onDelete"
+            >
+              Delete
+            </UButton>
+          </div>
+        </template>
+      </UCard>
+    </template>
+  </UModal>
+</template>

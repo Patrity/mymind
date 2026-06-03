@@ -43,6 +43,13 @@
       "when": 1780479472226,
       "tag": "0005_slimy_satana",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780480075127,
+      "tag": "0006_eager_scourge",
+      "breakpoints": true
     }
   ]
 }

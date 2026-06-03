@@ -33,6 +33,7 @@ export default defineNuxtConfig({
     betterAuthSecret: process.env.BETTER_AUTH_SECRET,
     betterAuthUrl: process.env.BETTER_AUTH_URL,
     allowSignup: process.env.ALLOW_SIGNUP,
+    maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 52428800),
     storageDriver: process.env.STORAGE_DRIVER ?? 'local',
     storageLocalDir: process.env.STORAGE_LOCAL_DIR ?? './.data/uploads',
     storageS3: {
@@ -56,7 +57,8 @@ export default defineNuxtConfig({
     experimental: { tasks: true },
     scheduledTasks: {
       '*/5 * * * *': ['embed-documents'],
-      '*/10 * * * *': ['enrich-input']
+      '*/10 * * * *': ['enrich-input'],
+      '*/7 * * * *': ['ocr-images']
     }
   }
 })

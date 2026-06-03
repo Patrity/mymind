@@ -1,0 +1,31 @@
+---
+title: Image Hosting + Gallery
+status: shipped
+cycle: 3
+updated: 2026-06-03
+---
+
+# Image Hosting + Gallery
+
+ShareX/CleanShot-compatible image host: uploads auto-convert to webp, get OCR text + recommended tags, and are browsed/managed in a gallery with public/private sharing.
+
+## Data model — `images` (`server/db/schema/images.ts`)
+`id` · `storage_key` (content-addressed sha256, via storage abstraction) · `original_name` · `mime` · `ext` · `kind` (image|gif|video) · `width`/`height` · `size` · `ocr_text` · `tags` text[] (confirmed) · `recommended_tags` text[] (OCR-suggested, awaiting approval) · `is_public` + `public_slug` (unique) · `created_at` · `deleted_at`. GIN index on tags.
+
+## Conversion — `server/lib/images/convert.ts`
+`processUpload(buffer, mime, name)`: raster → webp q82 (`sharp.rotate()` applies EXIF orientation) with dims; animated gif → animated webp; `video/*` → passthrough (kind 'video'; ffmpeg→webm is a follow-up). Pure (no DB).
+
+## Endpoints
+- `POST /api/upload` — multipart (`file`) or raw binary; `?public=1`/`X-Public:1` makes it public immediately. Auth: bearer API token or session. Returns `{ id, slug, url }`.
+- `GET /api/i/[slug]` — public, `is_public`-gated, streams the blob (auth-exempt prefix). `GET /api/images/[id]/raw` — authed, any image.
+- `GET /api/images` (list w/ `url`), `PATCH /api/images/[id]` (tags/recommendedTags/isPublic), `DELETE /api/images/[id]` (soft).
+- Service: `server/services/images.ts`.
+
+## OCR — `server/lib/ai/vision.ts` + `server/services/image-ocr.ts`
+`describeImage(dataUrl)` → vision model (qwen3-vl-8b, OpenAI-spec structured content) → `{ ocrText, tags }` (tolerant JSON). `runImageOcr()` fills `ocr_text` and sets `recommended_tags = splitTags(suggested, library).recommended` (library = distinct tags across documents+images). Never sets `tags`. Nitro task `ocr-images` (*/7) + `POST /api/admin/ocr-run`. Per-image failure-tolerant.
+
+## Gallery — `app/pages/gallery.vue` / `app/composables/useImages.ts`
+Thumbnail grid + detail modal: OCR text, removable confirmed tags, recommended tags (Approve → moves to `tags`; Dismiss), public toggle + copy URL, delete, upload.
+
+## Follow-ups
+Video→webm transcode; EXIF privacy scrub; OCR-failure → notification queue.
