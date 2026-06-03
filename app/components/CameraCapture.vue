@@ -24,6 +24,7 @@ watch(
       permissionError.value = false
       try {
         await start()
+        if (!props.open) stop()
       } catch {
         permissionError.value = true
       }

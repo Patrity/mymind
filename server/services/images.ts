@@ -64,6 +64,7 @@ export async function listImages(params: ListImagesParams = {}): Promise<(Image 
     .from(images)
     .where(and(...conditions))
     .orderBy(desc(images.createdAt))
+    .limit(500)
 
   return rows.map(r => ({ ...r, url: serveUrl(r) }))
 }
