@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const toast = useToast()
 const { get, update, share } = useDocuments()
+const { upload: uploadImage } = useImages()
 
 // Document state
 const doc = ref<DocumentDTO | null>(null)
@@ -31,6 +32,20 @@ function toolbarApplyTransform(fn: (s: EditorSelection2) => EditorSelection2) {
 
 function toolbarInsertText(snippet: string) {
   codeEditorRef.value?.insertText(snippet)
+}
+
+/** Called by CodeEditor when the user pastes or drops an image file. */
+async function onEditorImage(file: File) {
+  const toastId = toast.add({ color: 'neutral', title: 'Uploading image…' })
+  try {
+    const result = await uploadImage(file, true)
+    codeEditorRef.value?.insertText(`![](${result.url})`)
+    toast.remove(toastId.id)
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.remove(toastId.id)
+    toast.add({ color: 'error', title: 'Upload failed', description: err.data?.statusMessage ?? err.message })
+  }
 }
 
 // Metadata form fields (separate from content)
@@ -381,6 +396,7 @@ onUnmounted(() => {
           ref="codeEditorRef"
           :model-value="content"
           :language="language"
+          :on-image="onEditorImage"
           @update:model-value="onContentUpdate"
           @save="onSaveShortcut"
         />

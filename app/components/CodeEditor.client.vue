@@ -16,10 +16,14 @@ const props = withDefaults(defineProps<{
   language?: CodeLanguage
   readOnly?: boolean
   autoHeight?: boolean
+  /** Called when the user pastes or drops an image file into the editor.
+   *  The caller is responsible for uploading and inserting the result. */
+  onImage?: (file: File) => void
 }>(), {
   language: 'plaintext',
   readOnly: false,
-  autoHeight: false
+  autoHeight: false,
+  onImage: undefined
 })
 
 const emit = defineEmits<{
@@ -80,6 +84,37 @@ onMounted(() => {
           e.preventDefault()
           emit('save')
           return true
+        }
+        return false
+      },
+      paste(e) {
+        if (!props.onImage) return false
+        const items = e.clipboardData?.items
+        if (!items) return false
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]!
+          if (item.kind === 'file' && item.type.startsWith('image/')) {
+            const file = item.getAsFile()
+            if (file) {
+              e.preventDefault()
+              props.onImage(file)
+              return true
+            }
+          }
+        }
+        return false
+      },
+      drop(e) {
+        if (!props.onImage) return false
+        const files = e.dataTransfer?.files
+        if (!files) return false
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i]!
+          if (file.type.startsWith('image/')) {
+            e.preventDefault()
+            props.onImage(file)
+            return true
+          }
         }
         return false
       }
