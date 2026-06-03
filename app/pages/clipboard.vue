@@ -49,10 +49,9 @@ async function resolveThread() {
   }
 }
 
-// Run client-side only (auth-gated APIs need cookies).
-if (import.meta.client) {
-  await resolveThread()
-}
+// Under SPA (global ssr:false) there is no server pass, so resolveThread can run
+// at top level — auth cookies are always present when this executes in the browser.
+await resolveThread()
 </script>
 
 <template>

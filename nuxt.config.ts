@@ -10,10 +10,26 @@ export default defineNuxtConfig({
     enabled: true
   },
 
+  // Hybrid rendering: catch-all SPA with SSR carved out for public pages.
+  //
+  // Mechanism: SSR remains enabled globally (default). routeRules sets ssr:false for
+  // every route via catch-all '/**', so new app pages automatically get the SPA shell
+  // without needing to be listed explicitly (no pre-login flash or hydration mismatches).
+  // /share/** overrides back to ssr:true, which works because the more-specific rule wins.
+  //
+  // NOTE: Global ssr:false + per-route ssr:true was attempted but does NOT work in Nuxt 4.
+  // When ssr:false is set globally the renderer is compiled to always use getSPARenderer()
+  // regardless of routeRules — the per-route override only goes the other direction
+  // (SSR→SPA via routeRules ssr:false). Verified empirically in preview build.
+  // The correct supported hybrid mode is: ssr:true globally + ssr:false per route.
+
   css: ['~/assets/css/main.css'],
 
   routeRules: {
     '/': { redirect: '/documents' },
+    // Catch-all: every route is SPA by default so new pages never forget.
+    '/**': { ssr: false },
+    // Public share pages keep SSR for OG/SEO — more-specific rule wins.
     '/share/**': { ssr: true }
   },
 

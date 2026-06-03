@@ -21,3 +21,4 @@ The **living** reference for how each shipped system works **today** — one pag
 | Memory system (ingest, enrich, dedup, semantic search) | [memory.md](memory.md) | shipped |
 | MCP server (agent tools: memories/docs/projects/tasks) | [mcp.md](mcp.md) | shipped |
 | Clipboard (device-sync paste, live SSE, rich copy) | [clipboard.md](clipboard.md) | shipped |
+| Search + command palette (⌘K, cross-surface) + SPA rendering note | [search.md](search.md) | shipped |

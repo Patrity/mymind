@@ -317,14 +317,13 @@ onUnmounted(() => {
         class="min-h-0 relative"
         :class="mode === 'split' ? 'w-1/2 border-r border-default' : 'w-full'"
       >
-        <ClientOnly>
-          <CodeEditor
-            :model-value="content"
-            :language="language"
-            @update:model-value="onContentUpdate"
-            @save="onSaveShortcut"
-          />
-        </ClientOnly>
+        <!-- CodeEditor.client.vue — browser-only, no hydration concerns under SPA -->
+        <CodeEditor
+          :model-value="content"
+          :language="language"
+          @update:model-value="onContentUpdate"
+          @save="onSaveShortcut"
+        />
       </div>
 
       <!-- Preview pane -->
