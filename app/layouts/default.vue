@@ -2,6 +2,7 @@
 import type { NavigationMenuItem } from '@nuxt/ui'
 
 const { data: reviewCount, refresh: refreshCount } = await useFetch('/api/review/count', {
+  key: 'review-count',
   default: () => ({ pending: 0 })
 })
 

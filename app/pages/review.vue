@@ -24,6 +24,11 @@ const toast = useToast()
 
 const { data: items, refresh, pending } = await useFetch<ReviewItem[]>('/api/review')
 
+async function refreshAll() {
+  await refresh()
+  await refreshNuxtData('review-count')
+}
+
 const actioning = ref<Record<string, boolean>>({})
 
 async function approve(id: string) {
@@ -31,7 +36,7 @@ async function approve(id: string) {
   try {
     await $fetch(`/api/review/${id}/approve`, { method: 'POST' })
     toast.add({ color: 'success', title: 'Proposal approved', description: 'Document updated.' })
-    await refresh()
+    await refreshAll()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Approve failed', description: err.data?.statusMessage ?? err.message })
@@ -45,7 +50,7 @@ async function reject(id: string) {
   try {
     await $fetch(`/api/review/${id}/reject`, { method: 'POST' })
     toast.add({ color: 'neutral', title: 'Proposal rejected' })
-    await refresh()
+    await refreshAll()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Reject failed', description: err.data?.statusMessage ?? err.message })
