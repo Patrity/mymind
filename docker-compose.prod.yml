@@ -1,0 +1,47 @@
+# Production compose for MyMind (homelab / Proxmox + Docker).
+#   docker compose -f docker-compose.prod.yml up -d --build
+# Put a TLS reverse proxy (Caddy/Traefik/nginx) in front of the app and set
+# BETTER_AUTH_URL to the public https origin. See docs/DEPLOYMENT.md.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: mymind-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mymind
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: mymind
+    volumes:
+      - mymind-pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d   # creates pgcrypto/pg_trgm/ltree/vector on first boot
+    # No host port published — only the app (same compose network) reaches it.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mymind -d mymind"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mymind-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env                # AI_*, BETTER_AUTH_SECRET, ALLOW_SIGNUP, etc.
+    environment:
+      # Override DB + storage for the container network (db reachable as host "db" on 5432).
+      DATABASE_URL: postgres://mymind:${POSTGRES_PASSWORD}@db:5432/mymind
+      STORAGE_LOCAL_DIR: /app/.data/uploads
+      NITRO_PORT: "3000"
+      NITRO_HOST: "0.0.0.0"
+    volumes:
+      - mymind-uploads:/app/.data/uploads   # persistent uploaded blobs
+    ports:
+      - "3000:3000"   # bind to 127.0.0.1:3000 and front with a TLS proxy in real deployments
+
+volumes:
+  mymind-pgdata:
+  mymind-uploads:
