@@ -19,7 +19,9 @@ export function useAuth() {
     secret: cfg.betterAuthSecret as string,
     baseURL,
     trustedOrigins: baseURL ? [baseURL] : [],
-    emailAndPassword: { enabled: true, disableSignUp: cfg.allowSignup !== 'true' }
+    // String() so this works whether allowSignup is the raw string 'true' (baked at
+    // build time) or a boolean true (Nuxt coerces NUXT_ALLOW_SIGNUP=true via destr at runtime).
+    emailAndPassword: { enabled: true, disableSignUp: String(cfg.allowSignup) !== 'true' }
   })
   return _auth as ReturnType<typeof betterAuth>
 }

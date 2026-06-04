@@ -360,12 +360,10 @@ function formatBytes(n: number): string {
               v-if="isVideo(img)"
               class="absolute inset-0 flex items-center justify-center pointer-events-none"
             >
-              <div class="bg-black/50 rounded-full p-2">
                 <UIcon
                   name="i-lucide-play"
                   class="size-5 text-white"
                 />
-              </div>
             </div>
             <!-- Public/private badge -->
             <div class="absolute top-1.5 right-1.5">
@@ -421,6 +419,7 @@ function formatBytes(n: number): string {
               controls
               :src="selected.url"
               class="max-h-80 max-w-full"
+              autoplay
             />
           </div>
           <!-- Image preview -->
@@ -511,32 +510,41 @@ function formatBytes(n: number): string {
                 <span
                   v-for="tag in selected.recommendedTags"
                   :key="tag"
-                  class="inline-flex items-center gap-1"
+                  class="inline-flex items-center"
                 >
                   <UBadge
-                    :label="tag"
                     color="warning"
                     variant="subtle"
                     size="sm"
-                  />
-                  <UButton
-                    icon="i-lucide-check"
-                    size="xs"
-                    color="success"
-                    variant="ghost"
-                    :loading="mutating"
-                    aria-label="Approve tag"
-                    @click="onApproveTag(tag)"
-                  />
-                  <UButton
-                    icon="i-lucide-x"
-                    size="xs"
-                    color="neutral"
-                    variant="ghost"
-                    :loading="mutating"
-                    aria-label="Dismiss tag"
-                    @click="onDismissTag(tag)"
-                  />
+                  >
+                  <template #default>
+                  <span class="text-xs mx-2 py-1">
+                    {{ tag }}
+                  </span>
+                  </template>
+                  <template #trailing>
+                    <UFieldGroup>
+                    <UButton
+                      icon="i-lucide-check"
+                      size="xs"
+                      color="success"
+                      variant="subtle"
+                      :loading="mutating"
+                      aria-label="Approve tag"
+                      @click="onApproveTag(tag)"
+                    />
+                    <UButton
+                      icon="i-lucide-x"
+                      size="xs"
+                      color="error"
+                      variant="subtle"
+                      :loading="mutating"
+                      aria-label="Dismiss tag"
+                      @click="onDismissTag(tag)"
+                    />
+                    </UFieldGroup>
+                  </template>
+                  </UBadge>
                 </span>
               </div>
             </div>
