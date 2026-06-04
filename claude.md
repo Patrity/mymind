@@ -21,6 +21,9 @@ Path-scoped **rules** under [`.claude/rules/`](.claude/rules/) inject the releva
 - `pnpm build` to ensure builds pass
 - `pnpm db:migrate` to migrate the local env (this should be done in CI for prod)
 
+## Deploy
+Homelab (Proxmox + Docker), internet-exposed. Full instructions: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Artifacts: `Dockerfile`, `docker-compose.prod.yml`, `.env.example`.
+
 ## Rules
 - YOU ARE **RELENETLESSLY** SELF-IMPROVING
   - Update CLAUDE.md proactively and as-needed, but try to keep it concise. Use rules for directory-specific or filetype-specific context injection
