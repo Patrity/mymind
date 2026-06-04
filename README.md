@@ -4,6 +4,8 @@
 
 I built this for me. It's the single front door to everything I'd otherwise scatter across a dozen apps: a Markdown knowledge base, a ShareX image host, a kanban, a device-sync clipboard, and a memory system that turns my AI coding sessions into durable, searchable notes. It's also a portfolio piece — and very much a living project I'm going to keep growing.
 
+> 🛠️ Built by Tony — more of my work at **[techhivelabs.net](https://techhivelabs.net)**.
+
 <!-- Hero shot: the Documents page (split tree + editor in split/preview mode). -->
 ![MyMind — documents](docs/screenshots/documents.png)
 
@@ -102,3 +104,5 @@ On the radar: a session-summarization worker, GitHub-commit → memory, richer M
 ## A note
 
 This is a personal project — opinionated, single-user, and shaped entirely around how *I* work. I'm sharing it because I think the architecture is genuinely interesting (local-AI-native, agent-accessible, review-gated), not because it's a polished product for everyone. Poke around, steal ideas, and say hi.
+
+— **[Tony · Tech Hive Labs](https://techhivelabs.net)**

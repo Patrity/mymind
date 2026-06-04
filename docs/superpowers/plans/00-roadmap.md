@@ -45,7 +45,7 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 | 5 | **Memory + MCP Server + Hook Endpoints** — mem schema, hybrid search, enrichment loop (env provider), HTTP hooks for CC/Hermes, MCP tools (memories/docs/projects/tasks), scheduler tasks, GitHub-commit→memory. Deprecates the Python service. | ✅ shipped | [spec](../specs/2026-06-03-memory-mcp.md) | [plan](2026-06-03-memory-mcp.md) | [handover](../../handovers/2026-06-03-memory-mcp.md) |
 | 6 | **Clipboard** — port `copipasta` as a page (self-contained; can slot in anytime). | ✅ shipped | [spec](../specs/2026-06-03-clipboard.md) | [plan](2026-06-03-clipboard.md) | [handover](../../handovers/2026-06-03-clipboard.md) |
 
-### Round 2 — feedback after first-pass acceptance ([source](../../scope-feedback.md))
+### Round 2 — feedback after first-pass acceptance
 
 | # | Cycle | Status | Spec | Plan | Handover |
 |---|---|---|---|---|---|
