@@ -27,3 +27,9 @@ logs
 .claude/skills/*/manifest.json
 # playwright-cli artifacts
 .playwright-cli
+
+# Personal scratch / test uploads — keep out of a public repo
+IMG_*.jpg
+IMG_*.jpeg
+IMG_*.png
+*.zip

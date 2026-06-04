@@ -8,7 +8,7 @@
 
 **Tech Stack:** Nuxt 4, Drizzle/Postgres, sharp 0.34, ffmpeg (present, video deferred), qwen3-vl-8b (`:8005`), Vitest, playwright-cli.
 
-**Validation env:** rig reachable (vision 8005 with key <redacted>); sharp + ffmpeg installed.
+**Validation env:** rig reachable (vision 8005 with key from `.env`); sharp + ffmpeg installed.
 
 ---
 
