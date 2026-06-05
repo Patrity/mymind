@@ -57,6 +57,18 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 
 > Cycle ordering reflects dependencies: the spine underpins everything; enrichment makes it smart; capture/images/tasks are features on the spine; memory depends on docs/projects/tasks existing as MCP targets; clipboard is independent. Round 2 = polish/fixes on the shipped base; backend fixes (7) first, then architecture (8) before the UI-heavy editor/interaction work (9–10).
 
+### Round 3 — planned (new scope; see [`docs/BACKLOG.md`](../../BACKLOG.md) for detail + open items)
+
+| # | Cycle | Status | Spec | Plan | Handover |
+|---|---|---|---|---|---|
+| 12 | **AI model/provider registry** — DB-backed providers/models + role→model assignment + settings UI; `aiProvider()` resolves from DB (env fallback). Replaces `.env`-only config. | planned | — | — | — |
+| 13 | **API key management UI** — CRUD over `api_tokens` (mint/name/last-used/revoke) for ShareX uploads, CC/Hermes session-logging hooks, MCP. | planned | — | — | — |
+| 14 | **In-app AI chat** — reasoning chat over docs/memories/projects/tasks via server-side tool-calling (reuses the MCP tool surface); cites sources, takes confirmed actions. | planned | — | — | — |
+| 15 | **Capture/OCR robustness** — explicit dedup (untagged-only) + transcription retry (backoff / manual / auto-on-recovery) + surface OCR-failed & ambiguous-project to the notification queue. | planned | — | — | — |
+| 16 | **CD → homelab Proxmox LXC** — Actions: ci → build image → deploy (pull-based / self-hosted runner / SSH). Migrate-on-deploy. | planned | — | — | — |
+
+> Also tracked in the backlog (not yet cycled): GitHub-commits→memory, session-summarization worker, image semantic search, video→webm, EXIF scrub, bridget data migration, and assorted tech-debt. See [`docs/BACKLOG.md`](../../BACKLOG.md).
+
 ## Reference repos (read-only sources)
 
 - `~/Documents/GitHub/codethis-dev` — Postgres document model, `public_slugs` sharing, language detection, Shiki + CodeMirror.
