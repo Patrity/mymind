@@ -11,15 +11,19 @@ const props = defineProps<{
 const host = ref<HTMLDivElement | null>(null)
 let raf = 0
 let renderer: THREE.WebGLRenderer | null = null
+let cleanup: (() => void) | null = null
+let cancelled = false
 
 // palette per state (kept here, not in CSS, since it's a GL material colour)
 const PALETTE: Record<VoiceState, number> = {
   idle: 0x3b82f6, listening: 0x06b6d4, thinking: 0xf59e0b, speaking: 0x22d3ee
 }
 
-onMounted(() => {
-  const el = host.value!
-  const w = el.clientWidth, h = el.clientHeight
+function init(el: HTMLDivElement) {
+  // Fall back to a non-zero size: the flex cell may not have laid out yet on the
+  // first frame, and a 0/0 aspect ratio produces NaN.
+  const w = el.clientWidth || 320
+  const h = el.clientHeight || 320
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 100)
   camera.position.z = 5
@@ -81,14 +85,15 @@ onMounted(() => {
   frame()
 
   const onResize = () => {
-    const nw = el.clientWidth
-    const nh = el.clientHeight
+    const nw = el.clientWidth || 320
+    const nh = el.clientHeight || 320
     camera.aspect = nw / nh
     camera.updateProjectionMatrix()
     renderer!.setSize(nw, nh)
   }
   window.addEventListener('resize', onResize)
-  onUnmounted(() => {
+
+  cleanup = () => {
     cancelAnimationFrame(raf)
     window.removeEventListener('resize', onResize)
     core.geometry.dispose()
@@ -97,7 +102,26 @@ onMounted(() => {
     ;(ring.material as THREE.PointsMaterial).dispose()
     renderer?.dispose()
     el.innerHTML = ''
-  })
+  }
+}
+
+onMounted(() => {
+  // The template ref can be null on the first tick under the client-component
+  // wrapper; poll a few frames for it rather than throwing on `host.value!`.
+  let tries = 0
+  const wait = () => {
+    if (cancelled) return
+    const el = host.value
+    if (el) { init(el); return }
+    if (tries++ < 120) raf = requestAnimationFrame(wait)
+  }
+  wait()
+})
+
+onUnmounted(() => {
+  cancelled = true
+  cancelAnimationFrame(raf)
+  cleanup?.()
 })
 </script>
 
