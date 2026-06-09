@@ -33,3 +33,6 @@ IMG_*.jpg
 IMG_*.jpeg
 IMG_*.png
 *.zip
+
+# Git worktrees created for isolated feature work
+.claude/worktrees/
