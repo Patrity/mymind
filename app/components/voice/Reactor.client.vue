@@ -84,6 +84,10 @@ onMounted(() => {
   onUnmounted(() => {
     cancelAnimationFrame(raf)
     window.removeEventListener('resize', onResize)
+    core.geometry.dispose()
+    ;(core.material as THREE.MeshStandardMaterial).dispose()
+    ringGeo.dispose()
+    ;(ring.material as THREE.PointsMaterial).dispose()
     renderer?.dispose()
     el.innerHTML = ''
   })

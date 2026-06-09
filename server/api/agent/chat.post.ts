@@ -1,6 +1,7 @@
 // server/api/agent/chat.post.ts
 import { runAgentLoop } from '../../lib/agent/loop'
 import { textChunk, doneFrame } from '../../lib/agent/openai-chunk'
+import { publishActivity } from '../../lib/agent/bus'
 import type { ChatMessage } from '../../lib/ai/chat'
 
 // Session-authed. Streams the same OpenAI-chunk shape the client already parses
@@ -19,6 +20,7 @@ export default defineEventHandler(async (event) => {
     'x-accel-buffering': 'no'
   })
   res.flushHeaders()
+  publishActivity({ type: 'state', state: 'thinking' })
   try {
     for await (const ev of runAgentLoop(messages, { signal: ac.signal })) {
       if (ev.type === 'text-delta') res.write(textChunk(ev.text))

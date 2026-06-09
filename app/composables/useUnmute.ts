@@ -15,6 +15,7 @@ export function useUnmute() {
   let ws: WebSocket | null = null
   let audioCtx: AudioContext | null = null
   let recorder: RecorderType | null = null
+  let micStream: MediaStream | null = null
   let micAnalyser: AnalyserNode | null = null
   let outAnalyser: AnalyserNode | null = null
 
@@ -28,6 +29,7 @@ export function useUnmute() {
   }
 
   async function start() {
+    if (ws || audioCtx) return
     error.value = null
     const url = config.public.unmuteUrl as string
     if (!url) { error.value = 'NUXT_PUBLIC_UNMUTE_URL is not set'; return }
@@ -55,8 +57,8 @@ export function useUnmute() {
 
   async function startMic() {
     const { default: Recorder } = await import('opus-recorder')
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    const src = audioCtx!.createMediaStreamSource(stream)
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const src = audioCtx!.createMediaStreamSource(micStream)
     micAnalyser = audioCtx!.createAnalyser(); micAnalyser.fftSize = 256
     src.connect(micAnalyser)
 
@@ -115,7 +117,8 @@ export function useUnmute() {
     recorder?.stop().catch(() => {})
     ws?.close()
     audioCtx?.close()
-    recorder = null; ws = null; audioCtx = null
+    micStream?.getTracks().forEach(t => t.stop())
+    micStream = null; recorder = null; ws = null; audioCtx = null
     state.value = 'idle'; connected.value = false
   }
 

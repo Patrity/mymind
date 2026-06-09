@@ -3,7 +3,7 @@ import type { TranscriptEntry } from './useUnmute'
 
 // Posts to /api/agent/chat and appends streamed assistant text to `entries`.
 // Reuses the OpenAI-chunk shape the server emits (textChunk()).
-export async function textStreamToTranscript(query: string, entries: TranscriptEntry[]): Promise<void> {
+export async function textStreamToTranscript(entries: TranscriptEntry[]): Promise<void> {
   const res = await fetch('/api/agent/chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

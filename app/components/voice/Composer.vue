@@ -17,7 +17,7 @@ async function send() {
   const log = props.entries
   log.push({ role: 'user', text: q })
   try {
-    await textStreamToTranscript(q, log)
+    await textStreamToTranscript(log)
   } finally {
     busy.value = false
   }
