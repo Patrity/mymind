@@ -25,6 +25,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Inlined into the client bundle at build time (see Dockerfile). Compose
+        # interpolates this from .env. Also kept in the runtime env via env_file.
+        NUXT_PUBLIC_UNMUTE_URL: ${NUXT_PUBLIC_UNMUTE_URL:-}
     container_name: mymind-app
     restart: unless-stopped
     depends_on:

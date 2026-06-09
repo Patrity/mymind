@@ -8,6 +8,11 @@ WORKDIR /app
 
 # ---- build ----
 FROM base AS build
+# Public runtime config that Nuxt inlines into the CLIENT bundle at `nuxt build`
+# time (NUXT_PUBLIC_* are baked, not read at runtime for the SPA). Passed as a
+# build arg from compose (which interpolates it from .env).
+ARG NUXT_PUBLIC_UNMUTE_URL=""
+ENV NUXT_PUBLIC_UNMUTE_URL=$NUXT_PUBLIC_UNMUTE_URL
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # allow the sharp native build script (approved in pnpm-workspace.yaml)
 RUN pnpm install --frozen-lockfile
