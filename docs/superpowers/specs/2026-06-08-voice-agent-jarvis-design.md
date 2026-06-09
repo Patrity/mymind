@@ -29,7 +29,7 @@ URL and receives streamed text. Our endpoint does the tool work internally and s
 final (and interim "filler") text, which Unmute speaks.
 
 ```
-┌─ Client: /jarvis page ────────────────────────────────────────┐
+┌─ Client: /voice page ─────────────────────────────────────────┐
 │  (A) WebSocket  ⇄  Unmute /api/v1/realtime                     │
 │        ↑ mic Opus up   ↓ assistant Opus + transcripts down     │
 │        → feeds the Three.js reactor (audio) + transcript pane  │
@@ -169,12 +169,12 @@ Chosen behavior: **act + confirm + undo** (creates) / **confirm-first** (destruc
 
 | File | Purpose |
 |---|---|
-| `pages/jarvis.vue` | Layout: central reactor, transcript pane, composer, connection state. |
+| `pages/voice.vue` | Layout: central reactor, transcript pane, composer, connection state. |
 | `composables/useUnmute.ts` | Ported Unmute audio plumbing: WS (`subprotocol "realtime"`), opus-recorder encode/decode per wiki §6, event loop, two `AnalyserNode`s (mic + playback), transcript stream, barge-in flush. |
 | `composables/useAgentActivity.ts` | Subscribes to `/api/agent/activity` SSE → tool chips, undo, agent state. |
-| `components/jarvis/Reactor.client.vue` | Three.js 3D reactor: rotating core + orbiting node particles; amplitude → scale/emissive/displacement; state → palette. |
-| `components/jarvis/Transcript.vue` | Live transcript (you + assistant) + tool-action chips + undo buttons. |
-| `components/jarvis/Composer.vue` | Typed fallback input (posts to `/api/agent/chat`). |
+| `components/voice/Reactor.client.vue` | Three.js 3D reactor: rotating core + orbiting node particles; amplitude → scale/emissive/displacement; state → palette. |
+| `components/voice/Transcript.vue` | Live transcript (you + assistant) + tool-action chips + undo buttons. |
+| `components/voice/Composer.vue` | Typed fallback input (posts to `/api/agent/chat`). |
 
 **Visualizer state machine** (drives palette + motion):
 ```
@@ -185,7 +185,7 @@ idle ─speech_started→ listening ─speech_stopped→ thinking ─audio.delta
 Audio reactivity: the mic `AnalyserNode` feeds `listening`; the playback `AnalyserNode` feeds
 `speaking`; the reactor reads whichever stream is active.
 
-**Deps:** `three`, `opus-recorder`. **Nav:** add `/jarvis` to the sidebar.
+**Deps:** `three`, `opus-recorder`. **Nav:** add `/voice` to the sidebar.
 **Env:** `NUXT_PUBLIC_UNMUTE_URL` (client WS target). **Secure context:** mic needs HTTPS or
 localhost (prod serves HTTPS; dev uses a localhost tunnel) — per the integration wiki §9.
 
@@ -209,7 +209,7 @@ a default voice.
   - Registry ↔ MCP parity (same tools, same schemas).
   - `/api/agent/llm`: POST an OpenAI-style request → assert SSE deltas + tool side-effects + activity
     events (the brain's smoke test, mirroring the wiki's no-audio connection test but for tools).
-- **E2E (`playwright-cli`):** `/jarvis` renders, reactor canvas mounts, a simulated tool action
+- **E2E (`playwright-cli`):** `/voice` renders, reactor canvas mounts, a simulated tool action
   yields a chip, undo works.
 - **Manual:** full voice loop after the Unmute reconfig — barge-in, filler timing, a tool turn.
   (The one thing automation can't cover.)
