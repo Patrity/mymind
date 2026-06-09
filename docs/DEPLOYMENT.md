@@ -179,18 +179,24 @@ The `/voice` page requires two one-time setup steps and a specific proxy configu
 
 Unmute is the STT/TTS backend at `192.168.2.25`. Its default LLM URL must be re-pointed to MyMind's agent endpoint so the voice loop runs through Nitro.
 
+Unmute's backend reads `KYUTAI_LLM_URL` (see `unmute/kyutai_constants.py`) and builds
+its OpenAI client as `AsyncOpenAI(base_url=KYUTAI_LLM_URL + "/v1")`, then calls
+`{base}/v1/chat/completions` and `{base}/v1/models`. MyMind exposes exactly that
+surface at `/api/agent/llm/v1/*`, so set `KYUTAI_LLM_URL` to MyMind's host **without**
+the `/v1` (Unmute appends it):
+
 ```bash
 ssh tony@192.168.2.25
-# Edit Unmute's LLM config — the exact file/key depends on your Unmute deployment;
-# the setting to change is the OpenAI-compatible LLM base_url (sometimes called
-# OPENAI_BASE_URL or llm.base_url in the config file).
-# Set it to:
-#   base_url: http://<mymind-host>:3000/api/agent/llm
-# Leave the API key empty or set it to any dummy string ("none") —
-# the endpoint is unauthenticated (proxy-restricted, see §C below).
-# Then restart Unmute:
-docker compose restart   # or systemctl restart unmute, depending on your setup
+cd ~/unmute
+# In docker-compose.yml, the backend service env:
+#   KYUTAI_LLM_URL=http://<mymind-lan-ip>:3000/api/agent/llm   # homelab prod = http://192.168.2.89:3000/api/agent/llm
+#   KYUTAI_LLM_MODEL=<any non-empty string; MyMind ignores it and uses its own AI_REASONING_MODEL>
+#   KYUTAI_LLM_API_KEY=<empty or any dummy; the endpoint is keyless, proxy/LAN-restricted>
+# Then restart just the backend:
+docker compose up -d backend
 ```
+> The MyMind side resolves the real model from its `AI_REASONING_*` env. That base URL
+> **must include `/v1`** (e.g. `http://192.168.2.25:8004/v1`) or the loop 404s the model.
 
 After restarting, run the WebSocket smoke test from `docs/wiki/voice-agent-integration.md §11` to confirm the protocol path is intact before adding audio.
 

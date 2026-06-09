@@ -1,11 +1,12 @@
-// server/api/agent/llm.post.ts
-import { runAgentLoop } from '../../lib/agent/loop'
-import { textChunk, doneFrame } from '../../lib/agent/openai-chunk'
-import { publishActivity } from '../../lib/agent/bus'
-import { isPrivateAddress } from '../../utils/net'
-import type { ChatMessage } from '../../lib/ai/chat'
+import { runAgentLoop } from '../../../../../lib/agent/loop'
+import { textChunk, doneFrame } from '../../../../../lib/agent/openai-chunk'
+import { publishActivity } from '../../../../../lib/agent/bus'
+import { isPrivateAddress } from '../../../../../utils/net'
+import type { ChatMessage } from '../../../../../lib/ai/chat'
 
-// OpenAI /v1/chat/completions-shaped endpoint that Unmute's LLM points at.
+// OpenAI /v1/chat/completions endpoint that Unmute's LLM client points at.
+// Unmute builds the URL as `${KYUTAI_LLM_URL}/v1/chat/completions`, so its
+// KYUTAI_LLM_URL must be set to `http://<mymind-host>:3000/api/agent/llm`.
 // AUTH: none (Unmute is keyless) — defended by a private-address guard + a proxy
 // allow-list. NEVER expose this route publicly; it can mutate data.
 export default defineEventHandler(async (event) => {
