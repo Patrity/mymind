@@ -5,12 +5,25 @@ export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
 export interface TranscriptEntry { role: 'user' | 'assistant', text: string }
 
+export interface VoiceOption { id: string, label: string }
+
+// English voices available on the TTS server (from voices.yaml). Timbre is the
+// voice; "emotion"/persona is shaped by the system prompt in our agent loop.
+export const UNMUTE_VOICES: VoiceOption[] = [
+  { id: 'unmute-prod-website/p329_022.wav', label: 'Watercooler — casual' },
+  { id: 'unmute-prod-website/ex04_narration_longform_00001.wav', label: 'Explanation — narration' },
+  { id: 'unmute-prod-website/developer-1.mp3', label: 'Dev — neutral US' },
+  { id: 'unmute-prod-website/freesound/440565_why-is-there-educationwav.mp3', label: 'Gertrude' },
+  { id: 'unmute-prod-website/freesound/519189_request-42---hmm-i-dont-knowwav.mp3', label: 'Quiz show — UK, skeptical' }
+]
+
 export function useUnmute() {
   const config = useRuntimeConfig()
   const state = ref<VoiceState>('idle')
   const connected = ref(false)
   const transcript = ref<TranscriptEntry[]>([])
   const error = ref<string | null>(null)
+  const voice = ref<string>(UNMUTE_VOICES[0]!.id)
 
   let ws: WebSocket | null = null
   let audioCtx: AudioContext | null = null
@@ -39,6 +52,24 @@ export function useUnmute() {
     }
   }
 
+  function sessionUpdate() {
+    if (ws?.readyState !== WebSocket.OPEN) return
+    ws.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        instructions: { type: 'constant', text: 'You are MyMind, a concise voice assistant.', language: null },
+        voice: voice.value,
+        allow_recording: false
+      }
+    }))
+  }
+
+  /** Change the assistant voice; applies live mid-session (Unmute re-reads it). */
+  function setVoice(id: string) {
+    voice.value = id
+    sessionUpdate()
+  }
+
   async function start() {
     if (ws || audioCtx) return
     error.value = null
@@ -51,18 +82,12 @@ export function useUnmute() {
     audioCtx = new AudioContext()
     outAnalyser = audioCtx.createAnalyser()
     outAnalyser.fftSize = 256
+    outAnalyser.connect(audioCtx.destination) // connect once; sources feed the analyser
 
     ws = new WebSocket(url, ['realtime'])
     ws.onopen = () => {
       connected.value = true
-      ws!.send(JSON.stringify({
-        type: 'session.update',
-        session: {
-          instructions: { type: 'constant', text: 'You are MyMind, a concise voice assistant.', language: null },
-          voice: 'unmute-prod-website/developer-1.mp3',
-          allow_recording: false
-        }
-      }))
+      sessionUpdate()
       startMic().catch((e) => {
         error.value = String(e)
       })
@@ -79,7 +104,12 @@ export function useUnmute() {
 
   async function startMic() {
     const { default: Recorder } = await import('opus-recorder')
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    // Echo cancellation stops the mic from hearing the assistant's own TTS (which
+    // otherwise makes the server VAD self-interrupt); noise suppression drops steady
+    // ambient noise. autoGainControl OFF so quiet rooms don't get boosted into "speech".
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+    })
     const src = audioCtx!.createMediaStreamSource(micStream)
     micAnalyser = audioCtx!.createAnalyser()
     micAnalyser.fftSize = 256
@@ -93,9 +123,6 @@ export function useUnmute() {
       encoderApplication: 2049,
       streamPages: true,
       bufferLength: Math.round((960 * audioCtx!.sampleRate) / 24000),
-      // opus-recorder loads this as an AudioWorklet module; it must be served at a
-      // fetchable URL. We vendor its dist worklet into public/opus/ (the npm default
-      // relative path 404s when bundled → "Unable to load a worklet's module").
       encoderPath: '/opus/encoderWorker.min.js',
       mediaTrackConstraints: true
     })
@@ -108,34 +135,21 @@ export function useUnmute() {
   }
 
   // ---- assistant audio playback -------------------------------------------
-  // The assistant audio arrives as a STREAM of Ogg/Opus pages; decodeAudioData
-  // can't decode partial pages, so we feed them to opus-recorder's decoder worker
-  // (streaming Opus → Float32 PCM) and schedule the PCM gaplessly via WebAudio.
+  // ONE persistent decoder for the whole session (recreating it per turn — or
+  // sending it `done` — leaves later turns silent). Pages stream in as Ogg/Opus;
+  // the worker yields Float32 PCM which we schedule gaplessly. `muted` drops any
+  // PCM that decodes after a barge-in / turn switch so stale audio never plays.
   let decoderWorker: Worker | null = null
   let playCursor = 0
   let activeSources: AudioBufferSourceNode[] = []
+  let muted = false
 
-  function stopPlayback() {
-    for (const n of activeSources) {
-      try { n.stop() } catch { /* already stopped */ }
-      try { n.disconnect() } catch { /* already disconnected */ }
-    }
-    activeSources = []
-    playCursor = 0
-  }
-
-  function resetAudio() {
-    stopPlayback()
-    decoderWorker?.terminate()
-    decoderWorker = null
-  }
-
-  function newDecoder() {
-    resetAudio()
+  function ensureDecoder() {
+    if (decoderWorker || !audioCtx) return
     const w = new Worker('/opus/decoderWorker.min.js')
     w.onmessage = (e: MessageEvent) => {
       const channels = e.data as Float32Array[] | null
-      if (!channels || channels.length === 0 || !audioCtx || !outAnalyser) return
+      if (muted || !channels || channels.length === 0 || !audioCtx || !outAnalyser) return
       const frames = channels[0]?.length ?? 0
       if (frames === 0) return
       const buf = audioCtx.createBuffer(channels.length, frames, audioCtx.sampleRate)
@@ -143,7 +157,6 @@ export function useUnmute() {
       const node = audioCtx.createBufferSource()
       node.buffer = buf
       node.connect(outAnalyser)
-      outAnalyser.connect(audioCtx.destination)
       const startAt = Math.max(audioCtx.currentTime, playCursor)
       node.start(startAt)
       playCursor = startAt + buf.duration
@@ -153,17 +166,28 @@ export function useUnmute() {
     w.postMessage({
       command: 'init',
       decoderSampleRate: 24000,
-      outputBufferSampleRate: audioCtx!.sampleRate,
+      outputBufferSampleRate: audioCtx.sampleRate,
       resampleQuality: 0,
       numberOfChannels: 1,
-      bufferLength: 4096
+      bufferLength: 960 // small => the last (unflushed) chunk of each turn is tiny
     })
     decoderWorker = w
   }
 
+  function stopPlayback() {
+    muted = true // drop in-flight PCM from the turn we're cutting off
+    for (const n of activeSources) {
+      try { n.stop() } catch { /* already stopped */ }
+      try { n.disconnect() } catch { /* already disconnected */ }
+    }
+    activeSources = []
+    playCursor = 0
+  }
+
   function decodeOpus(bytes: Uint8Array) {
-    if (!decoderWorker) newDecoder()
-    decoderWorker!.postMessage({ command: 'decode', pages: bytes }, [bytes.buffer])
+    ensureDecoder()
+    muted = false // fresh audio for the current turn — accept it
+    decoderWorker?.postMessage({ command: 'decode', pages: bytes }, [bytes.buffer])
   }
 
   function handleEvent(ev: { type: string, delta?: string, audio?: string }) {
@@ -179,7 +203,7 @@ export function useUnmute() {
         break
       case 'response.created':
         state.value = 'thinking'
-        newDecoder() // fresh decoder per assistant turn (also stops prior playback)
+        stopPlayback() // clear any prior turn's tail; keep the decoder alive
         break
       case 'response.text.delta':
         if (ev.delta) pushDelta('assistant', ev.delta)
@@ -190,10 +214,9 @@ export function useUnmute() {
         break
       case 'response.audio.done':
         state.value = 'idle'
-        decoderWorker?.postMessage({ command: 'done' }) // flush the tail
         break
       case 'unmute.interrupted_by_vad':
-        resetAudio() // barge-in: stop speaking immediately
+        stopPlayback() // barge-in: cut the assistant off immediately
         state.value = 'listening'
         break
     }
@@ -201,7 +224,9 @@ export function useUnmute() {
 
   function stop() {
     recorder?.stop().catch(() => {})
-    resetAudio()
+    stopPlayback()
+    decoderWorker?.terminate()
+    decoderWorker = null
     ws?.close()
     audioCtx?.close()
     micStream?.getTracks().forEach(t => t.stop())
@@ -215,5 +240,9 @@ export function useUnmute() {
 
   onUnmounted(stop)
 
-  return { state, connected, transcript, error, start, stop, micAnalyser: () => micAnalyser, outAnalyser: () => outAnalyser }
+  return {
+    state, connected, transcript, error, voice, voices: UNMUTE_VOICES,
+    start, stop, setVoice,
+    micAnalyser: () => micAnalyser, outAnalyser: () => outAnalyser
+  }
 }

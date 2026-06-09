@@ -7,6 +7,13 @@ const activity = useAgentActivity()
 // Reactor reads whichever analyser is active for the current state.
 const activeAnalyser = () =>
   unmute.state.value === 'speaking' ? unmute.outAnalyser() : unmute.micAnalyser()
+
+// Voice picker — changing it applies live mid-session.
+const voiceItems = unmute.voices.map(v => ({ label: v.label, value: v.id }))
+const voiceModel = computed({
+  get: () => unmute.voice.value,
+  set: (id: string) => unmute.setVoice(id)
+})
 </script>
 
 <template>
@@ -17,6 +24,13 @@ const activeAnalyser = () =>
           <UDashboardSidebarCollapse />
         </template>
         <template #right>
+          <USelect
+            v-model="voiceModel"
+            :items="voiceItems"
+            value-key="value"
+            icon="i-lucide-mic-vocal"
+            class="w-44"
+          />
           <UButton
             v-if="!unmute.connected.value"
             icon="i-lucide-mic"
