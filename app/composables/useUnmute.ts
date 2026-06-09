@@ -8,14 +8,16 @@ export interface TranscriptEntry { role: 'user' | 'assistant', text: string }
 export interface VoiceOption { id: string, label: string }
 
 // Fallback catalog only — the real list is fetched live from Unmute's
-// /api/v1/voices (driven by voices.yaml on the rig), so the picker always matches
-// whatever voices are actually installed. The voice ID is the `path_on_server`.
+// /api/v1/voices when CORS allows. The voice ID is the `path_on_server`.
+// NOTE: prefer NEUTRAL samples (calm/narration/default) — emotional samples
+// (happy/amazement/adoration) make the TTS speak with exaggerated, stretched
+// prosody ("Heeeyyyy!"). Long samples (…_674s/_1143s) give better conditioning.
 const FALLBACK_VOICES: VoiceOption[] = [
-  { id: 'ears/p003/emo_amazement_freeform.wav', label: 'Imani — excited' },
-  { id: 'ears/p003/emo_adoration_freeform.wav', label: 'Imani — warm' },
-  { id: 'ears/p031/emo_realization_freeform.wav', label: 'Tyler' },
-  { id: 'expresso/ex01-ex02_fast_001_channel1_104s.wav', label: 'Ex01 — fast' },
-  { id: 'expresso/ex04-ex02_happy_001_channel1_118s.wav', label: 'Ex02 — happy' }
+  { id: 'expresso/ex03-ex01_calm_001_channel1_1143s.wav', label: 'Calm' },
+  { id: 'expresso/ex03-ex02_narration_001_channel1_674s.wav', label: 'Narration' },
+  { id: 'expresso/ex04-ex03_default_002_channel2_239s.wav', label: 'Neutral' },
+  { id: 'vctk/p270_023.wav', label: 'British (VCTK)' },
+  { id: 'expresso/ex04-ex02_happy_001_channel1_118s.wav', label: 'Happy (expressive)' }
 ]
 
 export function useUnmute() {
