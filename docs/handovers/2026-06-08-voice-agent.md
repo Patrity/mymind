@@ -77,6 +77,16 @@ See the `deferred:` frontmatter block. The most important item:
 
 **Unmute LLM reconfig is pending.** The infra step (SSH to 192.168.2.25, set LLM base_url to point at MyMind) must be done before the first voice session. Instructions are in `docs/DEPLOYMENT.md §Voice agent`.
 
+## Post-merge live test (2026-06-09)
+
+Ran the typed `/voice` path against the real dev stack (Postgres + dev server + `:8004` model) via playwright-cli. Results:
+
+- **Brain works end-to-end (no Unmute needed):** typed "Add a task called 'Buy milk for the voice test'" → the local `qwen3.6-35b-a3b` model emitted a `create_task` tool call → task created in the DB (verified) → activity chip *"added … to todo"* rendered → assistant confirmed. **Tool-calling on the local model is confirmed working** (this was the #1 open risk).
+- **Fixed two bugs found in testing (committed to `master`):**
+  1. `Reactor.client.vue` 500'd on load — `host.value` null on the first `onMounted` tick under the client-component wrapper. Now polls for the ref via rAF with a size fallback (`49585d9`).
+  2. Connecting voice threw `AbortError: Unable to load a worklet's module` — opus-recorder's `audioWorklet.addModule(encoderPath)` used a default relative path that 404s when bundled. Vendored its worklet to `public/opus/` and set `encoderPath: '/opus/encoderWorker.min.js'` (`96f8383`). **Deploy note: `public/opus/` must ship in the image.**
+- **Still unvalidated:** full audio round-trip (STT→loop→TTS→playback + barge-in) — needs the Unmute LLM reconfig + a real browser mic. The `playOpus` decode caveat above still stands.
+
 ## Next seam
 
 1. Do the Unmute LLM reconfig and run the manual voice test (barge-in, filler timing, tool turn with undo).
