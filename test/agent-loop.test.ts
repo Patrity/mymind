@@ -5,12 +5,14 @@ import type { AgentTool } from '../server/lib/agent/types'
 import type { StreamChunk } from '../server/lib/ai/chat-stream'
 
 function streamOf(chunks: StreamChunk[]) {
-  return async function* () { for (const c of chunks) yield c }()
+  return (async function* () {
+    for (const c of chunks) yield c
+  }())
 }
 
 const fakeTool: AgentTool = {
   name: 'create_task', description: 'x', kind: 'create',
-  schema: {}, handler: async () => ({ result: { id: 't1', title: 'milk' }, summary: "added 'milk' to todo", undo: async () => {} })
+  schema: {}, handler: async () => ({ result: { id: 't1', title: 'milk' }, summary: 'added \'milk\' to todo', undo: async () => {} })
 }
 
 describe('runAgentLoop', () => {
@@ -69,7 +71,7 @@ describe('runAgentLoop', () => {
     let i = 0
     const spy = vi.fn(() => calls[i++])
     // drain
-    // eslint-disable-next-line no-empty
+
     for await (const _ of runAgentLoop(
       [{ role: 'user', content: 'add milk' }],
       { signal: new AbortController().signal },
@@ -79,14 +81,14 @@ describe('runAgentLoop', () => {
     const secondCallMessages = spy.mock.calls[1][1] as Array<Record<string, unknown>>
     const assistant = secondCallMessages.find(
       m => m.role === 'assistant' && Array.isArray(m.tool_calls)
-    ) as { tool_calls: { id: string; type: string; function: { name: string; arguments: string } }[] } | undefined
+    ) as { tool_calls: { id: string, type: string, function: { name: string, arguments: string } }[] } | undefined
     expect(assistant).toBeTruthy()
     expect(assistant!.tool_calls[0]).toMatchObject({ id: 'c1', type: 'function', function: { name: 'create_task' } })
     expect(typeof assistant!.tool_calls[0].function.arguments).toBe('string') // JSON string, not object
     expect(JSON.parse(assistant!.tool_calls[0].function.arguments)).toEqual({ title: 'milk' })
 
     const toolMsg = secondCallMessages.find(m => m.role === 'tool') as
-      { tool_call_id: string; name: string; content: string } | undefined
+      { tool_call_id: string, name: string, content: string } | undefined
     expect(toolMsg).toMatchObject({ tool_call_id: 'c1', name: 'create_task' })
     expect(typeof toolMsg!.content).toBe('string')
   })

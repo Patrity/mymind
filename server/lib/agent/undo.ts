@@ -1,7 +1,7 @@
 // server/lib/agent/undo.ts
 import { nanoid } from 'nanoid'
 
-interface Entry { fn: () => Promise<void>; expires: number }
+interface Entry { fn: () => Promise<void>, expires: number }
 const store = new Map<string, Entry>()
 const TTL_MS = 10 * 60 * 1000 // 10 minutes
 

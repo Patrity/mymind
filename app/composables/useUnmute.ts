@@ -3,7 +3,7 @@ import type RecorderType from 'opus-recorder'
 
 export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
-export interface TranscriptEntry { role: 'user' | 'assistant'; text: string }
+export interface TranscriptEntry { role: 'user' | 'assistant', text: string }
 
 export function useUnmute() {
   const config = useRuntimeConfig()
@@ -32,10 +32,14 @@ export function useUnmute() {
     if (ws || audioCtx) return
     error.value = null
     const url = config.public.unmuteUrl as string
-    if (!url) { error.value = 'NUXT_PUBLIC_UNMUTE_URL is not set'; return }
+    if (!url) {
+      error.value = 'NUXT_PUBLIC_UNMUTE_URL is not set'
+      return
+    }
 
     audioCtx = new AudioContext()
-    outAnalyser = audioCtx.createAnalyser(); outAnalyser.fftSize = 256
+    outAnalyser = audioCtx.createAnalyser()
+    outAnalyser.fftSize = 256
 
     ws = new WebSocket(url, ['realtime'])
     ws.onopen = () => {
@@ -48,18 +52,26 @@ export function useUnmute() {
           allow_recording: false
         }
       }))
-      startMic().catch(e => { error.value = String(e) })
+      startMic().catch((e) => {
+        error.value = String(e)
+      })
     }
-    ws.onclose = () => { connected.value = false; state.value = 'idle' }
-    ws.onerror = () => { error.value = 'WebSocket error' }
-    ws.onmessage = (e) => handleEvent(JSON.parse(e.data))
+    ws.onclose = () => {
+      connected.value = false
+      state.value = 'idle'
+    }
+    ws.onerror = () => {
+      error.value = 'WebSocket error'
+    }
+    ws.onmessage = e => handleEvent(JSON.parse(e.data))
   }
 
   async function startMic() {
     const { default: Recorder } = await import('opus-recorder')
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
     const src = audioCtx!.createMediaStreamSource(micStream)
-    micAnalyser = audioCtx!.createAnalyser(); micAnalyser.fftSize = 256
+    micAnalyser = audioCtx!.createAnalyser()
+    micAnalyser.fftSize = 256
     src.connect(micAnalyser)
 
     recorder = new Recorder({
@@ -89,27 +101,46 @@ export function useUnmute() {
       const buf = await audioCtx!.decodeAudioData(bytes.buffer.slice(0) as ArrayBuffer)
       const node = audioCtx!.createBufferSource()
       node.buffer = buf
-      node.connect(outAnalyser!); outAnalyser!.connect(audioCtx!.destination)
+      node.connect(outAnalyser!)
+      outAnalyser!.connect(audioCtx!.destination)
       const startAt = Math.max(audioCtx!.currentTime, playCursor)
-      node.start(startAt); playCursor = startAt + buf.duration
+      node.start(startAt)
+      playCursor = startAt + buf.duration
     } catch { /* ignore undecodable page */ }
   }
 
-  function flushPlayback() { playCursor = 0 }
+  function flushPlayback() {
+    playCursor = 0
+  }
 
-  function handleEvent(ev: { type: string; delta?: string; audio?: string }) {
+  function handleEvent(ev: { type: string, delta?: string, audio?: string }) {
     switch (ev.type) {
-      case 'input_audio_buffer.speech_started': state.value = 'listening'; break
-      case 'input_audio_buffer.speech_stopped': state.value = 'thinking'; break
+      case 'input_audio_buffer.speech_started':
+        state.value = 'listening'
+        break
+      case 'input_audio_buffer.speech_stopped':
+        state.value = 'thinking'
+        break
       case 'conversation.item.input_audio_transcription.delta':
-        if (ev.delta) pushDelta('user', ev.delta); break
-      case 'response.created': state.value = 'thinking'; break
-      case 'response.text.delta': if (ev.delta) pushDelta('assistant', ev.delta); break
+        if (ev.delta) pushDelta('user', ev.delta)
+        break
+      case 'response.created':
+        state.value = 'thinking'
+        break
+      case 'response.text.delta':
+        if (ev.delta) pushDelta('assistant', ev.delta)
+        break
       case 'response.audio.delta':
         state.value = 'speaking'
-        if (ev.delta) playOpus(fromB64(ev.delta)); break
-      case 'response.audio.done': state.value = 'idle'; break
-      case 'unmute.interrupted_by_vad': flushPlayback(); state.value = 'listening'; break
+        if (ev.delta) playOpus(fromB64(ev.delta))
+        break
+      case 'response.audio.done':
+        state.value = 'idle'
+        break
+      case 'unmute.interrupted_by_vad':
+        flushPlayback()
+        state.value = 'listening'
+        break
     }
   }
 
@@ -118,8 +149,12 @@ export function useUnmute() {
     ws?.close()
     audioCtx?.close()
     micStream?.getTracks().forEach(t => t.stop())
-    micStream = null; recorder = null; ws = null; audioCtx = null
-    state.value = 'idle'; connected.value = false
+    micStream = null
+    recorder = null
+    ws = null
+    audioCtx = null
+    state.value = 'idle'
+    connected.value = false
   }
 
   onUnmounted(stop)

@@ -14,7 +14,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 403, statusMessage: 'Forbidden (LAN only)' })
   }
 
-  const body = await readBody<{ messages?: ChatMessage[]; stream?: boolean }>(event)
+  const body = await readBody<{ messages?: ChatMessage[], stream?: boolean }>(event)
   const messages = body?.messages ?? []
 
   // AbortSignal so barge-in (Unmute closing the request) cancels model + tools.

@@ -1,21 +1,25 @@
 // server/lib/ai/chat-stream.ts
-import { z } from 'zod'
+import type { z } from 'zod'
 import { aiProvider, type AiRole } from './provider'
 import type { ChatMessage } from './chat'
 
 // --- pure helpers (exported for tests) ---
 
-export function parseSseLine(line: string): { done: boolean; json?: unknown } {
+export function parseSseLine(line: string): { done: boolean, json?: unknown } {
   const trimmed = line.trim()
   if (!trimmed || trimmed.startsWith(':')) return { done: false }
   if (!trimmed.startsWith('data:')) return { done: false }
   const payload = trimmed.slice(5).trim()
   if (payload === '[DONE]') return { done: true }
-  try { return { done: false, json: JSON.parse(payload) } } catch { return { done: false } }
+  try {
+    return { done: false, json: JSON.parse(payload) }
+  } catch {
+    return { done: false }
+  }
 }
 
-interface ToolCallAcc { id?: string; name?: string; args: string }
-interface ToolCallDelta { index: number; id?: string; function?: { name?: string; arguments?: string } }
+interface ToolCallAcc { id?: string, name?: string, args: string }
+interface ToolCallDelta { index: number, id?: string, function?: { name?: string, arguments?: string } }
 
 export function assembleToolCalls(acc: Record<number, ToolCallAcc>, deltas: ToolCallDelta[]): void {
   for (const d of deltas) {
@@ -30,7 +34,7 @@ export function assembleToolCalls(acc: Record<number, ToolCallAcc>, deltas: Tool
 
 export interface OpenAiToolDef {
   type: 'function'
-  function: { name: string; description: string; parameters: Record<string, unknown> }
+  function: { name: string, description: string, parameters: Record<string, unknown> }
 }
 
 // Zod v4 uses `.def.type` as the type discriminator instead of `._def.typeName`.
@@ -42,7 +46,7 @@ export function zodShapeToJsonSchema(shape: z.ZodRawShape): Record<string, unkno
   for (const [key, schema] of Object.entries(shape)) {
     const s = schema as z.ZodTypeAny
     // Zod v4: use `.def.type` (string) instead of `._def.typeName`
-    const rawDef = (s as unknown as { def: { type: string; innerType?: z.ZodTypeAny; entries?: Record<string, string>; element?: z.ZodTypeAny } }).def
+    const rawDef = (s as unknown as { def: { type: string, innerType?: z.ZodTypeAny, entries?: Record<string, string>, element?: z.ZodTypeAny } }).def
     let inner: z.ZodTypeAny = s
     let innerDef = rawDef
     let optional = false
@@ -58,8 +62,7 @@ export function zodShapeToJsonSchema(shape: z.ZodRawShape): Record<string, unkno
       // Zod v4: enum values are in `def.entries` as { value: value } object
       const entries = innerDef.entries ?? {}
       jsonType = { type: 'string', enum: Object.keys(entries) }
-    }
-    else if (innerDef.type === 'array') jsonType = { type: 'array', items: { type: 'string' } }
+    } else if (innerDef.type === 'array') jsonType = { type: 'array', items: { type: 'string' } }
     if (inner.description) jsonType.description = inner.description
     properties[key] = jsonType
     if (!optional) required.push(key)
@@ -71,7 +74,7 @@ export function zodShapeToJsonSchema(shape: z.ZodRawShape): Record<string, unkno
 
 export interface StreamChunk {
   textDelta?: string
-  toolCalls?: { id: string; name: string; args: Record<string, unknown> }[] // emitted once, at end
+  toolCalls?: { id: string, name: string, args: Record<string, unknown> }[] // emitted once, at end
 }
 
 /**
@@ -81,7 +84,7 @@ export interface StreamChunk {
 export async function* streamChat(
   role: AiRole,
   messages: ChatMessage[],
-  opts: { tools?: OpenAiToolDef[]; signal?: AbortSignal; temperature?: number; maxTokens?: number } = {}
+  opts: { tools?: OpenAiToolDef[], signal?: AbortSignal, temperature?: number, maxTokens?: number } = {}
 ): AsyncGenerator<StreamChunk> {
   const cfg = aiProvider(role, { required: true })
   const res = await fetch(`${cfg.baseURL!.replace(/\/$/, '')}/chat/completions`, {
@@ -115,9 +118,12 @@ export async function* streamChat(
     buffer = lines.pop() ?? ''
     for (const line of lines) {
       const parsed = parseSseLine(line)
-      if (parsed.done) { buffer = ''; break }
+      if (parsed.done) {
+        buffer = ''
+        break
+      }
       if (!parsed.json) continue
-      const choice = (parsed.json as { choices?: { delta?: { content?: string; tool_calls?: ToolCallDelta[] } }[] }).choices?.[0]
+      const choice = (parsed.json as { choices?: { delta?: { content?: string, tool_calls?: ToolCallDelta[] } }[] }).choices?.[0]
       const delta = choice?.delta
       if (delta?.content) yield { textDelta: delta.content }
       if (delta?.tool_calls) assembleToolCalls(toolAcc, delta.tool_calls)
@@ -136,5 +142,9 @@ export async function* streamChat(
 }
 
 function safeJson(s: string): Record<string, unknown> {
-  try { return JSON.parse(s) } catch { return {} }
+  try {
+    return JSON.parse(s)
+  } catch {
+    return {}
+  }
 }

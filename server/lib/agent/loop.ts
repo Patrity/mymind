@@ -16,7 +16,7 @@ const MAX_ROUNDS = 5
 interface AssistantToolCallMessage {
   role: 'assistant'
   content: string
-  tool_calls: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
+  tool_calls: { id: string, type: 'function', function: { name: string, arguments: string } }[]
 }
 interface ToolResultMessage {
   role: 'tool'
@@ -56,13 +56,16 @@ export async function* runAgentLoop(
       yield { type: 'done' }
       return
     }
-    let toolCalls: { id: string; name: string; args: Record<string, unknown> }[] | undefined
+    let toolCalls: { id: string, name: string, args: Record<string, unknown> }[] | undefined
     let sawText = false
 
     // Cast through unknown once at the streamChat boundary — LoopMessage is a superset
     // of ChatMessage (adds 'tool' role + tool_calls) and is wire-compatible with OpenAI.
     for await (const chunk of streamChat('reasoning', messages as unknown as ChatMessage[], { tools: toolDefs, signal: ctx.signal })) {
-      if (chunk.textDelta) { sawText = true; yield { type: 'text-delta', text: chunk.textDelta } }
+      if (chunk.textDelta) {
+        sawText = true
+        yield { type: 'text-delta', text: chunk.textDelta }
+      }
       if (chunk.toolCalls) toolCalls = chunk.toolCalls
     }
 

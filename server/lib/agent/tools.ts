@@ -106,7 +106,7 @@ export const agentTools: AgentTool[] = [
       const slug = a.slug as string
       const prior = await getProject(slug)
       const { slug: _s, ...patch } = a
-      const p = await updateProject(slug, patch as { name?: string; description?: string; active?: boolean })
+      const p = await updateProject(slug, patch as { name?: string, description?: string, active?: boolean })
       return {
         result: p ?? { error: 'not found', slug },
         summary: `updated project "${slug}"`,
@@ -174,13 +174,15 @@ export const agentTools: AgentTool[] = [
       return {
         result: t ?? { error: 'not found', id },
         summary: `updated task`,
-        undo: prior ? async () => {
-          await updateTask(id, {
-            title: prior.title, description: prior.description ?? undefined,
-            status: prior.status, priority: prior.priority,
-            project: prior.project, dueDate: prior.dueDate ? new Date(prior.dueDate) : null
-          })
-        } : undefined
+        undo: prior
+          ? async () => {
+            await updateTask(id, {
+              title: prior.title, description: prior.description ?? undefined,
+              status: prior.status, priority: prior.priority,
+              project: prior.project, dueDate: prior.dueDate ? new Date(prior.dueDate) : null
+            })
+          }
+          : undefined
       }
     }
   },
@@ -193,7 +195,7 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const title = (a.title as string) ?? null
       const slug = title ? title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').slice(0, 64) || nanoid(8) : nanoid(10)
-      const doc = await createDoc({ path: `/input/${slug}.md`, title, content: a.text as string }) as { id?: string; path?: string }
+      const doc = await createDoc({ path: `/input/${slug}.md`, title, content: a.text as string }) as { id?: string, path?: string }
       return {
         result: doc, summary: `captured note${title ? ` "${title}"` : ''}`,
         // createDoc has no soft-delete service exposed here; undo is best-effort no-op marker.

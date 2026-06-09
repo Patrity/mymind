@@ -12,7 +12,7 @@ export default defineEventHandler(async (event) => {
   res.flushHeaders()
   res.write(': ping\n\n')
 
-  const unsubscribe = subscribeActivity((e) => res.write(`data: ${JSON.stringify(e)}\n\n`))
+  const unsubscribe = subscribeActivity(e => res.write(`data: ${JSON.stringify(e)}\n\n`))
   const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25_000)
 
   return new Promise<void>((resolve) => {

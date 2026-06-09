@@ -24,7 +24,8 @@ onMounted(() => {
   const camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 100)
   camera.position.z = 5
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-  renderer.setSize(w, h); renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+  renderer.setSize(w, h)
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
   el.appendChild(renderer.domElement)
 
   // core
@@ -49,14 +50,17 @@ onMounted(() => {
   scene.add(ring)
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.4))
-  const pl = new THREE.PointLight(0xffffff, 1.2); pl.position.set(3, 3, 5); scene.add(pl)
+  const pl = new THREE.PointLight(0xffffff, 1.2)
+  pl.position.set(3, 3, 5)
+  scene.add(pl)
 
   const data = new Uint8Array(128)
   function amplitude(): number {
     const an = props.analyser()
     if (!an) return 0
     an.getByteFrequencyData(data as Uint8Array<ArrayBuffer>)
-    let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i] ?? 0
+    let sum = 0
+    for (let i = 0; i < data.length; i++) sum += data[i] ?? 0
     return sum / data.length / 255 // 0..1
   }
 
@@ -77,8 +81,11 @@ onMounted(() => {
   frame()
 
   const onResize = () => {
-    const nw = el.clientWidth, nh = el.clientHeight
-    camera.aspect = nw / nh; camera.updateProjectionMatrix(); renderer!.setSize(nw, nh)
+    const nw = el.clientWidth
+    const nh = el.clientHeight
+    camera.aspect = nw / nh
+    camera.updateProjectionMatrix()
+    renderer!.setSize(nw, nh)
   }
   window.addEventListener('resize', onResize)
   onUnmounted(() => {
