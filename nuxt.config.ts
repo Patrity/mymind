@@ -54,7 +54,9 @@ export default defineNuxtConfig({
     public: {
       // Whether the /login page surfaces a "create account" toggle. Mirrors the
       // server-side disableSignUp gate so the UI only shows what the API allows.
-      allowSignup: process.env.ALLOW_SIGNUP === 'true'
+      allowSignup: process.env.ALLOW_SIGNUP === 'true',
+      // Voice agent: browser WebSocket URL of the self-hosted Unmute realtime API.
+      unmuteUrl: process.env.NUXT_PUBLIC_UNMUTE_URL ?? ''
     },
     storageDriver: process.env.STORAGE_DRIVER ?? 'local',
     storageLocalDir: process.env.STORAGE_LOCAL_DIR ?? './.data/uploads',
