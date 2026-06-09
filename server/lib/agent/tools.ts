@@ -44,12 +44,13 @@ export const agentTools: AgentTool[] = [
       content: z.string().max(20_000),
       scope: z.enum(['user', 'agent', 'world']),
       project: z.string().optional(),
-      tags: z.array(z.string()).optional()
+      tags: z.array(z.string()).optional(),
+      source: z.string().optional()
     },
     handler: async (a) => {
       const m = await createMemory({
         content: a.content as string, scope: a.scope as undefined,
-        project: (a.project as string) ?? null, tags: a.tags as undefined, source: 'voice'
+        project: (a.project as string) ?? null, tags: a.tags as undefined, source: (a.source as string) ?? 'voice'
       })
       return {
         result: m,
