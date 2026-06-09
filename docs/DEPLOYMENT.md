@@ -170,3 +170,68 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 - A leaner `.output`-only runtime image (current image keeps full deps so it can self-migrate).
 - Bridget memory data migration (importing the old Python service's memories) is not automated.
 See the per-cycle handovers in `docs/handovers/` for the full backlog.
+
+## 14. Voice agent
+
+The `/voice` page requires two one-time setup steps and a specific proxy configuration.
+
+### A. Unmute LLM reconfig (one-time, run once)
+
+Unmute is the STT/TTS backend at `192.168.2.25`. Its default LLM URL must be re-pointed to MyMind's agent endpoint so the voice loop runs through Nitro.
+
+```bash
+ssh tony@192.168.2.25
+# Edit Unmute's LLM config — the exact file/key depends on your Unmute deployment;
+# the setting to change is the OpenAI-compatible LLM base_url (sometimes called
+# OPENAI_BASE_URL or llm.base_url in the config file).
+# Set it to:
+#   base_url: http://<mymind-host>:3000/api/agent/llm
+# Leave the API key empty or set it to any dummy string ("none") —
+# the endpoint is unauthenticated (proxy-restricted, see §C below).
+# Then restart Unmute:
+docker compose restart   # or systemctl restart unmute, depending on your setup
+```
+
+After restarting, run the WebSocket smoke test from `docs/wiki/voice-agent-integration.md §11` to confirm the protocol path is intact before adding audio.
+
+### B. Client env var
+
+Set this in `.env` (and in the container env for prod):
+
+| Var | Example | Notes |
+|---|---|---|
+| `NUXT_PUBLIC_UNMUTE_URL` | `wss://unmute.example.com` | WebSocket base URL the browser connects to. Exposed as `runtimeConfig.public.unmuteUrl`. For dev via localhost tunnel: `ws://localhost:8080`. |
+
+The mic requires a **secure context**: HTTPS or `localhost`. On plain `http://` the browser will refuse `getUserMedia` before the WebSocket opens.
+
+### C. Reverse-proxy security rules (REQUIRED)
+
+`/api/agent/llm` is **unauthenticated and can mutate data** (it runs the full tool-calling loop). It is defended in-handler by an `isPrivateAddress` check, but that check reads `X-Forwarded-For`, which is spoofable unless the proxy enforces both of the following rules:
+
+**Rule 1 — allow-list by source IP:**
+Only forward requests to `/api/agent/llm` that originate from the Unmute host (192.168.2.25) or the LAN. Deny all requests to that path coming from the public internet.
+
+Example Caddyfile snippet:
+```
+mymind.example.com {
+    @agent_llm path /api/agent/llm
+    @lan_only  remote_ip 192.168.2.25 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12 127.0.0.1
+
+    handle @agent_llm {
+        @blocked not remote_ip 192.168.2.25 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12
+        respond @blocked 403
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
+```
+
+**Rule 2 — overwrite `X-Forwarded-For`:**
+The in-handler check calls `getRequestIP(event, { xForwardedFor: true })`. A client-supplied `X-Forwarded-For: 192.168.2.25` header would bypass it if the proxy forwards it unchanged. The proxy must **overwrite** (not append) `X-Forwarded-For` with the real remote IP so the header cannot be spoofed.
+
+In Caddy, `reverse_proxy` sets `X-Forwarded-For` to the actual client IP by default (override mode). In nginx, use `proxy_set_header X-Forwarded-For $remote_addr;` (not `$proxy_add_x_forwarded_for`).
+
+The other `/api/agent/*` routes (`activity`, `undo`, `chat`) use the standard session/bearer auth and require no special proxy rules beyond the existing ones for `/api/**`.

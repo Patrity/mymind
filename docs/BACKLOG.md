@@ -21,7 +21,7 @@ The original `scope.md` braindump (since removed from the repo) defined 8 areas.
 
 ### Gaps vs the original vision (not built)
 - **GitHub-commits → memory/notes/docs** — an explicit Memory-System task; never built. → planned (§2).
-- **In-app "agent loop" (skills / tools / code execution / fs ops)** — reframed as the MCP server (external agents drive MyMind). No autonomous in-app agent. Partially addressed by the planned **in-app chat** (§2); full code-execution loop is a deliberate maybe-not.
+- **In-app "agent loop" (skills / tools / code execution / fs ops)** — reframed as the MCP server (external agents drive MyMind). Substantially addressed by **cycle 17 (Voice Agent)**: the shared agent core (`server/lib/agent/`) + text-chat endpoint (`/api/agent/chat`) are shipped; the voice UI is live. A full **text-chat UI** (cycle 14) is still pending — the backend is ready. Full code-execution loop is a deliberate maybe-not.
 - **Full notification system** — the spec wanted human-attention alerts (OCR failed, can't determine project, frontmatter suggested). Only the **review queue** (enrichment proposals) exists; OCR-failed / ambiguous-project are not surfaced. → planned (§2/§3).
 - **Video → webm transcode** — ffmpeg installed; video stored passthrough, not converted. → §3.
 - **Voice (STT/TTS)** — rig endpoints env-configured but unused; no voice feature was ever a requirement. Out of scope unless wanted.
