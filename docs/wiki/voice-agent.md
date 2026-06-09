@@ -67,7 +67,7 @@ One transport-agnostic core shared by voice, the MCP server, and the text-chat e
 |---|---|---|
 | `search_memories` | read | memory.searchMemories |
 | `get_recent_memories` | read | memory.listMemories |
-| `save_memory` | create | memory.createMemory (source: 'voice') |
+| `save_memory` | create | memory.createMemory (optional `source`, defaults to 'voice') |
 | `search_docs` | read | documents.searchDocs |
 | `search_projects` | read | projects.listProjects |
 | `create_project` | create | projects.createProject |
