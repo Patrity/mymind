@@ -51,7 +51,11 @@ export async function* runAgentLoop(
   let fillerSpoken = false
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    if (ctx.signal.aborted) return
+    if (ctx.signal.aborted) {
+      publishActivity({ type: 'state', state: 'idle' })
+      yield { type: 'done' }
+      return
+    }
     let toolCalls: { id: string; name: string; args: Record<string, unknown> }[] | undefined
     let sawText = false
 
@@ -115,6 +119,10 @@ export async function* runAgentLoop(
     }
   }
 
+  // Rounds exhausted but the model kept calling tools — force a final spoken answer (no tools).
+  for await (const chunk of streamChat('reasoning', messages as unknown as ChatMessage[], { signal: ctx.signal })) {
+    if (chunk.textDelta) yield { type: 'text-delta', text: chunk.textDelta }
+  }
   publishActivity({ type: 'state', state: 'idle' })
   yield { type: 'done' }
 }
