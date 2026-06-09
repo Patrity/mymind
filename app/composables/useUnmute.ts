@@ -7,14 +7,15 @@ export interface TranscriptEntry { role: 'user' | 'assistant', text: string }
 
 export interface VoiceOption { id: string, label: string }
 
-// English voices available on the TTS server (from voices.yaml). Timbre is the
-// voice; "emotion"/persona is shaped by the system prompt in our agent loop.
-export const UNMUTE_VOICES: VoiceOption[] = [
-  { id: 'unmute-prod-website/p329_022.wav', label: 'Watercooler — casual' },
-  { id: 'unmute-prod-website/ex04_narration_longform_00001.wav', label: 'Explanation — narration' },
-  { id: 'unmute-prod-website/developer-1.mp3', label: 'Dev — neutral US' },
-  { id: 'unmute-prod-website/freesound/440565_why-is-there-educationwav.mp3', label: 'Gertrude' },
-  { id: 'unmute-prod-website/freesound/519189_request-42---hmm-i-dont-knowwav.mp3', label: 'Quiz show — UK, skeptical' }
+// Fallback catalog only — the real list is fetched live from Unmute's
+// /api/v1/voices (driven by voices.yaml on the rig), so the picker always matches
+// whatever voices are actually installed. The voice ID is the `path_on_server`.
+const FALLBACK_VOICES: VoiceOption[] = [
+  { id: 'ears/p003/emo_amazement_freeform.wav', label: 'Imani — excited' },
+  { id: 'ears/p003/emo_adoration_freeform.wav', label: 'Imani — warm' },
+  { id: 'ears/p031/emo_realization_freeform.wav', label: 'Tyler' },
+  { id: 'expresso/ex01-ex02_fast_001_channel1_104s.wav', label: 'Ex01 — fast' },
+  { id: 'expresso/ex04-ex02_happy_001_channel1_118s.wav', label: 'Ex02 — happy' }
 ]
 
 export function useUnmute() {
@@ -23,7 +24,30 @@ export function useUnmute() {
   const connected = ref(false)
   const transcript = ref<TranscriptEntry[]>([])
   const error = ref<string | null>(null)
-  const voice = ref<string>(UNMUTE_VOICES[0]!.id)
+  const voices = ref<VoiceOption[]>([...FALLBACK_VOICES])
+  const voice = ref<string>(FALLBACK_VOICES[0]!.id)
+
+  // Fetch the live voice catalog from Unmute (derive the http voices URL from the
+  // ws realtime URL) so the picker reflects the rig's current voices.yaml.
+  async function loadVoices() {
+    const wsUrl = config.public.unmuteUrl as string
+    if (!wsUrl) return
+    const httpUrl = wsUrl.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/realtime\/?$/, '/voices')
+    try {
+      const data = await $fetch<unknown>(httpUrl)
+      const list = (Array.isArray(data) ? data : (data as { voices?: unknown[] })?.voices ?? []) as Array<{
+        name?: string, path_on_server?: string, source?: { path_on_server?: string }
+      }>
+      const mapped = list
+        .map(v => ({ id: v.source?.path_on_server ?? v.path_on_server ?? '', label: v.name ?? v.source?.path_on_server ?? v.path_on_server ?? '' }))
+        .filter(v => v.id)
+      if (mapped.length) {
+        voices.value = mapped
+        if (!mapped.some(v => v.id === voice.value)) voice.value = mapped[0]!.id
+      }
+    } catch { /* keep fallback catalog */ }
+  }
+  loadVoices()
 
   let ws: WebSocket | null = null
   let audioCtx: AudioContext | null = null
@@ -241,7 +265,7 @@ export function useUnmute() {
   onUnmounted(stop)
 
   return {
-    state, connected, transcript, error, voice, voices: UNMUTE_VOICES,
+    state, connected, transcript, error, voice, voices,
     start, stop, setVoice,
     micAnalyser: () => micAnalyser, outAnalyser: () => outAnalyser
   }

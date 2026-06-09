@@ -8,8 +8,9 @@ const activity = useAgentActivity()
 const activeAnalyser = () =>
   unmute.state.value === 'speaking' ? unmute.outAnalyser() : unmute.micAnalyser()
 
-// Voice picker — changing it applies live mid-session.
-const voiceItems = unmute.voices.map(v => ({ label: v.label, value: v.id }))
+// Voice picker — changing it applies live mid-session. Reactive: the catalog is
+// fetched live from Unmute.
+const voiceItems = computed(() => unmute.voices.value.map(v => ({ label: v.label, value: v.id })))
 const voiceModel = computed({
   get: () => unmute.voice.value,
   set: (id: string) => unmute.setVoice(id)
