@@ -7,6 +7,7 @@ declare module 'opus-recorder' {
     encoderApplication?: number
     streamPages?: boolean
     bufferLength?: number
+    encoderPath?: string
     mediaTrackConstraints?: boolean | MediaTrackConstraints
   }
   export default class Recorder {

@@ -82,6 +82,10 @@ export function useUnmute() {
       encoderApplication: 2049,
       streamPages: true,
       bufferLength: Math.round((960 * audioCtx!.sampleRate) / 24000),
+      // opus-recorder loads this as an AudioWorklet module; it must be served at a
+      // fetchable URL. We vendor its dist worklet into public/opus/ (the npm default
+      // relative path 404s when bundled → "Unable to load a worklet's module").
+      encoderPath: '/opus/encoderWorker.min.js',
       mediaTrackConstraints: true
     })
     recorder.ondataavailable = (page: Uint8Array) => {
