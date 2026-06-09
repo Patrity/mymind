@@ -22,10 +22,21 @@ export function useUnmute() {
   const toB64 = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf)))
   const fromB64 = (s: string) => Uint8Array.from(atob(s), c => c.charCodeAt(0))
 
+  // Unmute/Kyutai emits word-level transcript deltas, often with no surrounding
+  // whitespace. Insert a space before a token that starts a new word, unless the
+  // running text already ends in whitespace (handles deltas that DO include a space).
+  function needsSpace(prev: string, delta: string): boolean {
+    return prev.length > 0 && !/\s$/.test(prev) && /^[A-Za-z0-9([{"]/.test(delta)
+  }
+
   function pushDelta(role: 'user' | 'assistant', delta: string) {
+    if (!delta) return
     const last = transcript.value[transcript.value.length - 1]
-    if (last && last.role === role) last.text += delta
-    else transcript.value.push({ role, text: delta })
+    if (last && last.role === role) {
+      last.text += (needsSpace(last.text, delta) ? ' ' : '') + delta
+    } else {
+      transcript.value.push({ role, text: delta.replace(/^\s+/, '') })
+    }
   }
 
   async function start() {
@@ -96,25 +107,63 @@ export function useUnmute() {
     await recorder.start()
   }
 
+  // ---- assistant audio playback -------------------------------------------
+  // The assistant audio arrives as a STREAM of Ogg/Opus pages; decodeAudioData
+  // can't decode partial pages, so we feed them to opus-recorder's decoder worker
+  // (streaming Opus → Float32 PCM) and schedule the PCM gaplessly via WebAudio.
+  let decoderWorker: Worker | null = null
   let playCursor = 0
-  async function playOpus(bytes: Uint8Array) {
-    // opus-recorder ships a decoder worklet; for v1 we decode via WebAudio
-    // decodeAudioData on the Ogg/Opus page. If decodeAudioData rejects on raw
-    // streamed pages, switch to opus-recorder's decoder worklet (wiki §6/§10).
-    try {
-      const buf = await audioCtx!.decodeAudioData(bytes.buffer.slice(0) as ArrayBuffer)
-      const node = audioCtx!.createBufferSource()
-      node.buffer = buf
-      node.connect(outAnalyser!)
-      outAnalyser!.connect(audioCtx!.destination)
-      const startAt = Math.max(audioCtx!.currentTime, playCursor)
-      node.start(startAt)
-      playCursor = startAt + buf.duration
-    } catch { /* ignore undecodable page */ }
+  let activeSources: AudioBufferSourceNode[] = []
+
+  function stopPlayback() {
+    for (const n of activeSources) {
+      try { n.stop() } catch { /* already stopped */ }
+      try { n.disconnect() } catch { /* already disconnected */ }
+    }
+    activeSources = []
+    playCursor = 0
   }
 
-  function flushPlayback() {
-    playCursor = 0
+  function resetAudio() {
+    stopPlayback()
+    decoderWorker?.terminate()
+    decoderWorker = null
+  }
+
+  function newDecoder() {
+    resetAudio()
+    const w = new Worker('/opus/decoderWorker.min.js')
+    w.onmessage = (e: MessageEvent) => {
+      const channels = e.data as Float32Array[] | null
+      if (!channels || channels.length === 0 || !audioCtx || !outAnalyser) return
+      const frames = channels[0]?.length ?? 0
+      if (frames === 0) return
+      const buf = audioCtx.createBuffer(channels.length, frames, audioCtx.sampleRate)
+      for (let c = 0; c < channels.length; c++) buf.copyToChannel(channels[c]! as Float32Array<ArrayBuffer>, c)
+      const node = audioCtx.createBufferSource()
+      node.buffer = buf
+      node.connect(outAnalyser)
+      outAnalyser.connect(audioCtx.destination)
+      const startAt = Math.max(audioCtx.currentTime, playCursor)
+      node.start(startAt)
+      playCursor = startAt + buf.duration
+      activeSources.push(node)
+      node.onended = () => { activeSources = activeSources.filter(n => n !== node) }
+    }
+    w.postMessage({
+      command: 'init',
+      decoderSampleRate: 24000,
+      outputBufferSampleRate: audioCtx!.sampleRate,
+      resampleQuality: 0,
+      numberOfChannels: 1,
+      bufferLength: 4096
+    })
+    decoderWorker = w
+  }
+
+  function decodeOpus(bytes: Uint8Array) {
+    if (!decoderWorker) newDecoder()
+    decoderWorker!.postMessage({ command: 'decode', pages: bytes }, [bytes.buffer])
   }
 
   function handleEvent(ev: { type: string, delta?: string, audio?: string }) {
@@ -130,19 +179,21 @@ export function useUnmute() {
         break
       case 'response.created':
         state.value = 'thinking'
+        newDecoder() // fresh decoder per assistant turn (also stops prior playback)
         break
       case 'response.text.delta':
         if (ev.delta) pushDelta('assistant', ev.delta)
         break
       case 'response.audio.delta':
         state.value = 'speaking'
-        if (ev.delta) playOpus(fromB64(ev.delta))
+        if (ev.delta) decodeOpus(fromB64(ev.delta))
         break
       case 'response.audio.done':
         state.value = 'idle'
+        decoderWorker?.postMessage({ command: 'done' }) // flush the tail
         break
       case 'unmute.interrupted_by_vad':
-        flushPlayback()
+        resetAudio() // barge-in: stop speaking immediately
         state.value = 'listening'
         break
     }
@@ -150,6 +201,7 @@ export function useUnmute() {
 
   function stop() {
     recorder?.stop().catch(() => {})
+    resetAudio()
     ws?.close()
     audioCtx?.close()
     micStream?.getTracks().forEach(t => t.stop())
