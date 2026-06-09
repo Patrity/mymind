@@ -161,20 +161,27 @@ export function useUnmute() {
   }
 
   // ---- assistant audio playback -------------------------------------------
-  // ONE persistent decoder for the whole session (recreating it per turn — or
-  // sending it `done` — leaves later turns silent). Pages stream in as Ogg/Opus;
-  // the worker yields Float32 PCM which we schedule gaplessly. `muted` drops any
-  // PCM that decodes after a barge-in / turn switch so stale audio never plays.
+  // One decoder per assistant turn, created lazily on the turn's first audio and
+  // finalized with `done` at end-of-turn to flush its tail (prevents the tail
+  // "click" from a dropped last chunk). Pages stream in as Ogg/Opus; the worker
+  // yields Float32 PCM which we schedule gaplessly. `muted` drops any PCM that
+  // decodes after a barge-in / turn switch so stale audio never plays.
   // Kyutai's TTS has no speed param, so we nudge playback ~10% faster client-side.
   // (playbackRate also raises pitch slightly — minor and acceptable at 1.1×.)
   const PLAYBACK_RATE = 1.1
   let decoderWorker: Worker | null = null
+  let decoderDone = false // current decoder was flushed at end-of-turn; replace it next turn
   let playCursor = 0
   let activeSources: AudioBufferSourceNode[] = []
   let muted = false
 
   function ensureDecoder() {
-    if (decoderWorker || !audioCtx) return
+    if (!audioCtx) return
+    if (decoderWorker && !decoderDone) return
+    // The previous decoder was finalized with `done` (to flush its tail). A
+    // finalized decoder won't decode again, so replace it for the new turn.
+    if (decoderWorker) { decoderWorker.terminate(); decoderWorker = null }
+    decoderDone = false
     const w = new Worker('/opus/decoderWorker.min.js')
     w.onmessage = (e: MessageEvent) => {
       const channels = e.data as Float32Array[] | null
@@ -244,9 +251,19 @@ export function useUnmute() {
         break
       case 'response.audio.done':
         state.value = 'idle'
+        // Flush the decoder's held last chunk so the sentence plays to its natural
+        // end instead of cutting off mid-waveform (the tail "click"). The decoder
+        // is finalized by this and gets replaced on the next turn's first audio.
+        if (decoderWorker && !decoderDone) {
+          decoderWorker.postMessage({ command: 'done' })
+          decoderDone = true
+        }
         break
       case 'unmute.interrupted_by_vad':
         stopPlayback() // barge-in: cut the assistant off immediately
+        decoderWorker?.terminate() // drop the cut-off turn's decoder; next turn makes a fresh one
+        decoderWorker = null
+        decoderDone = false
         state.value = 'listening'
         break
     }
