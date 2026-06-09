@@ -165,6 +165,9 @@ export function useUnmute() {
   // sending it `done` — leaves later turns silent). Pages stream in as Ogg/Opus;
   // the worker yields Float32 PCM which we schedule gaplessly. `muted` drops any
   // PCM that decodes after a barge-in / turn switch so stale audio never plays.
+  // Kyutai's TTS has no speed param, so we nudge playback ~10% faster client-side.
+  // (playbackRate also raises pitch slightly — minor and acceptable at 1.1×.)
+  const PLAYBACK_RATE = 1.1
   let decoderWorker: Worker | null = null
   let playCursor = 0
   let activeSources: AudioBufferSourceNode[] = []
@@ -182,10 +185,11 @@ export function useUnmute() {
       for (let c = 0; c < channels.length; c++) buf.copyToChannel(channels[c]! as Float32Array<ArrayBuffer>, c)
       const node = audioCtx.createBufferSource()
       node.buffer = buf
+      node.playbackRate.value = PLAYBACK_RATE
       node.connect(outAnalyser)
       const startAt = Math.max(audioCtx.currentTime, playCursor)
       node.start(startAt)
-      playCursor = startAt + buf.duration
+      playCursor = startAt + buf.duration / PLAYBACK_RATE
       activeSources.push(node)
       node.onended = () => { activeSources = activeSources.filter(n => n !== node) }
     }
