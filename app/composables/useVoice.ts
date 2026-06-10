@@ -209,6 +209,18 @@ export function useVoice() {
       desiredVoice = { provider, voice }
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', provider, voice }))
     },
+    /**
+     * Typed turn through the voice loop: injected server-side right after STT,
+     * so the agent animates and answers aloud. Returns false when the WS isn't
+     * open (caller should fall back to the text-only chat endpoint).
+     */
+    sendText: (text: string): boolean => {
+      const t = text.trim()
+      if (!t || ws?.readyState !== WebSocket.OPEN) return false
+      if (isPlaying()) { stopPlayback(); events.emit({ type: 'bargein' }) } // typed barge-in
+      ws.send(JSON.stringify({ type: 'text', text: t }))
+      return true
+    },
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,
     onVizEvent: events.on,

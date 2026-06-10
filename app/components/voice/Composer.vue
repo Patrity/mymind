@@ -3,7 +3,13 @@
 import { textStreamToTranscript } from '~/composables/useTextChat'
 import type { TranscriptEntry } from '~/composables/useVoice'
 
-const props = defineProps<{ entries: TranscriptEntry[] }>()
+const props = defineProps<{
+  entries: TranscriptEntry[]
+  // Voice-loop injection: when connected, typed turns go over the voice WS
+  // (post-STT) so the agent animates and replies aloud.
+  connected?: boolean
+  sendText?: (t: string) => boolean
+}>()
 const text = ref('')
 const busy = ref(false)
 
@@ -11,6 +17,9 @@ async function send() {
   const q = text.value.trim()
   if (!q || busy.value) return
   text.value = ''
+  // Voice path: the server echoes the user transcript and streams the reply
+  // (text + audio + states) over the WS — nothing to await or append here.
+  if (props.connected && props.sendText?.(q)) return
   busy.value = true
   // Use a local alias so vue/no-mutating-props is not triggered; the parent
   // intentionally passes a reactive array by reference for streaming appends.

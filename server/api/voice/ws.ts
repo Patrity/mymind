@@ -1,12 +1,13 @@
 // server/api/voice/ws.ts
-import { handleUtterance } from '../../lib/voice/orchestrator'
+import { handleUtterance, handleTurn, type VoiceEvent } from '../../lib/voice/orchestrator'
 import { classifyFrame } from '../../lib/voice/frames'
 import { makeStt, makeTts, defaultVoice, type TtsName } from '../../lib/voice/providers'
 import { VOICE_TUNING } from '../../lib/voice/tuning'
 import type { AgentMessage } from '../../lib/agent/run'
 
-// Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} | {type:'voice',provider,voice}
-// Server→client: binary = audio bytes | text JSON = transcript/tool/state events.
+// Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
+//   {type:'voice',provider,voice} | {type:'text',text} (typed turn, injected post-STT)
+// Server→client: binary = audio bytes | text JSON = transcript/tool/state/error events.
 interface ConnState { history: AgentMessage[]; ac: AbortController | null; provider: TtsName; voice: string; lock: Promise<void> }
 const conns = new WeakMap<object, ConnState>()
 
@@ -27,23 +28,32 @@ export default defineWebSocketHandler({
     // Classify by CONTENT, not transport type: crossws@0.3.5's node adapter drops
     // the isBinary flag, so JSON control frames arrive as Buffers (see frames.ts).
     const frame = classifyFrame(typeof message.rawData === 'string' ? message.rawData : message.uint8Array())
+    if (frame.kind === 'ignore') return
+    // A turn closure reads s.history at EXECUTION time (under the lock), so
+    // back-to-back turns see each other's appended messages.
+    let turn: ((signal: AbortSignal, emit: (e: VoiceEvent) => void) => Promise<AgentMessage[]>) | null = null
     if (frame.kind === 'control') {
       const msg = frame.msg
-      if (msg.type === 'interrupt') s.ac?.abort()
-      else if (msg.type === 'voice') { s.provider = msg.provider as TtsName; s.voice = msg.voice as string }
-      return
+      if (msg.type === 'interrupt') { s.ac?.abort(); return }
+      if (msg.type === 'voice') { s.provider = msg.provider as TtsName; s.voice = msg.voice as string; return }
+      if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
+        // Typed turn: inject post-STT — same agent loop, same TTS, same events.
+        const text = msg.text.trim()
+        turn = (signal, emit) => handleTurn(text, s.history, { tts: makeTts(s.provider), voice: s.voice, signal, emit })
+      } else {
+        return
+      }
+    } else {
+      const audio = frame.bytes
+      turn = (signal, emit) => handleUtterance(audio, s.history, { stt: makeStt(), tts: makeTts(s.provider), voice: s.voice, signal, emit })
     }
-    if (frame.kind === 'ignore') return
-    const audio = frame.bytes
     s.ac?.abort()
     s.ac = new AbortController()
     const ac = s.ac
+    const exec = turn
     const run = async () => {
       try {
-        s.history = await handleUtterance(audio, s.history, {
-          stt: makeStt(), tts: makeTts(s.provider), voice: s.voice, signal: ac.signal,
-          emit: (e) => { if (e.type === 'audio') peer.send(e.bytes); else peer.send(JSON.stringify(e)) }
-        })
+        s.history = await exec(ac.signal, (e) => { if (e.type === 'audio') peer.send(e.bytes); else peer.send(JSON.stringify(e)) })
       } catch (err) {
         if ((err as Error).name === 'AbortError') return
         // Surface pipeline failures to the client (error flash + message) instead

@@ -22,6 +22,8 @@ shipped:
   - "test/viz-choreographer.test.ts — 14 tests covering color lerp, shatter impulse + decay, disconnected derivation, assemble reset on connecting, ignite on WS open, sttFinal sparks consumed-once, mic attack > release, error decay, tool pulseRate."
   - "test/voice-messages.test.ts — 5 tests covering user/assistant transcripts, state mapping (including tool), playing-guard for idle, unknown messages."
   - "docs/wiki/voice-agent.md — updated to describe current visualizer architecture (cycle 19); WS protocol table corrected (transcript: text not delta; state: state not value; tool added)."
+shipped_acceptance_additions:
+  - "Typed input through the voice loop: server/lib/voice/orchestrator.ts split at the post-STT seam (handleTurn(userText,...) = everything after transcription; handleUtterance = STT → handleTurn). New WS frame {type:'text',text} runs handleTurn with the same per-connection history/abort/lock — typed turns animate the visualizer and answer with TTS voice. Client: useVoice.sendText() (with typed barge-in: stops playback + shatter), Composer prefers the WS path when connected, falls back to /api/agent/chat when not."
 deferred:
   - "Manual desktop + phone tuning pass — the feel-pass with Tony (desktop + LAN phone: connect, speak, barge-in, tool turn, disconnect/reconnect) is still pending as of the cycle-19 handover. Choreographer constants (ENERGY/SWIRL/MIC_ATTACK/MIC_RELEASE/SHATTER_DECAY/IGNITE_DECAY/ERROR_DECAY) and bloom strength/threshold in scene.ts are the tuning knobs — deliberately centralized for this purpose. See Task 8 step 2 of the plan."
   - "Visualizer settings UI (themes, particle density sliders) — cut by spec (§7 YAGNI). Palette and tiers are code-only."

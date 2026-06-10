@@ -99,6 +99,7 @@ The client (`useVoice.ts`) mirrors the `vad` / `turn` / `bargeIn` subset so thre
 | Binary | `ArrayBuffer` (WAV/PCM, RIFF) | Utterance audio to transcribe |
 | Text | `{type:'interrupt'}` | Barge-in: abort current turn |
 | Text | `{type:'voice', provider, voice}` | Switch TTS provider/voice |
+| Text | `{type:'text', text}` | Typed turn, injected post-STT (`handleTurn`) — same agent loop, TTS reply, and state events as speech |
 
 **Server → client**
 

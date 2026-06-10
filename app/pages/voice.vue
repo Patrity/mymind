@@ -115,7 +115,11 @@ const caption = computed(() => voice.transcript.value[voice.transcript.value.len
           :chips="activity.chips.value"
           @undo="activity.undo"
         />
-        <VoiceComposer :entries="voice.transcript.value" />
+        <VoiceComposer
+          :entries="voice.transcript.value"
+          :connected="voice.connected.value"
+          :send-text="voice.sendText"
+        />
       </template>
     </UDashboardPanel>
   </div>

@@ -11,8 +11,7 @@ export type VoiceEvent =
   | { type: 'audio'; bytes: Uint8Array }
   | { type: 'state'; state: 'thinking' | 'speaking' | 'tool' | 'idle' }
 
-export interface UtteranceDeps {
-  stt: SttProvider
+export interface TurnDeps {
   tts: TtsProvider
   voice: string
   signal: AbortSignal
@@ -20,9 +19,12 @@ export interface UtteranceDeps {
   runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; voice?: boolean }) => AsyncGenerator<AgentEvent>
 }
 
-/** One user turn: transcribe -> run the agent -> speak chunked replies. */
+export interface UtteranceDeps extends TurnDeps {
+  stt: SttProvider
+}
+
+/** One spoken user turn: transcribe, then run the shared turn pipeline. */
 export async function handleUtterance(audio: Uint8Array, history: AgentMessage[], deps: UtteranceDeps): Promise<AgentMessage[]> {
-  const run = deps.runAgent ?? realRunAgent
   let userText: string
   try {
     userText = await deps.stt.transcribe(audio, { language: VOICE_TUNING.stt.language, signal: deps.signal })
@@ -30,6 +32,16 @@ export async function handleUtterance(audio: Uint8Array, history: AgentMessage[]
     if ((err as Error).name === 'AbortError') return history
     throw err
   }
+  return handleTurn(userText, history, deps)
+}
+
+/**
+ * One user turn from already-known text — STT output or typed input injected
+ * post-STT. Typed messages get the identical state/transcript/audio event
+ * stream, so the client animates and answers aloud either way.
+ */
+export async function handleTurn(userText: string, history: AgentMessage[], deps: TurnDeps): Promise<AgentMessage[]> {
+  const run = deps.runAgent ?? realRunAgent
   if (!userText) return history
   deps.emit({ type: 'transcript', role: 'user', text: userText })
   const messages: AgentMessage[] = [...history, { role: 'user', content: userText }]
