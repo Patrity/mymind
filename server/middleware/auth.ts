@@ -3,8 +3,7 @@ import { useDb } from '../db'
 import { apiTokens } from '../db/schema'
 import { hashToken } from '../utils/api-token'
 
-// /api/agent/llm is keyless (Unmute) but guarded by a private-address check in the handler.
-const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i', '/api/agent/llm']
+const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i']
 
 export default defineEventHandler(async (event) => {
   const url = getRequestURL(event).pathname
