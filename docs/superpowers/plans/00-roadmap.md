@@ -1,7 +1,7 @@
 ---
 title: MyMind Master Roadmap
 status: active
-updated: 2026-06-02
+updated: 2026-06-09
 read_first: true
 ---
 
@@ -66,7 +66,8 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 | 14 | **In-app AI chat** — reasoning chat over docs/memories/projects/tasks via server-side tool-calling (reuses the MCP tool surface); cites sources, takes confirmed actions. Note: the shared agent core + text-chat endpoint (`/api/agent/chat`) shipped in cycle 17 — a full chat UI is what remains. | planned | — | — | — |
 | 15 | **Capture/OCR robustness** — explicit dedup (untagged-only) + transcription retry (backoff / manual / auto-on-recovery) + surface OCR-failed & ambiguous-project to the notification queue. | planned | — | — | — |
 | 16 | **CD → homelab Proxmox LXC** — Actions: ci → build image → deploy (pull-based / self-hosted runner / SSH). Migrate-on-deploy. | planned | — | — | — |
-| 17 | **Voice Agent ("Jarvis")** — `/voice` page; Unmute STT/TTS with barge-in re-pointed at a Nitro agent loop (`/api/agent/llm`, OpenAI-spec); shared tool registry (11 tools) used by voice, MCP, and future text-chat; Three.js reactor; universal undo. Subsumes cycle 14 agent core. | ✅ shipped | [spec](../specs/2026-06-08-voice-agent-jarvis-design.md) | [plan](2026-06-08-voice-agent-jarvis.md) | [handover](../../handovers/2026-06-08-voice-agent.md) |
+| 17 | **Voice Agent ("Jarvis")** — `/voice` page; Unmute STT/TTS with barge-in re-pointed at a Nitro agent loop (`/api/agent/llm`, OpenAI-spec); shared tool registry (11 tools) used by voice, MCP, and future text-chat; Three.js reactor; universal undo. Subsumes cycle 14 agent core. **Superseded by cycle 18.** | ✅ shipped | [spec](../specs/2026-06-08-voice-agent-jarvis-design.md) | [plan](2026-06-08-voice-agent-jarvis.md) | [handover](../../handovers/2026-06-08-voice-agent.md) |
+| 18 | **Voice Agent v2 (self-hosted, self-orchestrated)** — Replaced Unmute with a fully owned TS pipeline: Silero VAD + WAV barge-in (client), Nitro WS orchestrator, swappable OpenAI-spec STT (faster-whisper) + TTS (Kokoro/Chatterbox) providers, Vercel AI SDK `runAgent` core shared by voice + chat + cron. Unmute stack removed. | ✅ shipped | [spec](../specs/2026-06-09-voice-self-hosted-redesign-design.md) | — | [handover](../../handovers/2026-06-09-voice-v2.md) |
 
 > Also tracked in the backlog (not yet cycled): GitHub-commits→memory, session-summarization worker, image semantic search, video→webm, EXIF scrub, bridget data migration, and assorted tech-debt. See [`docs/BACKLOG.md`](../../BACKLOG.md).
 
