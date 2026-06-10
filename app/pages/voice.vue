@@ -4,10 +4,6 @@ definePageMeta({ title: 'Voice' })
 const voice = useVoice()
 const activity = useAgentActivity()
 
-// Reactor reads whichever analyser is active for the current state.
-const activeAnalyser = () =>
-  voice.state.value === 'speaking' ? voice.outAnalyser() : voice.micAnalyser()
-
 // Voice picker — fetched from same-origin proxy that aggregates both TTS providers.
 const { data: voiceList } = await useFetch('/api/voice/voices', {
   default: () => ({ voices: [] as { provider: string, voice: string }[] })
@@ -60,7 +56,10 @@ watch(selectedVoice, (val) => {
         <div class="relative flex items-center justify-center bg-elevated/20">
           <VoiceReactor
             :state="voice.state.value"
-            :analyser="activeAnalyser"
+            :connected="voice.connected.value"
+            :mic-analyser="voice.micAnalyser"
+            :out-analyser="voice.outAnalyser"
+            :on-viz-event="voice.onVizEvent"
           />
           <span class="absolute bottom-4 text-xs uppercase tracking-widest text-muted">
             {{ voice.state.value }}

@@ -1,119 +1,146 @@
 <!-- app/components/voice/Reactor.client.vue -->
 <script setup lang="ts">
-import * as THREE from 'three'
-import type { VoiceState } from '~/composables/useVoice'
+import { createScene, detectTier } from '../../lib/viz/scene'
+import { createCore } from '../../lib/viz/core'
+import { createRing } from '../../lib/viz/ring'
+import { createEffects } from '../../lib/viz/effects'
+import { createChoreographer } from '../../lib/viz/choreographer'
+import { BAR_COUNT } from '../../lib/viz/types'
+import type { VizEvent } from '../../lib/viz/types'
+import type { VoiceState } from '../../composables/useVoice'
 
 const props = defineProps<{
   state: VoiceState
-  analyser: () => AnalyserNode | null
+  connected: boolean
+  micAnalyser: () => AnalyserNode | null
+  outAnalyser: () => AnalyserNode | null
+  onVizEvent: (cb: (e: VizEvent) => void) => () => void
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
+const webglOk = ref(true)
 let raf = 0
-let renderer: THREE.WebGLRenderer | null = null
-let cleanup: (() => void) | null = null
 let cancelled = false
+let teardown: (() => void) | null = null
 
-// palette per state (kept here, not in CSS, since it's a GL material colour)
-const PALETTE: Record<VoiceState, number> = {
-  idle: 0x3b82f6, listening: 0x06b6d4, thinking: 0xf59e0b, speaking: 0x22d3ee,
-  connecting: 0x27457a, tool: 0xf59e0b
-}
-
-function init(el: HTMLDivElement) {
-  // Fall back to a non-zero size: the flex cell may not have laid out yet on the
-  // first frame, and a 0/0 aspect ratio produces NaN.
-  const w = el.clientWidth || 320
-  const h = el.clientHeight || 320
-  const scene = new THREE.Scene()
-  const camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 100)
-  camera.position.z = 5
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-  renderer.setSize(w, h)
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
-  el.appendChild(renderer.domElement)
-
-  // core
-  const core = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(1, 2),
-    new THREE.MeshStandardMaterial({ color: PALETTE.idle, emissive: PALETTE.idle, emissiveIntensity: 0.6, wireframe: true })
-  )
-  scene.add(core)
-
-  // orbiting node ring
-  const NODES = 48
-  const ringGeo = new THREE.BufferGeometry()
-  const positions = new Float32Array(NODES * 3)
-  for (let i = 0; i < NODES; i++) {
-    const a = (i / NODES) * Math.PI * 2
-    positions[i * 3] = Math.cos(a) * 2.2
-    positions[i * 3 + 1] = Math.sin(a) * 2.2
-    positions[i * 3 + 2] = 0
-  }
-  ringGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  const ring = new THREE.Points(ringGeo, new THREE.PointsMaterial({ color: PALETTE.idle, size: 0.08 }))
-  scene.add(ring)
-
-  scene.add(new THREE.AmbientLight(0xffffff, 0.4))
-  const pl = new THREE.PointLight(0xffffff, 1.2)
-  pl.position.set(3, 3, 5)
-  scene.add(pl)
-
-  const data = new Uint8Array(128)
-  function amplitude(): number {
-    const an = props.analyser()
-    if (!an) return 0
-    an.getByteFrequencyData(data as Uint8Array<ArrayBuffer>)
-    let sum = 0
-    for (let i = 0; i < data.length; i++) sum += data[i] ?? 0
-    return sum / data.length / 255 // 0..1
+function boot(el: HTMLDivElement) {
+  let scene: ReturnType<typeof createScene>
+  let core: ReturnType<typeof createCore>
+  let ring: ReturnType<typeof createRing>
+  let fx: ReturnType<typeof createEffects>
+  try {
+    const tier = detectTier()
+    scene = createScene(el, tier)
+    core = createCore(tier.particles)
+    ring = createRing()
+    fx = createEffects()
+    scene.scene.add(core.object, ring.object, fx.object)
+  } catch (err) {
+    // The visualizer is decorative — never let it take the voice page down.
+    console.error('[viz] init failed', err)
+    webglOk.value = false
+    return
   }
 
-  function frame() {
+  const choreo = createChoreographer()
+  const offEvents = props.onVizEvent(e => choreo.handleEvent(e))
+
+  const micData = new Uint8Array(128) // analyser fftSize 256 → 128 bins
+  const outData = new Uint8Array(128)
+  const micLevels = new Float32Array(BAR_COUNT)
+
+  // FPS watchdog: sustained slow frames trigger two one-way quality steps.
+  let degradeStep = 0
+  let slowSince = 0
+
+  let last = performance.now()
+  let t = 0
+  const frame = (now: number) => {
     raf = requestAnimationFrame(frame)
-    const amp = amplitude()
-    const color = new THREE.Color(PALETTE[props.state])
-    ;(core.material as THREE.MeshStandardMaterial).color.lerp(color, 0.1)
-    ;(core.material as THREE.MeshStandardMaterial).emissive.lerp(color, 0.1)
-    ;(ring.material as THREE.PointsMaterial).color.lerp(color, 0.1)
-    const scale = 1 + amp * 0.6
-    core.scale.setScalar(scale)
-    core.rotation.y += 0.004 + amp * 0.05
-    core.rotation.x += 0.002
-    ring.rotation.z += 0.003 + amp * 0.04
-    renderer!.render(scene, camera)
-  }
-  frame()
+    const dt = Math.min(0.1, (now - last) / 1000)
+    last = now
+    t += dt
 
-  const onResize = () => {
-    const nw = el.clientWidth || 320
-    const nh = el.clientHeight || 320
-    camera.aspect = nw / nh
-    camera.updateProjectionMatrix()
-    renderer!.setSize(nw, nh)
-  }
-  window.addEventListener('resize', onResize)
+    const mic = props.micAnalyser()
+    if (mic) {
+      mic.getByteFrequencyData(micData as Uint8Array<ArrayBuffer>)
+      for (let i = 0; i < BAR_COUNT; i++) {
+        micLevels[i] = (micData[Math.floor(i * micData.length / BAR_COUNT)] ?? 0) / 255
+      }
+    } else {
+      micLevels.fill(0)
+    }
+    let outLevel = 0
+    const out = props.outAnalyser()
+    if (out) {
+      out.getByteFrequencyData(outData as Uint8Array<ArrayBuffer>)
+      let sum = 0
+      for (let i = 0; i < outData.length; i++) sum += outData[i] ?? 0
+      outLevel = sum / outData.length / 255
+    }
 
-  cleanup = () => {
+    const d = choreo.update({ state: props.state, connected: props.connected, micLevels, outLevel }, dt)
+    core.update(d, t, dt)
+    ring.update(d, t, dt)
+    fx.update(d, t, dt)
+    scene.render()
+
+    if (dt > 1 / 45) { if (!slowSince) slowSince = now }
+    else slowSince = 0
+    if (slowSince && now - slowSince > 3000 && degradeStep < 2) {
+      degradeStep++
+      if (degradeStep === 1) scene.degrade()
+      else core.setDrawRange(0.5)
+      slowSince = 0
+    }
+  }
+  raf = requestAnimationFrame(frame)
+
+  const ro = new ResizeObserver(() => {
+    scene.setSize(el.clientWidth || 320, el.clientHeight || 320)
+  })
+  ro.observe(el)
+
+  const onVis = () => {
     cancelAnimationFrame(raf)
-    window.removeEventListener('resize', onResize)
-    core.geometry.dispose()
-    ;(core.material as THREE.MeshStandardMaterial).dispose()
-    ringGeo.dispose()
-    ;(ring.material as THREE.PointsMaterial).dispose()
-    renderer?.dispose()
-    el.innerHTML = ''
+    if (!document.hidden && !cancelled) {
+      last = performance.now()
+      raf = requestAnimationFrame(frame)
+    }
+  }
+  document.addEventListener('visibilitychange', onVis)
+
+  scene.onContextLost(() => {
+    // GPU reset (driver hiccup, mobile background) — rebuild the whole scene.
+    teardown?.()
+    if (!cancelled && host.value) boot(host.value)
+  })
+
+  teardown = () => {
+    cancelAnimationFrame(raf)
+    ro.disconnect()
+    document.removeEventListener('visibilitychange', onVis)
+    offEvents()
+    core.dispose()
+    ring.dispose()
+    fx.dispose()
+    scene.dispose()
+    teardown = null
   }
 }
 
 onMounted(() => {
   // The template ref can be null on the first tick under the client-component
-  // wrapper; poll a few frames for it rather than throwing on `host.value!`.
+  // wrapper; poll a few frames rather than throwing on `host.value!`.
   let tries = 0
   const wait = () => {
     if (cancelled) return
     const el = host.value
-    if (el) { init(el); return }
+    if (el) {
+      if (!document.createElement('canvas').getContext('webgl2')) { webglOk.value = false; return }
+      boot(el)
+      return
+    }
     if (tries++ < 120) raf = requestAnimationFrame(wait)
   }
   wait()
@@ -122,13 +149,15 @@ onMounted(() => {
 onUnmounted(() => {
   cancelled = true
   cancelAnimationFrame(raf)
-  cleanup?.()
+  teardown?.()
 })
 </script>
 
 <template>
-  <div
-    ref="host"
-    class="size-full min-h-[320px]"
-  />
+  <div ref="host" class="relative size-full min-h-[320px]">
+    <!-- No-WebGL fallback: a quiet pulse so the page still reads as alive -->
+    <div v-if="!webglOk" class="absolute inset-0 flex items-center justify-center">
+      <div class="size-24 animate-pulse rounded-full bg-primary/30" />
+    </div>
+  </div>
 </template>
