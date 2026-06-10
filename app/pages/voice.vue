@@ -16,6 +16,10 @@ watch(selectedVoice, (val) => {
   const [p, vc] = val.split('|') as [string, string]
   voice.setVoice(p, vc)
 })
+
+// Caption over the canvas: the message currently being spoken/typed. On small
+// screens (transcript hidden) this is the only live text.
+const caption = computed(() => voice.transcript.value[voice.transcript.value.length - 1] ?? null)
 </script>
 
 <template>
@@ -52,7 +56,7 @@ watch(selectedVoice, (val) => {
     </template>
 
     <template #body>
-      <div class="grid h-full grid-rows-[1fr_auto] gap-0 lg:grid-cols-[1.2fr_1fr] lg:grid-rows-1">
+      <div class="grid h-full grid-cols-1 gap-0 lg:grid-cols-[2fr_1fr]">
         <div class="relative flex items-center justify-center bg-elevated/20">
           <VoiceReactor
             :state="voice.state.value"
@@ -61,6 +65,15 @@ watch(selectedVoice, (val) => {
             :out-analyser="voice.outAnalyser"
             :on-viz-event="voice.onVizEvent"
           />
+          <div
+            v-if="caption"
+            class="absolute inset-x-4 bottom-12 z-10 mx-auto w-fit max-w-2xl rounded-lg bg-elevated px-4 py-2.5 shadow-lg"
+          >
+            <span class="text-xs font-semibold uppercase tracking-wider text-muted">
+              {{ caption.role === 'user' ? 'You' : 'MyMind' }}
+            </span>
+            <p class="mt-0.5 line-clamp-3 text-sm text-highlighted">{{ caption.text }}</p>
+          </div>
           <span class="absolute bottom-4 text-xs uppercase tracking-widest text-muted">
             {{ voice.state.value }}
           </span>
@@ -72,7 +85,7 @@ watch(selectedVoice, (val) => {
           />
         </div>
 
-        <div class="flex min-h-0 flex-col border-l border-default">
+        <div class="hidden min-h-0 flex-col border-l border-default lg:flex">
           <VoiceTranscript
             class="flex-1 min-h-0"
             :entries="voice.transcript.value"

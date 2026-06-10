@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createChoreographer, type VizInputs } from '../app/lib/viz/choreographer'
-import { BAR_COUNT, PALETTE } from '../app/lib/viz/types'
+import { BAR_COUNT } from '../app/lib/viz/types'
+import { PALETTE } from '../app/lib/viz/tuning'
 
 const DT = 1 / 60
 

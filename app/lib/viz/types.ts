@@ -33,16 +33,4 @@ export interface Directives {
   dim: number          // 0..1 overall dimming (idle/disconnected)
 }
 
-function hex(h: number): [number, number, number] {
-  return [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255]
-}
-
-export const PALETTE: Record<VizState, { core: [number, number, number]; ring: [number, number, number] }> = {
-  connecting: { core: hex(0x27457a), ring: hex(0x16233f) },
-  idle: { core: hex(0x3b82f6), ring: hex(0x1e3a5f) },
-  listening: { core: hex(0x3b82f6), ring: hex(0x22d3ee) },
-  thinking: { core: hex(0x8b5cf6), ring: hex(0x312e51) },
-  speaking: { core: hex(0x22d3ee), ring: hex(0x155e75) },
-  tool: { core: hex(0xf59e0b), ring: hex(0x78350f) },
-  disconnected: { core: hex(0x475569), ring: hex(0x1e293b) },
-}
+// State colors (PALETTE) and all other visual knobs live in ./tuning.ts.

@@ -1,6 +1,7 @@
 // Pure TS (no Three.js): consumes voice state + events + audio levels and
 // produces per-frame Directives. State changes are lerped (one deliberate hard cut: assemble resets to 0 when entering connecting).
-import { BAR_COUNT, PALETTE } from './types'
+import { BAR_COUNT } from './types'
+import { PALETTE } from './tuning'
 import type { VizState, VizEvent, Directives } from './types'
 
 export interface VizInputs {

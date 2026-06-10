@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+import { VIZ_TUNING } from './tuning'
 
 export interface QualityTier { particles: number; pixelRatioCap: number; bloomScale: number }
 
@@ -20,6 +21,8 @@ export interface VizScene {
   setSize: (w: number, h: number) => void
   /** One-way quality step: drops render resolution 25%. */
   degrade: () => void
+  /** Scroll-zoom: dolly the camera along z, clamped to tuning min/max. */
+  zoom: (deltaY: number) => void
   onContextLost: (cb: () => void) => void
   dispose: () => void
 }
@@ -29,8 +32,8 @@ export function createScene(el: HTMLElement, tier: QualityTier): VizScene {
   const w = el.clientWidth || 320
   const h = el.clientHeight || 320
   const scene = new THREE.Scene()
-  const camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 100)
-  camera.position.set(0, 0.6, 6.2)
+  const camera = new THREE.PerspectiveCamera(VIZ_TUNING.camera.fov, w / h, 0.1, 100)
+  camera.position.set(0, 0.6, VIZ_TUNING.camera.z)
   camera.lookAt(0, 0, 0)
 
   const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
@@ -44,9 +47,9 @@ export function createScene(el: HTMLElement, tier: QualityTier): VizScene {
   composer.addPass(new RenderPass(scene, camera))
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(w * tier.bloomScale, h * tier.bloomScale),
-    1.1,  // strength
-    0.55, // radius
-    0.12  // threshold — particles are dim-ish; let most of them bloom
+    VIZ_TUNING.bloom.strength,
+    VIZ_TUNING.bloom.radius,
+    VIZ_TUNING.bloom.threshold
   )
   composer.addPass(bloom)
 
@@ -76,6 +79,11 @@ export function createScene(el: HTMLElement, tier: QualityTier): VizScene {
       composer.setPixelRatio(ratio)
       composer.setSize(el.clientWidth || w, el.clientHeight || h)
       applyBloomScale(el.clientWidth || w, el.clientHeight || h)
+    },
+    zoom: (deltaY) => {
+      const c = VIZ_TUNING.camera
+      camera.position.z = Math.min(c.maxZ, Math.max(c.minZ, camera.position.z + deltaY * c.wheelSensitivity))
+      camera.lookAt(0, 0, 0)
     },
     onContextLost: (cb) => { lostCb = cb },
     dispose: () => {

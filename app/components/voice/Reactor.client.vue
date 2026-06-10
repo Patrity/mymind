@@ -130,6 +130,13 @@ function boot(el: HTMLDivElement) {
   }
   document.addEventListener('visibilitychange', onVis)
 
+  // Scroll-zoom: dolly the camera instead of scrolling the page.
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault()
+    scene!.zoom(e.deltaY)
+  }
+  el.addEventListener('wheel', onWheel, { passive: false })
+
   scene!.onContextLost(() => {
     // GPU reset (driver hiccup, mobile background) — rebuild the whole scene.
     teardown?.()
@@ -140,6 +147,7 @@ function boot(el: HTMLDivElement) {
     cancelAnimationFrame(raf)
     ro.disconnect()
     document.removeEventListener('visibilitychange', onVis)
+    el.removeEventListener('wheel', onWheel)
     offEvents()
     core!.dispose()
     ring!.dispose()

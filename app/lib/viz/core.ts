@@ -1,6 +1,7 @@
 // app/lib/viz/core.ts
 import * as THREE from 'three'
 import type { Directives } from './types'
+import { VIZ_TUNING } from './tuning'
 
 const VERT = /* glsl */ `
 uniform float uTime;
@@ -11,6 +12,7 @@ uniform float uAssemble;
 uniform float uIgnite;
 uniform float uDim;
 uniform float uSize;
+uniform float uAlpha;
 attribute vec3 aScatter;
 attribute vec4 aSeed;
 varying float vAlpha;
@@ -40,7 +42,7 @@ void main() {
   gl_PointSize = uSize * (0.6 + aSeed.w) * (1.0 + uEnergy * 0.7) * (220.0 / -mv.z);
   // disconnected: slow, irregular per-particle flicker (uDim≈1); negligible at idle dim
   float flick = 1.0 - uDim * uDim * 0.35 * (0.5 + 0.5 * sin(uTime * (0.6 + aSeed.x * 0.9) + aSeed.y * 6.2831));
-  vAlpha = (1.0 - uDim * 0.75) * (0.3 + 0.7 * aSeed.w) * flick;
+  vAlpha = uAlpha * (1.0 - uDim * 0.75) * (0.3 + 0.7 * aSeed.w) * flick;
 }
 `
 
@@ -99,9 +101,9 @@ export function createCore(particles: number) {
       uTime: { value: 0 }, uEnergy: { value: 0 }, uSwirl: { value: 0 },
       uShatter: { value: 0 }, uAssemble: { value: 0 }, uIgnite: { value: 0 },
       uDim: { value: 0 },
-      // uSize is in device px at ~1 world unit from camera scale: with the camera at
-      // z≈6.2, gl_PointSize ≈ uSize * 35 → ~3-5px points. (220/-mv.z ≈ 35 here.)
-      uSize: { value: 0.1 },
+      // gl_PointSize ≈ uSize * (220 / cameraZ) device px — see VIZ_TUNING.core.
+      uSize: { value: VIZ_TUNING.core.pointSize },
+      uAlpha: { value: VIZ_TUNING.core.alpha },
       uColor: { value: new THREE.Color() }, uErrorFlash: { value: 0 },
     },
   })

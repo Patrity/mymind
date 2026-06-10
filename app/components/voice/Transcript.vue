@@ -8,15 +8,15 @@ const emit = defineEmits<{ undo: [chip: ToolChip] }>()
 </script>
 
 <template>
-  <div class="flex flex-col gap-3 overflow-y-auto p-4">
+  <div class="flex flex-col gap-2 overflow-y-auto p-3">
     <div
       v-for="(e, i) in entries"
       :key="i"
       class="flex flex-col gap-0.5"
     >
-      <span class="text-xs uppercase tracking-wide text-muted">{{ e.role === 'user' ? 'You' : 'MyMind' }}</span>
+      <span class="text-[10px] uppercase tracking-wide text-muted">{{ e.role === 'user' ? 'You' : 'MyMind' }}</span>
       <p
-        class="text-sm"
+        class="text-xs"
         :class="e.role === 'user' ? 'text-default' : 'text-highlighted'"
       >
         {{ e.text }}

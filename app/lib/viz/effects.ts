@@ -1,11 +1,12 @@
 // app/lib/viz/effects.ts
 import * as THREE from 'three'
 import type { Directives } from './types'
+import { VIZ_TUNING } from './tuning'
 
 const PULSES = 3
 const MAX_SPARKS = 160
 const SPARK_LIFE = 0.8
-const RING_RADIUS = 2.5
+const RING_RADIUS = VIZ_TUNING.ring.radius
 
 export function createEffects() {
   const group = new THREE.Group()

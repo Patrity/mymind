@@ -4,8 +4,9 @@ cycle: 19
 date: 2026-06-10
 status: shipped
 shipped:
-  - "app/lib/viz/types.ts — BAR_COUNT 96, VizState (7: connecting/idle/listening/thinking/speaking/tool/disconnected), VizEvent (bargein/error/sttFinal/disconnected), Directives (14 per-frame knobs), PALETTE."
-  - "app/lib/viz/emitter.ts — generic typed event emitter. 3 unit tests."
+  - "app/lib/viz/types.ts — BAR_COUNT 96, VizState (7: connecting/idle/listening/thinking/speaking/tool/disconnected), VizEvent (bargein/error/sttFinal/disconnected), Directives (14 per-frame knobs)."
+  - "app/lib/viz/tuning.ts — VIZ_TUNING (camera fov/z + scroll-zoom clamps + wheel sensitivity, bloom strength/radius/threshold, core pointSize/alpha, ring radius) + PALETTE (per-state core/ring colors; moved here from types.ts during acceptance). The one-stop visual tuning surface."
+  - "app/lib/viz/emitter.ts — generic typed event emitter. 4 unit tests."
   - "app/lib/viz/choreographer.ts — pure-TS per-frame state machine: lerped color/knob transitions, impulse decays (shatter/ignite/errorFlash), mic attack/release smoothing, sparks consumed-once, dt clamp 0.1, lazy prev init. 14 unit tests (test/viz-choreographer.test.ts)."
   - "app/lib/voice/messages.ts — pure WS-message → {state, delta, events} mapper; handles idle/thinking/speaking/tool states + sttFinal sparks + playing-guard for premature idle. 5 unit tests (test/voice-messages.test.ts)."
   - "server/lib/voice/orchestrator.ts — emits state:'tool' on tool-start, back to state:'thinking' after tool-result chip; widened VoiceEvent state union to include 'tool'. test/orchestrator.test.ts extended with tool-state test."
@@ -14,8 +15,9 @@ shipped:
   - "app/lib/viz/core.ts — GPU particle sphere, all motion in GLSL vertex shader (swirl vortex with flatten, breathe+burst+ignite, barge-in shatter via aScatter, connect assembly, slow irregular per-particle flicker when disconnected uDim≈1); uSize 0.1 (~3-5px points with distance scaling); additive glow discs; dt-scaled rotation."
   - "app/lib/viz/ring.ts — 96 InstancedMesh bars at radius 2.5; mic FFT heights; sympathetic ripple from outLevel; error shockwave sweep via per-instance color lerp with ERROR_RED."
   - "app/lib/viz/effects.ts — 3 amber tool pulse rings (dt-scaled phase, opacity decay); 160-slot pooled transcription sparks spawned at ring perimeter, moving inward toward core over 0.8s lifetime."
-  - "app/components/voice/Reactor.client.vue — thin mount; RAF loop samples mic FFT→96 bands + outLevel; FPS watchdog (EWMA dt, trips below ~27fps sustained 3s; step 1 scene.degrade(), step 2 core.setDrawRange(0.5)); ResizeObserver; visibilitychange pause; context-loss rebuild; WebGL2-check + CSS-pulse fallback; partial-init disposal on boot failure."
-  - "app/pages/voice.vue — passes state/connected/micAnalyser/outAnalyser/onVizEvent to Reactor; activeAnalyser helper removed."
+  - "app/components/voice/Reactor.client.vue — thin mount; RAF loop samples mic FFT→96 bands + outLevel; FPS watchdog (EWMA dt, trips below ~27fps sustained 3s; step 1 scene.degrade(), step 2 core.setDrawRange(0.5)); ResizeObserver; visibilitychange pause; context-loss rebuild; WebGL2-check + CSS-pulse fallback; partial-init disposal on boot failure; scroll-wheel zoom (dollies camera via scene.zoom, preventDefault on canvas)."
+  - "app/pages/voice.vue — passes state/connected/micAnalyser/outAnalyser/onVizEvent to Reactor; activeAnalyser helper removed. Acceptance additions: opaque caption over the canvas showing the current turn's message (bg-elevated, line-clamp-3); transcript pane hidden below lg breakpoint; canvas column widened to 2fr."
+  - "app/components/voice/Transcript.vue — acceptance: text sizes reduced (text-xs body, 10px labels), tighter spacing."
   - "test/viz-emitter.test.ts — 4 tests (delivery, multiple subscribers, unsubscribe, unsubscribe-during-emit safety)."
   - "test/viz-choreographer.test.ts — 14 tests covering color lerp, shatter impulse + decay, disconnected derivation, assemble reset on connecting, ignite on WS open, sttFinal sparks consumed-once, mic attack > release, error decay, tool pulseRate."
   - "test/voice-messages.test.ts — 5 tests covering user/assistant transcripts, state mapping (including tool), playing-guard for idle, unknown messages."

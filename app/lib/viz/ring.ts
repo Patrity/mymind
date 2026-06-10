@@ -2,8 +2,9 @@
 import * as THREE from 'three'
 import { BAR_COUNT } from './types'
 import type { Directives } from './types'
+import { VIZ_TUNING } from './tuning'
 
-const RADIUS = 2.5
+const RADIUS = VIZ_TUNING.ring.radius
 const ERROR_RED = new THREE.Color(1, 0.25, 0.25)
 
 export function createRing() {

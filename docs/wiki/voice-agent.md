@@ -138,7 +138,8 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 | `app/components/voice/Transcript.vue` | Live transcript + tool-action chips + Undo buttons |
 | `app/components/voice/Composer.vue` | Typed fallback input |
 | `app/components/voice/VoicePicker.vue` | Voice selector (fetches live catalog from providers) |
-| `app/lib/viz/types.ts` | `BAR_COUNT` (96), `VizState` (7), `VizEvent`, `Directives`, `PALETTE` |
+| `app/lib/viz/types.ts` | `BAR_COUNT` (96), `VizState` (7), `VizEvent`, `Directives` |
+| `app/lib/viz/tuning.ts` | **All headline visual knobs**: `VIZ_TUNING` (camera/zoom clamps, bloom, point size/alpha, ring radius) + `PALETTE` (per-state colors) |
 | `app/lib/viz/emitter.ts` | Generic typed event emitter used by `useVoice` |
 | `app/lib/viz/choreographer.ts` | Pure-TS per-frame state machine: voice state + events + audio levels → `Directives` |
 | `app/lib/viz/scene.ts` | WebGLRenderer + EffectComposer + UnrealBloomPass; quality tiers; `degrade()` |
@@ -150,6 +151,8 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 ## Voice Visualizer (cycle 19)
 
 The `/voice` page renders a live Three.js visualizer driven entirely by voice state and audio levels. The hard boundary is *signals in → pixels out*: `useVoice` never imports Three.js; the `lib/viz/` units never touch the WebSocket.
+
+UI: scroll-wheel over the canvas dollies the camera (clamped by `VIZ_TUNING.camera.minZ/maxZ`); an opaque caption over the canvas shows the current turn's message; the transcript pane is hidden below the `lg` breakpoint (the caption is the only live text on phones). Visual tuning — bloom, zoom, particle size/alpha, ring radius, per-state colors — lives in `app/lib/viz/tuning.ts`; motion timing (lerp speeds, impulse decays, energy/swirl/dim tables) in `choreographer.ts`.
 
 ### Signal flow
 
