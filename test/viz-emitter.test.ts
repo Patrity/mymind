@@ -10,6 +10,17 @@ describe('createEmitter', () => {
     expect(cb).toHaveBeenCalledWith({ type: 'bargein' })
   })
 
+  it('delivers to multiple subscribers', () => {
+    const em = createEmitter<number>()
+    const a = vi.fn()
+    const b = vi.fn()
+    em.on(a)
+    em.on(b)
+    em.emit(42)
+    expect(a).toHaveBeenCalledWith(42)
+    expect(b).toHaveBeenCalledWith(42)
+  })
+
   it('unsubscribe stops delivery', () => {
     const em = createEmitter<number>()
     const cb = vi.fn()

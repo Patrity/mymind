@@ -10,6 +10,8 @@ export type VizEvent =
   | { type: 'bargein' }
   | { type: 'error' }
   | { type: 'sttFinal'; chars: number }
+  // NOTE: the choreographer ignores this event — the disconnected VISUAL state is
+  // derived structurally from VizInputs.connected. Emitted for future consumers only.
   | { type: 'disconnected' }
 
 /** Per-frame render knobs produced by the choreographer, consumed by scene units. */
