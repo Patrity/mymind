@@ -1,15 +1,31 @@
 // server/api/voice/ws.ts
 import { handleUtterance, handleTurn, type VoiceEvent } from '../../lib/voice/orchestrator'
 import { classifyFrame } from '../../lib/voice/frames'
-import { makeStt, makeTts, defaultVoice, type TtsName } from '../../lib/voice/providers'
-import { VOICE_TUNING } from '../../lib/voice/tuning'
+import { sttFromModel, ttsFromModel } from '../../lib/voice/providers'
+import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
+import { withFailover } from '../../lib/ai/registry/resolve'
 import type { AgentMessage } from '../../lib/agent/run'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
-//   {type:'voice',provider,voice} | {type:'text',text} (typed turn, injected post-STT)
+//   {type:'voice',voice} | {type:'text',text} (typed turn, injected post-STT)
 // Server→client: binary = audio bytes | text JSON = transcript/tool/state/error events.
-interface ConnState { history: AgentMessage[]; ac: AbortController | null; provider: TtsName; voice: string; lock: Promise<void> }
+interface ConnState { history: AgentMessage[]; ac: AbortController | null; voice: string; lock: Promise<void> }
 const conns = new WeakMap<object, ConnState>()
+
+// STT/TTS resolved from the registry at call time, with per-usage failover.
+const stt: SttProvider = {
+  transcribe: (audio, opts) =>
+    withFailover('stt', m => sttFromModel(m).transcribe(audio, opts))
+}
+const tts: TtsProvider = {
+  synthesize: (text, opts) => ttsSynthFailover(text, opts)
+}
+
+async function* ttsSynthFailover(text: string, opts: { voice: string; signal?: AbortSignal }) {
+  // Pick the first reachable TTS provider, then stream from it.
+  const provider = await withFailover('tts', async (m) => ttsFromModel(m))
+  yield* provider.synthesize(text, opts)
+}
 
 export default defineWebSocketHandler({
   // Server middleware does NOT run for WS upgrades (crossws handles them directly),
@@ -20,8 +36,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    const provider = VOICE_TUNING.tts.provider
-    conns.set(peer, { history: [], ac: null, provider, voice: defaultVoice(provider), lock: Promise.resolve() })
+    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve() })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -35,17 +50,17 @@ export default defineWebSocketHandler({
     if (frame.kind === 'control') {
       const msg = frame.msg
       if (msg.type === 'interrupt') { s.ac?.abort(); return }
-      if (msg.type === 'voice') { s.provider = msg.provider as TtsName; s.voice = msg.voice as string; return }
+      if (msg.type === 'voice') { s.voice = msg.voice as string; return }
       if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
         // Typed turn: inject post-STT — same agent loop, same TTS, same events.
         const text = msg.text.trim()
-        turn = (signal, emit) => handleTurn(text, s.history, { tts: makeTts(s.provider), voice: s.voice, signal, emit })
+        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, signal, emit })
       } else {
         return
       }
     } else {
       const audio = frame.bytes
-      turn = (signal, emit) => handleUtterance(audio, s.history, { stt: makeStt(), tts: makeTts(s.provider), voice: s.voice, signal, emit })
+      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, signal, emit })
     }
     s.ac?.abort()
     s.ac = new AbortController()
