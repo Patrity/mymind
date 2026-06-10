@@ -16,7 +16,8 @@ let cancelled = false
 
 // palette per state (kept here, not in CSS, since it's a GL material colour)
 const PALETTE: Record<VoiceState, number> = {
-  idle: 0x3b82f6, listening: 0x06b6d4, thinking: 0xf59e0b, speaking: 0x22d3ee
+  idle: 0x3b82f6, listening: 0x06b6d4, thinking: 0xf59e0b, speaking: 0x22d3ee,
+  connecting: 0x27457a, tool: 0xf59e0b
 }
 
 function init(el: HTMLDivElement) {

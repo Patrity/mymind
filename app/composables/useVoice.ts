@@ -1,5 +1,9 @@
 // app/composables/useVoice.ts
-export type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking'
+import { createEmitter } from '../lib/viz/emitter'
+import { mapServerMessage } from '../lib/voice/messages'
+import type { VizEvent } from '../lib/viz/types'
+
+export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool'
 export interface TranscriptEntry { role: 'user' | 'assistant'; text: string }
 
 // Client mirror of the tunable knobs that affect capture/barge-in.
@@ -19,6 +23,8 @@ export function useVoice() {
   const connected = ref(false)
   const transcript = ref<TranscriptEntry[]>([])
   const error = ref<string | null>(null)
+
+  const events = createEmitter<VizEvent>()
 
   let ws: WebSocket | null = null
   // Last voice the user picked. Selecting before connecting (the natural UX) would
@@ -94,6 +100,7 @@ export function useVoice() {
   async function start() {
     if (ws) return
     error.value = null
+    state.value = 'connecting'
 
     // Dynamic import keeps onnxruntime-web out of the SSR bundle
     const { MicVAD } = await import('@ricky0123/vad-web')
@@ -110,25 +117,21 @@ export function useVoice() {
     ws.binaryType = 'arraybuffer'
     ws.onopen = () => {
       connected.value = true
+      state.value = 'idle'
       // Apply a voice chosen before the socket existed (and re-apply on reconnect).
       if (desiredVoice) ws!.send(JSON.stringify({ type: 'voice', ...desiredVoice }))
     }
-    ws.onclose = () => { connected.value = false; state.value = 'idle' }
-    ws.onerror = () => { error.value = 'WebSocket error' }
+    ws.onclose = () => { connected.value = false; state.value = 'idle'; events.emit({ type: 'disconnected' }) }
+    ws.onerror = () => { error.value = 'WebSocket error'; events.emit({ type: 'error' }) }
     ws.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         state.value = 'speaking'
         enqueueWav(e.data)
       } else {
-        const m = JSON.parse(e.data as string) as { type: string; role?: 'user' | 'assistant'; text?: string; state?: string }
-        if (m.type === 'transcript' && m.role && m.text) pushDelta(m.role, m.text)
-        else if (m.type === 'state') {
-          // Ignore the server's premature 'idle' while audio is still playing —
-          // playWav's onended flips to idle when playback actually drains.
-          if (m.state === 'speaking') state.value = 'speaking'
-          else if (m.state === 'thinking') state.value = 'thinking'
-          else if (!isPlaying()) state.value = 'idle'
-        }
+        const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
+        if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
+        if (fx.state) state.value = fx.state
+        for (const ev of fx.events) events.emit(ev)
       }
     }
 
@@ -155,6 +158,7 @@ export function useVoice() {
         if (TUNING.bargeInEnabled && isPlaying()) {
           stopPlayback()
           ws?.send(JSON.stringify({ type: 'interrupt' }))
+          events.emit({ type: 'bargein' })
         }
         state.value = 'listening'
       },
@@ -195,6 +199,7 @@ export function useVoice() {
     },
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,
+    onVizEvent: events.on,
   }
 }
 
