@@ -11,10 +11,10 @@ export const VIZ_TUNING = {
     z: 9, // start distance — bigger = more zoomed out
     minZ: 4.5, // scroll-zoom clamp (closest)
     maxZ: 16, // scroll-zoom clamp (farthest)
-    wheelSensitivity: 0.004, // world units per wheel deltaY pixel
+    wheelSensitivity: 0.008, // world units per wheel deltaY pixel
   },
   bloom: {
-    strength: 0.45, // >1 blows the additive core out to a white blob
+    strength: 0.3, // >1 blows the additive core out to a white blob
     radius: 0.5,
     threshold: 0.3, // only the brightest pixels bloom
   },
@@ -24,6 +24,11 @@ export const VIZ_TUNING = {
   },
   ring: {
     radius: 2.5, // world units from center to the mic bars
+  },
+  lightning: {
+    rate: 22, // bolts per second at full thinking intensity
+    brightness: 1, // bolt color multiplier (additive — bloom amplifies it)
+    jag: 0.18, // jitter amplitude as a fraction of arc length
   },
 } as const
 

@@ -4,6 +4,7 @@ import { createScene, detectTier } from '../../lib/viz/scene'
 import { createCore } from '../../lib/viz/core'
 import { createRing } from '../../lib/viz/ring'
 import { createEffects } from '../../lib/viz/effects'
+import { createLightning } from '../../lib/viz/lightning'
 import { createChoreographer } from '../../lib/viz/choreographer'
 import { BAR_COUNT } from '../../lib/viz/types'
 import type { VizEvent } from '../../lib/viz/types'
@@ -28,16 +29,19 @@ function boot(el: HTMLDivElement) {
   let core: ReturnType<typeof createCore> | undefined
   let ring: ReturnType<typeof createRing> | undefined
   let fx: ReturnType<typeof createEffects> | undefined
+  let bolts: ReturnType<typeof createLightning> | undefined
   try {
     const tier = detectTier()
     scene = createScene(el, tier)
     core = createCore(tier.particles)
     ring = createRing()
     fx = createEffects()
-    scene.scene.add(core.object, ring.object, fx.object)
+    bolts = createLightning()
+    scene.scene.add(core.object, ring.object, fx.object, bolts.object)
   } catch (err) {
     // The visualizer is decorative — never let it take the voice page down.
     console.error('[viz] init failed', err)
+    bolts?.dispose()
     fx?.dispose()
     ring?.dispose()
     core?.dispose()
@@ -91,6 +95,9 @@ function boot(el: HTMLDivElement) {
       core!.update(d, t, dt)
       ring!.update(d, t, dt)
       fx!.update(d, t, dt)
+      // bolts live inside the core cloud — keep them rotating with it
+      bolts!.object.rotation.copy(core!.object.rotation)
+      bolts!.update(d, t, dt)
       scene!.render()
 
       dtAvg += (dt - dtAvg) * 0.05 // ~smooth over the last couple seconds of frames
@@ -149,6 +156,7 @@ function boot(el: HTMLDivElement) {
     document.removeEventListener('visibilitychange', onVis)
     el.removeEventListener('wheel', onWheel)
     offEvents()
+    bolts!.dispose()
     core!.dispose()
     ring!.dispose()
     fx!.dispose()

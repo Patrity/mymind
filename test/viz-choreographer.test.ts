@@ -105,6 +105,13 @@ describe('choreographer', () => {
     expect(run(c, inputs(), 200).dim).toBeCloseTo(0.35, 1)                        // idle
   })
 
+  it('neural lightning fires while thinking, simmers during tool, off when idle', () => {
+    const c = createChoreographer()
+    expect(run(c, inputs({ state: 'thinking' }), 120).firing).toBeGreaterThan(0.9)
+    expect(run(c, inputs({ state: 'tool' }), 120).firing).toBeGreaterThan(0.2)
+    expect(run(c, inputs({ state: 'idle' }), 120).firing).toBeLessThan(0.1)
+  })
+
   it('caps sparks at SPARKS_MAX for long transcripts', () => {
     const c = createChoreographer()
     c.handleEvent({ type: 'sttFinal', chars: 10_000 })

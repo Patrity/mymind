@@ -28,6 +28,7 @@ export interface Directives {
   ringLevels: Float32Array // BAR_COUNT smoothed 0..1 FFT bands
   outLevel: number     // smoothed playback amplitude 0..1
   errorFlash: number   // error impulse, decays to 0
+  firing: number       // 0..1 neural-lightning intensity (thinking/tool)
   sparks: number       // spark particles to spawn THIS frame (consumed)
   pulseRate: number    // tool pulses per second (0 = off)
   dim: number          // 0..1 overall dimming (idle/disconnected)

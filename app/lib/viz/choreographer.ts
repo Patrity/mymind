@@ -37,6 +37,10 @@ const SWIRL: Record<VizState, number> = {
 const DIM: Record<VizState, number> = {
   connecting: 0.3, idle: 0.35, listening: 0, thinking: 0, speaking: 0, tool: 0, disconnected: 1,
 }
+// neural lightning: full storm while reasoning, a simmer while a tool runs
+const FIRING: Record<VizState, number> = {
+  connecting: 0, idle: 0, listening: 0, thinking: 1, speaking: 0, tool: 0.35, disconnected: 0,
+}
 
 function approach(current: number, target: number, speed: number, dt: number): number {
   return current + (target - current) * (1 - Math.exp(-speed * dt))
@@ -55,7 +59,7 @@ export function createChoreographer() {
     ringColor: [...PALETTE.connecting.ring],
     energy: 0, swirl: 0, shatter: 0, ignite: 0, assemble: 0,
     micMix: 0, ringLevels: new Float32Array(BAR_COUNT), outLevel: 0,
-    errorFlash: 0, sparks: 0, pulseRate: 0, dim: 0,
+    errorFlash: 0, firing: 0, sparks: 0, pulseRate: 0, dim: 0,
   }
   let prev: VizState | null = null
   let pendingSparks = 0
@@ -98,6 +102,7 @@ export function createChoreographer() {
     d.swirl = approach(d.swirl, SWIRL[s], KNOB_SPEED, dt)
     d.dim = approach(d.dim, DIM[s], KNOB_SPEED, dt)
     d.micMix = approach(d.micMix, s === 'listening' ? 1 : 0, KNOB_SPEED, dt)
+    d.firing = approach(d.firing, FIRING[s], KNOB_SPEED, dt)
     d.assemble = approach(
       d.assemble,
       s === 'disconnected' ? 0.5 : 1, // disconnected: half-sagged sphere
