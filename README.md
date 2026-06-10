@@ -1,6 +1,6 @@
 # MyMind
 
-**A self-hosted "second brain" that's AI-native and agent-accessible.** Notes, documents, tasks, images, clipboard, and memory — in one place, running on my own hardware, wired into my local LLMs, and exposed to my coding agents over MCP.
+**A self-hosted "second brain" that's AI-native and agent-accessible.** Notes, documents, tasks, images, clipboard, memory — and a voice agent you can just *talk to* — in one place, running on my own hardware, wired into my local LLMs, and exposed to my coding agents over MCP.
 
 I built this for me. It's the single front door to everything I'd otherwise scatter across a dozen apps: a Markdown knowledge base, a ShareX image host, a kanban, a device-sync clipboard, and a memory system that turns my AI coding sessions into durable, searchable notes. It's also a portfolio piece — and very much a living project I'm going to keep growing.
 
@@ -33,8 +33,11 @@ One **⌘K command palette** searches across *everything* — documents, memorie
 ### 🧠 Memory — your AI sessions become durable knowledge
 Claude Code / Hermes hooks stream session transcripts in; a background job extracts **atomic, deduplicated memories** ("the user prefers pnpm", "this project uses Drizzle + pgvector") with confidence scores. High-confidence memories auto-file; the rest land in a review queue. Browse the raw transcripts too — token usage, tool calls, the works.
 
+### 🎙️ Voice — talk to your second brain
+A full hands-free agent, **100% self-hosted**: Silero VAD in the browser, faster-whisper STT and Kokoro/Chatterbox TTS on my rig, and the same agent core (with all its tools) in between. Barge-in works — interrupt it mid-sentence and it stops and listens. Typed messages run through the same loop and get spoken replies. The whole thing is fronted by a **GPU-particle reactor** (Three.js, 50k particles in a custom vertex shader) that breathes when idle, dances with your mic, collapses into a lightning-laced vortex while thinking, and erupts with the reply — plus a settings panel with a *live mic-probability meter* for tuning VAD sensitivity to your room.
+
 ### 🤖 An MCP server for your agents
-MyMind exposes ~10 tools over the Model Context Protocol — `search_memories`, `save_memory`, `search_docs`, `create_task`, `search/edit projects & tasks`. Point a coding agent at it and it can read your knowledge and write back to it, securely, with an API token.
+MyMind exposes 11 tools over the Model Context Protocol — `search_memories`, `save_memory`, `search_docs`, `create_task`, `search/edit projects & tasks`. Point a coding agent at it and it can read your knowledge and write back to it, securely, with an API token.
 
 ### 🖼️ Image host + quick capture
 A **ShareX/CleanShot-compatible uploader** (`POST /api/upload`) that auto-converts to WebP, runs **OCR + tag suggestions** via a local vision model, and serves public or private links. Quick Capture lets you paste/drag/snap a photo — including **transcribing handwritten notes into clean Markdown** with an inferred title.
@@ -51,24 +54,26 @@ A drag-and-drop kanban with projects/priorities; a **device-sync clipboard** (pa
 | ![Command palette](docs/screenshots/command-palette.png) **⌘K search across everything** | ![Gallery](docs/screenshots/gallery.png) **Image host + OCR tags** |
 | ![Kanban](docs/screenshots/tasks.png) **Tasks board** | ![Memories](docs/screenshots/memories.png) **Memory review** |
 | ![Sessions](docs/screenshots/sessions.png) **Session transcripts** | ![Clipboard](docs/screenshots/clipboard.png) **Device-sync clipboard** |
+| ![Voice reactor](docs/screenshots/voice.png) **Voice agent + particle reactor** | |
 
 ## How it works
 
 One **Nuxt 4** service does all of it — the web app (SPA), the HTTP API, and the MCP server, from a single deployable.
 
 ```
-   Browser (SPA)          ShareX / CleanShot        Claude Code / agents
-        │                        │                          │
-        ▼                        ▼                          ▼
+   Browser (SPA + mic)       ShareX / CleanShot        Claude Code / agents
+        │  ⇅ voice WS              │                          │
+        ▼                          ▼                          ▼
   ┌───────────────────────────────────────────────────────────────┐
   │                     Nuxt 4  ·  Nitro server                    │
-  │   web UI  ·  /api/* (upload, hooks, docs…)  ·  /api/mcp        │
+  │  web UI · /api/* (upload, hooks, docs…) · /api/voice/ws ·      │
+  │  /api/mcp · agent core (AI SDK runAgent: voice, chat, tools)   │
   └───────────────────────────────────────────────────────────────┘
         │                        │                          │
         ▼                        ▼                          ▼
   Postgres + pgvector      local AI rig (LAN)         object storage
   docs · memories ·     embeddings · vision/OCR ·     (local disk / S3)
-  tasks · sessions      reasoning · transcription
+  tasks · sessions      reasoning · STT · TTS
 ```
 
 - **Storage**: PostgreSQL + **pgvector** (HNSW) for hybrid search; content-addressed blob storage for images/files.
@@ -80,7 +85,7 @@ It was built deliberately, one system at a time — there's a full paper trail i
 
 ## Tech stack
 
-**Nuxt 4** · **Nuxt UI v4** · **Nitro** · **Drizzle ORM** · **PostgreSQL 16 + pgvector** · **better-auth** · **CodeMirror 6** · **Nuxt MDC** · **sharp** · **@modelcontextprotocol/sdk** · local **Qwen3** models (embeddings / vision / reasoning) via OpenAI-spec endpoints.
+**Nuxt 4** · **Nuxt UI v4** · **Nitro** · **Drizzle ORM** · **PostgreSQL 16 + pgvector** · **better-auth** · **CodeMirror 6** · **Nuxt MDC** · **sharp** · **@modelcontextprotocol/sdk** · **Vercel AI SDK** · **Three.js** (custom GLSL) · **Silero VAD** (`vad-web`) · local **Qwen3** models (embeddings / vision / reasoning) + **faster-whisper** STT + **Kokoro/Chatterbox** TTS via OpenAI-spec endpoints.
 
 ## Running it yourself
 
@@ -93,13 +98,15 @@ cp .env.example .env          # configure DB, auth, AI endpoints
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
+CI/CD is wired up too: every push runs the test suite, and pushes to `master` auto-deploy via a self-hosted GitHub Actions runner (see [`.github/workflows/`](.github/workflows/)).
+
 > Heads-up: the AI features expect OpenAI-compatible model endpoints (mine are local Qwen3 models). Point the `AI_*` env vars at any compatible provider — they're not hardcoded.
 
 ## Status & roadmap
 
-Actively built and in daily use. Eleven build cycles shipped so far (foundation → AI enrichment → capture/images → tasks → memory + MCP → clipboard, then a round of feedback-driven polish). The full status table and what's next live in [`docs/superpowers/plans/00-roadmap.md`](docs/superpowers/plans/00-roadmap.md).
+Actively built and in daily use. Nineteen build cycles shipped so far (foundation → AI enrichment → capture/images → tasks → memory + MCP → clipboard → feedback-driven polish → the self-hosted voice agent, its GPU-particle visualizer, and a CI/CD deploy pipeline). The full status table and what's next live in [`docs/superpowers/plans/00-roadmap.md`](docs/superpowers/plans/00-roadmap.md).
 
-On the radar: a session-summarization worker, GitHub-commit → memory, richer MDC components, and whatever else I decide my brain needs next.
+On the radar: a full text-chat UI on the agent core, streaming STT partials (live captions), a session-summarization worker, GitHub-commit → memory, and whatever else I decide my brain needs next.
 
 ## A note
 
