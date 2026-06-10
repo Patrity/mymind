@@ -1,4 +1,15 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
+import { createRequire } from 'node:module'
+import { dirname } from 'node:path'
+
+// Silero VAD (client barge-in) loads its worklet + ONNX model from `baseAssetPath`
+// and the onnxruntime-web WASM from `onnxWASMBasePath`. Under a bundler both default
+// to "/" / "./", so the files 404 unless we serve them. Resolve the package dirs
+// (robust under pnpm's nested layout) and expose them as static assets at /vad and /ort.
+const require_ = createRequire(import.meta.url)
+const vadAssetDir = dirname(require_.resolve('@ricky0123/vad-web/package.json')) + '/dist'
+const ortAssetDir = dirname(createRequire(require_.resolve('@ricky0123/vad-web/package.json')).resolve('onnxruntime-web'))
+
 export default defineNuxtConfig({
   modules: [
     '@nuxt/eslint',
@@ -81,6 +92,12 @@ export default defineNuxtConfig({
 
   nitro: {
     experimental: { tasks: true, websocket: true },
+    // Serve the Silero VAD assets (worklet + ONNX model) and onnxruntime-web WASM
+    // from the app origin so the client VAD can fetch them (see useVoice.ts asset paths).
+    publicAssets: [
+      { baseURL: 'vad', dir: vadAssetDir, maxAge: 60 * 60 * 24 * 30 },
+      { baseURL: 'ort', dir: ortAssetDir, maxAge: 60 * 60 * 24 * 30 }
+    ],
     scheduledTasks: {
       '*/5 * * * *': ['embed-documents'],
       '*/10 * * * *': ['enrich-input'],

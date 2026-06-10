@@ -21,6 +21,9 @@ export function useVoice() {
   const error = ref<string | null>(null)
 
   let ws: WebSocket | null = null
+  // Last voice the user picked. Selecting before connecting (the natural UX) would
+  // otherwise be lost — ws is null then, so we remember it and (re)send on open.
+  let desiredVoice: { provider: string; voice: string } | null = null
   let vad: { start: () => Promise<void>; destroy: () => Promise<void> } | null = null
   let audioCtx: AudioContext | null = null
   let micAnalyser: AnalyserNode | null = null
@@ -28,6 +31,12 @@ export function useVoice() {
   let vizStream: MediaStream | null = null
   let playCursor = 0
   let sources: AudioBufferSourceNode[] = []
+  // decodeAudioData resolves at different speeds per chunk, so decoding chunks
+  // concurrently lets a later chunk schedule ahead of an earlier one (reordered /
+  // skipped words). Serialize decode+schedule through a promise chain so chunks
+  // play in arrival order. `playEpoch` invalidates queued chunks after a barge-in.
+  let decodeChain: Promise<void> = Promise.resolve()
+  let playEpoch = 0
 
   function pushDelta(role: 'user' | 'assistant', delta: string) {
     const last = transcript.value[transcript.value.length - 1]
@@ -36,6 +45,8 @@ export function useVoice() {
   }
 
   function stopPlayback() {
+    playEpoch++ // invalidate any queued/in-flight decodes from the interrupted turn
+    decodeChain = Promise.resolve()
     for (const s of sources) {
       try { s.stop() } catch { /* already stopped */ }
       try { s.disconnect() } catch { /* already disconnected */ }
@@ -44,10 +55,26 @@ export function useVoice() {
     playCursor = 0
   }
 
-  async function playWav(bytes: ArrayBuffer) {
-    if (!audioCtx || !outAnalyser) return
+  // True while audio is actually playing or scheduled ahead. The server emits
+  // state:'idle' as soon as the agent finishes GENERATING, but the client has by
+  // then buffered the sentence WAVs into the future — so barge-in must key off real
+  // playback, not the server-driven state.value.
+  function isPlaying(): boolean {
+    return sources.length > 0 || (!!audioCtx && playCursor > audioCtx.currentTime + 0.02)
+  }
+
+  // Enqueue a chunk: decode + schedule run strictly after the previous chunk's,
+  // preserving arrival order. Stale chunks (superseded by a barge-in) are dropped.
+  function enqueueWav(bytes: ArrayBuffer) {
+    const epoch = playEpoch
+    decodeChain = decodeChain.then(() => playWav(bytes, epoch))
+  }
+
+  async function playWav(bytes: ArrayBuffer, epoch: number) {
+    if (!audioCtx || !outAnalyser || epoch !== playEpoch) return
     try {
       const buf = await audioCtx.decodeAudioData(bytes.slice(0))
+      if (epoch !== playEpoch) return // barge-in landed while decoding — drop it
       const node = audioCtx.createBufferSource()
       node.buffer = buf
       node.playbackRate.value = TUNING.playbackRate
@@ -56,7 +83,11 @@ export function useVoice() {
       node.start(at)
       playCursor = at + buf.duration / TUNING.playbackRate
       sources.push(node)
-      node.onended = () => { sources = sources.filter(s => s !== node) }
+      node.onended = () => {
+        sources = sources.filter(s => s !== node)
+        // Playback fully drained → reflect idle (the server already signalled done).
+        if (!isPlaying() && state.value === 'speaking') state.value = 'idle'
+      }
     } catch { /* skip undecodable */ }
   }
 
@@ -77,22 +108,37 @@ export function useVoice() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     ws = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
     ws.binaryType = 'arraybuffer'
-    ws.onopen = () => { connected.value = true }
+    ws.onopen = () => {
+      connected.value = true
+      // Apply a voice chosen before the socket existed (and re-apply on reconnect).
+      if (desiredVoice) ws!.send(JSON.stringify({ type: 'voice', ...desiredVoice }))
+    }
     ws.onclose = () => { connected.value = false; state.value = 'idle' }
     ws.onerror = () => { error.value = 'WebSocket error' }
     ws.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         state.value = 'speaking'
-        playWav(e.data)
+        enqueueWav(e.data)
       } else {
         const m = JSON.parse(e.data as string) as { type: string; role?: 'user' | 'assistant'; text?: string; state?: string }
         if (m.type === 'transcript' && m.role && m.text) pushDelta(m.role, m.text)
-        else if (m.type === 'state') state.value = m.state === 'speaking' ? 'speaking' : m.state === 'thinking' ? 'thinking' : 'idle'
+        else if (m.type === 'state') {
+          // Ignore the server's premature 'idle' while audio is still playing —
+          // playWav's onended flips to idle when playback actually drains.
+          if (m.state === 'speaking') state.value = 'speaking'
+          else if (m.state === 'thinking') state.value = 'thinking'
+          else if (!isPlaying()) state.value = 'idle'
+        }
       }
     }
 
     vad = await MicVAD.new({
       audioContext: audioCtx,
+      // Serve VAD worklet + ONNX model and onnxruntime-web WASM from our own origin
+      // (mapped in nuxt.config nitro.publicAssets). Without these, vad-web defaults to
+      // "/" and the assets 404 → the mic captures nothing.
+      baseAssetPath: '/vad/',
+      onnxWASMBasePath: '/ort/',
       getStream: async () => {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } })
         vizStream = stream
@@ -106,7 +152,7 @@ export function useVoice() {
       minSpeechMs: TUNING.minSpeechMs,
       redemptionMs: TUNING.redemptionMs,
       onSpeechStart: () => {
-        if (TUNING.bargeInEnabled && state.value === 'speaking') {
+        if (TUNING.bargeInEnabled && isPlaying()) {
           stopPlayback()
           ws?.send(JSON.stringify({ type: 'interrupt' }))
         }
@@ -143,7 +189,10 @@ export function useVoice() {
     error,
     start,
     stop,
-    setVoice: (provider: string, voice: string) => ws?.send(JSON.stringify({ type: 'voice', provider, voice })),
+    setVoice: (provider: string, voice: string) => {
+      desiredVoice = { provider, voice }
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', provider, voice }))
+    },
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,
   }

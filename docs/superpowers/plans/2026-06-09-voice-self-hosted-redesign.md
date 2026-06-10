@@ -240,9 +240,8 @@ function fakeFullStream(parts: any[]) {
 describe('runAgent', () => {
   it('maps fullStream text + tool parts to AgentEvents and ends with done', async () => {
     const streamText = vi.fn(() => fakeFullStream([
-      { type: 'text-delta', text: 'Hello ' },
-      { type: 'text-delta', text: 'Tony' },
-      { type: 'tool-result', toolName: 'create_task', output: { id: 't1' } },
+      { type: 'text-delta', id: 't', delta: 'Hello ' },   // v6: text-delta carries `delta`, not `text`
+      { type: 'text-delta', id: 't', delta: 'Tony' },
       { type: 'finish', finishReason: 'stop' }
     ]))
     const events: any[] = []
@@ -305,8 +304,9 @@ export async function* runAgent(
   for await (const part of result.fullStream) {
     // flush any tool events the tool execute() pushed
     while (queue.length) yield queue.shift()!
-    if (part.type === 'text-delta' || part.type === 'text') {
-      const text = (part as { text?: string }).text ?? ''
+    if (part.type === 'text-delta') {
+      // AI SDK v6: text-delta part carries `delta`. (v5 used `text` — fall back for safety.)
+      const text = (part as { delta?: string; text?: string }).delta ?? (part as { text?: string }).text ?? ''
       if (text) yield { type: 'text-delta', text }
     }
     // tool-call/tool-result are surfaced via the queue (buildAiTools.onEvent)

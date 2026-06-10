@@ -22,7 +22,7 @@ export interface RunDeps { streamText?: StreamTextFn; tools?: AgentTool[] }
 
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal },
+  ctx: { signal: AbortSignal; voice?: boolean },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
@@ -37,7 +37,7 @@ export async function* runAgent(
   publishActivity({ type: 'state', state: 'thinking' })
   const result = (streamTextFn as unknown as typeof realStreamText)({
     model,
-    system: buildSystemPrompt(),
+    system: buildSystemPrompt(ctx.voice ?? false),
     messages: messages.filter(m => m.role !== 'system'),
     tools,
     stopWhen: stepCountIs(VOICE_TUNING.agent.maxSteps),

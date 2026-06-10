@@ -13,12 +13,12 @@ export function openAiTts(cfg: { baseURL: string; model: string; apiKey?: string
         body: JSON.stringify({ model: cfg.model, voice: opts.voice, input: text, response_format: 'wav' })
       })
       if (!res.ok || !res.body) throw new Error(`TTS failed: ${res.status}`)
-      const reader = res.body.getReader()
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        if (value) yield value
-      }
+      // The server returns ONE WAV per request. Each chunk we yield is sent as a
+      // single binary frame and the client decodes it whole (decodeAudioData), so we
+      // must NOT forward header-less network fragments — only the first would carry
+      // the RIFF header and the rest would be dropped (clipped/skipped words).
+      // Buffer the full body and yield one complete, self-contained WAV.
+      yield new Uint8Array(await res.arrayBuffer())
     }
   }
 }

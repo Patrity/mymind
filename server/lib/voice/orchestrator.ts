@@ -17,7 +17,7 @@ export interface UtteranceDeps {
   voice: string
   signal: AbortSignal
   emit: (e: VoiceEvent) => void
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal }) => AsyncGenerator<AgentEvent>
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; voice?: boolean }) => AsyncGenerator<AgentEvent>
 }
 
 /** One user turn: transcribe -> run the agent -> speak chunked replies. */
@@ -51,7 +51,7 @@ export async function handleUtterance(audio: Uint8Array, history: AgentMessage[]
     }
   }
 
-  for await (const ev of run(messages, { signal: deps.signal })) {
+  for await (const ev of run(messages, { signal: deps.signal, voice: true })) {
     if (deps.signal.aborted) break
     if (ev.type === 'text-delta') {
       assistantText += ev.text
