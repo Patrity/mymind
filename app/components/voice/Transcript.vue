@@ -1,6 +1,6 @@
 <!-- app/components/voice/Transcript.vue -->
 <script setup lang="ts">
-import type { TranscriptEntry } from '~/composables/useUnmute'
+import type { TranscriptEntry } from '~/composables/useVoice'
 import type { ToolChip } from '~/composables/useAgentActivity'
 
 defineProps<{ entries: TranscriptEntry[], chips: ToolChip[] }>()

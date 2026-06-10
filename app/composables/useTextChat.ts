@@ -1,5 +1,5 @@
 // app/composables/useTextChat.ts
-import type { TranscriptEntry } from './useUnmute'
+import type { TranscriptEntry } from './useVoice'
 
 // Posts to /api/agent/chat and appends streamed assistant text to `entries`.
 // Parses OpenAI-compatible SSE chunks (choices[0].delta.content).

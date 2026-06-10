@@ -43,7 +43,6 @@
     "isomorphic-dompurify": "^3.15.0",
     "nanoid": "^5.1.11",
     "nuxt": "^4.4.6",
-    "opus-recorder": "^8.0.5",
     "pg": "^8.21.0",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.3.0",
