@@ -142,7 +142,9 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 | `app/composables/useTextChat.ts` | Typed fallback over `/api/agent/chat` |
 | `app/components/voice/Reactor.client.vue` | Thin mount: RAF loop, FFT sampling, FPS watchdog, context-loss rebuild, CSS fallback |
 | `app/components/voice/Transcript.vue` | Live transcript + tool-action chips + Undo buttons |
-| `app/components/voice/Composer.vue` | Typed fallback input |
+| `app/components/voice/Composer.vue` | Typed input — voice loop via WS `{type:'text'}` when connected (animated + spoken reply), `/api/agent/chat` fallback when not |
+| `app/components/voice/SettingsSlideover.vue` | Cog-button slideover: voice picker, live-metered VAD tuning, barge-in, playback speed |
+| `app/composables/useVoiceSettings.ts` | Cookie-persisted user settings (`voice-settings` via `useCookie`) |
 | `app/components/voice/VoicePicker.vue` | Voice selector (fetches live catalog from providers) |
 | `app/lib/viz/types.ts` | `BAR_COUNT` (96), `VizState` (7), `VizEvent`, `Directives` |
 | `app/lib/viz/tuning.ts` | **All headline visual knobs**: `VIZ_TUNING` (camera/zoom clamps, bloom, point size/alpha, ring radius) + `PALETTE` (per-state colors) |
