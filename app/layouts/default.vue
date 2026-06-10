@@ -46,7 +46,8 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
 </script>
 
 <template>
-  <UDashboardGroup unit="rem">
+  <!-- Panel sizes app-wide are PERCENTAGES (Nuxt UI default unit) -->
+  <UDashboardGroup>
     <UDashboardSidebar
       id="mymind-sidebar"
       collapsible

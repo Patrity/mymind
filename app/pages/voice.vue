@@ -26,15 +26,15 @@ const caption = computed(() => voice.transcript.value[voice.transcript.value.len
   <!-- Resizable panels don't have a single root element — wrap in a flex container.
        Nuxt UI's resize handle only supports a sized panel LEFT of the handle, and the
        transcript belongs on the right — so the CANVAS is the sized/resizable panel
-       (sizes are rem: the layout's UDashboardGroup sets unit="rem") and the transcript
-       is fluid. Dragging the handle right grows the canvas / shrinks the transcript. -->
+       (sizes are % of the dashboard group) and the transcript is fluid. Dragging the
+       handle right grows the canvas / shrinks the transcript; double-click resets. -->
   <div class="flex flex-1 min-w-0 h-full">
     <UDashboardPanel
       id="voice"
       resizable
-      :default-size="48"
-      :min-size="30"
-      :max-size="120"
+      :default-size="75"
+      :min-size="50"
+      :max-size="90"
       :ui="{ body: '!p-0 !gap-0 overflow-hidden' }"
     >
       <template #header>
