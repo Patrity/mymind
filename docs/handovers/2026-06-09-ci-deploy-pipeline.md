@@ -2,7 +2,7 @@
 title: CI + Deploy Pipeline (self-hosted Proxmox runner)
 cycle: infra
 date: 2026-06-09
-status: implemented-pending-runner
+status: shipped
 spec: ../superpowers/specs/2026-06-09-ci-deploy-pipeline-design.md
 plan: ../superpowers/plans/2026-06-09-ci-deploy-pipeline.md
 wiki: ../wiki/ci-deploy-pipeline.md
@@ -16,13 +16,15 @@ verified:
   - "Locally on master's tree: typecheck PASS, test PASS (158 tests / 31 files, ~1.3s), build PASS (.output produced), lint RED (expected, non-blocking)."
   - "actionlint (rhysd/actionlint Docker image) exits 0 on deploy.yml."
   - "Homelab facts confirmed via ssh mini: Proxmox pve 9 (pct, no LXD), LXC 114 = mymind @ 192.168.2.89, mymind-app + mymind-db up, repo at /opt/mymind (copied tree, NO .git), .env present (uid 501)."
+  - "LIVE END-TO-END (run 27266499739, master sha faa398d): test job green; deploy job green on the mini-proxmox self-hosted runner (Sync→Rebuild→Health all success). Verified on box: mymind-app rebuilt (Up <1m), /login=200, mymind-db untouched, /opt/mymind/.env preserved."
+  - "Runner mini-proxmox registered as a systemd service on host mini (RUNNER_ALLOW_RUNASROOT=1 so it can call pct); labels [self-hosted, Linux, X64, proxmox]; service path includes /usr/sbin so bare `pct` resolves."
 deferred:
-  - "Task 4 (end-to-end deploy) is BLOCKED until the operator registers a self-hosted GitHub Actions runner on `mini` with label `proxmox` — see DEPLOYMENT §15. Until then the `deploy` job has no runner and will queue."
   - "tar-extract is not deletion-safe: files removed from the repo are not removed from /opt/mymind. Switch to git-reset-in-container or rsync --delete if it ever bites."
   - "Lint stays non-blocking until the repo's 215 lint errors are brought to green (separate task)."
   - "build env NUXT_PUBLIC_UNMUTE_URL=\"\" matches the current Dockerfile ARG default; once voice v2 fully lands and drops that var (cycle 18 handover notes its removal), this line can go too. Harmless meanwhile (unused env)."
+  - "Docs-only pushes (docs/** and **.md) are excluded via on.push.paths-ignore, so editing handovers/wiki/specs does not trigger a rebuild+deploy."
 notes:
-  - "Branch feat/ci-deploy-pipeline also contains unrelated voice-visualizer commits (52d25b9, 50a72eb) and a .gitignore change that a concurrent session committed onto the same branch — NOT part of this work. Decide how to separate before merging the CI work."
+  - "The CI work was landed via a clean cherry-pick onto master (PR #1, rebase-merged). Unrelated voice-visualizer doc commits that had been interleaved on the working branch were cherry-picked to master separately; the working branch was then deleted."
 ---
 
 # CI + Deploy Pipeline — Handover
@@ -33,12 +35,13 @@ pipeline. Tests run on GitHub-hosted runners; the deploy runs on a self-hosted r
 the Proxmox host `mini`** (required — the app LXC is on the LAN and unreachable from
 GitHub-hosted infra) and rebuilds the app **inside LXC 114** via `pct exec`.
 
-## The one seam left open
-**Register the runner.** The deploy job targets `runs-on: [self-hosted, proxmox]`. No such
-runner exists yet. Follow `docs/DEPLOYMENT.md §15` on `mini` (as a user that can run `pct`).
-Once it shows **Idle** in GitHub → Settings → Actions → Runners, push to `master` triggers
-the first real deploy. Verify per plan Task 4: deploy job green + final step prints
-`healthy`; then `ssh mini` to confirm `mymind-app` restarted and `/login` returns 200.
+## Status: live
+The runner is registered on `mini` (systemd service) and the first end-to-end deploy ran
+green — see the `verified` frontmatter. Every push to `master` that touches non-docs files
+now runs `test` then, on success, `deploy` (rebuild LXC 114 + `/login` health check).
+
+If the runner ever needs re-registering: `docs/DEPLOYMENT.md §15`. To roll the deploy back,
+deploy a previous master commit (the deploy is idempotent — it rebuilds whatever is at HEAD).
 
 ## Why these choices
 - **tar-pipe (not git pull in container):** /opt/mymind has no `.git`, and the repo is
