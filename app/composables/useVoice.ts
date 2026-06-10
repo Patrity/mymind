@@ -101,7 +101,18 @@ export function useVoice() {
     if (ws) return
     error.value = null
     state.value = 'connecting'
+    try {
+      await startInner()
+    } catch (err) {
+      // VAD asset import or mic permission failure would otherwise strand the
+      // UI in 'connecting' (or leave a live WS with no mic). Tear down fully.
+      error.value = err instanceof Error ? err.message : 'Voice startup failed'
+      events.emit({ type: 'error' })
+      stop()
+    }
+  }
 
+  async function startInner() {
     // Dynamic import keeps onnxruntime-web out of the SSR bundle
     const { MicVAD } = await import('@ricky0123/vad-web')
 
