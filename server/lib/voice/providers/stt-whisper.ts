@@ -12,7 +12,8 @@ export function whisperStt(cfg: { baseURL: string; model: string; apiKey?: strin
       const res = await fetch(`${base}/audio/transcriptions`, {
         method: 'POST',
         headers: cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : undefined,
-        body: form
+        body: form,
+        signal: opts?.signal,
       })
       if (!res.ok) throw new Error(`STT failed: ${res.status}`)
       const json = await res.json() as { text?: string }

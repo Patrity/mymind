@@ -23,7 +23,13 @@ export interface UtteranceDeps {
 /** One user turn: transcribe -> run the agent -> speak chunked replies. */
 export async function handleUtterance(audio: Uint8Array, history: AgentMessage[], deps: UtteranceDeps): Promise<AgentMessage[]> {
   const run = deps.runAgent ?? realRunAgent
-  const userText = await deps.stt.transcribe(audio, { language: VOICE_TUNING.stt.language })
+  let userText: string
+  try {
+    userText = await deps.stt.transcribe(audio, { language: VOICE_TUNING.stt.language, signal: deps.signal })
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') return history
+    throw err
+  }
   if (!userText) return history
   deps.emit({ type: 'transcript', role: 'user', text: userText })
   const messages: AgentMessage[] = [...history, { role: 'user', content: userText }]
@@ -35,9 +41,13 @@ export async function handleUtterance(audio: Uint8Array, history: AgentMessage[]
   const speak = async (text: string) => {
     if (deps.signal.aborted) return
     deps.emit({ type: 'state', state: 'speaking' })
-    for await (const bytes of deps.tts.synthesize(text, { voice: deps.voice, signal: deps.signal })) {
-      if (deps.signal.aborted) return
-      deps.emit({ type: 'audio', bytes })
+    try {
+      for await (const bytes of deps.tts.synthesize(text, { voice: deps.voice, signal: deps.signal })) {
+        if (deps.signal.aborted) return
+        deps.emit({ type: 'audio', bytes })
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') throw err
     }
   }
 
@@ -51,6 +61,7 @@ export async function handleUtterance(audio: Uint8Array, history: AgentMessage[]
       deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken })
     }
   }
+  if (deps.signal.aborted) return messages
   for (const chunk of chunker.flush()) await speak(chunk)
   deps.emit({ type: 'state', state: 'idle' })
 
