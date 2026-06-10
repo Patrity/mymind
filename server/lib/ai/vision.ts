@@ -1,4 +1,4 @@
-import { aiProvider } from './provider'
+import { chat, type ChatMessage } from './chat'
 import { capTags } from '../../../shared/utils/cap-tags'
 
 export interface VisionResult {
@@ -42,7 +42,6 @@ function extractJson(raw: string): Record<string, unknown> | null {
 export async function describeImage(dataUrl: string): Promise<VisionResult> {
   const empty: VisionResult = { ocrText: '', tags: [] }
   try {
-    const cfg = aiProvider('vision', { required: true })
     const messages = [
       {
         role: 'user' as const,
@@ -59,22 +58,7 @@ export async function describeImage(dataUrl: string): Promise<VisionResult> {
       }
     ]
 
-    const res = await $fetch<{ choices: { message: { content: string } }[] }>(
-      `${cfg.baseURL!.replace(/\/$/, '')}/chat/completions`,
-      {
-        method: 'POST',
-        headers: cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : undefined,
-        signal: AbortSignal.timeout(60000),
-        body: {
-          model: cfg.model,
-          messages,
-          temperature: 0.1,
-          max_tokens: 600
-        }
-      }
-    )
-
-    const raw = res.choices?.[0]?.message?.content ?? ''
+    const raw = await chat('vision', messages as ChatMessage[], { temperature: 0.1, maxTokens: 600 })
     const parsed = extractJson(raw)
     if (!parsed) {
       console.warn('[vision] failed to parse JSON from model response:', raw.slice(0, 200))
