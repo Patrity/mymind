@@ -19,7 +19,7 @@ export function createRing() {
 
   return {
     object: mesh,
-    update(d: Directives, t: number) {
+    update(d: Directives, t: number, dt: number) {
       for (let i = 0; i < BAR_COUNT; i++) {
         const th = (i / BAR_COUNT) * Math.PI * 2
         const ambient = 0.05 + 0.03 * Math.sin(i * 0.7 + t * 1.5)
@@ -43,8 +43,8 @@ export function createRing() {
       }
       mesh.instanceMatrix.needsUpdate = true
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-      mesh.rotation.y += 0.0006 + d.micMix * 0.002
+      mesh.rotation.y += (0.0006 + d.micMix * 0.002) * dt * 60
     },
-    dispose() { geo.dispose(); mat.dispose() },
+    dispose() { geo.dispose(); mat.dispose(); mesh.dispose() },
   }
 }

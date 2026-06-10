@@ -50,6 +50,12 @@ export function createScene(el: HTMLElement, tier: QualityTier): VizScene {
   )
   composer.addPass(bloom)
 
+  // EffectComposer.setSize re-runs every pass at full resolution — re-apply the
+  // tier's bloom scale after any composer resize or it silently resets to 1.
+  const applyBloomScale = (w2: number, h2: number) =>
+    bloom.setSize(Math.max(1, w2 * tier.bloomScale), Math.max(1, h2 * tier.bloomScale))
+  applyBloomScale(w, h)
+
   let lostCb: (() => void) | null = null
   const onLost = (e: Event) => { e.preventDefault(); lostCb?.() }
   renderer.domElement.addEventListener('webglcontextlost', onLost)
@@ -62,16 +68,19 @@ export function createScene(el: HTMLElement, tier: QualityTier): VizScene {
       camera.updateProjectionMatrix()
       renderer.setSize(nw, nh)
       composer.setSize(nw, nh)
+      applyBloomScale(nw, nh)
     },
     degrade: () => {
       ratio = Math.max(0.75, ratio * 0.75)
       renderer.setPixelRatio(ratio)
       composer.setPixelRatio(ratio)
       composer.setSize(el.clientWidth || w, el.clientHeight || h)
+      applyBloomScale(el.clientWidth || w, el.clientHeight || h)
     },
     onContextLost: (cb) => { lostCb = cb },
     dispose: () => {
       renderer.domElement.removeEventListener('webglcontextlost', onLost)
+      bloom.dispose()
       composer.dispose()
       renderer.dispose()
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)

@@ -96,7 +96,10 @@ export function createCore(particles: number) {
     uniforms: {
       uTime: { value: 0 }, uEnergy: { value: 0 }, uSwirl: { value: 0 },
       uShatter: { value: 0 }, uAssemble: { value: 0 }, uIgnite: { value: 0 },
-      uDim: { value: 0 }, uSize: { value: 9 },
+      uDim: { value: 0 },
+      // uSize is in device px at ~1 world unit from camera scale: with the camera at
+      // z≈6.2, gl_PointSize ≈ uSize * 35 → ~3-5px points. (220/-mv.z ≈ 35 here.)
+      uSize: { value: 0.1 },
       uColor: { value: new THREE.Color() }, uErrorFlash: { value: 0 },
     },
   })
@@ -105,7 +108,7 @@ export function createCore(particles: number) {
 
   return {
     object: points,
-    update(d: Directives, t: number) {
+    update(d: Directives, t: number, dt: number) {
       const u = mat.uniforms
       u.uTime!.value = t
       u.uEnergy!.value = d.energy
@@ -116,7 +119,7 @@ export function createCore(particles: number) {
       u.uDim!.value = d.dim
       u.uErrorFlash!.value = d.errorFlash
       ;(u.uColor!.value as THREE.Color).setRGB(d.coreColor[0]!, d.coreColor[1]!, d.coreColor[2]!)
-      points.rotation.y += 0.0015 + d.energy * 0.004 + d.swirl * 0.01
+      points.rotation.y += (0.0015 + d.energy * 0.004 + d.swirl * 0.01) * dt * 60
     },
     /** One-way perf step: draw only the first `frac` of the particles. */
     setDrawRange(frac: number) { geo.setDrawRange(0, Math.floor(particles * frac)) },

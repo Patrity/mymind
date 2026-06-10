@@ -66,7 +66,7 @@ export function createEffects() {
       for (let i = 0; i < PULSES; i++) {
         const ph = (pulsePhase + i / PULSES) % 1
         pulseMeshes[i]!.scale.setScalar(1 + ph * 2.6)
-        pulseMats[i]!.opacity = d.pulseRate > 0 ? (1 - ph) * 0.4 : pulseMats[i]!.opacity * 0.9
+        pulseMats[i]!.opacity = d.pulseRate > 0 ? (1 - ph) * 0.4 : pulseMats[i]!.opacity * Math.exp(-6 * dt)
       }
 
       for (let n = 0; n < d.sparks; n++) spawnSpark()
