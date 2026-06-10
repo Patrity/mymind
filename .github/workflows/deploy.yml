@@ -1,0 +1,72 @@
+name: deploy
+
+on: push
+
+# A newer push to master supersedes an in-flight deploy.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/master' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Lint is red repo-wide (215 errors as of 2026-06-09): annotate, do not block.
+      - name: Lint
+        continue-on-error: true
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+        env:
+          NUXT_PUBLIC_UNMUTE_URL: ""
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/master'
+    runs-on: [self-hosted, proxmox]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Sync code into LXC 114
+        run: |
+          tar -C "$GITHUB_WORKSPACE" \
+            --exclude=.git --exclude=node_modules --exclude=.nuxt \
+            --exclude=.output --exclude=.data --exclude=.env \
+            -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
+
+      - name: Rebuild + restart (migrations run on container start)
+        run: |
+          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --build'
+
+      - name: Health check (/login -> 200)
+        run: |
+          # shellcheck disable=SC2016
+          pct exec 114 -- bash -lc 'for i in $(seq 1 30); do
+            code=$(curl -fsS -o /dev/null -w "%{http_code}" http://localhost:3000/login || true)
+            if [ "$code" = "200" ]; then echo "healthy"; exit 0; fi
+            echo "waiting ($i): got $code"; sleep 5
+          done; echo "never became healthy"; exit 1'
