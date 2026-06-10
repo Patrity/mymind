@@ -5,6 +5,8 @@ import type { VizEvent } from '../viz/types'
 export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string }
 
 export interface MsgEffect {
+  // 'listening'/'connecting' never come from the server (client VAD / WS dial own
+  // them), and the 'disconnected' viz event is emitted by useVoice.onclose — not here.
   state?: 'idle' | 'thinking' | 'speaking' | 'tool'
   delta?: { role: 'user' | 'assistant'; text: string }
   events: VizEvent[]
