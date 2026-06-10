@@ -1,6 +1,12 @@
 name: deploy
 
-on: push
+on:
+  push:
+    # Docs-only commits don't change runtime behaviour — skip the whole
+    # pipeline (and the deploy) for them.
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
 
 # A newer push to master supersedes an in-flight deploy.
 concurrency:
