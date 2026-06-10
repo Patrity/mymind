@@ -1,5 +1,5 @@
 // Pure TS (no Three.js): consumes voice state + events + audio levels and
-// produces per-frame Directives. Every state change is a lerp — no hard cuts.
+// produces per-frame Directives. State changes are lerped (one deliberate hard cut: assemble resets to 0 when entering connecting).
 import { BAR_COUNT, PALETTE } from './types'
 import type { VizState, VizEvent, Directives } from './types'
 
@@ -21,6 +21,10 @@ const MIC_ATTACK = 26
 const MIC_RELEASE = 6
 const OUT_ATTACK = 30
 const OUT_RELEASE = 8
+const TOOL_PULSE_RATE = 1.2 // pulses per second while a tool runs
+const SPARKS_BASE = 8
+const SPARKS_PER_CHAR = 0.25
+const SPARKS_MAX = 40
 
 const ENERGY: Record<VizState, number> = {
   connecting: 0.2, idle: 0.15, listening: 0.3, thinking: 0.4,
@@ -52,20 +56,27 @@ export function createChoreographer() {
     micMix: 0, ringLevels: new Float32Array(BAR_COUNT), outLevel: 0,
     errorFlash: 0, sparks: 0, pulseRate: 0, dim: 0,
   }
-  let prev: VizState = 'connecting'
+  let prev: VizState | null = null
   let pendingSparks = 0
 
   function handleEvent(e: VizEvent) {
     if (e.type === 'bargein') d.shatter = 1
     else if (e.type === 'error') d.errorFlash = 1
-    else if (e.type === 'sttFinal') pendingSparks += Math.min(40, 8 + Math.floor(e.chars / 4))
+    else if (e.type === 'sttFinal') pendingSparks += Math.min(SPARKS_MAX, SPARKS_BASE + Math.floor(e.chars * SPARKS_PER_CHAR))
     // 'disconnected' is derived from inputs.connected; the event needs no impulse
   }
 
+  /**
+   * Returns the SAME Directives object every frame, mutated in place (zero
+   * per-frame allocation). Consumers must read it immediately — never retain
+   * it (or ringLevels) across frames.
+   */
   function update(inp: VizInputs, dt: number): Directives {
+    dt = Math.min(dt, 0.1) // rAF can hand us seconds after a background tab — don't swallow impulses
     const s: VizState = !inp.connected && inp.state !== 'connecting' ? 'disconnected' : inp.state
+    if (prev === null) prev = s
     if (s !== prev) {
-      if (s === 'connecting') d.assemble = 0                          // scatter, then build
+      if (s === 'connecting') d.assemble = 0                          // hard cut by design: scatter, then build
       if (prev === 'connecting' && s !== 'disconnected') d.ignite = 1 // WS opened
       prev = s
     }
@@ -106,7 +117,7 @@ export function createChoreographer() {
     if (d.ignite < 0.001) d.ignite = 0
     if (d.errorFlash < 0.001) d.errorFlash = 0
 
-    d.pulseRate = s === 'tool' ? 1.2 : 0
+    d.pulseRate = s === 'tool' ? TOOL_PULSE_RATE : 0
     d.sparks = pendingSparks
     pendingSparks = 0
     return d

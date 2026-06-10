@@ -85,4 +85,36 @@ describe('choreographer', () => {
     expect(c.update(inputs({ state: 'tool' }), DT).pulseRate).toBeGreaterThan(0)
     expect(c.update(inputs({ state: 'idle' }), DT).pulseRate).toBe(0)
   })
+
+  it('returns the same Directives object every frame (mutate-in-place contract)', () => {
+    const c = createChoreographer()
+    expect(c.update(inputs(), DT)).toBe(c.update(inputs(), DT))
+  })
+
+  it('energy rises with playback level while speaking', () => {
+    const c = createChoreographer()
+    const quiet = run(c, inputs({ state: 'speaking' }), 120).energy
+    const loud = run(c, inputs({ state: 'speaking', outLevel: 1 }), 120).energy
+    expect(loud).toBeGreaterThan(quiet + 0.5)
+  })
+
+  it('dims fully when disconnected, partially when idle', () => {
+    const c = createChoreographer()
+    expect(run(c, inputs({ connected: false }), 200).dim).toBeGreaterThan(0.9)    // → 1
+    expect(run(c, inputs(), 200).dim).toBeCloseTo(0.35, 1)                        // idle
+  })
+
+  it('caps sparks at SPARKS_MAX for long transcripts', () => {
+    const c = createChoreographer()
+    c.handleEvent({ type: 'sttFinal', chars: 10_000 })
+    expect(c.update(inputs(), DT).sparks).toBe(40)
+  })
+
+  it('does not ignite when a connect attempt dies (connecting → disconnected)', () => {
+    const c = createChoreographer()
+    run(c, inputs({ state: 'connecting', connected: false }), 30)
+    const d = c.update(inputs({ state: 'idle', connected: false }), DT)
+    expect(d.vizState).toBe('disconnected')
+    expect(d.ignite).toBe(0)
+  })
 })
