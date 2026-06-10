@@ -1,6 +1,6 @@
 // test/ai-registry-resolve.test.ts
 import { describe, it, expect, beforeAll } from 'vitest'
-import { resolveChainFrom, withFailoverOver } from '../server/lib/ai/registry/resolve'
+import { resolveChainFrom, withFailoverOver, languageModel } from '../server/lib/ai/registry/resolve'
 import { AiNotConfiguredError, AiAllFailedError } from '../server/lib/ai/registry/errors'
 import { encryptSecret } from '../server/lib/ai/registry/crypto'
 import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel } from '../server/lib/ai/registry/types'
@@ -39,6 +39,23 @@ describe('resolveChainFrom', () => {
   it('filters the embeddings chain to dim-2560 models', () => {
     const chain = resolveChainFrom(build(), 'embeddings')
     expect(chain.map(m => m.modelId)).toEqual(['embed'])  // embed-bad (1024) dropped
+  })
+
+  it('degrades a provider with an undecryptable key to apiKey=null (one bad key does not kill the chain)', () => {
+    const d = build()
+    d.providers[0]!.apiKeyEnc = 'not-valid-ciphertext'  // decrypt will throw → null
+    const chain = resolveChainFrom(d, 'reasoning')
+    expect(chain[0]!.apiKey).toBeNull()
+    expect(chain[1]!.apiKey).toBe('k2')                 // the other provider still decrypts
+  })
+})
+
+describe('languageModel', () => {
+  it('dispatches on provider kind without throwing', () => {
+    const anth = languageModel({ usage: 'reasoning', modelDefId: 'm', providerKind: 'anthropic', baseURL: null, apiKey: 'k', modelId: 'claude-x', label: 'C', dim: null })
+    const oai = languageModel({ usage: 'reasoning', modelDefId: 'm', providerKind: 'openai-compatible', baseURL: 'http://a/v1', apiKey: 'k', modelId: 'qwen', label: 'Q', dim: null })
+    expect(anth).toBeTruthy()
+    expect(oai).toBeTruthy()
   })
 })
 

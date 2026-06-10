@@ -38,4 +38,16 @@ describe('config schema', () => {
     expect(p.apiKeyEnc).toBeUndefined()
     expect(p.hasKey).toBe(true)
   })
+
+  it('redactDoc leaks no ciphertext under serialization and reports hasKey:false for null keys', () => {
+    const d = doc()
+    d.providers[0]!.apiKeyEnc = 'SUPER-SECRET-CIPHERTEXT'
+    d.providers.push({ id: 'p2', name: 'Keyless', kind: 'openai-compatible' as const, baseURL: 'http://y/v1', apiKeyEnc: null })
+    d.models.push({ id: 'm2', providerId: 'p2', modelId: 'k', label: 'K', dim: null })
+    const json = JSON.stringify(redactDoc(parseConfig(d)))
+    expect(json).not.toContain('SUPER-SECRET-CIPHERTEXT')
+    expect(json).not.toContain('apiKeyEnc')
+    const r = redactDoc(parseConfig(d))
+    expect(r.providers.find(p => p.id === 'p2')!.hasKey).toBe(false)
+  })
 })
