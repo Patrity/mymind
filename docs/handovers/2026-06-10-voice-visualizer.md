@@ -62,9 +62,9 @@ Seven states with distinct choreography:
 | `connecting` | Particles scattered, slowly assemble; ignition burst fires on WS open |
 | `idle` | Slow dim breathing |
 | `listening` | 96-bar mic FFT ring dance, cyan ring |
-| `thinking` | Sphere collapses to fast violet vortex |
+| `thinking` | Sphere collapses to fast violet vortex + neural lightning arcs (lightning.ts, firing=1) |
 | `speaking` | Cyan burst/scatter driven by TTS amplitude; sympathetic ring ripple |
-| `tool` | Amber vortex + 3 radiating pulse rings |
+| `tool` | Amber vortex + 3 radiating pulse rings + simmering lightning (firing=0.35) |
 | `disconnected` | Sagged half-formed sphere, desaturated gray-blue |
 
 ### Event impulses

@@ -151,6 +151,7 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 | `app/lib/viz/core.ts` | GPU particle sphere — all motion in GLSL vertex shader |
 | `app/lib/viz/ring.ts` | 96-bar InstancedMesh mic-frequency ring + error shockwave coloring |
 | `app/lib/viz/effects.ts` | 3 amber tool-pulse rings + 160-slot pooled transcription sparks |
+| `app/lib/viz/lightning.ts` | Neural "synapse" arcs during thinking (firing=1) / tool (0.35): pooled jagged LineSegments with branches, additive + bloom |
 | `app/lib/voice/messages.ts` | Pure WS-message → `{state, delta, events}` mapper (tested, no mocks needed) |
 
 ## Voice Visualizer (cycle 19)
@@ -177,7 +178,7 @@ out AnalyserNode ──amplitude────────────────
 | `connecting` | Particles scattered → assembling; ignition swell on WS open | Flat/dim | Dim blue |
 | `idle` | Slow breathing, dim, lazy rotation | Near-flat shimmer | Blue |
 | `listening` | Calm, slightly brighter | Full 96-bar FFT dance | Cyan ring, blue core |
-| `thinking` | Fast swirling vortex (sphere flattens) | Quiet | Violet |
+| `thinking` | Fast swirling vortex (sphere flattens) + neural lightning arcs between particles | Quiet | Violet |
 | `speaking` | Burst/scatter driven by TTS amplitude | Faint sympathetic ripple | Bright cyan |
 | `tool` | Vortex at reduced energy | Quiet | Amber + radiating pulse rings |
 | `disconnected` | Sagged/dim sphere, slow irregular flicker | Off | Desaturated gray-blue |
