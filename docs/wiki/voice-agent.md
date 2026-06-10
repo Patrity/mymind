@@ -84,7 +84,7 @@ export const VOICE_TUNING = {
 }
 ```
 
-The client (`useVoice.ts`) mirrors the `vad` / `turn` / `bargeIn` subset so thresholds are consistent end-to-end. Sentence chunking flushes a TTS call on sentence-final punctuation or when `sentenceMinChars` is reached — audio starts before the LLM finishes.
+The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettings` (cookie `voice-settings`, via `useCookie`) holds voice choice, `positiveSpeechThreshold` (negative trails it by 0.15), `minSpeechMs`, `redemptionMs`, `bargeInEnabled`, `playbackRate`. The cog button on `/voice` opens `VoiceSettingsSlideover` — the sensitivity slider has a live meter fed by `voice.speechProb` (Silero per-frame probability via `onFrameProcessed`, the same unit as the threshold). Threshold/timing changes hot-apply through `applyVadSettings()` (debounced VAD-only restart; WS untouched); barge-in and playback rate apply live without restart. Sentence chunking flushes a TTS call on sentence-final punctuation or when `sentenceMinChars` is reached — audio starts before the LLM finishes.
 
 ## WebSocket protocol (`/api/voice/ws`)
 

@@ -6,23 +6,18 @@ import type { VizEvent } from '../lib/viz/types'
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool'
 export interface TranscriptEntry { role: 'user' | 'assistant'; text: string }
 
-// Client mirror of the tunable knobs that affect capture/barge-in.
-// NOTE: vad-web 0.0.30 uses time-based options (minSpeechMs, redemptionMs)
-// rather than frame-based (minSpeechFrames, redemptionFrames).
-const TUNING = {
-  positiveSpeechThreshold: 0.5,
-  negativeSpeechThreshold: 0.35,
-  minSpeechMs: 100,      // ~3 frames @ 30ms/frame ≈ original minSpeechFrames: 3
-  redemptionMs: 240,     // ~8 frames @ 30ms/frame ≈ original redemptionFrames: 8
-  bargeInEnabled: true,
-  playbackRate: 1.1,
-}
+// Capture/barge-in/playback knobs are user-tunable and cookie-persisted —
+// see useVoiceSettings. NOTE: vad-web 0.0.30 uses time-based options
+// (minSpeechMs, redemptionMs) rather than frame-based ones.
 
 export function useVoice() {
   const state = ref<VoiceState>('idle')
   const connected = ref(false)
   const transcript = ref<TranscriptEntry[]>([])
   const error = ref<string | null>(null)
+  /** Live Silero speech probability (0..1) — feeds the settings tuning meter. */
+  const speechProb = ref(0)
+  const { settings } = useVoiceSettings()
 
   const events = createEmitter<VizEvent>()
 
@@ -83,11 +78,11 @@ export function useVoice() {
       if (epoch !== playEpoch) return // barge-in landed while decoding — drop it
       const node = audioCtx.createBufferSource()
       node.buffer = buf
-      node.playbackRate.value = TUNING.playbackRate
+      node.playbackRate.value = settings.value.playbackRate
       node.connect(outAnalyser)
       const at = Math.max(audioCtx.currentTime, playCursor)
       node.start(at)
-      playCursor = at + buf.duration / TUNING.playbackRate
+      playCursor = at + buf.duration / settings.value.playbackRate
       sources.push(node)
       node.onended = () => {
         sources = sources.filter(s => s !== node)
@@ -113,9 +108,6 @@ export function useVoice() {
   }
 
   async function startInner() {
-    // Dynamic import keeps onnxruntime-web out of the SSR bundle
-    const { MicVAD } = await import('@ricky0123/vad-web')
-
     audioCtx = new AudioContext()
     outAnalyser = audioCtx.createAnalyser()
     outAnalyser.fftSize = 256
@@ -129,8 +121,9 @@ export function useVoice() {
     ws.onopen = () => {
       connected.value = true
       state.value = 'idle'
-      // Apply a voice chosen before the socket existed (and re-apply on reconnect).
-      if (desiredVoice) ws!.send(JSON.stringify({ type: 'voice', ...desiredVoice }))
+      // Apply the persisted voice choice (and re-apply on reconnect).
+      const v = desiredVoice ?? { provider: settings.value.provider, voice: settings.value.voice }
+      ws!.send(JSON.stringify({ type: 'voice', ...v }))
     }
     ws.onclose = () => { connected.value = false; state.value = 'idle'; events.emit({ type: 'disconnected' }) }
     ws.onerror = () => { error.value = 'WebSocket error'; events.emit({ type: 'error' }) }
@@ -147,8 +140,14 @@ export function useVoice() {
       }
     }
 
+    await startVad()
+  }
+
+  async function startVad() {
+    // Dynamic import keeps onnxruntime-web out of the SSR bundle (cached after first call)
+    const { MicVAD } = await import('@ricky0123/vad-web')
     vad = await MicVAD.new({
-      audioContext: audioCtx,
+      audioContext: audioCtx!,
       // Serve VAD worklet + ONNX model and onnxruntime-web WASM from our own origin
       // (mapped in nuxt.config nitro.publicAssets). Without these, vad-web defaults to
       // "/" and the assets 404 → the mic captures nothing.
@@ -162,12 +161,14 @@ export function useVoice() {
         } catch { /* visualization only — ignore */ }
         return stream
       },
-      positiveSpeechThreshold: TUNING.positiveSpeechThreshold,
-      negativeSpeechThreshold: TUNING.negativeSpeechThreshold,
-      minSpeechMs: TUNING.minSpeechMs,
-      redemptionMs: TUNING.redemptionMs,
+      positiveSpeechThreshold: settings.value.positiveSpeechThreshold,
+      negativeSpeechThreshold: negativeSpeechThreshold(settings.value.positiveSpeechThreshold),
+      minSpeechMs: settings.value.minSpeechMs,
+      redemptionMs: settings.value.redemptionMs,
+      // Live speech probability for the settings tuning meter (same unit as the threshold).
+      onFrameProcessed: (probs: { isSpeech: number }) => { speechProb.value = probs.isSpeech },
       onSpeechStart: () => {
-        if (TUNING.bargeInEnabled && isPlaying()) {
+        if (settings.value.bargeInEnabled && isPlaying()) {
           stopPlayback()
           ws?.send(JSON.stringify({ type: 'interrupt' }))
           events.emit({ type: 'bargein' })
@@ -182,6 +183,21 @@ export function useVoice() {
     vad.start()
   }
 
+  /**
+   * Hot-apply VAD settings: vad-web bakes thresholds in at construction, so a
+   * live session restarts just the VAD (mic stream re-acquired, WS untouched).
+   * No-op when not connected — the next start() reads the current settings.
+   */
+  async function applyVadSettings() {
+    if (!vad || !audioCtx) return
+    await vad.destroy()
+    vad = null
+    vizStream?.getTracks().forEach(t => t.stop())
+    vizStream = null
+    speechProb.value = 0
+    await startVad()
+  }
+
   function stop() {
     vad?.destroy()
     stopPlayback()
@@ -193,6 +209,7 @@ export function useVoice() {
     vizStream = null
     audioCtx = null
     state.value = 'idle'
+    speechProb.value = 0
     connected.value = false
   }
 
@@ -207,8 +224,11 @@ export function useVoice() {
     stop,
     setVoice: (provider: string, voice: string) => {
       desiredVoice = { provider, voice }
+      settings.value = { ...settings.value, provider, voice } // persist the pick
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', provider, voice }))
     },
+    speechProb,
+    applyVadSettings,
     /**
      * Typed turn through the voice loop: injected server-side right after STT,
      * so the agent animates and answers aloud. Returns false when the WS isn't

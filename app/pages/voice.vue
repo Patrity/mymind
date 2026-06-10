@@ -4,19 +4,6 @@ definePageMeta({ title: 'Voice' })
 const voice = useVoice()
 const activity = useAgentActivity()
 
-// Voice picker — fetched from same-origin proxy that aggregates both TTS providers.
-const { data: voiceList } = await useFetch('/api/voice/voices', {
-  default: () => ({ voices: [] as { provider: string, voice: string }[] })
-})
-const voiceItems = computed(() =>
-  voiceList.value.voices.map(v => ({ label: `${v.provider} · ${v.voice}`, value: `${v.provider}|${v.voice}` }))
-)
-const selectedVoice = ref('chatterbox|Gianna.wav')
-watch(selectedVoice, (val) => {
-  const [p, vc] = val.split('|') as [string, string]
-  voice.setVoice(p, vc)
-})
-
 // Caption over the canvas: the message currently being spoken/typed. On small
 // screens (transcript hidden) this is the only live text.
 const caption = computed(() => voice.transcript.value[voice.transcript.value.length - 1] ?? null)
@@ -43,13 +30,7 @@ const caption = computed(() => voice.transcript.value[voice.transcript.value.len
             <UDashboardSidebarCollapse />
           </template>
           <template #right>
-            <USelect
-              v-model="selectedVoice"
-              :items="voiceItems"
-              value-key="value"
-              icon="i-lucide-mic-vocal"
-              class="w-56"
-            />
+            <VoiceSettingsSlideover :voice="voice" />
             <UButton
               v-if="!voice.connected.value"
               icon="i-lucide-mic"
@@ -82,7 +63,7 @@ const caption = computed(() => voice.transcript.value[voice.transcript.value.len
             class="absolute inset-x-4 bottom-12 z-10 mx-auto w-fit max-w-2xl rounded-lg bg-elevated/50 px-4 py-2.5 shadow-lg"
           >
             <span class="text-xs font-semibold uppercase tracking-wider text-muted">
-              {{ caption.role === 'user' ? 'You' : 'MyMind' }}
+              {{ caption.role === 'user' ? 'You' : 'Bridget' }}
             </span>
             <p class="mt-0.5 line-clamp-3 text-sm text-highlighted">{{ caption.text }}</p>
           </div>

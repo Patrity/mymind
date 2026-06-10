@@ -14,7 +14,7 @@ const emit = defineEmits<{ undo: [chip: ToolChip] }>()
       :key="i"
       class="flex flex-col gap-0.5"
     >
-      <span class="text-[10px] uppercase tracking-wide text-muted">{{ e.role === 'user' ? 'You' : 'MyMind' }}</span>
+      <span class="text-[10px] uppercase tracking-wide text-muted">{{ e.role === 'user' ? 'You' : 'Bridget' }}</span>
       <p
         class="text-xs"
         :class="e.role === 'user' ? 'text-default' : 'text-highlighted'"
