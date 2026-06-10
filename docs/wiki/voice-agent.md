@@ -88,13 +88,17 @@ The client (`useVoice.ts`) mirrors the `vad` / `turn` / `bargeIn` subset so thre
 
 ## WebSocket protocol (`/api/voice/ws`)
 
+**Auth:** the WS upgrade is gated by an `upgrade()` hook in `ws.ts` validating the better-auth session — nitro server middleware does NOT run for WS upgrades (crossws handles them), so without this hook the socket was unauthenticated.
+
+**Frame classification:** incoming frames are classified by CONTENT (`server/lib/voice/frames.ts`: `RIFF` magic → audio, JSON → control, else ignored) — never by transport type, because nitro's `crossws@0.3.5` node adapter drops the `isBinary` flag and text frames arrive as Buffers. Relying on `typeof rawData === 'string'` routed JSON control frames into Whisper (HTTP 415).
+
 **Client → server**
 
 | Message | Shape | Meaning |
 |---|---|---|
-| Binary | `ArrayBuffer` (WAV/PCM) | Utterance audio to transcribe |
+| Binary | `ArrayBuffer` (WAV/PCM, RIFF) | Utterance audio to transcribe |
 | Text | `{type:'interrupt'}` | Barge-in: abort current turn |
-| Text | `{type:'config', …}` | Per-session override |
+| Text | `{type:'voice', provider, voice}` | Switch TTS provider/voice |
 
 **Server → client**
 
@@ -104,6 +108,7 @@ The client (`useVoice.ts`) mirrors the `vad` / `turn` / `bargeIn` subset so thre
 | Text | `{type:'transcript', role, text}` | Transcript line (role: `user` or `assistant`) |
 | Text | `{type:'tool', name, summary, undoToken?}` | Tool execution chip |
 | Text | `{type:'state', state}` | Orchestrator state: `idle`/`thinking`/`speaking`/`tool` |
+| Text | `{type:'error', message}` | Pipeline failure (STT/TTS/agent) — client shows alert + viz error flash, then idle |
 
 ## Env vars
 
