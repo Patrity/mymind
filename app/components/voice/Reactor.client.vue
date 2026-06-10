@@ -1,7 +1,7 @@
 <!-- app/components/voice/Reactor.client.vue -->
 <script setup lang="ts">
 import * as THREE from 'three'
-import type { VoiceState } from '~/composables/useUnmute'
+import type { VoiceState } from '~/composables/useVoice'
 
 const props = defineProps<{
   state: VoiceState

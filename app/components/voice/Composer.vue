@@ -1,7 +1,7 @@
 <!-- app/components/voice/Composer.vue -->
 <script setup lang="ts">
 import { textStreamToTranscript } from '~/composables/useTextChat'
-import type { TranscriptEntry } from '~/composables/useUnmute'
+import type { TranscriptEntry } from '~/composables/useVoice'
 
 const props = defineProps<{ entries: TranscriptEntry[] }>()
 const text = ref('')
