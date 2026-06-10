@@ -25,6 +25,12 @@ describe('mapServerMessage', () => {
     expect(mapServerMessage({ type: 'state', state: 'idle' }, false).state).toBe('idle')
   })
 
+  it('server error message → error text + error viz event + idle state', () => {
+    const fx = mapServerMessage({ type: 'error', message: 'STT failed: 415' }, false)
+    expect(fx.error).toBe('STT failed: 415')
+    expect(fx.events).toEqual([{ type: 'error' }])
+  })
+
   it('unknown messages are inert', () => {
     const fx = mapServerMessage({ type: 'tool', text: 'x' }, false)
     expect(fx.state).toBeUndefined()

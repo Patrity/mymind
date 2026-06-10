@@ -142,6 +142,7 @@ export function useVoice() {
         const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
         if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
         if (fx.state) state.value = fx.state
+        if (fx.error) error.value = fx.error
         for (const ev of fx.events) events.emit(ev)
       }
     }

@@ -2,13 +2,14 @@
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { VizEvent } from '../viz/types'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own
   // them), and the 'disconnected' viz event is emitted by useVoice.onclose — not here.
   state?: 'idle' | 'thinking' | 'speaking' | 'tool'
   delta?: { role: 'user' | 'assistant'; text: string }
+  error?: string
   events: VizEvent[]
 }
 
@@ -17,6 +18,9 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   if (m.type === 'transcript' && m.role && m.text) {
     if (m.role === 'user') events.push({ type: 'sttFinal', chars: m.text.length })
     return { delta: { role: m.role, text: m.text }, events }
+  }
+  if (m.type === 'error') {
+    return { error: m.message || 'Voice error', events: [{ type: 'error' }] }
   }
   if (m.type === 'state') {
     if (m.state === 'speaking') return { state: 'speaking', events }
