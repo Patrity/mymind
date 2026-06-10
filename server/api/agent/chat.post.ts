@@ -1,17 +1,12 @@
 // server/api/agent/chat.post.ts
-import { runAgentLoop } from '../../lib/agent/loop'
-import { textChunk, doneFrame } from '../../lib/agent/openai-chunk'
-import { publishActivity } from '../../lib/agent/bus'
-import type { ChatMessage } from '../../lib/ai/chat'
+import { runAgent, type AgentMessage } from '../../lib/agent/run'
 
-// Session-authed. Streams the same OpenAI-chunk shape the client already parses
-// from /api/agent/llm, so the page can reuse one stream reader for typed turns.
+// Session-authed (middleware). Streams plain text deltas as SSE `data:` lines.
 export default defineEventHandler(async (event) => {
-  const body = await readBody<{ messages?: ChatMessage[] }>(event)
+  const body = await readBody<{ messages?: AgentMessage[] }>(event)
   const messages = body?.messages ?? []
   const ac = new AbortController()
   event.node.req.on('close', () => ac.abort())
-
   const res = event.node.res
   setResponseHeaders(event, {
     'content-type': 'text/event-stream',
@@ -20,13 +15,12 @@ export default defineEventHandler(async (event) => {
     'x-accel-buffering': 'no'
   })
   res.flushHeaders()
-  publishActivity({ type: 'state', state: 'thinking' })
   try {
-    for await (const ev of runAgentLoop(messages, { signal: ac.signal })) {
-      if (ev.type === 'text-delta') res.write(textChunk(ev.text))
+    for await (const ev of runAgent(messages, { signal: ac.signal })) {
+      if (ev.type === 'text-delta') res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: ev.text } }] })}\n\n`)
     }
   } finally {
-    res.write(doneFrame())
+    res.write('data: [DONE]\n\n')
     res.end()
     event._handled = true
   }
