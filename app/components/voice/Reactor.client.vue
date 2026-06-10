@@ -24,10 +24,10 @@ let cancelled = false
 let teardown: (() => void) | null = null
 
 function boot(el: HTMLDivElement) {
-  let scene: ReturnType<typeof createScene>
-  let core: ReturnType<typeof createCore>
-  let ring: ReturnType<typeof createRing>
-  let fx: ReturnType<typeof createEffects>
+  let scene: ReturnType<typeof createScene> | undefined
+  let core: ReturnType<typeof createCore> | undefined
+  let ring: ReturnType<typeof createRing> | undefined
+  let fx: ReturnType<typeof createEffects> | undefined
   try {
     const tier = detectTier()
     scene = createScene(el, tier)
@@ -38,6 +38,10 @@ function boot(el: HTMLDivElement) {
   } catch (err) {
     // The visualizer is decorative — never let it take the voice page down.
     console.error('[viz] init failed', err)
+    fx?.dispose()
+    ring?.dispose()
+    core?.dispose()
+    scene?.dispose()
     webglOk.value = false
     return
   }
@@ -49,8 +53,10 @@ function boot(el: HTMLDivElement) {
   const outData = new Uint8Array(128)
   const micLevels = new Float32Array(BAR_COUNT)
 
-  // FPS watchdog: sustained slow frames trigger two one-way quality steps.
+  // FPS watchdog: sustained sub-27fps average triggers two one-way degrade steps.
+  // (Threshold sits below 30 so healthy 30Hz displays never trip it.)
   let degradeStep = 0
+  let dtAvg = 1 / 60
   let slowSince = 0
 
   let last = performance.now()
@@ -80,24 +86,26 @@ function boot(el: HTMLDivElement) {
     }
 
     const d = choreo.update({ state: props.state, connected: props.connected, micLevels, outLevel }, dt)
-    core.update(d, t, dt)
-    ring.update(d, t, dt)
-    fx.update(d, t, dt)
-    scene.render()
+    core!.update(d, t, dt)
+    ring!.update(d, t, dt)
+    fx!.update(d, t, dt)
+    scene!.render()
 
-    if (dt > 1 / 45) { if (!slowSince) slowSince = now }
+    dtAvg += (dt - dtAvg) * 0.05 // ~smooth over the last couple seconds of frames
+    if (dtAvg > 1 / 27) { if (!slowSince) slowSince = now }
     else slowSince = 0
     if (slowSince && now - slowSince > 3000 && degradeStep < 2) {
       degradeStep++
-      if (degradeStep === 1) scene.degrade()
-      else core.setDrawRange(0.5)
+      if (degradeStep === 1) scene!.degrade()
+      else core!.setDrawRange(0.5)
       slowSince = 0
+      dtAvg = 1 / 60 // re-measure from a clean slate after each step
     }
   }
   raf = requestAnimationFrame(frame)
 
   const ro = new ResizeObserver(() => {
-    scene.setSize(el.clientWidth || 320, el.clientHeight || 320)
+    scene!.setSize(el.clientWidth || 320, el.clientHeight || 320)
   })
   ro.observe(el)
 
@@ -110,7 +118,7 @@ function boot(el: HTMLDivElement) {
   }
   document.addEventListener('visibilitychange', onVis)
 
-  scene.onContextLost(() => {
+  scene!.onContextLost(() => {
     // GPU reset (driver hiccup, mobile background) — rebuild the whole scene.
     teardown?.()
     if (!cancelled && host.value) boot(host.value)
@@ -121,10 +129,10 @@ function boot(el: HTMLDivElement) {
     ro.disconnect()
     document.removeEventListener('visibilitychange', onVis)
     offEvents()
-    core.dispose()
-    ring.dispose()
-    fx.dispose()
-    scene.dispose()
+    core!.dispose()
+    ring!.dispose()
+    fx!.dispose()
+    scene!.dispose()
     teardown = null
   }
 }
@@ -142,6 +150,7 @@ onMounted(() => {
       return
     }
     if (tries++ < 120) raf = requestAnimationFrame(wait)
+    else { console.warn('[viz] host element never appeared — showing fallback'); webglOk.value = false }
   }
   wait()
 })
