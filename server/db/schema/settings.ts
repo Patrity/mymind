@@ -1,5 +1,4 @@
 // server/db/schema/settings.ts
-import { sql } from 'drizzle-orm'
 import { pgTable, text, jsonb, timestamp } from 'drizzle-orm/pg-core'
 
 // Generic single-row-per-key settings store. The AI config registry uses
