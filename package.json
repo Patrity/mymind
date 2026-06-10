@@ -33,6 +33,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@nuxt/ui": "^4.8.1",
     "@nuxtjs/mdc": "^0.22.0",
+    "@ricky0123/vad-web": "^0.0.30",
     "@vueuse/core": "^14.3.0",
     "@vueuse/nuxt": "^14.3.0",
     "ai": "^6.0.198",
