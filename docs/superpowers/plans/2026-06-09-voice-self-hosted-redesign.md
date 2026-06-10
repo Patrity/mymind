@@ -13,6 +13,31 @@
 
 ---
 
+## Deployed model specs (AUTHORITATIVE — confirmed live 2026-06-09; overrides assumptions in the tasks below)
+
+All three servers are up on `192.168.2.25`, **no API keys**, OpenAI-spec. MyMind env var names (AI_* to match the existing `runtimeConfig.ai` block):
+```
+AI_STT_BASE_URL=http://192.168.2.25:8881/v1
+AI_STT_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2     # turbo, NOT Systran/large-v3
+AI_TTS_KOKORO_BASE_URL=http://192.168.2.25:8880/v1
+AI_TTS_KOKORO_MODEL=kokoro
+AI_TTS_KOKORO_VOICE=af_heart
+AI_TTS_CHATTERBOX_BASE_URL=http://192.168.2.25:8884/v1
+AI_TTS_CHATTERBOX_MODEL=chatterbox
+AI_TTS_CHATTERBOX_VOICE=happy-us.wav                       # the Ex02-Happy clone; also fast1-us.wav, fast2-us.wav, Emily.wav…
+```
+Measured: STT ~280ms warm; Kokoro ~270ms; Chatterbox ~1s warm (**~12s on first/cold gen**).
+
+**Adjustments these specs force on the tasks:**
+1. **STT default model** (Task 8/12) = `deepdml/faster-whisper-large-v3-turbo-ct2`.
+2. **Voices endpoint is `/v1/audio/voices`** (Task 14 proxy hits `${base}/audio/voices`, not `/voices`).
+3. **Chatterbox 422s if `voice` is omitted** — always pass it. Our `openAiTts.synthesize` always sends `opts.voice`; ensure the WS/orchestrator never passes an empty voice. Each provider has its OWN voice namespace (Kokoro `af_*`, Chatterbox `*.wav`), so **voice selection carries `{provider, voice}` together**, not a bare voice string.
+4. **Per-provider default voice** comes from env (`AI_TTS_*_VOICE`); `VOICE_TUNING.tts` holds the default `provider` + a per-provider voice map. Default **provider = `kokoro` / `af_heart`** for first-response snappiness (Chatterbox's cold-start is rough); the picker switches to Chatterbox `happy-us.wav` etc.
+5. **Cold-start mitigation (Task 16):** optionally warm Chatterbox with a 1-word synth on server boot so the first real reply isn't ~12s.
+6. **Future (not v1):** Chatterbox-turbo accepts paralinguistic tags in the input text (`[laugh]`, `[sigh]`, `[chuckle]`, …) — a later prompt-level feature; don't wire it now.
+
+---
+
 ## Conventions
 - Run from repo root `/Users/tony/Documents/GitHub/mymind`. Package manager **pnpm**.
 - Tests live in flat `test/`, named `<topic>.test.ts`, run `pnpm test <name>` (Vitest, happy-dom available).
