@@ -241,3 +241,41 @@ The in-handler check calls `getRequestIP(event, { xForwardedFor: true })`. A cli
 In Caddy, `reverse_proxy` sets `X-Forwarded-For` to the actual client IP by default (override mode). In nginx, use `proxy_set_header X-Forwarded-For $remote_addr;` (not `$proxy_add_x_forwarded_for`).
 
 The other `/api/agent/*` routes (`activity`, `undo`, `chat`) use the standard session/bearer auth and require no special proxy rules beyond the existing ones for `/api/**`.
+
+## 15. CI/CD pipeline (GitHub Actions)
+
+`.github/workflows/deploy.yml` runs on every push:
+- **test** (GitHub-hosted): `pnpm install --frozen-lockfile`, lint (non-blocking — repo is
+  red), `typecheck`, `test`, `build`. Gates the deploy.
+- **deploy** (self-hosted on `mini`, `master` only): syncs the checked-out tree into LXC
+  114 at `/opt/mymind` via a `tar | pct exec 114 -- tar -x` pipe (preserves `.env` and the
+  Docker volumes), then `docker compose -f docker-compose.prod.yml up -d --build`. The
+  Dockerfile runs `pnpm db:migrate` on start, so migrations apply automatically. A
+  `/login` health check (200, 30×5s retries) must pass or the job fails.
+
+### One-time: register the self-hosted runner on `mini`
+
+The deploy job needs a runner **on the Proxmox host** (it must call `pct`). Run on `mini`
+as a user that can invoke `pct` (root, or a sudoers `pct` entry):
+
+```bash
+# On the host `mini` (192.168.2.50):
+mkdir -p /opt/actions-runner && cd /opt/actions-runner
+# Get the latest runner tarball URL + a registration token from:
+#   GitHub repo → Settings → Actions → Runners → New self-hosted runner (Linux x64)
+curl -o actions-runner.tar.gz -L <RUNNER_TARBALL_URL>
+tar xzf actions-runner.tar.gz
+./config.sh --url https://github.com/<owner>/<repo> --token <REG_TOKEN> --labels proxmox --unattended
+# Install + start as a service so it survives reboots:
+./svc.sh install
+./svc.sh start
+```
+
+Verify in GitHub → Settings → Actions → Runners: the runner shows **Idle** with label
+`proxmox`. `tar` and `curl` are already on the host. The deploy job targets
+`runs-on: [self-hosted, proxmox]`, so the label must match exactly.
+
+> **Note:** `/opt/mymind` on LXC 114 is the deploy target. It is a plain copied tree (not a
+> git checkout); the pipeline overwrites tracked files but leaves `.env`, `.env.bak-*`, and
+> the Docker volumes alone. Files **deleted** from the repo are not removed from
+> `/opt/mymind` (tar-extract limitation) — clean stale files by hand if it ever matters.
