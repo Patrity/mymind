@@ -36,6 +36,8 @@ Claude Code / Hermes hooks stream session transcripts in; a background job extra
 ### 🎙️ Voice — talk to your second brain
 A full hands-free agent, **100% self-hosted**: Silero VAD in the browser, faster-whisper STT and Kokoro/Chatterbox TTS on my rig, and the same agent core (with all its tools) in between. Barge-in works — interrupt it mid-sentence and it stops and listens. Typed messages run through the same loop and get spoken replies. The whole thing is fronted by a **GPU-particle reactor** (Three.js, 50k particles in a custom vertex shader) that breathes when idle, dances with your mic, collapses into a lightning-laced vortex while thinking, and erupts with the reply — plus a settings panel with a *live mic-probability meter* for tuning VAD sensitivity to your room.
 
+![Voice agent — GPU particle reactor](docs/screenshots/voice-agent.webp)
+
 ### 🤖 An MCP server for your agents
 MyMind exposes 11 tools over the Model Context Protocol — `search_memories`, `save_memory`, `search_docs`, `create_task`, `search/edit projects & tasks`. Point a coding agent at it and it can read your knowledge and write back to it, securely, with an API token.
 
@@ -54,7 +56,6 @@ A drag-and-drop kanban with projects/priorities; a **device-sync clipboard** (pa
 | ![Command palette](docs/screenshots/command-palette.png) **⌘K search across everything** | ![Gallery](docs/screenshots/gallery.png) **Image host + OCR tags** |
 | ![Kanban](docs/screenshots/tasks.png) **Tasks board** | ![Memories](docs/screenshots/memories.png) **Memory review** |
 | ![Sessions](docs/screenshots/sessions.png) **Session transcripts** | ![Clipboard](docs/screenshots/clipboard.png) **Device-sync clipboard** |
-| ![Voice reactor](docs/screenshots/voice.png) **Voice agent + particle reactor** | |
 
 ## How it works
 
