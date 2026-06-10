@@ -1,4 +1,4 @@
-export type AiRole = 'reasoning' | 'bulk' | 'embeddings' | 'vision' | 'stt' | 'tts'
+export type AiRole = 'reasoning' | 'bulk' | 'embeddings' | 'vision' | 'stt'
 export interface AiClient { baseURL?: string, apiKey?: string, model?: string }
 
 // OpenAI-spec endpoint config per role, env-driven. Cycle 2 adds the actual chat/embed calls.

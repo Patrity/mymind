@@ -72,8 +72,9 @@ export default defineNuxtConfig({
       bulk: { baseURL: process.env.AI_BULK_BASE_URL, apiKey: process.env.AI_BULK_API_KEY, model: process.env.AI_BULK_MODEL },
       embeddings: { baseURL: process.env.AI_EMBEDDINGS_BASE_URL, apiKey: process.env.AI_EMBEDDINGS_API_KEY, model: process.env.AI_EMBEDDINGS_MODEL },
       vision: { baseURL: process.env.AI_VISION_BASE_URL, apiKey: process.env.AI_VISION_API_KEY, model: process.env.AI_VISION_MODEL },
-      stt: { baseURL: process.env.AI_STT_BASE_URL, apiKey: process.env.AI_STT_API_KEY },
-      tts: { baseURL: process.env.AI_TTS_BASE_URL, apiKey: process.env.AI_TTS_API_KEY },
+      stt: { baseURL: process.env.AI_STT_BASE_URL, apiKey: process.env.AI_STT_API_KEY, model: process.env.AI_STT_MODEL },
+      ttsKokoro: { baseURL: process.env.AI_TTS_KOKORO_BASE_URL, apiKey: process.env.AI_TTS_KOKORO_API_KEY, model: process.env.AI_TTS_KOKORO_MODEL, voice: process.env.AI_TTS_KOKORO_VOICE },
+      ttsChatterbox: { baseURL: process.env.AI_TTS_CHATTERBOX_BASE_URL, apiKey: process.env.AI_TTS_CHATTERBOX_API_KEY, model: process.env.AI_TTS_CHATTERBOX_MODEL, voice: process.env.AI_TTS_CHATTERBOX_VOICE },
       rerankBaseUrl: process.env.AI_RERANK_BASE_URL ?? '',
       rerankApiKey: process.env.AI_RERANK_API_KEY ?? ''
     },
@@ -81,7 +82,7 @@ export default defineNuxtConfig({
   },
 
   nitro: {
-    experimental: { tasks: true },
+    experimental: { tasks: true, websocket: true },
     scheduledTasks: {
       '*/5 * * * *': ['embed-documents'],
       '*/10 * * * *': ['enrich-input'],
