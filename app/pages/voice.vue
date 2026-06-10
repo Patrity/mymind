@@ -1,19 +1,24 @@
 <script setup lang="ts">
 definePageMeta({ title: 'Voice' })
 
-const unmute = useUnmute()
+const voice = useVoice()
 const activity = useAgentActivity()
 
 // Reactor reads whichever analyser is active for the current state.
 const activeAnalyser = () =>
-  unmute.state.value === 'speaking' ? unmute.outAnalyser() : unmute.micAnalyser()
+  voice.state.value === 'speaking' ? voice.outAnalyser() : voice.micAnalyser()
 
-// Voice picker — changing it applies live mid-session. Reactive: the catalog is
-// fetched live from Unmute.
-const voiceItems = computed(() => unmute.voices.value.map(v => ({ label: v.label, value: v.id })))
-const voiceModel = computed({
-  get: () => unmute.voice.value,
-  set: (id: string) => unmute.setVoice(id)
+// Voice picker — fetched from same-origin proxy that aggregates both TTS providers.
+const { data: voiceList } = await useFetch('/api/voice/voices', {
+  default: () => ({ voices: [] as { provider: string, voice: string }[] })
+})
+const voiceItems = computed(() =>
+  voiceList.value.voices.map(v => ({ label: `${v.provider} · ${v.voice}`, value: `${v.provider}|${v.voice}` }))
+)
+const selectedVoice = ref('kokoro|af_heart')
+watch(selectedVoice, (val) => {
+  const [p, vc] = val.split('|') as [string, string]
+  voice.setVoice(p, vc)
 })
 </script>
 
@@ -26,17 +31,17 @@ const voiceModel = computed({
         </template>
         <template #right>
           <USelect
-            v-model="voiceModel"
+            v-model="selectedVoice"
             :items="voiceItems"
             value-key="value"
             icon="i-lucide-mic-vocal"
-            class="w-44"
+            class="w-56"
           />
           <UButton
-            v-if="!unmute.connected.value"
+            v-if="!voice.connected.value"
             icon="i-lucide-mic"
             label="Connect"
-            @click="unmute.start()"
+            @click="voice.start()"
           />
           <UButton
             v-else
@@ -44,7 +49,7 @@ const voiceModel = computed({
             variant="soft"
             icon="i-lucide-phone-off"
             label="Disconnect"
-            @click="unmute.stop()"
+            @click="voice.stop()"
           />
         </template>
       </UDashboardNavbar>
@@ -54,28 +59,28 @@ const voiceModel = computed({
       <div class="grid h-full grid-rows-[1fr_auto] gap-0 lg:grid-cols-[1.2fr_1fr] lg:grid-rows-1">
         <div class="relative flex items-center justify-center bg-elevated/20">
           <VoiceReactor
-            :state="unmute.state.value"
+            :state="voice.state.value"
             :analyser="activeAnalyser"
           />
           <span class="absolute bottom-4 text-xs uppercase tracking-widest text-muted">
-            {{ unmute.state.value }}
+            {{ voice.state.value }}
           </span>
           <UAlert
-            v-if="unmute.error.value"
+            v-if="voice.error.value"
             color="error"
             class="absolute top-4 mx-4"
-            :title="unmute.error.value"
+            :title="voice.error.value"
           />
         </div>
 
         <div class="flex min-h-0 flex-col border-l border-default">
           <VoiceTranscript
             class="flex-1 min-h-0"
-            :entries="unmute.transcript.value"
+            :entries="voice.transcript.value"
             :chips="activity.chips.value"
             @undo="activity.undo"
           />
-          <VoiceComposer :entries="unmute.transcript.value" />
+          <VoiceComposer :entries="voice.transcript.value" />
         </div>
       </div>
     </template>
