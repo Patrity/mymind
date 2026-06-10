@@ -1,6 +1,6 @@
 // server/lib/agent/run.ts
 import { streamText as realStreamText, stepCountIs } from 'ai'
-import { reasoningModel } from './model'
+import { reasoningModels } from './model'
 import { buildAiTools } from './ai-tools'
 import { agentTools as realRegistry } from './tools'
 import { buildSystemPrompt } from './prompt'
@@ -30,19 +30,28 @@ export async function* runAgent(
   const queue: AgentEvent[] = []
   const tools = buildAiTools(registry, { signal: ctx.signal, onEvent: e => queue.push(e) })
 
-  // Only resolve the real model when the real streamText is in use; injected
-  // fakes ignore their args so we skip the Nuxt useRuntimeConfig() call.
-  const model = deps.streamText ? (undefined as never) : reasoningModel()
-
   publishActivity({ type: 'state', state: 'thinking' })
-  const result = (streamTextFn as unknown as typeof realStreamText)({
-    model,
-    system: buildSystemPrompt(ctx.voice ?? false),
-    messages: messages.filter(m => m.role !== 'system'),
-    tools,
-    stopWhen: stepCountIs(VOICE_TUNING.agent.maxSteps),
-    abortSignal: ctx.signal
-  })
+
+  // Build the stream, trying each reasoning model in priority order. If stream
+  // creation throws (bad baseURL, adapter construction), fall over to the next.
+  // Mid-stream failures are NOT retried.
+  const models = deps.streamText ? [undefined as never] : await reasoningModels()
+  let result: ReturnType<typeof realStreamText> | undefined
+  let lastErr: unknown
+  for (const model of models) {
+    try {
+      result = (streamTextFn as unknown as typeof realStreamText)({
+        model,
+        system: buildSystemPrompt(ctx.voice ?? false),
+        messages: messages.filter(m => m.role !== 'system'),
+        tools,
+        stopWhen: stepCountIs(VOICE_TUNING.agent.maxSteps),
+        abortSignal: ctx.signal
+      })
+      break
+    } catch (err) { lastErr = err }
+  }
+  if (!result) throw lastErr ?? new Error('no reasoning model available')
 
   for await (const part of result.fullStream) {
     while (queue.length) yield queue.shift()!
