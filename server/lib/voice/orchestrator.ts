@@ -9,7 +9,7 @@ export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
   | { type: 'tool'; name: string; summary: string; undoToken?: string }
   | { type: 'audio'; bytes: Uint8Array }
-  | { type: 'state'; state: 'thinking' | 'speaking' | 'idle' }
+  | { type: 'state'; state: 'thinking' | 'speaking' | 'tool' | 'idle' }
 
 export interface UtteranceDeps {
   stt: SttProvider
@@ -57,8 +57,11 @@ export async function handleUtterance(audio: Uint8Array, history: AgentMessage[]
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })
       for (const chunk of chunker.push(ev.text)) await speak(chunk)
+    } else if (ev.type === 'tool-start') {
+      deps.emit({ type: 'state', state: 'tool' })
     } else if (ev.type === 'tool-result') {
       deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken })
+      deps.emit({ type: 'state', state: 'thinking' })
     }
   }
   if (deps.signal.aborted) return messages
