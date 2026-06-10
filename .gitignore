@@ -36,3 +36,4 @@ IMG_*.png
 
 # Git worktrees created for isolated feature work
 .claude/worktrees/
+.superpowers
