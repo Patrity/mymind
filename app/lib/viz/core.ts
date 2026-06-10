@@ -38,7 +38,9 @@ void main() {
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mv;
   gl_PointSize = uSize * (0.6 + aSeed.w) * (1.0 + uEnergy * 0.7) * (220.0 / -mv.z);
-  vAlpha = (1.0 - uDim * 0.75) * (0.3 + 0.7 * aSeed.w);
+  // disconnected: slow, irregular per-particle flicker (uDim≈1); negligible at idle dim
+  float flick = 1.0 - uDim * uDim * 0.35 * (0.5 + 0.5 * sin(uTime * (0.6 + aSeed.x * 0.9) + aSeed.y * 6.2831));
+  vAlpha = (1.0 - uDim * 0.75) * (0.3 + 0.7 * aSeed.w) * flick;
 }
 `
 

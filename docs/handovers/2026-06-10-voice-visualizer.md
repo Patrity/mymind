@@ -11,12 +11,12 @@ shipped:
   - "server/lib/voice/orchestrator.ts — emits state:'tool' on tool-start, back to state:'thinking' after tool-result chip; widened VoiceEvent state union to include 'tool'. test/orchestrator.test.ts extended with tool-state test."
   - "app/composables/useVoice.ts — VoiceState widened to 'connecting'|'idle'|'listening'|'thinking'|'speaking'|'tool'; onVizEvent emitter (bargein on barge-in, error on WS error + startup failure, sttFinal via messages mapper, disconnected on close); startup failure tears down cleanly (no stuck 'connecting' state); state set to 'connecting' in start(), back to 'idle' on WS open."
   - "app/lib/viz/scene.ts — WebGLRenderer + EffectComposer + UnrealBloomPass; quality tiers (mobile 10k/1.5x DPR/0.5 bloom; ≤4 cores 25k/2x/0.75; else 50k/2x/1.0); degrade() drops pixel ratio 25% one-way; bloom scale re-applied on every resize; bloom.dispose() included in cleanup."
-  - "app/lib/viz/core.ts — GPU particle sphere, all motion in GLSL vertex shader (swirl vortex with flatten, breathe+burst+ignite, barge-in shatter via aScatter, connect assembly); uSize 0.1 (~3-5px points with distance scaling); additive glow discs; dt-scaled rotation."
+  - "app/lib/viz/core.ts — GPU particle sphere, all motion in GLSL vertex shader (swirl vortex with flatten, breathe+burst+ignite, barge-in shatter via aScatter, connect assembly, slow irregular per-particle flicker when disconnected uDim≈1); uSize 0.1 (~3-5px points with distance scaling); additive glow discs; dt-scaled rotation."
   - "app/lib/viz/ring.ts — 96 InstancedMesh bars at radius 2.5; mic FFT heights; sympathetic ripple from outLevel; error shockwave sweep via per-instance color lerp with ERROR_RED."
   - "app/lib/viz/effects.ts — 3 amber tool pulse rings (dt-scaled phase, opacity decay); 160-slot pooled transcription sparks spawned at ring perimeter, moving inward toward core over 0.8s lifetime."
   - "app/components/voice/Reactor.client.vue — thin mount; RAF loop samples mic FFT→96 bands + outLevel; FPS watchdog (EWMA dt, trips below ~27fps sustained 3s; step 1 scene.degrade(), step 2 core.setDrawRange(0.5)); ResizeObserver; visibilitychange pause; context-loss rebuild; WebGL2-check + CSS-pulse fallback; partial-init disposal on boot failure."
   - "app/pages/voice.vue — passes state/connected/micAnalyser/outAnalyser/onVizEvent to Reactor; activeAnalyser helper removed."
-  - "test/viz-emitter.test.ts — 3 tests (delivery, unsubscribe, unsubscribe-during-emit safety)."
+  - "test/viz-emitter.test.ts — 4 tests (delivery, multiple subscribers, unsubscribe, unsubscribe-during-emit safety)."
   - "test/viz-choreographer.test.ts — 14 tests covering color lerp, shatter impulse + decay, disconnected derivation, assemble reset on connecting, ignite on WS open, sttFinal sparks consumed-once, mic attack > release, error decay, tool pulseRate."
   - "test/voice-messages.test.ts — 5 tests covering user/assistant transcripts, state mapping (including tool), playing-guard for idle, unknown messages."
   - "docs/wiki/voice-agent.md — updated to describe current visualizer architecture (cycle 19); WS protocol table corrected (transcript: text not delta; state: state not value; tool added)."
@@ -88,9 +88,9 @@ These were caught and fixed during implementation — they are the as-shipped be
 
 ### Tests
 
-182 tests passing (was 182 before; new tests added for viz/messages/orchestrator, existing tests unbroken):
+182 tests passing (was 157 before this cycle; +25 new tests added for viz/messages/orchestrator, existing tests unbroken):
 
-- 3 emitter tests
+- 4 emitter tests
 - 14 choreographer tests
 - 5 voice-messages tests
 - 1 orchestrator tool-state test (appended to existing orchestrator test)

@@ -58,6 +58,7 @@ function boot(el: HTMLDivElement) {
   let degradeStep = 0
   let dtAvg = 1 / 60
   let slowSince = 0
+  let frameErrors = 0
 
   let last = performance.now()
   let t = 0
@@ -67,39 +68,50 @@ function boot(el: HTMLDivElement) {
     last = now
     t += dt
 
-    const mic = props.micAnalyser()
-    if (mic) {
-      mic.getByteFrequencyData(micData as Uint8Array<ArrayBuffer>)
-      for (let i = 0; i < BAR_COUNT; i++) {
-        micLevels[i] = (micData[Math.floor(i * micData.length / BAR_COUNT)] ?? 0) / 255
+    try {
+      const mic = props.micAnalyser()
+      if (mic) {
+        mic.getByteFrequencyData(micData as Uint8Array<ArrayBuffer>)
+        for (let i = 0; i < BAR_COUNT; i++) {
+          micLevels[i] = (micData[Math.floor(i * micData.length / BAR_COUNT)] ?? 0) / 255
+        }
+      } else {
+        micLevels.fill(0)
       }
-    } else {
-      micLevels.fill(0)
-    }
-    let outLevel = 0
-    const out = props.outAnalyser()
-    if (out) {
-      out.getByteFrequencyData(outData as Uint8Array<ArrayBuffer>)
-      let sum = 0
-      for (let i = 0; i < outData.length; i++) sum += outData[i] ?? 0
-      outLevel = sum / outData.length / 255
-    }
+      let outLevel = 0
+      const out = props.outAnalyser()
+      if (out) {
+        out.getByteFrequencyData(outData as Uint8Array<ArrayBuffer>)
+        let sum = 0
+        for (let i = 0; i < outData.length; i++) sum += outData[i] ?? 0
+        outLevel = sum / outData.length / 255
+      }
 
-    const d = choreo.update({ state: props.state, connected: props.connected, micLevels, outLevel }, dt)
-    core!.update(d, t, dt)
-    ring!.update(d, t, dt)
-    fx!.update(d, t, dt)
-    scene!.render()
+      const d = choreo.update({ state: props.state, connected: props.connected, micLevels, outLevel }, dt)
+      core!.update(d, t, dt)
+      ring!.update(d, t, dt)
+      fx!.update(d, t, dt)
+      scene!.render()
 
-    dtAvg += (dt - dtAvg) * 0.05 // ~smooth over the last couple seconds of frames
-    if (dtAvg > 1 / 27) { if (!slowSince) slowSince = now }
-    else slowSince = 0
-    if (slowSince && now - slowSince > 3000 && degradeStep < 2) {
-      degradeStep++
-      if (degradeStep === 1) scene!.degrade()
-      else core!.setDrawRange(0.5)
-      slowSince = 0
-      dtAvg = 1 / 60 // re-measure from a clean slate after each step
+      dtAvg += (dt - dtAvg) * 0.05 // ~smooth over the last couple seconds of frames
+      if (dtAvg > 1 / 27) { if (!slowSince) slowSince = now }
+      else slowSince = 0
+      if (slowSince && now - slowSince > 3000 && degradeStep < 2) {
+        degradeStep++
+        if (degradeStep === 1) scene!.degrade()
+        else core!.setDrawRange(0.5)
+        slowSince = 0
+        dtAvg = 1 / 60 // re-measure from a clean slate after each step
+      }
+
+      frameErrors = 0
+    } catch (err) {
+      // A persistent render fault should degrade to the CSS fallback, not spam forever.
+      if (++frameErrors >= 10) {
+        console.error('[viz] persistent frame failure — falling back', err)
+        teardown?.()
+        webglOk.value = false
+      }
     }
   }
   raf = requestAnimationFrame(frame)

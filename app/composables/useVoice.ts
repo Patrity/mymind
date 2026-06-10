@@ -98,7 +98,7 @@ export function useVoice() {
   }
 
   async function start() {
-    if (ws) return
+    if (ws || state.value === 'connecting') return
     error.value = null
     state.value = 'connecting'
     try {
