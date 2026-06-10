@@ -9,11 +9,14 @@ const ai = () => (useRuntimeConfig().ai as Record<string, AiCfg>)
 
 export function makeStt(): SttProvider {
   const c = ai().stt ?? {}
-  return whisperStt({ baseURL: c.baseURL!, model: c.model || 'deepdml/faster-whisper-large-v3-turbo-ct2', apiKey: c.apiKey })
+  // Fail with a config message, not a cryptic relative-URL fetch error.
+  if (!c.baseURL) throw new Error('STT is not configured (set AI_STT_BASE_URL)')
+  return whisperStt({ baseURL: c.baseURL, model: c.model || 'deepdml/faster-whisper-large-v3-turbo-ct2', apiKey: c.apiKey })
 }
 export function makeTts(name: TtsName): TtsProvider {
   const c = ai()[name === 'kokoro' ? 'ttsKokoro' : 'ttsChatterbox'] ?? {}
-  return openAiTts({ baseURL: c.baseURL!, model: c.model || name, apiKey: c.apiKey })
+  if (!c.baseURL) throw new Error(`TTS provider "${name}" is not configured (set AI_TTS_${name.toUpperCase()}_BASE_URL)`)
+  return openAiTts({ baseURL: c.baseURL, model: c.model || name, apiKey: c.apiKey })
 }
 export function defaultVoice(name: TtsName): string {
   const c = ai()[name === 'kokoro' ? 'ttsKokoro' : 'ttsChatterbox'] ?? {}

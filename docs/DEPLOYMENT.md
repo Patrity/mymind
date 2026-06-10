@@ -68,12 +68,15 @@ Extensions are created automatically on **first** DB boot via `db/init/01-extens
 | `AI_REASONING_*` | for AI | strong model (`:8004`) — memory enrichment, transcription cleanup, `/input` proposals. |
 | `AI_EMBEDDINGS_*` | for AI | TEI `:8882`, **keyless**, 2560-dim. Powers semantic search + embeddings. |
 | `AI_VISION_*` | for OCR | `:8005` (8B, weak/flaky — OCR will occasionally blip, no longer loops). |
-| `AI_BULK_* / AI_STT_* / AI_TTS_*` | optional | configured, not all exercised yet. |
+| `AI_BULK_*` | optional | bulk model role. |
+| `AI_STT_* / AI_TTS_KOKORO_* / AI_TTS_CHATTERBOX_*` | for voice | the `/voice` page needs STT + at least one TTS provider (see the cycle-18 block in `.env.example`). |
 | `AI_RERANK_*` | optional | Qwen3-Reranker `:8883` for memory-search relevance. OFF unless `BASE_URL` set. |
 | `MEMORY_AUTO_REVIEW_THRESHOLD` | optional | default `0.75`; memories ≥ this auto-review. |
 | `STORAGE_DRIVER` / `STORAGE_LOCAL_DIR` | ✅ | `local` + `/app/.data/uploads` (a mounted volume in compose). `s3` + `STORAGE_S3_*` to use S3. |
 | `MAX_UPLOAD_BYTES` | optional | default 50 MB. |
 | `NITRO_PORT` / `NITRO_HOST` | optional | default `3000` / `0.0.0.0`. |
+
+> **How `AI_*` env actually reaches the app:** these are `runtimeConfig` values. They're baked at *image build* time — and bake **empty** in Docker because `.dockerignore` excludes `.env` — and at runtime Nitro only applies overrides from **`NUXT_`/`NITRO_`-prefixed** env vars; plain `AI_*` names in `env_file` do nothing by themselves. `docker-compose.prod.yml` therefore maps every plain `AI_*` name onto its `NUXT_AI_*` key, keeping the plain names in `.env` as the single source of truth. If an AI feature reports "not configured" despite a correct `.env`, check that the compose mapping covers the var.
 
 ## 5. Bootstrap the account + machine tokens
 

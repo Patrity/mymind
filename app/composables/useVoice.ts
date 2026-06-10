@@ -92,13 +92,20 @@ export function useVoice() {
     } catch { /* skip undecodable */ }
   }
 
+  // Bumped on every stop(): async startup steps (VAD model/wasm fetches can take
+  // seconds over WAN) bail out when their session is stale instead of constructing
+  // audio nodes on a closed AudioContext ("No execution context available").
+  let session = 0
+
   async function start() {
     if (ws || state.value === 'connecting') return
     error.value = null
     state.value = 'connecting'
+    const mySession = ++session
     try {
-      await startInner()
+      await startInner(mySession)
     } catch (err) {
+      if (mySession !== session) return // torn down mid-start — stop() already cleaned up
       // VAD asset import or mic permission failure would otherwise strand the
       // UI in 'connecting' (or leave a live WS with no mic). Tear down fully.
       error.value = err instanceof Error ? err.message : 'Voice startup failed'
@@ -107,7 +114,7 @@ export function useVoice() {
     }
   }
 
-  async function startInner() {
+  async function startInner(mySession: number) {
     audioCtx = new AudioContext()
     outAnalyser = audioCtx.createAnalyser()
     outAnalyser.fftSize = 256
@@ -140,13 +147,14 @@ export function useVoice() {
       }
     }
 
-    await startVad()
+    await startVad(mySession)
   }
 
-  async function startVad() {
+  async function startVad(mySession: number) {
     // Dynamic import keeps onnxruntime-web out of the SSR bundle (cached after first call)
     const { MicVAD } = await import('@ricky0123/vad-web')
-    vad = await MicVAD.new({
+    if (mySession !== session || !audioCtx) return // stopped while the module loaded
+    const v = await MicVAD.new({
       audioContext: audioCtx!,
       // Serve VAD worklet + ONNX model and onnxruntime-web WASM from our own origin
       // (mapped in nuxt.config nitro.publicAssets). Without these, vad-web defaults to
@@ -180,7 +188,9 @@ export function useVoice() {
         if (ws?.readyState === WebSocket.OPEN) ws.send(floatToWav(audio, 16000))
       },
     })
-    vad.start()
+    if (mySession !== session) { v.destroy(); return } // stopped during the (slow) model fetch
+    vad = v
+    v.start()
   }
 
   /**
@@ -190,15 +200,18 @@ export function useVoice() {
    */
   async function applyVadSettings() {
     if (!vad || !audioCtx) return
+    const mySession = session
     await vad.destroy()
+    if (mySession !== session) return // stop() landed mid-restart
     vad = null
     vizStream?.getTracks().forEach(t => t.stop())
     vizStream = null
     speechProb.value = 0
-    await startVad()
+    await startVad(mySession)
   }
 
   function stop() {
+    session++ // invalidate any in-flight startup/restart
     vad?.destroy()
     stopPlayback()
     ws?.close()
