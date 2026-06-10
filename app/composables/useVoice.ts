@@ -25,6 +25,7 @@ export function useVoice() {
   let audioCtx: AudioContext | null = null
   let micAnalyser: AnalyserNode | null = null
   let outAnalyser: AnalyserNode | null = null
+  let vizStream: MediaStream | null = null
   let playCursor = 0
   let sources: AudioBufferSourceNode[] = []
 
@@ -60,6 +61,7 @@ export function useVoice() {
   }
 
   async function start() {
+    if (ws) return
     error.value = null
 
     // Dynamic import keeps onnxruntime-web out of the SSR bundle
@@ -90,6 +92,15 @@ export function useVoice() {
     }
 
     vad = await MicVAD.new({
+      audioContext: audioCtx,
+      getStream: async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } })
+        vizStream = stream
+        try {
+          audioCtx!.createMediaStreamSource(stream).connect(micAnalyser!)
+        } catch { /* visualization only — ignore */ }
+        return stream
+      },
       positiveSpeechThreshold: TUNING.positiveSpeechThreshold,
       negativeSpeechThreshold: TUNING.negativeSpeechThreshold,
       minSpeechMs: TUNING.minSpeechMs,
@@ -113,9 +124,11 @@ export function useVoice() {
     vad?.destroy()
     stopPlayback()
     ws?.close()
+    vizStream?.getTracks().forEach(t => t.stop())
     audioCtx?.close()
     vad = null
     ws = null
+    vizStream = null
     audioCtx = null
     state.value = 'idle'
     connected.value = false
