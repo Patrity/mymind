@@ -50,3 +50,15 @@ export function languageModel(m: ResolvedModel): LanguageModel {
     apiKey: m.apiKey || 'none'
   })(m.modelId)
 }
+
+import { loadConfig } from './store'
+
+/** Cached: ordered decrypted chain for a usage (loads the doc once). */
+export async function resolveChain(usage: Usage): Promise<ResolvedModel[]> {
+  return resolveChainFrom(await loadConfig(), usage)
+}
+
+/** Cached: run fn against the usage's chain with failover. */
+export async function withFailover<T>(usage: Usage, fn: (m: ResolvedModel) => Promise<T>): Promise<T> {
+  return withFailoverOver(usage, await resolveChain(usage), fn)
+}
