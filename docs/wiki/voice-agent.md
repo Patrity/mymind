@@ -1,8 +1,8 @@
 ---
 title: Voice Agent
 status: shipped
-cycle: 18
-updated: 2026-06-09
+cycle: 19
+updated: 2026-06-10
 ---
 
 # Voice Agent
@@ -101,9 +101,9 @@ The client (`useVoice.ts`) mirrors the `vad` / `turn` / `bargeIn` subset so thre
 | Message | Shape | Meaning |
 |---|---|---|
 | Binary | `ArrayBuffer` (WAV/PCM) | TTS audio chunk (one per sentence) |
-| Text | `{type:'transcript', role, delta}` | Incremental transcript line |
-| Text | `{type:'tool', name, state, result?}` | Tool execution chip |
-| Text | `{type:'state', value}` | Orchestrator state: `idle`/`listening`/`thinking`/`speaking` |
+| Text | `{type:'transcript', role, text}` | Transcript line (role: `user` or `assistant`) |
+| Text | `{type:'tool', name, summary, undoToken?}` | Tool execution chip |
+| Text | `{type:'state', state}` | Orchestrator state: `idle`/`thinking`/`speaking`/`tool` |
 
 ## Env vars
 
@@ -131,13 +131,80 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 | File | Purpose |
 |---|---|
 | `app/pages/voice.vue` | Layout: reactor, transcript, composer, connection state |
-| `app/composables/useVoice.ts` | VAD, WAV encoding, WebSocket, PCM playback, barge-in |
+| `app/composables/useVoice.ts` | VAD, WAV encoding, WebSocket, PCM playback, barge-in; exposes `onVizEvent` emitter |
 | `app/composables/useAgentActivity.ts` | SSE → tool chips, undo tokens, agent state |
 | `app/composables/useTextChat.ts` | Typed fallback over `/api/agent/chat` |
-| `app/components/voice/Reactor.client.vue` | Three.js reactor (amplitude → scale/emissive; state → palette) |
+| `app/components/voice/Reactor.client.vue` | Thin mount: RAF loop, FFT sampling, FPS watchdog, context-loss rebuild, CSS fallback |
 | `app/components/voice/Transcript.vue` | Live transcript + tool-action chips + Undo buttons |
 | `app/components/voice/Composer.vue` | Typed fallback input |
 | `app/components/voice/VoicePicker.vue` | Voice selector (fetches live catalog from providers) |
+| `app/lib/viz/types.ts` | `BAR_COUNT` (96), `VizState` (7), `VizEvent`, `Directives`, `PALETTE` |
+| `app/lib/viz/emitter.ts` | Generic typed event emitter used by `useVoice` |
+| `app/lib/viz/choreographer.ts` | Pure-TS per-frame state machine: voice state + events + audio levels → `Directives` |
+| `app/lib/viz/scene.ts` | WebGLRenderer + EffectComposer + UnrealBloomPass; quality tiers; `degrade()` |
+| `app/lib/viz/core.ts` | GPU particle sphere — all motion in GLSL vertex shader |
+| `app/lib/viz/ring.ts` | 96-bar InstancedMesh mic-frequency ring + error shockwave coloring |
+| `app/lib/viz/effects.ts` | 3 amber tool-pulse rings + 160-slot pooled transcription sparks |
+| `app/lib/voice/messages.ts` | Pure WS-message → `{state, delta, events}` mapper (tested, no mocks needed) |
+
+## Voice Visualizer (cycle 19)
+
+The `/voice` page renders a live Three.js visualizer driven entirely by voice state and audio levels. The hard boundary is *signals in → pixels out*: `useVoice` never imports Three.js; the `lib/viz/` units never touch the WebSocket.
+
+### Signal flow
+
+```
+useVoice  ──(state + connected)──►  Reactor.client.vue  ──►  choreographer  ──►  core / ring / effects
+            ──(onVizEvent)─────►            │                  (Directives)
+mic AnalyserNode ──FFT──────────────────────┘
+out AnalyserNode ──amplitude────────────────┘
+```
+
+### Seven visual states
+
+`VizState` has 7 values. The first 6 map 1:1 to `VoiceState`; `disconnected` is derived by the choreographer whenever `connected === false` (it is not part of `VoiceState`):
+
+| State | Core (agent sphere) | Ring (mic bars) | Palette |
+|---|---|---|---|
+| `connecting` | Particles scattered → assembling; ignition swell on WS open | Flat/dim | Dim blue |
+| `idle` | Slow breathing, dim, lazy rotation | Near-flat shimmer | Blue |
+| `listening` | Calm, slightly brighter | Full 96-bar FFT dance | Cyan ring, blue core |
+| `thinking` | Fast swirling vortex (sphere flattens) | Quiet | Violet |
+| `speaking` | Burst/scatter driven by TTS amplitude | Faint sympathetic ripple | Bright cyan |
+| `tool` | Vortex at reduced energy | Quiet | Amber + radiating pulse rings |
+| `disconnected` | Sagged/dim sphere, slow irregular flicker | Off | Desaturated gray-blue |
+
+All transitions are lerped (no hard cuts). The pre-connect look is `disconnected` — the sphere wakes up through `connecting → idle` (ignition impulse on WS open).
+
+### Event impulses
+
+Events are one-shot impulses layered on the active state — they decay, not switch state:
+
+| `VizEvent` | Effect |
+|---|---|
+| `bargein` | `shatter` spike → particles fly outward then re-form as state flips to `listening` |
+| `error` | `errorFlash` → red shockwave sweeps the ring + brief red tint in core (~700 ms) |
+| `sttFinal` | `sparks` count → transcription spark particles stream from the ring inward to the core |
+| `disconnected` | Structural (derived from `connected === false`); event emitted for future consumers |
+
+### Quality tiers and watchdog
+
+`detectTier()` (in `scene.ts`) selects a tier at mount based on UA + `hardwareConcurrency`:
+
+| Tier | Particles | Pixel-ratio cap | Bloom scale |
+|---|---|---|---|
+| Mobile | 10 k | 1.5 | 0.5 |
+| ≤ 4 cores | 25 k | 2 | 0.75 |
+| Desktop | 50 k | 2 | 1.0 |
+
+The **FPS watchdog** in `Reactor.client.vue` uses an EWMA of frame `dt`. If frames stay below ~27 fps for 3 seconds, it steps quality down — step 1: `scene.degrade()` (drops pixel ratio 25%); step 2: `core.setDrawRange(0.5)` (halves particle draw range). Both steps are one-way per session.
+
+### Resilience
+
+- Tab hidden → RAF paused; resumes on `visibilitychange`.
+- WebGL context loss → `onContextLost` callback triggers full teardown + rebuild.
+- Init failure → `webglOk` flag flipped, CSS `animate-pulse` circle rendered as fallback; voice audio unaffected.
+- Unmount → full `geo.dispose()` / `mat.dispose()` / `composer.dispose()` / `renderer.dispose()` chain.
 
 ## Cross-references
 

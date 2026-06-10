@@ -1,7 +1,7 @@
 ---
 title: MyMind Master Roadmap
 status: active
-updated: 2026-06-09
+updated: 2026-06-10
 read_first: true
 ---
 
@@ -68,6 +68,7 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 | 16 | **CD → homelab Proxmox LXC** — Actions: ci → build image → deploy (pull-based / self-hosted runner / SSH). Migrate-on-deploy. | planned | — | — | — |
 | 17 | **Voice Agent ("Jarvis")** — `/voice` page; Unmute STT/TTS with barge-in re-pointed at a Nitro agent loop (`/api/agent/llm`, OpenAI-spec); shared tool registry (11 tools) used by voice, MCP, and future text-chat; Three.js reactor; universal undo. Subsumes cycle 14 agent core. **Superseded by cycle 18.** | ✅ shipped | [spec](../specs/2026-06-08-voice-agent-jarvis-design.md) | [plan](2026-06-08-voice-agent-jarvis.md) | [handover](../../handovers/2026-06-08-voice-agent.md) |
 | 18 | **Voice Agent v2 (self-hosted, self-orchestrated)** — Replaced Unmute with a fully owned TS pipeline: Silero VAD + WAV barge-in (client), Nitro WS orchestrator, swappable OpenAI-spec STT (faster-whisper) + TTS (Kokoro/Chatterbox) providers, Vercel AI SDK `runAgent` core shared by voice + chat + cron. Unmute stack removed. | ✅ shipped | [spec](../specs/2026-06-09-voice-self-hosted-redesign-design.md) | — | [handover](../../handovers/2026-06-09-voice-v2.md) |
+| 19 | **Voice Visualizer Redesign** — Replaced placeholder wireframe icosahedron + 48-point ring with a GPU-particle Three.js visualizer: 50k-particle sphere core (GLSL vertex-shader motion), 96-bar instanced mic-frequency ring, tool pulse rings + transcription sparks. Pure-TS choreographer (14 unit tests) drives all state transitions and event impulses (barge-in shatter, error shockwave, sttFinal sparks, connect assembly). Quality tiers + FPS watchdog + context-loss rebuild + CSS fallback. `useVoice` gains `connecting`/`tool` states and `onVizEvent` emitter. Manual desktop+phone tuning pass pending. | ✅ shipped | [spec](../specs/2026-06-09-voice-visualizer-redesign-design.md) | [plan](2026-06-09-voice-visualizer-redesign.md) | [handover](../../handovers/2026-06-10-voice-visualizer.md) |
 
 > Also tracked in the backlog (not yet cycled): GitHub-commits→memory, session-summarization worker, image semantic search, video→webm, EXIF scrub, bridget data migration, and assorted tech-debt. See [`docs/BACKLOG.md`](../../BACKLOG.md).
 

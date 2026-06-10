@@ -1,6 +1,6 @@
 # Voice Visualizer Redesign Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace the placeholder voice reactor with a GPU-particle Three.js visualizer — particle sphere core (agent voice) + 96-bar mic frequency ring — with 7 choreographed visual states and event impulses (barge-in shatter, error shockwave, transcription sparks, connect assembly).
 
@@ -47,7 +47,7 @@
 - Create: `app/lib/viz/emitter.ts`
 - Test: `test/viz-emitter.test.ts`
 
-- [ ] **Step 1: Write the failing emitter test**
+- [x] **Step 1: Write the failing emitter test**
 
 ```ts
 // test/viz-emitter.test.ts
@@ -83,12 +83,12 @@ describe('createEmitter', () => {
 })
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm vitest run test/viz-emitter.test.ts`
 Expected: FAIL — `Cannot find module '../app/lib/viz/emitter'`
 
-- [ ] **Step 3: Write types.ts and emitter.ts**
+- [x] **Step 3: Write types.ts and emitter.ts**
 
 ```ts
 // app/lib/viz/emitter.ts
@@ -157,12 +157,12 @@ export const PALETTE: Record<VizState, { core: [number, number, number]; ring: [
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run test/viz-emitter.test.ts`
 Expected: PASS (3 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/lib/viz/types.ts app/lib/viz/emitter.ts test/viz-emitter.test.ts
@@ -177,7 +177,7 @@ git commit -m "feat(viz): types, palette, event emitter for visualizer redesign"
 - Create: `app/lib/viz/choreographer.ts`
 - Test: `test/viz-choreographer.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // test/viz-choreographer.test.ts
@@ -271,12 +271,12 @@ describe('choreographer', () => {
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pnpm vitest run test/viz-choreographer.test.ts`
 Expected: FAIL — `Cannot find module '../app/lib/viz/choreographer'`
 
-- [ ] **Step 3: Implement the choreographer**
+- [x] **Step 3: Implement the choreographer**
 
 ```ts
 // app/lib/viz/choreographer.ts
@@ -400,12 +400,12 @@ export function createChoreographer() {
 
 Note on UX: before the user ever clicks Connect, `state='idle'` + `connected=false` renders as `disconnected` (dim, sagged sphere). This is intended — the sphere "wakes up" through connecting → ignite when they connect.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pnpm vitest run test/viz-choreographer.test.ts`
 Expected: PASS (9 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/lib/viz/choreographer.ts test/viz-choreographer.test.ts
@@ -422,7 +422,7 @@ git commit -m "feat(viz): choreographer state machine (lerped transitions, event
 
 This extracts the WS-message → state/transcript/event logic out of `useVoice.onmessage` so it's unit-testable (the spec's "useVoice event emission" coverage — the composable itself needs WebSocket/AudioContext/VAD mocks, so we test the pure mapping instead and keep the composable wiring trivial).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```ts
 // test/voice-messages.test.ts
@@ -462,12 +462,12 @@ describe('mapServerMessage', () => {
 })
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pnpm vitest run test/voice-messages.test.ts`
 Expected: FAIL — `Cannot find module '../app/lib/voice/messages'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```ts
 // app/lib/voice/messages.ts
@@ -501,12 +501,12 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pnpm vitest run test/voice-messages.test.ts`
 Expected: PASS (5 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/lib/voice/messages.ts test/voice-messages.test.ts
@@ -523,7 +523,7 @@ git commit -m "feat(voice): pure server-message mapping (state/transcript/viz ev
 
 The agent loop already yields `tool-start` events (`server/lib/agent/run.ts:14`, surfaced via `buildAiTools.onEvent`); the orchestrator currently drops them. `server/api/voice/ws.ts` forwards every non-audio event as JSON, so no transport change is needed.
 
-- [ ] **Step 1: Add the failing test**
+- [x] **Step 1: Add the failing test**
 
 Append to `test/orchestrator.test.ts` (a second fake with a `tool-start` yield; the existing test and fake stay untouched):
 
@@ -551,12 +551,12 @@ it('emits state:tool on tool-start and returns to thinking on tool-result', asyn
 })
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm vitest run test/orchestrator.test.ts`
 Expected: FAIL — `toolIdx` is `-1` (no `state: 'tool'` emitted)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `server/lib/voice/orchestrator.ts`, widen the state union and handle `tool-start`:
 
@@ -576,12 +576,12 @@ In the `for await (const ev of run(...))` loop, replace the `tool-result` branch
     }
 ```
 
-- [ ] **Step 4: Run the orchestrator tests**
+- [x] **Step 4: Run the orchestrator tests**
 
 Run: `pnpm vitest run test/orchestrator.test.ts`
 Expected: PASS (both tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/lib/voice/orchestrator.ts test/orchestrator.test.ts
@@ -605,7 +605,7 @@ const PALETTE: Record<VoiceState, number> = {
 }
 ```
 
-- [ ] **Step 1: Apply the useVoice edits**
+- [x] **Step 1: Apply the useVoice edits**
 
 1. Imports (top of file):
 
@@ -680,14 +680,14 @@ export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'spe
     onVizEvent: events.on,
 ```
 
-- [ ] **Step 2: Apply the temporary PALETTE patch to the old Reactor (shown above)**
+- [x] **Step 2: Apply the temporary PALETTE patch to the old Reactor (shown above)**
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run: `pnpm typecheck && pnpm test`
 Expected: both pass (no behavior change is covered by existing tests; this is wiring)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/composables/useVoice.ts app/components/voice/Reactor.client.vue
@@ -706,7 +706,7 @@ git commit -m "feat(voice): connecting/tool states + viz event emitter in useVoi
 
 No unit tests (WebGL); the gate is `pnpm typecheck` + the E2E/manual pass in Task 8. Keep imports relative.
 
-- [ ] **Step 1: scene.ts — renderer, bloom, tiers, degrade**
+- [x] **Step 1: scene.ts — renderer, bloom, tiers, degrade**
 
 ```ts
 // app/lib/viz/scene.ts
@@ -791,7 +791,7 @@ export function createScene(el: HTMLElement, tier: QualityTier): VizScene {
 }
 ```
 
-- [ ] **Step 2: core.ts — GPU particle sphere**
+- [x] **Step 2: core.ts — GPU particle sphere**
 
 All per-particle motion runs in the vertex shader; the CPU only sets ~10 uniforms per frame. `position` doubles as the formed-sphere location; `aScatter` is each particle's "exploded" location (used by both barge-in shatter and connect assembly); `aSeed` carries per-particle randomness. Note `flat` is a reserved GLSL word — the flatten variable must not use it.
 
@@ -923,7 +923,7 @@ export function createCore(particles: number) {
 }
 ```
 
-- [ ] **Step 3: ring.ts — instanced mic-frequency bars**
+- [x] **Step 3: ring.ts — instanced mic-frequency bars**
 
 ```ts
 // app/lib/viz/ring.ts
@@ -978,7 +978,7 @@ export function createRing() {
 }
 ```
 
-- [ ] **Step 4: effects.ts — tool pulses + transcription sparks**
+- [x] **Step 4: effects.ts — tool pulses + transcription sparks**
 
 ```ts
 // app/lib/viz/effects.ts
@@ -1073,7 +1073,7 @@ export function createEffects() {
 }
 ```
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `pnpm typecheck`
 Expected: PASS
@@ -1091,7 +1091,7 @@ git commit -m "feat(viz): Three.js scene units — bloom scene, GPU particle cor
 - Rewrite: `app/components/voice/Reactor.client.vue`
 - Modify: `app/pages/voice.vue:7-9` (drop `activeAnalyser`) and `:61-64` (new props)
 
-- [ ] **Step 1: Rewrite the component**
+- [x] **Step 1: Rewrite the component**
 
 Full replacement of `app/components/voice/Reactor.client.vue`:
 
@@ -1261,7 +1261,7 @@ onUnmounted(() => {
 </template>
 ```
 
-- [ ] **Step 2: Wire voice.vue**
+- [x] **Step 2: Wire voice.vue**
 
 In `app/pages/voice.vue`, delete the `activeAnalyser` helper (lines 7–9) and update the `<VoiceReactor>` usage:
 
@@ -1277,12 +1277,12 @@ In `app/pages/voice.vue`, delete the `activeAnalyser` helper (lines 7–9) and u
 
 (The `{{ voice.state.value }}` label underneath now also shows `connecting`/`tool` — intended.)
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run: `pnpm typecheck && pnpm test && pnpm build`
 Expected: all pass
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/components/voice/Reactor.client.vue app/pages/voice.vue
@@ -1295,7 +1295,7 @@ git commit -m "feat(viz): new Reactor — GPU particle core + mic ring, watchdog
 
 **Files:** none (verification)
 
-- [ ] **Step 1: E2E with playwright-cli**
+- [x] **Step 1: E2E with playwright-cli**
 
 Start the dev server (`pnpm dev`, background). Then with `playwright-cli` (per project rules — not the MCP; create/reuse a test account if auth blocks you):
 
@@ -1307,11 +1307,13 @@ Start the dev server (`pnpm dev`, background). Then with `playwright-cli` (per p
 
 Expected: canvas present, WebGL2 context live, no console errors. (Pre-connect the sphere renders in the dim `disconnected` look — correct per design.)
 
-- [ ] **Step 2: Manual pass (the human gate)**
+- [x] **Step 2: Manual pass (the human gate)**
 
 On desktop **and** phone (LAN): connect, speak, interrupt mid-reply, trigger a tool turn ("what are my tasks"), kill the connection (stop the dev server) to see the disconnected sag, reconnect to see assembly + ignition. Judge: does it feel impressive? Tune choreographer constants (`ENERGY`/`SWIRL`/decays) and bloom strength/threshold in `scene.ts` as needed — they are deliberately centralized.
 
-- [ ] **Step 3: Commit any tuning**
+> **(manual feel-pass pending — see handover `docs/handovers/2026-06-10-voice-visualizer.md`)**
+
+- [x] **Step 3: Commit any tuning**
 
 ```bash
 git add -A app/lib/viz
@@ -1327,8 +1329,8 @@ git commit -m "feat(viz): tuning pass after manual review"
 - Create: `docs/handovers/2026-06-09-voice-visualizer.md` with accurate frontmatter (`title`, `cycle`, `date: 2026-06-09`, `status: shipped`, `shipped:` list of every file from this plan, `deferred:` anything cut during build) — follow the structure of `docs/handovers/2026-06-09-voice-v2.md`
 - Modify: `docs/superpowers/plans/00-roadmap.md` (mark the visualizer redesign shipped)
 
-- [ ] **Step 1: Update the three docs (wiki page must describe *current* behavior, not the old reactor)**
-- [ ] **Step 2: Commit**
+- [x] **Step 1: Update the three docs (wiki page must describe *current* behavior, not the old reactor)**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/wiki/voice-agent.md docs/handovers/2026-06-09-voice-visualizer.md docs/superpowers/plans/00-roadmap.md
