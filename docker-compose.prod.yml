@@ -42,34 +42,8 @@ services:
       NITRO_PORT: "3000"
       NITRO_HOST: "0.0.0.0"
       # Nitro reads runtimeConfig overrides ONLY from NUXT_/NITRO_-prefixed env at
-      # runtime — plain AI_* names from env_file do NOT apply, and the baked build
-      # values are empty (.dockerignore excludes .env from the image build). Map the
-      # plain names (the single source of truth in .env) onto the prefixed keys.
-      NUXT_AI_REASONING_BASE_URL: ${AI_REASONING_BASE_URL:-}
-      NUXT_AI_REASONING_API_KEY: ${AI_REASONING_API_KEY:-}
-      NUXT_AI_REASONING_MODEL: ${AI_REASONING_MODEL:-}
-      NUXT_AI_BULK_BASE_URL: ${AI_BULK_BASE_URL:-}
-      NUXT_AI_BULK_API_KEY: ${AI_BULK_API_KEY:-}
-      NUXT_AI_BULK_MODEL: ${AI_BULK_MODEL:-}
-      NUXT_AI_EMBEDDINGS_BASE_URL: ${AI_EMBEDDINGS_BASE_URL:-}
-      NUXT_AI_EMBEDDINGS_API_KEY: ${AI_EMBEDDINGS_API_KEY:-}
-      NUXT_AI_EMBEDDINGS_MODEL: ${AI_EMBEDDINGS_MODEL:-}
-      NUXT_AI_VISION_BASE_URL: ${AI_VISION_BASE_URL:-}
-      NUXT_AI_VISION_API_KEY: ${AI_VISION_API_KEY:-}
-      NUXT_AI_VISION_MODEL: ${AI_VISION_MODEL:-}
-      NUXT_AI_STT_BASE_URL: ${AI_STT_BASE_URL:-}
-      NUXT_AI_STT_API_KEY: ${AI_STT_API_KEY:-}
-      NUXT_AI_STT_MODEL: ${AI_STT_MODEL:-}
-      NUXT_AI_TTS_KOKORO_BASE_URL: ${AI_TTS_KOKORO_BASE_URL:-}
-      NUXT_AI_TTS_KOKORO_API_KEY: ${AI_TTS_KOKORO_API_KEY:-}
-      NUXT_AI_TTS_KOKORO_MODEL: ${AI_TTS_KOKORO_MODEL:-}
-      NUXT_AI_TTS_KOKORO_VOICE: ${AI_TTS_KOKORO_VOICE:-}
-      NUXT_AI_TTS_CHATTERBOX_BASE_URL: ${AI_TTS_CHATTERBOX_BASE_URL:-}
-      NUXT_AI_TTS_CHATTERBOX_API_KEY: ${AI_TTS_CHATTERBOX_API_KEY:-}
-      NUXT_AI_TTS_CHATTERBOX_MODEL: ${AI_TTS_CHATTERBOX_MODEL:-}
-      NUXT_AI_TTS_CHATTERBOX_VOICE: ${AI_TTS_CHATTERBOX_VOICE:-}
-      NUXT_AI_RERANK_BASE_URL: ${AI_RERANK_BASE_URL:-}
-      NUXT_AI_RERANK_API_KEY: ${AI_RERANK_API_KEY:-}
+      # runtime. AI providers/models are no longer env-configured — they live in the
+      # DB (settings.key='ai_config', edited at /settings, keys stored encrypted).
     volumes:
       - mymind-uploads:/app/.data/uploads   # persistent uploaded blobs
     ports:

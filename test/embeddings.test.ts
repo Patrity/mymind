@@ -9,11 +9,21 @@ beforeEach(() => {
   vi.unstubAllGlobals()
 })
 
+// embed() now sources its endpoint from the AI config registry via
+// withFailover('embeddings', fn). We mock the resolver to drive `fn` against a
+// single fake ResolvedModel; the TEI request shape + dim-gating stay under test.
+function mockResolver(model: { baseURL?: string | null; apiKey?: string | null } | null) {
+  vi.doMock('../server/lib/ai/registry/resolve', () => ({
+    withFailover: async (_usage: string, fn: (m: unknown) => Promise<unknown>) => {
+      if (!model) throw new Error('embeddings not configured')
+      return fn({ baseURL: model.baseURL ?? null, apiKey: model.apiKey ?? null })
+    }
+  }))
+}
+
 describe('embed', () => {
   it('returns a 2560-length vector for a single text', async () => {
-    vi.stubGlobal('useRuntimeConfig', () => ({
-      ai: { embeddings: { baseURL: 'http://tei.local', apiKey: undefined } }
-    }))
+    mockResolver({ baseURL: 'http://tei.local', apiKey: undefined })
     vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([zeroVec]))
 
     const { embed } = await import('../server/lib/ai/embeddings')
@@ -23,9 +33,7 @@ describe('embed', () => {
   })
 
   it('returns empty array for empty input without calling $fetch', async () => {
-    vi.stubGlobal('useRuntimeConfig', () => ({
-      ai: { embeddings: { baseURL: 'http://tei.local', apiKey: undefined } }
-    }))
+    mockResolver({ baseURL: 'http://tei.local', apiKey: undefined })
     const fetchSpy = vi.fn()
     vi.stubGlobal('$fetch', fetchSpy)
 
@@ -35,10 +43,8 @@ describe('embed', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('throws when baseURL is missing', async () => {
-    vi.stubGlobal('useRuntimeConfig', () => ({
-      ai: { embeddings: { baseURL: '', apiKey: undefined } }
-    }))
+  it('throws when embeddings are not configured (no resolvable model)', async () => {
+    mockResolver(null)
     vi.stubGlobal('$fetch', vi.fn())
 
     const { embed } = await import('../server/lib/ai/embeddings')
@@ -46,9 +52,7 @@ describe('embed', () => {
   })
 
   it('throws when the response vector has the wrong dimension', async () => {
-    vi.stubGlobal('useRuntimeConfig', () => ({
-      ai: { embeddings: { baseURL: 'http://tei.local', apiKey: undefined } }
-    }))
+    mockResolver({ baseURL: 'http://tei.local', apiKey: undefined })
     // Return a vector of wrong dimension (e.g. 768)
     vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(768).fill(0)]))
 
@@ -57,9 +61,7 @@ describe('embed', () => {
   })
 
   it('sends authorization header when apiKey is provided', async () => {
-    vi.stubGlobal('useRuntimeConfig', () => ({
-      ai: { embeddings: { baseURL: 'http://tei.local', apiKey: 'secret-key' } }
-    }))
+    mockResolver({ baseURL: 'http://tei.local', apiKey: 'secret-key' })
     const fetchSpy = vi.fn().mockResolvedValue([zeroVec])
     vi.stubGlobal('$fetch', fetchSpy)
 
@@ -76,9 +78,7 @@ describe('embed', () => {
 
 describe('embedOne', () => {
   it('returns a single flat vector', async () => {
-    vi.stubGlobal('useRuntimeConfig', () => ({
-      ai: { embeddings: { baseURL: 'http://tei.local', apiKey: undefined } }
-    }))
+    mockResolver({ baseURL: 'http://tei.local', apiKey: undefined })
     vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([zeroVec]))
 
     const { embedOne } = await import('../server/lib/ai/embeddings')

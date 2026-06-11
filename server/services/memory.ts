@@ -6,6 +6,7 @@ import type { MemoryDTO, MemoryScope } from '../../shared/types/memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
+import { resolveChain } from '../lib/ai/registry/resolve'
 import { dedupDecision, type DedupCandidate } from './memory-dedup'
 
 // ---------------------------------------------------------------------------
@@ -255,14 +256,16 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
     relevance: Math.round((1 / (1 + rank)) * 1000) / 1000
   }))
 
-  // Optional: reranker (OFF by default — aiRerankBaseUrl must be set in config)
-  const config = useRuntimeConfig()
-  const rerankBaseUrl = (config.ai as { rerankBaseUrl?: string }).rerankBaseUrl ?? ''
-  if (rerankBaseUrl) {
+  // Optional: reranker (OFF by default — a 'rerank' model must be assigned in config)
+  let rerankCfg: { baseURL: string; apiKey: string; model: string } | null = null
+  try {
+    const [m] = await resolveChain('rerank')
+    if (m?.baseURL) rerankCfg = { baseURL: m.baseURL.replace(/\/$/, ''), apiKey: m.apiKey ?? '', model: m.modelId }
+  } catch { rerankCfg = null }  // AiNotConfiguredError → rerank stays off
+  if (rerankCfg) {
     try {
-      const rerankApiKey = (config.ai as { rerankApiKey?: string }).rerankApiKey ?? ''
       const docs = withRelevance.map(dto => ({ id: dto.id, text: dto.content }))
-      const reranked = await rerank(q, docs, rerankBaseUrl, rerankApiKey)
+      const reranked = await rerank(q, docs, rerankCfg.baseURL, rerankCfg.apiKey, rerankCfg.model)
       if (reranked.length === withRelevance.length) {
         const rerankedById = new Map(reranked.map(r => [r.id, r.score]))
         return withRelevance

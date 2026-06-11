@@ -1,14 +1,12 @@
 // server/lib/agent/model.ts
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { aiProvider } from '../ai/provider'
+import type { LanguageModel } from 'ai'
+import { resolveChain, languageModel } from '../ai/registry/resolve'
 
-/** AI SDK language model for the `reasoning` role (local qwen via vLLM, OpenAI-spec). */
-export function reasoningModel() {
-  const cfg = aiProvider('reasoning', { required: true })
-  const provider = createOpenAICompatible({
-    name: 'mymind-reasoning',
-    baseURL: cfg.baseURL!.replace(/\/$/, ''),
-    apiKey: cfg.apiKey || 'none'
-  })
-  return provider(cfg.model || 'default')
+/**
+ * Ordered AI SDK language models for the reasoning role (registry-configured).
+ * runAgent tries them in order at stream start (start-only failover).
+ */
+export async function reasoningModels(): Promise<LanguageModel[]> {
+  const chain = await resolveChain('reasoning')
+  return chain.map(languageModel)
 }

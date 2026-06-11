@@ -41,7 +41,8 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     icon: 'i-lucide-inbox',
     to: '/review',
     badge: reviewCount.value.pending > 0 ? reviewCount.value.pending : undefined
-  }
+  },
+  { label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }
 ])
 </script>
 

@@ -10,6 +10,8 @@
  * will catch the dim-mismatch error and the normalization below can be adjusted.
  */
 
+import { withFailover } from './registry/resolve'
+
 const DIM = 2560
 
 /** Normalize defensively: unwrap known envelope shapes, fall back to raw value. */
@@ -27,18 +29,14 @@ function normalizeResponse(raw: unknown): number[][] {
 export async function embed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
 
-  const cfg = useRuntimeConfig().ai.embeddings as { baseURL?: string; apiKey?: string }
-  if (!cfg.baseURL) {
-    throw new Error('embeddings not configured (AI_EMBEDDINGS_BASE_URL)')
-  }
-
-  const raw = await $fetch(`${cfg.baseURL.replace(/\/$/, '')}/embed`, {
-    method: 'POST',
-    headers: cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : undefined,
-    body: { inputs: texts, normalize: true }
+  const vectors = await withFailover('embeddings', async (m) => {
+    const raw = await $fetch(`${(m.baseURL ?? '').replace(/\/$/, '')}/embed`, {
+      method: 'POST',
+      headers: m.apiKey ? { authorization: `Bearer ${m.apiKey}` } : undefined,
+      body: { inputs: texts, normalize: true }
+    })
+    return normalizeResponse(raw)
   })
-
-  const vectors = normalizeResponse(raw)
 
   for (const v of vectors) {
     if (!Array.isArray(v) || v.length !== DIM) {
