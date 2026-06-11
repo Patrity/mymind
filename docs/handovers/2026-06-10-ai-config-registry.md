@@ -29,6 +29,7 @@ shipped:
   - "app/pages/onboarding.vue — UStepper wizard reusing the three tabs; 'Import from environment' button (loading+error feedback); Finish gated on reasoning+embeddings → save → status.refresh → navigate home."
   - "Resolver consumers cut over to the registry: server/lib/agent/model.ts, server/lib/ai/chat.ts, server/lib/ai/embeddings.ts, server/api/voice/ws.ts + voices.get.ts, server/services/memory.ts now resolve from the DB chain (no AI_* runtime env). nuxt.config.ts runtimeConfig.ai removed; docker-compose.prod.yml NUXT_AI_* mapping removed."
   - "New deps: @vueuse/integrations, sortablejs, @types/sortablejs."
+  - "RIDER (separate system, shares the sortable dep): app/pages/tasks.vue kanban migrated off raw HTML5 DnD to useSortable shared-group columns (group:'tasks'); one sortable per column bound to a per-column mutable array (shallowReactive colRefs + watchElement:true so binding survives the loading-skeleton v-if/v-else remount); cross-column drop → moveTask + loadTasks (server-authoritative reconcile), same-column reorder = no persistence. E2E PASS (drag Todo→In Progress persisted across reload; click-to-edit still works)."
   - "docs/wiki/ai-providers.md — rewritten around the registry (current behavior). docs/DEPLOYMENT.md — env table shrunk to infra-only; AI_* documented as import-only seeds; CONFIG_ENC_KEY + onboarding flow documented; §14a model-resolution note corrected to the registry."
 verified:
   - "pnpm typecheck: PASS (green across all tasks)."
