@@ -12,7 +12,7 @@ const modelDim = (id: string) => config.draft.value.models.find(m => m.id === id
 function options(usage: string) {
   const assigned = new Set(config.draft.value.assignments[usage] ?? [])
   return config.draft.value.models
-    .filter(m => !assigned.has(m.id) && (usage !== 'embeddings' || m.dim === 2560))
+    .filter(m => !assigned.has(m.id) && (usage !== 'embeddings' || m.dim === EMBEDDING_DIM))
     .map(m => ({ label: m.label, value: m.id }))
 }
 function add(usage: string, id: string) {

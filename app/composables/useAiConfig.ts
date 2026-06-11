@@ -69,6 +69,7 @@ export function useAiConfig() {
         }
       })
       await load(true)  // re-pull redacted (keys collapse back to keep:true)
+      useAiConfigStatus().refresh()  // re-arm the onboarding gate (fire-and-forget)
     } catch (err) {
       error.value = (err as { data?: { data?: string }; message?: string }).data?.data ?? (err as Error).message
       throw err
