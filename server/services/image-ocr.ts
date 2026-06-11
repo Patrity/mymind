@@ -179,3 +179,72 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
 
   return { ocred, failed, remaining }
 }
+
+// ---------------------------------------------------------------------------
+// Single-image rescan (eager, on-demand)
+// ---------------------------------------------------------------------------
+
+/**
+ * Clear an image's tags/OCR and immediately re-run the vision model for it.
+ * Unsticks images that exhausted ocrAttempts. Returns the updated row (or null
+ * if the image is missing/deleted). Never throws on a model failure — leaves
+ * the image cleared with ocrAttempts incremented, mirroring runImageOcr.
+ */
+export async function rescanImage(id: string): Promise<typeof images.$inferSelect | null> {
+  const db = useDb()
+
+  // Clear prior results first (confirmed tags too — a full redo per product intent).
+  const [cleared] = await db
+    .update(images)
+    .set({ tags: [], recommendedTags: [], ocrText: null, ocrAttempts: 0 })
+    .where(and(eq(images.id, id), isNull(images.deletedAt)))
+    .returning()
+  if (!cleared) return null
+
+  // Oversized images: mark attempted (empty sentinel) and return without calling the model.
+  if (cleared.size > OCR_MAX_SIZE) {
+    const [r] = await db.update(images).set({ ocrText: '' }).where(eq(images.id, id)).returning()
+    return r ?? cleared
+  }
+
+  const library = await buildTagLibrary()
+
+  try {
+    const { stream } = await storage().get(cleared.storageKey)
+    const chunks: Buffer[] = []
+    await new Promise<void>((resolve, reject) => {
+      stream.on('data', (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      stream.on('end', resolve)
+      stream.on('error', reject)
+    })
+    const dataUrl = `data:${cleared.mime};base64,${Buffer.concat(chunks).toString('base64')}`
+
+    const result = await describeImage(dataUrl)
+
+    if (!result.ocrText && result.tags.length === 0) {
+      const [r] = await db
+        .update(images)
+        .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+        .where(eq(images.id, id))
+        .returning()
+      return r ?? cleared
+    }
+
+    const { recommended } = splitTags(result.tags, library)
+    const cappedRecommended = capTags(recommended, 10)
+    const [r] = await db
+      .update(images)
+      .set({ ocrText: result.ocrText || '', recommendedTags: cappedRecommended })
+      .where(eq(images.id, id))
+      .returning()
+    return r ?? cleared
+  } catch (err) {
+    console.warn(`[image-ocr] rescan failed for ${id}:`, err)
+    const [r] = await db
+      .update(images)
+      .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+      .where(eq(images.id, id))
+      .returning()
+    return r ?? cleared
+  }
+}
