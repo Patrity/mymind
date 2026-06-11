@@ -620,6 +620,47 @@ git commit -m "docs(settings): AI config registry — wiki, deployment, handover
 
 ---
 
+### Task 10: Migrate the tasks kanban drag to `useSortable` (rides this branch for the shared dep)
+
+**Files:**
+- Modify: `app/pages/tasks.vue`
+
+The board currently uses raw HTML5 drag (`@dragstart/@dragover/@dragleave/@drop`, `dataTransfer`, the `dragTaskId`/`dragTaskStatus`/`dragOverColumn` refs). Replace with `useSortable` shared-group lists — one sortable per column, `group: 'tasks'` so cards drag between columns; on a cross-column move, detect the target column's status and call `moveTask(id, { status })` then `loadTasks()`. This is a different system from the AI registry but shares the `@vueuse/integrations` dep added in Task 1, so it lands here in its own commit.
+
+- [ ] **Step 1: Per-column sortable.** Each column's card-list container gets a `ref` and a `data-status` attribute. For each column, call:
+
+```ts
+import { useSortable } from '@vueuse/integrations/useSortable'
+// columnsTasks: a reactive Record<TaskStatus, TaskDTO[]> (the existing `map` grouping, made reactive per column)
+// For each column key, register a sortable on its container el bound to columnsTasks[key]:
+useSortable(elRef, columnsTasks[key], {
+  group: 'tasks',
+  animation: 150,
+  handle: '.task-card',           // or a drag handle
+  onEnd: async (evt: { item: HTMLElement; to: HTMLElement; from: HTMLElement }) => {
+    const id = evt.item.dataset.id
+    const toStatus = evt.to.dataset.status as TaskStatus | undefined
+    const fromStatus = evt.from.dataset.status as TaskStatus | undefined
+    if (!id || !toStatus || toStatus === fromStatus) return  // same-column reorder: no status change to persist (no order field)
+    try { await moveTask(id, { status: toStatus }); await loadTasks() }
+    catch (e) { /* existing toast error handling */ }
+  }
+})
+```
+
+Each task card gets `:data-id="task.id"`. Because Sortable mutates the DOM and we `loadTasks()` (re-render from server) after a cross-column move, the authoritative state reconciles; bind each column to its own array so Sortable's in-place mutation doesn't fight a shared list.
+
+- [ ] **Step 2: Delete the old DnD code** — remove `onDragStart/onDragEnd/onDragOver/onDragLeave/onDrop`, the `dragTaskId/dragTaskStatus/dragOverColumn` refs, the `draggable="true"` + `@drag*` template bindings, and the drag-over column highlight (replace with Sortable's `ghostClass`/`dragClass` for the visual). Keep `moveTask`/`loadTasks` and the toast error path.
+
+- [ ] **Step 3: Verify** — `pnpm typecheck && pnpm build`, then `playwright-cli`: drag a card between two columns, confirm its status persists across a reload. Capture a screenshot.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add app/pages/tasks.vue
+git commit -m "refactor(tasks): kanban drag via useSortable (smoother, shared-group columns)"
+```
+
 ## Self-Review Notes
 
 - **Spec coverage (§6 of the design):** Providers/Models/Model-Configuration tabs → Tasks 4,5,6,7. Draggable failover chains (`useSortable`) → Task 6. Write-only keys → Task 4 + the composable's `KeyField`. Onboarding wizard + redirect guard + import-from-env → Tasks 2,3,8. "AI-dependent bits show configure in Settings" is covered structurally by the onboarding redirect (unconfigured users can't reach those pages). New deps → Task 1.
