@@ -21,7 +21,7 @@ These hold across all cycles. Change them here (with a dated note) if they ever 
 |---|---|
 | Architecture | One Nuxt 4 service. Web + Nitro HTTP + MCP from the same app. No separate backends. |
 | Memory system | **Reimplemented in Nitro/TS** (porting the proven Python `bridget-services/memory` design, not its code). |
-| LLM/model access | **All connections env-configured, OpenAI-spec.** Roles: `reasoning`, `bulk`, `embeddings`, `vision`/OCR, `stt`, `tts` — each with `*_BASE_URL` / `*_API_KEY` / `*_MODEL`. Local default (AI rig `192.168.2.25`), hosted (Haiku / GPT / Gemini Flash via LiteLLM) for hard reasoning. Swapping a model = env change, never code. |
+| LLM/model access | **DB-backed registry (2026-06-10, cycle 12 — superseded env-only config).** Providers/models + per-usage failover chains live in one JSONB `ai_config` doc, edited in-app at `/settings`; keys encrypted at rest. Usages: `reasoning`, `bulk`, `embeddings`, `vision`/OCR, `stt`, `tts`, `rerank`. Providers are `anthropic` or `openai-compatible`. Local default (AI rig `192.168.2.25`), hosted (Haiku / GPT / Gemini Flash) for hard reasoning. Swapping a model = UI change, never code, never an env redeploy. The old `AI_*` env vars are now one-time onboarding import seeds only. |
 | Embeddings | `qwen3-embedding-4b`, **2560-dim**, stored as `halfvec(2560)` with HNSW cosine. TEI fronted to expose OpenAI `/v1/embeddings`. |
 | Doc organization | **Hybrid**: canonical path tree (incl. `/input` staging) for the human browser, plus first-class queryable columns (`project`, `domain`, `type`, `tags`, `topic` ltree) promoted out of frontmatter. |
 | Search | Trigram (keyword) from cycle 1; semantic + RRF fusion added in the enrichment cycle. |
@@ -61,7 +61,7 @@ Legend: `planned` → `spec'd` → `in-progress` → `shipped`
 
 | # | Cycle | Status | Spec | Plan | Handover |
 |---|---|---|---|---|---|
-| 12 | **AI model/provider registry** — DB-backed providers/models + role→model assignment + settings UI; `aiProvider()` resolves from DB (env fallback). Replaces `.env`-only config. | planned | — | — | — |
+| 12 | **AI model/provider registry** — DB-backed providers/models + per-usage failover-chain assignments in one JSONB `ai_config` doc; encrypted keys at rest (`CONFIG_ENC_KEY`, HKDF-from-`BETTER_AUTH_SECRET` fallback); `/settings` (3 tabs) + `/onboarding` wizard + redirect middleware; resolver hands decrypted failover chains to all AI consumers. Embeddings fixed at 2560-dim with a save-time dim-probe. The old `AI_*` env vars are now import-only seeds, not runtime config. **Shipped pending live E2E (merge gate).** | ✅ shipped | [spec](../specs/2026-06-10-ai-config-registry-design.md) | [backend](2026-06-10-ai-config-registry-backend.md) · [ui](2026-06-10-ai-config-registry-ui.md) | [handover](../../handovers/2026-06-10-ai-config-registry.md) |
 | 13 | **API key management UI** — CRUD over `api_tokens` (mint/name/last-used/revoke) for ShareX uploads, CC/Hermes session-logging hooks, MCP. | planned | — | — | — |
 | 14 | **In-app AI chat** — reasoning chat over docs/memories/projects/tasks via server-side tool-calling (reuses the MCP tool surface); cites sources, takes confirmed actions. Note: the shared agent core + text-chat endpoint (`/api/agent/chat`) shipped in cycle 17 — a full chat UI is what remains. | planned | — | — | — |
 | 15 | **Capture/OCR robustness** — explicit dedup (untagged-only) + transcription retry (backoff / manual / auto-on-recovery) + surface OCR-failed & ambiguous-project to the notification queue. | planned | — | — | — |

@@ -13,7 +13,7 @@ MyMind is **one Nuxt 4 service** (Nitro `node-server`) that serves:
 It depends on:
 - **PostgreSQL 16 + pgvector** (extensions: `pgcrypto`, `pg_trgm`, `ltree`, `vector`).
 - A **persistent uploads volume** (content-addressed image/file blobs).
-- The **local AI rig** at `192.168.2.25` (LAN) — embeddings (TEI :8882, keyless), reasoning (:8004), vision (:8005). All env-configured and optional-at-startup (the app boots without them; AI features degrade/skip).
+- The **local AI rig** at `192.168.2.25` (LAN) — embeddings (TEI :8882, keyless), reasoning (:8004), vision (:8005). Providers/models are configured **in-app** (the AI config registry — DB-backed, edited at `/settings`, see `docs/wiki/ai-providers.md`), not by env. The app boots without any model configured; AI features just stay unconfigured until you complete `/onboarding`.
 - **In-process scheduled tasks** (embeddings, enrichment, OCR, memory extraction) that run automatically while the server is up.
 
 **Network requirement:** the deploy host must reach BOTH the AI rig on the LAN (`192.168.2.25`) AND the public internet (for sharing / ShareX / hooks). A homelab box that sits on the LAN and is exposed via a reverse proxy is the intended shape.
@@ -42,7 +42,9 @@ cp .env.example .env
 #      POSTGRES_PASSWORD=<strong>            # used by compose for db + DATABASE_URL
 #      BETTER_AUTH_SECRET=<32+ random bytes> # openssl rand -base64 48
 #      BETTER_AUTH_URL=https://mymind.example.com   # your PUBLIC origin (no trailing slash)
-#      AI_* endpoints (defaults already point at the rig; embeddings need no key)
+#    Optional: AI_* endpoints — NOT runtime config; only a one-time seed for the
+#      onboarding "Import from environment" button (see §4a + §15a). Models are
+#      configured in-app at /settings after first sign-in.
 #    Note: docker-compose.prod.yml OVERRIDES DATABASE_URL + STORAGE_LOCAL_DIR for the container network.
 
 # 2. build + start (db comes up healthy, then app migrates + serves)
@@ -65,18 +67,20 @@ Extensions are created automatically on **first** DB boot via `db/init/01-extens
 | `BETTER_AUTH_SECRET` | ✅ | 32+ bytes. `openssl rand -base64 48`. |
 | `BETTER_AUTH_URL` | ✅ | **public origin**, must match how users reach it (proxy origin). Mismatch → sign-in/sign-up 403 (CSRF/origin check). |
 | `ALLOW_SIGNUP` | bootstrap | `true` to enable account creation; **unset after** creating your account. |
-| `AI_REASONING_*` | for AI | strong model (`:8004`) — memory enrichment, transcription cleanup, `/input` proposals. |
-| `AI_EMBEDDINGS_*` | for AI | TEI `:8882`, **keyless**, 2560-dim. Powers semantic search + embeddings. |
-| `AI_VISION_*` | for OCR | `:8005` (8B, weak/flaky — OCR will occasionally blip, no longer loops). |
-| `AI_BULK_*` | optional | bulk model role. |
-| `AI_STT_* / AI_TTS_KOKORO_* / AI_TTS_CHATTERBOX_*` | for voice | the `/voice` page needs STT + at least one TTS provider (see the cycle-18 block in `.env.example`). |
-| `AI_RERANK_*` | optional | Qwen3-Reranker `:8883` for memory-search relevance. OFF unless `BASE_URL` set. |
+| `CONFIG_ENC_KEY` | optional | Key used to encrypt provider API keys at rest in the AI config registry (AES-256-GCM). Raw 32-byte **base64** (`openssl rand -base64 32`). **If unset, the key is derived from `BETTER_AUTH_SECRET` via HKDF** — so you do not need to set this. Set it only if you want the config-secret key independent of the auth secret. A non-32-byte value throws on first AI-config write. |
 | `MEMORY_AUTO_REVIEW_THRESHOLD` | optional | default `0.75`; memories ≥ this auto-review. |
 | `STORAGE_DRIVER` / `STORAGE_LOCAL_DIR` | ✅ | `local` + `/app/.data/uploads` (a mounted volume in compose). `s3` + `STORAGE_S3_*` to use S3. |
 | `MAX_UPLOAD_BYTES` | optional | default 50 MB. |
 | `NITRO_PORT` / `NITRO_HOST` | optional | default `3000` / `0.0.0.0`. |
+| `AI_<ROLE>_BASE_URL / _API_KEY / _MODEL` | optional (seed) | **NOT runtime config** — see §4a. Leftover roles (`REASONING`, `BULK`, `EMBEDDINGS`, `VISION`, `STT`, `TTS_KOKORO`, `TTS_CHATTERBOX`, `RERANK`) are a **one-time onboarding seed** consumed only by the `/onboarding` "Import from environment" button. Safe to leave set (pre-fills the registry on first run) or to omit (configure in `/settings` by hand). |
 
-> **How `AI_*` env actually reaches the app:** these are `runtimeConfig` values. They're baked at *image build* time — and bake **empty** in Docker because `.dockerignore` excludes `.env` — and at runtime Nitro only applies overrides from **`NUXT_`/`NITRO_`-prefixed** env vars; plain `AI_*` names in `env_file` do nothing by themselves. `docker-compose.prod.yml` therefore maps every plain `AI_*` name onto its `NUXT_AI_*` key, keeping the plain names in `.env` as the single source of truth. If an AI feature reports "not configured" despite a correct `.env`, check that the compose mapping covers the var.
+### 4a. AI models are configured in-app, not by env
+
+Model/provider config moved out of env into the **AI config registry** (a DB-backed JSONB doc; `docs/wiki/ai-providers.md`). Providers, models, and per-usage failover chains are edited at **`/settings`** (Providers / Models / Model Configuration tabs). API keys are stored **encrypted at rest** (`CONFIG_ENC_KEY` above) and are never returned to the client.
+
+On first sign-in the app **redirects to `/onboarding`** until at least `reasoning` and `embeddings` each have an assigned model. The onboarding wizard reuses the settings tabs and offers an **"Import from environment"** button: if you left the old `AI_*` vars in `.env`, it seeds the registry from them in one click (one-time; it overwrites an empty config), then encrypts the keys. Otherwise add providers/models by hand. After onboarding, the `AI_*` env vars do nothing at runtime.
+
+Embeddings stay fixed at **2560-dim** (`qwen3-embedding-4b`, TEI `:8882`, keyless). On save the registry runs a **dim-probe** against the primary embedding model's `/embed` and rejects the config (422) unless it returns exactly 2560 dims — so the deploy host **must reach a working 2560-dim embedding endpoint** before you can finish onboarding.
 
 ## 5. Bootstrap the account + machine tokens
 
@@ -84,6 +88,7 @@ Sign-up is disabled by default (single-user, internet-exposed). To create the fi
 1. Set `ALLOW_SIGNUP=true` in `.env`, `docker compose -f docker-compose.prod.yml up -d app` (recreate).
 2. Visit `https://<origin>/login` → "Create account" → register. You're signed in.
 3. Set `ALLOW_SIGNUP=` (empty) and recreate the app container. (UI toggle hides AND the API rejects sign-up when off.)
+4. After sign-in you're redirected to **`/onboarding`** — configure AI models (Import from environment, or add providers/models by hand) until `reasoning` + `embeddings` are assigned, then Finish. See §4a.
 
 **API tokens** (for ShareX, Claude Code/Hermes hooks, MCP) have no UI yet — mint one and insert it:
 ```bash
@@ -193,13 +198,18 @@ ssh tony@192.168.2.25
 cd ~/unmute
 # In docker-compose.yml, the backend service env:
 #   KYUTAI_LLM_URL=http://<mymind-lan-ip>:3000/api/agent/llm   # homelab prod = http://192.168.2.89:3000/api/agent/llm
-#   KYUTAI_LLM_MODEL=<any non-empty string; MyMind ignores it and uses its own AI_REASONING_MODEL>
+#   KYUTAI_LLM_MODEL=<any non-empty string; MyMind ignores it and resolves its own reasoning model>
 #   KYUTAI_LLM_API_KEY=<empty or any dummy; the endpoint is keyless, proxy/LAN-restricted>
 # Then restart just the backend:
 docker compose up -d backend
 ```
-> The MyMind side resolves the real model from its `AI_REASONING_*` env. That base URL
+> The MyMind side resolves the real model from the **AI config registry** (the `reasoning`
+> usage chain — configured at `/settings`), not from env. The provider base URL set there
 > **must include `/v1`** (e.g. `http://192.168.2.25:8004/v1`) or the loop 404s the model.
+>
+> NOTE: voice v2 (cycle 18) removed the Unmute stack in favor of a self-hosted TS pipeline —
+> this §14a Unmute reconfig is retained for reference but is superseded; see
+> `docs/handovers/2026-06-09-voice-v2.md`.
 
 After restarting, run the WebSocket smoke test from `docs/wiki/voice-agent-integration.md §11` to confirm the protocol path is intact before adding audio.
 
