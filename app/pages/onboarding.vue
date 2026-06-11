@@ -3,8 +3,9 @@
 definePageMeta({ title: 'Set up AI', layout: false })  // standalone, no sidebar
 const config = useAiConfig()
 const status = useAiConfigStatus()
-const stepper = ref()
 const step = ref(0)
+const importing = ref(false)
+const importError = ref<string | null>(null)
 onMounted(() => config.load())
 
 const steps = [
@@ -17,7 +18,17 @@ const canFinish = computed(() =>
   (config.draft.value.assignments.reasoning?.length ?? 0) > 0 &&
   (config.draft.value.assignments.embeddings?.length ?? 0) > 0)
 
-async function importEnv() { await config.importEnv() }
+async function importEnv() {
+  importing.value = true
+  importError.value = null
+  try {
+    await config.importEnv()
+  } catch (err) {
+    importError.value = (err as { data?: { data?: string }; message?: string }).data?.data ?? (err as Error).message ?? 'Import failed'
+  } finally {
+    importing.value = false
+  }
+}
 async function finish() {
   await config.save()
   await status.refresh()
@@ -33,9 +44,10 @@ async function finish() {
     </div>
 
     <div class="flex items-center justify-between">
-      <UStepper ref="stepper" v-model="step" :items="steps" class="flex-1" />
-      <UButton variant="subtle" icon="i-lucide-download" label="Import from environment" class="ml-4" @click="importEnv" />
+      <UStepper v-model="step" :items="steps" class="flex-1" />
+      <UButton variant="subtle" icon="i-lucide-download" label="Import from environment" class="ml-4" :loading="importing" @click="importEnv" />
     </div>
+    <UAlert v-if="importError" color="error" :title="importError" />
 
     <div class="min-h-0 flex-1">
       <SettingsProvidersTab v-if="step === 0" />
