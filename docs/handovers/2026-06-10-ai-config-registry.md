@@ -71,6 +71,16 @@ This branch shipped in two plans:
 - **Dim-probe needs a reachable endpoint on save.** `PUT /api/settings/ai-config` probes the primary embedding model's `/embed` and 422s unless it returns exactly 2560 dims. The TEI rig (`:8882`) must be reachable to finish onboarding or save an embeddings assignment.
 - **CONFIG_ENC_KEY fallback couples secrets.** Unset = key derived from `BETTER_AUTH_SECRET`. Rotating `BETTER_AUTH_SECRET` then makes stored provider keys undecryptable (`resolveChain` swallows the decrypt error → null key → auth fails downstream). Set `CONFIG_ENC_KEY` explicitly to decouple.
 
+## Follow-ups (2026-06-11)
+
+Five small cycle-12 follow-ups landed on the `feat/cleanup-batch` branch:
+
+- **Onboarding `finish()` guard** — `onboarding.vue`'s `finish()` is now wrapped in try/catch so a save/probe rejection no longer surfaces as an unhandled promise rejection.
+- **`save()` → status refresh** — `useAiConfig.save()` now refreshes the cached `useAiConfigStatus` (`needsOnboarding`) after a successful PUT, so saving an assignment from `/settings` clears the onboarding gate without a reload.
+- **import-env overwrite guard (422)** — `POST /api/settings/import-env` now **422s when a config already exists** (non-empty registry), making it a strictly one-time seed and closing the destructive whole-doc overwrite noted under Known considerations.
+- **Clearer dim-probe message** — the embeddings dim-probe error on `PUT /api/settings/ai-config` no longer wrongly asserts the endpoint is "unreachable" when it responded with the wrong dimension.
+- **`EMBEDDING_DIM` dedupe** — the client `2560` literal is deduped into `app/utils/ai-config.ts` (`EMBEDDING_DIM`) instead of a bare magic number in the UI.
+
 ## Deferred
 
 - **Per-request model switching beyond voice** — failover chains are per-usage; no per-individual-request model picker outside the voice path.
