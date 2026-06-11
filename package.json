@@ -36,6 +36,7 @@
     "@nuxtjs/mdc": "^0.22.0",
     "@ricky0123/vad-web": "^0.0.30",
     "@vueuse/core": "^14.3.0",
+    "@vueuse/integrations": "^14.3.0",
     "@vueuse/nuxt": "^14.3.0",
     "ai": "^6.0.198",
     "better-auth": "^1.6.13",
@@ -46,6 +47,7 @@
     "nuxt": "^4.4.6",
     "pg": "^8.21.0",
     "sharp": "^0.34.5",
+    "sortablejs": "^1.15.7",
     "tailwindcss": "^4.3.0",
     "three": "^0.184.0",
     "zod": "^4.4.3"
@@ -54,6 +56,7 @@
     "@nuxt/eslint": "^1.15.2",
     "@nuxt/test-utils": "^4.0.3",
     "@types/pg": "^8.20.0",
+    "@types/sortablejs": "^1.15.9",
     "@types/three": "^0.184.1",
     "drizzle-kit": "^0.31.10",
     "eslint": "^10.4.1",
