@@ -8,7 +8,11 @@ const emit = defineEmits<{ reorder: [ids: string[]]; remove: [id: string] }>()
 const el = ref<HTMLElement | null>(null)
 // Local mirror sortable mutates; sync down from props, emit up on end.
 const list = ref<string[]>([...props.ids])
-watch(() => props.ids, v => { list.value = [...v] })
+watch(() => props.ids, (v) => {
+  const same = v.length === list.value.length && v.every((id, i) => id === list.value[i])
+  if (same) return
+  list.value = [...v]
+})
 
 useSortable(el, list, {
   animation: 150,
@@ -27,7 +31,7 @@ useSortable(el, list, {
       <UIcon name="i-lucide-grip-vertical" class="drag-handle size-4 cursor-grab text-muted" />
       <span class="flex-1 text-sm">{{ labelOf(id) }}</span>
       <UBadge v-if="dimOf(id)" size="xs" variant="subtle">{{ dimOf(id) }}</UBadge>
-      <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" @click="emit('remove', id)" />
+      <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" aria-label="Remove model" @click="emit('remove', id)" />
     </div>
     <p v-if="!list.length" class="text-xs text-muted">No models assigned.</p>
   </div>

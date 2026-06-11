@@ -22,6 +22,12 @@ function add(usage: string, id: string) {
 function remove(usage: string, id: string) {
   config.setAssignment(usage, (config.draft.value.assignments[usage] ?? []).filter(x => x !== id))
 }
+
+const picker = reactive<Record<string, string | null>>({})
+function pick(usage: string, id: string) {
+  add(usage, id)
+  picker[usage] = null
+}
 </script>
 
 <template>
@@ -44,7 +50,8 @@ function remove(usage: string, id: string) {
         value-key="value"
         placeholder="Add model…"
         class="mt-2 w-64"
-        @update:model-value="(id: string) => add(usage, id)"
+        :model-value="picker[usage] ?? undefined"
+        @update:model-value="(id: string) => pick(usage, id)"
       />
     </UFormField>
 
