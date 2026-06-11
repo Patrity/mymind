@@ -22,9 +22,16 @@ const tts: TtsProvider = {
 }
 
 async function* ttsSynthFailover(text: string, opts: { voice: string; signal?: AbortSignal }) {
-  // Pick the first reachable TTS provider, then stream from it.
-  const provider = await withFailover('tts', async (m) => ttsFromModel(m))
-  yield* provider.synthesize(text, opts)
+  // tts-openai buffers the whole WAV per call, so we can collect all chunks
+  // INSIDE withFailover — a provider that errors on synthesis falls over to the
+  // next, and only a fully-synthesized result is yielded. (Failover is per turn,
+  // not mid-stream — acceptable since each utterance is one buffered WAV.)
+  const chunks = await withFailover('tts', async (m) => {
+    const out: Uint8Array[] = []
+    for await (const c of ttsFromModel(m).synthesize(text, opts)) out.push(c)
+    return out
+  })
+  yield* chunks
 }
 
 export default defineWebSocketHandler({
