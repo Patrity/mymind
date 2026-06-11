@@ -92,20 +92,26 @@ watch(filterProject, loadTasks)
 // We read the move from DOM dataset (evt.item.dataset.id, evt.to/from.dataset.status)
 // — reliable during onEnd — NOT from the bound arrays (which Sortable mutates after
 // the drop, racing any read). On a cross-column move we persist + loadTasks() to
-// reconcile; a same-column reorder is a no-op (no order field to persist).
+// reconcile; a same-column reorder is a no-op FOR PERSISTENCE only (no order
+// field to save) — vueuse's default onUpdate still splices the local column
+// array to match the DOM, since we override onEnd, not onUpdate.
 const colRefs: Record<TaskStatus, HTMLElement | null> = Object.fromEntries(
   COLUMNS.map(c => [c.key, null])
 ) as Record<TaskStatus, HTMLElement | null>
 
 function setColRef(key: TaskStatus, el: Element | ComponentPublicInstance | null) {
+  // Vue function refs must return void — wrap the assignment in a block statement.
   colRefs[key] = (el as HTMLElement | null) ?? null
+  return
 }
 
 async function onCardMoved(evt: Sortable.SortableEvent) {
   const id = evt.item.dataset.id
   const toStatus = evt.to.dataset.status as TaskStatus | undefined
   const fromStatus = evt.from.dataset.status as TaskStatus | undefined
-  // Same-column reorder: no status change to persist (no order field).
+  // Same-column reorder: no status change to persist (no order field). This is a
+  // no-op for persistence only — vueuse's default onUpdate already spliced the
+  // local column array to match the DOM (we override onEnd, not onUpdate).
   if (!id || !toStatus || toStatus === fromStatus) return
   try {
     await moveTask(id, { status: toStatus })
@@ -119,6 +125,13 @@ async function onCardMoved(evt: Sortable.SortableEvent) {
 onMounted(() => {
   for (const col of COLUMNS) {
     useSortable(() => colRefs[col.key], columnsTasks[col.key], {
+      // Re-watch the element ref so Sortable (re)initializes whenever the column
+      // mounts. The board is gated behind v-else (loading skeleton is the v-if),
+      // and loadTasks() sets loading=true synchronously on mount — so at the
+      // single tryOnMounted(start) tick the colRefs are null. With watchElement
+      // we rebind once the v-else board renders, and again on every loading
+      // toggle (e.g. each filter change re-mounts the columns).
+      watchElement: true,
       group: 'tasks',
       animation: 150,
       handle: '.task-card',
