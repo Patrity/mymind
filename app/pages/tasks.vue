@@ -95,9 +95,9 @@ watch(filterProject, loadTasks)
 // reconcile; a same-column reorder is a no-op FOR PERSISTENCE only (no order
 // field to save) — vueuse's default onUpdate still splices the local column
 // array to match the DOM, since we override onEnd, not onUpdate.
-const colRefs: Record<TaskStatus, HTMLElement | null> = Object.fromEntries(
-  COLUMNS.map(c => [c.key, null])
-) as Record<TaskStatus, HTMLElement | null>
+const colRefs = shallowReactive(
+  Object.fromEntries(COLUMNS.map(c => [c.key, null])) as Record<TaskStatus, HTMLElement | null>
+)
 
 function setColRef(key: TaskStatus, el: Element | ComponentPublicInstance | null) {
   // Vue function refs must return void — wrap the assignment in a block statement.
