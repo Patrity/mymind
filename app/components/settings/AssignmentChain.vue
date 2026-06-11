@@ -6,19 +6,33 @@ const props = defineProps<{ ids: string[]; labelOf: (id: string) => string; dimO
 const emit = defineEmits<{ reorder: [ids: string[]]; remove: [id: string] }>()
 
 const el = ref<HTMLElement | null>(null)
-// Local mirror sortable mutates; sync down from props, emit up on end.
+// Local mirror that useSortable mutates in place on drop. Sync props -> list
+// (down) and emit list -> parent (up) via a watcher — NOT via onEnd: useSortable
+// updates `list` after the drop completes, so reading it inside onEnd races and
+// emits the pre-drop order (the dragged row "snaps back"). Watching `list`
+// (deep, to catch the in-place reorder) fires after the mutation lands. The
+// `syncingFromProps` flag stops the prop-driven resync from echoing back up.
 const list = ref<string[]>([...props.ids])
+let syncingFromProps = false
+
+function sameOrder(a: string[], b: string[]) {
+  return a.length === b.length && a.every((id, i) => id === b[i])
+}
+
 watch(() => props.ids, (v) => {
-  const same = v.length === list.value.length && v.every((id, i) => id === list.value[i])
-  if (same) return
+  if (sameOrder(v, list.value)) return
+  syncingFromProps = true
   list.value = [...v]
+  nextTick(() => { syncingFromProps = false })
 })
 
-useSortable(el, list, {
-  animation: 150,
-  handle: '.drag-handle',
-  onEnd: () => emit('reorder', [...list.value])
-})
+useSortable(el, list, { animation: 150, handle: '.drag-handle' })
+
+watch(list, (v) => {
+  if (syncingFromProps) return
+  if (sameOrder(v, props.ids)) return
+  emit('reorder', [...v])
+}, { deep: true })
 </script>
 
 <template>

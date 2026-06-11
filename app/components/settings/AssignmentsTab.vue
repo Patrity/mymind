@@ -38,7 +38,7 @@ function pick(usage: string, id: string) {
       :label="usage"
       :help="usage === 'embeddings' ? 'Only 2560-dim models. Order = failover priority.' : 'Drag to set failover priority (first = primary).'"
     >
-      <AssignmentChain
+      <SettingsAssignmentChain
         :ids="config.draft.value.assignments[usage] ?? []"
         :label-of="modelLabel"
         :dim-of="modelDim"
