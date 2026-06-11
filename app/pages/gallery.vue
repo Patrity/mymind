@@ -160,6 +160,11 @@ async function onRemoveTag(tag: string) {
   await withMutate(() => images.removeTag(selected.value!, tag))
 }
 
+async function onRescan() {
+  if (!selected.value) return
+  await withMutate(() => images.rescan(selected.value!.id))
+}
+
 // ── Delete ───────────────────────────────────────────────────────────────────
 const confirmDelete = ref(false)
 const deleting = ref(false)
@@ -587,14 +592,26 @@ function formatBytes(n: number): string {
               >
                 Delete
               </UButton>
-              <UButton
-                color="neutral"
-                variant="ghost"
-                size="sm"
-                @click="closeDetail"
-              >
-                Close
-              </UButton>
+              <div class="flex items-center gap-2">
+                <UButton
+                  icon="i-lucide-refresh-cw"
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  :loading="mutating"
+                  @click="onRescan"
+                >
+                  Rescan
+                </UButton>
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  @click="closeDetail"
+                >
+                  Close
+                </UButton>
+              </div>
             </div>
           </div>
         </div>

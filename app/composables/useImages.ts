@@ -26,6 +26,8 @@ export function useImages() {
 
   const remove = (id: string) => ofetch(`/api/images/${id}`, { method: 'DELETE' })
 
+  const rescan = (id: string) => ofetch<ImageDTO>(`/api/images/${id}/rescan`, { method: 'POST' })
+
   const setPublic = (id: string, isPublic: boolean) => patch(id, { isPublic })
 
   const approveTag = (img: ImageDTO, tag: string) =>
@@ -40,5 +42,5 @@ export function useImages() {
   const removeTag = (img: ImageDTO, tag: string) =>
     patch(img.id, { tags: img.tags.filter(t => t !== tag) })
 
-  return { list, upload, patch, remove, setPublic, approveTag, dismissTag, removeTag }
+  return { list, upload, patch, remove, setPublic, approveTag, dismissTag, removeTag, rescan }
 }
