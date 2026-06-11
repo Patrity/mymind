@@ -64,29 +64,29 @@ await resolveThread()
       </UDashboardNavbar>
     </template>
 
-    <!-- Loading state -->
-    <div
-      v-if="loading"
-      class="flex-1 flex items-center justify-center text-muted"
-    >
-      <UIcon name="i-lucide-loader-circle" class="size-6 animate-spin" />
-    </div>
+    <template #body>
+      <!-- Loading state -->
+      <div
+        v-if="loading"
+        class="flex-1 flex items-center justify-center text-muted"
+      >
+        <UIcon name="i-lucide-loader-circle" class="size-6 animate-spin" />
+      </div>
 
-    <!-- Error state -->
-    <div
-      v-else-if="error"
-      class="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8"
-    >
-      <UIcon name="i-lucide-alert-triangle" class="size-8 text-error" />
-      <p class="text-sm text-muted">{{ error }}</p>
-      <UButton size="sm" label="Retry" icon="i-lucide-refresh-cw" @click="resolveThread" />
-    </div>
+      <!-- Error state -->
+      <div
+        v-else-if="error"
+        class="flex-1 flex flex-col items-center justify-center gap-3 text-center p-8"
+      >
+        <UIcon name="i-lucide-alert-triangle" class="size-8 text-error" />
+        <p class="text-sm text-muted">{{ error }}</p>
+        <UButton size="sm" label="Retry" icon="i-lucide-refresh-cw" @click="resolveThread" />
+      </div>
 
-    <!-- Main clipboard UI -->
-    <template v-else-if="threadId">
-      <div class="flex flex-col h-full overflow-hidden">
-        <ClipboardThread :thread-id="threadId" />
-        <ClipboardComposer :thread-id="threadId" />
+      <!-- Main clipboard UI: thread scrolls, composer pinned -->
+      <div v-else-if="threadId" class="flex flex-col h-full min-h-0">
+        <ClipboardThread :thread-id="threadId" class="flex-1 min-h-0" />
+        <ClipboardComposer :thread-id="threadId" class="shrink-0" />
       </div>
     </template>
   </UDashboardPanel>
