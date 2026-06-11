@@ -1,8 +1,9 @@
 /**
  * Optional cross-encoder reranker.
  *
- * Disabled by default (aiRerankBaseUrl = '' in runtimeConfig).
- * Set AI_RERANK_BASE_URL env var to enable (e.g. http://192.168.2.25:8883).
+ * Disabled unless a model is assigned to the 'rerank' usage in the AI config
+ * registry (Settings). The caller (memory.ts) resolves baseURL/apiKey/model and
+ * skips reranking when the usage is unconfigured.
  *
  * On any failure the caller falls back to RRF-rank relevance — this module
  * never throws.
@@ -27,7 +28,8 @@ export async function rerank(
   query: string,
   docs: RerankDoc[],
   baseUrl: string,
-  apiKey: string
+  apiKey: string,
+  model = 'Qwen3-Reranker-0.6B'
 ): Promise<RerankResult[]> {
   if (!docs.length) return []
 
@@ -41,7 +43,7 @@ export async function rerank(
           'Content-Type': 'application/json'
         },
         body: {
-          model: 'Qwen3-Reranker-0.6B',
+          model,
           query,
           documents: docs.map(d => d.text),
           return_documents: false

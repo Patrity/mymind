@@ -257,15 +257,15 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
   }))
 
   // Optional: reranker (OFF by default — a 'rerank' model must be assigned in config)
-  let rerankCfg: { baseURL: string; apiKey: string } | null = null
+  let rerankCfg: { baseURL: string; apiKey: string; model: string } | null = null
   try {
     const [m] = await resolveChain('rerank')
-    if (m?.baseURL) rerankCfg = { baseURL: m.baseURL.replace(/\/$/, ''), apiKey: m.apiKey ?? '' }
+    if (m?.baseURL) rerankCfg = { baseURL: m.baseURL.replace(/\/$/, ''), apiKey: m.apiKey ?? '', model: m.modelId }
   } catch { rerankCfg = null }  // AiNotConfiguredError → rerank stays off
   if (rerankCfg) {
     try {
       const docs = withRelevance.map(dto => ({ id: dto.id, text: dto.content }))
-      const reranked = await rerank(q, docs, rerankCfg.baseURL, rerankCfg.apiKey)
+      const reranked = await rerank(q, docs, rerankCfg.baseURL, rerankCfg.apiKey, rerankCfg.model)
       if (reranked.length === withRelevance.length) {
         const rerankedById = new Map(reranked.map(r => [r.id, r.score]))
         return withRelevance

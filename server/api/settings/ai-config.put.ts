@@ -17,7 +17,13 @@ const Body = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  const body = Body.parse(await readBody(event))
+  let body: z.infer<typeof Body>
+  try {
+    body = Body.parse(await readBody(event))
+  } catch (err) {
+    // Honor a blanket 422 for invalid input (raw shape + referential alike).
+    throw createError({ statusCode: 422, statusMessage: 'Invalid request body', data: (err as Error).message })
+  }
   const existing = await loadConfig()
   const prevKey = new Map(existing.providers.map(p => [p.id, p.apiKeyEnc]))
 
