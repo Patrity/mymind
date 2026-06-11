@@ -55,7 +55,7 @@ await resolveThread()
 </script>
 
 <template>
-  <UDashboardPanel grow>
+  <UDashboardPanel grow :ui="{ body: '!p-0 !overflow-hidden' }">
     <template #header>
       <UDashboardNavbar title="Clipboard">
         <template #leading>
