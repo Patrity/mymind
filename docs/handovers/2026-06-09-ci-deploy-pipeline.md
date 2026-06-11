@@ -1,6 +1,6 @@
 ---
 title: CI + Deploy Pipeline (self-hosted Proxmox runner)
-cycle: infra
+cycle: 16
 date: 2026-06-09
 status: shipped
 spec: ../superpowers/specs/2026-06-09-ci-deploy-pipeline-design.md
