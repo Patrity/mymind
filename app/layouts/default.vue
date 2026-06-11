@@ -41,8 +41,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     icon: 'i-lucide-inbox',
     to: '/review',
     badge: reviewCount.value.pending > 0 ? reviewCount.value.pending : undefined
-  },
-  { label: 'Settings', icon: 'i-lucide-settings', to: '/settings' }
+  }
 ])
 </script>
 
@@ -91,13 +90,18 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
       </template>
 
       <template #footer="{ collapsed }">
-        <UColorModeButton
-          v-if="!collapsed"
-          size="xs"
-          variant="ghost"
-          color="neutral"
-          class="mx-2 mb-2"
-        />
+        <div :class="collapsed ? 'flex-col' : 'flex-row justify-center gap-2'" class="w-full flex">
+          <UColorModeButton
+            variant="ghost"
+            color="neutral"
+          />
+          <UButton
+            to="/settings"
+            icon="i-lucide-settings"
+            color="neutral"
+            variant="ghost"
+            />
+        </div>
       </template>
     </UDashboardSidebar>
 
