@@ -16,11 +16,13 @@ const tabs = [
       </UDashboardNavbar>
     </template>
     <template #body>
-      <UTabs :items="tabs" class="w-full">
-        <template #providers><SettingsProvidersTab /></template>
-        <template #models><SettingsModelsTab /></template>
-        <template #assignments><SettingsAssignmentsTab /></template>
-      </UTabs>
+      <div class="p-4 sm:p-6">
+        <UTabs :items="tabs" class="w-full">
+          <template #providers><SettingsProvidersTab /></template>
+          <template #models><SettingsModelsTab /></template>
+          <template #assignments><SettingsAssignmentsTab /></template>
+        </UTabs>
+      </div>
     </template>
   </UDashboardPanel>
 </template>
