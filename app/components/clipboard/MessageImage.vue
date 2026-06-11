@@ -9,7 +9,7 @@
 // Hover overlay offers Copy (clipboard image item) + Download (original file).
 interface AttachmentLike {
   storageKey: string
-  mimeType: string
+  mime: string
   originalName: string
   width: number | null
   height: number | null
@@ -36,7 +36,7 @@ const { copyImage } = useClipboard()
         color="neutral"
         icon="i-lucide-copy"
         label="Copy"
-        @click="copyImage(url, props.attachment.mimeType)"
+        @click="copyImage(url, props.attachment.mime)"
       />
       <UButton
         :to="url"

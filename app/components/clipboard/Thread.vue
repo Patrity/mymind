@@ -11,7 +11,7 @@ interface AttachmentRow {
   storageKey: string
   sha256: string
   size: number
-  mimeType: string
+  mime: string
   originalName: string
   width: number | null
   height: number | null

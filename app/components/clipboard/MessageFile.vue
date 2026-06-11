@@ -6,7 +6,7 @@
 interface AttachmentLike {
   storageKey: string
   size: number
-  mimeType: string
+  mime: string
   originalName: string
 }
 const props = defineProps<{ attachment: AttachmentLike }>()
@@ -30,7 +30,7 @@ function formatBytes(n: number) {
         {{ props.attachment.originalName }}
       </p>
       <p class="text-xs text-muted">
-        {{ formatBytes(props.attachment.size) }} · {{ props.attachment.mimeType }}
+        {{ formatBytes(props.attachment.size) }} · {{ props.attachment.mime }}
       </p>
     </div>
     <UButton
