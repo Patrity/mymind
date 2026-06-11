@@ -31,7 +31,13 @@ const showingExistingKey = computed(() =>
 // Local buffer for a freshly typed key; reset whenever we (re)open on a provider.
 const keyInput = ref('')
 watch(open, (isOpen) => {
-  if (isOpen) keyInput.value = ''
+  if (isOpen) {
+    keyInput.value = ''
+  } else if (props.provider.key && 'apiKey' in props.provider.key && props.provider.key.apiKey === '') {
+    // Closing after Replace with no key typed: an empty { apiKey:'' } would 422
+    // the save (server requires apiKey.min(1)). Fall back to a non-destructive state.
+    props.provider.key = props.provider.hasKey ? { keep: true } : null
+  }
 })
 
 function onKeyUpdate(val: string) {
