@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useSortable } from '@vueuse/integrations/useSortable'
+import type Sortable from 'sortablejs'
+import type { ComponentPublicInstance } from 'vue'
 import type { TaskDTO, TaskStatus, TaskPriority, ProjectDTO } from '~~/shared/types/tasks'
 
 definePageMeta({ title: 'Tasks' })
@@ -33,13 +36,25 @@ const filteredTasks = computed(() => {
   })
 })
 
-const tasksByStatus = computed(() => {
-  const map = Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]])) as Record<TaskStatus, TaskDTO[]>
-  for (const t of filteredTasks.value) {
-    if (map[t.status]) map[t.status].push(t)
+// Mutable per-column arrays that useSortable splices in place. Derived from
+// filteredTasks via the watcher below; each column binds to its OWN array so
+// Sortable's in-place mutation doesn't fight a shared list. After a cross-column
+// move we loadTasks() → filteredTasks recomputes → the watcher rebuilds these
+// from server truth (authoritative reconcile).
+const columnsTasks = reactive(
+  Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]]))
+) as Record<TaskStatus, TaskDTO[]>
+
+watch(filteredTasks, (list) => {
+  const byStatus = Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]])) as Record<TaskStatus, TaskDTO[]>
+  for (const t of list) {
+    if (byStatus[t.status]) byStatus[t.status].push(t)
   }
-  return map
-})
+  for (const col of COLUMNS) {
+    // Rebuild in place so the reactive proxy + Sortable observe the same array.
+    columnsTasks[col.key].splice(0, columnsTasks[col.key].length, ...byStatus[col.key])
+  }
+}, { immediate: true })
 
 // ── Load data ─────────────────────────────────────────────────────────────────
 async function loadTasks() {
@@ -72,52 +87,47 @@ onMounted(() => {
 // Re-fetch when project filter changes (server-side); priority is client-side
 watch(filterProject, loadTasks)
 
-// ── Drag-and-drop state ───────────────────────────────────────────────────────
-const dragTaskId = ref<string | null>(null)
-const dragTaskStatus = ref<TaskStatus | null>(null)
-const dragOverColumn = ref<TaskStatus | null>(null)
+// ── Drag-and-drop (useSortable, shared-group columns) ──────────────────────────
+// One sortable per column, all in group 'tasks' so cards drag between columns.
+// We read the move from DOM dataset (evt.item.dataset.id, evt.to/from.dataset.status)
+// — reliable during onEnd — NOT from the bound arrays (which Sortable mutates after
+// the drop, racing any read). On a cross-column move we persist + loadTasks() to
+// reconcile; a same-column reorder is a no-op (no order field to persist).
+const colRefs: Record<TaskStatus, HTMLElement | null> = Object.fromEntries(
+  COLUMNS.map(c => [c.key, null])
+) as Record<TaskStatus, HTMLElement | null>
 
-function onDragStart(event: DragEvent, task: TaskDTO) {
-  dragTaskId.value = task.id
-  dragTaskStatus.value = task.status
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', task.id)
-  }
+function setColRef(key: TaskStatus, el: Element | ComponentPublicInstance | null) {
+  colRefs[key] = (el as HTMLElement | null) ?? null
 }
 
-function onDragEnd() {
-  dragTaskId.value = null
-  dragTaskStatus.value = null
-  dragOverColumn.value = null
-}
-
-function onDragOver(event: DragEvent, colStatus: TaskStatus) {
-  event.preventDefault()
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
-  dragOverColumn.value = colStatus
-}
-
-function onDragLeave(colStatus: TaskStatus) {
-  if (dragOverColumn.value === colStatus) dragOverColumn.value = null
-}
-
-async function onDrop(event: DragEvent, colStatus: TaskStatus) {
-  event.stopPropagation()
-  dragOverColumn.value = null
-  const id = dragTaskId.value
-  const fromStatus = dragTaskStatus.value
-  dragTaskId.value = null
-  dragTaskStatus.value = null
-  if (!id || fromStatus === colStatus) return
+async function onCardMoved(evt: Sortable.SortableEvent) {
+  const id = evt.item.dataset.id
+  const toStatus = evt.to.dataset.status as TaskStatus | undefined
+  const fromStatus = evt.from.dataset.status as TaskStatus | undefined
+  // Same-column reorder: no status change to persist (no order field).
+  if (!id || !toStatus || toStatus === fromStatus) return
   try {
-    await moveTask(id, { status: colStatus })
+    await moveTask(id, { status: toStatus })
     await loadTasks()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Failed to move task', description: err.data?.statusMessage ?? err.message })
   }
 }
+
+onMounted(() => {
+  for (const col of COLUMNS) {
+    useSortable(() => colRefs[col.key], columnsTasks[col.key], {
+      group: 'tasks',
+      animation: 150,
+      handle: '.task-card',
+      ghostClass: 'opacity-40',
+      dragClass: 'ring-2',
+      onEnd: onCardMoved
+    })
+  }
+})
 
 // ── New task modal ────────────────────────────────────────────────────────────
 const showNewModal = ref(false)
@@ -332,69 +342,71 @@ const filterProjectItems = computed(() => [
         <div
           v-for="col in COLUMNS"
           :key="col.key"
-          class="flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg transition-colors"
-          :class="dragOverColumn === col.key ? 'bg-primary/5 ring-2 ring-primary/30' : ''"
-          @dragover="onDragOver($event, col.key)"
-          @dragleave="onDragLeave(col.key)"
-          @drop="onDrop($event, col.key)"
+          class="flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg"
         >
           <!-- Column header -->
           <div class="flex items-center gap-2 px-1">
             <span class="text-sm font-semibold text-highlighted">{{ col.label }}</span>
             <UBadge
-              :label="String(tasksByStatus[col.key].length)"
+              :label="String(columnsTasks[col.key].length)"
               color="neutral"
               variant="soft"
               size="xs"
             />
           </div>
 
-          <!-- Empty state / drop zone -->
+          <!-- Card list (sortable container; group 'tasks'). Keeps a min height
+               so empty columns remain a valid drop target; dashed border + hint
+               act as the empty affordance. -->
           <div
-            v-if="tasksByStatus[col.key].length === 0"
-            class="flex items-center justify-center h-20 rounded-lg border border-dashed transition-colors"
-            :class="dragOverColumn === col.key ? 'border-primary/50 text-primary' : 'border-muted text-muted'"
+            :ref="(el: Element | ComponentPublicInstance | null) => setColRef(col.key, el)"
+            :data-status="col.key"
+            class="flex flex-col gap-3 min-h-20 rounded-lg"
+            :class="columnsTasks[col.key].length === 0
+              ? 'items-center justify-center border border-dashed border-muted text-muted'
+              : ''"
           >
-            <span class="text-sm">{{ dragTaskId ? 'Drop here' : 'No tasks' }}</span>
-          </div>
+            <!-- Empty hint (non-sortable: only rendered when no cards) -->
+            <span
+              v-if="columnsTasks[col.key].length === 0"
+              class="text-sm pointer-events-none"
+            >No tasks</span>
 
-          <!-- Task cards -->
-          <div
-            v-for="task in tasksByStatus[col.key]"
-            :key="task.id"
-            draggable="true"
-            class="rounded-lg border border-default bg-elevated/50 p-3 flex flex-col gap-2 cursor-grab active:cursor-grabbing hover:bg-elevated transition-all select-none"
-            :class="dragTaskId === task.id ? 'opacity-40 ring-2 ring-primary/50' : ''"
-            @dragstart="onDragStart($event, task)"
-            @dragend="onDragEnd"
-            @click="openEditModal(task)"
-          >
-            <!-- Title -->
-            <p class="text-sm font-medium text-highlighted leading-snug">
-              {{ task.title }}
-            </p>
+            <!-- Task cards -->
+            <div
+              v-for="task in columnsTasks[col.key]"
+              :key="task.id"
+              :data-id="task.id"
+              class="task-card w-full rounded-lg border border-default bg-elevated/50 p-3 flex flex-col gap-2 cursor-grab active:cursor-grabbing hover:bg-elevated transition-colors select-none"
+              @click="openEditModal(task)"
+            >
+              <!-- Title -->
+              <p class="text-sm font-medium text-highlighted leading-snug">
+                {{ task.title }}
+              </p>
 
-            <!-- Badges row -->
-            <div class="flex flex-wrap items-center gap-1.5">
-              <UBadge
-                :label="task.priority"
-                :color="priorityColor[task.priority]"
-                variant="subtle"
-                size="xs"
-              />
-              <span
-                v-if="task.dueDate"
-                :class="['text-xs font-medium', isOverdue(task) ? 'text-error' : 'text-muted']"
-              >
-                {{ formatDate(task.dueDate) }}
-              </span>
-              <UBadge
-                v-if="task.project"
-                :label="projects.find(p => p.slug === task.project)?.name ?? task.project"
-                color="neutral"
-                variant="outline"
-                size="xs"
-              />
+              <!-- Badges row -->
+              <div class="flex flex-wrap items-center gap-1.5">
+                <UBadge
+                  :label="task.priority"
+                  :color="priorityColor[task.priority]"
+                  variant="subtle"
+                  size="xs"
+                />
+                <span
+                  v-if="task.dueDate"
+                  :class="['text-xs font-medium', isOverdue(task) ? 'text-error' : 'text-muted']"
+                >
+                  {{ formatDate(task.dueDate) }}
+                </span>
+                <UBadge
+                  v-if="task.project"
+                  :label="projects.find(p => p.slug === task.project)?.name ?? task.project"
+                  color="neutral"
+                  variant="outline"
+                  size="xs"
+                />
+              </div>
             </div>
           </div>
         </div>
