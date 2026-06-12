@@ -19,8 +19,13 @@ annotates because the repo is lint-red.
 ## Job: deploy (self-hosted `proxmox` runner on `mini`, `master` only)
 `needs: test`, `if: github.ref == 'refs/heads/master'`. Steps:
 1. `actions/checkout` on the host.
-2. `tar … | pct exec 114 -- tar -x` the tree into `/opt/mymind` (excludes `.git`,
-   `node_modules`, `.nuxt`, `.output`, `.data`, `.env`).
+2. **Delete-aware sync** into `/opt/mymind`: first clear the tracked tree on the box
+   (`find -maxdepth 1` removing everything except the preserved runtime entries
+   `.git`/`.env`/`.data`/`.output`/`.nuxt`/`node_modules`), then `tar … | pct exec 114 -- tar -x`
+   the fresh checkout (same exclude set). The clear step is what makes deletions propagate —
+   a plain `tar -x` overwrites but never removes, so a file deleted in the repo would otherwise
+   linger and break the build (it did once: a deleted `image-ocr.ts` still importing a removed
+   `describeImage` export failed `pnpm build`, cycle 20).
 3. `pct exec 114 -- … docker compose -f docker-compose.prod.yml up -d --build`
    (rebuilds the image; `pnpm db:migrate` runs on container start).
 4. Health check: `/login` must return 200 (30 × 5s) or the job fails.
@@ -37,6 +42,8 @@ push supersedes an in-flight deploy.
 One-time manual registration — see `docs/DEPLOYMENT.md` §15.
 
 ## Known limitations
-- tar-extract does not delete files removed from the repo (stale files cleaned by hand).
+- Deletions now propagate (the sync clears the tracked tree before extracting, preserving
+  runtime state); only `.env` + the Docker named volumes (`mymind-pgdata`, `mymind-uploads`)
+  survive a sync — anything else under `/opt/mymind` not in the repo is wiped on each deploy.
 - Lint is non-blocking until the repo is brought to green.
 - Single app instance (scheduled tasks are not distributed-locked — see DEPLOYMENT §7).
