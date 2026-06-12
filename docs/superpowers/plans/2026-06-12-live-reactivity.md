@@ -222,26 +222,36 @@ Create `app/plugins/vue-query.ts` (canonical Nuxt + vue-query setup — dehydrat
 ```ts
 import { VueQueryPlugin, QueryClient, hydrate, dehydrate } from '@tanstack/vue-query'
 
-export default defineNuxtPlugin((nuxt) => {
-  const vueQueryState = useState<unknown>('vue-query')
+// MUST be a named object-syntax plugin: the live-sse plugin depends on it by name,
+// and filenames sort 'live.client' < 'vue-query' (so without dependsOn the consumer
+// would run first and hit "No queryClient found in Vue context").
+export default defineNuxtPlugin({
+  name: 'vue-query',
+  setup(nuxt) {
+    const vueQueryState = useState<unknown>('vue-query')
 
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        staleTime: 30_000,        // live events drive freshness; this just debounces refetches
-        refetchOnReconnect: true, // self-heals missed invalidations after an SSE/network gap
-        refetchOnWindowFocus: false
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          staleTime: 30_000,        // live events drive freshness; this just debounces refetches
+          refetchOnReconnect: true, // self-heals missed invalidations after an SSE/network gap
+          refetchOnWindowFocus: false
+        }
       }
+    })
+
+    nuxt.vueApp.use(VueQueryPlugin, { queryClient })
+
+    if (import.meta.server) {
+      nuxt.hooks.hook('app:rendered', () => { vueQueryState.value = dehydrate(queryClient) })
     }
-  })
+    if (import.meta.client) {
+      hydrate(queryClient, vueQueryState.value)
+    }
 
-  nuxt.vueApp.use(VueQueryPlugin, { queryClient })
-
-  if (import.meta.server) {
-    nuxt.hooks.hook('app:rendered', () => { vueQueryState.value = dehydrate(queryClient) })
-  }
-  if (import.meta.client) {
-    hydrate(queryClient, vueQueryState.value)
+    // Expose via Nuxt provide so the live-sse plugin reads it as `nuxtApp.$queryClient`
+    // (no Vue injection context needed inside a plugin).
+    return { provide: { queryClient } }
   }
 })
 ```
@@ -364,28 +374,35 @@ git commit -m "feat(live): client dispatch registry mapping signals to invalidat
 Create `app/plugins/live.client.ts` (one `EventSource` per tab; the browser auto-reconnects, and `refetchOnReconnect` heals the gap):
 
 ```ts
-import { useQueryClient } from '@tanstack/vue-query'
+import type { QueryClient } from '@tanstack/vue-query'
 import { dispatchLiveEvent } from '../utils/live-dispatch'
 import type { LiveEvent } from '../../shared/types/live'
 
-export default defineNuxtPlugin(() => {
-  const queryClient = useQueryClient()
-  let es: EventSource | null = null
+// dependsOn guarantees the vue-query plugin ran and provided `$queryClient` first.
+// Read the client from Nuxt provide (not useQueryClient/inject — plugins have no
+// component instance). `$queryClient` is typed `unknown` across plugins, so cast.
+export default defineNuxtPlugin({
+  name: 'live-sse',
+  dependsOn: ['vue-query'],
+  setup(nuxt) {
+    const queryClient = nuxt.$queryClient as QueryClient
+    let es: EventSource | null = null
 
-  function connect() {
-    es = new EventSource('/api/events')
-    es.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data) as LiveEvent
-        if (data?.resource && data?.id) dispatchLiveEvent(queryClient, data)
-      } catch { /* ignore heartbeat/comment frames */ }
+    function connect() {
+      es = new EventSource('/api/events')
+      es.onmessage = (msg) => {
+        try {
+          const data = JSON.parse(msg.data) as LiveEvent
+          if (data?.resource && data?.id) dispatchLiveEvent(queryClient, data)
+        } catch { /* ignore heartbeat/comment frames */ }
+      }
+      // EventSource reconnects automatically on transient errors; no manual loop needed.
     }
-    // EventSource reconnects automatically on transient errors; no manual loop needed.
+
+    connect()
+
+    if (import.meta.hot) import.meta.hot.dispose(() => es?.close())
   }
-
-  connect()
-
-  if (import.meta.hot) import.meta.hot.dispose(() => es?.close())
 })
 ```
 
