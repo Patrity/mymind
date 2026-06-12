@@ -15,10 +15,11 @@ export function useImages() {
     return ofetch<ImageDTO[]>(`/api/images${qs ? `?${qs}` : ''}`)
   }
 
-  const upload = (file: File, isPublic = false) => {
+  const upload = (file: File, isPublic = false, makeDocument = false) => {
     const fd = new FormData()
     fd.append('file', file)
-    return ofetch<ImageDTO>(`/api/upload${isPublic ? '?public=1' : ''}`, { method: 'POST', body: fd })
+    const qs = [isPublic ? 'public=1' : '', makeDocument ? 'makeDocument=1' : ''].filter(Boolean).join('&')
+    return ofetch<ImageDTO>(`/api/upload${qs ? `?${qs}` : ''}`, { method: 'POST', body: fd })
   }
 
   const patch = (id: string, body: Record<string, unknown>) =>

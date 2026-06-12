@@ -42,6 +42,7 @@ const imageUploading = ref(false)
 const imageCreated = ref<ImageDTO | null>(null)
 const imageCameraOpen = ref(false)
 const imagePreviewUrl = ref<string | null>(null)
+const makeDoc = ref(false)
 
 async function uploadImage(file: File) {
   if (!file.type.startsWith('image/')) return
@@ -49,7 +50,7 @@ async function uploadImage(file: File) {
   imageCreated.value = null
   imagePreviewUrl.value = URL.createObjectURL(file)
   try {
-    const img = await images.upload(file, imagePublic.value)
+    const img = await images.upload(file, imagePublic.value, makeDoc.value)
     imageCreated.value = img
     toast.add({ color: 'success', title: 'Image uploaded', description: img.originalName ?? img.id })
   } catch (e: unknown) {
@@ -81,76 +82,10 @@ const { isOverDropZone: imageIsOver } = useDropZone(imageDropZoneRef, {
   }
 })
 
-// ── Transcribe tab ────────────────────────────────────────────────────────────
-const transcribeFileInput = ref<HTMLInputElement | null>(null)
-const transcribeDropZoneRef = ref<HTMLElement | null>(null)
-const transcribeTitle = ref('')
-const transcribeUploading = ref(false)
-const transcribing = ref(false)
-const transcribedDoc = ref<DocumentDTO | null>(null)
-const transcribedText = ref('')
-const transcribeCameraOpen = ref(false)
-const transcribePreviewUrl = ref<string | null>(null)
-
-async function uploadTranscribe(file: File) {
-  if (!file.type.startsWith('image/')) return
-  transcribeUploading.value = true
-  transcribedDoc.value = null
-  transcribedText.value = ''
-  transcribePreviewUrl.value = URL.createObjectURL(file)
-  try {
-    // Step 1: upload image to get id
-    const img = await images.upload(file, false)
-    toast.add({ color: 'neutral', title: 'Image uploaded', description: 'Transcribing…' })
-
-    // Step 2: transcribe via vision model
-    transcribing.value = true
-    const result = await $fetch<DocumentDTO & { ocrText: string }>('/api/capture/transcribe', {
-      method: 'POST',
-      body: {
-        imageId: img.id,
-        title: transcribeTitle.value || undefined
-      }
-    })
-    transcribedDoc.value = result
-    transcribedText.value = result.ocrText ?? ''
-    toast.add({ color: 'success', title: 'Transcribed', description: result.path })
-    transcribeTitle.value = ''
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Transcription failed', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    transcribeUploading.value = false
-    transcribing.value = false
-    if (transcribeFileInput.value) transcribeFileInput.value.value = ''
-  }
-}
-
-function onTranscribeSelected(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (file) uploadTranscribe(file)
-}
-
-function onTranscribePaste(e: ClipboardEvent) {
-  const item = Array.from(e.clipboardData?.items ?? []).find(i => i.type.startsWith('image/'))
-  const file = item?.getAsFile()
-  if (file) uploadTranscribe(file)
-}
-
-// Drag-drop for Transcribe tab via VueUse useDropZone
-const { isOverDropZone: transcribeIsOver } = useDropZone(transcribeDropZoneRef, {
-  dataTypes: types => types.some(t => t.startsWith('image/')),
-  onDrop: (files) => {
-    const file = files?.[0]
-    if (file) uploadTranscribe(file)
-  }
-})
-
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 const tabs = [
   { label: 'Note', slot: 'note' as const, icon: 'i-lucide-file-text' },
-  { label: 'Image', slot: 'image' as const, icon: 'i-lucide-image' },
-  { label: 'Transcribe', slot: 'transcribe' as const, icon: 'i-lucide-scan-text' }
+  { label: 'Image', slot: 'image' as const, icon: 'i-lucide-image' }
 ]
 </script>
 
@@ -216,10 +151,15 @@ const tabs = [
               tabindex="0"
               @paste="onImagePaste"
             >
-              <div class="flex items-center gap-3">
+              <div class="flex flex-wrap items-center gap-4">
                 <USwitch
                   v-model="imagePublic"
                   label="Public"
+                  size="sm"
+                />
+                <USwitch
+                  v-model="makeDoc"
+                  label="Also save as document"
                   size="sm"
                 />
               </div>
@@ -299,111 +239,6 @@ const tabs = [
             <CameraCapture
               v-model:open="imageCameraOpen"
               @capture="uploadImage"
-            />
-          </template>
-
-          <!-- ── Transcribe ── -->
-          <template #transcribe>
-            <div
-              class="mt-4 space-y-3"
-              tabindex="0"
-              @paste="onTranscribePaste"
-            >
-              <UInput
-                v-model="transcribeTitle"
-                placeholder="Document title (optional)"
-                :disabled="transcribeUploading || transcribing"
-              />
-
-              <!-- Drop zone -->
-              <div
-                ref="transcribeDropZoneRef"
-                class="border-2 border-dashed rounded-lg p-8 flex flex-col items-center gap-3 text-center transition-colors"
-                :class="transcribeIsOver ? 'border-primary bg-primary/5' : 'border-default'"
-              >
-                <!-- Preview thumbnail -->
-                <img
-                  v-if="transcribePreviewUrl"
-                  :src="transcribePreviewUrl"
-                  alt="Preview"
-                  class="max-h-40 rounded-md object-contain"
-                >
-                <template v-else>
-                  <UIcon
-                    name="i-lucide-scan-text"
-                    class="size-10 text-muted"
-                  />
-                  <p class="text-sm text-muted">
-                    Drop an image here, paste (Ctrl+V), or choose below
-                  </p>
-                </template>
-
-                <div class="flex flex-wrap items-center justify-center gap-2">
-                  <UButton
-                    icon="i-lucide-camera"
-                    variant="soft"
-                    :loading="transcribeUploading || transcribing"
-                    @click="transcribeFileInput?.click()"
-                  >
-                    {{ transcribing ? 'Transcribing…' : 'Choose image' }}
-                  </UButton>
-                  <UButton
-                    icon="i-lucide-camera"
-                    variant="soft"
-                    color="neutral"
-                    :disabled="transcribeUploading || transcribing"
-                    @click="transcribeCameraOpen = true"
-                  >
-                    Use camera
-                  </UButton>
-                </div>
-              </div>
-
-              <input
-                ref="transcribeFileInput"
-                type="file"
-                accept="image/*"
-                class="hidden"
-                @change="onTranscribeSelected"
-              >
-
-              <!-- Result -->
-              <div
-                v-if="transcribedDoc"
-                class="space-y-2"
-              >
-                <div class="flex items-center gap-2 text-xs text-success">
-                  <UIcon
-                    name="i-lucide-check-circle"
-                    class="size-4"
-                  />
-                  <NuxtLink
-                    to="/documents"
-                    class="hover:underline"
-                  >
-                    Saved to {{ transcribedDoc.path }} ↗
-                  </NuxtLink>
-                </div>
-                <div
-                  v-if="transcribedText"
-                  class="p-3 rounded-md bg-muted text-xs text-default leading-relaxed max-h-40 overflow-y-auto"
-                >
-                  <span class="font-semibold text-muted block mb-1">Transcribed text</span>
-                  {{ transcribedText }}
-                </div>
-                <p
-                  v-else
-                  class="text-xs text-dimmed"
-                >
-                  No text could be recognized in this image.
-                </p>
-              </div>
-            </div>
-
-            <!-- Camera modal for Transcribe tab -->
-            <CameraCapture
-              v-model:open="transcribeCameraOpen"
-              @capture="uploadTranscribe"
             />
           </template>
         </UTabs>
