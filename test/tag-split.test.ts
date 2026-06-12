@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { splitTags } from '../server/services/image-ocr'
+import { splitTags } from '../server/services/tag-library'
 
 describe('splitTags', () => {
   it('puts tags already in the library into confirmed', () => {

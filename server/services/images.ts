@@ -1,10 +1,13 @@
-import { and, arrayOverlaps, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm'
+import { and, arrayOverlaps, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import { Readable } from 'node:stream'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
 import { images } from '../db/schema'
 import { storage } from '../utils/storage'
 import { processUpload } from '../lib/images/convert'
+import { embedOne } from '../lib/ai/embeddings'
+import { rrfFuse } from '../lib/ai/rrf'
+import type { ImageDTO } from '../../shared/types/images'
 
 export type Image = typeof images.$inferSelect
 
@@ -16,7 +19,26 @@ export function serveUrl(row: Image): string {
   return `/api/images/${row.id}/raw`
 }
 
-export async function createImage(buffer: Buffer, mime: string, originalName?: string): Promise<Image> {
+/**
+ * Map a DB image row to the client-facing `ImageDTO`, OMITTING the server-only
+ * `embedding` halfvec (it must never serialize to the client) and adding `url`.
+ */
+export function toImageDTO(row: Image): ImageDTO {
+  const { embedding: _embedding, createdAt, deletedAt, ...rest } = row
+  return {
+    ...rest,
+    createdAt: createdAt instanceof Date ? createdAt.toISOString() : createdAt,
+    deletedAt: deletedAt instanceof Date ? deletedAt.toISOString() : deletedAt,
+    url: serveUrl(row)
+  }
+}
+
+export async function createImage(
+  buffer: Buffer,
+  mime: string,
+  originalName?: string,
+  opts?: { makeDocument?: boolean }
+): Promise<Image> {
   const processed = await processUpload(buffer, mime, originalName)
   const stream = Readable.from(processed.buffer)
   const { key, size } = await storage().put(stream, { contentType: processed.mime })
@@ -30,7 +52,8 @@ export async function createImage(buffer: Buffer, mime: string, originalName?: s
     width: processed.width ?? null,
     height: processed.height ?? null,
     size,
-    isPublic: false
+    isPublic: false,
+    makeDocument: opts?.makeDocument ?? false
   }).returning()
 
   return row!
@@ -41,7 +64,7 @@ export interface ListImagesParams {
   tags?: string[]
 }
 
-export async function listImages(params: ListImagesParams = {}): Promise<(Image & { url: string })[]> {
+export async function listImages(params: ListImagesParams = {}): Promise<ImageDTO[]> {
   const conditions = [live()]
 
   if (params.q?.trim()) {
@@ -66,7 +89,54 @@ export async function listImages(params: ListImagesParams = {}): Promise<(Image 
     .orderBy(desc(images.createdAt))
     .limit(500)
 
-  return rows.map(r => ({ ...r, url: serveUrl(r) }))
+  return rows.map(toImageDTO)
+}
+
+export async function searchImages(q: string): Promise<(Image & { url: string })[]> {
+  if (!q.trim()) return []
+
+  const db = useDb()
+  const pattern = `%${q}%`
+
+  // Lane 1: lexical — ocr/summary ILIKE + tag overlap, similarity-ordered
+  const lexRows = await db.select({ id: images.id }).from(images)
+    .where(and(live(), or(
+      ilike(images.ocrText, pattern),
+      ilike(images.summary, pattern),
+      sql`${images.tags} && ARRAY[${q}]::text[]`,
+      sql`${images.recommendedTags} && ARRAY[${q}]::text[]`
+    )))
+    .orderBy(sql`similarity(coalesce(${images.summary},'') || ' ' || coalesce(${images.ocrText},''), ${q}) desc`)
+    .limit(50)
+  const lexIds = lexRows.map(r => r.id)
+
+  // Lane 2: vector — cosine distance over the summary embedding, with fallback if rig is unavailable
+  let vecIds: string[] = []
+  try {
+    const qv = await embedOne(q)
+    const lit = `[${qv.join(',')}]`
+    const vecRows = await db.select({ id: images.id }).from(images)
+      .where(and(live(), isNotNull(images.embedding)))
+      .orderBy(sql`${images.embedding} <=> ${lit}::halfvec`)
+      .limit(50)
+    vecIds = vecRows.map(r => r.id)
+  } catch (err) {
+    console.warn('[searchImages] vector lane failed, falling back to lexical-only:', err)
+  }
+
+  // Fuse the two ranked lanes with RRF
+  const fusedIds = rrfFuse([lexIds, vecIds]).slice(0, 50)
+
+  if (fusedIds.length === 0) return []
+
+  // Hydrate full rows and re-order by fused rank (inArray doesn't preserve order)
+  const fetched = await db.select().from(images)
+    .where(and(live(), inArray(images.id, fusedIds)))
+  const byId = new Map(fetched.map(r => [r.id, r]))
+  return fusedIds.flatMap(id => {
+    const r = byId.get(id)
+    return r ? [{ ...r, url: serveUrl(r) }] : []
+  })
 }
 
 export async function getImage(id: string): Promise<Image | null> {
@@ -93,11 +163,21 @@ export async function setImagePublic(id: string, isPublic: boolean): Promise<Ima
   return r ?? null
 }
 
-export async function patchTags(
-  id: string,
-  patch: { tags?: string[], recommendedTags?: string[] }
-): Promise<Image | null> {
+export interface ImagePatch {
+  summary?: string | null
+  ocrText?: string | null
+  tags?: string[]
+  recommendedTags?: string[]
+}
+
+/**
+ * Update any provided subset of editable metadata columns. The public toggle is
+ * handled separately by `setImagePublic` (it owns slug generation).
+ */
+export async function patchImage(id: string, patch: ImagePatch): Promise<Image | null> {
   const update: Partial<typeof images.$inferInsert> = {}
+  if (patch.summary !== undefined) update.summary = patch.summary
+  if (patch.ocrText !== undefined) update.ocrText = patch.ocrText
   if (patch.tags !== undefined) update.tags = patch.tags
   if (patch.recommendedTags !== undefined) update.recommendedTags = patch.recommendedTags
   if (Object.keys(update).length === 0) {

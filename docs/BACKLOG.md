@@ -72,7 +72,7 @@ Carried out of the 11 cycle handovers, de-duplicated, current items only:
 **AI quality**
 - Session-summarization worker — sessions show "(untitled session)"; generate title+summary (bridget had this).
 - Reranker (`:8883`) wired but OFF by default — enable + evaluate for memory/doc relevance.
-- Image **semantic** search — gallery search is keyword/exact-tag only; add image embeddings + vector search.
+- ~~Image **semantic** search — gallery search is keyword/exact-tag only; add image embeddings + vector search.~~ ✅ **shipped (cycle 20)** — `images.embedding halfvec(2560)` (summary embedding) + `searchImages` hybrid trigram + vector RRF.
 - Bridget memory **data migration** — import the old Python service's memories (one-time).
 - Larger/steadier vision model — `:8005` (8B) is weak/flaky; transcription leans on the 27B cleanup.
 

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, integer, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { halfvec } from '../types/halfvec'
 
 export const images = pgTable('images', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -12,7 +13,12 @@ export const images = pgTable('images', {
   height: integer('height'),
   size: integer('size').notNull(),
   ocrText: text('ocr_text'),
-  ocrAttempts: integer('ocr_attempts').notNull().default(0),
+  summary: text('summary'),
+  embedding: halfvec(2560),
+  enrichStatus: text('enrich_status').notNull().default('pending'),
+  enrichError: text('enrich_error'),
+  makeDocument: boolean('make_document').notNull().default(false),
+  enrichAttempts: integer('enrich_attempts').notNull().default(0),
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   recommendedTags: text('recommended_tags').array().notNull().default(sql`'{}'::text[]`),
   isPublic: boolean('is_public').notNull().default(false),

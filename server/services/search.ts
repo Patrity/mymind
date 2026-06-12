@@ -1,9 +1,9 @@
-import { and, isNull, ilike, or, sql } from 'drizzle-orm'
+import { and, isNull, ilike, or } from 'drizzle-orm'
 import { useDb } from '../db'
-import { images, tasks, projects } from '../db/schema'
+import { tasks, projects } from '../db/schema'
 import { searchDocs } from './documents'
 import { searchMemories } from './memory'
-import { serveUrl } from './images'
+import { searchImages } from './images'
 import type { SearchResults } from '../../shared/types/search'
 
 const emptyResults = (): SearchResults => ({
@@ -51,27 +51,14 @@ export async function searchAll(q: string, perGroup = 5): Promise<SearchResults>
       }
     })(),
 
-    // Lane: images — ocr_text ILIKE or tag array overlap
+    // Lane: images — hybrid (lexical + summary vector, RRF) via searchImages
     (async () => {
       try {
-        const db = useDb()
-        const pattern = `%${q}%`
-        const rows = await db.select().from(images)
-          .where(
-            and(
-              isNull(images.deletedAt),
-              or(
-                ilike(images.ocrText, pattern),
-                sql`${images.tags} && ARRAY[${q}]::text[]`,
-                sql`${images.recommendedTags} && ARRAY[${q}]::text[]`
-              )
-            )
-          )
-          .limit(perGroup)
-        return rows.map(r => ({
+        const rows = await searchImages(q)
+        return rows.slice(0, perGroup).map(r => ({
           type: 'image' as const,
           id: r.id,
-          url: serveUrl(r),
+          url: r.url,
           tags: r.tags,
           to: '/gallery'
         }))

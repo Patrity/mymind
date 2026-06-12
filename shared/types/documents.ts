@@ -12,6 +12,7 @@ export interface DocumentDTO {
   topic: string | null
   isPublic: boolean
   publicSlug: string | null
+  ocrId: string | null
   updatedAt: string
 }
 export interface DocumentUpsert {
