@@ -4,6 +4,7 @@ import { sessions, messages, memEnrichmentState } from '../db/schema'
 import { chat } from '../lib/ai/chat'
 import { parseMemories } from '../lib/ai/memory-extract'
 import { createMemory } from './memory'
+import { publishChange } from '../utils/live-bus'
 
 export interface EnrichMemoryResult {
   enriched: number
@@ -99,7 +100,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
       // Store each candidate
       for (const candidate of extracted) {
         try {
-          await createMemory({
+          const created = await createMemory({
             scope: candidate.scope,
             content: candidate.content,
             tags: [...(candidate.tags ?? []), 'enrichment', 'unreviewed'],
@@ -108,6 +109,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
             confidence: candidate.confidence ?? null,
             evidence: [{ sessionId: session.id, mergedAt: new Date().toISOString() }]
           })
+          publishChange({ resource: 'memory', action: 'created', id: created.id })
           enriched++
         } catch (memErr) {
           console.warn(`[memory-enrich] failed to store candidate for session ${session.id}:`, memErr)

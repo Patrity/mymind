@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { createMemory } from '../../services/memory'
+import { publishChange } from '../../utils/live-bus'
 
 const Body = z.object({
   content: z.string().min(1).max(2000),
@@ -10,5 +11,7 @@ const Body = z.object({
 
 export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
-  return createMemory({ ...body, source: 'manual', reviewed: true })
+  const memory = await createMemory({ ...body, source: 'manual', reviewed: true })
+  publishChange({ resource: 'memory', action: 'created', id: memory.id })
+  return memory
 })

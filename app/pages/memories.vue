@@ -3,7 +3,7 @@ import type { MemoryDTO, MemoryScope } from '~~/shared/types/memory'
 
 definePageMeta({ title: 'Memories' })
 
-const { search: searchMemories, list: listMemories, create: createMemory, review: reviewMemory, archive: archiveMemory } = useMemories()
+const { create: createMemory, review: reviewMemory, archive: archiveMemory, useMemoryList } = useMemories()
 const toast = useToast()
 
 // ── Filters ───────────────────────────────────────────────────────────────────
@@ -19,10 +19,31 @@ const scopeItems = [
   { label: 'World', value: 'world' }
 ]
 
+// ── Debounced search query ────────────────────────────────────────────────────
+const debouncedQ = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+watch(q, (val) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { debouncedQ.value = val }, 350)
+})
+
 // ── Data ──────────────────────────────────────────────────────────────────────
-const memories = ref<MemoryDTO[]>([])
-const loading = ref(false)
-const isSearching = computed(() => q.value.trim().length > 0)
+const isSearching = computed(() => debouncedQ.value.trim().length > 0)
+
+const listParams = computed(() => ({
+  q: debouncedQ.value.trim() || undefined,
+  scope: scopeFilter.value !== 'all' ? (scopeFilter.value as MemoryScope) : undefined,
+  reviewed: (!debouncedQ.value.trim() && unreviewedOnly.value) ? false : undefined
+}))
+
+const { data, refetch, isPending, error } = useMemoryList(listParams)
+const memories = computed(() => data.value ?? [])
+
+watch(error, (err) => {
+  if (!err) return
+  const e = err as { data?: { statusMessage?: string }, message?: string }
+  toast.add({ color: 'error', title: 'Failed to load memories', description: e.data?.statusMessage ?? e.message })
+})
 
 /** All unique tags from the loaded set, for the filter selectmenu */
 const availableTags = computed(() => {
@@ -41,37 +62,6 @@ const filteredMemories = computed(() => {
   )
 })
 
-async function load() {
-  loading.value = true
-  try {
-    const scope = scopeFilter.value !== 'all' ? (scopeFilter.value as MemoryScope) : undefined
-    if (q.value.trim()) {
-      memories.value = await searchMemories(q.value.trim(), { scope })
-    } else {
-      memories.value = await listMemories({
-        scope,
-        reviewed: unreviewedOnly.value ? false : undefined
-      })
-    }
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to load memories', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    loading.value = false
-  }
-}
-
-// Debounced search
-let searchTimer: ReturnType<typeof setTimeout> | null = null
-watch(q, () => {
-  if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(load, 350)
-})
-
-watch([scopeFilter, unreviewedOnly], load)
-
-onMounted(load)
-
 // ── Actions ───────────────────────────────────────────────────────────────────
 const actioning = ref<Record<string, boolean>>({})
 
@@ -80,7 +70,7 @@ async function doReview(id: string) {
   try {
     await reviewMemory(id)
     toast.add({ color: 'success', title: 'Marked as reviewed' })
-    await load()
+    await refetch()
     await refreshNuxtData('memory-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -98,7 +88,7 @@ async function doArchive(id: string) {
   try {
     await archiveMemory(id)
     toast.add({ color: 'neutral', title: 'Memory archived' })
-    await load()
+    await refetch()
     await refreshNuxtData('memory-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -149,7 +139,7 @@ async function submitAdd() {
     })
     addOpen.value = false
     toast.add({ color: 'success', title: 'Memory added' })
-    await load()
+    await refetch()
     await refreshNuxtData('memory-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -203,7 +193,7 @@ function formatDate(iso: string) {
             placeholder="Search memories…"
             icon="i-lucide-search"
             class="w-full sm:flex-1"
-            :loading="loading && q.trim().length > 0"
+            :loading="isPending && isSearching"
             trailing
           />
           <USelect
@@ -230,7 +220,7 @@ function formatDate(iso: string) {
 
         <!-- Loading skeletons -->
         <div
-          v-if="loading"
+          v-if="isPending"
           class="space-y-3"
         >
           <USkeleton
