@@ -1,7 +1,7 @@
 ---
 title: Image enrichment pipeline — unified vision pass, summary embeddings, editable metadata
 date: 2026-06-11
-status: spec
+status: shipped
 supersedes: none
 related:
   - ../../handovers/2026-06-10-ai-config-registry.md
