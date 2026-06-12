@@ -56,6 +56,7 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
         topic: doc.topic,
         isPublic: doc.isPublic,
         publicSlug: doc.publicSlug,
+        ocrId: doc.ocrId,
         updatedAt: doc.updatedAt.toISOString()
       }
 

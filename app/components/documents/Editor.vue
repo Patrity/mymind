@@ -334,6 +334,18 @@ onUnmounted(() => {
           />
         </div>
 
+        <!-- Source image link (transcription-derived docs only) -->
+        <UButton
+          v-if="doc.ocrId"
+          icon="i-lucide-image"
+          label="View source image"
+          size="xs"
+          variant="link"
+          color="neutral"
+          to="/gallery"
+          title="View the source image this document was transcribed from"
+        />
+
         <!-- Share toggle -->
         <UButton
           :icon="doc.isPublic ? 'i-lucide-globe' : 'i-lucide-lock'"
