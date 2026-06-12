@@ -42,6 +42,8 @@ any Nitro write (HTTP handler OR background task)
 | task | `tasks/index.post`, `[id].patch\|delete`, `[id]/move` | — |
 | session | — | `services/sessions.ts` `ingestTranscript` + `api/hooks/cc/[event].post` `upsertSession` (one emit per write; not double-emitted) |
 
+Also emitting (writes outside the CRUD endpoints): `api/capture/note.post.ts` (document created) and the **agent/MCP tool surface** `server/lib/agent/tools.ts` — `save_memory`, `create_project`/`edit_project`, `create_task`/`edit_task`, `quick_capture` all `publishChange` after their write (and in their undo lambdas), so voice/MCP/chat actions update the UI live too. These emit in the tool handler, not the shared service (the HTTP handlers already emit there — no double-emit).
+
 ## Client
 
 - **`app/plugins/vue-query.ts`** — named (`vue-query`) plugin. Installs `VueQueryPlugin`
