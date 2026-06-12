@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { useDebounceFn } from '@vueuse/core'
+import { watchDebounced } from '@vueuse/core'
 import type { ImageDTO } from '~~/shared/types/images'
+import type { ListImagesParams } from '~/composables/useImages'
 
 definePageMeta({ title: 'Gallery' })
 
@@ -8,27 +9,35 @@ const images = useImages()
 const toast = useToast()
 const route = useRoute()
 
-// ── List state ───────────────────────────────────────────────────────────────
-const items = ref<ImageDTO[]>([])
-const loading = ref(false)
-
-async function loadImages(params?: { q?: string; tags?: string[] }) {
-  loading.value = true
-  try {
-    items.value = await images.list(params)
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to load images', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(() => loadImages())
-
 // ── Search + tag filter ───────────────────────────────────────────────────────
 const searchQuery = ref('')
 const selectedTags = ref<string[]>([])
+
+// Debounce ONLY the text query into the reactive query key so we don't refetch on
+// every keystroke (preserves the prior 300ms search debounce). Tags apply instantly.
+const debouncedQuery = ref('')
+watchDebounced(searchQuery, (v) => { debouncedQuery.value = v }, { debounce: 300 })
+
+const listParams = computed<ListImagesParams>(() => {
+  const p: ListImagesParams = {}
+  if (debouncedQuery.value.trim()) p.q = debouncedQuery.value.trim()
+  if (selectedTags.value.length) p.tags = [...selectedTags.value]
+  return p
+})
+
+// ── List state (backed by vue-query — live-updates via the global SSE invalidate) ─
+const { data, error, isPending, isFetching, refetch } = images.useImageList(listParams)
+const items = computed<ImageDTO[]>(() => data.value ?? [])
+// First-load spinner only; refetches (filters, mutations, SSE) update in place.
+const loading = computed(() => isPending.value)
+
+// Surface query/refetch errors as a toast (the imperative loader used to do this).
+watch(isFetching, (fetching) => {
+  if (!fetching && error.value) {
+    const err = error.value as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Failed to load images', description: err.data?.statusMessage ?? err.message })
+  }
+})
 
 // Derive distinct tags from loaded items (from confirmed tags only)
 const allTagOptions = computed(() => {
@@ -38,21 +47,6 @@ const allTagOptions = computed(() => {
   }
   return [...set].sort()
 })
-
-const debouncedSearch = useDebounceFn(() => {
-  applyFilters()
-}, 300)
-
-watch(searchQuery, () => debouncedSearch())
-
-watch(selectedTags, () => applyFilters(), { deep: true })
-
-function applyFilters() {
-  const params: { q?: string; tags?: string[] } = {}
-  if (searchQuery.value.trim()) params.q = searchQuery.value.trim()
-  if (selectedTags.value.length) params.tags = [...selectedTags.value]
-  loadImages(params)
-}
 
 // ── Upload ───────────────────────────────────────────────────────────────────
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -68,7 +62,7 @@ async function uploadFile(file: File) {
   try {
     await images.upload(file, uploadPublic.value)
     toast.add({ color: 'success', title: 'Uploaded', description: file.name })
-    await applyFilters()
+    await refetch()
   } catch (err: unknown) {
     const error = err as { data?: { statusCode?: number; statusMessage?: string }, message?: string }
     if (error.data?.statusCode === 415) {
@@ -163,12 +157,11 @@ async function withMutate(fn: () => Promise<ImageDTO>) {
   mutating.value = true
   try {
     const updated = await fn()
-    // Patch in-place in list
-    const idx = items.value.findIndex(i => i.id === updated.id)
-    if (idx !== -1) items.value[idx] = updated
-    // Keep modal in sync
+    // Keep modal in sync; the list is a read-only computed backed by vue-query.
     selected.value = { ...updated }
     syncEditSnapshot(updated)
+    // Refetch for immediate local refresh (cross-tab is handled by the SSE event).
+    await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Action failed', description: err.data?.statusMessage ?? err.message })
@@ -248,10 +241,12 @@ async function onDelete() {
   deleting.value = true
   try {
     await images.remove(selected.value.id)
-    items.value = items.value.filter(i => i.id !== selected.value!.id)
     toast.add({ color: 'success', title: 'Image deleted' })
     closeDetail()
     confirmDelete.value = false
+    // List is a read-only computed; refetch to drop the deleted item locally
+    // (cross-tab is handled by the SSE event the delete emits).
+    await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Delete failed', description: err.data?.statusMessage ?? err.message })
