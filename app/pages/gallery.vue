@@ -113,8 +113,19 @@ const selected = ref<ImageDTO | null>(null)
 const detailOpen = ref(false)
 const mutating = ref(false)
 
+// Snapshot of last server-synced editable fields, so blur only PATCHes real edits.
+// Normalized null→'' so an untouched null field doesn't read as a change.
+const syncedSummary = ref('')
+const syncedOcr = ref('')
+
+function syncEditSnapshot(img: ImageDTO) {
+  syncedSummary.value = img.summary ?? ''
+  syncedOcr.value = img.ocrText ?? ''
+}
+
 function openDetail(img: ImageDTO) {
   selected.value = { ...img }
+  syncEditSnapshot(img)
   detailOpen.value = true
 }
 
@@ -132,6 +143,7 @@ async function withMutate(fn: () => Promise<ImageDTO>) {
     if (idx !== -1) items.value[idx] = updated
     // Keep modal in sync
     selected.value = { ...updated }
+    syncEditSnapshot(updated)
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Action failed', description: err.data?.statusMessage ?? err.message })
@@ -160,9 +172,46 @@ async function onRemoveTag(tag: string) {
   await withMutate(() => images.removeTag(selected.value!, tag))
 }
 
-async function onRescan() {
+async function onReprocess() {
   if (!selected.value) return
-  await withMutate(() => images.rescan(selected.value!.id))
+  await withMutate(() => images.reprocess(selected.value!.id))
+}
+
+async function onRevectorize() {
+  if (!selected.value) return
+  await withMutate(() => images.revectorize(selected.value!.id))
+}
+
+async function onSaveSummary() {
+  if (!selected.value) return
+  // Dirty-check: skip PATCH if unchanged from last synced value (null/'' normalized)
+  if ((selected.value.summary ?? '') === syncedSummary.value) return
+  await withMutate(() => images.updateMeta(selected.value!.id, { summary: selected.value!.summary }))
+}
+
+async function onSaveOcr() {
+  if (!selected.value) return
+  if ((selected.value.ocrText ?? '') === syncedOcr.value) return
+  await withMutate(() => images.updateMeta(selected.value!.id, { ocrText: selected.value!.ocrText }))
+}
+
+// ── Custom tag input ──────────────────────────────────────────────────────────
+const newTag = ref('')
+
+async function onAddTag() {
+  if (!selected.value) return
+  const tag = newTag.value.trim()
+  newTag.value = ''
+  // Dedup guard: no-op (but still clear input) if empty or already present
+  if (!tag || selected.value.tags.includes(tag)) return
+  await withMutate(() => images.addTag(selected.value!, tag))
+}
+
+const statusColor = (status: string): 'info' | 'error' | 'success' | 'neutral' => {
+  if (status === 'processing') return 'info'
+  if (status === 'failed') return 'error'
+  if (status === 'done') return 'success'
+  return 'neutral'
 }
 
 // ── Delete ───────────────────────────────────────────────────────────────────
@@ -454,13 +503,54 @@ function formatBytes(n: number): string {
               <span>{{ new Date(selected.createdAt).toLocaleString() }}</span>
             </div>
 
+            <!-- Enrichment status -->
+            <div class="flex items-center gap-2 flex-wrap">
+              <UBadge
+                :label="selected.enrichStatus"
+                :color="statusColor(selected.enrichStatus)"
+                variant="subtle"
+                size="sm"
+              />
+              <p
+                v-if="selected.enrichStatus === 'failed' && selected.enrichError"
+                class="text-xs text-error"
+              >
+                {{ selected.enrichError }}
+              </p>
+            </div>
+
+            <!-- Summary -->
+            <div class="space-y-1.5">
+              <p class="text-xs font-medium text-muted">
+                Summary
+              </p>
+              <UTextarea
+                :model-value="selected.summary ?? ''"
+                :rows="3"
+                autoresize
+                placeholder="No summary yet…"
+                class="w-full"
+                :disabled="mutating"
+                @update:model-value="selected.summary = $event"
+                @blur="onSaveSummary"
+              />
+            </div>
+
             <!-- OCR text -->
-            <div
-              v-if="selected.ocrText"
-              class="p-3 rounded-md bg-muted text-xs text-default leading-relaxed max-h-28 overflow-y-auto"
-            >
-              <span class="font-semibold text-muted block mb-1">OCR text</span>
-              {{ selected.ocrText }}
+            <div class="space-y-1.5">
+              <p class="text-xs font-medium text-muted">
+                OCR text
+              </p>
+              <UTextarea
+                :model-value="selected.ocrText ?? ''"
+                :rows="3"
+                autoresize
+                placeholder="No OCR text yet…"
+                class="w-full"
+                :disabled="mutating"
+                @update:model-value="selected.ocrText = $event"
+                @blur="onSaveOcr"
+              />
             </div>
 
             <!-- Confirmed tags -->
@@ -502,6 +592,27 @@ function formatBytes(n: number): string {
               >
                 No tags yet.
               </p>
+              <div class="flex items-center gap-2 pt-1">
+                <UInput
+                  v-model="newTag"
+                  placeholder="Add a tag…"
+                  size="sm"
+                  class="flex-1"
+                  :disabled="mutating"
+                  @keydown.enter.prevent="onAddTag"
+                />
+                <UButton
+                  icon="i-lucide-plus"
+                  size="sm"
+                  color="primary"
+                  variant="subtle"
+                  :loading="mutating"
+                  :disabled="!newTag.trim()"
+                  @click="onAddTag"
+                >
+                  Add
+                </UButton>
+              </div>
             </div>
 
             <!-- Recommended tags -->
@@ -600,9 +711,19 @@ function formatBytes(n: number): string {
                   variant="ghost"
                   size="sm"
                   :loading="mutating"
-                  @click="onRescan"
+                  @click="onReprocess"
                 >
-                  Rescan
+                  Reprocess
+                </UButton>
+                <UButton
+                  icon="i-lucide-sparkles"
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  :loading="mutating"
+                  @click="onRevectorize"
+                >
+                  Revectorize
                 </UButton>
                 <UButton
                   color="neutral"

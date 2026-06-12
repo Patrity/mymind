@@ -27,7 +27,19 @@ export function useImages() {
 
   const remove = (id: string) => ofetch(`/api/images/${id}`, { method: 'DELETE' })
 
-  const rescan = (id: string) => ofetch<ImageDTO>(`/api/images/${id}/rescan`, { method: 'POST' })
+  const reprocess = (id: string) => ofetch<ImageDTO>(`/api/images/${id}/reprocess`, { method: 'POST' })
+
+  const revectorize = (id: string) => ofetch<ImageDTO>(`/api/images/${id}/revectorize`, { method: 'POST' })
+
+  const updateMeta = (id: string, body: { summary?: string | null, ocrText?: string | null, tags?: string[], recommendedTags?: string[] }) =>
+    patch(id, body)
+
+  const addTag = (img: ImageDTO, tag: string) => {
+    // Dedup guard: no-op if empty or already present (case-sensitive, matching tag model)
+    const trimmed = tag.trim()
+    if (!trimmed || img.tags.includes(trimmed)) return Promise.resolve(img)
+    return patch(img.id, { tags: [...img.tags, trimmed], recommendedTags: img.recommendedTags.filter(t => t !== trimmed) })
+  }
 
   const setPublic = (id: string, isPublic: boolean) => patch(id, { isPublic })
 
@@ -43,5 +55,5 @@ export function useImages() {
   const removeTag = (img: ImageDTO, tag: string) =>
     patch(img.id, { tags: img.tags.filter(t => t !== tag) })
 
-  return { list, upload, patch, remove, setPublic, approveTag, dismissTag, removeTag, rescan }
+  return { list, upload, patch, remove, setPublic, approveTag, dismissTag, removeTag, reprocess, revectorize, updateMeta, addTag }
 }
