@@ -6,6 +6,7 @@ definePageMeta({ title: 'Gallery' })
 
 const images = useImages()
 const toast = useToast()
+const route = useRoute()
 
 // ── List state ───────────────────────────────────────────────────────────────
 const items = ref<ImageDTO[]>([])
@@ -133,6 +134,30 @@ function closeDetail() {
   detailOpen.value = false
   selected.value = null
 }
+
+// ── Deep-link: ?image=<id> opens that image's detail modal ────────────────────
+// The list loads async; this matches reactively once items are available. If the
+// id isn't in the (possibly filtered) list, it fails gracefully — no modal.
+// `handledImageQuery` ensures we only auto-open once per distinct ?image= value,
+// so unrelated list updates (filters, mutations) don't re-trigger the modal.
+const handledImageQuery = ref<string | null>(null)
+
+function openImageFromQuery() {
+  const id = route.query.image
+  if (typeof id !== 'string' || !id) {
+    handledImageQuery.value = null
+    return
+  }
+  if (id === handledImageQuery.value) return
+  const match = items.value.find(i => i.id === id)
+  if (match) {
+    handledImageQuery.value = id
+    openDetail(match)
+  }
+}
+
+// Re-run when the list finishes loading or the query changes.
+watch([items, () => route.query.image], () => openImageFromQuery())
 
 async function withMutate(fn: () => Promise<ImageDTO>) {
   mutating.value = true

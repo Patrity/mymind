@@ -342,7 +342,7 @@ onUnmounted(() => {
           size="xs"
           variant="link"
           color="neutral"
-          to="/gallery"
+          :to="`/gallery?image=${doc.ocrId}`"
           title="View the source image this document was transcribed from"
         />
 
