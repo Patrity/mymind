@@ -1,4 +1,6 @@
 import { $fetch as ofetch } from 'ofetch'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import type { ImageDTO } from '~~/shared/types/images'
 
 export interface ListImagesParams {
@@ -55,5 +57,29 @@ export function useImages() {
   const removeTag = (img: ImageDTO, tag: string) =>
     patch(img.id, { tags: img.tags.filter(t => t !== tag) })
 
-  return { list, upload, patch, remove, setPublic, approveTag, dismissTag, removeTag, reprocess, revectorize, updateMeta, addTag }
+  const qc = useQueryClient()
+
+  // List key ['image','list', params]; partial-key invalidation on ['image','list']
+  // refetches every filter variant. Live SSE events drive cross-tab refresh.
+  // `params` is wrapped in a computed so vue-query unwraps it reactively — a raw
+  // getter would have a stable identity and never trigger a refetch on filter change.
+  const useImageList = (params?: MaybeRefOrGetter<ListImagesParams | undefined>) => {
+    const key = computed(() => toValue(params))
+    return useQuery({
+      queryKey: ['image', 'list', key],
+      queryFn: () => list(key.value)
+    })
+  }
+
+  // Acting tab invalidates locally; other tabs are covered by the SSE event.
+  const usePatchImage = () =>
+    useMutation({
+      mutationFn: (vars: { id: string, body: Record<string, unknown> }) => patch(vars.id, vars.body),
+      onSuccess: (_d, vars) => {
+        qc.invalidateQueries({ queryKey: ['image', vars.id] })
+        qc.invalidateQueries({ queryKey: ['image', 'list'] })
+      }
+    })
+
+  return { list, upload, patch, remove, setPublic, approveTag, dismissTag, removeTag, reprocess, revectorize, updateMeta, addTag, useImageList, usePatchImage }
 }

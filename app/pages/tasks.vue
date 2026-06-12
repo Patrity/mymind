@@ -6,19 +6,30 @@ import type { TaskDTO, TaskStatus, TaskPriority, ProjectDTO } from '~~/shared/ty
 
 definePageMeta({ title: 'Tasks' })
 
-const { list: listTasks, create: createTask, update: updateTask, move: moveTask, remove: removeTask } = useTasks()
-const { list: listProjects } = useProjects()
+const { useTaskList, create: createTask, update: updateTask, move: moveTask, remove: removeTask } = useTasks()
+const { useProjectList } = useProjects()
 const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
-const tasks = ref<TaskDTO[]>([])
-const projects = ref<ProjectDTO[]>([])
-const loading = ref(false)
+const { data: projectsData } = useProjectList(true)
+const projects = computed<ProjectDTO[]>(() => projectsData.value ?? [])
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 const FILTER_ALL = '__all__'
 const filterProject = ref<string>(FILTER_ALL)
 const filterPriority = ref<string>(FILTER_ALL)
+
+// ── Live task list (vue-query) ─────────────────────────────────────────────────
+// Project filter is applied server-side via the query key (slug or undefined for
+// "all"); changing it refetches and the watcher below rebuilds the columns.
+// Priority filter is client-side (see filteredTasks). SSE 'task' events invalidate
+// ['task','list'] → refetch → watcher rebuilds (drag-guarded).
+const { data: taskData, refetch, isPending } = useTaskList(
+  () => (filterProject.value !== FILTER_ALL ? filterProject.value : undefined)
+)
+const tasks = computed<TaskDTO[]>(() => taskData.value ?? [])
+// Show the skeleton only on the very first fetch (no data yet).
+const loading = computed(() => isPending.value && !taskData.value)
 
 // ── Column definitions ────────────────────────────────────────────────────────
 const COLUMNS: { key: TaskStatus, label: string }[] = [
@@ -28,24 +39,26 @@ const COLUMNS: { key: TaskStatus, label: string }[] = [
   { key: 'blocked', label: 'Blocked' }
 ]
 
+// Priority filter is client-side only (project is handled server-side by the query).
 const filteredTasks = computed(() => {
   return tasks.value.filter(t => {
-    const projectMatch = filterProject.value === FILTER_ALL || t.project === filterProject.value
-    const priorityMatch = filterPriority.value === FILTER_ALL || t.priority === filterPriority.value
-    return projectMatch && priorityMatch
+    return filterPriority.value === FILTER_ALL || t.priority === filterPriority.value
   })
 })
 
-// Mutable per-column arrays that useSortable splices in place. Derived from
-// filteredTasks via the watcher below; each column binds to its OWN array so
-// Sortable's in-place mutation doesn't fight a shared list. After a cross-column
-// move we loadTasks() → filteredTasks recomputes → the watcher rebuilds these
-// from server truth (authoritative reconcile).
+// Mutable per-column arrays that useSortable splices in place. Each column binds
+// to its OWN array so Sortable's in-place mutation doesn't fight a shared list.
+// Rebuilt from server truth via the drag-guarded watcher below.
 const columnsTasks = reactive(
   Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]]))
 ) as Record<TaskStatus, TaskDTO[]>
 
-watch(filteredTasks, (list) => {
+// True while a card is held. A live refetch (SSE invalidation) that lands mid-drag
+// must NOT rebuild the columns — that would yank the card out of the user's hand.
+// onStart sets this true; onCardMoved clears it in a finally after persisting.
+const isDragging = ref(false)
+
+function rebuildColumns(list: TaskDTO[]) {
   const byStatus = Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]])) as Record<TaskStatus, TaskDTO[]>
   for (const t of list) {
     if (byStatus[t.status]) byStatus[t.status].push(t)
@@ -54,44 +67,18 @@ watch(filteredTasks, (list) => {
     // Rebuild in place so the reactive proxy + Sortable observe the same array.
     columnsTasks[col.key].splice(0, columnsTasks[col.key].length, ...byStatus[col.key])
   }
+}
+
+// Rebuild whenever the (priority-filtered) data changes — but never mid-drag.
+watch(filteredTasks, (list) => {
+  if (!isDragging.value) rebuildColumns(list)
 }, { immediate: true })
-
-// ── Load data ─────────────────────────────────────────────────────────────────
-async function loadTasks() {
-  loading.value = true
-  try {
-    // Pass project server-side if filtered; priority is client-side only
-    const projectParam = filterProject.value !== FILTER_ALL ? filterProject.value : undefined
-    tasks.value = await listTasks(projectParam ? { project: projectParam } : undefined)
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to load tasks', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadProjects() {
-  try {
-    projects.value = await listProjects(true)
-  } catch {
-    // non-fatal; projects just won't appear in selects
-  }
-}
-
-onMounted(() => {
-  loadTasks()
-  loadProjects()
-})
-
-// Re-fetch when project filter changes (server-side); priority is client-side
-watch(filterProject, loadTasks)
 
 // ── Drag-and-drop (useSortable, shared-group columns) ──────────────────────────
 // One sortable per column, all in group 'tasks' so cards drag between columns.
 // We read the move from DOM dataset (evt.item.dataset.id, evt.to/from.dataset.status)
 // — reliable during onEnd — NOT from the bound arrays (which Sortable mutates after
-// the drop, racing any read). On a cross-column move we persist + loadTasks() to
+// the drop, racing any read). On a cross-column move we persist + refetch() to
 // reconcile; a same-column reorder is a no-op FOR PERSISTENCE only (no order
 // field to save) — vueuse's default onUpdate still splices the local column
 // array to match the DOM, since we override onEnd, not onUpdate.
@@ -111,14 +98,24 @@ async function onCardMoved(evt: Sortable.SortableEvent) {
   const fromStatus = evt.from.dataset.status as TaskStatus | undefined
   // Same-column reorder: no status change to persist (no order field). This is a
   // no-op for persistence only — vueuse's default onUpdate already spliced the
-  // local column array to match the DOM (we override onEnd, not onUpdate).
-  if (!id || !toStatus || toStatus === fromStatus) return
+  // local column array to match the DOM (we override onEnd, not onUpdate). We
+  // still clear the drag guard, and skip the refetch to preserve the current
+  // "visual reorder not persisted" behavior (an SSE-driven refetch would snap
+  // the DOM order back to server truth anyway).
+  if (!id || !toStatus || toStatus === fromStatus) {
+    isDragging.value = false
+    return
+  }
   try {
     await moveTask(id, { status: toStatus })
-    await loadTasks()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Failed to move task', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    // Re-open the watcher BEFORE refetch so the rebuild from server truth lands.
+    isDragging.value = false
+    // Explicit local reconcile (the move's own SSE emit also invalidates).
+    await refetch()
   }
 }
 
@@ -126,17 +123,19 @@ onMounted(() => {
   for (const col of COLUMNS) {
     useSortable(() => colRefs[col.key], columnsTasks[col.key], {
       // Re-watch the element ref so Sortable (re)initializes whenever the column
-      // mounts. The board is gated behind v-else (loading skeleton is the v-if),
-      // and loadTasks() sets loading=true synchronously on mount — so at the
-      // single tryOnMounted(start) tick the colRefs are null. With watchElement
-      // we rebind once the v-else board renders, and again on every loading
-      // toggle (e.g. each filter change re-mounts the columns).
+      // mounts. The board is gated behind v-else (loading skeleton is the v-if);
+      // on first mount the query is pending so `loading` is true and colRefs are
+      // null at the single tryOnMounted(start) tick. With watchElement we rebind
+      // once the v-else board renders, and again on every loading toggle.
       watchElement: true,
       group: 'tasks',
       animation: 150,
       handle: '.task-card',
       ghostClass: 'opacity-40',
       dragClass: 'ring-2',
+      // Guard the drag window: while a card is held, a live refetch must not
+      // rebuild the columns (see isDragging + the filteredTasks watcher).
+      onStart: () => { isDragging.value = true },
       onEnd: onCardMoved
     })
   }
@@ -175,7 +174,7 @@ async function submitNew() {
       project: newForm.value.project || null
     })
     showNewModal.value = false
-    await loadTasks()
+    await refetch()
     toast.add({ color: 'success', title: 'Task created' })
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -218,7 +217,7 @@ async function submitEdit() {
       project: editForm.value.project || null
     })
     showEditModal.value = false
-    await loadTasks()
+    await refetch()
     toast.add({ color: 'success', title: 'Task updated' })
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -235,7 +234,7 @@ async function deleteTask() {
   try {
     await removeTask(editingTask.value.id)
     showEditModal.value = false
-    await loadTasks()
+    await refetch()
     toast.add({ color: 'success', title: 'Task deleted' })
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }

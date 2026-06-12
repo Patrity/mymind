@@ -2,6 +2,7 @@ import { and, eq, isNull, sql, notExists } from 'drizzle-orm'
 import { useDb } from '../db'
 import { documents, reviewQueue } from '../db/schema'
 import { proposeFrontmatter } from '../lib/ai/enrich'
+import { publishChange } from '../utils/live-bus'
 
 export interface EnrichResult {
   proposed: number
@@ -68,14 +69,17 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
         continue
       }
 
-      await db.insert(reviewQueue).values({
+      const [inserted] = await db.insert(reviewQueue).values({
         docId: doc.id,
         kind: 'enrichment',
         proposed: proposal as unknown as string,
         status: 'pending'
-      }).onConflictDoNothing()
+      }).onConflictDoNothing().returning({ id: reviewQueue.id })
 
       console.log(`[enrichment] queued proposal for ${doc.path}`)
+      if (inserted) {
+        publishChange({ resource: 'review', action: 'created', id: inserted.id })
+      }
       proposed++
     } catch (err) {
       console.error(`[enrichment] error processing doc ${doc.id}:`, err)

@@ -10,6 +10,7 @@ import { capTags } from '../../shared/utils/cap-tags'
 import { cleanToMarkdown } from '../lib/ai/transcribe'
 import { createDoc } from './documents'
 import { slugify } from '../../shared/utils/slugify'
+import { publishChange } from '../utils/live-bus'
 
 const OCR_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
 const ENRICHABLE_KINDS = ['image', 'gif']
@@ -146,6 +147,7 @@ export async function runImageEnrich({ limit = 20 }: { limit?: number } = {}): P
   let done = 0, failed = 0
   for (const c of candidates) {
     const r = await enrichImage(c.id)
+    publishChange({ resource: 'image', action: 'updated', id: c.id })
     if (r?.enrichStatus === 'done') done++
     else failed++
   }

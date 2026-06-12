@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { nanoid } from 'nanoid'
 import { createDoc } from '../../services/documents'
+import { publishChange } from '../../utils/live-bus'
 
 const Body = z.object({
   text: z.string().min(1, 'text is required'),
@@ -23,9 +24,11 @@ export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
   const slug = body.title ? toSlug(body.title) : nanoid(10)
   const path = `/input/${slug}.md`
-  return createDoc({
+  const doc = await createDoc({
     path,
     title: body.title ?? null,
     content: body.text
   })
+  publishChange({ resource: 'document', action: 'created', id: doc.id })
+  return doc
 })

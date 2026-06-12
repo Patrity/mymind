@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { createTask } from '../../services/tasks'
+import { publishChange } from '../../utils/live-bus'
 
 // Accept both ISO datetime strings and bare YYYY-MM-DD from <input type=date>
 const Body = z.object({
@@ -21,8 +22,10 @@ export default defineEventHandler(async (event) => {
     dueDate = d
   }
 
-  return createTask({
+  const task = await createTask({
     ...body,
     dueDate
   })
+  publishChange({ resource: 'task', action: 'created', id: task.id })
+  return task
 })

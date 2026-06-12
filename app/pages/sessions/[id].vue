@@ -1,35 +1,27 @@
 <script setup lang="ts">
-import type { SessionDetail, SessionMessageDTO } from '~~/shared/types/session'
+import type { SessionMessageDTO } from '~~/shared/types/session'
 import { useTimeAgo } from '@vueuse/core'
 
 definePageMeta({ title: 'Session' })
 
 const route = useRoute()
-const { get } = useSessions()
+const { useSessionDetail } = useSessions()
 const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
-const session = ref<SessionDetail | null>(null)
-const notFound = ref(false)
-const loading = ref(false)
+const { data: session, isPending, error } = useSessionDetail(() => route.params.id as string)
+const loading = computed(() => isPending.value)
+const notFound = computed(() => !isPending.value && (error.value != null))
 
-async function load() {
-  loading.value = true
-  try {
-    session.value = await get(route.params.id as string)
-  } catch (e: unknown) {
-    const err = e as { status?: number; data?: { statusCode?: number } }
-    if (err.status === 404 || err.data?.statusCode === 404) {
-      notFound.value = true
-    } else {
-      toast.add({ color: 'error', title: 'Failed to load session' })
-    }
-  } finally {
-    loading.value = false
+watch(error, (err) => {
+  if (!err) return
+  const e = err as { status?: number; data?: { statusCode?: number } }
+  if (e.status === 404 || e.data?.statusCode === 404) {
+    // notFound is derived above — no toast needed for 404
+    return
   }
-}
-
-onMounted(load)
+  toast.add({ color: 'error', title: 'Failed to load session' })
+})
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function formatTokens(n: number): string {

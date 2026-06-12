@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { createProject } from '../../services/projects'
+import { publishChange } from '../../utils/live-bus'
 
 const Body = z.object({
   name: z.string().min(1),
@@ -10,7 +11,9 @@ const Body = z.object({
 export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
   try {
-    return await createProject(body)
+    const project = await createProject(body)
+    publishChange({ resource: 'project', action: 'created', id: project.slug })
+    return project
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('already exists')) {

@@ -5,6 +5,7 @@ import { searchMemories, createMemory, listMemories, archiveMemory } from '../..
 import { searchDocs, createDoc } from '../../services/documents'
 import { listProjects, createProject, updateProject, getProject, deleteProject } from '../../services/projects'
 import { createTask, listTasks, updateTask, getTask, deleteTask } from '../../services/tasks'
+import { publishChange } from '../../utils/live-bus'
 import { nanoid } from 'nanoid'
 
 export const agentTools: AgentTool[] = [
@@ -52,6 +53,7 @@ export const agentTools: AgentTool[] = [
         content: a.content as string, scope: a.scope as undefined,
         project: (a.project as string) ?? null, tags: a.tags as undefined, source: (a.source as string) ?? 'voice'
       })
+      publishChange({ resource: 'memory', action: 'created', id: (m as { id: string }).id })
       return {
         result: m,
         summary: `saved memory`,
@@ -88,9 +90,13 @@ export const agentTools: AgentTool[] = [
     schema: { name: z.string().min(1), description: z.string().optional() },
     handler: async (a) => {
       const p = await createProject({ name: a.name as string, description: a.description as undefined })
+      publishChange({ resource: 'project', action: 'created', id: (p as { slug: string }).slug })
       return {
         result: p, summary: `created project "${(p as { name: string }).name}"`,
-        undo: async () => { await deleteProject((p as { slug: string }).slug) }
+        undo: async () => {
+          await deleteProject((p as { slug: string }).slug)
+          publishChange({ resource: 'project', action: 'deleted', id: (p as { slug: string }).slug })
+        }
       }
     }
   },
@@ -107,10 +113,16 @@ export const agentTools: AgentTool[] = [
       const prior = await getProject(slug)
       const { slug: _s, ...patch } = a
       const p = await updateProject(slug, patch as { name?: string, description?: string, active?: boolean })
+      publishChange({ resource: 'project', action: 'updated', id: slug })
       return {
         result: p ?? { error: 'not found', slug },
         summary: `updated project "${slug}"`,
-        undo: prior ? async () => { await updateProject(slug, { name: prior.name, description: prior.description ?? undefined, active: prior.active }) } : undefined
+        undo: prior
+          ? async () => {
+            await updateProject(slug, { name: prior.name, description: prior.description ?? undefined, active: prior.active })
+            publishChange({ resource: 'project', action: 'updated', id: slug })
+          }
+          : undefined
       }
     }
   },
@@ -147,9 +159,13 @@ export const agentTools: AgentTool[] = [
         project: (a.project as string) ?? null,
         dueDate: a.dueDate ? new Date(a.dueDate as string) : undefined
       })
+      publishChange({ resource: 'task', action: 'created', id: (t as { id: string }).id })
       return {
         result: t, summary: `added "${(t as { title: string }).title}" to ${(t as { status: string }).status}`,
-        undo: async () => { await deleteTask((t as { id: string }).id) }
+        undo: async () => {
+          await deleteTask((t as { id: string }).id)
+          publishChange({ resource: 'task', action: 'deleted', id: (t as { id: string }).id })
+        }
       }
     }
   },
@@ -171,6 +187,7 @@ export const agentTools: AgentTool[] = [
       const prior = await getTask(id)
       const { id: _i, dueDate, ...rest } = a
       const t = await updateTask(id, { ...(rest as object), dueDate: dueDate ? new Date(dueDate as string) : undefined })
+      publishChange({ resource: 'task', action: 'updated', id })
       return {
         result: t ?? { error: 'not found', id },
         summary: `updated task`,
@@ -181,6 +198,7 @@ export const agentTools: AgentTool[] = [
               status: prior.status, priority: prior.priority,
               project: prior.project, dueDate: prior.dueDate ? new Date(prior.dueDate) : null
             })
+            publishChange({ resource: 'task', action: 'updated', id })
           }
           : undefined
       }
@@ -196,6 +214,7 @@ export const agentTools: AgentTool[] = [
       const title = (a.title as string) ?? null
       const slug = title ? title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').slice(0, 64) || nanoid(8) : nanoid(10)
       const doc = await createDoc({ path: `/input/${slug}.md`, title, content: a.text as string }) as { id?: string, path?: string }
+      publishChange({ resource: 'document', action: 'created', id: (doc as { id: string }).id })
       return {
         result: doc, summary: `captured note${title ? ` "${title}"` : ''}`,
         // createDoc has no soft-delete service exposed here; undo is best-effort no-op marker.

@@ -1,4 +1,5 @@
 import { createImage, serveUrl, setImagePublic } from '../services/images'
+import { publishChange } from '../utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -55,6 +56,8 @@ export default defineEventHandler(async (event) => {
   if (makePublic) {
     row = (await setImagePublic(row.id, true)) ?? row
   }
+
+  publishChange({ resource: 'image', action: 'created', id: row.id })
 
   const url = serveUrl(row)
 

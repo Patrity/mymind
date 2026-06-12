@@ -12,7 +12,7 @@ const props = defineProps<{
 }>()
 
 const toast = useToast()
-const { get, update, share } = useDocuments()
+const { get, update, share, useDocDetail } = useDocuments()
 const { upload: uploadImage } = useImages()
 
 // Document state
@@ -22,6 +22,32 @@ const loading = ref(false)
 const saveStatus = ref<SaveStatus>('idle')
 let savedContent = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+// Live detail query — keeps metadata in sync when remote changes arrive.
+// We do NOT replace the content ref if the user has unsaved edits.
+const { data: liveDocData } = useDocDetail(() => props.documentId)
+watch(liveDocData, (fresh) => {
+  if (!fresh || !doc.value || fresh.id !== doc.value.id) return
+  // Sync metadata only when the user isn't mid-edit — don't clobber a pending
+  // title/path/project edit inside the 800ms meta-save debounce window.
+  if (!metaDirty.value) {
+    doc.value = { ...doc.value, title: fresh.title, path: fresh.path, project: fresh.project,
+      domain: fresh.domain, type: fresh.type, tags: fresh.tags,
+      isPublic: fresh.isPublic, publicSlug: fresh.publicSlug }
+    metaPath.value = fresh.path
+    metaTitle.value = fresh.title ?? ''
+    metaProject.value = fresh.project ?? ''
+    metaDomain.value = fresh.domain ?? ''
+    metaType.value = fresh.type ?? ''
+    metaTags.value = (fresh.tags ?? []).join(', ')
+  }
+  // Only sync content when there are no local unsaved edits
+  if (content.value === savedContent) {
+    content.value = fresh.content
+    savedContent = fresh.content
+    doc.value = { ...doc.value, content: fresh.content }
+  }
+})
 
 // CodeEditor ref — used to wire toolbar transforms
 const codeEditorRef = ref<{ applyTransform: (fn: (s: EditorSelection2) => EditorSelection2) => void, insertText: (s: string) => void } | null>(null)
@@ -56,6 +82,9 @@ const metaDomain = ref('')
 const metaType = ref('')
 const metaTags = ref('') // comma-separated
 const metaSaveTimer: Ref<ReturnType<typeof setTimeout> | null> = ref(null)
+// True while the user has pending metadata edits; gates the live-sync watcher
+// so an incoming SSE refresh can't overwrite a field mid-edit.
+const metaDirty = ref(false)
 
 // View mode persisted in cookie
 const mode = useCookie<Mode>('mm.documents.viewMode', {
@@ -181,6 +210,8 @@ async function saveMetadata() {
         tags
       }
     }
+    // Edits are persisted — let the live watcher resume syncing this doc.
+    metaDirty.value = false
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Metadata save failed', description: err.data?.statusMessage ?? err.message })
@@ -188,6 +219,7 @@ async function saveMetadata() {
 }
 
 function scheduleMetaSave() {
+  metaDirty.value = true
   if (metaSaveTimer.value) clearTimeout(metaSaveTimer.value)
   metaSaveTimer.value = setTimeout(() => saveMetadata(), 800)
 }

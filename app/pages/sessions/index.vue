@@ -1,29 +1,20 @@
 <script setup lang="ts">
-import type { SessionListItem } from '~~/shared/types/session'
 import { useTimeAgo } from '@vueuse/core'
 
 definePageMeta({ title: 'Sessions' })
 
-const { list } = useSessions()
+const { useSessionList } = useSessions()
 const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
-const sessions = ref<SessionListItem[]>([])
-const loading = ref(false)
+const { data, isPending: loading, error } = useSessionList()
+const sessions = computed(() => data.value ?? [])
 
-async function load() {
-  loading.value = true
-  try {
-    sessions.value = await list()
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }; message?: string }
-    toast.add({ color: 'error', title: 'Failed to load sessions', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(load)
+watch(error, (err) => {
+  if (!err) return
+  const e = err as { data?: { statusMessage?: string }; message?: string }
+  toast.add({ color: 'error', title: 'Failed to load sessions', description: e.data?.statusMessage ?? e.message })
+})
 
 // ── Distinct filter options ────────────────────────────────────────────────────
 const distinctSources = computed(() => {

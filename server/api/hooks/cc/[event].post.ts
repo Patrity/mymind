@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { upsertSession } from '../../../services/sessions'
+import { publishChange } from '../../../utils/live-bus'
 
 const Body = z.object({
   source: z.string().default('claude_code'),
@@ -25,6 +26,8 @@ export default defineEventHandler(async (event) => {
     cwd: body.cwd ?? undefined,
     metadata
   })
+
+  publishChange({ resource: 'session', action: 'updated', id: session.id })
 
   return { ok: true, sessionId: session.id }
 })

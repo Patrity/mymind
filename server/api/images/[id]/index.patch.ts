@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { getImage, patchImage, toImageDTO, setImagePublic } from '../../../services/images'
+import { publishChange } from '../../../utils/live-bus'
 
 const Body = z.object({
   summary: z.string().nullable().optional(),
@@ -34,5 +35,6 @@ export default defineEventHandler(async (event) => {
     })) ?? row
   }
 
+  publishChange({ resource: 'image', action: 'updated', id })
   return toImageDTO(row)
 })
