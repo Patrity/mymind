@@ -7,11 +7,12 @@ import type { TaskDTO, TaskStatus, TaskPriority, ProjectDTO } from '~~/shared/ty
 definePageMeta({ title: 'Tasks' })
 
 const { useTaskList, create: createTask, update: updateTask, move: moveTask, remove: removeTask } = useTasks()
-const { list: listProjects } = useProjects()
+const { useProjectList } = useProjects()
 const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
-const projects = ref<ProjectDTO[]>([])
+const { data: projectsData } = useProjectList(true)
+const projects = computed<ProjectDTO[]>(() => projectsData.value ?? [])
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 const FILTER_ALL = '__all__'
@@ -72,18 +73,6 @@ function rebuildColumns(list: TaskDTO[]) {
 watch(filteredTasks, (list) => {
   if (!isDragging.value) rebuildColumns(list)
 }, { immediate: true })
-
-async function loadProjects() {
-  try {
-    projects.value = await listProjects(true)
-  } catch {
-    // non-fatal; projects just won't appear in selects
-  }
-}
-
-onMounted(() => {
-  loadProjects()
-})
 
 // ── Drag-and-drop (useSortable, shared-group columns) ──────────────────────────
 // One sortable per column, all in group 'tasks' so cards drag between columns.
