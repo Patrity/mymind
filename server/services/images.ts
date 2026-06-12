@@ -99,11 +99,21 @@ export async function setImagePublic(id: string, isPublic: boolean): Promise<Ima
   return r ?? null
 }
 
-export async function patchTags(
-  id: string,
-  patch: { tags?: string[], recommendedTags?: string[] }
-): Promise<Image | null> {
+export interface ImagePatch {
+  summary?: string | null
+  ocrText?: string | null
+  tags?: string[]
+  recommendedTags?: string[]
+}
+
+/**
+ * Update any provided subset of editable metadata columns. The public toggle is
+ * handled separately by `setImagePublic` (it owns slug generation).
+ */
+export async function patchImage(id: string, patch: ImagePatch): Promise<Image | null> {
   const update: Partial<typeof images.$inferInsert> = {}
+  if (patch.summary !== undefined) update.summary = patch.summary
+  if (patch.ocrText !== undefined) update.ocrText = patch.ocrText
   if (patch.tags !== undefined) update.tags = patch.tags
   if (patch.recommendedTags !== undefined) update.recommendedTags = patch.recommendedTags
   if (Object.keys(update).length === 0) {

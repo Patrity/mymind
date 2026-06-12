@@ -1,7 +1,9 @@
 import { z } from 'zod'
-import { getImage, patchTags, serveUrl, setImagePublic } from '../../../services/images'
+import { getImage, patchImage, serveUrl, setImagePublic } from '../../../services/images'
 
 const Body = z.object({
+  summary: z.string().nullable().optional(),
+  ocrText: z.string().nullable().optional(),
   tags: z.array(z.string()).optional(),
   recommendedTags: z.array(z.string()).optional(),
   isPublic: z.boolean().optional()
@@ -18,8 +20,18 @@ export default defineEventHandler(async (event) => {
     row = (await setImagePublic(id, body.isPublic)) ?? row
   }
 
-  if (body.tags !== undefined || body.recommendedTags !== undefined) {
-    row = (await patchTags(id, { tags: body.tags, recommendedTags: body.recommendedTags })) ?? row
+  if (
+    body.summary !== undefined ||
+    body.ocrText !== undefined ||
+    body.tags !== undefined ||
+    body.recommendedTags !== undefined
+  ) {
+    row = (await patchImage(id, {
+      summary: body.summary,
+      ocrText: body.ocrText,
+      tags: body.tags,
+      recommendedTags: body.recommendedTags
+    })) ?? row
   }
 
   return { ...row, url: serveUrl(row) }
