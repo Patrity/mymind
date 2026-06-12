@@ -1,4 +1,6 @@
 import { $fetch as ofetch } from 'ofetch'
+import { useQuery } from '@tanstack/vue-query'
+import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import type { TaskDTO, TaskStatus } from '~~/shared/types/tasks'
 
 export function useTasks() {
@@ -33,5 +35,18 @@ export function useTasks() {
   const remove = (id: string) =>
     ofetch(`/api/tasks/${id}`, { method: 'DELETE' })
 
-  return { list, get, create, update, move, remove }
+  // List key ['task','list', project]; partial-key invalidation on ['task','list']
+  // (driven by live SSE events) refetches every filter variant. `filter` is the
+  // project slug (or undefined for "all"); wrapped in a computed so vue-query
+  // unwraps it reactively and refetches when the filter changes. Mirrors list()'s
+  // own filter signature — we pass it as `{ project }`.
+  const useTaskList = (filter?: MaybeRefOrGetter<string | undefined>) => {
+    const key = computed(() => toValue(filter))
+    return useQuery({
+      queryKey: ['task', 'list', key],
+      queryFn: () => list(key.value ? { project: key.value } : undefined)
+    })
+  }
+
+  return { list, get, create, update, move, remove, useTaskList }
 }
