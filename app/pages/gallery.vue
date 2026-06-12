@@ -425,6 +425,7 @@ function formatBytes(n: number): string {
               :src="selected.url"
               class="max-h-80 max-w-full"
               autoplay
+              loop
             />
           </div>
           <!-- Image preview -->
