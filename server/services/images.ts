@@ -7,6 +7,7 @@ import { storage } from '../utils/storage'
 import { processUpload } from '../lib/images/convert'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
+import type { ImageDTO } from '../../shared/types/images'
 
 export type Image = typeof images.$inferSelect
 
@@ -16,6 +17,20 @@ const live = () => isNull(images.deletedAt)
 export function serveUrl(row: Image): string {
   if (row.isPublic && row.publicSlug) return `/api/i/${row.publicSlug}`
   return `/api/images/${row.id}/raw`
+}
+
+/**
+ * Map a DB image row to the client-facing `ImageDTO`, OMITTING the server-only
+ * `embedding` halfvec (it must never serialize to the client) and adding `url`.
+ */
+export function toImageDTO(row: Image): ImageDTO {
+  const { embedding: _embedding, createdAt, deletedAt, ...rest } = row
+  return {
+    ...rest,
+    createdAt: createdAt instanceof Date ? createdAt.toISOString() : createdAt,
+    deletedAt: deletedAt instanceof Date ? deletedAt.toISOString() : deletedAt,
+    url: serveUrl(row)
+  }
 }
 
 export async function createImage(
@@ -49,7 +64,7 @@ export interface ListImagesParams {
   tags?: string[]
 }
 
-export async function listImages(params: ListImagesParams = {}): Promise<(Image & { url: string })[]> {
+export async function listImages(params: ListImagesParams = {}): Promise<ImageDTO[]> {
   const conditions = [live()]
 
   if (params.q?.trim()) {
@@ -74,7 +89,7 @@ export async function listImages(params: ListImagesParams = {}): Promise<(Image 
     .orderBy(desc(images.createdAt))
     .limit(500)
 
-  return rows.map(r => ({ ...r, url: serveUrl(r) }))
+  return rows.map(toImageDTO)
 }
 
 export async function searchImages(q: string): Promise<(Image & { url: string })[]> {

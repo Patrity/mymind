@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { getImage, patchImage, serveUrl, setImagePublic } from '../../../services/images'
+import { getImage, patchImage, toImageDTO, setImagePublic } from '../../../services/images'
 
 const Body = z.object({
   summary: z.string().nullable().optional(),
@@ -34,5 +34,5 @@ export default defineEventHandler(async (event) => {
     })) ?? row
   }
 
-  return { ...row, url: serveUrl(row) }
+  return toImageDTO(row)
 })
