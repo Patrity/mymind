@@ -3,7 +3,7 @@ import { publishChange, subscribeChanges } from '../server/utils/live-bus'
 import type { LiveEvent } from '../shared/types/live'
 
 describe('live-bus', () => {
-  it('delivers a published change to a subscriber as a versioned, timestamped event', async () => {
+  it('delivers a published change to a subscriber as a versioned, timestamped event', () => {
     const received: LiveEvent[] = []
     const unsub = subscribeChanges(e => received.push(e))
 

@@ -11,7 +11,8 @@ emitter.setMaxListeners(0)
 const CHANNEL = 'live-change'
 
 export function publishChange(e: Pick<LiveEvent, 'resource' | 'action' | 'id'>): void {
-  const event: LiveEvent = { v: 1, at: Date.now(), ...e }
+  // `satisfies` locks the shape: a future `v: 2` mistake fails to typecheck here.
+  const event = { v: 1, at: Date.now(), ...e } satisfies LiveEvent
   emitter.emit(CHANNEL, event)
 }
 
