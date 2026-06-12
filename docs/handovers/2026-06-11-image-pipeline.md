@@ -84,6 +84,8 @@ Replaced the ad-hoc image OCR flow (the old `describeImage` + an `ocr_text`-poll
 - **No auto re-embed on summary edit** — refreshed only by the explicit **Revectorize** (or a full **Reprocess**). Intentional, to avoid a rig call on every save.
 - **Video not vision-enriched** — `kind 'video'` is marked `done` with no model call; vision-for-video (and video→webm transcode) is a follow-up.
 - **`searchImages` full-row re-hydrate** — the lanes select ids, RRF-fuse, then re-fetch + re-order full rows in app code (`inArray` loses order). Minor extra round-trip; acceptable at top-50 scale, foldable into one ranked query if volume grows.
+- **`useImages.upload()` return type is wider than the real response** (`app/composables/useImages.ts`) — typed `ImageDTO` but `/api/upload` returns only `{id, slug, url}`. Harmless at runtime (`capture.vue` falls back `originalName ?? id`), but the type masks the mismatch — tighten to the real shape. (Final-review Minor.)
+- **Oversize (>10 MB) image with `make_document` skips the doc spin-off** (`server/services/image-enrich.ts`) — the >10 MB short-circuit marks `done` before the spin-off block, so an oversized flagged image never gets a linked doc. Rare (uploads are downscaled first); follow-up if it ever bites. (Final-review Minor.)
 
 ## Next seam
 
