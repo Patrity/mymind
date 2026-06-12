@@ -4,7 +4,7 @@ import type { DocumentDTO } from '~~/shared/types/documents'
 
 definePageMeta({ title: 'Documents' })
 
-const { tree, create, search } = useDocuments()
+const { create, search, useDocTree } = useDocuments()
 const toast = useToast()
 
 /** Check if a doc id exists anywhere in the loaded tree */
@@ -16,9 +16,9 @@ function docExistsInTree(nodes: TreeNode[], id: string): boolean {
   return false
 }
 
-// Tree state
-const treeData = ref<TreeNode[]>([])
-const treeLoading = ref(false)
+// Tree query (live-reactive via vue-query + SSE)
+const { data: treeQueryData, refetch: refetchTree, isPending: treeLoading } = useDocTree()
+const treeData = computed(() => treeQueryData.value ?? [])
 
 // Selected document
 const route = useRoute()
@@ -37,18 +37,6 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 const showNewModal = ref(false)
 const newPath = ref('/input/untitled.md')
 const creating = ref(false)
-
-async function loadTree() {
-  treeLoading.value = true
-  try {
-    treeData.value = await tree()
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to load tree', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    treeLoading.value = false
-  }
-}
 
 function onSearchInput(val: string) {
   searchQuery.value = val
@@ -81,7 +69,7 @@ async function createDocument() {
   creating.value = true
   try {
     const doc = await create({ path: newPath.value.trim() })
-    await loadTree()
+    await refetchTree()
     selectedId.value = doc.id
     showNewModal.value = false
     newPath.value = '/input/untitled.md'
@@ -115,18 +103,15 @@ watch(selectedId, (id) => {
   if (id) lastDoc.value = id
 })
 
-onMounted(async () => {
-  await loadTree()
-
-  // Restore last-open doc if no ?doc= query param and no selection yet
-  if (!route.query.doc && !selectedId.value && lastDoc.value) {
-    // Verify the doc still exists in the tree before selecting
-    const exists = docExistsInTree(treeData.value, lastDoc.value)
+// Restore last-open doc once the tree has loaded (and no ?doc= deep-link)
+watch(treeData, (nodes) => {
+  if (nodes.length && !route.query.doc && !selectedId.value && lastDoc.value) {
+    const exists = docExistsInTree(nodes, lastDoc.value)
     if (exists) {
       selectedId.value = lastDoc.value
     }
   }
-})
+}, { once: true })
 
 onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer)
@@ -159,7 +144,7 @@ onUnmounted(() => {
               color="neutral"
               :loading="treeLoading"
               aria-label="Refresh tree"
-              @click="loadTree"
+              @click="() => { refetchTree() }"
             />
             <UButton
               icon="i-lucide-file-plus"
@@ -228,7 +213,7 @@ onUnmounted(() => {
           :tree="treeData"
           :selected-id="selectedId"
           @select="selectedId = $event"
-          @refresh="loadTree"
+          @refresh="refetchTree"
         />
       </template>
     </UDashboardPanel>

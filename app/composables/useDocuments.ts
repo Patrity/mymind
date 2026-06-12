@@ -1,4 +1,6 @@
 import { $fetch as ofetch } from 'ofetch'
+import { useQuery } from '@tanstack/vue-query'
+import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import type { DocumentDTO } from '~~/shared/types/documents'
 import type { TreeNode } from '~~/server/services/tree'
 
@@ -11,5 +13,21 @@ export function useDocuments() {
   const move = (id: string, path: string) => ofetch<DocumentDTO>(`/api/documents/${id}/move`, { method: 'POST', body: { path } })
   const share = (id: string, isPublic: boolean) => ofetch<DocumentDTO>(`/api/documents/${id}/share`, { method: 'POST', body: { isPublic } })
   const search = (q: string) => ofetch<DocumentDTO[]>('/api/documents/search', { query: { q } })
-  return { tree, get, create, update, remove, move, share, search }
+
+  const useDocTree = () =>
+    useQuery({
+      queryKey: ['document', 'list'] as const,
+      queryFn: () => tree()
+    })
+
+  const useDocDetail = (id: MaybeRefOrGetter<string | null | undefined>) => {
+    const key = computed(() => toValue(id))
+    return useQuery({
+      queryKey: computed(() => ['document', key.value] as const),
+      queryFn: () => get(key.value as string),
+      enabled: computed(() => !!key.value)
+    })
+  }
+
+  return { tree, get, create, update, remove, move, share, search, useDocTree, useDocDetail }
 }

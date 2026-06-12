@@ -2,6 +2,7 @@ import { and, isNull, or, sql, eq } from 'drizzle-orm'
 import { useDb } from '../db'
 import { documents } from '../db/schema'
 import { embed } from '../lib/ai/embeddings'
+import { publishChange } from '../utils/live-bus'
 
 export async function runEmbedding({ limit = 200, batch = 16 } = {}): Promise<{ embedded: number, failed: number, remaining: number }> {
   const db = useDb()
@@ -29,6 +30,7 @@ export async function runEmbedding({ limit = 200, batch = 16 } = {}): Promise<{ 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .set({ embedding: vectors[j] as any, embeddedHash: slice[j]!.contentHash })
           .where(eq(documents.id, slice[j]!.id))
+        publishChange({ resource: 'document', action: 'updated', id: slice[j]!.id })
         embedded++
       }
     } else {
@@ -40,6 +42,7 @@ export async function runEmbedding({ limit = 200, batch = 16 } = {}): Promise<{ 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             .set({ embedding: vec as any, embeddedHash: slice[j]!.contentHash })
             .where(eq(documents.id, slice[j]!.id))
+          publishChange({ resource: 'document', action: 'updated', id: slice[j]!.id })
           embedded++
         } catch {
           console.warn(`[embedding] skipping poison doc ${slice[j]!.id} — will retry next run`)

@@ -12,7 +12,7 @@ const props = defineProps<{
 }>()
 
 const toast = useToast()
-const { get, update, share } = useDocuments()
+const { get, update, share, useDocDetail } = useDocuments()
 const { upload: uploadImage } = useImages()
 
 // Document state
@@ -22,6 +22,29 @@ const loading = ref(false)
 const saveStatus = ref<SaveStatus>('idle')
 let savedContent = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+
+// Live detail query — keeps metadata in sync when remote changes arrive.
+// We do NOT replace the content ref if the user has unsaved edits.
+const { data: liveDocData } = useDocDetail(() => props.documentId)
+watch(liveDocData, (fresh) => {
+  if (!fresh || !doc.value || fresh.id !== doc.value.id) return
+  // Sync non-content fields unconditionally (metadata saves go through here too)
+  doc.value = { ...doc.value, title: fresh.title, path: fresh.path, project: fresh.project,
+    domain: fresh.domain, type: fresh.type, tags: fresh.tags,
+    isPublic: fresh.isPublic, publicSlug: fresh.publicSlug }
+  metaPath.value = fresh.path
+  metaTitle.value = fresh.title ?? ''
+  metaProject.value = fresh.project ?? ''
+  metaDomain.value = fresh.domain ?? ''
+  metaType.value = fresh.type ?? ''
+  metaTags.value = (fresh.tags ?? []).join(', ')
+  // Only sync content when there are no local unsaved edits
+  if (content.value === savedContent) {
+    content.value = fresh.content
+    savedContent = fresh.content
+    doc.value = { ...doc.value, ...fresh }
+  }
+})
 
 // CodeEditor ref — used to wire toolbar transforms
 const codeEditorRef = ref<{ applyTransform: (fn: (s: EditorSelection2) => EditorSelection2) => void, insertText: (s: string) => void } | null>(null)

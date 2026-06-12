@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { createDoc } from '../../services/documents'
+import { publishChange } from '../../utils/live-bus'
 const Body = z.object({
   path: z.string().min(1).regex(/^\//, 'path must start with /'),
   title: z.string().nullish(), content: z.string().optional(),
@@ -9,5 +10,7 @@ const Body = z.object({
 })
 export default defineEventHandler(async (event) => {
   const body = Body.parse(await readBody(event))
-  return createDoc(body)
+  const doc = await createDoc(body)
+  publishChange({ resource: 'document', action: 'created', id: doc.id })
+  return doc
 })
