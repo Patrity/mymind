@@ -487,7 +487,7 @@ function formatBytes(n: number): string {
       <template #content>
         <div
           v-if="selected"
-          class="flex flex-col gap-0"
+          class="flex flex-col gap-0 overflow-auto"
         >
           <!-- Video preview -->
           <div
