@@ -110,7 +110,7 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
           // Only scan images and gifs — skip videos and unknown kinds
           inArray(images.kind, ['image', 'gif']),
           // Cap retries: stop selecting after 3 failed attempts
-          lt(images.ocrAttempts, 3)
+          lt(images.enrichAttempts, 3)
         )
       )
       .limit(limit)
@@ -140,7 +140,7 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
         console.warn(`[image-ocr] empty result for ${img.id}, incrementing attempts`)
         await db
           .update(images)
-          .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+          .set({ enrichAttempts: sql`${images.enrichAttempts} + 1` })
           .where(eq(images.id, img.id))
         failed++
         continue
@@ -164,7 +164,7 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
       console.warn(`[image-ocr] failed to process image ${img.id}:`, err)
       await db
         .update(images)
-        .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+        .set({ enrichAttempts: sql`${images.enrichAttempts} + 1` })
         .where(eq(images.id, img.id))
       failed++
     }
@@ -174,7 +174,7 @@ export async function runImageOcr({ limit = 20 }: { limit?: number } = {}): Prom
   const remainingRows = await db
     .select({ remaining: sql<number>`count(*)::int` })
     .from(images)
-    .where(and(isNull(images.ocrText), isNull(images.deletedAt), inArray(images.kind, ['image', 'gif']), lt(images.ocrAttempts, 3)))
+    .where(and(isNull(images.ocrText), isNull(images.deletedAt), inArray(images.kind, ['image', 'gif']), lt(images.enrichAttempts, 3)))
 
   const remaining = remainingRows[0]?.remaining ?? 0
 
@@ -208,7 +208,7 @@ export async function rescanImage(id: string): Promise<typeof images.$inferSelec
   // anything else, clear stale results and return without a model call.
   if (!['image', 'gif'].includes(img.kind)) {
     const [r] = await db.update(images)
-      .set({ tags: [], recommendedTags: [], ocrText: '', ocrAttempts: 0 })
+      .set({ tags: [], recommendedTags: [], ocrText: '', enrichAttempts: 0 })
       .where(eq(images.id, id)).returning()
     return r ?? img
   }
@@ -216,7 +216,7 @@ export async function rescanImage(id: string): Promise<typeof images.$inferSelec
   // Oversized: clear + empty sentinel (don't re-select), no model call.
   if (img.size > OCR_MAX_SIZE) {
     const [r] = await db.update(images)
-      .set({ tags: [], recommendedTags: [], ocrText: '', ocrAttempts: 0 })
+      .set({ tags: [], recommendedTags: [], ocrText: '', enrichAttempts: 0 })
       .where(eq(images.id, id)).returning()
     return r ?? img
   }
@@ -230,7 +230,7 @@ export async function rescanImage(id: string): Promise<typeof images.$inferSelec
     // Empty result → keep existing tags/OCR intact, just record the attempt.
     if (!result.ocrText && result.tags.length === 0) {
       const [r] = await db.update(images)
-        .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+        .set({ enrichAttempts: sql`${images.enrichAttempts} + 1` })
         .where(eq(images.id, id)).returning()
       return r ?? img
     }
@@ -239,13 +239,13 @@ export async function rescanImage(id: string): Promise<typeof images.$inferSelec
     const { recommended } = splitTags(result.tags, library)
     const cappedRecommended = capTags(recommended, 10)
     const [r] = await db.update(images)
-      .set({ tags: [], recommendedTags: cappedRecommended, ocrText: result.ocrText || '', ocrAttempts: 0 })
+      .set({ tags: [], recommendedTags: cappedRecommended, ocrText: result.ocrText || '', enrichAttempts: 0 })
       .where(eq(images.id, id)).returning()
     return r ?? img
   } catch (err) {
     console.warn(`[image-ocr] rescan failed for ${id}:`, err)
     const [r] = await db.update(images)
-      .set({ ocrAttempts: sql`${images.ocrAttempts} + 1` })
+      .set({ enrichAttempts: sql`${images.enrichAttempts} + 1` })
       .where(eq(images.id, id)).returning()
     return r ?? img
   }

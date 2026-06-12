@@ -18,6 +18,7 @@ export const documents = pgTable('documents', {
   embeddedHash: text('embedded_hash'),
   isPublic: boolean('is_public').notNull().default(false),
   publicSlug: text('public_slug'),
+  ocrId: uuid('ocr_id'),
   embedding: halfvec(2560), // schema only in cycle 1; stays null
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
