@@ -6,6 +6,12 @@ export interface VisionResult {
   tags: string[]
 }
 
+export interface VisionFull {
+  summary: string
+  ocrText: string
+  tags: string[]
+}
+
 /**
  * Tolerant JSON extractor: strips markdown fences, finds the first {...} block,
  * and JSON.parses it. Returns null on any failure.
@@ -74,6 +80,46 @@ export async function describeImage(dataUrl: string): Promise<VisionResult> {
     return { ocrText, tags }
   } catch (err) {
     console.warn('[vision] describeImage failed:', err)
+    return empty
+  }
+}
+
+/** Pure parser for the unified vision response. Never throws. */
+export function parseVisionResponse(raw: string): VisionFull {
+  const empty: VisionFull = { summary: '', ocrText: '', tags: [] }
+  const parsed = extractJson(raw)
+  if (!parsed) return empty
+  const summary = typeof parsed.summary === 'string' ? parsed.summary : ''
+  const ocrText = typeof parsed.ocrText === 'string' ? parsed.ocrText : ''
+  const rawTags = Array.isArray(parsed.tags)
+    ? (parsed.tags as unknown[]).filter((t): t is string => typeof t === 'string')
+    : []
+  return { summary, ocrText, tags: capTags(rawTags, 10) }
+}
+
+/**
+ * Unified vision pass: one-sentence summary + verbatim OCR (if substantial text) + tags.
+ * Never throws — returns all-empty on any failure.
+ */
+export async function describeImageFull(dataUrl: string): Promise<VisionFull> {
+  const empty: VisionFull = { summary: '', ocrText: '', tags: [] }
+  try {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Describe this image in one concise sentence (subject + nature) as "summary". If the image contains substantial text, transcribe ALL of it verbatim as Markdown faithful to the source layout (headings #/##, bullet lists -, numbered lists 1., checkboxes - [ ]/- [x], **bold**) into "ocrText"; if it has little or no text, set "ocrText" to "". Also suggest 5–7 concise lowercase kebab-case tags describing the content (max 10). Respond as STRICT JSON only: {"summary": string, "ocrText": string, "tags": string[]}. No prose.'
+          },
+          { type: 'image_url' as const, image_url: { url: dataUrl } }
+        ]
+      }
+    ]
+    const raw = await chat('vision', messages as ChatMessage[], { temperature: 0.1, maxTokens: 800 })
+    return parseVisionResponse(raw)
+  } catch (err) {
+    console.warn('[vision] describeImageFull failed:', err)
     return empty
   }
 }
