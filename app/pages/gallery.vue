@@ -26,17 +26,19 @@ const listParams = computed<ListImagesParams>(() => {
 })
 
 // ── List state (backed by vue-query — live-updates via the global SSE invalidate) ─
-const { data, error, isPending, isFetching, refetch } = images.useImageList(listParams)
+const { data, error, isPending, refetch } = images.useImageList(listParams)
 const items = computed<ImageDTO[]>(() => data.value ?? [])
 // First-load spinner only; refetches (filters, mutations, SSE) update in place.
 const loading = computed(() => isPending.value)
 
 // Surface query/refetch errors as a toast (the imperative loader used to do this).
-watch(isFetching, (fetching) => {
-  if (!fetching && error.value) {
-    const err = error.value as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to load images', description: err.data?.statusMessage ?? err.message })
-  }
+// Watch `error` itself, not `isFetching`: the error ref only changes identity on a
+// new failure, so we toast once per distinct error instead of on every failed refetch
+// (SSE-driven invalidations would otherwise produce a toast storm while the API is down).
+watch(error, (err) => {
+  if (!err) return
+  const e = err as { data?: { statusMessage?: string }, message?: string }
+  toast.add({ color: 'error', title: 'Failed to load images', description: e.data?.statusMessage ?? e.message })
 })
 
 // Derive distinct tags from loaded items (from confirmed tags only)
@@ -97,8 +99,8 @@ const { isOverDropZone } = useDropZone(galleryRoot, {
 
 // ── Paste upload (page-level) ─────────────────────────────────────────────────
 function onPagePaste(e: ClipboardEvent) {
-  const items = Array.from(e.clipboardData?.items ?? [])
-  const imageItem = items.find(i => i.type.startsWith('image/'))
+  const pasteItems = Array.from(e.clipboardData?.items ?? [])
+  const imageItem = pasteItems.find(i => i.type.startsWith('image/'))
   const file = imageItem?.getAsFile()
   if (file) uploadFile(file)
 }
