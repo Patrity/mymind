@@ -23,3 +23,4 @@ The **living** reference for how each shipped system works **today** — one pag
 | Clipboard (device-sync paste, live SSE, rich copy) | [clipboard.md](clipboard.md) | shipped |
 | Search + command palette (⌘K, cross-surface) + SPA rendering note | [search.md](search.md) | shipped |
 | Sessions view (CC/Hermes transcripts + token/tool stats) | [sessions.md](sessions.md) | shipped |
+| Live reactivity (event bus → SSE → vue-query; live across tabs/devices) | [live-reactivity.md](live-reactivity.md) | shipped |

@@ -1,6 +1,6 @@
 # MyMind — Backlog & Spec Coverage
 
-> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-09.
+> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-12 — **cycle 21 (Live Reactivity) shipped**: the frontend is now live across tabs/devices (every Nitro write → in-process event bus → one SSE stream → `@tanstack/vue-query` invalidation), all list/detail surfaces migrated off manual refresh, sidebar badge poll removed. See [`wiki/live-reactivity.md`](wiki/live-reactivity.md). Remaining: full multi-resource live cross-tab E2E sweep.
 
 ---
 
