@@ -6,6 +6,7 @@ export default defineEventHandler(async (event) => {
 
   const contentType = getHeader(event, 'content-type') ?? ''
   const makePublic = getQuery(event).public === '1' || getHeader(event, 'x-public') === '1'
+  const makeDocument = getQuery(event).makeDocument === '1' || getQuery(event).makeDocument === 'true' || getHeader(event, 'x-make-document') === '1'
 
   // Check Content-Length before reading the body (content-length can lie; buffer.length is the real guard below)
   const contentLength = Number(getHeader(event, 'content-length') ?? 0)
@@ -42,7 +43,7 @@ export default defineEventHandler(async (event) => {
 
   let row: Awaited<ReturnType<typeof createImage>>
   try {
-    row = await createImage(buffer, mime, originalName)
+    row = await createImage(buffer, mime, originalName, { makeDocument })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.startsWith('Unsupported')) {

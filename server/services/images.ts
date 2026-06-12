@@ -16,7 +16,12 @@ export function serveUrl(row: Image): string {
   return `/api/images/${row.id}/raw`
 }
 
-export async function createImage(buffer: Buffer, mime: string, originalName?: string): Promise<Image> {
+export async function createImage(
+  buffer: Buffer,
+  mime: string,
+  originalName?: string,
+  opts?: { makeDocument?: boolean }
+): Promise<Image> {
   const processed = await processUpload(buffer, mime, originalName)
   const stream = Readable.from(processed.buffer)
   const { key, size } = await storage().put(stream, { contentType: processed.mime })
@@ -30,7 +35,8 @@ export async function createImage(buffer: Buffer, mime: string, originalName?: s
     width: processed.width ?? null,
     height: processed.height ?? null,
     size,
-    isPublic: false
+    isPublic: false,
+    makeDocument: opts?.makeDocument ?? false
   }).returning()
 
   return row!
