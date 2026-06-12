@@ -2,6 +2,7 @@ import { asc, desc, eq, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { sessions, messages } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
+import { publishChange } from '../utils/live-bus'
 import type { SessionListItem, SessionDetail, SessionMessageDTO } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
@@ -149,6 +150,8 @@ export async function ingestTranscript(input: IngestTranscriptInput): Promise<In
       lastActive: new Date()
     })
     .where(eq(sessions.id, session.id))
+
+  publishChange({ resource: 'session', action: 'updated', id: session.id })
 
   return { ingested, total }
 }
