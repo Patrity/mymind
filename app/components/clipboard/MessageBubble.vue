@@ -21,7 +21,7 @@ interface Message {
     storageKey: string
     sha256: string
     size: number
-    mimeType: string
+    mime: string
     originalName: string
     width: number | null
     height: number | null
@@ -36,7 +36,8 @@ const props = withDefaults(defineProps<{
 })
 
 const isCurrent = computed(() => props.message.deviceId === props.currentDeviceId)
-const isImage = computed(() => props.message.attachment?.mimeType?.startsWith('image/') ?? false)
+const isImage = computed(() => props.message.attachment?.mime?.startsWith('image/') ?? false)
+const isVideo = computed(() => props.message.attachment?.mime?.startsWith('video/') ?? false)
 const formattedTime = computed(() => {
   const d = props.message.createdAt instanceof Date
     ? props.message.createdAt
@@ -68,6 +69,10 @@ const caption = computed(() => {
       />
       <ClipboardMessageImage
         v-else-if="isImage && props.message.attachment"
+        :attachment="props.message.attachment"
+      />
+      <ClipboardMessageVideo
+        v-else-if="isVideo && props.message.attachment"
         :attachment="props.message.attachment"
       />
       <ClipboardMessageFile

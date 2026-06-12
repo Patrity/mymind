@@ -9,9 +9,6 @@
 <script setup lang="ts">
 import type { DraftModel, DraftProvider } from '~/composables/useAiConfig'
 
-// The embedding dimension is fixed server-side; there's no client export of it.
-const EMBEDDING_DIM = 2560
-
 const props = defineProps<{
   model: DraftModel
   providers: DraftProvider[]

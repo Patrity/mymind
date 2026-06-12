@@ -2,7 +2,7 @@
 // One-time onboarding helper: seed the registry from leftover AI_* env vars.
 // Reads process.env directly (runtimeConfig.ai was removed in Plan 1), encrypts
 // keys server-side, saves, and returns the redacted doc — no plaintext to client.
-import { saveConfig, invalidate } from '../../lib/ai/registry/store'
+import { loadConfig, saveConfig, invalidate } from '../../lib/ai/registry/store'
 import { redactDoc } from '../../lib/ai/registry/schema'
 import { encryptSecret } from '../../lib/ai/registry/crypto'
 import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ProviderDef, type ModelDef } from '../../lib/ai/registry/types'
@@ -21,6 +21,13 @@ const SOURCES: Src[] = [
 ]
 
 export default defineEventHandler(async () => {
+  // One-time seed only: refuse if a registry already exists (any providers/assignments).
+  const existing = await loadConfig()
+  const hasAny = existing.providers.length > 0 || Object.values(existing.assignments).some(ids => ids.length > 0)
+  if (hasAny) {
+    throw createError({ statusCode: 422, statusMessage: 'Config already exists', data: 'Import only seeds an empty registry; clear it first to re-import.' })
+  }
+
   const doc = emptyDoc()
   const e = process.env
 

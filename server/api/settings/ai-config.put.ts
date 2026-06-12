@@ -57,7 +57,7 @@ export default defineEventHandler(async (event) => {
       }
     } catch (err) {
       if ((err as { statusCode?: number }).statusCode === 422) throw err
-      throw createError({ statusCode: 422, statusMessage: 'Embedding probe failed (model unreachable?)', data: (err as Error).message })
+      throw createError({ statusCode: 422, statusMessage: 'Embedding probe failed', data: `Could not verify the embedding model's output dimensions (endpoint unreachable, timed out, or returned an unexpected response): ${(err as Error).message}` })
     }
   }
 

@@ -21,5 +21,9 @@ Ported chat components: Thread (history + live stream + dedup), Composer (paste 
 ## Cycle 10 polish
 Message bubbles show the originating **machine/device label** in the caption (`"<label> · HH:MM"`) — `listMessages` left-joins `clip_devices` to include `deviceLabel`.
 
+## Cleanup batch (2026-06-11)
+- **Layout** — `clipboard.vue` renders the thread inside `UDashboardPanel`'s `#body` slot with `:ui="{ body: '!p-0 !overflow-hidden' }"`, so the navbar pins and the message thread scrolls independently (no whole-page scroll).
+- **Inline media previews** — the client reads the attachment's `mime` field (previously the wrong `mimeType`), so `image/*` attachments render inline again; a new `ClipboardMessageVideo` component embeds a `<video controls>` player for `video/*` (mp4/webm). Non-media attachments still show the file card.
+
 ## Notes / follow-ups
 Single-user (no invites/multi-user); single in-process EventEmitter (Redis for multi-instance); single default thread in the UI (schema supports many); a hydration warning from the client-only thread resolve (consider `<ClientOnly>`).

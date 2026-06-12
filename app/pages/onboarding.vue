@@ -30,9 +30,13 @@ async function importEnv() {
   }
 }
 async function finish() {
-  await config.save()
-  await status.refresh()
-  await navigateTo('/')
+  try {
+    await config.save()
+    await status.refresh()
+    await navigateTo('/')
+  } catch {
+    // config.error is set by save() and rendered inside the AssignmentsTab on this step.
+  }
 }
 </script>
 

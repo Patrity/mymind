@@ -30,5 +30,8 @@ Thumbnail grid + detail modal: OCR text, removable confirmed tags, recommended t
 ## Cycle 10 polish
 Gallery supports page-level drag-drop + clipboard-paste upload, renders `<video controls>` for `kind:'video'` items (file picker accepts mp4/webm/quicktime), and has an OCR+tag search box + `USelectMenu` multiselect tag filter (server `GET /api/images?q=&tags=`, parameterized).
 
+## Per-image rescan (cleanup batch, 2026-06-11)
+`POST /api/images/[id]/rescan` (`rescanImage` in `server/services/image-ocr.ts`) re-runs OCR for a single image, **enrich-first** so it never loses data: it runs the vision model *before* touching anything, and **only on a real result** clears `tags`/`recommended_tags`/`ocr_text` and writes fresh OCR + recommended tags (resetting `ocr_attempts`). On an empty/failed result it preserves existing tags and just bumps `ocr_attempts` (no data loss). A `kind` guard restricts it to `image`/`gif`. Because it resets `ocr_attempts`, it **un-sticks images that exhausted the `ocr_attempts < 3` cap** (the cron/admin batch runner skips those forever). A **Rescan** button sits in the gallery image detail-modal footer (bottom-right, next to Close).
+
 ## Follow-ups
 Video→webm transcode; EXIF privacy scrub; OCR-failure → notification queue.
