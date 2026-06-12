@@ -1,3 +1,3 @@
-import { runImageOcr } from '../../services/image-ocr'
+import { runImageEnrich } from '../../services/image-enrich'
 
-export default defineEventHandler(async () => runImageOcr({ limit: 20 }))
+export default defineEventHandler(async () => runImageEnrich({ limit: 20 }))

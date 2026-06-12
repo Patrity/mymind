@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
 import { documents, images } from '../db/schema'
@@ -13,6 +13,9 @@ import { slugify } from '../../shared/utils/slugify'
 
 const OCR_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
 const ENRICHABLE_KINDS = ['image', 'gif']
+
+/** Cap retries: stop selecting a failed image after this many attempts. */
+export const MAX_ATTEMPTS = 3
 
 /** Read an image blob from storage and return a base64 data: URL for the vision model. */
 async function readImageDataUrl(storageKey: string, mime: string): Promise<string> {
@@ -116,6 +119,41 @@ export async function enrichImage(id: string): Promise<typeof images.$inferSelec
     enrichError: null
   }).where(eq(images.id, id)).returning()
   return r ?? img
+}
+
+export interface ImageEnrichResult {
+  done: number
+  failed: number
+  remaining: number
+}
+
+/**
+ * Process up to `limit` non-deleted images that are pending or retryable-failed
+ * (failed with fewer than MAX_ATTEMPTS attempts). Runs the full enrichment
+ * pipeline on each and tallies done/failed. `remaining` uses the same predicate.
+ */
+export async function runImageEnrich({ limit = 20 }: { limit?: number } = {}): Promise<ImageEnrichResult> {
+  const db = useDb()
+  const retryable = or(
+    eq(images.enrichStatus, 'pending'),
+    and(eq(images.enrichStatus, 'failed'), lt(images.enrichAttempts, MAX_ATTEMPTS))
+  )
+
+  const candidates = await db.select({ id: images.id }).from(images)
+    .where(and(isNull(images.deletedAt), retryable))
+    .limit(limit)
+
+  let done = 0, failed = 0
+  for (const c of candidates) {
+    const r = await enrichImage(c.id)
+    if (r?.enrichStatus === 'done') done++
+    else failed++
+  }
+
+  const [row] = await db.select({ remaining: sql<number>`count(*)::int` }).from(images)
+    .where(and(isNull(images.deletedAt), retryable))
+
+  return { done, failed, remaining: row?.remaining ?? 0 }
 }
 
 /** Re-embed the image's CURRENT summary only (no vision call). For the Revectorize button. */
