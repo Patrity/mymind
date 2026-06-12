@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useQuery } from '@tanstack/vue-query'
+
 definePageMeta({ title: 'Review' })
 
 interface Proposed {
@@ -22,12 +24,19 @@ interface ReviewItem {
 
 const toast = useToast()
 
-const { data: items, refresh, pending } = await useFetch<ReviewItem[]>('/api/review')
+const { data, refetch, isPending, error } = useQuery({
+  queryKey: ['review', 'list'],
+  queryFn: () => $fetch<ReviewItem[]>('/api/review')
+})
 
-async function refreshAll() {
-  await refresh()
-  await refreshNuxtData('review-count')
-}
+const items = computed(() => data.value ?? [])
+
+watch(error, (err) => {
+  if (err) {
+    const e = err as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Failed to load review queue', description: e.data?.statusMessage ?? e.message })
+  }
+})
 
 const actioning = ref<Record<string, boolean>>({})
 
@@ -36,7 +45,8 @@ async function approve(id: string) {
   try {
     await $fetch(`/api/review/${id}/approve`, { method: 'POST' })
     toast.add({ color: 'success', title: 'Proposal approved', description: 'Document updated.' })
-    await refreshAll()
+    await refetch()
+    await refreshNuxtData('review-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Approve failed', description: err.data?.statusMessage ?? err.message })
@@ -50,7 +60,8 @@ async function reject(id: string) {
   try {
     await $fetch(`/api/review/${id}/reject`, { method: 'POST' })
     toast.add({ color: 'neutral', title: 'Proposal rejected' })
-    await refreshAll()
+    await refetch()
+    await refreshNuxtData('review-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Reject failed', description: err.data?.statusMessage ?? err.message })
@@ -78,7 +89,7 @@ async function reject(id: string) {
       <div class="p-4 space-y-4 max-w-3xl mx-auto">
         <!-- Loading -->
         <div
-          v-if="pending"
+          v-if="isPending"
           class="space-y-3"
         >
           <USkeleton

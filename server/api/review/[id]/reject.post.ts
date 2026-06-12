@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { reviewQueue } from '../../../db/schema'
+import { publishChange } from '../../../utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
@@ -11,6 +12,8 @@ export default defineEventHandler(async (event) => {
   await db.update(reviewQueue)
     .set({ status: 'rejected', resolvedAt: new Date() })
     .where(eq(reviewQueue.id, id))
+
+  publishChange({ resource: 'review', action: 'updated', id })
 
   return { ok: true }
 })
