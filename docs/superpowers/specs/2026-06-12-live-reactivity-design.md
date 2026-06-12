@@ -55,6 +55,15 @@ only what changed.
    background task) publishes after a successful commit. Enforced by convention + a typed
    closed union (a missing wire-up is a type error).
 
+> **Planning-time correction (2026-06-12):** the data model has **no `userId` on rows**
+> (`createImage` takes no owner), API-token clients (ShareX) carry `context.client` but no
+> `context.user`, and background tasks have no session. Forcing a per-user topic would make
+> every emit site resolve a user the schema doesn't track. So events use a **single global
+> channel** (matching the existing `agent-activity` bus). The SSE endpoint stays
+> auth-gated. Per-user scoping is a documented one-line seam (add a `scope` arg to
+> `publishChange` + a topic filter) to add if the app ever becomes multi-user — **not built
+> now (YAGNI).**
+
 ## Architecture
 
 One per-user event channel. Every Nitro write publishes a thin signal to it. The client
@@ -78,18 +87,17 @@ type LiveEvent = {
   at: number
 }
 
-function publishChange(userId: string, e: Pick<LiveEvent, 'resource' | 'action' | 'id'>): void
+function publishChange(e: Pick<LiveEvent, 'resource' | 'action' | 'id'>): void
 ```
 
-Events are emitted on a per-user topic `u:<userId>`. Single-user today, but scoping is
-free and future-proof. `ResourceName` is a **closed union** — the structural backstop
-behind the convention.
+Events are emitted on a **single global channel** (single-user app; see planning-time
+correction above). `ResourceName` is a **closed union** — the structural backstop behind
+the convention.
 
-**`server/api/events.get.ts`** — one authenticated SSE endpoint, one connection per tab.
-Reuses the project's proven SSE plumbing: `text/event-stream`, 25s heartbeat comments,
-`x-accel-buffering: no` (reverse-proxy safe), subscription stored in a WeakMap and cleaned
-up on `req.close`. Subscribes **only** to the caller's `u:<userId>` topic (auth via the
-existing `event.context.user`).
+**`server/api/events.get.ts`** — one SSE endpoint, one connection per tab. Reuses the
+project's proven SSE plumbing: `text/event-stream`, 25s heartbeat comments,
+`x-accel-buffering: no` (reverse-proxy safe), unsubscribe on `req.close`. Auth-gated by the
+existing `server/middleware/auth.ts` (only logged-in sessions / valid tokens reach it).
 
 **Emit at the write sites** — every mutation handler and every background task calls
 `publishChange` after a successful commit:
@@ -97,7 +105,7 @@ existing `event.context.user`).
 - HTTP handlers under `server/api/**` (documents create/update/delete/move, image
   upload/patch/reprocess, memory create/review/archive, projects, tasks, etc.).
 - Background tasks: `enrich-images`, `enrich-input`, `enrich-memories`, `embed-documents`.
-  These run without a session; since it's single-user they resolve the owner directly.
+  No owner to resolve — emit is global.
 
 ### Client components
 
@@ -121,8 +129,8 @@ call drops every filtered list variant of that resource.
 
 ```
 enrich-images finishes image 123
-  → publishChange(userId, { resource:'image', action:'updated', id:'123' })
-  → live-bus emits on topic u:<userId>
+  → publishChange({ resource:'image', action:'updated', id:'123' })
+  → live-bus emits on the global channel
   → /api/events pushes { v:1, resource:'image', action:'updated', id:'123', at }
   → live.client.ts dispatch → invalidateQueries(['image','123']) + (['image','list'])
   → any tab showing that image/gallery refetches only what's affected
@@ -171,10 +179,10 @@ Incremental — vue-query and raw `$fetch` coexist, so nothing breaks mid-flight
 
 ## Testing
 
-- **Unit** — `publishChange` emits on the correct `u:<userId>` topic; the dispatch registry
-  maps each resource to the correct invalidations.
-- **Integration** — hit a mutation endpoint, assert an event arrives on `/api/events` for
-  that user and **not** for a different user.
+- **Unit** — `publishChange` emits on the global channel and `subscribe` receives it; the
+  dispatch registry maps each resource to the correct invalidations.
+- **Integration** — hit a mutation endpoint, assert a matching event is delivered to a
+  `subscribe` listener on the bus.
 - **E2E** (`playwright-cli`) — two browser contexts: mutate in A, assert B updates with no
   reload. Headline case: image enrich `pending → done` propagating across contexts.
 
