@@ -34,4 +34,16 @@ describe('dispatchLiveEvent', () => {
     expect(c.calls).toContainEqual([{ queryKey: ['memory', 'm-9'] }])
     expect(c.calls).toContainEqual([{ queryKey: ['memory', 'list'] }])
   })
+
+  it('memory events also invalidate the badge count', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'memory', id: 'm-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['memory', 'count'] }])
+  })
+
+  it('review events also invalidate the badge count', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'review', id: 'r-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
+  })
 })

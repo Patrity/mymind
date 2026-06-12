@@ -1,25 +1,16 @@
 <script setup lang="ts">
+import { useQuery } from '@tanstack/vue-query'
 import type { NavigationMenuItem } from '@nuxt/ui'
 
-const { data: reviewCount, refresh: refreshReviewCount } = await useFetch('/api/review/count', {
-  key: 'review-count',
-  default: () => ({ pending: 0 })
+const { data: reviewCount } = useQuery({
+  queryKey: ['review', 'count'],
+  queryFn: () => $fetch<{ pending: number }>('/api/review/count')
 })
 
-const { data: memoryCount, refresh: refreshMemoryCount } = await useFetch('/api/memories/count', {
-  key: 'memory-count',
-  default: () => ({ unreviewed: 0 })
+const { data: memoryCount } = useQuery({
+  queryKey: ['memory', 'count'],
+  queryFn: () => $fetch<{ unreviewed: number }>('/api/memories/count')
 })
-
-// Refresh counts every 60 seconds
-let countTimer: ReturnType<typeof setInterval> | null = null
-onMounted(() => {
-  countTimer = setInterval(() => {
-    refreshReviewCount()
-    refreshMemoryCount()
-  }, 60_000)
-})
-onUnmounted(() => { if (countTimer) clearInterval(countTimer) })
 
 const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
@@ -34,13 +25,13 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     label: 'Memory',
     icon: 'i-lucide-brain',
     to: '/memories',
-    badge: memoryCount.value.unreviewed > 0 ? memoryCount.value.unreviewed : undefined
+    badge: (memoryCount.value?.unreviewed ?? 0) > 0 ? memoryCount.value!.unreviewed : undefined
   },
   {
     label: 'Review',
     icon: 'i-lucide-inbox',
     to: '/review',
-    badge: reviewCount.value.pending > 0 ? reviewCount.value.pending : undefined
+    badge: (reviewCount.value?.pending ?? 0) > 0 ? reviewCount.value!.pending : undefined
   }
 ])
 </script>

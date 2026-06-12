@@ -71,7 +71,6 @@ async function doReview(id: string) {
     await reviewMemory(id)
     toast.add({ color: 'success', title: 'Marked as reviewed' })
     await refetch()
-    await refreshNuxtData('memory-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Review failed', description: err.data?.statusMessage ?? err.message })
@@ -89,7 +88,6 @@ async function doArchive(id: string) {
     await archiveMemory(id)
     toast.add({ color: 'neutral', title: 'Memory archived' })
     await refetch()
-    await refreshNuxtData('memory-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Archive failed', description: err.data?.statusMessage ?? err.message })
@@ -140,7 +138,6 @@ async function submitAdd() {
     addOpen.value = false
     toast.add({ color: 'success', title: 'Memory added' })
     await refetch()
-    await refreshNuxtData('memory-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Failed to add memory', description: err.data?.statusMessage ?? err.message })

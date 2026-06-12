@@ -46,7 +46,6 @@ async function approve(id: string) {
     await $fetch(`/api/review/${id}/approve`, { method: 'POST' })
     toast.add({ color: 'success', title: 'Proposal approved', description: 'Document updated.' })
     await refetch()
-    await refreshNuxtData('review-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Approve failed', description: err.data?.statusMessage ?? err.message })
@@ -61,7 +60,6 @@ async function reject(id: string) {
     await $fetch(`/api/review/${id}/reject`, { method: 'POST' })
     toast.add({ color: 'neutral', title: 'Proposal rejected' })
     await refetch()
-    await refreshNuxtData('review-count')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Reject failed', description: err.data?.statusMessage ?? err.message })

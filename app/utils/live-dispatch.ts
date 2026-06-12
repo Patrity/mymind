@@ -5,9 +5,11 @@ import type { LiveEvent, ResourceName } from '../../shared/types/live'
 type Invalidator = Pick<QueryClient, 'invalidateQueries'>
 
 // Per-resource override hook. Default behaviour (invalidate detail + list) covers
-// every resource today; add an entry here only when a resource needs extra keys
-// (e.g. 'memory' also bumping the count badge — added in a later task).
-const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => void>> = {}
+// every resource today; add an entry here only when a resource needs extra keys.
+const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => void>> = {
+  memory: (c) => c.invalidateQueries({ queryKey: ['memory', 'count'] }),
+  review: (c) => c.invalidateQueries({ queryKey: ['review', 'count'] })
+}
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {
   client.invalidateQueries({ queryKey: [e.resource, e.id] })
