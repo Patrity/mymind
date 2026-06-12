@@ -1,10 +1,12 @@
-import { and, arrayOverlaps, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm'
+import { and, arrayOverlaps, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import { Readable } from 'node:stream'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
 import { images } from '../db/schema'
 import { storage } from '../utils/storage'
 import { processUpload } from '../lib/images/convert'
+import { embedOne } from '../lib/ai/embeddings'
+import { rrfFuse } from '../lib/ai/rrf'
 
 export type Image = typeof images.$inferSelect
 
@@ -73,6 +75,53 @@ export async function listImages(params: ListImagesParams = {}): Promise<(Image 
     .limit(500)
 
   return rows.map(r => ({ ...r, url: serveUrl(r) }))
+}
+
+export async function searchImages(q: string): Promise<(Image & { url: string })[]> {
+  if (!q.trim()) return []
+
+  const db = useDb()
+  const pattern = `%${q}%`
+
+  // Lane 1: lexical — ocr/summary ILIKE + tag overlap, similarity-ordered
+  const lexRows = await db.select({ id: images.id }).from(images)
+    .where(and(live(), or(
+      ilike(images.ocrText, pattern),
+      ilike(images.summary, pattern),
+      sql`${images.tags} && ARRAY[${q}]::text[]`,
+      sql`${images.recommendedTags} && ARRAY[${q}]::text[]`
+    )))
+    .orderBy(sql`similarity(coalesce(${images.summary},'') || ' ' || coalesce(${images.ocrText},''), ${q}) desc`)
+    .limit(50)
+  const lexIds = lexRows.map(r => r.id)
+
+  // Lane 2: vector — cosine distance over the summary embedding, with fallback if rig is unavailable
+  let vecIds: string[] = []
+  try {
+    const qv = await embedOne(q)
+    const lit = `[${qv.join(',')}]`
+    const vecRows = await db.select({ id: images.id }).from(images)
+      .where(and(live(), isNotNull(images.embedding)))
+      .orderBy(sql`${images.embedding} <=> ${lit}::halfvec`)
+      .limit(50)
+    vecIds = vecRows.map(r => r.id)
+  } catch (err) {
+    console.warn('[searchImages] vector lane failed, falling back to lexical-only:', err)
+  }
+
+  // Fuse the two ranked lanes with RRF
+  const fusedIds = rrfFuse([lexIds, vecIds]).slice(0, 50)
+
+  if (fusedIds.length === 0) return []
+
+  // Hydrate full rows and re-order by fused rank (inArray doesn't preserve order)
+  const fetched = await db.select().from(images)
+    .where(and(live(), inArray(images.id, fusedIds)))
+  const byId = new Map(fetched.map(r => [r.id, r]))
+  return fusedIds.flatMap(id => {
+    const r = byId.get(id)
+    return r ? [{ ...r, url: serveUrl(r) }] : []
+  })
 }
 
 export async function getImage(id: string): Promise<Image | null> {
