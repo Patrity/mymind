@@ -3,36 +3,28 @@ import type { ProjectDTO } from '~~/shared/types/tasks'
 
 definePageMeta({ title: 'Projects' })
 
-const { list: listProjects, create: createProject, update: updateProject, remove: removeProject } = useProjects()
+const { create: createProject, update: updateProject, remove: removeProject, useProjectList } = useProjects()
 const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
-const projects = ref<ProjectDTO[]>([])
-const loading = ref(false)
+const { data, refetch, isPending, error } = useProjectList()
+const projects = computed(() => data.value ?? [])
 
-async function loadProjects() {
-  loading.value = true
-  try {
-    projects.value = await listProjects()
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to load projects', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(loadProjects)
+watch(error, (err) => {
+  if (!err) return
+  const e = err as { data?: { statusMessage?: string }, message?: string }
+  toast.add({ color: 'error', title: 'Failed to load projects', description: e.data?.statusMessage ?? e.message })
+})
 
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 // ── Toggle active inline ───────────────────────────────────────────────────────
-async function toggleActive(project: ProjectDTO, active: boolean) {
+async function toggleActive(project: { slug: string }, active: boolean) {
   try {
     await updateProject(project.slug, { active })
-    project.active = active
+    await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Failed to update project', description: err.data?.statusMessage ?? err.message })
@@ -64,7 +56,7 @@ async function submitNew() {
       ...(newForm.value.slug.trim() ? { slug: newForm.value.slug.trim() } : {})
     })
     showNewModal.value = false
-    await loadProjects()
+    await refetch()
     toast.add({ color: 'success', title: 'Project created' })
   } catch (e: unknown) {
     const err = e as { status?: number, statusCode?: number, data?: { statusMessage?: string }, message?: string }
@@ -109,7 +101,7 @@ async function submitEdit() {
       active: editForm.value.active
     })
     showEditModal.value = false
-    await loadProjects()
+    await refetch()
     toast.add({ color: 'success', title: 'Project updated' })
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -132,7 +124,7 @@ async function confirmDelete() {
     showDeleteConfirm.value = false
     showEditModal.value = false
     editingProject.value = null
-    await loadProjects()
+    await refetch()
     toast.add({ color: 'success', title: 'Project deleted' })
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -168,7 +160,7 @@ async function confirmDelete() {
     <template #body>
       <!-- Loading -->
       <div
-        v-if="loading"
+        v-if="isPending"
         class="flex flex-col gap-3 p-6"
       >
         <USkeleton
