@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, integer, jsonb, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, integer, jsonb, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core'
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -7,6 +7,13 @@ export const sessions = pgTable('sessions', {
   externalId: text('external_id').notNull(),
   project: text('project'),
   cwd: text('cwd'),
+  machineId: text('machine_id'),
+  hostname: text('hostname'),
+  gitBranch: text('git_branch'),
+  gitCommit: text('git_commit'),
+  gitRemote: text('git_remote'),
+  appVersion: text('app_version'),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
   title: text('title'),
   summary: text('summary'),
   messageCount: integer('message_count').notNull().default(0),
@@ -17,7 +24,8 @@ export const sessions = pgTable('sessions', {
   lastActive: timestamp('last_active', { withTimezone: true }).notNull().defaultNow(),
   metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`)
 }, (t) => [
-  uniqueIndex('sessions_source_external_uidx').on(t.source, t.externalId)
+  uniqueIndex('sessions_source_external_uidx').on(t.source, t.externalId),
+  index('sessions_machine_idx').on(t.machineId)
 ])
 
 export type Session = typeof sessions.$inferSelect
