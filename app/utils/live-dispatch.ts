@@ -8,7 +8,8 @@ type Invalidator = Pick<QueryClient, 'invalidateQueries'>
 // every resource today; add an entry here only when a resource needs extra keys.
 const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => void>> = {
   memory: (c) => c.invalidateQueries({ queryKey: ['memory', 'count'] }),
-  review: (c) => c.invalidateQueries({ queryKey: ['review', 'count'] })
+  review: (c) => c.invalidateQueries({ queryKey: ['review', 'count'] }),
+  activity: (c) => c.invalidateQueries({ queryKey: ['activity', 'count'] })
 }
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {

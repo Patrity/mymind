@@ -9,6 +9,7 @@ export type ResourceName =
   | 'task'
   | 'session'
   | 'clipboard'
+  | 'activity'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 

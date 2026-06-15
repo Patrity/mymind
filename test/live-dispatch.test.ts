@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { dispatchLiveEvent } from '../app/utils/live-dispatch'
 import type { LiveEvent } from '../shared/types/live'
 
@@ -45,5 +45,15 @@ describe('dispatchLiveEvent', () => {
     const c = fakeClient()
     dispatchLiveEvent(c as never, ev({ resource: 'review', id: 'r-1' }))
     expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
+  })
+})
+
+describe('dispatchLiveEvent — activity', () => {
+  it('invalidates activity list + count on an activity signal', () => {
+    const invalidateQueries = vi.fn()
+    dispatchLiveEvent({ invalidateQueries }, { v: 1, resource: 'activity', action: 'created', id: 'batch', at: 0 })
+    const keys = invalidateQueries.mock.calls.map(c => JSON.stringify(c[0]!.queryKey))
+    expect(keys).toContain(JSON.stringify(['activity', 'list']))
+    expect(keys).toContain(JSON.stringify(['activity', 'count']))
   })
 })
