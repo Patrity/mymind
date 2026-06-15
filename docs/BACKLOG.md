@@ -1,6 +1,6 @@
 # MyMind — Backlog & Spec Coverage
 
-> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-12 — **cycle 21 (Live Reactivity) shipped**: the frontend is now live across tabs/devices (every Nitro write → in-process event bus → one SSE stream → `@tanstack/vue-query` invalidation), all list/detail surfaces migrated off manual refresh, sidebar badge poll removed. See [`wiki/live-reactivity.md`](wiki/live-reactivity.md). Remaining: full multi-resource live cross-tab E2E sweep.
+> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-15 — **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.)
 
 ---
 
@@ -25,7 +25,7 @@ The original `scope.md` braindump (since removed from the repo) defined 8 areas.
 - **Full notification system** — the spec wanted human-attention alerts (OCR failed, can't determine project, frontmatter suggested). Only the **review queue** (enrichment proposals) exists; OCR-failed / ambiguous-project are not surfaced. → planned (§2/§3).
 - **Video → webm transcode** — ffmpeg installed; video stored passthrough, not converted. → §3.
 - **Voice (STT/TTS)** — ✅ shipped (cycle 18): self-hosted faster-whisper STT + Kokoro/Chatterbox TTS, client Silero VAD, Nitro WS orchestrator. In-app text-chat UI (cycle 14) rides the same AI SDK `runAgent` core.
-- **Email (ReSend)** — was "if needed"; not built. Optional.
+- ~~**Email (ReSend)** — was "if needed"; not built. Optional.~~ ✅ **shipped (cycle 22)** — Resend wired as the activity-log error-alert channel (severity-gated, windowed digest), configurable in `/settings → Activity & Alerts`. A general-purpose transactional-email use beyond error alerts is still open if ever needed.
 
 ---
 
@@ -55,7 +55,7 @@ A reasoning chat assistant inside the app — the pragmatic slice of the "agent 
 Harden the image pipeline (some of this exists — make it solid + visible).
 - **Dedup tagging/transcription** — *current:* OCR only processes `ocr_text IS NULL` images (untagged), so it already skips processed ones. **Do:** make the "needs processing" gate explicit + extend the same untagged-only guarantee to any re-tag path; ensure changed/re-uploaded images re-process intentionally, not accidentally.
 - **Retry logic for failed transcriptions** — *current:* bounded 3-attempt cap via `ocr_attempts` (stops infinite loops). **Do:** add backoff between attempts, a manual "retry failed" action in the gallery, and auto-retry when the vision endpoint recovers (don't permanently bury a doc that failed only because `:8005` was down).
-- **Failure surfacing** — enqueue `ocr-failed` / `ambiguous-project` into the review/notification queue instead of just `console.warn` (closes the original-spec notification gap).
+- **Failure surfacing** — enqueue `ocr-failed` / `ambiguous-project` into the review/notification queue instead of just `console.warn` (closes the original-spec notification gap). *Note (cycle 22): the activity log now captures `error`/`warn`-kind rows for these failures (visible at `/activity` + badge/toast/email), so this is the seam — the remaining work is the **actionable** review-queue entry for human follow-up, distinct from the observability row.*
 
 ### Cycle 16 — CD: deploy to homelab Proxmox LXC
 Automated deploy on merge to `master`.
