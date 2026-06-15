@@ -3,7 +3,7 @@ import { useDb } from '../db'
 import { sessions, messages, toolEvents } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
 import { publishChange } from '../utils/live-bus'
-import type { SessionListItem, SessionDetail, SessionMessageDTO } from '../../shared/types/session'
+import type { SessionListItem, SessionDetail, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -244,8 +244,27 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
     id: m.id,
     role: m.role,
     content: m.content,
+    thinking: m.thinking,
+    model: m.model,
+    isSidechain: m.isSidechain,
     metadata: (m.metadata as Record<string, unknown>) ?? {},
     createdAt: m.createdAt.toISOString()
+  }))
+
+  const tevs = await db.select().from(toolEvents)
+    .where(eq(toolEvents.sessionId, id)).orderBy(asc(toolEvents.createdAt))
+
+  const toolEventDTOs: SessionToolEventDTO[] = tevs.map(t => ({
+    id: t.id,
+    messageId: t.messageId,
+    toolName: t.toolName,
+    args: t.args,
+    result: t.result,
+    exitStatus: t.exitStatus,
+    phase: t.phase,
+    toolUseId: t.toolUseId,
+    isSidechain: t.isSidechain,
+    createdAt: t.createdAt.toISOString()
   }))
 
   return {
@@ -261,7 +280,14 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
     startedAt: session.startedAt.toISOString(),
     lastActive: session.lastActive.toISOString(),
     cwd: session.cwd,
+    machineId: session.machineId,
+    gitBranch: session.gitBranch,
+    gitCommit: session.gitCommit,
+    gitRemote: session.gitRemote,
+    appVersion: session.appVersion,
+    endedAt: session.endedAt?.toISOString() ?? null,
     metadata: (session.metadata as Record<string, unknown>) ?? {},
-    messages: messageDTOs
+    messages: messageDTOs,
+    toolEvents: toolEventDTOs
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { SessionMessageDTO } from '~~/shared/types/session'
+import type { SessionMessageDTO, SessionToolEventDTO } from '~~/shared/types/session'
 import { useTimeAgo } from '@vueuse/core'
 
 definePageMeta({ title: 'Session' })
@@ -88,15 +88,9 @@ function metaJson(msg: SessionMessageDTO): string {
 }
 
 // ── Git / metadata from session ────────────────────────────────────────────────
-const gitBranch = computed(() => {
-  const meta = session.value?.metadata ?? {}
-  return (meta.git_branch as string | undefined) ?? (meta.branch as string | undefined) ?? null
-})
-
-const gitRepo = computed(() => {
-  const meta = session.value?.metadata ?? {}
-  return (meta.git_repo as string | undefined) ?? (meta.repo as string | undefined) ?? null
-})
+const gitBranch = computed(() => session.value?.gitBranch ?? null)
+const gitRepo = computed(() => session.value?.gitRemote ?? null)
+const gitCommit = computed(() => session.value?.gitCommit ?? null)
 
 const sessionTitle = computed(() => {
   if (!session.value) return ''
@@ -107,6 +101,22 @@ const sessionTitle = computed(() => {
 const openMeta = ref<Record<string, boolean>>({})
 function toggleMeta(id: string) {
   openMeta.value[id] = !openMeta.value[id]
+}
+
+// ── Tool events ───────────────────────────────────────────────────────────────
+const toolEventsByMsg = computed(() => {
+  const m = new Map<string, SessionToolEventDTO[]>()
+  for (const te of session.value?.toolEvents ?? []) {
+    if (!te.messageId) continue
+    const arr = m.get(te.messageId) ?? []
+    arr.push(te)
+    m.set(te.messageId, arr)
+  }
+  return m
+})
+
+function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
+  return s === 'ok' ? 'success' : s ? 'error' : 'neutral'
 }
 </script>
 
@@ -240,9 +250,9 @@ function toggleMeta(id: string) {
             </span>
           </div>
 
-          <!-- CWD + git -->
+          <!-- CWD + git + machine -->
           <div
-            v-if="session.cwd || gitBranch || gitRepo"
+            v-if="session.cwd || gitBranch || gitRepo || session.machineId || session.appVersion"
             class="mt-3 pt-3 border-t border-default space-y-1"
           >
             <p
@@ -261,7 +271,19 @@ function toggleMeta(id: string) {
               v-if="gitBranch"
               class="text-xs text-dimmed font-mono"
             >
-              <UIcon name="i-lucide-git-branch" class="size-3.5 inline mr-1" />{{ gitBranch }}
+              <UIcon name="i-lucide-git-branch" class="size-3.5 inline mr-1" />{{ gitBranch }}{{ gitCommit ? ' @ ' + gitCommit.slice(0, 8) : '' }}
+            </p>
+            <p
+              v-if="session.machineId"
+              class="text-xs text-dimmed font-mono truncate"
+            >
+              <UIcon name="i-lucide-monitor" class="size-3.5 inline mr-1" />{{ session.machineId }}
+            </p>
+            <p
+              v-if="session.appVersion"
+              class="text-xs text-dimmed font-mono"
+            >
+              <UIcon name="i-lucide-tag" class="size-3.5 inline mr-1" />{{ session.appVersion }}
             </p>
           </div>
         </UCard>
@@ -282,27 +304,30 @@ function toggleMeta(id: string) {
               <div
                 v-if="msgKind(msg) === 'tool'"
                 class="flex items-start gap-2"
+                :class="msg.isSidechain ? 'opacity-70' : ''"
               >
                 <div class="w-full">
                   <UCard :ui="{ root: 'bg-elevated/40 border-muted', body: 'py-2 px-3' }">
                     <div class="flex items-start justify-between gap-2">
                       <div class="flex items-center gap-1.5 flex-wrap">
                         <UIcon name="i-lucide-wrench" class="size-3.5 text-warning shrink-0 mt-0.5" />
-                        <UBadge
-                          v-for="name in toolNames(msg)"
-                          :key="name"
-                          :label="name"
-                          color="warning"
-                          variant="subtle"
-                          size="xs"
-                        />
-                        <UBadge
-                          v-if="msg.metadata?.type === 'tool_result'"
-                          label="result"
-                          color="neutral"
-                          variant="outline"
-                          size="xs"
-                        />
+                        <template v-if="!toolEventsByMsg.get(msg.id)?.length">
+                          <UBadge
+                            v-for="name in toolNames(msg)"
+                            :key="name"
+                            :label="name"
+                            color="warning"
+                            variant="subtle"
+                            size="xs"
+                          />
+                          <UBadge
+                            v-if="msg.metadata?.type === 'tool_result'"
+                            label="result"
+                            color="neutral"
+                            variant="outline"
+                            size="xs"
+                          />
+                        </template>
                       </div>
                       <!-- Meta toggle -->
                       <UButton
@@ -322,6 +347,21 @@ function toggleMeta(id: string) {
                     >
                       {{ msg.content.slice(0, 300) }}{{ msg.content.length > 300 ? '…' : '' }}
                     </div>
+                    <!-- Tool event detail (new rows with tool_events populated) -->
+                    <template v-if="toolEventsByMsg.get(msg.id)?.length">
+                      <div
+                        v-for="te in toolEventsByMsg.get(msg.id)"
+                        :key="te.id"
+                        class="mt-1.5"
+                      >
+                        <div class="flex items-center gap-1.5 flex-wrap">
+                          <UBadge :label="te.toolName" color="warning" variant="subtle" size="xs" />
+                          <UBadge v-if="te.exitStatus" :label="te.exitStatus" :color="exitColor(te.exitStatus)" variant="subtle" size="xs" />
+                        </div>
+                        <pre v-if="te.args" class="mt-1 text-xs text-dimmed font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{{ JSON.stringify(te.args, null, 2).slice(0, 500) }}</pre>
+                        <pre v-if="te.result" class="mt-1 text-xs text-muted font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{{ typeof te.result === 'string' ? te.result.slice(0, 500) : JSON.stringify(te.result, null, 2).slice(0, 500) }}</pre>
+                      </div>
+                    </template>
                     <div
                       v-if="openMeta[msg.id]"
                       class="mt-2 pt-2 border-t border-muted"
@@ -336,6 +376,7 @@ function toggleMeta(id: string) {
               <div
                 v-else-if="msgKind(msg) === 'user'"
                 class="flex justify-end"
+                :class="msg.isSidechain ? 'opacity-70' : ''"
               >
                 <div class="max-w-[85%]">
                   <UCard :ui="{ root: 'bg-primary/10 border-primary/20', body: 'py-2.5 px-3.5' }">
@@ -372,16 +413,20 @@ function toggleMeta(id: string) {
               <div
                 v-else
                 class="flex justify-start"
+                :class="msg.isSidechain ? 'opacity-70' : ''"
               >
                 <div class="max-w-[85%]">
                   <UCard :ui="{ body: 'py-2.5 px-3.5' }">
                     <div class="flex items-start justify-between gap-2 mb-1.5">
-                      <UBadge
-                        label="assistant"
-                        color="neutral"
-                        variant="subtle"
-                        size="xs"
-                      />
+                      <div class="flex items-center gap-1.5 flex-wrap">
+                        <UBadge
+                          label="assistant"
+                          color="neutral"
+                          variant="subtle"
+                          size="xs"
+                        />
+                        <span v-if="msg.model" class="text-xs text-dimmed font-mono">{{ msg.model }}</span>
+                      </div>
                       <UButton
                         v-if="hasMetaDetails(msg)"
                         icon="i-lucide-chevron-down"
@@ -393,6 +438,10 @@ function toggleMeta(id: string) {
                         @click="toggleMeta(msg.id)"
                       />
                     </div>
+                    <details v-if="msg.thinking" class="mb-1.5">
+                      <summary class="text-xs text-dimmed cursor-pointer select-none">thinking…</summary>
+                      <pre class="mt-1 text-xs text-dimmed font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{{ msg.thinking }}</pre>
+                    </details>
                     <MdView :source="msg.content" />
                     <div
                       v-if="openMeta[msg.id]"
