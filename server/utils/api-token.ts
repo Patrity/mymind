@@ -6,3 +6,8 @@ export function generateToken(): string {
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
+
+/** Non-secret display hint: the last 4 chars of a minted token (for `mm_…AbCd`). */
+export function tokenLastFour(token: string): string {
+  return token.slice(-4)
+}
