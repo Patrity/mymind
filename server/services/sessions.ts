@@ -1,6 +1,6 @@
 import { asc, desc, eq, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { sessions, messages } from '../db/schema'
+import { sessions, messages, toolEvents } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
 import { publishChange } from '../utils/live-bus'
 import type { SessionListItem, SessionDetail, SessionMessageDTO } from '../../shared/types/session'
@@ -73,87 +73,77 @@ export async function upsertSession(input: UpsertSessionInput): Promise<typeof s
 
 export async function ingestTranscript(input: IngestTranscriptInput): Promise<IngestResult> {
   const db = useDb()
-
-  // Ensure the session exists
-  const session = await upsertSession({
-    source: input.source,
-    externalId: input.externalId
-  })
-
-  // Parse lines into message records (with metadata)
+  const session = await upsertSession({ source: input.source, externalId: input.externalId })
   const parsed = parseTranscriptLines(input.lines)
 
-  if (parsed.messages.length === 0) {
-    return { ingested: 0, total: await countMessages(session.id) }
+  // 1. Insert messages (idempotent on (session_id, external_uuid))
+  if (parsed.messages.length > 0) {
+    await db.insert(messages).values(parsed.messages.map(m => ({
+      sessionId: session.id,
+      role: m.role ?? undefined,
+      content: m.content,
+      externalUuid: m.externalUuid,
+      parentUuid: m.parentUuid,
+      thinking: m.thinking,
+      model: m.model,
+      stopReason: m.stopReason,
+      requestId: m.requestId,
+      isSidechain: m.isSidechain,
+      usage: m.usage as unknown as string,
+      metadata: m.metadata as unknown as string
+    }))).onConflictDoNothing()
   }
 
-  // Insert idempotently — on conflict (sessionId, externalUuid) do nothing
-  const toInsert = parsed.messages.map((m) => ({
-    sessionId: session.id,
-    role: m.role ?? undefined,
-    content: m.content,
-    externalUuid: m.externalUuid,
-    metadata: m.metadata as unknown as string
-  }))
+  // 2. Map externalUuid -> message id for tool-event linkage
+  const msgRows = await db.select({ id: messages.id, externalUuid: messages.externalUuid })
+    .from(messages).where(eq(messages.sessionId, session.id))
+  const idByUuid = new Map(msgRows.map(r => [r.externalUuid, r.id]))
 
-  const inserted = await db
-    .insert(messages)
-    .values(toInsert)
-    .onConflictDoNothing()
-    .returning({ id: messages.id })
-
-  const ingested = inserted.length
-
-  // Recompute session aggregates from ALL messages for this session.
-  // This is robust on partial / re-ingest: we always reflect the full truth.
-  const allMessages = await db
-    .select({ metadata: messages.metadata })
-    .from(messages)
-    .where(eq(messages.sessionId, session.id))
-
-  let totalInputTokens = 0
-  let totalOutputTokens = 0
-  let totalToolCount = 0
-
-  for (const row of allMessages) {
-    const meta = row.metadata as Record<string, unknown>
-
-    // Sum token usage from per-message metadata
-    const usage = meta?.usage as Record<string, unknown> | undefined
-    if (usage && typeof usage === 'object') {
-      totalInputTokens += ((usage.input_tokens as number | undefined) ?? 0)
-        + ((usage.cache_read_input_tokens as number | undefined) ?? 0)
-        + ((usage.cache_creation_input_tokens as number | undefined) ?? 0)
-      totalOutputTokens += (usage.output_tokens as number | undefined) ?? 0
-    }
-
-    // Count tools from metadata.tools array
-    const tools = meta?.tools
-    if (Array.isArray(tools)) {
-      totalToolCount += tools.length
-    }
-
-    // Count tool_result markers
-    if (meta?.type === 'tool_result') {
-      totalToolCount++
-    }
-  }
-
-  const total = allMessages.length
-  await db
-    .update(sessions)
-    .set({
-      messageCount: total,
-      inputTokens: totalInputTokens,
-      outputTokens: totalOutputTokens,
-      toolCount: totalToolCount,
-      lastActive: new Date()
+  // 3. Insert/close tool events (idempotent on (session_id, tool_use_id))
+  for (const te of parsed.toolEvents) {
+    if (!te.toolUseId) continue
+    await db.insert(toolEvents).values({
+      sessionId: session.id,
+      messageId: te.parentExternalUuid ? idByUuid.get(te.parentExternalUuid) ?? null : null,
+      toolName: te.toolName,
+      args: te.args as unknown as string,
+      result: te.result as unknown as string,
+      exitStatus: te.exitStatus,
+      phase: te.phase,
+      toolUseId: te.toolUseId,
+      isSidechain: te.isSidechain,
+      callerType: te.callerType
+    }).onConflictDoUpdate({
+      target: [toolEvents.sessionId, toolEvents.toolUseId],
+      set: { result: te.result as unknown as string, exitStatus: te.exitStatus, phase: te.phase }
     })
-    .where(eq(sessions.id, session.id))
+  }
+
+  // 4. Recompute aggregates from the real tables
+  const [agg] = await db.select({
+    msgCount: sql<number>`count(*)::int`,
+    inTok: sql<number>`coalesce(sum( coalesce((${messages.usage}->>'input_tokens')::int,0)
+      + coalesce((${messages.usage}->>'cache_read_input_tokens')::int,0)
+      + coalesce((${messages.usage}->>'cache_creation_input_tokens')::int,0) ),0)::int`,
+    outTok: sql<number>`coalesce(sum( coalesce((${messages.usage}->>'output_tokens')::int,0) ),0)::int`,
+    minTs: sql<string | null>`min(${messages.createdAt})`,
+    maxTs: sql<string | null>`max(${messages.createdAt})`
+  }).from(messages).where(eq(messages.sessionId, session.id))
+
+  const [toolAgg] = await db.select({ n: sql<number>`count(*)::int` })
+    .from(toolEvents).where(eq(toolEvents.sessionId, session.id))
+
+  await db.update(sessions).set({
+    messageCount: agg?.msgCount ?? 0,
+    inputTokens: agg?.inTok ?? 0,
+    outputTokens: agg?.outTok ?? 0,
+    toolCount: toolAgg?.n ?? 0,
+    ...(agg?.minTs ? { startedAt: new Date(agg.minTs) } : {}),
+    lastActive: agg?.maxTs ? new Date(agg.maxTs) : new Date()
+  }).where(eq(sessions.id, session.id))
 
   publishChange({ resource: 'session', action: 'updated', id: session.id })
-
-  return { ingested, total }
+  return { ingested: parsed.messages.length, total: agg?.msgCount ?? 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,12 +243,4 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
     metadata: (session.metadata as Record<string, unknown>) ?? {},
     messages: messageDTOs
   }
-}
-
-async function countMessages(sessionId: string): Promise<number> {
-  const [result] = await useDb()
-    .select({ count: sql<number>`count(*)::int` })
-    .from(messages)
-    .where(eq(messages.sessionId, sessionId))
-  return result?.count ?? 0
 }
