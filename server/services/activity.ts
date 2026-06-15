@@ -1,8 +1,9 @@
-import { and, desc, eq, ilike, lt, isNull, count } from 'drizzle-orm'
+import { and, desc, eq, ilike, lt, isNull, count, lte, ne, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { activityLog } from '../db/schema'
 import type { ActivityRow } from '../db/schema/activity-log'
 import type { ActivityDTO, ActivityListParams, ActivityCount, ActivitySeverity } from '../../shared/types/activity'
+import type { ObservabilityConfig } from '../lib/observability/types'
 
 // Pure: describe the filters a set of params implies (unit-testable without drizzle).
 export interface FilterDesc { col: string, op: 'eq' | 'ilike', value: unknown }
@@ -78,4 +79,31 @@ export async function ackActivity(id: string): Promise<void> {
 export async function ackAllErrors(): Promise<void> {
   await useDb().update(activityLog).set({ ackedAt: new Date() })
     .where(and(eq(activityLog.status, 'error'), isNull(activityLog.ackedAt)))
+}
+
+export function pruneCutoffs(cfg: ObservabilityConfig, now: number) {
+  const day = 86_400_000
+  return {
+    infoCutoff: new Date(now - cfg.retainInfoDays * day),
+    errorCutoff: new Date(now - cfg.retainErrorDays * day)
+  }
+}
+
+export async function pruneActivity(cfg: ObservabilityConfig, now = Date.now()): Promise<{ deleted: number }> {
+  const db = useDb()
+  const { infoCutoff, errorCutoff } = pruneCutoffs(cfg, now)
+  // non-error rows older than the info window
+  const a = await db.delete(activityLog)
+    .where(and(ne(activityLog.status, 'error'), lte(activityLog.createdAt, infoCutoff)))
+    .returning({ id: activityLog.id })
+  // error rows older than the (longer) error window
+  const b = await db.delete(activityLog)
+    .where(and(eq(activityLog.status, 'error'), lte(activityLog.createdAt, errorCutoff)))
+    .returning({ id: activityLog.id })
+  // hard row cap (oldest first) — delete anything beyond maxRows
+  await db.execute(sql`
+    DELETE FROM activity_log WHERE id IN (
+      SELECT id FROM activity_log ORDER BY created_at DESC OFFSET ${cfg.maxRows}
+    )`)
+  return { deleted: a.length + b.length }
 }
