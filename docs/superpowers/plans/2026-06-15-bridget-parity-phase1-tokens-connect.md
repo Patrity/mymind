@@ -32,7 +32,7 @@
 - `server/api/settings/tokens/index.get.ts` — list.
 - `server/api/settings/tokens/index.post.ts` — create (returns plaintext once).
 - `server/api/settings/tokens/[id]/revoke.post.ts` — soft-revoke.
-- `server/lib/setup/cc-hook.ts` — the `CC_HOOK_SCRIPT` string constant (single source of truth).
+- `server/assets/setup/cc-hook.sh` — the hook client, a real bash file (single source of truth; served as a Nitro server asset).
 - `server/api/setup/cc-hook.get.ts` — serves the script (public).
 - `app/composables/useApiTokens.ts` — vue-query reads + mutation fetchers.
 - `app/components/settings/ApiKeysTab.vue` — the tab UI (list + create + Connect).
@@ -41,6 +41,7 @@
 - `server/utils/api-token.ts` — add `tokenLastFour()`.
 - `server/db/schema/api-tokens.ts` — add `lastFour` column.
 - `server/middleware/auth.ts` — add `/api/setup` to `PUBLIC_PREFIXES`.
+- `nuxt.config.ts` — register the `setup` Nitro server asset.
 - `shared/types/live.ts` — add `'apiToken'` to `ResourceName`.
 - `app/pages/settings.vue` — register the 5th tab.
 
@@ -434,24 +435,23 @@ git commit -m "feat(tokens): session-only list/create/revoke endpoints"
 ## Task 5: Serve the `cc-hook.sh` installer (public, non-secret)
 
 **Files:**
-- Create: `server/lib/setup/cc-hook.ts`
+- Create: `server/assets/setup/cc-hook.sh` (the raw bash script — a real `.sh` file, no escaping).
+- Modify: `nuxt.config.ts` (register the Nitro server asset).
 - Create: `server/api/setup/cc-hook.get.ts`
 - Modify: `server/middleware/auth.ts`
 
 The script reads `MYMIND_URL`/`MYMIND_TOKEN` from the env (falling back to `~/.mymind/config.env`), augments each event with git/machine context, POSTs the event, and on terminal events ships the transcript byte-offset delta. It always exits 0. Uses `python3` for JSON/offset handling (matches the proven bridget approach; present on macOS/Linux dev boxes).
 
+**Why a real `.sh` file (not a TS string):** the script is full of `${…}` bash expansions and `\` sequences. A JS/TS template literal — even `String.raw` — would still interpolate `${…}` and mangle backslashes, corrupting the script. Storing it as an actual `.sh` file under `server/assets/` and reading it via Nitro's server-asset storage avoids ALL escaping issues and lets us `bash -n` the source directly.
+
 **Forward-compat note:** the script POSTs top-level `git_branch`/`git_commit`/`git_remote`/`machine_id`/`hostname` fields. The current `/api/hooks/cc/[event]` handler's zod `Body` is non-strict, so it **silently strips** those extra fields today — no error. Persisting them is Phase 2 (Part C, capture fidelity); the script is intentionally written now so it doesn't need reinstalling later.
 
-- [ ] **Step 1: Create the script constant**
+- [ ] **Step 1: Create the script file**
 
-Create `server/lib/setup/cc-hook.ts`:
+Create `server/assets/setup/cc-hook.sh` (a real bash file — paste the body below verbatim, no escaping):
 
-```typescript
-// Single source of truth for the Claude Code hook client. Served verbatim at
-// GET /api/setup/cc-hook. Contains NO secrets — reads MYMIND_URL/MYMIND_TOKEN
-// from the environment (or ~/.mymind/config.env). Always exits 0 so it can
-// never block the agent. Mirrors the proven bridget cc-hook design.
-export const CC_HOOK_SCRIPT = String.raw`#!/usr/bin/env bash
+```bash
+#!/usr/bin/env bash
 # mymind cc-hook — POSTs Claude Code session events + transcript deltas to MyMind.
 # Install: curl -fsSL "$MYMIND_URL/api/setup/cc-hook" -o ~/.mymind/cc-hook.sh && chmod +x ~/.mymind/cc-hook.sh
 # Wire into ~/.claude/settings.json hooks as: ~/.mymind/cc-hook.sh <EventName>
@@ -568,24 +568,38 @@ PY
 esac
 wait 2>/dev/null || true
 exit 0
-`
 ```
 
-- [ ] **Step 2: Serve the script**
+- [ ] **Step 2: Register the Nitro server asset**
+
+In `nuxt.config.ts`, inside the existing `nitro: { … }` block, add a `serverAssets` entry — MERGE it in; do NOT remove the existing `experimental`, `publicAssets`, or `scheduledTasks` keys:
+
+```typescript
+nitro: {
+  // …existing experimental / publicAssets / scheduledTasks keys stay…
+  serverAssets: [{ baseName: 'setup', dir: 'server/assets/setup' }]
+}
+```
+
+- [ ] **Step 3: Serve the script**
 
 Create `server/api/setup/cc-hook.get.ts`:
 
 ```typescript
-import { CC_HOOK_SCRIPT } from '../../lib/setup/cc-hook'
-
-export default defineEventHandler((event) => {
+export default defineEventHandler(async (event) => {
+  const script = await useStorage('assets:setup').getItem('cc-hook.sh')
+  if (typeof script !== 'string') {
+    throw createError({ statusCode: 500, statusMessage: 'cc-hook.sh asset missing' })
+  }
   setResponseHeader(event, 'content-type', 'text/x-shellscript; charset=utf-8')
   setResponseHeader(event, 'content-disposition', 'inline; filename="cc-hook.sh"')
-  return CC_HOOK_SCRIPT
+  return script
 })
 ```
 
-- [ ] **Step 3: Make `/api/setup` public**
+`useStorage`/`createError`/`setResponseHeader` are Nitro auto-imports; the `assets:setup` mount comes from the `baseName` in Step 2. If `getItem` returns a non-string for this text asset (some storage drivers return a Buffer), coerce with `String(script)` after the guard — verify what Nitro actually returns during the Task 8 live check.
+
+- [ ] **Step 4: Make `/api/setup` public**
 
 In `server/middleware/auth.ts`, add `/api/setup` to the public prefixes (the script holds no secrets and must be `curl`-able without a token):
 
@@ -593,18 +607,20 @@ In `server/middleware/auth.ts`, add `/api/setup` to the public prefixes (the scr
 const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i', '/api/setup']
 ```
 
-- [ ] **Step 4: Verify it serves**
+- [ ] **Step 5: Lint the script syntax + typecheck**
 
-Run (with the dev server running — ask Tony to start `pnpm dev` if it isn't): `curl -s http://localhost:3000/api/setup/cc-hook | head -3`
-Expected: the first lines of the script (`#!/usr/bin/env bash` …), with **no** 401.
-
-- [ ] **Step 5: Typecheck + commit**
+Run: `bash -n server/assets/setup/cc-hook.sh`
+Expected: no output (exit 0 = valid bash syntax).
 
 Run: `pnpm typecheck`
 Expected: 0 errors.
 
+(The live `curl http://localhost:3000/api/setup/cc-hook` check needs the dev server and is covered in Task 8 — do NOT start or disrupt a dev server here.)
+
+- [ ] **Step 6: Commit**
+
 ```bash
-git add server/lib/setup/cc-hook.ts server/api/setup/cc-hook.get.ts server/middleware/auth.ts
+git add server/assets/setup/cc-hook.sh nuxt.config.ts server/api/setup/cc-hook.get.ts server/middleware/auth.ts
 git commit -m "feat(connect): serve cc-hook.sh installer at /api/setup/cc-hook (public)"
 ```
 
