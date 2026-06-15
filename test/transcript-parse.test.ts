@@ -117,23 +117,18 @@ describe('parseTranscriptLines', () => {
     expect(toolMsg.content).toBe('')
   })
 
-  it('counts tool_result lines toward toolCount and marks metadata', () => {
+  it('skips a standalone pure tool_result line (no matching tool_use)', () => {
     const result = parseTranscriptLines([toolResultLine])
-    expect(result.toolCount).toBeGreaterThanOrEqual(1)
-    const toolResultMsg = result.messages.find(m => {
-      return m.metadata.type === 'tool_result'
-    })
-    expect(toolResultMsg).toBeDefined()
+    expect(result.messages).toHaveLength(0)
+    expect(result.toolEvents).toHaveLength(0)
   })
 
   it('full scenario: correct totals across 4 lines', () => {
     const result = parseTranscriptLines([userLine, assistantLine, toolUseLine, toolResultLine])
-    expect(result.inputTokens).toBe(100) // only from assistantLine (toolUseLine has 0)
+    expect(result.inputTokens).toBe(100)
     expect(result.outputTokens).toBe(50)
-    // tool_use (1) + tool_result (1) = 2
-    expect(result.toolCount).toBe(2)
-    // user msg, assistant text msg, assistant tool-only msg, user tool_result msg
-    expect(result.messages.length).toBe(4)
+    expect(result.toolCount).toBe(1) // one tool_use → one event (closed by the result)
+    expect(result.messages.length).toBe(3) // pure tool_result row skipped
   })
 
   it('adds cache tokens to inputTokens', () => {
