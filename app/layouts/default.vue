@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
 import type { NavigationMenuItem } from '@nuxt/ui'
+import type { ActivityCount } from '~~/shared/types/activity'
 
 const { data: reviewCount } = useQuery({
   queryKey: ['review', 'count'],
@@ -12,6 +13,24 @@ const { data: memoryCount } = useQuery({
   queryFn: () => $fetch<{ unreviewed: number }>('/api/memories/count')
 })
 
+const { data: activityCount } = useQuery({
+  queryKey: ['activity', 'count'],
+  queryFn: () => $fetch<ActivityCount>('/api/activity/count')
+})
+
+const toast = useToast()
+// Toast when a new unacked error appears (latest.id changes to a new value).
+watch(() => activityCount.value?.latest?.id, (id, prev) => {
+  if (!id || prev === undefined) return // skip initial load
+  if (id === prev) return
+  toast.add({
+    color: 'error',
+    title: 'New error logged',
+    description: activityCount.value?.latest?.name ?? 'See Activity',
+    actions: [{ label: 'View', onClick: () => { navigateTo('/activity/' + id) } }]
+  })
+})
+
 const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
   { label: 'Clipboard', icon: 'i-lucide-clipboard', to: '/clipboard' },
@@ -21,6 +40,12 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Tasks', icon: 'i-lucide-square-kanban', to: '/tasks' },
   { label: 'Projects', icon: 'i-lucide-folder-kanban', to: '/projects' },
   { label: 'Sessions', icon: 'i-lucide-history', to: '/sessions' },
+  {
+    label: 'Activity',
+    icon: 'i-lucide-activity',
+    to: '/activity',
+    badge: (activityCount.value?.unacked ?? 0) > 0 ? activityCount.value!.unacked : undefined
+  },
   {
     label: 'Memory',
     icon: 'i-lucide-brain',
