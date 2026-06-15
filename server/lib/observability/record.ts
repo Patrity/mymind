@@ -1,6 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import type { ActivityInsert } from '../../db/schema/activity-log'
+import { useDb } from '../../db'
+import { activityLog } from '../../db/schema'
+import { publishChange } from '../../utils/live-bus'
+import { createEmailDigester } from './notify'
+import { loadObsConfig } from './config'
+import type { ActivityKind } from './types'
 import type { SpanInput } from './types'
 
 interface SpanCtx { traceId: string, spanId: string }
@@ -107,4 +113,34 @@ export function createRecorder(deps: RecorderDeps): Recorder {
   }
 
   return { recordEvent, withSpan, flush, runInTrace }
+}
+
+const digester = createEmailDigester()
+
+// Default, app-wired recorder. Capture toggles are honored at the seam by
+// checking loadObsConfig(); the sink itself is dumb (writes whatever it's given).
+export const recorder: Recorder = createRecorder({
+  sink: async (rows) => {
+    await useDb().insert(activityLog).values(rows)
+  },
+  publish: () => publishChange({ resource: 'activity', action: 'created', id: 'batch' }),
+  notify: (rows) => digester.push(rows)
+})
+
+// A 1s flush loop + a 50-row eager flush keep latency off hot paths. unref so it
+// never holds the process open. (No-op in tests — they call recorder.flush() directly.)
+let flushTimer: ReturnType<typeof setInterval> | null = null
+export function startRecorderFlushLoop(): void {
+  if (flushTimer) return
+  flushTimer = setInterval(() => { void recorder.flush() }, 1_000)
+  flushTimer.unref?.()
+}
+
+export const withSpan = recorder.withSpan
+export const recordEvent = recorder.recordEvent
+export const runInTrace = recorder.runInTrace
+
+/** Seam guard: skip capture for a kind the user has disabled in settings. */
+export async function captureEnabled(kind: ActivityKind): Promise<boolean> {
+  try { return (await loadObsConfig()).capture[kind] !== false } catch { return true }
 }
