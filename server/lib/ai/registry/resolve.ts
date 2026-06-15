@@ -4,6 +4,17 @@ import type { LanguageModel } from 'ai'
 import { decryptSecret } from './crypto'
 import { AiNotConfiguredError, AiAllFailedError } from './errors'
 import { EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel, type Usage } from './types'
+import { recordEvent as defaultRecord } from '../../observability/record'
+import type { SpanInput } from '../../observability/types'
+
+// Minimal seam so tests can inject without DB. Default = the app recorder.
+interface ObsSeam { recordEvent: (e: SpanInput) => void }
+const realObs: ObsSeam = { recordEvent: defaultRecord }
+
+function providerHost(baseURL: string | null): string {
+  if (!baseURL) return '(none)'
+  try { return new URL(baseURL).host } catch { return baseURL }
+}
 
 /** Pure: build the ordered, decrypted chain for a usage from a config doc. */
 export function resolveChainFrom(doc: AiConfigDoc, usage: Usage): ResolvedModel[] {
@@ -29,12 +40,38 @@ export function resolveChainFrom(doc: AiConfigDoc, usage: Usage): ResolvedModel[
 }
 
 /** Pure: run fn against each model in order until one succeeds. */
-export async function withFailoverOver<T>(usage: Usage, chain: ResolvedModel[], fn: (m: ResolvedModel) => Promise<T>): Promise<T> {
+export async function withFailoverOver<T>(
+  usage: Usage,
+  chain: ResolvedModel[],
+  fn: (m: ResolvedModel) => Promise<T>,
+  obs: ObsSeam = realObs
+): Promise<T> {
   const attempts: { label: string; error: string }[] = []
-  for (const m of chain) {
-    try { return await fn(m) }
-    catch (err) { attempts.push({ label: m.label, error: (err as Error).message }) }
+  for (let i = 0; i < chain.length; i++) {
+    const m = chain[i]!
+    const started = Date.now()
+    try {
+      const out = await fn(m)
+      obs.recordEvent({
+        kind: 'attempt', name: `${usage}:${m.label}`, status: 'ok', severity: 'info',
+        usage, provider: `${m.label}@${providerHost(m.baseURL)}`, modelId: m.modelId,
+        attempt: i, durationMs: Date.now() - started
+      })
+      return out
+    } catch (err) {
+      const message = (err as Error).message
+      attempts.push({ label: m.label, error: message })
+      obs.recordEvent({
+        kind: 'attempt', name: `${usage}:${m.label}`, status: 'error', severity: 'warn',
+        usage, provider: `${m.label}@${providerHost(m.baseURL)}`, modelId: m.modelId,
+        attempt: i, durationMs: Date.now() - started, error: { message }
+      })
+    }
   }
+  obs.recordEvent({
+    kind: 'model', name: `${usage}:all-failed`, status: 'error', severity: 'error',
+    usage, error: { message: `all ${chain.length} models failed`, cause: JSON.stringify(attempts) }
+  })
   throw new AiAllFailedError(usage, attempts)
 }
 
