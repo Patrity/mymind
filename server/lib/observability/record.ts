@@ -8,6 +8,11 @@ import { createEmailDigester } from './notify'
 import { loadObsConfig } from './config'
 import type { ActivityKind } from './types'
 import type { SpanInput } from './types'
+import { sanitizeRequest, sanitizeResponse } from './redact'
+
+function safeSanitize<T>(fn: () => T): T | { _redactFailed: true } {
+  try { return fn() } catch { return { _redactFailed: true } }
+}
 
 interface SpanCtx { traceId: string, spanId: string }
 
@@ -23,8 +28,6 @@ export interface Recorder {
   recordEvent: (input: SpanInput) => void
   withSpan: <T>(input: SpanInput, fn: () => Promise<T>) => Promise<T>
   flush: () => Promise<void>
-  /** Run fn as the root of a new trace (used by inbound capture). */
-  runInTrace: <T>(fn: () => Promise<T>) => Promise<T>
 }
 
 export function createRecorder(deps: RecorderDeps): Recorder {
@@ -49,8 +52,8 @@ export function createRecorder(deps: RecorderDeps): Recorder {
       attempt: input.attempt ?? null,
       durationMs: input.durationMs ?? null,
       tokens: input.tokens ?? null,
-      request: input.request ?? null,
-      response: input.response ?? null,
+      request: input.request != null ? safeSanitize(() => sanitizeRequest(input.kind, input.request)) : null,
+      response: input.response != null ? safeSanitize(() => sanitizeResponse(input.response)) : null,
       error: input.error ?? null,
       meta: input.meta ?? {},
       ackedAt: null,
@@ -93,10 +96,6 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     }
   }
 
-  async function runInTrace<T>(fn: () => Promise<T>): Promise<T> {
-    return als.run({ traceId: newId(), spanId: newId() }, fn)
-  }
-
   async function flush(): Promise<void> {
     if (!buffer.length) return
     const rows = buffer
@@ -112,7 +111,7 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     if (errs.length) deps.notify?.(errs)
   }
 
-  return { recordEvent, withSpan, flush, runInTrace }
+  return { recordEvent, withSpan, flush }
 }
 
 const digester = createEmailDigester()
@@ -138,7 +137,6 @@ export function startRecorderFlushLoop(): void {
 
 export const withSpan = recorder.withSpan
 export const recordEvent = recorder.recordEvent
-export const runInTrace = recorder.runInTrace
 
 /** Seam guard: skip capture for a kind the user has disabled in settings. */
 export async function captureEnabled(kind: ActivityKind): Promise<boolean> {

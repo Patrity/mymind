@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, lt, isNull, count, lte, ne, sql } from 'drizzle-orm'
+import { and, desc, eq, ilike, lt, isNull, count, lte, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { activityLog } from '../db/schema'
 import type { ActivityRow } from '../db/schema/activity-log'
@@ -92,13 +92,13 @@ export function pruneCutoffs(cfg: ObservabilityConfig, now: number) {
 export async function pruneActivity(cfg: ObservabilityConfig, now = Date.now()): Promise<{ deleted: number }> {
   const db = useDb()
   const { infoCutoff, errorCutoff } = pruneCutoffs(cfg, now)
-  // non-error rows older than the info window
+  // info/debug rows older than the short window
   const a = await db.delete(activityLog)
-    .where(and(ne(activityLog.status, 'error'), lte(activityLog.createdAt, infoCutoff)))
+    .where(and(inArray(activityLog.severity, ['info', 'debug']), lte(activityLog.createdAt, infoCutoff)))
     .returning({ id: activityLog.id })
-  // error rows older than the (longer) error window
+  // warn/error rows older than the long window
   const b = await db.delete(activityLog)
-    .where(and(eq(activityLog.status, 'error'), lte(activityLog.createdAt, errorCutoff)))
+    .where(and(inArray(activityLog.severity, ['warn', 'error']), lte(activityLog.createdAt, errorCutoff)))
     .returning({ id: activityLog.id })
   // hard row cap (oldest first) — delete anything beyond maxRows
   await db.execute(sql`

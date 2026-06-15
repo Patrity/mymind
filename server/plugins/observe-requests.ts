@@ -11,16 +11,17 @@ export default defineNitroPlugin((nitroApp) => {
 
   nitroApp.hooks.hook('afterResponse', async (event) => {
     const path = event.path ?? ''
+    const pathname = path.split('?')[0] ?? path
     const start = event.context._obsStart as number | undefined
-    if (!start || !path.startsWith('/api/')) return
-    if (SKIP_PREFIXES.some(p => path === p || path.startsWith(p + '/'))) return
+    if (!start || !pathname.startsWith('/api/')) return
+    if (SKIP_PREFIXES.some(p => pathname === p || pathname.startsWith(p + '/'))) return
     if (!(await captureEnabled('inbound'))) return
 
     const status = getResponseStatus(event)
     const client = event.context.client as { type?: string, tokenId?: string, userId?: string } | undefined
     recordEvent({
       kind: 'inbound',
-      name: `${event.method ?? 'GET'} ${path.split('?')[0]}`,
+      name: `${event.method ?? 'GET'} ${pathname}`,
       status: status >= 500 ? 'error' : status >= 400 ? 'warn' : 'ok',
       severity: status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info',
       durationMs: Date.now() - start,

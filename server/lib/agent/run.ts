@@ -7,6 +7,7 @@ import { buildSystemPrompt } from './prompt'
 import { publishActivity } from './bus'
 import { VOICE_TUNING } from '../voice/tuning'
 import type { AgentTool } from './types'
+import { recordEvent } from '../observability/record'
 
 export interface AgentMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export type AgentEvent =
@@ -38,7 +39,9 @@ export async function* runAgent(
   const models = deps.streamText ? [undefined as never] : await reasoningModels()
   let result: ReturnType<typeof realStreamText> | undefined
   let lastErr: unknown
-  for (const model of models) {
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i]!
+    const started = Date.now()
     try {
       result = (streamTextFn as unknown as typeof realStreamText)({
         model,
@@ -48,10 +51,17 @@ export async function* runAgent(
         stopWhen: stepCountIs(VOICE_TUNING.agent.maxSteps),
         abortSignal: ctx.signal
       })
+      recordEvent({ kind: 'attempt', name: 'reasoning:agent', status: 'ok', severity: 'info', usage: 'reasoning', provider: (model as { label?: string } | undefined)?.label ?? null, modelId: (model as { modelId?: string } | undefined)?.modelId ?? null, attempt: i, durationMs: Date.now() - started })
       break
-    } catch (err) { lastErr = err }
+    } catch (err) {
+      lastErr = err
+      recordEvent({ kind: 'attempt', name: 'reasoning:agent', status: 'error', severity: 'warn', usage: 'reasoning', provider: (model as { label?: string } | undefined)?.label ?? null, modelId: (model as { modelId?: string } | undefined)?.modelId ?? null, attempt: i, durationMs: Date.now() - started, error: { message: (err as Error).message } })
+    }
   }
-  if (!result) throw lastErr ?? new Error('no reasoning model available')
+  if (!result) {
+    recordEvent({ kind: 'model', name: 'reasoning:agent-all-failed', status: 'error', severity: 'error', usage: 'reasoning', error: { message: (lastErr as Error)?.message ?? 'no reasoning model available' } })
+    throw lastErr ?? new Error('no reasoning model available')
+  }
 
   for await (const part of result.fullStream) {
     while (queue.length) yield queue.shift()!
