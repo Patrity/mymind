@@ -87,6 +87,7 @@ export default defineNuxtConfig({
       { baseURL: 'vad', dir: vadAssetDir, maxAge: 60 * 60 * 24 * 30 },
       { baseURL: 'ort', dir: ortAssetDir, maxAge: 60 * 60 * 24 * 30 }
     ],
+    serverAssets: [{ baseName: 'setup', dir: 'server/assets/setup' }],
     scheduledTasks: {
       '*/5 * * * *': ['embed-documents'],
       '*/10 * * * *': ['enrich-input'],

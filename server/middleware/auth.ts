@@ -3,7 +3,7 @@ import { useDb } from '../db'
 import { apiTokens } from '../db/schema'
 import { hashToken } from '../utils/api-token'
 
-const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i']
+const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i', '/api/setup']
 
 export default defineEventHandler(async (event) => {
   const url = getRequestURL(event).pathname
