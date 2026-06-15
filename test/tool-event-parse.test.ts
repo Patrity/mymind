@@ -78,4 +78,13 @@ describe('parseTranscriptLines — rich capture', () => {
     const r = parseTranscriptLines([asstThinking])
     expect(r.messages[0]!.isSidechain).toBe(false)
   })
+  it('links a tool event to its message even when the line has no uuid', () => {
+    const noUuidToolUse = JSON.stringify({
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tuX', name: 'Bash', input: {} }] }
+    })
+    const r = parseTranscriptLines([noUuidToolUse])
+    const msg = r.messages.find(m => m.role === 'assistant')!
+    const te = r.toolEvents.find(e => e.toolUseId === 'tuX')!
+    expect(te.parentExternalUuid).toBe(msg.externalUuid) // same synthetic uuid → links on insert
+  })
 })

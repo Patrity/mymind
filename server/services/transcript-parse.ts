@@ -94,6 +94,10 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
       const selfUuid = (typeof obj.uuid === 'string' ? obj.uuid : null)
         ?? (typeof msg?.id === 'string' ? msg.id as string : null)
 
+      const text = extractText(rawContent)
+      const thinking = extractThinking(rawContent)
+      const effectiveUuid = selfUuid ?? syntheticUuid(role, text)
+
       for (const part of contentArray) {
         if (part === null || typeof part !== 'object') continue
         if (part.type === 'tool_use') {
@@ -102,7 +106,7 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
           if (typeof part.id === 'string') {
             const ev: ParsedToolEvent = {
               toolUseId: part.id,
-              parentExternalUuid: selfUuid,
+              parentExternalUuid: effectiveUuid,
               toolName: typeof part.name === 'string' ? part.name : 'unknown',
               args: part.input ?? null,
               result: null,
@@ -128,8 +132,6 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
         }
       }
 
-      const text = extractText(rawContent)
-      const thinking = extractThinking(rawContent)
       const hasText = text.trim().length > 0
 
       const pureToolResult = role === 'user' && hasToolResult && !hasText && !hasToolUse
@@ -147,7 +149,7 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
       messages.push({
         role,
         content: text,
-        externalUuid: selfUuid ?? syntheticUuid(role, text),
+        externalUuid: effectiveUuid,
         parentUuid,
         thinking,
         model: typeof msg?.model === 'string' ? msg.model : null,
