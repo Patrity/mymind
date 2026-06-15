@@ -15,6 +15,13 @@ export interface UpsertSessionInput {
   project?: string | null
   cwd?: string | null
   title?: string | null
+  machineId?: string | null
+  hostname?: string | null
+  gitBranch?: string | null
+  gitCommit?: string | null
+  gitRemote?: string | null
+  appVersion?: string | null
+  endedAt?: Date | null
   metadata?: Record<string, unknown>
 }
 
@@ -44,6 +51,13 @@ export async function upsertSession(input: UpsertSessionInput): Promise<typeof s
   if (input.project !== undefined && input.project !== null) updateSet.project = input.project
   if (input.cwd !== undefined && input.cwd !== null) updateSet.cwd = input.cwd
   if (input.title !== undefined && input.title !== null) updateSet.title = input.title
+  if (input.machineId != null) updateSet.machineId = input.machineId
+  if (input.hostname != null) updateSet.hostname = input.hostname
+  if (input.gitBranch != null) updateSet.gitBranch = input.gitBranch
+  if (input.gitCommit != null) updateSet.gitCommit = input.gitCommit
+  if (input.gitRemote != null) updateSet.gitRemote = input.gitRemote
+  if (input.appVersion != null) updateSet.appVersion = input.appVersion
+  if (input.endedAt != null) updateSet.endedAt = input.endedAt
   if (input.metadata !== undefined) {
     // Merge metadata via jsonb concat on conflict
     updateSet.metadata = input.metadata as unknown as string
@@ -56,6 +70,13 @@ export async function upsertSession(input: UpsertSessionInput): Promise<typeof s
     ...(input.project != null ? { project: input.project } : {}),
     ...(input.cwd != null ? { cwd: input.cwd } : {}),
     ...(input.title != null ? { title: input.title } : {}),
+    ...(input.machineId != null ? { machineId: input.machineId } : {}),
+    ...(input.hostname != null ? { hostname: input.hostname } : {}),
+    ...(input.gitBranch != null ? { gitBranch: input.gitBranch } : {}),
+    ...(input.gitCommit != null ? { gitCommit: input.gitCommit } : {}),
+    ...(input.gitRemote != null ? { gitRemote: input.gitRemote } : {}),
+    ...(input.appVersion != null ? { appVersion: input.appVersion } : {}),
+    ...(input.endedAt != null ? { endedAt: input.endedAt } : {}),
     ...(input.metadata !== undefined ? { metadata: input.metadata as unknown as string } : {})
   }
 
