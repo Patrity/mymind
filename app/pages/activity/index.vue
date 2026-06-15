@@ -25,6 +25,10 @@ watch(paused, p => { if (!p) frozen.value = params.value })
 const { data, isPending: loading, error } = useActivityList(() => paused.value ? frozen.value : params.value)
 const rows = computed(() => data.value ?? [])
 
+const displayed = ref<ActivityDTO[]>([])
+watch(rows, (v) => { if (!paused.value) displayed.value = v }, { immediate: true })
+watch(paused, (p) => { if (!p) displayed.value = rows.value })
+
 watch(error, (err) => {
   if (!err) return
   const e = err as { data?: { statusMessage?: string }, message?: string }
@@ -38,6 +42,11 @@ function statusColor(s: string): 'success' | 'warning' | 'error' | 'neutral' {
   return s === 'ok' ? 'success' : s === 'warn' ? 'warning' : s === 'error' ? 'error' : 'neutral'
 }
 function rel(iso: string) { return useTimeAgo(new Date(iso)).value }
+
+async function ackAll() {
+  await $fetch('/api/activity/ack-all', { method: 'POST' })
+  toast.add({ color: 'success', title: 'All errors acknowledged' })
+}
 </script>
 
 <template>
@@ -46,6 +55,10 @@ function rel(iso: string) { return useTimeAgo(new Date(iso)).value }
       <UDashboardNavbar title="Activity">
         <template #leading><UDashboardSidebarCollapse /></template>
         <template #right>
+          <UButton
+            icon="i-lucide-check-check" label="Ack all" color="neutral" variant="ghost" size="sm"
+            @click="ackAll"
+          />
           <UButton
             :icon="paused ? 'i-lucide-play' : 'i-lucide-pause'"
             :label="paused ? 'Resume' : 'Pause'"
@@ -68,14 +81,14 @@ function rel(iso: string) { return useTimeAgo(new Date(iso)).value }
           <USkeleton v-for="i in 8" :key="i" class="h-14 w-full rounded-lg" />
         </div>
 
-        <div v-else-if="!rows.length" class="flex flex-col items-center justify-center py-24 gap-3 text-center">
+        <div v-else-if="!displayed.length" class="flex flex-col items-center justify-center py-24 gap-3 text-center">
           <UIcon name="i-lucide-activity" class="size-12 text-muted" />
           <p class="text-sm font-medium text-muted">No activity yet</p>
         </div>
 
         <template v-else>
           <UCard
-            v-for="r in rows" :key="r.id"
+            v-for="r in displayed" :key="r.id"
             class="cursor-pointer hover:bg-elevated/50 transition-colors"
             :ui="{ body: '!p-3' }"
             @click="navigateTo('/activity/' + r.id)"

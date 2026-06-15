@@ -18,18 +18,29 @@ const { data: activityCount } = useQuery({
   queryFn: () => $fetch<ActivityCount>('/api/activity/count')
 })
 
+const { data: obsConfig } = useQuery({
+  queryKey: ['observability-config'],
+  queryFn: () => $fetch<{ alerts: { badge: boolean, toast: boolean } }>('/api/settings/observability-config')
+})
+
 const toast = useToast()
-// Toast when a new unacked error appears (latest.id changes to a new value).
-watch(() => activityCount.value?.latest?.id, (id, prev) => {
-  if (!id || prev === undefined) return // skip initial load
-  if (id === prev) return
+// Toast when a genuinely newer unacked error appears, de-duped by timestamp.
+// On initial load we record the current latest without toasting (avoid noisy startup).
+const lastToastedAt = ref<string | null>(null)
+watch(() => activityCount.value?.latest, (latest) => {
+  if (!latest) return
+  if (obsConfig.value && obsConfig.value.alerts.toast === false) return
+  if (lastToastedAt.value !== null && latest.at <= lastToastedAt.value) return // older/seen error surfaced after an ack — don't re-toast
+  const first = lastToastedAt.value === null
+  lastToastedAt.value = latest.at
+  if (first) return // don't toast the pre-existing newest error on initial load
   toast.add({
     color: 'error',
     title: 'New error logged',
-    description: activityCount.value?.latest?.name ?? 'See Activity',
-    actions: [{ label: 'View', onClick: () => { navigateTo('/activity/' + id) } }]
+    description: latest.name ?? 'See Activity',
+    actions: [{ label: 'View', onClick: () => { navigateTo('/activity/' + latest.id) } }]
   })
-})
+}, { deep: false })
 
 const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
@@ -44,7 +55,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     label: 'Activity',
     icon: 'i-lucide-activity',
     to: '/activity',
-    badge: (activityCount.value?.unacked ?? 0) > 0 ? activityCount.value!.unacked : undefined
+    badge: (obsConfig.value?.alerts.badge !== false && (activityCount.value?.unacked ?? 0) > 0) ? activityCount.value!.unacked : undefined
   },
   {
     label: 'Memory',
