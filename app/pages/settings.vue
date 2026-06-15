@@ -5,6 +5,7 @@ const tabs = [
   { label: 'Providers', icon: 'i-lucide-server', slot: 'providers' as const },
   { label: 'Models', icon: 'i-lucide-box', slot: 'models' as const },
   { label: 'Model Configuration', icon: 'i-lucide-sliders-horizontal', slot: 'assignments' as const },
+  { label: 'API Keys', icon: 'i-lucide-key-round', slot: 'apikeys' as const },
   { label: 'Activity & Alerts', icon: 'i-lucide-activity', slot: 'activity' as const }
 ]
 </script>
@@ -22,6 +23,7 @@ const tabs = [
           <template #providers><SettingsProvidersTab /></template>
           <template #models><SettingsModelsTab /></template>
           <template #assignments><SettingsAssignmentsTab /></template>
+          <template #apikeys><SettingsApiKeysTab /></template>
           <template #activity><SettingsActivityAlertsTab /></template>
         </UTabs>
       </div>
