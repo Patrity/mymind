@@ -4,7 +4,8 @@ definePageMeta({ title: 'Settings' })
 const tabs = [
   { label: 'Providers', icon: 'i-lucide-server', slot: 'providers' as const },
   { label: 'Models', icon: 'i-lucide-box', slot: 'models' as const },
-  { label: 'Model Configuration', icon: 'i-lucide-sliders-horizontal', slot: 'assignments' as const }
+  { label: 'Model Configuration', icon: 'i-lucide-sliders-horizontal', slot: 'assignments' as const },
+  { label: 'Activity & Alerts', icon: 'i-lucide-activity', slot: 'activity' as const }
 ]
 </script>
 
@@ -21,6 +22,7 @@ const tabs = [
           <template #providers><SettingsProvidersTab /></template>
           <template #models><SettingsModelsTab /></template>
           <template #assignments><SettingsAssignmentsTab /></template>
+          <template #activity><SettingsActivityAlertsTab /></template>
         </UTabs>
       </div>
     </template>
