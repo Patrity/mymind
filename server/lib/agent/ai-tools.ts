@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { AgentTool, ToolContext } from './types'
 import { publishActivity } from './bus'
 import { registerUndo } from './undo'
+import { withSpan } from '../observability/record'
 
 export interface RunHooks {
   signal: AbortSignal
@@ -23,7 +24,10 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
       execute: async (input: Record<string, unknown>) => {
         hooks.onEvent({ type: 'tool-start', name: t.name, args: input })
         try {
-          const exec = await t.handler(input, ctx)
+          const exec = await withSpan(
+            { kind: 'tool', name: t.name, request: input as Record<string, unknown> },
+            () => t.handler(input, ctx)
+          )
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
           hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken })
