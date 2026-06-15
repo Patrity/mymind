@@ -3,7 +3,8 @@
 // tracks an in-memory edit; save() PUTs the whole doc. Keys are write-only:
 // existing keys carry { keep:true }; a typed key sets { apiKey }; null clears.
 
-export type ProviderKind = 'anthropic' | 'openai-compatible'
+// Every provider is OpenAI-compatible (non-OpenAI vendors go via a gateway).
+export type ProviderKind = 'openai-compatible'
 export type KeyField = { apiKey: string } | { keep: true } | null
 
 export interface DraftProvider { id: string; name: string; kind: ProviderKind; baseURL: string | null; hasKey: boolean; key: KeyField }

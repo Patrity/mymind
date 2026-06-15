@@ -5,8 +5,8 @@
   Controlled via v-model:open so the tab owns open/close.
   Keys are write-only: an existing key shows "set ••••" + Replace; a typed key
   sets { apiKey }; clearing the input falls back to { keep:true } (if a key
-  already exists) or null. Switching kind to anthropic nulls baseURL so the
-  server's z.string().url().nullable() validation accepts the save.
+  already exists) or null. Every provider is OpenAI-compatible (non-OpenAI
+  vendors are fronted by a gateway), so a base URL is always required.
 -->
 <script setup lang="ts">
 import type { DraftProvider } from '~/composables/useAiConfig'
@@ -19,8 +19,6 @@ const props = defineProps<{
 const open = defineModel<boolean>('open', { default: false })
 
 defineEmits<{ close: [] }>()
-
-const kindItems: DraftProvider['kind'][] = ['anthropic', 'openai-compatible']
 
 // "Replace" path: when an existing key is set ({ keep:true }), show masked text +
 // a button; clicking it switches into typed-key entry mode ({ apiKey:'' }).
@@ -52,15 +50,7 @@ function replaceKey() {
   props.provider.key = { apiKey: '' }
 }
 
-// Anthropic providers use no base URL; an empty string is not a valid URL and
-// would 422 the save, so null it when switching kind.
-watch(() => props.provider.kind, (kind) => {
-  if (kind === 'anthropic') props.provider.baseURL = null
-  else if (props.provider.baseURL === null) props.provider.baseURL = ''
-})
-
-// UInput wants string|undefined; baseURL is string|null. Only rendered for
-// openai-compatible (where it's a string), but proxy to keep types honest.
+// UInput wants string|undefined; baseURL is string|null. Proxy to keep types honest.
 const baseURLInput = computed({
   get: () => props.provider.baseURL ?? '',
   set: (v: string) => { props.provider.baseURL = v },
@@ -98,18 +88,7 @@ async function runTest() {
           />
         </UFormField>
 
-        <UFormField label="Type">
-          <USelectMenu
-            v-model="provider.kind"
-            :items="kindItems"
-            class="w-full"
-          />
-        </UFormField>
-
-        <UFormField
-          v-if="provider.kind === 'openai-compatible'"
-          label="Base URL"
-        >
+        <UFormField label="Base URL">
           <UInput
             v-model="baseURLInput"
             placeholder="http://host:port/v1"

@@ -7,7 +7,7 @@ import { USAGES, type AiConfigDoc, type Usage } from './types'
 const providerSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  kind: z.enum(['anthropic', 'openai-compatible']),
+  kind: z.enum(['openai-compatible']),
   baseURL: z.string().url().nullable(),
   apiKeyEnc: z.string().nullable()
 })

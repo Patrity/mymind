@@ -8,13 +8,15 @@ export type Usage = (typeof USAGES)[number]
 
 export const EMBEDDING_DIM = 2560
 
-export type ProviderKind = 'anthropic' | 'openai-compatible'
+// Every provider is OpenAI-compatible — non-OpenAI vendors are fronted by an
+// OpenAI-compatible gateway (LiteLLM). Kept as a union for forward-compatibility.
+export type ProviderKind = 'openai-compatible'
 
 export interface ProviderDef {
   id: string
   name: string
   kind: ProviderKind
-  baseURL: string | null      // required for openai-compatible; null for anthropic
+  baseURL: string | null      // required (the provider/gateway endpoint)
   apiKeyEnc: string | null    // AES-GCM ciphertext; server-only, never serialized to client
 }
 

@@ -15,7 +15,6 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.82",
     "@ai-sdk/openai-compatible": "^2.0.48",
     "@aws-sdk/client-s3": "^3.1058.0",
     "@aws-sdk/s3-request-presigner": "^3.1058.0",

@@ -2,7 +2,7 @@
 title: AI Model Providers
 status: shipped
 cycle: 12
-updated: 2026-06-10
+updated: 2026-06-14
 ---
 
 # AI Model Providers
@@ -23,7 +23,7 @@ interface AiConfigDoc {
 ```
 
 - **`USAGES`** = `reasoning` · `bulk` · `embeddings` · `vision` · `stt` · `tts` · `rerank`.
-- **`ProviderDef.kind`** is `anthropic` (baseURL must be `null`; uses `@ai-sdk/anthropic`) or `openai-compatible` (baseURL required). `apiKeyEnc` is AES-GCM ciphertext, **server-only — never serialized to the client.**
+- **`ProviderDef.kind`** is always **`openai-compatible`** (baseURL required). There is **one transport** — non-OpenAI vendors (e.g. Anthropic/Claude) are fronted by an **OpenAI-compatible gateway (LiteLLM)** and configured as a normal `openai-compatible` provider whose baseURL points at the gateway. (Native `anthropic` support and the `@ai-sdk/anthropic` dependency were removed in cycle 21 — see the handover — because the two transports diverged: Anthropic worked on the agent's `languageModel()` path but silently broke on the `chat()` path.) `apiKeyEnc` is AES-GCM ciphertext, **server-only — never serialized to the client.**
 - **`ModelDef.dim`** is `EMBEDDING_DIM` (2560) for embedding models, else `null`.
 - **`assignments[usage]`** is an *ordered* list of model ids = the failover chain for that usage (first = primary).
 
@@ -36,8 +36,8 @@ interface AiConfigDoc {
 ## Resolver — `server/lib/ai/registry/resolve.ts`
 
 - **`resolveChain(usage)`** (cached) / **`resolveChainFrom(doc, usage)`** (pure) — builds the ordered, **decrypted** `ResolvedModel[]` chain: walks `assignments[usage]`, joins each model to its provider, decrypts the key. For `embeddings` it filters the chain to dim-2560 models only (you can't fail over to a different embedding dimension). Throws `AiNotConfiguredError` if the chain is empty.
-- **`withFailover(usage, fn)`** / `withFailoverOver(...)` — runs `fn` against each `ResolvedModel` in order until one succeeds; throws `AiAllFailedError` with per-attempt errors if all fail.
-- **`languageModel(m)`** — kind-aware AI SDK model builder: `createAnthropic` for `anthropic`, `createOpenAICompatible` for the rest. Consumers (reasoning/bulk/vision LLM roles, embeddings, etc.) call `withFailover` rather than touching env.
+- **`withFailover(usage, fn)`** / `withFailoverOver(...)` — runs `fn` against each `ResolvedModel` in order until one succeeds; throws `AiAllFailedError` with per-attempt errors if all fail. **Failover is throw-driven**: `fn` must `throw` to advance to the next model — returning a sentinel/empty value reads as success and strands the call on a broken provider. The text helper `chat()` (`server/lib/ai/chat.ts`) enforces this via `extractContent()`, which **throws** when the response has no usable assistant content (missing `choices`, empty string, or a non-JSON body such as an HTML error page returned with HTTP 200). *(This is what masked a misconfigured provider in cycle 21: a 200 + HTML body returned `''`, looked like success, and never failed over.)*
+- **`languageModel(m)`** — builds a `createOpenAICompatible` AI SDK model (single transport; all providers are OpenAI-compatible). Consumers (reasoning/bulk/vision LLM roles, embeddings, etc.) call `withFailover` rather than touching env.
 
 ## Endpoints (`server/api/settings/`)
 
@@ -45,7 +45,7 @@ interface AiConfigDoc {
 |---|---|
 | `GET /api/settings/ai-config` | Redacted read — returns `redactDoc(loadConfig())`. Provider keys appear only as `hasKey: boolean`. |
 | `PUT /api/settings/ai-config` | Validates + saves the whole doc. Keys are write-only: each provider's `key` field is `{apiKey}` (encrypt new), `{keep:true}` (reuse stored ciphertext by id), or `null` (clear). **Blanket 422** on any invalid body (raw shape OR referential). If embeddings are assigned, runs a **dim-probe** against the primary embedding model's `/embed` (`{inputs:['probe']}`, 15s timeout) and 422s unless it returns exactly 2560 dims — so you can't save an unreachable or wrong-dimension embedding model. |
-| `POST /api/settings/test-provider` | Reachability + auth check. `anthropic` → `GET api.anthropic.com/v1/models` with `x-api-key`; `openai-compatible` → `GET {baseURL}/models`. Accepts inline (not-yet-saved) form config, or reuses a stored key by `id`. Returns `{ ok, message: "HTTP <status>" }`. |
+| `POST /api/settings/test-provider` | Reachability + auth check: `GET {baseURL}/models` with the bearer key. Accepts inline (not-yet-saved) form config, or reuses a stored key by `id`. Returns `{ ok, message: "HTTP <status>" }`. |
 | `POST /api/settings/import-env` | One-time onboarding seed from leftover `AI_*` env (see Migration). **422s if a config already exists** (non-empty registry) — it is a one-time seed only, so it can't blow away a populated `ai_config` row. |
 
 ## UI
@@ -54,7 +54,7 @@ interface AiConfigDoc {
 
 `UDashboardPanel` + `UTabs`, three tabs:
 
-1. **Providers** (`ProvidersTab.vue` + `ProviderForm.vue`) — CRUD over providers. Key field is **write-only** (you set or clear it, you never read it back); a **Test** button calls `test-provider`. Picking `anthropic` kind forces `baseURL = null`.
+1. **Providers** (`ProvidersTab.vue` + `ProviderForm.vue`) — CRUD over providers. Every provider is `openai-compatible`, so the form is name + base URL + key (no kind selector). Key field is **write-only** (you set or clear it, you never read it back); a **Test** button calls `test-provider`.
 2. **Models** (`ModelsTab.vue` + `ModelForm.vue`) — CRUD over models (provider + literal `modelId` + label). An embedding toggle sets `dim = 2560`.
 3. **Model Configuration** (`AssignmentsTab.vue` + `AssignmentChain.vue`) — per-usage **draggable failover chains** (drag to reorder priority) via `@vueuse/integrations/useSortable` + sortablejs. The embeddings chain's model dropdown is filtered to dim-2560 models.
 

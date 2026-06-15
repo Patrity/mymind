@@ -1,6 +1,5 @@
 // server/lib/ai/registry/resolve.ts
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { createAnthropic } from '@ai-sdk/anthropic'
 import type { LanguageModel } from 'ai'
 import { decryptSecret } from './crypto'
 import { AiNotConfiguredError, AiAllFailedError } from './errors'
@@ -39,11 +38,12 @@ export async function withFailoverOver<T>(usage: Usage, chain: ResolvedModel[], 
   throw new AiAllFailedError(usage, attempts)
 }
 
-/** Build a kind-aware AI SDK language model (used by reasoning/bulk/vision LLM roles). */
+/**
+ * Build an AI SDK language model (used by reasoning/bulk/vision LLM roles).
+ * All providers are OpenAI-compatible — non-OpenAI vendors (e.g. Anthropic) are
+ * fronted by an OpenAI-compatible gateway (LiteLLM), so there's a single transport.
+ */
 export function languageModel(m: ResolvedModel): LanguageModel {
-  if (m.providerKind === 'anthropic') {
-    return createAnthropic({ apiKey: m.apiKey || undefined })(m.modelId)
-  }
   return createOpenAICompatible({
     name: `mymind-${m.usage}`,
     baseURL: (m.baseURL ?? '').replace(/\/$/, ''),

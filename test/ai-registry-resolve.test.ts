@@ -12,7 +12,7 @@ function build(): AiConfigDoc {
     version: 1,
     providers: [
       { id: 'p1', name: 'A', kind: 'openai-compatible', baseURL: 'http://a/v1', apiKeyEnc: encryptSecret('k1') },
-      { id: 'p2', name: 'B', kind: 'anthropic', baseURL: null, apiKeyEnc: encryptSecret('k2') }
+      { id: 'p2', name: 'B', kind: 'openai-compatible', baseURL: 'http://gateway/v1', apiKeyEnc: encryptSecret('k2') }
     ],
     models: [
       { id: 'm1', providerId: 'p1', modelId: 'qwen', label: 'Qwen', dim: null },
@@ -29,7 +29,7 @@ describe('resolveChainFrom', () => {
     const chain = resolveChainFrom(build(), 'reasoning')
     expect(chain.map(m => m.modelId)).toEqual(['qwen', 'claude'])
     expect(chain[0]!.apiKey).toBe('k1')
-    expect(chain[1]!.providerKind).toBe('anthropic')
+    expect(chain[1]!.providerKind).toBe('openai-compatible')
   })
 
   it('throws AiNotConfiguredError for an empty usage', () => {
@@ -51,10 +51,8 @@ describe('resolveChainFrom', () => {
 })
 
 describe('languageModel', () => {
-  it('dispatches on provider kind without throwing', () => {
-    const anth = languageModel({ usage: 'reasoning', modelDefId: 'm', providerKind: 'anthropic', baseURL: null, apiKey: 'k', modelId: 'claude-x', label: 'C', dim: null })
+  it('builds an OpenAI-compatible model without throwing', () => {
     const oai = languageModel({ usage: 'reasoning', modelDefId: 'm', providerKind: 'openai-compatible', baseURL: 'http://a/v1', apiKey: 'k', modelId: 'qwen', label: 'Q', dim: null })
-    expect(anth).toBeTruthy()
     expect(oai).toBeTruthy()
   })
 })

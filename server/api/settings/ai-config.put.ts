@@ -9,7 +9,7 @@ const KeyField = z.union([z.object({ apiKey: z.string().min(1) }), z.object({ ke
 const Body = z.object({
   version: z.literal(1),
   providers: z.array(z.object({
-    id: z.string(), name: z.string(), kind: z.enum(['anthropic', 'openai-compatible']),
+    id: z.string(), name: z.string(), kind: z.enum(['openai-compatible']),
     baseURL: z.string().url().nullable(), key: KeyField
   })),
   models: z.array(z.object({ id: z.string(), providerId: z.string(), modelId: z.string(), label: z.string(), dim: z.number().int().positive().nullable() })),

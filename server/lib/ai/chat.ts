@@ -11,6 +11,24 @@ export interface ChatMessage {
   content: string | ContentPart[]
 }
 
+interface ChatCompletion { choices?: { message?: { content?: string } }[] }
+
+/**
+ * Pull the assistant message out of an OpenAI-style completion, THROWING on any
+ * unexpected shape (missing choices, empty content, or a non-JSON body — e.g. an
+ * HTML error page returned with HTTP 200). Throwing is deliberate: `chat()` runs
+ * inside `withFailover`, which only advances to the next model on a thrown error.
+ * Returning '' here would look like success and silently strand the call on a
+ * broken provider (this is exactly what masked a misconfigured provider before).
+ */
+export function extractContent(res: unknown): string {
+  const content = (res as ChatCompletion)?.choices?.[0]?.message?.content
+  if (typeof content !== 'string' || content.trim() === '') {
+    throw new Error('chat: model returned no usable content')
+  }
+  return content
+}
+
 // `role` here is a registry Usage (e.g. 'bulk', 'vision').
 export async function chat(
   role: Usage,
@@ -18,7 +36,7 @@ export async function chat(
   opts: { temperature?: number, maxTokens?: number } = {}
 ): Promise<string> {
   return withFailover(role, async (m) => {
-    const res = await $fetch<{ choices: { message: { content: string } }[] }>(
+    const res = await $fetch<unknown>(
       `${(m.baseURL ?? '').replace(/\/$/, '')}/chat/completions`,
       {
         method: 'POST',
@@ -27,6 +45,6 @@ export async function chat(
         body: { model: m.modelId, messages, temperature: opts.temperature ?? 0.2, max_tokens: opts.maxTokens ?? 600 }
       }
     )
-    return res.choices?.[0]?.message?.content ?? ''
+    return extractContent(res)
   })
 }
