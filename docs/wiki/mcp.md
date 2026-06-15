@@ -13,7 +13,7 @@ Exposes MyMind to agents (Claude Code, etc.) over the Model Context Protocol, de
 `POST /api/mcp` — `@modelcontextprotocol/sdk` `StreamableHTTPServerTransport` in **stateless** mode (fresh `McpServer` + transport per request; no session store). Wired into the Nitro h3 handler (`server/api/mcp/index.post.ts`): reads the body, `server.connect(transport)`, `transport.handleRequest(event.node.req, event.node.res, body)`, then `event._handled = true` (h3 v1). Responses are SSE-framed JSON-RPC (clients send `Accept: application/json, text/event-stream`).
 
 ## Auth
-Bearer **API token** (machine clients) — the existing dual-auth middleware gates `/api/**`, plus an in-handler token check against `api_tokens`. Create a token row to connect an agent.
+Bearer **API token** (machine clients) — the existing dual-auth middleware gates `/api/**`, plus an in-handler token check against `api_tokens`. Mint/manage tokens and get a copy-paste MCP config at `/settings → API Keys` — see [`api-tokens.md`](api-tokens.md).
 
 ## Tools (`server/lib/mcp/server.ts`)
 | Tool | Delegates to |
