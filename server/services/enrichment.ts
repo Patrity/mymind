@@ -3,6 +3,7 @@ import { useDb } from '../db'
 import { documents, reviewQueue } from '../db/schema'
 import { proposeFrontmatter } from '../lib/ai/enrich'
 import { publishChange } from '../utils/live-bus'
+import { recordEvent } from '../lib/observability/record'
 
 export interface EnrichResult {
   proposed: number
@@ -64,7 +65,11 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
       const proposal = await proposeFrontmatter(docDto)
 
       if (!proposal) {
-        console.warn(`[enrichment] parse failed for doc ${doc.id} (${doc.path}), skipping`)
+        recordEvent({
+          kind: 'job', name: 'enrich-input:parse-failed', status: 'warn', severity: 'warn',
+          meta: { docId: doc.id, path: doc.path },
+          error: { message: `proposeFrontmatter returned null (model produced no parseable proposal)` }
+        })
         skipped++
         continue
       }
@@ -76,13 +81,17 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
         status: 'pending'
       }).onConflictDoNothing().returning({ id: reviewQueue.id })
 
-      console.log(`[enrichment] queued proposal for ${doc.path}`)
       if (inserted) {
         publishChange({ resource: 'review', action: 'created', id: inserted.id })
+        recordEvent({ kind: 'job', name: 'enrich-input:queued', status: 'ok', severity: 'info', meta: { docId: doc.id, path: doc.path, reviewId: inserted.id } })
       }
       proposed++
     } catch (err) {
-      console.error(`[enrichment] error processing doc ${doc.id}:`, err)
+      recordEvent({
+        kind: 'job', name: 'enrich-input:doc-error', status: 'error', severity: 'error',
+        meta: { docId: doc.id, path: doc.path },
+        error: { message: (err as Error).message, stack: (err as Error).stack }
+      })
       skipped++
     }
   }
