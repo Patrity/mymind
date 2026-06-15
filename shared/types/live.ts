@@ -10,6 +10,7 @@ export type ResourceName =
   | 'session'
   | 'clipboard'
   | 'activity'
+  | 'apiToken'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 
