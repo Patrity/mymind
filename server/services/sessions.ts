@@ -3,6 +3,7 @@ import { useDb } from '../db'
 import { sessions, messages, toolEvents } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
 import { publishChange } from '../utils/live-bus'
+import { findOrCreateProject } from './projects'
 import type { SessionListItem, SessionDetail, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
@@ -44,11 +45,22 @@ export async function upsertSession(input: UpsertSessionInput): Promise<typeof s
   const db = useDb()
   const now = new Date()
 
+  // Resolve canonical project when we have git/cwd signal (event path). Never
+  // clobber an existing project_id when this call carries no signal (transcript path).
+  let resolvedProjectId: string | undefined
+  let resolvedProjectSlug: string | undefined
+  if (input.gitRemote != null || input.cwd != null) {
+    const proj = await findOrCreateProject({ gitRemote: input.gitRemote, cwd: input.cwd })
+    resolvedProjectId = proj.id
+    resolvedProjectSlug = proj.slug
+  }
+
   // Build the set clause for conflict updates (only update provided fields)
   const updateSet: Partial<typeof sessions.$inferInsert> & { lastActive: Date } = {
     lastActive: now
   }
   if (input.project !== undefined && input.project !== null) updateSet.project = input.project
+  if (resolvedProjectId) { updateSet.projectId = resolvedProjectId; updateSet.project = resolvedProjectSlug }
   if (input.cwd !== undefined && input.cwd !== null) updateSet.cwd = input.cwd
   if (input.title !== undefined && input.title !== null) updateSet.title = input.title
   if (input.machineId != null) updateSet.machineId = input.machineId
@@ -68,6 +80,7 @@ export async function upsertSession(input: UpsertSessionInput): Promise<typeof s
     externalId: input.externalId,
     lastActive: now,
     ...(input.project != null ? { project: input.project } : {}),
+    ...(resolvedProjectId ? { projectId: resolvedProjectId, project: resolvedProjectSlug } : {}),
     ...(input.cwd != null ? { cwd: input.cwd } : {}),
     ...(input.title != null ? { title: input.title } : {}),
     ...(input.machineId != null ? { machineId: input.machineId } : {}),
