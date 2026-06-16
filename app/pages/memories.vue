@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { MemoryDTO, MemoryScope } from '~~/shared/types/memory'
+import type { MemoryDTO, MemoryRelationDTO, MemoryScope } from '~~/shared/types/memory'
 
 definePageMeta({ title: 'Memories' })
 
@@ -155,6 +155,23 @@ const scopeColor: Record<MemoryScope, 'primary' | 'info' | 'warning'> = {
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function relationLabel(rel: MemoryRelationDTO): string {
+  if (rel.type === 'supersedes') return rel.direction === 'outgoing' ? '→ supersedes' : '← superseded by'
+  if (rel.type === 'contradicts') return '⚠ contradicts'
+  if (rel.type === 'duplicate-of') return rel.direction === 'outgoing' ? '≈ duplicate of' : '≈ duplicate'
+  return rel.type
+}
+
+function relationColor(rel: MemoryRelationDTO): 'warning' | 'error' | 'neutral' | 'info' {
+  if (rel.type === 'supersedes') return rel.direction === 'outgoing' ? 'warning' : 'neutral'
+  if (rel.type === 'contradicts') return 'error'
+  return 'info'
+}
+
+function firstEvidence(mem: MemoryDTO) {
+  return mem.evidence?.[0] ?? null
 }
 </script>
 
@@ -313,6 +330,51 @@ function formatDate(iso: string) {
             >
               {{ mem.source }}
             </p>
+          </div>
+
+          <!-- Provenance -->
+          <div
+            v-if="firstEvidence(mem)"
+            class="mt-3 p-3 rounded-md bg-muted space-y-1"
+          >
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-xs font-semibold text-muted uppercase tracking-wide">Provenance</span>
+              <NuxtLink
+                v-if="firstEvidence(mem)?.sessionId"
+                :to="`/sessions/${firstEvidence(mem)!.sessionId}`"
+                class="text-xs text-primary hover:underline font-mono"
+              >
+                session {{ firstEvidence(mem)!.sessionId!.slice(0, 8) }}…
+              </NuxtLink>
+            </div>
+            <blockquote
+              v-if="firstEvidence(mem)?.quote"
+              class="text-xs text-dimmed italic border-l-2 border-muted pl-2"
+            >
+              {{ firstEvidence(mem)!.quote }}
+            </blockquote>
+            <p
+              v-if="firstEvidence(mem)?.reasoning"
+              class="text-xs text-muted"
+            >
+              {{ firstEvidence(mem)!.reasoning }}
+            </p>
+          </div>
+
+          <!-- Relation badges -->
+          <div
+            v-if="mem.relations && mem.relations.length"
+            class="mt-2 flex flex-wrap gap-1"
+          >
+            <UBadge
+              v-for="(rel, ri) in mem.relations"
+              :key="ri"
+              :label="relationLabel(rel)"
+              :color="relationColor(rel)"
+              variant="subtle"
+              size="xs"
+              :title="rel.otherContent ?? rel.otherId"
+            />
           </div>
 
           <template #footer>

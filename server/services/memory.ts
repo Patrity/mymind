@@ -1,8 +1,8 @@
 import { and, eq, isNull, isNotNull, ilike, or, sql, inArray, arrayContains, count } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { useDb } from '../db'
-import { memories } from '../db/schema'
-import type { MemoryDTO, MemoryScope } from '../../shared/types/memory'
+import { memories, memoryRelations } from '../db/schema'
+import type { MemoryDTO, MemoryEvidenceEntry, MemoryRelationDTO, MemoryScope } from '../../shared/types/memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
@@ -37,7 +37,18 @@ export function stripUnreviewed(tags: string[]): string[] {
 
 const live = () => isNull(memories.archivedAt)
 
-function toDTO(r: typeof memories.$inferSelect): MemoryDTO {
+function toDTO(r: typeof memories.$inferSelect, relations?: MemoryRelationDTO[]): MemoryDTO {
+  const evidenceRaw = Array.isArray(r.evidence) ? (r.evidence as unknown[]) : []
+  const evidence: MemoryEvidenceEntry[] = evidenceRaw.map((e) => {
+    const entry = e as Record<string, unknown>
+    return {
+      sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : null,
+      msgIds: Array.isArray(entry.msgIds) ? entry.msgIds as string[] : undefined,
+      quote: typeof entry.quote === 'string' ? entry.quote : null,
+      reasoning: typeof entry.reasoning === 'string' ? entry.reasoning : null,
+      mergedAt: typeof entry.mergedAt === 'string' ? entry.mergedAt : null
+    }
+  })
   return {
     id: r.id,
     scope: r.scope as MemoryScope,
@@ -50,8 +61,68 @@ function toDTO(r: typeof memories.$inferSelect): MemoryDTO {
     enrichedAt: r.enrichedAt?.toISOString() ?? null,
     reviewedAt: r.reviewedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
-    updatedAt: r.updatedAt.toISOString()
+    updatedAt: r.updatedAt.toISOString(),
+    evidence: evidence.length > 0 ? evidence : undefined,
+    relations
   }
+}
+
+/** Fetch all memory_relations for a set of memory ids and attach them as RelationDTOs. */
+async function fetchRelationsForIds(ids: string[]): Promise<Map<string, MemoryRelationDTO[]>> {
+  if (!ids.length) return new Map()
+  const db = useDb()
+
+  // Fetch outgoing (fromId in ids)
+  const outgoing = await db
+    .select({
+      fromId: memoryRelations.fromId,
+      toId: memoryRelations.toId,
+      type: memoryRelations.type,
+      status: memoryRelations.status,
+      otherContent: memories.content
+    })
+    .from(memoryRelations)
+    .leftJoin(memories, eq(memories.id, memoryRelations.toId))
+    .where(inArray(memoryRelations.fromId, ids))
+
+  // Fetch incoming (toId in ids)
+  const incoming = await db
+    .select({
+      fromId: memoryRelations.fromId,
+      toId: memoryRelations.toId,
+      type: memoryRelations.type,
+      status: memoryRelations.status,
+      otherContent: memories.content
+    })
+    .from(memoryRelations)
+    .leftJoin(memories, eq(memories.id, memoryRelations.fromId))
+    .where(inArray(memoryRelations.toId, ids))
+
+  const result = new Map<string, MemoryRelationDTO[]>()
+
+  for (const r of outgoing) {
+    if (!result.has(r.fromId)) result.set(r.fromId, [])
+    result.get(r.fromId)!.push({
+      type: r.type,
+      direction: 'outgoing',
+      otherId: r.toId,
+      otherContent: r.otherContent ?? null,
+      status: r.status
+    })
+  }
+
+  for (const r of incoming) {
+    if (!result.has(r.toId)) result.set(r.toId, [])
+    result.get(r.toId)!.push({
+      type: r.type,
+      direction: 'incoming',
+      otherId: r.fromId,
+      otherContent: r.otherContent ?? null,
+      status: r.status
+    })
+  }
+
+  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -301,13 +372,18 @@ export async function listMemories(opts: ListMemoriesOptions = {}): Promise<Memo
     .where(and(...conditions))
     .orderBy(sql`${memories.createdAt} desc`)
     .limit(opts.limit ?? 100)
-  return rows.map(toDTO)
+
+  const ids = rows.map(r => r.id)
+  const relationsMap = await fetchRelationsForIds(ids)
+  return rows.map(r => toDTO(r, relationsMap.get(r.id)))
 }
 
 export async function getMemory(id: string): Promise<MemoryDTO | null> {
   const [r] = await useDb().select().from(memories)
     .where(and(eq(memories.id, id), live())).limit(1)
-  return r ? toDTO(r) : null
+  if (!r) return null
+  const relationsMap = await fetchRelationsForIds([id])
+  return toDTO(r, relationsMap.get(id))
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/vue-query'
 
 definePageMeta({ title: 'Review' })
 
-interface Proposed {
+interface DocProposed {
   title?: string | null
   project?: string | null
   domain?: string | null
@@ -13,13 +13,28 @@ interface Proposed {
   reasoning?: string | null
 }
 
+interface MemoryConflictProposed {
+  newId: string
+  existingId: string
+  confidence?: number | null
+  reasoning?: string | null
+  newContent?: string | null
+  existingContent?: string | null
+}
+
 interface ReviewItem {
   id: string
   docId: string
   kind: string
-  proposed: Proposed
+  proposed: DocProposed | MemoryConflictProposed
   createdAt: string
   docPath: string | null
+}
+
+const MEMORY_CONFLICT_KINDS = new Set(['memory-supersede', 'memory-contradict'])
+
+function isMemoryConflict(item: ReviewItem): item is ReviewItem & { proposed: MemoryConflictProposed } {
+  return MEMORY_CONFLICT_KINDS.has(item.kind)
 }
 
 const toast = useToast()
@@ -63,6 +78,37 @@ async function reject(id: string) {
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Reject failed', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    actioning.value[id] = false
+  }
+}
+
+// ── Memory conflict helpers ────────────────────────────────────────────────
+
+async function acceptConflict(id: string, kind: string) {
+  actioning.value[id] = true
+  try {
+    await $fetch(`/api/review/${id}/approve`, { method: 'POST' })
+    const label = kind === 'memory-supersede' ? 'New memory kept, old archived.' : 'New memory kept, old archived.'
+    toast.add({ color: 'success', title: 'Conflict resolved', description: label })
+    await refetch()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Accept failed', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    actioning.value[id] = false
+  }
+}
+
+async function keepBoth(id: string) {
+  actioning.value[id] = true
+  try {
+    await $fetch(`/api/review/${id}/reject`, { method: 'POST' })
+    toast.add({ color: 'neutral', title: 'Both memories kept' })
+    await refetch()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Keep-both failed', description: err.data?.statusMessage ?? err.message })
   } finally {
     actioning.value[id] = false
   }
@@ -115,114 +161,196 @@ async function reject(id: string) {
         </div>
 
         <!-- Items list -->
-        <UCard
+        <template
           v-for="item in items"
           v-else
           :key="item.id"
         >
-          <template #header>
-            <div class="flex items-start justify-between gap-2">
-              <div class="min-w-0">
-                <p class="text-xs text-muted font-mono truncate">
-                  {{ item.docPath ?? item.docId }}
+          <!-- Memory conflict card (memory-supersede / memory-contradict) -->
+          <UCard v-if="isMemoryConflict(item)">
+            <template #header>
+              <div class="flex items-start justify-between gap-2">
+                <div class="flex items-center gap-2 flex-wrap min-w-0">
+                  <UBadge
+                    :label="item.kind === 'memory-supersede' ? 'Supersede' : 'Contradiction'"
+                    :color="item.kind === 'memory-supersede' ? 'warning' : 'error'"
+                    variant="subtle"
+                    size="xs"
+                  />
+                  <UBadge
+                    label="memory conflict"
+                    color="neutral"
+                    variant="outline"
+                    size="xs"
+                  />
+                  <span
+                    v-if="(item.proposed as MemoryConflictProposed).confidence != null"
+                    class="text-xs text-muted"
+                  >
+                    {{ Math.round(((item.proposed as MemoryConflictProposed).confidence ?? 0) * 100) }}% confidence
+                  </span>
+                </div>
+                <p class="text-xs text-dimmed shrink-0">
+                  {{ new Date(item.createdAt).toLocaleString() }}
                 </p>
-                <UBadge
-                  :label="item.kind"
+              </div>
+            </template>
+
+            <!-- NEW vs EXISTING content -->
+            <div class="space-y-3">
+              <div>
+                <p class="text-xs font-semibold text-success mb-1 uppercase tracking-wide">
+                  New
+                </p>
+                <p class="text-sm text-default leading-relaxed p-3 rounded-md bg-muted">
+                  {{ (item.proposed as MemoryConflictProposed).newContent ?? '(no content)' }}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs font-semibold text-error mb-1 uppercase tracking-wide">
+                  {{ item.kind === 'memory-supersede' ? 'Existing (will be archived on accept)' : 'Existing (conflicts)' }}
+                </p>
+                <p class="text-sm text-default leading-relaxed p-3 rounded-md bg-muted">
+                  {{ (item.proposed as MemoryConflictProposed).existingContent ?? '(no content)' }}
+                </p>
+              </div>
+              <div
+                v-if="(item.proposed as MemoryConflictProposed).reasoning"
+                class="p-3 rounded-md bg-elevated text-xs text-muted leading-relaxed"
+              >
+                <span class="font-semibold text-default">Reasoning: </span>{{ (item.proposed as MemoryConflictProposed).reasoning }}
+              </div>
+            </div>
+
+            <template #footer>
+              <div class="flex justify-end gap-2">
+                <UButton
                   color="neutral"
-                  variant="subtle"
-                  size="xs"
-                  class="mt-1"
-                />
+                  variant="ghost"
+                  size="sm"
+                  :loading="actioning[item.id]"
+                  @click="keepBoth(item.id)"
+                >
+                  Keep both
+                </UButton>
+                <UButton
+                  :color="item.kind === 'memory-supersede' ? 'warning' : 'error'"
+                  size="sm"
+                  :loading="actioning[item.id]"
+                  @click="acceptConflict(item.id, item.kind)"
+                >
+                  Accept (archive old)
+                </UButton>
               </div>
-              <p class="text-xs text-dimmed shrink-0">
-                {{ new Date(item.createdAt).toLocaleString() }}
-              </p>
-            </div>
-          </template>
+            </template>
+          </UCard>
 
-          <!-- Proposed fields -->
-          <div class="space-y-2">
-            <div
-              v-if="item.proposed.title"
-              class="flex gap-2 text-sm"
-            >
-              <span class="text-muted w-20 shrink-0">Title</span>
-              <span class="font-medium text-highlighted">{{ item.proposed.title }}</span>
+          <!-- Enrichment-doc card (original behaviour) -->
+          <UCard v-else>
+            <template #header>
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0">
+                  <p class="text-xs text-muted font-mono truncate">
+                    {{ item.docPath ?? item.docId }}
+                  </p>
+                  <UBadge
+                    :label="item.kind"
+                    color="neutral"
+                    variant="subtle"
+                    size="xs"
+                    class="mt-1"
+                  />
+                </div>
+                <p class="text-xs text-dimmed shrink-0">
+                  {{ new Date(item.createdAt).toLocaleString() }}
+                </p>
+              </div>
+            </template>
+
+            <!-- Proposed fields -->
+            <div class="space-y-2">
+              <div
+                v-if="(item.proposed as DocProposed).title"
+                class="flex gap-2 text-sm"
+              >
+                <span class="text-muted w-20 shrink-0">Title</span>
+                <span class="font-medium text-highlighted">{{ (item.proposed as DocProposed).title }}</span>
+              </div>
+              <div
+                v-if="(item.proposed as DocProposed).project"
+                class="flex gap-2 text-sm"
+              >
+                <span class="text-muted w-20 shrink-0">Project</span>
+                <span>{{ (item.proposed as DocProposed).project }}</span>
+              </div>
+              <div
+                v-if="(item.proposed as DocProposed).domain"
+                class="flex gap-2 text-sm"
+              >
+                <span class="text-muted w-20 shrink-0">Domain</span>
+                <span>{{ (item.proposed as DocProposed).domain }}</span>
+              </div>
+              <div
+                v-if="(item.proposed as DocProposed).type"
+                class="flex gap-2 text-sm"
+              >
+                <span class="text-muted w-20 shrink-0">Type</span>
+                <span>{{ (item.proposed as DocProposed).type }}</span>
+              </div>
+              <div
+                v-if="(item.proposed as DocProposed).tags && (item.proposed as DocProposed).tags!.length > 0"
+                class="flex gap-2 text-sm"
+              >
+                <span class="text-muted w-20 shrink-0">Tags</span>
+                <div class="flex flex-wrap gap-1">
+                  <UBadge
+                    v-for="tag in (item.proposed as DocProposed).tags"
+                    :key="tag"
+                    :label="tag"
+                    color="primary"
+                    variant="subtle"
+                    size="xs"
+                  />
+                </div>
+              </div>
+              <div
+                v-if="(item.proposed as DocProposed).path"
+                class="flex gap-2 text-sm"
+              >
+                <span class="text-muted w-20 shrink-0">New path</span>
+                <span class="font-mono text-xs text-highlighted">{{ (item.proposed as DocProposed).path }}</span>
+              </div>
+              <div
+                v-if="(item.proposed as DocProposed).reasoning"
+                class="mt-3 p-3 rounded-md bg-muted text-xs text-muted leading-relaxed"
+              >
+                <span class="font-semibold text-default">Reasoning: </span>{{ (item.proposed as DocProposed).reasoning }}
+              </div>
             </div>
-            <div
-              v-if="item.proposed.project"
-              class="flex gap-2 text-sm"
-            >
-              <span class="text-muted w-20 shrink-0">Project</span>
-              <span>{{ item.proposed.project }}</span>
-            </div>
-            <div
-              v-if="item.proposed.domain"
-              class="flex gap-2 text-sm"
-            >
-              <span class="text-muted w-20 shrink-0">Domain</span>
-              <span>{{ item.proposed.domain }}</span>
-            </div>
-            <div
-              v-if="item.proposed.type"
-              class="flex gap-2 text-sm"
-            >
-              <span class="text-muted w-20 shrink-0">Type</span>
-              <span>{{ item.proposed.type }}</span>
-            </div>
-            <div
-              v-if="item.proposed.tags && item.proposed.tags.length > 0"
-              class="flex gap-2 text-sm"
-            >
-              <span class="text-muted w-20 shrink-0">Tags</span>
-              <div class="flex flex-wrap gap-1">
-                <UBadge
-                  v-for="tag in item.proposed.tags"
-                  :key="tag"
-                  :label="tag"
+
+            <template #footer>
+              <div class="flex justify-end gap-2">
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  :loading="actioning[item.id]"
+                  @click="reject(item.id)"
+                >
+                  Reject
+                </UButton>
+                <UButton
                   color="primary"
-                  variant="subtle"
-                  size="xs"
-                />
+                  size="sm"
+                  :loading="actioning[item.id]"
+                  @click="approve(item.id)"
+                >
+                  Approve
+                </UButton>
               </div>
-            </div>
-            <div
-              v-if="item.proposed.path"
-              class="flex gap-2 text-sm"
-            >
-              <span class="text-muted w-20 shrink-0">New path</span>
-              <span class="font-mono text-xs text-highlighted">{{ item.proposed.path }}</span>
-            </div>
-            <div
-              v-if="item.proposed.reasoning"
-              class="mt-3 p-3 rounded-md bg-muted text-xs text-muted leading-relaxed"
-            >
-              <span class="font-semibold text-default">Reasoning: </span>{{ item.proposed.reasoning }}
-            </div>
-          </div>
-
-          <template #footer>
-            <div class="flex justify-end gap-2">
-              <UButton
-                color="neutral"
-                variant="ghost"
-                size="sm"
-                :loading="actioning[item.id]"
-                @click="reject(item.id)"
-              >
-                Reject
-              </UButton>
-              <UButton
-                color="primary"
-                size="sm"
-                :loading="actioning[item.id]"
-                @click="approve(item.id)"
-              >
-                Approve
-              </UButton>
-            </div>
-          </template>
-        </UCard>
+            </template>
+          </UCard>
+        </template>
       </div>
     </template>
   </UDashboardPanel>

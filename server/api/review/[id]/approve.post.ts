@@ -1,8 +1,10 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { reviewQueue } from '../../../db/schema'
+import { reviewQueue, memories, memoryRelations } from '../../../db/schema'
 import { getDoc, updateDoc, moveDoc } from '../../../services/documents'
 import { publishChange } from '../../../utils/live-bus'
+
+const MEMORY_CONFLICT_KINDS = new Set(['memory-supersede', 'memory-contradict'])
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
@@ -10,6 +12,38 @@ export default defineEventHandler(async (event) => {
   const [item] = await db.select().from(reviewQueue).where(eq(reviewQueue.id, id)).limit(1)
   if (!item || item.status !== 'pending') throw createError({ statusCode: 404 })
 
+  // ── Memory conflict kinds (memory-supersede / memory-contradict) ──────────
+  if (MEMORY_CONFLICT_KINDS.has(item.kind)) {
+    const p = item.proposed as {
+      newId: string
+      existingId: string
+      confidence?: number | null
+      reasoning?: string | null
+      newContent?: string | null
+      existingContent?: string | null
+    }
+
+    // accept → archive the existing (old) memory
+    await db.update(memories)
+      .set({ archivedAt: new Date(), supersededBy: p.newId, updatedAt: new Date() })
+      .where(eq(memories.id, p.existingId))
+
+    // mark the relation resolved
+    await db.update(memoryRelations)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(and(eq(memoryRelations.toId, p.existingId), eq(memoryRelations.fromId, p.newId)))
+
+    await db.update(reviewQueue)
+      .set({ status: 'approved', resolvedAt: new Date() })
+      .where(eq(reviewQueue.id, id))
+
+    publishChange({ resource: 'review', action: 'updated', id })
+    publishChange({ resource: 'memory', action: 'updated', id: p.existingId })
+
+    return { ok: true }
+  }
+
+  // ── Enrichment-doc kind (original behaviour) ──────────────────────────────
   const p = item.proposed as {
     title?: string | null
     project?: string | null
