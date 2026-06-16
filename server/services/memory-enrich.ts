@@ -3,14 +3,14 @@ import { useDb } from '../db'
 import { sessions, messages, memEnrichmentState, toolEvents, projects } from '../db/schema'
 import { chat } from '../lib/ai/chat'
 import { parseMemories } from '../lib/ai/memory-extract'
-import { createMemory } from './memory'
-import { publishChange } from '../utils/live-bus'
+import { resolveEnrichedMemory } from './memory-resolve'
 
 export interface EnrichMemoryResult {
   enriched: number
   candidates: number
   sessionsProcessed: number
   skipped: number
+  actions: { inserted: number, superseded: number, contradicted: number, duplicate: number, reviewQueued: number }
 }
 
 const TRANSCRIPT_CHAR_LIMIT = 12000
@@ -103,6 +103,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
   let candidates = 0
   let sessionsProcessed = 0
   let skipped = 0
+  const actions = { inserted: 0, superseded: 0, contradicted: 0, duplicate: 0, reviewQueued: 0 }
 
   for (const session of candidateSessions) {
     try {
@@ -152,10 +153,10 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
       const extracted = parseMemories(raw)
       candidates += extracted.length
 
-      // Store each candidate with rich provenance
+      // Store each candidate with rich provenance via resolution orchestrator
       for (const candidate of extracted) {
         try {
-          const created = await createMemory({
+          const plan = await resolveEnrichedMemory({
             scope: candidate.scope,
             content: candidate.content,
             tags: [...(candidate.tags ?? []), 'enrichment', 'unreviewed'],
@@ -171,8 +172,12 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
               mergedAt: new Date().toISOString()
             }]
           })
-          publishChange({ resource: 'memory', action: 'created', id: created.id })
           enriched++
+          if (plan.action === 'insert') actions.inserted++
+          else if (plan.action === 'supersede') actions.superseded++
+          else if (plan.action === 'contradict') { actions.contradicted++; actions.reviewQueued++ }
+          else if (plan.action === 'review-supersede') actions.reviewQueued++
+          else if (plan.action === 'duplicate') actions.duplicate++
         } catch (memErr) {
           console.warn(`[memory-enrich] failed to store candidate for session ${session.id}:`, memErr)
         }
@@ -232,5 +237,5 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
     }
   }
 
-  return { enriched, candidates, sessionsProcessed, skipped }
+  return { enriched, candidates, sessionsProcessed, skipped, actions }
 }
