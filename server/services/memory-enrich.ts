@@ -71,7 +71,9 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
   // Select candidate sessions with all conditions:
   // 1. real-message floor >= 4 (user/assistant, non-empty, non-sidechain, non-system_prompt)
   // 2. grace period: last_active < now() - 1 hour
-  // 3. active project (null project passes through; named project must exist + be active)
+  // 3. not an explicitly-INACTIVE project (null / unknown / active all pass; only projects
+  //    registered AND marked inactive are excluded — imported sessions have unregistered
+  //    projects and must still enrich)
   // 4. never-enriched OR grew-by->=5 OR errored->=24h-ago
   const candidateSessions = await db
     .select({
@@ -88,7 +90,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
               and coalesce((m.metadata->>'system_prompt')::boolean, false) is not true
               and m.is_sidechain is not true) >= 4`,
         sql`${sessions.lastActive} < now() - interval '1 hour'`,
-        sql`(${sessions.project} is null or ${sessions.project} in (select slug from ${projects} where active))`,
+        sql`(${sessions.project} is null or ${sessions.project} not in (select slug from ${projects} where active = false))`,
         sql`(not exists (select 1 from ${memEnrichmentState} e where e.session_id = ${sessions.id})
           or exists (select 1 from ${memEnrichmentState} e where e.session_id = ${sessions.id} and (
             (${sessions.messageCount} - coalesce(e.last_enriched_message_count, 0)) >= 5
