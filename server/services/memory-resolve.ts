@@ -14,6 +14,8 @@ export interface ResolveInput {
   tags?: string[]
   source?: string
   project?: string | null
+  projectId?: string | null
+  sourceDate?: Date | null
   sessionId?: string | null
   confidence?: number | null
   evidence?: unknown[]
@@ -44,15 +46,21 @@ async function insertFresh(input: ResolveInput, vec: number[], contentHash: stri
     embedding: vec,
     contentHash, confidence: input.confidence ?? null,
     evidence: (input.evidence ?? []) as unknown as string, project: input.project ?? null,
+    projectId: input.projectId ?? null,
+    sourceDate: input.sourceDate ?? null,
     sessionId: input.sessionId ?? null, enrichedAt: new Date(), reviewedAt: autoReview ? new Date() : null
   }).returning({ id: memories.id })
   publishChange({ resource: 'memory', action: 'created', id: row!.id })
   return row!.id
 }
 
-async function mergeEvidence(targetId: string, evidence: unknown[]) {
+async function mergeEvidence(targetId: string, evidence: unknown[], sourceDate: Date | null) {
   const db = useDb()
-  await db.update(memories).set({ evidence: sql`${memories.evidence} || ${JSON.stringify(evidence)}::jsonb`, updatedAt: new Date() }).where(eq(memories.id, targetId))
+  await db.update(memories).set({
+    evidence: sql`${memories.evidence} || ${JSON.stringify(evidence)}::jsonb`,
+    sourceDate: sql`greatest(${memories.sourceDate}, ${sourceDate ?? null})`,
+    updatedAt: new Date()
+  }).where(eq(memories.id, targetId))
   publishChange({ resource: 'memory', action: 'updated', id: targetId })
 }
 
@@ -66,10 +74,10 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const vec = await embedOne(input.content)
   const lit = `[${vec.join(',')}]`
   const live = isNull(memories.archivedAt)
-  const projectFilter = input.project ? eq(memories.project, input.project) : isNull(memories.project)
+  const projectFilter = input.projectId ? eq(memories.projectId, input.projectId) : isNull(memories.projectId)
 
   const [exact] = await db.select({ id: memories.id }).from(memories).where(and(live, eq(memories.contentHash, contentHash))).limit(1)
-  if (exact) { await mergeEvidence(exact.id, input.evidence ?? []); return { action: 'duplicate', targetId: exact.id } }
+  if (exact) { await mergeEvidence(exact.id, input.evidence ?? [], input.sourceDate ?? null); return { action: 'duplicate', targetId: exact.id } }
 
   const near = await db.select({ id: memories.id, content: memories.content }).from(memories)
     .where(and(live, eq(memories.scope, scope), projectFilter, isNotNull(memories.embedding)))
@@ -80,7 +88,7 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const plan = chooseResolution(verdicts, threshold)
   const existing = plan.targetId ? near.find(n => n.id === plan.targetId) : undefined
 
-  if (plan.action === 'duplicate') { await mergeEvidence(plan.targetId!, input.evidence ?? []); return plan }
+  if (plan.action === 'duplicate') { await mergeEvidence(plan.targetId!, input.evidence ?? [], input.sourceDate ?? null); return plan }
   if (plan.action === 'insert') { await insertFresh(input, vec, contentHash, threshold); return plan }
 
   const newId = await insertFresh(input, vec, contentHash, threshold)

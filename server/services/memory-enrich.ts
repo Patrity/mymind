@@ -4,6 +4,7 @@ import { sessions, messages, memEnrichmentState, toolEvents, projects } from '..
 import { chat } from '../lib/ai/chat'
 import { parseMemories } from '../lib/ai/memory-extract'
 import { resolveEnrichedMemory } from './memory-resolve'
+import { projectIdForScope } from '../lib/projects/memory-project'
 
 export interface EnrichMemoryResult {
   enriched: number
@@ -79,7 +80,9 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
     .select({
       id: sessions.id,
       messageCount: sessions.messageCount,
-      project: sessions.project
+      project: sessions.project,
+      projectId: sessions.projectId,
+      startedAt: sessions.startedAt
     })
     .from(sessions)
     .where(
@@ -90,7 +93,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
               and coalesce((m.metadata->>'system_prompt')::boolean, false) is not true
               and m.is_sidechain is not true) >= 4`,
         sql`${sessions.lastActive} < now() - interval '1 hour'`,
-        sql`(${sessions.project} is null or ${sessions.project} not in (select slug from ${projects} where active = false))`,
+        sql`not exists (select 1 from ${projects} p where p.id = ${sessions.projectId} and p.active = false)`,
         sql`(not exists (select 1 from ${memEnrichmentState} e where e.session_id = ${sessions.id})
           or exists (select 1 from ${memEnrichmentState} e where e.session_id = ${sessions.id} and (
             (${sessions.messageCount} - coalesce(e.last_enriched_message_count, 0)) >= 5
@@ -164,10 +167,13 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
             tags: [...(candidate.tags ?? []), 'enrichment', 'unreviewed'],
             source: `enrichment:${session.id}`,
             project: session.project ?? null,
+            projectId: projectIdForScope(candidate.scope, session.projectId ?? null),
+            sourceDate: session.startedAt ?? null,
             sessionId: session.id,
             confidence: candidate.confidence ?? null,
             evidence: [{
               sessionId: session.id,
+              sessionDate: session.startedAt?.toISOString() ?? null,
               msgIds: candidate.evidenceMsgIds ?? [],
               quote: candidate.quote ?? null,
               reasoning: candidate.reasoning ?? null,
