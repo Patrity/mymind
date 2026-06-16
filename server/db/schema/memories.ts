@@ -14,6 +14,7 @@ export const memories = pgTable('memories', {
   evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
   project: text('project'),
   sessionId: uuid('session_id'),
+  supersededBy: uuid('superseded_by'),
   enrichedAt: timestamp('enriched_at', { withTimezone: true }),
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

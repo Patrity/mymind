@@ -127,6 +127,13 @@
       "when": 1781598530689,
       "tag": "0017_solid_stingray",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1781607584269,
+      "tag": "0018_reflective_scarecrow",
+      "breakpoints": true
     }
   ]
 }
