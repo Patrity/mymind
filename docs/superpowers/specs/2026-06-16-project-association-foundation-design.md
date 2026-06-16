@@ -1,7 +1,7 @@
 ---
 title: Project-Association Foundation (Phase 1)
 status: approved-brainstorm
-cycle: 14
+cycle: 23
 phase: 1 of 3
 date: 2026-06-16
 ---

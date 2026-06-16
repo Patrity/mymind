@@ -1,7 +1,7 @@
 ---
 title: Projects
 status: shipped
-cycle: 14
+cycle: 23
 phase: 1
 updated: 2026-06-16
 ---

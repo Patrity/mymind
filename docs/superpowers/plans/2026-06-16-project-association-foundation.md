@@ -630,7 +630,7 @@ psql "$DATABASE_URL" -c "SELECT count(*) total, count(project_id) with_project F
 ```
 Expected: every session has a `project_id`; real projects created from git remotes; memory `source_date` populated where a session exists.
 
-- [ ] **Step 3: Write `docs/wiki/projects.md`** — a new wiki page (`status: shipped`, `cycle: 14`, `phase: 1`) documenting: the `projects` schema (uuid id, slug unique, `git_remote_key` canonical key, richer columns, `active` kept), `findOrCreateProject` matching (normalize → key → alias → create → Uncategorized), the session + memory wiring, `source_date` semantics, the backfill script, and the explicit phase-2/3 deferrals (merge, doc/task association, auto-move, UI). Mirror the structure/voice of `docs/wiki/sessions.md`.
+- [ ] **Step 3: Write `docs/wiki/projects.md`** — a new wiki page (`status: shipped`, `cycle: 23`, `phase: 1`) documenting: the `projects` schema (uuid id, slug unique, `git_remote_key` canonical key, richer columns, `active` kept), `findOrCreateProject` matching (normalize → key → alias → create → Uncategorized), the session + memory wiring, `source_date` semantics, the backfill script, and the explicit phase-2/3 deferrals (merge, doc/task association, auto-move, UI). Mirror the structure/voice of `docs/wiki/sessions.md`.
 
 - [ ] **Step 4: Update `docs/wiki/memory.md` and `docs/wiki/sessions.md`** — note `memories.project_id`/`source_date` and the scope-based project rule (memory.md); note `sessions.project_id` + that ingest resolves it via `findOrCreateProject` (sessions.md). Link both to `projects.md`.
 
