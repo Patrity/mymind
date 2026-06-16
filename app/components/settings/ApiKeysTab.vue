@@ -47,8 +47,22 @@ function copy(text: string) {
 
 const tokenForSnippets = computed(() => minted.value?.token ?? 'mm_•••••••• (paste your saved token)')
 
-// Env-var references like ${MYMIND_URL} are intentional — they must render literally for the user's shell.
-const mcpSnippet = computed(() => `{
+const rows = computed(() => tokens.value ?? [])
+
+// ---- Connect: tabbed setup (Claude Code w/ OS toggle, + Screenshots) ----
+const connectTabs = [
+  { label: 'Claude Code', icon: 'i-lucide-terminal', slot: 'cc' as const },
+  { label: 'Screenshots', icon: 'i-lucide-camera', slot: 'shots' as const }
+]
+const os = ref<'unix' | 'win'>('unix')
+const osItems = [
+  { label: 'macOS / Linux', value: 'unix' },
+  { label: 'Windows', value: 'win' }
+]
+
+// .mcp.json is identical across OS — Claude Code expands ${ENV} refs in MCP config,
+// so these placeholders must render literally.
+const mcpSnippet = `{
   "mcpServers": {
     "mymind": {
       "type": "http",
@@ -56,44 +70,80 @@ const mcpSnippet = computed(() => `{
       "headers": { "Authorization": "Bearer \${MYMIND_TOKEN}" }
     }
   }
-}`)
+}`
 
-// name + URL must come BEFORE --header: `--header` is variadic and will otherwise
-// swallow the positional name/url as extra header values ("missing argument 'name'").
-const mcpCli = computed(() =>
-  `claude mcp add --transport http --scope user \\
-  mymind "\${MYMIND_URL}/api/mcp" \\
-  --header "Authorization: Bearer \${MYMIND_TOKEN}"`)
+// Build the settings.json hooks block from a per-OS command builder. JSON.stringify
+// guarantees correct escaping (esp. Windows backslash paths).
+const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'SessionEnd']
+function hooksJson(cmd: (ev: string) => string): string {
+  const hooks: Record<string, unknown> = {}
+  for (const ev of EVENTS) hooks[ev] = [{ matcher: '*', hooks: [{ type: 'command', command: cmd(ev) }] }]
+  return JSON.stringify({ hooks }, null, 2)
+}
 
-const envSnippet = computed(() =>
-  `export MYMIND_URL="${baseUrl.value}"
-export MYMIND_TOKEN="${tokenForSnippets.value}"
-mkdir -p ~/.mymind && printf 'MYMIND_URL=%s\\nMYMIND_TOKEN=%s\\n' "$MYMIND_URL" "$MYMIND_TOKEN" > ~/.mymind/config.env`)
-
-const installSnippet = computed(() =>
-  `mkdir -p ~/.mymind && curl -fsSL "${baseUrl.value}/api/setup/cc-hook" -o ~/.mymind/cc-hook.sh && chmod +x ~/.mymind/cc-hook.sh`)
-
-const hooksSnippet = computed(() => `{
-  "hooks": {
-    "SessionStart":    [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh SessionStart" }] }],
-    "UserPromptSubmit":[{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh UserPromptSubmit" }] }],
-    "PreToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh PreToolUse" }] }],
-    "PostToolUse":     [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh PostToolUse" }] }],
-    "Stop":            [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh Stop" }] }],
-    "SubagentStop":    [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh SubagentStop" }] }],
-    "SessionEnd":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh SessionEnd" }] }]
+const steps = computed(() => {
+  const tok = tokenForSnippets.value
+  const tokNote = minted.value ? 'Pre-filled with your new token.' : 'Replace mm_•••• with the token you saved.'
+  if (os.value === 'win') {
+    return [
+      { n: '1', title: 'Set your token (PowerShell)', note: tokNote, code:
+`$env:MYMIND_URL = "${baseUrl.value}"
+$env:MYMIND_TOKEN = "${tok}"
+New-Item -ItemType Directory -Force "$HOME\\.mymind" | Out-Null
+"MYMIND_URL=$env:MYMIND_URL\`nMYMIND_TOKEN=$env:MYMIND_TOKEN" | Set-Content "$HOME\\.mymind\\config.env"` },
+      { n: '2', title: 'Add the MCP server (.mcp.json or ~/.claude.json)', note: undefined, code: mcpSnippet },
+      { n: '2.1', title: '…or via the CLI', note: undefined, code:
+`claude mcp add --transport http --scope user \`
+  mymind "$env:MYMIND_URL/api/mcp" \`
+  --header "Authorization: Bearer $env:MYMIND_TOKEN"` },
+      { n: '3', title: 'Install the session-logging hook', note: undefined, code:
+`New-Item -ItemType Directory -Force "$HOME\\.mymind" | Out-Null
+Invoke-WebRequest "${baseUrl.value}/api/setup/cc-hook.ps1" -OutFile "$HOME\\.mymind\\cc-hook.ps1"` },
+      { n: '3.1', title: '…then add to %USERPROFILE%\\.claude\\settings.json',
+        note: 'If hooks don’t fire, replace %USERPROFILE% with your full home path (C:\\Users\\you). Running Claude Code under WSL? Use the macOS / Linux tab instead.',
+        code: hooksJson(ev => `powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\\.mymind\\cc-hook.ps1" ${ev}`) }
+    ]
   }
-}`)
+  return [
+    { n: '1', title: 'Set your token', note: tokNote, code:
+`export MYMIND_URL="${baseUrl.value}"
+export MYMIND_TOKEN="${tok}"
+mkdir -p ~/.mymind && printf 'MYMIND_URL=%s\\nMYMIND_TOKEN=%s\\n' "$MYMIND_URL" "$MYMIND_TOKEN" > ~/.mymind/config.env` },
+    { n: '2', title: 'Add the MCP server (.mcp.json or ~/.claude.json)', note: undefined, code: mcpSnippet },
+    { n: '2.1', title: '…or via the CLI', note: undefined, code:
+`claude mcp add --transport http --scope user \\
+  mymind "\${MYMIND_URL}/api/mcp" \\
+  --header "Authorization: Bearer \${MYMIND_TOKEN}"` },
+    { n: '3', title: 'Install the session-logging hook', note: undefined, code:
+`mkdir -p ~/.mymind && curl -fsSL "${baseUrl.value}/api/setup/cc-hook" -o ~/.mymind/cc-hook.sh && chmod +x ~/.mymind/cc-hook.sh` },
+    { n: '3.1', title: '…then add to ~/.claude/settings.json',
+      note: 'If hooks don’t fire, replace ~ with $HOME in each command.',
+      code: hooksJson(ev => `~/.mymind/cc-hook.sh ${ev}`) }
+  ]
+})
 
-const rows = computed(() => tokens.value ?? [])
+// ---- Screenshots: ShareX / CleanShot custom uploader (.sxcu) ----
+const sxcuSnippet = computed(() => JSON.stringify({
+  Version: '1.0.0',
+  Name: 'MyMind',
+  DestinationType: 'ImageUploader, FileUploader',
+  RequestMethod: 'POST',
+  RequestURL: `${baseUrl.value}/api/upload?public=1`,
+  Headers: { Authorization: `Bearer ${tokenForSnippets.value}` },
+  Body: 'MultipartFormData',
+  FileFormName: 'file',
+  URL: '{json:url}'
+}, null, 2))
 
-const steps = computed(() => [
-  { n: '1', title: 'Set your token', code: envSnippet.value, note: minted.value ? 'Pre-filled with your new token.' : 'Replace mm_•••• with the token you saved.' },
-  { n: '2', title: 'Add the MCP server (.mcp.json or ~/.claude.json)', code: mcpSnippet.value, note: undefined },
-  { n: '2.1', title: '…or via the CLI', code: mcpCli.value, note: undefined },
-  { n: '3', title: 'Install the session-logging hook', code: installSnippet.value, note: undefined },
-  { n: '3.1', title: '…then add to ~/.claude/settings.json', code: hooksSnippet.value, note: undefined },
-])
+function downloadSxcu() {
+  if (!import.meta.client) return
+  const blob = new Blob([sxcuSnippet.value], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'mymind.sxcu'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
 </script>
 
 <template>
@@ -146,18 +196,51 @@ const steps = computed(() => [
 
     <div class="flex flex-col gap-4 border-t border-default pt-6">
       <div>
-        <h2 class="text-base font-semibold text-highlighted">Connect to Claude Code</h2>
-        <p class="text-sm text-muted">Run these once on each machine. Snippets carry no secret — your token lives in two env vars.</p>
+        <h2 class="text-base font-semibold text-highlighted">Connect</h2>
+        <p class="text-sm text-muted">Run these once on each machine. Snippets carry no secret beyond your token.</p>
       </div>
 
-      <div v-for="step in steps" :key="step.n">
-        <div class="flex items-center justify-between mb-1">
-          <span class="text-sm font-medium text-toned">{{ step.title }}</span>
-          <UButton size="xs" icon="i-lucide-copy" color="neutral" variant="ghost" @click="copy(step.code)" />
-        </div>
-        <p v-if="step.note" class="text-xs text-muted mb-1">{{ step.note }}</p>
-        <pre class="bg-elevated border border-default rounded-md p-3 text-xs font-mono overflow-x-auto whitespace-pre">{{ step.code }}</pre>
-      </div>
+      <UTabs :items="connectTabs" class="w-full">
+        <template #cc>
+          <div class="flex flex-col gap-4 pt-2">
+            <div class="flex items-center gap-3">
+              <span class="text-sm text-muted">OS</span>
+              <UTabs v-model="os" :items="osItems" :content="false" color="neutral" size="xs" class="w-auto" />
+            </div>
+            <div v-for="step in steps" :key="step.n">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium text-toned">{{ step.title }}</span>
+                <UButton size="xs" icon="i-lucide-copy" color="neutral" variant="ghost" @click="copy(step.code)" />
+              </div>
+              <p v-if="step.note" class="text-xs text-muted mb-1">{{ step.note }}</p>
+              <pre class="bg-elevated border border-default rounded-md p-3 text-xs font-mono overflow-x-auto whitespace-pre">{{ step.code }}</pre>
+            </div>
+          </div>
+        </template>
+
+        <template #shots>
+          <div class="flex flex-col gap-4 pt-2">
+            <p class="text-sm text-muted">
+              MyMind hosts screenshots ShareX/CleanShot-style — uploads get a public link and are auto-OCR'd and searchable in your
+              <NuxtLink to="/gallery" class="text-primary">gallery</NuxtLink>. Import this custom uploader once.
+            </p>
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium text-toned">mymind.sxcu — ShareX &amp; CleanShot X</span>
+                <div class="flex gap-1">
+                  <UButton size="xs" icon="i-lucide-download" color="neutral" variant="ghost" label="Download" @click="downloadSxcu" />
+                  <UButton size="xs" icon="i-lucide-copy" color="neutral" variant="ghost" @click="copy(sxcuSnippet)" />
+                </div>
+              </div>
+              <pre class="bg-elevated border border-default rounded-md p-3 text-xs font-mono overflow-x-auto whitespace-pre">{{ sxcuSnippet }}</pre>
+            </div>
+            <div class="text-xs text-muted flex flex-col gap-2">
+              <p><span class="font-medium text-toned">ShareX:</span> Destinations → Custom uploader settings → Import → From file… → pick <code class="font-mono">mymind.sxcu</code>, then set Destinations → Image uploader → <code class="font-mono">MyMind</code>.</p>
+              <p><span class="font-medium text-toned">CleanShot X:</span> Settings → Uploads → Custom → import the same <code class="font-mono">.sxcu</code>, then choose it as the active destination.</p>
+            </div>
+          </div>
+        </template>
+      </UTabs>
     </div>
 
     <UModal v-model:open="createOpen" title="Create API token">
