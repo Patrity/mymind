@@ -92,7 +92,12 @@ export default defineNuxtConfig({
       '*/5 * * * *': ['embed-documents', 'summarize-sessions'],
       '*/10 * * * *': ['enrich-input'],
       '*/7 * * * *': ['enrich-images'],
-      '*/15 * * * *': ['enrich-memories'],
+      // enrich-memories DISABLED until the project-association foundation lands —
+      // memories must bucket into canonical projects before the big enrich run, or
+      // the project-scoped dedup/supersede decisions get baked in against the wrong
+      // (cwd-basename) buckets and can't be undone by a later re-label. Re-enable in
+      // that cycle. Manual trigger (/api/admin/memory-enrich-run) still works.
+      // '*/15 * * * *': ['enrich-memories'],
       '0 3 * * *': ['prune-activity-log'],
       '*/4 * * * *': ['embed-messages']
     }
