@@ -45,7 +45,7 @@ const sessionsSql = `select id, source, external_id, project, host, machine_id, 
   git_branch, git_commit, git_remote, app_version, title, summary,
   started_at, last_active, ended_at, message_count, tool_count, metadata
   from sess_sessions where source = $1 ${includeEmpty ? '' : 'and message_count > 0'}
-  order by last_active asc nulls first ${limit ? 'limit ' + limit : ''}`
+  order by last_active asc nulls first, external_id asc ${limit ? 'limit ' + limit : ''}`
 const { rows: bSessions } = await src.query(sessionsSql, [source])
 console.log(`found ${bSessions.length} bridget sessions`)
 
