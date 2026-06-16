@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, jsonb, boolean, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core'
+import { halfvec } from '../types/halfvec'
 
 export const messages = pgTable('messages', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -14,6 +15,7 @@ export const messages = pgTable('messages', {
   requestId: text('request_id'),
   isSidechain: boolean('is_sidechain').notNull().default(false),
   usage: jsonb('usage'),
+  embedding: halfvec(2560),
   metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [

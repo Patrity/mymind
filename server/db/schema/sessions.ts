@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, integer, jsonb, timestamp, uniqueIndex, index } from 'drizzle-orm/pg-core'
+import { halfvec } from '../types/halfvec'
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
@@ -22,6 +23,8 @@ export const sessions = pgTable('sessions', {
   toolCount: integer('tool_count').notNull().default(0),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   lastActive: timestamp('last_active', { withTimezone: true }).notNull().defaultNow(),
+  summaryEmbedding: halfvec(2560, 'summary_embedding'),
+  lastEmbeddedAt: timestamp('last_embedded_at', { withTimezone: true }),
   metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`)
 }, (t) => [
   uniqueIndex('sessions_source_external_uidx').on(t.source, t.externalId),
