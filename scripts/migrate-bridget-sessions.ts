@@ -10,6 +10,7 @@ const dryRun = args.includes('--dry-run')
 const source = (args.find(a => a.startsWith('--source='))?.split('=')[1]) ?? 'claude_code'
 const limit = Number(args.find(a => a.startsWith('--limit='))?.split('=')[1]) || null
 const includeEmpty = args.includes('--include-empty')
+const projects = (args.find(a => a.startsWith('--projects='))?.split('=')[1]?.split(',').map(s => s.trim()).filter(Boolean)) ?? null
 
 if (!process.env.BRIDGET_DATABASE_URL) throw new Error('set BRIDGET_DATABASE_URL (read-only) in .env')
 if (!process.env.DATABASE_URL) throw new Error('set DATABASE_URL (MyMind) in .env')
@@ -30,7 +31,7 @@ const dst = new Client({ connectionString: process.env.DATABASE_URL })
 await src.connect()
 await dst.connect()
 const srcDb = (await src.query('select current_database() d')).rows[0].d
-console.log(`bridget import — source=${source} dryRun=${dryRun} limit=${limit ?? 'none'} includeEmpty=${includeEmpty} srcDb=${srcDb}`)
+console.log(`bridget import — source=${source} dryRun=${dryRun} limit=${limit ?? 'none'} includeEmpty=${includeEmpty} projects=${projects?.join('|') ?? 'all'} srcDb=${srcDb}`)
 
 // Preflight: fail loudly if we're not actually looking at the bridget schema.
 const pre = await src.query(`select to_regclass('public.sess_sessions') as t`)
@@ -45,8 +46,9 @@ const sessionsSql = `select id, source, external_id, project, host, machine_id, 
   git_branch, git_commit, git_remote, app_version, title, summary,
   started_at, last_active, ended_at, message_count, tool_count, metadata
   from sess_sessions where source = $1 ${includeEmpty ? '' : 'and message_count > 0'}
+  ${projects ? 'and project = any($2)' : ''}
   order by last_active asc nulls first, external_id asc ${limit ? 'limit ' + limit : ''}`
-const { rows: bSessions } = await src.query(sessionsSql, [source])
+const { rows: bSessions } = await src.query(sessionsSql, projects ? [source, projects] : [source])
 console.log(`found ${bSessions.length} bridget sessions`)
 
 let nSess = 0, nMsg = 0, nTool = 0
