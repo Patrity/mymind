@@ -1,6 +1,7 @@
 // One-time, idempotent, re-runnable import of bridget raw sessions into MyMind.
 // Imports sessions/messages/tool_events ONLY (no memories, no embeddings).
-// Run: node --import tsx --env-file=.env scripts/migrate-bridget-sessions.ts [--dry-run] [--source=claude_code] [--limit=N]
+// Run: node --import tsx --env-file=.env scripts/migrate-bridget-sessions.ts [--dry-run] [--source=claude_code] [--limit=N] [--include-empty]
+// By default skips message_count=0 sessions (live-event-only, no transcript ever shipped).
 import { Client } from 'pg'
 import { mapSession, mapMessage, mapToolEvent } from '../server/lib/migrate/bridget-map'
 
@@ -8,15 +9,32 @@ const args = process.argv.slice(2)
 const dryRun = args.includes('--dry-run')
 const source = (args.find(a => a.startsWith('--source='))?.split('=')[1]) ?? 'claude_code'
 const limit = Number(args.find(a => a.startsWith('--limit='))?.split('=')[1]) || null
+const includeEmpty = args.includes('--include-empty')
 
 if (!process.env.BRIDGET_DATABASE_URL) throw new Error('set BRIDGET_DATABASE_URL (read-only) in .env')
 if (!process.env.DATABASE_URL) throw new Error('set DATABASE_URL (MyMind) in .env')
 
-const src = new Client({ connectionString: process.env.BRIDGET_DATABASE_URL })
+// Bridget's session data lives in the `bridget` database. If the URL points at
+// the default `postgres` db (or omits the db), retarget it to `/bridget`.
+function bridgetConn(): string {
+  const raw = process.env.BRIDGET_DATABASE_URL as string
+  try {
+    const u = new URL(raw)
+    if (u.pathname === '' || u.pathname === '/' || u.pathname === '/postgres') u.pathname = '/bridget'
+    return u.toString()
+  } catch { return raw }
+}
+
+const src = new Client({ connectionString: bridgetConn() })
 const dst = new Client({ connectionString: process.env.DATABASE_URL })
 await src.connect()
 await dst.connect()
-console.log(`bridget import — source=${source} dryRun=${dryRun} limit=${limit ?? 'none'}`)
+const srcDb = (await src.query('select current_database() d')).rows[0].d
+console.log(`bridget import — source=${source} dryRun=${dryRun} limit=${limit ?? 'none'} includeEmpty=${includeEmpty} srcDb=${srcDb}`)
+
+// Preflight: fail loudly if we're not actually looking at the bridget schema.
+const pre = await src.query(`select to_regclass('public.sess_sessions') as t`)
+if (!pre.rows[0].t) throw new Error(`sess_sessions not found in db '${srcDb}' — point BRIDGET_DATABASE_URL at the bridget database (path /bridget)`)
 
 // jsonb columns come back from pg as PARSED JS values; re-inserting a primitive
 // (e.g. the string "file1.txt") into a jsonb column fails the text→jsonb cast.
@@ -26,7 +44,8 @@ const jb = (v: unknown) => v == null ? null : JSON.stringify(v)
 const sessionsSql = `select id, source, external_id, project, host, machine_id, cwd,
   git_branch, git_commit, git_remote, app_version, title, summary,
   started_at, last_active, ended_at, message_count, tool_count, metadata
-  from sess_sessions where source = $1 order by last_active asc nulls first ${limit ? 'limit ' + limit : ''}`
+  from sess_sessions where source = $1 ${includeEmpty ? '' : 'and message_count > 0'}
+  order by last_active asc nulls first ${limit ? 'limit ' + limit : ''}`
 const { rows: bSessions } = await src.query(sessionsSql, [source])
 console.log(`found ${bSessions.length} bridget sessions`)
 
