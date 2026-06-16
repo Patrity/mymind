@@ -1,6 +1,6 @@
 # MyMind — Backlog & Spec Coverage
 
-> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-15 — **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.)
+> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-16 — **cycle 13 (Bridget Parity) shipped** (broadened from "API key UI"): API-key CRUD + Connect-to-Claude-Code, capture-fidelity ingestion (tool_events/thinking/git/machine), one-time import of 457 claude_code sessions, session summarization + session/message search, and memory intelligence (provenance + a `memory_relations` graph + LLM relationship-judge with auto-supersede + review-gated contradictions). On `feat/bridget-parity` (not yet merged); closes the §3 session-summarization + bridget-migration items and the session/message-search gap. Earlier: **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.)
 
 ---
 
@@ -40,7 +40,9 @@ Move provider config out of `.env` into the database with a settings UI.
 - Settings UI: CRUD providers + models, a "test connection" button, and a role→model assignment panel. API keys stored encrypted at rest (not returned to the client after save).
 - *Why:* swap/add models without redeploying; see which model does what at a glance.
 
-### Cycle 13 — API key management UI (CRUD)
+### Cycle 13 — Bridget Parity ✅ shipped (broadened from "API key management UI (CRUD)")
+Shipped in 5 phases on `feat/bridget-parity` (see the [handover](handovers/2026-06-16-bridget-parity.md)): API-key CRUD + Connect-to-CC, capture fidelity, 457-session import, summaries+search, memory intelligence. Original scope below (delivered + exceeded):
+
 A settings page over the existing `api_tokens` table (today tokens are inserted by hand).
 - Create (name + scopes/notes; show the plaintext token **once**), list (name, created, last-used, masked), revoke. For ShareX/CleanShot uploads, CC/Hermes session-logging hooks, and MCP.
 - Optional: per-token scope (upload-only vs full) — currently all tokens are equal.
@@ -70,10 +72,10 @@ Automated deploy on merge to `master`.
 Carried out of the 11 cycle handovers, de-duplicated, current items only:
 
 **AI quality**
-- Session-summarization worker — sessions show "(untitled session)"; generate title+summary (bridget had this).
+- ~~Session-summarization worker — sessions show "(untitled session)"; generate title+summary (bridget had this).~~ ✅ **shipped (cycle 13 phase 4)** — `summarize-sessions` task → title+summary+`summary_embedding`; + session/message semantic search in the palette.
 - Reranker (`:8883`) wired but OFF by default — enable + evaluate for memory/doc relevance.
 - ~~Image **semantic** search — gallery search is keyword/exact-tag only; add image embeddings + vector search.~~ ✅ **shipped (cycle 20)** — `images.embedding halfvec(2560)` (summary embedding) + `searchImages` hybrid trigram + vector RRF.
-- Bridget memory **data migration** — import the old Python service's memories (one-time).
+- Bridget **raw data migration** — ✅ **shipped (cycle 13 phase 3)**: `scripts/migrate-bridget-sessions.ts` imported 457 claude_code sessions/messages/tool_events (raw; memories regenerated locally, NOT imported). Remaining: run against PROD `DATABASE_URL`; optionally import hermes (`--source=hermes`).
 - Larger/steadier vision model — `:8005` (8B) is weak/flaky; transcription leans on the 27B cleanup.
 
 **Security / ops (before wider exposure)**
