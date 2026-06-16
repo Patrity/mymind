@@ -1,8 +1,9 @@
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { projects } from '../db/schema'
 import type { ProjectDTO } from '../../shared/types/tasks'
 import { slugify } from '../../shared/utils/slugify'
+import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/projects/git-remote'
 
 // ---------------------------------------------------------------------------
 // DTO mapper
@@ -96,4 +97,47 @@ export async function deleteProject(slug: string): Promise<boolean> {
     .where(eq(projects.slug, slug))
     .returning({ slug: projects.slug })
   return !!r
+}
+
+/**
+ * Resolve a session's project. Matches on the normalized git remote (then aliases),
+ * creating a project on first sight; sessions with no remote return the seeded
+ * Uncategorized bucket. Race on git_remote_key falls back to re-select.
+ */
+export async function findOrCreateProject(input: { gitRemote?: string | null, cwd?: string | null }): Promise<typeof projects.$inferSelect> {
+  const db = useDb()
+  const key = normalizeGitRemote(input.gitRemote)
+  const cwd = input.cwd ?? null
+
+  if (!key) {
+    const [u] = await db.select().from(projects).where(eq(projects.slug, 'uncategorized')).limit(1)
+    return u! // seeded by migration 0019
+  }
+
+  let [proj] = await db.select().from(projects).where(eq(projects.gitRemoteKey, key)).limit(1)
+  if (!proj) {
+    ;[proj] = await db.select().from(projects).where(sql`${projects.aliases} @> ARRAY[${key}]::text[]`).limit(1)
+  }
+  if (proj) {
+    const localPaths = (proj.localPaths ?? [])
+    const nextPaths = cwd && !localPaths.includes(cwd) ? [...localPaths, cwd] : localPaths
+    await db.update(projects).set({ localPaths: nextPaths, lastActivityAt: new Date(), updatedAt: new Date() }).where(eq(projects.id, proj.id))
+    return { ...proj, localPaths: nextPaths, lastActivityAt: new Date() }
+  }
+
+  const taken = new Set((await db.select({ slug: projects.slug }).from(projects)).map(r => r.slug))
+  const slug = nextUniqueSlug(slugify(repoNameFromKey(key)) || 'project', taken)
+  try {
+    const [created] = await db.insert(projects).values({
+      slug, name: repoNameFromKey(key), gitRemoteKey: key,
+      repositoryUrl: input.gitRemote ?? null,
+      localPaths: cwd ? [cwd] : [], lastActivityAt: new Date()
+    }).returning()
+    return created!
+  } catch {
+    // unique race on git_remote_key — another ingest created it first
+    const [racer] = await db.select().from(projects).where(eq(projects.gitRemoteKey, key)).limit(1)
+    if (racer) return racer
+    throw new Error(`findOrCreateProject: failed to create or find project for key ${key}`)
+  }
 }
