@@ -109,6 +109,36 @@ const groups = computed<CommandPaletteGroup[]>(() => {
     })
   }
 
+  if (r?.sessions?.length) {
+    list.push({
+      id: 'sessions',
+      label: 'Sessions',
+      ignoreFilter: true,
+      items: r.sessions.map(sess => ({
+        id: sess.id,
+        label: sess.title,
+        suffix: sess.project ?? sess.snippet ?? undefined,
+        icon: 'i-lucide-history',
+        onSelect: () => navigateTo(sess.to)
+      }))
+    })
+  }
+
+  if (r?.messages?.length) {
+    list.push({
+      id: 'messages',
+      label: 'Messages',
+      ignoreFilter: true,
+      items: r.messages.map(msg => ({
+        id: msg.id,
+        label: msg.snippet,
+        suffix: msg.role ?? undefined,
+        icon: 'i-lucide-message-circle',
+        onSelect: () => navigateTo(msg.to)
+      }))
+    })
+  }
+
   return list
 })
 </script>
@@ -119,8 +149,8 @@ const groups = computed<CommandPaletteGroup[]>(() => {
     :groups="groups"
     :loading="loading"
     title="Search"
-    description="Search documents, memories, images, tasks and projects"
-    placeholder="Search documents, memories, tasks…"
+    description="Search documents, memories, images, tasks, projects, sessions and messages"
+    placeholder="Search documents, memories, tasks, sessions…"
     :color-mode="false"
   />
 </template>

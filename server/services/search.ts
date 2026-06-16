@@ -4,6 +4,7 @@ import { tasks, projects } from '../db/schema'
 import { searchDocs } from './documents'
 import { searchMemories } from './memory'
 import { searchImages } from './images'
+import { searchSessions, searchMessages } from './session-search'
 import type { SearchResults } from '../../shared/types/search'
 
 const emptyResults = (): SearchResults => ({
@@ -19,7 +20,7 @@ const emptyResults = (): SearchResults => ({
 export async function searchAll(q: string, perGroup = 5): Promise<SearchResults> {
   if (!q.trim()) return emptyResults()
 
-  const [documents, memories, imgs, taskItems, projectItems] = await Promise.all([
+  const [documents, memories, imgs, taskItems, projectItems, sessionItems, messageItems] = await Promise.all([
     // Lane: documents (hybrid vector+trigram via searchDocs)
     (async () => {
       try {
@@ -119,8 +120,26 @@ export async function searchAll(q: string, perGroup = 5): Promise<SearchResults>
       } catch {
         return []
       }
+    })(),
+
+    // Lane: sessions — hybrid vector+trigram via searchSessions
+    (async () => {
+      try {
+        return await searchSessions(q, perGroup)
+      } catch {
+        return []
+      }
+    })(),
+
+    // Lane: messages — hybrid vector+trigram via searchMessages
+    (async () => {
+      try {
+        return await searchMessages(q, perGroup)
+      } catch {
+        return []
+      }
     })()
   ])
 
-  return { documents, memories, images: imgs, tasks: taskItems, projects: projectItems, sessions: [], messages: [] }
+  return { documents, memories, images: imgs, tasks: taskItems, projects: projectItems, sessions: sessionItems, messages: messageItems }
 }
