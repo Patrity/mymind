@@ -11,7 +11,9 @@ const emptyResults = (): SearchResults => ({
   memories: [],
   images: [],
   tasks: [],
-  projects: []
+  projects: [],
+  sessions: [],
+  messages: []
 })
 
 export async function searchAll(q: string, perGroup = 5): Promise<SearchResults> {
@@ -120,5 +122,5 @@ export async function searchAll(q: string, perGroup = 5): Promise<SearchResults>
     })()
   ])
 
-  return { documents, memories, images: imgs, tasks: taskItems, projects: projectItems }
+  return { documents, memories, images: imgs, tasks: taskItems, projects: projectItems, sessions: [], messages: [] }
 }

@@ -38,10 +38,30 @@ export interface ProjectResult {
   to: string
 }
 
+export interface SessionResult {
+  type: 'session'
+  id: string
+  title: string
+  snippet: string
+  project: string | null
+  to: string
+}
+
+export interface MessageResult {
+  type: 'message'
+  id: string
+  sessionId: string
+  role: string | null
+  snippet: string
+  to: string
+}
+
 export interface SearchResults {
   documents: DocumentResult[]
   memories: MemoryResult[]
   images: ImageResult[]
   tasks: TaskResult[]
   projects: ProjectResult[]
+  sessions: SessionResult[]
+  messages: MessageResult[]
 }

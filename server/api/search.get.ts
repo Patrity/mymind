@@ -6,7 +6,9 @@ const emptyResults: SearchResults = {
   memories: [],
   images: [],
   tasks: [],
-  projects: []
+  projects: [],
+  sessions: [],
+  messages: []
 }
 
 export default defineEventHandler(async (event) => {
