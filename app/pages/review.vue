@@ -89,7 +89,7 @@ async function acceptConflict(id: string, kind: string) {
   actioning.value[id] = true
   try {
     await $fetch(`/api/review/${id}/approve`, { method: 'POST' })
-    const label = kind === 'memory-supersede' ? 'New memory kept, old archived.' : 'New memory kept, old archived.'
+    const label = kind === 'memory-supersede' ? 'New memory kept, old archived.' : 'Contradiction resolved — old memory archived.'
     toast.add({ color: 'success', title: 'Conflict resolved', description: label })
     await refetch()
   } catch (e: unknown) {

@@ -91,6 +91,7 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
     await db.update(memories).set({ archivedAt: new Date(), supersededBy: newId, updatedAt: new Date() }).where(eq(memories.id, plan.targetId!))
     publishChange({ resource: 'memory', action: 'updated', id: plan.targetId! })
   } else if (plan.action === 'review-supersede') {
+    await db.insert(memoryRelations).values({ fromId: newId, toId: plan.targetId!, type: 'supersedes', confidence: plan.confidence ?? null, status: 'active', reason: plan.reasoning ?? null }).onConflictDoNothing()
     await db.insert(reviewQueue).values({ docId: plan.targetId!, kind: 'memory-supersede', proposed: proposed as unknown as string }).onConflictDoNothing()
     publishChange({ resource: 'review', action: 'created', id: plan.targetId! })
   } else if (plan.action === 'contradict') {
