@@ -13,6 +13,8 @@ export const memories = pgTable('memories', {
   confidence: real('confidence'),
   evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
   project: text('project'),
+  projectId: uuid('project_id'),
+  sourceDate: timestamp('source_date', { withTimezone: true }),
   sessionId: uuid('session_id'),
   supersededBy: uuid('superseded_by'),
   enrichedAt: timestamp('enriched_at', { withTimezone: true }),
@@ -23,7 +25,8 @@ export const memories = pgTable('memories', {
 }, (t) => [
   index('memories_scope_idx').on(t.scope),
   index('memories_tags_gin').using('gin', t.tags),
-  uniqueIndex('memories_content_hash_live_uidx').on(t.contentHash).where(sql`${t.archivedAt} is null`)
+  uniqueIndex('memories_content_hash_live_uidx').on(t.contentHash).where(sql`${t.archivedAt} is null`),
+  index('memories_project_id_idx').on(t.projectId)
 ])
 
 export type Memory = typeof memories.$inferSelect

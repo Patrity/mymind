@@ -134,6 +134,13 @@
       "when": 1781607584269,
       "tag": "0018_reflective_scarecrow",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1781643149025,
+      "tag": "0019_normal_brother_voodoo",
+      "breakpoints": true
     }
   ]
 }

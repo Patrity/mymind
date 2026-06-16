@@ -7,6 +7,7 @@ export const sessions = pgTable('sessions', {
   source: text('source').notNull(),
   externalId: text('external_id').notNull(),
   project: text('project'),
+  projectId: uuid('project_id'),
   cwd: text('cwd'),
   machineId: text('machine_id'),
   hostname: text('hostname'),
@@ -28,7 +29,8 @@ export const sessions = pgTable('sessions', {
   metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`)
 }, (t) => [
   uniqueIndex('sessions_source_external_uidx').on(t.source, t.externalId),
-  index('sessions_machine_idx').on(t.machineId)
+  index('sessions_machine_idx').on(t.machineId),
+  index('sessions_project_id_idx').on(t.projectId)
 ])
 
 export type Session = typeof sessions.$inferSelect
