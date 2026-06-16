@@ -58,10 +58,12 @@ const mcpSnippet = computed(() => `{
   }
 }`)
 
+// name + URL must come BEFORE --header: `--header` is variadic and will otherwise
+// swallow the positional name/url as extra header values ("missing argument 'name'").
 const mcpCli = computed(() =>
   `claude mcp add --transport http --scope user \\
-  --header "Authorization: Bearer \${MYMIND_TOKEN}" \\
-  mymind "\${MYMIND_URL}/api/mcp"`)
+  mymind "\${MYMIND_URL}/api/mcp" \\
+  --header "Authorization: Bearer \${MYMIND_TOKEN}"`)
 
 const envSnippet = computed(() =>
   `export MYMIND_URL="${baseUrl.value}"
