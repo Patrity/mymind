@@ -10,7 +10,7 @@ updated: 2026-06-16
 Reimplements the bridget memory service in TS: ingest AI-session transcripts, enrich into durable memories, search semantically. Nothing auto-trusted — enrichment memories are `unreviewed` until the human marks them reviewed.
 
 ## Data model
-- `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`. Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
+- `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 14), `source_date` (last-observed, = source session `started_at`, cycle 14), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`. Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
 - `memory_relations` (cycle 13, `memory-relations.ts`): `from_id`→`to_id`, `type` (supersedes|contradicts|duplicate-of), `confidence`, `status` (active|resolved), `reason`. The lineage/conflict graph; unique edge `(from,to,type)`.
 - `sessions` (source, external_id unique, project, cwd, title, summary, message_count, started_at, last_active, metadata) + `messages` (session_id, role, content, external_uuid unique-per-session) + `mem_enrichment_state` (per-session enrichment progress).
 
@@ -38,5 +38,7 @@ Selects sessions with ≥4 messages and new content since last run; assembles a 
 Search (hybrid), scope filter, unreviewed toggle, cards (content/scope/tags/source). Search results show a **relevance** badge; list mode shows **confidence**. Mark reviewed (the human gate; strips the `unreviewed` chip) + Archive. **Provenance (cycle 13):** each card surfaces its source-session link, the verbatim `quote` + `reasoning` from its evidence, and relation badges (→ supersedes / ← superseded-by / ⚠ contradicts). `/review` renders memory-conflict items (New vs Existing + Accept / Keep-both). Sidebar "Memory" nav with unreviewed badge.
 
 > The 457 imported bridget sessions (cycle 13 phase 3) feed this enrichment locally — no bridget memories were imported; they're regenerated here with provenance + the relationship graph.
+
+**Cycle 14 — project association.** Enrichment now sets `project_id` **by scope**: `agent` memories inherit their source session's project, `user`/`world` memories stay `null` (global). `source_date` = the source session's `started_at`, advanced via SQL `greatest` when new evidence merges. The selector excludes sessions whose project is `active=false`. See [projects.md](projects.md).
 
 See [mcp.md](mcp.md) for the agent-facing tools.
