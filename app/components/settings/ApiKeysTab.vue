@@ -69,12 +69,14 @@ export MYMIND_TOKEN="${tokenForSnippets.value}"
 mkdir -p ~/.mymind && printf 'MYMIND_URL=%s\\nMYMIND_TOKEN=%s\\n' "$MYMIND_URL" "$MYMIND_TOKEN" > ~/.mymind/config.env`)
 
 const installSnippet = computed(() =>
-  `curl -fsSL "${baseUrl.value}/api/setup/cc-hook" -o ~/.mymind/cc-hook.sh && chmod +x ~/.mymind/cc-hook.sh`)
+  `mkdir -p ~/.mymind && curl -fsSL "${baseUrl.value}/api/setup/cc-hook" -o ~/.mymind/cc-hook.sh && chmod +x ~/.mymind/cc-hook.sh`)
 
 const hooksSnippet = computed(() => `{
   "hooks": {
     "SessionStart":    [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh SessionStart" }] }],
     "UserPromptSubmit":[{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh UserPromptSubmit" }] }],
+    "PreToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh PreToolUse" }] }],
+    "PostToolUse":     [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh PostToolUse" }] }],
     "Stop":            [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh Stop" }] }],
     "SubagentStop":    [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh SubagentStop" }] }],
     "SessionEnd":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "~/.mymind/cc-hook.sh SessionEnd" }] }]

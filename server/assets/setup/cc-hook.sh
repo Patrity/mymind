@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # mymind cc-hook — POSTs Claude Code session events + transcript deltas to MyMind.
-# Install: curl -fsSL "$MYMIND_URL/api/setup/cc-hook" -o ~/.mymind/cc-hook.sh && chmod +x ~/.mymind/cc-hook.sh
+# Install: mkdir -p ~/.mymind && curl -fsSL "$MYMIND_URL/api/setup/cc-hook" -o ~/.mymind/cc-hook.sh && chmod +x ~/.mymind/cc-hook.sh
 # Wire into ~/.claude/settings.json hooks as: ~/.mymind/cc-hook.sh <EventName>
 set -u
 cfgdir="$HOME/.mymind"
