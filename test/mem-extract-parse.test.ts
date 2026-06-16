@@ -96,12 +96,13 @@ describe('parseMemories', () => {
     expect(parseMemories('{ broken json }')).toEqual([])
   })
 
-  it('clamps confidence below 0 to 0', () => {
+  it('clamps confidence below 0 to 0 (and then drops since 0 < 0.3 threshold)', () => {
     const raw = JSON.stringify({
       memories: [{ scope: 'agent', content: 'Clamped low.', confidence: -0.5 }]
     })
+    // -0.5 is clamped to 0, which is below the 0.3 drop threshold → dropped
     const result = parseMemories(raw)
-    expect(result[0].confidence).toBe(0)
+    expect(result).toHaveLength(0)
   })
 
   it('clamps confidence above 1 to 1', () => {
@@ -150,5 +151,103 @@ describe('parseMemories', () => {
     expect(result[0].scope).toBe('agent')
     expect(result[1].scope).toBe('user')
     expect(result[2].scope).toBe('world')
+  })
+
+  it('parses provenance fields: evidence_msg_ids, quote, reasoning', () => {
+    const raw = JSON.stringify({
+      memories: [
+        {
+          scope: 'agent',
+          content: 'MyMind uses Drizzle ORM.',
+          confidence: 0.9,
+          evidence_msg_ids: ['msg-1', 'msg-2'],
+          quote: 'We use Drizzle for all DB access.',
+          reasoning: 'Explicitly stated in the conversation.'
+        }
+      ]
+    })
+    const result = parseMemories(raw)
+    expect(result).toHaveLength(1)
+    expect(result[0].evidenceMsgIds).toEqual(['msg-1', 'msg-2'])
+    expect(result[0].quote).toBe('We use Drizzle for all DB access.')
+    expect(result[0].reasoning).toBe('Explicitly stated in the conversation.')
+  })
+
+  it('filters non-string items from evidence_msg_ids', () => {
+    const raw = JSON.stringify({
+      memories: [
+        {
+          scope: 'agent',
+          content: 'Some fact.',
+          confidence: 0.8,
+          evidence_msg_ids: ['msg-1', 42, null, 'msg-3']
+        }
+      ]
+    })
+    const result = parseMemories(raw)
+    expect(result[0].evidenceMsgIds).toEqual(['msg-1', 'msg-3'])
+  })
+
+  it('slices quote to 280 chars and reasoning to 500 chars', () => {
+    const longQuote = 'q'.repeat(400)
+    const longReasoning = 'r'.repeat(600)
+    const raw = JSON.stringify({
+      memories: [
+        {
+          scope: 'agent',
+          content: 'Some fact.',
+          confidence: 0.8,
+          quote: longQuote,
+          reasoning: longReasoning
+        }
+      ]
+    })
+    const result = parseMemories(raw)
+    expect(result[0].quote).toHaveLength(280)
+    expect(result[0].reasoning).toHaveLength(500)
+  })
+
+  it('drops candidate with confidence 0.2 (below 0.3 threshold)', () => {
+    const raw = JSON.stringify({
+      memories: [
+        { scope: 'agent', content: 'Low confidence fact.', confidence: 0.2 }
+      ]
+    })
+    const result = parseMemories(raw)
+    expect(result).toHaveLength(0)
+  })
+
+  it('keeps candidate with confidence exactly 0.3', () => {
+    const raw = JSON.stringify({
+      memories: [
+        { scope: 'agent', content: 'Exactly at threshold.', confidence: 0.3 }
+      ]
+    })
+    const result = parseMemories(raw)
+    expect(result).toHaveLength(1)
+    expect(result[0].confidence).toBeCloseTo(0.3)
+  })
+
+  it('keeps candidate with no confidence field (manual-style)', () => {
+    const raw = JSON.stringify({
+      memories: [
+        { scope: 'agent', content: 'No confidence provided.' }
+      ]
+    })
+    const result = parseMemories(raw)
+    expect(result).toHaveLength(1)
+    expect(result[0].confidence).toBeUndefined()
+  })
+
+  it('omits provenance fields when not present in source', () => {
+    const raw = JSON.stringify({
+      memories: [
+        { scope: 'agent', content: 'Plain fact.', confidence: 0.8 }
+      ]
+    })
+    const result = parseMemories(raw)
+    expect(result[0].evidenceMsgIds).toBeUndefined()
+    expect(result[0].quote).toBeUndefined()
+    expect(result[0].reasoning).toBeUndefined()
   })
 })

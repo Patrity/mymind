@@ -5,6 +5,9 @@ export interface MemoryCandidate {
   content: string
   tags?: string[]
   confidence?: number
+  evidenceMsgIds?: string[]
+  quote?: string
+  reasoning?: string
 }
 
 /**
@@ -112,13 +115,43 @@ export function parseMemories(raw: string): MemoryCandidate[] {
         // other types → leave as undefined
       }
 
-      // confidence: clamp to 0..1
+      // confidence: clamp to 0..1; drop if present and < 0.3
       let confidence: number | undefined
       if (typeof obj.confidence === 'number' && !isNaN(obj.confidence)) {
         confidence = Math.min(1, Math.max(0, obj.confidence))
+        if (confidence < 0.3) return []
       }
 
-      return [{ scope, content, ...(tags !== undefined ? { tags } : {}), ...(confidence !== undefined ? { confidence } : {}) }]
+      // evidence_msg_ids: array of strings, filter non-strings
+      let evidenceMsgIds: string[] | undefined
+      if (Array.isArray(obj.evidence_msg_ids)) {
+        const filtered = obj.evidence_msg_ids.filter((x): x is string => typeof x === 'string')
+        if (filtered.length > 0) evidenceMsgIds = filtered
+      }
+
+      // quote: string, trimmed, sliced to 280 chars
+      let quote: string | undefined
+      if (typeof obj.quote === 'string') {
+        const trimmed = obj.quote.trim().slice(0, 280)
+        if (trimmed) quote = trimmed
+      }
+
+      // reasoning: string, trimmed, sliced to 500 chars
+      let reasoning: string | undefined
+      if (typeof obj.reasoning === 'string') {
+        const trimmed = obj.reasoning.trim().slice(0, 500)
+        if (trimmed) reasoning = trimmed
+      }
+
+      return [{
+        scope,
+        content,
+        ...(tags !== undefined ? { tags } : {}),
+        ...(confidence !== undefined ? { confidence } : {}),
+        ...(evidenceMsgIds !== undefined ? { evidenceMsgIds } : {}),
+        ...(quote !== undefined ? { quote } : {}),
+        ...(reasoning !== undefined ? { reasoning } : {})
+      }]
     })
   } catch {
     return []
