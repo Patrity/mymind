@@ -31,5 +31,9 @@ Legacy `messages.metadata.{usage,model,tools,type}` is still dual-written so pre
 ## Validated (2026-06-15)
 A crafted transcript (thinking + Bash tool_use + tool_result + SessionEnd w/ git/machine) ingested via the hooks → detail shows `thinking`, model, the Bash event (completed/ok, args+result, message-linked), git branch/commit, machine, and `endedAt`; re-ingest is idempotent (counts steady). Gates: typecheck 0 / test 267 / build.
 
-## Follow-ups (cycle 13 phase 4)
-Session **summarization** worker (titles + summaries + `summary_embedding`) and session/message **semantic search** — sessions still show "(untitled)" until phase 4. Token-cost ($) display; deeper Hermes/imsg shape support.
+## Summaries + search (cycle 13 phase 4, shipped 2026-06-16)
+- **Summarization** — `summarize-sessions` task (`*/5`, `server/services/session-summarize.ts`): selects new/stale/grown sessions (real-message floor 6, refresh-delta 50, stale 24h; mirrors bridget `sess_summarize`), builds a transcript (text + `<thinking>` + tool one-liners, head/tail elide at 60k chars), `chat('reasoning')` → strict-JSON `{title, summary}`, writes `title` (COALESCE — never clobbers an existing title), `summary`, and a `title‖summary` `summary_embedding`. State + retry tracked in `sess_summary_state`. Validated: 203 sessions summarized, 100% ok.
+- **Search** — `searchSessions`/`searchMessages` (`server/services/session-search.ts`): hybrid trigram (`ilike`/`similarity` on title+summary / content) + vector (`summary_embedding` / `messages.embedding`, `<=>` halfvec cosine, try/catch trigram-only fallback), RRF-fused (`rrfFuse`). Wired into `searchAll` + the command palette (`AppSearch.client.vue`) as **Sessions** + **Messages** groups (message hits deep-link to the parent session). `messages.embedding` backfilled by the `embed-messages` task (`*/4`).
+
+## Follow-ups
+Token-cost ($) display; deeper Hermes/imsg shape support; `sess_summary_state.model` per-row attribution (column exists, unwritten).
