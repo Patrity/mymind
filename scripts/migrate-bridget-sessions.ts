@@ -115,7 +115,6 @@ for (const bs of bSessions) {
        message_count = (select count(*) from messages where session_id = s.id),
        tool_count = (select count(*) from tool_events where session_id = s.id),
        input_tokens = (select coalesce(sum( coalesce((usage->>'input_tokens')::int,0)
-         + coalesce((usage->>'cache_read_input_tokens')::int,0)
          + coalesce((usage->>'cache_creation_input_tokens')::int,0) ),0) from messages where session_id = s.id),
        output_tokens = (select coalesce(sum( coalesce((usage->>'output_tokens')::int,0) ),0) from messages where session_id = s.id),
        started_at = coalesce((select min(created_at) from messages where session_id = s.id), s.started_at),

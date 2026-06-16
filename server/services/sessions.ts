@@ -143,8 +143,10 @@ export async function ingestTranscript(input: IngestTranscriptInput): Promise<In
   // 4. Recompute aggregates from the real tables
   const [agg] = await db.select({
     msgCount: sql<number>`count(*)::int`,
+    // input = fresh tokens + tokens cached for the FIRST time. cache_read is
+    // EXCLUDED: it's the cached prefix re-read every turn (already counted once via
+    // cache_creation), so summing it N-counts the same context and balloons the total.
     inTok: sql<number>`coalesce(sum( coalesce((${messages.usage}->>'input_tokens')::int,0)
-      + coalesce((${messages.usage}->>'cache_read_input_tokens')::int,0)
       + coalesce((${messages.usage}->>'cache_creation_input_tokens')::int,0) ),0)::int`,
     outTok: sql<number>`coalesce(sum( coalesce((${messages.usage}->>'output_tokens')::int,0) ),0)::int`,
     minTs: sql<string | null>`min(${messages.createdAt})`,
