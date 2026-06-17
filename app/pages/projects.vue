@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ProjectDTO } from '~~/shared/types/tasks'
+import { projectColor, PROJECT_PALETTE } from '~/utils/project-color'
 
 definePageMeta({ title: 'Projects' })
 
@@ -19,6 +20,11 @@ watch(error, (err) => {
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
+
+// The palette swatch highlighted as "auto" when no override is set.
+const autoColor = computed(() =>
+  editingProject.value ? projectColor(editingProject.value.slug, null) : null
+)
 
 // ── Toggle active inline ───────────────────────────────────────────────────────
 async function toggleActive(project: { slug: string }, active: boolean) {
@@ -78,17 +84,48 @@ const editSaving = ref(false)
 const deleting = ref(false)
 const showDeleteConfirm = ref(false)
 
-const emptyEditForm = () => ({ name: '', description: '', active: true })
-const editForm = ref(emptyEditForm())
+interface EditForm {
+  name: string
+  description: string
+  active: boolean
+  color: string | null
+  repositoryUrl: string | null
+  productionUrl: string | null
+  stagingUrl: string | null
+  aliases: string[]
+}
+
+const emptyEditForm = (): EditForm => ({
+  name: '',
+  description: '',
+  active: true,
+  color: null,
+  repositoryUrl: null,
+  productionUrl: null,
+  stagingUrl: null,
+  aliases: []
+})
+const editForm = ref<EditForm>(emptyEditForm())
 
 function openEditModal(project: ProjectDTO) {
   editingProject.value = project
   editForm.value = {
     name: project.name,
     description: project.description ?? '',
-    active: project.active
+    active: project.active,
+    color: project.color,
+    repositoryUrl: project.repositoryUrl,
+    productionUrl: project.productionUrl,
+    stagingUrl: project.stagingUrl,
+    aliases: [...project.aliases]
   }
   showEditModal.value = true
+}
+
+// Empty string in a URL field means "clear it" → send null.
+function urlOrNull(v: string | null): string | null {
+  const t = (v ?? '').trim()
+  return t ? t : null
 }
 
 async function submitEdit() {
@@ -98,7 +135,12 @@ async function submitEdit() {
     await updateProject(editingProject.value.slug, {
       name: editForm.value.name.trim(),
       description: editForm.value.description.trim() || undefined,
-      active: editForm.value.active
+      active: editForm.value.active,
+      color: editForm.value.color,
+      repositoryUrl: urlOrNull(editForm.value.repositoryUrl),
+      productionUrl: urlOrNull(editForm.value.productionUrl),
+      stagingUrl: urlOrNull(editForm.value.stagingUrl),
+      aliases: editForm.value.aliases.map(a => a.trim()).filter(Boolean)
     })
     showEditModal.value = false
     await refetch()
@@ -209,18 +251,35 @@ async function confirmDelete() {
 
           <!-- Name + description -->
           <div class="flex-1 min-w-0">
-            <p class="text-sm font-medium text-highlighted truncate">
-              {{ project.name }}
-            </p>
+            <ProjectBadge
+              :slug="project.slug"
+              :name="project.name"
+              :color="project.color"
+              :to="false"
+            />
             <p
               v-if="project.description"
-              class="text-xs text-muted truncate mt-0.5"
+              class="text-xs text-muted truncate mt-1"
             >
               {{ project.description }}
             </p>
-            <p class="text-xs text-dimmed mt-0.5">
-              {{ project.slug }} · Created {{ formatDate(project.createdAt) }}
-            </p>
+            <div class="flex items-center gap-2 text-xs text-dimmed mt-1 min-w-0">
+              <span
+                v-if="project.gitRemoteKey"
+                class="flex items-center gap-1 font-mono truncate min-w-0 max-w-[40%]"
+              >
+                <UIcon
+                  name="i-lucide-git-branch"
+                  class="size-3 shrink-0"
+                />
+                <span class="truncate">{{ project.gitRemoteKey }}</span>
+              </span>
+              <span class="shrink-0">{{ project.sessionCount }} sessions · {{ project.memoryCount }} memories</span>
+              <span
+                v-if="project.lastActivityAt"
+                class="shrink-0"
+              >Active {{ formatDate(project.lastActivityAt) }}</span>
+            </div>
           </div>
 
           <!-- Active toggle -->
@@ -368,6 +427,95 @@ async function confirmDelete() {
               label="Project is active"
             />
           </UFormField>
+
+          <UFormField label="Repository URL">
+            <UInput
+              :model-value="editForm.repositoryUrl ?? ''"
+              placeholder="https://github.com/owner/repo"
+              class="w-full"
+              @update:model-value="editForm.repositoryUrl = String($event)"
+            />
+          </UFormField>
+
+          <UFormField label="Production URL">
+            <UInput
+              :model-value="editForm.productionUrl ?? ''"
+              placeholder="https://example.com"
+              class="w-full"
+              @update:model-value="editForm.productionUrl = String($event)"
+            />
+          </UFormField>
+
+          <UFormField label="Staging URL">
+            <UInput
+              :model-value="editForm.stagingUrl ?? ''"
+              placeholder="https://staging.example.com"
+              class="w-full"
+              @update:model-value="editForm.stagingUrl = String($event)"
+            />
+          </UFormField>
+
+          <UFormField
+            label="Aliases"
+            hint="Press enter to add"
+          >
+            <UInputTags
+              v-model="editForm.aliases"
+              placeholder="Add an alias…"
+              class="w-full"
+            />
+          </UFormField>
+
+          <UFormField label="Color">
+            <div class="flex flex-col gap-3">
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  v-for="hex in PROJECT_PALETTE"
+                  :key="hex"
+                  type="button"
+                  class="size-6 rounded-full ring-offset-2 ring-offset-default transition-all"
+                  :class="(editForm.color === hex || (editForm.color === null && autoColor === hex)) ? 'ring-2 ring-inverted' : 'hover:scale-110'"
+                  :style="{ backgroundColor: hex }"
+                  :aria-label="`Set color ${hex}`"
+                  @click="editForm.color = hex"
+                >
+                  <UIcon
+                    v-if="editForm.color === hex || (editForm.color === null && autoColor === hex)"
+                    name="i-lucide-check"
+                    class="size-4 text-white"
+                  />
+                </button>
+                <UButton
+                  size="xs"
+                  color="neutral"
+                  variant="ghost"
+                  icon="i-lucide-rotate-ccw"
+                  label="Reset to auto"
+                  @click="editForm.color = null"
+                />
+              </div>
+              <ProjectBadge
+                :slug="editingProject?.slug ?? ''"
+                :name="editForm.name"
+                :color="editForm.color"
+                :to="false"
+              />
+            </div>
+          </UFormField>
+
+          <div
+            v-if="editingProject"
+            class="flex flex-col gap-1.5 text-xs text-dimmed border-t border-default pt-3"
+          >
+            <div class="flex gap-2">
+              <span class="font-medium shrink-0">git_remote_key:</span>
+              <span class="font-mono truncate">{{ editingProject.gitRemoteKey ?? '—' }}</span>
+            </div>
+            <div class="flex gap-2">
+              <span class="font-medium shrink-0">local_paths:</span>
+              <span class="font-mono truncate">{{ editingProject.localPaths.length ? editingProject.localPaths.join(', ') : '—' }}</span>
+            </div>
+          </div>
         </div>
 
         <template #footer>
