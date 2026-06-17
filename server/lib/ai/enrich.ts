@@ -12,6 +12,12 @@ export interface Proposed {
   reasoning?: string
 }
 
+export interface ProjectCandidate {
+  slug: string
+  name: string
+  description: string
+}
+
 /**
  * Strip markdown fences, find the first {...} block, JSON.parse, validate,
  * and coerce tags. Returns null on any failure.
@@ -73,17 +79,42 @@ export function parseProposal(raw: string): Proposed | null {
   }
 }
 
-const SYSTEM_PROMPT = `You organize a personal knowledge base. Given a staged note, propose frontmatter as STRICT JSON only (no prose). Fields: title (concise), project (kebab-case slug or null), domain (broad subject e.g. 'engineering','health','finance'), type (one of note|reference|meeting|idea|task), tags (array of kebab-case strings), path (a destination path moving the doc OUT of /input into an organized location like /<domain>/<project-or-topic>/<filename>.md), reasoning (one sentence). Output ONLY the JSON object.`
+const BASE_SYSTEM_PROMPT = `You organize a personal knowledge base. Given a staged note, propose frontmatter as STRICT JSON only (no prose). Fields: title (concise), project (kebab-case slug or null), domain (broad subject e.g. 'engineering','health','finance'), type (one of note|reference|meeting|idea|task), tags (array of kebab-case strings), path (a destination path moving the doc OUT of /input), reasoning (one sentence). Output ONLY the JSON object.`
 
-export async function proposeFrontmatter(doc: DocumentDTO): Promise<Proposed | null> {
+/**
+ * Pure helper: build the system + user messages for the enrichment AI call.
+ * Extracted so it can be unit-tested without a live AI call.
+ */
+export function buildEnrichMessages(
+  doc: DocumentDTO,
+  projects: ProjectCandidate[]
+): Array<{ role: 'system' | 'user'; content: string }> {
   const content = doc.content.slice(0, 6000)
+
+  let systemPrompt = BASE_SYSTEM_PROMPT
+
+  if (projects.length > 0) {
+    const projectList = projects
+      .map(p => `  ${p.slug} — ${p.name} — ${p.description}`)
+      .join('\n')
+    systemPrompt += `\n\nAvailable projects (slug — name — description):\n${projectList}\n\nChoose the single best-matching project SLUG from this list only, or set project to null if none clearly fits. If you choose a project, set \`path\` to \`/projects/<that-slug>/<current-filename>\` (keep the existing filename). If project is null, you may still propose a \`path\` but it must NOT be under /projects/.`
+  } else {
+    systemPrompt += `\n\nNo projects are available. Set project to null. You may still propose a \`path\` but it must NOT be under /projects/.`
+  }
+
   const userMessage = `Path: ${doc.path}\n\nContent:\n${content}`
 
+  return [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userMessage }
+  ]
+}
+
+export async function proposeFrontmatter(doc: DocumentDTO, projects: ProjectCandidate[] = []): Promise<Proposed | null> {
+  const messages = buildEnrichMessages(doc, projects)
+
   try {
-    const raw = await chat('reasoning', [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userMessage }
-    ], { temperature: 0.1 })
+    const raw = await chat('reasoning', messages, { temperature: 0.1 })
 
     return parseProposal(raw)
   } catch (err) {

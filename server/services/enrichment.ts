@@ -1,6 +1,6 @@
 import { and, eq, isNull, sql, notExists } from 'drizzle-orm'
 import { useDb } from '../db'
-import { documents, reviewQueue } from '../db/schema'
+import { documents, projects as projectsTable, reviewQueue } from '../db/schema'
 import { proposeFrontmatter } from '../lib/ai/enrich'
 import { publishChange } from '../utils/live-bus'
 import { recordEvent } from '../lib/observability/record'
@@ -17,6 +17,14 @@ export interface EnrichResult {
  */
 export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): Promise<EnrichResult> {
   const db = useDb()
+
+  // Load active projects once before the loop — used to classify each doc.
+  // Filter out 'uncategorized' (a system bucket, not a filing target).
+  const activeProjects = (await db
+    .select({ slug: projectsTable.slug, name: projectsTable.name, description: projectsTable.description })
+    .from(projectsTable)
+    .where(eq(projectsTable.active, true)))
+    .filter(p => p.slug !== 'uncategorized')
 
   // Select live /input/* docs with sparse metadata (project IS NULL, tags empty)
   // that have no review_queue row (any status) for that docId
@@ -62,7 +70,7 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
         updatedAt: doc.updatedAt.toISOString()
       }
 
-      const proposal = await proposeFrontmatter(docDto)
+      const proposal = await proposeFrontmatter(docDto, activeProjects)
 
       if (!proposal) {
         recordEvent({

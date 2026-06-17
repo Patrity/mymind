@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest'
-import { parseProposal } from '../server/lib/ai/enrich'
+import { parseProposal, buildEnrichMessages } from '../server/lib/ai/enrich'
+import type { DocumentDTO } from '../shared/types/documents'
+
+// Minimal DocumentDTO stub for unit tests — only the fields buildEnrichMessages reads.
+function makeDocDto(overrides: Partial<DocumentDTO> = {}): DocumentDTO {
+  return {
+    id: 'doc-1',
+    path: '/input/test-note.md',
+    title: 'Test Note',
+    content: 'This is a test note about the mymind project.',
+    language: 'en',
+    frontmatter: {},
+    project: null,
+    domain: null,
+    type: null,
+    tags: [],
+    topic: null,
+    isPublic: false,
+    publicSlug: null,
+    ocrId: null,
+    updatedAt: new Date().toISOString(),
+    ...overrides
+  }
+}
 
 describe('parseProposal', () => {
   it('parses clean JSON', () => {
@@ -122,5 +145,116 @@ describe('parseProposal', () => {
     expect(result).not.toBeNull()
     expect(result!.title).toBe('Double Wrapped')
     expect(result!.project).toBe('dw-project')
+  })
+
+  it('accepts project slug + /projects/<slug>/ path together', () => {
+    const raw = JSON.stringify({
+      title: 'MyMind Feature',
+      project: 'mymind',
+      domain: 'engineering',
+      type: 'note',
+      tags: ['feature'],
+      path: '/projects/mymind/x.md',
+      reasoning: 'Belongs to the mymind project.'
+    })
+    const result = parseProposal(raw)
+    expect(result).not.toBeNull()
+    expect(result!.project).toBe('mymind')
+    expect(result!.path).toBe('/projects/mymind/x.md')
+  })
+
+  it('accepts project: null with no path', () => {
+    const raw = JSON.stringify({
+      title: 'Unclassified Note',
+      project: null,
+      domain: 'misc',
+      type: 'note',
+      tags: [],
+      reasoning: 'No clear project match.'
+    })
+    const result = parseProposal(raw)
+    expect(result).not.toBeNull()
+    expect(result!.project).toBeNull()
+    expect(result!.path).toBeUndefined()
+  })
+})
+
+describe('buildEnrichMessages', () => {
+  it('includes project slugs in the system message when projects are provided', () => {
+    const doc = makeDocDto()
+    const projects = [
+      { slug: 'mymind', name: 'MyMind', description: 'Personal knowledge base' },
+      { slug: 'side-project', name: 'Side Project', description: 'A side project' }
+    ]
+    const messages = buildEnrichMessages(doc, projects)
+    const systemMsg = messages.find(m => m.role === 'system')
+    expect(systemMsg).toBeDefined()
+    expect(systemMsg!.content).toContain('mymind')
+    expect(systemMsg!.content).toContain('side-project')
+    expect(systemMsg!.content).toContain('MyMind')
+    expect(systemMsg!.content).toContain('Personal knowledge base')
+  })
+
+  it('includes the /projects/<slug>/ path instruction in the system message', () => {
+    const doc = makeDocDto()
+    const projects = [{ slug: 'mymind', name: 'MyMind', description: 'Personal knowledge base' }]
+    const messages = buildEnrichMessages(doc, projects)
+    const systemMsg = messages.find(m => m.role === 'system')
+    expect(systemMsg).toBeDefined()
+    expect(systemMsg!.content).toContain('/projects/<that-slug>/<current-filename>')
+  })
+
+  it('instructs project: null when no projects are provided', () => {
+    const doc = makeDocDto()
+    const messages = buildEnrichMessages(doc, [])
+    const systemMsg = messages.find(m => m.role === 'system')
+    expect(systemMsg).toBeDefined()
+    expect(systemMsg!.content).toContain('No projects are available')
+    expect(systemMsg!.content).toContain('project to null')
+  })
+
+  it('includes the doc path and content in the user message', () => {
+    const doc = makeDocDto({ path: '/input/my-note.md', content: 'Some content here' })
+    const messages = buildEnrichMessages(doc, [])
+    const userMsg = messages.find(m => m.role === 'user')
+    expect(userMsg).toBeDefined()
+    expect(userMsg!.content).toContain('/input/my-note.md')
+    expect(userMsg!.content).toContain('Some content here')
+  })
+
+  it('returns exactly two messages: system + user', () => {
+    const doc = makeDocDto()
+    const messages = buildEnrichMessages(doc, [])
+    expect(messages).toHaveLength(2)
+    expect(messages[0].role).toBe('system')
+    expect(messages[1].role).toBe('user')
+  })
+
+  it('caps content at 6000 chars in the user message', () => {
+    const longContent = 'x'.repeat(10000)
+    const doc = makeDocDto({ content: longContent })
+    const messages = buildEnrichMessages(doc, [])
+    const userMsg = messages.find(m => m.role === 'user')
+    // The content in the user message should be at most 6000 chars plus metadata overhead
+    expect(userMsg!.content.length).toBeLessThan(10000)
+    expect(userMsg!.content).not.toContain('x'.repeat(6001))
+  })
+
+  it('lists projects in slug — name — description format', () => {
+    const doc = makeDocDto()
+    const projects = [
+      { slug: 'alpha', name: 'Alpha Project', description: 'The first project' }
+    ]
+    const messages = buildEnrichMessages(doc, projects)
+    const systemMsg = messages.find(m => m.role === 'system')
+    expect(systemMsg!.content).toContain('alpha — Alpha Project — The first project')
+  })
+
+  it('does not include /projects/ in path instruction when project list is empty', () => {
+    const doc = makeDocDto()
+    const messages = buildEnrichMessages(doc, [])
+    const systemMsg = messages.find(m => m.role === 'system')
+    // Empty list: must NOT include a project filing instruction
+    expect(systemMsg!.content).not.toContain('/projects/<that-slug>/')
   })
 })
