@@ -8,7 +8,9 @@ const props = defineProps<{
   // Voice-loop injection: when connected, typed turns go over the voice WS
   // (post-STT) so the agent animates and replies aloud.
   connected?: boolean
-  sendText?: (t: string) => boolean
+  sendText?: (t: string, speak?: boolean) => boolean
+  /** When true, typed sends request a spoken reply from the agent. */
+  speak?: boolean
 }>()
 const text = ref('')
 const busy = ref(false)
@@ -19,7 +21,7 @@ async function send() {
   text.value = ''
   // Voice path: the server echoes the user transcript and streams the reply
   // (text + audio + states) over the WS — nothing to await or append here.
-  if (props.connected && props.sendText?.(q)) return
+  if (props.connected && props.sendText?.(q, props.speak ?? false)) return
   busy.value = true
   // Use a local alias so vue/no-mutating-props is not triggered; the parent
   // intentionally passes a reactive array by reference for streaming appends.
