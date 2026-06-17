@@ -1,8 +1,8 @@
 ---
 title: Projects
 status: shipped
-cycle: 23
-phase: 1
+cycle: 25
+phase: 2
 updated: 2026-06-16
 ---
 
@@ -47,5 +47,56 @@ Phase 1 deliberately leaves these for follow-up cycles:
 - **Project merge** (fold one project into another, re-point sessions/memories).
 - **Document & task association** to projects.
 - **Auto-move docs** into `/Projects/<name>/` on association.
-- **Project UI / CRUD** beyond the existing minimal service (`list`/`get`/`create`/`update`/`archive`/`delete`).
 - The **`details` KV editor** (column exists; no UI yet).
+
+---
+
+## Cycle 25 — projects UI + color
+
+### Color column and palette utility
+
+Migration `0020_tired_nebula.sql` adds a single `color text` nullable column to `projects`. A null value means "use the automatic default" — no manual work is required for a project to have a colour.
+
+The pure utility `app/utils/project-color.ts` exports:
+- **`PROJECT_PALETTE`** — 14 Tailwind-500 hex values (`#ef4444` … `#ec4899`) covering the full hue wheel, chosen to read well on the dark theme.
+- **`projectColor(slug, override?): string`** — pure function; returns `override` if truthy, otherwise derives a stable colour by hashing the slug (`djb2`-style `Math.imul`) and indexing into the palette. Because the hash is stable, every project gets a consistent, distinct colour with zero configuration.
+
+### `<ProjectBadge>` component
+
+`app/components/ProjectBadge.vue` renders a coloured pill with a dot, a truncated label, and an optional link.
+
+Props: `slug` (required), `name?`, `color?`, `to?` (default `'/projects'`; pass `false` to suppress the link).
+
+Colour resolution order (first truthy wins):
+1. Explicit `color` prop.
+2. `useProjects().useProjectColors().map` — a `computed` Map derived from the vue-query project list cache (`slug → color | null`). This propagates a custom override saved on `/projects` to every surface that renders a badge without needing a separate fetch.
+3. `projectColor(slug)` deterministic default.
+
+Styling uses inline `style` bindings (not Tailwind classes) so arbitrary hex values work: `color`, `backgroundColor` (`hex + '1f'` for 12 % alpha fill), and `borderColor` (`hex + '40'` for 25 % alpha border).
+
+Surfaces that use `<ProjectBadge>`: memories list/detail, sessions detail, and tasks cards.
+
+### Expanded `ProjectDTO` and list API
+
+`ProjectDTO` (`shared/types/tasks.ts`) now exposes the full project model:
+- Core: `id`, `slug`, `name`, `description`, `active`, `color`
+- Git: `gitRemoteKey`, `repositoryUrl`, `productionUrl`, `stagingUrl`, `aliases`, `localPaths`, `lastActivityAt`
+- Counters (computed in SQL): `sessionCount`, `memoryCount`
+
+`listProjects` (`server/services/projects.ts`) inlines two count subqueries so the list endpoint returns session and memory counts in a single round-trip with no N+1.
+
+### `/projects` page
+
+The projects index page surfaces all `ProjectDTO` fields per row:
+- Coloured `<ProjectBadge>` for each project.
+- Git remote key, repository/production/staging URLs.
+- Session and memory counts.
+- Last-activity timestamp.
+
+An **Edit modal** per project provides:
+- Repository URL, production URL, staging URL text inputs.
+- Aliases multi-value input (`UInputTags`).
+- A **colour swatch picker**: 14 swatches from `PROJECT_PALETTE` plus a "Reset to auto" option that sets `color` to `null` (reverts to the slug-hash default).
+- Read-only display of `gitRemoteKey` and `localPaths`.
+
+Saving calls `PATCH /api/projects/:slug` with `{ color, repositoryUrl, productionUrl, stagingUrl, aliases }`. On save the vue-query cache is invalidated, causing all `<ProjectBadge>` instances across the app to re-resolve via the shared `useProjectColors()` map.
