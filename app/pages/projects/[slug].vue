@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { useTimeAgo } from '@vueuse/core'
 import type { ProjectDTO, TaskDTO, TaskPriority } from '~~/shared/types/tasks'
 import type { SessionListItem } from '~~/shared/types/session'
 import type { MemoryDTO, MemoryScope } from '~~/shared/types/memory'
@@ -52,8 +51,21 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function relativeTime(iso: string): string {
-  return useTimeAgo(new Date(iso)).value
+function relativeTime(iso: string | null): string {
+  if (!iso) return ''
+  const diffMs = Date.now() - new Date(iso).getTime()
+  const sec = Math.round(diffMs / 1000)
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ['year', 31536000], ['month', 2592000], ['day', 86400],
+    ['hour', 3600], ['minute', 60], ['second', 1]
+  ]
+  for (const [unit, secs] of units) {
+    if (Math.abs(sec) >= secs || unit === 'second') {
+      return rtf.format(-Math.round(sec / secs), unit)
+    }
+  }
+  return ''
 }
 
 function formatTokens(n: number): string {
