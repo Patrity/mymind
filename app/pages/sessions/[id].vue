@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
+import { useQueryClient } from '@tanstack/vue-query'
 import SessionTranscript from '~/components/sessions/SessionTranscript.vue'
+import type { SessionMessages } from '~~/shared/types/session'
 
 definePageMeta({ title: 'Session' })
 
 const route = useRoute()
-const { useSessionMeta, useSessionMessages } = useSessions()
+const { useSessionMeta, useSessionMessages, getMessages } = useSessions()
 const toast = useToast()
+const qc = useQueryClient()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 const { data: meta, isPending: metaPending, error } = useSessionMeta(() => route.params.id as string)
@@ -14,6 +17,28 @@ const { data: msgData, isPending: messagesPending, error: messagesError } = useS
 const messages = computed(() => msgData.value?.messages ?? [])
 const toolEvents = computed(() => msgData.value?.toolEvents ?? [])
 const metaNotFound = computed(() => !metaPending.value && (error.value != null))
+
+// ── Live append ─────────────────────────────────────────────────────────────────
+// The meta query refetches on SSE `session` events, so its messageCount rises when
+// new turns are ingested. When it grows, fetch only the delta (messages newer than
+// the last one we hold) and merge into the messages cache — no full transcript refetch.
+watch(() => meta.value?.messageCount, async (count, prev) => {
+  if (count == null || prev == null || count <= prev) return
+  const cur = messages.value
+  const since = cur.length ? cur[cur.length - 1]!.createdAt : undefined
+  const id = route.params.id as string
+  const delta = await getMessages(id, since)
+  if (!delta.messages.length && !delta.toolEvents.length) return
+  qc.setQueryData(['session', id, 'messages'], (old: SessionMessages | undefined) => {
+    // tool events aren't `since`-filtered server-side, so de-dup by id to avoid repeats.
+    const seenTev = new Set((old?.toolEvents ?? []).map(t => t.id))
+    const newTev = delta.toolEvents.filter(t => !seenTev.has(t.id))
+    return {
+      messages: [...(old?.messages ?? []), ...delta.messages],
+      toolEvents: [...(old?.toolEvents ?? []), ...newTev]
+    }
+  })
+}, { flush: 'post' })
 
 watch(error, (err) => {
   if (!err) return

@@ -12,14 +12,75 @@ const props = defineProps<{
 // Only the visible window of message rows is mounted in the DOM, so multi-thousand
 // message imported sessions scroll smoothly. Individual rows are height-bounded
 // (internal max-h scrolls on big content) so a constant item-height estimate works.
-const { list, containerProps, wrapperProps } = useVirtualList(
+const { list, containerProps, wrapperProps, scrollTo } = useVirtualList(
   computed(() => props.messages),
   { itemHeight: 140, overscan: 10 },
 )
 
-// Scroll container ref — a later task uses it for virtualization / scroll control.
+// Scroll container ref — also used below for live-tail scroll control.
 // containerProps.ref is the same node the virtual list scrolls; alias it so both work.
 const scrollEl = containerProps.ref
+
+// ── Autoscroll + live-tail ──────────────────────────────────────────────────────
+// Track whether the viewport is pinned to the bottom, and the id of the last
+// message the user has "seen" (i.e. last message at the moment we were at bottom).
+const atBottom = ref(true)
+const lastSeenId = ref<string | null>(null)
+
+function scrollToBottom() {
+  if (!props.messages.length) return
+  // useVirtualList owns scrollTop and clamps it against an ESTIMATED total height
+  // (itemHeight × count). scrollTo(last) reliably pins the tail into view but settles
+  // up to ~one viewport short of the literal pixel bottom; we treat that as "at bottom"
+  // via BOTTOM_THRESHOLD below. Recompute after the window re-renders.
+  scrollTo(props.messages.length - 1)
+  nextTick(onLocalScroll)
+}
+
+// Recompute atBottom from the live scroll node on every scroll event. We bind both
+// the virtual list's own onScroll (via v-bind="containerProps") and this handler.
+// useVirtualList clamps scrollTop against an estimated total height, so scrolling to
+// the last row settles up to ~one viewport short of the literal bottom. Use a
+// viewport-sized threshold (+ one item) so that pinned-to-tail counts as "at bottom".
+const ITEM_HEIGHT = 140
+function onLocalScroll() {
+  const el = containerProps.ref.value
+  if (!el) return
+  atBottom.value = isAtBottom({
+    scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  }, el.clientHeight + ITEM_HEIGHT)
+}
+
+// Autoscroll on first load and auto-follow growth while pinned to bottom.
+watch(
+  () => props.messages.length,
+  async (n, prev) => {
+    const firstArrival = (prev === 0 || prev == null) && n > 0
+    if (firstArrival) {
+      await nextTick()
+      scrollToBottom()
+      lastSeenId.value = props.messages.at(-1)?.id ?? null
+      return
+    }
+    // Growth
+    if (n > (prev ?? 0) && atBottom.value) {
+      await nextTick()
+      scrollToBottom()
+      lastSeenId.value = props.messages.at(-1)?.id ?? null
+    }
+    // Growth while not at bottom: leave lastSeenId — the "N new" button shows the count.
+  },
+  { flush: 'post' },
+)
+
+function jumpToLatest() {
+  scrollToBottom()
+  lastSeenId.value = props.messages.at(-1)?.id ?? null
+}
+
+const newCount = computed(() => countNewSince(props.messages, lastSeenId.value))
 
 // ── Message classification ────────────────────────────────────────────────────
 type MsgKind = 'user' | 'assistant' | 'tool'
@@ -81,7 +142,7 @@ function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
 </script>
 
 <template>
-  <div class="space-y-2 h-full flex flex-col">
+  <div class="space-y-2 h-full flex flex-col relative">
     <h2 class="text-sm font-semibold text-muted uppercase tracking-wider px-1 shrink-0">
       Transcript
     </h2>
@@ -117,6 +178,7 @@ function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
       v-else
       v-bind="containerProps"
       class="h-full overflow-y-auto pr-1"
+      @scroll="onLocalScroll"
     >
       <div
         v-bind="wrapperProps"
@@ -284,5 +346,16 @@ function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
         </template>
       </div>
     </div>
+
+    <!-- Live-tail affordance: appears when new messages arrived while scrolled up -->
+    <UButton
+      v-if="!atBottom && newCount > 0"
+      icon="i-lucide-arrow-down"
+      color="primary"
+      size="sm"
+      class="absolute bottom-4 right-4 shadow-lg"
+      :label="`${newCount} new`"
+      @click="jumpToLatest"
+    />
   </div>
 </template>
