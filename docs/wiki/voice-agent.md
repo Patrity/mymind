@@ -7,7 +7,9 @@ updated: 2026-06-10
 
 # Voice Agent
 
-A `/voice` page where Tony talks to MyMind with full barge-in and tool use. Cycle 18 replaced the Unmute/Kyutai-orchestrated approach (cycle 17) with a fully self-owned TypeScript pipeline: client-side VAD, a Nitro WebSocket orchestrator, and swappable OpenAI-spec local STT/TTS providers.
+> **Cycle 28 update:** the `/voice` page was merged into the unified **`/agent`** surface (talk + type in one place; the visualizer is now a toggle). `/voice` redirects to `/agent`. This page documents the self-hosted STT/TTS + visualizer pipeline (still current); see [agent.md](agent.md) for the unified surface, conversation persistence, and the `speak`-driven convergence.
+
+A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and tool use. Cycle 18 replaced the Unmute/Kyutai-orchestrated approach (cycle 17) with a fully self-owned TypeScript pipeline: client-side VAD, a Nitro WebSocket orchestrator, and swappable OpenAI-spec local STT/TTS providers.
 
 ## Architecture — four layers
 
