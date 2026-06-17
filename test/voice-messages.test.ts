@@ -37,4 +37,10 @@ describe('mapServerMessage', () => {
     expect(fx.delta).toBeUndefined()
     expect(fx.events).toEqual([])
   })
+
+  it('typing state message → state:typing, no events', () => {
+    const fx = mapServerMessage({ type: 'state', state: 'typing' }, false)
+    expect(fx.state).toBe('typing')
+    expect(fx.events).toEqual([])
+  })
 })

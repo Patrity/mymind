@@ -3,7 +3,7 @@
 export const BAR_COUNT = 96
 
 export type VizState =
-  | 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool'
+  | 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
   | 'disconnected' // derived by the choreographer from connected === false
 
 export type VizEvent =

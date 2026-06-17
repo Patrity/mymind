@@ -45,4 +45,5 @@ export const PALETTE: Record<VizState, { core: [number, number, number]; ring: [
   speaking: { core: hex(0x22d3ee), ring: hex(0x155e75) },
   tool: { core: hex(0xf59e0b), ring: hex(0x78350f) },
   disconnected: { core: hex(0x475569), ring: hex(0x1e293b) },
+  typing: { core: hex(0x22d3ee), ring: hex(0x155e75) }, // calm cyan — reuse speaking colors
 }

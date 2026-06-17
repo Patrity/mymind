@@ -1,35 +1,25 @@
 <!-- app/components/voice/Composer.vue -->
 <script setup lang="ts">
-import { textStreamToTranscript } from '~/composables/useTextChat'
 import type { TranscriptEntry } from '~/composables/useVoice'
 
 const props = defineProps<{
   entries: TranscriptEntry[]
-  // Voice-loop injection: when connected, typed turns go over the voice WS
-  // (post-STT) so the agent animates and replies aloud.
+  // Voice-loop injection: typed turns go over the voice WS only.
+  // The composer is disabled (and shows a placeholder) when not connected.
   connected?: boolean
-  sendText?: (t: string) => boolean
+  sendText?: (t: string, speak?: boolean) => boolean
+  /** When true, typed sends request a spoken reply from the agent. */
+  speak?: boolean
 }>()
 const text = ref('')
-const busy = ref(false)
 
-async function send() {
+function send() {
   const q = text.value.trim()
-  if (!q || busy.value) return
+  if (!q || !props.connected) return
   text.value = ''
-  // Voice path: the server echoes the user transcript and streams the reply
+  // WS path only: the server echoes the user transcript and streams the reply
   // (text + audio + states) over the WS — nothing to await or append here.
-  if (props.connected && props.sendText?.(q)) return
-  busy.value = true
-  // Use a local alias so vue/no-mutating-props is not triggered; the parent
-  // intentionally passes a reactive array by reference for streaming appends.
-  const log = props.entries
-  log.push({ role: 'user', text: q })
-  try {
-    await textStreamToTranscript(log)
-  } finally {
-    busy.value = false
-  }
+  props.sendText?.(q, props.speak ?? false)
 }
 </script>
 
@@ -40,15 +30,14 @@ async function send() {
   >
     <UInput
       v-model="text"
-      placeholder="Type a message…"
+      :placeholder="connected ? 'Type a message…' : 'Connect to start chatting'"
       class="flex-1"
-      :disabled="busy"
+      :disabled="!connected"
     />
     <UButton
       type="submit"
       icon="i-lucide-send"
-      :loading="busy"
-      :disabled="!text.trim()"
+      :disabled="!connected || !text.trim()"
     />
   </form>
 </template>

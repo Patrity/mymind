@@ -23,7 +23,7 @@ describe('handleUtterance', () => {
   it('STT -> runAgent -> chunked TTS, emitting transcript/tool/audio events', async () => {
     const events: any[] = []
     await handleUtterance(new Uint8Array([1]), [], {
-      stt, tts, voice: 'af_heart', runAgent, signal: new AbortController().signal,
+      stt, tts, voice: 'af_heart', speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events.find(e => e.type === 'transcript' && e.role === 'user')?.text).toBe('what are my tasks')
@@ -35,7 +35,7 @@ describe('handleUtterance', () => {
   it('emits state:tool on tool-start and returns to thinking on tool-result', async () => {
     const events: any[] = []
     await handleUtterance(new Uint8Array([1]), [], {
-      stt, tts, voice: 'af_heart', runAgent: runAgentWithTool, signal: new AbortController().signal,
+      stt, tts, voice: 'af_heart', speak: true, runAgent: runAgentWithTool, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     const states = events.filter(e => e.type === 'state').map(e => e.state)
@@ -53,7 +53,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     const freshStt = { transcribe: vi.fn(async () => 'never') }
     void freshStt // typed turns have no stt dep at all — compile-time guarantee
     const history = await handleTurn('what are my tasks', [], {
-      tts, voice: 'af_heart', runAgent, signal: new AbortController().signal,
+      tts, voice: 'af_heart', speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events.find(e => e.type === 'transcript' && e.role === 'user')?.text).toBe('what are my tasks')
@@ -65,7 +65,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
   it('empty text is a no-op', async () => {
     const events: any[] = []
     const history = await handleTurn('', [{ role: 'user', content: 'hi' }], {
-      tts, voice: 'af_heart', runAgent, signal: new AbortController().signal,
+      tts, voice: 'af_heart', speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events).toEqual([])

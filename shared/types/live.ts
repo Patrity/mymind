@@ -11,6 +11,7 @@ export type ResourceName =
   | 'clipboard'
   | 'activity'
   | 'apiToken'
+  | 'conversation'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 

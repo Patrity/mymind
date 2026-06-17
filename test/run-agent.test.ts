@@ -17,7 +17,7 @@ describe('runAgent', () => {
     for await (const e of runAgent(
       [{ role: 'user', content: 'hi' }],
       { signal: new AbortController().signal },
-      { streamText: streamText as never, tools: [] }
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
     )) events.push(e)
     const text = events.filter(e => e.type === 'text-delta').map(e => e.text).join('')
     expect(text).toBe('Hello Tony')

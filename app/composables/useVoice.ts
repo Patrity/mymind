@@ -3,7 +3,7 @@ import { createEmitter } from '../lib/viz/emitter'
 import { mapServerMessage } from '../lib/voice/messages'
 import type { VizEvent } from '../lib/viz/types'
 
-export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool'
+export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
 export interface TranscriptEntry { role: 'user' | 'assistant'; text: string }
 
 // Capture/barge-in/playback knobs are user-tunable and cookie-persisted —
@@ -97,24 +97,28 @@ export function useVoice() {
   // audio nodes on a closed AudioContext ("No execution context available").
   let session = 0
 
-  async function start() {
+  /**
+   * Connect: build AudioContext (for playback) + open the WS. Does NOT start the
+   * VAD or request mic permission. Safe to call from a text-first UI without ever
+   * prompting for mic access.
+   */
+  async function connect() {
     if (ws || state.value === 'connecting') return
     error.value = null
     state.value = 'connecting'
     const mySession = ++session
     try {
-      await startInner(mySession)
+      await connectInner(mySession)
     } catch (err) {
       if (mySession !== session) return // torn down mid-start — stop() already cleaned up
-      // VAD asset import or mic permission failure would otherwise strand the
-      // UI in 'connecting' (or leave a live WS with no mic). Tear down fully.
+      // WS setup failure would otherwise strand the UI in 'connecting'.
       error.value = err instanceof Error ? err.message : 'Voice startup failed'
       events.emit({ type: 'error' })
       stop()
     }
   }
 
-  async function startInner(mySession: number) {
+  async function connectInner(mySession: number) {
     audioCtx = new AudioContext()
     outAnalyser = audioCtx.createAnalyser()
     outAnalyser.fftSize = 256
@@ -146,8 +150,39 @@ export function useVoice() {
         for (const ev of fx.events) events.emit(ev)
       }
     }
+    // connectInner does NOT call startVad — call enableMic() separately for mic input.
+    if (mySession !== session) return // stop() landed while setting up
+  }
 
-    await startVad(mySession)
+  /**
+   * Enable microphone input: start the VAD + getUserMedia. Requires the WS to be
+   * connected first (`connected.value === true`). No-op if VAD is already running.
+   */
+  async function enableMic() {
+    if (!connected.value || vad) return
+    const mySession = session
+    try {
+      await startVad(mySession)
+    } catch (err) {
+      if (mySession !== session) return
+      error.value = err instanceof Error ? err.message : 'Mic startup failed'
+      events.emit({ type: 'error' })
+    }
+  }
+
+  /**
+   * Disable microphone input: destroy the VAD and release the mic stream. The WS
+   * and AudioContext remain live — audio playback continues unaffected.
+   */
+  async function disableMic() {
+    if (!vad) return
+    const current = session
+    await vad.destroy()
+    if (current !== session) return // stop() raced us
+    vad = null
+    vizStream?.getTracks().forEach(t => t.stop())
+    vizStream = null
+    speechProb.value = 0
   }
 
   async function startVad(mySession: number) {
@@ -226,6 +261,14 @@ export function useVoice() {
     connected.value = false
   }
 
+  /**
+   * Backwards-compatible start(): equivalent to connect() (mic OFF by default —
+   * text-first UX). Call enableMic() afterwards for voice input.
+   */
+  async function start() {
+    await connect()
+  }
+
   onUnmounted(stop)
 
   return {
@@ -233,6 +276,13 @@ export function useVoice() {
     connected,
     transcript,
     error,
+    /** Connect the WS + AudioContext (no mic). Text-first entry point. */
+    connect,
+    /** Start VAD + request mic permission. Requires connected === true. */
+    enableMic,
+    /** Stop VAD + release mic stream. WS + playback remain live. */
+    disableMic,
+    /** Backwards-compatible alias for connect(). Mic stays OFF. */
     start,
     stop,
     setVoice: (provider: string, voice: string) => {
@@ -243,16 +293,33 @@ export function useVoice() {
     speechProb,
     applyVadSettings,
     /**
-     * Typed turn through the voice loop: injected server-side right after STT,
-     * so the agent animates and answers aloud. Returns false when the WS isn't
-     * open (caller should fall back to the text-only chat endpoint).
+     * Send a typed turn through the voice loop. Pass speak=true to have the
+     * agent answer aloud; speak=false (default) for text-only response.
+     * Returns false when the WS isn't open (caller should fall back to the
+     * text-only chat endpoint).
      */
-    sendText: (text: string): boolean => {
+    sendText: (text: string, speak = false): boolean => {
       const t = text.trim()
       if (!t || ws?.readyState !== WebSocket.OPEN) return false
       if (isPlaying()) { stopPlayback(); events.emit({ type: 'bargein' }) } // typed barge-in
-      ws.send(JSON.stringify({ type: 'text', text: t }))
+      ws.send(JSON.stringify({ type: 'text', text: t, speak }))
       return true
+    },
+    /**
+     * Resume a previous conversation by ID. The page is responsible for
+     * hydrating the transcript from the HTTP fetch (see T8).
+     */
+    loadConversation: (id: string) => {
+      if (ws?.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: 'load', conversationId: id }))
+    },
+    /**
+     * Start a fresh conversation: signals the server to reset context and
+     * clears the local transcript.
+     */
+    newConversation: () => {
+      transcript.value = []
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))
     },
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,

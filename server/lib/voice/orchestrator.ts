@@ -9,14 +9,16 @@ export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
   | { type: 'tool'; name: string; summary: string; undoToken?: string }
   | { type: 'audio'; bytes: Uint8Array }
-  | { type: 'state'; state: 'thinking' | 'speaking' | 'tool' | 'idle' }
+  | { type: 'state'; state: 'thinking' | 'speaking' | 'typing' | 'tool' | 'idle' }
 
 export interface TurnDeps {
   tts: TtsProvider
   voice: string
   signal: AbortSignal
+  speak: boolean
+  context?: string
   emit: (e: VoiceEvent) => void
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; voice?: boolean }) => AsyncGenerator<AgentEvent>
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -63,12 +65,19 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     }
   }
 
-  for await (const ev of run(messages, { signal: deps.signal, voice: true })) {
+  let sawText = false
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context: deps.context })) {
     if (deps.signal.aborted) break
     if (ev.type === 'text-delta') {
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })
-      for (const chunk of chunker.push(ev.text)) await speak(chunk)
+      if (deps.speak) {
+        for (const chunk of chunker.push(ev.text)) await speak(chunk)
+      } else if (!sawText) {
+        // Text-only turn: no TTS; signal the client to animate a typing state.
+        deps.emit({ type: 'state', state: 'typing' })
+      }
+      sawText = true
     } else if (ev.type === 'tool-start') {
       deps.emit({ type: 'state', state: 'tool' })
     } else if (ev.type === 'tool-result') {
@@ -77,7 +86,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     }
   }
   if (deps.signal.aborted) return messages
-  for (const chunk of chunker.flush()) await speak(chunk)
+  if (deps.speak) for (const chunk of chunker.flush()) await speak(chunk)
   deps.emit({ type: 'state', state: 'idle' })
 
   return assistantText ? [...messages, { role: 'assistant', content: assistantText }] : messages
