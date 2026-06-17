@@ -39,19 +39,21 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'save_memory',
-    description: 'Store a new memory (with deduplication).',
+    description: 'Store ONE concise, durable fact (a single sentence) with deduplication. Prefer this only for cross-session facts the enrichment loop can\'t derive from a transcript (e.g. a user preference); do NOT paste long architecture/design detail. Pass `confidence` (0-1) — a value >= 0.75 auto-reviews the memory; omit it to leave the memory for manual review.',
     kind: 'create',
     schema: {
       content: z.string().max(20_000),
       scope: z.enum(['user', 'agent', 'world']),
       project: z.string().optional(),
       tags: z.array(z.string()).optional(),
-      source: z.string().optional()
+      source: z.string().optional(),
+      confidence: z.number().min(0).max(1).optional()
     },
     handler: async (a) => {
       const m = await createMemory({
         content: a.content as string, scope: a.scope as undefined,
-        project: (a.project as string) ?? null, tags: a.tags as undefined, source: (a.source as string) ?? 'voice'
+        project: (a.project as string) ?? null, tags: a.tags as undefined, source: (a.source as string) ?? 'voice',
+        confidence: (a.confidence as number | undefined) ?? null
       })
       publishChange({ resource: 'memory', action: 'created', id: (m as { id: string }).id })
       return {
