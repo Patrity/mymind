@@ -39,6 +39,7 @@ export default defineEventHandler(async (event) => {
     publishChange({ resource: 'session', action: 'updated', id: project.slug })
     publishChange({ resource: 'task', action: 'updated', id: project.slug })
     publishChange({ resource: 'memory', action: 'updated', id: project.slug })
+    publishChange({ resource: 'document', action: 'updated', id: project.slug })
   }
 
   return project

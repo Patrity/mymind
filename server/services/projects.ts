@@ -1,6 +1,6 @@
 import { eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { projects, sessions, memories, tasks } from '../db/schema'
+import { projects, sessions, memories, tasks, documents } from '../db/schema'
 import type { ProjectDTO } from '../../shared/types/tasks'
 import { slugify } from '../../shared/utils/slugify'
 import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/projects/git-remote'
@@ -118,12 +118,24 @@ export async function updateProject(slug: string, patch: UpdateProjectInput): Pr
     const [conflict] = await db.select({ id: projects.id }).from(projects).where(eq(projects.slug, newSlug)).limit(1)
     if (conflict) throw new Error(`Project slug "${newSlug}" already exists`)
 
+    // Fetch the canonical project id before the transaction — used for the
+    // documents cascade (project_id is unchanged by a rename).
+    const existingRow = await projectRowBySlug(slug)
+    if (!existingRow) return null
+
     update.slug = newSlug
     await db.transaction(async (tx) => {
       await tx.update(projects).set(update as Partial<typeof projects.$inferInsert>).where(eq(projects.slug, slug))
       await tx.update(sessions).set({ project: newSlug }).where(eq(sessions.project, slug))
       await tx.update(tasks).set({ project: newSlug }).where(eq(tasks.project, slug))
       await tx.update(memories).set({ project: newSlug }).where(eq(memories.project, slug))
+      await tx.update(documents)
+        .set({
+          project: newSlug,
+          path: sql`regexp_replace(${documents.path}, ${'^/projects/' + slug + '/'}, ${'/projects/' + newSlug + '/'})`,
+          updatedAt: new Date()
+        })
+        .where(eq(documents.projectId, existingRow.id))
     })
     return getProject(newSlug)
   }

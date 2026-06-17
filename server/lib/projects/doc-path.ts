@@ -12,3 +12,17 @@ export function projectFromPath(path: string): string | null {
   const m = /^\/projects\/([^/]+)\//.exec(path)
   return m ? m[1]! : null
 }
+
+/**
+ * If `path` starts with `/projects/<oldSlug>/` (slash-boundary required),
+ * replaces that prefix with `/projects/<newSlug>/` and returns the result.
+ * Returns `path` unchanged for all other inputs (different project, no
+ * trailing slash, non-project paths). Pure — mirrors the SQL
+ * `regexp_replace(path, '^/projects/<old>/', '/projects/<new>/')`.
+ * Slugs are `[a-z0-9-]+` and therefore regex-safe.
+ */
+export function rewriteProjectPathPrefix(path: string, oldSlug: string, newSlug: string): string {
+  const prefix = `/projects/${oldSlug}/`
+  if (!path.startsWith(prefix)) return path
+  return `/projects/${newSlug}/` + path.slice(prefix.length)
+}
