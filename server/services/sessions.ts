@@ -4,7 +4,7 @@ import { sessions, messages, toolEvents } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
 import { publishChange } from '../utils/live-bus'
 import { findOrCreateProject } from './projects'
-import type { SessionListItem, SessionDetail, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
+import type { SessionListItem, SessionDetail, SessionMeta, SessionMessages, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -238,7 +238,7 @@ export async function listSessions(opts: ListSessionsOptions = {}): Promise<Sess
   }))
 }
 
-export async function getSession(id: string): Promise<SessionDetail | null> {
+export async function getSessionMeta(id: string): Promise<SessionMeta | null> {
   const db = useDb()
 
   const [session] = await db
@@ -248,39 +248,6 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
     .limit(1)
 
   if (!session) return null
-
-  const msgs = await db
-    .select()
-    .from(messages)
-    .where(eq(messages.sessionId, id))
-    .orderBy(asc(messages.createdAt))
-
-  const messageDTOs: SessionMessageDTO[] = msgs.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    thinking: m.thinking,
-    model: m.model,
-    isSidechain: m.isSidechain,
-    metadata: (m.metadata as Record<string, unknown>) ?? {},
-    createdAt: m.createdAt.toISOString()
-  }))
-
-  const tevs = await db.select().from(toolEvents)
-    .where(eq(toolEvents.sessionId, id)).orderBy(asc(toolEvents.createdAt))
-
-  const toolEventDTOs: SessionToolEventDTO[] = tevs.map(t => ({
-    id: t.id,
-    messageId: t.messageId,
-    toolName: t.toolName,
-    args: t.args,
-    result: t.result,
-    exitStatus: t.exitStatus,
-    phase: t.phase,
-    toolUseId: t.toolUseId,
-    isSidechain: t.isSidechain,
-    createdAt: t.createdAt.toISOString()
-  }))
 
   return {
     id: session.id,
@@ -301,8 +268,25 @@ export async function getSession(id: string): Promise<SessionDetail | null> {
     gitRemote: session.gitRemote,
     appVersion: session.appVersion,
     endedAt: session.endedAt?.toISOString() ?? null,
-    metadata: (session.metadata as Record<string, unknown>) ?? {},
-    messages: messageDTOs,
-    toolEvents: toolEventDTOs
+    metadata: (session.metadata as Record<string, unknown>) ?? {}
   }
+}
+
+export async function getSessionMessages(id: string, opts: { since?: string } = {}): Promise<SessionMessages> {
+  const db = useDb()
+  const msgs = await db.select().from(messages)
+    .where(opts.since
+      ? sql`${messages.sessionId} = ${id} and ${messages.createdAt} > ${opts.since}`
+      : eq(messages.sessionId, id))
+    .orderBy(asc(messages.createdAt))
+  const messageDTOs: SessionMessageDTO[] = msgs.map(m => ({
+    id: m.id, role: m.role, content: m.content, thinking: m.thinking, model: m.model,
+    isSidechain: m.isSidechain, metadata: (m.metadata as Record<string, unknown>) ?? {}, createdAt: m.createdAt.toISOString()
+  }))
+  const tevs = await db.select().from(toolEvents).where(eq(toolEvents.sessionId, id)).orderBy(asc(toolEvents.createdAt))
+  const toolEventDTOs: SessionToolEventDTO[] = tevs.map(t => ({
+    id: t.id, messageId: t.messageId, toolName: t.toolName, args: t.args, result: t.result,
+    exitStatus: t.exitStatus, phase: t.phase, toolUseId: t.toolUseId, isSidechain: t.isSidechain, createdAt: t.createdAt.toISOString()
+  }))
+  return { messages: messageDTOs, toolEvents: toolEventDTOs }
 }

@@ -48,3 +48,19 @@ export interface SessionDetail extends SessionListItem {
   messages: SessionMessageDTO[]
   toolEvents: SessionToolEventDTO[]
 }
+
+export interface SessionMeta extends SessionListItem {
+  cwd: string | null
+  machineId: string | null
+  gitBranch: string | null
+  gitCommit: string | null
+  gitRemote: string | null
+  appVersion: string | null
+  endedAt: string | null
+  metadata: Record<string, unknown>
+}
+
+export interface SessionMessages {
+  messages: SessionMessageDTO[]
+  toolEvents: SessionToolEventDTO[]
+}
