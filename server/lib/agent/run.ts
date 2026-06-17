@@ -2,8 +2,8 @@
 import { streamText as realStreamText, stepCountIs } from 'ai'
 import { reasoningModels } from './model'
 import { buildAiTools } from './ai-tools'
-import { agentTools as realRegistry } from './tools'
-import { buildSystemPrompt } from './prompt'
+import { buildSystemPrompt as realBuildSystemPrompt } from './prompt'
+import { bridgetProfile, type AgentProfile } from './profile'
 import { publishActivity } from './bus'
 import { VOICE_TUNING } from '../voice/tuning'
 import type { AgentTool } from './types'
@@ -19,17 +19,27 @@ export type AgentEvent =
 // Structural type for the streamText dep: only what runAgent actually uses.
 type StreamTextFn = (args: never) => { fullStream: AsyncIterable<unknown> }
 
-export interface RunDeps { streamText?: StreamTextFn; tools?: AgentTool[] }
+export interface RunDeps {
+  streamText?: StreamTextFn
+  tools?: AgentTool[]
+  buildSystemPrompt?: (o: { profile?: { personaKey: string }; speak: boolean; context?: string }) => Promise<string>
+}
 
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; voice?: boolean },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
-  const registry = deps.tools ?? realRegistry
+  const profile = ctx.profile ?? bridgetProfile
+  const registry = deps.tools ?? profile.tools
+  const buildPrompt = deps.buildSystemPrompt ?? realBuildSystemPrompt
   const queue: AgentEvent[] = []
   const tools = buildAiTools(registry, { signal: ctx.signal, onEvent: e => queue.push(e) })
+
+  // Compute the system prompt ONCE before the model loop (the persona + live
+  // context are stable for the turn; the loop only retries model construction).
+  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context })
 
   publishActivity({ type: 'state', state: 'thinking' })
 
@@ -45,7 +55,7 @@ export async function* runAgent(
     try {
       result = (streamTextFn as unknown as typeof realStreamText)({
         model,
-        system: buildSystemPrompt(ctx.voice ?? false),
+        system,
         messages: messages.filter(m => m.role !== 'system'),
         tools,
         stopWhen: stepCountIs(VOICE_TUNING.agent.maxSteps),

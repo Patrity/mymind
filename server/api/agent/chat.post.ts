@@ -16,7 +16,7 @@ export default defineEventHandler(async (event) => {
   })
   res.flushHeaders()
   try {
-    for await (const ev of runAgent(messages, { signal: ac.signal, voice: false })) {
+    for await (const ev of runAgent(messages, { signal: ac.signal, speak: false })) {
       if (ev.type === 'text-delta') res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: ev.text } }] })}\n\n`)
     }
   } finally {

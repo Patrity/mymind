@@ -61,13 +61,13 @@ export default defineWebSocketHandler({
       if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
         // Typed turn: inject post-STT — same agent loop, same TTS, same events.
         const text = msg.text.trim()
-        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, signal, emit })
+        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak: true, signal, emit })
       } else {
         return
       }
     } else {
       const audio = frame.bytes
-      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, signal, emit })
+      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, signal, emit })
     }
     s.ac?.abort()
     s.ac = new AbortController()
