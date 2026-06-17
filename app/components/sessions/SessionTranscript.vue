@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useVirtualList } from '@vueuse/core'
 import type { SessionMessageDTO, SessionToolEventDTO } from '~~/shared/types/session'
 
 const props = defineProps<{
@@ -6,6 +7,19 @@ const props = defineProps<{
   toolEvents: SessionToolEventDTO[]
   loading?: boolean
 }>()
+
+// ── Virtualization ────────────────────────────────────────────────────────────
+// Only the visible window of message rows is mounted in the DOM, so multi-thousand
+// message imported sessions scroll smoothly. Individual rows are height-bounded
+// (internal max-h scrolls on big content) so a constant item-height estimate works.
+const { list, containerProps, wrapperProps } = useVirtualList(
+  computed(() => props.messages),
+  { itemHeight: 140, overscan: 10 },
+)
+
+// Scroll container ref — a later task uses it for virtualization / scroll control.
+// containerProps.ref is the same node the virtual list scrolls; alias it so both work.
+const scrollEl = containerProps.ref
 
 // ── Message classification ────────────────────────────────────────────────────
 type MsgKind = 'user' | 'assistant' | 'tool'
@@ -64,9 +78,6 @@ const toolEventsByMsg = computed(() => {
 function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
   return s === 'ok' ? 'success' : s ? 'error' : 'neutral'
 }
-
-// Scroll container ref — a later task uses it for virtualization / scroll control.
-const scrollEl = ref<HTMLElement | null>(null)
 </script>
 
 <template>
@@ -75,24 +86,46 @@ const scrollEl = ref<HTMLElement | null>(null)
       Transcript
     </h2>
 
-    <!-- Scroll area fills the pane -->
+    <!-- Loading skeleton (outside the virtual list) -->
     <div
-      ref="scrollEl"
+      v-if="loading && !messages.length"
       class="space-y-2 h-full overflow-y-auto pr-1"
     >
-      <!-- Loading -->
-      <template v-if="loading && !messages.length">
-        <USkeleton
-          v-for="i in 5"
-          :key="i"
-          class="h-24 w-full rounded-lg"
-        />
-      </template>
+      <USkeleton
+        v-for="i in 5"
+        :key="i"
+        class="h-24 w-full rounded-lg"
+      />
+    </div>
 
-      <template
-        v-for="msg in messages"
-        :key="msg.id"
+    <!-- Empty transcript (outside the virtual list) -->
+    <div
+      v-else-if="!loading && !messages.length"
+      class="flex flex-col items-center justify-center py-16 gap-3 text-center h-full overflow-y-auto pr-1"
+    >
+      <UIcon
+        name="i-lucide-message-square-off"
+        class="size-10 text-muted"
+      />
+      <p class="text-sm text-muted">
+        No messages in this session
+      </p>
+    </div>
+
+    <!-- Virtualized scroll area fills the pane: only the visible window is mounted -->
+    <div
+      v-else
+      v-bind="containerProps"
+      class="h-full overflow-y-auto pr-1"
+    >
+      <div
+        v-bind="wrapperProps"
+        class="space-y-2"
       >
+        <template
+          v-for="{ data: msg } in list"
+          :key="msg.id"
+        >
         <!-- Tool turn -->
         <div
           v-if="msgKind(msg) === 'tool'"
@@ -248,20 +281,7 @@ const scrollEl = ref<HTMLElement | null>(null)
             </UCard>
           </div>
         </div>
-      </template>
-
-      <!-- Empty transcript -->
-      <div
-        v-if="!loading && !messages.length"
-        class="flex flex-col items-center justify-center py-16 gap-3 text-center"
-      >
-        <UIcon
-          name="i-lucide-message-square-off"
-          class="size-10 text-muted"
-        />
-        <p class="text-sm text-muted">
-          No messages in this session
-        </p>
+        </template>
       </div>
     </div>
   </div>
