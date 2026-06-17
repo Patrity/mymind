@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ProjectDTO } from '~~/shared/types/tasks'
-import { projectColor, PROJECT_PALETTE } from '~/utils/project-color'
+import { PROJECT_PALETTE, NEUTRAL_COLOR } from '~/utils/project-color'
 
 definePageMeta({ title: 'Projects' })
 
@@ -20,11 +20,6 @@ watch(error, (err) => {
 function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
-
-// The palette swatch highlighted as "auto" when no override is set.
-const autoColor = computed(() =>
-  editingProject.value ? projectColor(editingProject.value.slug, null) : null
-)
 
 // ── Toggle active inline ───────────────────────────────────────────────────────
 async function toggleActive(project: { slug: string }, active: boolean) {
@@ -470,29 +465,35 @@ async function confirmDelete() {
             <div class="flex flex-col gap-3">
               <div class="flex flex-wrap items-center gap-2">
                 <button
+                  type="button"
+                  class="size-6 rounded-full ring-offset-2 ring-offset-default transition-all"
+                  :class="editForm.color === null ? 'ring-2 ring-inverted' : 'hover:scale-110'"
+                  :style="{ backgroundColor: NEUTRAL_COLOR }"
+                  aria-label="Default color"
+                  @click="editForm.color = null"
+                >
+                  <UIcon
+                    v-if="editForm.color === null"
+                    name="i-lucide-check"
+                    class="size-4 text-white"
+                  />
+                </button>
+                <button
                   v-for="hex in PROJECT_PALETTE"
                   :key="hex"
                   type="button"
                   class="size-6 rounded-full ring-offset-2 ring-offset-default transition-all"
-                  :class="(editForm.color === hex || (editForm.color === null && autoColor === hex)) ? 'ring-2 ring-inverted' : 'hover:scale-110'"
+                  :class="editForm.color === hex ? 'ring-2 ring-inverted' : 'hover:scale-110'"
                   :style="{ backgroundColor: hex }"
                   :aria-label="`Set color ${hex}`"
                   @click="editForm.color = hex"
                 >
                   <UIcon
-                    v-if="editForm.color === hex || (editForm.color === null && autoColor === hex)"
+                    v-if="editForm.color === hex"
                     name="i-lucide-check"
                     class="size-4 text-white"
                   />
                 </button>
-                <UButton
-                  size="xs"
-                  color="neutral"
-                  variant="ghost"
-                  icon="i-lucide-rotate-ccw"
-                  label="Reset to auto"
-                  @click="editForm.color = null"
-                />
               </div>
               <ProjectBadge
                 :slug="editingProject?.slug ?? ''"

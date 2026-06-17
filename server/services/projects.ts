@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm'
+import { eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { projects, sessions, memories } from '../db/schema'
 import type { ProjectDTO } from '../../shared/types/tasks'
@@ -110,15 +110,36 @@ export async function deleteProject(slug: string): Promise<boolean> {
 
 /**
  * Resolve a session's project. Matches on the normalized git remote (then aliases),
- * creating a project on first sight; sessions with no remote return the seeded
- * Uncategorized bucket. Race on git_remote_key falls back to re-select.
+ * creating a project on first sight. Sessions with no remote MATCH an existing
+ * project by cwd label (slug / aliases) but never create — falling back to the
+ * seeded Uncategorized bucket. Race on git_remote_key falls back to re-select.
  */
 export async function findOrCreateProject(input: { gitRemote?: string | null, cwd?: string | null }): Promise<typeof projects.$inferSelect> {
   const db = useDb()
   const key = normalizeGitRemote(input.gitRemote)
   const cwd = input.cwd ?? null
 
+  // Touch a matched project: append cwd to local_paths + bump last_activity_at.
+  const touch = async (proj: typeof projects.$inferSelect): Promise<typeof projects.$inferSelect> => {
+    const localPaths = (proj.localPaths ?? [])
+    const nextPaths = cwd && !localPaths.includes(cwd) ? [...localPaths, cwd] : localPaths
+    const now = new Date()
+    await db.update(projects).set({ localPaths: nextPaths, lastActivityAt: now, updatedAt: now }).where(eq(projects.id, proj.id))
+    return { ...proj, localPaths: nextPaths, lastActivityAt: now }
+  }
+
   if (!key) {
+    // No git remote: try to MATCH (never create) an existing project by cwd label / slug / alias.
+    const label = cwd ? cwd.split('/').filter(Boolean).at(-1) ?? null : null
+    if (label) {
+      const lslug = slugify(label)
+      const [match] = await db.select().from(projects).where(or(
+        eq(projects.slug, lslug),
+        sql`${projects.aliases} @> ARRAY[${label}]::text[]`,
+        sql`${projects.aliases} @> ARRAY[${lslug}]::text[]`
+      )).limit(1)
+      if (match) return touch(match)
+    }
     const [u] = await db.select().from(projects).where(eq(projects.slug, 'uncategorized')).limit(1)
     return u! // seeded by migration 0019
   }
@@ -127,12 +148,7 @@ export async function findOrCreateProject(input: { gitRemote?: string | null, cw
   if (!proj) {
     ;[proj] = await db.select().from(projects).where(sql`${projects.aliases} @> ARRAY[${key}]::text[]`).limit(1)
   }
-  if (proj) {
-    const localPaths = (proj.localPaths ?? [])
-    const nextPaths = cwd && !localPaths.includes(cwd) ? [...localPaths, cwd] : localPaths
-    await db.update(projects).set({ localPaths: nextPaths, lastActivityAt: new Date(), updatedAt: new Date() }).where(eq(projects.id, proj.id))
-    return { ...proj, localPaths: nextPaths, lastActivityAt: new Date() }
-  }
+  if (proj) return touch(proj)
 
   const taken = new Set((await db.select({ slug: projects.slug }).from(projects)).map(r => r.slug))
   const slug = nextUniqueSlug(slugify(repoNameFromKey(key)) || 'project', taken)
