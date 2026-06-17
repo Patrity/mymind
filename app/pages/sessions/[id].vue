@@ -1,23 +1,25 @@
 <script setup lang="ts">
-import type { SessionMessageDTO, SessionToolEventDTO } from '~~/shared/types/session'
 import { useTimeAgo } from '@vueuse/core'
+import SessionTranscript from '~/components/sessions/SessionTranscript.vue'
 
 definePageMeta({ title: 'Session' })
 
 const route = useRoute()
-const { useSessionDetail } = useSessions()
+const { useSessionMeta, useSessionMessages } = useSessions()
 const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
-const { data: session, isPending, error } = useSessionDetail(() => route.params.id as string)
-const loading = computed(() => isPending.value)
-const notFound = computed(() => !isPending.value && (error.value != null))
+const { data: meta, isPending: metaPending, error } = useSessionMeta(() => route.params.id as string)
+const { data: msgData, isPending: messagesPending } = useSessionMessages(() => route.params.id as string)
+const messages = computed(() => msgData.value?.messages ?? [])
+const toolEvents = computed(() => msgData.value?.toolEvents ?? [])
+const metaNotFound = computed(() => !metaPending.value && (error.value != null))
 
 watch(error, (err) => {
   if (!err) return
   const e = err as { status?: number; data?: { statusCode?: number } }
   if (e.status === 404 || e.data?.statusCode === 404) {
-    // notFound is derived above — no toast needed for 404
+    // metaNotFound is derived above — no toast needed for 404
     return
   }
   toast.add({ color: 'error', title: 'Failed to load session' })
@@ -51,73 +53,15 @@ function sourceColor(source: string): 'primary' | 'info' | 'warning' | 'neutral'
   return 'neutral'
 }
 
-// ── Message classification ────────────────────────────────────────────────────
-type MsgKind = 'user' | 'assistant' | 'tool'
-
-function msgKind(msg: SessionMessageDTO): MsgKind {
-  if (msg.metadata?.type === 'tool_result') return 'tool'
-  if (Array.isArray(msg.metadata?.tools) && (msg.metadata.tools as unknown[]).length > 0) return 'tool'
-  if (msg.role === 'assistant') return 'assistant'
-  return 'user'
-}
-
-function toolNames(msg: SessionMessageDTO): string[] {
-  const tools = (msg.metadata as { tools?: unknown }).tools
-  if (Array.isArray(tools)) {
-    return tools
-      .map(t => typeof t === 'string' ? t : (t && typeof t === 'object' ? ((t as { name?: string }).name ?? 'tool') : 'tool'))
-      .filter(Boolean)
-  }
-  if (msg.metadata?.type === 'tool_result') {
-    const name = (msg.metadata?.tool_name as string | undefined)
-    return name ? [name] : ['tool_result']
-  }
-  return []
-}
-
-function hasMetaDetails(msg: SessionMessageDTO): boolean {
-  return Object.keys(msg.metadata ?? {}).length > 0
-}
-
-function metaJson(msg: SessionMessageDTO): string {
-  try {
-    return JSON.stringify(msg.metadata, null, 2)
-  } catch {
-    return String(msg.metadata)
-  }
-}
-
 // ── Git / metadata from session ────────────────────────────────────────────────
-const gitBranch = computed(() => session.value?.gitBranch ?? null)
-const gitRepo = computed(() => session.value?.gitRemote ?? null)
-const gitCommit = computed(() => session.value?.gitCommit ?? null)
+const gitBranch = computed(() => meta.value?.gitBranch ?? null)
+const gitRepo = computed(() => meta.value?.gitRemote ?? null)
+const gitCommit = computed(() => meta.value?.gitCommit ?? null)
 
 const sessionTitle = computed(() => {
-  if (!session.value) return ''
-  return session.value.title || session.value.summary || '(untitled session)'
+  if (!meta.value) return ''
+  return meta.value.title || meta.value.summary || '(untitled session)'
 })
-
-// Open state tracking for metadata collapsibles
-const openMeta = ref<Record<string, boolean>>({})
-function toggleMeta(id: string) {
-  openMeta.value[id] = !openMeta.value[id]
-}
-
-// ── Tool events ───────────────────────────────────────────────────────────────
-const toolEventsByMsg = computed(() => {
-  const m = new Map<string, SessionToolEventDTO[]>()
-  for (const te of session.value?.toolEvents ?? []) {
-    if (!te.messageId) continue
-    const arr = m.get(te.messageId) ?? []
-    arr.push(te)
-    m.set(te.messageId, arr)
-  }
-  return m
-})
-
-function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
-  return s === 'ok' ? 'success' : s ? 'error' : 'neutral'
-}
 </script>
 
 <template>
@@ -147,7 +91,7 @@ function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
     <template #body>
       <!-- Loading -->
       <div
-        v-if="loading"
+        v-if="metaPending"
         class="p-4 space-y-4 max-w-4xl mx-auto"
       >
         <USkeleton class="h-10 w-2/3 rounded-lg" />
@@ -161,7 +105,7 @@ function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
 
       <!-- Not found -->
       <div
-        v-else-if="notFound"
+        v-else-if="metaNotFound"
         class="flex flex-col items-center justify-center py-32 gap-4 text-center"
       >
         <UIcon
@@ -185,289 +129,128 @@ function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
         </UButton>
       </div>
 
-      <!-- Content -->
+      <!-- Content: resizable split-pane (LEFT metadata / RIGHT transcript) -->
       <div
-        v-else-if="session"
-        class="p-4 space-y-5 max-w-4xl mx-auto w-full"
+        v-else-if="meta"
+        class="flex flex-1 min-w-0 h-full"
       >
-        <!-- Header card -->
-        <UCard>
-          <!-- Title / summary -->
-          <div class="space-y-2">
-            <div class="flex items-center gap-2 flex-wrap">
-              <UBadge
-                :label="session.source"
-                :color="sourceColor(session.source)"
-                variant="subtle"
-                size="sm"
-              />
-              <UBadge
-                v-if="session.project"
-                :label="session.project"
-                color="neutral"
-                variant="outline"
-                size="sm"
-              />
-            </div>
-            <h1 class="text-lg font-semibold text-highlighted leading-snug">
-              {{ sessionTitle }}
-            </h1>
-            <p
-              v-if="session.title && session.summary"
-              class="text-sm text-muted leading-relaxed"
-            >
-              {{ session.summary }}
-            </p>
-          </div>
-
-          <!-- Stats row -->
-          <div class="mt-4 flex flex-wrap gap-4 text-sm">
-            <div class="flex items-center gap-1.5 text-muted">
-              <UIcon name="i-lucide-message-circle" class="size-4" />
-              <span>{{ session.messageCount }} messages</span>
-            </div>
-            <div class="flex items-center gap-1.5 text-muted">
-              <UIcon name="i-lucide-wrench" class="size-4" />
-              <span>{{ session.toolCount }} tool calls</span>
-            </div>
-            <div class="flex items-center gap-1.5 text-info">
-              <UIcon name="i-lucide-arrow-up" class="size-4" />
-              <span>{{ formatTokens(session.inputTokens) }} in</span>
-            </div>
-            <div class="flex items-center gap-1.5 text-success">
-              <UIcon name="i-lucide-arrow-down" class="size-4" />
-              <span>{{ formatTokens(session.outputTokens) }} out</span>
-            </div>
-          </div>
-
-          <!-- Dates -->
-          <div class="mt-3 flex flex-wrap gap-4 text-xs text-dimmed">
-            <span>
-              Started {{ formatDateFull(session.startedAt) }}
-            </span>
-            <span>
-              Last active {{ relativeTime(session.lastActive) }}
-            </span>
-          </div>
-
-          <!-- CWD + git + machine -->
-          <div
-            v-if="session.cwd || gitBranch || gitRepo || session.machineId || session.appVersion"
-            class="mt-3 pt-3 border-t border-default space-y-1"
-          >
-            <p
-              v-if="session.cwd"
-              class="text-xs text-dimmed font-mono truncate"
-            >
-              <UIcon name="i-lucide-folder" class="size-3.5 inline mr-1" />{{ session.cwd }}
-            </p>
-            <p
-              v-if="gitRepo"
-              class="text-xs text-dimmed font-mono truncate"
-            >
-              <UIcon name="i-lucide-git-commit-horizontal" class="size-3.5 inline mr-1" />{{ gitRepo }}
-            </p>
-            <p
-              v-if="gitBranch"
-              class="text-xs text-dimmed font-mono"
-            >
-              <UIcon name="i-lucide-git-branch" class="size-3.5 inline mr-1" />{{ gitBranch }}{{ gitCommit ? ' @ ' + gitCommit.slice(0, 8) : '' }}
-            </p>
-            <p
-              v-if="session.machineId"
-              class="text-xs text-dimmed font-mono truncate"
-            >
-              <UIcon name="i-lucide-monitor" class="size-3.5 inline mr-1" />{{ session.machineId }}
-            </p>
-            <p
-              v-if="session.appVersion"
-              class="text-xs text-dimmed font-mono"
-            >
-              <UIcon name="i-lucide-tag" class="size-3.5 inline mr-1" />{{ session.appVersion }}
-            </p>
-          </div>
-        </UCard>
-
-        <!-- Transcript -->
-        <div class="space-y-2">
-          <h2 class="text-sm font-semibold text-muted uppercase tracking-wider px-1">
-            Transcript
-          </h2>
-
-          <!-- Scroll area with max height -->
-          <div class="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
-            <template
-              v-for="msg in session.messages"
-              :key="msg.id"
-            >
-              <!-- Tool turn -->
-              <div
-                v-if="msgKind(msg) === 'tool'"
-                class="flex items-start gap-2"
-                :class="msg.isSidechain ? 'opacity-70' : ''"
-              >
-                <div class="w-full">
-                  <UCard :ui="{ root: 'bg-elevated/40 border-muted', body: 'py-2 px-3' }">
-                    <div class="flex items-start justify-between gap-2">
-                      <div class="flex items-center gap-1.5 flex-wrap">
-                        <UIcon name="i-lucide-wrench" class="size-3.5 text-warning shrink-0 mt-0.5" />
-                        <template v-if="!toolEventsByMsg.get(msg.id)?.length">
-                          <UBadge
-                            v-for="name in toolNames(msg)"
-                            :key="name"
-                            :label="name"
-                            color="warning"
-                            variant="subtle"
-                            size="xs"
-                          />
-                          <UBadge
-                            v-if="msg.metadata?.type === 'tool_result'"
-                            label="result"
-                            color="neutral"
-                            variant="outline"
-                            size="xs"
-                          />
-                        </template>
-                      </div>
-                      <!-- Meta toggle -->
-                      <UButton
-                        v-if="hasMetaDetails(msg)"
-                        icon="i-lucide-chevron-down"
-                        :class="openMeta[msg.id] ? 'rotate-180' : ''"
-                        color="neutral"
-                        variant="ghost"
-                        size="xs"
-                        class="shrink-0 transition-transform"
-                        @click="toggleMeta(msg.id)"
-                      />
-                    </div>
-                    <div
-                      v-if="msg.content"
-                      class="mt-1.5 text-xs text-muted font-mono line-clamp-3"
-                    >
-                      {{ msg.content.slice(0, 300) }}{{ msg.content.length > 300 ? '…' : '' }}
-                    </div>
-                    <!-- Tool event detail (new rows with tool_events populated) -->
-                    <template v-if="toolEventsByMsg.get(msg.id)?.length">
-                      <div
-                        v-for="te in toolEventsByMsg.get(msg.id)"
-                        :key="te.id"
-                        class="mt-1.5"
-                      >
-                        <div class="flex items-center gap-1.5 flex-wrap">
-                          <UBadge :label="te.toolName" color="warning" variant="subtle" size="xs" />
-                          <UBadge v-if="te.exitStatus" :label="te.exitStatus" :color="exitColor(te.exitStatus)" variant="subtle" size="xs" />
-                        </div>
-                        <pre v-if="te.args" class="mt-1 text-xs text-dimmed font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{{ JSON.stringify(te.args, null, 2).slice(0, 500) }}</pre>
-                        <pre v-if="te.result" class="mt-1 text-xs text-muted font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{{ typeof te.result === 'string' ? te.result.slice(0, 500) : JSON.stringify(te.result, null, 2).slice(0, 500) }}</pre>
-                      </div>
-                    </template>
-                    <div
-                      v-if="openMeta[msg.id]"
-                      class="mt-2 pt-2 border-t border-muted"
-                    >
-                      <pre class="text-xs text-dimmed font-mono overflow-x-auto whitespace-pre-wrap break-words max-h-48">{{ metaJson(msg) }}</pre>
-                    </div>
-                  </UCard>
+        <UDashboardPanel
+          id="session-meta"
+          resizable
+          :default-size="34"
+          :min-size="22"
+          :max-size="55"
+          class="border-r border-default"
+        >
+          <template #body>
+            <div class="p-4 overflow-y-auto h-full">
+              <!-- Header card -->
+              <UCard>
+                <!-- Title / summary -->
+                <div class="space-y-2">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <UBadge
+                      :label="meta.source"
+                      :color="sourceColor(meta.source)"
+                      variant="subtle"
+                      size="sm"
+                    />
+                    <UBadge
+                      v-if="meta.project"
+                      :label="meta.project"
+                      color="neutral"
+                      variant="outline"
+                      size="sm"
+                    />
+                  </div>
+                  <h1 class="text-lg font-semibold text-highlighted leading-snug">
+                    {{ sessionTitle }}
+                  </h1>
+                  <p
+                    v-if="meta.title && meta.summary"
+                    class="text-sm text-muted leading-relaxed"
+                  >
+                    {{ meta.summary }}
+                  </p>
                 </div>
-              </div>
 
-              <!-- User turn -->
-              <div
-                v-else-if="msgKind(msg) === 'user'"
-                class="flex justify-end"
-                :class="msg.isSidechain ? 'opacity-70' : ''"
-              >
-                <div class="max-w-[85%]">
-                  <UCard :ui="{ root: 'bg-primary/10 border-primary/20', body: 'py-2.5 px-3.5' }">
-                    <div class="flex items-start justify-between gap-2 mb-1.5">
-                      <UBadge
-                        label="user"
-                        color="primary"
-                        variant="subtle"
-                        size="xs"
-                      />
-                      <UButton
-                        v-if="hasMetaDetails(msg)"
-                        icon="i-lucide-chevron-down"
-                        :class="openMeta[msg.id] ? 'rotate-180' : ''"
-                        color="neutral"
-                        variant="ghost"
-                        size="xs"
-                        class="shrink-0 transition-transform"
-                        @click="toggleMeta(msg.id)"
-                      />
-                    </div>
-                    <MdView :source="msg.content" />
-                    <div
-                      v-if="openMeta[msg.id]"
-                      class="mt-2 pt-2 border-t border-muted"
-                    >
-                      <pre class="text-xs text-dimmed font-mono overflow-x-auto whitespace-pre-wrap break-words max-h-48">{{ metaJson(msg) }}</pre>
-                    </div>
-                  </UCard>
+                <!-- Stats row -->
+                <div class="mt-4 flex flex-wrap gap-4 text-sm">
+                  <div class="flex items-center gap-1.5 text-muted">
+                    <UIcon name="i-lucide-message-circle" class="size-4" />
+                    <span>{{ meta.messageCount }} messages</span>
+                  </div>
+                  <div class="flex items-center gap-1.5 text-muted">
+                    <UIcon name="i-lucide-wrench" class="size-4" />
+                    <span>{{ meta.toolCount }} tool calls</span>
+                  </div>
+                  <div class="flex items-center gap-1.5 text-info">
+                    <UIcon name="i-lucide-arrow-up" class="size-4" />
+                    <span>{{ formatTokens(meta.inputTokens) }} in</span>
+                  </div>
+                  <div class="flex items-center gap-1.5 text-success">
+                    <UIcon name="i-lucide-arrow-down" class="size-4" />
+                    <span>{{ formatTokens(meta.outputTokens) }} out</span>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Assistant turn -->
-              <div
-                v-else
-                class="flex justify-start"
-                :class="msg.isSidechain ? 'opacity-70' : ''"
-              >
-                <div class="max-w-[85%]">
-                  <UCard :ui="{ body: 'py-2.5 px-3.5' }">
-                    <div class="flex items-start justify-between gap-2 mb-1.5">
-                      <div class="flex items-center gap-1.5 flex-wrap">
-                        <UBadge
-                          label="assistant"
-                          color="neutral"
-                          variant="subtle"
-                          size="xs"
-                        />
-                        <span v-if="msg.model" class="text-xs text-dimmed font-mono">{{ msg.model }}</span>
-                      </div>
-                      <UButton
-                        v-if="hasMetaDetails(msg)"
-                        icon="i-lucide-chevron-down"
-                        :class="openMeta[msg.id] ? 'rotate-180' : ''"
-                        color="neutral"
-                        variant="ghost"
-                        size="xs"
-                        class="shrink-0 transition-transform"
-                        @click="toggleMeta(msg.id)"
-                      />
-                    </div>
-                    <details v-if="msg.thinking" class="mb-1.5">
-                      <summary class="text-xs text-dimmed cursor-pointer select-none">thinking…</summary>
-                      <pre class="mt-1 text-xs text-dimmed font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{{ msg.thinking }}</pre>
-                    </details>
-                    <MdView :source="msg.content" />
-                    <div
-                      v-if="openMeta[msg.id]"
-                      class="mt-2 pt-2 border-t border-muted"
-                    >
-                      <pre class="text-xs text-dimmed font-mono overflow-x-auto whitespace-pre-wrap break-words max-h-48">{{ metaJson(msg) }}</pre>
-                    </div>
-                  </UCard>
+                <!-- Dates -->
+                <div class="mt-3 flex flex-wrap gap-4 text-xs text-dimmed">
+                  <span>
+                    Started {{ formatDateFull(meta.startedAt) }}
+                  </span>
+                  <span>
+                    Last active {{ relativeTime(meta.lastActive) }}
+                  </span>
                 </div>
-              </div>
-            </template>
 
-            <!-- Empty transcript -->
-            <div
-              v-if="!session.messages.length"
-              class="flex flex-col items-center justify-center py-16 gap-3 text-center"
-            >
-              <UIcon
-                name="i-lucide-message-square-off"
-                class="size-10 text-muted"
-              />
-              <p class="text-sm text-muted">
-                No messages in this session
-              </p>
+                <!-- CWD + git + machine -->
+                <div
+                  v-if="meta.cwd || gitBranch || gitRepo || meta.machineId || meta.appVersion"
+                  class="mt-3 pt-3 border-t border-default space-y-1"
+                >
+                  <p
+                    v-if="meta.cwd"
+                    class="text-xs text-dimmed font-mono truncate"
+                  >
+                    <UIcon name="i-lucide-folder" class="size-3.5 inline mr-1" />{{ meta.cwd }}
+                  </p>
+                  <p
+                    v-if="gitRepo"
+                    class="text-xs text-dimmed font-mono truncate"
+                  >
+                    <UIcon name="i-lucide-git-commit-horizontal" class="size-3.5 inline mr-1" />{{ gitRepo }}
+                  </p>
+                  <p
+                    v-if="gitBranch"
+                    class="text-xs text-dimmed font-mono"
+                  >
+                    <UIcon name="i-lucide-git-branch" class="size-3.5 inline mr-1" />{{ gitBranch }}{{ gitCommit ? ' @ ' + gitCommit.slice(0, 8) : '' }}
+                  </p>
+                  <p
+                    v-if="meta.machineId"
+                    class="text-xs text-dimmed font-mono truncate"
+                  >
+                    <UIcon name="i-lucide-monitor" class="size-3.5 inline mr-1" />{{ meta.machineId }}
+                  </p>
+                  <p
+                    v-if="meta.appVersion"
+                    class="text-xs text-dimmed font-mono"
+                  >
+                    <UIcon name="i-lucide-tag" class="size-3.5 inline mr-1" />{{ meta.appVersion }}
+                  </p>
+                </div>
+              </UCard>
             </div>
-          </div>
+          </template>
+        </UDashboardPanel>
+
+        <div class="flex-1 min-w-0 h-full p-4">
+          <SessionTranscript
+            :messages="messages"
+            :tool-events="toolEvents"
+            :loading="messagesPending"
+          />
         </div>
       </div>
     </template>

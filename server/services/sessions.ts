@@ -4,7 +4,7 @@ import { sessions, messages, toolEvents } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
 import { publishChange } from '../utils/live-bus'
 import { findOrCreateProject } from './projects'
-import type { SessionListItem, SessionDetail, SessionMeta, SessionMessages, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
+import type { SessionListItem, SessionMeta, SessionMessages, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
 // Types
