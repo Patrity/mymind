@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import type { ProjectDTO } from '~~/shared/types/tasks'
-import { PROJECT_PALETTE, NEUTRAL_COLOR } from '~/utils/project-color'
 
 definePageMeta({ title: 'Projects' })
 
-const { create: createProject, update: updateProject, remove: removeProject, useProjectList } = useProjects()
+const { create: createProject, update: updateProject, useProjectList } = useProjects()
 const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
@@ -72,103 +71,21 @@ async function submitNew() {
   }
 }
 
-// ── Edit project modal ────────────────────────────────────────────────────────
+// ── Edit / Delete (delegated to ProjectEditModal) ─────────────────────────────
 const showEditModal = ref(false)
 const editingProject = ref<ProjectDTO | null>(null)
-const editSaving = ref(false)
-const deleting = ref(false)
-const showDeleteConfirm = ref(false)
-
-interface EditForm {
-  name: string
-  description: string
-  active: boolean
-  color: string | null
-  repositoryUrl: string | null
-  productionUrl: string | null
-  stagingUrl: string | null
-  aliases: string[]
-}
-
-const emptyEditForm = (): EditForm => ({
-  name: '',
-  description: '',
-  active: true,
-  color: null,
-  repositoryUrl: null,
-  productionUrl: null,
-  stagingUrl: null,
-  aliases: []
-})
-const editForm = ref<EditForm>(emptyEditForm())
 
 function openEditModal(project: ProjectDTO) {
   editingProject.value = project
-  editForm.value = {
-    name: project.name,
-    description: project.description ?? '',
-    active: project.active,
-    color: project.color,
-    repositoryUrl: project.repositoryUrl,
-    productionUrl: project.productionUrl,
-    stagingUrl: project.stagingUrl,
-    aliases: [...project.aliases]
-  }
   showEditModal.value = true
 }
 
-// Empty string in a URL field means "clear it" → send null.
-function urlOrNull(v: string | null): string | null {
-  const t = (v ?? '').trim()
-  return t ? t : null
+function onSaved() {
+  refetch()
 }
 
-async function submitEdit() {
-  if (!editingProject.value || !editForm.value.name.trim()) return
-  editSaving.value = true
-  try {
-    await updateProject(editingProject.value.slug, {
-      name: editForm.value.name.trim(),
-      description: editForm.value.description.trim() || undefined,
-      active: editForm.value.active,
-      color: editForm.value.color,
-      repositoryUrl: urlOrNull(editForm.value.repositoryUrl),
-      productionUrl: urlOrNull(editForm.value.productionUrl),
-      stagingUrl: urlOrNull(editForm.value.stagingUrl),
-      aliases: editForm.value.aliases.map(a => a.trim()).filter(Boolean)
-    })
-    showEditModal.value = false
-    await refetch()
-    toast.add({ color: 'success', title: 'Project updated' })
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to update project', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    editSaving.value = false
-  }
-}
-
-function openDeleteConfirm(project: ProjectDTO) {
-  editingProject.value = project
-  showDeleteConfirm.value = true
-}
-
-async function confirmDelete() {
-  if (!editingProject.value) return
-  deleting.value = true
-  try {
-    await removeProject(editingProject.value.slug)
-    showDeleteConfirm.value = false
-    showEditModal.value = false
-    editingProject.value = null
-    await refetch()
-    toast.add({ color: 'success', title: 'Project deleted' })
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to delete project', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    deleting.value = false
-  }
+function onDeleted() {
+  refetch()
 }
 </script>
 
@@ -298,7 +215,7 @@ async function confirmDelete() {
               size="xs"
               color="error"
               variant="ghost"
-              @click="openDeleteConfirm(project)"
+              @click="openEditModal(project)"
             />
           </div>
         </div>
@@ -379,217 +296,11 @@ async function confirmDelete() {
     </template>
   </UModal>
 
-  <!-- ── Edit project modal ─────────────────────────────────────────────────── -->
-  <UModal v-model:open="showEditModal">
-    <template #content>
-      <UCard>
-        <template #header>
-          <div class="flex items-center gap-2">
-            <UIcon
-              name="i-lucide-folder-pen"
-              class="size-5"
-            />
-            <span class="font-semibold">Edit project</span>
-          </div>
-        </template>
-
-        <div class="flex flex-col gap-4">
-          <UFormField
-            label="Name"
-            required
-          >
-            <UInput
-              v-model="editForm.name"
-              placeholder="Project name"
-              autofocus
-              class="w-full"
-              @keyup.enter="submitEdit"
-            />
-          </UFormField>
-
-          <UFormField label="Description">
-            <UTextarea
-              v-model="editForm.description"
-              placeholder="Optional description…"
-              :rows="2"
-              class="w-full"
-            />
-          </UFormField>
-
-          <UFormField label="Active">
-            <USwitch
-              v-model="editForm.active"
-              label="Project is active"
-            />
-          </UFormField>
-
-          <UFormField label="Repository URL">
-            <UInput
-              :model-value="editForm.repositoryUrl ?? ''"
-              placeholder="https://github.com/owner/repo"
-              class="w-full"
-              @update:model-value="editForm.repositoryUrl = String($event)"
-            />
-          </UFormField>
-
-          <UFormField label="Production URL">
-            <UInput
-              :model-value="editForm.productionUrl ?? ''"
-              placeholder="https://example.com"
-              class="w-full"
-              @update:model-value="editForm.productionUrl = String($event)"
-            />
-          </UFormField>
-
-          <UFormField label="Staging URL">
-            <UInput
-              :model-value="editForm.stagingUrl ?? ''"
-              placeholder="https://staging.example.com"
-              class="w-full"
-              @update:model-value="editForm.stagingUrl = String($event)"
-            />
-          </UFormField>
-
-          <UFormField
-            label="Aliases"
-            hint="Press enter to add"
-          >
-            <UInputTags
-              v-model="editForm.aliases"
-              placeholder="Add an alias…"
-              class="w-full"
-            />
-          </UFormField>
-
-          <UFormField label="Color">
-            <div class="flex flex-col gap-3">
-              <div class="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  class="size-6 rounded-full ring-offset-2 ring-offset-default transition-all"
-                  :class="editForm.color === null ? 'ring-2 ring-inverted' : 'hover:scale-110'"
-                  :style="{ backgroundColor: NEUTRAL_COLOR }"
-                  aria-label="Default color"
-                  @click="editForm.color = null"
-                >
-                  <UIcon
-                    v-if="editForm.color === null"
-                    name="i-lucide-check"
-                    class="size-4 text-white"
-                  />
-                </button>
-                <button
-                  v-for="hex in PROJECT_PALETTE"
-                  :key="hex"
-                  type="button"
-                  class="size-6 rounded-full ring-offset-2 ring-offset-default transition-all"
-                  :class="editForm.color === hex ? 'ring-2 ring-inverted' : 'hover:scale-110'"
-                  :style="{ backgroundColor: hex }"
-                  :aria-label="`Set color ${hex}`"
-                  @click="editForm.color = hex"
-                >
-                  <UIcon
-                    v-if="editForm.color === hex"
-                    name="i-lucide-check"
-                    class="size-4 text-white"
-                  />
-                </button>
-              </div>
-              <ProjectBadge
-                :slug="editingProject?.slug ?? ''"
-                :name="editForm.name"
-                :color="editForm.color"
-                :to="false"
-              />
-            </div>
-          </UFormField>
-
-          <div
-            v-if="editingProject"
-            class="flex flex-col gap-1.5 text-xs text-dimmed border-t border-default pt-3"
-          >
-            <div class="flex gap-2">
-              <span class="font-medium shrink-0">git_remote_key:</span>
-              <span class="font-mono truncate">{{ editingProject.gitRemoteKey ?? '—' }}</span>
-            </div>
-            <div class="flex gap-2">
-              <span class="font-medium shrink-0">local_paths:</span>
-              <span class="font-mono truncate">{{ editingProject.localPaths.length ? editingProject.localPaths.join(', ') : '—' }}</span>
-            </div>
-          </div>
-        </div>
-
-        <template #footer>
-          <div class="flex justify-between gap-2">
-            <UButton
-              color="error"
-              variant="ghost"
-              icon="i-lucide-trash-2"
-              @click="editingProject && openDeleteConfirm(editingProject)"
-            >
-              Delete
-            </UButton>
-            <div class="flex gap-2">
-              <UButton
-                color="neutral"
-                variant="ghost"
-                @click="showEditModal = false"
-              >
-                Cancel
-              </UButton>
-              <UButton
-                :loading="editSaving"
-                :disabled="!editForm.name.trim()"
-                @click="submitEdit"
-              >
-                Save
-              </UButton>
-            </div>
-          </div>
-        </template>
-      </UCard>
-    </template>
-  </UModal>
-
-  <!-- ── Delete confirm modal ───────────────────────────────────────────────── -->
-  <UModal v-model:open="showDeleteConfirm">
-    <template #content>
-      <UCard>
-        <template #header>
-          <div class="flex items-center gap-2">
-            <UIcon
-              name="i-lucide-trash-2"
-              class="size-5 text-error"
-            />
-            <span class="font-semibold">Delete project?</span>
-          </div>
-        </template>
-
-        <p class="text-sm text-muted">
-          Are you sure you want to delete
-          <span class="font-medium text-highlighted">{{ editingProject?.name }}</span>?
-          This cannot be undone.
-        </p>
-
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <UButton
-              color="neutral"
-              variant="ghost"
-              @click="showDeleteConfirm = false"
-            >
-              Cancel
-            </UButton>
-            <UButton
-              color="error"
-              :loading="deleting"
-              @click="confirmDelete"
-            >
-              Delete
-            </UButton>
-          </div>
-        </template>
-      </UCard>
-    </template>
-  </UModal>
+  <!-- ── Edit + Delete modal (reusable component) ─────────────────────────── -->
+  <ProjectEditModal
+    v-model:open="showEditModal"
+    :project="editingProject"
+    @saved="onSaved"
+    @deleted="onDeleted"
+  />
 </template>
