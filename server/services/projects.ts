@@ -17,6 +17,18 @@ async function projectRowBySlug(slug: string) {
   return r ?? null
 }
 
+// Count subqueries keyed on the denormalized project SLUG — the same key the
+// `?project=` session/task/memory filters (and the project dashboard tabs) use.
+// Counting by slug (rather than the canonical project_id) keeps the counts in
+// lock-step with what those filtered lists actually show, even for a row whose
+// project_id and slug have drifted (legacy vs canonical projects coexist until
+// phase-3 merge). Reused by both listProjects and getProject.
+const COUNT_COLUMNS = {
+  sessionCount: sql<number>`(select count(*)::int from ${sessions} s where s.project = ${projects.slug})`,
+  memoryCount: sql<number>`(select count(*)::int from ${memories} m where m.project = ${projects.slug})`,
+  taskCount: sql<number>`(select count(*)::int from ${tasks} t where t.project = ${projects.slug})`
+}
+
 // ---------------------------------------------------------------------------
 // DTO mapper
 // ---------------------------------------------------------------------------
@@ -42,9 +54,7 @@ export async function listProjects(filter: { activeOnly?: boolean } = {}): Promi
   const db = useDb()
   const rows = await db.select({
     project: projects,
-    sessionCount: sql<number>`(select count(*)::int from ${sessions} s where s.project_id = ${projects.id})`,
-    memoryCount: sql<number>`(select count(*)::int from ${memories} m where m.project_id = ${projects.id})`,
-    taskCount: sql<number>`(select count(*)::int from ${tasks} t where t.project = ${projects.slug})`
+    ...COUNT_COLUMNS
   }).from(projects).where(filter.activeOnly ? eq(projects.active, true) : undefined)
     .orderBy(sql`coalesce(${projects.lastActivityAt}, ${projects.createdAt}) desc`)
   return rows.map(r => toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount, taskCount: r.taskCount }))
@@ -53,9 +63,7 @@ export async function listProjects(filter: { activeOnly?: boolean } = {}): Promi
 export async function getProject(slug: string): Promise<ProjectDTO | null> {
   const [r] = await useDb().select({
     project: projects,
-    sessionCount: sql<number>`(select count(*)::int from ${sessions} s where s.project_id = ${projects.id})`,
-    memoryCount: sql<number>`(select count(*)::int from ${memories} m where m.project_id = ${projects.id})`,
-    taskCount: sql<number>`(select count(*)::int from ${tasks} t where t.project = ${projects.slug})`
+    ...COUNT_COLUMNS
   }).from(projects).where(eq(projects.slug, slug)).limit(1)
   return r ? toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount, taskCount: r.taskCount }) : null
 }
