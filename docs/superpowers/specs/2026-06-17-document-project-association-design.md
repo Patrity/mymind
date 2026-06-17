@@ -17,21 +17,21 @@ Documents are different from sessions: a document write path (manual create, qui
 
 ## Core invariant: path ⟺ project
 
-> A document is associated with project *X* **if and only if** it lives under `/Projects/<X-slug>/…`.
+> A document is associated with project *X* **if and only if** it lives under `/projects/<X-slug>/…`.
 
 The **path is the single source of truth** for filing. The row stores the resolved `project_id` (+ a synced `project` slug, denormalized for filtering) so queries don't re-parse paths, but those columns are always **derived from the path** on write — they never drift from it.
 
-`/Projects` (capital P, a constant `PROJECTS_ROOT`) is the document-tree root for filed docs; it is unrelated to the app route `/projects`. Unfiled docs live in `/input/**` (the existing staging area) or elsewhere and have `project_id = null`.
+`/projects` (the constant `PROJECTS_ROOT = '/projects'`) is the document-tree root for filed docs. This is a string in `documents.path` (the doc tree browsed inside the `/documents` page), NOT the Nuxt app route `/projects/[slug]` — they share the spelling but are different namespaces and never collide at runtime. Unfiled docs live in `/input/**` (the existing staging area) or elsewhere and have `project_id = null`.
 
 ## Data model
 
-**Migration 0021** — `documents.project_id uuid references projects(id)` (nullable; index `documents_project_id_idx`). The existing `documents.project text` slug stays and is **kept in sync** with `project_id` (same denormalization as `sessions`/`memories`). Backfill: `UPDATE documents d SET project_id = p.id FROM projects p WHERE d.project = p.slug AND d.project_id IS NULL` (associates any docs whose slug is already set; the `/Projects/` convention is new so few/none exist yet).
+**Migration 0021** — `documents.project_id uuid references projects(id)` (nullable; index `documents_project_id_idx`). The existing `documents.project text` slug stays and is **kept in sync** with `project_id` (same denormalization as `sessions`/`memories`). Backfill: `UPDATE documents d SET project_id = p.id FROM projects p WHERE d.project = p.slug AND d.project_id IS NULL` (associates any docs whose slug is already set; the `/projects/` convention is new so few/none exist yet).
 
 `project_id` is the **durable identity** — it survives a slug rename and is what a future Phase-3 merge repoints. The `project` slug is cosmetic/denormalized (drives `?project=` filtering, consistent with the dashboard's other tabs).
 
 ## Resolver + the three triggers
 
-**Pure helper** `projectFromPath(path): string | null` — returns `<seg>` from `^/Projects/([^/]+)/`, else null. (Unit-tested.)
+**Pure helper** `projectFromPath(path): string | null` — returns `<seg>` from `^/projects/([^/]+)/`, else null. (Unit-tested.)
 
 **`matchProjectByLabel(label): Project | null`** (`server/services/projects.ts`) — matches an existing project by `slug = label` OR `aliases @> [label]` OR slugified `name = label`. **Match-only — never creates** (consistent with cycle-23's "creation is git-remote-only"). This is the same match logic as `findOrCreateProject`'s no-git branch, extracted so both share it. An unmatched folder ⇒ the doc keeps its path but `project_id` stays null (not auto-created).
 
@@ -39,8 +39,8 @@ The **path is the single source of truth** for filing. The row stores the resolv
 
 The three triggers all funnel through the invariant:
 
-1. **Manual move (the "move-listener")** — `moveDoc`/`updateDoc` (when `path` changes) and `createDoc` run `setDocProjectFromPath` after the path is set. Move **into** `/Projects/<x>/` ⇒ associate; move **out** ⇒ clear.
-2. **Assign-project (reverse direction)** — a UI/enrichment "set project = X" action **moves** the doc to `/Projects/<X-slug>/<basename>` and associates it (assigning a project files the doc). Path-collision at the target reuses the existing path-uniqueness handling (suffix or error — match current `createDoc`/`moveDoc` behavior).
+1. **Manual move (the "move-listener")** — `moveDoc`/`updateDoc` (when `path` changes) and `createDoc` run `setDocProjectFromPath` after the path is set. Move **into** `/projects/<x>/` ⇒ associate; move **out** ⇒ clear.
+2. **Assign-project (reverse direction)** — a UI/enrichment "set project = X" action **moves** the doc to `/projects/<X-slug>/<basename>` and associates it (assigning a project files the doc). Path-collision at the target reuses the existing path-uniqueness handling (suffix or error — match current `createDoc`/`moveDoc` behavior).
 3. **`/input` enrichment classify** — the enrichment run that organizes `/input` has the LLM **classify the doc against the existing project list** (slug + name + description) and return a best-match project slug + confidence:
    - The project + target-path proposal **rides the existing enrichment review flow as one more field on the same `review_queue` proposal** as the frontmatter. Whatever gate the current flow uses (queue-for-human vs auto-review-threshold) governs it — the project proposal is **applied (move + associate) exactly when its review item is approved** (auto-approved at high confidence if the existing threshold mechanism does so; otherwise on manual approval).
    - **no match ⇒** leave in `/input`, unassigned (no proposal).
@@ -48,7 +48,7 @@ The three triggers all funnel through the invariant:
 
 ## Slug-rename cascade (extends the dashboard's editable slug)
 
-`updateProject` already cascades a slug rename to `sessions/tasks/memories.project`. This phase **extends that same transaction** to documents: for every doc with `project_id = <id>`, rewrite the `project` slug to the new slug **and** the path prefix `^/Projects/<old>/` → `/Projects/<new>/` (so filed docs move with the rename). `project_id` is unchanged. Path-prefix rewrite preserves relative subpaths, so no new collisions within the project's own subtree. Emits a `document` `publishChange` so the tree refreshes.
+`updateProject` already cascades a slug rename to `sessions/tasks/memories.project`. This phase **extends that same transaction** to documents: for every doc with `project_id = <id>`, rewrite the `project` slug to the new slug **and** the path prefix `^/projects/<old>/` → `/projects/<new>/` (so filed docs move with the rename). `project_id` is unchanged. Path-prefix rewrite preserves relative subpaths, so no new collisions within the project's own subtree. Emits a `document` `publishChange` so the tree refreshes.
 
 ## Surfacing
 
@@ -62,11 +62,11 @@ The image-OCR → document spin-off (`server/services/image-enrich.ts`) creates 
 
 ## Edge cases & decisions
 
-- **Unmatched `/Projects/<x>/` folder** → unassigned (match-only). Documented; avoids spawning junk projects from stray folders.
-- **Move out of `/Projects/`** → `project_id` cleared (path is the source of truth).
-- **Manual API `project` field** — the manual create/update endpoints currently accept a `project` slug directly. Decision: setting `project` via the API is treated as an **assign-project** (trigger 2) — the service files the doc under `/Projects/<slug>/` and resolves `project_id` so the invariant holds (rather than letting `project` drift from the path). The field stays in the API surface; its effect is now "file + associate."
+- **Unmatched `/projects/<x>/` folder** → unassigned (match-only). Documented; avoids spawning junk projects from stray folders.
+- **Move out of `/projects/`** → `project_id` cleared (path is the source of truth).
+- **Manual API `project` field** — the manual create/update endpoints currently accept a `project` slug directly. Decision: setting `project` via the API is treated as an **assign-project** (trigger 2) — the service files the doc under `/projects/<slug>/` and resolves `project_id` so the invariant holds (rather than letting `project` drift from the path). The field stays in the API surface; its effect is now "file + associate."
 - **Path collisions** on assign/auto-file reuse existing path-uniqueness behavior; the slug-rename subtree move preserves relative paths (no intra-project collision).
-- **`uncategorized`** project is not a filing target (`/Projects/uncategorized/` would resolve to it via match, which is acceptable but not auto-created by enrichment).
+- **`uncategorized`** project is not a filing target (`/projects/uncategorized/` would resolve to it via match, which is acceptable but not auto-created by enrichment).
 
 ## Out of scope
 
@@ -76,7 +76,7 @@ The image-OCR → document spin-off (`server/services/image-enrich.ts`) creates 
 
 ## Testing
 
-- Pure helpers unit-tested: `projectFromPath` (matches `/Projects/x/…`, rejects `/input/…`, `/Projectsfoo`, root), `matchProjectByLabel` (slug/alias/name match, no-match → null, never creates).
-- Service-level: move into/out of `/Projects/<x>/` sets/clears association; assign-project moves the file; slug rename rewrites doc paths + slug, leaves `project_id`.
+- Pure helpers unit-tested: `projectFromPath` (matches `/projects/x/…`, rejects `/input/…`, `/projectsfoo` (no slash boundary), root), `matchProjectByLabel` (slug/alias/name match, no-match → null, never creates).
+- Service-level: move into/out of `/projects/<x>/` sets/clears association; assign-project moves the file; slug rename rewrites doc paths + slug, leaves `project_id`.
 - Playwright E2E: file a doc under a project (move) → it appears in the dashboard Documents tab + the count increments; rename the project slug → the doc's path follows; `?project=` filter on the docs page.
 - Gates: typecheck 0 / test green / build, per the project's real gates.
