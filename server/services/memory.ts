@@ -60,6 +60,7 @@ function toDTO(r: typeof memories.$inferSelect, relations?: MemoryRelationDTO[])
     sessionId: r.sessionId,
     enrichedAt: r.enrichedAt?.toISOString() ?? null,
     reviewedAt: r.reviewedAt?.toISOString() ?? null,
+    sourceDate: r.sourceDate?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     evidence: evidence.length > 0 ? evidence : undefined,
@@ -358,6 +359,7 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
 export interface ListMemoriesOptions {
   scope?: MemoryScope
   reviewed?: boolean
+  project?: string | null
   limit?: number
 }
 
@@ -367,6 +369,10 @@ export async function listMemories(opts: ListMemoriesOptions = {}): Promise<Memo
   if (opts.scope) conditions.push(eq(memories.scope, opts.scope))
   if (opts.reviewed === true) conditions.push(isNotNull(memories.reviewedAt))
   if (opts.reviewed === false) conditions.push(isNull(memories.reviewedAt))
+  if (opts.project !== undefined) {
+    if (opts.project === null) conditions.push(isNull(memories.project))
+    else conditions.push(eq(memories.project, opts.project))
+  }
 
   const rows = await db.select().from(memories)
     .where(and(...conditions))

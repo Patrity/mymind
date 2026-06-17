@@ -96,11 +96,11 @@ describe('parseMemories', () => {
     expect(parseMemories('{ broken json }')).toEqual([])
   })
 
-  it('clamps confidence below 0 to 0 (and then drops since 0 < 0.3 threshold)', () => {
+  it('clamps confidence below 0 to 0 (and then drops since 0 < 0.6 threshold)', () => {
     const raw = JSON.stringify({
       memories: [{ scope: 'agent', content: 'Clamped low.', confidence: -0.5 }]
     })
-    // -0.5 is clamped to 0, which is below the 0.3 drop threshold → dropped
+    // -0.5 is clamped to 0, which is below the 0.6 drop threshold → dropped
     const result = parseMemories(raw)
     expect(result).toHaveLength(0)
   })
@@ -207,25 +207,25 @@ describe('parseMemories', () => {
     expect(result[0].reasoning).toHaveLength(500)
   })
 
-  it('drops candidate with confidence 0.2 (below 0.3 threshold)', () => {
+  it('drops candidate with confidence 0.5 (below 0.6 threshold)', () => {
     const raw = JSON.stringify({
       memories: [
-        { scope: 'agent', content: 'Low confidence fact.', confidence: 0.2 }
+        { scope: 'agent', content: 'Low confidence fact.', confidence: 0.5 }
       ]
     })
     const result = parseMemories(raw)
     expect(result).toHaveLength(0)
   })
 
-  it('keeps candidate with confidence exactly 0.3', () => {
+  it('keeps candidate with confidence exactly 0.6', () => {
     const raw = JSON.stringify({
       memories: [
-        { scope: 'agent', content: 'Exactly at threshold.', confidence: 0.3 }
+        { scope: 'agent', content: 'Exactly at threshold.', confidence: 0.6 }
       ]
     })
     const result = parseMemories(raw)
     expect(result).toHaveLength(1)
-    expect(result[0].confidence).toBeCloseTo(0.3)
+    expect(result[0].confidence).toBeCloseTo(0.6)
   })
 
   it('keeps candidate with no confidence field (manual-style)', () => {

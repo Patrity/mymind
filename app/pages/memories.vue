@@ -4,6 +4,7 @@ import type { MemoryDTO, MemoryRelationDTO, MemoryScope } from '~~/shared/types/
 definePageMeta({ title: 'Memories' })
 
 const { create: createMemory, review: reviewMemory, archive: archiveMemory, useMemoryList } = useMemories()
+const { useProjectList } = useProjects()
 const toast = useToast()
 
 // ── Filters ───────────────────────────────────────────────────────────────────
@@ -11,6 +12,7 @@ const q = ref('')
 const scopeFilter = ref<MemoryScope | 'all'>('all')
 const unreviewedOnly = ref(false)
 const tagFilter = ref<string[]>([])
+const projectFilter = ref<string | undefined>(undefined)
 
 const scopeItems = [
   { label: 'All scopes', value: 'all' },
@@ -33,7 +35,8 @@ const isSearching = computed(() => debouncedQ.value.trim().length > 0)
 const listParams = computed(() => ({
   q: debouncedQ.value.trim() || undefined,
   scope: scopeFilter.value !== 'all' ? (scopeFilter.value as MemoryScope) : undefined,
-  reviewed: (!debouncedQ.value.trim() && unreviewedOnly.value) ? false : undefined
+  reviewed: (!debouncedQ.value.trim() && unreviewedOnly.value) ? false : undefined,
+  project: projectFilter.value || undefined
 }))
 
 const { data, refetch, isPending, error } = useMemoryList(listParams)
@@ -52,6 +55,23 @@ const availableTags = computed(() => {
     for (const t of m.tags) seen.add(t)
   }
   return [...seen].sort()
+})
+
+// ── Project filter options ──────────────────────────────────────────────────────
+const { data: projectsData } = useProjectList()
+
+/**
+ * Project filter options: prefer the registered projects list (by slug);
+ * fall back to distinct project values from the loaded memories.
+ */
+const projectItems = computed(() => {
+  const fromProjects = (projectsData.value ?? []).map(p => ({ label: p.name, value: p.slug }))
+  if (fromProjects.length) return fromProjects
+  const seen = new Set<string>()
+  for (const m of memories.value) {
+    if (m.project) seen.add(m.project)
+  }
+  return [...seen].sort().map(p => ({ label: p, value: p }))
 })
 
 /** Client-side tag filter applied after server fetch */
@@ -223,6 +243,14 @@ function firstEvidence(mem: MemoryDTO) {
             placeholder="Filter by tag…"
             class="w-48 shrink-0"
           />
+          <USelectMenu
+            v-model="projectFilter"
+            :items="projectItems"
+            value-key="value"
+            clear
+            placeholder="All projects"
+            class="w-44 shrink-0"
+          />
           <div class="flex items-center gap-2 shrink-0">
             <USwitch
               v-model="unreviewedOnly"
@@ -277,6 +305,14 @@ function firstEvidence(mem: MemoryDTO) {
                   size="xs"
                 />
                 <UBadge
+                  v-if="mem.project"
+                  :label="mem.project"
+                  color="neutral"
+                  variant="outline"
+                  size="xs"
+                  icon="i-lucide-folder"
+                />
+                <UBadge
                   v-if="mem.reviewedAt"
                   label="reviewed"
                   color="success"
@@ -298,9 +334,17 @@ function firstEvidence(mem: MemoryDTO) {
                   size="xs"
                 />
               </div>
-              <p class="text-xs text-dimmed shrink-0">
-                {{ formatDate(mem.createdAt) }}
-              </p>
+              <div class="text-right shrink-0">
+                <p class="text-xs text-dimmed">
+                  {{ formatDate(mem.sourceDate ?? mem.createdAt) }}
+                </p>
+                <p
+                  v-if="mem.sourceDate"
+                  class="text-xs text-dimmed/70"
+                >
+                  enriched {{ formatDate(mem.createdAt) }}
+                </p>
+              </div>
             </div>
           </template>
 

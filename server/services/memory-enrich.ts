@@ -17,12 +17,24 @@ export interface EnrichMemoryResult {
 const TRANSCRIPT_CHAR_LIMIT = 12000
 const HEAD_CHARS = 2000
 
-const SYSTEM_PROMPT = `You extract DURABLE, ATOMIC memories from an AI work-session transcript to feed a long-term memory store for an assistant serving Tony, a software engineer. Extract facts that will STILL BE TRUE AND USEFUL in 6 months — each a single declarative fact in present tense ("X is Y", not "We decided X"), <=240 chars.
-SCOPES: 'user' = durable facts about Tony (preferences, habits, identity) — be CONSERVATIVE, never fabricate. 'agent' = the project/environment (paths, hosts, services, conventions, decisions + rationale, tool quirks) — THIS IS THE MOST COMMON SCOPE. 'world' = external systems (Postgres, APIs, libraries) — only non-obvious, reusable facts.
-DO NOT extract session-specific noise ("Tony asked about…", "We just shipped commit…", "the current task is…").
-CONFIDENCE: 0.9-1.0 explicit/observable; 0.6-0.8 strong implication; 0.3-0.5 weak but novel; below 0.3 DO NOT EMIT.
-VOLUME: 0 to 8 memories per session is typical — prefer fewer, higher-signal.
-For each memory cite the transcript message ids that justify it (evidence_msg_ids), a short verbatim quote (<=240 chars) from the transcript, and one-line reasoning.
+const SYSTEM_PROMPT = `You extract a SMALL number of DURABLE, HIGH-SIGNAL memories from an AI work-session transcript, for a long-term memory store serving Tony, a software engineer. Be RUTHLESSLY selective: most sessions yield 0-3 memories. If nothing is durably significant, return an empty list — that is a correct and common answer.
+
+Each memory is a single atomic fact, present tense ("X is Y", not "we decided/shipped X"), <=240 chars, that a future session MONTHS from now would benefit from. The test for every candidate: "Will this still be true AND useful in 6 months, independent of this session?" If not, DROP it.
+
+EXTRACT (high signal): durable architecture/design decisions + their rationale; stable project conventions, constraints, and invariants; non-obvious gotchas/footguns and how to avoid them; durable service/host/path/config facts; durable facts about Tony (preferences, identity, how he likes to work); non-obvious reusable facts about external systems (libraries/APIs/Postgres).
+
+DO NOT EXTRACT (these are the most common mistakes — reject them):
+- Transient state: test counts ("98 tests pass"), build/CI status, coverage numbers, "currently/now/the current X", what is in-progress, TODOs, what was "just shipped/built/fixed".
+- In-progress bug details that get fixed within the session. (A durable LESSON from the fix can qualify; the bug-of-the-moment does not.)
+- Anything about the AI's OWN process or tooling: skills (e.g. "superpowers:X", "the debugging skill"), the agent's workflow, "Tony uses the X skill", the agent's own review/commit/TDD conventions.
+- Session narration: "Tony asked…", "we explored…", "the task is…", "this session…".
+- Volatile specifics that churn: exact file paths, line numbers, commit SHAs, in-flux version numbers.
+
+CONFIDENCE = DURABILITY + reusability, NOT how clearly you observed it. A precisely-observed fact that won't matter next month is LOW confidence. Bands: 0.85-1.0 = durable and clearly reusable; 0.6-0.84 = likely durable; below 0.6 DO NOT EMIT.
+
+SCOPES: 'user' = durable facts about Tony (be conservative, never fabricate). 'agent' = the project/environment (most common). 'world' = external systems (only non-obvious, reusable).
+
+For each memory: cite the transcript message ids that justify it (evidence_msg_ids), a short verbatim quote (<=240 chars), and one-line reasoning that states WHY it is durable (not just true).
 Output STRICT JSON ONLY: {"memories":[{"scope":"user|agent|world","content":"...","tags":["kebab"],"confidence":0.0-1.0,"evidence_msg_ids":["..."],"quote":"...","reasoning":"..."}]}. No prose.`
 
 /**

@@ -29,6 +29,7 @@ export interface MemoryDTO {
   sessionId: string | null
   enrichedAt: string | null
   reviewedAt: string | null
+  sourceDate: string | null
   createdAt: string
   updatedAt: string
   /** Parsed evidence entries from the evidence jsonb column. */

@@ -14,14 +14,15 @@ export interface MemoryListParams {
   q?: string
   scope?: MemoryScope
   reviewed?: boolean
+  project?: string
   limit?: number
 }
 
 export function useMemories() {
-  const list = (params?: { scope?: MemoryScope, reviewed?: boolean, limit?: number }) =>
+  const list = (params?: { scope?: MemoryScope, reviewed?: boolean, project?: string, limit?: number }) =>
     ofetch<MemoryDTO[]>('/api/memories', { query: params })
 
-  const search = (q: string, params?: { scope?: MemoryScope, limit?: number }) =>
+  const search = (q: string, params?: { scope?: MemoryScope, project?: string, limit?: number }) =>
     ofetch<MemoryDTO[]>('/api/memories', { query: { q, ...params } })
 
   const create = (body: CreateMemoryBody) =>
@@ -49,9 +50,9 @@ export function useMemories() {
         const p = key.value
         const q = p?.q?.trim()
         if (q) {
-          return search(q, { scope: p?.scope, limit: p?.limit })
+          return search(q, { scope: p?.scope, project: p?.project, limit: p?.limit })
         }
-        return list({ scope: p?.scope, reviewed: p?.reviewed, limit: p?.limit })
+        return list({ scope: p?.scope, reviewed: p?.reviewed, project: p?.project, limit: p?.limit })
       }
     })
   }

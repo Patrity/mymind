@@ -115,11 +115,11 @@ export function parseMemories(raw: string): MemoryCandidate[] {
         // other types → leave as undefined
       }
 
-      // confidence: clamp to 0..1; drop if present and < 0.3
+      // confidence: clamp to 0..1; drop if present and < 0.6
       let confidence: number | undefined
       if (typeof obj.confidence === 'number' && !isNaN(obj.confidence)) {
         confidence = Math.min(1, Math.max(0, obj.confidence))
-        if (confidence < 0.3) return []
+        if (confidence < 0.6) return []
       }
 
       // evidence_msg_ids: array of strings, filter non-strings
