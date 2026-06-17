@@ -16,6 +16,20 @@ watch(error, (err) => {
   toast.add({ color: 'error', title: 'Failed to load sessions', description: e.data?.statusMessage ?? e.message })
 })
 
+// ── Live-activity pulse ───────────────────────────────────────────────────────
+const _seenActive = new Map<string, string>()
+const pulse = ref<Record<string, number>>({})
+watch(() => sessions.value, (list) => {
+  for (const s of list ?? []) {
+    const prev = _seenActive.get(s.id)
+    if (prev && s.lastActive > prev) {
+      pulse.value[s.id] = Date.now()
+      setTimeout(() => { delete pulse.value[s.id] }, 2000)
+    }
+    _seenActive.set(s.id, s.lastActive)
+  }
+}, { deep: true })
+
 // ── Distinct filter options ────────────────────────────────────────────────────
 const distinctSources = computed(() => {
   const seen = new Set<string>()
@@ -181,9 +195,16 @@ function relativeTime(iso: string) {
                     size="xs"
                   />
                 </div>
-                <p class="text-sm font-medium text-default truncate leading-snug">
-                  {{ sessionLabel(session) }}
-                </p>
+                <div class="flex items-center gap-1.5">
+                  <span
+                    v-if="pulse[session.id]"
+                    class="inline-flex size-2 rounded-full bg-primary animate-ping shrink-0"
+                    title="just updated"
+                  />
+                  <p class="text-sm font-medium text-default truncate leading-snug">
+                    {{ sessionLabel(session) }}
+                  </p>
+                </div>
               </div>
               <!-- Right: relative time -->
               <p class="text-xs text-dimmed shrink-0 mt-0.5">

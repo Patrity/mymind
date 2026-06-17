@@ -1,8 +1,8 @@
 ---
 title: Sessions View
 status: shipped
-cycle: 11
-updated: 2026-06-15
+cycle: 24
+updated: 2026-06-16
 ---
 
 # Sessions View
@@ -34,6 +34,20 @@ A crafted transcript (thinking + Bash tool_use + tool_result + SessionEnd w/ git
 ## Summaries + search (cycle 13 phase 4, shipped 2026-06-16)
 - **Summarization** — `summarize-sessions` task (`*/5`, `server/services/session-summarize.ts`): selects new/stale/grown sessions (real-message floor 6, refresh-delta 50, stale 24h; mirrors bridget `sess_summarize`), builds a transcript (text + `<thinking>` + tool one-liners, head/tail elide at 60k chars), `chat('reasoning')` → strict-JSON `{title, summary}`, writes `title` (COALESCE — never clobbers an existing title), `summary`, and a `title‖summary` `summary_embedding`. State + retry tracked in `sess_summary_state`. Validated: 203 sessions summarized, 100% ok.
 - **Search** — `searchSessions`/`searchMessages` (`server/services/session-search.ts`): hybrid trigram (`ilike`/`similarity` on title+summary / content) + vector (`summary_embedding` / `messages.embedding`, `<=>` halfvec cosine, try/catch trigram-only fallback), RRF-fused (`rrfFuse`). Wired into `searchAll` + the command palette (`AppSearch.client.vue`) as **Sessions** + **Messages** groups (message hits deep-link to the parent session). `messages.embedding` backfilled by the `embed-messages` task (`*/4`).
+
+## Cycle-24 changes (Sessions UX)
+
+### Progressive detail loading
+`GET /api/sessions/[id]` now returns **meta only** (`getSessionMeta` — header, counts, git info, no messages). The transcript is fetched separately via `GET /api/sessions/[id]/messages` (`getSessionMessages`), which accepts a `?since=<iso>` query parameter for incremental append (returns only messages created after that timestamp).
+
+### Resizable split-pane detail layout
+The detail page uses `UDashboardPanel resizable` to render a two-column split: metadata (left panel) and transcript (right panel). Panel widths are adjustable by the user.
+
+### Virtualized + live-tailing transcript
+`app/components/sessions/SessionTranscript.vue` virtualizes the message list using `@vueuse/core` `useVirtualList` (only visible rows are mounted). It **autoscrolls / live-tails**: a watcher on `meta.messageCount` fetches `?since=` deltas and appends them to the local list. When the viewport is scrolled up, a **"↓ N new"** button appears (count from `countNewSince`); clicking it jumps to bottom and resumes tailing. Pure scroll helpers live in `app/utils/transcript-scroll.ts` (`isAtBottom`, `countNewSince`).
+
+### List live-activity pulse (cycle 24 final)
+The sessions list now shows a small **pinging dot** (`bg-primary animate-ping`) next to the title of any row whose `lastActive` timestamp just increased. The dot disappears after 2 seconds. This is purely client-side: a `watch` on the `sessions` computed compares each row's `lastActive` against a `Map` of previously-seen values; on advance it sets `pulse[id] = Date.now()` and schedules a delete via `setTimeout`. The underlying list already refetches automatically on SSE `session` events (live-dispatch invalidates `['session','list']`), so counts and timestamps stay current without any additional polling.
 
 ## Follow-ups
 Token-cost ($) display; deeper Hermes/imsg shape support; `sess_summary_state.model` per-row attribution (column exists, unwritten).
