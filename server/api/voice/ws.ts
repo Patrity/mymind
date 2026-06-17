@@ -74,9 +74,14 @@ export default defineWebSocketHandler({
       // load: restore a previous conversation under the lock so history is consistent
       if (msg.type === 'load' && typeof msg.conversationId === 'string') {
         s.lock = s.lock.then(async () => {
-          s.history = await getAgentHistory(msg.conversationId as string)
-          s.conversationId = msg.conversationId as string
-          s.context = null
+          try {
+            s.history = await getAgentHistory(msg.conversationId as string)
+            s.conversationId = msg.conversationId as string
+            s.context = null
+          } catch (err) {
+            console.error('[agent] load failed:', err)
+            peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'failed to load conversation' }))
+          }
         })
         return
       }
