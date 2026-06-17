@@ -19,7 +19,7 @@ Canonical project entities that sessions and (agent) memories hang off of. A pro
 
 ## Resolution — `findOrCreateProject` (`server/services/projects.ts`)
 Given `{ gitRemote, cwd }`:
-1. `normalizeGitRemote(gitRemote)` → canonical key, or `null`. **No key → return the seeded Uncategorized row.**
+1. `normalizeGitRemote(gitRemote)` → canonical key, or `null`. **No key →** derive the cwd basename, slugify it, and match an existing project by `slug` OR `aliases @> [label]`/`[lslug]` (so a non-git `…/bridget-services` session resolves to the friendly-named project that has `bridget-services` as a slug/alias); only if nothing matches → the seeded **Uncategorized** row. (Cycle 25 — this label path **matches only, never creates**; creation stays git-remote-only.)
 2. Match an existing project by `git_remote_key`.
 3. Else match by `aliases` (`@>` array contains the key).
 4. On a hit: append `cwd` to `local_paths` if new, bump `last_activity_at`, return.
@@ -58,8 +58,9 @@ Phase 1 deliberately leaves these for follow-up cycles:
 Migration `0020_tired_nebula.sql` adds a single `color text` nullable column to `projects`. A null value means "use the automatic default" — no manual work is required for a project to have a colour.
 
 The pure utility `app/utils/project-color.ts` exports:
-- **`PROJECT_PALETTE`** — 14 Tailwind-500 hex values (`#ef4444` … `#ec4899`) covering the full hue wheel, chosen to read well on the dark theme.
-- **`projectColor(slug, override?): string`** — pure function; returns `override` if truthy, otherwise derives a stable colour by hashing the slug (`djb2`-style `Math.imul`) and indexing into the palette. Because the hash is stable, every project gets a consistent, distinct colour with zero configuration.
+- **`PROJECT_PALETTE`** — 14 Tailwind-500 hex values (`#ef4444` … `#ec4899`) covering the full hue wheel, chosen to read well on the dark theme — these are the **opt-in** colours.
+- **`NEUTRAL_COLOR`** — `#9ca3af`, the grey **default** every project uses until the user picks a colour.
+- **`projectColor(slug, override?): string`** — pure: `return override || NEUTRAL_COLOR`. So a project is grey by default; setting `color` (an override) gives it a palette hue. (No auto-assignment — `slug` is kept in the signature for callers but unused.)
 
 ### `<ProjectBadge>` component
 
@@ -70,7 +71,7 @@ Props: `slug` (required), `name?`, `color?`, `to?` (default `'/projects'`; pass 
 Colour resolution order (first truthy wins):
 1. Explicit `color` prop.
 2. `useProjects().useProjectColors().map` — a `computed` Map derived from the vue-query project list cache (`slug → color | null`). This propagates a custom override saved on `/projects` to every surface that renders a badge without needing a separate fetch.
-3. `projectColor(slug)` deterministic default.
+3. `projectColor(slug)` → the grey `NEUTRAL_COLOR` default.
 
 Styling uses inline `style` bindings (not Tailwind classes) so arbitrary hex values work: `color`, `backgroundColor` (`hex + '1f'` for 12 % alpha fill), and `borderColor` (`hex + '40'` for 25 % alpha border).
 
@@ -96,7 +97,7 @@ The projects index page surfaces all `ProjectDTO` fields per row:
 An **Edit modal** per project provides:
 - Repository URL, production URL, staging URL text inputs.
 - Aliases multi-value input (`UInputTags`).
-- A **colour swatch picker**: 14 swatches from `PROJECT_PALETTE` plus a "Reset to auto" option that sets `color` to `null` (reverts to the slug-hash default).
+- A **colour swatch picker**: a leading grey **"Default"** swatch (sets `color = null` → the neutral grey) followed by the 14 `PROJECT_PALETTE` hues; the active swatch is ring-highlighted (grey when `color` is null).
 - Read-only display of `gitRemoteKey` and `localPaths`.
 
 Saving calls `PATCH /api/projects/:slug` with `{ color, repositoryUrl, productionUrl, stagingUrl, aliases }`. On save the vue-query cache is invalidated, causing all `<ProjectBadge>` instances across the app to re-resolve via the shared `useProjectColors()` map.
