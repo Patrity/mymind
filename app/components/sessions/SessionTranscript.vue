@@ -17,10 +17,6 @@ const { list, containerProps, wrapperProps, scrollTo } = useVirtualList(
   { itemHeight: 140, overscan: 10 },
 )
 
-// Scroll container ref — also used below for live-tail scroll control.
-// containerProps.ref is the same node the virtual list scrolls; alias it so both work.
-const scrollEl = containerProps.ref
-
 // ── Autoscroll + live-tail ──────────────────────────────────────────────────────
 // Track whether the viewport is pinned to the bottom, and the id of the last
 // message the user has "seen" (i.e. last message at the moment we were at bottom).

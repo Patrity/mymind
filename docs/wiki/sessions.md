@@ -22,7 +22,8 @@ Legacy `messages.metadata.{usage,model,tools,type}` is still dual-written so pre
 
 ## API (`server/api/sessions/*`, types in `shared/types/session.ts`)
 - `GET /api/sessions?source=&project=` → `SessionListItem[]`, newest first.
-- `GET /api/sessions/[id]` → `SessionDetail`: session header (`cwd`, `machineId`, `gitBranch`/`gitCommit`/`gitRemote`, `appVersion`, `endedAt`, metadata) + `messages[]` (now incl. `thinking`, `model`, `isSidechain`) + **`toolEvents[]`** (`SessionToolEventDTO`: name/args/result/exitStatus/phase/messageId). Auth-gated.
+- `GET /api/sessions/[id]` → meta only (`getSessionMeta`): session header (`cwd`, `machineId`, `gitBranch`/`gitCommit`/`gitRemote`, `appVersion`, `endedAt`, metadata, counts). No messages. Auth-gated.
+- `GET /api/sessions/[id]/messages?since=<iso>` → `messages[]` (incl. `thinking`, `model`, `isSidechain`) + **`toolEvents[]`** (`SessionToolEventDTO`); `?since=` returns only messages after that timestamp for incremental append.
 
 ## UI (`app/pages/sessions/{index,[id]}.vue`)
 - **List**: cards with source badge, project, title/summary, message/tool/token stats, relative last-active; source/project filters + search.
