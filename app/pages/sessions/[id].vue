@@ -10,7 +10,7 @@ const toast = useToast()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 const { data: meta, isPending: metaPending, error } = useSessionMeta(() => route.params.id as string)
-const { data: msgData, isPending: messagesPending } = useSessionMessages(() => route.params.id as string)
+const { data: msgData, isPending: messagesPending, error: messagesError } = useSessionMessages(() => route.params.id as string)
 const messages = computed(() => msgData.value?.messages ?? [])
 const toolEvents = computed(() => msgData.value?.toolEvents ?? [])
 const metaNotFound = computed(() => !metaPending.value && (error.value != null))
@@ -23,6 +23,10 @@ watch(error, (err) => {
     return
   }
   toast.add({ color: 'error', title: 'Failed to load session' })
+})
+
+watch(messagesError, (err) => {
+  if (err) toast.add({ color: 'error', title: 'Failed to load transcript' })
 })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
