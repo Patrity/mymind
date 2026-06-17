@@ -6,6 +6,18 @@ import { slugify } from '../../shared/utils/slugify'
 import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/projects/git-remote'
 
 // ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Bare row select: no count subqueries. Used for existence/uniqueness checks only.
+ */
+async function projectRowBySlug(slug: string) {
+  const [r] = await useDb().select().from(projects).where(eq(projects.slug, slug)).limit(1)
+  return r ?? null
+}
+
+// ---------------------------------------------------------------------------
 // DTO mapper
 // ---------------------------------------------------------------------------
 
@@ -57,9 +69,8 @@ export interface CreateProjectInput {
 export async function createProject(input: CreateProjectInput): Promise<ProjectDTO> {
   const slug = input.slug ?? slugify(input.name)
 
-  // Check for existing project with the same slug
-  const existing = await getProject(slug)
-  if (existing) {
+  // Check for existing project with the same slug (lean existence check, no counts)
+  if (await projectRowBySlug(slug)) {
     throw new Error(`Project with slug "${slug}" already exists`)
   }
 
@@ -95,8 +106,6 @@ export async function updateProject(slug: string, patch: UpdateProjectInput): Pr
 
   const newSlug = patch.slug?.trim()
   if (newSlug && newSlug !== slug) {
-    // Guard against empty after trim (belt-and-suspenders; zod validates shape upstream)
-    if (!newSlug) throw new Error('Project slug cannot be empty')
     // Check uniqueness: any existing row with newSlug is a conflict
     const [conflict] = await db.select({ id: projects.id }).from(projects).where(eq(projects.slug, newSlug)).limit(1)
     if (conflict) throw new Error(`Project slug "${newSlug}" already exists`)
