@@ -1,9 +1,9 @@
 ---
 title: Projects
 status: shipped
-cycle: 25
+cycle: 26
 phase: 2
-updated: 2026-06-16
+updated: 2026-06-17
 ---
 
 # Projects
@@ -119,4 +119,39 @@ The route is keyed on **slug** (`getProject(slug)` and every `?project=<slug>` f
 - **Edit:** header Edit button opens `<ProjectEditModal>`; on `saved` with a changed slug the page `navigateTo`s the new `/projects/<newslug>` URL (`replace: true`); on `deleted` it returns to `/projects`.
 
 ### Editable slug + cascade rename (`updateProject`)
-`UpdateProjectInput` accepts `slug?`. When the slug **changes**, `updateProject` (in a `db.transaction`): (1) verifies the new slug is free (else throws → the PATCH endpoint maps it to **409**, surfaced as an inline field error in the modal); (2) updates the `projects` row; (3) **cascades** the rename to the denormalized slug columns — `UPDATE sessions/tasks/memories SET project = <new> WHERE project = <old>` — so the dashboard tabs (which filter by slug) keep showing the project's rows. The canonical `project_id` (uuid) columns are **not** touched. The PATCH endpoint emits `publishChange` for `project` always, and additionally for `session`/`task`/`memory` on a slug change so their lists refetch cross-tab. The slug zod is `^[a-z0-9]+(?:-[a-z0-9]+)*$` (matches `slugify` output).
+`UpdateProjectInput` accepts `slug?`. When the slug **changes**, `updateProject` (in a `db.transaction`): (1) verifies the new slug is free (else throws → the PATCH endpoint maps it to **409**, surfaced as an inline field error in the modal); (2) updates the `projects` row; (3) **cascades** the rename to the denormalized slug columns — `UPDATE sessions/tasks/memories SET project = <new> WHERE project = <old>` — so the dashboard tabs (which filter by slug) keep showing the project's rows. The canonical `project_id` (uuid) columns are **not** touched. The PATCH endpoint emits `publishChange` for `project` always, and additionally for `session`/`task`/`memory`/`document` on a slug change so their lists refetch cross-tab. The slug zod is `^[a-z0-9]+(?:-[a-z0-9]+)*$` (matches `slugify` output).
+
+---
+
+## Document association (cycle 26) — the path⟺project invariant
+
+Documents associate with projects by **filing**, not by a creation-time signal (a doc write — manual, quick-capture, OCR spin-off, transcription — carries no git/cwd). The rule:
+
+> A document is associated with project *X* **iff** its `documents.path` is under **`/projects/<X-slug>/`** (lowercase — a doc-tree path string, NOT the Nuxt route `/projects/[slug]`).
+
+The **path is the single source of truth**; the row stores the resolved `project_id` (uuid FK, migration 0021) + the denormalized `project` slug, both **derived from the path on every write** and kept in lock-step with it.
+
+### The resolver + choke point
+- Pure `projectFromPath(path)` (`server/lib/projects/doc-path.ts`) → the `<seg>` from `^/projects/<seg>/` (trailing-slash boundary required), else null.
+- `matchProjectByLabel(label)` (`server/services/projects.ts`) → matches an existing project by slug/alias/slugified-name; **match-only, never creates** (creation stays git-remote-only). Extracted from `findOrCreateProject`'s no-git branch.
+- `createDoc`/`updateDoc` (`server/services/documents.ts`) funnel every path/project change through `resolveDocProjectFromPath(finalPath)`. Precedence: if the input carries a `project` slug and the path isn't already under `/projects/<slug>/`, the doc is **relocated** to `/projects/<slug>/<basename>` (assign-project files it); then `project_id`+`project` are derived from the final path. **The path always wins** — passing `project` only relocates; to un-associate, move the doc out of `/projects/`.
+
+### Three triggers (all enforce the invariant)
+1. **Manual move** — moving a doc into/out of `/projects/<x>/` associates/clears it.
+2. **Assign-project** — setting `project=X` (API/UI) files the doc under `/projects/<X-slug>/`.
+3. **`/input` enrichment** — `buildEnrichMessages` feeds the active project list to the proposer, which classifies the doc into a real slug (or null) and proposes `path = /projects/<slug>/<filename>`. The proposal rides the **existing** `review_queue` → approve flow (`approve.post.ts` already applies `project` + moves to `path`); the move-listener then resolves `project_id`. No new auto-apply mechanism.
+
+### Slug-rename cascade
+`updateProject`'s rename transaction (above) also rewrites associated docs: `path` prefix `/projects/<old>/…` → `/projects/<new>/…` and the `project` slug, `WHERE project_id = <id>` (`project_id` unchanged). The SQL `regexp_replace('^/projects/<old>/', …)` mirrors the unit-tested pure `rewriteProjectPathPrefix`.
+
+### Surfacing
+- `documents.project_id` (migration 0021, nullable FK → `projects.id`, indexed; backfilled from the `project` slug).
+- `ProjectDTO.documentCount` via the shared `COUNT_COLUMNS` (count by slug **and** `deleted_at is null`). The same commit fixed `taskCount`/`memoryCount` to exclude soft-deleted/archived rows so every stat matches its tab's `live()` filter (sessions hard-delete, so unchanged).
+- `listDocs({ project })` + `GET /api/documents?project=<slug>` + `useDocList(slug)` (vue-query, reactive key).
+- A **Documents tab** on `/projects/[slug]` (4th tab) + a Documents stat cell.
+- The image-OCR → document spin-off now emits `publishChange({ resource: 'document', … })` (previously the only doc write path missing it).
+
+### Not yet
+- Tree/search `?project=` filtering (the dashboard uses the flat `listDocs`; tree/search filtering deferred).
+- Per-document deep-link route (`?doc=<id>`) — doc rows link to `/documents`.
+- The `documentCount` **stat badge** doesn't live-update on a doc move (only the tab list does) — same as the sibling counts (no write emits a `project` event); a cross-cutting follow-up.
