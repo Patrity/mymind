@@ -31,6 +31,7 @@ export interface ProjectDTO {
   lastActivityAt: string | null
   sessionCount: number
   memoryCount: number
+  taskCount: number
   createdAt: string
   updatedAt: string
 }

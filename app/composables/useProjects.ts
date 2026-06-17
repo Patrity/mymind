@@ -10,7 +10,7 @@ export function useProjects() {
   const create = (body: { name: string, description?: string, slug?: string }) =>
     ofetch<ProjectDTO>('/api/projects', { method: 'POST', body })
 
-  const update = (slug: string, body: { name?: string, description?: string, active?: boolean, color?: string | null, repositoryUrl?: string | null, productionUrl?: string | null, stagingUrl?: string | null, aliases?: string[] }) =>
+  const update = (slug: string, body: { name?: string, description?: string, active?: boolean, color?: string | null, repositoryUrl?: string | null, productionUrl?: string | null, stagingUrl?: string | null, aliases?: string[], slug?: string }) =>
     ofetch<ProjectDTO>(`/api/projects/${slug}`, { method: 'PATCH', body })
 
   const remove = (slug: string) =>
@@ -27,6 +27,15 @@ export function useProjects() {
     })
   }
 
+  const useProject = (slug: MaybeRefOrGetter<string | undefined>) => {
+    const slugRef = computed(() => toValue(slug))
+    return useQuery({
+      queryKey: ['project', slugRef],
+      queryFn: () => ofetch<ProjectDTO>(`/api/projects/${slugRef.value}`),
+      enabled: computed(() => !!slugRef.value)
+    })
+  }
+
   const useProjectColors = () => {
     const q = useProjectList()
     const map = computed(() => {
@@ -37,5 +46,5 @@ export function useProjects() {
     return { map }
   }
 
-  return { list, create, update, remove, useProjectList, useProjectColors }
+  return { list, create, update, remove, useProjectList, useProject, useProjectColors }
 }
