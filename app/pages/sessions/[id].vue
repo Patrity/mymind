@@ -184,12 +184,9 @@ const sessionTitle = computed(() => {
                       variant="subtle"
                       size="sm"
                     />
-                    <UBadge
+                    <ProjectBadge
                       v-if="meta.project"
-                      :label="meta.project"
-                      color="neutral"
-                      variant="outline"
-                      size="sm"
+                      :slug="meta.project"
                     />
                   </div>
                   <h1 class="text-lg font-semibold text-highlighted leading-snug">

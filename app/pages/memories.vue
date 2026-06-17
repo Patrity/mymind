@@ -304,13 +304,10 @@ function firstEvidence(mem: MemoryDTO) {
                   variant="subtle"
                   size="xs"
                 />
-                <UBadge
+                <ProjectBadge
                   v-if="mem.project"
-                  :label="mem.project"
-                  color="neutral"
-                  variant="outline"
-                  size="xs"
-                  icon="i-lucide-folder"
+                  :slug="mem.project"
+                  :to="false"
                 />
                 <UBadge
                   v-if="mem.reviewedAt"

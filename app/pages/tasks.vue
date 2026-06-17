@@ -411,12 +411,10 @@ const filterProjectItems = computed(() => [
                 >
                   {{ formatDate(task.dueDate) }}
                 </span>
-                <UBadge
+                <ProjectBadge
                   v-if="task.project"
-                  :label="projects.find(p => p.slug === task.project)?.name ?? task.project"
-                  color="neutral"
-                  variant="outline"
-                  size="xs"
+                  :slug="task.project"
+                  :to="false"
                 />
               </div>
             </div>
