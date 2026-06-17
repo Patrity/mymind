@@ -1,8 +1,8 @@
 ---
 title: Projects
 status: shipped
-cycle: 26
-phase: 2
+cycle: 27
+phase: 3
 updated: 2026-06-17
 ---
 
@@ -155,3 +155,29 @@ The **path is the single source of truth**; the row stores the resolved `project
 - Tree/search `?project=` filtering (the dashboard uses the flat `listDocs`; tree/search filtering deferred).
 - Per-document deep-link route (`?doc=<id>`) — doc rows link to `/documents`.
 - The `documentCount` **stat badge** doesn't live-update on a doc move (only the tab list does) — same as the sibling counts (no write emits a `project` event); a cross-cutting follow-up.
+
+---
+
+## Project merge (cycle 27) — folding a duplicate into its canonical twin
+
+Phase 1's history import grouped sessions by cwd-label when no git remote was recorded, so **legacy label projects coexist with their git-keyed twins** (`gpx-workflows` ↔ `gpx-workflows-2`, `portfolio-v2` ↔ `portfolio-v2-2`, etc.). Merge folds a **loser** L into a **winner** W and deletes L.
+
+### `mergeProjects(loserSlug, winnerSlug)` (`server/services/project-merge.ts`)
+One `db.transaction`:
+1. **Guards** (throw → endpoint maps to HTTP): loser/winner must exist (`MERGE_NOT_FOUND` → 404); not the same project (`MERGE_SELF` → 400); neither is `uncategorized` (`MERGE_UNCATEGORIZED` → 400).
+2. Capture `repointedMemoryIds` (the loser's live memories — fed to the dedup pass).
+3. **Repoint** every reference, matched by **`project_id = L.id` OR the denormalized `project = L.slug`** (catches drift): `sessions`/`memories` set `project_id = W.id, project = W.slug`; `tasks` set `project = W.slug` (slug-only — no `project_id`).
+4. **Documents — row-by-row** (a merge brings two doc trees together, so paths can collide): for each loser doc, `rewriteProjectPathPrefix(path, L.slug, W.slug)` then `uniquifyPath(newPath, takenSet)` (collision → `…-2.md`/`-3`; the doc's own old path is freed from `takenSet` first). Repoint `project_id`+`project`+`path`.
+5. **Absorb L's identity into W** so future ingests that matched L now resolve to W: `W.aliases = mergeStringArrays(W.aliases, [L.slug, ...L.aliases, ...(L.gitRemoteKey && !W.gitRemoteKey ? [L.gitRemoteKey] : [])])`; merge `local_paths`; `last_activity_at = max(W, L)`.
+6. **Hard-delete L** (all FK refs repointed → the `ON DELETE NO ACTION` FK is satisfied; the slug frees up but lives on as a W alias).
+
+Returns `{ winner, repointedMemoryIds }`. Emits (in the endpoint): `project` deleted (L) + `project` updated (W) + `session`/`task`/`memory`/`document` updated.
+
+### Post-merge memory dedup (`dedupMemoriesAfterMerge`, `server/services/memory.ts`)
+After the transaction, the loser's repointed memories may duplicate the winner's. **Reuses the existing `createMemory` dedup machinery** — the extracted `buildDedupCandidates({contentHash, embedding, scope, project, excludeId})` (exact-hash global + near-vector scoped to `(scope, project)`) + `dedupDecision`. For each repointed memory, processed **sequentially** (so an earlier archive is `live()`-invisible to a later candidate build, avoiding mutual-archive): `skip`/`merge` → archive it (`archivedAt`, `supersededBy`) + append its evidence to the survivor. (The deterministic near-neighbor/hash dedup; the LLM relationship-judge layer is a deferred enhancement.)
+
+### Endpoint + UI
+`POST /api/projects/[slug]/merge` `{ targetSlug }` (the `[slug]` is the loser). Dashboard `/projects/[slug]` has a secondary **"Merge"** action → `<ProjectMergeModal>`: a target `USelectMenu` (excludes self + `uncategorized`), a preview of counts that will move, a destructive "**{loser}** will be permanently deleted" warning, and an `error`-coloured Merge button → navigates to the winner. **Hard-delete is final; no undo** (the confirm dialog is the guard).
+
+### Watch-out — schema/DB FK divergence
+The three `project_id` FK constraints exist in **prod** (raw SQL in migrations 0019/0021, `ON DELETE NO ACTION`) but are **not modeled** in the Drizzle schema files (declared as bare `uuid`). A future `pnpm db:generate` could emit a migration that *drops* them — **review any generated migration touching these FKs**. (Same class as the existing partial-unique/GIN snapshot drift.) Modeling them with `.references()` is a backlog item.
