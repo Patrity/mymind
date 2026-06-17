@@ -21,8 +21,12 @@ Bearer **API token** (machine clients) — the existing dual-auth middleware gat
 | `search_memories(query, scope?, project?, limit?)` | memory.searchMemories |
 | `save_memory(content, scope, project?, tags?, source?, confidence?)` | memory.createMemory |
 | `get_recent_memories(scope?, limit?)` | memory.listMemories |
-| `search_docs(query)` | documents.searchDocs |
+| `search_docs(query, project?)` | documents.searchDocs |
+| `list_documents(project?)` | documents.listDocs |
+| `get_document(id)` | documents.getDoc |
+| `save_document(content, project?, title?, path?)` | documents.createDoc |
 | `search_projects(activeOnly?)` | projects.listProjects |
+| `get_project(slug)` | projects.getProject |
 | `create_project(name, description?)` | projects.createProject |
 | `edit_project(slug, name?, description?, active?)` | projects.updateProject |
 | `create_task(title, ...)` | tasks.createTask |
@@ -32,10 +36,12 @@ Bearer **API token** (machine clients) — the existing dual-auth middleware gat
 
 `save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
 
+**Project-aware document tools (cycle 27-followup)** — for coding agents working inside a project: `search_docs`/`list_documents` accept a `project` slug to scope to one project; `get_document(id)` returns a doc's full content + frontmatter; `save_document(content, project?, …)` creates a doc and — when `project` is set — **auto-files it under `/projects/<slug>/`** via the cycle-26 path⟺project choke point (vs `quick_capture`, which drops a quick note in `/input`). `get_project(slug)` returns the full project model + session/memory/task/document counts.
+
 Registered via `server.tool(name, description, zodShape, handler)`; each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
 
 ## Validate
-With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 11 tools; `search_memories` returns ranked memories; `create_task` creates a real task row.
+With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 15 tools; `search_memories` returns ranked memories; `create_task` creates a real task row. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
 
 ## Notes / follow-ups
 Stateless mode → no server-initiated notifications; tools only (no MCP resources/prompts) — sufficient for the agent tool-call use case.
