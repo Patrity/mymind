@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { uniquifyPath, mergeStringArrays } from '../server/services/project-merge'
+import { uniquifyPath, mergeStringArrays, computeDocTargetPaths } from '../server/services/project-merge'
 
 // ---------------------------------------------------------------------------
 // uniquifyPath
@@ -40,5 +40,72 @@ describe('mergeStringArrays', () => {
 
   it('returns items from b when a is empty', () => {
     expect(mergeStringArrays([], ['p', 'q'])).toEqual(['p', 'q'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// computeDocTargetPaths — pure path-collision logic used by mergeProjects
+// ---------------------------------------------------------------------------
+describe('computeDocTargetPaths', () => {
+  it('rewrites loser paths under /projects/<loser>/ to /projects/<winner>/', () => {
+    const loserDocs = [{ id: '1', path: '/projects/l/a.md' }]
+    const taken = new Set<string>(['/projects/l/a.md'])
+    const result = computeDocTargetPaths(loserDocs, taken, 'l', 'w')
+    expect(result.get('1')).toBe('/projects/w/a.md')
+  })
+
+  it('uniquifies when winner already has the target path', () => {
+    const loserDocs = [
+      { id: '1', path: '/projects/l/a.md' },
+      { id: '2', path: '/projects/l/b.md' }
+    ]
+    // Winner already owns /projects/w/a.md; /projects/w/b.md is free
+    const taken = new Set<string>([
+      '/projects/l/a.md',
+      '/projects/l/b.md',
+      '/projects/w/a.md'
+    ])
+    const result = computeDocTargetPaths(loserDocs, taken, 'l', 'w')
+    expect(result.get('1')).toBe('/projects/w/a-2.md')
+    expect(result.get('2')).toBe('/projects/w/b.md')
+  })
+
+  it('sequential collision: first doc avoids taken winner path; second gets unique suffix', () => {
+    // l/a.md → rewrites to w/a.md → taken → becomes w/a-2.md (also taken) → w/a-3.md
+    // l/b.md → rewrites to w/b.md → taken → becomes w/b-2.md
+    const loserDocs = [
+      { id: '1', path: '/projects/l/a.md' },
+      { id: '2', path: '/projects/l/b.md' }
+    ]
+    const taken = new Set<string>([
+      '/projects/l/a.md',
+      '/projects/l/b.md',
+      '/projects/w/a.md',   // winner already has a.md
+      '/projects/w/a-2.md', // winner already has a-2.md
+      '/projects/w/b.md'    // winner already has b.md
+    ])
+    const result = computeDocTargetPaths(loserDocs, taken, 'l', 'w')
+    expect(result.get('1')).toBe('/projects/w/a-3.md')
+    expect(result.get('2')).toBe('/projects/w/b-2.md')
+  })
+
+  it('does not collide a doc with its own old path (self-free)', () => {
+    // loser's path /projects/l/a.md rewrites to /projects/w/a.md
+    // but /projects/w/a.md is NOT in taken; /projects/l/a.md IS
+    // The doc should NOT collide with its own old path after rewrite.
+    const loserDocs = [{ id: '1', path: '/projects/l/a.md' }]
+    const taken = new Set<string>(['/projects/l/a.md'])
+    const result = computeDocTargetPaths(loserDocs, taken, 'l', 'w')
+    // /projects/l/a.md is freed, rewritten to /projects/w/a.md, which is free
+    expect(result.get('1')).toBe('/projects/w/a.md')
+  })
+
+  it('leaves non-project paths unchanged (path not under /projects/<loser>/)', () => {
+    const loserDocs = [{ id: '1', path: '/docs/readme.md' }]
+    const taken = new Set<string>(['/docs/readme.md'])
+    const result = computeDocTargetPaths(loserDocs, taken, 'l', 'w')
+    // path not under /projects/l/ so rewriteProjectPathPrefix returns unchanged;
+    // old path freed, no collision → stays /docs/readme.md
+    expect(result.get('1')).toBe('/docs/readme.md')
   })
 })
