@@ -132,6 +132,20 @@ These run **in-process** while the app is up (Nitro `scheduledTasks`):
 - To migrate manually (e.g. before a zero-downtime swap): `DATABASE_URL=... pnpm db:migrate` from the repo (needs dev deps for `drizzle-kit`).
 - New migrations are added by `pnpm db:generate` after schema changes (dev), committed under `server/db/migrations/`.
 
+### 8a. Running scripts / DB ops against prod (no exposed DB port)
+The homelab prod DB (`mymind-db`) publishes **no host port** — only the app reaches it on the compose network (`mymind_default`, host `db:5432`). Prod runs in **LXC 114** on Proxmox host **192.168.2.50** (LXC LAN IP **192.168.2.89**). Three recipes:
+- **Read-only SQL / quick fixes** — `ssh root@192.168.2.50` then `pct exec 114 -- docker exec mymind-db psql -U mymind -d mymind -c '…'` (in-container trust auth; no password). Multi-statement clears: pipe SQL via `… | pct exec 114 -- docker exec -i mymind-db psql -U mymind -d mymind`.
+- **Run a node script inside the app container** — `mymind-app` has `node` + `pg` + the source tree, but **NOT `tsx`** (the pnpm `.bin/tsx` symlink isn't present). So write a **self-contained `.mjs`** (plain JS, helpers inlined, `import pg from 'pg'`), ship it in via `base64 < x.mjs | ssh … "pct exec 114 -- docker exec -i mymind-app sh -c 'base64 -d > /app/x.mjs'"`, then `pct exec 114 -- docker exec -w /app mymind-app node x.mjs`. `DATABASE_URL` is already in the container env. `rm` it after.
+- **Run a LOCAL script against prod** (when the source must stay local — e.g. the bridget import needs the local-only bridget DB) — stand up a **temporary** tunnel, then tear it down:
+  ```bash
+  ssh root@192.168.2.50 "pct exec 114 -- docker run -d --rm --name pg-tunnel --network mymind_default -p 5432:5432 alpine/socat tcp-listen:5432,fork,reuseaddr tcp:mymind-db:5432"
+  # prod Postgres is now at 192.168.2.89:5432 (password-required); run your local script with
+  #   PGPASSWORD=$(ssh root@192.168.2.50 "pct exec 114 -- sh -c 'grep ^POSTGRES_PASSWORD= /opt/mymind/.env | cut -d= -f2-'") \
+  #   DATABASE_URL=postgres://mymind@192.168.2.89:5432/mymind  node_modules/.bin/tsx scripts/<x>.ts
+  ssh root@192.168.2.50 "pct exec 114 -- docker rm -f pg-tunnel"   # ALWAYS tear down
+  ```
+  Never echo `POSTGRES_PASSWORD`; pg falls back to `PGPASSWORD` when the URL omits the password. **Deploy detection:** after a push, poll `docker inspect mymind-app --format '{{.State.StartedAt}}'` for a change to know the rebuild landed.
+
 ## 9. Backups (out-of-band — not built into the app)
 Per the project's locked decision, backups are external. Schedule on the host:
 ```bash
