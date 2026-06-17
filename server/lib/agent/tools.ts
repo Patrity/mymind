@@ -2,10 +2,11 @@
 import { z } from 'zod'
 import type { AgentTool } from './types'
 import { searchMemories, createMemory, listMemories, archiveMemory } from '../../services/memory'
-import { searchDocs, createDoc } from '../../services/documents'
+import { searchDocs, createDoc, listDocs, getDoc, deleteDoc } from '../../services/documents'
 import { listProjects, createProject, updateProject, getProject, deleteProject } from '../../services/projects'
 import { createTask, listTasks, updateTask, getTask, deleteTask } from '../../services/tasks'
 import { publishChange } from '../../utils/live-bus'
+import { slugify } from '../../../shared/utils/slugify'
 import { nanoid } from 'nanoid'
 
 export const agentTools: AgentTool[] = [
@@ -66,12 +67,58 @@ export const agentTools: AgentTool[] = [
   // ---- documents ----
   {
     name: 'search_docs',
-    description: 'Semantic + keyword search over stored documents.',
+    description: 'Semantic + keyword search over stored documents. Pass `project` (a slug) to scope the search to one project.',
     kind: 'read',
-    schema: { query: z.string().describe('Search query') },
+    schema: { query: z.string().describe('Search query'), project: z.string().optional().describe('Project slug to scope to') },
     handler: async (a) => {
-      const res = await searchDocs(a.query as string)
+      const res = await searchDocs(a.query as string, { project: a.project as string | undefined })
       return { result: res, summary: `searched docs (${Array.isArray(res) ? res.length : 0})` }
+    }
+  },
+  {
+    name: 'list_documents',
+    description: 'List documents, newest first. Pass `project` (a slug) to list only that project\'s documents.',
+    kind: 'read',
+    schema: { project: z.string().optional().describe('Project slug to filter by') },
+    handler: async (a) => {
+      const res = await listDocs({ project: a.project as string | undefined })
+      return { result: res, summary: `listed documents (${res.length})` }
+    }
+  },
+  {
+    name: 'get_document',
+    description: 'Get a single document by id, including its full Markdown content and frontmatter.',
+    kind: 'read',
+    schema: { id: z.string().describe('Document id') },
+    handler: async (a) => {
+      const doc = await getDoc(a.id as string)
+      return { result: doc, summary: doc ? `got document ${doc.path}` : 'document not found' }
+    }
+  },
+  {
+    name: 'save_document',
+    description: 'Create a Markdown document. Pass `project` (a slug) to file it under /projects/<slug>/ and associate it with that project; otherwise it lands in /input for triage. Use this (not quick_capture) for substantive, project-scoped documents.',
+    kind: 'create',
+    schema: {
+      content: z.string().describe('Markdown body'),
+      project: z.string().optional().describe('Project slug to file under'),
+      title: z.string().optional().describe('Title (also used to derive the filename)'),
+      path: z.string().optional().describe('Explicit document path; overrides the derived one')
+    },
+    handler: async (a) => {
+      const base = a.title ? slugify(a.title as string) : nanoid(10)
+      const path = (a.path as string) ?? `/input/${base || nanoid(10)}.md`
+      const doc = await createDoc({
+        path, content: a.content as string,
+        title: (a.title as string) ?? undefined,
+        project: (a.project as string) ?? null
+      })
+      publishChange({ resource: 'document', action: 'created', id: doc.id })
+      return {
+        result: doc,
+        summary: `saved document ${doc.path}`,
+        undo: async () => { await deleteDoc(doc.id) }
+      }
     }
   },
   // ---- projects ----
@@ -83,6 +130,16 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const res = await listProjects({ activeOnly: (a.activeOnly as boolean) ?? false })
       return { result: res, summary: `listed projects (${res.length})` }
+    }
+  },
+  {
+    name: 'get_project',
+    description: 'Get a single project by slug — full model (git remote, URLs, aliases, local paths) plus session/memory/task/document counts.',
+    kind: 'read',
+    schema: { slug: z.string().describe('Project slug') },
+    handler: async (a) => {
+      const proj = await getProject(a.slug as string)
+      return { result: proj, summary: proj ? `got project ${proj.slug}` : 'project not found' }
     }
   },
   {

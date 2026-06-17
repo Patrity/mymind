@@ -148,14 +148,16 @@ export async function deleteDoc(id: string): Promise<boolean> {
   return !!r
 }
 
-export async function searchDocs(q: string): Promise<DocumentDTO[]> {
+export async function searchDocs(q: string, opts: { project?: string } = {}): Promise<DocumentDTO[]> {
   if (!q.trim()) return []
 
   const db = useDb()
+  // Optional project scoping — filters both lanes by the denormalized project slug.
+  const projectFilter = opts.project ? eq(documents.project, opts.project) : undefined
 
   // Lane 1: trigram — ILIKE filter + similarity ordering
   const trigramRows = await db.select({ id: documents.id }).from(documents)
-    .where(and(live(), or(ilike(documents.title, `%${q}%`), ilike(documents.content, `%${q}%`))))
+    .where(and(live(), projectFilter, or(ilike(documents.title, `%${q}%`), ilike(documents.content, `%${q}%`))))
     .orderBy(sql`similarity(coalesce(${documents.title},'') || ' ' || ${documents.content}, ${q}) desc`)
     .limit(50)
   const trigramIds = trigramRows.map(r => r.id)
@@ -167,7 +169,7 @@ export async function searchDocs(q: string): Promise<DocumentDTO[]> {
     const lit = `[${qv.join(',')}]`
     const vecRows = await db.select({ id: documents.id })
       .from(documents)
-      .where(and(live(), isNotNull(documents.embedding)))
+      .where(and(live(), projectFilter, isNotNull(documents.embedding)))
       .orderBy(sql`${documents.embedding} <=> ${lit}::halfvec`)
       .limit(50)
     vectorIds = vecRows.map(r => r.id)
