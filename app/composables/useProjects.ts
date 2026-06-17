@@ -16,6 +16,9 @@ export function useProjects() {
   const remove = (slug: string) =>
     ofetch(`/api/projects/${slug}`, { method: 'DELETE' })
 
+  const merge = (slug: string, targetSlug: string) =>
+    ofetch<ProjectDTO>(`/api/projects/${slug}/merge`, { method: 'POST', body: { targetSlug } })
+
   // List key: ['project','list', key] where key is a computed wrapping the
   // MaybeRefOrGetter so vue-query reacts to filter changes.
   // Live SSE events drive cross-tab refresh via the global invalidator.
@@ -46,5 +49,5 @@ export function useProjects() {
     return { map }
   }
 
-  return { list, create, update, remove, useProjectList, useProject, useProjectColors }
+  return { list, create, update, remove, merge, useProjectList, useProject, useProjectColors }
 }
