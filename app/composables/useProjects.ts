@@ -27,5 +27,15 @@ export function useProjects() {
     })
   }
 
-  return { list, create, update, remove, useProjectList }
+  const useProjectColors = () => {
+    const q = useProjectList()
+    const map = computed(() => {
+      const m = new Map<string, string | null>()
+      for (const p of (q.data.value ?? [])) m.set(p.slug, p.color ?? null)
+      return m
+    })
+    return { map }
+  }
+
+  return { list, create, update, remove, useProjectList, useProjectColors }
 }
