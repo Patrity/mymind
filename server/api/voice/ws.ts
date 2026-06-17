@@ -5,11 +5,22 @@ import { sttFromModel, ttsFromModel } from '../../lib/voice/providers'
 import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import type { AgentMessage } from '../../lib/agent/run'
+import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
+import { buildLiveContext } from '../../lib/agent/context'
+import { publishChange } from '../../utils/live-bus'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
-//   {type:'voice',voice} | {type:'text',text} (typed turn, injected post-STT)
+//   {type:'voice',voice} | {type:'text',text,speak?} (typed turn, injected post-STT) |
+//   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset)
 // Server→client: binary = audio bytes | text JSON = transcript/tool/state/error events.
-interface ConnState { history: AgentMessage[]; ac: AbortController | null; voice: string; lock: Promise<void> }
+interface ConnState {
+  history: AgentMessage[]
+  ac: AbortController | null
+  voice: string
+  lock: Promise<void>
+  conversationId: string | null
+  context: string | null
+}
 const conns = new WeakMap<object, ConnState>()
 
 // STT/TTS resolved from the registry at call time, with per-usage failover.
@@ -43,7 +54,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve() })
+    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, context: null })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -54,20 +65,38 @@ export default defineWebSocketHandler({
     // A turn closure reads s.history at EXECUTION time (under the lock), so
     // back-to-back turns see each other's appended messages.
     let turn: ((signal: AbortSignal, emit: (e: VoiceEvent) => void) => Promise<AgentMessage[]>) | null = null
+    let inputModality: 'text' | 'voice' = 'text'
+    let speakFlag = false
     if (frame.kind === 'control') {
       const msg = frame.msg
       if (msg.type === 'interrupt') { s.ac?.abort(); return }
       if (msg.type === 'voice') { s.voice = msg.voice as string; return }
+      // load: restore a previous conversation under the lock so history is consistent
+      if (msg.type === 'load' && typeof msg.conversationId === 'string') {
+        s.lock = s.lock.then(async () => {
+          s.history = await getAgentHistory(msg.conversationId as string)
+          s.conversationId = msg.conversationId as string
+          s.context = null
+        })
+        return
+      }
+      // new: reset to a fresh conversation
+      if (msg.type === 'new') { s.history = []; s.conversationId = null; s.context = null; return }
       if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
         // Typed turn: inject post-STT — same agent loop, same TTS, same events.
         const text = msg.text.trim()
-        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak: true, signal, emit })
+        const speak = typeof msg.speak === 'boolean' ? msg.speak : false
+        inputModality = 'text'
+        speakFlag = speak
+        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, signal, emit })
       } else {
         return
       }
     } else {
       const audio = frame.bytes
-      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, signal, emit })
+      inputModality = 'voice'
+      speakFlag = true
+      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context: s.context ?? undefined, signal, emit })
     }
     s.ac?.abort()
     s.ac = new AbortController()
@@ -75,13 +104,30 @@ export default defineWebSocketHandler({
     const exec = turn
     const run = async () => {
       try {
-        s.history = await exec(ac.signal, (e) => { if (e.type === 'audio') peer.send(e.bytes); else peer.send(JSON.stringify(e)) })
+        if (!s.context) s.context = await buildLiveContext(new Date())
+        const toolCalls: { name: string; summary: string; undoToken?: string }[] = []
+        const prevLen = s.history.length
+        const emit = (e: VoiceEvent) => {
+          if (e.type === 'audio') peer.send(e.bytes)
+          else { if (e.type === 'tool') toolCalls.push({ name: e.name, summary: e.summary, undoToken: e.undoToken }); peer.send(JSON.stringify(e)) }
+        }
+        s.history = await exec!(ac.signal, emit)               // exec built with speak+context
+        const added = s.history.slice(prevLen)                // [user] or [user, assistant]
+        if (added.length && !ac.signal.aborted) {
+          const created = prevLen === 0 && !s.conversationId
+          if (!s.conversationId) s.conversationId = (await createConversation({ title: deriveTitle(added[0]!.content) })).id
+          await appendMessages(s.conversationId, added.map(m => ({
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
+            toolCalls: m.role === 'assistant' && toolCalls.length ? toolCalls : null
+          })))
+          publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
+        }
       } catch (err) {
         if ((err as Error).name === 'AbortError') return
-        // Surface pipeline failures to the client (error flash + message) instead
-        // of dying as an unhandledRejection on the lock chain.
-        console.error('[voice] utterance failed:', err)
-        peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'voice pipeline error' }))
+        console.error('[agent] turn failed:', err)
+        peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'agent pipeline error' }))
         peer.send(JSON.stringify({ type: 'state', state: 'idle' }))
       }
     }
