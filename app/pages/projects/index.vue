@@ -153,7 +153,8 @@ function onDeleted() {
         <div
           v-for="project in projects"
           :key="project.slug"
-          class="flex items-center gap-4 px-6 py-4 hover:bg-elevated/40 transition-colors group"
+          class="flex items-center gap-4 px-6 py-4 hover:bg-elevated/40 transition-colors group cursor-pointer"
+          @click="navigateTo('/projects/' + project.slug)"
         >
           <!-- Icon -->
           <UIcon
@@ -198,11 +199,15 @@ function onDeleted() {
           <USwitch
             :model-value="project.active"
             size="sm"
+            @click.stop
             @update:model-value="toggleActive(project, $event)"
           />
 
           <!-- Actions -->
-          <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div
+            class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+            @click.stop
+          >
             <UButton
               icon="i-lucide-pencil"
               size="xs"
