@@ -3,7 +3,7 @@ title: Project Dashboard `/projects/[slug]` + editable slug
 cycle: 25-followup
 date: 2026-06-16
 branch: feat/project-dashboard
-status: in-progress
+status: shipped
 ---
 
 # Project Dashboard + editable slug

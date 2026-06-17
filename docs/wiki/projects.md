@@ -66,7 +66,7 @@ The pure utility `app/utils/project-color.ts` exports:
 
 `app/components/ProjectBadge.vue` renders a coloured pill with a dot, a truncated label, and an optional link.
 
-Props: `slug` (required), `name?`, `color?`, `to?` (default `'/projects'`; pass `false` to suppress the link).
+Props: `slug` (required), `name?`, `color?`, `to?: string | null`. Link behaviour: **absent `to` → deep-links to that project's dashboard** `/projects/<slug>`; an explicit string overrides the target; **`to = null` renders a plain `<span>`** (no link). The type is `string | null` (not `string | false`) on purpose — a Boolean in the prop type makes Vue cast an *absent* `to` to `false`, which is indistinguishable from an explicit no-link; `null` keeps "absent" (→ dashboard) and "no link" distinct. The link element is the real `NuxtLink` component resolved via `resolveComponent` (passing the string `'NuxtLink'` to `<component :is>` renders an inert `<nuxtlink>` custom element, not an `<a>`).
 
 Colour resolution order (first truthy wins):
 1. Explicit `color` prop.
@@ -75,16 +75,16 @@ Colour resolution order (first truthy wins):
 
 Styling uses inline `style` bindings (not Tailwind classes) so arbitrary hex values work: `color`, `backgroundColor` (`hex + '1f'` for 12 % alpha fill), and `borderColor` (`hex + '40'` for 25 % alpha border).
 
-Surfaces that use `<ProjectBadge>`: memories list/detail, sessions detail, and tasks cards.
+Surfaces that use `<ProjectBadge>`: memories list (deep-links to the dashboard) and session detail (deep-links); the `/projects` rows, dashboard header, task cards, and the edit-modal preview pass `:to="null"` (plain pill — the row/page handles navigation itself).
 
 ### Expanded `ProjectDTO` and list API
 
 `ProjectDTO` (`shared/types/tasks.ts`) now exposes the full project model:
 - Core: `id`, `slug`, `name`, `description`, `active`, `color`
 - Git: `gitRemoteKey`, `repositoryUrl`, `productionUrl`, `stagingUrl`, `aliases`, `localPaths`, `lastActivityAt`
-- Counters (computed in SQL): `sessionCount`, `memoryCount`
+- Counters (computed in SQL): `sessionCount`, `memoryCount`, `taskCount`
 
-`listProjects` (`server/services/projects.ts`) inlines two count subqueries so the list endpoint returns session and memory counts in a single round-trip with no N+1.
+`listProjects` and `getProject` (`server/services/projects.ts`) share a `COUNT_COLUMNS` set of count subqueries so both return session/memory/task counts in a single round-trip with no N+1. **All three count by the denormalized `project` slug string** (`where x.project = projects.slug`), NOT the canonical `project_id` — this is the same key the dashboard tabs and every `?project=` filter use, so the header counts always match what the tabs display even when a row's slug and `project_id` have drifted (legacy vs canonical projects coexist until phase-3 merge).
 
 ### `/projects` page
 
@@ -100,4 +100,23 @@ An **Edit modal** per project provides:
 - A **colour swatch picker**: a leading grey **"Default"** swatch (sets `color = null` → the neutral grey) followed by the 14 `PROJECT_PALETTE` hues; the active swatch is ring-highlighted (grey when `color` is null).
 - Read-only display of `gitRemoteKey` and `localPaths`.
 
-Saving calls `PATCH /api/projects/:slug` with `{ color, repositoryUrl, productionUrl, stagingUrl, aliases }`. On save the vue-query cache is invalidated, causing all `<ProjectBadge>` instances across the app to re-resolve via the shared `useProjectColors()` map.
+Saving calls `PATCH /api/projects/:slug` with `{ color, repositoryUrl, productionUrl, stagingUrl, aliases, slug? }`. On save the vue-query cache is invalidated, causing all `<ProjectBadge>` instances across the app to re-resolve via the shared `useProjectColors()` map.
+
+The Edit modal lives in a reusable component **`app/components/ProjectEditModal.vue`** (`v-model:open`, `:project`, `@saved`/`@deleted`), used by both `/projects` and the dashboard. It owns its own success/error toasts; consuming pages just refetch/navigate on the events.
+
+---
+
+## Project dashboard `/projects/[slug]` + editable slug
+
+### Routing & pages
+The route is keyed on **slug** (`getProject(slug)` and every `?project=<slug>` filter already key on the slug, so the route param feeds straight into the header fetch and all three tab fetches — zero extra lookups). `app/pages/projects.vue` was split into `app/pages/projects/index.vue` (the list) + `app/pages/projects/[slug].vue` (the dashboard). Clicking a project row on `/projects` navigates to its dashboard (the active toggle and edit button `@click.stop` so they don't trigger navigation).
+
+### Dashboard (`app/pages/projects/[slug].vue`)
+- **Data:** `useProjects().useProject(slug)` (vue-query key `['project', slug]`, live-invalidated by the `{resource:'project'}` event). Loading → skeletons; 404/null → a "Project not found" state with a back link.
+- **Header:** `<ProjectBadge :to="null">`, description, and a metadata grid — git remote key, repository/production/staging URLs as external links (`target=_blank rel=noopener`, rendered only when set), aliases as badges, `localPaths` (mono), and created/updated/last-active dates.
+- **Stats row:** Sessions · Memories · Tasks (`sessionCount`/`memoryCount`/`taskCount` from the one `getProject` fetch — counted by slug, see above).
+- **Tabs** (`UTabs`): Sessions | Tasks | Memories, each reusing the existing filtered list hooks (`useSessionList({project})`, `useTaskList(slug)`, `useMemoryList({project})`) with loading/empty/error states. Session rows deep-link to `/sessions/[id]`; task/memory rows have no per-item detail page (link to `/tasks` / `/memories`).
+- **Edit:** header Edit button opens `<ProjectEditModal>`; on `saved` with a changed slug the page `navigateTo`s the new `/projects/<newslug>` URL (`replace: true`); on `deleted` it returns to `/projects`.
+
+### Editable slug + cascade rename (`updateProject`)
+`UpdateProjectInput` accepts `slug?`. When the slug **changes**, `updateProject` (in a `db.transaction`): (1) verifies the new slug is free (else throws → the PATCH endpoint maps it to **409**, surfaced as an inline field error in the modal); (2) updates the `projects` row; (3) **cascades** the rename to the denormalized slug columns — `UPDATE sessions/tasks/memories SET project = <new> WHERE project = <old>` — so the dashboard tabs (which filter by slug) keep showing the project's rows. The canonical `project_id` (uuid) columns are **not** touched. The PATCH endpoint emits `publishChange` for `project` always, and additionally for `session`/`task`/`memory` on a slug change so their lists refetch cross-tab. The slug zod is `^[a-z0-9]+(?:-[a-z0-9]+)*$` (matches `slugify` output).
