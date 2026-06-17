@@ -149,6 +149,24 @@ export async function deleteProject(slug: string): Promise<boolean> {
 }
 
 /**
+ * Find an existing project matching a human label (e.g. cwd basename) by slug
+ * or alias — never creates, no Uncategorized fallback. Returns the raw DB row
+ * or null. The match checks: slug = label, slug = slugify(label),
+ * aliases @> [label], aliases @> [slugify(label)].
+ */
+export async function matchProjectByLabel(label: string): Promise<typeof projects.$inferSelect | null> {
+  const db = useDb()
+  const lslug = slugify(label)
+  const [match] = await db.select().from(projects).where(or(
+    eq(projects.slug, label),
+    eq(projects.slug, lslug),
+    sql`${projects.aliases} @> ARRAY[${label}]::text[]`,
+    sql`${projects.aliases} @> ARRAY[${lslug}]::text[]`
+  )).limit(1)
+  return match ?? null
+}
+
+/**
  * Resolve a session's project. Matches on the normalized git remote (then aliases),
  * creating a project on first sight. Sessions with no remote MATCH an existing
  * project by cwd label (slug / aliases) but never create — falling back to the
@@ -172,12 +190,7 @@ export async function findOrCreateProject(input: { gitRemote?: string | null, cw
     // No git remote: try to MATCH (never create) an existing project by cwd label / slug / alias.
     const label = cwd ? cwd.split('/').filter(Boolean).at(-1) ?? null : null
     if (label) {
-      const lslug = slugify(label)
-      const [match] = await db.select().from(projects).where(or(
-        eq(projects.slug, lslug),
-        sql`${projects.aliases} @> ARRAY[${label}]::text[]`,
-        sql`${projects.aliases} @> ARRAY[${lslug}]::text[]`
-      )).limit(1)
+      const match = await matchProjectByLabel(label)
       if (match) return touch(match)
     }
     const [u] = await db.select().from(projects).where(eq(projects.slug, 'uncategorized')).limit(1)
