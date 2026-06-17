@@ -168,7 +168,7 @@ function onDeleted() {
               :slug="project.slug"
               :name="project.name"
               :color="project.color"
-              :to="false"
+              :to="null"
             />
             <p
               v-if="project.description"

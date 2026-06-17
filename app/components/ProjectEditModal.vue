@@ -268,7 +268,7 @@ async function confirmDelete() {
                 :slug="editForm.slug || (project?.slug ?? '')"
                 :name="editForm.name"
                 :color="editForm.color"
-                :to="false"
+                :to="null"
               />
             </div>
           </UFormField>

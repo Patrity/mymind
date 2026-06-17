@@ -414,7 +414,7 @@ const filterProjectItems = computed(() => [
                 <ProjectBadge
                   v-if="task.project"
                   :slug="task.project"
-                  :to="false"
+                  :to="null"
                 />
               </div>
             </div>

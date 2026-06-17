@@ -207,7 +207,7 @@ const tabItems = [
             :slug="project.slug"
             :name="project.name"
             :color="project.color"
-            :to="false"
+            :to="null"
             class="text-sm!"
           />
           <p

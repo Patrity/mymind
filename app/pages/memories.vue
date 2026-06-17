@@ -307,7 +307,7 @@ function firstEvidence(mem: MemoryDTO) {
                 <ProjectBadge
                   v-if="mem.project"
                   :slug="mem.project"
-                  :to="false"
+                  @click.stop
                 />
                 <UBadge
                   v-if="mem.reviewedAt"
