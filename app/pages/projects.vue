@@ -210,13 +210,6 @@ function onDeleted() {
               variant="ghost"
               @click="openEditModal(project)"
             />
-            <UButton
-              icon="i-lucide-trash-2"
-              size="xs"
-              color="error"
-              variant="ghost"
-              @click="openEditModal(project)"
-            />
           </div>
         </div>
       </div>

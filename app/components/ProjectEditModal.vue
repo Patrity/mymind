@@ -265,7 +265,7 @@ async function confirmDelete() {
                 </button>
               </div>
               <ProjectBadge
-                :slug="project?.slug ?? ''"
+                :slug="editForm.slug || (project?.slug ?? '')"
                 :name="editForm.name"
                 :color="editForm.color"
                 :to="false"
