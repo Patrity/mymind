@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cosine, dedupDecision, type DedupCandidate } from '../server/services/memory-dedup'
 
 const DIM = 8 // small dimension for tests
@@ -113,5 +113,21 @@ describe('dedupDecision', () => {
       { threshold: 1.0 }
     )
     expect(result.action).toBe('insert')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// dedupMemoriesAfterMerge — unit-testable surface (pure zero-input case)
+// ---------------------------------------------------------------------------
+
+describe('dedupMemoriesAfterMerge', () => {
+  // We cannot stand up a real DB in unit tests, but we can verify the zero-input
+  // short-circuit that is purely in-process and requires no database at all.
+  it('returns { collapsed: 0 } immediately when given an empty id list', async () => {
+    // Dynamically import so the module-level mocks (useDb etc.) are not needed
+    // for this particular code path — the function returns early before any DB call.
+    const { dedupMemoriesAfterMerge } = await import('../server/services/memory')
+    const result = await dedupMemoriesAfterMerge([])
+    expect(result).toEqual({ collapsed: 0 })
   })
 })

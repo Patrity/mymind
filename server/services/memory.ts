@@ -1,4 +1,4 @@
-import { and, eq, isNull, isNotNull, ilike, or, sql, inArray, arrayContains, count } from 'drizzle-orm'
+import { and, eq, isNull, isNotNull, ne, ilike, or, sql, inArray, arrayContains, count } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { useDb } from '../db'
 import { memories, memoryRelations } from '../db/schema'
@@ -8,6 +8,7 @@ import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
 import { resolveChain } from '../lib/ai/registry/resolve'
 import { dedupDecision, type DedupCandidate } from './memory-dedup'
+import { publishChange } from '../utils/live-bus'
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -127,6 +128,63 @@ async function fetchRelationsForIds(ids: string[]): Promise<Map<string, MemoryRe
 }
 
 // ---------------------------------------------------------------------------
+// Dedup candidate pool builder (shared by createMemory + dedupMemoriesAfterMerge)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the two-stage dedup candidate pool for a given memory fingerprint.
+ *
+ * Stage 1: exact content-hash match (global — the unique index is on hash alone).
+ * Stage 2: top-20 nearest vectors in the same (scope, project) partition.
+ *
+ * An optional `excludeId` is used to exclude the memory being checked from its
+ * own candidate pool (needed when checking an existing memory against others).
+ */
+export async function buildDedupCandidates(opts: {
+  contentHash: string
+  embedding: number[]
+  scope: MemoryScope
+  project: string | null
+  excludeId?: string
+}): Promise<DedupCandidate[]> {
+  const db = useDb()
+  const { contentHash, embedding, scope, project, excludeId } = opts
+  const lit = `[${embedding.join(',')}]`
+
+  const [exactRows, vectorRows] = await Promise.all([
+    // Exact-hash lookup is GLOBAL (no scope/project filter) — the unique index
+    // is on content_hash alone (where archived_at is null), so we must match it.
+    db.select({ id: memories.id, contentHash: memories.contentHash, embedding: memories.embedding })
+      .from(memories)
+      .where(and(live(), eq(memories.contentHash, contentHash), excludeId ? ne(memories.id, excludeId) : undefined))
+      .limit(1),
+    // Semantic near-dup search stays scoped to (scope, project) for relevance.
+    db.select({ id: memories.id, contentHash: memories.contentHash, embedding: memories.embedding })
+      .from(memories)
+      .where(and(
+        live(),
+        eq(memories.scope, scope),
+        project ? eq(memories.project, project) : isNull(memories.project),
+        isNotNull(memories.embedding),
+        excludeId ? ne(memories.id, excludeId) : undefined
+      ))
+      .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`)
+      .limit(20)
+  ])
+
+  // Merge both candidate pools (exact first, deduplicated by id)
+  const seen = new Set<string>()
+  const candidates: DedupCandidate[] = []
+  for (const r of [...exactRows, ...vectorRows]) {
+    if (seen.has(r.id)) continue
+    seen.add(r.id)
+    candidates.push({ id: r.id, contentHash: r.contentHash, embedding: r.embedding })
+  }
+
+  return candidates
+}
+
+// ---------------------------------------------------------------------------
 // Create (with two-stage dedup)
 // ---------------------------------------------------------------------------
 
@@ -149,37 +207,13 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
   const scope = input.scope ?? 'user'
   const contentHash = createHash('sha256').update(input.content).digest('hex')
   const vec = await embedOne(input.content)
-  const lit = `[${vec.join(',')}]`
 
-  // Build dedup candidate pool:
-  // 1. Exact contentHash match (SQL WHERE)
-  // 2. Top-20 nearest vectors in same scope+project partition
-  const scopeFilter = eq(memories.scope, scope)
-  const projectFilter = input.project ? eq(memories.project, input.project) : isNull(memories.project)
-
-  const [exactRows, vectorRows] = await Promise.all([
-    // Exact-hash lookup is GLOBAL (no scope/project filter) — the unique index
-    // is on content_hash alone (where archived_at is null), so we must match it.
-    db.select({ id: memories.id, contentHash: memories.contentHash, embedding: memories.embedding })
-      .from(memories)
-      .where(and(live(), eq(memories.contentHash, contentHash)))
-      .limit(1),
-    // Semantic near-dup search stays scoped to (scope, project) for relevance.
-    db.select({ id: memories.id, contentHash: memories.contentHash, embedding: memories.embedding })
-      .from(memories)
-      .where(and(live(), scopeFilter, projectFilter, isNotNull(memories.embedding)))
-      .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`)
-      .limit(20)
-  ])
-
-  // Merge both candidate pools (exact first, deduplicated by id)
-  const seen = new Set<string>()
-  const candidates: DedupCandidate[] = []
-  for (const r of [...exactRows, ...vectorRows]) {
-    if (seen.has(r.id)) continue
-    seen.add(r.id)
-    candidates.push({ id: r.id, contentHash: r.contentHash, embedding: r.embedding })
-  }
+  const candidates = await buildDedupCandidates({
+    contentHash,
+    embedding: vec,
+    scope,
+    project: input.project ?? null
+  })
 
   const decision = dedupDecision({ contentHash, embedding: vec }, candidates)
 
@@ -255,6 +289,89 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
     }
     throw err
   }
+}
+
+// ---------------------------------------------------------------------------
+// Post-merge dedup: collapse near/exact duplicates in a merged project bucket
+// ---------------------------------------------------------------------------
+
+/**
+ * For each memory id (the "loser" memories now reassigned to the winner project),
+ * run the same candidate-pool + decision logic that createMemory uses, but for an
+ * existing memory, excluding itself from its own candidate pool.
+ *
+ * - exact hash match  → 'skip':  archive this memory, set supersededBy, merge evidence into survivor
+ * - near-dup (≥0.85) → 'merge': same as skip
+ * - no dup           → 'insert': leave it alone
+ *
+ * Processed sequentially (for...of) to avoid thundering-herd on the DB and to
+ * keep decisions deterministic (later iterations see the updated survivor state).
+ */
+export async function dedupMemoriesAfterMerge(memoryIds: string[]): Promise<{ collapsed: number }> {
+  if (memoryIds.length === 0) return { collapsed: 0 }
+
+  const db = useDb()
+  let collapsed = 0
+
+  for (const id of memoryIds) {
+    // 1. Load the memory — skip if missing, archived, or has no embedding
+    const [row] = await db
+      .select({
+        id: memories.id,
+        contentHash: memories.contentHash,
+        embedding: memories.embedding,
+        scope: memories.scope,
+        project: memories.project,
+        evidence: memories.evidence
+      })
+      .from(memories)
+      .where(and(eq(memories.id, id), live()))
+      .limit(1)
+
+    if (!row || !row.embedding) continue
+
+    const { contentHash, embedding, project, evidence } = row
+    const scope = row.scope as MemoryScope
+
+    // 2. Build candidate pool excluding this memory
+    const candidates = await buildDedupCandidates({
+      contentHash,
+      embedding,
+      scope,
+      project: project ?? null,
+      excludeId: id
+    })
+
+    // 3. Run the same dedup decision
+    const decision = dedupDecision({ contentHash, embedding }, candidates)
+
+    if (decision.action === 'skip' || decision.action === 'merge') {
+      const survivorId = decision.mergeId!
+      const thisEvidence = Array.isArray(evidence) ? evidence : []
+
+      // 4a. Archive this memory (the duplicate), pointing supersededBy at the survivor
+      await db.update(memories)
+        .set({ archivedAt: new Date(), supersededBy: survivorId, updatedAt: new Date() })
+        .where(eq(memories.id, id))
+
+      // 4b. Merge this memory's evidence into the survivor
+      await db.update(memories)
+        .set({
+          evidence: sql`${memories.evidence} || ${JSON.stringify(thisEvidence)}::jsonb`,
+          updatedAt: new Date()
+        })
+        .where(eq(memories.id, survivorId))
+
+      // 4c. Emit live-bus events for both the archived memory and the updated survivor
+      publishChange({ resource: 'memory', action: 'updated', id })
+      publishChange({ resource: 'memory', action: 'updated', id: survivorId })
+
+      collapsed++
+    }
+    // action === 'insert': leave this memory in place
+  }
+
+  return { collapsed }
 }
 
 // ---------------------------------------------------------------------------
