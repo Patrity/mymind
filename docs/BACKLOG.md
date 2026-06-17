@@ -1,6 +1,6 @@
 # MyMind — Backlog & Spec Coverage
 
-> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-16 — **cycle 13 (Bridget Parity) shipped** (broadened from "API key UI"): API-key CRUD + Connect-to-Claude-Code, capture-fidelity ingestion (tool_events/thinking/git/machine), one-time import of 457 claude_code sessions, session summarization + session/message search, and memory intelligence (provenance + a `memory_relations` graph + LLM relationship-judge with auto-supersede + review-gated contradictions). On `feat/bridget-parity` (not yet merged); closes the §3 session-summarization + bridget-migration items and the session/message-search gap. Earlier: **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.)
+> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-06-16 — **cycle 13 (Bridget Parity) shipped** (broadened from "API key UI"): API-key CRUD + Connect-to-Claude-Code, capture-fidelity ingestion (tool_events/thinking/git/machine), one-time import of 457 claude_code sessions, session summarization + session/message search, and memory intelligence (provenance + a `memory_relations` graph + LLM relationship-judge with auto-supersede + review-gated contradictions). On `feat/bridget-parity` (not yet merged); closes the §3 session-summarization + bridget-migration items and the session/message-search gap. Earlier: **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.) **Reconciled 2026-06-17 — the entire Projects line shipped + deployed to prod (cycles 23–27):** canonical git-keyed projects + session/memory association (23), sessions UX/SSE (24), projects UI + per-project colour (25), the `/projects/[slug]` **dashboard** + editable-slug cascade (25-followup), **document↔project association** via the `/projects/<slug>/` path invariant + `documents.project_id` (migration 0021) (26), and **project merge** (27). See [`wiki/projects.md`](wiki/projects.md) + the cycle-23→27 handovers.
 
 ---
 
@@ -91,11 +91,22 @@ Carried out of the 11 cycle handovers, de-duplicated, current items only:
 - `listSessions` raw-`sql` where → `and()/eq()`.
 - Multiple-clipboard-threads UI (schema supports many; UI uses one default thread).
 - Token-cost ($) display on sessions (raw counts only).
-- Tasks: subtasks/checklists, recurring, reminders, calendar view, doc↔project↔task cross-view, manual in-column reordering.
-- Per-surface deep-links (`?task=`/`?img=`/`?focus=` were stripped pending page support).
+- Tasks: subtasks/checklists, recurring, reminders, calendar view, manual in-column reordering. (~~doc↔project↔task cross-view~~ ✅ shipped — the `/projects/[slug]` dashboard has Sessions/Tasks/Memories/Documents tabs.)
+- Per-surface deep-links (`?task=`/`?img=`/`?focus=`/`?doc=` were stripped pending page support — the projects-dashboard doc-tab rows currently link to `/documents`, not a per-doc deep-link).
 
 ---
 
 ## 4. Doc hygiene
 - Handover `deferred:` blocks are point-in-time; several listed items shipped in later cycles (login, drag-drop, deep-links, semantic search…). **This doc supersedes them** for "what's left."
 - When a Round-3 cycle ships, update its roadmap row + add/refresh the relevant wiki page, and tick the item here.
+
+---
+
+## 5. Next direction (post-projects, 2026-06-17)
+
+With the projects backbone in place (canonical entities + association + dashboard + merge), the next themes (not yet spec'd — each gets its own brainstorm → spec → plan cycle):
+
+- **A real agent loop** — graduate the shared `runAgent` core (used by voice/chat/cron) into a first-class, multi-step **in-app agent** with the full tool surface (cycle 14's text-chat UI is the entry point; the agent loop is the deeper goal). Tool-scoped, review-gated — not arbitrary code execution.
+- **Better / more MCP tools for coding agents** — expand the MCP surface beyond today's 11 (e.g. richer doc read/write + filing into `/projects/<slug>/`, project-scoped search, structured task/memory queries) so external coding agents (Claude Code etc.) can drive MyMind more capably. Keep each tool concise + well-scoped.
+- **Deep but scoped knowledge/memory** — lean on the enrichment loop (concise, confidence-scored, session-linked, project-scoped memories) as the primary inlet; reserve `save_memory` (now with a `confidence` param) for concise cross-session facts. Explore richer project-scoped recall + the `memory_relations` graph (supersede/contradict) surfacing.
+- Carry-overs still open: **in-app text-chat UI** (§2 cycle 14), **capture/OCR robustness** (§2 cycle 15), **GitHub-commits → memory** (§1 gap), the **reranker** (off by default), and the cosmetic follow-ups in §3.

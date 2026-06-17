@@ -25,7 +25,7 @@ any Nitro write (HTTP handler OR background task)
   `EventEmitter` (`setMaxListeners(0)`). `subscribeChanges(cb)` returns an unsubscribe.
   Single instance, no broker (correct for this homelab deploy).
 - **`shared/types/live.ts`** — `ResourceName` (closed union:
-  `document | image | memory | review | project | task | session | clipboard`),
+  `document | image | memory | review | project | task | session | clipboard | activity | apiToken`),
   `LiveAction` (`created | updated | deleted`), `LiveEvent` (`{v:1, resource, action, id, at}`).
 - **`server/api/events.get.ts`** — one SSE connection per tab. `text/event-stream`, 25s
   heartbeat comments, `x-accel-buffering: no`, unsubscribe on `req.close`. Auth-gated by

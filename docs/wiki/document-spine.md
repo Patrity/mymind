@@ -1,8 +1,8 @@
 ---
 title: Document Spine
 status: shipped
-cycle: 1
-updated: 2026-06-03
+cycle: 26
+updated: 2026-06-17
 ---
 
 # Document Spine
@@ -10,9 +10,12 @@ updated: 2026-06-03
 The shared content core every feature is a view over: documents stored in Postgres with a hybrid path-tree + frontmatter model, browsed/edited in a split file-tree/editor UI, keyword-searchable, and publicly shareable.
 
 ## Data model — `documents` (`server/db/schema/documents.ts`)
-`id` uuid PK · `path` text (canonical tree location, e.g. `/input/x.md`; unique where `deleted_at is null`) · `title` · `content` · `language` (from `getLanguageFromPath`) · `frontmatter` jsonb · **promoted queryable columns** `project` / `domain` / `type` / `tags` text[] / `topic` ltree · `content_hash` · `is_public` + `public_slug` (unique) · `embedding` halfvec(2560) (**NULL until cycle 2**) · `created_at` / `updated_at` / `deleted_at` (soft delete).
-Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `project`, GIN trigram on `title` and `content`, GiST on `topic`.
-Minimal `projects` table: `slug` PK, `name`, `description`, `active`.
+`id` uuid PK · `path` text (canonical tree location, e.g. `/input/x.md`; unique where `deleted_at is null`) · `title` · `content` · `language` (from `getLanguageFromPath`) · `frontmatter` jsonb · **promoted queryable columns** `project` text (denormalized slug) / `project_id` uuid FK → `projects.id` (nullable, indexed; migration 0021) / `domain` / `type` / `tags` text[] / `topic` ltree · `content_hash` · `is_public` + `public_slug` (unique) · `embedding` halfvec(2560) (**NULL until cycle 2**) · `created_at` / `updated_at` / `deleted_at` (soft delete).
+Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `project`, btree `project_id`, GIN trigram on `title` and `content`, GiST on `topic`.
+
+**Project association (cycle 26):** a doc is associated with project X **iff** its `path` is under `/projects/<X-slug>/` (lowercase). The `project` slug and `project_id` are derived from the final path on every write — the path is the single source of truth. Three triggers: manual move into/out of `/projects/<slug>/`; setting `project=X` on a doc (which relocates it to `/projects/X/<basename>`); or the `/input` enrichment classifying a doc into a project (proposes a new path via the `review_queue → approve` flow). See [projects.md](projects.md) for full detail.
+
+See [projects.md](projects.md) for the canonical `projects` table schema (git-keyed, full URL/alias/local-paths model).
 
 ## The seam
 All document access goes through `server/services/documents.ts`: `listTree`, `getDoc`, `createDoc`, `updateDoc`, `moveDoc`, `deleteDoc` (soft), `searchDocs`, `setPublic`, `getByPublicSlug`. Nothing else touches the table. Tree shaping: `server/services/tree.ts` `buildTree()` (folders before files, alphabetical).
@@ -34,4 +37,4 @@ All document access goes through `server/services/documents.ts`: `listTree`, `ge
 - **Last-open doc** persisted via `useCookie('mm.lastDoc')` (`?doc=` query wins).
 
 ## Known gaps (see handover)
-Deep-link `?doc=<id>` doesn't auto-load; no tree drag-drop UI (move API exists); `useDocuments` uses raw ofetch.
+Deep-link `?doc=<id>` doesn't auto-load; `useDocuments` uses raw ofetch. Tree drag-drop shipped (cycle 9, see Power-editor above). Project association doc-tree/search `?project=` filtering deferred (dashboard uses flat `listDocs`); per-doc deep-link route (`?doc=<id>`) from the project Documents tab is deferred (rows link to `/documents`).

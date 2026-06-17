@@ -24,3 +24,9 @@ The **living** reference for how each shipped system works **today** — one pag
 | Search + command palette (⌘K, cross-surface) + SPA rendering note | [search.md](search.md) | shipped |
 | Sessions view (CC/Hermes transcripts + token/tool stats) | [sessions.md](sessions.md) | shipped |
 | Live reactivity (event bus → SSE → vue-query; live across tabs/devices) | [live-reactivity.md](live-reactivity.md) | shipped |
+| Activity log + observability (spans, model/tool traces, email alerts) | [activity-log.md](activity-log.md) | shipped |
+| API tokens + Connect (mint/revoke, Claude Code MCP/hooks, ShareX) | [api-tokens.md](api-tokens.md) | shipped |
+| CI/CD deploy pipeline (GitHub Actions → Proxmox homelab) | [ci-deploy-pipeline.md](ci-deploy-pipeline.md) | shipped |
+| Projects (canonical git-keyed entities, dashboard, doc-assoc, merge) | [projects.md](projects.md) | shipped |
+| Voice agent (VAD, WebSocket orchestrator, STT/TTS, Three.js visualizer) | [voice-agent.md](voice-agent.md) | shipped |
+| Voice agent integration guide (legacy Kyutai/Unmute reference) | [voice-agent-integration.md](voice-agent-integration.md) | shipped |

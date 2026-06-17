@@ -19,6 +19,14 @@ Reimplements the bridget memory service in TS: ingest AI-session transcripts, en
 - `searchMemories(q, {scope,project,tags,limit})` — hybrid trigram + vector cosine RRF (same pattern as `searchDocs`), trigram fallback.
 - `listMemories`, `getMemory`, `updateMemory` (re-embed on content change), `reviewMemory`, `archiveMemory`, `countUnreviewedMemories`.
 
+## Two inlets into memory
+
+Memories enter via exactly two paths, both going through `createMemory` (shared dedup via `dedupDecision` + `buildDedupCandidates`):
+
+1. **Enrichment loop** (`enrich-memories` cron → `server/services/memory-enrich.ts`): distills concise, **confidence-scored**, **session-linked** (`sessionId` + evidence) memories from session transcripts. Auto-reviews when `confidence >= memoryAutoReviewThreshold` (~0.75). This is the primary source of agent-scoped memories.
+
+2. **Direct `save_memory`** (MCP tool / `POST /api/memories`): saves raw content. Accepts an optional **`confidence`** (0–1) — a value ≥ 0.75 auto-reviews the memory; `null` (omitted) leaves it for manual review. `shouldAutoReview(confidence, threshold)` returns `false` for `null` — no-confidence saves always require human review. The tool description nudges callers toward ONE concise durable sentence; architecture detail belongs in handovers/wiki, not memory. Manual saves created via `POST /api/memories` (cycle 10) set `source: 'manual', reviewed: true` and skip the unreviewed state entirely.
+
 ## Ingestion — hooks (`server/api/hooks/cc/*`, `server/services/sessions.ts`)
 - `POST /api/hooks/cc/[event]` upserts a session (liveness/metadata). `POST /api/hooks/cc/transcript` parses CC JSONL lines (tolerant: user/assistant text parts) → idempotent `messages`. Bearer-token auth.
 

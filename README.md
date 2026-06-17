@@ -44,8 +44,11 @@ MyMind exposes 11 tools over the Model Context Protocol — `search_memories`, `
 ### 🖼️ Image host + quick capture
 A **ShareX/CleanShot-compatible uploader** (`POST /api/upload`) that auto-converts to WebP, runs **OCR + tag suggestions** via a local vision model, and serves public or private links. Quick Capture lets you paste/drag/snap a photo — including **transcribing handwritten notes into clean Markdown** with an inferred title.
 
-### ✅ Tasks, 📋 Clipboard, and more
-A drag-and-drop kanban with projects/priorities; a **device-sync clipboard** (paste on one machine, grab it on another, live over SSE, with per-message machine attribution). Everything that lands in the inbox (`/input`) gets auto-enriched and filed.
+### 🗂️ Projects — everything rolls up to the work it belongs to
+**Canonical projects** keyed on the git remote, so the same repo cloned to many machines/paths resolves to one identity. Sessions, memories, **documents**, and tasks all associate to a project, and a per-project **dashboard** (`/projects/[slug]`) shows its git remote, links, aliases, and live tabs of everything tied to it. Documents file under `/projects/<slug>/…` (the path *is* the association); the `/input` enricher auto-classifies new notes into the right project. Slugs are renameable (cascades everywhere) and duplicate projects can be **merged** (fold a legacy label project into its git-keyed twin in one click).
+
+### ✅ Tasks, 📋 Clipboard, 📈 Activity, and more
+A drag-and-drop kanban with projects/priorities; a **device-sync clipboard** (paste on one machine, grab it on another, live over SSE, with per-message machine attribution); an **activity log** with a live trace-tree of every model call, agent action, and background job (+ email alerts). Everything that lands in the inbox (`/input`) gets auto-enriched and filed. The whole UI is **live across devices** — changes stream over SSE and refetch without a manual refresh.
 
 ## Screenshots
 
@@ -78,7 +81,7 @@ One **Nuxt 4** service does all of it — the web app (SPA), the HTTP API, and t
 ```
 
 - **Storage**: PostgreSQL + **pgvector** (HNSW) for hybrid search; content-addressed blob storage for images/files.
-- **AI**: every model call is an env-configured, OpenAI-spec endpoint pointed at my local rig (embeddings, vision/OCR, a reasoning model) — swap a model by changing an env var, never code.
+- **AI**: a **DB-backed model registry** (edited in-app at `/settings`) maps each usage — reasoning, embeddings, vision/OCR, STT, TTS, rerank — to an OpenAI-spec endpoint (mostly my local rig, with hosted fallbacks for hard reasoning). Swap or add a model in the UI; never a code change or redeploy.
 - **Background work**: in-process scheduled jobs embed documents, run OCR, propose frontmatter, and extract memories on a cadence.
 - **Auth**: single-user sessions for the web app; bearer API tokens for machine clients (ShareX, hooks, MCP).
 
@@ -101,13 +104,13 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 CI/CD is wired up too: every push runs the test suite, and pushes to `master` auto-deploy via a self-hosted GitHub Actions runner (see [`.github/workflows/`](.github/workflows/)).
 
-> Heads-up: the AI features expect OpenAI-compatible model endpoints (mine are local Qwen3 models). Point the `AI_*` env vars at any compatible provider — they're not hardcoded.
+> Heads-up: the AI features expect OpenAI-compatible model endpoints (mine are local Qwen3 models). Configure them in-app at `/settings` — the `AI_*` env vars are just one-time onboarding seeds; any compatible provider works.
 
 ## Status & roadmap
 
-Actively built and in daily use. Nineteen build cycles shipped so far (foundation → AI enrichment → capture/images → tasks → memory + MCP → clipboard → feedback-driven polish → the self-hosted voice agent, its GPU-particle visualizer, and a CI/CD deploy pipeline). The full status table and what's next live in [`docs/superpowers/plans/00-roadmap.md`](docs/superpowers/plans/00-roadmap.md).
+Actively built and in daily use — 27 build cycles shipped so far (foundation → AI enrichment → capture/images → tasks → memory + MCP → clipboard → polish → a DB-backed AI model registry → the self-hosted voice agent + GPU-particle visualizer → CI/CD deploy → image-enrichment pipeline → live cross-device reactivity → activity-log observability → bridget-parity session import + semantic session/message search → and a full **projects** system: canonical git-keyed projects, a per-project dashboard, document/session/memory association, and project merge). The full status table lives in [`docs/superpowers/plans/00-roadmap.md`](docs/superpowers/plans/00-roadmap.md); what's left is reconciled in [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
-On the radar: a full text-chat UI on the agent core, streaming STT partials (live captions), a session-summarization worker, GitHub-commit → memory, and whatever else I decide my brain needs next.
+On the radar: a full **text-chat UI** on the agent core, a richer **agent loop** with more **MCP tools** for my coding agents, deeper **scoped memory/knowledge**, streaming STT partials (live captions), GitHub-commit → memory, and whatever else I decide my brain needs next.
 
 ## A note
 

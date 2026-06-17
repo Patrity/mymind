@@ -2,7 +2,7 @@
 title: MCP Server
 status: shipped
 cycle: 5
-updated: 2026-06-03
+updated: 2026-06-17
 ---
 
 # MCP Server
@@ -19,7 +19,7 @@ Bearer **API token** (machine clients) — the existing dual-auth middleware gat
 | Tool | Delegates to |
 |---|---|
 | `search_memories(query, scope?, project?, limit?)` | memory.searchMemories |
-| `save_memory(content, scope, project?, tags?)` | memory.createMemory |
+| `save_memory(content, scope, project?, tags?, source?, confidence?)` | memory.createMemory |
 | `get_recent_memories(scope?, limit?)` | memory.listMemories |
 | `search_docs(query)` | documents.searchDocs |
 | `search_projects(activeOnly?)` | projects.listProjects |
@@ -28,11 +28,14 @@ Bearer **API token** (machine clients) — the existing dual-auth middleware gat
 | `create_task(title, ...)` | tasks.createTask |
 | `search_tasks(status?, project?)` | tasks.listTasks |
 | `edit_task(id, ...patch)` | tasks.updateTask |
+| `quick_capture(text, title?)` | documents.createDoc |
+
+`save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
 
 Registered via `server.tool(name, description, zodShape, handler)`; each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
 
 ## Validate
-With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 10 tools; `search_memories` returns ranked memories; `create_task` creates a real task row.
+With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 11 tools; `search_memories` returns ranked memories; `create_task` creates a real task row.
 
 ## Notes / follow-ups
 Stateless mode → no server-initiated notifications; tools only (no MCP resources/prompts) — sufficient for the agent tool-call use case.
