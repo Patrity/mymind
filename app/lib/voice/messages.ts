@@ -7,7 +7,7 @@ export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: s
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own
   // them), and the 'disconnected' viz event is emitted by useVoice.onclose — not here.
-  state?: 'idle' | 'thinking' | 'speaking' | 'tool'
+  state?: 'idle' | 'thinking' | 'speaking' | 'tool' | 'typing'
   delta?: { role: 'user' | 'assistant'; text: string }
   error?: string
   events: VizEvent[]
@@ -26,6 +26,7 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
     if (m.state === 'speaking') return { state: 'speaking', events }
     if (m.state === 'thinking') return { state: 'thinking', events }
     if (m.state === 'tool') return { state: 'tool', events }
+    if (m.state === 'typing') return { state: 'typing', events }
     // Server says idle the moment generation ends, but audio may still be
     // buffered ahead — playback drain flips to idle in that case (useVoice).
     return isPlaying ? { events } : { state: 'idle', events }

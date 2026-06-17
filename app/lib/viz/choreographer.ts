@@ -29,17 +29,17 @@ const SPARKS_MAX = 40
 
 const ENERGY: Record<VizState, number> = {
   connecting: 0.2, idle: 0.15, listening: 0.3, thinking: 0.4,
-  speaking: 0.35, tool: 0.3, disconnected: 0.05,
+  speaking: 0.35, tool: 0.3, disconnected: 0.05, typing: 0.3,
 }
 const SWIRL: Record<VizState, number> = {
-  connecting: 0, idle: 0, listening: 0, thinking: 1, speaking: 0, tool: 0.6, disconnected: 0,
+  connecting: 0, idle: 0, listening: 0, thinking: 1, speaking: 0, tool: 0.6, disconnected: 0, typing: 0,
 }
 const DIM: Record<VizState, number> = {
-  connecting: 0.3, idle: 0.35, listening: 0, thinking: 0, speaking: 0, tool: 0, disconnected: 1,
+  connecting: 0.3, idle: 0.35, listening: 0, thinking: 0, speaking: 0, tool: 0, disconnected: 1, typing: 0,
 }
-// neural lightning: full storm while reasoning, a simmer while a tool runs
+// neural lightning: full storm while reasoning, a simmer while a tool runs, steady composing glow while typing
 const FIRING: Record<VizState, number> = {
-  connecting: 0, idle: 0, listening: 0, thinking: 1, speaking: 0, tool: 0.35, disconnected: 0,
+  connecting: 0, idle: 0, listening: 0, thinking: 1, speaking: 0, tool: 0.35, disconnected: 0, typing: 0.5,
 }
 
 function approach(current: number, target: number, speed: number, dt: number): number {

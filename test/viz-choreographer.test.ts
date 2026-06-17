@@ -125,4 +125,14 @@ describe('choreographer', () => {
     expect(d.vizState).toBe('disconnected')
     expect(d.ignite).toBe(0)
   })
+
+  it('typing state yields vizState:typing with dim≈0 and firing>0 but < thinking', () => {
+    const c = createChoreographer()
+    const settled = run(c, inputs({ state: 'typing' }), 200)
+    expect(settled.vizState).toBe('typing')
+    expect(settled.dim).toBeCloseTo(0, 1)
+    expect(settled.firing).toBeGreaterThan(0)
+    const thinkingFiring = run(createChoreographer(), inputs({ state: 'thinking' }), 200).firing
+    expect(settled.firing).toBeLessThan(thinkingFiring)
+  })
 })
