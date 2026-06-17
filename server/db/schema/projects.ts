@@ -7,6 +7,7 @@ export const projects = pgTable('projects', {
   name: text('name').notNull(),
   description: text('description').notNull().default(''),
   active: boolean('active').notNull().default(true),
+  color: text('color'),
   gitRemoteKey: text('git_remote_key'),
   repositoryUrl: text('repository_url'),
   productionUrl: text('production_url'),

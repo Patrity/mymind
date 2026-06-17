@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { projects } from '../db/schema'
+import { projects, sessions, memories } from '../db/schema'
 import type { ProjectDTO } from '../../shared/types/tasks'
 import { slugify } from '../../shared/utils/slugify'
 import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/projects/git-remote'
@@ -9,14 +9,15 @@ import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/proj
 // DTO mapper
 // ---------------------------------------------------------------------------
 
-function toDTO(r: typeof projects.$inferSelect): ProjectDTO {
+function toDTO(r: typeof projects.$inferSelect, counts?: { sessionCount: number, memoryCount: number }): ProjectDTO {
   return {
-    slug: r.slug,
-    name: r.name,
-    description: r.description,
-    active: r.active,
-    createdAt: r.createdAt.toISOString(),
-    updatedAt: r.updatedAt.toISOString()
+    id: r.id, slug: r.slug, name: r.name, description: r.description, active: r.active,
+    color: r.color, gitRemoteKey: r.gitRemoteKey, repositoryUrl: r.repositoryUrl,
+    productionUrl: r.productionUrl, stagingUrl: r.stagingUrl,
+    aliases: r.aliases ?? [], localPaths: r.localPaths ?? [],
+    lastActivityAt: r.lastActivityAt?.toISOString() ?? null,
+    sessionCount: counts?.sessionCount ?? 0, memoryCount: counts?.memoryCount ?? 0,
+    createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString()
   }
 }
 
@@ -26,10 +27,13 @@ function toDTO(r: typeof projects.$inferSelect): ProjectDTO {
 
 export async function listProjects(filter: { activeOnly?: boolean } = {}): Promise<ProjectDTO[]> {
   const db = useDb()
-  const rows = filter.activeOnly
-    ? await db.select().from(projects).where(eq(projects.active, true))
-    : await db.select().from(projects)
-  return rows.map(toDTO)
+  const rows = await db.select({
+    project: projects,
+    sessionCount: sql<number>`(select count(*)::int from ${sessions} s where s.project_id = ${projects.id})`,
+    memoryCount: sql<number>`(select count(*)::int from ${memories} m where m.project_id = ${projects.id})`
+  }).from(projects).where(filter.activeOnly ? eq(projects.active, true) : undefined)
+    .orderBy(sql`coalesce(${projects.lastActivityAt}, ${projects.createdAt}) desc`)
+  return rows.map(r => toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount }))
 }
 
 export async function getProject(slug: string): Promise<ProjectDTO | null> {
@@ -68,9 +72,9 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectD
 }
 
 export interface UpdateProjectInput {
-  name?: string
-  description?: string
-  active?: boolean
+  name?: string; description?: string; active?: boolean
+  color?: string | null; repositoryUrl?: string | null
+  productionUrl?: string | null; stagingUrl?: string | null; aliases?: string[]
 }
 
 export async function updateProject(slug: string, patch: UpdateProjectInput): Promise<ProjectDTO | null> {
@@ -78,6 +82,11 @@ export async function updateProject(slug: string, patch: UpdateProjectInput): Pr
   if (patch.name !== undefined) update.name = patch.name
   if (patch.description !== undefined) update.description = patch.description
   if (patch.active !== undefined) update.active = patch.active
+  if (patch.color !== undefined) update.color = patch.color
+  if (patch.repositoryUrl !== undefined) update.repositoryUrl = patch.repositoryUrl
+  if (patch.productionUrl !== undefined) update.productionUrl = patch.productionUrl
+  if (patch.stagingUrl !== undefined) update.stagingUrl = patch.stagingUrl
+  if (patch.aliases !== undefined) update.aliases = patch.aliases
 
   const [r] = await useDb()
     .update(projects)

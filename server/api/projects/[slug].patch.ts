@@ -5,7 +5,12 @@ import { publishChange } from '../../utils/live-bus'
 const Body = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
-  active: z.boolean().optional()
+  active: z.boolean().optional(),
+  color: z.string().nullable().optional(),
+  repositoryUrl: z.string().nullable().optional(),
+  productionUrl: z.string().nullable().optional(),
+  stagingUrl: z.string().nullable().optional(),
+  aliases: z.array(z.string()).optional()
 })
 
 export default defineEventHandler(async (event) => {
