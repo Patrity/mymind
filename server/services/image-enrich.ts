@@ -94,6 +94,7 @@ export async function enrichImage(id: string): Promise<typeof images.$inferSelec
           content: markdown || '(no text recognized)'
         })
         await db.update(documents).set({ ocrId: id }).where(eq(documents.id, doc.id))
+        publishChange({ resource: 'document', action: 'created', id: doc.id })
       }
     } catch (err) {
       console.warn(`[image-enrich] doc spin-off failed for ${id}:`, err)

@@ -18,6 +18,7 @@ const notFound = computed(() => !isPending.value && (error.value != null || proj
 const { useSessionList } = useSessions()
 const { useTaskList } = useTasks()
 const { useMemoryList } = useMemories()
+const { useDocList } = useDocuments()
 
 const { data: sessionData, isPending: sessionsLoading, error: sessionsError } = useSessionList(
   () => ({ project: slug.value })
@@ -31,6 +32,11 @@ const { data: memoryData, isPending: memoriesLoading, error: memoriesError } = u
   () => ({ project: slug.value })
 )
 const memories = computed(() => memoryData.value ?? [])
+
+const { data: docData, isPending: docsLoading, error: docsError } = useDocList(
+  () => slug.value
+)
+const docs = computed(() => docData.value ?? [])
 
 // ── Edit modal ────────────────────────────────────────────────────────────────
 const showEdit = ref(false)
@@ -110,7 +116,8 @@ const activeTab = ref('sessions')
 const tabItems = [
   { label: 'Sessions', value: 'sessions', slot: 'sessions' as const },
   { label: 'Tasks', value: 'tasks', slot: 'tasks' as const },
-  { label: 'Memories', value: 'memories', slot: 'memories' as const }
+  { label: 'Memories', value: 'memories', slot: 'memories' as const },
+  { label: 'Documents', value: 'documents', slot: 'documents' as const }
 ]
 </script>
 
@@ -310,7 +317,7 @@ const tabItems = [
         </div>
 
         <!-- ── Stats row ── -->
-        <div class="grid grid-cols-3 gap-4">
+        <div class="grid grid-cols-4 gap-4">
           <div class="rounded-lg border border-default bg-elevated/30 p-4 text-center space-y-1">
             <p class="text-2xl font-bold text-highlighted">
               {{ project.sessionCount }}
@@ -336,6 +343,15 @@ const tabItems = [
             <p class="text-xs text-muted flex items-center justify-center gap-1">
               <UIcon name="i-lucide-check-square" class="size-3.5" />
               Tasks
+            </p>
+          </div>
+          <div class="rounded-lg border border-default bg-elevated/30 p-4 text-center space-y-1">
+            <p class="text-2xl font-bold text-highlighted">
+              {{ project.documentCount }}
+            </p>
+            <p class="text-xs text-muted flex items-center justify-center gap-1">
+              <UIcon name="i-lucide-file-text" class="size-3.5" />
+              Documents
             </p>
           </div>
         </div>
@@ -582,6 +598,65 @@ const tabItems = [
                     size="xs"
                   />
                 </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Documents tab -->
+          <template #documents>
+            <div class="mt-4 space-y-3">
+              <!-- Loading -->
+              <div
+                v-if="docsLoading"
+                class="space-y-3"
+              >
+                <USkeleton
+                  v-for="i in 3"
+                  :key="i"
+                  class="h-16 w-full rounded-lg"
+                />
+              </div>
+
+              <!-- Error -->
+              <div
+                v-else-if="docsError"
+                class="flex items-center gap-2 text-sm text-error py-4"
+              >
+                <UIcon name="i-lucide-alert-circle" class="size-4 shrink-0" />
+                Failed to load documents.
+              </div>
+
+              <!-- Empty -->
+              <div
+                v-else-if="docs.length === 0"
+                class="flex flex-col items-center justify-center py-12 gap-3 text-center"
+              >
+                <UIcon name="i-lucide-file-text" class="size-10 text-muted" />
+                <p class="text-sm text-muted">
+                  No documents yet for this project.
+                </p>
+              </div>
+
+              <!-- Document rows (no per-doc deep-link yet — links to /documents; TODO: add ?doc=<id> deep-link) -->
+              <div
+                v-for="doc in docs"
+                v-else
+                :key="doc.id"
+                class="flex items-center gap-3 px-4 py-3 rounded-lg border border-default bg-elevated/30 hover:bg-elevated/50 transition-colors cursor-pointer"
+                @click="navigateTo('/documents')"
+              >
+                <UIcon name="i-lucide-file-text" class="size-4 text-muted shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium text-default truncate">
+                    {{ doc.title || doc.path }}
+                  </p>
+                  <p class="text-xs text-dimmed font-mono truncate mt-0.5">
+                    {{ doc.path }}
+                  </p>
+                </div>
+                <p class="text-xs text-dimmed shrink-0">
+                  {{ formatDate(doc.updatedAt) }}
+                </p>
               </div>
             </div>
           </template>

@@ -32,6 +32,7 @@ export interface ProjectDTO {
   sessionCount: number
   memoryCount: number
   taskCount: number
+  documentCount: number
   createdAt: string
   updatedAt: string
 }

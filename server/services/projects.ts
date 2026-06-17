@@ -26,14 +26,15 @@ async function projectRowBySlug(slug: string) {
 const COUNT_COLUMNS = {
   sessionCount: sql<number>`(select count(*)::int from ${sessions} s where s.project = ${projects.slug})`,
   memoryCount: sql<number>`(select count(*)::int from ${memories} m where m.project = ${projects.slug})`,
-  taskCount: sql<number>`(select count(*)::int from ${tasks} t where t.project = ${projects.slug})`
+  taskCount: sql<number>`(select count(*)::int from ${tasks} t where t.project = ${projects.slug})`,
+  documentCount: sql<number>`(select count(*)::int from ${documents} d where d.project = ${projects.slug})`
 }
 
 // ---------------------------------------------------------------------------
 // DTO mapper
 // ---------------------------------------------------------------------------
 
-function toDTO(r: typeof projects.$inferSelect, counts?: { sessionCount: number, memoryCount: number, taskCount: number }): ProjectDTO {
+function toDTO(r: typeof projects.$inferSelect, counts?: { sessionCount: number, memoryCount: number, taskCount: number, documentCount: number }): ProjectDTO {
   return {
     id: r.id, slug: r.slug, name: r.name, description: r.description, active: r.active,
     color: r.color, gitRemoteKey: r.gitRemoteKey, repositoryUrl: r.repositoryUrl,
@@ -41,7 +42,7 @@ function toDTO(r: typeof projects.$inferSelect, counts?: { sessionCount: number,
     aliases: r.aliases ?? [], localPaths: r.localPaths ?? [],
     lastActivityAt: r.lastActivityAt?.toISOString() ?? null,
     sessionCount: counts?.sessionCount ?? 0, memoryCount: counts?.memoryCount ?? 0,
-    taskCount: counts?.taskCount ?? 0,
+    taskCount: counts?.taskCount ?? 0, documentCount: counts?.documentCount ?? 0,
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString()
   }
 }
@@ -57,7 +58,7 @@ export async function listProjects(filter: { activeOnly?: boolean } = {}): Promi
     ...COUNT_COLUMNS
   }).from(projects).where(filter.activeOnly ? eq(projects.active, true) : undefined)
     .orderBy(sql`coalesce(${projects.lastActivityAt}, ${projects.createdAt}) desc`)
-  return rows.map(r => toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount, taskCount: r.taskCount }))
+  return rows.map(r => toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount, taskCount: r.taskCount, documentCount: r.documentCount }))
 }
 
 export async function getProject(slug: string): Promise<ProjectDTO | null> {
@@ -65,7 +66,7 @@ export async function getProject(slug: string): Promise<ProjectDTO | null> {
     project: projects,
     ...COUNT_COLUMNS
   }).from(projects).where(eq(projects.slug, slug)).limit(1)
-  return r ? toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount, taskCount: r.taskCount }) : null
+  return r ? toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount, taskCount: r.taskCount, documentCount: r.documentCount }) : null
 }
 
 export interface CreateProjectInput {

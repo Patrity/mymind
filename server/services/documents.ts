@@ -1,4 +1,4 @@
-import { and, eq, isNull, ilike, or, sql, inArray, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, isNull, ilike, or, sql, inArray, isNotNull } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
@@ -64,6 +64,16 @@ const toDTO = (r: typeof documents.$inferSelect): DocumentDTO => ({
   ocrId: r.ocrId,
   updatedAt: r.updatedAt.toISOString()
 })
+
+export async function listDocs(opts: { project?: string } = {}): Promise<DocumentDTO[]> {
+  const rows = await useDb()
+    .select()
+    .from(documents)
+    .where(and(live(), opts.project ? eq(documents.project, opts.project) : undefined))
+    .orderBy(desc(documents.updatedAt))
+    .limit(200)
+  return rows.map(toDTO)
+}
 
 export async function listTree(): Promise<TreeNode[]> {
   const rows = await useDb().select({ id: documents.id, path: documents.path, title: documents.title })

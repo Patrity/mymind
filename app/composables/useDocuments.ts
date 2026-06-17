@@ -29,5 +29,13 @@ export function useDocuments() {
     })
   }
 
-  return { tree, get, create, update, remove, move, share, search, useDocTree, useDocDetail }
+  const useDocList = (project: MaybeRefOrGetter<string | undefined>) => {
+    const key = computed(() => toValue(project))
+    return useQuery({
+      queryKey: ['document', 'list', key] as const,
+      queryFn: () => ofetch<DocumentDTO[]>('/api/documents', { query: { project: key.value } })
+    })
+  }
+
+  return { tree, get, create, update, remove, move, share, search, useDocTree, useDocDetail, useDocList }
 }
