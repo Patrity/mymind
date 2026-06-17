@@ -18,16 +18,19 @@ async function projectRowBySlug(slug: string) {
 }
 
 // Count subqueries keyed on the denormalized project SLUG — the same key the
-// `?project=` session/task/memory filters (and the project dashboard tabs) use.
-// Counting by slug (rather than the canonical project_id) keeps the counts in
-// lock-step with what those filtered lists actually show, even for a row whose
-// project_id and slug have drifted (legacy vs canonical projects coexist until
-// phase-3 merge). Reused by both listProjects and getProject.
+// `?project=` session/task/memory/document filters (and the project dashboard
+// tabs) use. Counting by slug (rather than the canonical project_id) keeps the
+// counts in lock-step with what those filtered lists actually show, even for a
+// row whose project_id and slug have drifted (legacy vs canonical projects
+// coexist until phase-3 merge). Each count also excludes soft-deleted/archived
+// rows so the stat matches its tab's `live()` filter (tasks/documents soft-delete
+// via deleted_at, memories archive via archived_at; sessions hard-delete).
+// Reused by both listProjects and getProject.
 const COUNT_COLUMNS = {
   sessionCount: sql<number>`(select count(*)::int from ${sessions} s where s.project = ${projects.slug})`,
-  memoryCount: sql<number>`(select count(*)::int from ${memories} m where m.project = ${projects.slug})`,
-  taskCount: sql<number>`(select count(*)::int from ${tasks} t where t.project = ${projects.slug})`,
-  documentCount: sql<number>`(select count(*)::int from ${documents} d where d.project = ${projects.slug})`
+  memoryCount: sql<number>`(select count(*)::int from ${memories} m where m.project = ${projects.slug} and m.archived_at is null)`,
+  taskCount: sql<number>`(select count(*)::int from ${tasks} t where t.project = ${projects.slug} and t.deleted_at is null)`,
+  documentCount: sql<number>`(select count(*)::int from ${documents} d where d.project = ${projects.slug} and d.deleted_at is null)`
 }
 
 // ---------------------------------------------------------------------------
