@@ -8,6 +8,53 @@ import { buildTree, type TreeNode } from './tree'
 import type { DocumentDTO, DocumentUpsert } from '../../shared/types/documents'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
+import { projectFromPath, PROJECTS_ROOT } from '../lib/projects/doc-path'
+import { matchProjectByLabel } from './projects'
+
+// ---------------------------------------------------------------------------
+// Path↔project association helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the canonical target path for filing a doc under a given project.
+ * e.g. targetPathForAssign('/input/foo.md', 'mymind') → '/projects/mymind/foo.md'
+ * Pure — no DB, always safe to call.
+ */
+export function targetPathForAssign(currentPath: string, slug: string): string {
+  const basename = currentPath.split('/').filter(Boolean).pop() ?? currentPath
+  return `${PROJECTS_ROOT}/${slug}/${basename}`
+}
+
+/**
+ * Given an input path and an optional project slug from the caller, compute the
+ * FINAL path that should be stored. Precedence rules:
+ *   1. If project slug is given (non-null) AND the path is NOT already under
+ *      /projects/<slug>/, relocate the doc: finalPath = targetPathForAssign(path, slug).
+ *   2. Otherwise keep path as-is (path wins; project=null never moves anything).
+ * Pure — no DB.
+ */
+export function computeFinalPath(path: string, project: string | null | undefined): string {
+  if (!project) return path
+  // Check if already under /projects/<slug>/
+  const alreadyFiled = path.startsWith(`${PROJECTS_ROOT}/${project}/`)
+  if (alreadyFiled) return path
+  return targetPathForAssign(path, project)
+}
+
+/**
+ * Derives the project_id + project slug from a path. The path is the single
+ * source of truth — if the path is under /projects/<seg>/ and a matching
+ * project row exists, both fields are set. Otherwise both are null.
+ */
+export async function resolveDocProjectFromPath(
+  path: string
+): Promise<{ projectId: string | null; project: string | null }> {
+  const seg = projectFromPath(path)
+  if (!seg) return { projectId: null, project: null }
+  const row = await matchProjectByLabel(seg)
+  if (!row) return { projectId: null, project: null }
+  return { projectId: row.id, project: row.slug }
+}
 
 const live = () => isNull(documents.deletedAt)
 const toDTO = (r: typeof documents.$inferSelect): DocumentDTO => ({
@@ -30,11 +77,16 @@ export async function getDoc(id: string): Promise<DocumentDTO | null> {
 }
 
 export async function createDoc(input: DocumentUpsert): Promise<DocumentDTO> {
+  // Compute the final path applying assign-project relocate logic, then derive
+  // project_id + project slug from that path. The path always wins.
+  const finalPath = computeFinalPath(input.path, input.project)
+  const { projectId, project } = await resolveDocProjectFromPath(finalPath)
   const rows = await useDb().insert(documents).values({
-    path: input.path, title: input.title ?? input.path.split('/').pop() ?? null,
-    content: input.content ?? '', language: getLanguageFromPath(input.path),
+    path: finalPath,
+    title: input.title ?? finalPath.split('/').filter(Boolean).pop() ?? null,
+    content: input.content ?? '', language: getLanguageFromPath(finalPath),
     frontmatter: (input.frontmatter ?? {}) as unknown as string,
-    project: input.project, domain: input.domain,
+    project, projectId, domain: input.domain,
     type: input.type, tags: input.tags ?? [], topic: input.topic,
     contentHash: createHash('sha256').update(input.content ?? '').digest('hex')
   }).returning()
@@ -43,15 +95,37 @@ export async function createDoc(input: DocumentUpsert): Promise<DocumentDTO> {
 
 export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Promise<DocumentDTO | null> {
   const patch: Record<string, unknown> = { updatedAt: new Date() }
-  for (const k of ['title', 'content', 'frontmatter', 'project', 'domain', 'type', 'tags', 'topic', 'path'] as const) {
+
+  // Apply association logic only when path or project is part of the input.
+  const pathOrProjectChanged = input.path !== undefined || input.project !== undefined
+  if (pathOrProjectChanged) {
+    // We need the current path to compute the final path when only project changes.
+    // Fetch the existing row (lightweight — id + path only).
+    const [existing] = await useDb()
+      .select({ path: documents.path })
+      .from(documents)
+      .where(and(eq(documents.id, id), live()))
+      .limit(1)
+    if (!existing) return null // doc not found / soft-deleted
+
+    const basePath = input.path ?? existing.path
+    const finalPath = computeFinalPath(basePath, input.project)
+    const { projectId, project } = await resolveDocProjectFromPath(finalPath)
+
+    patch.path = finalPath
+    patch.project = project
+    patch.projectId = projectId
+    patch.language = getLanguageFromPath(finalPath)
+    // Sync title to basename on path change unless caller explicitly set one
+    if (input.title === undefined) patch.title = finalPath.split('/').filter(Boolean).pop() ?? null
+  }
+
+  // Copy remaining scalar fields (title override honoured when explicitly set)
+  for (const k of ['title', 'content', 'frontmatter', 'domain', 'type', 'tags', 'topic'] as const) {
     if (input[k] !== undefined) patch[k] = input[k]
   }
-  if (input.path !== undefined) {
-    patch.language = getLanguageFromPath(input.path)
-    // Sync title to the new basename when a path-rename happens and title wasn't explicitly set
-    if (input.title === undefined) patch.title = input.path.split('/').filter(Boolean).pop() ?? null
-  }
   if (input.content !== undefined) patch.contentHash = createHash('sha256').update(input.content).digest('hex')
+
   const [r] = await useDb().update(documents).set(patch as Partial<typeof documents.$inferInsert>).where(and(eq(documents.id, id), live())).returning()
   return r ? toDTO(r) : null
 }
