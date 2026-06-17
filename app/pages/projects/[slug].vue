@@ -52,6 +52,13 @@ function onDeleted() {
   navigateTo('/projects')
 }
 
+// ── Merge modal ───────────────────────────────────────────────────────────────
+const showMerge = ref(false)
+
+function onMerged(winner: ProjectDTO) {
+  navigateTo('/projects/' + winner.slug)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -140,6 +147,15 @@ const tabItems = [
           />
         </template>
         <template #right>
+          <UButton
+            v-if="project"
+            icon="i-lucide-git-merge"
+            label="Merge"
+            size="xs"
+            color="neutral"
+            variant="ghost"
+            @click="showMerge = true"
+          />
           <UButton
             v-if="project"
             icon="i-lucide-pencil"
@@ -672,5 +688,12 @@ const tabItems = [
     :project="project"
     @saved="onSaved"
     @deleted="onDeleted"
+  />
+
+  <!-- Merge modal -->
+  <ProjectMergeModal
+    v-model:open="showMerge"
+    :project="project ?? null"
+    @merged="onMerged"
   />
 </template>
