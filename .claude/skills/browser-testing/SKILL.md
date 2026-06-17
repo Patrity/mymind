@@ -1,0 +1,68 @@
+---
+name: browser-testing
+description: Use when validating UI or end-to-end behaviour in the MyMind web app with playwright-cli (auth-gated pages, reka-ui clicks, setting up/asserting data via authenticated fetches, screenshots). Use it to PROVE a change works in the real app — green typecheck/test/build never catch rendering/wiring bugs that only show in the browser.
+---
+
+# Browser testing (playwright-cli)
+
+Validate MyMind UI/E2E with **`playwright-cli`** — the terminal CLI, **NOT** the Playwright MCP (project rule `.claude/rules/web-vue-ui.md`). Browser validation has repeatedly caught bugs that passed typecheck/test/build (e.g. a badge that rendered an inert `<nuxtlink>` instead of an `<a>`, counts that didn't match their tabs). **Always** browser-validate UI work before claiming it's done.
+
+## Setup
+- Dev server: `pnpm dev` → http://localhost:3000 (check it's up: `curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/login`). Browser fetches hit **DEV**; the mymind **MCP points at PROD** — so `mcp__mymind__save_memory` / `create_task` mutate prod, but `fetch('/api/…')` in the browser hits dev.
+
+## Dev test credentials (dev/testing only)
+The dev DB is single-tenant. Standing account — reuse it; re-register via the login page's **"Create account"** if the dev DB was reset:
+- **email:** `test@example.com`  ·  **password:** `testpassword123`  ·  **name:** `Test User`
+
+## Core workflow: snapshot → ref → act
+playwright-cli acts on **element refs** (`e20`, `e31`…) obtained from a snapshot — not CSS selectors.
+```bash
+playwright-cli open http://localhost:3000/projects   # or: goto <url>
+playwright-cli snapshot                               # prints a YAML tree with [ref=e20] ids
+playwright-cli fill e20 "test@example.com"
+playwright-cli click e31
+playwright-cli eval "() => ({ path: location.pathname, txt: document.body.innerText.slice(0,300) })"
+playwright-cli screenshot --filename=/tmp/x.png       # then Read the PNG to view it
+```
+
+## Logging in (auth-gated pages redirect to /login)
+```bash
+playwright-cli goto "http://localhost:3000/projects"      # any gated page
+playwright-cli eval "() => location.pathname"             # '/login' ⇒ need to auth
+# grab the field refs, then fill + submit:
+playwright-cli snapshot | grep -iE 'Email|Password|Sign in'   # find e-refs
+playwright-cli fill <emailRef> "test@example.com"
+playwright-cli fill <passwordRef> "testpassword123"
+playwright-cli click <signInRef>
+```
+The session cookie persists across `goto`s for the rest of the run.
+
+## reka-ui components need a REAL click
+`UTabs`, `USelectMenu`, `USwitch`, segmented controls (reka-ui) **must** be driven with `playwright-cli click <e-ref>` (a real click after `snapshot`). A programmatic `el.click()` inside `eval` does NOT fire reka's handler — the tab/toggle won't change. (Memory: `playwright-cli-reka-tabs`.) Note: `UTabs` renders all panels and hides inactive ones (`[hidden]`/`data-state`); query the **active** panel (`[role=tabpanel][data-state=active]`), not the first one.
+
+## The power pattern: authenticated `eval` + `fetch`
+The fastest way to set up fixtures and assert state — runs JS with the session cookie, so it hits the real API:
+```bash
+playwright-cli eval "async () => {
+  const j = r => r.json();
+  const post = (u,b) => fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)}).then(j);
+  const doc = await post('/api/documents', { path:'/projects/mymind/x.md', content:'# t' });
+  const proj = await fetch('/api/projects/mymind').then(j);
+  return { docProject: doc.project, documentCount: proj.documentCount };
+}"
+```
+Use it to create docs/tasks/memories/projects, exercise a flow (e.g. a slug rename or a merge via `POST /api/projects/[slug]/merge`), and read back DTOs to assert — far faster than clicking through the UI for data setup. Drive the actual UI (clicks) for what you're specifically validating; use fetch for fixtures + assertions.
+
+## Clean up test data
+Leave the dev corpus clean. Delete what you created (`DELETE /api/documents/[id]`, `/api/tasks/[id]`, etc.). Hard-deleting a project FK-fails while sessions/memories/documents still reference it (`project_id` FK, `ON DELETE NO ACTION`) — clear the child rows first, or use the merge flow. For a quick direct cleanup, a `node -e` script against the dev `DATABASE_URL` (in `.env`) works (`pg` is installed).
+
+## Gotcha: stale `.vue` (Vite HMR) — restart the dev server
+Server-side (Nitro) changes hot-reload reliably. **Client `.vue` changes sometimes don't** — a long-running dev server (or a duplicate/foreign git-worktree under `.claude/worktrees/*`) can serve a stale compiled component even after `reload`. Symptom: a component edit (verified on disk, typecheck/build pass) doesn't show in the browser. Fix: kill + restart `pnpm dev` cleanly, then re-validate. (Don't remove a worktree you didn't create.) Related: `vitest-claude-worktree-pollution` memory.
+
+## Checklist for a UI change
+1. Dev server up; logged in.
+2. Exercise the new UI with real clicks (reka components: click by ref).
+3. Assert rendered output (`eval` the DOM — tag/href/text, not just "it's there").
+4. Set up edge cases + verify via authenticated fetch (filters, counts, cascades).
+5. Screenshot the result; Read it to confirm it looks right.
+6. Clean up test data.
