@@ -38,22 +38,27 @@ function formatRelative(dateStr: string | null): string {
   >
     <template #body>
       <div class="flex flex-col gap-1">
-        <button
+        <UButton
           v-for="c in conversations"
           :key="c.id"
-          class="flex flex-col gap-0.5 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          block
+          variant="ghost"
+          color="neutral"
+          class="text-left"
           @click="emit('select', c.id)"
         >
-          <span class="text-sm font-medium text-highlighted truncate">
-            {{ c.title || 'New conversation' }}
-          </span>
-          <span class="text-xs text-muted">
-            {{ formatRelative(c.lastMessageAt) }}
-            <template v-if="c.snippet">
-              · {{ c.snippet }}
-            </template>
-          </span>
-        </button>
+          <div class="flex flex-col gap-0.5 w-full">
+            <span class="text-sm font-medium text-highlighted truncate">
+              {{ c.title || 'New conversation' }}
+            </span>
+            <span class="text-xs text-muted">
+              {{ formatRelative(c.lastMessageAt) }}
+              <template v-if="c.snippet">
+                · {{ c.snippet }}
+              </template>
+            </span>
+          </div>
+        </UButton>
 
         <p
           v-if="conversations.length === 0"
