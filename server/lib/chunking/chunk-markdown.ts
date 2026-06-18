@@ -99,7 +99,10 @@ function hardSplit(block: string, max: number, overlap: number): string[] {
   return out
 }
 
+const MATCH_LEN = 24
+
 export function chunkMarkdown(text: string, opts: ChunkOptions = {}): Chunk[] {
+  if (!text.trim()) return []
   const title = (opts.title ?? '').trim()
   const target = opts.targetTokens ?? 300
   const max = opts.maxTokens ?? 512
@@ -125,15 +128,20 @@ export function chunkMarkdown(text: string, opts: ChunkOptions = {}): Chunk[] {
       }
       if (cur.trim()) pieces.push(cur)
     }
+    let cursor = 0
     for (const piece of pieces) {
-      const rel = sec.text.indexOf(piece.slice(0, 24))
-      const charStart = sec.charStart + (rel >= 0 ? rel : 0)
+      if (!piece.trim()) continue
+      let idx = sec.text.indexOf(piece.slice(0, MATCH_LEN), cursor)
+      if (idx < 0) idx = cursor
+      const charStart = sec.charStart + idx
+      const charEnd = charStart + piece.length
+      cursor = idx + 1
       chunks.push({
         ord: ord++,
         content: piece,
         headingPath: sec.headingPath || title,
         charStart,
-        charEnd: charStart + piece.length,
+        charEnd,
         tokenCount: estimateTokens(piece)
       })
     }

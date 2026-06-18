@@ -53,4 +53,17 @@ describe('chunkMarkdown', () => {
     expect(estimateTokens('abcd')).toBeGreaterThan(0)
     expect(estimateTokens('a'.repeat(380))).toBeGreaterThan(estimateTokens('a'.repeat(38)))
   })
+
+  it('assigns monotonic, non-collapsing char offsets on repetitive content', () => {
+    const md = '# Big\n\n' + Array(1500).fill('alpha').join(' ')
+    const out = chunkMarkdown(md, { title: 'T', targetTokens: 300, maxTokens: 512 })
+    expect(out.length).toBeGreaterThan(2)
+    const starts = out.map(c => c.charStart)
+    for (let i = 1; i < starts.length; i++) expect(starts[i]!).toBeGreaterThan(starts[i - 1]!)
+  })
+
+  it('returns no chunks for empty or whitespace-only input', () => {
+    expect(chunkMarkdown('', { title: 'T' })).toEqual([])
+    expect(chunkMarkdown('   \n\n  ', { title: 'T' })).toEqual([])
+  })
 })
