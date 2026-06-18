@@ -5,7 +5,7 @@ vi.mock('../server/lib/ai/chat', () => ({ chat: (...a: unknown[]) => chatMock(..
 
 import { contextualizeChunk } from '../server/lib/chunking/contextualize'
 
-beforeEach(() => chatMock.mockReset())
+beforeEach(() => { chatMock.mockReset() })
 
 describe('contextualizeChunk', () => {
   it('returns the LLM context when enabled and the call succeeds', async () => {

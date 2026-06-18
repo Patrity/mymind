@@ -6,7 +6,6 @@ import { defineConfig } from 'vitest/config'
 // and inflate/confuse the suite. Mirrors vitest's default exclude list + that path.
 export default defineConfig({
   test: {
-    setupFiles: ['./test/setup.ts'],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
