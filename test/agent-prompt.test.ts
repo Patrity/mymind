@@ -27,4 +27,5 @@ describe('composePrompt', () => {
   it('appends the context block when present', () => {
     expect(composePrompt({ ...base, speak: false, context: 'Active projects: mymind.' })).toContain('Active projects: mymind.')
   })
+  it('includes web-research guidance', () => { expect(composePrompt({ persona: 'p', speak: false, toneLine: 't' })).toMatch(/web_search/) })
 })
