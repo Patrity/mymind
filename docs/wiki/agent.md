@@ -66,9 +66,10 @@ After each completed turn the handler lazily creates the conversation (first tur
 
 ## Deferred (not built this cycle)
 
-- **Cycle B** — powerful capability tools (web research / shell / SSH / `gh` / file-edit) + the execution-model/security design.
+- **Cycle B1 (shipped, cycle 29)** — `web_search` + `web_fetch` read-only web research tools on the default toolset; SSRF-guarded; SearXNG bundled (zero-config). See [web-research.md](web-research.md).
+- **Cycle B2+** — approval-gate harness + constrained exec + SSH / `gh` / file-edit (the execution-model/security design).
 - Conversation **summarization worker** + **semantic search** (the `summary_embedding` column is reserved; keyword ships now).
 - **Branching UI** (edit/regenerate → fork): the `parent_id` edge exists; `active_leaf_id`/path-walking + UI are future.
 - Storing voice **audio** (transcript text only), command-palette integration, token-cost display, multi-profile UI.
 
-See also: [voice-agent.md](voice-agent.md) (the self-hosted STT/TTS pipeline + visualizer), [ai-providers.md](ai-providers.md) (model registry), [live-reactivity.md](live-reactivity.md).
+See also: [voice-agent.md](voice-agent.md) (the self-hosted STT/TTS pipeline + visualizer), [ai-providers.md](ai-providers.md) (model registry), [live-reactivity.md](live-reactivity.md), [web-research.md](web-research.md) (`web_search` + `web_fetch` tools, SSRF guard, SearXNG).

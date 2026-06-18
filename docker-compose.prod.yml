@@ -44,10 +44,22 @@ services:
       # Nitro reads runtimeConfig overrides ONLY from NUXT_/NITRO_-prefixed env at
       # runtime. AI providers/models are no longer env-configured — they live in the
       # DB (settings.key='ai_config', edited at /settings, keys stored encrypted).
+      # SearXNG (bundled search backend — internal only, reachable on compose network).
+      SEARCH_SEARXNG_URL: http://searxng:8080
     volumes:
       - mymind-uploads:/app/.data/uploads   # persistent uploaded blobs
     ports:
       - "3000:3000"   # bind to 127.0.0.1:3000 and front with a TLS proxy in real deployments
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: mymind-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    # No host port — only the app reaches it on the compose network as "searxng:8080".
 
 volumes:
   mymind-pgdata:

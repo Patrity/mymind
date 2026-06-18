@@ -186,14 +186,22 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 - **Single app instance** for the scheduled tasks (see §7).
 - Change the **default Postgres password** (`POSTGRES_PASSWORD`) — never ship `mymind/mymind`.
 
-## 13. Not yet built (deploy-relevant backlog)
+## 13. SearXNG (bundled web-search backend)
+
+`docker-compose.prod.yml` includes a `searxng` service (image `searxng/searxng:latest`):
+- **Internal-only** — no host port is published; only the app reaches it on the compose network as `searxng:8080`.
+- The app reads `SEARCH_SEARXNG_URL` (defaults to `http://searxng:8080`) as its search backend; override the active provider in-app at **`/settings → Search`**.
+- `searxng/settings.yml` (mounted to `/etc/searxng`) enables the JSON API (`search.formats: [html, json]`) and disables the rate-limiter for internal use.
+- **`SEARXNG_SECRET` is required in `.env`** (`openssl rand -hex 32`). Compose passes it to the `searxng` service via `environment:`; the container's entrypoint replaces the `ultrasecretkey` placeholder in `settings.yml` with the real value on boot. Without it, `docker compose up` fails fast.
+
+## 14. Not yet built (deploy-relevant backlog)
 - No API-token management UI (insert rows manually, §5).
 - No in-app backups (external, §9) and no automated blob backup.
 - A leaner `.output`-only runtime image (current image keeps full deps so it can self-migrate).
 - Bridget memory data migration (importing the old Python service's memories) is not automated.
 See the per-cycle handovers in `docs/handovers/` for the full backlog.
 
-## 14. Voice agent
+## 15. Voice agent
 
 The `/voice` page requires two one-time setup steps and a specific proxy configuration.
 
@@ -269,7 +277,7 @@ In Caddy, `reverse_proxy` sets `X-Forwarded-For` to the actual client IP by defa
 
 The other `/api/agent/*` routes (`activity`, `undo`, `chat`) use the standard session/bearer auth and require no special proxy rules beyond the existing ones for `/api/**`.
 
-## 15. CI/CD pipeline (GitHub Actions)
+## 16. CI/CD pipeline (GitHub Actions)
 
 `.github/workflows/deploy.yml` runs on every push:
 - **test** (GitHub-hosted): `pnpm install --frozen-lockfile`, lint (non-blocking — repo is
