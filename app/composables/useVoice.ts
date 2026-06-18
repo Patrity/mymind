@@ -102,20 +102,27 @@ export function useVoice() {
    * VAD or request mic permission. Safe to call from a text-first UI without ever
    * prompting for mic access.
    */
+  // De-dupes concurrent connect() calls and lets callers `await` until the WS is
+  // actually OPEN (connectInner resolves on `onopen`) — so a typed send right after
+  // connect() never races the handshake.
+  let connecting: Promise<void> | null = null
+
   async function connect() {
-    if (ws || state.value === 'connecting') return
+    if (connected.value) return
+    if (connecting) return connecting
     error.value = null
     state.value = 'connecting'
     const mySession = ++session
-    try {
-      await connectInner(mySession)
-    } catch (err) {
-      if (mySession !== session) return // torn down mid-start — stop() already cleaned up
-      // WS setup failure would otherwise strand the UI in 'connecting'.
-      error.value = err instanceof Error ? err.message : 'Voice startup failed'
-      events.emit({ type: 'error' })
-      stop()
-    }
+    connecting = connectInner(mySession)
+      .catch((err) => {
+        if (mySession !== session) return // torn down mid-start — stop() already cleaned up
+        // WS setup failure would otherwise strand the UI in 'connecting'.
+        error.value = err instanceof Error ? err.message : 'Voice startup failed'
+        events.emit({ type: 'error' })
+        stop()
+      })
+      .finally(() => { connecting = null })
+    await connecting
   }
 
   async function connectInner(mySession: number) {
@@ -127,18 +134,12 @@ export function useVoice() {
     micAnalyser.fftSize = 256
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
-    ws.binaryType = 'arraybuffer'
-    ws.onopen = () => {
-      connected.value = true
-      state.value = 'idle'
-      // Apply the persisted voice choice (and re-apply on reconnect).
-      const v = desiredVoice ?? { provider: settings.value.provider, voice: settings.value.voice }
-      ws!.send(JSON.stringify({ type: 'voice', ...v }))
-    }
-    ws.onclose = () => { connected.value = false; state.value = 'idle'; events.emit({ type: 'disconnected' }) }
-    ws.onerror = () => { error.value = 'WebSocket error'; events.emit({ type: 'error' }) }
-    ws.onmessage = (e) => {
+    const socket = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
+    socket.binaryType = 'arraybuffer'
+    ws = socket
+    socket.onclose = () => { connected.value = false; state.value = 'idle'; events.emit({ type: 'disconnected' }) }
+    socket.onerror = () => { error.value = 'WebSocket error'; events.emit({ type: 'error' }) }
+    socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         state.value = 'speaking'
         enqueueWav(e.data)
@@ -150,6 +151,21 @@ export function useVoice() {
         for (const ev of fx.events) events.emit(ev)
       }
     }
+    // Resolve only once the socket is OPEN. A pre-open error/close rejects → connect()'s
+    // catch tears down + surfaces the error. (Post-open errors/closes are handled by the
+    // persistent handlers above; the once-listeners reject an already-settled promise = no-op.)
+    await new Promise<void>((resolve, reject) => {
+      socket.onopen = () => {
+        connected.value = true
+        state.value = 'idle'
+        // Apply the persisted voice choice (and re-apply on reconnect).
+        const v = desiredVoice ?? { provider: settings.value.provider, voice: settings.value.voice }
+        socket.send(JSON.stringify({ type: 'voice', ...v }))
+        resolve()
+      }
+      socket.addEventListener('error', () => reject(new Error('WebSocket error')), { once: true })
+      socket.addEventListener('close', () => reject(new Error('WebSocket closed before open')), { once: true })
+    })
     // connectInner does NOT call startVad — call enableMic() separately for mic input.
     if (mySession !== session) return // stop() landed while setting up
   }
@@ -295,21 +311,24 @@ export function useVoice() {
     /**
      * Send a typed turn through the voice loop. Pass speak=true to have the
      * agent answer aloud; speak=false (default) for text-only response.
-     * Returns false when the WS isn't open (caller should fall back to the
-     * text-only chat endpoint).
+     * Auto-connects the WS transparently if needed — a chat "just works" without
+     * an explicit Connect step. Returns false only if connecting fails.
      */
-    sendText: (text: string, speak = false): boolean => {
+    sendText: async (text: string, speak = false): Promise<boolean> => {
       const t = text.trim()
-      if (!t || ws?.readyState !== WebSocket.OPEN) return false
+      if (!t) return false
+      if (ws?.readyState !== WebSocket.OPEN) await connect()
+      if (ws?.readyState !== WebSocket.OPEN) return false
       if (isPlaying()) { stopPlayback(); events.emit({ type: 'bargein' }) } // typed barge-in
       ws.send(JSON.stringify({ type: 'text', text: t, speak }))
       return true
     },
     /**
-     * Resume a previous conversation by ID. The page is responsible for
-     * hydrating the transcript from the HTTP fetch (see T8).
+     * Resume a previous conversation by ID. Auto-connects if needed. The page
+     * hydrates the transcript from the HTTP fetch (see T8).
      */
-    loadConversation: (id: string) => {
+    loadConversation: async (id: string) => {
+      if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return
       ws.send(JSON.stringify({ type: 'load', conversationId: id }))
     },
