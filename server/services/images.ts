@@ -2,11 +2,12 @@ import { and, arrayOverlaps, desc, eq, ilike, inArray, isNotNull, isNull, or, sq
 import { Readable } from 'node:stream'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
-import { images } from '../db/schema'
+import { images, chunks } from '../db/schema'
 import { storage } from '../utils/storage'
 import { processUpload } from '../lib/images/convert'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
+import { collapseChunksToSources } from '../lib/chunking/collapse'
 import type { ImageDTO } from '../../shared/types/images'
 
 export type Image = typeof images.$inferSelect
@@ -111,7 +112,9 @@ export async function searchImages(q: string): Promise<(Image & { url: string })
   const lexIds = lexRows.map(r => r.id)
 
   // Lane 2: vector — cosine distance over the summary embedding, with fallback if rig is unavailable
+  // Lane 3 (OCR chunks) reuses the same query embedding so we never embed twice.
   let vecIds: string[] = []
+  let ocrIds: string[] = []
   try {
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
@@ -120,12 +123,21 @@ export async function searchImages(q: string): Promise<(Image & { url: string })
       .orderBy(sql`${images.embedding} <=> ${lit}::halfvec`)
       .limit(50)
     vecIds = vecRows.map(r => r.id)
+
+    // Lane 3: OCR chunks — distance over per-chunk embeddings, collapsed back to image ids
+    const chunkRows = await db.select({ sourceId: chunks.sourceId })
+      .from(chunks)
+      .innerJoin(images, eq(chunks.sourceId, images.id))
+      .where(and(eq(chunks.sourceType, 'image'), live()))
+      .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
+      .limit(100)
+    ocrIds = collapseChunksToSources(chunkRows).slice(0, 50)
   } catch (err) {
     console.warn('[searchImages] vector lane failed, falling back to lexical-only:', err)
   }
 
-  // Fuse the two ranked lanes with RRF
-  const fusedIds = rrfFuse([lexIds, vecIds]).slice(0, 50)
+  // Fuse the ranked lanes with RRF (lexical + summary-vector + OCR-chunk)
+  const fusedIds = rrfFuse([lexIds, vecIds, ocrIds]).slice(0, 50)
 
   if (fusedIds.length === 0) return []
 
