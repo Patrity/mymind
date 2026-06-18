@@ -1,8 +1,8 @@
 ---
-title: Document Chunking + Contextual Retrieval (Cycle 30)
+title: Document Chunking + Contextual Retrieval (Cycle 31)
 date: 2026-06-17
 status: design
-cycle: 30
+cycle: 31
 related:
   - 2026-06-03-ai-enrichment.md
   - 2026-06-11-image-pipeline-design.md
@@ -11,7 +11,7 @@ related:
   - ../../wiki/search.md
 ---
 
-# Document Chunking + Contextual Retrieval (Cycle 30)
+# Document Chunking + Contextual Retrieval (Cycle 31)
 
 Fixes a foundational defect in the RAG pipeline: **documents are embedded whole**, with no
 chunking and no truncation. Documents over TEI's configured 16k-token input limit fail to
