@@ -9,3 +9,17 @@ export function collapseChunksToSources(hits: { sourceId: string }[]): string[] 
   }
   return out
 }
+
+/** Like collapseChunksToSources, but carries the best (first-seen) distance per source. */
+export function collapseChunksToHits(
+  hits: { sourceId: string; distance: number }[]
+): { sourceId: string; distance: number }[] {
+  const seen = new Set<string>()
+  const out: { sourceId: string; distance: number }[] = []
+  for (const h of hits) {
+    if (seen.has(h.sourceId)) continue
+    seen.add(h.sourceId)
+    out.push({ sourceId: h.sourceId, distance: h.distance })
+  }
+  return out
+}
