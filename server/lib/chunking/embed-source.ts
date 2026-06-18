@@ -42,6 +42,11 @@ export async function chunkAndEmbedSource(opts: {
     const slice = embedTexts.slice(i, i + cfg.embedBatch)
     vectors.push(...await embed(slice))
   }
+  // Guard against a provider under-returning vectors (would silently store NULL
+  // embeddings). Throw so the source fails + retries rather than storing junk.
+  if (vectors.length !== parts.length) {
+    throw new Error(`embed returned ${vectors.length} vectors for ${parts.length} chunks`)
+  }
 
   const rows = parts.map((p, i) => ({
     sourceType: opts.sourceType,

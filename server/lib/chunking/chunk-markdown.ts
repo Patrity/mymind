@@ -93,7 +93,7 @@ function hardSplit(block: string, max: number, overlap: number): string[] {
       cur = overlapChars > 0 ? cur.slice(-overlapChars) : ''
     }
     cur += u
-    while (cur.length > maxChars) { out.push(cur.slice(0, maxChars)); cur = cur.slice(maxChars - overlapChars) }
+    while (cur.length > maxChars) { out.push(cur.slice(0, maxChars)); cur = cur.slice(Math.max(1, maxChars - overlapChars)) }
   }
   if (cur.trim()) out.push(cur.trim())
   return out
