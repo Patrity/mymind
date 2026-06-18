@@ -15,12 +15,17 @@ const emit = defineEmits<{ undo: [chip: ToolChip] }>()
       class="flex flex-col gap-0.5"
     >
       <span class="text-[10px] uppercase tracking-wide text-muted">{{ e.role === 'user' ? 'You' : 'Bridget' }}</span>
+      <!-- Assistant replies may contain markdown — render via the shared MDC renderer.
+           User turns are literal text (preserve their line breaks). -->
+      <MdView
+        v-if="e.role === 'assistant'"
+        :source="e.text"
+        class="text-highlighted"
+      />
       <p
-        class="text-xs"
-        :class="e.role === 'user' ? 'text-default' : 'text-highlighted'"
-      >
-        {{ e.text }}
-      </p>
+        v-else
+        class="whitespace-pre-wrap text-sm text-default"
+      >{{ e.text }}</p>
     </div>
 
     <div
