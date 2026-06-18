@@ -1,6 +1,6 @@
 use_default_settings: true
 server:
-  secret_key: "${SEARXNG_SECRET:-change-me-in-prod}"
+  secret_key: "ultrasecretkey"
   limiter: false
 search:
   formats:

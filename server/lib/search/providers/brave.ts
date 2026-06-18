@@ -19,6 +19,7 @@ export function braveProvider(apiKey: string): SearchProvider {
       const res = await fetch(url.toString(), {
         headers: { 'X-Subscription-Token': apiKey, 'Accept': 'application/json' },
         signal: AbortSignal.timeout(10_000),
+        redirect: 'error',
       })
       if (!res.ok) throw new Error(`Brave Search error: ${res.status}`)
       const json = await res.json() as { web?: { results?: unknown[] } }

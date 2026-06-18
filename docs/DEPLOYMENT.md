@@ -192,7 +192,7 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 - **Internal-only** — no host port is published; only the app reaches it on the compose network as `searxng:8080`.
 - The app reads `SEARCH_SEARXNG_URL` (defaults to `http://searxng:8080`) as its search backend; override the active provider in-app at **`/settings → Search`**.
 - `searxng/settings.yml` (mounted to `/etc/searxng`) enables the JSON API (`search.formats: [html, json]`) and disables the rate-limiter for internal use.
-- **Before exposing to the internet:** replace `SEARXNG_SECRET` in `.env` with a real value (`openssl rand -hex 32`). The container interpolates it from that env var at startup.
+- **`SEARXNG_SECRET` is required in `.env`** (`openssl rand -hex 32`). Compose passes it to the `searxng` service via `environment:`; the container's entrypoint replaces the `ultrasecretkey` placeholder in `settings.yml` with the real value on boot. Without it, `docker compose up` fails fast.
 
 ## 14. Not yet built (deploy-relevant backlog)
 - No API-token management UI (insert rows manually, §5).

@@ -15,7 +15,7 @@ export function searxngProvider(baseUrl: string): SearchProvider {
       const url = new URL('/search', baseUrl)
       url.searchParams.set('q', query)
       url.searchParams.set('format', 'json')
-      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(10_000) })
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(10_000), redirect: 'error' })
       if (!res.ok) throw new Error(`SearXNG error: ${res.status}`)
       const json = await res.json() as { results?: unknown[] }
       return normalizeSearxng(json as never, opts?.count ?? 8)
