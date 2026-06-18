@@ -1,11 +1,12 @@
-import { and, desc, eq, isNull, ilike, or, sql, inArray, isNotNull } from 'drizzle-orm'
+import { and, desc, eq, isNull, ilike, or, sql, inArray } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
-import { documents } from '../db/schema'
+import { documents, chunks } from '../db/schema'
 import { getLanguageFromPath } from '../../shared/utils/languages'
 import { buildTree, type TreeNode } from './tree'
-import type { DocumentDTO, DocumentUpsert } from '../../shared/types/documents'
+import type { DocumentDTO, DocumentUpsert, ChunkHit } from '../../shared/types/documents'
+import { collapseChunksToSources } from '../lib/chunking/collapse'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { projectFromPath, PROJECTS_ROOT } from '../lib/projects/doc-path'
@@ -167,12 +168,13 @@ export async function searchDocs(q: string, opts: { project?: string } = {}): Pr
   try {
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vecRows = await db.select({ id: documents.id })
-      .from(documents)
-      .where(and(live(), projectFilter, isNotNull(documents.embedding)))
-      .orderBy(sql`${documents.embedding} <=> ${lit}::halfvec`)
-      .limit(50)
-    vectorIds = vecRows.map(r => r.id)
+    const chunkRows = await db.select({ sourceId: chunks.sourceId })
+      .from(chunks)
+      .innerJoin(documents, eq(chunks.sourceId, documents.id))
+      .where(and(eq(chunks.sourceType, 'document'), live(), projectFilter))
+      .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
+      .limit(100)
+    vectorIds = collapseChunksToSources(chunkRows).slice(0, 50)
   } catch (err) {
     console.warn('[searchDocs] vector lane failed, falling back to trigram-only:', err)
   }
@@ -204,4 +206,24 @@ export async function getByPublicSlug(slug: string): Promise<DocumentDTO | null>
   const [r] = await useDb().select().from(documents)
     .where(and(eq(documents.publicSlug, slug), eq(documents.isPublic, true), live())).limit(1)
   return r ? toDTO(r) : null
+}
+
+export async function searchPassages(q: string, opts: { project?: string, limit?: number } = {}): Promise<ChunkHit[]> {
+  if (!q.trim()) return []
+  const db = useDb()
+  const projectFilter = opts.project ? eq(documents.project, opts.project) : undefined
+  const qv = await embedOne(q)
+  const lit = `[${qv.join(',')}]`
+  const rows = await db.select({
+    sourceType: chunks.sourceType, sourceId: chunks.sourceId, ord: chunks.ord,
+    content: chunks.content, headingPath: chunks.headingPath, context: chunks.context,
+    docTitle: documents.title, docPath: documents.path,
+    distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
+  })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.sourceId, documents.id))
+    .where(and(eq(chunks.sourceType, 'document'), live(), projectFilter))
+    .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
+    .limit(opts.limit ?? 10)
+  return rows as ChunkHit[]
 }

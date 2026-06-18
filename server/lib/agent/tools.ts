@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import type { AgentTool } from './types'
 import { searchMemories, createMemory, listMemories, archiveMemory } from '../../services/memory'
-import { searchDocs, createDoc, listDocs, getDoc, deleteDoc } from '../../services/documents'
+import { searchDocs, searchPassages, createDoc, listDocs, getDoc, deleteDoc } from '../../services/documents'
 import { listProjects, createProject, updateProject, getProject, deleteProject } from '../../services/projects'
 import { createTask, listTasks, updateTask, getTask, deleteTask } from '../../services/tasks'
 import { publishChange } from '../../utils/live-bus'
@@ -75,6 +75,16 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const res = await searchDocs(a.query as string, { project: a.project as string | undefined })
       return { result: res, summary: `searched docs (${Array.isArray(res) ? res.length : 0})` }
+    }
+  },
+  {
+    name: 'search_passages',
+    description: 'Semantic search returning chunk-level passages (with parent document title/path) — use for precise RAG context instead of whole documents. Pass `project` (a slug) to scope.',
+    kind: 'read',
+    schema: { query: z.string().describe('Search query'), project: z.string().optional().describe('Project slug to scope to'), limit: z.number().optional().describe('Max passages (default 10)') },
+    handler: async (a) => {
+      const res = await searchPassages(a.query as string, { project: a.project as string | undefined, limit: a.limit as number | undefined })
+      return { result: res, summary: `searched passages (${Array.isArray(res) ? res.length : 0})` }
     }
   },
   {
