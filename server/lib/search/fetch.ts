@@ -150,7 +150,13 @@ export interface FetchedPage {
 }
 
 const FETCH_HEADERS = {
-  'user-agent': 'MyMind-Bridget/1.0 (+https://github.com/Patrity/mymind)',
+  // A realistic browser UA + Accept headers avoid naive bot-protection 403s. Sites
+  // with real challenge protection (Cloudflare, etc.) may still block — those surface
+  // as a graceful "fetch failed" result to the agent (see the web_fetch handler), not
+  // a thrown system error.
+  'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'accept-language': 'en-US,en;q=0.9',
 }
 const MAX_REDIRECTS = 3
 
