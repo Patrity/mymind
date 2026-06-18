@@ -24,6 +24,7 @@ async function toggleMic() {
     await voice.disableMic()
     micOn.value = false
   } else {
+    await voice.connect() // ensure the WS is up before requesting the mic
     await voice.enableMic()
     micOn.value = true
   }
@@ -32,16 +33,16 @@ async function toggleMic() {
 async function resume(id: string) {
   const { messages } = await useConversations().getConversation(id)
   voice.transcript.value = messages.map(m => ({ role: m.role, text: m.content }))
-  voice.loadConversation(id)
+  await voice.loadConversation(id)
   historyOpen.value = false
 }
 
+// Auto-connect the WS on mount so the chat is usable immediately — typing and
+// sending "just work" without an explicit Connect step. Resume a thread if ?c= is set.
 onMounted(async () => {
+  await voice.connect()
   const c = route.query.c
-  if (typeof c === 'string' && c) {
-    await voice.connect()
-    await resume(c)
-  }
+  if (typeof c === 'string' && c) await resume(c)
 })
 </script>
 
@@ -94,31 +95,14 @@ onMounted(async () => {
               color="neutral"
               @click="voice.newConversation()"
             />
-            <!-- Mic toggle (only when connected) -->
+            <!-- Mic toggle (auto-connects if needed) -->
             <UButton
-              v-if="voice.connected.value"
               :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
               :color="micOn ? 'primary' : 'neutral'"
               :variant="micOn ? 'soft' : 'ghost'"
               :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
               @click="toggleMic"
-            />
-            <!-- Connect / Disconnect -->
-            <UButton
-              v-if="!voice.connected.value"
-              icon="i-lucide-phone"
-              label="Connect"
-              @click="voice.connect()"
-            />
-            <UButton
-              v-else
-              color="error"
-              variant="soft"
-              icon="i-lucide-phone-off"
-              label="Disconnect"
-              @click="voice.stop()"
-            />
-            <VoiceSettingsSlideover :voice="voice" />
+            />            <VoiceSettingsSlideover :voice="voice" />
           </template>
         </UDashboardNavbar>
       </template>
@@ -201,31 +185,14 @@ onMounted(async () => {
               color="neutral"
               @click="voice.newConversation()"
             />
-            <!-- Mic toggle (only when connected) -->
+            <!-- Mic toggle (auto-connects if needed) -->
             <UButton
-              v-if="voice.connected.value"
               :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
               :color="micOn ? 'primary' : 'neutral'"
               :variant="micOn ? 'soft' : 'ghost'"
               :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
               @click="toggleMic"
-            />
-            <!-- Connect / Disconnect -->
-            <UButton
-              v-if="!voice.connected.value"
-              icon="i-lucide-phone"
-              label="Connect"
-              @click="voice.connect()"
-            />
-            <UButton
-              v-else
-              color="error"
-              variant="soft"
-              icon="i-lucide-phone-off"
-              label="Disconnect"
-              @click="voice.stop()"
-            />
-            <VoiceSettingsSlideover :voice="voice" />
+            />            <VoiceSettingsSlideover :voice="voice" />
           </template>
         </UDashboardNavbar>
       </template>
@@ -239,7 +206,6 @@ onMounted(async () => {
         />
         <VoiceComposer
           :entries="voice.transcript.value"
-          :connected="voice.connected.value"
           :send-text="voice.sendText"
           :speak="speakReply"
         />

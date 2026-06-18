@@ -4,10 +4,9 @@ import type { TranscriptEntry } from '~/composables/useVoice'
 
 const props = defineProps<{
   entries: TranscriptEntry[]
-  // Voice-loop injection: typed turns go over the voice WS only.
-  // The composer is disabled (and shows a placeholder) when not connected.
-  connected?: boolean
-  sendText?: (t: string, speak?: boolean) => boolean
+  // Typed turns go over the voice WS only. sendText auto-connects the WS
+  // transparently, so the composer is always usable — no explicit Connect step.
+  sendText?: (t: string, speak?: boolean) => boolean | Promise<boolean>
   /** When true, typed sends request a spoken reply from the agent. */
   speak?: boolean
 }>()
@@ -15,7 +14,7 @@ const text = ref('')
 
 function send() {
   const q = text.value.trim()
-  if (!q || !props.connected) return
+  if (!q) return
   text.value = ''
   // WS path only: the server echoes the user transcript and streams the reply
   // (text + audio + states) over the WS — nothing to await or append here.
@@ -30,14 +29,13 @@ function send() {
   >
     <UInput
       v-model="text"
-      :placeholder="connected ? 'Type a message…' : 'Connect to start chatting'"
+      placeholder="Type a message…"
       class="flex-1"
-      :disabled="!connected"
     />
     <UButton
       type="submit"
       icon="i-lucide-send"
-      :disabled="!connected || !text.trim()"
+      :disabled="!text.trim()"
     />
   </form>
 </template>
