@@ -6,8 +6,9 @@ import { documents, chunks } from '../db/schema'
 import { getLanguageFromPath } from '../../shared/utils/languages'
 import { buildTree, type TreeNode } from './tree'
 import type { DocumentDTO, DocumentUpsert, ChunkHit } from '../../shared/types/documents'
-import { collapseChunksToSources } from '../lib/chunking/collapse'
+import { collapseChunksToHits } from '../lib/chunking/collapse'
 import { embedOne } from '../lib/ai/embeddings'
+import { getSearchConfig } from '../lib/search/config'
 import { rrfFuse } from '../lib/ai/rrf'
 import { projectFromPath, PROJECTS_ROOT } from '../lib/projects/doc-path'
 import { matchProjectByLabel } from './projects'
@@ -166,15 +167,22 @@ export async function searchDocs(q: string, opts: { project?: string } = {}): Pr
   // Lane 2: vector — cosine distance via HNSW index, with fallback if rig is unavailable
   let vectorIds: string[] = []
   try {
+    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const chunkRows = await db.select({ sourceId: chunks.sourceId })
+    const chunkRows = await db.select({
+      sourceId: chunks.sourceId,
+      distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
+    })
       .from(chunks)
       .innerJoin(documents, eq(chunks.sourceId, documents.id))
       .where(and(eq(chunks.sourceType, 'document'), live(), projectFilter))
       .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
       .limit(100)
-    vectorIds = collapseChunksToSources(chunkRows).slice(0, 50)
+    vectorIds = collapseChunksToHits(chunkRows)
+      .filter(h => h.distance <= cosineFloor)
+      .map(h => h.sourceId)
+      .slice(0, 50)
   } catch (err) {
     console.warn('[searchDocs] vector lane failed, falling back to trigram-only:', err)
   }

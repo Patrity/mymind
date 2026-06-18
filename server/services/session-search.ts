@@ -3,6 +3,7 @@ import { useDb } from '../db'
 import { sessions, messages } from '../db/schema'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
+import { getSearchConfig } from '../lib/search/config'
 import type { SessionResult, MessageResult } from '../../shared/types/search'
 
 export async function searchSessions(q: string, limit = 5): Promise<SessionResult[]> {
@@ -18,13 +19,17 @@ export async function searchSessions(q: string, limit = 5): Promise<SessionResul
   // Lane 2: vector — cosine distance via HNSW index, with fallback
   let vecIds: string[] = []
   try {
+    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vRows = await db.select({ id: sessions.id }).from(sessions)
+    const vRows = await db.select({
+      id: sessions.id,
+      distance: sql<number>`${sessions.summaryEmbedding} <=> ${lit}::halfvec`
+    }).from(sessions)
       .where(isNotNull(sessions.summaryEmbedding))
       .orderBy(sql`${sessions.summaryEmbedding} <=> ${lit}::halfvec`)
       .limit(50)
-    vecIds = vRows.map(r => r.id)
+    vecIds = vRows.filter(r => r.distance <= cosineFloor).map(r => r.id)
   } catch (err) {
     console.warn('[searchSessions] vector lane failed, falling back to trigram-only:', err)
   }
@@ -57,13 +62,17 @@ export async function searchMessages(q: string, limit = 5): Promise<MessageResul
   // Lane 2: vector — cosine distance via HNSW index, with fallback
   let vecIds: string[] = []
   try {
+    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vRows = await db.select({ id: messages.id }).from(messages)
+    const vRows = await db.select({
+      id: messages.id,
+      distance: sql<number>`${messages.embedding} <=> ${lit}::halfvec`
+    }).from(messages)
       .where(isNotNull(messages.embedding))
       .orderBy(sql`${messages.embedding} <=> ${lit}::halfvec`)
       .limit(50)
-    vecIds = vRows.map(r => r.id)
+    vecIds = vRows.filter(r => r.distance <= cosineFloor).map(r => r.id)
   } catch (err) {
     console.warn('[searchMessages] vector lane failed, falling back to trigram-only:', err)
   }

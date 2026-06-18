@@ -7,7 +7,8 @@ import { storage } from '../utils/storage'
 import { processUpload } from '../lib/images/convert'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
-import { collapseChunksToSources } from '../lib/chunking/collapse'
+import { collapseChunksToHits } from '../lib/chunking/collapse'
+import { getSearchConfig } from '../lib/search/config'
 import type { ImageDTO } from '../../shared/types/images'
 
 export type Image = typeof images.$inferSelect
@@ -116,22 +117,31 @@ export async function searchImages(q: string): Promise<(Image & { url: string })
   let vecIds: string[] = []
   let ocrIds: string[] = []
   try {
+    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vecRows = await db.select({ id: images.id }).from(images)
+    const vecRows = await db.select({
+      id: images.id,
+      distance: sql<number>`${images.embedding} <=> ${lit}::halfvec`
+    }).from(images)
       .where(and(live(), isNotNull(images.embedding)))
       .orderBy(sql`${images.embedding} <=> ${lit}::halfvec`)
       .limit(50)
-    vecIds = vecRows.map(r => r.id)
+    vecIds = vecRows.filter(r => r.distance <= cosineFloor).map(r => r.id)
 
-    // Lane 3: OCR chunks — distance over per-chunk embeddings, collapsed back to image ids
-    const chunkRows = await db.select({ sourceId: chunks.sourceId })
+    const chunkRows = await db.select({
+      sourceId: chunks.sourceId,
+      distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
+    })
       .from(chunks)
       .innerJoin(images, eq(chunks.sourceId, images.id))
       .where(and(eq(chunks.sourceType, 'image'), live()))
       .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
       .limit(100)
-    ocrIds = collapseChunksToSources(chunkRows).slice(0, 50)
+    ocrIds = collapseChunksToHits(chunkRows)
+      .filter(h => h.distance <= cosineFloor)
+      .map(h => h.sourceId)
+      .slice(0, 50)
   } catch (err) {
     console.warn('[searchImages] vector lane failed, falling back to lexical-only:', err)
   }

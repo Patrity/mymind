@@ -6,6 +6,7 @@ import type { MemoryDTO, MemoryEvidenceEntry, MemoryRelationDTO, MemoryScope } f
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
+import { getSearchConfig } from '../lib/search/config'
 import { resolveChain } from '../lib/ai/registry/resolve'
 import { dedupDecision, type DedupCandidate } from './memory-dedup'
 import { publishChange } from '../utils/live-bus'
@@ -412,14 +413,18 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
   // Lane 2: vector — cosine distance via HNSW index, with fallback
   let vectorIds: string[] = []
   try {
+    const { cosineFloor } = await getSearchConfig()
     const qv = await embedOne(q)
     const lit = `[${qv.join(',')}]`
-    const vecRows = await db.select({ id: memories.id })
+    const vecRows = await db.select({
+      id: memories.id,
+      distance: sql<number>`${memories.embedding} <=> ${lit}::halfvec`
+    })
       .from(memories)
       .where(and(baseWhere, isNotNull(memories.embedding)))
       .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`)
       .limit(50)
-    vectorIds = vecRows.map(r => r.id)
+    vectorIds = vecRows.filter(r => r.distance <= cosineFloor).map(r => r.id)
   } catch (err) {
     console.warn('[searchMemories] vector lane failed, falling back to trigram-only:', err)
   }
