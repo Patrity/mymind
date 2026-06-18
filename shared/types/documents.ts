@@ -26,3 +26,14 @@ export interface DocumentUpsert {
   tags?: string[]
   topic?: string | null
 }
+export interface ChunkHit {
+  sourceType: string
+  sourceId: string
+  ord: number
+  content: string
+  headingPath: string | null
+  context: string | null
+  docTitle: string | null
+  docPath: string | null
+  distance: number
+}

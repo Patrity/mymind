@@ -1,8 +1,8 @@
 ---
 title: Search + Command Palette
 status: shipped
-cycle: 8 (extended 13, 20)
-updated: 2026-06-17
+cycle: 8 (extended 13, 20, 31)
+updated: 2026-06-18
 ---
 
 # Search + Command Palette
@@ -13,14 +13,16 @@ A global ⌘K command palette that searches across every surface and jumps to re
 `searchAll(q, perGroup=5)` fans out lanes in parallel (`Promise.all`), each independently try/caught (a lane failure → `[]`, never tanks the whole search):
 | Lane | Backing | Match |
 |---|---|---|
-| documents | `searchDocs(q)` | hybrid trigram + vector (RRF) |
+| documents | `searchDocs(q)` | hybrid trigram + **chunk**-vector (RRF, best-chunk-per-doc) — cycle 31 |
 | memories | `searchMemories(q)` | hybrid + `relevance` score |
-| images | `searchImages(q)` | hybrid lexical + summary-vector (RRF) — cycle 20 |
+| images | `searchImages(q)` | hybrid lexical + summary-vector + **OCR-chunk**-vector (RRF) — cycle 20, 31 |
 | sessions | session search | semantic (session-summary vector, RRF) — cycle 13 |
 | messages | message search | semantic (message vector, RRF) — cycle 13 |
 | tasks | `listTasks` | title/description ILIKE |
 | projects | `listProjects` | name/slug ILIKE |
 Each result carries `type` + a `to` route (e.g. document → `/documents?doc=<id>`, session → `/sessions/<id>`). All ILIKE queries are drizzle-parameterized (no injection). `GET /api/search?q=` (auth-gated) returns the grouped `SearchResults` (`shared/types/search.ts`); blank `q` → empty groups.
+
+> **Chunking (cycle 31):** the document + image vector lanes no longer embed whole sources — they search a per-chunk `chunks` index (best-chunk-per-doc collapse) and the chunk embeddings carry LLM-generated contextual prefixes. For chunk-level passages (RAG context for agents), use `searchPassages` / the MCP `search_passages` tool. See [`chunking.md`](chunking.md).
 
 ## Palette — `app/components/AppSearch.client.vue`
 `UDashboardSearchButton` (above the Capture nav) + `UDashboardSearch` (⌘K), debounced query → `/api/search`, results mapped to grouped command items with icons; `onSelect` → `navigateTo(item.to)`. `documents.vue` reads `?doc=<id>` to open the selected document. Explicit `title`/`description` props (Nuxt UI's built-in i18n keys need them).

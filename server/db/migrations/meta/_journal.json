@@ -162,6 +162,13 @@
       "when": 1781733426383,
       "tag": "0022_cheerful_fallen_one",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1781774143145,
+      "tag": "0023_sticky_ego",
+      "breakpoints": true
     }
   ]
 }

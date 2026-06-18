@@ -1,7 +1,7 @@
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
-import { documents, images } from '../db/schema'
+import { documents, images, chunks } from '../db/schema'
 import { storage } from '../utils/storage'
 import { describeImageFull } from '../lib/ai/vision'
 import { embed } from '../lib/ai/embeddings'
@@ -11,6 +11,8 @@ import { cleanToMarkdown } from '../lib/ai/transcribe'
 import { createDoc } from './documents'
 import { slugify } from '../../shared/utils/slugify'
 import { publishChange } from '../utils/live-bus'
+import { chunkAndEmbedSource } from '../lib/chunking/embed-source'
+import { estimateTokens } from '../lib/chunking/chunk-markdown'
 
 const OCR_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
 const ENRICHABLE_KINDS = ['image', 'gif']
@@ -120,6 +122,20 @@ export async function enrichImage(id: string): Promise<typeof images.$inferSelec
     enrichStatus: 'done',
     enrichError: null
   }).where(eq(images.id, id)).returning()
+
+  // Long OCR → chunk into the shared primitive (short OCR stays summary-only).
+  // On re-enrich where OCR shrinks to ≤512 tokens (or empty), clear any stale
+  // chunks so they don't linger in image search.
+  try {
+    if (result.ocrText && estimateTokens(result.ocrText) > 512) {
+      await chunkAndEmbedSource({ sourceType: 'image', sourceId: id, title: result.summary || null, body: result.ocrText })
+    } else {
+      await db.delete(chunks).where(and(eq(chunks.sourceType, 'image'), eq(chunks.sourceId, id)))
+    }
+  } catch (err) {
+    console.warn(`[image-enrich] OCR chunking failed for ${id}:`, (err as Error).message)
+  }
+
   return r ?? img
 }
 
