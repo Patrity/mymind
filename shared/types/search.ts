@@ -1,43 +1,23 @@
-export interface DocumentResult {
-  type: 'document'
+export type SearchHitType =
+  'document' | 'memory' | 'image' | 'task' | 'project' | 'session' | 'message'
+
+export interface SearchHit {
+  type: SearchHitType
   id: string
-  title: string
-  path: string
-  to: string
+  title: string            // primary display line
+  snippet: string | null   // matched passage / excerpt (may contain the matched phrase)
+  score: number            // raw rerank score (0..1) when reranked, else synthetic RRF order
+  to: string               // route
+  icon: string             // lucide icon name
+  meta: string | null      // type-specific: doc path / memory scope / task status / session project / msg role
 }
 
-export interface MemoryResult {
-  type: 'memory'
-  id: string
-  snippet: string
-  scope: string
-  relevance?: number
-  to: string
+export interface SearchResults {
+  hits: SearchHit[]        // globally ranked, post-cutoff
+  reranked: boolean        // true when the cross-encoder produced the scores (controls score-badge display)
 }
 
-export interface ImageResult {
-  type: 'image'
-  id: string
-  url: string
-  tags: string[]
-  to: string
-}
-
-export interface TaskResult {
-  type: 'task'
-  id: string
-  title: string
-  status: string
-  to: string
-}
-
-export interface ProjectResult {
-  type: 'project'
-  slug: string
-  name: string
-  to: string
-}
-
+// Lane-level shapes still produced by session-search.ts and consumed by the aggregator.
 export interface SessionResult {
   type: 'session'
   id: string
@@ -54,14 +34,4 @@ export interface MessageResult {
   role: string | null
   snippet: string
   to: string
-}
-
-export interface SearchResults {
-  documents: DocumentResult[]
-  memories: MemoryResult[]
-  images: ImageResult[]
-  tasks: TaskResult[]
-  projects: ProjectResult[]
-  sessions: SessionResult[]
-  messages: MessageResult[]
 }
