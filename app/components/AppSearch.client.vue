@@ -33,6 +33,9 @@ const toItem = (h: SearchHit): HitItem => ({
   onSelect: () => navigateTo(h.to)
 })
 
+// Restore field-level typing: item.hit resolves to `any` via CommandPaletteItem's index signature.
+const hitOf = (item: CommandPaletteItem): SearchHit => (item as HitItem).hit
+
 const TYPE_LABELS: Record<SearchHitType, string> = {
   document: 'Documents', memory: 'Memories', image: 'Images', task: 'Tasks',
   project: 'Projects', session: 'Sessions', message: 'Messages'
@@ -70,9 +73,9 @@ const showScore = computed(() => results.value?.reranked === true)
   >
     <template #hit-label="{ item }">
       <div class="flex flex-col gap-0.5 min-w-0">
-        <span class="truncate text-highlighted">{{ item.hit.title }}</span>
-        <span v-if="item.hit.snippet" class="truncate text-xs text-muted">
-          <template v-for="(seg, i) in highlightTokens(item.hit.snippet, searchTerm)" :key="i">
+        <span class="truncate text-highlighted">{{ hitOf(item).title }}</span>
+        <span v-if="hitOf(item).snippet" class="truncate text-xs text-muted">
+          <template v-for="(seg, i) in highlightTokens(hitOf(item).snippet!, searchTerm)" :key="i">
             <mark v-if="seg.match" class="bg-primary/15 text-highlighted rounded-[2px]">{{ seg.text }}</mark>
             <template v-else>{{ seg.text }}</template>
           </template>
@@ -80,7 +83,7 @@ const showScore = computed(() => results.value?.reranked === true)
       </div>
     </template>
     <template #hit-trailing="{ item }">
-      <UBadge v-if="showScore" :label="item.hit.score.toFixed(2)" color="neutral" variant="subtle" size="sm" />
+      <UBadge v-if="showScore" :label="hitOf(item).score.toFixed(2)" color="neutral" variant="subtle" size="sm" />
     </template>
   </UDashboardSearch>
 </template>
