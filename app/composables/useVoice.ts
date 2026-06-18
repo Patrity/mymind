@@ -41,7 +41,10 @@ export function useVoice() {
 
   function pushDelta(role: 'user' | 'assistant', delta: string) {
     const last = transcript.value[transcript.value.length - 1]
-    if (last && last.role === role) last.text += (/\S$/.test(last.text) && /^\w/.test(delta) ? ' ' : '') + delta
+    // Append raw — LLM/STT text deltas already carry their own spacing and
+    // concatenate to the exact string. (An earlier word-boundary space heuristic
+    // mangled sub-word token streaming, e.g. "Brid"+"get" → "Brid get".)
+    if (last && last.role === role) last.text += delta
     else transcript.value.push({ role, text: delta })
   }
 
