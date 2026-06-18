@@ -38,3 +38,6 @@ IMG_*.png
 .claude/worktrees/
 .superpowers
 docs/screenshots/voice-agent.gif
+
+# SearXNG writes this on first boot — generated, not tracked
+searxng/uwsgi.ini
