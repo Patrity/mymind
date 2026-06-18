@@ -22,4 +22,10 @@ describe('makeSnippet', () => {
     const s = makeSnippet('aaaa target bbbb', 'a target', 160)
     expect(s).toContain('target')
   })
+  it('keeps the window at the match when the matched phrase is longer than maxLen', () => {
+    const text = 'alpha beta gamma delta epsilon zeta omega'
+    const s = makeSnippet(text, 'gamma delta epsilon zeta', 10)
+    expect(s).toContain('gamma')             // window starts at the match, not past it
+    expect(s.length).toBeLessThanOrEqual(12) // maxLen + 2 ellipses
+  })
 })

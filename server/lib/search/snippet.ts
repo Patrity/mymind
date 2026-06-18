@@ -32,7 +32,7 @@ export function makeSnippet(text: string, query: string, maxLen = 160): string {
 
   // Compute window: try to give context before, but ensure the phrase fits
   const phraseLen = phraseEnd - idx
-  const availableForContext = maxLen - phraseLen
+  const availableForContext = Math.max(0, maxLen - phraseLen)
   const contextBefore = Math.min(30, availableForContext)
 
   const start = Math.max(0, idx - contextBefore)
