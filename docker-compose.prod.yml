@@ -59,7 +59,11 @@ services:
       SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
     volumes:
       - ./searxng:/etc/searxng:rw
-    # No host port — only the app reaches it on the compose network as "searxng:8080".
+    # Published on the LAN so other homelab services can share this SearXNG instance
+    # (the app still reaches it internally as "searxng:8080"). Keep it LAN-only —
+    # do NOT expose to the internet. Override the host port with SEARXNG_PORT in .env.
+    ports:
+      - "${SEARXNG_PORT:-8088}:8080"
 
 volumes:
   mymind-pgdata:

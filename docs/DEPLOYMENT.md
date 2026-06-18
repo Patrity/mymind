@@ -189,7 +189,8 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 ## 13. SearXNG (bundled web-search backend)
 
 `docker-compose.prod.yml` includes a `searxng` service (image `searxng/searxng:latest`):
-- **Internal-only** — no host port is published; only the app reaches it on the compose network as `searxng:8080`.
+- The app reaches it internally on the compose network as `searxng:8080`.
+- **Shared on the LAN** — the service publishes a host port (`SEARXNG_PORT`, default `8088`) so other homelab services can use the same SearXNG: point them at `http://<lxc-ip>:${SEARXNG_PORT}` (JSON API at `/search?format=json`). **Keep it LAN-only — do not expose this port to the internet** (no auth, rate-limiter off for internal use). If you ever need it public, front it with its own authenticated TLS proxy.
 - The app reads `SEARCH_SEARXNG_URL` (defaults to `http://searxng:8080`) as its search backend; override the active provider in-app at **`/settings → Search`**.
 - `searxng/settings.yml` (mounted to `/etc/searxng`) enables the JSON API (`search.formats: [html, json]`) and disables the rate-limiter for internal use.
 - **`SEARXNG_SECRET` is required in `.env`** (`openssl rand -hex 32`). Compose passes it to the `searxng` service via `environment:`; the container's entrypoint replaces the `ultrasecretkey` placeholder in `settings.yml` with the real value on boot. Without it, `docker compose up` fails fast.
