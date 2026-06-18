@@ -455,7 +455,7 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
     try {
       const docs = withRelevance.map(dto => ({ id: dto.id, text: dto.content }))
       const reranked = await rerank(q, docs, rerankCfg.baseURL, rerankCfg.apiKey, rerankCfg.model)
-      if (reranked.length === withRelevance.length) {
+      if (reranked.length) {
         const rerankedById = new Map(reranked.map(r => [r.id, r.score]))
         return withRelevance
           .map(dto => ({ ...dto, relevance: rerankedById.get(dto.id) ?? dto.relevance }))
