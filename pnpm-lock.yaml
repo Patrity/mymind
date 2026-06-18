@@ -95,6 +95,9 @@ importers:
       nanoid:
         specifier: ^5.1.11
         version: 5.1.11
+      node-html-markdown:
+        specifier: ^2.0.0
+        version: 2.0.0
       nuxt:
         specifier: ^4.4.6
         version: 4.4.6(@babel/plugin-syntax-jsx@7.28.6(@babel/core@7.29.0))(@babel/plugin-syntax-typescript@7.28.6(@babel/core@7.29.0))(@parcel/watcher@2.5.6)(@types/node@25.9.1)(@vue/compiler-sfc@3.5.34)(cac@6.7.14)(db0@0.3.4(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.29.2)(pg@8.21.0)))(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.29.2)(pg@8.21.0))(eslint@10.4.1(jiti@2.7.0))(ioredis@5.10.1)(lightningcss@1.32.0)(magicast@0.5.3)(optionator@0.9.4)(rollup-plugin-visualizer@7.0.1(rollup@4.60.4))(rollup@4.60.4)(srvx@0.11.15)(terser@5.47.1)(tsx@4.22.4)(typescript@6.0.3)(vite@7.3.3(@types/node@25.9.1)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.47.1)(tsx@4.22.4)(yaml@2.9.0))(vue-tsc@3.3.3(typescript@6.0.3))(yaml@2.9.0)
@@ -5059,6 +5062,10 @@ packages:
   hastscript@9.0.1:
     resolution: {integrity: sha512-g7df9rMFX/SPi34tyGCyUBREQoKkapwdY/T04Qn9TDWfHhAYt4/I0gMVirzK5wEzeUqIjEB+LXC/ypb7Aqno5w==}
 
+  he@1.2.0:
+    resolution: {integrity: sha512-F/1DnUGPopORZi0ni+CvrCgHQ5FyEAHRLSApuYWMmrbSwoN2Mn/7k+Gl38gJnR7yyDZk6WLXwiGod1JOWNDKGw==}
+    hasBin: true
+
   hey-listen@1.0.8:
     resolution: {integrity: sha512-COpmrF2NOg4TBWUJ5UVyaCU2A88wEMkUPK4hNqyCkqHbxT92BbvfjoSozkAIIm6XhicGlJHhFdullInrdhwU8Q==}
 
@@ -5801,6 +5808,13 @@ packages:
   node-gyp-build@4.8.4:
     resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
     hasBin: true
+
+  node-html-markdown@2.0.0:
+    resolution: {integrity: sha512-DqUC3GGP7pwSYxS93SwHoP+qCw78xcMP6C6H2DuC8rPD2AweJRjBzQb5SdXpKtDlqAQ7hVotJcfhgU7hU5Gthw==}
+    engines: {node: '>=20.0.0'}
+
+  node-html-parser@6.1.13:
+    resolution: {integrity: sha512-qIsTMOY4C/dAa5Q5vsobRpOOvPfC4pB61UVW2uSwZNUp0QU/jCekTal1vMmbO0DgdHeLUJpv/ARmDqErVxA3Sg==}
 
   node-mock-http@1.0.4:
     resolution: {integrity: sha512-8DY+kFsDkNXy1sJglUfuODx1/opAGJGyrTuFqEoN90oRc2Vk0ZbD4K2qmKXBBEhZQzdKHIVfEJpDU8Ak2NJEvQ==}
@@ -12683,6 +12697,8 @@ snapshots:
       property-information: 7.2.0
       space-separated-tokens: 2.0.2
 
+  he@1.2.0: {}
+
   hey-listen@1.0.8: {}
 
   hono@4.12.23: {}
@@ -13627,6 +13643,15 @@ snapshots:
   node-forge@1.4.0: {}
 
   node-gyp-build@4.8.4: {}
+
+  node-html-markdown@2.0.0:
+    dependencies:
+      node-html-parser: 6.1.13
+
+  node-html-parser@6.1.13:
+    dependencies:
+      css-select: 5.2.2
+      he: 1.2.0
 
   node-mock-http@1.0.4: {}
 
