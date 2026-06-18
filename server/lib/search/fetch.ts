@@ -26,6 +26,7 @@ import { NodeHtmlMarkdown } from 'node-html-markdown'
  *   ::1              – loopback
  *   fc00::/7         – ULA (fc/fd)
  *   fe80::/10        – link-local
+ *   ::ffff:0:0/96    – IPv4-mapped (delegates to IPv4 check)
  */
 export function isPrivateIp(ip: string): boolean {
   // --- IPv6 ---
@@ -34,6 +35,25 @@ export function isPrivateIp(ip: string): boolean {
     if (lower === '::1') return true
     if (lower.startsWith('fc') || lower.startsWith('fd')) return true
     if (lower.startsWith('fe80')) return true
+
+    // IPv4-mapped IPv6: ::ffff:a.b.c.d  or  ::ffff:hhhh:hhhh
+    if (lower.startsWith('::ffff:')) {
+      const suffix = lower.slice(7) // everything after "::ffff:"
+      if (suffix.includes('.')) {
+        // Dotted-quad form: ::ffff:192.168.1.1
+        return isPrivateIp(suffix)
+      } else {
+        // Hex-group form: ::ffff:c0a8:0101  (two 16-bit groups)
+        const hexParts = suffix.split(':')
+        if (hexParts.length === 2) {
+          const hi = parseInt(hexParts[0]!, 16)
+          const lo = parseInt(hexParts[1]!, 16)
+          const dotted = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
+          return isPrivateIp(dotted)
+        }
+      }
+    }
+
     return false
   }
 
@@ -83,7 +103,9 @@ export function ssrfCheckUrl(raw: string): { ok: boolean; reason?: string } {
     return { ok: false, reason: `Scheme not allowed: ${url.protocol}` }
   }
 
-  const host = url.hostname.toLowerCase()
+  let host = url.hostname.toLowerCase()
+  // Strip trailing dot (e.g. "localhost." → "localhost")
+  host = host.replace(/\.$/, '')
 
   if (host === 'localhost') return { ok: false, reason: 'localhost is blocked' }
   if (host.endsWith('.local')) return { ok: false, reason: '.local hosts are blocked' }
@@ -127,45 +149,76 @@ export interface FetchedPage {
   content: string
 }
 
+const FETCH_HEADERS = {
+  'user-agent': 'MyMind-Bridget/1.0 (+https://github.com/Patrity/mymind)',
+}
+const MAX_REDIRECTS = 3
+
 /**
- * Fetches a URL with SSRF guards (static + DNS-rebinding) and returns the
- * page as extracted Markdown.
- *
- * Throws if:
- *  - ssrfCheckUrl rejects the URL
- *  - Any resolved DNS address is private (DNS-rebinding defence)
- *  - The network fetch fails or times out (10 s)
+ * Run the static SSRF check and DNS-rebinding defence for a URL.
+ * Throws if the URL or any of its resolved addresses are private.
  */
-export async function fetchAsMarkdown(url: string): Promise<FetchedPage> {
-  const check = ssrfCheckUrl(url)
+async function ssrfGuardHop(rawUrl: string): Promise<void> {
+  const check = ssrfCheckUrl(rawUrl)
   if (!check.ok) throw new Error(`SSRF blocked: ${check.reason}`)
 
-  const { hostname } = new URL(url)
-
-  // DNS-rebinding defence: resolve all addresses and reject any private ones
+  const { hostname } = new URL(rawUrl)
   const records = await lookup(hostname, { all: true })
   for (const { address } of records) {
     if (isPrivateIp(address)) {
       throw new Error(`SSRF blocked: resolved address ${address} is private`)
     }
   }
+}
 
-  const res = await fetch(url, {
-    headers: {
-      'user-agent': 'MyMind-Bridget/1.0 (+https://github.com/Patrity/mymind)',
-    },
-    signal: AbortSignal.timeout(10_000),
-    redirect: 'follow',
-  })
+/**
+ * Fetches a URL with SSRF guards (static + DNS-rebinding) and returns the
+ * page as extracted Markdown.
+ *
+ * Redirects are followed manually (up to MAX_REDIRECTS hops) so that every
+ * redirect target is re-checked for SSRF before being fetched.
+ *
+ * Throws if:
+ *  - ssrfCheckUrl rejects the URL (any hop)
+ *  - Any resolved DNS address is private (DNS-rebinding defence, any hop)
+ *  - The redirect chain exceeds MAX_REDIRECTS
+ *  - The network fetch fails or times out (10 s per hop)
+ */
+export async function fetchAsMarkdown(url: string): Promise<FetchedPage> {
+  let currentUrl = url
+  let hops = 0
 
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`)
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    await ssrfGuardHop(currentUrl)
 
-  const html = await res.text()
+    const res = await fetch(currentUrl, {
+      headers: FETCH_HEADERS,
+      signal: AbortSignal.timeout(10_000),
+      redirect: 'manual',
+    })
 
-  // Extract title from <title> tag, fall back to hostname
-  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i)
-  const title = titleMatch?.[1]?.trim() ?? hostname
+    // Follow 3xx redirects manually so each hop is re-guarded
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location')
+      if (!location) throw new Error(`Redirect with no Location header from ${currentUrl}`)
+      hops++
+      if (hops > MAX_REDIRECTS) throw new Error('blocked: too many redirects')
+      // Resolve relative redirects against the current URL
+      currentUrl = new URL(location, currentUrl).toString()
+      continue
+    }
 
-  const content = htmlToMarkdown(html)
-  return { url, title, content }
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`)
+
+    const html = await res.text()
+    const { hostname } = new URL(currentUrl)
+
+    // Extract title from <title> tag, fall back to hostname
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i)
+    const title = titleMatch?.[1]?.trim() ?? hostname
+
+    const content = htmlToMarkdown(html)
+    return { url, title, content }
+  }
 }

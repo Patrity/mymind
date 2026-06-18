@@ -9,6 +9,18 @@ describe('isPrivateIp', () => {
   it('allows public IPs', () => {
     for (const ip of ['8.8.8.8','1.1.1.1','93.184.216.34']) expect(isPrivateIp(ip)).toBe(false)
   })
+  it('flags IPv6 ULA and link-local', () => {
+    expect(isPrivateIp('fd00::1')).toBe(true)
+    expect(isPrivateIp('fe80::1')).toBe(true)
+  })
+  it('flags IPv4-mapped IPv6 (dotted-quad form)', () => {
+    expect(isPrivateIp('::ffff:192.168.1.1')).toBe(true)
+    expect(isPrivateIp('::ffff:10.0.0.1')).toBe(true)
+    expect(isPrivateIp('::ffff:169.254.169.254')).toBe(true)
+  })
+  it('allows IPv4-mapped IPv6 for public IPs', () => {
+    expect(isPrivateIp('::ffff:8.8.8.8')).toBe(false)
+  })
 })
 describe('ssrfCheckUrl', () => {
   it('blocks non-http schemes + internal hosts', () => {
@@ -19,6 +31,12 @@ describe('ssrfCheckUrl', () => {
     expect(ssrfCheckUrl('http://192.168.1.10/').ok).toBe(false)
   })
   it('allows public https URLs', () => { expect(ssrfCheckUrl('https://example.com/p').ok).toBe(true) })
+  it('blocks trailing-dot localhost', () => {
+    expect(ssrfCheckUrl('http://localhost./').ok).toBe(false)
+  })
+  it('blocks IPv4-mapped IPv6 private address', () => {
+    expect(ssrfCheckUrl('http://[::ffff:192.168.1.1]/').ok).toBe(false)
+  })
 })
 describe('htmlToMarkdown', () => {
   it('strips scripts/styles and converts, truncating at maxChars', () => {
