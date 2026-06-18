@@ -17,6 +17,7 @@ export const documents = pgTable('documents', {
   topic: text('topic'), // ltree column; declared as text in drizzle, altered to ltree in custom SQL
   contentHash: text('content_hash'),
   embeddedHash: text('embedded_hash'),
+  chunkedHash: text('chunked_hash'),
   isPublic: boolean('is_public').notNull().default(false),
   publicSlug: text('public_slug'),
   ocrId: uuid('ocr_id'),
