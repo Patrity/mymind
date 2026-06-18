@@ -1,15 +1,7 @@
 import { searchAll } from '../services/search'
 import type { SearchResults } from '../../shared/types/search'
 
-const emptyResults: SearchResults = {
-  documents: [],
-  memories: [],
-  images: [],
-  tasks: [],
-  projects: [],
-  sessions: [],
-  messages: []
-}
+const emptyResults: SearchResults = { hits: [], reranked: false }
 
 export default defineEventHandler(async (event) => {
   const q = getQuery(event).q
