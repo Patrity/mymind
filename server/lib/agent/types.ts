@@ -1,9 +1,18 @@
 // server/lib/agent/types.ts
 import type { ZodRawShape } from 'zod'
 
+/** A dangerous-tool approval request surfaced to the human. */
+export interface ApprovalRequest {
+  tool: string        // e.g. 'exec'
+  command: string     // the exact thing that will run / change
+  proposedPattern: string // an "always allow" suggestion (editable in the UI)
+}
+
 /** Per-call context handed to every tool handler. */
 export interface ToolContext {
-  signal: AbortSignal // aborts when the caller (Unmute) hangs up / barge-in
+  signal: AbortSignal // aborts when the caller hangs up / barge-in
+  // Present only on the interactive (WS) path; a dangerous tool with no channel auto-denies.
+  requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
 }
 
 /** What a tool handler returns. `undo` (when present) reverses the side-effect. */
@@ -20,6 +29,10 @@ export interface AgentTool {
   description: string
   schema: ZodRawShape // → OpenAI tool JSON schema AND MCP registration
   kind: ToolKind
+  dangerous?: boolean // requires human approval before the handler runs
+  // Derive the approval request from the call args (tool-agnostic gate). Defaults
+  // to a JSON-of-args command + `<name> *` pattern when omitted.
+  describeApproval?: (args: Record<string, unknown>) => ApprovalRequest
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolExecution>
 }
 
