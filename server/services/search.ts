@@ -149,6 +149,6 @@ export async function searchAll(q: string): Promise<SearchResults> {
     }
   }
 
-  const hits = rankCandidates(pool, rerankScores, { rerankCutoff: cfg.rerankCutoff })
+  const hits = rankCandidates(pool, rerankScores, { topK: cfg.rerankTopK, relBand: cfg.rerankRelBand })
   return { hits, reranked: rerankScores !== null }
 }
