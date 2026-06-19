@@ -6,6 +6,13 @@ const emit = defineEmits<{ approve: [{ remember: boolean; pattern: string }]; de
 const remember = ref(false)
 const pattern = ref(props.approval.proposedPattern)
 watch(() => props.approval, (a) => { remember.value = false; pattern.value = a.proposedPattern })
+
+function approve() {
+  emit('approve', { remember: remember.value, pattern: pattern.value })
+}
+function deny() {
+  emit('deny')
+}
 </script>
 
 <template>
@@ -21,8 +28,8 @@ watch(() => props.approval, (a) => { remember.value = false; pattern.value = a.p
       <UInput v-model="pattern" :disabled="!remember" size="xs" class="font-mono flex-1 max-w-xs" />
     </div>
     <div class="flex items-center gap-2">
-      <UButton label="Approve" color="primary" icon="i-lucide-check" @click="emit('approve', { remember, pattern })" />
-      <UButton label="Deny" color="neutral" variant="soft" icon="i-lucide-x" @click="emit('deny')" />
+      <UButton label="Approve" color="primary" icon="i-lucide-check" @click="approve()" />
+      <UButton label="Deny" color="neutral" variant="soft" icon="i-lucide-x" @click="deny()" />
     </div>
   </div>
 </template>
