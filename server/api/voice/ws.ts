@@ -8,6 +8,11 @@ import type { AgentMessage } from '../../lib/agent/run'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
 import { buildLiveContext } from '../../lib/agent/context'
 import { publishChange } from '../../utils/live-bus'
+import { profileById } from '../../lib/agent/profile'
+import type { ApprovalRequest } from '../../lib/agent/types'
+import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
+import { recordEvent } from '../../lib/observability/record'
+import { randomUUID } from 'node:crypto'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'voice',voice} | {type:'text',text,speak?} (typed turn, injected post-STT) |
@@ -20,6 +25,8 @@ interface ConnState {
   lock: Promise<void>
   conversationId: string | null
   context: string | null
+  profile: 'bridget' | 'powerful'
+  pendingApprovals: Map<string, { resolve: (d: { approved: boolean }) => void; timer: ReturnType<typeof setTimeout>; req: ApprovalRequest }>
 }
 const conns = new WeakMap<object, ConnState>()
 
@@ -54,7 +61,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, context: null })
+    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, context: null, profile: 'bridget', pendingApprovals: new Map() })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -67,10 +74,57 @@ export default defineWebSocketHandler({
     let turn: ((signal: AbortSignal, emit: (e: VoiceEvent) => void) => Promise<AgentMessage[]>) | null = null
     let inputModality: 'text' | 'voice' = 'text'
     let speakFlag = false
+    // Approval channel for dangerous tools: allowlist check → run; else emit an
+    // approval request to the peer and await Tony's decision (120s auto-deny).
+    // Computed unconditionally so both text + audio turn branches can reference them.
+    const requestApproval = async (req: ApprovalRequest): Promise<{ approved: boolean }> => {
+      const patterns = (await loadApprovals(req.tool)).filter(p => matchesApproval(req.command, [p.pattern]))
+      if (patterns.length) {
+        touchApproval(patterns[0]!.id).catch(() => {})
+        recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: 'allowlisted', command: req.command, pattern: patterns[0]!.pattern } })
+        return { approved: true }
+      }
+      const requestId = randomUUID()
+      return await new Promise<{ approved: boolean }>((resolve) => {
+        const timer = setTimeout(() => {
+          if (s.pendingApprovals.delete(requestId)) {
+            recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'timeout', command: req.command } })
+            peer.send(JSON.stringify({ type: 'approval-resolved', requestId }))
+            resolve({ approved: false })
+          }
+        }, Number(process.env.APPROVAL_TIMEOUT_MS ?? 120_000))
+        s.pendingApprovals.set(requestId, { resolve, timer, req })
+        peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern }))
+      })
+    }
+    const profile = profileById(s.profile)
     if (frame.kind === 'control') {
       const msg = frame.msg
       if (msg.type === 'interrupt') { s.ac?.abort(); return }
       if (msg.type === 'voice') { s.voice = msg.voice as string; return }
+      // Profile switch (per-connection; default safe). Affects subsequent turns.
+      if (msg.type === 'profile') { s.profile = msg.profile === 'powerful' ? 'powerful' : 'bridget'; return }
+      // Approve/deny resolve a pending approval IMMEDIATELY (like interrupt) — not
+      // queued behind the turn lock, so the awaiting turn unblocks.
+      if (msg.type === 'approve' || msg.type === 'deny') {
+        const id = typeof msg.requestId === 'string' ? msg.requestId : ''
+        const pending = s.pendingApprovals.get(id)
+        if (pending) {
+          clearTimeout(pending.timer)
+          s.pendingApprovals.delete(id)
+          const outcome = approvalOutcome(
+            msg.type === 'approve'
+              ? { kind: 'approve', remember: !!msg.remember, pattern: typeof msg.pattern === 'string' ? msg.pattern : undefined, proposedPattern: pending.req.proposedPattern }
+              : { kind: 'deny' }
+          )
+          if (outcome.persist && outcome.pattern) {
+            addApproval({ pattern: outcome.pattern, tool: pending.req.tool }).catch(err => console.error('[exec] persist approval failed:', err))
+          }
+          recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: msg.type, command: pending.req.command, pattern: outcome.pattern, remembered: outcome.persist } })
+          pending.resolve({ approved: outcome.approved })
+        }
+        return
+      }
       // load: restore a previous conversation under the lock so history is consistent
       if (msg.type === 'load' && typeof msg.conversationId === 'string') {
         s.lock = s.lock.then(async () => {
@@ -93,7 +147,7 @@ export default defineWebSocketHandler({
         const speak = typeof msg.speak === 'boolean' ? msg.speak : false
         inputModality = 'text'
         speakFlag = speak
-        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, signal, emit })
+        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, profile, requestApproval, signal, emit })
       } else {
         return
       }
@@ -101,9 +155,11 @@ export default defineWebSocketHandler({
       const audio = frame.bytes
       inputModality = 'voice'
       speakFlag = true
-      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context: s.context ?? undefined, signal, emit })
+      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context: s.context ?? undefined, profile, requestApproval, signal, emit })
     }
     s.ac?.abort()
+    for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }
+    s.pendingApprovals.clear()
     s.ac = new AbortController()
     const ac = s.ac
     const exec = turn
@@ -138,5 +194,10 @@ export default defineWebSocketHandler({
     }
     s.lock = s.lock.then(run, run)
   },
-  close(peer) { conns.get(peer)?.ac?.abort(); conns.delete(peer) }
+  close(peer) {
+    const s = conns.get(peer)
+    s?.ac?.abort()
+    if (s) { for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) } }
+    conns.delete(peer)
+  }
 })

@@ -17,8 +17,10 @@ export interface TurnDeps {
   signal: AbortSignal
   speak: boolean
   context?: string
+  profile?: import('../agent/profile').AgentProfile
+  requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>
   emit: (e: VoiceEvent) => void
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string }) => AsyncGenerator<AgentEvent>
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }> }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -66,7 +68,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   }
 
   let sawText = false
-  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context: deps.context })) {
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context: deps.context, profile: deps.profile, requestApproval: deps.requestApproval })) {
     if (deps.signal.aborted) break
     if (ev.type === 'text-delta') {
       assistantText += ev.text
