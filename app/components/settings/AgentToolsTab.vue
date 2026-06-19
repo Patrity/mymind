@@ -25,19 +25,25 @@ async function add() {
 }
 
 async function save(row: Approval) {
+  error.value = ''
   try {
     await $fetch('/api/settings/exec-approvals', { method: 'PUT', body: { id: row.id, pattern: row.pattern } })
+    await load()
     toast.add({ title: 'Pattern updated', color: 'success' })
   } catch (e) {
     error.value = (e as { data?: { message?: string } })?.data?.message ?? 'Failed to update'
-    await load()
   }
 }
 
 async function revoke(row: Approval) {
-  await $fetch('/api/settings/exec-approvals', { method: 'DELETE', query: { id: row.id } })
-  await load()
-  toast.add({ title: 'Pattern revoked', color: 'neutral' })
+  error.value = ''
+  try {
+    await $fetch('/api/settings/exec-approvals', { method: 'DELETE', query: { id: row.id } })
+    await load()
+    toast.add({ title: 'Pattern revoked', color: 'neutral' })
+  } catch (e) {
+    error.value = (e as { data?: { message?: string } })?.data?.message ?? 'Failed to revoke pattern'
+  }
 }
 </script>
 
