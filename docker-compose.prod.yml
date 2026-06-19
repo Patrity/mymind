@@ -48,6 +48,7 @@ services:
       SEARCH_SEARXNG_URL: http://searxng:8080
     volumes:
       - mymind-uploads:/app/.data/uploads   # persistent uploaded blobs
+      - mymind-workspace:/workspace        # exec tool cwd-jail (owned by the low-priv agent user)
     ports:
       - "3000:3000"   # bind to 127.0.0.1:3000 and front with a TLS proxy in real deployments
 
@@ -68,3 +69,4 @@ services:
 volumes:
   mymind-pgdata:
   mymind-uploads:
+  mymind-workspace:

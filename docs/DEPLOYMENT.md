@@ -195,7 +195,38 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 - `searxng/settings.yml` (mounted to `/etc/searxng`) enables the JSON API (`search.formats: [html, json]`) and disables the rate-limiter for internal use.
 - **`SEARXNG_SECRET` is required in `.env`** (`openssl rand -hex 32`). Compose passes it to the `searxng` service via `environment:`; the container's entrypoint replaces the `ultrasecretkey` placeholder in `settings.yml` with the real value on boot. Without it, `docker compose up` fails fast.
 
-## 14. Not yet built (deploy-relevant backlog)
+## 14. Agent exec tool
+
+The MCP `exec` tool lets Claude Code run shell commands inside the container, gated by a human-approval step in the UI.
+
+**Privilege model — the app stays root; children are dropped to `agent`.**
+The Nitro process runs as root so it can use `setpriv` to fully drop privileges for each exec child. In setuid mode, `runConstrained` spawns commands via:
+```
+setpriv --reuid 10001 --regid 10001 --clear-groups -- /bin/sh -c <command>
+```
+`setpriv` (from `util-linux`) is the only mechanism that also clears root's supplementary groups — Node's built-in `spawn({uid, gid})` does not. `util-linux` is explicitly installed in the runtime image stage. **Do NOT add a `USER` directive to the Dockerfile** — if the process is not root it cannot setpriv and exec fails closed immediately.
+
+**`/workspace` — the cwd-jail.**
+Every exec child runs with cwd set to `/workspace` (owned by `agent:agent`, uid/gid 10001). In `docker-compose.prod.yml` this is a named volume (`mymind-workspace`) so it persists across container restarts and is isolated from the app tree at `/app`.
+
+**Fails closed.**
+If `setpriv` is not found, if the `agent` user doesn't exist, or if any privilege-drop step throws, `runConstrained` rejects the call before spawning anything. The app never falls back to running exec as root.
+
+**Honest isolation statement.**
+This is a least-privilege + approval-gate + container-boundary design — NOT a syscall sandbox (no seccomp profile, no Linux namespace isolation beyond what Docker provides). The `agent` user cannot write to `/app`; the container boundary keeps exec'd commands away from the host. Review commands in the approval UI before approving.
+
+**Container-internal env vars** (set by the Dockerfile; you normally never override these):
+| Var | Default | Notes |
+|---|---|---|
+| `EXEC_AGENT_UID` | `10001` | uid of the `agent` user that exec children run as |
+| `EXEC_AGENT_GID` | `10001` | gid of the `agent` group |
+| `EXEC_WORKSPACE_DIR` | `/workspace` | cwd-jail for exec children |
+| `EXEC_TIMEOUT_MS` | `60000` | per-command wall-clock timeout (ms) |
+| `APPROVAL_TIMEOUT_MS` | `120000` | how long an approval prompt waits before auto-deny (ms) |
+
+`EXEC_UNCONFINED` is a **dev-only** escape hatch and is **ignored in production** — never set it on the server.
+
+## 15. Not yet built (deploy-relevant backlog)
 - No API-token management UI (insert rows manually, §5).
 - No in-app backups (external, §9) and no automated blob backup.
 - A leaner `.output`-only runtime image (current image keeps full deps so it can self-migrate).
