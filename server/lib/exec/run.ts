@@ -2,6 +2,7 @@
 // stripped env + timeout + output cap + the container boundary. NOT a syscall
 // sandbox. Fails CLOSED when it cannot drop privileges (never runs as the app user).
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 
 export class ExecDisabledError extends Error {
@@ -16,13 +17,27 @@ export function buildExecEnv(opts: { path?: string; home: string }): Record<stri
 }
 
 export function resolveExecCwd(workspaceRoot: string, cwd?: string): string {
-  // NOTE: jail is LEXICAL (path.resolve, no realpath); symlink confinement is not claimed — it relies on the uid + container boundary.
   const root = path.resolve(workspaceRoot)
   const resolved = path.resolve(root, cwd ?? '.')
+  // Lexical containment check (always first).
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
     throw new Error(`cwd escapes the workspace jail: ${cwd}`)
   }
-  return resolved
+  // Defense-in-depth: realpath the resolved path to catch symlink jail escapes.
+  // Only resolve if the path actually exists (a non-existent path can't be a symlink;
+  // the shell will fail naturally, so we keep the lexical result).
+  let realResolved: string
+  try {
+    realResolved = fs.realpathSync(resolved)
+  } catch {
+    // ENOENT (or any other error) — path doesn't exist; return lexical result as-is.
+    return resolved
+  }
+  const realRoot = fs.realpathSync(root)
+  if (realResolved !== realRoot && !realResolved.startsWith(realRoot + path.sep)) {
+    throw new Error(`cwd escapes the workspace jail: ${cwd}`)
+  }
+  return realResolved
 }
 
 export type ExecMode =

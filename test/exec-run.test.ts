@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildExecEnv, resolveExecCwd, selectExecMode, buildSpawnArgs, runConstrained } from '../server/lib/exec/run'
@@ -29,6 +29,40 @@ describe('resolveExecCwd', () => {
     expect(() => resolveExecCwd('/workspace', '../etc')).toThrow()
     expect(() => resolveExecCwd('/workspace', '/etc/passwd')).toThrow()
     expect(() => resolveExecCwd('/workspace', '../workspace-evil')).toThrow()
+  })
+})
+
+describe('resolveExecCwd — symlink jail escape (realpath defense-in-depth)', () => {
+  let workspace: string
+  let outside: string
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), 'mymind-ws-'))
+    outside = mkdtempSync(join(tmpdir(), 'mymind-outside-'))
+  })
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  })
+
+  it('rejects a symlink inside workspace that points outside the jail', () => {
+    // Create workspace/evil -> outside (an out-of-jail dir)
+    symlinkSync(outside, join(workspace, 'evil'))
+    expect(() => resolveExecCwd(workspace, 'evil')).toThrow(/cwd escapes the workspace jail/)
+  })
+
+  it('accepts a normal (non-symlink) existing subdirectory', () => {
+    mkdirSync(join(workspace, 'sub'))
+    const result = resolveExecCwd(workspace, 'sub')
+    // On macOS /tmp is a symlink → use realpathSync to get the canonical form the function returns
+    expect(result).toBe(realpathSync(join(workspace, 'sub')))
+  })
+
+  it('returns the lexical path for a non-existent subdirectory (no throw)', () => {
+    // Path doesn't exist — can't be a symlink; shell will fail naturally
+    const result = resolveExecCwd(workspace, 'nonexistent')
+    expect(result).toBe(join(workspace, 'nonexistent'))
   })
 })
 

@@ -12,6 +12,10 @@ export function validatePattern(pattern: string): { valid: boolean; error?: stri
   if (!p) return { valid: false, error: 'pattern is empty' }
   // Strip wildcards + whitespace; a pattern must carry at least one literal char.
   if (!p.replace(/\*/g, '').trim()) return { valid: false, error: 'pattern must contain a literal command, not just "*"' }
+  // The command head (first whitespace-delimited token) must be a literal — no wildcard.
+  // A leading wildcard (*foo, * status) matches arbitrary commands and is therefore rejected.
+  const head = p.split(/\s+/)[0]
+  if (head && head.includes('*')) return { valid: false, error: 'command head must be a literal (no wildcard in the first token)' }
   return { valid: true }
 }
 

@@ -43,6 +43,14 @@ describe('validatePattern', () => {
   it('accepts patterns with a literal command', () => {
     expect(validatePattern('git *').valid).toBe(true)
     expect(validatePattern('ls').valid).toBe(true)
+    expect(validatePattern('npm run *').valid).toBe(true)
+    expect(validatePattern('ls -la').valid).toBe(true)
+  })
+  it('rejects patterns with a wildcard in the command head (leading wildcard)', () => {
+    expect(validatePattern('* status').valid).toBe(false)
+    expect(validatePattern('*foo').valid).toBe(false)
+    expect(validatePattern('  * x').valid).toBe(false)
+    expect(validatePattern('*foo bar').valid).toBe(false)
   })
 })
 

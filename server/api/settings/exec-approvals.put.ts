@@ -1,6 +1,10 @@
 import { addApproval, updateApproval, validatePattern } from '../../lib/exec/approvals'
 
 export default defineEventHandler(async (event) => {
+  // Allowlist authoring is a human-in-the-loop action; reject non-session clients (e.g. api-token).
+  if (event.context.client?.type !== 'session') {
+    throw createError({ statusCode: 403, statusMessage: 'Session required' })
+  }
   const body = await readBody<{ id?: string; pattern?: string; tool?: string }>(event)
   const pattern = (body.pattern ?? '').trim()
   const v = validatePattern(pattern)
