@@ -53,7 +53,7 @@ export function approvalOutcome(ev: ApprovalDecisionEvent): { approved: boolean;
 }
 
 // ---- exec_approvals DB store (mirrors search/store.ts: thin Drizzle I/O) ----
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { execApprovals, type ExecApproval } from '../../db/schema'
 
@@ -75,7 +75,7 @@ export async function addApproval(input: { pattern: string; tool?: string }): Pr
   const db = useDb()
   await db.insert(execApprovals).values({ pattern, tool }).onConflictDoNothing()
   const [row] = await db.select().from(execApprovals)
-    .where(eq(execApprovals.pattern, pattern)).limit(1)
+    .where(and(eq(execApprovals.tool, tool), eq(execApprovals.pattern, pattern))).limit(1)
   return row!
 }
 
