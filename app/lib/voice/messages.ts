@@ -2,7 +2,7 @@
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { VizEvent } from '../viz/types'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own
@@ -11,6 +11,8 @@ export interface MsgEffect {
   delta?: { role: 'user' | 'assistant'; text: string }
   error?: string
   events: VizEvent[]
+  approval?: { requestId: string; tool: string; command: string; proposedPattern: string }
+  approvalResolved?: string // requestId that was settled server-side (timeout)
 }
 
 export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
@@ -30,6 +32,12 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
     // Server says idle the moment generation ends, but audio may still be
     // buffered ahead — playback drain flips to idle in that case (useVoice).
     return isPlaying ? { events } : { state: 'idle', events }
+  }
+  if (m.type === 'approval' && m.requestId && m.command) {
+    return { approval: { requestId: m.requestId, tool: m.tool ?? 'exec', command: m.command, proposedPattern: m.proposedPattern ?? '' }, events }
+  }
+  if (m.type === 'approval-resolved' && m.requestId) {
+    return { approvalResolved: m.requestId, events }
   }
   return { events }
 }

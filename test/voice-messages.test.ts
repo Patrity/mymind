@@ -44,3 +44,13 @@ describe('mapServerMessage', () => {
     expect(fx.events).toEqual([])
   })
 })
+
+describe('mapServerMessage approval frames', () => {
+  it('maps an approval request', () => {
+    const fx = mapServerMessage({ type: 'approval', requestId: 'r1', tool: 'exec', command: 'git status', proposedPattern: 'git *' }, false)
+    expect(fx.approval).toEqual({ requestId: 'r1', tool: 'exec', command: 'git status', proposedPattern: 'git *' })
+  })
+  it('maps an approval-resolved (timeout) frame', () => {
+    expect(mapServerMessage({ type: 'approval-resolved', requestId: 'r1' }, false).approvalResolved).toBe('r1')
+  })
+})

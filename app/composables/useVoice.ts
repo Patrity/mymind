@@ -17,6 +17,7 @@ export function useVoice() {
   const error = ref<string | null>(null)
   /** Live Silero speech probability (0..1) — feeds the settings tuning meter. */
   const speechProb = ref(0)
+  const pendingApproval = ref<{ requestId: string; tool: string; command: string; proposedPattern: string } | null>(null)
   const { settings } = useVoiceSettings()
 
   const events = createEmitter<VizEvent>()
@@ -152,6 +153,8 @@ export function useVoice() {
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
         for (const ev of fx.events) events.emit(ev)
+        if (fx.approval) pendingApproval.value = fx.approval
+        if (fx.approvalResolved && pendingApproval.value?.requestId === fx.approvalResolved) pendingApproval.value = null
       }
     }
     // Resolve only once the socket is OPEN. A pre-open error/close rejects → connect()'s
@@ -346,6 +349,16 @@ export function useVoice() {
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,
     onVizEvent: events.on,
+    pendingApproval,
+    setProfile: (profile: 'bridget' | 'powerful') => {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'profile', profile }))
+    },
+    sendApproval: (requestId: string, approved: boolean, opts?: { remember?: boolean; pattern?: string }) => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: approved ? 'approve' : 'deny', requestId, remember: opts?.remember, pattern: opts?.pattern }))
+      }
+      if (pendingApproval.value?.requestId === requestId) pendingApproval.value = null
+    },
   }
 }
 

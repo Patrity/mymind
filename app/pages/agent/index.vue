@@ -9,6 +9,10 @@ const route = useRoute()
 const showCanvas = useCookie<boolean>('agent-canvas', { default: () => true })
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
 
+// Powerful-tools toggle: per-session (NOT cookie-persisted) so it defaults safe on every load
+const powerful = ref(false)
+watch(powerful, (v) => voice.setProfile(v ? 'powerful' : 'bridget'))
+
 // Mic-on state is local — it reflects whether the VAD is actually running
 const micOn = ref(false)
 
@@ -41,6 +45,7 @@ async function resume(id: string) {
 // sending "just work" without an explicit Connect step. Resume a thread if ?c= is set.
 onMounted(async () => {
   await voice.connect()
+  voice.setProfile(powerful.value ? 'powerful' : 'bridget')
   const c = route.query.c
   if (typeof c === 'string' && c) await resume(c)
 })
@@ -77,6 +82,12 @@ onMounted(async () => {
             <USwitch
               v-model="speakReply"
               label="Voice replies"
+              size="sm"
+            />
+            <!-- Powerful tools toggle (per-session, defaults safe) -->
+            <USwitch
+              v-model="powerful"
+              label="Powerful tools"
               size="sm"
             />
             <!-- History button -->
@@ -169,6 +180,12 @@ onMounted(async () => {
               label="Voice replies"
               size="sm"
             />
+            <!-- Powerful tools toggle (per-session, defaults safe) -->
+            <USwitch
+              v-model="powerful"
+              label="Powerful tools"
+              size="sm"
+            />
             <!-- History button -->
             <UButton
               icon="i-lucide-history"
@@ -204,6 +221,13 @@ onMounted(async () => {
           :chips="activity.chips.value"
           @undo="activity.undo"
         />
+        <div v-if="voice.pendingApproval.value" class="px-4 pb-2">
+          <AgentApprovalPrompt
+            :approval="voice.pendingApproval.value"
+            @approve="(d) => voice.sendApproval(voice.pendingApproval.value!.requestId, true, d)"
+            @deny="() => voice.sendApproval(voice.pendingApproval.value!.requestId, false)"
+          />
+        </div>
         <VoiceComposer
           :entries="voice.transcript.value"
           :send-text="voice.sendText"
