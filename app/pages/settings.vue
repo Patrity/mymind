@@ -8,7 +8,8 @@ const tabs = [
   { label: 'API Keys', icon: 'i-lucide-key-round', slot: 'apikeys' as const },
   { label: 'Activity & Alerts', icon: 'i-lucide-activity', slot: 'activity' as const },
   { label: 'Bridget', icon: 'i-lucide-bot', slot: 'bridget' as const },
-  { label: 'Search', icon: 'i-lucide-search', slot: 'search' as const }
+  { label: 'Search', icon: 'i-lucide-search', slot: 'search' as const },
+  { label: 'Agent Tools', icon: 'i-lucide-terminal', slot: 'agentTools' as const }
 ]
 </script>
 
@@ -29,6 +30,7 @@ const tabs = [
           <template #activity><SettingsActivityAlertsTab /></template>
           <template #bridget><SettingsPersonaTab /></template>
           <template #search><SettingsSearchTab /></template>
+          <template #agentTools><SettingsAgentToolsTab /></template>
         </UTabs>
       </div>
     </template>
