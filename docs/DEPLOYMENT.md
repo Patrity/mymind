@@ -233,7 +233,7 @@ This is a least-privilege + approval-gate + container-boundary design — NOT a 
 - Bridget memory data migration (importing the old Python service's memories) is not automated.
 See the per-cycle handovers in `docs/handovers/` for the full backlog.
 
-## 15. Voice agent
+## 16. Voice agent
 
 The `/voice` page requires two one-time setup steps and a specific proxy configuration.
 
@@ -309,7 +309,7 @@ In Caddy, `reverse_proxy` sets `X-Forwarded-For` to the actual client IP by defa
 
 The other `/api/agent/*` routes (`activity`, `undo`, `chat`) use the standard session/bearer auth and require no special proxy rules beyond the existing ones for `/api/**`.
 
-## 16. CI/CD pipeline (GitHub Actions)
+## 17. CI/CD pipeline (GitHub Actions)
 
 `.github/workflows/deploy.yml` runs on every push:
 - **test** (GitHub-hosted): `pnpm install --frozen-lockfile`, lint (non-blocking — repo is
