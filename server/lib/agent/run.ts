@@ -22,7 +22,7 @@ type StreamTextFn = (args: never) => { fullStream: AsyncIterable<unknown> }
 export interface RunDeps {
   streamText?: StreamTextFn
   tools?: AgentTool[]
-  buildSystemPrompt?: (o: { profile?: { personaKey: string }; speak: boolean; context?: string }) => Promise<string>
+  buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string }) => Promise<string>
 }
 
 export async function* runAgent(

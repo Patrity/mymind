@@ -29,3 +29,13 @@ describe('composePrompt', () => {
   })
   it('includes web-research guidance', () => { expect(composePrompt({ persona: 'p', speak: false, toneLine: 't' })).toMatch(/web_search/) })
 })
+
+describe('composePrompt powerful guidance', () => {
+  it('includes exec guidance only for the powerful profile', () => {
+    const safe = composePrompt({ persona: 'p', speak: false, toneLine: 't', powerful: false })
+    const powerful = composePrompt({ persona: 'p', speak: false, toneLine: 't', powerful: true })
+    expect(safe).not.toMatch(/exec/i)
+    expect(powerful).toMatch(/exec/)
+    expect(powerful).toMatch(/approv/i) // mentions the approval requirement
+  })
+})
