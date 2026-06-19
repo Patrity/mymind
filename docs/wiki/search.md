@@ -1,8 +1,8 @@
 ---
 title: Search + Command Palette
 status: shipped
-cycle: 8 (extended 13, 20, 31, 32)
-updated: 2026-06-18
+cycle: 8 (extended 13, 20, 31, 32, 33)
+updated: 2026-06-19
 ---
 
 # Search + Command Palette
@@ -23,12 +23,14 @@ searchAll(q):
        - doc snippet/rerankText = best-matching chunk passage (searchPassages) ?? doc content
        - lexicalExact = the query is an exact substring of the candidate's text
   2. pool = all candidates, capped at maxCandidates
-  3. if a `rerank` model is assigned (resolveChain('rerank')):
-        ONE rerank(q, pool) → RAW cross-encoder scores; drop score < rerankCutoff,
-        EXCEPT lexicalExact candidates (pinned — a known phrase always survives)
-     else (unconfigured / threw / empty result): score = synthetic RRF rank, no cutoff
-  4. sort by score desc → SearchHit[]
-  5. return { hits, reranked }     // reranked = scores actually came from the reranker
+  3. rank (rankCandidates):
+       if a `rerank` model is assigned (resolveChain('rerank')):
+          ONE rerank(q, pool) → RAW scores; sort desc; keep score >= rerankRelBand × topScore
+          (a per-query RELATIVE band, robust to the length-dependent scale) OR lexicalExact
+          (pinned — a known phrase always survives)
+       else (unconfigured / threw / empty result): synthetic RRF-rank score, sort desc, no band
+       cap to rerankTopK
+  4. return { hits, reranked }     // reranked = scores actually came from the reranker
 ```
 
 | Lane | Backing | Match |
@@ -47,18 +49,27 @@ returns `SearchResults = { hits: SearchHit[]; reranked: boolean }` (`shared/type
 drizzle-parameterized; the embedding literal is a bound `::halfvec` param (no injection).
 
 ### Relevance pieces (cycle 32)
-- **Reranker** (`server/lib/ai/rerank.ts`): a TEI `/rerank` cross-encoder client. Returns
-  **raw** `relevance_score` (the rig field is `score`; `relevance_score` accepted too) — no
-  min-max, so the absolute score is usable for a cutoff. Resolved from the AI-config registry
-  via `resolveChain('rerank')`; **OFF until a model is assigned to the `rerank` usage** in
-  `/settings → AI`. Never blocks search (throws → fall back to RRF order; an empty result set
-  also falls back).
+- **Reranker** (`server/lib/ai/rerank.ts`): a `/rerank` cross-encoder client. Returns **raw**
+  scores (the legacy `/rerank` field is `score`; the Cohere `/v1`–`/v2` routes return the same
+  numbers as `relevance_score` — both parsed; the `model` field is ignored by the rig shim).
+  No min-max — the raw scores feed the **per-query relative band** (cycle 33). Resolved from the
+  AI-config registry via `resolveChain('rerank')`; **OFF until a model is assigned to the
+  `rerank` usage** in `/settings → AI`. Never blocks search (throws → fall back to RRF order; an
+  empty result set also falls back).
+- **Cutoff = top-k + relative band** (cycle 33, `rankCandidates` in `server/lib/search/rank.ts`):
+  reranked candidates are sorted, then kept iff `lexicalExact || score >= rerankRelBand × topScore`,
+  then capped to `rerankTopK`. Relative to the query's own top hit → robust to the reranker's
+  **length-dependent** absolute scale (a fixed absolute floor over/under-trimmed by passage
+  length). Fallback (no reranker) = synthetic RRF rank, capped to `rerankTopK`, no band. Empty
+  state is **retrieval-based** — a non-empty pool always yields ≥1 hit, so `hits=[]` ⟺ the lanes
+  returned nothing (we don't score-gate emptiness; gibberish queries score high).
 - **Cosine floor** (per vector lane): drops nearest-neighbours past `cosineFloor` cosine
   distance before fusion — the always-on noise trim when the reranker is off/down.
 - **Config** — `server/lib/search/config.ts`, `search_relevance` settings key (JSONB) over
-  defaults `{ rerankCutoff: 0.2, cosineFloor: 1.0, candidatesPerLane: 8, maxCandidates: 50 }`.
-  Tunable without redeploy. Defaults are deliberately permissive (`cosineFloor 1.0` hides
-  nothing) — tune down once a real corpus is observed.
+  defaults `{ rerankTopK: 12, rerankRelBand: 0.6, cosineFloor: 1.0, candidatesPerLane: 8,
+  maxCandidates: 50 }`. Tunable without redeploy. `rerankRelBand 0.6` keeps hits within 60% of
+  the top score (relevant lands ~1.0 on the current model); `cosineFloor 1.0` is permissive
+  (hides nothing) — tune on a real corpus.
 - **Snippet + highlight** — `makeSnippet(text,q)` (server, window around the matched token)
   + `highlightTokens(text,q)` (client, `<mark>` segments).
 
@@ -81,38 +92,29 @@ drizzle-parameterized; the embedding literal is a bound `::halfvec` param (no in
 The app is a **SPA** (`routeRules '/**': { ssr:false }`, global `ssr` stays `true`); only
 `/share/**` is SSR. New pages are SPA by default via the catch-all.
 
-## Operational note — reranker quality (cycle 32; corrected 2026-06-19 after rig verification)
-The wired-but-off reranker is **usable**, with one structural caveat. Verified against the
-homelab rig (`192.168.2.25:8883`, currently the **0.6B** `Qwen3-Reranker-0.6B-seq-cls`):
+## Operational note — reranker (cycle 32 → corrected 2026-06-19 → mxbai + relative cutoff, cycle 33)
+The reranker is wired, **OFF until a model is assigned**, and now in good shape:
 
-- **The Cohere shim is fully compatible.** Our client posts `{ model, query, documents }` and
-  reads `relevance_score` **or** `score`; `/rerank` (bare), `/v1/rerank`, `/v2/rerank` return
-  **identical scores** (the `/v1`–`/v2` Cohere envelope `relevance_score`/`document`/`meta` is
-  handled by the fallback). Point the `rerank` provider `baseURL` at the right prefix (bare
-  host → `/rerank`; `…/v2` → `/v2/rerank`). The **`model` field is IGNORED** by the shim (the
-  loaded model is fixed by the shim's own config) — proven byte-identical with / without / a
-  bogus model. It's cosmetic for us.
-- **The real limitation is a length-dependent score scale**, not the shim, the model field, or
-  ordering capability. The *same* content scored ~0.29 at 46 chars vs ~0.50 padded to ~600
-  chars (irrelevant filler *raised* the score), so the **fixed `rerankCutoff` shipped this
-  cycle is fragile**. In the in-app regime (≤512-char best-chunk passages) the 0.6B orders
-  clean and equal-length heterogeneous cases correctly (on-topic 0.815 > off-topic 0.805) — but
-  with razor-thin separation, so it's *marginal* on heterogeneous content.
-- **Correction to the original cycle-32 notes:** the earlier "miscalibrated / cat-photo > deploy-
-  runbook / gibberish→0.999" claims were **test artifacts** — diagnostic inputs that varied doc
-  text/length (and one anomalous short string), not a model defect. Retracted.
-- **Recommendation:** the structural fix is a **per-query relative cutoff / top-k** (robust to
-  the scale shift) rather than the fixed absolute floor. A stronger reranker
-  (`tomaarsen/Qwen3-Reranker-4B-seq-cls` — the shim's own default; 8B also exists) sharpens
-  separation but is a **VRAM-placement decision** on the shared Zotac GPU (~17/24 GB used; the
-  4B is ~8–9 GB), not a one-liner. Don't leave the 0.6B written off — re-evaluate enabling it
-  in prod once the cutoff is relative.
+- **Cohere shim, fully compatible.** Client posts `{ model, query, documents }` and reads
+  `relevance_score` || `score`; `/rerank`, `/v1/rerank`, `/v2/rerank` return identical scores
+  (point the provider `baseURL` at the prefix — bare → `/rerank`, `…/v2` → `/v2/rerank`). The
+  **`model` field is ignored** by the shim (the loaded model is fixed by its own config) — cosmetic.
+- **Model: `mixedbread-ai/mxbai-rerank-large-v2`** (1.5B, fp16, ~2.5 GB) replaced the 0.6B, which
+  *inverted* technical/entity queries (e.g. "Intel X550" → relevant 0.107, lowest). The 1.5B ranks
+  correctly and lands relevant docs at a reliable **~1.0**, length-robust. Caveat: irrelevant docs
+  **scatter 0.0–0.9** (not the "≈0" the rig claimed) and gibberish queries score high — so "is
+  anything relevant" can't be score-gated (hence the retrieval-based empty state above).
+- **Cutoff = relative band** (cycle 33), anchored to the reliable ~1.0 top — cleanly trims the
+  noise tail, robust to the length-dependent scale + the false-positive scatter. The old fixed
+  absolute `rerankCutoff` is gone.
+- **Earlier retractions stand:** the cycle-32 "miscalibrated / cat-photo > runbook / gibberish→0.999
+  / model-required" notes were **test artifacts** (varied input text/length; `model`-less curls).
+- **To enable in prod:** assign the mxbai model to the `rerank` usage in `/settings → AI` (provider
+  baseURL `http://192.168.2.25:8883`), then validate + tune `rerankRelBand` / `rerankTopK` on the
+  real corpus. With rerank off, search uses RRF + cosine-floor + exact-pin (not free).
 
 ## Follow-ups
-- **Relative / top-k rerank cutoff** — replace the fixed absolute `rerankCutoff`; it fights the
-  length-dependent score scale. The key correctness follow-up (own cycle).
-- Optionally move to the **4B reranker** (the shim's default) for sharper separation — a VRAM-
-  placement decision on the shared GPU.
-- Rerank the MCP `search_docs` / `search_passages` (agent-facing) too — this cycle only the
-  cosine floor reaches them; the cross-type rerank is palette-only.
+- Validate + tune the reranker on the real corpus once enabled (`rerankRelBand` / `rerankTopK`).
+- Rerank the MCP `search_docs` / `search_passages` (agent-facing) too — currently only the cosine
+  floor reaches them; the cross-type rerank is palette-only.
 - Contextual BM25 over chunk text (Anthropic ~49%); a `/settings` relevance-tuning UI tab.
