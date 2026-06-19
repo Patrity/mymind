@@ -81,21 +81,38 @@ drizzle-parameterized; the embedding literal is a bound `::halfvec` param (no in
 The app is a **SPA** (`routeRules '/**': { ssr:false }`, global `ssr` stays `true`); only
 `/share/**` is SSR. New pages are SPA by default via the catch-all.
 
-## Operational note — reranker quality (cycle 32)
-The wired-but-off reranker is now fully usable, but the homelab rig model
-(`Qwen3-Reranker-0.6B-seq-cls` @ `192.168.2.25:8883`) was found **miscalibrated** in live
-testing: it assigns high scores to irrelevant/gibberish pairs (a nonsense query scored
-unrelated docs ~0.999), so enabling it as-is can *reorder by bad scores* and the absolute
-cutoff won't reliably trim noise. Recommendation: keep the `rerank` usage **unassigned** —
-RRF + cosine-floor + exact-pin + the new unified UI is already an improvement over the old
-flat 5-per-type palette — until the rig reranker is recalibrated (likely a missing Qwen3
-instruction template / model-config issue), then assign it and tune `rerankCutoff` /
-`cosineFloor` on the real corpus. In a homogeneous embedding space cosine distances cluster
-tightly (a real vs. gibberish query differed by only ~0.04 in testing), so the cosine floor
-alone is blunt — the reranker is the precision lever.
+## Operational note — reranker quality (cycle 32; corrected 2026-06-19 after rig verification)
+The wired-but-off reranker is **usable**, with one structural caveat. Verified against the
+homelab rig (`192.168.2.25:8883`, currently the **0.6B** `Qwen3-Reranker-0.6B-seq-cls`):
+
+- **The Cohere shim is fully compatible.** Our client posts `{ model, query, documents }` and
+  reads `relevance_score` **or** `score`; `/rerank` (bare), `/v1/rerank`, `/v2/rerank` return
+  **identical scores** (the `/v1`–`/v2` Cohere envelope `relevance_score`/`document`/`meta` is
+  handled by the fallback). Point the `rerank` provider `baseURL` at the right prefix (bare
+  host → `/rerank`; `…/v2` → `/v2/rerank`). The **`model` field is IGNORED** by the shim (the
+  loaded model is fixed by the shim's own config) — proven byte-identical with / without / a
+  bogus model. It's cosmetic for us.
+- **The real limitation is a length-dependent score scale**, not the shim, the model field, or
+  ordering capability. The *same* content scored ~0.29 at 46 chars vs ~0.50 padded to ~600
+  chars (irrelevant filler *raised* the score), so the **fixed `rerankCutoff` shipped this
+  cycle is fragile**. In the in-app regime (≤512-char best-chunk passages) the 0.6B orders
+  clean and equal-length heterogeneous cases correctly (on-topic 0.815 > off-topic 0.805) — but
+  with razor-thin separation, so it's *marginal* on heterogeneous content.
+- **Correction to the original cycle-32 notes:** the earlier "miscalibrated / cat-photo > deploy-
+  runbook / gibberish→0.999" claims were **test artifacts** — diagnostic inputs that varied doc
+  text/length (and one anomalous short string), not a model defect. Retracted.
+- **Recommendation:** the structural fix is a **per-query relative cutoff / top-k** (robust to
+  the scale shift) rather than the fixed absolute floor. A stronger reranker
+  (`tomaarsen/Qwen3-Reranker-4B-seq-cls` — the shim's own default; 8B also exists) sharpens
+  separation but is a **VRAM-placement decision** on the shared Zotac GPU (~17/24 GB used; the
+  4B is ~8–9 GB), not a one-liner. Don't leave the 0.6B written off — re-evaluate enabling it
+  in prod once the cutoff is relative.
 
 ## Follow-ups
-- Recalibrate the rig reranker, then enable + tune on the prod corpus.
+- **Relative / top-k rerank cutoff** — replace the fixed absolute `rerankCutoff`; it fights the
+  length-dependent score scale. The key correctness follow-up (own cycle).
+- Optionally move to the **4B reranker** (the shim's default) for sharper separation — a VRAM-
+  placement decision on the shared GPU.
 - Rerank the MCP `search_docs` / `search_passages` (agent-facing) too — this cycle only the
   cosine floor reaches them; the cross-type rerank is palette-only.
 - Contextual BM25 over chunk text (Anthropic ~49%); a `/settings` relevance-tuning UI tab.

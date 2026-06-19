@@ -39,9 +39,11 @@ by assigning the `rerank` usage in `/settings`. MCP-side reranking deferred (onl
 reaches `search_docs` this cycle).
 
 ## Task-1 spike (the reranker rig)
-Probed `192.168.2.25:8883` directly. TEI `/rerank` returns `{results:[{index, score, text}]}`
-— the field is **`score`** (not `relevance_score`); the Task-2 adapter was corrected to read
-it. **Caveat found and confirmed at scale in E2E (below): the rig reranker is miscalibrated.**
+Probed `192.168.2.25:8883` directly. The bare `/rerank` returns `{results:[{index, score, text}]}`
+(field `score`); the Cohere `/v1`–`/v2` routes return the same numbers in a `relevance_score`
+envelope. The Task-2 adapter reads `score` || `relevance_score`, so both work. (NOTE: the spike's
+own `model`-less curls produced misleading scores — the `model` field turns out to be ignored by
+the shim; see the corrected Finding below. The real caveat is the length-dependent score scale.)
 
 ## Live E2E (playwright-cli, dev rigs, 2026-06-18) — what was proven
 Ran against a worktree dev server (`:3001`) on the shared local dev DB + the real rigs
@@ -57,24 +59,33 @@ Ran against a worktree dev server (`:3001`) on the shared local dev DB + the rea
 - **UI** (screenshot): the palette renders the "Top results" group (mixed types, icons, title
   + matched snippet + score badge 0.96…0.66) over a "Documents" per-type group. ✅
 
-## ⚠️ Important finding — the rig reranker is miscalibrated (operational, not a code bug)
-A **nonsense** query (`zzzqqxnomatchxyzzy`) came back with 24 hits scored up to **0.999** — the
-rig reranker assigns high relevance to garbage. A distance probe showed why the cosine floor
-can't compensate: in this embedding space a real query's nearest chunk (0.672) and a gibberish
-query's nearest (0.710) differ by only ~0.04 — distances cluster too tightly for a floor to
-separate relevant from noise. So **with the current rig + permissive defaults, the
-"drop-the-noise / empty-state" goal is NOT met out of the box**, and enabling the reranker can
-*reorder by bad scores* (e.g. "humanizer skill" ranked #1 for "document chunking").
+## ⚠️ Finding — reranker score *scale*, not the rig/shim (corrected 2026-06-19 after verification)
+The first version of this handover claimed the rig reranker was "miscalibrated" (cat-photo >
+deploy-runbook, gibberish→0.999, off-topic > on-topic). **A follow-up verification against the
+rig (`192.168.2.25:8883`) retracted those causal claims — they were test artifacts:**
+- The **`model` field is ignored** by the Cohere shim (proven byte-identical with / without / a
+  bogus model); it was never "load-bearing." The **Cohere shim is fully compatible**: our client
+  posts `{ model, query, documents }` and reads `relevance_score` || `score`; `/rerank`,
+  `/v1/rerank`, `/v2/rerank` return identical scores (set the provider `baseURL` prefix to match).
+- "cat-photo > runbook" was the **specific input strings** flipping the result (same query/model,
+  only the doc text differed), not a model defect.
+- "off-topic > on-topic" was a **length confound** — at equal length in the in-app regime
+  (≤512-char best-chunk passages) the 0.6B orders correctly (on-topic 0.815 > off-topic 0.805),
+  if with razor-thin separation.
 
-**Recommendation (carried as the merge's headline caveat):**
-- Keep the `rerank` usage **unassigned in prod for now**. Even off, this cycle is a clear win
-  over master: ONE unified relevance-ranked list, exact matches pinned to the top, matched
-  snippets, empty groups hidden, score badges when reranked.
-- Recalibrate the rig reranker (almost certainly a missing **Qwen3 instruction template** /
-  model-config issue on `:8883`) — a homelab task. Then assign the `rerank` model and tune
-  `rerankCutoff` / `cosineFloor` on the **real prod corpus** (bigger, and where the original
-  "PR #835 pending" case lives) via the `search_relevance` settings key. The reranker is the
-  precision lever; the cosine floor alone is blunt here.
+The **one verified, real** issue: the reranker's **absolute score scale is length-dependent**
+(same content ~0.29 @46 chars vs ~0.50 padded to ~600 chars — irrelevant filler *raised* the
+score). That makes the **fixed `rerankCutoff` shipped this cycle fragile**, independent of model.
+
+**Recommendation (corrected):**
+- The structural fix is a **per-query relative cutoff / top-k**, not the fixed absolute floor —
+  robust to the length-dependent scale. The key follow-up (own cycle; task `96ffb5bb`).
+- A stronger reranker (`tomaarsen/Qwen3-Reranker-4B-seq-cls` — the shim's **own default**;
+  running 0.6B only due to a compose override; 8B also exists) sharpens separation but is a
+  **VRAM-placement decision** on the shared Zotac GPU (~17/24 GB used; 4B ~8–9 GB), not a one-liner.
+- **Don't write off the 0.6B:** in the clipped in-app regime it orders clean/equal-length cases
+  correctly. Re-evaluate enabling the `rerank` usage in prod once the cutoff is relative (with
+  rerank off, search falls back to RRF-lane fusion, which isn't free).
 
 ## Final review
 Opus whole-branch review: **Ready to merge — with fixes.** No Critical, no code defects.
@@ -89,8 +100,8 @@ high K) recorded as non-blocking.
 ## Pending acceptance
 - **Reranked relevance on the real prod corpus has NOT been validated** (the dev corpus is tiny
   + different; the original "PR #835 pending" docs live in prod). The mechanism is proven; the
-  *quality* depends on the rig recalibration above. Validate post-deploy once the reranker is
-  fixed + assigned.
+  *quality* gate is the **relative-cutoff** rework above (the fixed absolute cutoff fights the
+  length-dependent score scale). Re-evaluate enabling the `rerank` usage in prod after that.
 - Merge via `finishing-a-development-branch`; `master` auto-deploys. No migration (config is a
   settings key; the legacy `documents.embedding` columns are untouched).
 
