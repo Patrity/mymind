@@ -41,6 +41,15 @@ describe('buildAiTools dangerous-tool gate', () => {
     expect(handler).not.toHaveBeenCalled()
     expect(res).toEqual({ denied: true })
   })
+  it('denies when approval resolves to a non-true (malformed) value', async () => {
+    const handler = vi.fn()
+    const t = dangerTool(); t.handler = handler as never
+    const requestApproval = vi.fn().mockResolvedValue({ approved: 'yes' as unknown as boolean })
+    const set = buildAiTools([t], { signal: new AbortController().signal, onEvent: () => {}, requestApproval })
+    const res = await exec(set, { command: 'echo hi' })
+    expect(handler).not.toHaveBeenCalled()
+    expect(res).toEqual({ denied: true })
+  })
   it('does not gate a non-dangerous tool', async () => {
     const t: AgentTool = { name: 'ping', description: 'x', kind: 'read', schema: {}, handler: async () => ({ result: 'pong', summary: 'p' }) }
     const requestApproval = vi.fn()

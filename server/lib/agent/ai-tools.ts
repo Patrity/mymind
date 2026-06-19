@@ -34,7 +34,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           const decision = ctx.requestApproval
             ? await ctx.requestApproval(approvalRequestFor(t, input))
             : { approved: false } // fail-safe: no channel → auto-deny
-          if (!decision.approved) {
+          if (decision.approved !== true) {
             const summary = `denied: ${t.name}`
             publishActivity({ type: 'tool', name: t.name, summary })
             hooks.onEvent({ type: 'tool-result', name: t.name, summary })
