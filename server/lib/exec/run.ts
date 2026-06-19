@@ -16,6 +16,7 @@ export function buildExecEnv(opts: { path?: string; home: string }): Record<stri
 }
 
 export function resolveExecCwd(workspaceRoot: string, cwd?: string): string {
+  // NOTE: jail is LEXICAL (path.resolve, no realpath); symlink confinement is not claimed — it relies on the uid + container boundary.
   const root = path.resolve(workspaceRoot)
   const resolved = path.resolve(root, cwd ?? '.')
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
@@ -55,7 +56,18 @@ export interface ExecResult {
   stdout: string
   stderr: string
   timedOut: boolean
+  aborted: boolean
   mode: 'setuid' | 'unconfined'
+}
+
+/** Build the spawn argv for the chosen mode. setuid uses `setpriv` to fully
+ *  drop uid/gid AND clear supplementary groups — Node's spawn {uid,gid} leaves
+ *  root's supplementary groups intact, an incomplete privilege drop. */
+export function buildSpawnArgs(mode: ExecMode, command: string): { file: string; args: string[] } {
+  if (mode.mode === 'setuid') {
+    return { file: 'setpriv', args: ['--reuid', String(mode.uid), '--regid', String(mode.gid), '--clear-groups', '--', '/bin/sh', '-c', command] }
+  }
+  return { file: '/bin/sh', args: ['-c', command] }
 }
 
 export async function runConstrained(
@@ -83,18 +95,28 @@ export async function runConstrained(
 
   const env = buildExecEnv({ path: process.env.PATH, home: workspaceRoot })
   const spawnOpts: Parameters<typeof spawn>[2] = { cwd, env, detached: true }
-  if (decided.mode === 'setuid') { spawnOpts.uid = decided.uid; spawnOpts.gid = decided.gid }
+  // NOTE: do NOT set uid/gid on spawnOpts in setuid mode — setpriv performs the full privilege drop
+  // (including clearing supplementary groups), so the parent must stay root to exec setpriv.
+
+  const { file, args } = buildSpawnArgs(decided, command)
+  const resolvedMode = decided.mode === 'setuid' ? 'setuid' : 'unconfined'
+
+  // Pre-spawn guard: if the signal is already aborted, resolve immediately without spawning.
+  if (opts.signal?.aborted) {
+    return { exitCode: null, stdout: '', stderr: '', timedOut: false, aborted: true, mode: resolvedMode }
+  }
 
   return await new Promise<ExecResult>((resolve, reject) => {
     let child
     try {
-      child = spawn('/bin/sh', ['-c', command], spawnOpts)
+      child = spawn(file, args, spawnOpts)
     } catch (err) {
       reject(new ExecDisabledError(`exec spawn failed: ${(err as Error).message}`)); return
     }
     let out = ''
     let errs = ''
     let timedOut = false
+    let aborted = false
     let outLen = 0
     let errLen = 0
     const append = (buf: Buffer, kind: 'out' | 'err') => {
@@ -115,7 +137,7 @@ export async function runConstrained(
 
     const kill = () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL') } catch { /* already gone */ } }
     const timer = setTimeout(() => { timedOut = true; kill() }, timeoutMs)
-    const onAbort = () => { kill() }
+    const onAbort = () => { aborted = true; kill() }
     opts.signal?.addEventListener('abort', onAbort, { once: true })
 
     child.on('error', (err) => {
@@ -124,7 +146,7 @@ export async function runConstrained(
     })
     child.on('close', (code) => {
       clearTimeout(timer); opts.signal?.removeEventListener('abort', onAbort)
-      resolve({ exitCode: code, stdout: out, stderr: errs, timedOut, mode: decided.mode === 'setuid' ? 'setuid' : 'unconfined' })
+      resolve({ exitCode: code, stdout: out, stderr: errs, timedOut, aborted, mode: resolvedMode })
     })
   })
 }

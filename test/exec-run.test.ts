@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildExecEnv, resolveExecCwd, selectExecMode, runConstrained } from '../server/lib/exec/run'
+import { buildExecEnv, resolveExecCwd, selectExecMode, buildSpawnArgs, runConstrained } from '../server/lib/exec/run'
 
 describe('buildExecEnv', () => {
   it('returns exactly PATH/HOME/LANG and nothing else (allowlist by construction)', () => {
@@ -46,6 +46,24 @@ describe('selectExecMode', () => {
   it('allows unconfined ONLY in non-production when explicitly opted in', () => {
     expect(selectExecMode({ uid: 1000, agentUid: null, agentGid: null, nodeEnv: 'development', unconfined: true }).mode).toBe('unconfined')
     expect(selectExecMode({ uid: 1000, agentUid: null, agentGid: null, nodeEnv: 'development', unconfined: false }).mode).toBe('disabled')
+  })
+  it('disables when root with agentUid === 0 (rejects root-as-agent)', () => {
+    expect(selectExecMode({ ...base, agentUid: 0 }).mode).toBe('disabled')
+  })
+})
+
+describe('buildSpawnArgs', () => {
+  it('setuid mode → setpriv argv with full privilege drop args', () => {
+    expect(buildSpawnArgs({ mode: 'setuid', uid: 10001, gid: 10001 }, 'echo hi')).toEqual({
+      file: 'setpriv',
+      args: ['--reuid', '10001', '--regid', '10001', '--clear-groups', '--', '/bin/sh', '-c', 'echo hi']
+    })
+  })
+  it('unconfined mode → /bin/sh -c', () => {
+    expect(buildSpawnArgs({ mode: 'unconfined' }, 'echo hi')).toEqual({
+      file: '/bin/sh',
+      args: ['-c', 'echo hi']
+    })
   })
 })
 
@@ -94,5 +112,26 @@ describe('runConstrained (real spawn, unconfined dev mode)', () => {
     process.env.NODE_ENV = 'development'
     const r = await runConstrained('sleep 5', { ...opts, timeoutMs: 200 })
     expect(r.timedOut).toBe(true)
+    expect(r.aborted).toBe(false)
+  })
+  it('resolves with aborted:true when signal fires mid-run', async () => {
+    process.env.EXEC_UNCONFINED = '1'
+    process.env.NODE_ENV = 'development'
+    const ac = new AbortController()
+    setTimeout(() => ac.abort(), 100)
+    const r = await runConstrained('sleep 5', { ...opts, signal: ac.signal })
+    expect(r.aborted).toBe(true)
+    expect(r.timedOut).toBe(false)
+  })
+  it('returns aborted:true immediately when signal is already aborted before spawn', async () => {
+    process.env.EXEC_UNCONFINED = '1'
+    process.env.NODE_ENV = 'development'
+    const ac = new AbortController()
+    ac.abort()
+    const r = await runConstrained('sleep 5', { ...opts, signal: ac.signal })
+    expect(r.aborted).toBe(true)
+    expect(r.exitCode).toBeNull()
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
   })
 })
