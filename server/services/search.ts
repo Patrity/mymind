@@ -142,7 +142,7 @@ export async function searchAll(q: string): Promise<SearchResults> {
     try {
       const docs = pool.map(c => ({ id: `${c.type}:${c.id}`, text: c.rerankText }))
       const results = await rerank(q, docs, rerankModel.baseURL.replace(/\/$/, ''), rerankModel.apiKey ?? '', rerankModel.modelId)
-      rerankScores = new Map(results.map(r => [r.id, r.score]))
+      rerankScores = results.length ? new Map(results.map(r => [r.id, r.score])) : null
     } catch (err) {
       console.warn('[searchAll] reranker failed, falling back to RRF order:', err)
       rerankScores = null
