@@ -21,7 +21,7 @@ export const execTool: AgentTool = {
     try {
       const r = await runConstrained(command, { cwd: a.cwd as string | undefined, signal: ctx.signal })
       return {
-        result: { command, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut },
+        result: { command, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, aborted: r.aborted },
         summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}`
       }
     } catch (err) {
