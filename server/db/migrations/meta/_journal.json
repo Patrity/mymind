@@ -169,6 +169,13 @@
       "when": 1781774143145,
       "tag": "0023_sticky_ego",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1781838006910,
+      "tag": "0024_clever_psylocke",
+      "breakpoints": true
     }
   ]
 }

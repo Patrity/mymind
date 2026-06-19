@@ -51,3 +51,48 @@ export function approvalOutcome(ev: ApprovalDecisionEvent): { approved: boolean;
   const pattern = (ev.pattern?.trim() || ev.proposedPattern).trim()
   return { approved: true, persist: true, pattern }
 }
+
+// ---- exec_approvals DB store (mirrors search/store.ts: thin Drizzle I/O) ----
+import { eq } from 'drizzle-orm'
+import { useDb } from '../../db'
+import { execApprovals, type ExecApproval } from '../../db/schema'
+
+export type { ExecApproval }
+
+export async function loadApprovals(tool?: string): Promise<ExecApproval[]> {
+  const db = useDb()
+  const rows = tool
+    ? await db.select().from(execApprovals).where(eq(execApprovals.tool, tool))
+    : await db.select().from(execApprovals)
+  return rows
+}
+
+export async function addApproval(input: { pattern: string; tool?: string }): Promise<ExecApproval> {
+  const pattern = input.pattern.trim()
+  const v = validatePattern(pattern)
+  if (!v.valid) throw new Error(v.error ?? 'invalid pattern')
+  const tool = input.tool ?? 'exec'
+  const db = useDb()
+  await db.insert(execApprovals).values({ pattern, tool }).onConflictDoNothing()
+  const [row] = await db.select().from(execApprovals)
+    .where(eq(execApprovals.pattern, pattern)).limit(1)
+  return row!
+}
+
+export async function updateApproval(id: string, pattern: string): Promise<ExecApproval | null> {
+  const next = pattern.trim()
+  const v = validatePattern(next)
+  if (!v.valid) throw new Error(v.error ?? 'invalid pattern')
+  const db = useDb()
+  const [row] = await db.update(execApprovals).set({ pattern: next })
+    .where(eq(execApprovals.id, id)).returning()
+  return row ?? null
+}
+
+export async function deleteApproval(id: string): Promise<void> {
+  await useDb().delete(execApprovals).where(eq(execApprovals.id, id))
+}
+
+export async function touchApproval(id: string): Promise<void> {
+  await useDb().update(execApprovals).set({ lastUsedAt: new Date() }).where(eq(execApprovals.id, id))
+}
