@@ -56,6 +56,17 @@ export function sanitizeRequest(kind: ActivityKind, req: unknown): unknown {
   return cap(scrub(req))
 }
 
+/** Replace every occurrence of each secret value in `text` with «redacted».
+ *  Values shorter than 6 characters are ignored to avoid masking trivial strings. */
+export function maskSecrets(text: string, values: string[]): string {
+  let out = text
+  for (const v of values) {
+    if (!v || v.length < 6) continue // don't mask trivially-short strings
+    out = out.split(v).join('«redacted»')
+  }
+  return out
+}
+
 /** Sanitize a captured response. Embedding vectors collapse to {dim,count}. */
 export function sanitizeResponse(res: unknown): unknown {
   const r = res as Record<string, unknown> | undefined
