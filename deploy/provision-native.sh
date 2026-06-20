@@ -59,12 +59,23 @@ if [ -f "$APP_DIR/.env.native" ]; then
   ensure_nuxt_override STORAGE_LOCAL_DIR NUXT_STORAGE_LOCAL_DIR
 fi
 
-# 3. Native dirs + one-time uploads migration from the docker volume
+# 3. Native dirs + one-time uploads migration from the docker volume.
+# The docker app stored uploads in a COMPOSE-NAMED volume: <project>_mymind-uploads (project =
+# the compose dir name = "mymind" -> "mymind_mymind-uploads"), NOT the bare "mymind-uploads".
+# Auto-detect any "*mymind-uploads" volume and pick the one that actually has files (avoids an
+# empty stray volume). Only runs when the native dir is still empty.
 mkdir -p "$APP_DIR/.data/uploads" "$APP_DIR/workspace"
-if [ -z "$(ls -A "$APP_DIR/.data/uploads" 2>/dev/null)" ] && docker volume inspect mymind-uploads >/dev/null 2>&1; then
-  echo "[provision] migrating mymind-uploads volume -> $APP_DIR/.data/uploads"
-  docker run --rm -v mymind-uploads:/src -v "$APP_DIR/.data/uploads":/dst alpine \
-    sh -c 'cp -a /src/. /dst/ 2>/dev/null || true'
+if [ -z "$(ls -A "$APP_DIR/.data/uploads" 2>/dev/null)" ]; then
+  best=""; best_n=0
+  for vol in $(docker volume ls -q | grep -E 'mymind-uploads$' || true); do
+    n="$(docker run --rm -v "$vol":/src alpine sh -c 'find /src -type f | wc -l' 2>/dev/null || echo 0)"
+    if [ "${n:-0}" -gt "$best_n" ]; then best_n="$n"; best="$vol"; fi
+  done
+  if [ -n "$best" ] && [ "$best_n" -gt 0 ]; then
+    echo "[provision] migrating uploads volume $best ($best_n files) -> $APP_DIR/.data/uploads"
+    docker run --rm -v "$best":/src -v "$APP_DIR/.data/uploads":/dst alpine \
+      sh -c 'cp -a /src/. /dst/ 2>/dev/null || true'
+  fi
 fi
 
 # 4. systemd unit (refresh + enable; do NOT start here — the deploy restarts after build)
