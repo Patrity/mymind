@@ -70,9 +70,12 @@ jobs:
             --exclude=.output --exclude=.data --exclude=.env --exclude=.env.native \
             -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
 
-      - name: Start db + searxng (drop the old app container)
+      - name: Ensure db + searxng up (keep the OLD app serving during the build)
         run: |
-          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng'
+          # No --remove-orphans here: the previous app (docker container on first cutover,
+          # or the native service on later deploys) keeps serving while we build, so a slow
+          # or FAILED build never causes an outage.
+          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d db searxng'
 
       - name: Provision native runtime (idempotent)
         run: |
@@ -82,9 +85,12 @@ jobs:
         run: |
           pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NUXT_PUBLIC_UNMUTE_URL="" pnpm build && set -a && . ./.env.native && set +a && pnpm db:migrate'
 
-      - name: Restart native service
+      - name: Cut over to native (drop old app container, start native on :3000)
         run: |
-          pct exec 114 -- bash -lc 'systemctl restart mymind'
+          # --remove-orphans drops the now-unlisted `app` container (first cutover); on later
+          # deploys it's a no-op. systemctl restart binds the freshly-built .output on :3000.
+          # Downtime is just this step (seconds), not the whole build.
+          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng && systemctl restart mymind'
 
       - name: Health check (/login -> 200)
         run: |
