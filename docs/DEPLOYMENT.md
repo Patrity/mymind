@@ -366,9 +366,12 @@ DATABASE_URL=postgres://mymind:<POSTGRES_PASSWORD>@127.0.0.1:5432/mymind
 SEARCH_SEARXNG_URL=http://127.0.0.1:8088
 STORAGE_LOCAL_DIR=/opt/mymind/.data/uploads
 NITRO_PORT=3000
-NITRO_HOST=127.0.0.1
+NITRO_HOST=0.0.0.0
 ```
 `.env.native` is on-box only (gitignored via `.env.*`) and is preserved by the deploy sync.
+**`NITRO_HOST` must be `0.0.0.0`** — the reverse proxy (Pangolin) reaches the app by the LXC's
+IP, so a loopback (`127.0.0.1`) bind 502s externally even though the in-LXC `localhost`
+health-check passes. `provision-native.sh` self-heals an existing loopback `.env.native`.
 
 **First cutover:** merge to master — the CD `deploy` job runs `deploy/provision-native.sh`
 (idempotent), which installs Node 22 + pnpm, writes `.env.native` (deriving the PG password from

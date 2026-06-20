@@ -23,8 +23,16 @@ DATABASE_URL=postgres://mymind:${PW}@127.0.0.1:5432/mymind
 SEARCH_SEARXNG_URL=http://127.0.0.1:8088
 STORAGE_LOCAL_DIR=$APP_DIR/.data/uploads
 NITRO_PORT=3000
-NITRO_HOST=127.0.0.1
+NITRO_HOST=0.0.0.0
 EOF
+fi
+
+# 2b. Self-heal: the native app must bind 0.0.0.0 so the reverse proxy can reach it via the
+# LXC IP. A loopback (127.0.0.1) bind passes the in-LXC localhost health-check but 502s
+# externally — correct any existing .env.native that still has the loopback bind.
+if [ -f "$APP_DIR/.env.native" ] && grep -qE '^NITRO_HOST=127\.0\.0\.1' "$APP_DIR/.env.native"; then
+  echo "[provision] fixing NITRO_HOST 127.0.0.1 -> 0.0.0.0"
+  sed -i 's/^NITRO_HOST=127\.0\.0\.1/NITRO_HOST=0.0.0.0/' "$APP_DIR/.env.native"
 fi
 
 # 3. Native dirs + one-time uploads migration from the docker volume
