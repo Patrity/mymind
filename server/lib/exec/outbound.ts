@@ -66,9 +66,23 @@ function extractHosts(command: string): string[] {
 }
 
 /**
+ * Extract all external (non-private) hosts from an outbound command string.
+ * Returns the lowercased hostnames of every http(s):// URL in the command that
+ * is NOT a private/loopback address. Port and IPv6 brackets are stripped.
+ * Returns [] if the command is not an outbound tool or has no parseable URLs.
+ * This is the canonical host-extraction helper; classifyOutbound calls it too.
+ */
+export function extractExternalHosts(command: string): string[] {
+  if (!OUTBOUND_TOOLS.test(command)) return []
+  const hosts = extractHosts(command)
+  return hosts.filter(h => !(/^\d{1,3}(\.\d{1,3}){3}$/.test(h) && isPrivateAddress(h))).map(h => h.toLowerCase())
+}
+
+/**
  * Extract the first external URL's scheme+host from an outbound command string,
  * returning `null` if the command is not outbound or carries no URL.
  * Exported so approvals.ts can build host-scoped patterns without duplicating URL parsing.
+ * @deprecated Use extractExternalHosts for security-critical decisions.
  */
 export function extractFirstExternalUrl(command: string): string | null {
   if (!OUTBOUND_TOOLS.test(command)) return null

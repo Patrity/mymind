@@ -2,7 +2,7 @@
 // Pure helpers for the exec approval allowlist + the exec_approvals DB store.
 // The pure section is unit-tested; the store section mirrors search/store.ts.
 
-import { isCatastrophic, classifyOutbound, extractFirstExternalUrl } from './outbound'
+import { isCatastrophic, classifyOutbound, extractExternalHosts } from './outbound'
 
 // Shell metacharacters that chain/compose commands. A wildcard must NOT span
 // these, so an approved prefix can never be turned into a second command.
@@ -16,6 +16,13 @@ const OUTBOUND_TOOL_HEADS = new Set(['curl', 'wget'])
 export function validatePattern(pattern: string): { valid: boolean; error?: string } {
   const p = pattern.trim()
   if (!p) return { valid: false, error: 'pattern is empty' }
+  // host:<hostname> is the ONLY form accepted for outbound allowlisting.
+  if (p.startsWith('host:')) {
+    const hostname = p.slice(5)
+    if (!hostname) return { valid: false, error: 'host: pattern must include a hostname' }
+    if (!/^[a-zA-Z0-9.\-]+$/.test(hostname)) return { valid: false, error: 'host: pattern hostname must contain only letters, digits, dots, and hyphens' }
+    return { valid: true }
+  }
   // Strip wildcards + whitespace; a pattern must carry at least one literal char.
   if (!p.replace(/\*/g, '').trim()) return { valid: false, error: 'pattern must contain a literal command, not just "*"' }
   // The command head (first whitespace-delimited token) must be a literal — no wildcard.
@@ -23,10 +30,11 @@ export function validatePattern(pattern: string): { valid: boolean; error?: stri
   const tokens = p.split(/\s+/)
   const head = tokens[0]
   if (head && head.includes('*')) return { valid: false, error: 'command head must be a literal (no wildcard in the first token)' }
-  // A bare outbound-tool wildcard (e.g. `curl *`, `wget *`) is the exact exfil bypass
-  // this system is designed to prevent. Hard-reject it even if it passes other checks.
-  if (head && OUTBOUND_TOOL_HEADS.has(head) && tokens.length === 2 && tokens[1] === '*') {
-    return { valid: false, error: `bare outbound wildcard '${head} *' is not allowed — use a host-scoped pattern like '${head} *https://example.com/*'` }
+  // Any command-glob headed by an outbound tool is rejected — the ONLY way to allowlist
+  // outbound traffic is via a `host:<hostname>` pattern. Glob-headed outbound patterns
+  // are exploitable via substring embedding (attacker.io/https://approved.host/).
+  if (head && OUTBOUND_TOOL_HEADS.has(head)) {
+    return { valid: false, error: `command glob with outbound head '${head}' is not allowed — use 'host:<hostname>' to allowlist outbound traffic` }
   }
   return { valid: true }
 }
@@ -54,11 +62,11 @@ export function matchesApproval(command: string, patterns: string[]): boolean {
 export function proposedPattern(command: string): string {
   const first = command.trim().split(/\s+/)[0]
   if (!first) return ''
-  // For external outbound commands, propose a host-scoped pattern (e.g. `curl *https://api.github.com/*`)
-  // rather than the broad `curl *` which would approve ALL outbound traffic.
+  // For external outbound commands, propose a host:<hostname> pattern.
+  // This is the ONLY safe form: it matches on exact host membership, not substrings.
   if (classifyOutbound(command) === 'external') {
-    const baseUrl = extractFirstExternalUrl(command)
-    if (baseUrl) return `${first} *${baseUrl}/*`
+    const hosts = extractExternalHosts(command)
+    if (hosts[0]) return `host:${hosts[0]}`
   }
   return `${first} *`
 }
@@ -128,6 +136,26 @@ export function execAutoApproveDecision(input: { command: string; patterns: stri
   if (isCatastrophic(command)) return { allow: false, reason: 'catastrophic' } // prompt; handler hard-blocks anyway
   const outbound = classifyOutbound(command)
   if (outbound === 'lan') return { allow: true, reason: 'lan' }               // LAN always allowed
-  if (matchesApproval(command, patterns)) return { allow: true, reason: 'allowlisted' }
-  return { allow: false, reason: outbound === 'external' ? 'external-unlisted' : 'unlisted' }
+  if (outbound === 'external') {
+    // SECURITY: outbound commands NEVER go through glob matching.
+    // Only exact host-set membership is checked to prevent substring-embedding exfil.
+    const hosts = extractExternalHosts(command)
+    const approvedHosts = new Set(
+      patterns.filter(p => p.startsWith('host:')).map(p => p.slice(5).toLowerCase())
+    )
+    if (hosts.length > 0 && hosts.every(h => approvedHosts.has(h))) {
+      return { allow: true, reason: 'host-allowlisted' }
+    }
+    return { allow: false, reason: 'external-unlisted' }
+  }
+  // Command is an outbound tool (curl/wget) but no parseable URL was found (e.g. `curl $URL`).
+  // Never auto-approve — shell variable expansion could reach any host.
+  const OUTBOUND_TOOLS_RE = /\b(curl|wget)\b/
+  if (OUTBOUND_TOOLS_RE.test(command)) {
+    return { allow: false, reason: 'outbound-unparsed' }
+  }
+  // Non-outbound command: standard glob matching.
+  return matchesApproval(command, patterns)
+    ? { allow: true, reason: 'allowlisted' }
+    : { allow: false, reason: 'unlisted' }
 }
