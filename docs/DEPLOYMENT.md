@@ -315,10 +315,12 @@ The other `/api/agent/*` routes (`activity`, `undo`, `chat`) use the standard se
 - **test** (GitHub-hosted): `pnpm install --frozen-lockfile`, lint (non-blocking — repo is
   red), `typecheck`, `test`, `build`. Gates the deploy.
 - **deploy** (self-hosted on `mini`, `master` only): syncs the checked-out tree into LXC
-  114 at `/opt/mymind` via a `tar | pct exec 114 -- tar -x` pipe (preserves `.env` and the
-  Docker volumes), then `docker compose -f docker-compose.prod.yml up -d --build`. The
-  Dockerfile runs `pnpm db:migrate` on start, so migrations apply automatically. A
-  `/login` health check (200, 30×5s retries) must pass or the job fails.
+  114 at `/opt/mymind`, then runs the **native** flow (B3.1) — `docker compose up -d
+  --remove-orphans db searxng` (Postgres + SearXNG stay containers; the app is **not** a
+  container), `deploy/provision-native.sh` (idempotent), `pnpm install`/`build`, `pnpm
+  db:migrate` (sourcing `.env.native`), then `systemctl restart mymind`. A `/login` health
+  check (200, 30×5s retries) gates success. **See §18 for the native model** — §3's `docker
+  compose up --build app` flow is legacy/rollback only.
 
 ### One-time: register the self-hosted runner on `mini`
 
@@ -343,6 +345,50 @@ Verify in GitHub → Settings → Actions → Runners: the runner shows **Idle**
 `runs-on: [self-hosted, proxmox]`, so the label must match exactly.
 
 > **Note:** `/opt/mymind` on LXC 114 is the deploy target. It is a plain copied tree (not a
-> git checkout); the pipeline overwrites tracked files but leaves `.env`, `.env.bak-*`, and
-> the Docker volumes alone. Files **deleted** from the repo are not removed from
-> `/opt/mymind` (tar-extract limitation) — clean stale files by hand if it ever matters.
+> git checkout); the pipeline overwrites tracked files but leaves `.env`, `.env.native`,
+> `.data`, `workspace`, and the Docker volumes alone. Files **deleted** from the repo are not
+> removed from `/opt/mymind` (tar-extract limitation) — clean stale files by hand if it ever matters.
+
+## 18. Native deploy (B3.1 — app runs outside Docker)
+
+As of **B3.1** the app runs **natively** as a `systemd` service in LXC 114, **not** as a Docker
+container, so the agent's `exec` runs in the LXC directly. **`db` (Postgres/pgvector) and
+`searxng` stay Docker containers** (Postgres published on `127.0.0.1:5432`); the corpus volume
+`mymind-pgdata` is never migrated. The §3 / §17 `docker compose up --build app` flow is **legacy**
+(kept for rollback); the `Dockerfile` is retired.
+
+**Runtime:** `deploy/mymind.service` runs `node /opt/mymind/.output/server/index.mjs` as **root**
+(the unprivileged LXC is the boundary), `Restart=always`. It loads `/opt/mymind/.env` then
+`/opt/mymind/.env.native` (native overrides win):
+
+```
+DATABASE_URL=postgres://mymind:<POSTGRES_PASSWORD>@127.0.0.1:5432/mymind
+SEARCH_SEARXNG_URL=http://127.0.0.1:8088
+STORAGE_LOCAL_DIR=/opt/mymind/.data/uploads
+NITRO_PORT=3000
+NITRO_HOST=127.0.0.1
+```
+`.env.native` is on-box only (gitignored via `.env.*`) and is preserved by the deploy sync.
+
+**First cutover:** merge to master — the CD `deploy` job runs `deploy/provision-native.sh`
+(idempotent), which installs Node 22 + pnpm, writes `.env.native` (deriving the PG password from
+`.env`), **migrates the `mymind-uploads` Docker volume → `/opt/mymind/.data/uploads`** (one-time),
+and installs+enables the unit. For a deliberate first cutover you can run it by hand first:
+`pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/provision-native.sh'`.
+
+**Each deploy** (CD `deploy` job): sync tree → `docker compose up -d --remove-orphans db searxng`
+(`--remove-orphans` drops the old `app` container, freeing `:3000`) → `provision-native.sh` →
+`pnpm install`/`build` → `pnpm db:migrate` (sources `.env.native`) → `systemctl restart mymind` →
+`/login` health check.
+
+**Ops:** `systemctl status mymind`, `journalctl -u mymind -f` for the app; `docker ps` shows only
+`mymind-db` + `mymind-searxng`. The in-process Nitro `scheduledTasks` (embeddings, enrichment,
+prune) run inside the native process — no separate cron.
+
+**Rollback:** the previous app image is still on the box. Restore the docker-app by checking out
+the pre-B3.1 `docker-compose.prod.yml` (with the `app` service) + `docker compose up -d --build app`,
+then `systemctl stop mymind`. Keep until the native deploy is confirmed stable.
+
+> **Note:** post-B3.1 the `exec` tool returns **`disabled`** (fail-closed) until **B3.2** reworks
+> the runner for the native root-in-LXC model. The approval gate, allowlist, and
+> `/settings → Agent Tools` UI remain intact.
