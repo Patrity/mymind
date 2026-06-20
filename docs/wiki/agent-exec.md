@@ -9,15 +9,15 @@ updated: 2026-06-20
 
 Cycles B2 and B3.1 added the approval gate harness and moved the app to a native systemd process (root in LXC 114). B3.2 reworks the exec runner for that reality: exec now runs **natively as root in the LXC** (no `setpriv`, no `agent` uid drop, no `/workspace` jail), always injects the user's service tokens, and applies an allowlist-first gate with a catastrophic hard-block. The LXC container is the security boundary.
 
-## The two gates
+## What must be true for exec to run
 
-Exec is disabled by default. It runs only when **all three** conditions hold simultaneously:
+Exec is disabled by default. It runs only when **two operator-controlled gates** are open AND a **process-level prerequisite** is satisfied:
 
-1. **`powerful` profile** — `server/lib/agent/profile.ts` defines two profiles. `bridgetProfile` (default) includes `agentTools` only; `powerfulProfile` adds `execTool`. The model cannot call exec unless the active profile is `powerful`. Selected per-connection via `{ type: 'profile', profile: 'powerful' }` WS frame.
+**Gate 1 — `powerful` profile** — `server/lib/agent/profile.ts` defines two profiles. `bridgetProfile` (default) includes `agentTools` only; `powerfulProfile` adds `execTool`. The model cannot call exec unless the active profile is `powerful`. Selected per-connection via `{ type: 'profile', profile: 'powerful' }` WS frame.
 
-2. **`agent-exec-enabled` cookie** — the `/agent` page exposes an "Exec enabled" toggle (`useCookie<boolean>('agent-exec-enabled', { default: () => false })`). Toggling it sends `{ type: 'execEnabled', value: true|false }` over the WS; `ConnState.execEnabled` carries the current state. At agent-run time, `effectiveTools` (`server/lib/agent/run.ts`) strips `execTool` from the profile's tool registry when `execEnabled === false`. The cookie is **off by default** and is **not present in background/cron/unattended agent runs** — those always run without exec.
+**Gate 2 — `agent-exec-enabled` cookie** — the `/agent` page exposes an "Exec enabled" toggle (`useCookie<boolean>('agent-exec-enabled', { default: () => false })`). Toggling it sends `{ type: 'execEnabled', value: true|false }` over the WS; `ConnState.execEnabled` carries the current state. At agent-run time, `effectiveTools` (`server/lib/agent/run.ts`) strips `execTool` from the profile's tool registry when `execEnabled === false`. The cookie is **off by default** and is **not present in background/cron/unattended agent runs** — those always run without exec.
 
-3. **`selectExecMode` returns `native-root`** — `runConstrained` calls `selectExecMode({ uid: process.getuid(), nodeEnv, unconfined })`. When the process is root (`uid === 0`), it returns `{ mode: 'native-root' }` and exec proceeds. In non-root dev, `EXEC_UNCONFINED=1` (with `NODE_ENV !== 'production'`) returns `{ mode: 'unconfined' }` (same runtime path, no privilege drop, stripped env still applies). Anything else returns `{ mode: 'disabled' }` and `ExecDisabledError` is thrown.
+**Prerequisite (fail-closed) — process running as root** — `runConstrained` calls `selectExecMode({ uid: process.getuid(), nodeEnv, unconfined })`. When the process is root (`uid === 0`), it returns `{ mode: 'native-root' }` and exec proceeds. In non-root dev, `EXEC_UNCONFINED=1` (with `NODE_ENV !== 'production'`) returns `{ mode: 'unconfined' }` (same runtime path, no privilege drop, stripped env still applies). Anything else returns `{ mode: 'disabled' }` and `ExecDisabledError` is thrown. This is not an operator-configured gate — it is a fail-closed check that prevents exec from silently working in an unexpected runtime context.
 
 Flipping the cookie off disables exec immediately with no deploy.
 
@@ -68,7 +68,7 @@ The child environment is **constructed from scratch** (allowlist-by-construction
 
 ### Catastrophic hard-block (`isCatastrophic`)
 
-These commands are **refused unconditionally** — never run, never approvable:
+These commands are **refused unconditionally** — they can never be run even if the human approves:
 
 | Pattern | What it catches |
 |---|---|
@@ -78,7 +78,13 @@ These commands are **refused unconditionally** — never run, never approvable:
 | `:(){ :|:& };:` | fork bomb |
 | `shutdown` / `reboot` / `halt` / `poweroff` | system stop/restart |
 
-`tools/exec.ts` checks `isCatastrophic` **before** consulting the allowlist or the approval channel. A catastrophic command returns `{ blocked: true }` to the model and never reaches `runConstrained`.
+This is a **two-layer defense**:
+
+1. **Gate layer** — `execAutoApproveDecision` (`server/lib/exec/approvals.ts`) returns `{ allow: false, reason: 'catastrophic' }` for catastrophic commands. This means the gate does **not** auto-approve them; instead they fall through to the normal human-approval prompt (the same approval channel as any other unlisted command). A catastrophic command reaching this layer is treated like an unknown command — Tony is asked.
+
+2. **Handler layer** — even if Tony approves, `tools/exec.ts` checks `isCatastrophic` again in the handler **before** calling `runConstrained`. It returns `{ blocked: true, error: 'refused: catastrophic command' }` to the model and never spawns the process. Approval cannot override this hard-block.
+
+The result: catastrophic commands are always surfaced to the human (not silently auto-denied), but they can never actually execute regardless of the approval outcome.
 
 ### Outbound classifier (`classifyOutbound`)
 
@@ -93,7 +99,7 @@ Hostname-addressed LAN targets (e.g. `http://nas.local`) are classified `externa
 ### Allowlist-first decision (`execAutoApproveDecision`)
 
 ```
-isCatastrophic?  → hard-block (return to model, never approvable)
+isCatastrophic?  → allow=false (prompt human; handler hard-blocks before spawning even if approved)
 outbound = lan?  → allow silently
 matchesApproval? → allow silently
 else             → prompt (approval channel)

@@ -16,7 +16,7 @@ export const execTool: AgentTool = {
   dangerous: true,
   schema: {
     command: z.string().min(1).describe('The shell command to run'),
-    cwd: z.string().optional().describe('Working directory relative to /workspace (must stay inside it)')
+    cwd: z.string().optional().describe('Working directory for the command — absolute, or relative to /opt/mymind/workspace. Runs as root in the LXC (no jail).')
   },
   describeApproval: (a) => ({ tool: 'exec', command: a.command as string, proposedPattern: proposedPattern(a.command as string) }),
   autoApprove: async (input) => {
