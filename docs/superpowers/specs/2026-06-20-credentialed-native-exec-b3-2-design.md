@@ -30,8 +30,8 @@ security boundary; openclaw/hermes are cited prior art.
 | Approval gate | **Allowlist-first** — known-safe runs silently, unknown prompts (+remember) | hard-gate (B2 nags every command); pure-autonomy+audit |
 | Secret injection | **Always-on env** — all stored tokens in every command's env | bound-to-allowlist-entry; per-command opt-in |
 | Privilege | **root in the (unprivileged) LXC**, no privilege drop, no jail | setpriv→low-priv user; per-command container |
-| Internal reachability | **via exec + curl** (root has LAN); leave `web_fetch` SSRF guard intact | open `web_fetch` to homelab CIDRs |
-| Exposure | **opt-in `powerful` profile** + global enable flag | on by default in Bridget |
+| Internal reachability | **via exec + curl** — LAN/private targets always-allowed (no prompt), external targets per-hostname allowlist; `web_fetch` SSRF guard untouched | open `web_fetch` to homelab CIDRs |
+| Exposure | **opt-in `powerful` profile** + a per-session **cookie** enable toggle (default off) | on by default in Bridget; DB global flag |
 
 ## Design
 
@@ -65,15 +65,25 @@ checks). Default cwd is a real, persisted working dir `/opt/mymind/workspace` (c
   matching). The decision flow in `tools/exec.ts` / `ai-tools.ts` changes: **before** prompting,
   match the command against the allowlist — matched ⇒ run silently; unmatched ⇒ the existing WS
   approval prompt, with optional remember-as-pattern.
-- **Denylist** (`approvals.ts`, pure matcher, unit-tested) with two jobs:
-  1. **Catastrophic hard-block** — never run, never approvable: `rm -rf /`, `rm -rf /*`, `mkfs*`,
-     `dd of=/dev/*`, fork-bomb `:(){ :|:& };:`, etc.
-  2. **Outbound-breadth rule** — refuse to *remember* an over-broad outbound pattern (`curl *`,
-     `wget *`). Raw outbound with args is never blanket-allowlisted; only a **narrow scoped**
-     pattern can be remembered (e.g. `curl http://192.168.2.25:8004/*`). This is the exfil tripwire
-     that the always-on-env choice requires — a single broad `curl` can't silently ship every token.
-- **Fail-closed:** an unmatched command with no connected approval channel auto-denies (unchanged
-  from B2).
+- **Denylist** (`approvals.ts`, pure matcher, unit-tested): **catastrophic hard-block** — never run,
+  never approvable: `rm -rf /`, `rm -rf /*`, `mkfs*`, `dd of=/dev/*`, fork-bomb `:(){ :|:& };:`, etc.
+- **Outbound policy** (the exfil control the always-on-env choice requires) — a pure classifier in
+  `approvals.ts` that extracts the target host(s) from outbound commands (`curl`/`wget` URLs + host
+  args) and applies:
+  - **LAN / private targets → always allowed, no prompt.** If every outbound target is a private
+    address (reuse `isPrivateAddress` from `server/utils/net.ts`: loopback, `10/8`, `172.16/12`,
+    `192.168/16`), the command runs silently. The agent freely reaches the rig and other homelab
+    hosts — internal access is trusted.
+  - **External targets → per-hostname allowlist.** A command targeting a public host needs a
+    per-host allowlist entry; the first request to a new external host **prompts**, and
+    approve+remember binds to that hostname/domain (`api.github.com`, not `curl *`). No broad
+    outbound is ever remembered — exfiltration to an attacker host always requires an explicit,
+    per-domain human approval.
+  - Classification rule: a **literal private IP → LAN**; a public IP **or a hostname → external**
+    (per-host allowlist). Hostnames that happen to resolve to the LAN are treated as external
+    (approve once per host) — this avoids DNS-resolution-at-gate complexity and is fine because
+    homelab access here is IP-addressed.
+- **Fail-closed:** a gated command with no connected approval channel auto-denies (unchanged from B2).
 
 ### 5. Self-install persistence
 `apt`/`npm -g`/`pip` installs land in the LXC root filesystem and **persist** across app restarts
@@ -83,20 +93,28 @@ pattern). Caveat to document: a full LXC rebuild loses self-installed tools — 
 in `provision-native.sh` (acceptable; rebuilds are rare and can be re-installed on demand).
 
 ### 6. Internal reachability (the rig probe)
-exec runs as root with full LAN access, so `curl http://192.168.2.25:8004/v1/models` works — gated
-by the allowlist. Because §4 keeps raw outbound out of broad allowlisting, the first internal curl
-**prompts**, and the human approves+remembers a **narrow** pattern (`curl http://192.168.2.25:8004/*`),
-after which internal probes run silently. `web_fetch`'s SSRF guard (`server/utils/net.ts`,
+exec runs as root with full LAN access, and the §4 outbound policy treats **LAN/private targets as
+always-allowed**, so `curl http://192.168.2.25:8004/v1/models` runs with **no prompt** — the rig
+probe and any other homelab host work out of the box. `web_fetch`'s SSRF guard (`server/utils/net.ts`,
 `isPrivateAddress`) stays intact — that tool ingests *untrusted external* content and must stay
-paranoid; exec is the trusted-operator path for internal hosts.
+paranoid; exec is the trusted-operator path for internal hosts. (Both the SSRF guard and the §4
+outbound classifier share the same `isPrivateAddress` helper — one source of truth for "what is LAN".)
 
-### 7. Exposure + global enable
+### 7. Exposure + enable toggle
 - `execTool` stays in the **`powerful` profile only** (`server/lib/agent/profile.ts`); default
   Bridget has no exec. `dangerous:true` semantics remain; the allowlist-first gate only changes
   *when* it prompts.
-- A **global kill-switch** `settings.exec_enabled` (default **false**). Exec runs only when
-  `exec_enabled === true` AND the active profile includes `execTool` AND `selectExecMode` returns
-  `native-root`. Flipping `exec_enabled` off disables exec instantly without a deploy.
+- **Enable toggle = a cookie**, persisted the way the app's other frontend settings are: a
+  `useCookie<boolean>('agent-exec-enabled', { default: () => false })` in the agent UI
+  (`app/pages/agent/index.vue`, alongside the existing `agent-canvas` / `agent-speak` cookies). The
+  server reads it at agent-run time via `getCookie(event, 'agent-exec-enabled')` (the same
+  client-cookie→`getCookie` pattern already used for `clip_device`) and threads the boolean into the
+  exec gate.
+- Exec runs only when **all** hold: the cookie is on (this session), the active profile includes
+  `execTool`, and `selectExecMode` returns `native-root`. Flipping the cookie off disables exec
+  instantly, no deploy. **Background/cron agent runs carry no request cookie → exec is off** — a safe
+  default (autonomous, unattended runs don't get a credentialed shell). The opt-in `powerful` profile
+  remains the deliberate server-side capability grant; the cookie is the per-session "armed" switch.
 
 ### 8. Audit
 - The exec `tool` span is already recorded (`ai-tools.ts` `withSpan({kind:'tool', …})` →
@@ -110,26 +128,32 @@ paranoid; exec is the trusted-operator path for internal hosts.
 ## Components / files
 - `server/lib/exec/run.ts` — `native-root` mode; `buildSpawnArgs` native-root; `buildExecEnv` inject
   secrets; relax `resolveExecCwd`.
-- `server/lib/exec/approvals.ts` — allowlist-first decision + denylist matcher (catastrophic
-  hard-block + outbound-breadth rule).
+- `server/lib/exec/approvals.ts` — allowlist-first decision + catastrophic denylist + the outbound
+  classifier (LAN-allow / external per-host; reuses `isPrivateAddress` from `server/utils/net.ts`).
 - `server/lib/exec/secrets.ts` *(new)* — encrypted secrets store (reuse config crypto).
-- `server/lib/agent/tools/exec.ts` — wire allowlist-first; enrich the result payload.
+- `server/lib/agent/tools/exec.ts` — wire allowlist-first + outbound policy; enrich the result payload.
 - `server/lib/agent/ai-tools.ts` — exec span enrichment.
-- `server/lib/agent/profile.ts` — `powerful` profile (exists) + `exec_enabled` gating.
+- `server/lib/agent/run.ts` + the agent-run request handler — thread the
+  `getCookie(event, 'agent-exec-enabled')` boolean from the request into the agent run → exec gate.
+- `server/lib/agent/profile.ts` — `powerful` profile (exists); exec gated by the threaded cookie flag.
 - `server/lib/observability/redact.ts` — mask secret values.
-- `app/pages/settings.vue` (+ a settings component) — Secrets tab + `exec_enabled` toggle.
-- DB — secrets store (settings key or new table) + `exec_enabled` setting; migration only if a new
-  table is added.
+- `app/pages/agent/index.vue` — `useCookie<boolean>('agent-exec-enabled')` toggle (next to
+  `agent-canvas`/`agent-speak`); `app/pages/settings.vue` (+ component) — **Secrets** tab.
+- DB — secrets store (settings key or new table; mirror `ai_config`); migration only if a new table
+  is added. **No `exec_enabled` DB setting** — the toggle is the cookie.
 - `deploy/provision-native.sh` — ensure `/opt/mymind/workspace` exists (already created in B3.1).
-- Tests — `selectExecMode` native-root; denylist matcher (catastrophic + outbound-breadth);
-  allowlist-first decision; secret-value redaction; secrets-store crypto roundtrip.
+- Tests — `selectExecMode` native-root; catastrophic denylist matcher; outbound classifier
+  (LAN-allow vs external per-host); allowlist-first decision; secret-value redaction; secrets-store
+  crypto roundtrip.
 
 ## Security posture (accepted)
 root-in-LXC + always-on secrets + no jail, accepted by the user (LXC is the boundary;
-openclaw/hermes prior art). Retained mitigations: the allowlist-first **human gate**, the
-**outbound-breadth rule** (no `curl *`), the **catastrophic hard-block**, full **audit + value
-redaction**, **opt-in profile + global kill-switch**, and unchanged app auth fronting everything
-(exec is reachable only through an authenticated agent run, never anonymously).
+openclaw/hermes prior art). Retained mitigations: the allowlist-first **human gate**; the **outbound
+policy** (LAN/private always-allowed, but every external host is per-domain allowlisted — so token
+exfiltration to an attacker host always needs an explicit human approval); the **catastrophic
+hard-block**; full **audit + secret-value redaction**; **opt-in `powerful` profile + a per-session
+cookie toggle** (off by default, and off for unattended/cron runs); and unchanged app auth fronting
+everything (exec is reachable only through an authenticated agent run, never anonymously).
 
 ## Out of scope (later cycles)
 - B3.3 / B4: artifact/report rendering; `ssh`/`pct` to **other** homelab hosts (higher privilege).
@@ -138,10 +162,12 @@ redaction**, **opt-in profile + global kill-switch**, and unchanged app auth fro
 - Per-command containerization/sandboxing.
 
 ## Testing & validation
-- **Unit:** the pure helpers above (mode select, denylist, allowlist-first decision, redaction,
-  crypto roundtrip).
-- **Live E2E (on the box, post-deploy):** enable `exec_enabled` + powerful profile; agent runs `gh`
-  against a private repo (token from the store) → success; agent curls the rig
-  `http://192.168.2.25:8004/v1/models`, approve+remember the scoped pattern → success; confirm
-  `activity_log` shows both commands with secret values **redacted**; confirm a broad `curl *`
-  remember is **refused**; confirm flipping `exec_enabled` off disables exec.
+- **Unit:** the pure helpers above (native-root mode select, catastrophic denylist, outbound
+  classifier [LAN vs external host extraction], allowlist-first decision, secret-value redaction,
+  secrets-store crypto roundtrip).
+- **Live E2E (on the box, post-deploy):** turn on the `agent-exec-enabled` cookie + powerful profile;
+  agent runs `gh` against a private repo (token from the store) → success; agent curls the rig
+  `http://192.168.2.25:8004/v1/models` → success with **no prompt** (LAN always-allowed); a request to
+  a **new external host** prompts and binds per-hostname on approve+remember; confirm `activity_log`
+  shows the commands with secret values **redacted**; confirm flipping the cookie off disables exec;
+  confirm an unattended/cron agent run cannot exec (no cookie).
