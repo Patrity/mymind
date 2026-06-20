@@ -100,3 +100,16 @@ export async function deleteApproval(id: string): Promise<void> {
 export async function touchApproval(id: string): Promise<void> {
   await useDb().update(execApprovals).set({ lastUsedAt: new Date() }).where(eq(execApprovals.id, id))
 }
+
+// ---- Pure auto-approve decision (no I/O) ----
+import { isCatastrophic, classifyOutbound } from './outbound'
+
+/** Allowlist-first decision for exec. allow=true ⇒ run silently; allow=false ⇒ prompt the human. */
+export function execAutoApproveDecision(input: { command: string; patterns: string[] }): { allow: boolean; reason: string } {
+  const { command, patterns } = input
+  if (isCatastrophic(command)) return { allow: false, reason: 'catastrophic' } // prompt; handler hard-blocks anyway
+  const outbound = classifyOutbound(command)
+  if (outbound === 'lan') return { allow: true, reason: 'lan' }               // LAN always allowed
+  if (matchesApproval(command, patterns)) return { allow: true, reason: 'allowlisted' }
+  return { allow: false, reason: outbound === 'external' ? 'external-unlisted' : 'unlisted' }
+}
