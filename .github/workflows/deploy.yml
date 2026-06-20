@@ -52,30 +52,39 @@ jobs:
     needs: test
     if: github.ref == 'refs/heads/master'
     runs-on: [self-hosted, proxmox]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Sync code into LXC 114
         run: |
-          # `tar -x` overwrites but never DELETES files removed from the repo, so a
-          # source file deleted in a commit lingers on the box and can break the
-          # build (e.g. a deleted module still imported by another stale file).
           # Clear the tracked tree first — preserving runtime state that lives in
-          # /opt/mymind (.env, plus any .data/.output/.nuxt/node_modules/.git) —
-          # then extract the fresh checkout so deletions propagate.
+          # /opt/mymind (.env, .env.native, plus any .data/.output/.nuxt/node_modules/workspace/.git)
+          # — then extract the fresh checkout so deletions propagate.
           pct exec 114 -- bash -lc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 \
-            ! -name .git ! -name .env ! -name .data ! -name .output \
-            ! -name .nuxt ! -name node_modules -exec rm -rf {} +'
+            ! -name .git ! -name .env ! -name .env.native ! -name .data ! -name .output \
+            ! -name .nuxt ! -name node_modules ! -name workspace -exec rm -rf {} +'
           tar -C "$GITHUB_WORKSPACE" \
             --exclude=.git --exclude=node_modules --exclude=.nuxt \
-            --exclude=.output --exclude=.data --exclude=.env \
+            --exclude=.output --exclude=.data --exclude=.env --exclude=.env.native \
             -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
 
-      - name: Rebuild + restart (migrations run on container start)
+      - name: Start db + searxng (drop the old app container)
         run: |
-          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --build'
+          pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng'
+
+      - name: Provision native runtime (idempotent)
+        run: |
+          pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/provision-native.sh'
+
+      - name: Install + build + migrate (migrate uses .env.native)
+        run: |
+          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NUXT_PUBLIC_UNMUTE_URL="" pnpm build && set -a && . ./.env.native && set +a && pnpm db:migrate'
+
+      - name: Restart native service
+        run: |
+          pct exec 114 -- bash -lc 'systemctl restart mymind'
 
       - name: Health check (/login -> 200)
         run: |
