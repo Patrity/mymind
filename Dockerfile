@@ -1,4 +1,7 @@
 # syntax=docker/dockerfile:1
+# LEGACY (B3.1): the app now runs NATIVELY via systemd in LXC 114 — see deploy/mymind.service
+# + docs/DEPLOYMENT.md (Native deploy). This Dockerfile is no longer in the deploy flow; kept
+# for reference / emergency rollback only.
 # MyMind — Nuxt 4 (Nitro node-server). Multi-stage; runtime keeps deps + migrations
 # so the container can run `pnpm db:migrate` on start.
 FROM node:22-slim AS base

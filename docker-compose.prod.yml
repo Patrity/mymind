@@ -1,7 +1,7 @@
-# Production compose for MyMind (homelab / Proxmox + Docker).
-#   docker compose -f docker-compose.prod.yml up -d --build
-# Put a TLS reverse proxy (Caddy/Traefik/nginx) in front of the app and set
-# BETTER_AUTH_URL to the public https origin. See docs/DEPLOYMENT.md.
+# Production compose for MyMind — db + searxng only.
+# The APP now runs NATIVELY via systemd (deploy/mymind.service), not as a container.
+#   docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng
+# See docs/DEPLOYMENT.md (Native deploy).
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -14,43 +14,13 @@ services:
     volumes:
       - mymind-pgdata:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d   # creates pgcrypto/pg_trgm/ltree/vector on first boot
-    # No host port published — only the app (same compose network) reaches it.
+    ports:
+      - "127.0.0.1:5432:5432"   # native app reaches Postgres on loopback (LXC-internal only)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mymind -d mymind"]
       interval: 10s
       timeout: 5s
       retries: 10
-
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        # Inlined into the client bundle at build time (see Dockerfile). Compose
-        # interpolates this from .env. Also kept in the runtime env via env_file.
-        NUXT_PUBLIC_UNMUTE_URL: ${NUXT_PUBLIC_UNMUTE_URL:-}
-    container_name: mymind-app
-    restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-    env_file: .env                # AI_*, BETTER_AUTH_SECRET, ALLOW_SIGNUP, etc.
-    environment:
-      # Override DB + storage for the container network (db reachable as host "db" on 5432).
-      DATABASE_URL: postgres://mymind:${POSTGRES_PASSWORD}@db:5432/mymind
-      STORAGE_LOCAL_DIR: /app/.data/uploads
-      NITRO_PORT: "3000"
-      NITRO_HOST: "0.0.0.0"
-      # Nitro reads runtimeConfig overrides ONLY from NUXT_/NITRO_-prefixed env at
-      # runtime. AI providers/models are no longer env-configured — they live in the
-      # DB (settings.key='ai_config', edited at /settings, keys stored encrypted).
-      # SearXNG (bundled search backend — internal only, reachable on compose network).
-      SEARCH_SEARXNG_URL: http://searxng:8080
-    volumes:
-      - mymind-uploads:/app/.data/uploads   # persistent uploaded blobs
-      - mymind-workspace:/workspace        # exec tool cwd-jail (owned by the low-priv agent user)
-    ports:
-      - "3000:3000"   # bind to 127.0.0.1:3000 and front with a TLS proxy in real deployments
 
   searxng:
     image: searxng/searxng:latest
@@ -60,13 +30,10 @@ services:
       SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET in .env}
     volumes:
       - ./searxng:/etc/searxng:rw
-    # Published on the LAN so other homelab services can share this SearXNG instance
-    # (the app still reaches it internally as "searxng:8080"). Keep it LAN-only —
-    # do NOT expose to the internet. Override the host port with SEARXNG_PORT in .env.
+    # LAN-published so other homelab services can share it; the native app reaches it at
+    # http://127.0.0.1:8088. Keep LAN-only — do NOT expose to the internet.
     ports:
       - "${SEARXNG_PORT:-8088}:8080"
 
 volumes:
   mymind-pgdata:
-  mymind-uploads:
-  mymind-workspace:
