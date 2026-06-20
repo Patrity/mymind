@@ -2,10 +2,36 @@ import { describe, it, expect } from 'vitest'
 import { isCatastrophic, classifyOutbound } from './outbound'
 
 describe('isCatastrophic', () => {
-  for (const c of ['rm -rf /', 'rm -rf /*', 'sudo rm -rf  /', 'mkfs.ext4 /dev/sda', 'dd if=/dev/zero of=/dev/sda', ':(){ :|:& };:']) {
+  // Existing positive cases (must remain blocked)
+  for (const c of [
+    'rm -rf /',
+    'rm -rf /*',
+    'sudo rm -rf  /',
+    'mkfs.ext4 /dev/sda',
+    'dd if=/dev/zero of=/dev/sda',
+    ':(){ :|:& };:',
+  ]) {
     it(`blocks: ${c}`, () => expect(isCatastrophic(c)).toBe(true))
   }
-  for (const c of ['rm -rf ./build', 'gh pr list', 'curl http://x']) {
+
+  // New positive cases: split flags and intervening long options
+  for (const c of [
+    'rm -r -f /',
+    'rm --no-preserve-root -rf /',
+    'rm -rf --no-preserve-root /',
+    'rm -fr /*',
+  ]) {
+    it(`blocks (split/intervening flags): ${c}`, () => expect(isCatastrophic(c)).toBe(true))
+  }
+
+  // Negative cases (must remain allowed)
+  for (const c of [
+    'rm -rf ./build',
+    'rm -r -f ./tmp',
+    'rm -rf /home/me/project',
+    'gh pr list',
+    'curl http://x',
+  ]) {
     it(`allows: ${c}`, () => expect(isCatastrophic(c)).toBe(false))
   }
 })

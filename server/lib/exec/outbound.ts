@@ -1,8 +1,44 @@
 import { isPrivateAddress } from '../../utils/net'
 
+/** Returns true when the `rm` invocation is a recursive+forced wipe of the filesystem root (`/` or `/*`). */
+function isRootWipe(command: string): boolean {
+  const tokens = command.trim().split(/\s+/)
+  // Find `rm` (possibly preceded by `sudo` etc.)
+  const rmIdx = tokens.findIndex(t => t === 'rm')
+  if (rmIdx === -1) return false
+
+  // Gather all tokens after `rm`
+  const rest = tokens.slice(rmIdx + 1)
+
+  // Collect single-char flags from every flag token; skip bare `--` (end-of-options sentinel)
+  // Long options like --no-preserve-root don't grant -r/-f; only single-char flags count.
+  let hasR = false
+  let hasF = false
+  const nonFlagArgs: string[] = []
+
+  for (const tok of rest) {
+    if (tok === '--') continue
+    if (tok.startsWith('--')) {
+      // long option — ignore (--no-preserve-root etc. don't add -r/-f)
+      continue
+    }
+    if (tok.startsWith('-')) {
+      for (const ch of tok.slice(1)) {
+        if (ch === 'r' || ch === 'R') hasR = true
+        if (ch === 'f') hasF = true
+      }
+    } else {
+      nonFlagArgs.push(tok)
+    }
+  }
+
+  if (!hasR || !hasF) return false
+
+  // A root wipe hits `/` or `/*` as one of the target arguments.
+  return nonFlagArgs.some(a => a === '/' || a === '/*')
+}
+
 const CATASTROPHIC: RegExp[] = [
-  /\brm\s+-[a-z]*r[a-z]*f[a-z]*\s+\/(\s|\*|$)/i, // rm -rf / or /*
-  /\brm\s+-[a-z]*f[a-z]*r[a-z]*\s+\/(\s|\*|$)/i,
   /\bmkfs\b/i,
   /\bdd\b[^\n]*\bof=\/dev\//i,
   /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, // fork bomb
@@ -10,7 +46,7 @@ const CATASTROPHIC: RegExp[] = [
 ]
 
 export function isCatastrophic(command: string): boolean {
-  return CATASTROPHIC.some(re => re.test(command))
+  return isRootWipe(command) || CATASTROPHIC.some(re => re.test(command))
 }
 
 // Extract URLs and host:port args from outbound-capable commands. We only classify
