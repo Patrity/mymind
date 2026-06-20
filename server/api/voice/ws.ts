@@ -26,6 +26,7 @@ interface ConnState {
   conversationId: string | null
   context: string | null
   profile: 'bridget' | 'powerful'
+  execEnabled: boolean
   pendingApprovals: Map<string, { resolve: (d: { approved: boolean }) => void; timer: ReturnType<typeof setTimeout>; req: ApprovalRequest }>
 }
 const conns = new WeakMap<object, ConnState>()
@@ -61,7 +62,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, context: null, profile: 'bridget', pendingApprovals: new Map() })
+    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, context: null, profile: 'bridget', execEnabled: false, pendingApprovals: new Map() })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -104,6 +105,8 @@ export default defineWebSocketHandler({
       if (msg.type === 'voice') { s.voice = msg.voice as string; return }
       // Profile switch (per-connection; default safe). Affects subsequent turns.
       if (msg.type === 'profile') { s.profile = msg.profile === 'powerful' ? 'powerful' : 'bridget'; return }
+      // Exec gate: per-session master enable switch (cookie-armed, default off).
+      if (msg.type === 'execEnabled') { s.execEnabled = msg.value === true; return }
       // Approve/deny resolve a pending approval IMMEDIATELY (like interrupt) — not
       // queued behind the turn lock, so the awaiting turn unblocks.
       if (msg.type === 'approve' || msg.type === 'deny') {
@@ -147,7 +150,7 @@ export default defineWebSocketHandler({
         const speak = typeof msg.speak === 'boolean' ? msg.speak : false
         inputModality = 'text'
         speakFlag = speak
-        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, profile, requestApproval, signal, emit })
+        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, profile, execEnabled: s.execEnabled, requestApproval, signal, emit })
       } else {
         return
       }
@@ -155,7 +158,7 @@ export default defineWebSocketHandler({
       const audio = frame.bytes
       inputModality = 'voice'
       speakFlag = true
-      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context: s.context ?? undefined, profile, requestApproval, signal, emit })
+      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context: s.context ?? undefined, profile, execEnabled: s.execEnabled, requestApproval, signal, emit })
     }
     s.ac?.abort()
     for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }

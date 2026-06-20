@@ -8,10 +8,14 @@ const route = useRoute()
 // Persistent preferences (cookie-backed so they survive page reloads)
 const showCanvas = useCookie<boolean>('agent-canvas', { default: () => true })
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
+// Exec master switch: cookie-backed so the choice persists across page reloads,
+// but defaults false so unattended/cron runs carry no cookie → exec stays off.
+const execEnabled = useCookie<boolean>('agent-exec-enabled', { default: () => false })
 
 // Powerful-tools toggle: per-session (NOT cookie-persisted) so it defaults safe on every load
 const powerful = ref(false)
 watch(powerful, (v) => voice.setProfile(v ? 'powerful' : 'bridget'))
+watch(execEnabled, (v) => voice.setExecEnabled(!!v))
 
 // Mic-on state is local — it reflects whether the VAD is actually running
 const micOn = ref(false)
@@ -46,6 +50,7 @@ async function resume(id: string) {
 onMounted(async () => {
   await voice.connect()
   voice.setProfile(powerful.value ? 'powerful' : 'bridget')
+  voice.setExecEnabled(!!execEnabled.value)
   const c = route.query.c
   if (typeof c === 'string' && c) await resume(c)
 })
@@ -88,6 +93,12 @@ onMounted(async () => {
             <USwitch
               v-model="powerful"
               label="Powerful tools"
+              size="sm"
+            />
+            <!-- Exec master switch: arms exec tool for this session; cookie-persisted, default off -->
+            <USwitch
+              v-model="execEnabled"
+              label="Exec (powerful)"
               size="sm"
             />
             <!-- History button -->
@@ -184,6 +195,12 @@ onMounted(async () => {
             <USwitch
               v-model="powerful"
               label="Powerful tools"
+              size="sm"
+            />
+            <!-- Exec master switch: arms exec tool for this session; cookie-persisted, default off -->
+            <USwitch
+              v-model="execEnabled"
+              label="Exec (powerful)"
               size="sm"
             />
             <!-- History button -->

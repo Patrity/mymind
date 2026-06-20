@@ -25,14 +25,25 @@ export interface RunDeps {
   buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string }) => Promise<string>
 }
 
+/**
+ * Filter tools from the base registry. When execEnabled is false (the default),
+ * the 'exec' tool is stripped out — exec is dark until the user arms it via the
+ * per-session cookie. Pure function so it can be unit-tested independently.
+ */
+export function effectiveTools(base: AgentTool[], execEnabled: boolean): AgentTool[] {
+  if (execEnabled) return base
+  return base.filter(t => t.name !== 'exec')
+}
+
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }> },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; execEnabled?: boolean; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }> },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
   const profile = ctx.profile ?? bridgetProfile
-  const registry = deps.tools ?? profile.tools
+  const baseRegistry = deps.tools ?? profile.tools
+  const registry = effectiveTools(baseRegistry, ctx.execEnabled === true)
   const buildPrompt = deps.buildSystemPrompt ?? realBuildSystemPrompt
   const queue: AgentEvent[] = []
   const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, onEvent: e => queue.push(e) })
