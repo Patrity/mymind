@@ -367,11 +367,27 @@ SEARCH_SEARXNG_URL=http://127.0.0.1:8088
 STORAGE_LOCAL_DIR=/opt/mymind/.data/uploads
 NITRO_PORT=3000
 NITRO_HOST=0.0.0.0
+# runtimeConfig overrides — REQUIRED at runtime (see the runtimeConfig gotcha below):
+NUXT_DATABASE_URL=postgres://mymind:<POSTGRES_PASSWORD>@127.0.0.1:5432/mymind
+NUXT_STORAGE_LOCAL_DIR=/opt/mymind/.data/uploads
 ```
 `.env.native` is on-box only (gitignored via `.env.*`) and is preserved by the deploy sync.
+
 **`NITRO_HOST` must be `0.0.0.0`** — the reverse proxy (Pangolin) reaches the app by the LXC's
 IP, so a loopback (`127.0.0.1`) bind 502s externally even though the in-LXC `localhost`
 health-check passes. `provision-native.sh` self-heals an existing loopback `.env.native`.
+
+**The `NUXT_DATABASE_URL` gotcha (cost us a prod incident).** `useDb()` reads
+`useRuntimeConfig().databaseUrl`, and `nuxt.config` defines `databaseUrl: process.env.DATABASE_URL`.
+Nuxt **bakes `runtimeConfig` at build time** from the build-time `.env` (which has `@db:5432`, the
+Docker hostname). At runtime, a plain `DATABASE_URL` env var does **not** override a `runtimeConfig`
+key — **only the `NUXT_`-prefixed `NUXT_DATABASE_URL` does**. So a native deploy that sets only
+`DATABASE_URL` leaves the app dialing the build-baked `@db` (which resolves via DNS search to a
+public IP → `ECONNREFUSED`); `migrate` still works because drizzle reads `process.env.DATABASE_URL`
+directly. The tell: `/login` returns 200 (SSR, no DB) but every **authenticated** API call (`/api/mcp`,
+`/api/hooks/cc/*`) 500s — the auth middleware's `api_tokens` lookup is the first DB hit.
+`provision-native.sh` writes/self-heals `NUXT_DATABASE_URL` + `NUXT_STORAGE_LOCAL_DIR`. **Health
+checks must hit an authenticated endpoint, not just `/login`**, to catch this class of failure.
 
 **First cutover:** merge to master — the CD `deploy` job runs `deploy/provision-native.sh`
 (idempotent), which installs Node 22 + pnpm, writes `.env.native` (deriving the PG password from

@@ -95,11 +95,14 @@ jobs:
           # Downtime is just this step (seconds), not the whole build.
           pct exec 114 -- bash -lc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng && systemctl restart mymind'
 
-      - name: Health check (/login -> 200)
+      - name: Health check (/api/health -> 200, DB-touching)
         run: |
+          # /api/health runs `select 1` against the app's runtimeConfig DB URL — it catches a
+          # broken DB connection that /login (pure SSR, no DB) would silently pass. This is the
+          # check that would have caught the B3.1 NUXT_DATABASE_URL incident. See DEPLOYMENT.md §18.
           # shellcheck disable=SC2016
           pct exec 114 -- bash -lc 'for i in $(seq 1 30); do
-            code=$(curl -fsS -o /dev/null -w "%{http_code}" http://localhost:3000/login || true)
+            code=$(curl -fsS -o /dev/null -w "%{http_code}" http://localhost:3000/api/health || true)
             if [ "$code" = "200" ]; then echo "healthy"; exit 0; fi
             echo "waiting ($i): got $code"; sleep 5
-          done; echo "never became healthy"; exit 1'
+          done; echo "never became healthy"; curl -s http://localhost:3000/api/health || true; exit 1'

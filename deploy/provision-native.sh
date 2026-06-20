@@ -19,11 +19,18 @@ if [ ! -f "$APP_DIR/.env.native" ]; then
   echo "[provision] writing .env.native"
   PW="$(grep -E '^POSTGRES_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2-)"
   cat > "$APP_DIR/.env.native" <<EOF
+# Plain vars — read directly from process.env (migrate/drizzle-kit, SearXNG client, Nitro host/port).
 DATABASE_URL=postgres://mymind:${PW}@127.0.0.1:5432/mymind
 SEARCH_SEARXNG_URL=http://127.0.0.1:8088
 STORAGE_LOCAL_DIR=$APP_DIR/.data/uploads
 NITRO_PORT=3000
 NITRO_HOST=0.0.0.0
+# NUXT_-prefixed runtime overrides for nuxt.config runtimeConfig keys (databaseUrl, storageLocalDir).
+# The APP reads useRuntimeConfig(), which is BAKED AT BUILD from the build-time .env (=> @db). At
+# runtime only NUXT_* env vars override it — a plain DATABASE_URL does NOT. Without these the app
+# dials the build-baked DB host (e.g. @db -> a public IP via DNS search) and every authed API 500s.
+NUXT_DATABASE_URL=postgres://mymind:${PW}@127.0.0.1:5432/mymind
+NUXT_STORAGE_LOCAL_DIR=$APP_DIR/.data/uploads
 EOF
 fi
 
@@ -33,6 +40,23 @@ fi
 if [ -f "$APP_DIR/.env.native" ] && grep -qE '^NITRO_HOST=127\.0\.0\.1' "$APP_DIR/.env.native"; then
   echo "[provision] fixing NITRO_HOST 127.0.0.1 -> 0.0.0.0"
   sed -i 's/^NITRO_HOST=127\.0\.0\.1/NITRO_HOST=0.0.0.0/' "$APP_DIR/.env.native"
+fi
+
+# 2c. Self-heal: ensure the NUXT_-prefixed runtime overrides exist on an existing .env.native
+# (added after the first native deploys). The app reads useRuntimeConfig() (baked at build from
+# the build-time .env); only NUXT_* env vars override it at runtime — plain DATABASE_URL does not.
+# Derive each from the plain var already present in .env.native.
+ensure_nuxt_override() {
+  local plain="$1" nuxt="$2" val
+  val="$(grep -E "^${plain}=" "$APP_DIR/.env.native" | head -1 | cut -d= -f2-)"
+  if [ -n "$val" ] && ! grep -qE "^${nuxt}=" "$APP_DIR/.env.native"; then
+    echo "[provision] adding ${nuxt} (runtime override for nuxt runtimeConfig)"
+    echo "${nuxt}=${val}" >> "$APP_DIR/.env.native"
+  fi
+}
+if [ -f "$APP_DIR/.env.native" ]; then
+  ensure_nuxt_override DATABASE_URL NUXT_DATABASE_URL
+  ensure_nuxt_override STORAGE_LOCAL_DIR NUXT_STORAGE_LOCAL_DIR
 fi
 
 # 3. Native dirs + one-time uploads migration from the docker volume

@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/mymind
+# Parity with the old docker runtime stage (which set ENV NODE_ENV=production).
+Environment=NODE_ENV=production
 # .env first, then .env.native overrides (DB/searxng/storage/host) — order matters.
 EnvironmentFile=/opt/mymind/.env
 EnvironmentFile=/opt/mymind/.env.native
