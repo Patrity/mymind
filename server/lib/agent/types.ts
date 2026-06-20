@@ -33,6 +33,8 @@ export interface AgentTool {
   // Derive the approval request from the call args (tool-agnostic gate). Defaults
   // to a JSON-of-args command + `<name> *` pattern when omitted.
   describeApproval?: (args: Record<string, unknown>) => ApprovalRequest
+  /** Optional per-tool fast-path: return true to run WITHOUT a human prompt (gate still applies to false). */
+  autoApprove?: (input: Record<string, unknown>, ctx: ToolContext) => boolean | Promise<boolean>
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolExecution>
 }
 

@@ -29,16 +29,20 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
       inputSchema: z.object(t.schema),
       execute: async (input: Record<string, unknown>) => {
         hooks.onEvent({ type: 'tool-start', name: t.name, args: input })
-        // Dangerous tools pause for human approval BEFORE the handler runs.
+        // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
+        // autoApprove fast-path clears it (allowlist-first).
         if (t.dangerous) {
-          const decision = ctx.requestApproval
-            ? await ctx.requestApproval(approvalRequestFor(t, input))
-            : { approved: false } // fail-safe: no channel → auto-deny
-          if (decision.approved !== true) {
-            const summary = `denied: ${t.name}`
-            publishActivity({ type: 'tool', name: t.name, summary })
-            hooks.onEvent({ type: 'tool-result', name: t.name, summary })
-            return { denied: true }
+          const auto = t.autoApprove ? await t.autoApprove(input, ctx) : false
+          if (!auto) {
+            const decision = ctx.requestApproval
+              ? await ctx.requestApproval(approvalRequestFor(t, input))
+              : { approved: false } // fail-safe: no channel → auto-deny
+            if (decision.approved !== true) {
+              const summary = `denied: ${t.name}`
+              publishActivity({ type: 'tool', name: t.name, summary })
+              hooks.onEvent({ type: 'tool-result', name: t.name, summary })
+              return { denied: true }
+            }
           }
         }
         try {
