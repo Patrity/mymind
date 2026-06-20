@@ -83,7 +83,10 @@ jobs:
 
       - name: Install + build + migrate (migrate uses .env.native)
         run: |
-          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NUXT_PUBLIC_UNMUTE_URL="" pnpm build && set -a && . ./.env.native && set +a && pnpm db:migrate'
+          # --max-old-space-size: the native nuxt/vite build needs >2GB heap; the V8 default
+          # (~2GB) OOMs the server build in the LXC (the old docker build had its own limits).
+          # LXC 114 must have enough physical RAM for this heap + the running db/searxng/app.
+          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && set -a && . ./.env.native && set +a && pnpm db:migrate'
 
       - name: Cut over to native (drop old app container, start native on :3000)
         run: |
