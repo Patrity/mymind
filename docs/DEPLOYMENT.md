@@ -195,36 +195,45 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 - `searxng/settings.yml` (mounted to `/etc/searxng`) enables the JSON API (`search.formats: [html, json]`) and disables the rate-limiter for internal use.
 - **`SEARXNG_SECRET` is required in `.env`** (`openssl rand -hex 32`). Compose passes it to the `searxng` service via `environment:`; the container's entrypoint replaces the `ultrasecretkey` placeholder in `settings.yml` with the real value on boot. Without it, `docker compose up` fails fast.
 
-## 14. Agent exec tool
+## 14. Agent exec tool (B3.2 — native-root model)
 
-The MCP `exec` tool lets Claude Code run shell commands inside the container, gated by a human-approval step in the UI.
+The agent `exec` tool lets the AI run shell commands inside LXC 114, gated by an allowlist-first approval step. Full reference: `docs/wiki/agent-exec.md`.
 
-**Privilege model — the app stays root; children are dropped to `agent`.**
-The Nitro process runs as root so it can use `setpriv` to fully drop privileges for each exec child. In setuid mode, `runConstrained` spawns commands via:
-```
-setpriv --reuid 10001 --regid 10001 --clear-groups -- /bin/sh -c <command>
-```
-`setpriv` (from `util-linux`) is the only mechanism that also clears root's supplementary groups — Node's built-in `spawn({uid, gid})` does not. `util-linux` is explicitly installed in the runtime image stage. **Do NOT add a `USER` directive to the Dockerfile** — if the process is not root it cannot setpriv and exec fails closed immediately.
+**Privilege model — native root in the LXC.**
+As of B3.2, exec runs natively as root — no `setpriv`, no uid drop, no `agent` user. `runConstrained` spawns `/bin/sh -c <command>` directly. The LXC container is the security boundary. The B2 `setpriv`/uid-10001/`/workspace`-jail model is retired.
 
-**`/workspace` — the cwd-jail.**
-Every exec child runs with cwd set to `/workspace` (owned by `agent:agent`, uid/gid 10001). In `docker-compose.prod.yml` this is a named volume (`mymind-workspace`) so it persists across container restarts and is isolated from the app tree at `/app`.
+**Default cwd — `/opt/mymind/workspace`.**
+`deploy/provision-native.sh` creates `/opt/mymind/workspace` (idempotent). This is the default working directory for exec children and persists across app restarts and CD deploys (`provision-native.sh` does not remove it). There is no cwd jail — absolute paths pass through as-is.
+
+**Credential injection — encrypted DB store.**
+Secrets (API tokens, service credentials) are stored encrypted in the `settings` table under key `exec_secrets` (same encryption key as the AI config registry — `CONFIG_ENC_KEY` / `BETTER_AUTH_SECRET` via HKDF). Manage secrets at **`/settings → Secrets`**. The child environment is constructed from scratch (PATH, HOME, LANG) and the decrypted secrets are merged in — app secrets (`DATABASE_URL`, `BETTER_AUTH_SECRET`, etc.) are never in the child env.
+
+**The two gates — both must be on.**
+1. **`powerful` profile** — the default Bridget conversation cannot reach exec. Switch by sending `{ type: 'profile', profile: 'powerful' }` over the WebSocket.
+2. **`agent-exec-enabled` cookie** — toggled from the "Exec enabled" button on the `/agent` page. Off by default. **Background/unattended/cron runs carry no cookie and cannot exec.** There is no env var to enable exec for unattended runs — this is intentional.
+
+**Allowlist-first gate + catastrophic hard-block.**
+- Catastrophic commands (`rm -rf /`, `mkfs*`, `dd of=/dev/*`, fork bomb, `shutdown`/`reboot`) are **refused unconditionally** before anything is spawned.
+- LAN/private curl/wget targets (`10/8`, `172.16/12`, `192.168/16`, loopback) are always allowed silently.
+- Commands matching a saved allowlist pattern run silently. Everything else pauses for approval via the UI.
+- Manage allowlist patterns at **`/settings → Agent Tools`**.
+
+**Audit + secret redaction.**
+Every exec call is logged to `activity_log` (visible at `/activity`). Secret values that appear in command strings or output are replaced with `[REDACTED]` before logging or returning to the model. The result payload includes `secretsInjected: [names]` (not values) for the audit trail.
 
 **Fails closed.**
-If `setpriv` is not found, if the `agent` user doesn't exist, or if any privilege-drop step throws, `runConstrained` rejects the call before spawning anything. The app never falls back to running exec as root.
+If the process is not root (`uid !== 0`) and `EXEC_UNCONFINED=1` is not set (or `NODE_ENV=production`), `selectExecMode` returns `disabled` and `ExecDisabledError` is thrown — exec never runs.
 
-**Honest isolation statement.**
-This is a least-privilege + approval-gate + container-boundary design — NOT a syscall sandbox (no seccomp profile, no Linux namespace isolation beyond what Docker provides). The `agent` user cannot write to `/app`; the container boundary keeps exec'd commands away from the host. Review commands in the approval UI before approving.
-
-**Container-internal env vars** (set by the Dockerfile; you normally never override these):
+**Relevant env vars** (optional overrides):
 | Var | Default | Notes |
 |---|---|---|
-| `EXEC_AGENT_UID` | `10001` | uid of the `agent` user that exec children run as |
-| `EXEC_AGENT_GID` | `10001` | gid of the `agent` group |
-| `EXEC_WORKSPACE_DIR` | `/workspace` | cwd-jail for exec children |
+| `EXEC_WORKSPACE_DIR` | `/opt/mymind/workspace` | default cwd for exec children |
 | `EXEC_TIMEOUT_MS` | `60000` | per-command wall-clock timeout (ms) |
 | `APPROVAL_TIMEOUT_MS` | `120000` | how long an approval prompt waits before auto-deny (ms) |
 
-`EXEC_UNCONFINED` is a **dev-only** escape hatch and is **ignored in production** — never set it on the server.
+`EXEC_UNCONFINED` is a **dev-only** escape hatch (non-root dev machines, `NODE_ENV !== 'production'`). Never set it on the server — on prod the process is root and `native-root` mode is selected automatically.
+
+`EXEC_AGENT_UID`, `EXEC_AGENT_GID` — **retired** in B3.2. No uid drop occurs; remove from any custom env files.
 
 ## 15. Not yet built (deploy-relevant backlog)
 - No API-token management UI (insert rows manually, §5).

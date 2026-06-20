@@ -1,114 +1,48 @@
 ---
-title: Agent Exec — Approval Gate + Constrained Exec (Cycle B2)
+title: Agent Exec — Credentialed Native-Root Exec (Cycle B3.2)
 status: shipped
-cycle: 30
-updated: 2026-06-18
+cycle: 35 (B3.2)
+updated: 2026-06-20
 ---
 
-# Agent Exec — Approval Gate + Constrained Exec (Cycle B2)
+# Agent Exec — Credentialed Native-Root Exec (Cycle B3.2)
 
-This is the security keystone of Cycle B. It added a human-in-the-loop **approval gate** that pauses dangerous tool calls until Tony approves or denies them in the UI, plus the first **`exec`** tool that runs shell commands as a constrained child process. The gate is tool-agnostic — Cycle B3 (`gh`/file-edit) and B4 (`ssh`) ride the same harness.
+Cycles B2 and B3.1 added the approval gate harness and moved the app to a native systemd process (root in LXC 114). B3.2 reworks the exec runner for that reality: exec now runs **natively as root in the LXC** (no `setpriv`, no `agent` uid drop, no `/workspace` jail), always injects the user's service tokens, and applies an allowlist-first gate with a catastrophic hard-block. The LXC container is the security boundary.
 
-## The `powerful` profile + per-connection toggle
+## The two gates
 
-`server/lib/agent/profile.ts` defines two profiles:
+Exec is disabled by default. It runs only when **all three** conditions hold simultaneously:
 
-- **`bridgetProfile`** (default/safe) — all standard tools (`agentTools`), no dangerous tools. Normal conversations stay on this profile.
-- **`powerfulProfile`** (opt-in) — all safe tools **plus** `execTool`, personaKey `agent_persona`.
+1. **`powerful` profile** — `server/lib/agent/profile.ts` defines two profiles. `bridgetProfile` (default) includes `agentTools` only; `powerfulProfile` adds `execTool`. The model cannot call exec unless the active profile is `powerful`. Selected per-connection via `{ type: 'profile', profile: 'powerful' }` WS frame.
 
-`profileById(id)` resolves a profile by string id, defaulting to `bridgetProfile` for unknown values.
+2. **`agent-exec-enabled` cookie** — the `/agent` page exposes an "Exec enabled" toggle (`useCookie<boolean>('agent-exec-enabled', { default: () => false })`). Toggling it sends `{ type: 'execEnabled', value: true|false }` over the WS; `ConnState.execEnabled` carries the current state. At agent-run time, `effectiveTools` (`server/lib/agent/run.ts`) strips `execTool` from the profile's tool registry when `execEnabled === false`. The cookie is **off by default** and is **not present in background/cron/unattended agent runs** — those always run without exec.
 
-The `/agent` page exposes a **"Powerful tools"** `USwitch` in the navbar. The toggle is **per-session** (not cookie-persisted), so every page load defaults to the safe profile. Toggling it sends `{ type: 'profile', profile: 'bridget' | 'powerful' }` to the WS; the `ConnState.profile` field carries the current selection; subsequent turns pass the resolved profile into `runAgent`.
+3. **`selectExecMode` returns `native-root`** — `runConstrained` calls `selectExecMode({ uid: process.getuid(), nodeEnv, unconfined })`. When the process is root (`uid === 0`), it returns `{ mode: 'native-root' }` and exec proceeds. In non-root dev, `EXEC_UNCONFINED=1` (with `NODE_ENV !== 'production'`) returns `{ mode: 'unconfined' }` (same runtime path, no privilege drop, stripped env still applies). Anything else returns `{ mode: 'disabled' }` and `ExecDisabledError` is thrown.
 
-The safe profile never includes `execTool`, so a non-powerful session literally cannot invoke the exec tool.
-
-## Tool-agnostic approval gate (`buildAiTools`)
-
-`server/lib/agent/ai-tools.ts` wraps every tool in the `buildAiTools` function. For tools marked `dangerous: true`, the wrapper:
-
-1. Calls `ctx.requestApproval(approvalRequestFor(t, input))` before running the handler.
-2. If `approved === true` (strict equality) → proceeds to the handler.
-3. If not approved (deny, timeout, or missing `requestApproval`) → returns `{ denied: true }` so the model is told plainly and continues without executing.
-4. **Fail-safe**: if `requestApproval` is absent (e.g., the headless SSE path), the tool auto-denies. Dangerous tools can never run without an explicit approval channel.
-
-`approvalRequestFor` uses the tool's optional `describeApproval` method; if absent, it falls back to `{ tool, command: JSON.stringify(input), proposedPattern: '<name> *' }`.
-
-## WebSocket protocol additions
-
-`server/api/voice/ws.ts` added the following frames:
-
-**Client → server:**
-| Frame | Purpose |
-|---|---|
-| `{ type: 'profile', profile: 'bridget' \| 'powerful' }` | Switch profiles per-connection (processed immediately, not queued behind the turn lock) |
-| `{ type: 'approve', requestId, remember?, pattern? }` | Approve a pending tool call; optionally persist the pattern to the allowlist |
-| `{ type: 'deny', requestId }` | Deny a pending tool call |
-
-**Server → client:**
-| Frame | Purpose |
-|---|---|
-| `{ type: 'approval', requestId, tool, command, proposedPattern }` | Emitted when a dangerous tool call needs approval |
-| `{ type: 'approval-resolved', requestId }` | Emitted when a pending approval times out (120 s auto-deny) |
-
-`approve`/`deny` frames are processed **immediately** (like `interrupt`) — not queued behind the turn lock — so the awaiting turn unblocks while the turn itself is still suspended under the serializing lock.
-
-`ConnState.pendingApprovals` is a `Map<requestId, { resolve, timer, req }>`. On connection close or a new interrupt, all pending approvals are auto-denied.
-
-## `requestApproval` implementation
-
-The `requestApproval` function injected into the turn:
-
-1. Loads patterns from `exec_approvals` filtered to the tool and matching the command via `matchesApproval`. If a match is found, `touchApproval` updates `last_used_at`, logs an `allowlisted` event, and returns `{ approved: true }` immediately — no UI round-trip.
-2. Otherwise, allocates a `requestId` (UUID), stores a deferred promise + a 120 s timeout in `pendingApprovals`, and emits the `approval` frame to the client.
-3. The deferred resolves when the client sends `approve`/`deny`, or auto-resolves `{ approved: false }` at timeout with an `approval-resolved` frame and a `timeout` activity event.
-
-## Allowlist — `exec_approvals` table + pattern semantics
-
-**Schema** (migration `0024_clever_psylocke.sql`): `exec_approvals` table with `id` (uuid PK), `pattern` (text), `tool` (text, default `exec`), `created_at`, `last_used_at`. Unique on `(tool, pattern)`.
-
-**`matchesApproval(command, patterns)`** (`server/lib/exec/approvals.ts`):
-- Anchored glob matching: `*` compiles to a character class `[^;&|` + "`" + `$()<>\n\r]*` — shell metacharacters that chain or compose commands.
-- Anchored to the start **and** end: `^<compiled>$`. A pattern like `git *` cannot be tricked into matching a command that has `git status && rm -rf /` because `*` never spans `;&|` etc.
-- Bare `*` (pattern is just wildcards) is rejected by `validatePattern` — a pattern must contain at least one literal character.
-
-**`proposedPattern(command)`** derives the suggested allowlist pattern from the command: `<first-token> *`.
-
-**`approvalOutcome(event)`** maps an `approve`/`deny`/`timeout` decision event to `{ approved, persist, pattern }`.
-
-### `/settings → Agent Tools`
-
-`AgentToolsTab.vue` at `/settings → Agent Tools` lists all allowlisted patterns with `last_used_at`, allows adding new patterns, editing existing ones (inline, blur or Enter saves), and revoking patterns. A bare `*` is rejected server-side. The API endpoints are:
-- `GET /api/settings/exec-approvals` — list all patterns
-- `PUT /api/settings/exec-approvals` — add (body `{ pattern }`) or update (body `{ id, pattern }`) a pattern
-- `DELETE /api/settings/exec-approvals?id=` — revoke a pattern
+Flipping the cookie off disables exec immediately with no deploy.
 
 ## `runConstrained` — the exec runner
 
 `server/lib/exec/run.ts`. Every exec goes through this function; it is fail-closed by design.
 
-### Privilege drop — `selectExecMode` + `setpriv`
+### Privilege model — `native-root`
 
-`selectExecMode` chooses one of three modes:
+`buildSpawnArgs` runs `/bin/sh -c <command>` directly — no `setpriv`, no uid/gid manipulation. The process is root in the LXC and that is the boundary. There is no `EXEC_AGENT_UID`/`EXEC_AGENT_GID` requirement; the B2 `setuid` mode and uid-10001 agent user are retired.
 
-| Mode | Condition |
-|---|---|
-| `setuid` | Process is root (`uid === 0`) AND `EXEC_AGENT_UID` is set to a non-root uid |
-| `unconfined` | `NODE_ENV !== 'production'` AND `EXEC_UNCONFINED=1` (dev escape hatch only) |
-| `disabled` | Anything else — exec fails closed with `ExecDisabledError` |
+### Default cwd — `/opt/mymind/workspace`
 
-In production, `unconfined` is never reachable (the `NODE_ENV !== 'production'` guard prevents it). If the server cannot drop privileges, exec throws `ExecDisabledError` and the model is told; it never runs as the app user.
+`resolveExecCwd` resolves the working directory:
+- Default (no `cwd` arg): `path.resolve(workspaceRoot)` where `workspaceRoot = process.env.EXEC_WORKSPACE_DIR ?? '/opt/mymind/workspace'`
+- Relative `cwd`: resolved relative to `workspaceRoot` via `path.resolve(workspaceRoot, cwd)`
+- Absolute `cwd`: used as-is
 
-**`buildSpawnArgs`** in `setuid` mode uses `setpriv --reuid <uid> --regid <gid> --clear-groups -- /bin/sh -c <command>`. Node's `spawn({ uid, gid })` leaves root's supplementary groups intact; `setpriv --clear-groups` is the only safe path to a fully-dropped privilege set.
+There is **no cwd jail** — absolute paths go straight through. The agent is root in its own LXC and may work in any directory.
 
-The runtime container uses uid/gid `10001` (`agent` user, created in the Dockerfile), with `EXEC_AGENT_UID=10001` and `EXEC_AGENT_GID=10001` baked into the image's `ENV`.
+`/opt/mymind/workspace` is created by `deploy/provision-native.sh` and persists across deploys.
 
-### CWD jail — `resolveExecCwd`
+### Secret injection — `buildExecEnv`
 
-The workspace root is `EXEC_WORKSPACE_DIR` (defaults to `/workspace`). The `cwd` argument from the model is resolved via `path.resolve(workspaceRoot, cwd)`. If the result does not start with `workspaceRoot + sep`, an error is thrown before spawn. The jail is **lexical** (no `realpath`); symlink confinement is not claimed and relies on the uid boundary and container.
-
-### Stripped environment — `buildExecEnv`
-
-The child environment is **constructed from scratch** (allowlist-by-construction): only `PATH`, `HOME` (set to the workspace root), and `LANG=C.UTF-8`. No `DATABASE_URL`, `BETTER_AUTH_SECRET`, `CONFIG_ENC_KEY`, AI provider keys, `SEARXNG_SECRET`, or any other app secret can leak to the child process.
+The child environment is **constructed from scratch** (allowlist-by-construction) with three base vars (`PATH`, `HOME` = workspace root, `LANG=C.UTF-8`), then every decrypted secret from the encrypted store is merged in. App secrets (`DATABASE_URL`, `BETTER_AUTH_SECRET`, `CONFIG_ENC_KEY`, AI keys, etc.) are never in the child env — they are not passed and not in the env the secrets store builds from. Secret values that appear in command strings or output are **masked** in the result payload (see §Audit).
 
 ### Timeout + output cap
 
@@ -117,55 +51,129 @@ The child environment is **constructed from scratch** (allowlist-by-construction
 - Output cap: 64 KB each for stdout and stderr; overflow is truncated with `\n…[output truncated]`.
 - `ExecResult` carries `{ exitCode, stdout, stderr, timedOut, aborted, mode }`.
 
-### Dev escape hatch
+## Credential store — `exec_secrets`
 
-`EXEC_UNCONFINED=1` (only honoured when `NODE_ENV !== 'production'`) lets the runner execute without privilege drop in local dev — jail and stripped env still apply. The runner logs a loud warning when this mode is active. Never set in production.
+`server/lib/exec/secrets.ts`. Secrets are stored in the `settings` table under key `exec_secrets` as a JSON doc `{ version: 1, secrets: Record<name, encryptedBase64> }`, encrypted with the same key derivation as the AI config registry (`CONFIG_ENC_KEY` / `BETTER_AUTH_SECRET` via HKDF).
+
+- Secret names must match `/^[A-Z_][A-Z0-9_]*$/` (valid env var names, shell-safe).
+- `listSecretNames()` returns name + last-4 chars of the decrypted value (write-only display).
+- `getDecryptedSecrets()` returns the full plaintext map (server-only, called at exec time).
+- `setSecret(name, value)` / `deleteSecret(name)` upsert / drop entries.
+
+**UI:** `/settings → Secrets` — add/edit/delete named secrets (value is write-only; shows last-4 hint). Suggested names: `GITHUB_TOKEN`, `CLOUDFLARE_API_TOKEN`, `NEON_API_KEY`, `RAILWAY_TOKEN` (free-form).
+
+## Gate — allowlist-first + outbound policy + catastrophic hard-block
+
+`server/lib/exec/approvals.ts` + `server/lib/exec/outbound.ts`.
+
+### Catastrophic hard-block (`isCatastrophic`)
+
+These commands are **refused unconditionally** — never run, never approvable:
+
+| Pattern | What it catches |
+|---|---|
+| `rm -rf /` or `rm -rf /*` | root filesystem wipe (recursive + forced, target `/` or `/*`) |
+| `mkfs*` | format a filesystem |
+| `dd of=/dev/*` | overwrite a block device |
+| `:(){ :|:& };:` | fork bomb |
+| `shutdown` / `reboot` / `halt` / `poweroff` | system stop/restart |
+
+`tools/exec.ts` checks `isCatastrophic` **before** consulting the allowlist or the approval channel. A catastrophic command returns `{ blocked: true }` to the model and never reaches `runConstrained`.
+
+### Outbound classifier (`classifyOutbound`)
+
+For commands containing `curl` or `wget`, the classifier extracts target hosts from `https?://…` URLs and applies:
+
+- **`lan`** — every extracted host is a dotted-decimal IPv4 that `isPrivateAddress` classifies as private (loopback, `10/8`, `172.16/12`, `192.168/16`). LAN/private commands are **always allowed, no prompt**.
+- **`external`** — any hostname, or a public IP. Requires a per-host allowlist entry or an approval.
+- **`none`** — no `curl`/`wget` found. Falls through to the pattern allowlist.
+
+Hostname-addressed LAN targets (e.g. `http://nas.local`) are classified `external` (no DNS resolution at gate time) — approve once per host. This avoids DNS complexity and is acceptable since homelab hosts are reachable by IP.
+
+### Allowlist-first decision (`execAutoApproveDecision`)
+
+```
+isCatastrophic?  → hard-block (return to model, never approvable)
+outbound = lan?  → allow silently
+matchesApproval? → allow silently
+else             → prompt (approval channel)
+```
+
+`matchesApproval(command, patterns)` uses anchored glob matching: `*` compiles to `[^;&|` + `` ` `` + `$()<>\n\r]*` — shell metacharacters that chain commands. Patterns are anchored `^…$` so a `git *` pattern can never match `git status && rm -rf /`. Bare `*` is rejected by `validatePattern`.
+
+`proposedPattern(command)` derives the suggested allowlist entry: `<first-token> *`.
+
+`approvalOutcome(event)` maps `approve`/`deny`/`timeout` to `{ approved, persist, pattern }`.
+
+### Approval channel (unchanged from B2)
+
+When `execAutoApproveDecision` returns `allow: false`, the gate prompts via the existing WS approval flow:
+1. A `requestId` UUID is allocated, a deferred promise + 120 s timeout stored in `ConnState.pendingApprovals`, and an `{ type: 'approval', requestId, tool, command, proposedPattern }` frame is sent to the client.
+2. The client renders `ApprovalPrompt.vue` in the transcript panel; Tony approves or denies (optionally saving the pattern to the allowlist).
+3. An `{ type: 'approve', requestId, remember?, pattern? }` or `{ type: 'deny', requestId }` frame resolves the deferred.
+4. **Fail-safe:** if no approval channel is present (headless/cron), the tool auto-denies.
+5. On connection close or interrupt, all pending approvals are auto-denied.
+
+### Allowlist management — `/settings → Agent Tools`
+
+`GET/PUT/DELETE /api/settings/exec-approvals` — list, add/update, revoke patterns. The `exec_approvals` table (`id` uuid PK, `pattern` text, `tool` text default `exec`, `created_at`, `last_used_at`; unique on `(tool, pattern)`).
 
 ## The `exec` tool
 
 `server/lib/agent/tools/exec.ts`:
 - `kind: 'destructive'`, `dangerous: true`
 - Schema: `{ command: string, cwd?: string }`
-- `describeApproval` returns `{ tool: 'exec', command, proposedPattern: proposedPattern(command) }`
-- On `ExecDisabledError` (misconfigured or jail violation), the error is returned as a model-visible result (`{ disabled: true, error }`) rather than thrown, so the model can inform Tony rather than producing a system error
+- `autoApprove` loads patterns from `exec_approvals` and calls `execAutoApproveDecision` — returns `true` (allow silently) or `false` (prompt). This replaces B2's always-prompt-for-dangerous-tool behaviour.
+- `handler` on success: `getDecryptedSecrets()` → `runConstrained(command, { cwd, signal, secrets })` → mask secret values in `command`, `stdout`, `stderr` via `maskSecrets`. Returns `{ command (masked), exitCode, stdout (masked), stderr (masked), timedOut, aborted, mode, secretsInjected: [names] }`.
+- `handler` on `ExecDisabledError`: returns `{ disabled: true, error }` — the model is informed, not a system error.
+- `handler` on catastrophic: returns `{ blocked: true, error: 'refused: catastrophic command' }` before touching `runConstrained`.
 
-## Approval prompt UI
+## Audit + secret redaction
 
-`app/components/agent/ApprovalPrompt.vue` renders inline in the transcript panel when `voice.pendingApproval` is set:
-- Shows the tool name and exact command in a monospace block
-- "Always allow commands matching" checkbox + editable pattern field (pre-filled with `proposedPattern`, editable before saving)
-- Approve / Deny buttons; emits `approve({ remember, pattern })` or `deny`
+- Every exec tool call is wrapped in a `withSpan({ kind: 'tool', … })` span in `buildAiTools` → logged to `activity_log` → visible at `/activity`.
+- `maskSecrets(text, values)` (`server/lib/observability/redact.ts`) replaces every stored secret value appearing in the command string or its stdout/stderr with `[REDACTED]` before the result is logged or returned to the model.
+- The result payload includes `secretsInjected: [names]` (not values) for the audit trail.
+- Approval decisions (`allowlisted`, `approve`, `deny`, `timeout`) are logged via `recordEvent`.
 
-`useVoice.ts` exposes `pendingApproval` (ref), `sendApproval(requestId, approved, opts?)`, and `setProfile(profile)`. The client handles `approval` frames by setting `pendingApproval`; `approval-resolved` clears it.
+## WebSocket protocol additions (B2 + B3.2)
 
-## Activity logging
+**Client → server:**
+| Frame | Purpose |
+|---|---|
+| `{ type: 'profile', profile: 'bridget' \| 'powerful' }` | Switch profiles per-connection |
+| `{ type: 'execEnabled', value: boolean }` | Toggle exec gate per-session (sent by the `agent-exec-enabled` cookie watcher) |
+| `{ type: 'approve', requestId, remember?, pattern? }` | Approve a pending tool call |
+| `{ type: 'deny', requestId }` | Deny a pending tool call |
 
-Every approval decision is logged to the activity log via `recordEvent`:
-- `allowlisted`: command matched a persisted pattern, auto-approved
-- `approve` / `deny`: Tony's explicit decision; includes the pattern if saved
-- `timeout`: the 120 s window elapsed; includes the command
+**Server → client:**
+| Frame | Purpose |
+|---|---|
+| `{ type: 'approval', requestId, tool, command, proposedPattern }` | Dangerous tool call needs approval |
+| `{ type: 'approval-resolved', requestId }` | Pending approval timed out (120 s auto-deny) |
 
-The exec tool's handler is wrapped in `withSpan` (tool span) in `buildAiTools`, so every execution is also a trace span in the activity log.
+`approve`/`deny`/`execEnabled` frames are processed **immediately** (like `interrupt`) — not queued behind the turn lock.
 
-## Deployment
+## Self-install persistence
 
-**Dockerfile**: the runtime stage installs `util-linux` (provides `setpriv`), creates the `agent` group/user (uid/gid 10001), creates `/workspace` owned by `agent`, and sets `EXEC_AGENT_UID`, `EXEC_AGENT_GID`, `EXEC_WORKSPACE_DIR` in the image environment.
+`apt`, `npm -g`, `pip` installs land in the LXC root filesystem and persist across app restarts and CD deploys (the deploy sync only overwrites `/opt/mymind`'s tracked tree). First use of an install command is unmatched → prompts → approve+remember to add a scoped pattern. **Caveat:** a full LXC rebuild loses self-installed tools; they can be re-installed on demand.
 
-**`docker-compose.prod.yml`**: a persistent `mymind-workspace` named volume is mounted at `/workspace` — the exec cwd-jail shared by the app container. This volume will also be used by B3 (file-edit/report rendering).
+## Honest security posture (B3.2)
 
-## Honest isolation statement
+Exec is protected by:
+- **(a) opt-in `powerful` profile** — the default Bridget conversation cannot reach exec.
+- **(b) `agent-exec-enabled` cookie** — off by default; unattended/background runs carry no cookie and cannot exec.
+- **(c) allowlist-first gate** — known-safe commands run silently; new/external commands pause for Tony's approval before anything is spawned.
+- **(d) catastrophic hard-block** — a small set of irreversible commands can never run, even with approval.
+- **(e) outbound policy** — LAN/private always-allowed, but every external host is per-domain allowlisted; token exfiltration to an attacker domain always needs an explicit per-domain human approval.
+- **(f) stripped base environment + secret injection** — app secrets (`DATABASE_URL`, auth keys, etc.) are never in the child env; only the stored exec secrets are injected.
+- **(g) audit + secret-value redaction** — every command, exit code, and injected secret names are logged; secret values that appear in output are masked before logging.
+- **(h) the LXC container boundary** — the accepted isolation layer.
 
-Exec is protected by: (a) the powerful-profile opt-in — normal conversations cannot reach exec; (b) the hard per-command approval gate — every call pauses until Tony approves; (c) a least-privilege `agent` user (uid 10001) with supplementary groups dropped via `setpriv --clear-groups`; (d) a `/workspace` cwd-jail (lexical path check + the uid boundary); (e) an allowlist-constructed stripped environment (no app secrets reach the child); and (f) the Docker container boundary.
-
-It is **not** a true syscall sandbox. A compromised command running as the `agent` user could still read world-readable files inside the container and make outbound network calls. The gate, least-privilege user, and stripped secrets are the principal defenses; a stronger sandbox (bwrap/nsjail/gVisor) is a future hardening option if the Proxmox LXC ever supports nested namespaces.
-
-## B3 / B4 forward
-
-Cycle B3 (`gh` read, file-edit, report/visualization rendering) and B4 (ssh) ride this same harness — both will be `dangerous: true` tools that use `requestApproval` and the same `exec_approvals` allowlist infrastructure (with their own `tool` column values for pattern scoping). No architectural changes to the gate are needed.
+This is **not** a syscall sandbox. A command running as root in the LXC has full root access within that container. The gate, outbound policy, and audit are the principal defenses. Stronger sandboxing (bwrap/nsjail) is a future option.
 
 ## See also
 
-- [agent.md](agent.md) — the agent surface, WS protocol, conversation store, Bridget personality
-- [web-research.md](web-research.md) — `web_search` + `web_fetch` (Cycle B1, read-only tools, no gate)
+- [agent.md](agent.md) — agent surface, WS protocol, conversation store, Bridget personality
+- [web-research.md](web-research.md) — `web_search` + `web_fetch` (read-only tools, no gate)
 - [ai-providers.md](ai-providers.md) — model registry
 - [activity-log.md](activity-log.md) — observability (`withSpan`, `recordEvent`, the activity log surface)
