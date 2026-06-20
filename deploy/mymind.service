@@ -1,0 +1,18 @@
+[Unit]
+Description=MyMind (Nuxt/Nitro) native app
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mymind
+# .env first, then .env.native overrides (DB/searxng/storage/host) — order matters.
+EnvironmentFile=/opt/mymind/.env
+EnvironmentFile=/opt/mymind/.env.native
+ExecStart=/usr/bin/node /opt/mymind/.output/server/index.mjs
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
