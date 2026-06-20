@@ -35,6 +35,12 @@ export interface AgentTool {
   describeApproval?: (args: Record<string, unknown>) => ApprovalRequest
   /** Optional per-tool fast-path: return true to run WITHOUT a human prompt (gate still applies to false). */
   autoApprove?: (input: Record<string, unknown>, ctx: ToolContext) => boolean | Promise<boolean>
+  /**
+   * Optional hook to redact sensitive values from the input before it is written to the
+   * audit log (activity_log). The model-visible result is unchanged — only the logged
+   * request is masked. Omit to log the raw input.
+   */
+  redactForLog?: (input: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolExecution>
 }
 

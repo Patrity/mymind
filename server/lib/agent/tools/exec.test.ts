@@ -26,6 +26,7 @@ vi.mock('../../exec/secrets', () => ({
 
 import { execTool } from './exec'
 import { loadApprovals } from '../../exec/approvals'
+import { getDecryptedSecrets } from '../../exec/secrets'
 import type { ToolContext } from '../types'
 
 const ctx: ToolContext = { signal: new AbortController().signal }
@@ -64,6 +65,26 @@ describe('execTool.autoApprove', () => {
   it('returns false for external unlisted curl', async () => {
     const result = await execTool.autoApprove!({ command: 'curl https://api.github.com/user' }, ctx)
     expect(result).toBe(false)
+  })
+})
+
+describe('execTool.redactForLog — mask secret values in audit span', () => {
+  it('replaces a secret value in the command with «redacted»', async () => {
+    vi.mocked(getDecryptedSecrets).mockResolvedValueOnce({ GITHUB_TOKEN: 'ghp_supersecretvalue' })
+    const redacted = await execTool.redactForLog!({ command: 'echo ghp_supersecretvalue' })
+    expect(redacted.command).toBe('echo «redacted»')
+  })
+
+  it('preserves other input fields unchanged', async () => {
+    vi.mocked(getDecryptedSecrets).mockResolvedValueOnce({ GITHUB_TOKEN: 'ghp_supersecretvalue' })
+    const redacted = await execTool.redactForLog!({ command: 'echo ghp_supersecretvalue', cwd: '/tmp' })
+    expect(redacted.cwd).toBe('/tmp')
+  })
+
+  it('does not alter commands without any secret values', async () => {
+    vi.mocked(getDecryptedSecrets).mockResolvedValueOnce({ GITHUB_TOKEN: 'ghp_supersecretvalue' })
+    const redacted = await execTool.redactForLog!({ command: 'ls /tmp' })
+    expect(redacted.command).toBe('ls /tmp')
   })
 })
 

@@ -65,6 +65,22 @@ function extractHosts(command: string): string[] {
   return hosts
 }
 
+/**
+ * Extract the first external URL's scheme+host from an outbound command string,
+ * returning `null` if the command is not outbound or carries no URL.
+ * Exported so approvals.ts can build host-scoped patterns without duplicating URL parsing.
+ */
+export function extractFirstExternalUrl(command: string): string | null {
+  if (!OUTBOUND_TOOLS.test(command)) return null
+  const urlRe = /\b(https?:\/\/[^/\s'"]+)/gi
+  const m = urlRe.exec(command)
+  if (!m) return null
+  // Return scheme + host (strip :port so the pattern is host-only, not port-sensitive)
+  const full = m[1]! // e.g. "https://api.github.com" or "https://api.github.com:443"
+  // Strip port and trailing slash from host portion, keep scheme
+  return full.replace(/:\d+$/, '')
+}
+
 export function classifyOutbound(command: string): 'none' | 'lan' | 'external' {
   const hosts = extractHosts(command)
   if (hosts.length === 0) return 'none'

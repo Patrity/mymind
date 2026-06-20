@@ -2,10 +2,16 @@
 // Pure helpers for the exec approval allowlist + the exec_approvals DB store.
 // The pure section is unit-tested; the store section mirrors search/store.ts.
 
+import { isCatastrophic, classifyOutbound, extractFirstExternalUrl } from './outbound'
+
 // Shell metacharacters that chain/compose commands. A wildcard must NOT span
 // these, so an approved prefix can never be turned into a second command.
 const META = ';&|`$()<>\n\r'
 const METACLASS = '[^' + META.replace(/[\\\]^-]/g, '\\$&') + ']*'
+
+// Outbound tools that can exfiltrate data externally. A bare `<tool> *` pattern
+// for these must never be saved — it would silently approve ALL outbound traffic.
+const OUTBOUND_TOOL_HEADS = new Set(['curl', 'wget'])
 
 export function validatePattern(pattern: string): { valid: boolean; error?: string } {
   const p = pattern.trim()
@@ -14,8 +20,14 @@ export function validatePattern(pattern: string): { valid: boolean; error?: stri
   if (!p.replace(/\*/g, '').trim()) return { valid: false, error: 'pattern must contain a literal command, not just "*"' }
   // The command head (first whitespace-delimited token) must be a literal — no wildcard.
   // A leading wildcard (*foo, * status) matches arbitrary commands and is therefore rejected.
-  const head = p.split(/\s+/)[0]
+  const tokens = p.split(/\s+/)
+  const head = tokens[0]
   if (head && head.includes('*')) return { valid: false, error: 'command head must be a literal (no wildcard in the first token)' }
+  // A bare outbound-tool wildcard (e.g. `curl *`, `wget *`) is the exact exfil bypass
+  // this system is designed to prevent. Hard-reject it even if it passes other checks.
+  if (head && OUTBOUND_TOOL_HEADS.has(head) && tokens.length === 2 && tokens[1] === '*') {
+    return { valid: false, error: `bare outbound wildcard '${head} *' is not allowed — use a host-scoped pattern like '${head} *https://example.com/*'` }
+  }
   return { valid: true }
 }
 
@@ -41,7 +53,14 @@ export function matchesApproval(command: string, patterns: string[]): boolean {
 
 export function proposedPattern(command: string): string {
   const first = command.trim().split(/\s+/)[0]
-  return first ? `${first} *` : ''
+  if (!first) return ''
+  // For external outbound commands, propose a host-scoped pattern (e.g. `curl *https://api.github.com/*`)
+  // rather than the broad `curl *` which would approve ALL outbound traffic.
+  if (classifyOutbound(command) === 'external') {
+    const baseUrl = extractFirstExternalUrl(command)
+    if (baseUrl) return `${first} *${baseUrl}/*`
+  }
+  return `${first} *`
 }
 
 export type ApprovalDecisionEvent =
@@ -102,7 +121,6 @@ export async function touchApproval(id: string): Promise<void> {
 }
 
 // ---- Pure auto-approve decision (no I/O) ----
-import { isCatastrophic, classifyOutbound } from './outbound'
 
 /** Allowlist-first decision for exec. allow=true ⇒ run silently; allow=false ⇒ prompt the human. */
 export function execAutoApproveDecision(input: { command: string; patterns: string[] }): { allow: boolean; reason: string } {

@@ -19,6 +19,11 @@ export const execTool: AgentTool = {
     cwd: z.string().optional().describe('Working directory for the command — absolute, or relative to /opt/mymind/workspace. Runs as root in the LXC (no jail).')
   },
   describeApproval: (a) => ({ tool: 'exec', command: a.command as string, proposedPattern: proposedPattern(a.command as string) }),
+  redactForLog: async (input) => {
+    const secrets = await getDecryptedSecrets()
+    const values = Object.values(secrets)
+    return { ...input, command: maskSecrets(String(input.command ?? ''), values) }
+  },
   autoApprove: async (input) => {
     const patterns = (await loadApprovals('exec')).map(a => a.pattern)
     return execAutoApproveDecision({ command: input.command as string, patterns }).allow

@@ -98,7 +98,7 @@ onMounted(async () => {
             <!-- Exec master switch: arms exec tool for this session; cookie-persisted, default off -->
             <USwitch
               v-model="execEnabled"
-              label="Exec (powerful)"
+              label="Exec enabled"
               size="sm"
             />
             <!-- History button -->
@@ -200,7 +200,7 @@ onMounted(async () => {
             <!-- Exec master switch: arms exec tool for this session; cookie-persisted, default off -->
             <USwitch
               v-model="execEnabled"
-              label="Exec (powerful)"
+              label="Exec enabled"
               size="sm"
             />
             <!-- History button -->

@@ -46,8 +46,9 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           }
         }
         try {
+          const reqForLog = t.redactForLog ? await t.redactForLog(input) : input
           const exec = await withSpan(
-            { kind: 'tool', name: t.name, request: input as Record<string, unknown> },
+            { kind: 'tool', name: t.name, request: reqForLog as Record<string, unknown> },
             () => t.handler(input, ctx)
           )
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
