@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { selectExecMode, buildSpawnArgs, resolveExecCwd } from './run'
+import { selectExecMode, buildSpawnArgs, resolveExecCwd, buildExecEnv } from './run'
 
 describe('selectExecMode', () => {
   it('root → native-root', () => {
@@ -26,5 +26,13 @@ describe('resolveExecCwd', () => {
   })
   it('allows an absolute cwd anywhere (no jail)', () => {
     expect(resolveExecCwd('/opt/mymind/workspace', '/etc')).toBe('/etc')
+  })
+})
+
+describe('buildExecEnv', () => {
+  it('buildExecEnv injects secrets over the base allowlist', () => {
+    const env = buildExecEnv({ home: '/w', secrets: { GITHUB_TOKEN: 'x' } })
+    expect(env).toMatchObject({ HOME: '/w', LANG: 'C.UTF-8', GITHUB_TOKEN: 'x' })
+    expect(env.PATH).toBeTruthy()
   })
 })

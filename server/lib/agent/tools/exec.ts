@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { AgentTool } from '../types'
 import { runConstrained, ExecDisabledError } from '../../exec/run'
 import { proposedPattern } from '../../exec/approvals'
+import { getDecryptedSecrets } from '../../exec/secrets'
 
 const clip = (s: string, n = 80) => (s.length > n ? s.slice(0, n) + '…' : s)
 
@@ -19,7 +20,8 @@ export const execTool: AgentTool = {
   handler: async (a, ctx) => {
     const command = a.command as string
     try {
-      const r = await runConstrained(command, { cwd: a.cwd as string | undefined, signal: ctx.signal })
+      const secrets = await getDecryptedSecrets()
+      const r = await runConstrained(command, { cwd: a.cwd as string | undefined, signal: ctx.signal, secrets })
       return {
         result: { command, exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, aborted: r.aborted },
         summary: `ran \`${clip(command)}\` → exit ${r.exitCode}${r.timedOut ? ' (timed out)' : ''}`
