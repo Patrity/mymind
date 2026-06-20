@@ -1,8 +1,7 @@
-// Constrained command runner. Honest isolation: least-privilege uid + cwd-jail +
-// stripped env + timeout + output cap + the container boundary. NOT a syscall
-// sandbox. Fails CLOSED when it cannot drop privileges (never runs as the app user).
+// Constrained command runner. Root-in-LXC IS the boundary (no setpriv/uid drop needed).
+// Isolation layers: stripped env + timeout + output cap + the LXC container boundary.
+// Fails CLOSED when exec is not configured for native-root operation.
 import { spawn } from 'node:child_process'
-import fs from 'node:fs'
 import path from 'node:path'
 
 export class ExecDisabledError extends Error {
@@ -11,59 +10,33 @@ export class ExecDisabledError extends Error {
 
 const DEFAULT_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
-export function buildExecEnv(opts: { path?: string; home: string }): Record<string, string> {
+export function buildExecEnv(opts: { path?: string; home: string; secrets?: Record<string, string> }): Record<string, string> {
   // Construct from scratch (allowlist), so no app secret can leak by omission.
-  return { PATH: opts.path || DEFAULT_PATH, HOME: opts.home, LANG: 'C.UTF-8' }
+  const base: Record<string, string> = { PATH: opts.path || DEFAULT_PATH, HOME: opts.home, LANG: 'C.UTF-8' }
+  if (opts.secrets) {
+    for (const [k, v] of Object.entries(opts.secrets)) {
+      base[k] = v
+    }
+  }
+  return base
 }
 
-export function resolveExecCwd(workspaceRoot: string, cwd?: string): string {
-  const root = path.resolve(workspaceRoot)
-  const resolved = path.resolve(root, cwd ?? '.')
-  // Lexical containment check (always first).
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new Error(`cwd escapes the workspace jail: ${cwd}`)
-  }
-  // Defense-in-depth: realpath the resolved path to catch symlink jail escapes.
-  // Only resolve if the path actually exists (a non-existent path can't be a symlink;
-  // the shell will fail naturally, so we keep the lexical result).
-  let realResolved: string
-  try {
-    realResolved = fs.realpathSync(resolved)
-  } catch {
-    // ENOENT (or any other error) — path doesn't exist; return lexical result as-is.
-    return resolved
-  }
-  const realRoot = fs.realpathSync(root)
-  if (realResolved !== realRoot && !realResolved.startsWith(realRoot + path.sep)) {
-    throw new Error(`cwd escapes the workspace jail: ${cwd}`)
-  }
-  return realResolved
+export function resolveExecCwd(defaultDir: string, cwd?: string): string {
+  // Absolute paths go straight through (no jail). Relative paths anchor against defaultDir.
+  if (!cwd) return path.resolve(defaultDir)
+  if (path.isAbsolute(cwd)) return cwd
+  return path.resolve(defaultDir, cwd)
 }
 
 export type ExecMode =
-  | { mode: 'setuid'; uid: number; gid: number }
-  | { mode: 'unconfined' }
+  | { mode: 'native-root' }
+  | { mode: 'unconfined' }            // non-root dev machines (EXEC_UNCONFINED=1, non-prod)
   | { mode: 'disabled'; reason: string }
 
-export function selectExecMode(env: {
-  uid: number | undefined
-  agentUid: number | null
-  agentGid: number | null
-  nodeEnv: string | undefined
-  unconfined: boolean
-}): ExecMode {
-  const isRoot = env.uid === 0
-  if (isRoot && env.agentUid != null && env.agentUid !== 0) {
-    return { mode: 'setuid', uid: env.agentUid, gid: env.agentGid ?? env.agentUid }
-  }
-  // Dev-only escape hatch: never in production, always loud, still jailed.
+export function selectExecMode(env: { uid: number | undefined; nodeEnv: string | undefined; unconfined: boolean }): ExecMode {
+  if (env.uid === 0) return { mode: 'native-root' }                       // prod: root in the LXC IS the boundary
   if (env.nodeEnv !== 'production' && env.unconfined) return { mode: 'unconfined' }
-  return {
-    mode: 'disabled',
-    reason: isRoot
-      ? 'no agent user configured (set EXEC_AGENT_UID)'
-      : 'process is not root; cannot setuid to a low-privilege user'
-  }
+  return { mode: 'disabled', reason: 'native exec requires running as root in the LXC' }
 }
 
 export interface ExecResult {
@@ -72,49 +45,34 @@ export interface ExecResult {
   stderr: string
   timedOut: boolean
   aborted: boolean
-  mode: 'setuid' | 'unconfined'
+  mode: 'native-root' | 'unconfined'
 }
 
-/** Build the spawn argv for the chosen mode. setuid uses `setpriv` to fully
- *  drop uid/gid AND clear supplementary groups — Node's spawn {uid,gid} leaves
- *  root's supplementary groups intact, an incomplete privilege drop. */
-export function buildSpawnArgs(mode: ExecMode, command: string): { file: string; args: string[] } {
-  if (mode.mode === 'setuid') {
-    return { file: 'setpriv', args: ['--reuid', String(mode.uid), '--regid', String(mode.gid), '--clear-groups', '--', '/bin/sh', '-c', command] }
-  }
-  return { file: '/bin/sh', args: ['-c', command] }
+/** Build the spawn argv for the chosen mode. Root-in-LXC: no setpriv needed. */
+export function buildSpawnArgs(_mode: ExecMode, command: string): { file: string; args: string[] } {
+  return { file: '/bin/sh', args: ['-c', command] } // no setpriv — root-in-LXC
 }
 
 export async function runConstrained(
   command: string,
-  opts: { cwd?: string; signal?: AbortSignal; workspaceRoot?: string; timeoutMs?: number; outputCapBytes?: number } = {}
+  opts: { cwd?: string; signal?: AbortSignal; workspaceRoot?: string; timeoutMs?: number; outputCapBytes?: number; secrets?: Record<string, string> } = {}
 ): Promise<ExecResult> {
-  const workspaceRoot = opts.workspaceRoot ?? process.env.EXEC_WORKSPACE_DIR ?? '/workspace'
+  const workspaceRoot = opts.workspaceRoot ?? process.env.EXEC_WORKSPACE_DIR ?? '/opt/mymind/workspace'
   const cwd = resolveExecCwd(workspaceRoot, opts.cwd)
   const timeoutMs = opts.timeoutMs ?? Number(process.env.EXEC_TIMEOUT_MS ?? 60_000)
   const cap = opts.outputCapBytes ?? 64 * 1024
 
-  const agentUid = process.env.EXEC_AGENT_UID ? Number(process.env.EXEC_AGENT_UID) : null
-  const agentGid = process.env.EXEC_AGENT_GID ? Number(process.env.EXEC_AGENT_GID) : null
-  const decided = selectExecMode({
-    uid: process.getuid?.(),
-    agentUid,
-    agentGid,
-    nodeEnv: process.env.NODE_ENV,
-    unconfined: process.env.EXEC_UNCONFINED === '1'
-  })
+  const decided = selectExecMode({ uid: process.getuid?.(), nodeEnv: process.env.NODE_ENV, unconfined: process.env.EXEC_UNCONFINED === '1' })
   if (decided.mode === 'disabled') throw new ExecDisabledError(`exec is disabled: ${decided.reason}`)
   if (decided.mode === 'unconfined') {
-    console.warn('[exec] UNCONFINED dev mode — running WITHOUT privilege drop (jail + stripped env still apply). Never set EXEC_UNCONFINED in production.')
+    console.warn('[exec] UNCONFINED dev mode — running WITHOUT privilege drop (stripped env still applies). Never set EXEC_UNCONFINED in production.')
   }
 
-  const env = buildExecEnv({ path: process.env.PATH, home: workspaceRoot })
+  const env = buildExecEnv({ path: process.env.PATH, home: workspaceRoot, secrets: opts.secrets })
   const spawnOpts: Parameters<typeof spawn>[2] = { cwd, env, detached: true }
-  // NOTE: do NOT set uid/gid on spawnOpts in setuid mode — setpriv performs the full privilege drop
-  // (including clearing supplementary groups), so the parent must stay root to exec setpriv.
 
   const { file, args } = buildSpawnArgs(decided, command)
-  const resolvedMode = decided.mode === 'setuid' ? 'setuid' : 'unconfined'
+  const resolvedMode = decided.mode === 'native-root' ? 'native-root' : 'unconfined'
 
   // Pre-spawn guard: if the signal is already aborted, resolve immediately without spawning.
   if (opts.signal?.aborted) {
