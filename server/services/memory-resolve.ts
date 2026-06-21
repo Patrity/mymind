@@ -71,13 +71,18 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const threshold = (config.memoryAutoReviewThreshold as number) ?? 0.75
   const scope = input.scope ?? 'agent'
   const contentHash = createHash('sha256').update(input.content).digest('hex')
-  const vec = await embedOne(input.content)
-  const lit = `[${vec.join(',')}]`
   const live = isNull(memories.archivedAt)
-  const projectFilter = input.projectId ? eq(memories.projectId, input.projectId) : isNull(memories.projectId)
 
+  // Exact-duplicate short-circuit BEFORE embedding: identical content (same hash)
+  // resolves to a no-op evidence merge regardless of its vector, so embedding here
+  // is pure waste on the re-enrichment path. Defer embedOne until we actually need
+  // a vector (near-neighbour search / fresh insert) below.
   const [exact] = await db.select({ id: memories.id }).from(memories).where(and(live, eq(memories.contentHash, contentHash))).limit(1)
   if (exact) { await mergeEvidence(exact.id, input.evidence ?? [], input.sourceDate ?? null); return { action: 'duplicate', targetId: exact.id } }
+
+  const vec = await embedOne(input.content)
+  const lit = `[${vec.join(',')}]`
+  const projectFilter = input.projectId ? eq(memories.projectId, input.projectId) : isNull(memories.projectId)
 
   const near = await db.select({ id: memories.id, content: memories.content }).from(memories)
     .where(and(live, eq(memories.scope, scope), projectFilter, isNotNull(memories.embedding)))

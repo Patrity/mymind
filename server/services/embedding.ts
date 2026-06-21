@@ -1,4 +1,4 @@
-import { and, isNull, or, sql, eq } from 'drizzle-orm'
+import { and, isNull, sql, eq } from 'drizzle-orm'
 import { useDb } from '../db'
 import { documents } from '../db/schema'
 import { chunkAndEmbedSource } from '../lib/chunking/embed-source'
@@ -6,9 +6,15 @@ import { publishChange } from '../utils/live-bus'
 
 export async function runEmbedding({ limit = 200 } = {}): Promise<{ embedded: number, failed: number, remaining: number }> {
   const db = useDb()
+  // Re-embed when the chunked vectors are stale vs. current content. coalesce()
+  // BOTH sides so a row with content_hash = NULL converges instead of looping
+  // forever: the embed write sets chunked_hash := content_hash, so if content_hash
+  // is NULL the old `chunked_hash IS NULL` branch stayed true every tick and the
+  // doc re-embedded every 5 min. NULL vs NULL now reads as "not stale". (The only
+  // writer of documents always sets content_hash; this guards legacy/NULL rows.)
   const needWhere = and(
     isNull(documents.deletedAt),
-    or(isNull(documents.chunkedHash), sql`${documents.chunkedHash} is distinct from ${documents.contentHash}`)
+    sql`coalesce(${documents.chunkedHash}, '') is distinct from coalesce(${documents.contentHash}, '')`
   )
   const rows = await db.select({ id: documents.id, title: documents.title, content: documents.content, contentHash: documents.contentHash })
     .from(documents).where(needWhere).limit(limit)

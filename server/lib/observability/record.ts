@@ -9,6 +9,7 @@ import { loadObsConfig } from './config'
 import type { ActivityKind } from './types'
 import type { SpanInput } from './types'
 import { sanitizeRequest, sanitizeResponse } from './redact'
+import { jobDidWork } from './job-summary'
 
 function safeSanitize<T>(fn: () => T): T | { _redactFailed: true } {
   try { return fn() } catch { return { _redactFailed: true } }
@@ -137,6 +138,17 @@ export function startRecorderFlushLoop(): void {
 
 export const withSpan = recorder.withSpan
 export const recordEvent = recorder.recordEvent
+
+/**
+ * Record a cron job's `<name>:summary` event, but ONLY when it did real work
+ * (see `jobDidWork`). The wrapping `withSpan({ kind: 'job', name })` still records
+ * every run for liveness, so idle ticks stay observable without spamming the
+ * activity feed with all-zero summaries that read as constant re-embedding/churn.
+ */
+export function recordJobSummary(name: string, result: Record<string, unknown>): void {
+  if (!jobDidWork(result)) return
+  recordEvent({ kind: 'job', name: `${name}:summary`, status: 'ok', severity: 'info', meta: result })
+}
 
 /** Seam guard: skip capture for a kind the user has disabled in settings. */
 export async function captureEnabled(kind: ActivityKind): Promise<boolean> {

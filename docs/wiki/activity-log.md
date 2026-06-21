@@ -76,7 +76,7 @@ badge-count hot path).
 | Model failover | `withFailoverOver` (`ai/registry/resolve.ts`) | one `attempt` row per model tried (ok=info / fail=warn); a `model` `:all-failed` (error) when the chain is exhausted |
 | Agent reasoning | `server/lib/agent/run.ts` loop | one `attempt` row per reasoning model tried; `model` `:agent-all-failed` on exhaustion |
 | Agent tools | `server/lib/agent/ai-tools.ts` (`buildAiTools` handler wrap) | one `tool` row per call (name + sanitized args), nested under the turn |
-| Cron jobs | the 4 `server/tasks/*.ts` | one `job` row per run + a `:summary` child carrying the service's return (`{proposed,skipped,…}`) |
+| Cron jobs | the `server/tasks/*.ts` crons | one `job` row per run (liveness, always) + a `:summary` child carrying the service's return (`{proposed,skipped,…}`) **only when the run did real work** (`recordJobSummary` → `jobDidWork`: any non-`remaining` counter > 0). All-zero no-op ticks are suppressed so the feed doesn't read as constant re-embedding/churn |
 | Enrichment | `server/services/enrichment.ts` | `enrich-input:parse-failed` (warn), `:queued` (info), `:doc-error` (error) — the old swallowed `console.warn` is now a visible row |
 | Inbound | `server/plugins/observe-requests.ts` (Nitro `request`/`afterResponse`) | one flat `inbound` row per authed `/api/**` request (method/path/status/who/duration, **metadata only**). Skips `/api/auth|share|i|events|activity` (no self-logging loop) |
 
