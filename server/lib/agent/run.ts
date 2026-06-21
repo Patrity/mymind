@@ -69,7 +69,7 @@ export async function* runAgent(
         system,
         messages: messages.filter(m => m.role !== 'system'),
         tools,
-        stopWhen: stepCountIs(VOICE_TUNING.agent.maxSteps),
+        stopWhen: stepCountIs(ctx.execEnabled ? VOICE_TUNING.agent.maxStepsPowerful : VOICE_TUNING.agent.maxSteps),
         abortSignal: ctx.signal
       })
       recordEvent({ kind: 'attempt', name: 'reasoning:agent', status: 'ok', severity: 'info', usage: 'reasoning', provider: (model as { label?: string } | undefined)?.label ?? null, modelId: (model as { modelId?: string } | undefined)?.modelId ?? null, attempt: i, durationMs: Date.now() - started })

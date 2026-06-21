@@ -6,6 +6,9 @@ export const VOICE_TUNING = {
   bargeIn: { enabled: true, minSpeechMsToInterrupt: 300 },
   tts:     { provider: 'kokoro' as 'chatterbox' | 'kokoro', sentenceMinChars: 60, playbackRate: 1.1 },
   stt:     { language: 'en' },
-  agent:   { maxSteps: 6 }
+  // maxSteps: default cap for quick voice/chat turns. maxStepsPowerful: exec-enabled runs do
+  // multi-step work (install → configure → run → verify), so they need more headroom (a 6-step
+  // cap stranded a real gh install+run mid-task).
+  agent:   { maxSteps: 6, maxStepsPowerful: 16 }
 }
 export type VoiceTuning = typeof VOICE_TUNING
