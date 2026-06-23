@@ -8,6 +8,36 @@
 
 **Tech Stack:** Nuxt 4 / Nitro (server), Drizzle (Postgres `settings` + `images` tables), Vitest, `$fetch` (ofetch), Nuxt UI v4, `@tanstack/vue-query` is not needed here (config tab uses `useState`+`$fetch` like the other settings tabs).
 
+## Context for a fresh agent (read first)
+
+You are implementing this with **zero prior conversation context**. Everything you need is here.
+
+- **Read the spec first:** [`docs/superpowers/specs/2026-06-22-generate-image-tool-design.md`](../specs/2026-06-22-generate-image-tool-design.md) — the why + the locked design decisions. This plan is the how.
+- **Branch:** work on **`feat/generate-image-tool`** (the spec + this plan are committed there; branched off `master` @ `078e801`). The project builds **subagent-driven** (fresh implementer + two-stage reviewer per task, then a final whole-branch review). If you run multiple agents concurrently, isolate them in a **git worktree** — concurrent sessions in one working dir share `HEAD` (a checkout in one moves all).
+- **Package manager: `pnpm` only** (never npm/yarn). Commands:
+  - `pnpm vitest run <file>` — one test file (fast inner loop). `pnpm test` — the whole suite (`vitest run`).
+  - `pnpm typecheck` (`nuxt typecheck`) · `pnpm build` (`nuxt build`).
+  - **No DB migration in this cycle** (every column used already exists). Don't run `db:generate`/`db:migrate`.
+- **Gates that matter: typecheck + test + build.** **Lint is red repo-wide and is NOT a gate** — `pnpm lint` failures are pre-existing noise; ignore them.
+- **Directory layout (verified):** this repo uses **repo-root `app/` and `server/`** — there is **no `apps/web/`**. The auto-injected `.claude/rules/web-nuxt.md` mentions `apps/web/app/`; **ignore that prefix here** and use the repo-root paths in this plan exactly as written.
+- **Live-data convention:** every successful write calls `publishChange({ resource, action, id })` after commit (`server/utils/live-bus.ts`); `'image'` is already a valid `ResourceName` (`shared/types/live.ts`). See `.claude/rules/live-data.md`.
+- **When writing the `.vue` tab (Task 7):** the `nuxt-ui-docs` / `nuxt-docs` skills carry component/composable APIs — consult them rather than guessing props.
+
+### Reference files to mirror (precedents — open these, copy the idiom)
+| To build | Mirror | Why |
+|---|---|---|
+| `imagegen/store.ts` | `server/lib/search/store.ts` | settings-doc store: module cache + `onConflictDoUpdate` |
+| settings get/put/test endpoints | `server/api/settings/search.get.ts`, `search.put.ts`, `test-provider.post.ts` | thin handler shape + `$fetch.raw` connectivity ping |
+| `useImageConfig.ts` + Image Gen tab | `app/composables/useExecSecrets.ts` + `app/components/settings/SearchTab.vue` (`SettingsSearchTab`) | `useState`+`$fetch` composable + tab layout/auto-import naming |
+| ComfyUI `$fetch` client + its test | `server/lib/ai/embeddings.ts` + `test/embeddings.test.ts` | bare `$fetch` usage + `vi.stubGlobal('$fetch', …)` test idiom |
+| `createGeneratedImage` persist | `server/services/images.ts` `createImage` (insert shape, `serveUrl`, `deleteImage`) + `server/services/image-enrich.ts` (the `embedding: vec as any` halfvec write; the cron's `enrichStatus='pending'` predicate → `'done'` rows are skipped) | exact insert/embedding idioms |
+| `generate_image` tool | `server/lib/agent/tools.ts` `save_document` (a `create` tool w/ `undo`) + `server/lib/mcp/server.ts` (auto-derives MCP tools from `agentTools` — no MCP wiring needed) | tool registry shape |
+
+### Facts verified 2026-06-22 (trust these — don't re-litigate)
+- `settings` columns: `key` (pk text), `value` (jsonb notNull), `updatedAt` (timestamptz) → the store's `onConflictDoUpdate({ target: settings.key, set:{ value, updatedAt } })` is correct.
+- `server/services/images.ts` **already imports `embedOne`** (line 8) and exports `serveUrl` + `deleteImage`. `processUpload(buffer, mime, _name?)` — third arg optional.
+- `'image'` ∈ `ResourceName`. `pnpm` scripts: `test`=`vitest run`, `typecheck`=`nuxt typecheck`, `build`=`nuxt build`.
+
 ## Global Constraints
 
 - **Config lives in the DB, never env** (locked cycle-12 decision). The ComfyUI URL + model filenames + defaults live in a `settings` row `key='image_config'`.
@@ -613,14 +643,7 @@ Expected: FAIL with "buildGeneratedImageValues is not a function".
 
 - [ ] **Step 3: Write the implementation**
 
-In `server/services/images.ts`, add the import near the top (it already imports `embedOne`? it imports `embedOne` from `../lib/ai/embeddings` — verify; `createImage` uses `processUpload`). Add `embedOne` to the existing embeddings import if not present:
-
-```ts
-// at top, alongside the existing: import { embedOne } from '../lib/ai/embeddings'
-// (embeddings.ts already exports embedOne; add it to the existing import line if missing)
-```
-
-Then add, immediately after `createImage`:
+In `server/services/images.ts`, `embedOne` is **already imported** (line 8: `import { embedOne } from '../lib/ai/embeddings'`) and `Readable`, `storage`, `processUpload`, `useDb`, `images` are all already in scope (used by `createImage`). **Add no new imports.** Add the following two exports immediately after `createImage`:
 
 ```ts
 /** Pure: the insert row for a generated image (prompt-seeded, enrich skipped). */
