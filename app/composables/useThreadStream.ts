@@ -17,7 +17,15 @@ const POLL_INTERVAL_MS = 4000
 // SSE is not retried once we've gone cold-fallback.
 //
 // Adapted from copipasta: API base → /api/clipboard/threads/*. Logic unchanged.
-export function useThreadStream(threadId: Ref<string>, onMessage: (m: MessageRow) => void) {
+// `initialCursor` seeds the forward-poll cursor with the newest message the
+// caller already loaded, so the polling fallback asks only for messages *after*
+// that point. Without it, the first poll sends `since=''`, which the API treats
+// as "newest page" and would replay a whole page of history into onMessage.
+export function useThreadStream(
+  threadId: Ref<string>,
+  onMessage: (m: MessageRow) => void,
+  initialCursor?: Ref<string | null>
+) {
   let es: EventSource | null = null
   let pollTimer: ReturnType<typeof setInterval> | null = null
   // FIX 3: Track a timestamp cursor (ISO string) instead of a UUID id so that
@@ -33,8 +41,9 @@ export function useThreadStream(threadId: Ref<string>, onMessage: (m: MessageRow
     pollingPermanent = true
     pollTimer = setInterval(async () => {
       try {
+        const since = lastCreatedAt ?? initialCursor?.value ?? ''
         const r = await $fetch<MessageRow[]>(`/api/clipboard/threads/${threadId.value}/messages`, {
-          query: { since: lastCreatedAt ?? '' }
+          query: { since }
         })
         for (const m of r) {
           if (seenIds.has(m.id)) continue

@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, getTableColumns } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, lt, inArray, getTableColumns } from 'drizzle-orm'
 import { useDb } from '../db'
 import { clipThreads, clipMessages, clipAttachments, clipDevices } from '../db/schema'
 import { sanitizeHtml } from '../../shared/utils/sanitize-html'
@@ -175,60 +175,85 @@ export async function deleteThread(id: string): Promise<boolean> {
 // Messages
 // ---------------------------------------------------------------------------
 
+// Parse a caller-supplied ISO cursor, nudged by +1ms so it is exclusive at the
+// millisecond boundary the caller observed. DTO ISO strings are truncated to
+// milliseconds but Postgres stores microseconds, so a raw `gt`/`lt` against
+// "...068Z" would still match a row whose actual DB time is "...068768µs".
+// Adding 1ms makes the comparison behave as the caller expects. Returns null
+// for absent/invalid values (e.g. a UUID — `new Date(uuid)` is Invalid Date,
+// which would make Drizzle throw).
+function parseCursor(value?: string): Date | null {
+  if (!value) return null
+  const d = new Date(value)
+  return isNaN(d.getTime()) ? null : new Date(d.getTime() + 1)
+}
+
+async function hydrateMessages(
+  db: ReturnType<typeof useDb>,
+  rows: Array<typeof clipMessages.$inferSelect & { deviceLabel: string | null }>
+): Promise<ClipMessageDTO[]> {
+  if (rows.length === 0) return []
+
+  // Batch-fetch attachments for all file messages in one query (avoids an
+  // N+1 round-trip per file message, which got expensive as threads grew).
+  const fileMessageIds = rows.filter(m => m.kind === 'file').map(m => m.id)
+  const attachmentsByMessageId = new Map<string, typeof clipAttachments.$inferSelect>()
+  if (fileMessageIds.length > 0) {
+    const atts = await db
+      .select()
+      .from(clipAttachments)
+      .where(inArray(clipAttachments.messageId, fileMessageIds))
+    for (const att of atts) {
+      if (!attachmentsByMessageId.has(att.messageId)) attachmentsByMessageId.set(att.messageId, att)
+    }
+  }
+
+  return rows.map(({ deviceLabel, ...m }) => toMessageDTO(m, attachmentsByMessageId.get(m.id), deviceLabel))
+}
+
 export async function listMessages(opts: {
   threadId: string
   since?: string
+  before?: string
   limit?: number
 }): Promise<ClipMessageDTO[]> {
   const db = useDb()
-  const { threadId, since, limit = 100 } = opts
+  const { threadId, since, before, limit = 100 } = opts
 
-  // FIX 3: Guard against invalid `since` values (e.g. a UUID instead of an ISO
-  // string). new Date(uuid) produces Invalid Date which causes Drizzle to throw.
-  // Also add 1ms to the cursor: DTO ISO strings are truncated to milliseconds but
-  // Postgres stores microseconds, so gt(createdAt, "...068Z") would still include
-  // a row whose actual DB time is "...068768µs". Adding 1ms makes the cursor
-  // exclusive at the millisecond boundary the caller observed.
-  const sinceRaw = since ? new Date(since) : null
-  const sinceDate = sinceRaw && !isNaN(sinceRaw.getTime())
-    ? new Date(sinceRaw.getTime() + 1)
-    : null
-  const whereClause = sinceDate
-    ? and(eq(clipMessages.threadId, threadId), gt(clipMessages.createdAt, sinceDate))
-    : eq(clipMessages.threadId, threadId)
-
-  const rows = await db
+  const baseSelect = () => db
     .select({
       ...getTableColumns(clipMessages),
       deviceLabel: clipDevices.label
     })
     .from(clipMessages)
     .leftJoin(clipDevices, eq(clipMessages.deviceId, clipDevices.id))
-    .where(whereClause)
-    .orderBy(asc(clipMessages.createdAt))
-    .limit(limit)
 
-  if (rows.length === 0) return []
-
-  // Fetch attachments for file messages
-  const fileMessageIds = rows
-    .filter(m => m.kind === 'file')
-    .map(m => m.id)
-
-  const attachmentsByMessageId = new Map<string, typeof clipAttachments.$inferSelect>()
-
-  if (fileMessageIds.length > 0) {
-    for (const msgId of fileMessageIds) {
-      const [att] = await db
-        .select()
-        .from(clipAttachments)
-        .where(eq(clipAttachments.messageId, msgId))
-        .limit(1)
-      if (att) attachmentsByMessageId.set(msgId, att)
-    }
+  // Forward catch-up mode: the live-stream poll passes `since` to fetch only
+  // messages newer than its cursor, ascending. Unchanged.
+  const sinceDate = parseCursor(since)
+  if (sinceDate) {
+    const rows = await baseSelect()
+      .where(and(eq(clipMessages.threadId, threadId), gt(clipMessages.createdAt, sinceDate)))
+      .orderBy(asc(clipMessages.createdAt))
+      .limit(limit)
+    return hydrateMessages(db, rows)
   }
 
-  return rows.map(({ deviceLabel, ...m }) => toMessageDTO(m, attachmentsByMessageId.get(m.id), deviceLabel))
+  // History mode (initial load + scroll-up): return the newest `limit` messages
+  // older than `before` (when given). We query DESC + limit so prod never pulls
+  // the whole thread, then reverse to ascending so the UI renders oldest→newest.
+  const beforeDate = parseCursor(before)
+  const whereClause = beforeDate
+    ? and(eq(clipMessages.threadId, threadId), lt(clipMessages.createdAt, beforeDate))
+    : eq(clipMessages.threadId, threadId)
+
+  const rows = await baseSelect()
+    .where(whereClause)
+    .orderBy(desc(clipMessages.createdAt))
+    .limit(limit)
+
+  rows.reverse()
+  return hydrateMessages(db, rows)
 }
 
 export async function createTextMessage(input: {

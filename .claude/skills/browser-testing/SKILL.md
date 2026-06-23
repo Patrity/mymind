@@ -58,6 +58,10 @@ Leave the dev corpus clean. Delete what you created (`DELETE /api/documents/[id]
 
 ## Gotcha: stale `.vue` (Vite HMR) — restart the dev server
 Server-side (Nitro) changes hot-reload reliably. **Client `.vue` changes sometimes don't** — a long-running dev server (or a duplicate/foreign git-worktree under `.claude/worktrees/*`) can serve a stale compiled component even after `reload`. Symptom: a component edit (verified on disk, typecheck/build pass) doesn't show in the browser. Fix: kill + restart `pnpm dev` cleanly, then re-validate. (Don't remove a worktree you didn't create.) Related: `vitest-claude-worktree-pollution` memory.
+- **Don't cry "stale" too fast.** Before blaming HMR, confirm the new behaviour really should differ — a measurement that's identical across edits is often your *code's actual behaviour*, not a stale bundle. Verify what owns :3000 (`lsof -ti tcp:3000`) and that it's the mymind nuxt process.
+
+## Gotcha: port :3000 contention across projects — verify the page is actually MyMind
+This machine runs several Nuxt dev servers (e.g. `2d-rpg`). They all default to :3000, so **when you restart the mymind dev server another project can grab :3000** during the gap. Symptoms: the browser shows a *different app* (e.g. a game HUD at `/dev/hud`), or `/api/clipboard/*` starts 401ing because the session was dropped on restart. Diagnose + fix: `lsof -ti tcp:3000 | xargs ps -p` to confirm the owner is `…/mymind/…nuxt`; if not, kill the foreign listener and restart mymind's `pnpm dev`; re-login (the session cookie is lost across a restart). Then re-validate.
 
 ## Checklist for a UI change
 1. Dev server up; logged in.
