@@ -336,7 +336,10 @@ export const agentTools: AgentTool[] = [
       const made: { id: string; url: string; seed: number }[] = []
       for (let i = 0; i < n; i++) {
         if (ctx.signal.aborted) break
-        const gen = await generateImage(params, { signal: ctx.signal })
+        // With an explicit seed, stride by `i` so n>1 yields distinct AND reproducible
+        // images; with no seed, comfy.ts re-randomizes each call (leave undefined).
+        const iterParams = { ...params, seed: params.seed === undefined ? undefined : params.seed + i }
+        const gen = await generateImage(iterParams, { signal: ctx.signal })
         if (!gen.ok) {
           // Partial success: return what we made plus the error; nothing to clean up beyond `made`.
           if (made.length === 0) {
@@ -344,7 +347,17 @@ export const agentTools: AgentTool[] = [
           }
           break
         }
-        const row = await createGeneratedImage(gen.buffer, gen.mime, { prompt: params.prompt })
+        // createGeneratedImage CAN throw (storage/DB) — generateImage cannot. Catch it so an
+        // escaping throw doesn't log a spurious error-severity activity_log row (and discard
+        // a costly image). Mirror the partial-success policy: bail clean if nothing made yet.
+        let row
+        try {
+          row = await createGeneratedImage(gen.buffer, gen.mime, { prompt: params.prompt })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (made.length === 0) return { result: { ok: false, error: msg }, summary: `image generation failed: ${msg}` }
+          break
+        }
         publishChange({ resource: 'image', action: 'created', id: row.id })
         made.push({ id: row.id, url: serveUrl(row), seed: gen.meta.seed })
       }

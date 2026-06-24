@@ -83,4 +83,23 @@ describe('generate_image tool', () => {
     expect(generateImage).not.toHaveBeenCalled()
     expect((exec.result as { images: unknown[] }).images.length).toBe(0)
   })
+
+  it('returns a clean error (no throw escapes) when persisting the image throws', async () => {
+    ;(generateImage as any).mockResolvedValue({ ok: true, buffer: Buffer.from([1]), mime: 'image/png', meta: { seed: 7, width: 1024, height: 1024, steps: 20, cfg: 2.5 } })
+    ;(createGeneratedImage as any).mockRejectedValue(new Error('disk full'))
+    const exec = await tool.handler({ prompt: 'x' }, ctx)
+    expect((exec.result as { ok: boolean }).ok).toBe(false)
+    expect(exec.summary).toMatch(/failed/i)
+    expect(publishChange).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'created' }))
+  })
+
+  it('strides the seed per image when an explicit seed is given (distinct + reproducible)', async () => {
+    ;(generateImage as any).mockResolvedValue({ ok: true, buffer: Buffer.from([1]), mime: 'image/png', meta: { seed: 100, width: 1024, height: 1024, steps: 20, cfg: 2.5 } })
+    ;(createGeneratedImage as any)
+      .mockResolvedValueOnce({ id: 'a', isPublic: false, publicSlug: null })
+      .mockResolvedValueOnce({ id: 'b', isPublic: false, publicSlug: null })
+    await tool.handler({ prompt: 'x', n: 2, seed: 100 }, ctx)
+    expect((generateImage as any).mock.calls[0][0].seed).toBe(100)
+    expect((generateImage as any).mock.calls[1][0].seed).toBe(101)
+  })
 })
