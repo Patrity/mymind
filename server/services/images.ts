@@ -61,6 +61,51 @@ export async function createImage(
   return row!
 }
 
+/** Pure: the insert row for a generated image (prompt-seeded, enrich skipped). */
+export function buildGeneratedImageValues(args: {
+  storageKey: string; mime: string; ext: string; kind: string
+  width: number | null; height: number | null; size: number
+  prompt: string; embedding: number[] | null
+}): Record<string, unknown> {
+  return {
+    storageKey: args.storageKey,
+    originalName: null,
+    mime: args.mime,
+    ext: args.ext,
+    kind: args.kind,
+    width: args.width,
+    height: args.height,
+    size: args.size,
+    summary: args.prompt,
+    tags: ['generated'],
+    enrichStatus: 'done',
+    embedding: args.embedding as unknown,  // halfvec write idiom (see image-enrich.ts)
+    isPublic: false,
+    makeDocument: false
+  }
+}
+
+/**
+ * Persist a generated image WITHOUT the vision enrich pass: the prompt is the
+ * summary + the embedding source, so the image is searchable immediately.
+ */
+export async function createGeneratedImage(buffer: Buffer, mime: string, opts: { prompt: string }): Promise<Image> {
+  const processed = await processUpload(buffer, mime)
+  const stream = Readable.from(processed.buffer)
+  const { key, size } = await storage().put(stream, { contentType: processed.mime })
+
+  let embedding: number[] | null = null
+  try { embedding = await embedOne(opts.prompt) } catch (err) { console.warn('[imagegen] embed failed; storing null:', err) }
+
+  const values = buildGeneratedImageValues({
+    storageKey: key, mime: processed.mime, ext: processed.ext, kind: processed.kind,
+    width: processed.width ?? null, height: processed.height ?? null, size,
+    prompt: opts.prompt, embedding
+  })
+  const [row] = await useDb().insert(images).values(values as typeof images.$inferInsert).returning()
+  return row!
+}
+
 export interface ListImagesParams {
   q?: string
   tags?: string[]
