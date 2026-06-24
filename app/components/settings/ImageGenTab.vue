@@ -49,10 +49,17 @@ async function onSave() {
 
 async function onTest() {
   testResult.value = null
+  error.value = null
   try {
     testResult.value = await testConnection(form.baseURL.trim() || null)
-  } catch {
-    testResult.value = { ok: false, message: 'Request failed' }
+  } catch (e) {
+    testResult.value = {
+      ok: false,
+      message:
+        (e as { data?: { message?: string } }).data?.message ??
+        (e as Error).message ??
+        'Request failed',
+    }
   }
 }
 </script>
@@ -89,16 +96,16 @@ async function onTest() {
 
       <div class="grid grid-cols-2 gap-3">
         <UFormField label="Width">
-          <UInput v-model.number="form.width" type="number" class="w-full" />
+          <UInput v-model.number="form.width" type="number" :min="256" :max="2048" class="w-full" />
         </UFormField>
         <UFormField label="Height">
-          <UInput v-model.number="form.height" type="number" class="w-full" />
+          <UInput v-model.number="form.height" type="number" :min="256" :max="2048" class="w-full" />
         </UFormField>
         <UFormField label="Steps">
-          <UInput v-model.number="form.steps" type="number" class="w-full" />
+          <UInput v-model.number="form.steps" type="number" :min="1" :max="60" class="w-full" />
         </UFormField>
         <UFormField label="CFG">
-          <UInput v-model.number="form.cfg" type="number" step="0.1" class="w-full" />
+          <UInput v-model.number="form.cfg" type="number" step="0.1" :min="0" :max="20" class="w-full" />
         </UFormField>
         <UFormField label="Sampler">
           <UInput v-model="form.sampler" class="w-full" />
