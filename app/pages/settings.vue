@@ -10,7 +10,8 @@ const tabs = [
   { label: 'Bridget', icon: 'i-lucide-bot', slot: 'bridget' as const },
   { label: 'Search', icon: 'i-lucide-search', slot: 'search' as const },
   { label: 'Agent Tools', icon: 'i-lucide-terminal', slot: 'agentTools' as const },
-  { label: 'Secrets', icon: 'i-lucide-key-square', slot: 'secrets' as const }
+  { label: 'Secrets', icon: 'i-lucide-key-square', slot: 'secrets' as const },
+  { label: 'Image Gen', icon: 'i-lucide-image', slot: 'imageGen' as const }
 ]
 </script>
 
@@ -33,6 +34,7 @@ const tabs = [
           <template #search><SettingsSearchTab /></template>
           <template #agentTools><SettingsAgentToolsTab /></template>
           <template #secrets><SettingsSecretsTab /></template>
+          <template #imageGen><SettingsImageGenTab /></template>
         </UTabs>
       </div>
     </template>
