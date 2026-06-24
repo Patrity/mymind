@@ -38,6 +38,7 @@ describe('generate_image tool', () => {
     expect(publishChange).toHaveBeenCalledWith({ resource: 'image', action: 'created', id: 'img1' })
     await exec.undo!()
     expect(deleteImage).toHaveBeenCalledWith('img1')
+    expect(publishChange).toHaveBeenCalledWith({ resource: 'image', action: 'deleted', id: 'img1' })
   })
 
   it('returns a clean error result (no throw) when generation fails', async () => {
@@ -56,5 +57,30 @@ describe('generate_image tool', () => {
     const exec = await tool.handler({ prompt: 'x', n: 2 }, ctx)
     expect((exec.result as { images: unknown[] }).images.length).toBe(2)
     expect(generateImage).toHaveBeenCalledTimes(2)
+  })
+
+  it('partial success: keeps the first image when a later generation fails (with undo)', async () => {
+    ;(generateImage as any)
+      .mockResolvedValueOnce({ ok: true, buffer: Buffer.from([1]), mime: 'image/png', meta: { seed: 3, width: 1024, height: 1024, steps: 20, cfg: 2.5 } })
+      .mockResolvedValueOnce({ ok: false, error: 'boom' })
+    ;(createGeneratedImage as any).mockResolvedValueOnce({ id: 'a', isPublic: false, publicSlug: null })
+    const exec = await tool.handler({ prompt: 'x', n: 2 }, ctx)
+    const result = exec.result as { images: { id: string }[] }
+    expect(result.images.length).toBe(1)
+    expect(result.images[0].id).toBe('a')
+    expect(createGeneratedImage).toHaveBeenCalledTimes(1)
+    expect(exec.undo).toBeTypeOf('function')
+    await exec.undo!()
+    expect(deleteImage).toHaveBeenCalledWith('a')
+    expect(deleteImage).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts before generating when the signal is already aborted', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    const abortedCtx = { signal: ac.signal }
+    const exec = await tool.handler({ prompt: 'x', n: 2 }, abortedCtx)
+    expect(generateImage).not.toHaveBeenCalled()
+    expect((exec.result as { images: unknown[] }).images.length).toBe(0)
   })
 })
