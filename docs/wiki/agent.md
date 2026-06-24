@@ -106,7 +106,7 @@ After each completed turn the handler lazily creates the conversation (first tur
 
 - **Cycle B1 (shipped, cycle 29)** — `web_search` + `web_fetch` read-only web research tools on the default toolset; SSRF-guarded; SearXNG bundled (zero-config). See [web-research.md](web-research.md).
 - **Cycle B2 (shipped, cycle 30)** — approval-gate harness + constrained `exec` tool (`powerful` profile opt-in, per-command Approve/Deny prompt, persisted allowlist, `setpriv` privilege drop, `/workspace` jail, stripped env). See [agent-exec.md](agent-exec.md).
-- **Cycle B3+** — `gh` / file-edit / report rendering + SSH (ride the B2 harness; not yet built).
+- **Cycle B3.1/B3.2 (shipped, cycles 34/35)** — native LXC deploy (systemd) + credentialed self-installing native `exec` (root-in-LXC, always-on encrypted credential injection, allowlist-first gate). See [agent-exec.md](agent-exec.md). B3.3/B4 (artifact/report rendering, SSH to other homelab hosts) remain.
 - Conversation **summarization worker** + **semantic search** (the `summary_embedding` column is reserved; keyword ships now).
 - **Branching UI** (edit/regenerate → fork): the `parent_id` edge exists; `active_leaf_id`/path-walking + UI are future.
 - Storing voice **audio** (transcript text only), command-palette integration, token-cost display, multi-profile UI.
