@@ -1,13 +1,13 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 28
-updated: 2026-06-17
+cycle: 36
+updated: 2026-06-24
 ---
 
 # Agent Surface (`/agent`)
 
-One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page where the Three.js visualizer is a toggle, conversations persist as resumable + searchable threads, and the same shared agent core powers every turn. This is the in-app "agent loop" — tool-scoped on the current 15-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are a separate future cycle (**Cycle B**), not built here.
+One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page where the Three.js visualizer is a toggle, conversations persist as resumable + searchable threads, and the same shared agent core powers every turn. This is the in-app "agent loop" — tool-scoped on the current 19-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are part of the Cycle B series (B1/B2/B3 shipped).
 
 ## The convergence principle (one flow, one branch)
 
@@ -63,6 +63,44 @@ After each completed turn the handler lazily creates the conversation (first tur
 `app/pages/agent/index.vue` (and `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send. Controls: **Visualizer** toggle (cookie `agent-canvas`), **Respond in voice** toggle (cookie `agent-speak` → per-message `speak`), **Enable microphone** (`enableMic()`/`disableMic()` — lazy VAD; the only voice affordance, auto-connects if needed), **New**, **History** slideover (`app/components/agent/HistorySlideover.vue`), and the composer. Assistant replies render **markdown** via the shared `<MdView>` (MDC) renderer; user turns are literal text. Streamed text deltas are appended raw (they already carry their own spacing). Resume: `getConversation(id)` → set transcript → `loadConversation(id)`; `/agent?c=<id>` deep-links from the history page. The client transport (`app/composables/useVoice.ts`) decouples the WS from the mic so typing never prompts for a microphone and text chat survives an STT/TTS outage. `connect()` resolves only once the socket is OPEN, and `sendText`/`loadConversation` auto-connect transparently, so a typed send never races the handshake. Reads use `@tanstack/vue-query` (`useConversations`); the `conversation` live-resource refreshes lists across tabs.
 
 > **Nuxt routing note:** the page lives at `pages/agent/index.vue` (not `pages/agent.vue`) so `/agent` and `/agent/history` are **sibling** routes. With `pages/agent.vue` + `pages/agent/history.vue`, Nuxt nests `/agent/history` under `agent.vue`, which has no `<NuxtPage/>` outlet, so the history route renders the agent shell. (Caught by E2E; typecheck/build pass either way.)
+
+## Tool registry (current — 19 tools)
+
+| Tool | Kind | Notes |
+|---|---|---|
+| `search_memories` | read | Hybrid RRF search over memory store |
+| `get_recent_memories` | read | Most recent memories, optional scope/project filter |
+| `save_memory` | create | Confidence ≥ 0.75 auto-reviews |
+| `search_docs` | read | Trigram + semantic RRF; optional project scope |
+| `search_passages` | read | Per-chunk passage search (cycle 31) |
+| `list_documents` | read | Optional project filter |
+| `get_document` | read | Full content + frontmatter |
+| `save_document` | create | Auto-files under `/projects/<slug>/` when project set |
+| `search_projects` | read | Active + all |
+| `get_project` | read | Full model + counts |
+| `create_project` | create | |
+| `edit_project` | destructive | |
+| `search_tasks` | read | Status + project filter |
+| `create_task` | create | |
+| `edit_task` | destructive | |
+| `quick_capture` | create | Drops note into `/input` |
+| `web_search` | read | SearXNG / Brave; SSRF-guarded (cycle 29) |
+| `web_fetch` | read | Markdown extraction; SSRF-guarded (cycle 29) |
+| `generate_image` | create | ComfyUI + Qwen-Image; saves to gallery (cycle 36) |
+
+## Image generation (`generate_image`)
+
+**Cycle 36.** Generates images from a text prompt using the local ComfyUI + Qwen-Image stack and saves the result directly into the gallery.
+
+**Config:** lives in the `image_config` settings doc, edited at `/settings → Image Gen`. This is **not** the `ai_config` model registry — it holds the ComfyUI URL, workflow ID, default resolution/steps/cfg, and the Qwen-Image model name. No DB migration — the settings doc is created on first save.
+
+**Persistence:** generated images skip the vision-enrich pass entirely. The prompt becomes both the `summary` and the embedding source; the image is tagged `['generated']`; `enrich_status` is set to `done` at creation time so the enrichment cron ignores it.
+
+**Behavior:** synchronous (~1 min/image, 180 s hard cap, honors the abort signal). Parameters: `prompt`, `negative_prompt`, `width`, `height`, `steps`, `cfg`, `seed` (same seed → identical image), `n` (1–4 images, generated sequentially). If ComfyUI is unreachable or not configured, returns `{ ok: false, error }` — never throws.
+
+**MCP:** auto-exposed via the standard `agentTools` loop in `server/lib/mcp/server.ts` (non-`dangerous` → always registered). No per-tool MCP wiring needed.
+
+**Deferred:** live diffusion-preview WebSocket stream; REST `POST /api/images/generate` endpoint.
 
 ## Deferred (not built this cycle)
 

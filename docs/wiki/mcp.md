@@ -2,7 +2,7 @@
 title: MCP Server
 status: shipped
 cycle: 5
-updated: 2026-06-17
+updated: 2026-06-24
 ---
 
 # MCP Server
@@ -33,6 +33,7 @@ Bearer **API token** (machine clients) — the existing dual-auth middleware gat
 | `search_tasks(status?, project?)` | tasks.listTasks |
 | `edit_task(id, ...patch)` | tasks.updateTask |
 | `quick_capture(text, title?)` | documents.createDoc |
+| `generate_image(prompt, ...)` | imagegen/comfy → images.createGeneratedImage |
 
 `save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
 
@@ -41,7 +42,7 @@ Bearer **API token** (machine clients) — the existing dual-auth middleware gat
 Registered via `server.tool(name, description, zodShape, handler)`; each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
 
 ## Validate
-With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 15 tools; `search_memories` returns ranked memories; `create_task` creates a real task row. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
+With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 19 tools; `search_memories` returns ranked memories; `create_task` creates a real task row. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
 
 ## Notes / follow-ups
 Stateless mode → no server-initiated notifications; tools only (no MCP resources/prompts) — sufficient for the agent tool-call use case.

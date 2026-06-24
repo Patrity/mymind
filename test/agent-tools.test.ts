@@ -3,10 +3,11 @@ import { describe, it, expect } from 'vitest'
 import { agentTools, toolByName } from '../server/lib/agent/tools'
 
 describe('agent tool registry', () => {
-  it('exposes the expected 18 tools (15 base + search_passages + web_search + web_fetch)', () => {
+  it('exposes the expected 19 tools (15 base + search_passages + web_search + web_fetch + generate_image)', () => {
     const names = agentTools.map(t => t.name).sort()
     expect(names).toEqual([
       'create_project', 'create_task', 'edit_project', 'edit_task',
+      'generate_image',
       'get_document', 'get_project', 'get_recent_memories', 'list_documents',
       'quick_capture', 'save_document', 'save_memory',
       'search_docs', 'search_memories', 'search_passages', 'search_projects', 'search_tasks',
