@@ -2,7 +2,7 @@
 title: generate_image agent tool (ComfyUI + Qwen-Image) — Cycle 36
 cycle: 36
 date: 2026-06-24
-status: shipped — gates green (typecheck 0 / test 622 / build); NOT yet deployed; live E2E against the rig pending
+status: shipped + DEPLOYED to prod (master f8616e1, CD green); persistence live-validated (first gen landed in the gallery); post-ship fix f3ad2a3 deployed (inline image embed)
 branch: feat/generate-image-tool (rebased onto master 298d603; subagent-driven, 8 tasks)
 task: cb4cf239 (MyMind-side integration)
 spec: ../superpowers/specs/2026-06-22-generate-image-tool-design.md
@@ -65,3 +65,28 @@ and a non-dangerous `generate_image` tool that is auto-exposed via MCP. Config i
 - **MCP surface is auto-derived** from non-dangerous `agentTools`; `mcp-parity.test.ts` asserts the
   count (now 19). Adding/removing a non-dangerous tool requires updating `agent-tools.test.ts` +
   `mcp.md`'s table, or the full suite goes red (it did, mid-build — caught by the Task 8 gate).
+
+## Post-ship fix — 2026-06-24 (f3ad2a3, deployed): inline image embed
+
+**First live use surfaced two issues:** the agent generated an image (which DID persist — it
+appeared in the gallery), reported success, and gave a **link** that 404'd; and it didn't show the
+image inline.
+
+**Root cause (one cause, both symptoms):** the tool handed the model only a URL with no embed
+guidance, so the model wrote a markdown **link** `[..](/api/images/<id>/raw)`. The `/agent` chat
+renders assistant markdown via `MdView` → `@nuxtjs/mdc`. A clicked relative `/api/...` link is
+intercepted by the Nuxt **SPA router** (no client route) → the **SPA 404 page** — the Nitro endpoint
+itself is fine. The image row existed all along; nothing was broken server-side.
+
+**Fix:** `generate_image` now returns a ready-to-paste markdown **embed** per image
+(`![<alt>](url)`) plus a top-level `markdown` string, and its description instructs the model to
+embed inline (not link). MDC renders `![](url)` as a plain `<img src>` the browser fetches directly
+with session cookies — so it **displays inline AND bypasses the router intercept**. Alt text strips
+`[]`/newlines; `MdView` now caps images at `max-width:100%` so 1024px gens don't overflow the chat.
+Gates: typecheck 0 / test 624 / build. (No `@nuxt/image`/`ProseImg` override → plain `<img>`,
+confirmed.)
+
+**General gotcha for future tools:** an agent tool returning a URL to an in-app (`/api/...`) resource
+should hand the model an **embed** or an externally-openable URL, not rely on it writing an in-app
+link — clicked relative `/api` links get SPA-router-intercepted to a 404. Embedded `<img>`/asset
+fetches are not.
