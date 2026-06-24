@@ -19,6 +19,9 @@ describe('extractOutputImage', () => {
     expect(extractOutputImage({}, 'p1')).toBeNull()
     expect(extractOutputImage({ p1: { outputs: {} } }, 'p1')).toBeNull()
   })
+  it('returns null when a node has an empty images[] array', () => {
+    expect(extractOutputImage({ p1: { outputs: { '9': { images: [] } } } }, 'p1')).toBeNull()
+  })
 })
 
 describe('generateImage', () => {
@@ -70,5 +73,22 @@ describe('generateImage', () => {
     const res = await generateImage({ prompt: 'x', seed: 1 }, { config, signal: AbortSignal.abort(), pollIntervalMs: 1, maxWaitMs: 50 })
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error).toMatch(/abort/i)
+  })
+
+  // Regression: loadImageConfig() touches the DB. When NO config is passed in opts,
+  // generateImage falls through to loadImageConfig(); a DB throw there must still
+  // surface as { ok:false, error } (never escape) — the never-throws guarantee.
+  it('returns { ok:false, error } (no throw) when loadImageConfig rejects', async () => {
+    vi.resetModules()
+    vi.doMock('./store', () => ({ loadImageConfig: vi.fn().mockRejectedValue(new Error('db down')) }))
+    try {
+      const { generateImage: generateImageMocked } = await import('./comfy')
+      const res = await generateImageMocked({ prompt: 'x', seed: 1 }) // no config -> falls through to loadImageConfig()
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.error).toContain('db down')
+    } finally {
+      vi.doUnmock('./store')
+      vi.resetModules()
+    }
   })
 })

@@ -38,23 +38,25 @@ export async function generateImage(
   params: { prompt: string; negativePrompt?: string; width?: number; height?: number; steps?: number; cfg?: number; seed?: number; batchSize?: number },
   opts: { signal?: AbortSignal; config?: ImageGenConfig; clientId?: string; pollIntervalMs?: number; maxWaitMs?: number } = {}
 ): Promise<GenerateResult> {
-  const config = opts.config ?? await loadImageConfig()
-  if (!config.baseURL) return { ok: false, error: 'image generation not configured (set a ComfyUI URL in /settings → Image Gen)' }
-
-  const base = config.baseURL.replace(/\/$/, '')
-  const seed = params.seed ?? randomSeed()
-  const resolved: GenerateParams = { ...params, seed }
-  const width = params.width ?? config.width
-  const height = params.height ?? config.height
-  const steps = params.steps ?? config.steps
-  const cfg = params.cfg ?? config.cfg
-  const clientId = opts.clientId ?? `mymind-${seed}-${Date.now()}`
-  const pollIntervalMs = opts.pollIntervalMs ?? 1500
-  const maxWaitMs = opts.maxWaitMs ?? 180_000
-
   if (opts.signal?.aborted) return { ok: false, error: 'aborted' }
 
   try {
+    // loadImageConfig() touches the DB (useDb()) — keep it inside the try so a
+    // DB-unavailable / pool-exhausted throw surfaces as { ok:false } and never escapes.
+    const config = opts.config ?? await loadImageConfig()
+    if (!config.baseURL) return { ok: false, error: 'image generation not configured (set a ComfyUI URL in /settings → Image Gen)' }
+
+    const base = config.baseURL.replace(/\/$/, '')
+    const seed = params.seed ?? randomSeed()
+    const resolved: GenerateParams = { ...params, seed }
+    const width = params.width ?? config.width
+    const height = params.height ?? config.height
+    const steps = params.steps ?? config.steps
+    const cfg = params.cfg ?? config.cfg
+    const clientId = opts.clientId ?? `mymind-${seed}-${Date.now()}`
+    const pollIntervalMs = opts.pollIntervalMs ?? 1500
+    const maxWaitMs = opts.maxWaitMs ?? 180_000
+
     const graph = buildComfyGraph(resolved, config)
     const submit = await $fetch<{ prompt_id?: string }>(`${base}/prompt`, {
       method: 'POST', body: { prompt: graph, client_id: clientId }, signal: opts.signal
