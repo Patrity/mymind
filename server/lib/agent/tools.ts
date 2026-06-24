@@ -10,6 +10,8 @@ import { slugify } from '../../../shared/utils/slugify'
 import { nanoid } from 'nanoid'
 import { searchProvider } from '../search/resolve'
 import { fetchAsMarkdown } from '../search/fetch'
+import { generateImage } from '../imagegen/comfy'
+import { createGeneratedImage, deleteImage, serveUrl } from '../../services/images'
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
@@ -302,6 +304,59 @@ export const agentTools: AgentTool[] = [
         // not throw (which logs a system error in the activity log).
         const message = err instanceof Error ? err.message : String(err)
         return { result: { url, ok: false, error: message }, summary: `web_fetch failed: ${message}` }
+      }
+    }
+  },
+  // ---- image generation ----
+  {
+    name: 'generate_image',
+    description: 'Generate an image from a text prompt using the local Qwen-Image model. The result is saved to the gallery and is searchable by its prompt. Returns the new image id(s) and URL(s). Generation takes ~1 minute per image. If it can\'t run (backend down / not configured) the result is { ok:false, error } — say so rather than retrying.',
+    kind: 'create',
+    schema: {
+      prompt: z.string().min(1).describe('What to generate'),
+      negative_prompt: z.string().optional().describe('What to avoid'),
+      width: z.number().int().min(256).max(2048).optional(),
+      height: z.number().int().min(256).max(2048).optional(),
+      steps: z.number().int().min(1).max(60).optional(),
+      cfg: z.number().min(0).max(20).optional(),
+      seed: z.number().int().optional(),
+      n: z.number().int().min(1).max(4).optional().describe('How many images (default 1)')
+    },
+    handler: async (a, ctx) => {
+      const n = (a.n as number | undefined) ?? 1
+      const params = {
+        prompt: a.prompt as string,
+        negativePrompt: a.negative_prompt as string | undefined,
+        width: a.width as number | undefined,
+        height: a.height as number | undefined,
+        steps: a.steps as number | undefined,
+        cfg: a.cfg as number | undefined,
+        seed: a.seed as number | undefined
+      }
+      const made: { id: string; url: string; seed: number }[] = []
+      for (let i = 0; i < n; i++) {
+        if (ctx.signal.aborted) break
+        const gen = await generateImage(params, { signal: ctx.signal })
+        if (!gen.ok) {
+          // Partial success: return what we made plus the error; nothing to clean up beyond `made`.
+          if (made.length === 0) {
+            return { result: { ok: false, error: gen.error }, summary: `image generation failed: ${gen.error}` }
+          }
+          break
+        }
+        const row = await createGeneratedImage(gen.buffer, gen.mime, { prompt: params.prompt })
+        publishChange({ resource: 'image', action: 'created', id: row.id })
+        made.push({ id: row.id, url: serveUrl(row), seed: gen.meta.seed })
+      }
+      return {
+        result: { images: made, params: { prompt: params.prompt, negativePrompt: params.negativePrompt ?? null } },
+        summary: made.length === 1 ? `generated image (${made[0]!.id})` : `generated ${made.length} images`,
+        undo: async () => {
+          for (const m of made) {
+            await deleteImage(m.id)
+            publishChange({ resource: 'image', action: 'deleted', id: m.id })
+          }
+        }
       }
     }
   },
