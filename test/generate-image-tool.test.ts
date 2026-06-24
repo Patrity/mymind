@@ -41,6 +41,27 @@ describe('generate_image tool', () => {
     expect(publishChange).toHaveBeenCalledWith({ resource: 'image', action: 'deleted', id: 'img1' })
   })
 
+  it('returns embeddable markdown so the model renders the image inline (not a bare link)', async () => {
+    ;(generateImage as any).mockResolvedValue({ ok: true, buffer: Buffer.from([1]), mime: 'image/png', meta: { seed: 7, width: 1024, height: 1024, steps: 20, cfg: 2.5 } })
+    ;(createGeneratedImage as any).mockResolvedValue({ id: 'img1', isPublic: false, publicSlug: null })
+    const exec = await tool.handler({ prompt: 'a red bicycle' }, ctx)
+    const result = exec.result as { images: { markdown: string }[]; markdown: string }
+    // per-image embed + a top-level convenience string the model can paste verbatim
+    expect(result.images[0].markdown).toBe('![a red bicycle](/api/images/img1/raw)')
+    expect(result.markdown).toBe('![a red bicycle](/api/images/img1/raw)')
+    // the tool description must tell the model to embed (display inline), not just link
+    expect(tool.description.toLowerCase()).toMatch(/embed|inline|!\[/)
+  })
+
+  it('sanitizes square brackets in the prompt when building the markdown alt text', async () => {
+    ;(generateImage as any).mockResolvedValue({ ok: true, buffer: Buffer.from([1]), mime: 'image/png', meta: { seed: 1, width: 1024, height: 1024, steps: 20, cfg: 2.5 } })
+    ;(createGeneratedImage as any).mockResolvedValue({ id: 'img1', isPublic: false, publicSlug: null })
+    const exec = await tool.handler({ prompt: 'a [red] bicycle' }, ctx)
+    const result = exec.result as { images: { markdown: string }[] }
+    // no raw [ ] in the alt text (would break markdown image parsing)
+    expect(result.images[0].markdown).toBe('![a red bicycle](/api/images/img1/raw)')
+  })
+
   it('returns a clean error result (no throw) when generation fails', async () => {
     ;(generateImage as any).mockResolvedValue({ ok: false, error: 'ECONNREFUSED' })
     const exec = await tool.handler({ prompt: 'x' }, ctx)

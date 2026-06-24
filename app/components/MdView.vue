@@ -86,6 +86,12 @@ defineProps<{
   padding-left: 0.85em;
   color: var(--ui-text-muted);
 }
+.mm-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.5em 0;
+}
 .mm-md table {
   border-collapse: collapse;
   margin: 0.6em 0;

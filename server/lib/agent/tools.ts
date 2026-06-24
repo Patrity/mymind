@@ -310,7 +310,7 @@ export const agentTools: AgentTool[] = [
   // ---- image generation ----
   {
     name: 'generate_image',
-    description: 'Generate an image from a text prompt using the local Qwen-Image model. The result is saved to the gallery and is searchable by its prompt. Returns the new image id(s) and URL(s). Generation takes ~1 minute per image. If it can\'t run (backend down / not configured) the result is { ok:false, error } — say so rather than retrying.',
+    description: 'Generate an image from a text prompt using the local Qwen-Image model. The result is saved to the gallery and is searchable by its prompt. Generation takes ~1 minute per image. IMPORTANT: to show the image you MUST embed it inline in your reply using markdown image syntax — paste each result\'s `markdown` field verbatim (it looks like ![prompt](url)). Do NOT write it as a plain link [..](url); a bare link does not display and breaks in the app. If it can\'t run (backend down / not configured) the result is { ok:false, error } — say so rather than retrying.',
     kind: 'create',
     schema: {
       prompt: z.string().min(1).describe('What to generate'),
@@ -333,7 +333,9 @@ export const agentTools: AgentTool[] = [
         cfg: a.cfg as number | undefined,
         seed: a.seed as number | undefined
       }
-      const made: { id: string; url: string; seed: number }[] = []
+      const made: { id: string; url: string; seed: number; markdown: string }[] = []
+      // Alt text for the markdown embed: strip brackets/newlines so `![alt](url)` parses.
+      const alt = params.prompt.replace(/[\r\n]+/g, ' ').replace(/[[\]]/g, '').trim().slice(0, 120)
       for (let i = 0; i < n; i++) {
         if (ctx.signal.aborted) break
         // With an explicit seed, stride by `i` so n>1 yields distinct AND reproducible
@@ -359,10 +361,16 @@ export const agentTools: AgentTool[] = [
           break
         }
         publishChange({ resource: 'image', action: 'created', id: row.id })
-        made.push({ id: row.id, url: serveUrl(row), seed: gen.meta.seed })
+        const url = serveUrl(row)
+        made.push({ id: row.id, url, seed: gen.meta.seed, markdown: `![${alt}](${url})` })
       }
       return {
-        result: { images: made, params: { prompt: params.prompt, negativePrompt: params.negativePrompt ?? null } },
+        result: {
+          images: made,
+          // Ready-to-paste embed(s) — the model must render these inline (see the tool description).
+          markdown: made.map(m => m.markdown).join('\n\n'),
+          params: { prompt: params.prompt, negativePrompt: params.negativePrompt ?? null }
+        },
         summary: made.length === 1 ? `generated image (${made[0]!.id})` : `generated ${made.length} images`,
         undo: async () => {
           for (const m of made) {
