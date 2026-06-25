@@ -82,6 +82,12 @@ export default defineNuxtConfig({
 
   nitro: {
     experimental: { tasks: true, websocket: true },
+    // Pre-compress static public assets (JS/CSS/wasm/fonts) to .gz + .br at build time.
+    // Nitro serves the precompressed variant with Content-Encoding when the client offers
+    // it; the proxy forwards it untouched. Without this every _nuxt chunk crossed the
+    // Pangolin tunnel raw — a 713 KB JS chunk was ~180 KB brotli'd, and the onnxruntime-web
+    // wasm (see publicAssets below) compresses several-fold too. Build-time cost only.
+    compressPublicAssets: { gzip: true, brotli: true },
     // Serve the Silero VAD assets (worklet + ONNX model) and onnxruntime-web WASM
     // from the app origin so the client VAD can fetch them (see useVoice.ts asset paths).
     publicAssets: [
