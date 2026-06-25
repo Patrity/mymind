@@ -2,7 +2,7 @@
 title: generate_image agent tool (ComfyUI + Qwen-Image) — Cycle 36
 cycle: 36
 date: 2026-06-24
-status: shipped + DEPLOYED to prod (master f8616e1, CD green); persistence live-validated (first gen landed in the gallery); post-ship fix f3ad2a3 deployed (inline image embed)
+status: shipped + DEPLOYED to prod + USER-ACCEPTED 2026-06-25 (inline image render confirmed working). master f8616e1 + post-ship fix f3ad2a3 (inline embed); CD green; persistence live-validated
 branch: feat/generate-image-tool (rebased onto master 298d603; subagent-driven, 8 tasks)
 task: cb4cf239 (MyMind-side integration)
 spec: ../superpowers/specs/2026-06-22-generate-image-tool-design.md
