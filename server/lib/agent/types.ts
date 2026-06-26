@@ -1,5 +1,6 @@
 // server/lib/agent/types.ts
 import type { ZodRawShape } from 'zod'
+import type { DisplayImage } from './image-embed'
 
 /** A dangerous-tool approval request surfaced to the human. */
 export interface ApprovalRequest {
@@ -20,6 +21,7 @@ export interface ToolExecution {
   result: unknown // structured result fed back to the model
   summary: string // short spoken/UI-friendly line, e.g. "added 'buy milk' to todo"
   undo?: () => Promise<void> // present for create/destructive tools
+  display?: { images: DisplayImage[] } // server-authored embeds; the model never receives the URL
 }
 
 export type ToolKind = 'read' | 'create' | 'destructive'
@@ -48,7 +50,7 @@ export interface AgentTool {
 export type LoopEvent
   = | { type: 'text-delta', text: string }
     | { type: 'tool-start', name: string, args: Record<string, unknown> }
-    | { type: 'tool-result', name: string, summary: string, undoToken?: string }
+    | { type: 'tool-result', name: string, summary: string, undoToken?: string, images?: DisplayImage[] }
     | { type: 'done' }
 
 /** Events published on the activity bus for the client side-channel. */

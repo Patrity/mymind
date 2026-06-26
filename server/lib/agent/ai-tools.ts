@@ -11,7 +11,7 @@ export interface RunHooks {
   requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
   onEvent: (e:
     | { type: 'tool-start'; name: string; args: Record<string, unknown> }
-    | { type: 'tool-result'; name: string; summary: string; undoToken?: string }) => void
+    | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[] }) => void
 }
 
 function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
@@ -53,7 +53,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           )
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken })
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images })
           return exec.result
         } catch (err) {
           const summary = `failed: ${t.name}`

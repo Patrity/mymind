@@ -4,10 +4,11 @@ import { VOICE_TUNING } from './tuning'
 import type { SttProvider, TtsProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
 import { runAgent as realRunAgent } from '../agent/run'
+import { applyImageEmbeds, type DisplayImage } from '../agent/image-embed'
 
 export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
-  | { type: 'tool'; name: string; summary: string; undoToken?: string }
+  | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[] }
   | { type: 'audio'; bytes: Uint8Array }
   | { type: 'state'; state: 'thinking' | 'speaking' | 'typing' | 'tool' | 'idle' }
 
@@ -54,6 +55,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   deps.emit({ type: 'state', state: 'thinking' })
   const chunker = new SentenceChunker(VOICE_TUNING.tts.sentenceMinChars)
   let assistantText = ''
+  const turnImages: DisplayImage[] = []
 
   const speak = async (text: string) => {
     if (deps.signal.aborted) return
@@ -84,7 +86,8 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     } else if (ev.type === 'tool-start') {
       deps.emit({ type: 'state', state: 'tool' })
     } else if (ev.type === 'tool-result') {
-      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken })
+      if (ev.images?.length) turnImages.push(...ev.images)
+      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images })
       deps.emit({ type: 'state', state: 'thinking' })
     }
   }
@@ -92,5 +95,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   if (deps.speak) for (const chunk of chunker.flush()) await speak(chunk)
   deps.emit({ type: 'state', state: 'idle' })
 
+  if (turnImages.length) {
+    const { content, appended } = applyImageEmbeds(assistantText, turnImages)
+    if (appended) deps.emit({ type: 'transcript', role: 'assistant', text: appended })  // live render
+    assistantText = content
+  }
   return assistantText ? [...messages, { role: 'assistant', content: assistantText }] : messages
 }

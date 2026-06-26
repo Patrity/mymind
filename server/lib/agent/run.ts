@@ -13,7 +13,7 @@ export interface AgentMessage { role: 'system' | 'user' | 'assistant'; content: 
 export type AgentEvent =
   | { type: 'text-delta'; text: string }
   | { type: 'tool-start'; name: string; args: Record<string, unknown> }
-  | { type: 'tool-result'; name: string; summary: string; undoToken?: string }
+  | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[] }
   | { type: 'done' }
 
 // Structural type for the streamText dep: only what runAgent actually uses.
