@@ -1,7 +1,7 @@
 ---
 title: MCP Server
 status: shipped
-cycle: 5
+cycle: 37
 updated: 2026-06-25
 ---
 
