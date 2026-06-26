@@ -2,7 +2,7 @@
 title: MCP Server
 status: shipped
 cycle: 5
-updated: 2026-06-24
+updated: 2026-06-25
 ---
 
 # MCP Server
@@ -16,7 +16,7 @@ Exposes MyMind to agents (Claude Code, etc.) over the Model Context Protocol, de
 Bearer **API token** (machine clients) — the existing dual-auth middleware gates `/api/**`, plus an in-handler token check against `api_tokens`. Mint/manage tokens and get a copy-paste MCP config at `/settings → API Keys` — see [`api-tokens.md`](api-tokens.md).
 
 ## Tools (`server/lib/mcp/server.ts`)
-The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. All 19 tools are currently non-dangerous, so the full registry is exposed (19 rows below).
+The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. All 20 tools are currently non-dangerous, so the full registry is exposed (20 rows below).
 
 | Tool | Delegates to |
 |---|---|
@@ -39,6 +39,7 @@ The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/
 | `web_search(query, count?)` | search provider (SearXNG/Brave); untrusted results (cycle 29) |
 | `web_fetch(url)` | fetchAsMarkdown; SSRF-guarded, untrusted content (cycle 29) |
 | `generate_image(prompt, ...)` | imagegen/comfy → images.createGeneratedImage (cycle 36) |
+| `edit_image(prompt, source_image_id?, strength?, ...)` | imagegen/comfy img2img → images.createGeneratedImage (cycle 37) |
 
 `save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
 
@@ -47,7 +48,7 @@ The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/
 Registered via `server.tool(name, description, zodShape, handler)`; each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
 
 ## Validate
-With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 19 tools; `search_memories` returns ranked memories; `create_task` creates a real task row. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
+With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified: tools/list → 20 tools; `search_memories` returns ranked memories; `create_task` creates a real task row. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
 
 ## Notes / follow-ups
 Stateless mode → no server-initiated notifications; tools only (no MCP resources/prompts) — sufficient for the agent tool-call use case.

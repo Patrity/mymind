@@ -1,13 +1,13 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 36
-updated: 2026-06-24
+cycle: 37
+updated: 2026-06-25
 ---
 
 # Agent Surface (`/agent`)
 
-One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page where the Three.js visualizer is a toggle, conversations persist as resumable + searchable threads, and the same shared agent core powers every turn. This is the in-app "agent loop" — tool-scoped on the current 19-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are part of the Cycle B series (B1/B2/B3 shipped).
+One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page where the Three.js visualizer is a toggle, conversations persist as resumable + searchable threads, and the same shared agent core powers every turn. This is the in-app "agent loop" — tool-scoped on the current 20-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are part of the Cycle B series (B1/B2/B3 shipped).
 
 ## The convergence principle (one flow, one branch)
 
@@ -64,7 +64,7 @@ After each completed turn the handler lazily creates the conversation (first tur
 
 > **Nuxt routing note:** the page lives at `pages/agent/index.vue` (not `pages/agent.vue`) so `/agent` and `/agent/history` are **sibling** routes. With `pages/agent.vue` + `pages/agent/history.vue`, Nuxt nests `/agent/history` under `agent.vue`, which has no `<NuxtPage/>` outlet, so the history route renders the agent shell. (Caught by E2E; typecheck/build pass either way.)
 
-## Tool registry (current — 19 tools)
+## Tool registry (current — 20 tools)
 
 | Tool | Kind | Notes |
 |---|---|---|
@@ -87,12 +87,13 @@ After each completed turn the handler lazily creates the conversation (first tur
 | `web_search` | read | SearXNG / Brave; SSRF-guarded (cycle 29) |
 | `web_fetch` | read | Markdown extraction; SSRF-guarded (cycle 29) |
 | `generate_image` | create | ComfyUI + Qwen-Image; saves to gallery (cycle 36) |
+| `edit_image` | create | ComfyUI img2img on an existing image; defaults to most-recent generated; result embedded by server (cycle 37) |
 
 ## Image generation (`generate_image`)
 
 **Cycle 36.** Generates images from a text prompt using the local ComfyUI + Qwen-Image stack and saves the result directly into the gallery.
 
-**Config:** lives in the `image_config` settings doc, edited at `/settings → Image Gen`. This is **not** the `ai_config` model registry — it holds the ComfyUI URL, workflow ID, default resolution/steps/cfg, and the Qwen-Image model name. No DB migration — the settings doc is created on first save.
+**Config:** lives in the `image_config` settings doc, edited at `/settings → Image Gen`. This is **not** the `ai_config` model registry — it holds the ComfyUI URL, workflow ID, default resolution/steps/cfg, the Qwen-Image model name, and (added cycle 37) `editStrength` (the default img2img denoise strength). No DB migration — the settings doc is created on first save.
 
 **Persistence:** generated images skip the vision-enrich pass entirely. The prompt becomes both the `summary` and the embedding source; the image is tagged `['generated']`; `enrich_status` is set to `done` at creation time so the enrichment cron ignores it.
 
@@ -101,6 +102,33 @@ After each completed turn the handler lazily creates the conversation (first tur
 **MCP:** auto-exposed via the standard `agentTools` loop in `server/lib/mcp/server.ts` (non-`dangerous` → always registered). No per-tool MCP wiring needed.
 
 **Deferred:** live diffusion-preview WebSocket stream; REST `POST /api/images/generate` endpoint.
+
+## Image editing (`edit_image`) — cycle 37
+
+**Cycle 37.** Edits an existing image via ComfyUI img2img (same Qwen-Image model as `generate_image`). The tool takes a natural-language change description and re-rolls the image guided by the new prompt, producing a result image that is persisted into the gallery.
+
+**Source resolution:** if `source_image_id` is omitted (the normal case), the server resolves the most recently generated/edited image from the gallery. The agent never has to track IDs explicitly.
+
+**`strength` (denoise):** controls how far the result departs from the source (0 = identical; 1 = full re-generation). Default is `editStrength` from `image_config` (roughly 0.55). Lower values preserve more of the original composition; higher values allow more change. Configurable per-call or globally in `/settings → Image Gen`.
+
+**Caveat — whole-image shift:** img2img re-rolls the **entire** image guided by the combined prompt, not a masked/targeted region. A prompt like "make the hat blue" may shift other areas of the image too. Phase 2 (paste-upload), Phase 3 (mask/inpaint), and Qwen-Image-Edit are deferred.
+
+**Persistence:** edited images are tagged `['generated', 'edited']`; `enrich_status: done`; embedding source = the edit prompt. The `source_image_id` is stored on the row for lineage.
+
+**Fails clean:** returns `{ ok:false, error }` when ComfyUI is unreachable, when no source image exists, or when the source row is missing — never throws.
+
+## Reliable render (cycle 37 — supersedes cycle-36 approach)
+
+**Problem:** in cycle 36, the model was asked to paste a markdown image link from the tool result. In practice the model would sometimes hallucinate the URL slightly (or the wrong path), making the inline image silently fail — and the embed depended on the model faithfully copying the URL out of the tool response.
+
+**Fix (cycle 37):** the model **never receives an image URL**. The `generate_image` and `edit_image` tool handlers set a `display` sentinel on the result instead of returning a raw URL. The orchestrator (`server/lib/voice/orchestrator.ts`) intercepts this sentinel, looks up the real persisted gallery row by ID, and **authors the chat embed itself** as an `assistant` message containing the correct markdown image link. The model only receives `{ ok:true, id, summary }` — no URL.
+
+**Effect:**
+- A hallucinated image URL cannot render — the model has no URL to hallucinate.
+- The embed is always derived from the real, persisted row.
+- Even if the model writes a stray markdown link (impossible with the current prompt, but belt-and-suspenders), the orchestrator strips unrecognized image links from model output before appending them to the transcript.
+
+This supersedes the cycle-36 "model pastes markdown" approach and closes the hallucination-render bug entirely.
 
 ## Deferred (not built this cycle)
 
