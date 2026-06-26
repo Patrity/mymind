@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { editImage } from './comfy'
+import { editImage, uploadSourceImage } from './comfy'
 import type { ImageGenConfig } from './types'
 
 const config: ImageGenConfig = {
@@ -36,5 +36,30 @@ describe('editImage', () => {
     const res = await editImage({ ...src, prompt: 'x', seed: 1 }, { config: { ...config, baseURL: null } })
     expect(res.ok).toBe(false)
     if (!res.ok) expect(res.error).toMatch(/not configured/i)
+  })
+})
+
+describe('uploadSourceImage', () => {
+  it('returns { ok:false } when no baseURL is configured', async () => {
+    const res = await uploadSourceImage(Buffer.from([1]), 'x.png', { config: { ...config, baseURL: null } })
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error).toMatch(/not configured/i)
+  })
+
+  it('returns { ok:false } when the upload response has no name', async () => {
+    vi.stubGlobal('$fetch', vi.fn().mockResolvedValue({}))
+    const res = await uploadSourceImage(Buffer.from([1]), 'x.png', { config })
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.error).toMatch(/no filename/i)
+  })
+
+  it('prefixes the subfolder when present, else returns the bare name', async () => {
+    vi.stubGlobal('$fetch', vi.fn().mockResolvedValue({ name: 'a.png', subfolder: 'sub', type: 'input' }))
+    const withSub = await uploadSourceImage(Buffer.from([1]), 'x.png', { config })
+    expect(withSub).toEqual({ ok: true, name: 'sub/a.png' })
+
+    vi.stubGlobal('$fetch', vi.fn().mockResolvedValue({ name: 'a.png', subfolder: '', type: 'input' }))
+    const noSub = await uploadSourceImage(Buffer.from([1]), 'x.png', { config })
+    expect(noSub).toEqual({ ok: true, name: 'a.png' })
   })
 })

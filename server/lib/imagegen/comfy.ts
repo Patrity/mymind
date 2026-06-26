@@ -130,7 +130,7 @@ export async function editImage(
     const up = await uploadSourceImage(params.sourceBytes, `mymind-src-${seed}.${ext}`, { config, signal: opts.signal })
     if (!up.ok) return up
 
-    const graph = buildImg2ImgGraph({ prompt: params.prompt, negativePrompt: params.negativePrompt, steps: params.steps, cfg: params.cfg, seed, strength: params.strength }, config, up.name)
+    const graph = buildImg2ImgGraph({ prompt: params.prompt, negativePrompt: params.negativePrompt, steps, cfg, seed, strength: params.strength }, config, up.name)
     const submit = await $fetch<{ prompt_id?: string }>(`${base}/prompt`, { method: 'POST', body: { prompt: graph, client_id: clientId }, signal: opts.signal })
     const promptId = submit?.prompt_id
     if (!promptId) return { ok: false, error: 'ComfyUI did not return a prompt_id' }
