@@ -65,7 +65,7 @@ export async function createImage(
 export function buildGeneratedImageValues(args: {
   storageKey: string; mime: string; ext: string; kind: string
   width: number | null; height: number | null; size: number
-  prompt: string; embedding: number[] | null
+  prompt: string; embedding: number[] | null; tags?: string[]
 }): Record<string, unknown> {
   return {
     storageKey: args.storageKey,
@@ -77,7 +77,7 @@ export function buildGeneratedImageValues(args: {
     height: args.height,
     size: args.size,
     summary: args.prompt,
-    tags: ['generated'],
+    tags: args.tags ?? ['generated'],
     enrichStatus: 'done',
     embedding: args.embedding as unknown,  // halfvec write idiom (see image-enrich.ts)
     isPublic: false,
@@ -89,7 +89,7 @@ export function buildGeneratedImageValues(args: {
  * Persist a generated image WITHOUT the vision enrich pass: the prompt is the
  * summary + the embedding source, so the image is searchable immediately.
  */
-export async function createGeneratedImage(buffer: Buffer, mime: string, opts: { prompt: string }): Promise<Image> {
+export async function createGeneratedImage(buffer: Buffer, mime: string, opts: { prompt: string; tags?: string[] }): Promise<Image> {
   const processed = await processUpload(buffer, mime)
   const stream = Readable.from(processed.buffer)
   const { key, size } = await storage().put(stream, { contentType: processed.mime })
@@ -100,10 +100,32 @@ export async function createGeneratedImage(buffer: Buffer, mime: string, opts: {
   const values = buildGeneratedImageValues({
     storageKey: key, mime: processed.mime, ext: processed.ext, kind: processed.kind,
     width: processed.width ?? null, height: processed.height ?? null, size,
-    prompt: opts.prompt, embedding
+    prompt: opts.prompt, embedding, tags: opts.tags ?? ['generated']
   })
   const [row] = await useDb().insert(images).values(values as typeof images.$inferInsert).returning()
   return row!
+}
+
+/** Resolve the source image for an edit: the explicit id (must be live) or the newest generated image. */
+export async function resolveSourceImageId(explicitId: string | null): Promise<string | null> {
+  if (explicitId) {
+    const row = await getImage(explicitId)
+    return row ? row.id : null
+  }
+  const [row] = await useDb().select({ id: images.id }).from(images)
+    .where(and(live(), sql`${'generated'} = ANY(${images.tags})`))
+    .orderBy(desc(images.createdAt)).limit(1)
+  return row?.id ?? null
+}
+
+/** Read a stored image's bytes (for feeding an edit to ComfyUI). */
+export async function getImageBytes(id: string): Promise<{ bytes: Buffer; mime: string } | null> {
+  const row = await getImage(id)
+  if (!row) return null
+  const { stream } = await storage().get(row.storageKey)
+  const chunks: Buffer[] = []
+  for await (const c of stream as AsyncIterable<Buffer>) chunks.push(Buffer.from(c))
+  return { bytes: Buffer.concat(chunks), mime: row.mime }
 }
 
 export interface ListImagesParams {
