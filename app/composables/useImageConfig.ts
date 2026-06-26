@@ -10,6 +10,7 @@ export interface ImageConfig {
   cfg: number
   sampler: string
   scheduler: string
+  editStrength: number
   workflowJson?: string
 }
 
