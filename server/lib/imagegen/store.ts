@@ -16,7 +16,7 @@ export function defaultImageConfig(): ImageGenConfig {
     unetName: 'qwen_image_fp8_e4m3fn.safetensors',
     clipName: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
     vaeName: 'qwen_image_vae.safetensors',
-    width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple'
+    width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple', editStrength: 0.55
   }
 }
 
@@ -41,6 +41,7 @@ export const imageConfigInputSchema = z.object({
   cfg: z.number().min(0).max(20).optional(),
   sampler: z.string().min(1).optional(),
   scheduler: z.string().min(1).optional(),
+  editStrength: z.number().min(0).max(1).optional(),
   workflowJson: z.string().optional()
 })
 

@@ -5,7 +5,7 @@ import type { ImageGenConfig } from './types'
 const config: ImageGenConfig = {
   baseURL: 'http://rig:8188',
   unetName: 'u', clipName: 'c', vaeName: 'v',
-  width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple'
+  width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple', editStrength: 0.55
 }
 
 afterEach(() => { vi.unstubAllGlobals() })

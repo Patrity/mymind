@@ -40,3 +40,12 @@ describe('parseImageConfigInput', () => {
     expect(() => parseImageConfigInput({ baseURL: 'not a url' })).toThrow()
   })
 })
+
+describe('editStrength', () => {
+  it('defaults to 0.55 and is validated in range', async () => {
+    const { defaultImageConfig, parseImageConfigInput } = await import('./store')
+    expect(defaultImageConfig().editStrength).toBe(0.55)
+    expect(parseImageConfigInput({ editStrength: 0.7 }).editStrength).toBe(0.7)
+    expect(() => parseImageConfigInput({ editStrength: 2 })).toThrow()
+  })
+})
