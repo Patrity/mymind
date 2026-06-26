@@ -40,10 +40,19 @@ describe('edit_image tool', () => {
     expect(publishChange).toHaveBeenCalledWith({ resource: 'image', action: 'created', id: 'edit1' })
     await exec.undo!()
     expect(deleteImage).toHaveBeenCalledWith('edit1')
+    expect(publishChange).toHaveBeenCalledWith({ resource: 'image', action: 'deleted', id: 'edit1' })
   })
 
   it('clean error when there is no source image to edit', async () => {
     ;(resolveSourceImageId as any).mockResolvedValue(null)
+    const exec = await tool.handler({ prompt: 'x' }, ctx)
+    expect((exec.result as { ok: boolean }).ok).toBe(false)
+    expect(editImage).not.toHaveBeenCalled()
+  })
+
+  it('clean error when the resolved source has no bytes', async () => {
+    ;(resolveSourceImageId as any).mockResolvedValue('src1')
+    ;(getImageBytes as any).mockResolvedValue(null)
     const exec = await tool.handler({ prompt: 'x' }, ctx)
     expect((exec.result as { ok: boolean }).ok).toBe(false)
     expect(editImage).not.toHaveBeenCalled()
@@ -56,5 +65,12 @@ describe('edit_image tool', () => {
     const exec = await tool.handler({ prompt: 'x' }, ctx)
     expect((exec.result as { ok: boolean }).ok).toBe(false)
     expect(createGeneratedImage).not.toHaveBeenCalled()
+  })
+
+  it('never throws — converts a DB throw during source resolution to a clean error', async () => {
+    ;(resolveSourceImageId as any).mockRejectedValue(new Error('db down'))
+    const exec = await tool.handler({ prompt: 'x' }, ctx)
+    expect((exec.result as { ok: boolean }).ok).toBe(false)
+    expect(editImage).not.toHaveBeenCalled()
   })
 })

@@ -384,32 +384,40 @@ export const agentTools: AgentTool[] = [
       seed: z.number().int().optional()
     },
     handler: async (a, ctx) => {
-      const sourceId = await resolveSourceImageId((a.source_image_id as string | undefined) ?? null)
-      if (!sourceId) return { result: { ok: false, error: 'no image to edit — generate an image first, or pass a valid source_image_id' }, summary: 'edit failed: no source image' }
-      const src = await getImageBytes(sourceId)
-      if (!src) return { result: { ok: false, error: 'source image not found' }, summary: 'edit failed: source not found' }
-      const prompt = a.prompt as string
-      const gen = await editImage({
-        prompt, negativePrompt: a.negative_prompt as string | undefined,
-        strength: a.strength as number | undefined, seed: a.seed as number | undefined,
-        sourceBytes: src.bytes, sourceMime: src.mime
-      }, { signal: ctx.signal })
-      if (!gen.ok) return { result: { ok: false, error: gen.error }, summary: `edit failed: ${gen.error}` }
-      let row
       try {
-        row = await createGeneratedImage(gen.buffer, gen.mime, { prompt, tags: ['generated', 'edited'] })
+        const sourceId = await resolveSourceImageId((a.source_image_id as string | undefined) ?? null)
+        if (!sourceId) return { result: { ok: false, error: 'no image to edit — generate an image first, or pass a valid source_image_id' }, summary: 'edit failed: no source image' }
+        const src = await getImageBytes(sourceId)
+        if (!src) return { result: { ok: false, error: 'source image not found' }, summary: 'edit failed: source not found' }
+        const prompt = a.prompt as string
+        const gen = await editImage({
+          prompt, negativePrompt: a.negative_prompt as string | undefined,
+          strength: a.strength as number | undefined, seed: a.seed as number | undefined,
+          sourceBytes: src.bytes, sourceMime: src.mime
+        }, { signal: ctx.signal })
+        if (!gen.ok) return { result: { ok: false, error: gen.error }, summary: `edit failed: ${gen.error}` }
+        let row
+        try {
+          row = await createGeneratedImage(gen.buffer, gen.mime, { prompt, tags: ['generated', 'edited'] })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return { result: { ok: false, error: msg }, summary: `edit failed: ${msg}` }
+        }
+        publishChange({ resource: 'image', action: 'created', id: row.id })
+        const url = serveUrl(row)
+        const alt = prompt.replace(/[\r\n]+/g, ' ').replace(/[[\]]/g, '').trim().slice(0, 120)
+        return {
+          result: { ok: true, image_id: row.id },
+          display: { images: [{ id: row.id, url, alt }] },
+          summary: `edited image (${row.id})`,
+          undo: async () => { await deleteImage(row!.id); publishChange({ resource: 'image', action: 'deleted', id: row!.id }) }
+        }
       } catch (err) {
+        // Backstop: resolveSourceImageId / getImageBytes touch the DB (useDb) and CAN throw
+        // on DB unavailability. An escaping throw would log a spurious error-severity
+        // activity_log row (never-throws mandate) — convert it to a clean error result.
         const msg = err instanceof Error ? err.message : String(err)
         return { result: { ok: false, error: msg }, summary: `edit failed: ${msg}` }
-      }
-      publishChange({ resource: 'image', action: 'created', id: row.id })
-      const url = serveUrl(row)
-      const alt = prompt.replace(/[\r\n]+/g, ' ').replace(/[[\]]/g, '').trim().slice(0, 120)
-      return {
-        result: { ok: true, image_id: row.id },
-        display: { images: [{ id: row.id, url, alt }] },
-        summary: `edited image (${row.id})`,
-        undo: async () => { await deleteImage(row!.id); publishChange({ resource: 'image', action: 'deleted', id: row!.id }) }
       }
     }
   },
