@@ -10,8 +10,8 @@ import { slugify } from '../../../shared/utils/slugify'
 import { nanoid } from 'nanoid'
 import { searchProvider } from '../search/resolve'
 import { fetchAsMarkdown } from '../search/fetch'
-import { generateImage } from '../imagegen/comfy'
-import { createGeneratedImage, deleteImage, serveUrl } from '../../services/images'
+import { generateImage, editImage } from '../imagegen/comfy'
+import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getImageBytes } from '../../services/images'
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
@@ -310,7 +310,7 @@ export const agentTools: AgentTool[] = [
   // ---- image generation ----
   {
     name: 'generate_image',
-    description: 'Generate an image from a text prompt using the local Qwen-Image model. The result is saved to the gallery and is searchable by its prompt. Generation takes ~1 minute per image. IMPORTANT: to show the image you MUST embed it inline in your reply using markdown image syntax — paste each result\'s `markdown` field verbatim (it looks like ![prompt](url)). Do NOT write it as a plain link [..](url); a bare link does not display and breaks in the app. If it can\'t run (backend down / not configured) the result is { ok:false, error } — say so rather than retrying.',
+    description: 'Generate an image from a text prompt using the local Qwen-Image model. Saved to the gallery and searchable by its prompt. ~1 minute per image. The image is shown to the user automatically — do NOT write an image link or markdown in your reply. On failure the result is { ok:false, error } — say so rather than retrying.',
     kind: 'create',
     schema: {
       prompt: z.string().min(1).describe('What to generate'),
@@ -333,9 +333,7 @@ export const agentTools: AgentTool[] = [
         cfg: a.cfg as number | undefined,
         seed: a.seed as number | undefined
       }
-      const made: { id: string; url: string; seed: number; markdown: string }[] = []
-      // Alt text for the markdown embed: strip brackets/newlines so `![alt](url)` parses.
-      const alt = params.prompt.replace(/[\r\n]+/g, ' ').replace(/[[\]]/g, '').trim().slice(0, 120)
+      const made: { id: string; url: string; seed: number }[] = []
       for (let i = 0; i < n; i++) {
         if (ctx.signal.aborted) break
         // With an explicit seed, stride by `i` so n>1 yields distinct AND reproducible
@@ -361,23 +359,57 @@ export const agentTools: AgentTool[] = [
           break
         }
         publishChange({ resource: 'image', action: 'created', id: row.id })
-        const url = serveUrl(row)
-        made.push({ id: row.id, url, seed: gen.meta.seed, markdown: `![${alt}](${url})` })
+        made.push({ id: row.id, url: serveUrl(row), seed: gen.meta.seed })
       }
+      const alt = params.prompt.replace(/[\r\n]+/g, ' ').replace(/[[\]]/g, '').trim().slice(0, 120)
       return {
-        result: {
-          images: made,
-          // Ready-to-paste embed(s) — the model must render these inline (see the tool description).
-          markdown: made.map(m => m.markdown).join('\n\n'),
-          params: { prompt: params.prompt, negativePrompt: params.negativePrompt ?? null }
-        },
+        result: made.length === 1
+          ? { ok: true, image_id: made[0]!.id }
+          : { ok: true, image_ids: made.map(m => m.id) },
+        display: { images: made.map(m => ({ id: m.id, url: m.url, alt })) },
         summary: made.length === 1 ? `generated image (${made[0]!.id})` : `generated ${made.length} images`,
-        undo: async () => {
-          for (const m of made) {
-            await deleteImage(m.id)
-            publishChange({ resource: 'image', action: 'deleted', id: m.id })
-          }
-        }
+        undo: async () => { for (const m of made) { await deleteImage(m.id); publishChange({ resource: 'image', action: 'deleted', id: m.id }) } }
+      }
+    }
+  },
+  {
+    name: 'edit_image',
+    description: 'Edit/iterate on an existing image (local Qwen-Image img2img): describe the change (e.g. "make the hat blue"). By default edits the most recently generated image; pass source_image_id to edit a specific one. Note: img2img re-rolls the whole image guided by the prompt, so it shifts more than just the named part (strength controls how much). The result is shown to the user automatically — do NOT write an image link. On failure the result is { ok:false, error }.',
+    kind: 'create',
+    schema: {
+      prompt: z.string().min(1).describe('The change to make'),
+      source_image_id: z.string().optional().describe('Image to edit (defaults to the most recently generated image)'),
+      strength: z.number().min(0).max(1).optional().describe('How far to depart from the source (denoise; default ~0.55)'),
+      negative_prompt: z.string().optional(),
+      seed: z.number().int().optional()
+    },
+    handler: async (a, ctx) => {
+      const sourceId = await resolveSourceImageId((a.source_image_id as string | undefined) ?? null)
+      if (!sourceId) return { result: { ok: false, error: 'no image to edit — generate an image first, or pass a valid source_image_id' }, summary: 'edit failed: no source image' }
+      const src = await getImageBytes(sourceId)
+      if (!src) return { result: { ok: false, error: 'source image not found' }, summary: 'edit failed: source not found' }
+      const prompt = a.prompt as string
+      const gen = await editImage({
+        prompt, negativePrompt: a.negative_prompt as string | undefined,
+        strength: a.strength as number | undefined, seed: a.seed as number | undefined,
+        sourceBytes: src.bytes, sourceMime: src.mime
+      }, { signal: ctx.signal })
+      if (!gen.ok) return { result: { ok: false, error: gen.error }, summary: `edit failed: ${gen.error}` }
+      let row
+      try {
+        row = await createGeneratedImage(gen.buffer, gen.mime, { prompt, tags: ['generated', 'edited'] })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { result: { ok: false, error: msg }, summary: `edit failed: ${msg}` }
+      }
+      publishChange({ resource: 'image', action: 'created', id: row.id })
+      const url = serveUrl(row)
+      const alt = prompt.replace(/[\r\n]+/g, ' ').replace(/[[\]]/g, '').trim().slice(0, 120)
+      return {
+        result: { ok: true, image_id: row.id },
+        display: { images: [{ id: row.id, url, alt }] },
+        summary: `edited image (${row.id})`,
+        undo: async () => { await deleteImage(row!.id); publishChange({ resource: 'image', action: 'deleted', id: row!.id }) }
       }
     }
   },
