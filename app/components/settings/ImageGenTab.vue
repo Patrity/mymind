@@ -16,7 +16,7 @@ const form = reactive({
   cfg: 2.5,
   sampler: 'euler',
   scheduler: 'simple',
-  editStrength: 0.55,
+  editStrength: 0.72,
 })
 
 onMounted(async () => {
@@ -32,7 +32,7 @@ onMounted(async () => {
     form.cfg = config.value.cfg ?? 2.5
     form.sampler = config.value.sampler ?? 'euler'
     form.scheduler = config.value.scheduler ?? 'simple'
-    form.editStrength = config.value.editStrength ?? 0.55
+    form.editStrength = config.value.editStrength ?? 0.72
   }
 })
 

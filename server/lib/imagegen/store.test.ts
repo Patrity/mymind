@@ -42,9 +42,9 @@ describe('parseImageConfigInput', () => {
 })
 
 describe('editStrength', () => {
-  it('defaults to 0.55 and is validated in range', async () => {
+  it('defaults to 0.72 and is validated in range', async () => {
     const { defaultImageConfig, parseImageConfigInput } = await import('./store')
-    expect(defaultImageConfig().editStrength).toBe(0.55)
+    expect(defaultImageConfig().editStrength).toBe(0.72)
     expect(parseImageConfigInput({ editStrength: 0.7 }).editStrength).toBe(0.7)
     expect(() => parseImageConfigInput({ editStrength: 2 })).toThrow()
   })

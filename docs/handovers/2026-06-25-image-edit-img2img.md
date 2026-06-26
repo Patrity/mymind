@@ -2,7 +2,7 @@
 title: Image Editing (img2img) Phase 1 + Reliable Render — Cycle 37
 cycle: 37
 date: 2026-06-25
-status: shipped — gates green (typecheck 0 / test 642 / build); NOT yet deployed; live E2E against the rig pending
+status: shipped + DEPLOYED to prod (master c241309); post-ship fix deployed for the first live test (history-URL redaction + edit-strength); see "Post-ship fix" below
 branch: feat/image-edit-img2img (off master 6ee7810; subagent-driven, 8 tasks; whole-branch review opus = ready-to-merge)
 spec: ../superpowers/specs/2026-06-25-image-edit-img2img-design.md
 plan: ../superpowers/plans/2026-06-25-image-edit-img2img.md
@@ -57,6 +57,26 @@ See frontmatter `shipped`. Two themes share one engine:
   appends the server-authored one. This is the durable fix for the hallucination class.
 - **Source defaults to the newest generated image** (single-user) so "edit the one I just made"
   needs no id juggling; pass `source_image_id` for a specific one.
+
+## Post-ship fix — 2026-06-26 (first live test on prod)
+
+First live edit run surfaced two issues; root-caused from prod DB (activity_log + conversation_messages + images):
+- **The model copied an OLD image's URL → double-render + "same image".** The persisted assistant
+  messages were each correct (exactly one server-authored embed). But the server-authored embeds in
+  *history* re-exposed image URLs to the model: on the next turn it copied a prior `![..](/api/images/<old>/raw)`
+  into its reply, which streamed live as the *old* image, then the server appended the *real* new embed →
+  two images live (DB stayed clean — the copy was stripped for persistence). The "no URL to the model"
+  invariant held for the tool *result* but not for *history*. **Fix:** `redactImageUrlsForModel` (image-embed.ts)
+  rewrites `![alt](/api/images/..)` → `[generated image: alt]` in assistant history before it reaches the
+  model (run.ts message map). The model keeps the context ("an image of X exists") but has no URL to copy.
+- **Edits barely changed the image.** img2img at `editStrength` 0.55 preserved too much; and the model was
+  passing the user's *instruction* as the prompt. **Mitigations (not a true fix — img2img can't do targeted
+  edits):** bumped default `editStrength` 0.55 → **0.72** (applies on prod automatically — existing
+  `image_config` lacks the field so it takes the new default via `mergeImageConfig`); rewrote the `edit_image`
+  description so `prompt` is a FULL DESCRIPTION of the desired final image (not an instruction) + an explicit
+  "shifts the whole image, can't do a pixel-perfect targeted edit" caveat. **The real fix for targeted edits
+  is Qwen-Image-Edit / inpainting (deferred Phase 3, task a48a746c).**
+- Gates: typecheck 0 / test 645 / build. Deployed to prod.
 
 ## Gotchas for the next session
 - **The model has NO image url** — by design. If you see a tool returning a url in `result`

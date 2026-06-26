@@ -16,7 +16,7 @@ export function defaultImageConfig(): ImageGenConfig {
     unetName: 'qwen_image_fp8_e4m3fn.safetensors',
     clipName: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
     vaeName: 'qwen_image_vae.safetensors',
-    width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple', editStrength: 0.55
+    width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple', editStrength: 0.72
   }
 }
 

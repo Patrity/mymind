@@ -374,7 +374,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'edit_image',
-    description: 'Edit/iterate on an existing image (local Qwen-Image img2img): describe the change (e.g. "make the hat blue"). By default edits the most recently generated image; pass source_image_id to edit a specific one. Note: img2img re-rolls the whole image guided by the prompt, so it shifts more than just the named part (strength controls how much). The result is shown to the user automatically — do NOT write an image link. On failure the result is { ok:false, error }.',
+    description: 'Edit/iterate on an existing image (local Qwen-Image img2img). IMPORTANT: `prompt` is NOT an instruction — it is a FULL DESCRIPTION of the desired final image (e.g. for "make the hat blue" on a cat photo, pass "a photo of a cat wearing a blue top hat", NOT "make the hat blue"). img2img re-renders the whole image from the source guided by that description, so it shifts the rest of the image too, not just the named part — it cannot do a pixel-perfect targeted edit. Use `strength` (0..1, default ~0.72) to control how far it departs from the source: lower preserves more of the original, higher changes more. By default edits the most recently generated image; pass source_image_id to edit a specific one. The result is shown to the user automatically — do NOT write an image link. On failure the result is { ok:false, error }.',
     kind: 'create',
     schema: {
       prompt: z.string().min(1).describe('The change to make'),

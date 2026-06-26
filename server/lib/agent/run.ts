@@ -8,6 +8,7 @@ import { publishActivity } from './bus'
 import { VOICE_TUNING } from '../voice/tuning'
 import type { AgentTool } from './types'
 import { recordEvent } from '../observability/record'
+import { redactImageUrlsForModel } from './image-embed'
 
 export interface AgentMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export type AgentEvent =
@@ -67,7 +68,9 @@ export async function* runAgent(
       result = (streamTextFn as unknown as typeof realStreamText)({
         model,
         system,
-        messages: messages.filter(m => m.role !== 'system'),
+        // Redact /api/images URLs from history so the model can't copy a real URL into a
+        // new reply (which would render the wrong/old image live). See image-embed.ts.
+        messages: messages.filter(m => m.role !== 'system').map(m => m.role === 'assistant' ? { ...m, content: redactImageUrlsForModel(m.content) } : m),
         tools,
         stopWhen: stepCountIs(ctx.execEnabled ? VOICE_TUNING.agent.maxStepsPowerful : VOICE_TUNING.agent.maxSteps),
         abortSignal: ctx.signal

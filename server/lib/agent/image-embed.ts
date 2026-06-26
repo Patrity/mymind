@@ -15,3 +15,17 @@ export function applyImageEmbeds(text: string, images: DisplayImage[]): { conten
   const appended = (stripped ? '\n\n' : '') + embeds
   return { content: stripped + appended, appended }
 }
+
+/**
+ * Redact /api/images URLs from prior assistant turns BEFORE the model sees them as
+ * history. The server authors image embeds into persisted messages (so the chat renders
+ * them), but feeding those URLs back to the model lets it COPY a real URL into a new
+ * reply — which streams live as the wrong/old image (and double-renders alongside the
+ * server's real embed). Replacing `![alt](/api/images/..)` with `[generated image: alt]`
+ * keeps the model's context ("an image of X exists") while removing any URL to copy.
+ */
+export function redactImageUrlsForModel(text: string): string {
+  return (text ?? '')
+    .replace(/!\[([^\]]*)\]\((?:https?:\/\/[^)]*)?\/api\/images\/[^)]*\)/g, (_m, alt) => alt ? `[generated image: ${alt}]` : '[generated image]')
+    .replace(/\[([^\]]*)\]\((?:https?:\/\/[^)]*)?\/api\/images\/[^)]*\)/g, (_m, txt) => txt ? `[image: ${txt}]` : '[image]')
+}

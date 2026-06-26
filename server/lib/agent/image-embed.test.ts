@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyImageEmbeds } from './image-embed'
+import { applyImageEmbeds, redactImageUrlsForModel } from './image-embed'
 
 const img = (id: string) => ({ id, url: `/api/images/${id}/raw`, alt: 'a cat' })
 
@@ -20,5 +20,21 @@ describe('applyImageEmbeds', () => {
 
   it('no images -> returns text unchanged, empty appended', () => {
     expect(applyImageEmbeds('hello', [])).toEqual({ content: 'hello', appended: '' })
+  })
+})
+
+describe('redactImageUrlsForModel', () => {
+  it('replaces a server image embed with a urlless placeholder (keeps the alt)', () => {
+    const out = redactImageUrlsForModel('![a cat in a top hat](/api/images/abc-123/raw)')
+    expect(out).toBe('[generated image: a cat in a top hat]')
+    expect(out).not.toContain('/api/images')
+  })
+
+  it('redacts a link-form /api/images url too', () => {
+    expect(redactImageUrlsForModel('see [here](/api/images/x/raw)')).not.toContain('/api/images')
+  })
+
+  it('leaves normal prose untouched', () => {
+    expect(redactImageUrlsForModel('Done — here is your image.')).toBe('Done — here is your image.')
   })
 })
