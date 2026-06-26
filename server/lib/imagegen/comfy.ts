@@ -1,7 +1,7 @@
 // server/lib/imagegen/comfy.ts
 // ComfyUI client: POST /prompt -> poll /history -> GET /view. Never throws on an
 // expected backend failure — returns { ok:false, error } (the web_fetch convention).
-import { buildComfyGraph } from './graph'
+import { buildComfyGraph, buildImg2ImgGraph } from './graph'
 import { loadImageConfig } from './store'
 import type { GenerateParams, GenerateResult, ImageGenConfig } from './types'
 
@@ -82,5 +82,75 @@ export async function generateImage(
     const message = err instanceof Error ? err.message : String(err)
     if (opts.signal?.aborted) return { ok: false, error: 'aborted' }
     return { ok: false, error: message }
+  }
+}
+
+// reverse of MIME_BY_EXT for naming the upload (webp/png/jpg); defaults to 'png'.
+function mimeToExt(mime: string): string {
+  if (mime === 'image/webp') return 'webp'
+  if (mime === 'image/jpeg') return 'jpg'
+  return 'png'
+}
+
+/** Upload a source image to ComfyUI's input store; returns the referenceable filename. Never throws. */
+export async function uploadSourceImage(
+  bytes: Buffer, filename: string, opts: { config: ImageGenConfig; signal?: AbortSignal }
+): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+  const base = opts.config.baseURL?.replace(/\/$/, '')
+  if (!base) return { ok: false, error: 'image generation not configured (set a ComfyUI URL in /settings -> Image Gen)' }
+  try {
+    const fd = new FormData()
+    fd.append('image', new Blob([new Uint8Array(bytes)]), filename)
+    fd.append('overwrite', 'true')
+    const r = await $fetch<{ name?: string; subfolder?: string }>(`${base}/upload/image`, { method: 'POST', body: fd, signal: opts.signal })
+    if (!r?.name) return { ok: false, error: 'ComfyUI upload returned no filename' }
+    return { ok: true, name: r.subfolder ? `${r.subfolder}/${r.name}` : r.name }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function editImage(
+  params: { prompt: string; negativePrompt?: string; steps?: number; cfg?: number; seed?: number; strength?: number; sourceBytes: Buffer; sourceMime: string },
+  opts: { signal?: AbortSignal; config?: ImageGenConfig; clientId?: string; pollIntervalMs?: number; maxWaitMs?: number } = {}
+): Promise<GenerateResult> {
+  try {
+    const config = opts.config ?? await loadImageConfig()
+    if (!config.baseURL) return { ok: false, error: 'image generation not configured (set a ComfyUI URL in /settings -> Image Gen)' }
+    const base = config.baseURL.replace(/\/$/, '')
+    const seed = params.seed ?? randomSeed()
+    const steps = params.steps ?? config.steps
+    const cfg = params.cfg ?? config.cfg
+    const clientId = opts.clientId ?? `mymind-edit-${seed}-${Date.now()}`
+    const pollIntervalMs = opts.pollIntervalMs ?? 1500
+    const maxWaitMs = opts.maxWaitMs ?? 180_000
+    if (opts.signal?.aborted) return { ok: false, error: 'aborted' }
+
+    const ext = mimeToExt(params.sourceMime)
+    const up = await uploadSourceImage(params.sourceBytes, `mymind-src-${seed}.${ext}`, { config, signal: opts.signal })
+    if (!up.ok) return up
+
+    const graph = buildImg2ImgGraph({ prompt: params.prompt, negativePrompt: params.negativePrompt, steps: params.steps, cfg: params.cfg, seed, strength: params.strength }, config, up.name)
+    const submit = await $fetch<{ prompt_id?: string }>(`${base}/prompt`, { method: 'POST', body: { prompt: graph, client_id: clientId }, signal: opts.signal })
+    const promptId = submit?.prompt_id
+    if (!promptId) return { ok: false, error: 'ComfyUI did not return a prompt_id' }
+
+    const start = Date.now()
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (opts.signal?.aborted) return { ok: false, error: 'aborted' }
+      if (Date.now() - start > maxWaitMs) return { ok: false, error: `image edit timed out after ${Math.round(maxWaitMs / 1000)}s` }
+      const history = await $fetch(`${base}/history/${promptId}`, { signal: opts.signal })
+      const out = extractOutputImage(history, promptId)
+      if (out) {
+        const q = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder, type: out.type })
+        const ab = await $fetch<ArrayBuffer>(`${base}/view?${q.toString()}`, { responseType: 'arrayBuffer', signal: opts.signal })
+        return { ok: true, buffer: Buffer.from(ab), mime: mimeFromName(out.filename), meta: { seed, width: config.width, height: config.height, steps, cfg } }
+      }
+      await sleep(pollIntervalMs)
+    }
+  } catch (err) {
+    if (opts.signal?.aborted) return { ok: false, error: 'aborted' }
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
