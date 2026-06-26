@@ -2,6 +2,12 @@
 import { runAgent, type AgentMessage } from '../../lib/agent/run'
 
 // Session-authed (middleware). Streams plain text deltas as SSE `data:` lines.
+// TEXT-ONLY: this headless path forwards only `text-delta`; it does NOT apply the
+// server-authored image embed (that lives in the WS orchestrator, see
+// server/lib/voice/orchestrator.ts + lib/agent/image-embed.ts). image tools
+// (generate_image/edit_image) return no URL to the model, so over THIS endpoint an
+// image is created + searchable but is not rendered inline. If a UI is ever wired to
+// this endpoint, fold in applyImageEmbeds from the tool-result `display` channel first.
 export default defineEventHandler(async (event) => {
   const body = await readBody<{ messages?: AgentMessage[] }>(event)
   const messages = body?.messages ?? []
