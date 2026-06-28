@@ -54,8 +54,9 @@ export function buildComfyGraph(params: GenerateParams, config: ImageGenConfig):
  */
 export function buildQwenEditGraph(params: EditParams, config: ImageGenConfig, sourceFilename: string, opts: { quality?: boolean } = {}): ComfyGraph {
   const unet = opts.quality ? config.editUnetQualityName : config.editUnetName
-  const steps = params.steps ?? (opts.quality ? config.editStepsQuality : config.editSteps)
-  const cfg = params.cfg ?? (opts.quality ? config.editCfgQuality : config.editCfg)
+  // The quality flag is the single source of truth for steps/cfg (no per-call override).
+  const steps = opts.quality ? config.editStepsQuality : config.editSteps
+  const cfg = opts.quality ? config.editCfgQuality : config.editCfg
   return {
     '37': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: 'default' } },
     '38': { class_type: 'CLIPLoader', inputs: { clip_name: config.clipName, type: 'qwen_image' } },

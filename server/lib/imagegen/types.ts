@@ -40,8 +40,6 @@ export interface GenerateParams {
 export interface EditParams {
   prompt: string
   negativePrompt?: string
-  steps?: number
-  cfg?: number
   seed: number
 }
 
