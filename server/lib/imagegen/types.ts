@@ -14,6 +14,13 @@ export interface ImageGenConfig {
   cfg: number              // default cfg scale
   sampler: string          // KSampler sampler_name
   scheduler: string        // KSampler scheduler
+  editUnetName?: string         // fast/default edit model (merged lightning, 4-step)
+  editSteps?: number            // fast edit steps
+  editCfg?: number              // fast edit cfg
+  editUnetQualityName?: string  // quality edit model (unmerged, 20-step)
+  editStepsQuality?: number     // quality edit steps
+  editCfgQuality?: number       // quality edit cfg
+  editShift?: number            // ModelSamplingAuraFlow shift for edits
   editStrength: number     // default img2img denoise when the tool omits strength
   workflowJson?: string    // optional override graph (JSON string); when set it replaces the template
 }

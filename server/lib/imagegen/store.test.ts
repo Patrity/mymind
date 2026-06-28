@@ -49,3 +49,19 @@ describe('editStrength', () => {
     expect(() => parseImageConfigInput({ editStrength: 2 })).toThrow()
   })
 })
+
+describe('edit-model config', () => {
+  it('defaults to the merged fast model + unmerged quality model + shift, and validates', async () => {
+    const { defaultImageConfig, parseImageConfigInput } = await import('./store')
+    const d = defaultImageConfig()
+    expect(d.editUnetName).toMatch(/lightning4/)
+    expect(d.editSteps).toBe(4)
+    expect(d.editCfg).toBe(1.0)
+    expect(d.editUnetQualityName).toBe('qwen_image_edit_2509_fp8_e4m3fn.safetensors')
+    expect(d.editStepsQuality).toBe(20)
+    expect(d.editCfgQuality).toBe(2.5)
+    expect(d.editShift).toBe(3.0)
+    expect(parseImageConfigInput({ editSteps: 6 }).editSteps).toBe(6)
+    expect(() => parseImageConfigInput({ editSteps: 0 })).toThrow()
+  })
+})
