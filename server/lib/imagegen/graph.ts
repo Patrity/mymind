@@ -46,6 +46,37 @@ export function buildComfyGraph(params: GenerateParams, config: ImageGenConfig):
 }
 
 /**
+ * Qwen-Image-Edit-2509 instruction edit graph (verified on the rig 2026-06-26). The
+ * merged lightning model is the default; `opts.quality` selects the unmerged 20-step
+ * model. Source image: LoadImage -> FluxKontextImageScale (auto-resolution) -> VAEEncode
+ * (latent) AND -> image1 of both TextEncodeQwenImageEditPlus nodes (the reference the
+ * edit conditions on). Pure — caller resolves `seed`.
+ */
+export function buildQwenEditGraph(params: EditParams, config: ImageGenConfig, sourceFilename: string, opts: { quality?: boolean } = {}): ComfyGraph {
+  const unet = opts.quality ? config.editUnetQualityName : config.editUnetName
+  const steps = params.steps ?? (opts.quality ? config.editStepsQuality : config.editSteps)
+  const cfg = params.cfg ?? (opts.quality ? config.editCfgQuality : config.editCfg)
+  return {
+    '37': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: 'default' } },
+    '38': { class_type: 'CLIPLoader', inputs: { clip_name: config.clipName, type: 'qwen_image' } },
+    '39': { class_type: 'VAELoader', inputs: { vae_name: config.vaeName } },
+    '66': { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['37', 0], shift: config.editShift } },
+    '75': { class_type: 'CFGNorm', inputs: { model: ['66', 0], strength: 1.0 } },
+    '78': { class_type: 'LoadImage', inputs: { image: sourceFilename } },
+    '117': { class_type: 'FluxKontextImageScale', inputs: { image: ['78', 0] } },
+    '88': { class_type: 'VAEEncode', inputs: { pixels: ['117', 0], vae: ['39', 0] } },
+    '111': { class_type: 'TextEncodeQwenImageEditPlus', inputs: { clip: ['38', 0], vae: ['39', 0], image1: ['117', 0], prompt: params.prompt } },
+    '110': { class_type: 'TextEncodeQwenImageEditPlus', inputs: { clip: ['38', 0], vae: ['39', 0], image1: ['117', 0], prompt: params.negativePrompt ?? '' } },
+    '3': { class_type: 'KSampler', inputs: {
+      seed: params.seed, steps, cfg, sampler_name: config.sampler, scheduler: config.scheduler, denoise: 1.0,
+      model: ['75', 0], positive: ['111', 0], negative: ['110', 0], latent_image: ['88', 0]
+    } },
+    '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['39', 0] } },
+    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'mymind-edit', images: ['8', 0] } }
+  }
+}
+
+/**
  * img2img: same loaders/encoders as the text-to-image graph, but the latent comes
  * from encoding the uploaded source image (LoadImage -> VAEEncode) and KSampler runs
  * at denoise<1 (strength). The caller resolves `seed`; this stays pure.
