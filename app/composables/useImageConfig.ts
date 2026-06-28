@@ -11,6 +11,13 @@ export interface ImageConfig {
   sampler: string
   scheduler: string
   editStrength: number
+  editUnetName: string
+  editSteps: number
+  editCfg: number
+  editUnetQualityName: string
+  editStepsQuality: number
+  editCfgQuality: number
+  editShift: number
   workflowJson?: string
 }
 

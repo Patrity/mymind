@@ -17,6 +17,13 @@ const form = reactive({
   sampler: 'euler',
   scheduler: 'simple',
   editStrength: 0.72,
+  editUnetName: '',
+  editSteps: 4,
+  editCfg: 1.0,
+  editUnetQualityName: '',
+  editStepsQuality: 20,
+  editCfgQuality: 2.5,
+  editShift: 3.0,
 })
 
 onMounted(async () => {
@@ -33,6 +40,13 @@ onMounted(async () => {
     form.sampler = config.value.sampler ?? 'euler'
     form.scheduler = config.value.scheduler ?? 'simple'
     form.editStrength = config.value.editStrength ?? 0.72
+    form.editUnetName = config.value.editUnetName ?? ''
+    form.editSteps = config.value.editSteps ?? 4
+    form.editCfg = config.value.editCfg ?? 1.0
+    form.editUnetQualityName = config.value.editUnetQualityName ?? ''
+    form.editStepsQuality = config.value.editStepsQuality ?? 20
+    form.editCfgQuality = config.value.editCfgQuality ?? 2.5
+    form.editShift = config.value.editShift ?? 3.0
   }
 })
 
@@ -117,6 +131,31 @@ async function onTest() {
         </UFormField>
         <UFormField label="Edit strength (img2img denoise)">
           <UInput v-model.number="form.editStrength" type="number" step="0.05" :min="0" :max="1" class="w-full" />
+        </UFormField>
+      </div>
+
+      <h3 class="text-sm font-semibold text-highlighted mt-2">Edit model (instruction editing)</h3>
+      <div class="grid grid-cols-2 gap-3">
+        <UFormField label="Edit UNET filename" class="col-span-2">
+          <UInput v-model="form.editUnetName" class="w-full" />
+        </UFormField>
+        <UFormField label="Edit steps">
+          <UInput v-model.number="form.editSteps" type="number" :min="1" :max="60" class="w-full" />
+        </UFormField>
+        <UFormField label="Edit CFG">
+          <UInput v-model.number="form.editCfg" type="number" step="0.1" :min="0" :max="20" class="w-full" />
+        </UFormField>
+        <UFormField label="Edit UNET quality filename" class="col-span-2">
+          <UInput v-model="form.editUnetQualityName" class="w-full" />
+        </UFormField>
+        <UFormField label="Edit steps (quality)">
+          <UInput v-model.number="form.editStepsQuality" type="number" :min="1" :max="60" class="w-full" />
+        </UFormField>
+        <UFormField label="Edit CFG (quality)">
+          <UInput v-model.number="form.editCfgQuality" type="number" step="0.1" :min="0" :max="20" class="w-full" />
+        </UFormField>
+        <UFormField label="Edit shift">
+          <UInput v-model.number="form.editShift" type="number" step="0.1" :min="0" :max="10" class="w-full" />
         </UFormField>
       </div>
     </div>
