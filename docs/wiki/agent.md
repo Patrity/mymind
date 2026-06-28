@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 37
-updated: 2026-06-25
+cycle: 38
+updated: 2026-06-26
 ---
 
 # Agent Surface (`/agent`)
@@ -87,13 +87,13 @@ After each completed turn the handler lazily creates the conversation (first tur
 | `web_search` | read | SearXNG / Brave; SSRF-guarded (cycle 29) |
 | `web_fetch` | read | Markdown extraction; SSRF-guarded (cycle 29) |
 | `generate_image` | create | ComfyUI + Qwen-Image; saves to gallery (cycle 36) |
-| `edit_image` | create | ComfyUI img2img on an existing image; defaults to most-recent generated; result embedded by server (cycle 37) |
+| `edit_image` | create | Qwen-Image-Edit-2509 instruction editing on an existing image; defaults to most-recent generated; result embedded by server (cycles 37–38) |
 
 ## Image generation (`generate_image`)
 
 **Cycle 36.** Generates images from a text prompt using the local ComfyUI + Qwen-Image stack and saves the result directly into the gallery.
 
-**Config:** lives in the `image_config` settings doc, edited at `/settings → Image Gen`. This is **not** the `ai_config` model registry — it holds the ComfyUI URL, workflow ID, default resolution/steps/cfg, the Qwen-Image model name, and (added cycle 37) `editStrength` (the default img2img denoise strength). No DB migration — the settings doc is created on first save.
+**Config:** lives in the `image_config` settings doc, edited at `/settings → Image Gen`. This is **not** the `ai_config` model registry — it holds the ComfyUI URL, workflow ID, default resolution/steps/cfg, the Qwen-Image model name, and (added cycle 38) the Qwen-Image-Edit-2509 model name + edit graph IDs. No DB migration — the settings doc is created on first save. (`editStrength` was removed in cycle 38 when img2img was replaced.)
 
 **Persistence:** generated images skip the vision-enrich pass entirely. The prompt becomes both the `summary` and the embedding source; the image is tagged `['generated']`; `enrich_status` is set to `done` at creation time so the enrichment cron ignores it.
 
@@ -103,17 +103,21 @@ After each completed turn the handler lazily creates the conversation (first tur
 
 **Deferred:** live diffusion-preview WebSocket stream; REST `POST /api/images/generate` endpoint.
 
-## Image editing (`edit_image`) — cycle 37
+## Image editing (`edit_image`) — cycles 37–38
 
-**Cycle 37.** Edits an existing image via ComfyUI img2img (same Qwen-Image model as `generate_image`). The tool takes a natural-language change description and re-rolls the image guided by the new prompt, producing a result image that is persisted into the gallery.
+**Cycle 38 (supersedes cycle-37 img2img).** Edits an existing image using **Qwen-Image-Edit-2509** — an instruction-tuned diffusion model. The tool takes a natural-language instruction describing the *change* ("change the hat to a blue cowboy hat") and edits the named region while preserving the rest of the image. This is fundamentally different from img2img re-roll: the model reuses the encoder/VAE of the source and targets only the described part.
+
+**img2img + editStrength removed (cycle 38):** the old img2img denoise-strength approach and the `strength`/`editStrength` parameter are gone. Do not reference them — they no longer exist in code or config.
 
 **Source resolution:** if `source_image_id` is omitted (the normal case), the server resolves the most recently generated/edited image from the gallery. The agent never has to track IDs explicitly.
 
-**`strength` (denoise):** controls how far the result departs from the source (0 = identical; 1 = full re-generation). Default is `editStrength` from `image_config` (roughly 0.55). Lower values preserve more of the original composition; higher values allow more change. Configurable per-call or globally in `/settings → Image Gen`.
+**Speed:** a **fast merged 4-step path** is the default (~14 s). Pass `quality: true` to use a 20-step unmerged path (slower, sharper). The graph automatically selects the sampler/scheduler and step count based on this flag.
 
-**Caveat — whole-image shift:** img2img re-rolls the **entire** image guided by the combined prompt, not a masked/targeted region. A prompt like "make the hat blue" may shift other areas of the image too. Phase 2 (paste-upload), Phase 3 (mask/inpaint), and Qwen-Image-Edit are deferred.
+**Resolution:** `FluxKontextImageScale` auto-selects the resolution from the source image — no manual width/height needed.
 
-**Persistence:** edited images are tagged `['generated', 'edited']`; `enrich_status: done`; embedding source = the edit prompt. The `source_image_id` is stored on the row for lineage.
+**Instruction prompt:** phrase as a targeted edit, e.g. "change the hat to a blue cowboy hat", "make the background a sunset", "add sunglasses". The model preserves the unmentioned parts of the image; a good instruction targets one clearly described change.
+
+**Persistence:** edited images are tagged `['generated', 'edited']`; `enrich_status: done`; embedding source = the instruction prompt. The `source_image_id` is stored on the row for lineage.
 
 **Fails clean:** returns `{ ok:false, error }` when ComfyUI is unreachable, when no source image exists, or when the source row is missing — never throws.
 

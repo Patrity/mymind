@@ -1,8 +1,8 @@
 ---
 title: MCP Server
 status: shipped
-cycle: 37
-updated: 2026-06-25
+cycle: 38
+updated: 2026-06-26
 ---
 
 # MCP Server
@@ -39,7 +39,7 @@ The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/
 | `web_search(query, count?)` | search provider (SearXNG/Brave); untrusted results (cycle 29) |
 | `web_fetch(url)` | fetchAsMarkdown; SSRF-guarded, untrusted content (cycle 29) |
 | `generate_image(prompt, ...)` | imagegen/comfy → images.createGeneratedImage (cycle 36) |
-| `edit_image(prompt, source_image_id?, strength?, ...)` | imagegen/comfy img2img → images.createGeneratedImage (cycle 37) |
+| `edit_image(instruction, source_image_id?, quality?)` | Qwen-Image-Edit-2509 instruction editing → images.createGeneratedImage (cycles 37–38; img2img+strength removed) |
 
 `save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
 
