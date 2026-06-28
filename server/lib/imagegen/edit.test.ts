@@ -31,6 +31,9 @@ describe('editImage', () => {
     const graph = ($fetch.mock.calls[1]?.[1] as { body: { prompt: Record<string, { class_type: string; inputs: Record<string, unknown> }> } }).body.prompt
     expect(graph['111']!.class_type).toBe('TextEncodeQwenImageEditPlus')
     expect(graph['37']!.inputs.unet_name).toBe(config.editUnetName)
+    // fast path uses the fast steps/cfg (guards against always-quality regression)
+    expect(graph['3']!.inputs.steps).toBe(config.editSteps)
+    expect(graph['3']!.inputs.cfg).toBe(config.editCfg)
   })
 
   it('quality:true submits the unmerged quality model', async () => {
