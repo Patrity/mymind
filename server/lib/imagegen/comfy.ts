@@ -1,7 +1,7 @@
 // server/lib/imagegen/comfy.ts
 // ComfyUI client: POST /prompt -> poll /history -> GET /view. Never throws on an
 // expected backend failure — returns { ok:false, error } (the web_fetch convention).
-import { buildComfyGraph, buildImg2ImgGraph, buildQwenEditGraph } from './graph'
+import { buildComfyGraph, buildQwenEditGraph } from './graph'
 import { loadImageConfig } from './store'
 import type { GenerateParams, GenerateResult, ImageGenConfig } from './types'
 
@@ -111,10 +111,7 @@ export async function uploadSourceImage(
 }
 
 export async function editImage(
-  // `strength` is a transient, ignored param: the existing edit_image tool still
-  // passes it. Task 4 stops the tool sending it; Task 6 removes it here. The Qwen
-  // edit graph has no strength/denoise knob, so it is accepted and discarded.
-  params: { prompt: string; negativePrompt?: string; seed?: number; strength?: number; sourceBytes: Buffer; sourceMime: string },
+  params: { prompt: string; negativePrompt?: string; seed?: number; sourceBytes: Buffer; sourceMime: string },
   opts: { signal?: AbortSignal; config?: ImageGenConfig; clientId?: string; pollIntervalMs?: number; maxWaitMs?: number; quality?: boolean } = {}
 ): Promise<GenerateResult> {
   try {

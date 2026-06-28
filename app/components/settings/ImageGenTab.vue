@@ -16,7 +16,6 @@ const form = reactive({
   cfg: 2.5,
   sampler: 'euler',
   scheduler: 'simple',
-  editStrength: 0.72,
   editUnetName: '',
   editSteps: 4,
   editCfg: 1.0,
@@ -39,7 +38,6 @@ onMounted(async () => {
     form.cfg = config.value.cfg ?? 2.5
     form.sampler = config.value.sampler ?? 'euler'
     form.scheduler = config.value.scheduler ?? 'simple'
-    form.editStrength = config.value.editStrength ?? 0.72
     form.editUnetName = config.value.editUnetName ?? ''
     form.editSteps = config.value.editSteps ?? 4
     form.editCfg = config.value.editCfg ?? 1.0
@@ -128,9 +126,6 @@ async function onTest() {
         </UFormField>
         <UFormField label="Scheduler">
           <UInput v-model="form.scheduler" class="w-full" />
-        </UFormField>
-        <UFormField label="Edit strength (img2img denoise)">
-          <UInput v-model.number="form.editStrength" type="number" step="0.05" :min="0" :max="1" class="w-full" />
         </UFormField>
       </div>
 

@@ -21,7 +21,6 @@ export interface ImageGenConfig {
   editStepsQuality: number     // quality edit steps
   editCfgQuality: number       // quality edit cfg
   editShift: number            // ModelSamplingAuraFlow shift for edits
-  editStrength: number     // default img2img denoise when the tool omits strength
   workflowJson?: string    // optional override graph (JSON string); when set it replaces the template
 }
 
@@ -37,14 +36,13 @@ export interface GenerateParams {
   batchSize?: number       // EmptySD3LatentImage batch_size (default 1)
 }
 
-/** Tool inputs for an img2img edit, after Zod parsing. `seed` resolved by the caller. */
+/** Tool inputs for a Qwen-Image-Edit instruction edit, after Zod parsing. `seed` resolved by the caller. */
 export interface EditParams {
   prompt: string
   negativePrompt?: string
   steps?: number
   cfg?: number
   seed: number
-  strength?: number   // KSampler denoise (0..1); lower = closer to source
 }
 
 /** ComfyUI API-format graph: node-id -> { class_type, inputs }. */

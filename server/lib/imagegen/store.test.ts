@@ -41,15 +41,6 @@ describe('parseImageConfigInput', () => {
   })
 })
 
-describe('editStrength', () => {
-  it('defaults to 0.72 and is validated in range', async () => {
-    const { defaultImageConfig, parseImageConfigInput } = await import('./store')
-    expect(defaultImageConfig().editStrength).toBe(0.72)
-    expect(parseImageConfigInput({ editStrength: 0.7 }).editStrength).toBe(0.7)
-    expect(() => parseImageConfigInput({ editStrength: 2 })).toThrow()
-  })
-})
-
 describe('edit-model config', () => {
   it('defaults to the merged fast model + unmerged quality model + shift, and validates', async () => {
     const { defaultImageConfig, parseImageConfigInput } = await import('./store')

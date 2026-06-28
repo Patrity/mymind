@@ -24,7 +24,6 @@ export function defaultImageConfig(): ImageGenConfig {
     editStepsQuality: 20,
     editCfgQuality: 2.5,
     editShift: 3.0,
-    editStrength: 0.72
   }
 }
 
@@ -49,7 +48,6 @@ export const imageConfigInputSchema = z.object({
   cfg: z.number().min(0).max(20).optional(),
   sampler: z.string().min(1).optional(),
   scheduler: z.string().min(1).optional(),
-  editStrength: z.number().min(0).max(1).optional(),
   editUnetName: z.string().min(1).optional(),
   editSteps: z.number().int().min(1).max(60).optional(),
   editCfg: z.number().min(0).max(20).optional(),

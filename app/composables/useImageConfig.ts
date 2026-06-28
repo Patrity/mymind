@@ -10,7 +10,6 @@ export interface ImageConfig {
   cfg: number
   sampler: string
   scheduler: string
-  editStrength: number
   editUnetName: string
   editSteps: number
   editCfg: number
