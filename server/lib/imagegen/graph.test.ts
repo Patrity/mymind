@@ -7,7 +7,11 @@ const config: ImageGenConfig = {
   unetName: 'qwen_image_fp8_e4m3fn.safetensors',
   clipName: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
   vaeName: 'qwen_image_vae.safetensors',
-  width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple', editStrength: 0.55
+  width: 1024, height: 1024, steps: 20, cfg: 2.5, sampler: 'euler', scheduler: 'simple', editStrength: 0.55,
+  editUnetName: 'qwen_image_edit_2509_fp8_e4m3fn_lightning4.safetensors',
+  editSteps: 4, editCfg: 1.0,
+  editUnetQualityName: 'qwen_image_edit_2509_fp8_e4m3fn.safetensors',
+  editStepsQuality: 20, editCfgQuality: 2.5, editShift: 3.0
 }
 
 describe('buildComfyGraph', () => {
