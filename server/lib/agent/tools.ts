@@ -374,12 +374,12 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'edit_image',
-    description: 'Edit/iterate on an existing image (local Qwen-Image img2img). IMPORTANT: `prompt` is NOT an instruction — it is a FULL DESCRIPTION of the desired final image (e.g. for "make the hat blue" on a cat photo, pass "a photo of a cat wearing a blue top hat", NOT "make the hat blue"). img2img re-renders the whole image from the source guided by that description, so it shifts the rest of the image too, not just the named part — it cannot do a pixel-perfect targeted edit. Use `strength` (0..1, default ~0.72) to control how far it departs from the source: lower preserves more of the original, higher changes more. By default edits the most recently generated image; pass source_image_id to edit a specific one. The result is shown to the user automatically — do NOT write an image link. On failure the result is { ok:false, error }.',
+    description: 'Edit an existing image with an instruction (local Qwen-Image-Edit): describe the change, e.g. "change the hat to a blue cowboy hat". It edits the named part while preserving the rest of the image. By default edits the most recently generated image; pass source_image_id to edit a specific one. Set quality:true for a slower, higher-fidelity 20-step pass (default is the fast 4-step model). The result is shown to the user automatically — do NOT write an image link. On failure the result is { ok:false, error }.',
     kind: 'create',
     schema: {
       prompt: z.string().min(1).describe('The change to make'),
       source_image_id: z.string().optional().describe('Image to edit (defaults to the most recently generated image)'),
-      strength: z.number().min(0).max(1).optional().describe('How far to depart from the source (denoise; default ~0.55)'),
+      quality: z.boolean().optional().describe('Slower 20-step high-fidelity pass (default fast 4-step)'),
       negative_prompt: z.string().optional(),
       seed: z.number().int().optional()
     },
@@ -392,9 +392,9 @@ export const agentTools: AgentTool[] = [
         const prompt = a.prompt as string
         const gen = await editImage({
           prompt, negativePrompt: a.negative_prompt as string | undefined,
-          strength: a.strength as number | undefined, seed: a.seed as number | undefined,
+          seed: a.seed as number | undefined,
           sourceBytes: src.bytes, sourceMime: src.mime
-        }, { signal: ctx.signal })
+        }, { signal: ctx.signal, quality: a.quality as boolean | undefined })
         if (!gen.ok) return { result: { ok: false, error: gen.error }, summary: `edit failed: ${gen.error}` }
         let row
         try {

@@ -43,6 +43,15 @@ describe('edit_image tool', () => {
     expect(publishChange).toHaveBeenCalledWith({ resource: 'image', action: 'deleted', id: 'edit1' })
   })
 
+  it('forwards quality flag to editImage', async () => {
+    ;(resolveSourceImageId as any).mockResolvedValue('src1')
+    ;(getImageBytes as any).mockResolvedValue({ bytes: Buffer.from([1]), mime: 'image/webp' })
+    ;(editImage as any).mockResolvedValue({ ok: true, buffer: Buffer.from([2]), mime: 'image/png', meta: { seed: 9, width: 1024, height: 1024, steps: 20, cfg: 2.5 } })
+    ;(createGeneratedImage as any).mockResolvedValue({ id: 'e2', isPublic: false, publicSlug: null })
+    await tool.handler({ prompt: 'make it a cowboy hat', quality: true }, ctx)
+    expect((editImage as any).mock.calls.at(-1)[1].quality).toBe(true)
+  })
+
   it('clean error when there is no source image to edit', async () => {
     ;(resolveSourceImageId as any).mockResolvedValue(null)
     const exec = await tool.handler({ prompt: 'x' }, ctx)
