@@ -1,7 +1,7 @@
 // server/lib/imagegen/comfy.ts
 // ComfyUI client: POST /prompt -> poll /history -> GET /view. Never throws on an
 // expected backend failure — returns { ok:false, error } (the web_fetch convention).
-import { buildComfyGraph, buildImg2ImgGraph } from './graph'
+import { buildComfyGraph, buildImg2ImgGraph, buildQwenEditGraph } from './graph'
 import { loadImageConfig } from './store'
 import type { GenerateParams, GenerateResult, ImageGenConfig } from './types'
 
@@ -111,16 +111,20 @@ export async function uploadSourceImage(
 }
 
 export async function editImage(
-  params: { prompt: string; negativePrompt?: string; steps?: number; cfg?: number; seed?: number; strength?: number; sourceBytes: Buffer; sourceMime: string },
-  opts: { signal?: AbortSignal; config?: ImageGenConfig; clientId?: string; pollIntervalMs?: number; maxWaitMs?: number } = {}
+  // `strength` is a transient, ignored param: the existing edit_image tool still
+  // passes it. Task 4 stops the tool sending it; Task 6 removes it here. The Qwen
+  // edit graph has no strength/denoise knob, so it is accepted and discarded.
+  params: { prompt: string; negativePrompt?: string; seed?: number; strength?: number; sourceBytes: Buffer; sourceMime: string },
+  opts: { signal?: AbortSignal; config?: ImageGenConfig; clientId?: string; pollIntervalMs?: number; maxWaitMs?: number; quality?: boolean } = {}
 ): Promise<GenerateResult> {
   try {
     const config = opts.config ?? await loadImageConfig()
     if (!config.baseURL) return { ok: false, error: 'image generation not configured (set a ComfyUI URL in /settings -> Image Gen)' }
     const base = config.baseURL.replace(/\/$/, '')
     const seed = params.seed ?? randomSeed()
-    const steps = params.steps ?? config.steps
-    const cfg = params.cfg ?? config.cfg
+    const quality = opts.quality ?? false
+    const steps = quality ? config.editStepsQuality : config.editSteps
+    const cfg = quality ? config.editCfgQuality : config.editCfg
     const clientId = opts.clientId ?? `mymind-edit-${seed}-${Date.now()}`
     const pollIntervalMs = opts.pollIntervalMs ?? 1500
     const maxWaitMs = opts.maxWaitMs ?? 180_000
@@ -130,7 +134,7 @@ export async function editImage(
     const up = await uploadSourceImage(params.sourceBytes, `mymind-src-${seed}.${ext}`, { config, signal: opts.signal })
     if (!up.ok) return up
 
-    const graph = buildImg2ImgGraph({ prompt: params.prompt, negativePrompt: params.negativePrompt, steps, cfg, seed, strength: params.strength }, config, up.name)
+    const graph = buildQwenEditGraph({ prompt: params.prompt, negativePrompt: params.negativePrompt, seed }, config, up.name, { quality })
     const submit = await $fetch<{ prompt_id?: string }>(`${base}/prompt`, { method: 'POST', body: { prompt: graph, client_id: clientId }, signal: opts.signal })
     const promptId = submit?.prompt_id
     if (!promptId) return { ok: false, error: 'ComfyUI did not return a prompt_id' }
@@ -145,7 +149,7 @@ export async function editImage(
       if (out) {
         const q = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder, type: out.type })
         const ab = await $fetch<ArrayBuffer>(`${base}/view?${q.toString()}`, { responseType: 'arrayBuffer', signal: opts.signal })
-        return { ok: true, buffer: Buffer.from(ab), mime: mimeFromName(out.filename), meta: { seed, width: config.width, height: config.height, steps, cfg } }
+        return { ok: true, buffer: Buffer.from(ab), mime: mimeFromName(out.filename), meta: { seed, width: 0, height: 0, steps, cfg } }
       }
       await sleep(pollIntervalMs)
     }

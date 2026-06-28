@@ -15,19 +15,36 @@ const src = { sourceBytes: Buffer.from([9, 9, 9]), sourceMime: 'image/webp' }
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('editImage', () => {
-  it('uploads the source, submits img2img, polls, fetches bytes, returns ok', async () => {
+  it('uploads the source, submits the Qwen edit graph, polls, fetches bytes, returns ok', async () => {
     const png = new Uint8Array([1, 2, 3]).buffer
     const $fetch = vi.fn()
-      .mockResolvedValueOnce({ name: 'src.png', subfolder: '', type: 'input' })                               // POST /upload/image
-      .mockResolvedValueOnce({ prompt_id: 'p1' })                                                             // POST /prompt
-      .mockResolvedValueOnce({ p1: { outputs: { '9': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } }) // /history
-      .mockResolvedValueOnce(png)                                                                             // GET /view
+      .mockResolvedValueOnce({ name: 'src.png', subfolder: '', type: 'input' })       // POST /upload/image
+      .mockResolvedValueOnce({ prompt_id: 'p1' })                                      // POST /prompt
+      .mockResolvedValueOnce({ p1: { outputs: { '9': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } })
+      .mockResolvedValueOnce(png)
     vi.stubGlobal('$fetch', $fetch)
-    const res = await editImage({ ...src, prompt: 'make it blue', seed: 5 }, { config, clientId: 'cid', pollIntervalMs: 1, maxWaitMs: 1000 })
+    const res = await editImage({ ...src, prompt: 'make it a cowboy hat', seed: 5 }, { config, clientId: 'cid', pollIntervalMs: 1, maxWaitMs: 1000 })
     expect(res.ok).toBe(true)
     if (res.ok) expect(res.buffer.length).toBe(3)
-    expect(String($fetch.mock.calls[0]?.[0])).toContain('/upload/image')   // upload first
-    expect(String($fetch.mock.calls[1]?.[0])).toContain('/prompt')
+    expect(String($fetch.mock.calls[0]?.[0])).toContain('/upload/image')
+    // the submitted /prompt body carries the Qwen edit graph (fast model by default)
+    const graph = ($fetch.mock.calls[1]?.[1] as { body: { prompt: Record<string, { class_type: string; inputs: Record<string, unknown> }> } }).body.prompt
+    expect(graph['111']!.class_type).toBe('TextEncodeQwenImageEditPlus')
+    expect(graph['37']!.inputs.unet_name).toBe(config.editUnetName)
+  })
+
+  it('quality:true submits the unmerged quality model', async () => {
+    const png = new Uint8Array([1]).buffer
+    const $fetch = vi.fn()
+      .mockResolvedValueOnce({ name: 'src.png', subfolder: '', type: 'input' })
+      .mockResolvedValueOnce({ prompt_id: 'p1' })
+      .mockResolvedValueOnce({ p1: { outputs: { '9': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } })
+      .mockResolvedValueOnce(png)
+    vi.stubGlobal('$fetch', $fetch)
+    await editImage({ ...src, prompt: 'x', seed: 1 }, { config, quality: true, pollIntervalMs: 1, maxWaitMs: 1000 })
+    const graph = ($fetch.mock.calls[1]?.[1] as { body: { prompt: Record<string, { inputs: Record<string, unknown> }> } }).body.prompt
+    expect(graph['37']!.inputs.unet_name).toBe(config.editUnetQualityName)
+    expect(graph['3']!.inputs.steps).toBe(20)
   })
 
   it('returns { ok:false } (no throw) when the upload fails', async () => {
