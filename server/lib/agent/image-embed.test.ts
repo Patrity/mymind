@@ -24,10 +24,13 @@ describe('applyImageEmbeds', () => {
 })
 
 describe('redactImageUrlsForModel', () => {
-  it('replaces a server image embed with a urlless placeholder (keeps the alt)', () => {
+  it('replaces a server image embed with a minimal, non-imitable placeholder (no url, no description)', () => {
     const out = redactImageUrlsForModel('![a cat in a top hat](/api/images/abc-123/raw)')
-    expect(out).toBe('[generated image: a cat in a top hat]')
+    expect(out).toBe('[image]')
     expect(out).not.toContain('/api/images')
+    // the description must NOT survive — the model copied "generated image: <desc>" verbatim before
+    expect(out).not.toContain('cat in a top hat')
+    expect(out).not.toMatch(/generated image/i)
   })
 
   it('redacts a link-form /api/images url too', () => {

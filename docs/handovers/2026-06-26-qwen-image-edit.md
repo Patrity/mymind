@@ -2,7 +2,7 @@
 title: Qwen-Image-Edit-2509 — instruction editing (replaces img2img) — Cycle 38
 cycle: 38
 date: 2026-06-26
-status: shipped — gates green (typecheck 0 / test 647 / build); NOT yet deployed; live rig E2E pending
+status: shipped + DEPLOYED to prod (master 2f0231e); post-ship fix deployed for a live hallucination regression (see "Post-ship fix")
 branch: feat/qwen-image-edit (off master 379c8b4; subagent-driven, 7 tasks; whole-branch review opus = ready-to-merge)
 spec: ../superpowers/specs/2026-06-26-qwen-image-edit-design.md
 plan: ../superpowers/plans/2026-06-26-qwen-image-edit.md
@@ -52,6 +52,28 @@ unchanged.
   model (~14 s warm). The unmerged 20-step model is the `quality` path.
 - **img2img removed, not kept as fallback** (user-approved) — it produced the bad edits; keeping it
   would be a confusing dead path.
+
+## Post-ship fix — 2026-06-28 (live test hallucination regression)
+
+First live edit test: "generate a t-rex" worked (rendered); "I need the same image but a blue tongue"
+→ the model replied with the literal text `[generated image: a fierce Tyrannosaurus rex … blue tongue]`
+and **no image, no tool call** (activity_log: zero image-tool calls that turn). Root cause: the
+cycle-37 history-redaction placeholder `[generated image: <alt>]` was **imitable** — the model saw it
+in history and copied it as its reply instead of calling a tool. (It also reached for `generate_image`
+over `edit_image` when it did call.) Two-part fix (prompt.ts + image-embed.ts):
+- **`redactImageUrlsForModel` → `[image]`** — a minimal marker with NO "generated image:" prefix and NO
+  description, so there's nothing worth copying (the image still renders from the tool result's
+  `display` channel; this only affects what the model sees in history).
+- **System-prompt IMAGES rule** (`composePrompt`, both voice + text) — to create/change an image the
+  model MUST call `generate_image` (new) or `edit_image` ("same image but X" / "change Y" / "make it
+  Z" → edits the most-recent generated image); the image renders automatically; NEVER write image
+  markdown/URL/`[image]`/`generated image:` text or claim an image without a tool call. A
+  `prompt.test.ts` guards the rule's presence.
+- Gates: typecheck 0 / test 649 / build. Deployed.
+- **Lesson:** ANY representation of a generated image in assistant *history* gets imitated by the model
+  (cycle 36: it copied the URL; cycle 37: it copied the `[generated image: …]` placeholder). The durable
+  fix is the hard prompt rule ("images come only from tool calls; never write them") + a history marker
+  with nothing worth copying — not a prettier placeholder.
 
 ## Gotchas for the next session
 - **The live rig E2E is the real proof** — the unit tests assert the graph SHAPE, not that the live

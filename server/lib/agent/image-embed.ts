@@ -25,7 +25,13 @@ export function applyImageEmbeds(text: string, images: DisplayImage[]): { conten
  * keeps the model's context ("an image of X exists") while removing any URL to copy.
  */
 export function redactImageUrlsForModel(text: string): string {
+  // Replace with a MINIMAL, non-imitable marker — no url AND no description. An earlier
+  // version used `[generated image: <alt>]`, which the model copied verbatim as its reply
+  // ("generated image: a t-rex...") instead of calling the tool, producing fake image text
+  // and no render. `[image]` carries "an image was here" context with nothing worth copying;
+  // the system prompt's IMAGES rule does the real work (always call the tool, never write
+  // image text). The image itself renders from the tool result's display channel.
   return (text ?? '')
-    .replace(/!\[([^\]]*)\]\((?:https?:\/\/[^)]*)?\/api\/images\/[^)]*\)/g, (_m, alt) => alt ? `[generated image: ${alt}]` : '[generated image]')
-    .replace(/\[([^\]]*)\]\((?:https?:\/\/[^)]*)?\/api\/images\/[^)]*\)/g, (_m, txt) => txt ? `[image: ${txt}]` : '[image]')
+    .replace(/!\[[^\]]*\]\((?:https?:\/\/[^)]*)?\/api\/images\/[^)]*\)/g, '[image]')
+    .replace(/\[[^\]]*\]\((?:https?:\/\/[^)]*)?\/api\/images\/[^)]*\)/g, '[image]')
 }
