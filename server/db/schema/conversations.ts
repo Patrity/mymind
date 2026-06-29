@@ -29,6 +29,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   content: text('content').notNull().default(''),
   modality: text('modality').notNull(),         // 'voice' | 'text'
   toolCalls: jsonb('tool_calls'),               // [{ name, summary, undoToken? }] for assistant turns
+  attachments: jsonb('attachments'),            // [{ id, kind, mime, name? }] for user turns (Task 5 populates)
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   index('conversation_messages_convo_idx').on(t.conversationId, t.createdAt),

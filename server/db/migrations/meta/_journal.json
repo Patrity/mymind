@@ -176,6 +176,13 @@
       "when": 1781838006910,
       "tag": "0024_clever_psylocke",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1782724796559,
+      "tag": "0025_sparkling_smasher",
+      "breakpoints": true
     }
   ]
 }
