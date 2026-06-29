@@ -385,7 +385,7 @@ export const agentTools: AgentTool[] = [
     },
     handler: async (a, ctx) => {
       try {
-        const sourceId = await resolveSourceImageId((a.source_image_id as string | undefined) ?? null)
+        const sourceId = await resolveSourceImageId((a.source_image_id as string | undefined) ?? null, { preferIds: ctx.attachmentImageIds })
         if (!sourceId) return { result: { ok: false, error: 'no image to edit — generate an image first, or pass a valid source_image_id' }, summary: 'edit failed: no source image' }
         const src = await getImageBytes(sourceId)
         if (!src) return { result: { ok: false, error: 'source image not found' }, summary: 'edit failed: source not found' }

@@ -35,7 +35,7 @@ describe('edit_image tool', () => {
     expect((exec.result as Record<string, unknown>).url).toBeUndefined()
     expect((exec.result as { image_id: string }).image_id).toBe('edit1')
     expect((exec as { display: { images: { url: string }[] } }).display.images[0].url).toBe('/api/images/edit1/raw')
-    expect(resolveSourceImageId).toHaveBeenCalledWith(null)
+    expect(resolveSourceImageId).toHaveBeenCalledWith(null, { preferIds: undefined })
     expect(createGeneratedImage).toHaveBeenCalledWith(expect.any(Buffer), 'image/png', { prompt: 'make the hat blue', tags: ['generated', 'edited'] })
     expect(publishChange).toHaveBeenCalledWith({ resource: 'image', action: 'created', id: 'edit1' })
     await exec.undo!()
@@ -74,6 +74,17 @@ describe('edit_image tool', () => {
     const exec = await tool.handler({ prompt: 'x' }, ctx)
     expect((exec.result as { ok: boolean }).ok).toBe(false)
     expect(createGeneratedImage).not.toHaveBeenCalled()
+  })
+
+  it('prefers the turn attachment image as the edit source', async () => {
+    ;(resolveSourceImageId as any).mockResolvedValue('att1')
+    ;(getImageBytes as any).mockResolvedValue({ bytes: Buffer.from([1]), mime: 'image/webp' })
+    ;(editImage as any).mockResolvedValue({ ok: true, buffer: Buffer.from([2]), mime: 'image/png', meta: { seed: 1, width: 1024, height: 1024, steps: 4, cfg: 1 } })
+    ;(createGeneratedImage as any).mockResolvedValue({ id: 'edit2', isPublic: false, publicSlug: null })
+    const ctxWithAtt = { signal: new AbortController().signal, attachmentImageIds: ['att1'] }
+    const exec = await tool.handler({ prompt: 'make the sky purple' }, ctxWithAtt)
+    expect(resolveSourceImageId).toHaveBeenCalledWith(null, { preferIds: ['att1'] })
+    expect((exec.result as { image_id: string }).image_id).toBe('edit2')
   })
 
   it('never throws — converts a DB throw during source resolution to a clean error', async () => {

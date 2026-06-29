@@ -107,10 +107,14 @@ export async function createGeneratedImage(buffer: Buffer, mime: string, opts: {
 }
 
 /** Resolve the source image for an edit: the explicit id (must be live) or the newest generated image. */
-export async function resolveSourceImageId(explicitId: string | null): Promise<string | null> {
+export async function resolveSourceImageId(explicitId: string | null, opts?: { preferIds?: string[] }): Promise<string | null> {
   if (explicitId) {
     const row = await getImage(explicitId)
     return row ? row.id : null
+  }
+  for (const id of opts?.preferIds ?? []) {
+    const row = await getImage(id)
+    if (row) return row.id
   }
   const [row] = await useDb().select({ id: images.id }).from(images)
     .where(and(live(), sql`${'generated'} = ANY(${images.tags})`))
