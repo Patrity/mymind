@@ -1,7 +1,7 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { conversations, conversationMessages } from '../db/schema'
-import type { ConversationDTO, ConversationMessageDTO, ConversationListItem } from '../../shared/types/conversation'
+import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef } from '../../shared/types/conversation'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -22,6 +22,7 @@ export interface NewConvMessage {
   content: string
   modality: 'voice' | 'text'
   toolCalls?: { name: string; summary: string; undoToken?: string }[] | null
+  attachments?: AttachmentRef[] | null
 }
 
 // ---------------------------------------------------------------------------
@@ -39,13 +40,14 @@ function convToDTO(r: typeof conversations.$inferSelect): ConversationDTO {
   }
 }
 
-function msgToDTO(r: typeof conversationMessages.$inferSelect): ConversationMessageDTO {
+export function msgToDTO(r: typeof conversationMessages.$inferSelect): ConversationMessageDTO {
   return {
     id: r.id,
     role: r.role as 'user' | 'assistant',
     content: r.content,
     modality: r.modality as 'voice' | 'text',
     toolCalls: (r.toolCalls as { name: string; summary: string; undoToken?: string }[] | null) ?? null,
+    attachments: (r.attachments as AttachmentRef[] | null) ?? null,
     createdAt: r.createdAt.toISOString()
   }
 }
@@ -95,7 +97,8 @@ export async function appendMessages(
         role: msg.role,
         content: msg.content,
         modality: msg.modality,
-        toolCalls: msg.toolCalls ?? null
+        toolCalls: msg.toolCalls ?? null,
+        attachments: msg.attachments ?? null
       })
       .returning({ id: conversationMessages.id })
     prevId = inserted!.id
