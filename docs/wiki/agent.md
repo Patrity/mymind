@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 38
-updated: 2026-06-26
+cycle: 39
+updated: 2026-06-29
 ---
 
 # Agent Surface (`/agent`)
@@ -133,6 +133,29 @@ After each completed turn the handler lazily creates the conversation (first tur
 - Even if the model writes a stray markdown link (impossible with the current prompt, but belt-and-suspenders), the orchestrator strips unrecognized image links from model output before appending them to the transcript.
 
 This supersedes the cycle-36 "model pastes markdown" approach and closes the hallucination-render bug entirely.
+
+## Multimodal attachments (cycle 39)
+
+Attach **images and files** to a turn (paste / drag-drop / file-picker in the composer, mirroring the clipboard input). The reasoning model (**Qwen3.6-35B-A3B**, a native VLM) sees the attachment as a message **content part** and decides from the prompt: reason over it ("what's in this?", "summarize this PDF") or call a tool (e.g. `edit_image` on an attached photo). No separate vision model, no `analyze_image` tool, no per-turn routing.
+
+**The serving-stack constraint (why files become images):** vLLM's OpenAI API forwards only `image_url`/`video_url`/`audio_url` content parts — **there is no generic file/document part**. So everything the model receives is a **text part or an image part**:
+
+| Attachment | What the model gets |
+|---|---|
+| image | a native image part (bytes inline as a base64 data-URL) |
+| PDF | rendered to page images (`pdf-to-img` + `sharp`→webp, **first 8 pages, ≤1600px**) → one image part per page — the VLM *sees* the document |
+| text-like file (`text/*`, json, xml, csv) | decoded UTF-8 → a text part |
+| other binary (docx, xlsx, …) | rejected at the composer (deferred) |
+
+`AgentMessage.content` is `string | AgentContentPart[]` where `AgentContentPart = {type:'text'} | {type:'image'}` (no file part). `messageText()` flattens parts for display/persistence; `toModelContent()` maps to the AI SDK `streamText` shape and applies the cycle-37 URL redaction to **text parts only**.
+
+**Pipeline:** composer uploads each attachment over HTTP (images → `POST /api/upload`; files → `POST /api/agent/files`, raw blob in the new `agent_files` table) → the WS `text` frame carries `attachments: AttachmentRef[]` (`{id, kind:'image'|'file', mime, name?}`) → `handleTurn` reads the bytes server-side and builds the multimodal message via `buildUserMessageParts` (`server/lib/agent/attachments.ts`; PDFs go through `server/lib/agent/pdf-render.ts`) → the turn's **image** attachment ids ride `ToolContext.attachmentImageIds`.
+
+**Edit-from-attachment:** `edit_image` defaults its source to the turn's attachment image (`resolveSourceImageId(explicitId, { preferIds: ctx.attachmentImageIds })`) before the newest-generated fallback — so "make the sky purple" on an attached photo edits that photo.
+
+**Bytes, never URLs:** attachment images + rendered PDF pages are inline base64 — the self-hosted model behind LiteLLM can't fetch the auth-gated `/api/...` URLs. This is consistent with the cycle-37 reliable-render invariant; user *attachments* are a separate INPUT path from server-authored *generated*-image output.
+
+**Persistence + render:** the user message persists its `attachments` (`conversation_messages.attachments` jsonb); `getConversation` returns them in the DTO; the transcript renders image thumbnails (`/api/images/<id>/raw`) and file download chips (`/api/agent/files/<id>`) on the user turn — live and on reload. `getAgentHistory` (the model's history) stays text-only: **v1 sends attachment content only for the current turn** (multi-turn image memory is deferred).
 
 ## Deferred (not built this cycle)
 
