@@ -14,6 +14,7 @@ import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
 import { randomUUID } from 'node:crypto'
+import type { AttachmentRef } from '../../lib/agent/attachments'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'voice',voice} | {type:'text',text,speak?} (typed turn, injected post-STT) |
@@ -76,6 +77,7 @@ export default defineWebSocketHandler({
     let turn: ((signal: AbortSignal, emit: (e: VoiceEvent) => void) => Promise<AgentMessage[]>) | null = null
     let inputModality: 'text' | 'voice' = 'text'
     let speakFlag = false
+    let turnAttachments: AttachmentRef[] = []
     // Approval channel for dangerous tools: allowlist check → run; else emit an
     // approval request to the peer and await Tony's decision (120s auto-deny).
     // Computed unconditionally so both text + audio turn branches can reference them.
@@ -149,9 +151,11 @@ export default defineWebSocketHandler({
         // Typed turn: inject post-STT — same agent loop, same TTS, same events.
         const text = msg.text.trim()
         const speak = typeof msg.speak === 'boolean' ? msg.speak : false
+        const attachments = Array.isArray(msg.attachments) ? (msg.attachments as AttachmentRef[]) : []
+        turnAttachments = attachments
         inputModality = 'text'
         speakFlag = speak
-        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, profile, execEnabled: s.execEnabled, requestApproval, signal, emit })
+        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, profile, execEnabled: s.execEnabled, requestApproval, attachments, signal, emit })
       } else {
         return
       }
@@ -185,7 +189,8 @@ export default defineWebSocketHandler({
             role: m.role as 'user' | 'assistant',
             content: messageText(m.content),
             modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
-            toolCalls: m.role === 'assistant' && toolCalls.length ? toolCalls : null
+            toolCalls: m.role === 'assistant' && toolCalls.length ? toolCalls : null,
+            attachments: m.role === 'user' ? turnAttachments : null
           })))
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }

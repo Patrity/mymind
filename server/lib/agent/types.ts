@@ -19,6 +19,7 @@ export interface ToolContext {
   signal: AbortSignal // aborts when the caller hangs up / barge-in
   // Present only on the interactive (WS) path; a dangerous tool with no channel auto-denies.
   requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
+  attachmentImageIds?: string[]  // image attachments of the current turn (edit_image source)
 }
 
 /** What a tool handler returns. `undo` (when present) reverses the side-effect. */

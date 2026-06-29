@@ -5,6 +5,9 @@ import type { SttProvider, TtsProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
 import { runAgent as realRunAgent } from '../agent/run'
 import { applyImageEmbeds, type DisplayImage } from '../agent/image-embed'
+import { getImageBytes } from '../../services/images'
+import { getFileBytes } from '../../services/files'
+import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
 
 export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
@@ -21,8 +24,10 @@ export interface TurnDeps {
   profile?: import('../agent/profile').AgentProfile
   execEnabled?: boolean
   requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>
+  attachments?: AttachmentRef[]
+  readAttachmentBytes?: (a: AttachmentRef) => Promise<{ bytes: Buffer; mime: string } | null>
   emit: (e: VoiceEvent) => void
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; profile?: import('../agent/profile').AgentProfile; execEnabled?: boolean; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }> }) => AsyncGenerator<AgentEvent>
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; profile?: import('../agent/profile').AgentProfile; execEnabled?: boolean; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[] }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -50,7 +55,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const run = deps.runAgent ?? realRunAgent
   if (!userText) return history
   deps.emit({ type: 'transcript', role: 'user', text: userText })
-  const messages: AgentMessage[] = [...history, { role: 'user', content: userText }]
+  const attachments = deps.attachments ?? []
+  const readBytes = deps.readAttachmentBytes ?? ((a: AttachmentRef) => a.kind === 'image' ? getImageBytes(a.id) : getFileBytes(a.id))
+  const userContent = await buildUserMessageParts(userText, attachments, readBytes)
+  const messages: AgentMessage[] = [...history, { role: 'user', content: userContent }]
 
   deps.emit({ type: 'state', state: 'thinking' })
   const chunker = new SentenceChunker(VOICE_TUNING.tts.sentenceMinChars)
@@ -71,7 +79,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   }
 
   let sawText = false
-  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context: deps.context, profile: deps.profile, execEnabled: deps.execEnabled, requestApproval: deps.requestApproval })) {
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context: deps.context, profile: deps.profile, execEnabled: deps.execEnabled, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id) })) {
     if (deps.signal.aborted) break
     if (ev.type === 'text-delta') {
       assistantText += ev.text

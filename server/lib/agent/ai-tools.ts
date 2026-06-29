@@ -9,6 +9,7 @@ import { withSpan } from '../observability/record'
 export interface RunHooks {
   signal: AbortSignal
   requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
+  attachmentImageIds?: string[]
   onEvent: (e:
     | { type: 'tool-start'; name: string; args: Record<string, unknown> }
     | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[] }) => void
@@ -21,7 +22,7 @@ function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): Appro
 
 /** Adapt the agent tool registry into an AI SDK ToolSet (execute = gate + handler + bus + undo). */
 export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
-  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval }
+  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds }
   const set: ToolSet = {}
   for (const t of registry) {
     set[t.name] = tool({

@@ -57,7 +57,7 @@ export function effectiveTools(base: AgentTool[], execEnabled: boolean): AgentTo
 
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; execEnabled?: boolean; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }> },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; execEnabled?: boolean; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[] },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
@@ -66,7 +66,7 @@ export async function* runAgent(
   const registry = effectiveTools(baseRegistry, ctx.execEnabled === true)
   const buildPrompt = deps.buildSystemPrompt ?? realBuildSystemPrompt
   const queue: AgentEvent[] = []
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, onEvent: e => queue.push(e) })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, onEvent: e => queue.push(e) })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
