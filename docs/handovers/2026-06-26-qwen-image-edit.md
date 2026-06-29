@@ -2,7 +2,7 @@
 title: Qwen-Image-Edit-2509 — instruction editing (replaces img2img) — Cycle 38
 cycle: 38
 date: 2026-06-26
-status: shipped + DEPLOYED to prod (master 2f0231e); post-ship fix deployed for a live hallucination regression (see "Post-ship fix")
+status: shipped + DEPLOYED + USER-ACCEPTED 2026-06-28 ("working perfectly" — generate → instruction-edit verified live on prod). master 2f0231e + post-ship hallucination fix dac1802 (see "Post-ship fix")
 branch: feat/qwen-image-edit (off master 379c8b4; subagent-driven, 7 tasks; whole-branch review opus = ready-to-merge)
 spec: ../superpowers/specs/2026-06-26-qwen-image-edit-design.md
 plan: ../superpowers/plans/2026-06-26-qwen-image-edit.md
