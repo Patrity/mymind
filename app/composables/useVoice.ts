@@ -5,7 +5,7 @@ import type { VizEvent } from '../lib/viz/types'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
-export interface TranscriptEntry { role: 'user' | 'assistant'; text: string }
+export interface TranscriptEntry { role: 'user' | 'assistant'; text: string; attachments?: AttachmentRef[] }
 
 // Capture/barge-in/playback knobs are user-tunable and cookie-persisted —
 // see useVoiceSettings. NOTE: vad-web 0.0.30 uses time-based options
@@ -23,6 +23,7 @@ export function useVoice() {
 
   const events = createEmitter<VizEvent>()
 
+  let pendingUserAttachments: AttachmentRef[] = []
   let ws: WebSocket | null = null
   // Last voice the user picked. Selecting before connecting (the natural UX) would
   // otherwise be lost — ws is null then, so we remember it and (re)send on open.
@@ -47,7 +48,10 @@ export function useVoice() {
     // concatenate to the exact string. (An earlier word-boundary space heuristic
     // mangled sub-word token streaming, e.g. "Brid"+"get" → "Brid get".)
     if (last && last.role === role) last.text += delta
-    else transcript.value.push({ role, text: delta })
+    else {
+      transcript.value.push({ role, text: delta, attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
+      if (role === 'user') pendingUserAttachments = []
+    }
   }
 
   function stopPlayback() {
@@ -327,6 +331,7 @@ export function useVoice() {
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return false
       if (isPlaying()) { stopPlayback(); events.emit({ type: 'bargein' }) } // typed barge-in
+      pendingUserAttachments = attachments
       ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments }))
       return true
     },

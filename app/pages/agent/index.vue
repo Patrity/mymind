@@ -40,7 +40,7 @@ async function toggleMic() {
 
 async function resume(id: string) {
   const { messages } = await useConversations().getConversation(id)
-  voice.transcript.value = messages.map(m => ({ role: m.role, text: m.content }))
+  voice.transcript.value = messages.map(m => ({ role: m.role, text: m.content, attachments: m.attachments ?? undefined }))
   await voice.loadConversation(id)
   historyOpen.value = false
 }
