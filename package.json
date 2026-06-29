@@ -46,6 +46,7 @@
     "nanoid": "^5.1.11",
     "node-html-markdown": "^2.0.0",
     "nuxt": "^4.4.6",
+    "pdf-to-img": "^6.2.0",
     "pg": "^8.21.0",
     "sharp": "^0.34.5",
     "sortablejs": "^1.15.7",
