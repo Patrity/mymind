@@ -2,6 +2,7 @@
 import { createEmitter } from '../lib/viz/emitter'
 import { mapServerMessage } from '../lib/voice/messages'
 import type { VizEvent } from '../lib/viz/types'
+import type { AttachmentRef } from '~~/shared/types/conversation'
 
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
 export interface TranscriptEntry { role: 'user' | 'assistant'; text: string }
@@ -320,13 +321,13 @@ export function useVoice() {
      * Auto-connects the WS transparently if needed — a chat "just works" without
      * an explicit Connect step. Returns false only if connecting fails.
      */
-    sendText: async (text: string, speak = false): Promise<boolean> => {
+    sendText: async (text: string, speak = false, attachments: AttachmentRef[] = []): Promise<boolean> => {
       const t = text.trim()
-      if (!t) return false
+      if (!t && !attachments.length) return false
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return false
       if (isPlaying()) { stopPlayback(); events.emit({ type: 'bargein' }) } // typed barge-in
-      ws.send(JSON.stringify({ type: 'text', text: t, speak }))
+      ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments }))
       return true
     },
     /**
