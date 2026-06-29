@@ -4,6 +4,7 @@ import { classifyFrame } from '../../lib/voice/frames'
 import { sttFromModel, ttsFromModel } from '../../lib/voice/providers'
 import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
 import { withFailover } from '../../lib/ai/registry/resolve'
+import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
 import { buildLiveContext } from '../../lib/agent/context'
@@ -179,10 +180,10 @@ export default defineWebSocketHandler({
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId
-          if (!s.conversationId) s.conversationId = (await createConversation({ title: deriveTitle(added[0]!.content) })).id
+          if (!s.conversationId) s.conversationId = (await createConversation({ title: deriveTitle(messageText(added[0]!.content)) })).id
           await appendMessages(s.conversationId, added.map(m => ({
             role: m.role as 'user' | 'assistant',
-            content: m.content,
+            content: messageText(m.content),
             modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
             toolCalls: m.role === 'assistant' && toolCalls.length ? toolCalls : null
           })))

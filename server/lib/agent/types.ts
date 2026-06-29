@@ -2,6 +2,11 @@
 import type { ZodRawShape } from 'zod'
 import type { DisplayImage } from './image-embed'
 
+/** A single content part in a multimodal agent message. */
+export type AgentContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image: string; mediaType: string }
+
 /** A dangerous-tool approval request surfaced to the human. */
 export interface ApprovalRequest {
   tool: string        // e.g. 'exec'

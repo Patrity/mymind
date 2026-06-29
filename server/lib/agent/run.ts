@@ -10,7 +10,26 @@ import type { AgentTool } from './types'
 import { recordEvent } from '../observability/record'
 import { redactImageUrlsForModel } from './image-embed'
 
-export interface AgentMessage { role: 'system' | 'user' | 'assistant'; content: string }
+export type { AgentContentPart } from './types'
+import type { AgentContentPart } from './types'
+
+export interface AgentMessage { role: 'system' | 'user' | 'assistant'; content: string | AgentContentPart[] }
+
+export function messageText(content: string | AgentContentPart[]): string {
+  return typeof content === 'string'
+    ? content
+    : content.filter(p => p.type === 'text').map(p => (p as { text: string }).text).join('\n')
+}
+
+/** Map our content → AI SDK message content for streamText. Redaction applies to text only. */
+export function toModelContent(role: AgentMessage['role'], content: string | AgentContentPart[]): unknown {
+  const redact = (t: string) => role === 'assistant' ? redactImageUrlsForModel(t) : t
+  if (typeof content === 'string') return redact(content)
+  return content.map(p => p.type === 'text'
+    ? { type: 'text', text: redact(p.text) }
+    : { type: 'image', image: p.image })
+}
+
 export type AgentEvent =
   | { type: 'text-delta'; text: string }
   | { type: 'tool-start'; name: string; args: Record<string, unknown> }
@@ -70,7 +89,7 @@ export async function* runAgent(
         system,
         // Redact /api/images URLs from history so the model can't copy a real URL into a
         // new reply (which would render the wrong/old image live). See image-embed.ts.
-        messages: messages.filter(m => m.role !== 'system').map(m => m.role === 'assistant' ? { ...m, content: redactImageUrlsForModel(m.content) } : m),
+        messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: toModelContent(m.role, m.content) })) as never,
         tools,
         stopWhen: stepCountIs(ctx.execEnabled ? VOICE_TUNING.agent.maxStepsPowerful : VOICE_TUNING.agent.maxSteps),
         abortSignal: ctx.signal
