@@ -2,8 +2,8 @@
 import { z } from 'zod'
 import type { AgentTool } from './types'
 import { searchMemories, createMemory, listMemories, archiveMemory } from '../../services/memory'
-import { searchDocs, searchPassages, createDoc, listDocs, getDoc, deleteDoc } from '../../services/documents'
-import { outline, readSection, documentStats, grepContent } from '../documents/edit-ops'
+import { searchDocs, searchPassages, createDoc, listDocs, getDoc, deleteDoc, updateDoc, moveDoc } from '../../services/documents'
+import { outline, readSection, documentStats, grepContent, applyReplace, applyEditSection } from '../documents/edit-ops'
 import { listProjects, createProject, updateProject, getProject, deleteProject } from '../../services/projects'
 import { createTask, listTasks, updateTask, getTask, deleteTask } from '../../services/tasks'
 import { publishChange } from '../../utils/live-bus'
@@ -185,6 +185,116 @@ export const agentTools: AgentTool[] = [
         result: doc,
         summary: `saved document ${doc.path}`,
         undo: async () => { await deleteDoc(doc.id) }
+      }
+    }
+  },
+  {
+    name: 'edit_document',
+    description: 'Surgically edit a document by exact find/replace (like a code editor\'s edit). `old_string` must appear exactly once (add surrounding lines to disambiguate) unless you pass replace_all. Cheap on long docs — do NOT rewrite the whole document for a small change. Tip: grep_document/read_document to get the exact old_string first.',
+    kind: 'create',
+    schema: {
+      id: z.string().describe('Document id'),
+      old_string: z.string().min(1).describe('Exact text to replace (must be unique unless replace_all)'),
+      new_string: z.string().describe('Replacement text'),
+      replace_all: z.boolean().optional().describe('Replace every occurrence')
+    },
+    handler: async (a) => {
+      const id = a.id as string
+      const doc = await getDoc(id)
+      if (!doc) return { result: { error: 'document not found' }, summary: 'edit_document: not found' }
+      const prior = doc.content ?? ''
+      const res = applyReplace(prior, a.old_string as string, a.new_string as string, a.replace_all as boolean | undefined)
+      if ('error' in res) return { result: { error: res.error }, summary: `edit_document: ${res.error}` }
+      const updated = await updateDoc(id, { content: res.content })
+      publishChange({ resource: 'document', action: 'updated', id })
+      return {
+        result: updated, summary: `edited document ${doc.path}`,
+        undo: async () => { await updateDoc(id, { content: prior }); publishChange({ resource: 'document', action: 'updated', id }) }
+      }
+    }
+  },
+  {
+    name: 'edit_section',
+    description: 'Edit a document by markdown heading section. mode:"append" with no heading appends to the end of the doc; with a heading it appends inside that section. mode:"replace" needs a heading and replaces that section\'s body (the heading line is kept). For whole-content or metadata changes use update_document.',
+    kind: 'create',
+    schema: {
+      id: z.string().describe('Document id'),
+      mode: z.enum(['append', 'replace']).describe('append or replace a section'),
+      text: z.string().describe('Markdown to append / replace with'),
+      heading: z.string().optional().describe('Exact heading text (required for replace)')
+    },
+    handler: async (a) => {
+      const id = a.id as string
+      const doc = await getDoc(id)
+      if (!doc) return { result: { error: 'document not found' }, summary: 'edit_section: not found' }
+      const prior = doc.content ?? ''
+      const res = applyEditSection(prior, {
+        mode: a.mode as 'append' | 'replace', text: a.text as string, heading: a.heading as string | undefined
+      })
+      if ('error' in res) return { result: { error: res.error, outline: outline(prior) }, summary: `edit_section: ${res.error}` }
+      const updated = await updateDoc(id, { content: res.content })
+      publishChange({ resource: 'document', action: 'updated', id })
+      return {
+        result: updated, summary: `edited section of ${doc.path}`,
+        undo: async () => { await updateDoc(id, { content: prior }); publishChange({ resource: 'document', action: 'updated', id }) }
+      }
+    }
+  },
+  {
+    name: 'update_document',
+    description: 'Update a document\'s whole content and/or metadata (title, frontmatter, tags, domain, type). Passing `project` (a slug) files/associates it under /projects/<slug>/. For a small content change prefer edit_document; to relocate by explicit path use move_document. At least one field is required.',
+    kind: 'create',
+    schema: {
+      id: z.string().describe('Document id'),
+      content: z.string().optional().describe('New whole-document markdown body'),
+      title: z.string().optional(),
+      frontmatter: z.record(z.string(), z.unknown()).optional(),
+      tags: z.array(z.string()).optional(),
+      domain: z.string().optional(),
+      type: z.string().optional(),
+      project: z.string().optional().describe('Project slug to file/associate under')
+    },
+    handler: async (a) => {
+      const id = a.id as string
+      const doc = await getDoc(id)
+      if (!doc) return { result: { error: 'document not found' }, summary: 'update_document: not found' }
+      const { id: _id, ...patch } = a
+      if (Object.keys(patch).length === 0) return { result: { error: 'no fields to update' }, summary: 'update_document: empty' }
+      const updated = await updateDoc(id, patch as Record<string, unknown>)
+      publishChange({ resource: 'document', action: 'updated', id })
+      // Undo restores prior content + metadata + original path (path wins → also reverses an assign-project relocate).
+      const prior = doc
+      return {
+        result: updated ?? { error: 'not found', id }, summary: `updated document ${doc.path}`,
+        undo: async () => {
+          await updateDoc(id, {
+            path: prior.path, title: prior.title ?? undefined, content: prior.content ?? '',
+            frontmatter: prior.frontmatter, tags: prior.tags ?? [],
+            domain: prior.domain ?? undefined, type: prior.type ?? undefined
+          })
+          publishChange({ resource: 'document', action: 'updated', id })
+        }
+      }
+    }
+  },
+  {
+    name: 'move_document',
+    description: 'Move or rename a document to a new absolute path (must start with "/"). Filing it under /projects/<slug>/... associates it with that project. Reversible.',
+    kind: 'create',
+    schema: {
+      id: z.string().describe('Document id'),
+      path: z.string().regex(/^\//, 'path must start with /').describe('New absolute path, e.g. /projects/mymind/notes.md')
+    },
+    handler: async (a) => {
+      const id = a.id as string
+      const doc = await getDoc(id)
+      if (!doc) return { result: { error: 'document not found' }, summary: 'move_document: not found' }
+      const prior = doc.path
+      const updated = await moveDoc(id, a.path as string)
+      publishChange({ resource: 'document', action: 'updated', id })
+      return {
+        result: updated, summary: `moved document to ${a.path}`,
+        undo: async () => { await moveDoc(id, prior); publishChange({ resource: 'document', action: 'updated', id }) }
       }
     }
   },

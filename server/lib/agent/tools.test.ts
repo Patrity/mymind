@@ -14,3 +14,18 @@ describe('read tools', () => {
     expect(Object.keys(t!.schema)).toEqual(expect.arrayContaining(['id', 'pattern']))
   })
 })
+
+describe('edit tools', () => {
+  it('edit tools are ungated (kind create, not dangerous)', () => {
+    for (const name of ['edit_document', 'edit_section', 'update_document', 'move_document']) {
+      const t = toolByName(name)
+      expect(t, name).toBeDefined()
+      expect(t!.kind, name).toBe('create')
+      expect(t!.dangerous, name).toBeFalsy()
+    }
+  })
+  it('edit_document takes old_string/new_string/replace_all', () => {
+    expect(Object.keys(toolByName('edit_document')!.schema))
+      .toEqual(expect.arrayContaining(['id', 'old_string', 'new_string', 'replace_all']))
+  })
+})
