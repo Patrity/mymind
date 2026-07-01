@@ -137,3 +137,12 @@ export async function deleteTask(id: string): Promise<boolean> {
     .returning({ id: tasks.id })
   return !!r
 }
+
+export async function restoreTask(id: string): Promise<boolean> {
+  const [r] = await useDb()
+    .update(tasks)
+    .set({ deletedAt: null })
+    .where(eq(tasks.id, id))
+    .returning({ id: tasks.id })
+  return !!r
+}

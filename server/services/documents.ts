@@ -150,6 +150,12 @@ export async function deleteDoc(id: string): Promise<boolean> {
   return !!r
 }
 
+export async function restoreDoc(id: string): Promise<boolean> {
+  const [r] = await useDb().update(documents).set({ deletedAt: null })
+    .where(eq(documents.id, id)).returning({ id: documents.id })
+  return !!r
+}
+
 export async function searchDocs(q: string, opts: { project?: string } = {}): Promise<DocumentDTO[]> {
   if (!q.trim()) return []
 

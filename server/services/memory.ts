@@ -580,6 +580,14 @@ export async function archiveMemory(id: string): Promise<MemoryDTO | null> {
   return r ? toDTO(r) : null
 }
 
+export async function unarchiveMemory(id: string): Promise<MemoryDTO | null> {
+  const [r] = await useDb().update(memories)
+    .set({ archivedAt: null, updatedAt: new Date() })
+    .where(eq(memories.id, id))
+    .returning()
+  return r ? toDTO(r) : null
+}
+
 export async function countUnreviewedMemories(): Promise<number> {
   const [result] = await useDb()
     .select({ n: count() })
