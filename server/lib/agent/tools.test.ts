@@ -29,3 +29,14 @@ describe('edit tools', () => {
       .toEqual(expect.arrayContaining(['id', 'old_string', 'new_string', 'replace_all']))
   })
 })
+
+describe('delete tools', () => {
+  it('delete tools are destructive but not hard-gated', () => {
+    for (const name of ['delete_document', 'delete_task', 'forget_memory']) {
+      const t = toolByName(name)
+      expect(t, name).toBeDefined()
+      expect(t!.kind, name).toBe('destructive')
+      expect(t!.dangerous, name).toBeFalsy() // never dangerous → stays MCP-exposed, no approval channel needed
+    }
+  })
+})

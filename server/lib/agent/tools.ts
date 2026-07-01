@@ -1,11 +1,11 @@
 // server/lib/agent/tools.ts
 import { z } from 'zod'
 import type { AgentTool } from './types'
-import { searchMemories, createMemory, listMemories, archiveMemory } from '../../services/memory'
-import { searchDocs, searchPassages, createDoc, listDocs, getDoc, deleteDoc, updateDoc, moveDoc } from '../../services/documents'
+import { searchMemories, createMemory, listMemories, archiveMemory, unarchiveMemory } from '../../services/memory'
+import { searchDocs, searchPassages, createDoc, listDocs, getDoc, deleteDoc, updateDoc, moveDoc, restoreDoc } from '../../services/documents'
 import { outline, readSection, documentStats, grepContent, applyReplace, applyEditSection } from '../documents/edit-ops'
 import { listProjects, createProject, updateProject, getProject, deleteProject } from '../../services/projects'
-import { createTask, listTasks, updateTask, getTask, deleteTask } from '../../services/tasks'
+import { createTask, listTasks, updateTask, getTask, deleteTask, restoreTask } from '../../services/tasks'
 import { publishChange } from '../../utils/live-bus'
 import { slugify } from '../../../shared/utils/slugify'
 import { nanoid } from 'nanoid'
@@ -66,6 +66,22 @@ export const agentTools: AgentTool[] = [
         result: m,
         summary: `saved memory`,
         undo: async () => { await archiveMemory((m as { id: string }).id) }
+      }
+    }
+  },
+  {
+    name: 'forget_memory',
+    description: 'Archive a memory so it no longer surfaces in search/recall. Reversible — undo unarchives it. Use to retire a fact that is wrong or obsolete.',
+    kind: 'destructive',
+    schema: { id: z.string().describe('Memory id') },
+    handler: async (a) => {
+      const id = a.id as string
+      const m = await archiveMemory(id)
+      if (!m) return { result: { error: 'memory not found' }, summary: 'forget_memory: not found' }
+      publishChange({ resource: 'memory', action: 'deleted', id })
+      return {
+        result: { ok: true, id }, summary: 'archived memory',
+        undo: async () => { await unarchiveMemory(id); publishChange({ resource: 'memory', action: 'updated', id }) }
       }
     }
   },
@@ -298,6 +314,23 @@ export const agentTools: AgentTool[] = [
       }
     }
   },
+  {
+    name: 'delete_document',
+    description: 'Soft-delete a document. Reversible — undo restores it. Use for cleanup of docs the agent created or that are obsolete.',
+    kind: 'destructive',
+    schema: { id: z.string().describe('Document id') },
+    handler: async (a) => {
+      const id = a.id as string
+      const doc = await getDoc(id)
+      if (!doc) return { result: { error: 'document not found' }, summary: 'delete_document: not found' }
+      await deleteDoc(id)
+      publishChange({ resource: 'document', action: 'deleted', id })
+      return {
+        result: { ok: true, id, path: doc.path }, summary: `deleted document ${doc.path}`,
+        undo: async () => { await restoreDoc(id); publishChange({ resource: 'document', action: 'created', id }) }
+      }
+    }
+  },
   // ---- projects ----
   {
     name: 'search_projects',
@@ -437,6 +470,22 @@ export const agentTools: AgentTool[] = [
             publishChange({ resource: 'task', action: 'updated', id })
           }
           : undefined
+      }
+    }
+  },
+  {
+    name: 'delete_task',
+    description: 'Soft-delete a task. Reversible — undo restores it.',
+    kind: 'destructive',
+    schema: { id: z.string().describe('Task id') },
+    handler: async (a) => {
+      const id = a.id as string
+      const ok = await deleteTask(id)
+      if (!ok) return { result: { error: 'task not found' }, summary: 'delete_task: not found' }
+      publishChange({ resource: 'task', action: 'deleted', id })
+      return {
+        result: { ok: true, id }, summary: 'deleted task',
+        undo: async () => { await restoreTask(id); publishChange({ resource: 'task', action: 'updated', id }) }
       }
     }
   },
