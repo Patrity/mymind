@@ -2,7 +2,7 @@
 title: Multimodal agent — image + file attachments (Qwen3.6 VLM; files via PDF→image render) — Cycle 39
 cycle: 39
 date: 2026-06-29
-status: built + gates green + final whole-branch review PENDING — NOT merged, NOT deployed, live acceptance against the rig PENDING
+status: MERGED (master c660078) + DEPLOYED (CD 28366761446 cycle + 28484922407 post-ship fix) + prod infra-verified. Final opus review = READY TO MERGE. Post-ship fix applied for the edit-turn `[image]` imitation recurrence (see below). Interactive live acceptance (attach→vision, generate→edit) PENDING Tony re-test.
 branch: feat/multimodal-agent (off master 152b01e; worktree .claude/worktrees/multimodal; subagent-driven, 9 tasks + docs)
 spec: ../superpowers/specs/2026-06-28-multimodal-agent-design.md
 plan: ../superpowers/plans/2026-06-28-multimodal-agent.md
@@ -83,3 +83,25 @@ unchanged; user *attachments* are a separate input path.
   `pnpm add` hit an interactive workspace prompt and stalled the Task-2 subagent on the 600s watchdog.
 - **`pdf-to-img` → `@napi-rs/canvas`** is a native dep with prebuilt binaries (like sharp); it bundled
   with no nuxt.config change. Confirm the prod build step installs it cleanly.
+
+## Post-ship fix — 2026-06-30 (edit-turn `[image]` imitation recurrence, master c660078)
+
+First live edit test after deploy: "generate Travis" (worked) → "make the subject drooling and dumber
+looking" → the model replied with the literal text **`[image]` and called NO tool** (prod
+`conversation_messages`: content=`[image]`, `tool_calls` NULL). Root cause: `redactImageUrlsForModel`
+replaced the prior generate turn's embed with the marker `[image]` in the model's history, and the model
+**copied that marker** as its reply instead of calling `edit_image`. Same imitation class as cycle 38 —
+its prompt-only mitigation's known residual, and proof that even a *minimal* token marker gets imitated.
+
+Fix (the documented hardening, [[llm-imitates-history-representations]]):
+- **`redactImageUrlsForModel` now REMOVES the embed entirely** (empty), leaving the model's prose —
+  nothing to imitate. (A minimal `[image]` marker was NOT non-imitable.)
+- **`applyImageEmbeds` strips any stray `[image]`/`![image]`** from the outgoing reply, and the
+  orchestrator runs it on EVERY turn (not just image turns) — a slipped marker never reaches the user.
+- **IMAGES prompt rule strengthened** — routes "make it/him/the subject Z" + add/remove to `edit_image`
+  explicitly; states `[image]`/`![...]` are internal markers, never a reply.
+- Gate: typecheck 0 / vitest 673 (107 files) / build. Deployed (CD 28484922407).
+- **If it recurs, escalate to the structural fix:** feed the model its tool-call history as proper
+  tool-call + tool-result messages (right now runAgent builds model history from `{role,content}` only,
+  so the model never sees it *called* generate_image — it only sees prose). Then it structurally learns
+  images come from tool calls, not text.
