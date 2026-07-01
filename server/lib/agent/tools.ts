@@ -274,12 +274,13 @@ export const agentTools: AgentTool[] = [
       const id = a.id as string
       const doc = await getDoc(id)
       if (!doc) return { result: { error: 'document not found' }, summary: 'update_document: not found' }
+      // Capture the pre-mutation snapshot BEFORE updateDoc runs. Undo restores prior content +
+      // metadata + original path (path wins → also reverses an assign-project relocate).
+      const prior = doc
       const { id: _id, ...patch } = a
       if (Object.keys(patch).length === 0) return { result: { error: 'no fields to update' }, summary: 'update_document: empty' }
       const updated = await updateDoc(id, patch as Record<string, unknown>)
       publishChange({ resource: 'document', action: 'updated', id })
-      // Undo restores prior content + metadata + original path (path wins → also reverses an assign-project relocate).
-      const prior = doc
       return {
         result: updated ?? { error: 'not found', id }, summary: `updated document ${doc.path}`,
         undo: async () => {

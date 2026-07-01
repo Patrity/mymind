@@ -100,9 +100,10 @@ automatically by the embed/chunk cron.
 
 ## Gotchas for the next session
 
-- The MCP parity test (`test/mcp-parity.test.ts`) now asserts 29 tools. If you add a tool, add
-  it to `agentTools` in `tools.ts` and the parity test picks it up automatically — but the
-  `agent-tools.test.ts` toEqual list needs a manual update.
+- The MCP parity test (`test/mcp-parity.test.ts`) asserts parity **dynamically** — the MCP-exposed
+  set equals the non-`dangerous` `agentTools` — so it self-adjusts when you add a tool. The
+  hardcoded count lives in `test/agent-tools.test.ts`: its `toEqual` 29-name list needs a manual
+  update whenever you add a tool to `agentTools`.
 - Line numbers in `edit-ops.ts` are **1-indexed** throughout. Section boundary: heading line through
   the line before the next heading whose level ≤ the section's level (or EOF). Repeated identical
   headings → `{error}` (ambiguous), not silently picking the first.
