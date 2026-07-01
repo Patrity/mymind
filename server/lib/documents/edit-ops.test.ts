@@ -31,6 +31,10 @@ describe('outline', () => {
     const c = ['# Real', '```', '# not a heading', '```', '## Also real'].join('\n')
     expect(outline(c).map(h => h.text)).toEqual(['Real', 'Also real'])
   })
+  it('keeps inline # in heading text but strips closing hashes', () => {
+    expect(outline('## Fix #42').map(h => h.text)).toEqual(['Fix #42'])
+    expect(outline('## Foo ##').map(h => h.text)).toEqual(['Foo'])
+  })
 })
 
 describe('findSection', () => {
@@ -73,6 +77,7 @@ describe('grepContent', () => {
   it('finds substring matches with context', () => {
     const r = grepContent(DOC, 'beta body 1', { context: 1 })
     expect(r).toMatchObject({ total: 1, truncated: false })
+    expect('error' in r).toBe(false)
     if ('matches' in r) {
       expect(r.matches[0]).toEqual({
         line: 8, text: 'beta body 1',
@@ -83,6 +88,7 @@ describe('grepContent', () => {
   it('supports regex and caps at max', () => {
     const r = grepContent(DOC, '^## ', { regex: true, context: 0, max: 2 })
     expect(r).toMatchObject({ total: 3, truncated: true })
+    expect('error' in r).toBe(false)
     if ('matches' in r) expect(r.matches.map(m => m.line)).toEqual([4, 7])
   })
   it('returns an error for an invalid regex instead of throwing', () => {

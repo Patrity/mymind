@@ -7,7 +7,7 @@ export interface ReadResult { text: string; startLine: number; endLine: number }
 export interface GrepMatch { line: number; text: string; context: { line: number; text: string }[] }
 export interface GrepResult { matches: GrepMatch[]; total: number; truncated: boolean }
 
-const ATX = /^(#{1,6})\s+(.*?)\s*#*\s*$/
+const ATX = /^(#{1,6})\s+(.*?)(?:\s+#+\s*)?$/
 const FENCE = /^\s*(```|~~~)/
 
 /** ATX headings, skipping fenced code blocks. */
