@@ -19,11 +19,12 @@ describe('toModelContent', () => {
       { type: 'text', text: 'see ![x](/api/images/y/raw)' },
       { type: 'image', image: 'data:image/webp;base64,AAAA', mediaType: 'image/webp' }
     ]) as AgentContentPart[]
-    expect(out[0]).toEqual({ type: 'text', text: 'see [image]' })   // redaction on text part
+    expect(out[0]).toEqual({ type: 'text', text: 'see' })   // embed REMOVED (nothing to imitate)
     expect(out[1]).toMatchObject({ type: 'image' })
   })
-  it('redacts a plain string assistant message', () => {
-    expect(toModelContent('assistant', '![x](/api/images/y/raw)')).toBe('[image]')
+  it('redacts a plain string assistant message (embed removed, no marker)', () => {
+    expect(toModelContent('assistant', '![x](/api/images/y/raw)')).toBe('')
+    expect(toModelContent('assistant', 'Done — here is Travis ![x](/api/images/y/raw)')).toBe('Done — here is Travis')
   })
   it('does NOT redact a user text part', () => {
     const out = toModelContent('user', [{ type: 'text', text: 'see ![x](/api/images/y/raw)' }]) as AgentContentPart[]

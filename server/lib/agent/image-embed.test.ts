@@ -21,16 +21,26 @@ describe('applyImageEmbeds', () => {
   it('no images -> returns text unchanged, empty appended', () => {
     expect(applyImageEmbeds('hello', [])).toEqual({ content: 'hello', appended: '' })
   })
+
+  it('strips a stray [image] marker the model copied from history, even with no images', () => {
+    // Regression: the model imitated the history [image] marker as its reply and called no tool.
+    expect(applyImageEmbeds('[image]', [])).toEqual({ content: '', appended: '' })
+    expect(applyImageEmbeds('Sure! [image]', []).content).toBe('Sure!')
+  })
 })
 
 describe('redactImageUrlsForModel', () => {
-  it('replaces a server image embed with a minimal, non-imitable placeholder (no url, no description)', () => {
+  it('REMOVES a server image embed entirely (no marker for the model to copy)', () => {
     const out = redactImageUrlsForModel('![a cat in a top hat](/api/images/abc-123/raw)')
-    expect(out).toBe('[image]')
+    expect(out).toBe('')
     expect(out).not.toContain('/api/images')
-    // the description must NOT survive — the model copied "generated image: <desc>" verbatim before
-    expect(out).not.toContain('cat in a top hat')
+    // no imitable marker at all — earlier `[generated image: <desc>]` and `[image]` were copied verbatim
+    expect(out).not.toMatch(/\[image\]/i)
     expect(out).not.toMatch(/generated image/i)
+  })
+
+  it('keeps the model prose but drops the embed', () => {
+    expect(redactImageUrlsForModel('Done — here is Travis ![x](/api/images/abc/raw)')).toBe('Done — here is Travis')
   })
 
   it('redacts a link-form /api/images url too', () => {

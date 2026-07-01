@@ -103,7 +103,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   if (deps.speak) for (const chunk of chunker.flush()) await speak(chunk)
   deps.emit({ type: 'state', state: 'idle' })
 
-  if (turnImages.length) {
+  // ALWAYS sanitize the assistant text (append real embeds when an image was produced; strip any
+  // stray `[image]` placeholder even when turnImages is empty — the model sometimes copies the
+  // history marker without calling the tool; see image-embed.ts).
+  {
     const { content, appended } = applyImageEmbeds(assistantText, turnImages)
     if (appended) deps.emit({ type: 'transcript', role: 'assistant', text: appended })  // live render
     assistantText = content
