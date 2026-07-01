@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { outline, findSection, readSection, documentStats, grepContent } from './edit-ops'
+import { outline, findSection, readSection, documentStats, grepContent, applyReplace, applyEditSection } from './edit-ops'
 
 const DOC = [
   '# Title',            // 1
@@ -94,5 +94,51 @@ describe('grepContent', () => {
   it('returns an error for an invalid regex instead of throwing', () => {
     const r = grepContent(DOC, '(', { regex: true })
     expect('error' in r).toBe(true)
+  })
+})
+
+describe('applyReplace', () => {
+  it('replaces a unique occurrence', () => {
+    expect(applyReplace('a foo b', 'foo', 'bar')).toEqual({ content: 'a bar b' })
+  })
+  it('errors when old_string is absent', () => {
+    expect(applyReplace('abc', 'zzz', 'x')).toEqual({ error: 'old_string not found in document' })
+  })
+  it('errors when old_string is non-unique without replace_all', () => {
+    expect(applyReplace('x x x', 'x', 'y')).toEqual({
+      error: 'old_string is not unique (3 matches) — add surrounding context or pass replace_all',
+    })
+  })
+  it('replaces all occurrences with replace_all', () => {
+    expect(applyReplace('x x x', 'x', 'y', true)).toEqual({ content: 'y y y' })
+  })
+  it('treats $ in new_string literally (no regex specials)', () => {
+    expect(applyReplace('cost is HERE', 'HERE', '$5')).toEqual({ content: 'cost is $5' })
+  })
+})
+
+describe('applyEditSection', () => {
+  const DOC = ['# T', 'intro', '', '## A', 'a body', '', '## B', 'b body'].join('\n')
+  it('appends to the end of the document (no heading)', () => {
+    const r = applyEditSection(DOC, { mode: 'append', text: 'NEW' })
+    expect(r).toEqual({ content: DOC.replace(/\n*$/, '') + '\n\nNEW\n' })
+  })
+  it('replaces a section body, keeping the heading', () => {
+    const r = applyEditSection(DOC, { mode: 'replace', heading: 'A', text: 'fresh a' })
+    if ('error' in r) throw new Error(r.error)
+    expect(r.content).toBe(['# T', 'intro', '', '## A', 'fresh a', '## B', 'b body'].join('\n'))
+  })
+  it('appends inside a section, before the next heading', () => {
+    const r = applyEditSection(DOC, { mode: 'append', heading: 'A', text: 'more a' })
+    if ('error' in r) throw new Error(r.error)
+    expect(r.content).toBe(['# T', 'intro', '', '## A', 'a body', '', 'more a', '## B', 'b body'].join('\n'))
+  })
+  it('errors on replace with no heading', () => {
+    expect(applyEditSection(DOC, { mode: 'replace', text: 'x' })).toEqual({
+      error: 'replace mode requires a heading; use update_document to replace whole content',
+    })
+  })
+  it('passes through a missing-heading error', () => {
+    expect(applyEditSection(DOC, { mode: 'replace', heading: 'Z', text: 'x' })).toEqual({ error: 'heading not found: "Z"' })
   })
 })

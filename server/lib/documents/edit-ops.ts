@@ -93,3 +93,48 @@ export function grepContent(
     truncated: hits.length > kept.length,
   }
 }
+
+function countOccurrences(hay: string, needle: string): number {
+  let n = 0, i = 0
+  for (;;) { const idx = hay.indexOf(needle, i); if (idx === -1) break; n++; i = idx + needle.length }
+  return n
+}
+
+/** Exact find/replace with a uniqueness guard (mirrors Claude Code's Edit tool). */
+export function applyReplace(
+  content: string, oldStr: string, newStr: string, replaceAll?: boolean,
+): { content: string } | { error: string } {
+  if (oldStr === '') return { error: 'old_string must not be empty' }
+  const count = countOccurrences(content, oldStr)
+  if (count === 0) return { error: 'old_string not found in document' }
+  if (count > 1 && !replaceAll) {
+    return { error: `old_string is not unique (${count} matches) — add surrounding context or pass replace_all` }
+  }
+  if (replaceAll) return { content: content.split(oldStr).join(newStr) } // split/join → no regex/$ specials
+  const idx = content.indexOf(oldStr)
+  return { content: content.slice(0, idx) + newStr + content.slice(idx + oldStr.length) }
+}
+
+/** Structure-aware append/replace by heading. */
+export function applyEditSection(
+  content: string, args: { mode: 'append' | 'replace'; text: string; heading?: string },
+): { content: string } | { error: string } {
+  if (args.heading === undefined) {
+    if (args.mode === 'replace') return { error: 'replace mode requires a heading; use update_document to replace whole content' }
+    return { content: content.replace(/\n*$/, '') + '\n\n' + args.text + '\n' } // append to end of doc
+  }
+  const sec = findSection(content, args.heading)
+  if ('error' in sec) return sec
+  const lines = content.split('\n')
+  const body = args.text.split('\n')
+  if (args.mode === 'replace') {
+    // keep the heading line (index sec.startLine-1); replace the body lines startLine..endLine
+    const before = lines.slice(0, sec.startLine)   // through the heading line
+    const after = lines.slice(sec.endLine)          // from the next heading on
+    return { content: [...before, ...body, ...after].join('\n') }
+  }
+  // append: insert at the end of the section, before the next heading
+  const before = lines.slice(0, sec.endLine)
+  const after = lines.slice(sec.endLine)
+  return { content: [...before, ...body, ...after].join('\n') }
+}
