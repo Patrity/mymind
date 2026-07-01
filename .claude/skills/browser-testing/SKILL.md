@@ -70,3 +70,18 @@ This machine runs several Nuxt dev servers (e.g. `2d-rpg`). They all default to 
 4. Set up edge cases + verify via authenticated fetch (filters, counts, cascades).
 5. Screenshot the result; Read it to confirm it looks right.
 6. Clean up test data.
+
+## Testing MCP / agent tools on LOCAL dev (not the browser)
+The session's `mcp__mymind__*` tools point at **PROD**, so they can't validate a NEW or changed agent tool on your branch. Drive the **local dev** MCP endpoint (`POST /api/mcp`) directly — that's the exact path an external Claude Code agent uses. The auth middleware accepts a **Bearer token OR a session**, so the cleanest headless route is a minted token + the real MCP client SDK:
+
+1. **Mint a token** straight into the dev DB (no UI needed). The stored hash is `sha256("mm_"+base64url)`:
+   ```js
+   // node (pg installed); DBURL from .env DATABASE_URL (dev = localhost:5433)
+   const token='mm_'+require('crypto').randomBytes(24).toString('base64url')
+   const hash=require('crypto').createHash('sha256').update(token).digest('hex')
+   // insert into api_tokens (name, token_hash, last_four) values (..., hash, token.slice(-4))
+   ```
+2. **Drive `/api/mcp`** with `@modelcontextprotocol/sdk/client` (`Client` + `StreamableHTTPClientTransport`, `requestInit.headers.Authorization = 'Bearer '+token`). `client.listTools()` proves exposure; `client.callTool({name,arguments})` runs the handler. Parse results with `JSON.parse(res.content[0].text)` (handlers return `JSON.stringify(exec.result)`).
+3. **Run the script from the REPO ROOT** (not the scratchpad) or node throws `ERR_MODULE_NOT_FOUND` — it resolves `@modelcontextprotocol/sdk` from `<repo>/node_modules`. Write it as `<repo>/_e2e.mjs`, run, then `rm` it.
+4. Assert real behaviour (create a doc → read/grep/edit → get_document to verify content → move → delete → get_document is null). Expected-error paths (not-found, non-unique, invalid regex) must return `{error}`, never throw.
+5. **Clean up**: delete the token row + any test docs/tasks (`delete from chunks where source_id=any(...)` before `documents`), then stop the dev server. Note: an `&`-backgrounded `pnpm dev` still boots — verify with `curl -s -o /dev/null -w "%{http_code}" localhost:3000/login`.
