@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { AgentTool } from './types'
 import { searchMemories, createMemory, listMemories, archiveMemory } from '../../services/memory'
 import { searchDocs, searchPassages, createDoc, listDocs, getDoc, deleteDoc } from '../../services/documents'
+import { outline, readSection, documentStats, grepContent } from '../documents/edit-ops'
 import { listProjects, createProject, updateProject, getProject, deleteProject } from '../../services/projects'
 import { createTask, listTasks, updateTask, getTask, deleteTask } from '../../services/tasks'
 import { publishChange } from '../../utils/live-bus'
@@ -107,6 +108,58 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const doc = await getDoc(a.id as string)
       return { result: doc, summary: doc ? `got document ${doc.path}` : 'document not found' }
+    }
+  },
+  {
+    name: 'read_document',
+    description: 'Read part of a document without pulling the whole body — use this for long docs. With no selector it returns a MAP: the heading outline (with line numbers) + line/char counts, so you can then read just what you need. Pass `heading` for one section, or `offset`+`limit` for a line window. Locate first (this or grep_document), then edit_document.',
+    kind: 'read',
+    schema: {
+      id: z.string().describe('Document id'),
+      heading: z.string().optional().describe('Return just this section (exact heading text)'),
+      offset: z.number().int().min(1).optional().describe('1-indexed start line for a line window'),
+      limit: z.number().int().min(1).optional().describe('Lines to read from offset (default 200)')
+    },
+    handler: async (a) => {
+      const doc = await getDoc(a.id as string)
+      if (!doc) return { result: { error: 'document not found' }, summary: 'read_document: not found' }
+      const content = doc.content ?? ''
+      if (a.heading === undefined && a.offset === undefined) {
+        return {
+          result: { path: doc.path, title: doc.title, ...documentStats(content), outline: outline(content) },
+          summary: `read_document map ${doc.path}`
+        }
+      }
+      const res = readSection(content, {
+        heading: a.heading as string | undefined,
+        offset: a.offset as number | undefined,
+        limit: a.limit as number | undefined
+      })
+      if ('error' in res) return { result: { error: res.error, outline: outline(content) }, summary: `read_document: ${res.error}` }
+      return { result: { path: doc.path, ...res }, summary: `read_document ${doc.path} lines ${res.startLine}-${res.endLine}` }
+    }
+  },
+  {
+    name: 'grep_document',
+    description: 'Search within ONE document for a pattern (substring by default; set regex:true for a JS regexp). Returns matching lines with line numbers + surrounding context. Use it to find the exact text to pass to edit_document as old_string.',
+    kind: 'read',
+    schema: {
+      id: z.string().describe('Document id'),
+      pattern: z.string().min(1).describe('Substring (or regex if regex:true)'),
+      regex: z.boolean().optional().describe('Treat pattern as a JS regular expression'),
+      context: z.number().int().min(0).max(10).optional().describe('Context lines around each match (default 2)'),
+      max: z.number().int().min(1).max(200).optional().describe('Max matches (default 50)')
+    },
+    handler: async (a) => {
+      const doc = await getDoc(a.id as string)
+      if (!doc) return { result: { error: 'document not found' }, summary: 'grep_document: not found' }
+      const res = grepContent(doc.content ?? '', a.pattern as string, {
+        regex: a.regex as boolean | undefined,
+        context: a.context as number | undefined,
+        max: a.max as number | undefined
+      })
+      if ('error' in res) return { result: { error: res.error }, summary: `grep_document: ${res.error}` }
+      return { result: res, summary: `grep_document (${res.total} matches)` }
     }
   },
   {
