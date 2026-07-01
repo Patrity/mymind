@@ -23,7 +23,7 @@ export function braveProvider(apiKey: string): SearchProvider {
       })
       if (!res.ok) throw new Error(`Brave Search error: ${res.status}`)
       const json = await res.json() as { web?: { results?: unknown[] } }
-      return normalizeBrave(json as never, count)
+      return { results: normalizeBrave(json as never, count) }
     },
   }
 }

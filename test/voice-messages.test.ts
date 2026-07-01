@@ -32,10 +32,22 @@ describe('mapServerMessage', () => {
   })
 
   it('unknown messages are inert', () => {
-    const fx = mapServerMessage({ type: 'tool', text: 'x' }, false)
+    const fx = mapServerMessage({ type: 'nonsense', text: 'x' }, false)
     expect(fx.state).toBeUndefined()
     expect(fx.delta).toBeUndefined()
+    expect(fx.tool).toBeUndefined()
     expect(fx.events).toEqual([])
+  })
+
+  it('tool result event → inline tool effect', () => {
+    const fx = mapServerMessage({ type: 'tool', name: 'web_search', summary: 'searched "x" (5)', undoToken: 'u1' }, false)
+    expect(fx.tool).toEqual({ name: 'web_search', summary: 'searched "x" (5)', undoToken: 'u1' })
+    expect(fx.delta).toBeUndefined()
+    expect(fx.events).toEqual([])
+  })
+
+  it('tool event without name/summary stays inert', () => {
+    expect(mapServerMessage({ type: 'tool', text: 'x' }, false).tool).toBeUndefined()
   })
 
   it('typing state message → state:typing, no events', () => {

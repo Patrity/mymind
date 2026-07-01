@@ -28,6 +28,18 @@ describe('composePrompt', () => {
     expect(composePrompt({ ...base, speak: false, context: 'Active projects: mymind.' })).toContain('Active projects: mymind.')
   })
   it('includes web-research guidance', () => { expect(composePrompt({ persona: 'p', speak: false, toneLine: 't' })).toMatch(/web_search/) })
+  it('includes the degraded-search-backend honesty rule', () => {
+    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
+    expect(p).toMatch(/warning/i)
+    expect(p).toMatch(/do not conclude the information does not exist/i)
+  })
+  it('forbids narrating a tool call without making it', () => {
+    expect(composePrompt({ persona: 'p', speak: false, toneLine: 't' })).toMatch(/NEVER say you are checking\/searching/i)
+  })
+  it('includes the verify-before-conceding pushback rule', () => {
+    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
+    expect(p).toMatch(/do not reflexively agree/i)
+  })
 })
 
 describe('composePrompt powerful guidance', () => {

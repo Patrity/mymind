@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import type { TranscriptEntry } from '~/composables/useVoice'
+
 definePageMeta({ title: 'Agent' })
 
 const voice = useVoice()
-const activity = useAgentActivity()
 const route = useRoute()
 
 // Persistent preferences (cookie-backed so they survive page reloads)
@@ -24,8 +25,20 @@ const micOn = ref(false)
 const historyOpen = ref(false)
 
 // Caption over the canvas: the message currently being spoken/typed. On small
-// screens (transcript hidden) this is the only live text.
-const caption = computed(() => voice.transcript.value[voice.transcript.value.length - 1] ?? null)
+// screens (transcript hidden) this is the only live text. Tool chips are not
+// captions — show the latest user/assistant text instead.
+const caption = computed(() => {
+  const t = voice.transcript.value
+  for (let i = t.length - 1; i >= 0; i--) if (t[i]!.role !== 'tool') return t[i]!
+  return null
+})
+
+// Undo a tool call from its inline transcript chip.
+async function undoTool(entry: TranscriptEntry) {
+  if (!entry.undoToken) return
+  const { ok } = await $fetch<{ ok: boolean }>('/api/agent/undo', { method: 'POST', body: { token: entry.undoToken } })
+  if (ok) entry.undone = true
+}
 
 async function toggleMic() {
   if (micOn.value) {
@@ -40,7 +53,15 @@ async function toggleMic() {
 
 async function resume(id: string) {
   const { messages } = await useConversations().getConversation(id)
-  voice.transcript.value = messages.map(m => ({ role: m.role, text: m.content, attachments: m.attachments ?? undefined }))
+  // Rebuild inline tool chips from the persisted toolCalls. Exact stream position
+  // isn't stored (one assistant row per turn), so chips render before the reply
+  // they belong to — tools run before the final answer.
+  voice.transcript.value = messages.flatMap<TranscriptEntry>(m => [
+    ...(m.role === 'assistant' && m.toolCalls?.length
+      ? m.toolCalls.map((t, i) => ({ id: `${m.id}-tool-${i}`, role: 'tool' as const, text: '', name: t.name, summary: t.summary, undoToken: t.undoToken }))
+      : []),
+    { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined }
+  ])
   await voice.loadConversation(id)
   historyOpen.value = false
 }
@@ -235,8 +256,7 @@ onMounted(async () => {
         <VoiceTranscript
           class="flex-1 min-h-0"
           :entries="voice.transcript.value"
-          :chips="activity.chips.value"
-          @undo="activity.undo"
+          @undo="undoTool"
         />
         <div v-if="voice.pendingApproval.value" class="px-4 pb-2">
           <AgentApprovalPrompt

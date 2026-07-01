@@ -2,15 +2,24 @@
 // Shared markdown renderer. Wraps @nuxtjs/mdc so we can theme code blocks
 // + restyle prose without touching every caller. Use everywhere we render
 // text that may contain markdown (document preview, memory cards, task bodies).
+//
+// cacheKey: REQUIRED for content that STREAMS (grows after mount). MDC keys its
+// useAsyncData on hash(value) at setup time — for streaming text that's the hash
+// of the first delta, so two messages starting with the same token collide on one
+// asyncData record and render each other's content (live-verified on /agent).
 defineProps<{
   source: string
   inline?: boolean
+  cacheKey?: string
 }>()
 </script>
 
 <template>
   <div :class="inline ? 'mm-md mm-md-inline' : 'mm-md'">
-    <MDC :value="source" />
+    <MDC
+      :value="source"
+      :cache-key="cacheKey"
+    />
   </div>
 </template>
 

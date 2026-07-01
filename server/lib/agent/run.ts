@@ -91,6 +91,7 @@ export async function* runAgent(
         // new reply (which would render the wrong/old image live). See image-embed.ts.
         messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: toModelContent(m.role, m.content) })) as never,
         tools,
+        temperature: VOICE_TUNING.agent.temperature,
         stopWhen: stepCountIs(ctx.execEnabled ? VOICE_TUNING.agent.maxStepsPowerful : VOICE_TUNING.agent.maxSteps),
         abortSignal: ctx.signal
       })

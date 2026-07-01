@@ -6,3 +6,19 @@ search:
   formats:
     - html
     - json
+  # The agent fires bursts of queries; the defaults bench a rate-limited engine
+  # for 1h and a CAPTCHA'd one for 24h — one research turn blacked out search
+  # entirely (every query → [] until the next day). Recover in minutes instead.
+  suspended_times:
+    SearxEngineTooManyRequests: 60
+    SearxEngineCaptcha: 300
+    SearxEngineAccessDenied: 300
+engines:
+  # Diversify beyond the defaults (google/duckduckgo/brave/startpage) so one
+  # engine's rate limit doesn't zero out results — independent indexes.
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: qwant
+    disabled: false

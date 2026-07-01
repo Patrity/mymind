@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 39
-updated: 2026-06-29
+cycle: 41
+updated: 2026-07-01
 ---
 
 # Agent Surface (`/agent`)
@@ -28,6 +28,8 @@ The SSE `POST /api/agent/chat` still exists but is **headless/programmatic only*
 - `speak` — replaces the old `voice` boolean; drives TTS + prompt mode.
 - `context` — the per-connection live-state block (see Personality).
 - The system prompt is built **once** before the model loop; start-only failover + `recordEvent` observability are unchanged. `deps.buildSystemPrompt` is injectable so tests run without the DB.
+- **Sampling + step budget (cycle 41):** `streamText` always sends `temperature` (`VOICE_TUNING.agent.temperature`, 0.7 — qwen3-recommended) so a greedy serving-stack default can't degenerate a small local model into copy-loops; `maxSteps` is 12 (powerful 16) — the old 6 forced research turns to stop mid-investigation.
+- **Known structural gap (next cycle):** model history is `{role, content}` **text only** — the model never sees its own prior tool calls/results across turns (`getAgentHistory` drops them). Cross-turn it can't know it already searched; the fix is persisting tool calls with args+results and feeding them back as structured tool messages. See handover 2026-07-01.
 
 ## Conversation store
 
@@ -60,7 +62,11 @@ After each completed turn the handler lazily creates the conversation (first tur
 
 ## UI
 
-`app/pages/agent/index.vue` (and `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send. Controls: **Visualizer** toggle (cookie `agent-canvas`), **Respond in voice** toggle (cookie `agent-speak` → per-message `speak`), **Enable microphone** (`enableMic()`/`disableMic()` — lazy VAD; the only voice affordance, auto-connects if needed), **New**, **History** slideover (`app/components/agent/HistorySlideover.vue`), and the composer. Assistant replies render **markdown** via the shared `<MdView>` (MDC) renderer; user turns are literal text. Streamed text deltas are appended raw (they already carry their own spacing). Resume: `getConversation(id)` → set transcript → `loadConversation(id)`; `/agent?c=<id>` deep-links from the history page. The client transport (`app/composables/useVoice.ts`) decouples the WS from the mic so typing never prompts for a microphone and text chat survives an STT/TTS outage. `connect()` resolves only once the socket is OPEN, and `sendText`/`loadConversation` auto-connect transparently, so a typed send never races the handshake. Reads use `@tanstack/vue-query` (`useConversations`); the `conversation` live-resource refreshes lists across tabs.
+`app/pages/agent/index.vue` (and `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send. Controls: **Visualizer** toggle (cookie `agent-canvas`), **Respond in voice** toggle (cookie `agent-speak` → per-message `speak`), **Enable microphone** (`enableMic()`/`disableMic()` — lazy VAD; the only voice affordance, auto-connects if needed), **New**, **History** slideover (`app/components/agent/HistorySlideover.vue`), and the composer. Assistant replies render **markdown** via the shared `<MdView>` (MDC) renderer; user turns are literal text. Streamed text deltas are appended raw (they already carry their own spacing).
+
+**Transcript rendering invariants (cycle 41):**
+- Every `TranscriptEntry` has a stable unique `id` (uuid at stream time; DB message id on resume) which keys BOTH the `v-for` and the MDC parse cache (`<MdView :cache-key>`). **This is load-bearing**: `<MDC>` keys its `useAsyncData` on `hash(value)` frozen at setup — for streamed text that's the hash of the *first delta*, so two replies opening with the same token would otherwise share one asyncData record and render each other's content (live incident: three distinct replies all displayed as the first one).
+- **Tool chips render inline** at their true stream position: the orchestrator's WS `{type:'tool'}` events map to `role:'tool'` transcript entries (with undo), naturally splitting assistant text into before/after-tool bubbles. On resume, chips rebuild from the persisted `tool_calls` and render before their reply (exact position isn't stored). The old bottom-of-transcript chips block (fed by the global `/api/agent/activity` SSE) is gone; that SSE + `useAgentActivity` are currently unconsumed. Resume: `getConversation(id)` → set transcript → `loadConversation(id)`; `/agent?c=<id>` deep-links from the history page. The client transport (`app/composables/useVoice.ts`) decouples the WS from the mic so typing never prompts for a microphone and text chat survives an STT/TTS outage. `connect()` resolves only once the socket is OPEN, and `sendText`/`loadConversation` auto-connect transparently, so a typed send never races the handshake. Reads use `@tanstack/vue-query` (`useConversations`); the `conversation` live-resource refreshes lists across tabs.
 
 > **Nuxt routing note:** the page lives at `pages/agent/index.vue` (not `pages/agent.vue`) so `/agent` and `/agent/history` are **sibling** routes. With `pages/agent.vue` + `pages/agent/history.vue`, Nuxt nests `/agent/history` under `agent.vue`, which has no `<NuxtPage/>` outlet, so the history route renders the agent shell. (Caught by E2E; typecheck/build pass either way.)
 
@@ -84,7 +90,7 @@ After each completed turn the handler lazily creates the conversation (first tur
 | `create_task` | create | |
 | `edit_task` | destructive | |
 | `quick_capture` | create | Drops note into `/input` |
-| `web_search` | read | SearXNG / Brave; SSRF-guarded (cycle 29) |
+| `web_search` | read | SearXNG / Brave; SSRF-guarded (cycle 29). Returns `{results, warning?}` — `warning` set when results are empty AND engines are down (rate-limit/CAPTCHA), so the model reports a backend outage instead of "no results" (cycle 41). SearXNG config (`searxng/settings.yml`): bing/mojeek/qwant enabled + fast engine-suspension recovery (60–300s, defaults were 1h–24h) |
 | `web_fetch` | read | Markdown extraction; SSRF-guarded (cycle 29) |
 | `generate_image` | create | ComfyUI + Qwen-Image; saves to gallery (cycle 36) |
 | `edit_image` | create | Qwen-Image-Edit-2509 instruction editing on an existing image; defaults to most-recent generated; result embedded by server (cycles 37–38) |

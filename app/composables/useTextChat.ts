@@ -1,5 +1,5 @@
 // app/composables/useTextChat.ts
-import type { TranscriptEntry } from './useVoice'
+import { newEntryId, type TranscriptEntry } from './useVoice'
 
 // Posts to /api/agent/chat and appends streamed assistant text to `entries`.
 // Parses OpenAI-compatible SSE chunks (choices[0].delta.content).
@@ -7,12 +7,13 @@ export async function textStreamToTranscript(entries: TranscriptEntry[]): Promis
   const res = await fetch('/api/agent/chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ messages: entries.map(e => ({ role: e.role, content: e.text })) })
+    // Tool chip entries are client-side display only — not model messages.
+    body: JSON.stringify({ messages: entries.filter(e => e.role !== 'tool').map(e => ({ role: e.role, content: e.text })) })
   })
   if (!res.body) return
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
-  entries.push({ role: 'assistant', text: '' })
+  entries.push({ id: newEntryId(), role: 'assistant', text: '' })
   const target = entries[entries.length - 1]!
   let buffer = ''
   while (true) {

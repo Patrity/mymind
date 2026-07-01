@@ -7,8 +7,15 @@ export interface SearchResult {
   snippet: string
 }
 
+export interface SearchResponse {
+  results: SearchResult[]
+  /** Set when the backend is degraded (e.g. engines rate-limited/CAPTCHA'd) so an
+   *  empty result can be distinguished from "nothing on the web". */
+  warning?: string
+}
+
 export interface SearchProvider {
-  search(query: string, opts?: { count?: number }): Promise<SearchResult[]>
+  search(query: string, opts?: { count?: number }): Promise<SearchResponse>
 }
 
 export interface SearchConfig {

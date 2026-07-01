@@ -5,7 +5,24 @@ import type { VizEvent } from '../lib/viz/types'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
-export interface TranscriptEntry { role: 'user' | 'assistant'; text: string; attachments?: AttachmentRef[] }
+// `id` is a stable per-entry key: it keys v-for AND the MdView/MDC parse cache —
+// without a unique cache key, streaming entries that start with the same first
+// delta collide on MDC's hash(value) asyncData key and mirror each other's text.
+// role 'tool' entries are inline tool-call chips (name/summary/undoToken set, text unused).
+export interface TranscriptEntry {
+  id: string
+  role: 'user' | 'assistant' | 'tool'
+  text: string
+  attachments?: AttachmentRef[]
+  name?: string
+  summary?: string
+  undoToken?: string
+  undone?: boolean
+}
+
+export function newEntryId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)
+}
 
 // Capture/barge-in/playback knobs are user-tunable and cookie-persisted —
 // see useVoiceSettings. NOTE: vad-web 0.0.30 uses time-based options
@@ -47,11 +64,17 @@ export function useVoice() {
     // Append raw — LLM/STT text deltas already carry their own spacing and
     // concatenate to the exact string. (An earlier word-boundary space heuristic
     // mangled sub-word token streaming, e.g. "Brid"+"get" → "Brid get".)
+    // A tool entry between deltas breaks the same-role run, so assistant text
+    // resumes in a NEW bubble after each inline tool chip — true stream order.
     if (last && last.role === role) last.text += delta
     else {
-      transcript.value.push({ role, text: delta, attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
+      transcript.value.push({ id: newEntryId(), role, text: delta, attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
       if (role === 'user') pendingUserAttachments = []
     }
+  }
+
+  function pushTool(t: { name: string; summary: string; undoToken?: string }) {
+    transcript.value.push({ id: newEntryId(), role: 'tool', text: '', ...t })
   }
 
   function stopPlayback() {
@@ -155,6 +178,7 @@ export function useVoice() {
       } else {
         const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
         if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
+        if (fx.tool) pushTool(fx.tool)
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
         for (const ev of fx.events) events.emit(ev)
