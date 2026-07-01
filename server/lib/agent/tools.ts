@@ -18,7 +18,7 @@ export const agentTools: AgentTool[] = [
   // ---- memory ----
   {
     name: 'search_memories',
-    description: 'Semantic + keyword search over stored memories.',
+    description: 'Search Tony\'s durable memories (semantic + keyword). Check here before answering from your own recollection — these are facts distilled from every past session.',
     kind: 'read',
     schema: {
       query: z.string().describe('Search query'),
@@ -35,7 +35,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'get_recent_memories',
-    description: 'List recent memories, optionally filtered by scope.',
+    description: 'List recent memories, newest first (optionally by scope). A quick way to see what\'s top-of-mind before you act.',
     kind: 'read',
     schema: { scope: z.enum(['user', 'agent', 'world']).optional(), limit: z.number().int().min(1).max(100).optional() },
     handler: async (a) => {
@@ -88,7 +88,7 @@ export const agentTools: AgentTool[] = [
   // ---- documents ----
   {
     name: 'search_docs',
-    description: 'Semantic + keyword search over stored documents. Pass `project` (a slug) to scope the search to one project.',
+    description: 'Semantic + keyword search over stored documents — search here before creating a new one to avoid duplicates. Pass `project` (a slug) to scope to one project.',
     kind: 'read',
     schema: { query: z.string().describe('Search query'), project: z.string().optional().describe('Project slug to scope to') },
     handler: async (a) => {
@@ -108,7 +108,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'list_documents',
-    description: 'List documents, newest first. Pass `project` (a slug) to list only that project\'s documents.',
+    description: 'List documents, newest first. Pass `project` (a slug) to list only that project\'s docs. Use search_docs when you know what you\'re looking for.',
     kind: 'read',
     schema: { project: z.string().optional().describe('Project slug to filter by') },
     handler: async (a) => {
@@ -118,7 +118,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'get_document',
-    description: 'Get a single document by id, including its full Markdown content and frontmatter.',
+    description: 'Get a whole document by id (full Markdown + frontmatter). For a long document, prefer read_document (outline/section) or grep_document so you don\'t pull the entire body.',
     kind: 'read',
     schema: { id: z.string().describe('Document id') },
     handler: async (a) => {
@@ -180,7 +180,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'save_document',
-    description: 'Create a Markdown document. Pass `project` (a slug) to file it under /projects/<slug>/ and associate it with that project; otherwise it lands in /input for triage. Use this (not quick_capture) for substantive, project-scoped documents.',
+    description: 'Create a Markdown document. Search first (search_docs) to avoid duplicates. Pass `project` (a slug) to file it under /projects/<slug>/ and associate it; otherwise it lands in /input for triage. Prefer this over quick_capture for anything substantive or project-scoped; to change an existing doc use edit_document/update_document.',
     kind: 'create',
     schema: {
       content: z.string().describe('Markdown body'),
@@ -334,7 +334,7 @@ export const agentTools: AgentTool[] = [
   // ---- projects ----
   {
     name: 'search_projects',
-    description: 'List all projects, optionally active-only.',
+    description: 'List projects (optionally active-only). Projects are the top-level buckets everything files under.',
     kind: 'read',
     schema: { activeOnly: z.boolean().optional() },
     handler: async (a) => {
@@ -398,7 +398,7 @@ export const agentTools: AgentTool[] = [
   // ---- tasks ----
   {
     name: 'search_tasks',
-    description: 'List tasks, optionally filtered by status or project.',
+    description: 'List tasks (optionally by status or project). Check existing tasks before creating one, and when deciding what to work on.',
     kind: 'read',
     schema: {
       status: z.enum(['todo', 'in_progress', 'completed', 'blocked']).optional(),
@@ -411,7 +411,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'create_task',
-    description: 'Create a new task.',
+    description: 'Create a task. Record follow-ups and deferred work here so it isn\'t lost between sessions. Search first to avoid duplicates.',
     kind: 'create',
     schema: {
       title: z.string().min(1).max(500),
