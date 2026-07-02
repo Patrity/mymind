@@ -116,3 +116,16 @@ container) and a ShareX/CleanShot third-party "Settings" mention in the same fil
 - **`textContent` length is a weak proxy for "page has content"** on form-heavy pages —
   `<textarea>`/`<input>` values don't count toward it. Prefer visual (screenshot) confirmation for
   settings pages that are mostly form fields (bridget's persona textarea, search's provider form).
+
+## Final whole-branch review (2026-07-02)
+
+**Ready to merge: YES** — 0 Critical / 0 Important in the git range; all per-task deferred minors
+triaged "fine to leave" (bare `navigateTo` is the canonical Nuxt redirect idiom; footer `gap-2` is
+a literal no-op with one flex child). The one out-of-repo finding — stale MyMind wiki mirrors — was
+resolved the same day: the only two mirrored pages (`agent-exec.md`, `mcp.md`) had their
+`` /settings → <Tab> `` references patched via MCP `edit_document`; the other six changed wiki pages
+have never had mirrors (verified: the mymind project holds 6 docs total), so nothing else to sync.
+Two review minors (singular "`/settings` page" wording in `ai-providers.md:10`, "UI tab" phrasing in
+`search.md:120`) were fixed in the follow-up docs commit that added this section.
+Noted seam: adding a settings page touches two places (page file + `settingsChildren` in the
+layout) — fine at 10 pages, derive-from-routes if the list keeps growing.

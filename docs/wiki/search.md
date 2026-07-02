@@ -117,4 +117,4 @@ The reranker is wired, **OFF until a model is assigned**, and now in good shape:
 - Validate + tune the reranker on the real corpus once enabled (`rerankRelBand` / `rerankTopK`).
 - Rerank the MCP `search_docs` / `search_passages` (agent-facing) too — currently only the cosine
   floor reaches them; the cross-type rerank is palette-only.
-- Contextual BM25 over chunk text (Anthropic ~49%); a `/settings` relevance-tuning UI tab.
+- Contextual BM25 over chunk text (Anthropic ~49%); a `/settings/*` relevance-tuning subpage.

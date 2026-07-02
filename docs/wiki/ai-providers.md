@@ -7,7 +7,7 @@ updated: 2026-06-14
 
 # AI Model Providers
 
-Model access is **DB-backed and runtime-editable** via the AI config registry. Providers, models, and per-usage failover chains live in one JSONB document; the `/settings` page and `/onboarding` wizard edit it; the resolver decrypts keys and merges provider+model into ready-to-call chains. **Swapping or adding a model is a UI change, never code, never an env redeploy.** The old `AI_*` env vars are now import-only seeds (see Migration below).
+Model access is **DB-backed and runtime-editable** via the AI config registry. Providers, models, and per-usage failover chains live in one JSONB document; the `/settings/*` pages and `/onboarding` wizard edit it; the resolver decrypts keys and merges provider+model into ready-to-call chains. **Swapping or adding a model is a UI change, never code, never an env redeploy.** The old `AI_*` env vars are now import-only seeds (see Migration below).
 
 ## The config document (`server/lib/ai/registry/types.ts`)
 
