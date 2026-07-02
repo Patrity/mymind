@@ -44,6 +44,12 @@ describe('composePrompt', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't', nowLine: 'Current date and time: Wednesday, July 1, 2026, 3:00 PM (America/Chicago).' })
     expect(p).toContain('Current date and time: Wednesday, July 1, 2026')
   })
+  it('includes search-discipline rules (diminishing returns + bot walls)', () => {
+    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
+    expect(p).toMatch(/diminishing returns/i)
+    expect(p).toMatch(/bot walls/i)
+    expect(p).toMatch(/eBay sold listings/)
+  })
   it('includes subagent delegation guidance', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
     expect(p).toMatch(/research_web/)

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { normalizeSearxng, searxngWarning } from '../server/lib/search/providers/searxng'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { normalizeSearxng, searxngWarning, searxngProvider, resetSearxngState, cacheKey } from '../server/lib/search/providers/searxng'
 import { normalizeBrave } from '../server/lib/search/providers/brave'
 
 describe('normalizeSearxng', () => {
@@ -33,6 +33,48 @@ describe('searxngWarning', () => {
   it('no warning for a genuinely empty result with healthy engines', () => {
     expect(searxngWarning({ results: [] }, 0)).toBeUndefined()
     expect(searxngWarning({ results: [], unresponsive_engines: [] }, 0)).toBeUndefined()
+  })
+})
+
+describe('searxng burst protection', () => {
+  beforeEach(() => resetSearxngState())
+
+  const okResponse = (results: unknown[]) => ({
+    ok: true,
+    json: async () => ({ results })
+  }) as unknown as Response
+
+  it('serves repeat queries from the cache without re-fetching', async () => {
+    const fetchFn = vi.fn(async () => okResponse([{ title: 'A', url: 'https://a.com', content: 's' }]))
+    const p = searxngProvider('http://x', { fetchFn, minIntervalMs: 0 })
+    const first = await p.search('DDR4 price', { count: 5 })
+    const second = await p.search('  ddr4   PRICE ', { count: 5 }) // normalized-identical
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    expect(second).toEqual(first)
+  })
+
+  it('does NOT cache degraded empty responses (backend may recover)', async () => {
+    const degraded = { ok: true, json: async () => ({ results: [], unresponsive_engines: [['brave', 'CAPTCHA']] }) } as unknown as Response
+    const fetchFn = vi.fn(async () => degraded)
+    const p = searxngProvider('http://x', { fetchFn, minIntervalMs: 0 })
+    await p.search('q', { count: 5 })
+    await p.search('q', { count: 5 })
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('paces concurrent outbound requests through the shared gate', async () => {
+    const stamps: number[] = []
+    const fetchFn = vi.fn(async () => { stamps.push(Date.now()); return okResponse([{ url: 'https://a.com' }]) })
+    const p = searxngProvider('http://x', { fetchFn, minIntervalMs: 40 })
+    await Promise.all([p.search('one'), p.search('two'), p.search('three')])
+    expect(fetchFn).toHaveBeenCalledTimes(3)
+    expect(stamps[1]! - stamps[0]!).toBeGreaterThanOrEqual(35)
+    expect(stamps[2]! - stamps[1]!).toBeGreaterThanOrEqual(35)
+  })
+
+  it('cacheKey normalizes whitespace and case, and keys on count', () => {
+    expect(cacheKey('  Foo   BAR ', 5)).toBe('foo bar|5')
+    expect(cacheKey('foo bar', 8)).not.toBe(cacheKey('foo bar', 5))
   })
 })
 
