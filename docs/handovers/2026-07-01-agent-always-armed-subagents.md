@@ -63,4 +63,19 @@ text. Plus budget guidance in both subagent prompts ("~2 steps searching, ~2 fet
 step forces you to write") and the no-report summary now includes the tool-call count. Guard test in
 test/run-agent.test.ts. Live-verified on dev: `researched: … (7 tool calls)` + a real digest; the degraded
 search backend during the test also proved the warning chain end-to-end (Bridget reported "live web search is
-unavailable" and labeled her MSRP answer as training data).
+unavailable" and labeled her MSRP answer as training data). Deployed (d12a6b9).
+
+## Post-ship fix #2 (same day): agent DoS'd its own search backend chasing bot-walled data
+
+Live incident #2 (prod spans): **32 searches + 20 fetches in <4 minutes** re-benched every SearXNG engine
+mid-conversation — while chasing eBay sold-listing prices, which are unreachable by design (not in search
+snippets; eBay 403s all bot fetches — six 403s didn't stop it).
+
+**Fixes (3226479, deployed):** (1) searxng provider burst protection — module-level 10-min TTL query cache
+(normalized de-dupe; degraded empties NOT cached) + 1.1s pacing gate serializing outbound requests across all
+provider instances; (2) prompt rules (test-guarded): diminishing returns (2–3 good queries then change
+strategy; bursts rate-limit the backend for the whole conversation) + marketplace bot walls (sold-listing/
+price-history data needs APIs we don't have; ONE 403 from such a domain = stop touching the domain; label
+tracker-based estimates as not-from-sold-listings); (3) web_fetch description + researcher subagent prompt
+carry the domain-level 403 rule. Option for later: a Brave Search API key in /settings → Search as a
+rate-limit-immune provider (the brave provider lane already exists).
