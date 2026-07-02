@@ -22,12 +22,14 @@ export interface TurnDeps {
   speak: boolean
   context?: string
   profile?: import('../agent/profile').AgentProfile
-  execEnabled?: boolean
   requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>
   attachments?: AttachmentRef[]
   readAttachmentBytes?: (a: AttachmentRef) => Promise<{ bytes: Buffer; mime: string } | null>
+  /** Per-turn proactive memory retrieval — injected at the WS boundary (ws.ts passes
+   *  the real search-backed builder; tests omit it → no injection). Never throws. */
+  buildMemoryContext?: (userText: string) => Promise<string>
   emit: (e: VoiceEvent) => void
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; profile?: import('../agent/profile').AgentProfile; execEnabled?: boolean; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[] }) => AsyncGenerator<AgentEvent>
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[] }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -61,6 +63,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const messages: AgentMessage[] = [...history, { role: 'user', content: userContent }]
 
   deps.emit({ type: 'state', state: 'thinking' })
+  // Proactive memory injection: top relevant memories for THIS turn ride the
+  // context block. Best-effort (returns '' on error/timeout) — never blocks a turn.
+  const memoryBlock = deps.buildMemoryContext ? await deps.buildMemoryContext(userText) : ''
+  const context = [deps.context, memoryBlock].filter(Boolean).join('\n\n') || undefined
   const chunker = new SentenceChunker(VOICE_TUNING.tts.sentenceMinChars)
   let assistantText = ''
   const turnImages: DisplayImage[] = []
@@ -79,7 +85,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   }
 
   let sawText = false
-  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context: deps.context, profile: deps.profile, execEnabled: deps.execEnabled, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id) })) {
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id) })) {
     if (deps.signal.aborted) break
     if (ev.type === 'text-delta') {
       assistantText += ev.text

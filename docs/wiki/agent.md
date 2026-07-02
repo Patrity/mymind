@@ -1,7 +1,7 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 41
+cycle: 42
 updated: 2026-07-01
 ---
 
@@ -23,13 +23,25 @@ The SSE `POST /api/agent/chat` still exists but is **headless/programmatic only*
 
 ## Entry point (`runAgent`)
 
-`runAgent(messages, ctx, deps)` where `ctx = { signal, speak?, profile?, context? }`:
-- `profile` (`server/lib/agent/profile.ts`) — `AgentProfile = { id, tools, personaKey }`. One profile this cycle: **`bridgetProfile`** (all 15 tools + the `agent_persona` persona). The shape is the seam for Cycle B (a profile selects its tool subset/prompt).
+`runAgent(messages, ctx, deps)` where `ctx = { signal, speak?, profile?, context?, maxSteps? }`:
+- `profile` (`server/lib/agent/profile.ts`) — `AgentProfile = { id, tools, personaKey }`. **ONE always-armed profile since cycle 42**: `bridgetProfile` = the full `agentTools` registry **+ `execTool` + the subagent tools** (`research_web`, `search_brain`). The old `powerful` profile and the `agent-exec-enabled` cookie/switch are gone — safety is the approval gate (dangerous tools pause for allowlist-or-approval; channels without an approval UI auto-deny).
 - `speak` — replaces the old `voice` boolean; drives TTS + prompt mode.
-- `context` — the per-connection live-state block (see Personality).
+- `context` — the per-turn context block: live state (projects + open tasks, rebuilt EVERY turn since cycle 42) **plus proactive memory injection** — `buildMemoryContext(userText)` (`server/lib/agent/context.ts`) retrieves the top-5 relevant memories for the user's message (relevance floor 0.2, 1.5s timeout, never throws) and injects them as a labeled background block. Wired at the WS boundary (`ws.ts` passes it into `handleTurn`); tests omit it.
+- `maxSteps` — optional per-run override of the step cap (subagents pass their own budget).
 - The system prompt is built **once** before the model loop; start-only failover + `recordEvent` observability are unchanged. `deps.buildSystemPrompt` is injectable so tests run without the DB.
-- **Sampling + step budget (cycle 41):** `streamText` always sends `temperature` (`VOICE_TUNING.agent.temperature`, 0.7 — qwen3-recommended) so a greedy serving-stack default can't degenerate a small local model into copy-loops; `maxSteps` is 12 (powerful 16) — the old 6 forced research turns to stop mid-investigation.
-- **Known structural gap (next cycle):** model history is `{role, content}` **text only** — the model never sees its own prior tool calls/results across turns (`getAgentHistory` drops them). Cross-turn it can't know it already searched; the fix is persisting tool calls with args+results and feeding them back as structured tool messages. See handover 2026-07-01.
+- **Sampling + step budget (cycle 41):** `streamText` always sends `temperature` (`VOICE_TUNING.agent.temperature`, 0.7 — qwen3-recommended) so a greedy serving-stack default can't degenerate a small local model into copy-loops; `maxSteps` is 16 for every main-loop turn (single cap since cycle 42).
+- **Known structural gap (cycle 43, task filed):** model history is `{role, content}` **text only** — the model never sees its own prior tool calls/results across turns (`getAgentHistory` drops them). Cross-turn it can't know it already searched; the fix is persisting tool calls with args+results and feeding them back as structured tool messages. See handover 2026-07-01.
+
+## Subagents (cycle 42)
+
+`server/lib/agent/subagents.ts` — fixed specialist subagents exposed to the main agent as ordinary tools. Each runs a **nested `runAgent`** with a narrow tool subset, its own steering system prompt (replaces the Bridget persona), and its own step budget, and returns a compact digest — multi-step digging happens off the main conversation's context.
+
+| Tool | Toolset | Budget | Returns |
+|---|---|---|---|
+| `research_web` | `web_search`, `web_fetch` | 10 steps | digest ≤~350 words + source URLs (multi-angle queries, reads 2–3 sources, reports degraded backend honestly) |
+| `search_brain` | memories/docs/passages/projects/tasks read tools | 8 steps | digest with paths/citations, including what was NOT found |
+
+Design invariants: **not** a generic spawner (fixed types keep a small orchestrator model from compounding planning errors); no subagent's toolset contains subagent tools (recursion impossible by construction); subagents live on the **profile**, not `agentTools`, so MCP never sees them; `makeSubagentTool` dynamic-imports `run.ts` (breaks the run→profile→subagents cycle); the prompt tells the orchestrator the subagents **cannot see the conversation** — pass facts via `context`.
 
 ## Conversation store
 

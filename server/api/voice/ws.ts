@@ -7,9 +7,8 @@ import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
-import { buildLiveContext } from '../../lib/agent/context'
+import { buildLiveContext, buildMemoryContext } from '../../lib/agent/context'
 import { publishChange } from '../../utils/live-bus'
-import { profileById } from '../../lib/agent/profile'
 import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
@@ -26,9 +25,6 @@ interface ConnState {
   voice: string
   lock: Promise<void>
   conversationId: string | null
-  context: string | null
-  profile: 'bridget' | 'powerful'
-  execEnabled: boolean
   pendingApprovals: Map<string, { resolve: (d: { approved: boolean }) => void; timer: ReturnType<typeof setTimeout>; req: ApprovalRequest }>
 }
 const conns = new WeakMap<object, ConnState>()
@@ -64,7 +60,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, context: null, profile: 'bridget', execEnabled: false, pendingApprovals: new Map() })
+    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -74,7 +70,7 @@ export default defineWebSocketHandler({
     if (frame.kind === 'ignore') return
     // A turn closure reads s.history at EXECUTION time (under the lock), so
     // back-to-back turns see each other's appended messages.
-    let turn: ((signal: AbortSignal, emit: (e: VoiceEvent) => void) => Promise<AgentMessage[]>) | null = null
+    let turn: ((signal: AbortSignal, emit: (e: VoiceEvent) => void, context: string | undefined) => Promise<AgentMessage[]>) | null = null
     let inputModality: 'text' | 'voice' = 'text'
     let speakFlag = false
     let turnAttachments: AttachmentRef[] = []
@@ -101,15 +97,12 @@ export default defineWebSocketHandler({
         peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern }))
       })
     }
-    const profile = profileById(s.profile)
     if (frame.kind === 'control') {
       const msg = frame.msg
       if (msg.type === 'interrupt') { s.ac?.abort(); return }
       if (msg.type === 'voice') { s.voice = msg.voice as string; return }
-      // Profile switch (per-connection; default safe). Affects subsequent turns.
-      if (msg.type === 'profile') { s.profile = msg.profile === 'powerful' ? 'powerful' : 'bridget'; return }
-      // Exec gate: per-session master enable switch (cookie-armed, default off).
-      if (msg.type === 'execEnabled') { s.execEnabled = msg.value === true; return }
+      // 'profile' / 'execEnabled' frames from old clients are silently ignored —
+      // the agent is always fully armed now (single profile; approval gate = safety).
       // Approve/deny resolve a pending approval IMMEDIATELY (like interrupt) — not
       // queued behind the turn lock, so the awaiting turn unblocks.
       if (msg.type === 'approve' || msg.type === 'deny') {
@@ -137,7 +130,6 @@ export default defineWebSocketHandler({
           try {
             s.history = await getAgentHistory(msg.conversationId as string)
             s.conversationId = msg.conversationId as string
-            s.context = null
           } catch (err) {
             console.error('[agent] load failed:', err)
             peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'failed to load conversation' }))
@@ -146,7 +138,7 @@ export default defineWebSocketHandler({
         return
       }
       // new: reset to a fresh conversation
-      if (msg.type === 'new') { s.history = []; s.conversationId = null; s.context = null; return }
+      if (msg.type === 'new') { s.history = []; s.conversationId = null; return }
       if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
         // Typed turn: inject post-STT — same agent loop, same TTS, same events.
         const text = msg.text.trim()
@@ -155,7 +147,7 @@ export default defineWebSocketHandler({
         turnAttachments = attachments
         inputModality = 'text'
         speakFlag = speak
-        turn = (signal, emit) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context: s.context ?? undefined, profile, execEnabled: s.execEnabled, requestApproval, attachments, signal, emit })
+        turn = (signal, emit, context) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context, buildMemoryContext, requestApproval, attachments, signal, emit })
       } else {
         return
       }
@@ -163,7 +155,7 @@ export default defineWebSocketHandler({
       const audio = frame.bytes
       inputModality = 'voice'
       speakFlag = true
-      turn = (signal, emit) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context: s.context ?? undefined, profile, execEnabled: s.execEnabled, requestApproval, signal, emit })
+      turn = (signal, emit, context) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context, buildMemoryContext, requestApproval, signal, emit })
     }
     s.ac?.abort()
     for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }
@@ -173,14 +165,17 @@ export default defineWebSocketHandler({
     const exec = turn
     const run = async () => {
       try {
-        if (!s.context) s.context = await buildLiveContext(new Date())
+        // Live context is rebuilt EVERY turn (two cheap indexed queries) — the old
+        // once-per-connection cache went stale (a task created mid-conversation
+        // never appeared).
+        const context = (await buildLiveContext(new Date())) || undefined
         const toolCalls: { name: string; summary: string; undoToken?: string }[] = []
         const prevLen = s.history.length
         const emit = (e: VoiceEvent) => {
           if (e.type === 'audio') peer.send(e.bytes)
           else { if (e.type === 'tool') toolCalls.push({ name: e.name, summary: e.summary, undoToken: e.undoToken }); peer.send(JSON.stringify(e)) }
         }
-        s.history = await exec!(ac.signal, emit)               // exec built with speak+context
+        s.history = await exec!(ac.signal, emit, context)
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId

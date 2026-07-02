@@ -6,14 +6,13 @@ export const VOICE_TUNING = {
   bargeIn: { enabled: true, minSpeechMsToInterrupt: 300 },
   tts:     { provider: 'kokoro' as 'chatterbox' | 'kokoro', sentenceMinChars: 60, playbackRate: 1.1 },
   stt:     { language: 'en' },
-  // maxSteps: default cap for chat turns — 6 forced a real web-research turn to stop
-  // mid-investigation and rationalize ("I have enough context"); 12 gives search→fetch→
-  // cross-check headroom. maxStepsPowerful: exec-enabled runs do multi-step work
-  // (install → configure → run → verify), so they need more (a 6-step cap stranded a
-  // real gh install+run mid-task).
+  // maxSteps: one cap for every main-loop turn — the agent is always fully armed
+  // (the old 6-step quick cap forced research turns to stop mid-investigation, and
+  // a 6-step cap once stranded a real gh install+run mid-task). Subagents pass
+  // their own ctx.maxSteps override.
   // temperature: ALWAYS sent explicitly — if the serving stack defaults to greedy
   // decoding, a small local model degenerates into verbatim copy-loops of its own
   // history (qwen3 recommended sampling: temp 0.7).
-  agent:   { maxSteps: 12, maxStepsPowerful: 16, temperature: 0.7 }
+  agent:   { maxSteps: 16, temperature: 0.7 }
 }
 export type VoiceTuning = typeof VOICE_TUNING

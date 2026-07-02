@@ -1,25 +1,23 @@
 ---
-title: Agent Exec — Credentialed Native-Root Exec (Cycle B3.2)
+title: Agent Exec — Credentialed Native-Root Exec (Cycle B3.2; always-armed since cycle 42)
 status: shipped
-cycle: 35 (B3.2)
-updated: 2026-06-20
+cycle: 42
+updated: 2026-07-01
 ---
 
-# Agent Exec — Credentialed Native-Root Exec (Cycle B3.2)
+# Agent Exec — Credentialed Native-Root Exec
 
-Cycles B2 and B3.1 added the approval gate harness and moved the app to a native systemd process (root in LXC 114). B3.2 reworks the exec runner for that reality: exec now runs **natively as root in the LXC** (no `setpriv`, no `agent` uid drop, no `/workspace` jail), always injects the user's service tokens, and applies an allowlist-first gate with a catastrophic hard-block. The LXC container is the security boundary.
+Cycles B2 and B3.1 added the approval gate harness and moved the app to a native systemd process (root in LXC 114). B3.2 reworks the exec runner for that reality: exec runs **natively as root in the LXC** (no `setpriv`, no `agent` uid drop, no `/workspace` jail), always injects the user's service tokens, and applies an allowlist-first gate with a catastrophic hard-block. The LXC container is the security boundary.
 
-## What must be true for exec to run
+## What must be true for exec to run (always-armed since cycle 42)
 
-Exec is disabled by default. It runs only when **two operator-controlled gates** are open AND a **process-level prerequisite** is satisfied:
+**The old dual-enable lever is GONE** (Tony's decision, 2026-07-01): there is no `powerful` profile toggle and no `agent-exec-enabled` cookie. `server/lib/agent/profile.ts` defines ONE profile (`bridgetProfile` = `agentTools` + `execTool` + subagent tools) and the exec tool is exposed on every turn. Old `{type:'profile'}` / `{type:'execEnabled'}` WS frames are silently ignored.
 
-**Gate 1 — `powerful` profile** — `server/lib/agent/profile.ts` defines two profiles. `bridgetProfile` (default) includes `agentTools` only; `powerfulProfile` adds `execTool`. The model cannot call exec unless the active profile is `powerful`. Selected per-connection via `{ type: 'profile', profile: 'powerful' }` WS frame.
+What still stands between the model and a running command:
 
-**Gate 2 — `agent-exec-enabled` cookie** — the `/agent` page exposes an "Exec enabled" toggle (`useCookie<boolean>('agent-exec-enabled', { default: () => false })`). Toggling it sends `{ type: 'execEnabled', value: true|false }` over the WS; `ConnState.execEnabled` carries the current state. At agent-run time, `effectiveTools` (`server/lib/agent/run.ts`) strips `execTool` from the profile's tool registry when `execEnabled === false`. The cookie is **off by default** and is **not present in background/cron/unattended agent runs** — those always run without exec.
+**The approval gate** — exec is `dangerous: true`, so every call goes allowlist-or-approve (see below). On channels with **no approval UI** (headless SSE `/api/agent/chat`, and MCP — where exec isn't even registered), a non-allowlisted exec **auto-denies** (`buildAiTools` fail-safe). This is the safety model: availability is universal, execution is gated per command.
 
 **Prerequisite (fail-closed) — process running as root** — `runConstrained` calls `selectExecMode({ uid: process.getuid(), nodeEnv, unconfined })`. When the process is root (`uid === 0`), it returns `{ mode: 'native-root' }` and exec proceeds. In non-root dev, `EXEC_UNCONFINED=1` (with `NODE_ENV !== 'production'`) returns `{ mode: 'unconfined' }` (same runtime path, no privilege drop, stripped env still applies). Anything else returns `{ mode: 'disabled' }` and `ExecDisabledError` is thrown. This is not an operator-configured gate — it is a fail-closed check that prevents exec from silently working in an unexpected runtime context.
-
-Flipping the cookie off disables exec immediately with no deploy.
 
 ## `runConstrained` — the exec runner
 
@@ -150,10 +148,10 @@ When `execAutoApproveDecision` returns `allow: false`, the gate prompts via the 
 **Client → server:**
 | Frame | Purpose |
 |---|---|
-| `{ type: 'profile', profile: 'bridget' \| 'powerful' }` | Switch profiles per-connection |
-| `{ type: 'execEnabled', value: boolean }` | Toggle exec gate per-session (sent by the `agent-exec-enabled` cookie watcher) |
 | `{ type: 'approve', requestId, remember?, pattern? }` | Approve a pending tool call |
 | `{ type: 'deny', requestId }` | Deny a pending tool call |
+
+(The B2-era `{type:'profile'}` and `{type:'execEnabled'}` frames were retired in cycle 42 — old clients' frames are silently ignored.)
 
 **Server → client:**
 | Frame | Purpose |
@@ -161,17 +159,16 @@ When `execAutoApproveDecision` returns `allow: false`, the gate prompts via the 
 | `{ type: 'approval', requestId, tool, command, proposedPattern }` | Dangerous tool call needs approval |
 | `{ type: 'approval-resolved', requestId }` | Pending approval timed out (120 s auto-deny) |
 
-`approve`/`deny`/`execEnabled` frames are processed **immediately** (like `interrupt`) — not queued behind the turn lock.
+`approve`/`deny` frames are processed **immediately** (like `interrupt`) — not queued behind the turn lock.
 
 ## Self-install persistence
 
 `apt`, `npm -g`, `pip` installs land in the LXC root filesystem and persist across app restarts and CD deploys (the deploy sync only overwrites `/opt/mymind`'s tracked tree). First use of an install command is unmatched → prompts → approve+remember to add a scoped pattern. **Caveat:** a full LXC rebuild loses self-installed tools; they can be re-installed on demand.
 
-## Honest security posture (B3.2)
+## Honest security posture (updated cycle 42 — always-armed)
 
 Exec is protected by:
-- **(a) opt-in `powerful` profile** — the default Bridget conversation cannot reach exec.
-- **(b) `agent-exec-enabled` cookie** — off by default; unattended/background runs carry no cookie and cannot exec.
+- **(a) the approval gate is the sole operator gate** — the profile/cookie levers are gone (cycle 42). Channels without an approval UI (headless SSE, MCP) auto-deny non-allowlisted exec, so unattended runs cannot execute new commands — but note: **allowlisted patterns DO run without a prompt on any channel**, including unattended ones. Keep the allowlist scoped to genuinely safe commands.
 - **(c) allowlist-first gate** — known-safe commands run silently; new/external commands pause for Tony's approval before anything is spawned.
 - **(d) catastrophic hard-block** — a small set of irreversible commands can never run, even with approval.
 - **(e) outbound policy** — LAN/private always-allowed; external hosts are checked against an exact `host:<hostname>` set (NOT glob-matched). The first use of any new external host requires an explicit human approval before any network call is made.
@@ -191,7 +188,7 @@ The outbound gate performs **static analysis** on the literal command string and
 
 This is a **deliberately accepted risk**. The rationale:
 - The LXC container is the security boundary. The operator runs a single-user, internet-exposed box where the LXC itself is the isolation layer.
-- Exec is opt-in (requires the `powerful` profile + per-session cookie, both off by default) and is never available in unattended/background runs.
+- Exec is always available but per-command gated (cycle 42): new commands need an interactive approval, and channels with no approval UI auto-deny them; only pre-allowlisted patterns run unattended.
 - Every exec call is audited. Secret values are masked before logging.
 - The gate raises the bar against casual misuse, confused model behaviour, and prompt-injection attacks that attempt to exfiltrate data to a novel domain — covering the highest-probability threat. It does not contain a determined attacker who has already obtained an allowlisted session and crafts a carefully constructed command.
 

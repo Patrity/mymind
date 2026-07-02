@@ -380,12 +380,6 @@ export function useVoice() {
     outAnalyser: () => outAnalyser,
     onVizEvent: events.on,
     pendingApproval,
-    setProfile: (profile: 'bridget' | 'powerful') => {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'profile', profile }))
-    },
-    setExecEnabled: (value: boolean) => {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'execEnabled', value }))
-    },
     sendApproval: (requestId: string, approved: boolean, opts?: { remember?: boolean; pattern?: string }) => {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: approved ? 'approve' : 'deny', requestId, remember: opts?.remember, pattern: opts?.pattern }))

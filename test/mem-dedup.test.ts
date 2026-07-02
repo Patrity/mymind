@@ -123,11 +123,13 @@ describe('dedupDecision', () => {
 describe('dedupMemoriesAfterMerge', () => {
   // We cannot stand up a real DB in unit tests, but we can verify the zero-input
   // short-circuit that is purely in-process and requires no database at all.
+  // 15s timeout: the dynamic import pulls the whole services/memory graph, which
+  // under full-suite parallel load can alone exceed the 5s default (observed flake).
   it('returns { collapsed: 0 } immediately when given an empty id list', async () => {
     // Dynamically import so the module-level mocks (useDb etc.) are not needed
     // for this particular code path — the function returns early before any DB call.
     const { dedupMemoriesAfterMerge } = await import('../server/services/memory')
     const result = await dedupMemoriesAfterMerge([])
     expect(result).toEqual({ collapsed: 0 })
-  })
+  }, 15_000)
 })

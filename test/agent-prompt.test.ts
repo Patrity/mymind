@@ -40,14 +40,33 @@ describe('composePrompt', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
     expect(p).toMatch(/do not reflexively agree/i)
   })
+  it('includes the exact date/time line when provided', () => {
+    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't', nowLine: 'Current date and time: Wednesday, July 1, 2026, 3:00 PM (America/Chicago).' })
+    expect(p).toContain('Current date and time: Wednesday, July 1, 2026')
+  })
+  it('includes subagent delegation guidance', () => {
+    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
+    expect(p).toMatch(/research_web/)
+    expect(p).toMatch(/search_brain/)
+    expect(p).toMatch(/cannot see this conversation/i)
+  })
 })
 
-describe('composePrompt powerful guidance', () => {
-  it('includes exec guidance only for the powerful profile', () => {
-    const safe = composePrompt({ persona: 'p', speak: false, toneLine: 't', powerful: false })
-    const powerful = composePrompt({ persona: 'p', speak: false, toneLine: 't', powerful: true })
-    expect(safe).not.toMatch(/exec/i)
-    expect(powerful).toMatch(/exec/)
-    expect(powerful).toMatch(/approv/i) // mentions the approval requirement
+describe('composePrompt always-armed exec guidance', () => {
+  it('always includes exec + approval guidance (the powerful/exec levers are gone)', () => {
+    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
+    expect(p).toMatch(/`exec` tool/)
+    expect(p).toMatch(/approv/i) // mentions the approval requirement
+    expect(p).toMatch(/Catastrophic commands/i)
+  })
+})
+
+describe('nowLine', () => {
+  it('formats an exact timestamp with timezone', async () => {
+    const { nowLine } = await import('../server/lib/agent/prompt')
+    const line = nowLine(new Date('2026-07-01T15:04:00'))
+    expect(line).toMatch(/^Current date and time: /)
+    expect(line).toMatch(/2026/)
+    expect(line).toMatch(/\(.+\)\.$/) // trailing (timezone).
   })
 })
