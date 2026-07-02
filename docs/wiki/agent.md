@@ -67,7 +67,7 @@ After each completed turn the handler lazily creates the conversation (first tur
 ## Personality (Bridget)
 
 `buildSystemPrompt({profile, speak, context})` (`server/lib/agent/prompt.ts`) composes: **[editable persona]** + **[time-of-day tone]** + **[modality rules from `speak`]** + **[live context]**.
-- **Editable** — persona text in the `settings` table under key `agent_persona` (`server/lib/agent/persona.ts`, cached like `ai_config`; `DEFAULT_PERSONA` seed). Edited in-app at **`/settings → Bridget`** (`GET`/`PUT /api/settings/persona`).
+- **Editable** — persona text in the `settings` table under key `agent_persona` (`server/lib/agent/persona.ts`, cached like `ai_config`; `DEFAULT_PERSONA` seed). Edited in-app at **`/settings/bridget`** (`GET`/`PUT /api/settings/persona`).
 - **Time-of-day** — `timeOfDayTone(now)` (morning/afternoon/evening/late-night). (Verified live: an evening turn replied "Evening, Tony!".)
 - **Context-aware** — `buildLiveContext(now)` injects active projects + open tasks (assembled once per connection to bound cost).
 `composePrompt` + `timeOfDayTone` are pure + unit-tested; the DB-backed loaders are E2E-validated.
@@ -111,7 +111,7 @@ After each completed turn the handler lazily creates the conversation (first tur
 
 **Cycle 36.** Generates images from a text prompt using the local ComfyUI + Qwen-Image stack and saves the result directly into the gallery.
 
-**Config:** lives in the `image_config` settings doc, edited at `/settings → Image Gen`. This is **not** the `ai_config` model registry — it holds the ComfyUI URL, workflow ID, default resolution/steps/cfg, the Qwen-Image model name, and (added cycle 38) the Qwen-Image-Edit-2509 model name + edit graph IDs. No DB migration — the settings doc is created on first save. (`editStrength` was removed in cycle 38 when img2img was replaced.)
+**Config:** lives in the `image_config` settings doc, edited at `/settings/image-gen`. This is **not** the `ai_config` model registry — it holds the ComfyUI URL, workflow ID, default resolution/steps/cfg, the Qwen-Image model name, and (added cycle 38) the Qwen-Image-Edit-2509 model name + edit graph IDs. No DB migration — the settings doc is created on first save. (`editStrength` was removed in cycle 38 when img2img was replaced.)
 
 **Persistence:** generated images skip the vision-enrich pass entirely. The prompt becomes both the `summary` and the embedding source; the image is tagged `['generated']`; `enrich_status` is set to `done` at creation time so the enrichment cron ignores it.
 

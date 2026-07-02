@@ -50,15 +50,15 @@ interface AiConfigDoc {
 
 ## UI
 
-### `/settings` — `app/pages/settings.vue`
+### `/settings/*` — `app/pages/settings.vue` parent shell + subpages
 
-`UDashboardPanel` + `UTabs`, three tabs:
+`app/pages/settings.vue` is a thin parent shell (`UDashboardPanel` + `UDashboardNavbar`, renders `<NuxtPage />` in the body); each child under `app/pages/settings/` is a ~7-line wrapper around one `Settings*Tab` component and sets `definePageMeta({ title })`, which the parent reads to build the navbar title `Settings · <page>`. The three AI-config pages:
 
-1. **Providers** (`ProvidersTab.vue` + `ProviderForm.vue`) — CRUD over providers. Every provider is `openai-compatible`, so the form is name + base URL + key (no kind selector). Key field is **write-only** (you set or clear it, you never read it back); a **Test** button calls `test-provider`.
-2. **Models** (`ModelsTab.vue` + `ModelForm.vue`) — CRUD over models (provider + literal `modelId` + label). An embedding toggle sets `dim = 2560`.
-3. **Model Configuration** (`AssignmentsTab.vue` + `AssignmentChain.vue`) — per-usage **draggable failover chains** (drag to reorder priority) via `@vueuse/integrations/useSortable` + sortablejs. The embeddings chain's model dropdown is filtered to dim-2560 models.
+1. **Providers** (`/settings/providers`, `SettingsProvidersTab.vue` / `ProvidersTab.vue` + `ProviderForm.vue`) — CRUD over providers. Every provider is `openai-compatible`, so the form is name + base URL + key (no kind selector). Key field is **write-only** (you set or clear it, you never read it back); a **Test** button calls `test-provider`.
+2. **Models** (`/settings/models`, `SettingsModelsTab.vue` / `ModelsTab.vue` + `ModelForm.vue`) — CRUD over models (provider + literal `modelId` + label). An embedding toggle sets `dim = 2560`.
+3. **Model Configuration** (`/settings/model-config`, `SettingsAssignmentsTab.vue` / `AssignmentsTab.vue` + `AssignmentChain.vue`) — per-usage **draggable failover chains** (drag to reorder priority) via `@vueuse/integrations/useSortable` + sortablejs. The embeddings chain's model dropdown is filtered to dim-2560 models.
 
-State flows through **`app/composables/useAiConfig.ts`** — a shared `useState` editable draft with `load()` / `save()` (PUT the whole doc) / `testProvider()` / `importEnv()` and provider/model/assignment CRUD. Keys are tracked client-side as: existing untouched → `{keep:true}`, typed → `{apiKey}`, cleared → `null`. A sidebar nav link to `/settings` lives in `app/layouts/default.vue`.
+State flows through **`app/composables/useAiConfig.ts`** — a shared `useState` editable draft with `load()` / `save()` (PUT the whole doc) / `testProvider()` / `importEnv()` and provider/model/assignment CRUD. Keys are tracked client-side as: existing untouched → `{keep:true}`, typed → `{apiKey}`, cleared → `null`. Settings pages are a collapsible nested group in the main sidebar (`app/layouts/default.vue` `mainItems`), auto-open on `/settings/*`; `/settings` redirects to `/settings/providers`.
 
 ### `/onboarding` — first-run gate
 

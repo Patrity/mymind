@@ -58,7 +58,7 @@ The child environment is **constructed from scratch** (allowlist-by-construction
 - `getDecryptedSecrets()` returns the full plaintext map (server-only, called at exec time).
 - `setSecret(name, value)` / `deleteSecret(name)` upsert / drop entries.
 
-**UI:** `/settings → Secrets` — add/edit/delete named secrets (value is write-only; shows last-4 hint). Suggested names: `GITHUB_TOKEN`, `CLOUDFLARE_API_TOKEN`, `NEON_API_KEY`, `RAILWAY_TOKEN` (free-form).
+**UI:** `/settings/secrets` — add/edit/delete named secrets (value is write-only; shows last-4 hint). Suggested names: `GITHUB_TOKEN`, `CLOUDFLARE_API_TOKEN`, `NEON_API_KEY`, `RAILWAY_TOKEN` (free-form).
 
 ## Gate — allowlist-first + outbound policy + catastrophic hard-block
 
@@ -122,7 +122,7 @@ When `execAutoApproveDecision` returns `allow: false`, the gate prompts via the 
 4. **Fail-safe:** if no approval channel is present (headless/cron), the tool auto-denies.
 5. On connection close or interrupt, all pending approvals are auto-denied.
 
-### Allowlist management — `/settings → Agent Tools`
+### Allowlist management — `/settings/agent-tools`
 
 `GET/PUT/DELETE /api/settings/exec-approvals` — list, add/update, revoke patterns. The `exec_approvals` table (`id` uuid PK, `pattern` text, `tool` text default `exec`, `created_at`, `last_used_at`; unique on `(tool, pattern)`).
 

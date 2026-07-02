@@ -30,7 +30,7 @@ All three require a **session** (`requireSession`, `server/utils/auth-guard.ts`)
 
 ## UI
 
-`/settings → API Keys` tab (`app/components/settings/ApiKeysTab.vue`, composable `useApiTokens`): token list (name · `mm_…lastFour` · created · last-used · Active/Revoked · revoke), a create modal that reveals the plaintext once in a dismissible warning alert with copy, and the **Connect** section.
+`/settings/api-keys` (`app/components/settings/ApiKeysTab.vue`, composable `useApiTokens`): token list (name · `mm_…lastFour` · created · last-used · Active/Revoked · revoke), a create modal that reveals the plaintext once in a dismissible warning alert with copy, and the **Connect** section.
 
 ## Connect
 

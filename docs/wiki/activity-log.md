@@ -97,7 +97,7 @@ live in settings.
   freezes the displayed rows, plus **Ack all**. Detail (`[id].vue`) reconstructs the nested
   **trace tree** (group by `trace_id`, indent by `parent_id`) with request/response/error/meta
   JSON and per-row **Ack**.
-- **Alerts** (all in `observability_config`, edited at `/settings` → **Activity & Alerts**):
+- **Alerts** (all in `observability_config`, edited at `/settings/alerts`):
   sidebar `Activity ●N` unacked-error badge, a new-error toast (de-duped by timestamp), and
   Resend email — each independently toggleable; the layout honors `alerts.badge`/`alerts.toast`.
   **Email is off by default** until a key + recipient are set.

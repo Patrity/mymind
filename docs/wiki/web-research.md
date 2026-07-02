@@ -41,7 +41,7 @@ One JSONB doc in the existing `settings` table (same store + cache pattern as `a
 - `PUT /api/settings/search` → validates `provider` + `searxngUrl`; encrypts `braveApiKey` when provided; preserves the existing key when the field is omitted or blank.
 - **Default** (no row in DB): `{ provider: 'searxng', searxngUrl: process.env.SEARCH_SEARXNG_URL || 'http://searxng:8080' }` — zero-config with the bundled SearXNG.
 
-Edited in-app at **`/settings → Search`** (`app/components/settings/SearchTab.vue`): provider select, SearXNG URL field, Brave API key password field.
+Edited in-app at **`/settings/search`** (`app/components/settings/SearchTab.vue`): provider select, SearXNG URL field, Brave API key password field.
 
 ## The tools
 

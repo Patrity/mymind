@@ -54,7 +54,7 @@ drizzle-parameterized; the embedding literal is a bound `::halfvec` param (no in
   numbers as `relevance_score` — both parsed; the `model` field is ignored by the rig shim).
   No min-max — the raw scores feed the **per-query relative band** (cycle 33). Resolved from the
   AI-config registry via `resolveChain('rerank')`; **OFF until a model is assigned to the
-  `rerank` usage** in `/settings → AI`. Never blocks search (throws → fall back to RRF order; an
+  `rerank` usage** in `/settings/model-config`. Never blocks search (throws → fall back to RRF order; an
   empty result set also falls back).
 - **Cutoff = top-k + relative band** (cycle 33, `rankCandidates` in `server/lib/search/rank.ts`):
   reranked candidates are sorted, then kept iff `lexicalExact || score >= rerankRelBand × topScore`,
@@ -109,7 +109,7 @@ The reranker is wired, **OFF until a model is assigned**, and now in good shape:
   absolute `rerankCutoff` is gone.
 - **Earlier retractions stand:** the cycle-32 "miscalibrated / cat-photo > runbook / gibberish→0.999
   / model-required" notes were **test artifacts** (varied input text/length; `model`-less curls).
-- **To enable in prod:** assign the mxbai model to the `rerank` usage in `/settings → AI` (provider
+- **To enable in prod:** assign the mxbai model to the `rerank` usage in `/settings/model-config` (provider
   baseURL `http://192.168.2.25:8883`), then validate + tune `rerankRelBand` / `rerankTopK` on the
   real corpus. With rerank off, search uses RRF + cosine-floor + exact-pin (not free).
 
