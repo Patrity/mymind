@@ -42,6 +42,21 @@ watch(() => activityCount.value?.latest, (latest) => {
   })
 }, { deep: false })
 
+const route = useRoute()
+
+const settingsChildren: NavigationMenuItem[] = [
+  { label: 'Providers', icon: 'i-lucide-server', to: '/settings/providers' },
+  { label: 'Models', icon: 'i-lucide-box', to: '/settings/models' },
+  { label: 'Model Configuration', icon: 'i-lucide-sliders-horizontal', to: '/settings/model-config' },
+  { label: 'API Keys', icon: 'i-lucide-key-round', to: '/settings/api-keys' },
+  { label: 'Activity & Alerts', icon: 'i-lucide-activity', to: '/settings/alerts' },
+  { label: 'Bridget', icon: 'i-lucide-bot', to: '/settings/bridget' },
+  { label: 'Search', icon: 'i-lucide-search', to: '/settings/search' },
+  { label: 'Agent Tools', icon: 'i-lucide-terminal', to: '/settings/agent-tools' },
+  { label: 'Secrets', icon: 'i-lucide-key-square', to: '/settings/secrets' },
+  { label: 'Image Gen', icon: 'i-lucide-image', to: '/settings/image-gen' }
+]
+
 const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
   { label: 'Clipboard', icon: 'i-lucide-clipboard', to: '/clipboard' },
@@ -68,6 +83,12 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     icon: 'i-lucide-inbox',
     to: '/review',
     badge: (reviewCount.value?.pending ?? 0) > 0 ? reviewCount.value!.pending : undefined
+  },
+  {
+    label: 'Settings',
+    icon: 'i-lucide-settings',
+    defaultOpen: route.path.startsWith('/settings'),
+    children: settingsChildren
   }
 ])
 </script>
@@ -112,6 +133,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
           :items="mainItems"
           orientation="vertical"
           tooltip
+          popover
         />
         <div class="mt-auto" />
       </template>
@@ -122,12 +144,6 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
             variant="ghost"
             color="neutral"
           />
-          <UButton
-            to="/settings"
-            icon="i-lucide-settings"
-            color="neutral"
-            variant="ghost"
-            />
         </div>
       </template>
     </UDashboardSidebar>
