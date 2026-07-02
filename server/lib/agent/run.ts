@@ -64,6 +64,7 @@ export async function* runAgent(
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
   const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context })
+  const maxSteps = ctx.maxSteps ?? VOICE_TUNING.agent.maxSteps
 
   publishActivity({ type: 'state', state: 'thinking' })
 
@@ -85,7 +86,12 @@ export async function* runAgent(
         messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: toModelContent(m.role, m.content) })) as never,
         tools,
         temperature: VOICE_TUNING.agent.temperature,
-        stopWhen: stepCountIs(ctx.maxSteps ?? VOICE_TUNING.agent.maxSteps),
+        stopWhen: stepCountIs(maxSteps),
+        // Final-step guarantee: the last allowed step is text-only, so a run can
+        // never end on a tool call with no reply. (Live failure: research_web
+        // burned all 10 steps on searches → stream ended → "no report".)
+        prepareStep: ({ stepNumber }: { stepNumber: number }) =>
+          stepNumber >= maxSteps - 1 ? { toolChoice: 'none' as const } : undefined,
         abortSignal: ctx.signal
       })
       recordEvent({ kind: 'attempt', name: 'reasoning:agent', status: 'ok', severity: 'info', usage: 'reasoning', provider: (model as { label?: string } | undefined)?.label ?? null, modelId: (model as { modelId?: string } | undefined)?.modelId ?? null, attempt: i, durationMs: Date.now() - started })

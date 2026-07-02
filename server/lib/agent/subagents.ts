@@ -56,7 +56,7 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
         else if (ev.type === 'tool-result') toolCalls++
       }
       report = report.trim()
-      if (!report) return { result: { error: 'subagent produced no report' }, summary: `${spec.label}: no report` }
+      if (!report) return { result: { error: 'subagent produced no report' }, summary: `${spec.label}: no report (${toolCalls} tool calls)` }
       const short = task.length > 60 ? `${task.slice(0, 60)}…` : task
       return { result: { report }, summary: `${spec.label}: ${short} (${toolCalls} tool calls)` }
     }
@@ -67,6 +67,7 @@ const RESEARCHER_SYSTEM = [
   'You are a focused web-research subagent. You receive ONE research task and return ONE written digest. You have no conversation with a user — your final text IS the deliverable.',
   '',
   'Method:',
+  '- You have a HARD budget of ~10 tool steps and the final step forces you to write. Plan for it: ~2 steps of searches, ~2 steps of fetches, then WRITE THE DIGEST. More searching past that point loses your findings.',
   '- Run web_search from 2–4 DIFFERENT angles (vary phrasing, add year/qualifiers). Batch independent searches in one step where possible.',
   '- web_fetch the 2–3 most promising results and read them — snippets alone are weak evidence.',
   '- If a fetch fails or a page is blocked, try a different source; never retry the same URL.',
@@ -84,6 +85,7 @@ const LIBRARIAN_SYSTEM = [
   "You are a librarian subagent for Tony's second brain (MyMind: memories, documents, passages, projects, tasks). You receive ONE lookup task and return ONE written digest of what the store already knows. Your final text IS the deliverable.",
   '',
   'Method:',
+  '- You have a HARD budget of ~8 tool steps and the final step forces you to write. Search wide first, read second, and stop digging in time to write the digest.',
   '- Search MULTIPLE angles: search_memories and search_docs/search_passages with 2–3 varied phrasings; check search_tasks/search_projects when the task touches ongoing work.',
   '- For a promising document, use read_document (outline or section) or grep_document to pull the relevant part — do not dump whole documents.',
   '- Prefer precise citations: document paths, project slugs, task titles.',

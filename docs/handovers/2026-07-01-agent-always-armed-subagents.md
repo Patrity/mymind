@@ -49,3 +49,18 @@ subagents with narrow toolsets + steering prompts so deep digging happens off th
 All three shipped — see frontmatter. The security posture change is deliberate and documented in
 wiki/agent-exec.md: availability is universal, execution is per-command gated, no-approval-UI channels
 auto-deny, allowlisted patterns still run unattended (keep the allowlist tight).
+
+## Post-ship fix (same day): "researched: no report"
+
+First prod use: `research_web` ran 22s, made ~12 successful searches/fetches (prod activity_log spans), then
+**hit its 10-step cap mid-tool-loop** — the AI SDK stops the run right there, so the subagent never got a
+step to write its digest → empty report. (Bridget's fallback behaviour was correct: she said so and searched
+directly.)
+
+**Fix — final-step guarantee in `runAgent`:** `prepareStep` forces `toolChoice: 'none'` on the LAST allowed
+step (`stepNumber >= maxSteps - 1`), so NO run — subagent or main loop — can ever end on a tool call with no
+text. Plus budget guidance in both subagent prompts ("~2 steps searching, ~2 fetching, then WRITE — the final
+step forces you to write") and the no-report summary now includes the tool-call count. Guard test in
+test/run-agent.test.ts. Live-verified on dev: `researched: … (7 tool calls)` + a real digest; the degraded
+search backend during the test also proved the warning chain end-to-end (Bridget reported "live web search is
+unavailable" and labeled her MSRP answer as training data).
