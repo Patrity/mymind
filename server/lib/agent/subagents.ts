@@ -31,6 +31,9 @@ export interface SubagentDeps { run?: typeof RunAgentFn }
 
 export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): AgentTool {
   const tools = agentTools.filter(t => spec.toolNames.includes(t.name))
+  // Budget line derives from spec.maxSteps so prompt and cap can never diverge
+  // (a hand-tuned cap bump once left the prompt claiming the old budget).
+  const system = `${spec.system}\n\nBudget: you have a HARD cap of ${spec.maxSteps} tool steps; the FINAL step forces you to write with no tools available — stop digging with room to spare and write the full digest.`
   return {
     name: spec.name,
     description: spec.description,
@@ -50,7 +53,7 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
       for await (const ev of run(
         [{ role: 'user', content }],
         { signal: ctx.signal, speak: false, maxSteps: spec.maxSteps },
-        { tools, buildSystemPrompt: async () => spec.system }
+        { tools, buildSystemPrompt: async () => system }
       )) {
         if (ev.type === 'text-delta') report += ev.text
         else if (ev.type === 'tool-result') toolCalls++
@@ -67,7 +70,7 @@ const RESEARCHER_SYSTEM = [
   'You are a focused web-research subagent. You receive ONE research task and return ONE written digest. You have no conversation with a user — your final text IS the deliverable.',
   '',
   'Method:',
-  '- You have a HARD budget of ~10 tool steps and the final step forces you to write. Plan for it: ~2 steps of searches, ~2 steps of fetches, then WRITE THE DIGEST. More searching past that point loses your findings.',
+  '- Work in waves: a step of varied searches, a step of fetches, then reassess. Keep going only while each wave surfaces genuinely NEW information; the moment it stops, write the digest.',
   '- Run web_search from 2–4 DIFFERENT angles (vary phrasing, add year/qualifiers). Batch independent searches in one step where possible.',
   '- web_fetch the 2–3 most promising results and read them — snippets alone are weak evidence.',
   '- If a fetch fails or a page is blocked, try a different source; never retry the same URL. A 403 from a marketplace/retail domain (eBay, Amazon…) means that WHOLE domain is bot-walled — stop touching it and say so in the digest.',
@@ -86,7 +89,7 @@ const LIBRARIAN_SYSTEM = [
   "You are a librarian subagent for Tony's second brain (MyMind: memories, documents, passages, projects, tasks). You receive ONE lookup task and return ONE written digest of what the store already knows. Your final text IS the deliverable.",
   '',
   'Method:',
-  '- You have a HARD budget of ~8 tool steps and the final step forces you to write. Search wide first, read second, and stop digging in time to write the digest.',
+  '- Search wide first, read second, and stop digging in time to write the digest.',
   '- Search MULTIPLE angles: search_memories and search_docs/search_passages with 2–3 varied phrasings; check search_tasks/search_projects when the task touches ongoing work.',
   '- For a promising document, use read_document (outline or section) or grep_document to pull the relevant part — do not dump whole documents.',
   '- Prefer precise citations: document paths, project slugs, task titles.',
@@ -104,7 +107,7 @@ export const researchSubagent = makeSubagentTool({
   description: 'Delegate a multi-step web research task to a focused researcher subagent (own context, web_search + web_fetch, several angles, reads sources). Returns a digest with source URLs. Use for anything needing more than one quick search — comparisons, current prices/news, "find out about X". For a single lookup, call web_search directly. The subagent cannot see this conversation: give it a specific task and pass needed facts in `context`.',
   toolNames: ['web_search', 'web_fetch'],
   system: RESEARCHER_SYSTEM,
-  maxSteps: 10
+  maxSteps: 50
 })
 
 export const brainSubagent = makeSubagentTool({
