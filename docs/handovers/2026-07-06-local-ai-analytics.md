@@ -54,5 +54,7 @@ Snapshot/series/requests + settings endpoints all exercised against the real hom
 ## Deferred / follow-ups (none blocking)
 
 - `litellm-cache-ratio` panel exists in the catalog but isn't gridded (cache metrics all zero today).
+- Spec's "local-vs-cloud grouping" on the spend panel was dropped (plain by-model; local models log $0, making the split near-meaningless today) — flagged by the final review.
+- Snapshot DTO carries `engines` (running/waiting) + `spendByModel` that the page doesn't render yet (future tiles seam) — either render or drop those 3 instant queries in a follow-up.
 - Minor polish backlog from reviews: settings-tab edit race after save-invalidate (dirty-flag guard); GPU tile progress bars render null as empty-bar (text correctly shows —); positional chart colors could shift if Prometheus reorders series (one-line sort fix); `formatLitellmDate` TZ test could pin `process.env.TZ`; proto-key regression unit test.
 - Ideas parked: per-key spend drill-down, request-body inspection (LiteLLM stores it), Grafana deep-links, alert thresholds (Grafana + Activity alerts already cover alerting).
