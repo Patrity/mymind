@@ -1,13 +1,13 @@
 ---
 title: Local AI Analytics
-status: built
+status: shipped
 cycle: 44
 updated: 2026-07-06
 ---
 
 # Local AI Analytics — `/analytics`
 
-**status: built** (cycle 44 — dev live-validated end-to-end; awaiting Tony's acceptance + prod deploy)
+**status: shipped** (cycle 44 — merged + deployed to prod 2026-07-06; dev live-validated end-to-end against the real homelab)
 
 A read-only, Grafana-style dashboard for the local AI estate: per-GPU telemetry on the AI rig, inference-engine activity (vLLM / TEI / llama.cpp), LiteLLM traffic + spend, and a live request log. MyMind **collects and stores no metrics** — everything is read server-side from the homelab's existing Prometheus (`192.168.2.90:9090`, Dell LXC 111) and the LiteLLM admin API (`192.168.2.85:4000`).
 

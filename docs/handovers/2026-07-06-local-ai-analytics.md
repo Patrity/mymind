@@ -2,7 +2,7 @@
 title: Local AI Analytics dashboard (/analytics) — Cycle 44
 cycle: 44
 date: 2026-07-06
-status: built + gates green (typecheck 0 / 757 tests / build clean) + full live E2E on dev against the REAL homelab (Prometheus, LiteLLM w/ real master key, GPU exporters) — awaiting Tony acceptance + merge + prod deploy
+status: SHIPPED — merged to master (e28510d) + deployed to prod (deploy run green, /analytics live, 2026-07-06); gates typecheck 0 / 757 tests / build; full live E2E on dev against the REAL homelab. Remaining for Tony: paste LiteLLM master key at prod /settings/analytics
 branch: feat/local-ai-analytics (worktree .claude/worktrees/local-ai-analytics; built subagent-driven, 10 impl tasks + 2 controller tasks, per-task two-verdict review)
 docs:
   - ../wiki/analytics.md (living reference — architecture, endpoints, panel catalog, config)
