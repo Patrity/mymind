@@ -18,8 +18,8 @@ export function defaultAnalyticsConfig(): AnalyticsConfig {
     gpuLabels: {
       '24d1cd2c-76e0-8a7a-66be-48dc43b0e4ac': 'Coder A (Strix)',
       '875c12f4-d03b-89ac-528d-57d15bee97bb': 'Coder B (Strix)',
-      '2035bb42-d953-83d3-eb4f-5cb8214873dd': 'Vision (PNY)',
-      '0cbf708d-6235-18d7-8bd2-eaeea0389254': 'Zotac (voice/util)',
+      '2035bb42-d953-83d3-eb4f-5cb8214873dd': 'Zotac (voice/util)',
+      '0cbf708d-6235-18d7-8bd2-eaeea0389254': 'Image Gen (PNY)',
       'bbd65887-973e-4982-ced8-2ba8dcd3586d': 'Autocomplete (P2000)'
     }
   }

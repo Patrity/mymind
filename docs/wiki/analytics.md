@@ -36,7 +36,7 @@ Mirrors the `search_config`/`image_config` store pattern (`server/lib/analytics/
 
 - `prometheusUrl` (default `http://192.168.2.90:9090`), `litellmUrl` (default `http://192.168.2.85:4000`)
 - `litellmMasterKeyEnc` — AES-256-GCM via the ai-config `encryptSecret`; write-only in the UI; decrypted only inside `server/lib/analytics/litellm.ts` and only into the outbound Authorization header
-- `gpuLabels` — GPU uuid (lowercase, no `GPU-` prefix) → friendly name. Seeded: Strix pair = Coder A/B (390W default limit), PNY = Vision, Zotac = voice/util, P2000 = Autocomplete. **Saved wholesale** (a PUT with `gpuLabels` replaces the whole map — the settings UI always sends the full map)
+- `gpuLabels` — GPU uuid (lowercase, no `GPU-` prefix) → friendly name. Seeded: Strix pair = Coder A/B (390W default limit), Zotac = voice/util (steady ~23 GB stack), PNY = Image Gen (ComfyUI, on-demand), P2000 = Autocomplete. **Saved wholesale** (a PUT with `gpuLabels` replaces the whole map — the settings UI always sends the full map)
 
 ## Frontend
 
