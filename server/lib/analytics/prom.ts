@@ -1,7 +1,7 @@
 // server/lib/analytics/prom.ts
 // Prometheus HTTP API client + pure response transforms.
 // The ONLY module that talks to Prometheus. 5s timeout; callers map errors to 502.
-import type { RangeKey, Series } from './types'
+import type { RangeKey, Series } from '../../../shared/types/analytics'
 
 // `$fetch` is Nitro's ambient global (ofetch) — used bare here exactly like
 // server/lib/imagegen/comfy.ts / server/lib/ai/embeddings.ts. Do NOT

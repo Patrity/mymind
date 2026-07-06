@@ -3,7 +3,7 @@
 import type { PromVectorResult } from './prom'
 import type { SnapshotQueryId } from './queries'
 import { resolveGpuLabel } from './queries'
-import type { GpuSnapshot, ServiceHealth, SnapshotResponse } from './types'
+import type { GpuSnapshot, ServiceHealth, SnapshotResponse } from '../../../shared/types/analytics'
 
 // The fixed service list for the health strip. `match` is tested against up{}/probe_success vectors.
 const SERVICES: { id: string, label: string, source: 'up' | 'probes', match: (l: Record<string, string>) => boolean }[] = [

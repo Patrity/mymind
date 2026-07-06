@@ -1,7 +1,7 @@
 import { loadAnalyticsConfig } from '../../lib/analytics/store'
 import { promRange, toSeries, windowForRange } from '../../lib/analytics/prom'
 import { RANGE_PANELS } from '../../lib/analytics/queries'
-import { RANGE_KEYS, type RangeKey, type SeriesResponse } from '../../lib/analytics/types'
+import { RANGE_KEYS, type RangeKey, type SeriesResponse } from '../../../shared/types/analytics'
 
 export default defineEventHandler(async (event): Promise<SeriesResponse> => {
   const q = getQuery(event)

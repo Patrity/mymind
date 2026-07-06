@@ -2,7 +2,8 @@
 // LiteLLM admin-API client for the request log. The master key is decrypted
 // here and only ever placed in the outbound Authorization header.
 import { decryptSecret } from '../ai/registry/crypto'
-import type { AnalyticsConfig, RequestLogResponse, RequestLogRow } from './types'
+import type { AnalyticsConfig } from './types'
+import type { RequestLogResponse, RequestLogRow } from '../../../shared/types/analytics'
 
 const asNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 const asStr = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null)
