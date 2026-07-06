@@ -59,7 +59,9 @@ const chromeVars = computed(() => (isDark.value
     }))
 
 const x = (d: Record<string, number | null>) => d.t as number
-const yAccessors = computed(() => pivoted.value.keys.map(k => (d: Record<string, number | null>) => d[k]))
+// null -> undefined: Unovis treats null as defined (isFinite(null) === true) and
+// draws a gap as a dip to zero; undefined breaks the line. Real 0 survives `??`.
+const yAccessors = computed(() => pivoted.value.keys.map(k => (d: Record<string, number | null>) => d[k] ?? undefined))
 
 const fmt = (v: number) => {
   if (props.format) return props.format(v)
