@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeSpendRow } from '../server/lib/analytics/litellm'
+import { formatLitellmDate, normalizeSpendRow } from '../server/lib/analytics/litellm'
+
+describe('formatLitellmDate', () => {
+  it('formats a Date as UTC "YYYY-MM-DD HH:MM:SS"', () => {
+    expect(formatLitellmDate(new Date('2026-07-06T10:00:02.500Z'))).toBe('2026-07-06 10:00:02')
+  })
+
+  it('is UTC-based regardless of local timezone (midnight boundary)', () => {
+    expect(formatLitellmDate(new Date('2026-01-01T00:00:00.000Z'))).toBe('2026-01-01 00:00:00')
+  })
+})
 
 describe('normalizeSpendRow', () => {
   it('maps a full LiteLLM SpendLogs row', () => {

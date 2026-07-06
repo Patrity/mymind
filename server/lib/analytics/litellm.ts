@@ -8,6 +8,12 @@ import type { RequestLogResponse, RequestLogRow } from '../../../shared/types/an
 const asNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 const asStr = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null)
 
+/** LiteLLM spend endpoints require UTC 'YYYY-MM-DD HH:MM:SS' (bare 'YYYY-MM-DD' 400s; verified live). */
+export function formatLitellmDate(d: Date): string {
+  const iso = d.toISOString()
+  return iso.slice(0, 10) + ' ' + iso.slice(11, 19)
+}
+
 export function normalizeSpendRow(raw: Record<string, unknown>): RequestLogRow {
   const meta = (raw.metadata ?? {}) as Record<string, unknown>
   const start = asStr(raw.startTime)
@@ -43,11 +49,25 @@ export async function fetchSpendLogs(cfg: AnalyticsConfig, page: number, pageSiz
   const headers = { authorization: `Bearer ${decryptSecret(cfg.litellmMasterKeyEnc)}` }
 
   try {
-    // Primary: paginated admin-UI endpoint
-    const res = await $fetch<{ data?: Record<string, unknown>[], total_pages?: number } | Record<string, unknown>[]>(
+    // Primary: paginated admin-UI endpoint. It REQUIRES a datetime window (verified live:
+    // omitting dates -> 400 "Start date and end date are required"; bare dates -> 400 bad
+    // format). 7-day lookback + a small future margin to absorb clock skew.
+    const res = await $fetch<{ data?: Record<string, unknown>[], total_pages?: number, error?: unknown } | Record<string, unknown>[]>(
       `${cfg.litellmUrl}/spend/logs/ui`,
-      { query: { page, page_size: pageSize }, headers, timeout: 5000 },
+      {
+        query: {
+          page,
+          page_size: pageSize,
+          start_date: formatLitellmDate(new Date(Date.now() - 7 * 86400_000)),
+          end_date: formatLitellmDate(new Date(Date.now() + 3600_000)),
+        },
+        headers,
+        timeout: 5000,
+      },
     )
+    if (!Array.isArray(res) && res.error !== undefined) {
+      throw new Error(typeof res.error === 'string' ? res.error : JSON.stringify(res.error))
+    }
     const rows = Array.isArray(res) ? res : (res.data ?? [])
     const totalPages = Array.isArray(res) ? null : (typeof res.total_pages === 'number' ? res.total_pages : null)
     return { rows: rows.map(normalizeSpendRow), page, pageSize, totalPages }
@@ -57,13 +77,16 @@ export async function fetchSpendLogs(cfg: AnalyticsConfig, page: number, pageSiz
   }
 
   // Fallback for LiteLLM versions without /spend/logs/ui: last-24h window, slice server-side.
+  // Newer LiteLLM returns AGGREGATE objects (users/models/spend maps) from /spend/logs, so
+  // keep only entries that look like request rows (have a request_id) instead of junk rows.
   const end = new Date()
   const start = new Date(end.getTime() - 24 * 3600 * 1000)
   const all = await $fetch<Record<string, unknown>[]>(`${cfg.litellmUrl}/spend/logs`, {
     query: { start_date: start.toISOString().slice(0, 10), end_date: end.toISOString().slice(0, 10) },
     headers, timeout: 5000,
   })
-  const sorted = [...all].sort((a, b) => String(b.startTime ?? '').localeCompare(String(a.startTime ?? '')))
+  const requestRows = all.filter(r => r && typeof r === 'object' && 'request_id' in r)
+  const sorted = [...requestRows].sort((a, b) => String(b.startTime ?? '').localeCompare(String(a.startTime ?? '')))
   const slice = sorted.slice((page - 1) * pageSize, page * pageSize)
   return { rows: slice.map(normalizeSpendRow), page, pageSize, totalPages: Math.max(1, Math.ceil(sorted.length / pageSize)) }
 }
