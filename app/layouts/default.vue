@@ -54,7 +54,8 @@ const settingsChildren: NavigationMenuItem[] = [
   { label: 'Search', icon: 'i-lucide-search', to: '/settings/search' },
   { label: 'Agent Tools', icon: 'i-lucide-terminal', to: '/settings/agent-tools' },
   { label: 'Secrets', icon: 'i-lucide-key-square', to: '/settings/secrets' },
-  { label: 'Image Gen', icon: 'i-lucide-image', to: '/settings/image-gen' }
+  { label: 'Image Gen', icon: 'i-lucide-image', to: '/settings/image-gen' },
+  { label: 'Analytics', icon: 'i-lucide-chart-line', to: '/settings/analytics' }
 ]
 
 const mainItems = computed<NavigationMenuItem[]>(() => [

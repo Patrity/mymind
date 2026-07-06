@@ -5,7 +5,7 @@ export default defineEventHandler(async (event) => {
   try {
     input = parseAnalyticsConfigInput(await readBody(event))
   } catch (err) {
-    throw createError({ statusCode: 422, statusMessage: (err as Error).message })
+    throw createError({ statusCode: 422, statusMessage: 'Invalid analytics config', data: (err as Error).message })
   }
 
   // Save-time validation: the new Prometheus URL must answer buildinfo.

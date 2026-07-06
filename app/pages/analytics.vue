@@ -41,6 +41,7 @@ const { data: snapshot, error: snapshotError } = useSnapshot()
           <AnalyticsTimeSeriesChart panel="litellm-spend" :range="range" title="LiteLLM spend" :format="(v) => '$' + v.toFixed(4)" />
           <AnalyticsTimeSeriesChart panel="tei-rate" :range="range" title="Embedding rate" unit="/min" />
         </div>
+        <AnalyticsRequestLogTable />
       </div>
     </template>
   </UDashboardPanel>
