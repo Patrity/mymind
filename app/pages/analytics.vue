@@ -27,9 +27,19 @@ const { data: snapshot, error: snapshotError } = useSnapshot()
                 :description="(snapshotError as any)?.data?.statusMessage ?? 'Check Settings → Analytics'" />
         <AnalyticsHealthStrip v-if="snapshot" :services="snapshot.services" />
         <AnalyticsGpuTiles v-if="snapshot" :gpus="snapshot.gpus" />
-        <!-- Task 9 replaces these placeholders with TimeSeriesChart panels -->
         <div class="grid gap-4 lg:grid-cols-2">
-          <USkeleton class="h-56" /><USkeleton class="h-56" />
+          <AnalyticsTimeSeriesChart panel="gpu-util" :range="range" title="GPU utilization" unit="%" />
+          <AnalyticsTimeSeriesChart panel="gpu-vram" :range="range" title="GPU VRAM" :format="(v) => (v / 1024 ** 3).toFixed(1) + ' GB'" />
+          <AnalyticsTimeSeriesChart panel="gpu-power" :range="range" title="GPU power" unit=" W" />
+          <AnalyticsTimeSeriesChart panel="gpu-temp" :range="range" title="GPU temperature" unit="°C" />
+          <AnalyticsTimeSeriesChart panel="vllm-requests" :range="range" title="vLLM requests" />
+          <AnalyticsTimeSeriesChart panel="vllm-throughput" :range="range" title="vLLM token throughput" unit=" tok/s" />
+          <AnalyticsTimeSeriesChart panel="vllm-ttft" :range="range" title="Time to first token" unit=" ms" />
+          <AnalyticsTimeSeriesChart panel="vllm-kv-cache" :range="range" title="KV-cache usage" unit="%" />
+          <AnalyticsTimeSeriesChart panel="litellm-requests" :range="range" title="LiteLLM requests" />
+          <AnalyticsTimeSeriesChart panel="litellm-tokens" :range="range" title="LiteLLM tokens" />
+          <AnalyticsTimeSeriesChart panel="litellm-spend" :range="range" title="LiteLLM spend" :format="(v) => '$' + v.toFixed(4)" />
+          <AnalyticsTimeSeriesChart panel="tei-rate" :range="range" title="Embedding rate" unit="/min" />
         </div>
       </div>
     </template>

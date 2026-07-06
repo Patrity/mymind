@@ -35,6 +35,8 @@
     "@nuxtjs/mdc": "^0.22.0",
     "@ricky0123/vad-web": "^0.0.30",
     "@tanstack/vue-query": "^5.101.0",
+    "@unovis/ts": "^1.6.7",
+    "@unovis/vue": "^1.6.7",
     "@vueuse/core": "^14.3.0",
     "@vueuse/integrations": "^14.3.0",
     "@vueuse/nuxt": "^14.3.0",
