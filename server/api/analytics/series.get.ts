@@ -7,7 +7,7 @@ export default defineEventHandler(async (event): Promise<SeriesResponse> => {
   const q = getQuery(event)
   const panelId = String(q.panel ?? '')
   const range = String(q.range ?? '') as RangeKey
-  const panel = RANGE_PANELS[panelId]
+  const panel = Object.hasOwn(RANGE_PANELS, panelId) ? RANGE_PANELS[panelId] : undefined
   if (!panel) throw createError({ statusCode: 400, statusMessage: `unknown panel: ${panelId}` })
   if (!RANGE_KEYS.includes(range)) throw createError({ statusCode: 400, statusMessage: `unknown range: ${range}` })
 
