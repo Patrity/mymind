@@ -32,6 +32,7 @@ export function toModelContent(role: AgentMessage['role'], content: string | Age
 
 export type AgentEvent =
   | { type: 'text-delta'; text: string }
+  | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-start'; name: string; args: Record<string, unknown> }
   | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[] }
   | { type: 'done' }
@@ -113,6 +114,11 @@ export async function* runAgent(
       const p = part as { delta?: string; text?: string }
       const text = p.delta ?? p.text ?? ''
       if (text) yield { type: 'text-delta', text }
+    } else if ((part as { type?: unknown }).type === 'reasoning-delta') {
+      // AI SDK v6 fullStream reasoning part carries `.delta`; test fakes may use `.text`.
+      const p = part as { delta?: string; text?: string }
+      const text = p.delta ?? p.text ?? ''
+      if (text) yield { type: 'reasoning-delta', text }
     }
     // tool-start / tool-result surface via the queue (buildAiTools.onEvent)
   }

@@ -71,4 +71,26 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     expect(events).toEqual([])
     expect(history).toEqual([{ role: 'user', content: 'hi' }])
   })
+
+  it('emits a reasoning event, keeps it out of TTS and out of the persisted answer', async () => {
+    const events: any[] = []
+    const reasoningTts = { synthesize: vi.fn(async function* () { yield new Uint8Array([1]) }) }
+    const runReason = (async function* () {
+      yield { type: 'reasoning-delta', text: 'thinking… ' }
+      yield { type: 'text-delta', text: 'Final answer.' }
+      yield { type: 'done' }
+    }) as never
+    const history = await handleTurn('hi', [], {
+      tts: reasoningTts, voice: 'af_heart', speak: true, runAgent: runReason,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+    // reasoning surfaced as its own event…
+    expect(events.some(e => e.type === 'reasoning' && e.text === 'thinking… ')).toBe(true)
+    // …never spoken (TTS only ever saw the answer text)…
+    for (const call of reasoningTts.synthesize.mock.calls) {
+      expect(call[0]).not.toContain('thinking')
+    }
+    // …and never merged into the persisted assistant content.
+    expect(history.at(-1)).toEqual({ role: 'assistant', content: 'Final answer.' })
+  })
 })

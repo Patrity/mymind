@@ -11,6 +11,7 @@ import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
 
 export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
+  | { type: 'reasoning'; text: string }
   | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[] }
   | { type: 'audio'; bytes: Uint8Array }
   | { type: 'state'; state: 'thinking' | 'speaking' | 'typing' | 'tool' | 'idle' }
@@ -87,7 +88,9 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   let sawText = false
   for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id) })) {
     if (deps.signal.aborted) break
-    if (ev.type === 'text-delta') {
+    if (ev.type === 'reasoning-delta') {
+      deps.emit({ type: 'reasoning', text: ev.text })   // display only — never chunked/spoken/persisted here
+    } else if (ev.type === 'text-delta') {
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })
       if (deps.speak) {

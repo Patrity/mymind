@@ -170,10 +170,15 @@ export default defineWebSocketHandler({
         // never appeared).
         const context = (await buildLiveContext(new Date())) || undefined
         const toolCalls: { name: string; summary: string; undoToken?: string }[] = []
+        let reasoningText = ''
         const prevLen = s.history.length
         const emit = (e: VoiceEvent) => {
           if (e.type === 'audio') peer.send(e.bytes)
-          else { if (e.type === 'tool') toolCalls.push({ name: e.name, summary: e.summary, undoToken: e.undoToken }); peer.send(JSON.stringify(e)) }
+          else {
+            if (e.type === 'tool') toolCalls.push({ name: e.name, summary: e.summary, undoToken: e.undoToken })
+            if (e.type === 'reasoning') reasoningText += e.text
+            peer.send(JSON.stringify(e))
+          }
         }
         s.history = await exec!(ac.signal, emit, context)
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
@@ -185,6 +190,7 @@ export default defineWebSocketHandler({
             content: messageText(m.content),
             modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
             toolCalls: m.role === 'assistant' && toolCalls.length ? toolCalls : null,
+            reasoning: m.role === 'assistant' ? (reasoningText || null) : null,
             attachments: m.role === 'user' ? turnAttachments : null
           })))
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })

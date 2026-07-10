@@ -36,4 +36,25 @@ describe('runAgent', () => {
     expect(args.prepareStep({ stepNumber: 2 })).toBeUndefined()
     expect(args.prepareStep({ stepNumber: 3 })).toEqual({ toolChoice: 'none' }) // last of 4 (0-indexed)
   })
+
+  it('maps fullStream reasoning-delta parts to reasoning-delta events', async () => {
+    const streamText = vi.fn(() => fakeFullStream([
+      { type: 'reasoning-start', id: 'r' },
+      { type: 'reasoning-delta', id: 'r', delta: 'Let me ' },
+      { type: 'reasoning-delta', id: 'r', delta: 'think.' },
+      { type: 'reasoning-end', id: 'r' },
+      { type: 'text-delta', id: 't', delta: 'Answer.' },
+      { type: 'finish', finishReason: 'stop' }
+    ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'hi' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    const reasoning = events.filter(e => e.type === 'reasoning-delta').map(e => e.text).join('')
+    const text = events.filter(e => e.type === 'text-delta').map(e => e.text).join('')
+    expect(reasoning).toBe('Let me think.')
+    expect(text).toBe('Answer.')
+  })
 })
