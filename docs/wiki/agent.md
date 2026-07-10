@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 42
-updated: 2026-07-01
+cycle: 45
+updated: 2026-07-10
 ---
 
 # Agent Surface (`/agent`)
@@ -23,7 +23,7 @@ The SSE `POST /api/agent/chat` still exists but is **headless/programmatic only*
 
 ## Entry point (`runAgent`)
 
-`runAgent(messages, ctx, deps)` where `ctx = { signal, speak?, profile?, context?, maxSteps? }`:
+`runAgent(messages, ctx, deps)` where `ctx = { signal, speak?, profile?, context?, maxSteps?, modelDefId? }`:
 - `profile` (`server/lib/agent/profile.ts`) — `AgentProfile = { id, tools, personaKey }`. **ONE always-armed profile since cycle 42**: `bridgetProfile` = the full `agentTools` registry **+ `execTool` + the subagent tools** (`research_web`, `search_brain`). The old `powerful` profile and the `agent-exec-enabled` cookie/switch are gone — safety is the approval gate (dangerous tools pause for allowlist-or-approval; channels without an approval UI auto-deny).
 - `speak` — replaces the old `voice` boolean; drives TTS + prompt mode.
 - `context` — the per-turn context block: live state (projects + open tasks, rebuilt EVERY turn since cycle 42) **plus proactive memory injection** — `buildMemoryContext(userText)` (`server/lib/agent/context.ts`) retrieves the top-5 relevant memories for the user's message (relevance floor 0.2, 1.5s timeout, never throws) and injects them as a labeled background block. Wired at the WS boundary (`ws.ts` passes it into `handleTurn`); tests omit it.
@@ -48,9 +48,9 @@ Design invariants: **not** a generic spawner (fixed types keep a small orchestra
 New tables (`server/db/schema/conversations.ts`, migration 0022), kept separate from the CC/Hermes import `sessions`/`messages`:
 
 - **`conversations`**: `id`, `title` (auto from the first user turn via `deriveTitle`), `summary` (null — reserved), `project_id` (null — optional), `message_count`, `last_message_at`, `summary_embedding halfvec(2560)` (**reserved**, unpopulated — keyword search ships first), `created_at`/`updated_at`. Indexes: `last_message_at`, gin-trigram on `title`.
-- **`conversation_messages`**: `id`, `conversation_id` (FK `ON DELETE CASCADE`), `parent_id` (nullable — **tree-capable edge, populated linearly** = parent is the prior turn; branching UI is deferred), `role`, `content`, `modality` (`voice`|`text`), `tool_calls jsonb` (assistant tool chips for resume), `created_at`. Indexes: `(conversation_id, created_at)`, gin-trigram on `content`.
+- **`conversation_messages`**: `id`, `conversation_id` (FK `ON DELETE CASCADE`), `parent_id` (nullable — **tree-capable edge, populated linearly** = parent is the prior turn; branching UI is deferred), `role`, `content`, `modality` (`voice`|`text`), `tool_calls jsonb` (assistant tool chips for resume), `reasoning text` (nullable — assistant "thinking"; **display/storage only, never re-sent to the model**; migration 0026, cycle 45), `created_at`. Indexes: `(conversation_id, created_at)`, gin-trigram on `content`.
 
-Store service: `server/services/conversations.ts` — `createConversation` / `appendMessages` (linear `parent_id` chain) / `getConversation` / `getAgentHistory` (role+content only, for WS hydration) / `listConversations({q})` (keyword: title ILIKE OR a message content ILIKE; newest first, limit 50) / `deleteConversation` / `deriveTitle`.
+Store service: `server/services/conversations.ts` — `createConversation` / `appendMessages` (linear `parent_id` chain; persists `reasoning` on assistant rows) / `getConversation` (DTO includes `reasoning`, for UI hydration) / `getAgentHistory` (**role+content only** — reasoning is deliberately excluded, for WS model-history hydration) / `listConversations({q})` (keyword: title ILIKE OR a message content ILIKE; newest first, limit 50) / `deleteConversation` / `deriveTitle`. The two reads are differentiated on purpose: reasoning is hydrated into the *UI* but never into the *model's* context.
 
 ## WebSocket protocol (`server/api/voice/ws.ts`)
 
@@ -59,10 +59,29 @@ Per-connection `ConnState` adds `conversationId` + `context`. Frames (client→s
 - `{type:'text', text, speak?}` — typed turn (`speak` default false → modality `text`, reply is `typing`)
 - `{type:'interrupt'}` — barge-in / abort
 - `{type:'voice', voice}` — set the TTS voice
+- `{type:'model', modelDefId}` — **ephemeral reasoning-model override** (cycle 45): sets `ConnState.model`, applied to every subsequent turn; `null` clears it. Never writes `ai_config`.
 - `{type:'load', conversationId}` — hydrate history from the store (errors surface as an `error` frame)
 - `{type:'new'}` — reset history + conversation + context
 
-After each completed turn the handler lazily creates the conversation (first turn) and appends the new user+assistant messages (with per-message modality + collected `tool_calls`), then `publishChange({resource:'conversation', action})`. Live context is assembled **once per connection** (cached on `ConnState`, rebuilt on `new`).
+Server→client adds a `{type:'reasoning', text}` frame (cycle 45) alongside `transcript`/`tool`/`state`/`error` — reasoning deltas, never audio.
+
+After each completed turn the handler lazily creates the conversation (first turn) and appends the new user+assistant messages (with per-message modality + collected `tool_calls` + accumulated `reasoning`), then `publishChange({resource:'conversation', action})`. Live context is assembled **once per connection** (cached on `ConnState`, rebuilt on `new`).
+
+## Reasoning block + on-the-fly model selector (cycle 45)
+
+Two additions to the `/agent` surface, both riding the WS pipeline only.
+
+**Reasoning "Thinking" block.** The reasoning models emit `reasoning_content` (a `<think>` block) as a channel separate from the answer. `@ai-sdk/openai-compatible` parses it into `reasoning-delta` stream parts, which `runAgent` was dropping. Now:
+- `run.ts` yields a `{type:'reasoning-delta', text}` `AgentEvent` (read defensively as `part.delta ?? part.text`).
+- `orchestrator.ts` emits a `{type:'reasoning', text}` `VoiceEvent` — **never chunked/spoken and never merged into `assistantText`**, so voice turns don't read the thinking aloud and it never enters the model's history.
+- `ws.ts` accumulates the reasoning in its `emit` closure (the same seam that collects `tool_calls`) and persists it on the assistant row (`conversation_messages.reasoning`).
+- The client (`messages.ts` → `useVoice.pushReasoning`) attaches it to the current assistant `TranscriptEntry.reasoning`; `app/components/agent/ReasoningBlock.vue` renders it as a collapsible **Thinking** `<details>` above the answer (muted `whitespace-pre-wrap` text — not MDC). It **auto-opens while thinking and collapses when the answer starts**, but a manual toggle wins after that. On resume, `getConversation` returns `reasoning` and the page hydrates it, so the block persists across reloads.
+
+**On-the-fly reasoning-model override.** A navbar `USelectMenu` (`app/pages/agent/index.vue`) lists the models assigned to the `reasoning` usage (from `useAiConfig`) plus a **"Default (chain order)"** entry. Picking one:
+- writes the cookie `agent-model` (`''` = default) and sends `{type:'model', modelDefId}` over the WS; the pick is **resent on every WS (re)open** (like the voice pick), so it survives reconnects;
+- server-side, `reasoningModels(modelDefId)` calls the pure `reorderChain` (`server/lib/ai/registry/resolve.ts`) to move the chosen model to the **front** of the resolved chain — **the rest stay as failover**; an unknown/`null`/`undefined` id is a no-op (falls back to the configured order).
+- The override is **ephemeral and connection-level** — it lives in `ConnState.model` + the cookie and **never mutates `ai_config`**. Subagents do **not** inherit it (they run the default reasoning chain — a deliberate scope boundary).
+- reka-ui gotcha: `USelectMenu`/`ComboboxItem` **rejects an empty-string item value**, so the "Default" option uses a non-empty sentinel (`'__default__'`) mapped back to `''`/`null`. (Caught in browser E2E; typecheck/build/review all passed the empty-string version.)
 
 ## Personality (Bridget)
 
@@ -74,7 +93,7 @@ After each completed turn the handler lazily creates the conversation (first tur
 
 ## UI
 
-`app/pages/agent/index.vue` (and `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send. Controls: **Visualizer** toggle (cookie `agent-canvas`), **Respond in voice** toggle (cookie `agent-speak` → per-message `speak`), **Enable microphone** (`enableMic()`/`disableMic()` — lazy VAD; the only voice affordance, auto-connects if needed), **New**, **History** slideover (`app/components/agent/HistorySlideover.vue`), and the composer. Assistant replies render **markdown** via the shared `<MdView>` (MDC) renderer; user turns are literal text. Streamed text deltas are appended raw (they already carry their own spacing).
+`app/pages/agent/index.vue` (and `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send. Controls: **Visualizer** toggle (cookie `agent-canvas`), **Respond in voice** toggle (cookie `agent-speak` → per-message `speak`), the **reasoning-model dropdown** (cookie `agent-model`; cycle 45 — see above), **Enable microphone** (`enableMic()`/`disableMic()` — lazy VAD; the only voice affordance, auto-connects if needed), **New**, **History** slideover (`app/components/agent/HistorySlideover.vue`), and the composer. Assistant replies render **markdown** via the shared `<MdView>` (MDC) renderer; user turns are literal text. Streamed text deltas are appended raw (they already carry their own spacing).
 
 **Transcript rendering invariants (cycle 41):**
 - Every `TranscriptEntry` has a stable unique `id` (uuid at stream time; DB message id on resume) which keys BOTH the `v-for` and the MDC parse cache (`<MdView :cache-key>`). **This is load-bearing**: `<MDC>` keys its `useAsyncData` on `hash(value)` frozen at setup — for streamed text that's the hash of the *first delta*, so two replies opening with the same token would otherwise share one asyncData record and render each other's content (live incident: three distinct replies all displayed as the first one).
