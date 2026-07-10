@@ -41,6 +41,11 @@ const emit = defineEmits<{ undo: [entry: TranscriptEntry] }>()
       </UBadge>
       <template v-else>
         <span class="text-[10px] uppercase tracking-wide text-muted">{{ e.role === 'user' ? 'You' : 'Bridget' }}</span>
+        <AgentReasoningBlock
+          v-if="e.role === 'assistant' && e.reasoning"
+          :reasoning="e.reasoning"
+          :has-answer="!!e.text"
+        />
         <!-- Assistant replies may contain markdown — render via the shared MDC renderer.
              cache-key MUST be per-entry: streamed entries sharing a first delta otherwise
              collide on MDC's hash-of-value key and mirror each other's content.

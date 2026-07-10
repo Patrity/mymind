@@ -52,7 +52,7 @@ async function resume(id: string) {
     ...(m.role === 'assistant' && m.toolCalls?.length
       ? m.toolCalls.map((t, i) => ({ id: `${m.id}-tool-${i}`, role: 'tool' as const, text: '', name: t.name, summary: t.summary, undoToken: t.undoToken }))
       : []),
-    { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined }
+    { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined }
   ])
   await voice.loadConversation(id)
   historyOpen.value = false
