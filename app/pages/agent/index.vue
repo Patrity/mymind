@@ -10,6 +10,21 @@ const route = useRoute()
 const showCanvas = useCookie<boolean>('agent-canvas', { default: () => true })
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
 
+// Reasoning-model override (ephemeral, cookie-backed). '' = default chain order.
+const { load: loadAiConfig, draft: aiDraft } = useAiConfig()
+const agentModel = useCookie<string>('agent-model', { default: () => '' })
+const modelItems = computed(() => {
+  const models = aiDraft.value.models
+  const chain = (aiDraft.value.assignments.reasoning ?? [])
+    .map(id => models.find(m => m.id === id))
+    .filter((m): m is NonNullable<typeof m> => !!m)
+  return [{ label: 'Default (chain order)', value: '' }, ...chain.map(m => ({ label: m.label, value: m.id }))]
+})
+const selectedModel = computed({
+  get: () => agentModel.value,
+  set: (val: string) => { agentModel.value = val; voice.setModel(val || null) }
+})
+
 // Mic-on state is local — it reflects whether the VAD is actually running
 const micOn = ref(false)
 
@@ -62,6 +77,8 @@ async function resume(id: string) {
 // sending "just work" without an explicit Connect step. Resume a thread if ?c= is set.
 onMounted(async () => {
   await voice.connect()
+  await loadAiConfig()
+  if (agentModel.value) voice.setModel(agentModel.value)
   const c = route.query.c
   if (typeof c === 'string' && c) await resume(c)
 })
@@ -123,7 +140,18 @@ onMounted(async () => {
               :variant="micOn ? 'soft' : 'ghost'"
               :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
               @click="toggleMic"
-            />            <VoiceSettingsSlideover :voice="voice" />
+            />
+            <!-- Reasoning-model override (ephemeral, cookie-persisted) -->
+            <USelectMenu
+              v-model="selectedModel"
+              :items="modelItems"
+              value-key="value"
+              icon="i-lucide-cpu"
+              size="sm"
+              class="w-44"
+              aria-label="Agent model"
+            />
+            <VoiceSettingsSlideover :voice="voice" />
           </template>
         </UDashboardNavbar>
       </template>
@@ -213,7 +241,18 @@ onMounted(async () => {
               :variant="micOn ? 'soft' : 'ghost'"
               :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
               @click="toggleMic"
-            />            <VoiceSettingsSlideover :voice="voice" />
+            />
+            <!-- Reasoning-model override (ephemeral, cookie-persisted) -->
+            <USelectMenu
+              v-model="selectedModel"
+              :items="modelItems"
+              value-key="value"
+              icon="i-lucide-cpu"
+              size="sm"
+              class="w-44"
+              aria-label="Agent model"
+            />
+            <VoiceSettingsSlideover :voice="voice" />
           </template>
         </UDashboardNavbar>
       </template>

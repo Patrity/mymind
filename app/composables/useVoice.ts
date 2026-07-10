@@ -46,6 +46,10 @@ export function useVoice() {
   // Last voice the user picked. Selecting before connecting (the natural UX) would
   // otherwise be lost — ws is null then, so we remember it and (re)send on open.
   let desiredVoice: { provider: string; voice: string } | null = null
+  // Last reasoning-model override the user picked (navbar dropdown, ephemeral —
+  // not persisted server-side). null = default chain order. Resent on (re)open
+  // for the same reason as desiredVoice: picking before/across a reconnect.
+  let desiredModel: string | null = null
   let vad: { start: () => Promise<void>; destroy: () => Promise<void> } | null = null
   let audioCtx: AudioContext | null = null
   let micAnalyser: AnalyserNode | null = null
@@ -204,6 +208,7 @@ export function useVoice() {
         // Apply the persisted voice choice (and re-apply on reconnect).
         const v = desiredVoice ?? { provider: settings.value.provider, voice: settings.value.voice }
         socket.send(JSON.stringify({ type: 'voice', ...v }))
+        if (desiredModel) socket.send(JSON.stringify({ type: 'model', modelDefId: desiredModel }))
         resolve()
       }
       socket.addEventListener('error', () => reject(new Error('WebSocket error')), { once: true })
@@ -348,6 +353,15 @@ export function useVoice() {
       desiredVoice = { provider, voice }
       settings.value = { ...settings.value, provider, voice } // persist the pick
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', provider, voice }))
+    },
+    /**
+     * Override the reasoning model for this connection (null = default chain
+     * order). Ephemeral — not persisted server-side; the caller cookie-persists
+     * the pick and re-applies it via this same setter after connect/reconnect.
+     */
+    setModel: (modelDefId: string | null) => {
+      desiredModel = modelDefId
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'model', modelDefId }))
     },
     speechProb,
     applyVadSettings,
