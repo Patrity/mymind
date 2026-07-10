@@ -10,7 +10,10 @@ const route = useRoute()
 const showCanvas = useCookie<boolean>('agent-canvas', { default: () => true })
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
 
-// Reasoning-model override (ephemeral, cookie-backed). '' = default chain order.
+// Reasoning-model override (ephemeral, cookie-backed). Empty cookie = default chain order.
+// reka-ui's USelectMenu rejects an empty-string item value, so the "Default" option uses a
+// non-empty sentinel that maps back to "no override" (empty cookie / null to setModel).
+const DEFAULT_MODEL = '__default__'
 const { load: loadAiConfig, draft: aiDraft } = useAiConfig()
 const agentModel = useCookie<string>('agent-model', { default: () => '' })
 const modelItems = computed(() => {
@@ -18,11 +21,15 @@ const modelItems = computed(() => {
   const chain = (aiDraft.value.assignments.reasoning ?? [])
     .map(id => models.find(m => m.id === id))
     .filter((m): m is NonNullable<typeof m> => !!m)
-  return [{ label: 'Default (chain order)', value: '' }, ...chain.map(m => ({ label: m.label, value: m.id }))]
+  return [{ label: 'Default (chain order)', value: DEFAULT_MODEL }, ...chain.map(m => ({ label: m.label, value: m.id }))]
 })
 const selectedModel = computed({
-  get: () => agentModel.value,
-  set: (val: string) => { agentModel.value = val; voice.setModel(val || null) }
+  get: () => agentModel.value || DEFAULT_MODEL,
+  set: (val: string) => {
+    const id = val === DEFAULT_MODEL ? '' : val
+    agentModel.value = id
+    voice.setModel(id || null)
+  }
 })
 
 // Mic-on state is local — it reflects whether the VAD is actually running
