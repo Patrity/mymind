@@ -1,6 +1,6 @@
 // test/ai-registry-resolve.test.ts
 import { describe, it, expect, beforeAll } from 'vitest'
-import { resolveChainFrom, withFailoverOver, languageModel } from '../server/lib/ai/registry/resolve'
+import { resolveChainFrom, withFailoverOver, languageModel, reorderChain } from '../server/lib/ai/registry/resolve'
 import { AiNotConfiguredError, AiAllFailedError } from '../server/lib/ai/registry/errors'
 import { encryptSecret } from '../server/lib/ai/registry/crypto'
 import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel } from '../server/lib/ai/registry/types'
@@ -54,6 +54,24 @@ describe('languageModel', () => {
   it('builds an OpenAI-compatible model without throwing', () => {
     const oai = languageModel({ usage: 'reasoning', modelDefId: 'm', providerKind: 'openai-compatible', baseURL: 'http://a/v1', apiKey: 'k', modelId: 'qwen', label: 'Q', dim: null })
     expect(oai).toBeTruthy()
+  })
+})
+
+describe('reorderChain', () => {
+  const chain = [
+    { modelDefId: 'a', label: 'A' },
+    { modelDefId: 'b', label: 'B' },
+    { modelDefId: 'c', label: 'C' }
+  ] as any[]
+
+  it('moves the chosen model to the front, preserving the rest as failover', () => {
+    expect(reorderChain(chain, 'b').map(m => m.modelDefId)).toEqual(['b', 'a', 'c'])
+  })
+  it('is a no-op when the id is already first, unknown, null, or undefined', () => {
+    expect(reorderChain(chain, 'a').map(m => m.modelDefId)).toEqual(['a', 'b', 'c'])
+    expect(reorderChain(chain, 'zzz').map(m => m.modelDefId)).toEqual(['a', 'b', 'c'])
+    expect(reorderChain(chain, null).map(m => m.modelDefId)).toEqual(['a', 'b', 'c'])
+    expect(reorderChain(chain, undefined).map(m => m.modelDefId)).toEqual(['a', 'b', 'c'])
   })
 })
 

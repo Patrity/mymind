@@ -39,6 +39,14 @@ export function resolveChainFrom(doc: AiConfigDoc, usage: Usage): ResolvedModel[
   return chain
 }
 
+/** Pure: move the chosen model to the front (chosen = primary; the rest stay as failover). */
+export function reorderChain(chain: ResolvedModel[], modelDefId?: string | null): ResolvedModel[] {
+  if (!modelDefId) return chain
+  const idx = chain.findIndex(m => m.modelDefId === modelDefId)
+  if (idx <= 0) return chain
+  return [chain[idx]!, ...chain.slice(0, idx), ...chain.slice(idx + 1)]
+}
+
 /** Pure: run fn against each model in order until one succeeds. */
 export async function withFailoverOver<T>(
   usage: Usage,

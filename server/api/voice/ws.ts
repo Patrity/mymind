@@ -23,6 +23,7 @@ interface ConnState {
   history: AgentMessage[]
   ac: AbortController | null
   voice: string
+  model: string | null
   lock: Promise<void>
   conversationId: string | null
   pendingApprovals: Map<string, { resolve: (d: { approved: boolean }) => void; timer: ReturnType<typeof setTimeout>; req: ApprovalRequest }>
@@ -60,7 +61,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, voice: '', lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
+    conns.set(peer, { history: [], ac: null, voice: '', model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -101,6 +102,7 @@ export default defineWebSocketHandler({
       const msg = frame.msg
       if (msg.type === 'interrupt') { s.ac?.abort(); return }
       if (msg.type === 'voice') { s.voice = msg.voice as string; return }
+      if (msg.type === 'model') { s.model = typeof msg.modelDefId === 'string' ? msg.modelDefId : null; return }
       // 'profile' / 'execEnabled' frames from old clients are silently ignored —
       // the agent is always fully armed now (single profile; approval gate = safety).
       // Approve/deny resolve a pending approval IMMEDIATELY (like interrupt) — not
@@ -147,7 +149,7 @@ export default defineWebSocketHandler({
         turnAttachments = attachments
         inputModality = 'text'
         speakFlag = speak
-        turn = (signal, emit, context) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context, buildMemoryContext, requestApproval, attachments, signal, emit })
+        turn = (signal, emit, context) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context, modelDefId: s.model, buildMemoryContext, requestApproval, attachments, signal, emit })
       } else {
         return
       }
@@ -155,7 +157,7 @@ export default defineWebSocketHandler({
       const audio = frame.bytes
       inputModality = 'voice'
       speakFlag = true
-      turn = (signal, emit, context) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context, buildMemoryContext, requestApproval, signal, emit })
+      turn = (signal, emit, context) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context, modelDefId: s.model, buildMemoryContext, requestApproval, signal, emit })
     }
     s.ac?.abort()
     for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }

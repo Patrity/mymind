@@ -52,7 +52,7 @@ export interface RunDeps {
 // stripping — the old dual-enable lever (powerful profile + exec cookie) is gone.
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[] },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
@@ -72,7 +72,7 @@ export async function* runAgent(
   // Build the stream, trying each reasoning model in priority order. If stream
   // creation throws (bad baseURL, adapter construction), fall over to the next.
   // Mid-stream failures are NOT retried.
-  const models = deps.streamText ? [undefined as never] : await reasoningModels()
+  const models = deps.streamText ? [undefined as never] : await reasoningModels(ctx.modelDefId)
   let result: ReturnType<typeof realStreamText> | undefined
   let lastErr: unknown
   for (let i = 0; i < models.length; i++) {
