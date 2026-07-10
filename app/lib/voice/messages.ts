@@ -9,6 +9,7 @@ export interface MsgEffect {
   // them), and the 'disconnected' viz event is emitted by useVoice.onclose — not here.
   state?: 'idle' | 'thinking' | 'speaking' | 'tool' | 'typing'
   delta?: { role: 'user' | 'assistant'; text: string }
+  reasoning?: string
   /** A completed tool call — rendered INLINE in the transcript at stream position. */
   tool?: { name: string; summary: string; undoToken?: string }
   error?: string
@@ -22,6 +23,9 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   if (m.type === 'transcript' && m.role && m.text) {
     if (m.role === 'user') events.push({ type: 'sttFinal', chars: m.text.length })
     return { delta: { role: m.role, text: m.text }, events }
+  }
+  if (m.type === 'reasoning' && m.text) {
+    return { reasoning: m.text, events }
   }
   // Tool result event — surfaced inline so the transcript shows WHERE in the
   // reply each tool ran (previously collected out-of-band at the bottom).

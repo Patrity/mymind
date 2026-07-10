@@ -55,6 +55,13 @@ describe('mapServerMessage', () => {
     expect(fx.state).toBe('typing')
     expect(fx.events).toEqual([])
   })
+
+  it('reasoning message → reasoning effect, no delta', () => {
+    const fx = mapServerMessage({ type: 'reasoning', text: 'thinking…' }, false)
+    expect(fx.reasoning).toBe('thinking…')
+    expect(fx.delta).toBeUndefined()
+    expect(fx.events).toEqual([])
+  })
 })
 
 describe('mapServerMessage approval frames', () => {

@@ -18,6 +18,7 @@ export interface TranscriptEntry {
   summary?: string
   undoToken?: string
   undone?: boolean
+  reasoning?: string
 }
 
 export function newEntryId(): string {
@@ -71,6 +72,12 @@ export function useVoice() {
       transcript.value.push({ id: newEntryId(), role, text: delta, attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
       if (role === 'user') pendingUserAttachments = []
     }
+  }
+
+  function pushReasoning(text: string) {
+    const last = transcript.value[transcript.value.length - 1]
+    if (last && last.role === 'assistant') last.reasoning = (last.reasoning ?? '') + text
+    else transcript.value.push({ id: newEntryId(), role: 'assistant', text: '', reasoning: text })
   }
 
   function pushTool(t: { name: string; summary: string; undoToken?: string }) {
@@ -178,6 +185,7 @@ export function useVoice() {
       } else {
         const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
         if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
+        if (fx.reasoning) pushReasoning(fx.reasoning)
         if (fx.tool) pushTool(fx.tool)
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
