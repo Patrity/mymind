@@ -16,9 +16,11 @@ import { randomUUID } from 'node:crypto'
 import type { AttachmentRef } from '../../lib/agent/attachments'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
-//   {type:'voice',voice} | {type:'text',text,speak?} (typed turn, injected post-STT) |
-//   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset)
-// Server→client: binary = audio bytes | text JSON = transcript/tool/state/error events.
+//   {type:'voice',voice} | {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
+//   {type:'text',text,speak?} (typed turn, injected post-STT) |
+//   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset) |
+//   {type:'approve'|'deny',requestId,...} (resolve a pending exec approval)
+// Server→client: binary = audio bytes | text JSON = transcript/reasoning/tool/state/error events.
 interface ConnState {
   history: AgentMessage[]
   ac: AbortController | null

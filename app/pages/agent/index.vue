@@ -85,6 +85,13 @@ async function resume(id: string) {
 onMounted(async () => {
   await voice.connect()
   await loadAiConfig()
+  // Drop a stale override: if the cookie names a model no longer assigned to
+  // reasoning, clear it so the dropdown doesn't show a blank label and no dead
+  // id is sent. (Server reorderChain already no-ops an unknown id, so this is
+  // cosmetic — but keeps the picker honest.)
+  if (agentModel.value && !(aiDraft.value.assignments.reasoning ?? []).includes(agentModel.value)) {
+    agentModel.value = ''
+  }
   if (agentModel.value) voice.setModel(agentModel.value)
   const c = route.query.c
   if (typeof c === 'string' && c) await resume(c)
