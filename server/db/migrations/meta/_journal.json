@@ -183,6 +183,13 @@
       "when": 1782724796559,
       "tag": "0025_sparkling_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1783718745471,
+      "tag": "0026_shallow_madrox",
+      "breakpoints": true
     }
   ]
 }

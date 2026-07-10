@@ -22,6 +22,7 @@ export interface NewConvMessage {
   content: string
   modality: 'voice' | 'text'
   toolCalls?: { name: string; summary: string; undoToken?: string }[] | null
+  reasoning?: string | null
   attachments?: AttachmentRef[] | null
 }
 
@@ -47,6 +48,7 @@ export function msgToDTO(r: typeof conversationMessages.$inferSelect): Conversat
     content: r.content,
     modality: r.modality as 'voice' | 'text',
     toolCalls: (r.toolCalls as { name: string; summary: string; undoToken?: string }[] | null) ?? null,
+    reasoning: r.reasoning ?? null,
     attachments: (r.attachments as AttachmentRef[] | null) ?? null,
     createdAt: r.createdAt.toISOString()
   }
@@ -98,6 +100,7 @@ export async function appendMessages(
         content: msg.content,
         modality: msg.modality,
         toolCalls: msg.toolCalls ?? null,
+        reasoning: msg.reasoning ?? null,
         attachments: msg.attachments ?? null
       })
       .returning({ id: conversationMessages.id })
