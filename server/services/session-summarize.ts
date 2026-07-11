@@ -83,7 +83,10 @@ export async function runSessionSummarize({ limit = PER_RUN }: { limit?: number 
       const tools = await db.select({ toolName: toolEvents.toolName, exitStatus: toolEvents.exitStatus })
         .from(toolEvents).where(eq(toolEvents.sessionId, sessionId)).limit(40)
       const transcript = buildSummaryTranscript(real, tools)
-      const raw = await chat('reasoning', [
+      // 'bulk' = no-think model: this is a capped, single-shot summary. The
+      // reasoning alias emits <think>/reasoning_content and returns null content
+      // under the token cap, which chat() throws on (rescued only by failover).
+      const raw = await chat('bulk', [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: transcript }
       ], { temperature: 0.3, maxTokens: 1024 })

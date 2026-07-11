@@ -35,7 +35,10 @@ export async function judgeRelations(candidate: string, near: { id: string, cont
   if (!near.length) return []
   const user = `NEW:\n${candidate}\n\nEXISTING:\n${near.map(n => `[${n.id}] ${n.content}`).join('\n')}`
   try {
-    const raw = await chat('reasoning', [{ role: 'system', content: PROMPT }, { role: 'user', content: user }], { temperature: 0.1, maxTokens: 800 })
+    // 'bulk' = no-think model: a capped, single-shot JSON judgment. The reasoning
+    // alias emits <think>/reasoning_content and returns null content under the token
+    // cap, which chat() throws on (rescued only by failover).
+    const raw = await chat('bulk', [{ role: 'system', content: PROMPT }, { role: 'user', content: user }], { temperature: 0.1, maxTokens: 800 })
     return parseJudgement(raw, near.map(n => n.id))
   } catch { return [] }
 }

@@ -157,9 +157,11 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
 
       const transcript = buildEnrichTranscript(msgs, tools)
 
-      // Call the LLM
+      // Call the LLM. 'bulk' = no-think model: a capped, single-shot structured
+      // extraction. The reasoning alias emits <think>/reasoning_content and returns
+      // null content under the token cap, which chat() throws on (failover-rescued).
       const raw = await chat(
-        'reasoning',
+        'bulk',
         [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: transcript }

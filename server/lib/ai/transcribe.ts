@@ -39,8 +39,11 @@ export async function cleanToMarkdown(raw: string): Promise<{ title: string, mar
   if (!raw.trim()) return { title: 'Transcribed note', markdown: raw }
 
   try {
+    // 'bulk' = no-think model: a single-shot transcript cleanup. The reasoning alias
+    // emits <think>/reasoning_content and returns null content under the token cap,
+    // which chat() throws on (rescued only by failover).
     const out = await chat(
-      'reasoning',
+      'bulk',
       [
         { role: 'system', content: SYS },
         { role: 'user', content: raw }

@@ -114,7 +114,10 @@ export async function proposeFrontmatter(doc: DocumentDTO, projects: ProjectCand
   const messages = buildEnrichMessages(doc, projects)
 
   try {
-    const raw = await chat('reasoning', messages, { temperature: 0.1 })
+    // 'bulk' = no-think model: a single-shot structured frontmatter proposal. The
+    // reasoning alias emits <think>/reasoning_content and returns null content under
+    // the token cap, which chat() throws on (rescued only by failover).
+    const raw = await chat('bulk', messages, { temperature: 0.1 })
 
     return parseProposal(raw)
   } catch (err) {
