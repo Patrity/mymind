@@ -4,6 +4,7 @@ import { projects, sessions, memories, tasks, documents } from '../db/schema'
 import type { ProjectDTO } from '../../shared/types/tasks'
 import { slugify } from '../../shared/utils/slugify'
 import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/projects/git-remote'
+import { longestPrefixMatch, basenameOf, isAutoCreatable, normalizePrefix } from '../lib/projects/path-routing'
 
 // ---------------------------------------------------------------------------
 // Private helpers
@@ -183,12 +184,13 @@ export async function matchProjectByLabel(label: string): Promise<typeof project
 }
 
 /**
- * Resolve a session's project. Matches on the normalized git remote (then aliases),
- * creating a project on first sight. Sessions with no remote MATCH an existing
- * project by cwd label (slug / aliases) but never create — falling back to the
- * seeded Uncategorized bucket. Race on git_remote_key falls back to re-select.
+ * Resolve a session's project. With a git remote: match by normalized remote key
+ * (then aliases), creating on first sight. Without a remote: match by longest
+ * registered path prefix, then by cwd/git-root basename label, then AUTO-CREATE a
+ * project from the cwd's leaf folder (registering the cwd as a path prefix) unless
+ * the cwd is stoplisted, in which case fall back to the seeded Uncategorized bucket.
  */
-export async function findOrCreateProject(input: { gitRemote?: string | null, cwd?: string | null }): Promise<typeof projects.$inferSelect> {
+export async function findOrCreateProject(input: { gitRemote?: string | null, cwd?: string | null, gitRoot?: string | null }): Promise<typeof projects.$inferSelect> {
   const db = useDb()
   const key = normalizeGitRemote(input.gitRemote)
   const cwd = input.cwd ?? null
@@ -203,14 +205,39 @@ export async function findOrCreateProject(input: { gitRemote?: string | null, cw
   }
 
   if (!key) {
-    // No git remote: try to MATCH (never create) an existing project by cwd label / slug / alias.
-    const label = cwd ? cwd.split('/').filter(Boolean).at(-1) ?? null : null
-    if (label) {
-      const match = await matchProjectByLabel(label)
-      if (match) return touch(match)
+    // 1. Longest registered path-prefix wins.
+    if (cwd) {
+      const rows = await db.select({ id: projects.id, slug: projects.slug, prefixes: projects.pathPrefixes }).from(projects)
+      const hit = longestPrefixMatch(cwd, rows.map(r => ({ id: r.id, slug: r.slug, prefixes: r.prefixes ?? [] })))
+      if (hit) {
+        const [proj] = await db.select().from(projects).where(eq(projects.id, hit.id)).limit(1)
+        if (proj) return touch(proj)
+      }
     }
+    // 2. Label match: cwd basename, then git-root basename.
+    for (const label of [cwd ? basenameOf(cwd) : null, input.gitRoot ? basenameOf(input.gitRoot) : null]) {
+      if (label) { const m = await matchProjectByLabel(label); if (m) return touch(m) }
+    }
+    // 3. Auto-create from the cwd leaf, unless the cwd is bare/scratch (stoplisted).
+    if (cwd && isAutoCreatable(cwd)) {
+      const prefix = normalizePrefix(cwd)
+      const taken = new Set((await db.select({ slug: projects.slug }).from(projects)).map(r => r.slug))
+      const slug = nextUniqueSlug(slugify(basenameOf(prefix)) || 'project', taken)
+      try {
+        const [created] = await db.insert(projects).values({
+          slug, name: basenameOf(prefix), pathPrefixes: [prefix], localPaths: [cwd], lastActivityAt: new Date()
+        }).returning()
+        return created!
+      } catch {
+        // slug race — re-select by the prefix we tried to register.
+        const rows = await db.select().from(projects)
+        const racer = rows.find(r => (r.pathPrefixes ?? []).includes(prefix))
+        if (racer) return racer
+      }
+    }
+    // 4. Uncategorized fallback (seeded by migration 0019).
     const [u] = await db.select().from(projects).where(eq(projects.slug, 'uncategorized')).limit(1)
-    return u! // seeded by migration 0019
+    return u!
   }
 
   let [proj] = await db.select().from(projects).where(eq(projects.gitRemoteKey, key)).limit(1)

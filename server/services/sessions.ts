@@ -21,6 +21,7 @@ export interface UpsertSessionInput {
   gitBranch?: string | null
   gitCommit?: string | null
   gitRemote?: string | null
+  gitRoot?: string | null
   appVersion?: string | null
   endedAt?: Date | null
   metadata?: Record<string, unknown>
@@ -50,7 +51,7 @@ export async function upsertSession(input: UpsertSessionInput): Promise<typeof s
   let resolvedProjectId: string | undefined
   let resolvedProjectSlug: string | undefined
   if (input.gitRemote != null || input.cwd != null) {
-    const proj = await findOrCreateProject({ gitRemote: input.gitRemote, cwd: input.cwd })
+    const proj = await findOrCreateProject({ gitRemote: input.gitRemote, cwd: input.cwd, gitRoot: input.gitRoot })
     resolvedProjectId = proj.id
     resolvedProjectSlug = proj.slug
   }

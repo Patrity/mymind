@@ -44,17 +44,18 @@ PY
 )
 
 # git context (never fails)
-gb="" ; gc="" ; gr="" ; proj=""
+gb="" ; gc="" ; gr="" ; gr_root="" ; proj=""
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
   gb="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   gc="$(git -C "$cwd" rev-parse HEAD 2>/dev/null)"
   gr="$(git -C "$cwd" config --get remote.origin.url 2>/dev/null)"
+  gr_root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
   proj="$(basename "$cwd")"
 fi
 
 # POST the event (background; short timeout; never blocks)
 {
-  MM_SID="$sid" MM_CWD="$cwd" MM_PROJ="$proj" MM_GB="$gb" MM_GC="$gc" MM_GR="$gr" \
+  MM_SID="$sid" MM_CWD="$cwd" MM_PROJ="$proj" MM_GB="$gb" MM_GC="$gc" MM_GR="$gr" MM_GRR="$gr_root" \
   MM_MID="$mid" MM_HOST="$host" MM_EV="$event" python3 - > "$payload.body" <<'PY'
 import json,os
 print(json.dumps({
@@ -65,6 +66,7 @@ print(json.dumps({
   "git_branch":os.environ["MM_GB"] or None,
   "git_commit":os.environ["MM_GC"] or None,
   "git_remote":os.environ["MM_GR"] or None,
+  "git_root":os.environ["MM_GRR"] or None,
   "machine_id":os.environ["MM_MID"] or None,
   "hostname":os.environ["MM_HOST"] or None,
   "metadata":{"hostname":os.environ["MM_HOST"],"lastEvent":os.environ["MM_EV"]}
