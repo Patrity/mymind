@@ -36,5 +36,10 @@ export function useSessions() {
     })
   }
 
-  return { list, useSessionList, useSessionMeta, useSessionMessages, getMessages }
+  const reassign = (id: string, body: { project: string, pathPrefix?: string | null }) =>
+    $fetch<{ ok: true, from: string | null, to: string }>(`/api/sessions/${id}`, { method: 'PATCH', body })
+  const reassignMany = (body: { ids: string[], project: string, pathPrefix?: string | null }) =>
+    $fetch<{ ok: true, count: number }>(`/api/sessions/reassign`, { method: 'POST', body })
+
+  return { list, useSessionList, useSessionMeta, useSessionMessages, getMessages, reassign, reassignMany }
 }

@@ -1,9 +1,10 @@
-import { asc, desc, eq, sql } from 'drizzle-orm'
+import { asc, desc, eq, and, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { sessions, messages, toolEvents } from '../db/schema'
+import { sessions, messages, toolEvents, projects, memories } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
 import { publishChange } from '../utils/live-bus'
 import { findOrCreateProject } from './projects'
+import { normalizePrefix } from '../lib/projects/path-routing'
 import type { SessionListItem, SessionMeta, SessionMessages, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
@@ -181,6 +182,56 @@ export async function ingestTranscript(input: IngestTranscriptInput): Promise<In
 
   publishChange({ resource: 'session', action: 'updated', id: session.id })
   return { ingested: parsed.messages.length, total: agg?.msgCount ?? 0 }
+}
+
+// ---------------------------------------------------------------------------
+// Reassignment
+// ---------------------------------------------------------------------------
+
+type Db = ReturnType<typeof useDb>
+type Tx = Parameters<Parameters<Db['transaction']>[0]>[0]
+
+/** Move one session + its agent-scoped memories onto `proj` within a tx. Returns the previous slug. */
+async function applyReassign(tx: Tx, id: string, proj: typeof projects.$inferSelect): Promise<string | null> {
+  const [sess] = await tx.select({ project: sessions.project }).from(sessions).where(eq(sessions.id, id)).limit(1)
+  if (!sess) throw new Error(`session not found: ${id}`)
+  await tx.update(sessions).set({ project: proj.slug, projectId: proj.id }).where(eq(sessions.id, id))
+  await tx.update(memories).set({ project: proj.slug, projectId: proj.id })
+    .where(and(eq(memories.sessionId, id), eq(memories.scope, 'agent')))
+  return sess.project
+}
+
+/** Append a normalized path prefix to a project's path_prefixes (dedup), within a tx. */
+async function registerPrefix(tx: Tx, proj: typeof projects.$inferSelect, rawPrefix: string): Promise<void> {
+  const prefix = normalizePrefix(rawPrefix)
+  const cur = proj.pathPrefixes ?? []
+  if (prefix && !cur.includes(prefix)) {
+    await tx.update(projects).set({ pathPrefixes: [...cur, prefix], updatedAt: new Date() }).where(eq(projects.id, proj.id))
+  }
+}
+
+export async function reassignSession(id: string, opts: { projectSlug: string, pathPrefix?: string | null }): Promise<{ from: string | null, to: string }> {
+  const db = useDb()
+  const [proj] = await db.select().from(projects).where(eq(projects.slug, opts.projectSlug)).limit(1)
+  if (!proj) throw new Error(`project not found: ${opts.projectSlug}`)
+  let from: string | null = null
+  await db.transaction(async (tx) => {
+    from = await applyReassign(tx, id, proj)
+    if (opts.pathPrefix) await registerPrefix(tx, proj, opts.pathPrefix)
+  })
+  return { from, to: proj.slug }
+}
+
+export async function reassignSessions(ids: string[], opts: { projectSlug: string, pathPrefix?: string | null }): Promise<{ froms: (string | null)[], to: string }> {
+  const db = useDb()
+  const [proj] = await db.select().from(projects).where(eq(projects.slug, opts.projectSlug)).limit(1)
+  if (!proj) throw new Error(`project not found: ${opts.projectSlug}`)
+  const froms: (string | null)[] = []
+  await db.transaction(async (tx) => {
+    for (const id of ids) froms.push(await applyReassign(tx, id, proj))
+    if (opts.pathPrefix) await registerPrefix(tx, proj, opts.pathPrefix)
+  })
+  return { froms, to: proj.slug }
 }
 
 // ---------------------------------------------------------------------------
