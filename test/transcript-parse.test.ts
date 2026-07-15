@@ -149,3 +149,63 @@ describe('parseTranscriptLines', () => {
     expect(() => parseTranscriptLines(weirdLines)).not.toThrow()
   })
 })
+
+// ---------------------------------------------------------------------------
+// NUL byte (U+0000) sanitisation — Postgres text AND jsonb columns reject it.
+// CC transcripts legitimately carry it (binary tool output, or source code that
+// contains a literal  escape), which otherwise 500s the whole delta.
+// ---------------------------------------------------------------------------
+
+describe('parseTranscriptLines — NUL byte sanitisation', () => {
+  // A real NUL char in JS → JSON.stringify emits the  escape → JSON.parse
+  // yields a real NUL again inside the parsed value (the production failure mode).
+  const NUL = String.fromCharCode(0)
+  const nulTextLine = JSON.stringify({
+    uuid: 'nul1',
+    message: { role: 'assistant', content: [{ type: 'text', text: `before${NUL}after` }] }
+  })
+  const nulToolUseLine = JSON.stringify({
+    uuid: 'nul2',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'tuN', name: 'Bash', input: { command: `raw.replace(/[${NUL}]/g)` } }]
+    }
+  })
+  const nulToolResultLine = JSON.stringify({
+    uuid: 'nul3',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tuN', content: `out${NUL}put` }] }
+  })
+  const nulThinkingLine = JSON.stringify({
+    uuid: 'nul4',
+    message: { role: 'assistant', content: [{ type: 'thinking', thinking: `ponder${NUL}ing` }] }
+  })
+
+  it('strips NUL from message content but keeps the surrounding text', () => {
+    const m = parseTranscriptLines([nulTextLine]).messages.find(x => x.role === 'assistant')!
+    expect(m.content).toBe('beforeafter')
+    expect(m.content).not.toContain(NUL)
+  })
+
+  it('strips NUL from thinking', () => {
+    const m = parseTranscriptLines([nulThinkingLine]).messages.find(x => x.thinking)!
+    expect(m.thinking).toBe('pondering')
+  })
+
+  it('strips NUL from tool args and result (jsonb columns)', () => {
+    const r = parseTranscriptLines([nulToolUseLine, nulToolResultLine])
+    const ev = r.toolEvents.find(e => e.toolUseId === 'tuN')!
+    // no NUL survives anywhere in the nested structures...
+    expect(JSON.stringify(ev.args)).not.toContain('\\u0000')
+    expect(JSON.stringify(ev.result)).not.toContain('\\u0000')
+    // ...but the real payload is preserved
+    expect(JSON.stringify(ev.args)).toContain('raw.replace')
+    expect(String(ev.result)).toBe('output')
+  })
+
+  it('leaves NUL-free input untouched', () => {
+    const r = parseTranscriptLines([assistantLine, toolUseLine, toolResultLine])
+    const asst = r.messages.find(m => m.role === 'assistant' && m.content)!
+    expect(asst.content).toBe('Sure, I will do that.')
+    expect(r.toolEvents[0]!.args).toEqual({ command: 'ls' })
+  })
+})

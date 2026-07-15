@@ -59,6 +59,24 @@ function syntheticUuid(role: string, content: string): string {
   return 'h:' + createHash('sha256').update(role + '|' + content).digest('hex').slice(0, 16)
 }
 
+/**
+ * Recursively strip NUL (U+0000) from every string in a value. Postgres `text`
+ * columns cannot store a raw NUL byte and `jsonb` rejects the `` escape
+ * (SQLSTATE 22P05) — either one throws the whole insert. CC transcripts carry
+ * NUL legitimately (binary tool output, or source code containing the literal
+ * escape), so we scrub it here, the single choke point feeding every DB column.
+ */
+export function stripNul<T>(value: T): T {
+  if (typeof value === 'string') return value.replace(/\u0000/g, '') as T
+  if (Array.isArray(value)) return value.map(stripNul) as T
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) out[k] = stripNul(v)
+    return out as T
+  }
+  return value
+}
+
 /** Parse CC JSONL lines into rich messages + tool events. Tolerant: never throws. */
 export function parseTranscriptLines(lines: string[]): ParsedTranscript {
   const messages: ParsedMessage[] = []
@@ -164,5 +182,12 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
     }
   }
 
-  return { messages, toolEvents, inputTokens, outputTokens, toolCount: toolEvents.length }
+  // Scrub NUL from every string before it reaches the DB (text + jsonb both reject it).
+  return {
+    messages: messages.map(stripNul),
+    toolEvents: toolEvents.map(stripNul),
+    inputTokens,
+    outputTokens,
+    toolCount: toolEvents.length
+  }
 }

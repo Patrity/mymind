@@ -71,10 +71,13 @@ print(json.dumps({
 }))
 PY
   if [ -n "$sid" ]; then
-    curl -sS -m 5 -X POST \
+    # Capture the HTTP status: curl without --fail exits 0 even on a 5xx, so the
+    # old `|| echo failed` never saw server errors. Log the code to distinguish a
+    # transport failure (000) from an HTTP rejection (4xx/5xx).
+    code=$(curl -sS -m 5 -o /dev/null -w '%{http_code}' -X POST \
       -H 'Content-Type: application/json' -H "Authorization: Bearer $tok" \
-      --data-binary "@$payload.body" "$url/api/hooks/cc/$event" \
-      >/dev/null 2>&1 || echo "$(date '+%F %T') event=$event POST failed" >> "$log"
+      --data-binary "@$payload.body" "$url/api/hooks/cc/$event" 2>/dev/null)
+    case "$code" in 2*) ;; *) echo "$(date '+%F %T') event=$event POST failed http=${code:-000}" >> "$log" ;; esac
   fi
   rm -f "$payload.body" 2>/dev/null
 } &
@@ -104,13 +107,15 @@ print(consumed)
 PY
 )
         if [ "${consumed:-0}" -gt 0 ]; then
-          if curl -sS -m 15 -X POST \
-              -H 'Content-Type: application/json' -H "Authorization: Bearer $tok" \
-              --data-binary "@$body" "$url/api/hooks/cc/transcript" >/dev/null 2>&1; then
-            echo "$((prev + consumed))" > "$off_file"
-          else
-            echo "$(date '+%F %T') transcript POST failed sid=$sid" >> "$log"
-          fi
+          code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -H "Authorization: Bearer $tok" \
+            --data-binary "@$body" "$url/api/hooks/cc/transcript" 2>/dev/null)
+          case "$code" in
+            # Advance the byte offset ONLY on a real 2xx. On any error the delta is
+            # retried on the next terminal event instead of being silently dropped.
+            2*) echo "$((prev + consumed))" > "$off_file" ;;
+            *) echo "$(date '+%F %T') transcript POST failed http=${code:-000} sid=$sid" >> "$log" ;;
+          esac
         fi
       fi
     fi

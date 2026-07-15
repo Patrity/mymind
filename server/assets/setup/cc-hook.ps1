@@ -77,7 +77,10 @@ if ($sid) {
   try {
     Invoke-RestMethod -Method Post -Uri "$url/api/hooks/cc/$EventName" -TimeoutSec 5 `
       -ContentType 'application/json' -Headers @{ Authorization = "Bearer $tok" } -Body $body | Out-Null
-  } catch { "$([DateTime]::Now.ToString('u')) event=$EventName POST failed" | Add-Content $log }
+  } catch {
+    $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode.value__ } else { 0 }
+    "$([DateTime]::Now.ToString('u')) event=$EventName POST failed http=$code" | Add-Content $log
+  }
 }
 
 # ship transcript delta on terminal events
@@ -109,7 +112,11 @@ if (($EventName -in @('Stop', 'SubagentStop', 'SessionEnd')) -and $sid -and $tp 
           Invoke-RestMethod -Method Post -Uri "$url/api/hooks/cc/transcript" -TimeoutSec 15 `
             -ContentType 'application/json' -Headers @{ Authorization = "Bearer $tok" } -Body $tbody | Out-Null
           ($prev + $consumed) | Set-Content -NoNewline $offf
-        } catch { "$([DateTime]::Now.ToString('u')) transcript POST failed sid=$sid" | Add-Content $log }
+        } catch {
+          # offset advance sits after the POST inside try, so a non-2xx skips it → retried next terminal event
+          $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode.value__ } else { 0 }
+          "$([DateTime]::Now.ToString('u')) transcript POST failed http=$code sid=$sid" | Add-Content $log
+        }
       }
     }
   }

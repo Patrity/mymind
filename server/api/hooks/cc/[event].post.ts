@@ -18,7 +18,13 @@ const Body = z.object({
 
 export default defineEventHandler(async (event) => {
   const eventName = getRouterParam(event, 'event') ?? 'unknown'
-  const body = Body.parse(await readBody(event))
+  const parsed = Body.safeParse(await readBody(event))
+  if (!parsed.success) {
+    // A malformed body is a client error (400), not a server crash (500). The
+    // transcript route already does this; keep the two hook routes consistent.
+    throw createError({ statusCode: 400, statusMessage: 'Bad Request', data: parsed.error.issues })
+  }
+  const body = parsed.data
 
   const metadata: Record<string, unknown> = { ...(body.metadata ?? {}), lastEvent: eventName }
   const isEnd = eventName === 'SessionEnd'
