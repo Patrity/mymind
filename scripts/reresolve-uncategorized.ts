@@ -1,6 +1,7 @@
 // Re-resolve sessions currently in `uncategorized` (or NULL) against EXISTING
-// projects only — prefix match, then cwd/git-root label, then git_remote key.
-// NEVER creates a project. Cascades agent-scoped memories. Idempotent.
+// projects only — git_remote key, then longest path-prefix match, then cwd
+// leaf-basename label. NEVER creates a project. Cascades agent-scoped
+// memories. Idempotent.
 // Run: node_modules/.bin/tsx --env-file=.env scripts/reresolve-uncategorized.ts [--dry-run]
 import { Client } from 'pg'
 import { normalizeGitRemote } from '../server/lib/projects/git-remote'
