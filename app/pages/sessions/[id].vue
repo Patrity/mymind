@@ -91,6 +91,9 @@ const sessionTitle = computed(() => {
   if (!meta.value) return ''
   return meta.value.title || meta.value.summary || '(untitled session)'
 })
+
+// ── Reassignment ──────────────────────────────────────────────────────────────
+const reassignOpen = ref(false)
 </script>
 
 <template>
@@ -188,6 +191,14 @@ const sessionTitle = computed(() => {
                       v-if="meta.project"
                       :slug="meta.project"
                     />
+                    <UButton
+                      icon="i-lucide-folder-input"
+                      color="neutral"
+                      variant="ghost"
+                      size="xs"
+                      :label="meta.project ? 'Move' : 'Assign project'"
+                      @click="reassignOpen = true"
+                    />
                   </div>
                   <h1 class="text-lg font-semibold text-highlighted leading-snug">
                     {{ sessionTitle }}
@@ -280,6 +291,14 @@ const sessionTitle = computed(() => {
           />
         </div>
       </div>
+
+      <ReassignProjectModal
+        v-if="meta"
+        v-model:open="reassignOpen"
+        :session-ids="[meta.id]"
+        :current-cwd="meta.cwd"
+        :current-project="meta.project"
+      />
     </template>
   </UDashboardPanel>
 </template>

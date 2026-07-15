@@ -115,6 +115,17 @@ function sourceColor(source: string): 'primary' | 'info' | 'warning' | 'neutral'
 function relativeTime(iso: string) {
   return useTimeAgo(new Date(iso)).value
 }
+
+// ── Selection + bulk reassignment ────────────────────────────────────────────
+const selectedIds = ref<Set<string>>(new Set())
+const reassignOpen = ref(false)
+function toggleSelect(id: string) {
+  const next = new Set(selectedIds.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  selectedIds.value = next
+}
+function clearSelection() { selectedIds.value = new Set() }
+const selectedList = computed(() => [...selectedIds.value])
 </script>
 
 <template>
@@ -161,6 +172,29 @@ function relativeTime(iso: string) {
           />
         </div>
 
+        <!-- Selection action bar -->
+        <div
+          v-if="selectedIds.size"
+          class="flex items-center gap-3 rounded-lg border border-default bg-elevated/50 px-3 py-2"
+        >
+          <span class="text-sm text-muted">{{ selectedIds.size }} selected</span>
+          <UButton
+            icon="i-lucide-folder-input"
+            color="primary"
+            variant="soft"
+            size="sm"
+            label="Move to project"
+            @click="reassignOpen = true"
+          />
+          <UButton
+            color="neutral"
+            variant="ghost"
+            size="sm"
+            label="Clear"
+            @click="clearSelection"
+          />
+        </div>
+
         <!-- Loading skeletons -->
         <div
           v-if="loading"
@@ -199,6 +233,12 @@ function relativeTime(iso: string) {
             @click="navigateTo('/sessions/' + session.id)"
           >
             <div class="flex items-start justify-between gap-3 flex-wrap">
+              <UCheckbox
+                :model-value="selectedIds.has(session.id)"
+                class="mt-0.5"
+                @click.stop
+                @update:model-value="toggleSelect(session.id)"
+              />
               <!-- Left: title + badges -->
               <div class="min-w-0 flex-1 space-y-1">
                 <div class="flex items-center gap-2 flex-wrap">
@@ -262,6 +302,14 @@ function relativeTime(iso: string) {
           </UCard>
         </template>
       </div>
+
+      <ReassignProjectModal
+        v-model:open="reassignOpen"
+        :session-ids="selectedList"
+        :current-cwd="null"
+        :current-project="null"
+        @done="clearSelection"
+      />
     </template>
   </UDashboardPanel>
 </template>
