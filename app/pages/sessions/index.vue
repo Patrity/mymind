@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
+import ReassignProjectModal from '~/components/sessions/ReassignProjectModal.vue'
 
 definePageMeta({ title: 'Sessions' })
 

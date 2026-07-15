@@ -2,6 +2,7 @@
 import { useTimeAgo } from '@vueuse/core'
 import { useQueryClient } from '@tanstack/vue-query'
 import SessionTranscript from '~/components/sessions/SessionTranscript.vue'
+import ReassignProjectModal from '~/components/sessions/ReassignProjectModal.vue'
 import type { SessionMessages } from '~~/shared/types/session'
 
 definePageMeta({ title: 'Session' })
