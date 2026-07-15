@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "path_prefixes" text[] DEFAULT '{}'::text[] NOT NULL;

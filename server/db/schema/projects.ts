@@ -14,6 +14,7 @@ export const projects = pgTable('projects', {
   stagingUrl: text('staging_url'),
   aliases: text('aliases').array().notNull().default(sql`'{}'::text[]`),
   localPaths: text('local_paths').array().notNull().default(sql`'{}'::text[]`),
+  pathPrefixes: text('path_prefixes').array().notNull().default(sql`'{}'::text[]`),
   details: jsonb('details').notNull().default(sql`'{}'::jsonb`),
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

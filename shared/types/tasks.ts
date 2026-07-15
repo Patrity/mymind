@@ -28,6 +28,7 @@ export interface ProjectDTO {
   stagingUrl: string | null
   aliases: string[]
   localPaths: string[]
+  pathPrefixes: string[]
   lastActivityAt: string | null
   sessionCount: number
   memoryCount: number
