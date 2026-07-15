@@ -1,9 +1,9 @@
 ---
 title: Projects
 status: shipped
-cycle: 27
+cycle: 46
 phase: 3
-updated: 2026-06-17
+updated: 2026-07-15
 ---
 
 # Projects
@@ -11,19 +11,21 @@ updated: 2026-06-17
 Canonical project entities that sessions and (agent) memories hang off of. A project is matched primarily by its **git remote** — the same repo cloned to many machines/paths still resolves to one project — so the agent's work, memories, and (later) docs/tasks all roll up to a single durable identity. Phase 1 ships the data model + resolution + ingest wiring + backfill; richer project features are deferred (see end).
 
 ## Data model (`server/db/schema/projects.ts`)
-- `projects`: uuid `id` PK (`gen_random_uuid()`), `slug` (unique, `projects_slug_uidx`), `name`, `description` (default `''`), `active` (default `true`), `git_remote_key` (**canonical match key**, `host/owner/repo` lowercased — see below), `repository_url` / `production_url` / `staging_url`, `aliases text[]` (extra remote keys that resolve here), `local_paths text[]` (observed `cwd`s), `details jsonb` (free-form KV, default `{}`), `last_activity_at`, `created_at` / `updated_at`. Indexes: unique slug, plain index on `git_remote_key`, and a **partial unique** index `projects_git_remote_key_uidx ON (git_remote_key) WHERE git_remote_key IS NOT NULL` (so many rows may have a null key, but a non-null key is unique).
+- `projects`: uuid `id` PK (`gen_random_uuid()`), `slug` (unique, `projects_slug_uidx`), `name`, `description` (default `''`), `active` (default `true`), `git_remote_key` (**canonical match key**, `host/owner/repo` lowercased — see below), `repository_url` / `production_url` / `staging_url`, `aliases text[]` (extra remote keys that resolve here), `local_paths text[]` (every observed `cwd`, passively accumulated — never used for routing), **`path_prefixes text[]`** (migration `0027_bumpy_virginia_dare.sql`, cycle 46 — **routing roots**, distinct from `local_paths`; see below), `details jsonb` (free-form KV, default `{}`), `last_activity_at`, `created_at` / `updated_at`. Indexes: unique slug, plain index on `git_remote_key`, and a **partial unique** index `projects_git_remote_key_uidx ON (git_remote_key) WHERE git_remote_key IS NOT NULL` (so many rows may have a null key, but a non-null key is unique).
 - The seeded **`uncategorized`** row (migration 0019): the fallback bucket for sessions with no parseable git remote. Never auto-created twice.
 - `sessions.project_id` (uuid FK, indexed `sessions_project_id_idx`) — set on ingest. The legacy `sessions.project` text slug is kept in sync alongside it.
 - `memories.project_id` (uuid FK, indexed `memories_project_id_idx`) — **null means global / project-agnostic** (user/world memories). Only `agent`-scope memories carry a project.
 - `memories.source_date` (timestamptz) — "last observed" date for the memory, sourced from its session's `started_at`.
 
 ## Resolution — `findOrCreateProject` (`server/services/projects.ts`)
-Given `{ gitRemote, cwd }`:
-1. `normalizeGitRemote(gitRemote)` → canonical key, or `null`. **No key →** derive the cwd basename, slugify it, and match an existing project by `slug` OR `aliases @> [label]`/`[lslug]` (so a non-git `…/bridget-services` session resolves to the friendly-named project that has `bridget-services` as a slug/alias); only if nothing matches → the seeded **Uncategorized** row. (Cycle 25 — this label path **matches only, never creates**; creation stays git-remote-only.)
-2. Match an existing project by `git_remote_key`.
-3. Else match by `aliases` (`@>` array contains the key).
-4. On a hit: append `cwd` to `local_paths` if new, bump `last_activity_at`, return.
-5. Else **create**: slug = `nextUniqueSlug(slugify(repoNameFromKey(key)))`, `name` = repo name, `git_remote_key` = key, `repository_url` = raw remote, `local_paths` = `[cwd]`. A unique-race on `git_remote_key` (another concurrent ingest won) is caught and falls back to re-selecting the winner — **race-safe**.
+Given `{ gitRemote, cwd, gitRoot }`:
+1. `normalizeGitRemote(gitRemote)` → canonical key, or `null`.
+2. **With a key:** match an existing project by `git_remote_key`, else by `aliases` (`@>` array contains the key); on a hit, append `cwd` to `local_paths` if new + bump `last_activity_at`. Else **create**: slug = `nextUniqueSlug(slugify(repoNameFromKey(key)))`, `name` = repo name, `git_remote_key` = key, `repository_url` = raw remote, `local_paths` = `[cwd]`. A unique-race on `git_remote_key` (another concurrent ingest won) is caught and falls back to re-selecting the winner — **race-safe**.
+3. **No key** (cycle 46 order — see [sessions.md](sessions.md#cycle-46--reassignment--path-based-auto-routing--hostname) for the full writeup):
+   1. **Longest registered `path_prefixes` match** wins (`longestPrefixMatch`) — the candidate whose registered prefix is the longest ancestor-or-equal of `cwd`.
+   2. **Label match**: `cwd` basename, then `gitRoot` basename, against existing `slug`/`aliases` (`matchProjectByLabel` — **match-only, never creates**).
+   3. **Auto-create**: if `cwd` passes the `isAutoCreatable` stoplist, create a new project named for the `cwd` leaf, seeding `path_prefixes = [cwd]`.
+   4. **Uncategorized fallback** (seeded row, unchanged since cycle 23).
 
 The pure key helpers live in `server/lib/projects/git-remote.ts`:
 - `normalizeGitRemote(remote)` — strips scheme/credentials/port/`.git`, handles scp-style `git@host:owner/repo`, lowercases → `host/owner/repo` (or `null`).
@@ -181,3 +183,21 @@ After the transaction, the loser's repointed memories may duplicate the winner's
 
 ### Watch-out — schema/DB FK divergence
 The three `project_id` FK constraints exist in **prod** (raw SQL in migrations 0019/0021, `ON DELETE NO ACTION`) but are **not modeled** in the Drizzle schema files (declared as bare `uuid`). A future `pnpm db:generate` could emit a migration that *drops* them — **review any generated migration touching these FKs**. (Same class as the existing partial-unique/GIN snapshot drift.) Modeling them with `.references()` is a backlog item.
+
+---
+
+## Path-prefix routing + session reassignment (cycle 46)
+
+### `path_prefixes` — routing roots, distinct from `local_paths`
+`projects.path_prefixes text[]` (migration `0027_bumpy_virginia_dare.sql`, default `'{}'`) holds the folder roots this project **auto-routes** future no-git-remote sessions from. It is populated two ways — never by hand:
+- **Auto-create** (`findOrCreateProject`, no-remote branch, step 3) seeds it with the single `cwd` that triggered the new project.
+- **Session reassignment** (below) can optionally register an additional prefix when a human moves a session to a project.
+
+This is deliberately **separate from `local_paths`** (every `cwd` a project has ever been seen at — passive history, exact-match only, not used for routing). `path_prefixes` entries are ancestor-matched: `longestPrefixMatch(cwd, candidates)` (`server/lib/projects/path-routing.ts`) picks the candidate whose registered prefix is the longest ancestor-or-equal of the session's `cwd`, so registering `…/Projects/Terawulf` also routes `…/Projects/Terawulf/subdir`. `ProjectDTO.pathPrefixes` exposes the field.
+
+### Session reassignment writes `path_prefixes`
+`reassignSession`/`reassignSessions` (`server/services/sessions.ts`) move a session (+ cascade its `scope='agent'` memories) onto a target project and, when the caller passes a `pathPrefix`, append it (deduped, `normalizePrefix`-ed) to that project's `path_prefixes` — teaching the router so future sessions from that folder never need a manual move again. Full detail (endpoints, UI, memory cascade, the `046ddc9` auto-import fix) lives in [sessions.md](sessions.md#cycle-46--reassignment--path-based-auto-routing--hostname).
+
+### Known limitations (deferred)
+- `findOrCreateProject`'s auto-create path swallows any **non-race** insert error and silently falls through to Uncategorized (no log) — asymmetric with the git-remote branch's race handling. A targeted re-select + log is a follow-up.
+- `reassignSession`/`reassignSessions` read the target project row **before** opening the transaction, so a concurrent reassignment to the same project has a theoretical lost-update race on `path_prefixes`. Negligible for a single-user deployment.
