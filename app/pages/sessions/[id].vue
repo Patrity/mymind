@@ -232,7 +232,7 @@ const sessionTitle = computed(() => {
 
                 <!-- CWD + git + machine -->
                 <div
-                  v-if="meta.cwd || gitBranch || gitRepo || meta.machineId || meta.appVersion"
+                  v-if="meta.cwd || gitBranch || gitRepo || meta.hostname || meta.machineId || meta.appVersion"
                   class="mt-3 pt-3 border-t border-default space-y-1"
                 >
                   <p
@@ -254,10 +254,11 @@ const sessionTitle = computed(() => {
                     <UIcon name="i-lucide-git-branch" class="size-3.5 inline mr-1" />{{ gitBranch }}{{ gitCommit ? ' @ ' + gitCommit.slice(0, 8) : '' }}
                   </p>
                   <p
-                    v-if="meta.machineId"
+                    v-if="meta.hostname || meta.machineId"
                     class="text-xs text-dimmed font-mono truncate"
+                    :title="meta.machineId ?? undefined"
                   >
-                    <UIcon name="i-lucide-monitor" class="size-3.5 inline mr-1" />{{ meta.machineId }}
+                    <UIcon name="i-lucide-monitor" class="size-3.5 inline mr-1" />{{ meta.hostname ?? meta.machineId }}
                   </p>
                   <p
                     v-if="meta.appVersion"

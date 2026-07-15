@@ -50,14 +50,26 @@ const sourceItems = computed(() => [
   ...distinctSources.value.map(s => ({ label: s, value: s }))
 ])
 
+const distinctHostnames = computed(() => {
+  const seen = new Set<string>()
+  for (const s of sessions.value) if (s.hostname) seen.add(s.hostname)
+  return [...seen].sort()
+})
+
 const projectItems = computed(() => [
   { label: 'All projects', value: '__all__' },
   ...distinctProjects.value.map(p => ({ label: p, value: p }))
 ])
 
+const hostnameItems = computed(() => [
+  { label: 'All machines', value: '__all__' },
+  ...distinctHostnames.value.map(h => ({ label: h, value: h }))
+])
+
 // ── Filters ───────────────────────────────────────────────────────────────────
 const sourceFilter = ref('__all__')
 const projectFilter = ref('__all__')
+const hostnameFilter = ref('__all__')
 const searchQ = ref('')
 
 const filtered = computed(() => {
@@ -67,6 +79,9 @@ const filtered = computed(() => {
   }
   if (projectFilter.value !== '__all__') {
     rows = rows.filter(s => s.project === projectFilter.value)
+  }
+  if (hostnameFilter.value !== '__all__') {
+    rows = rows.filter(s => s.hostname === hostnameFilter.value)
   }
   if (searchQ.value.trim()) {
     const q = searchQ.value.trim().toLowerCase()
@@ -135,6 +150,12 @@ function relativeTime(iso: string) {
           <USelect
             v-model="projectFilter"
             :items="projectItems"
+            value-key="value"
+            class="w-44 shrink-0"
+          />
+          <USelect
+            v-model="hostnameFilter"
+            :items="hostnameItems"
             value-key="value"
             class="w-44 shrink-0"
           />
@@ -221,6 +242,13 @@ function relativeTime(iso: string) {
               <span class="flex items-center gap-1">
                 <UIcon name="i-lucide-wrench" class="size-3.5" />
                 {{ session.toolCount }} tools
+              </span>
+              <span
+                v-if="session.hostname"
+                class="flex items-center gap-1"
+              >
+                <UIcon name="i-lucide-monitor" class="size-3.5" />
+                {{ session.hostname }}
               </span>
               <span class="flex items-center gap-1">
                 <UIcon name="i-lucide-arrow-up" class="size-3.5 text-info" />

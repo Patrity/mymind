@@ -2,6 +2,7 @@ export interface SessionListItem {
   id: string
   source: string
   project: string | null
+  hostname: string | null
   title: string | null
   summary: string | null
   messageCount: number
