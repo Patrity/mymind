@@ -126,7 +126,12 @@ function toggleSelect(id: string) {
   selectedIds.value = next
 }
 function clearSelection() { selectedIds.value = new Set() }
-const selectedList = computed(() => [...selectedIds.value])
+// Intersection with `filtered`, not a raw copy of `selectedIds` — a row a filter
+// hides should drop out of the bulk action even though it stays selected (so
+// toggling the filter back off restores it). Computed rather than pruned via a
+// watch, since the list also refetches on background SSE events and a
+// selection-mutating watch could drop selections mid-refetch.
+const selectedList = computed(() => filtered.value.filter(s => selectedIds.value.has(s.id)).map(s => s.id))
 </script>
 
 <template>
@@ -175,10 +180,10 @@ const selectedList = computed(() => [...selectedIds.value])
 
         <!-- Selection action bar -->
         <div
-          v-if="selectedIds.size"
+          v-if="selectedList.length"
           class="flex items-center gap-3 rounded-lg border border-default bg-elevated/50 px-3 py-2"
         >
-          <span class="text-sm text-muted">{{ selectedIds.size }} selected</span>
+          <span class="text-sm text-muted">{{ selectedList.length }} selected</span>
           <UButton
             icon="i-lucide-folder-input"
             color="primary"

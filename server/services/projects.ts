@@ -228,11 +228,12 @@ export async function findOrCreateProject(input: { gitRemote?: string | null, cw
           slug, name: basenameOf(prefix), pathPrefixes: [prefix], localPaths: [cwd], lastActivityAt: new Date()
         }).returning()
         return created!
-      } catch {
+      } catch (err) {
         // slug race — re-select by the prefix we tried to register.
         const rows = await db.select().from(projects)
         const racer = rows.find(r => (r.pathPrefixes ?? []).includes(prefix))
         if (racer) return racer
+        console.error(`findOrCreateProject: auto-create failed for cwd ${cwd}, falling back to uncategorized`, err)
       }
     }
     // 4. Uncategorized fallback (seeded by migration 0019).

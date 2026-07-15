@@ -49,8 +49,14 @@ async function submit() {
   try {
     let slug = selected.value
     if (isCreate.value) {
-      const proj = await create({ name: newName.value.trim() })
-      slug = proj.slug
+      try {
+        const proj = await create({ name: newName.value.trim() })
+        slug = proj.slug
+      } catch (e: unknown) {
+        const err = e as { data?: { statusMessage?: string }, message?: string }
+        toast.add({ color: 'error', title: "Couldn't create project", description: err.data?.statusMessage ?? err.message })
+        return
+      }
     }
     const pfx = registerPrefix.value && prefix.value.trim() ? normalizePrefix(prefix.value) : null
     if (props.sessionIds.length === 1) {

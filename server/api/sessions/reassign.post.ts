@@ -3,7 +3,7 @@ import { reassignSessions } from '../../services/sessions'
 import { publishChange } from '../../utils/live-bus'
 
 const Body = z.object({
-  ids: z.array(z.string().min(1)).min(1),
+  ids: z.array(z.string().min(1)).min(1).max(500),
   project: z.string().min(1),
   pathPrefix: z.string().nullish()
 })
