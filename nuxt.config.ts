@@ -102,9 +102,11 @@ export default defineNuxtConfig({
       '*/15 * * * *': ['enrich-memories'],
       '0 3 * * *': ['prune-activity-log'],
       '*/4 * * * *': ['embed-messages'],
-      // UMAP over ~2000+ vectors is heavy — run once nightly (offset from the
-      // 03:00 prune) to rebuild the knowledge-galaxy layout.
-      '0 4 * * *': ['compute-graph-layout']
+      // UMAP over ~2000+ vectors is heavy + synchronous (blocks the event loop),
+      // so the hourly run SKIPS the recompute unless the eligible node count
+      // changed (see the job's force guard). Manual /api/graph/recompute forces
+      // a full rebuild. Keeps new memories/projects appearing within the hour.
+      '0 * * * *': ['compute-graph-layout']
     }
   }
 })

@@ -22,6 +22,8 @@ export interface GraphLayoutSummary {
   projects: number
   edges: number
   upserted: number
+  /** true when the hourly run short-circuited because the node set was unchanged. */
+  skipped?: boolean
 }
 
 /**
@@ -40,7 +42,7 @@ export interface GraphLayoutSummary {
  * both paths land in the activity log. Publishes a single `graph` live event once
  * the upsert commits so every open galaxy tab refetches the rebuilt layout.
  */
-export async function runComputeGraphLayout(): Promise<GraphLayoutSummary> {
+export async function runComputeGraphLayout(opts: { force?: boolean } = {}): Promise<GraphLayoutSummary> {
   return withSpan({ kind: 'job', name: 'compute-graph-layout' }, async () => {
     const db = useDb()
 
@@ -78,6 +80,24 @@ export async function runComputeGraphLayout(): Promise<GraphLayoutSummary> {
     for (const [docId, vecs] of docVecs) {
       if (vecs.length === 0) continue
       items.push({ type: 'document', id: docId, vector: meanPool(vecs) })
+    }
+
+    // Hourly-cron guard: if the eligible node set is unchanged since the last run
+    // (no adds/removes), the seeded UMAP would land identically — skip the heavy,
+    // event-loop-blocking recompute. `force` (manual /api/graph/recompute) always
+    // rebuilds. Count-only compare: a pure content edit keeps the count and is
+    // picked up on the next add/remove; a slightly stale coord is harmless.
+    if (!opts.force) {
+      const [cur] = await db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(graphLayout)
+        .where(sql`${graphLayout.sourceType} <> 'project'`)
+      const currentNodeCount = cur?.c ?? 0
+      if (currentNodeCount > 0 && currentNodeCount === items.length) {
+        const skipped: GraphLayoutSummary = { memories: 0, documents: 0, images: 0, sessions: 0, projects: 0, edges: 0, upserted: 0, skipped: true }
+        recordJobSummary('compute-graph-layout', skipped as unknown as Record<string, unknown>)
+        return skipped
+      }
     }
 
     // 2. UMAP → 3D coords.
@@ -156,7 +176,7 @@ export async function runComputeGraphLayout(): Promise<GraphLayoutSummary> {
 }
 
 export default defineTask({
-  meta: { name: 'compute-graph-layout', description: 'Recompute the knowledge-galaxy UMAP layout (nightly)' },
+  meta: { name: 'compute-graph-layout', description: 'Recompute the knowledge-galaxy UMAP layout (hourly; skips when the node set is unchanged)' },
   async run() {
     const result = await runComputeGraphLayout()
     return { result }
