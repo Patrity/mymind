@@ -160,7 +160,11 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   const composer = new EffectComposer(renderer)
   composer.setPixelRatio(ratio)
   composer.addPass(new RenderPass(scene, camera))
-  const bloom = new UnrealBloomPass(new THREE.Vector2(cssW, cssH), BLOOM_BASE, 0.6, 0.0)
+  // threshold=0.2 (not 0): at 0 every near-black background texel + faint additive
+  // edge blending enters the bloom convolution, and with ~230 points in frame that
+  // floods the whole canvas into a lavender haze instead of a dark backdrop with
+  // isolated glows. Tuned live in the browser (Task 1.6) against the prototype.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(cssW, cssH), BLOOM_BASE, 0.55, 0.2)
   composer.addPass(bloom)
 
   // --- point material (custom shader: per-node size + colour + alpha) ------
