@@ -92,7 +92,7 @@ const BLOOM_BASE = 0.85 // UnrealBloom strength at glow = 1
 // Slider clamp ranges (mirror the prototype's <input> min/max).
 const CLAMP: Record<keyof GalaxyControlsState, [number, number]> = {
   spread: [0.5, 1.9],
-  zoom: [0.5, 2.6],
+  zoom: [0.5, 10],
   rotate: [0, 4],
   size: [0.5, 2],
   glow: [0.0, 1.8],
@@ -298,6 +298,12 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   let lastInteract = -1e9
   let cxCur = cssW / 2
   let detailOpen = false
+  // Zoom-to-cursor pan (world units), COMPOSED with the detail-pane horizontal centre.
+  // `zoomAnchor` captures the cloud-plane offset `u` of the point under the cursor at
+  // wheel time; while active, each frame re-solves pan so `u` re-projects to (mx,my).
+  let panX = 0
+  let panY = 0
+  const zoomAnchor = { active: false, ux: 0, uy: 0, mx: 0, my: 0 }
 
   let colorMode: 'type' | 'project' = 'type'
   // Isolate filter: empty ⇒ show all; non-empty ⇒ show ONLY nodes whose legend key ∈ set.
@@ -594,6 +600,17 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
 
   const onWheel = (e: WheelEvent) => {
     e.preventDefault()
+    // Anchor the cloud point currently under the cursor: capture its offset `u` from the
+    // CURRENT projected origin, so the frame loop can hold it under (mx,my) as zoom eases.
+    const p = localXY(e)
+    const fp = focalPx()
+    const opx = cxCur + panX * fp // current projected-origin x
+    const opy = cssH / 2 - panY * fp // current projected-origin y
+    zoomAnchor.ux = (p.x - opx) / fp
+    zoomAnchor.uy = (opy - p.y) / fp
+    zoomAnchor.mx = p.x
+    zoomAnchor.my = p.y
+    zoomAnchor.active = true
     springs.zoom.t = clamp(springs.zoom.t * (1 - e.deltaY * 0.0012), CLAMP.zoom[0], CLAMP.zoom[1])
     mark()
   }
@@ -685,6 +702,10 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     flyT0 = now()
     inertia = false
     spin = null
+    // Recenter: a fly-to brings the node to the projected origin, so drop any zoom-to-cursor pan.
+    zoomAnchor.active = false
+    panX = 0
+    panY = 0
     springs.zoom.t = clamp(Math.max(springs.zoom.t, 1.4), CLAMP.zoom[0], CLAMP.zoom[1])
     select(nodeId)
     mark()
@@ -699,7 +720,9 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
 
   function updateCamera() {
     // fov so the projected galaxy radius equals R = focalPx (arcball tracking).
-    const tanHalf = clamp((cssH * 0.5) / (CAM_D * Math.max(1, focalPx())), Math.tan((8 * Math.PI) / 360), Math.tan((70 * Math.PI) / 360))
+    // Low fov floor (2.5°) lets deep zoom keep magnifying — at an 8° floor magnification
+    // plateaus around zoom≈6, well inside the new CLAMP.zoom max of 10.
+    const tanHalf = clamp((cssH * 0.5) / (CAM_D * Math.max(1, focalPx())), Math.tan((2.5 * Math.PI) / 360), Math.tan((70 * Math.PI) / 360))
     camera.fov = (2 * Math.atan(tanHalf) * 180) / Math.PI
     camera.updateProjectionMatrix()
   }
@@ -779,7 +802,25 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
 
     // apply transform to the world group
     world.quaternion.set(q.x, q.y, q.z, q.w)
-    world.position.x = (cxCur - cssW / 2) / focalPx() // pan for detail pane
+    const fp = focalPx()
+    // Zoom-to-cursor: while the anchor is active, re-solve pan so the anchored cloud point
+    // (offset `u`) re-projects to (mx,my) at the current focalPx. Clear once the zoom spring
+    // settles. Otherwise, when fully zoomed out (≤1), ease pan back so the view re-centers;
+    // when zoomed in (>1) pan persists (map-like).
+    if (zoomAnchor.active) {
+      const opx = zoomAnchor.mx - zoomAnchor.ux * fp
+      const opy = zoomAnchor.my + zoomAnchor.uy * fp
+      panX = (opx - cxCur) / fp
+      panY = (cssH / 2 - opy) / fp
+      if (Math.abs(springs.zoom.t - springs.zoom.c) < 1e-3 && Math.abs(springs.zoom.v) < 1e-3) zoomAnchor.active = false
+    } else if (springs.zoom.c <= 1.0) {
+      panX += -panX * 0.1
+      panY += -panY * 0.1
+      if (Math.abs(panX) < 1e-4) panX = 0
+      if (Math.abs(panY) < 1e-4) panY = 0
+    }
+    world.position.x = (cxCur - cssW / 2) / fp + panX // detail-pane centre + zoom-to-cursor pan
+    world.position.y = panY
     world.updateMatrixWorld(true)
 
     // spread changes → rewrite node + edge positions

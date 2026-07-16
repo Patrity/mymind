@@ -22,7 +22,7 @@ interface SliderDef {
 // Ranges mirror scene.ts's CLAMP table exactly.
 const SLIDERS: SliderDef[] = [
   { key: 'spread', label: 'Cluster spread', min: 0.5, max: 1.9, step: 0.01, decimals: 2 },
-  { key: 'zoom', label: 'Zoom', min: 0.5, max: 2.6, step: 0.01, decimals: 2 },
+  { key: 'zoom', label: 'Zoom', min: 0.5, max: 10, step: 0.01, decimals: 2 },
   { key: 'rotate', label: 'Rotate speed', min: 0, max: 4, step: 0.05, decimals: 1 },
   { key: 'size', label: 'Node size', min: 0.5, max: 2, step: 0.01, decimals: 2 },
   { key: 'glow', label: 'Glow', min: 0.0, max: 1.8, step: 0.01, decimals: 2 },
