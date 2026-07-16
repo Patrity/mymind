@@ -58,7 +58,10 @@ function notYet(feature: string) {
 <template>
   <aside class="fixed top-0 right-0 bottom-0 z-[15] w-[372px] max-w-[88vw] bg-[rgba(14,16,26,.72)] backdrop-blur-2xl border-l border-white/[0.09] px-5 pb-5 pt-16 overflow-y-auto">
     <span class="inline-flex items-center gap-1.5 text-[11px] tracking-[0.06em] uppercase text-white px-2.5 py-1 rounded-full bg-[rgba(167,139,250,.25)] border border-[rgba(167,139,250,.4)]">
-      <UIcon :name="TYPE_ICON[node.type]" class="size-3" />
+      <UIcon
+        :name="TYPE_ICON[node.type]"
+        class="size-3"
+      />
       {{ TYPE_LABEL[node.type] }}
     </span>
 

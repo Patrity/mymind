@@ -24,7 +24,10 @@ let scene: GalaxyScene | null = null
 // Cursor position (viewport coords) for the hover tooltip — position:fixed, offset +14px like the prototype.
 const mouseX = ref(-999)
 const mouseY = ref(-999)
-function onPointerMove(e: PointerEvent) { mouseX.value = e.clientX; mouseY.value = e.clientY }
+function onPointerMove(e: PointerEvent) {
+  mouseX.value = e.clientX
+  mouseY.value = e.clientY
+}
 
 onMounted(() => {
   scene = createGalaxyScene(canvas.value!)
@@ -154,7 +157,9 @@ function onSearchSubmit() {
       :style="{ left: `${mouseX + 14}px`, top: `${mouseY + 14}px` }"
     >
       <div class="text-[10px] tracking-[0.08em] uppercase text-[#9aa0b8]">
-        {{ hovered.type === 'project' ? 'Project hub' : hovered.type }}<template v-if="hovered.project && hovered.type !== 'project'"> · {{ hovered.project }}</template>
+        {{ hovered.type === 'project' ? 'Project hub' : hovered.type }}<template v-if="hovered.project && hovered.type !== 'project'">
+          · {{ hovered.project }}
+        </template>
       </div>
       <div class="text-[#e9eaf3] mt-0.5 leading-[1.35] text-xs">
         {{ hovered.label }}
