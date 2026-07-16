@@ -54,6 +54,7 @@
     "sortablejs": "^1.15.7",
     "tailwindcss": "^4.3.0",
     "three": "^0.184.0",
+    "umap-js": "^1.4.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
