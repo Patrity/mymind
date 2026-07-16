@@ -197,6 +197,13 @@
       "when": 1784140063383,
       "tag": "0027_bumpy_virginia_dare",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1784197097749,
+      "tag": "0028_cold_supernaut",
+      "breakpoints": true
     }
   ]
 }
