@@ -4,6 +4,7 @@ import { graphLayout, memories, documents, images, sessions, chunks } from '../d
 import { meanPool, computeLayout, type LayoutItem, type LayoutRow } from '../lib/galaxy/layout'
 import { assembleEdges, buildEdgeSourceRows } from '../services/graph'
 import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { publishChange } from '../utils/live-bus'
 
 // Fixed seed so the UMAP layout is reproducible run-to-run (the same vectors
 // land in the same place, so the galaxy doesn't reshuffle every night).
@@ -36,8 +37,8 @@ export interface GraphLayoutSummary {
  *
  * Exported so the /api/graph/recompute endpoint can trigger it on demand; also the
  * body of the nightly `compute-graph-layout` task below. Wrapped in a job span so
- * both paths land in the activity log. Does NOT publish a `graph` live event — that
- * is Phase 3 (Task 3.2).
+ * both paths land in the activity log. Publishes a single `graph` live event once
+ * the upsert commits so every open galaxy tab refetches the rebuilt layout.
  */
 export async function runComputeGraphLayout(): Promise<GraphLayoutSummary> {
   return withSpan({ kind: 'job', name: 'compute-graph-layout' }, async () => {
@@ -147,6 +148,9 @@ export async function runComputeGraphLayout(): Promise<GraphLayoutSummary> {
       upserted: allRows.length
     }
     recordJobSummary('compute-graph-layout', summary as unknown as Record<string, unknown>)
+    // One signal for the whole rebuild (not per-row) — the galaxy refetches the
+    // entire layout in one call, so a single event is all any listener needs.
+    publishChange({ resource: 'graph', action: 'updated', id: 'layout' })
     return summary
   })
 }

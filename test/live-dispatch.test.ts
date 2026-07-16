@@ -57,3 +57,22 @@ describe('dispatchLiveEvent — activity', () => {
     expect(keys).toContain(JSON.stringify(['activity', 'count']))
   })
 })
+
+describe('dispatchLiveEvent — galaxy graph invalidation', () => {
+  it.each(['graph', 'memory', 'document', 'image', 'session', 'project'] as const)(
+    'invalidates the galaxy query (["graph"]) on a %s event',
+    (resource) => {
+      const invalidateQueries = vi.fn()
+      dispatchLiveEvent({ invalidateQueries }, { v: 1, resource, action: 'updated', id: 'x-1', at: 0 })
+      const keys = invalidateQueries.mock.calls.map(c => JSON.stringify(c[0]!.queryKey))
+      expect(keys).toContain(JSON.stringify(['graph']))
+    }
+  )
+
+  it('does not invalidate the galaxy query for unrelated resources', () => {
+    const invalidateQueries = vi.fn()
+    dispatchLiveEvent({ invalidateQueries }, { v: 1, resource: 'task', action: 'updated', id: 't-1', at: 0 })
+    const keys = invalidateQueries.mock.calls.map(c => JSON.stringify(c[0]!.queryKey))
+    expect(keys).not.toContain(JSON.stringify(['graph']))
+  })
+})
