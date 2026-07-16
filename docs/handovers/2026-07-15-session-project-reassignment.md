@@ -2,8 +2,8 @@
 title: Session ↔ Project reassignment + path-based auto-routing
 cycle: 46
 date: 2026-07-15
-status: BUILT + browser-validated on branch feat/session-project-reassignment — gates green (typecheck 0 / test 773 / build). Final whole-branch review + merge/deploy PENDING (Tony).
-branch: feat/session-project-reassignment (built subagent-driven, 8 tasks; controller ran full playwright-cli E2E for tasks 6 and 8)
+status: MERGED to master (local fast-forward, 4629e7e) — gates green (typecheck 0 / test 773 / build), full playwright-cli E2E pass, final whole-branch review (opus) = Ready to merge. NOT pushed/deployed; push→CD deploy + prod-drain PENDING (Tony).
+branch: feat/session-project-reassignment (built subagent-driven, 8 tasks + 1 E2E-found fix + final-review polish; merged to master and deleted; controller ran full playwright-cli E2E)
 docs:
   - ../wiki/sessions.md (living reference — resolver order, hostname filter, reassignment; cycle bumped 24→46)
   - ../wiki/projects.md (living reference — path_prefixes field; cycle bumped 27→46)
@@ -117,6 +117,6 @@ import ReassignProjectModal from '~/components/sessions/ReassignProjectModal.vue
 
 ## Next steps for Tony
 
-1. Review the branch; when ready, merge `feat/session-project-reassignment` to master.
-2. Run the deploy/prod-drain steps above post-merge.
+1. ~~Review + merge to master.~~ **Done** — merged locally (fast-forward, `4629e7e`), branch deleted. `master` is ahead of `origin/master` by 13 commits, **not yet pushed**.
+2. Push `master` to trigger CD, then run the deploy/prod-drain steps above.
 3. Optional follow-ups: fix the auto-create error-swallow (add a log), consider the `path_prefixes` race if concurrent reassignment ever becomes a real workflow, prune `selectedIds` on filter change.
