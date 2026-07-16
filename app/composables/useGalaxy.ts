@@ -63,10 +63,12 @@ export function useGalaxy() {
   /**
    * Draw a manual supersedes/contradicts edge between two memories. The new edge
    * lands live via the ['graph'] invalidation (the endpoint publishes `graph`).
-   * Returns the undoToken so the caller can offer "Undo".
+   * Returns `{ created: false }` (no undoToken, no live publish) when the exact same
+   * edge already existed — the endpoint no-ops on that conflict instead of pretending
+   * to create it, so the caller must branch on `created` rather than assume success.
    */
   function addRelation(fromId: string, toId: string, type: MemoryRelationType) {
-    return $fetch<{ undoToken: string }>('/api/memory-relations', {
+    return $fetch<{ created: true, undoToken: string } | { created: false }>('/api/memory-relations', {
       method: 'POST',
       body: { fromId, toId, type }
     })

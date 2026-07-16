@@ -113,12 +113,18 @@ async function onShowSimilar() {
 async function onCreateRelation(payload: { toId: string, type: MemoryRelationType }) {
   if (!selected.value) return
   try {
-    const { undoToken } = await galaxy.addRelation(selected.value.id, payload.toId, payload.type)
+    const result = await galaxy.addRelation(selected.value.id, payload.toId, payload.type)
+    if (!result.created) {
+      // Same edge already existed — the endpoint no-op'd (no publish, no undo token).
+      // Say so plainly rather than showing a false "created" toast with a dead Undo.
+      toast.add({ color: 'neutral', icon: 'i-lucide-git-branch', title: 'Relation already exists' })
+      return
+    }
     toast.add({
       color: 'success',
       icon: 'i-lucide-git-branch',
       title: `Relation created (${payload.type})`,
-      actions: undoToken ? [{ label: 'Undo', onClick: () => onUndo(undoToken, 'Relation removed') }] : undefined
+      actions: [{ label: 'Undo', onClick: () => onUndo(result.undoToken, 'Relation removed') }]
     })
   } catch (e) { toastErr(e, 'Could not create relation') }
 }

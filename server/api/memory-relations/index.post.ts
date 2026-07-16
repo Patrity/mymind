@@ -2,13 +2,17 @@ import { z } from 'zod'
 import { createMemoryRelation } from '../../services/memory-relations'
 
 const Body = z.object({
-  fromId: z.string().min(1),
-  toId: z.string().min(1),
+  fromId: z.uuid(),
+  toId: z.uuid(),
   type: z.enum(['supersedes', 'contradicts'])
 })
 
 export default defineEventHandler(async (event) => {
-  const body = Body.parse(await readBody(event))
+  const parsed = Body.safeParse(await readBody(event))
+  if (!parsed.success) {
+    throw createError({ statusCode: 400, statusMessage: 'Bad Request', data: parsed.error.issues })
+  }
+  const body = parsed.data
   try {
     return await createMemoryRelation(body.fromId, body.toId, body.type)
   } catch (err: unknown) {

@@ -36,10 +36,11 @@ export function validateRelationInput(input: { fromId: string, toId: string, typ
 
 /**
  * Draw a manual supersede/contradict edge between two memories.
- * Idempotent (onConflictDoNothing on the (fromId,toId,type) unique index).
- * Undo deletes the row it just inserted (no-op if the edge already existed).
+ * Idempotent (onConflictDoNothing on the (fromId,toId,type) unique index): if the edge
+ * already existed, nothing was inserted — return `{ created: false }` without publishing
+ * a live event or registering an undo (there is nothing to refetch or undo).
  */
-export async function createMemoryRelation(fromId: string, toId: string, type: MemoryRelationType): Promise<{ undoToken: string }> {
+export async function createMemoryRelation(fromId: string, toId: string, type: MemoryRelationType): Promise<{ created: true, undoToken: string } | { created: false }> {
   const input = validateRelationInput({ fromId, toId, type })
   const db = useDb()
 
@@ -48,17 +49,17 @@ export async function createMemoryRelation(fromId: string, toId: string, type: M
     .onConflictDoNothing()
     .returning()
 
+  if (!inserted) return { created: false }
+
   publishChange({ resource: 'graph', action: 'updated', id: input.fromId })
 
-  const relationId = inserted?.id
+  const relationId = inserted.id
   const undoToken = registerUndo(async () => {
-    // If the edge already existed (conflict), we created nothing — undo is a no-op.
-    if (!relationId) return
     await db.delete(memoryRelations).where(eq(memoryRelations.id, relationId))
     publishChange({ resource: 'graph', action: 'updated', id: input.fromId })
   })
 
-  return { undoToken }
+  return { created: true, undoToken }
 }
 
 /**
