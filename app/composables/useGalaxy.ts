@@ -21,7 +21,8 @@ export function useGalaxy() {
   const hovered = ref<GraphNode | null>(null)
   const colorMode = ref<'type' | 'project'>('type') // DEFAULT = type
   const disabledKeys = reactive(new Set<string>())
-  const controls = reactive({ spread: 1, zoom: 0.9, rotate: 1, size: 1, glow: 1, link: 1 })
+  // Defaults tuned for real ~2k-node scale (glow/size lowered from the 230-node prototype's 1.0 to avoid bloom washout)
+  const controls = reactive({ spread: 1.2, zoom: 0.9, rotate: 1, size: 0.55, glow: 0.35, link: 1 })
 
   const scene = shallowRef<GalaxyScene | null>(null)
   function bindScene(s: GalaxyScene | null) {

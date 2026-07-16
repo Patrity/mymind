@@ -270,12 +270,13 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   let edges: EdgePair[] = []
 
   // controls (springs) ------------------------------------------------------
+  // Initial targets mirror useGalaxy's control defaults (tuned for ~2k-node scale)
   const springs: Record<keyof GalaxyControlsState, Spring> = {
-    spread: makeSpring(1.0),
+    spread: makeSpring(1.2),
     zoom: makeSpring(0.9),
     rotate: makeSpring(1.0),
-    size: makeSpring(1.0),
-    glow: makeSpring(1.0),
+    size: makeSpring(0.55),
+    glow: makeSpring(0.35),
     link: makeSpring(1.0),
   }
   let lastSpread = 1.0
