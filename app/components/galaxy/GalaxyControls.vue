@@ -25,7 +25,7 @@ const SLIDERS: SliderDef[] = [
   { key: 'zoom', label: 'Zoom', min: 0.5, max: 2.6, step: 0.01, decimals: 2 },
   { key: 'rotate', label: 'Rotate speed', min: 0, max: 4, step: 0.05, decimals: 1 },
   { key: 'size', label: 'Node size', min: 0.5, max: 2, step: 0.01, decimals: 2 },
-  { key: 'glow', label: 'Glow', min: 0.3, max: 1.8, step: 0.01, decimals: 2 },
+  { key: 'glow', label: 'Glow', min: 0.0, max: 1.8, step: 0.01, decimals: 2 },
   { key: 'link', label: 'Link opacity', min: 0, max: 1.6, step: 0.01, decimals: 2 }
 ]
 
@@ -35,7 +35,7 @@ function onSlide(key: keyof GalaxyControlsState, v: number | number[]) {
 </script>
 
 <template>
-  <div class="fixed left-4 sm:left-[18px] top-16 z-[12] w-[212px] rounded-[13px] bg-[rgba(14,16,26,.72)] border border-white/[0.09] backdrop-blur-xl overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,.35)]">
+  <div class="absolute left-4 sm:left-[18px] top-16 z-[12] w-[212px] rounded-[13px] bg-[rgba(14,16,26,.72)] border border-white/[0.09] backdrop-blur-xl overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,.35)]">
     <button
       type="button"
       class="w-full flex items-center justify-between px-3.5 py-2.5 text-[11px] tracking-[0.09em] uppercase text-[#9aa0b8] select-none hover:text-[#e9eaf3] transition-colors cursor-pointer"

@@ -20,7 +20,7 @@ An interactive **3D knowledge graph** of the whole second brain at **`/galaxy`**
 - `ocr`: document → source image (`documents.ocr_id`).
 - `supersedes` / `contradicts`: memory ↔ memory from `memory_relations` (status `active` only), colour-coded violet / red.
 
-Semantic similarity is **not** a persistent edge — position encodes it, and "Show similar" (cosine kNN) highlights neighbours on demand.
+Semantic similarity is **not** a persistent edge — position encodes it, and **selecting a node auto-highlights its cosine-kNN neighbours** (the former manual "Show similar" button was removed; the highlight now fires on selection via `GET /api/graph/neighbors`).
 
 ## Position (layout)
 
@@ -53,9 +53,13 @@ PK `(source_type, source_id)`; index on `source_type`. **Empty until the job run
 
 ## Frontend
 
-- Page `app/pages/galaxy.vue` + composable `app/composables/useGalaxy.ts` (vue-query `['graph']`). Overlays: `GalaxyControls` (sliders), `GalaxyLegend` (colour toggles), `GalaxyDetail` (right pane, per-type CRUD + Show-similar + draw-relation).
-- Scene `app/lib/galaxy/scene.ts` — three.js `Points` (additive, colour by type/project, size ∝ √degree) + `UnrealBloomPass`; `LineSegments` edges by kind; **quaternion arcball** camera (`app/lib/galaxy/arcball.ts`) so the grabbed node tracks the cursor; **drag-throw inertia**; 2 s idle auto-rotate; scroll-zoom; `flyTo`/search; `highlight(ids)` for Show-similar.
-- **Controls + defaults** (spring-eased, `app/lib/galaxy/spring.ts`): Cluster spread **1.2**, Zoom 0.9, Rotate 1.0, Node size **0.55**, Glow **0.35**, Link opacity 1.0. Colour default **Type** (toggle Project). *(Glow/size/spread were retuned down from the 230-node prototype's 1.0 — at ~1,900 real nodes the old defaults bloomed to a white cloud.)*
+- **Layout:** the page uses the **default dashboard layout** (sidebar visible). The canvas + all overlays live inside a `stage` container (`position:relative`) that fills the main content panel (`UDashboardPanel`, body padding killed); the `<canvas>` is `absolute inset-0` within it (not `fixed` to the viewport) and every overlay is `absolute`, so the scene sizes to the panel via `canvas.getBoundingClientRect()` and resizes cleanly. *(Earlier it was `layout:false` / full-bleed.)*
+- Page `app/pages/galaxy.vue` + composable `app/composables/useGalaxy.ts` (vue-query `['graph']`). Overlays: `GalaxyControls` (sliders), `GalaxyLegend` (**isolate filter**), `GalaxyDetail` (right pane, per-type CRUD + draw-relation).
+- **Legend = isolate/filter** (not hide): clicking rows builds an **active set** (`useGalaxy.activeKeys`, empty = show all); non-empty shows ONLY nodes whose legend key (`node.type` in Type mode, `node.project ?? '__none__'` in Project mode) ∈ the set. Multiple clicks union; inactive rows dim + a "Filtering" badge shows. Wired page→scene via `scene.setActiveKeys(active)`.
+- **Selection** (click a node, or fly-to): opens the detail pane, **boosts the effective glow to ~2× the slider value** (a springed bloom multiplier capped at the glow max — never mutates the slider), and **auto-highlights the node's kNN neighbours** (skipped for projects, which carry no vector). Deselect/close reverts the glow.
+- **Selection ring** is sized **proportional to the node's on-screen radius** (`≈1.8×`, tracks the `size` slider + perspective/depth), not fixed screen pixels — so it hugs just outside the node at any zoom instead of ballooning.
+- Scene `app/lib/galaxy/scene.ts` — three.js `Points` (additive, colour by type/project, size ∝ √degree) + `UnrealBloomPass`; `LineSegments` edges by kind; **quaternion arcball** camera (`app/lib/galaxy/arcball.ts`) so the grabbed node tracks the cursor; **drag-throw inertia**; 2 s idle auto-rotate; scroll-zoom; `flyTo`/search; `highlight(ids)` for the neighbour flash. The cloud is **centred at the world origin** in `setData` (its centroid is subtracted from every node anchor) so the arcball pivots around the visual middle, not a corner.
+- **Controls + defaults** (spring-eased, `app/lib/galaxy/spring.ts`; useGalaxy + scene spring-init kept in lockstep): Cluster spread **1.14**, Zoom 0.9, Rotate 1.0, Node size **0.8**, Glow **0.3**, Link opacity **0.4**. Glow slider min is **0.0** (renders with no bloom). Colour default **Type** (toggle Project). *(Glow/size/spread were retuned for ~1,900 real nodes — the 230-node prototype's 1.0 defaults bloomed to a white cloud.)*
 
 ## Live reactivity
 

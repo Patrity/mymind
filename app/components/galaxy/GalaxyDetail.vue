@@ -9,9 +9,9 @@
      refresh is automatic — every mutation publishes a change that invalidates
      the ['graph'] query (see .claude/rules/live-data.md).
 
-     The immersive canvas escapes the dashboard shell (layout:false), so this
-     pane keeps its own cosmic palette (raw hex) rather than the app tokens —
-     the established convention for the galaxy surface. -->
+     The galaxy surface deliberately keeps its own cosmic palette (raw hex) rather
+     than the app tokens — the established convention for this immersive canvas.
+     The pane is `absolute` within the galaxy stage (the content panel), not `fixed`. -->
 <script setup lang="ts">
 import type { GraphEdgeKind, GraphNode, GraphNodeType } from '~~/shared/types/graph'
 import type { MemoryDTO, MemoryScope } from '~~/shared/types/memory'
@@ -33,7 +33,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   fly: [nodeId: string]
-  'show-similar': []
   'create-relation': [payload: { toId: string, type: MemoryRelationType }]
   'archive-memory': []
   reassign: []
@@ -78,8 +77,6 @@ const REL_TYPE_ITEMS = [
 ]
 
 const isMemory = computed(() => props.node.type === 'memory')
-// Projects carry no vector, so they have no semantic neighbours.
-const canShowSimilar = computed(() => props.node.type !== 'project')
 
 // ── Full memory row (accurate content + tags; the graph label is truncated) ──
 const memDetail = ref<MemoryDTO | null>(null)
@@ -209,7 +206,7 @@ const editLinkLabel = computed(() => (props.node.type === 'project' ? 'Edit proj
 </script>
 
 <template>
-  <aside class="fixed top-0 right-0 bottom-0 z-[15] w-[372px] max-w-[88vw] bg-[rgba(14,16,26,.72)] backdrop-blur-2xl border-l border-white/[0.09] px-5 pb-5 pt-16 overflow-y-auto">
+  <aside class="absolute top-0 right-0 bottom-0 z-[15] w-[372px] max-w-[88vw] bg-[rgba(14,16,26,.72)] backdrop-blur-2xl border-l border-white/[0.09] px-5 pb-5 pt-16 overflow-y-auto">
     <span class="inline-flex items-center gap-1.5 text-[11px] tracking-[0.06em] uppercase text-white px-2.5 py-1 rounded-full bg-[rgba(167,139,250,.25)] border border-[rgba(167,139,250,.4)]">
       <UIcon
         :name="TYPE_ICON[node.type]"
@@ -435,17 +432,6 @@ const editLinkLabel = computed(() => (props.node.type === 'project' ? 'Edit proj
         color="primary"
         variant="soft"
         @click="emit('reassign')"
-      />
-
-      <!-- show similar (all vector-bearing types) -->
-      <UButton
-        v-if="canShowSimilar"
-        label="Show similar"
-        icon="i-lucide-sparkles"
-        size="sm"
-        color="neutral"
-        variant="soft"
-        @click="emit('show-similar')"
       />
 
       <!-- deep-link edit (document / image / session / project) -->

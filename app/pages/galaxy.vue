@@ -1,18 +1,21 @@
 <!-- app/pages/galaxy.vue -->
-<!-- Full-viewport 3D knowledge graph. `layout:false` escapes the dashboard shell
-     (sidebar/navbar) — the immersive canvas must fill the real viewport, and
-     auth.global.ts gates by path regardless of layout, so this stays protected. -->
+<!-- 3D knowledge graph rendered inside the DEFAULT dashboard layout: the canvas +
+     overlays fill the main content panel (UDashboardPanel), positioned `absolute`
+     within the `stage` container rather than `fixed` to the viewport — so the sidebar
+     stays visible and the galaxy sizes to the panel (the scene measures the canvas'
+     bounding rect). auth.global.ts gates /galaxy by path. -->
 <script setup lang="ts">
 import { createGalaxyScene, type GalaxyScene } from '~/lib/galaxy/scene'
 import type { GalaxyRelationRow } from '~/components/galaxy/GalaxyDetail.vue'
 import type { MemoryRelationType } from '~/composables/useGalaxy'
 import type { MemoryScope } from '~~/shared/types/memory'
+import type { GraphNode } from '~~/shared/types/graph'
 import ReassignProjectModal from '~/components/sessions/ReassignProjectModal.vue'
 
-definePageMeta({ title: 'Galaxy', layout: false })
+definePageMeta({ title: 'Galaxy' })
 
 const galaxy = useGalaxy()
-const { graph, selected, hovered, colorMode, disabledKeys, controls } = galaxy
+const { graph, selected, hovered, colorMode, activeKeys, controls } = galaxy
 const toast = useToast()
 const memories = useMemories()
 
@@ -28,21 +31,24 @@ watch(graph.error, (err) => {
 })
 
 const canvas = ref<HTMLCanvasElement>()
+const stage = ref<HTMLElement>() // positioning context for the absolute overlays
 let scene: GalaxyScene | null = null
 
-// Cursor position (viewport coords) for the hover tooltip — position:fixed, offset +14px like the prototype.
+// Cursor position for the hover tooltip — now STAGE-relative (the tooltip is
+// absolute within the content panel, not fixed to the viewport), offset +14px.
 const mouseX = ref(-999)
 const mouseY = ref(-999)
 function onPointerMove(e: PointerEvent) {
-  mouseX.value = e.clientX
-  mouseY.value = e.clientY
+  const r = stage.value?.getBoundingClientRect()
+  mouseX.value = r ? e.clientX - r.left : e.clientX
+  mouseY.value = r ? e.clientY - r.top : e.clientY
 }
 
 onMounted(() => {
   scene = createGalaxyScene(canvas.value!)
   galaxy.bindScene(scene)
   scene.onHover(n => (hovered.value = n))
-  scene.onSelect(n => (selected.value = n))
+  scene.onSelect(onNodeSelected)
   watch(() => graph.data.value, (d) => {
     if (!d) return
     scene!.setData(d)
@@ -58,9 +64,9 @@ onMounted(() => {
   watch(colorMode, m => scene!.setColorMode(m), { immediate: true })
   watch(controls, c => scene!.setControls({ ...c }), { deep: true, immediate: true })
   watch(() => selected.value?.id ?? null, id => scene!.setDetailOpen(!!id))
-  // CRITICAL: without this the legend's toggles have nothing to drive — setVisibleKeys
-  // is the only thing that actually hides a layer (see GalaxyLegend's header comment).
-  watch(disabledKeys, () => scene!.setVisibleKeys(new Set(disabledKeys)), { deep: true, immediate: true })
+  // CRITICAL: without this the legend's clicks have nothing to drive — setActiveKeys
+  // is the only thing that actually filters layers (isolate model; see GalaxyLegend).
+  watch(activeKeys, () => scene!.setActiveKeys(new Set(activeKeys)), { deep: true, immediate: true })
   window.addEventListener('pointermove', onPointerMove)
 })
 onBeforeUnmount(() => {
@@ -97,19 +103,17 @@ const memoryTargets = computed(() => {
     .map(n => ({ id: n.id, label: n.label }))
 })
 
-// ── Detail-pane actions (scene-/undo-/modal-coupled; the pane emits, we act) ──
-async function onShowSimilar() {
-  if (!selected.value) return
-  try {
-    const neighbors = await galaxy.showSimilar(selected.value)
-    toast.add({
-      color: neighbors.length ? 'success' : 'neutral',
-      icon: 'i-lucide-sparkles',
-      title: neighbors.length ? `Highlighting ${neighbors.length} similar node${neighbors.length > 1 ? 's' : ''}` : 'No similar nodes found'
-    })
-  } catch (e) { toastErr(e, 'Similarity search failed') }
+// Selecting a node (a click on the canvas, or a fly-to) auto-highlights its semantic
+// neighbours — replacing the old "Show similar" button (fix 4b). Projects carry no
+// vector, so skip them. Fire-and-forget: a failed similarity fetch must never break
+// the selection itself (the node still opens in the detail pane + glows).
+async function onNodeSelected(n: GraphNode) {
+  selected.value = n
+  if (n.type === 'project') return
+  try { await galaxy.showSimilar(n) } catch { /* non-fatal: node stays selected, just no neighbours */ }
 }
 
+// ── Detail-pane actions (scene-/undo-/modal-coupled; the pane emits, we act) ──
 async function onCreateRelation(payload: { toId: string, type: MemoryRelationType }) {
   if (!selected.value) return
   try {
@@ -200,17 +204,29 @@ function onSearchSubmit() {
 </script>
 
 <template>
-  <div class="fixed inset-0 bg-[#05060c] text-[#e9eaf3] overflow-hidden select-none">
-    <canvas
-      ref="canvas"
-      class="fixed inset-0 w-screen h-screen"
-    />
+  <UDashboardPanel
+    id="galaxy"
+    grow
+    :ui="{ body: '!p-0 relative overflow-hidden' }"
+  >
+    <template #body>
+      <!-- `stage`: the positioning context. The canvas fills it (absolute inset-0),
+           the scene measures the canvas' bounding rect, so the galaxy sizes to this
+           content panel. Every overlay below is `absolute` within `stage`. -->
+      <div
+        ref="stage"
+        class="absolute inset-0 bg-[#05060c] text-[#e9eaf3] overflow-hidden select-none"
+      >
+        <canvas
+          ref="canvas"
+          class="absolute inset-0 h-full w-full"
+        />
 
-    <!-- loading veil (first load only) -->
-    <div
-      v-if="graph.isPending.value"
-      class="fixed inset-0 z-30 flex items-center justify-center bg-[#05060c]/70 pointer-events-none"
-    >
+        <!-- loading veil (first load only) -->
+        <div
+          v-if="graph.isPending.value"
+          class="absolute inset-0 z-30 flex items-center justify-center bg-[#05060c]/70 pointer-events-none"
+        >
       <div class="flex items-center gap-2 text-sm text-[#9aa0b8]">
         <UIcon
           name="i-lucide-loader-2"
@@ -220,8 +236,9 @@ function onSearchSubmit() {
       </div>
     </div>
 
-    <!-- top bar -->
-    <div class="fixed top-0 inset-x-0 z-10 flex items-center gap-3 px-4 sm:px-[18px] py-3 bg-gradient-to-b from-[#05060c]/90 to-transparent backdrop-blur-[2px]">
+    <!-- top bar (absolute overlay across the panel) -->
+    <div class="absolute top-0 inset-x-0 z-10 flex items-center gap-3 px-4 sm:px-[18px] py-3 bg-gradient-to-b from-[#05060c]/90 to-transparent backdrop-blur-[2px]">
+      <UDashboardSidebarCollapse class="shrink-0 -ml-1 text-[#9aa0b8] hover:text-[#e9eaf3]" />
       <div class="flex items-center gap-2 font-semibold tracking-tight text-sm shrink-0">
         <span class="size-4 rounded-full bg-[radial-gradient(circle_at_35%_30%,#c4b5fd,#7c3aed)] shadow-[0_0_14px_#7c3aed]" />
         Galaxy
@@ -268,19 +285,19 @@ function onSearchSubmit() {
     <GalaxyLegend
       :graph="graph.data.value"
       :mode="colorMode"
-      :disabled="disabledKeys"
+      :active="activeKeys"
       @toggle="galaxy.toggleKey"
     />
 
     <!-- hint -->
-    <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-10 text-xs text-[#9aa0b8] bg-[rgba(14,16,26,.72)] border border-white/[0.09] backdrop-blur-xl px-3.5 py-1.5 rounded-full whitespace-nowrap pointer-events-none">
+    <div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 text-xs text-[#9aa0b8] bg-[rgba(14,16,26,.72)] border border-white/[0.09] backdrop-blur-xl px-3.5 py-1.5 rounded-full whitespace-nowrap pointer-events-none">
       grab, drag &amp; throw — release to keep spinning · scroll to zoom · click to open
     </div>
 
-    <!-- cursor-following tooltip -->
+    <!-- cursor-following tooltip (stage-relative) -->
     <div
       v-if="hovered"
-      class="fixed z-20 pointer-events-none px-[11px] py-2 rounded-[9px] bg-[rgba(10,12,22,.94)] border border-white/[0.09] shadow-2xl max-w-[240px]"
+      class="absolute z-20 pointer-events-none px-[11px] py-2 rounded-[9px] bg-[rgba(10,12,22,.94)] border border-white/[0.09] shadow-2xl max-w-[240px]"
       :style="{ left: `${mouseX + 14}px`, top: `${mouseY + 14}px` }"
     >
       <div class="text-[10px] tracking-[0.08em] uppercase text-[#9aa0b8]">
@@ -300,7 +317,6 @@ function onSearchSubmit() {
       :memory-targets="memoryTargets"
       @close="closeDetail"
       @fly="galaxy.flyTo"
-      @show-similar="onShowSimilar"
       @create-relation="onCreateRelation"
       @archive-memory="onArchiveMemory"
       @reassign="onReassign"
@@ -383,5 +399,7 @@ function onSearchSubmit() {
         </div>
       </template>
     </UModal>
-  </div>
+      </div>
+    </template>
+  </UDashboardPanel>
 </template>

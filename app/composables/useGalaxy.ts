@@ -20,9 +20,11 @@ export function useGalaxy() {
   const selected = ref<GraphNode | null>(null)
   const hovered = ref<GraphNode | null>(null)
   const colorMode = ref<'type' | 'project'>('type') // DEFAULT = type
-  const disabledKeys = reactive(new Set<string>())
-  // Defaults tuned for real ~2k-node scale (glow/size lowered from the 230-node prototype's 1.0 to avoid bloom washout)
-  const controls = reactive({ spread: 1.2, zoom: 0.9, rotate: 1, size: 0.55, glow: 0.35, link: 1 })
+  // Active legend filter (ISOLATE model): empty ⇒ show all; non-empty ⇒ show ONLY nodes
+  // whose legend key ∈ set. See toggleKey + scene.setActiveKeys.
+  const activeKeys = reactive(new Set<string>())
+  // Control defaults tuned for real ~2k-node scale (fix 3). Must mirror scene.ts's spring init.
+  const controls = reactive({ spread: 1.14, zoom: 0.9, rotate: 1, size: 0.8, glow: 0.3, link: 0.4 })
 
   const scene = shallowRef<GalaxyScene | null>(null)
   function bindScene(s: GalaxyScene | null) {
@@ -38,10 +40,10 @@ export function useGalaxy() {
     scene.value?.select(nodeId)
   }
 
-  /** Legend row click — toggles a type/project key in the disabled set. MUST stay `node.type` (type mode) / `node.project ?? '__none__'` (project mode) to match the scene's setVisibleKeys contract. */
+  /** Legend row click — toggles a type/project key in the ACTIVE filter set (isolate model; empty ⇒ show all). Keys MUST stay `node.type` (type mode) / `node.project ?? '__none__'` (project mode) to match the scene's setActiveKeys contract. */
   function toggleKey(key: string) {
-    if (disabledKeys.has(key)) disabledKeys.delete(key)
-    else disabledKeys.add(key)
+    if (activeKeys.has(key)) activeKeys.delete(key)
+    else activeKeys.add(key)
   }
 
   /** Imperatively emphasise a set of nodes in the scene (anchor id first). */
@@ -80,5 +82,5 @@ export function useGalaxy() {
     return $fetch<{ ok: boolean }>('/api/agent/undo', { method: 'POST', body: { token } })
   }
 
-  return { graph, selected, hovered, colorMode, disabledKeys, controls, flyTo, select, bindScene, toggleKey, highlight, showSimilar, addRelation, undo }
+  return { graph, selected, hovered, colorMode, activeKeys, controls, flyTo, select, bindScene, toggleKey, highlight, showSimilar, addRelation, undo }
 }

@@ -1,6 +1,9 @@
 <!-- app/components/galaxy/GalaxyLegend.vue -->
 <!-- Color-key legend, bottom-left, mirroring the prototype's `.legend` panel.
-     CRITICAL: row keys MUST match scene.ts's setVisibleKeys contract exactly —
+     ISOLATE/filter model (fix 5): clicking a row toggles its key in the ACTIVE set.
+     Empty ⇒ show all; non-empty ⇒ show ONLY the active keys (union of clicks). Inactive
+     rows dim while a filter is on; active rows get a highlighted chip.
+     CRITICAL: row keys MUST match scene.ts's setActiveKeys contract exactly —
      `node.type` in type mode, `node.project ?? '__none__'` in project mode —
      or toggling a row silently fails to filter anything. The palettes below
      are duplicated from app/lib/galaxy/scene.ts (TYPE_COLOR / PROJECT_HUES;
@@ -11,7 +14,8 @@ import type { GraphData, GraphNodeType } from '~~/shared/types/graph'
 const props = defineProps<{
   graph: GraphData | undefined
   mode: 'type' | 'project'
-  disabled: Set<string>
+  /** Active isolate filter — empty ⇒ all shown; non-empty ⇒ only these keys. */
+  active: Set<string>
 }>()
 
 const emit = defineEmits<{ toggle: [key: string] }>()
@@ -54,16 +58,25 @@ const rows = computed<LegendRow[]>(() => {
 </script>
 
 <template>
-  <div class="fixed left-4 sm:left-[18px] bottom-4 z-10 flex flex-col gap-1.5 px-3.5 py-3 rounded-xl bg-[rgba(14,16,26,.72)] border border-white/[0.09] backdrop-blur-xl text-xs text-[#9aa0b8] max-h-[40vh] overflow-y-auto">
-    <b class="text-[11px] font-semibold tracking-[0.08em] uppercase text-[#e9eaf3]">
-      {{ mode === 'type' ? 'Type' : 'Project' }}
-    </b>
+  <div class="absolute left-4 sm:left-[18px] bottom-4 z-10 flex flex-col gap-1.5 px-3.5 py-3 rounded-xl bg-[rgba(14,16,26,.72)] border border-white/[0.09] backdrop-blur-xl text-xs text-[#9aa0b8] max-h-[40vh] overflow-y-auto">
+    <div class="flex items-center justify-between gap-2">
+      <b class="text-[11px] font-semibold tracking-[0.08em] uppercase text-[#e9eaf3]">
+        {{ mode === 'type' ? 'Type' : 'Project' }}
+      </b>
+      <span
+        v-if="active.size > 0"
+        class="text-[10px] tracking-[0.04em] uppercase text-[#c4b5fd]"
+      >Filtering</span>
+    </div>
     <button
       v-for="row in rows"
       :key="row.key"
       type="button"
-      class="flex items-center gap-2 py-0.5 transition-opacity duration-150 cursor-pointer hover:opacity-100"
-      :class="disabled.has(row.key) ? 'opacity-35' : 'opacity-100'"
+      class="flex items-center gap-2 py-0.5 px-1.5 -mx-1.5 rounded-md transition-all duration-150 cursor-pointer hover:opacity-100"
+      :class="[
+        active.size > 0 && !active.has(row.key) ? 'opacity-35' : 'opacity-100',
+        active.has(row.key) ? 'bg-[rgba(167,139,250,.16)] ring-1 ring-[rgba(167,139,250,.4)]' : ''
+      ]"
       @click="emit('toggle', row.key)"
     >
       <span

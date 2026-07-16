@@ -35,8 +35,8 @@ export interface GalaxyControlsState {
 export interface GalaxyScene {
   setData(data: GraphData): void
   setColorMode(mode: 'type' | 'project'): void
-  /** Legend toggles — the set holds the *disabled* keys (type name, or project slug in project mode). */
-  setVisibleKeys(disabled: Set<string>): void
+  /** Legend filter (isolate model) — the set holds the *active* keys (type name, or project slug in project mode); empty = show all, non-empty = show ONLY those keys. */
+  setActiveKeys(active: Set<string>): void
   /** Slider targets — sprung toward each frame. */
   setControls(partial: Partial<GalaxyControlsState>): void
   flyTo(nodeId: string): void
@@ -95,7 +95,7 @@ const CLAMP: Record<keyof GalaxyControlsState, [number, number]> = {
   zoom: [0.5, 2.6],
   rotate: [0, 4],
   size: [0.5, 2],
-  glow: [0.3, 1.8],
+  glow: [0.0, 1.8],
   link: [0, 1.6],
 }
 
@@ -272,13 +272,17 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   // controls (springs) ------------------------------------------------------
   // Initial targets mirror useGalaxy's control defaults (tuned for ~2k-node scale)
   const springs: Record<keyof GalaxyControlsState, Spring> = {
-    spread: makeSpring(1.2),
+    spread: makeSpring(1.14),
     zoom: makeSpring(0.9),
     rotate: makeSpring(1.0),
-    size: makeSpring(0.55),
-    glow: makeSpring(0.35),
-    link: makeSpring(1.0),
+    size: makeSpring(0.8),
+    glow: makeSpring(0.3),
+    link: makeSpring(0.4),
   }
+  // Selection glow boost (fix 4a): a springed MULTIPLIER on the effective glow —
+  // eased to 2 while a node is selected, back to 1 on deselect. Kept separate from
+  // the glow slider so it never mutates the user's slider value/target.
+  const glowBoost = makeSpring(1)
   let lastSpread = 1.0
 
   // camera orientation + interaction state ----------------------------------
@@ -296,7 +300,8 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   let detailOpen = false
 
   let colorMode: 'type' | 'project' = 'type'
-  let disabledKeys = new Set<string>()
+  // Isolate filter: empty ⇒ show all; non-empty ⇒ show ONLY nodes whose legend key ∈ set.
+  let activeKeys = new Set<string>()
   let selectedId: string | null = null
   // "Show similar" transient highlight (anchor id first, then neighbours).
   let highlightSet = new Set<string>()
@@ -325,7 +330,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   // -------------------------------------------------------------------------
   const projKey = (n: GraphNode) => n.project ?? '__none__'
   const legendKey = (n: GraphNode) => (colorMode === 'type' ? n.type : projKey(n))
-  const nodeVisible = (n: GraphNode) => !disabledKeys.has(legendKey(n))
+  const nodeVisible = (n: GraphNode) => activeKeys.size === 0 || activeKeys.has(legendKey(n))
   const rgb = (hex: number): [number, number, number] => [((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255]
 
   function nodeHue(n: GraphNode): number {
@@ -374,11 +379,20 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
       return { x: 0, y: 0, z: 0 }
     }
 
+    // Center the whole cloud at the world origin (fix 2). The centroid is taken over
+    // EVERY node's base position (= node.x/y/z, incl. project hubs) and subtracted from
+    // each node's anchor (cX/cY/cZ) — since live pos = anchor + offset*spread, subtracting
+    // it from the anchor shifts the entire cloud uniformly, so the arcball (which pivots
+    // about the origin) rotates around the visual middle instead of a corner.
+    let gx = 0, gy = 0, gz = 0
+    for (const node of nodes) { gx += node.x; gy += node.y; gz += node.z }
+    if (n > 0) { gx /= n; gy /= n; gz /= n }
+
     nodes.forEach((node, i) => {
       const hub = node.type === 'project'
       isHub[i] = hub
       const c = node.project === null && !hub ? { x: 0, y: 0, z: 0 } : centroidOf(projKey(node))
-      cX[i] = c.x; cY[i] = c.y; cZ[i] = c.z
+      cX[i] = c.x - gx; cY[i] = c.y - gy; cZ[i] = c.z - gz
       oX[i] = node.x - c.x; oY[i] = node.y - c.y; oZ[i] = node.z - c.z
       // size ∝ sqrt(degree) × size control; hubs larger.
       baseSize[i] = hub ? HUB_SIZE + Math.sqrt(node.degree + 1) * 0.4 : Math.min(4, Math.sqrt(node.degree + 1))
@@ -626,8 +640,8 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     rebuildEdges()
   }
 
-  function setVisibleKeys(disabled: Set<string>) {
-    disabledKeys = new Set(disabled)
+  function setActiveKeys(active: Set<string>) {
+    activeKeys = new Set(active)
     refreshAlphas()
     rebuildEdges()
     if (selectedId !== null) {
@@ -647,9 +661,10 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
 
   function select(nodeId: string | null) {
     selectedId = nodeId
-    if (nodeId === null) { ring.visible = false; return }
+    if (nodeId === null) { ring.visible = false; glowBoost.t = 1; return }
     const idx = idIndex.get(nodeId)
-    if (idx === undefined) { selectedId = null; ring.visible = false; return }
+    if (idx === undefined) { selectedId = null; ring.visible = false; glowBoost.t = 1; return }
+    glowBoost.t = 2 // ease the effective glow to ~2× while this node stays selected (fix 4a)
     onSelectCb?.(nodes[idx]!)
     mark()
   }
@@ -695,8 +710,15 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     if (idx === undefined || !nodeVisible(nodes[idx]!)) { ring.visible = false; return }
     _v.set(posArr[idx * 3]!, posArr[idx * 3 + 1]!, posArr[idx * 3 + 2]!).applyMatrix4(world.matrixWorld)
     ring.position.copy(_v)
-    const depth = Math.max(0.1, camera.position.z - _v.z)
-    ring.scale.setScalar(0.05 + baseSize[idx]! * 0.02 + depth * 0.03)
+    // Ring hugs just outside the node: outer-ring radius ≈ 1.8× the node's on-screen radius (fix 6).
+    // Node screen radius (css px) = 0.5·aSize·uSize·POINT_PX/depth (the point shader's gl_PointSize/ratio).
+    // A world-space ring sprite of scale S has its outer stroke at 0.44·S world units, which projects to
+    // 0.44·S·CAM_D·focalPx/depth css px. Equating (1.8× the node) makes depth cancel, so S is proportional
+    // to the node's *rendered* size (sizeArr·uSize) and inversely to zoom (focalPx) — i.e. the ring tracks
+    // the node at every zoom/size instead of being a fixed pixel blob. No more unscaled +px offsets.
+    const RING_MULT = 1.8
+    const nodeSize = sizeArr[idx]! * springs.size.c // = rendered gl_PointSize's aSize·uSize
+    ring.scale.setScalar((RING_MULT * 0.5 * nodeSize * POINT_PX) / (0.44 * CAM_D * Math.max(1, focalPx())))
     ring.visible = true
   }
 
@@ -732,6 +754,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     // step control springs
     stepSpring(springs.spread); stepSpring(springs.zoom); stepSpring(springs.rotate)
     stepSpring(springs.size); stepSpring(springs.glow); stepSpring(springs.link)
+    stepSpring(glowBoost)
 
     // ease horizontal centre for the detail pane
     const cxTarget = detailOpen ? (cssW - DETAIL_W) / 2 : cssW / 2
@@ -765,7 +788,8 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     // camera + uniforms
     updateCamera()
     pointMat.uniforms.uSize!.value = springs.size.c
-    bloom.strength = BLOOM_BASE * springs.glow.c
+    // Effective glow = slider glow × selection boost, capped at the glow max bound (fix 4a).
+    bloom.strength = BLOOM_BASE * Math.min(springs.glow.c * glowBoost.c, CLAMP.glow[1])
     const link = springs.link.c
     faintMat.opacity = clamp(0.11 * link, 0, 1)
     strongMat.opacity = clamp(0.5 * link, 0, 1)
@@ -803,7 +827,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   return {
     setData,
     setColorMode,
-    setVisibleKeys,
+    setActiveKeys,
     setControls,
     flyTo,
     onHover: (cb) => { onHoverCb = cb },
