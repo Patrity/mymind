@@ -6,8 +6,10 @@
 // `bindScene` so every overlay (search bar, detail pane, legend, …) has one
 // call site for `flyTo`/`select` regardless of which one triggers it.
 import { useQuery } from '@tanstack/vue-query'
-import type { GraphData, GraphNode } from '~~/shared/types/graph'
+import type { GraphData, GraphNode, GraphNeighbor } from '~~/shared/types/graph'
 import type { GalaxyScene } from '~/lib/galaxy/scene'
+
+export type MemoryRelationType = 'supersedes' | 'contradicts'
 
 export function useGalaxy() {
   const graph = useQuery({
@@ -41,5 +43,39 @@ export function useGalaxy() {
     else disabledKeys.add(key)
   }
 
-  return { graph, selected, hovered, colorMode, disabledKeys, controls, flyTo, select, bindScene, toggleKey }
+  /** Imperatively emphasise a set of nodes in the scene (anchor id first). */
+  function highlight(ids: string[]) {
+    scene.value?.highlight(ids)
+  }
+
+  /**
+   * "Show similar" — fetch a node's semantic neighbours and flash them (plus the
+   * source) in the scene. Returns the neighbours so the caller can toast a count.
+   */
+  async function showSimilar(node: GraphNode): Promise<GraphNeighbor[]> {
+    const neighbors = await $fetch<GraphNeighbor[]>('/api/graph/neighbors', {
+      query: { type: node.type, id: node.id, k: 8 }
+    })
+    scene.value?.highlight([node.id, ...neighbors.map(n => n.id)])
+    return neighbors
+  }
+
+  /**
+   * Draw a manual supersedes/contradicts edge between two memories. The new edge
+   * lands live via the ['graph'] invalidation (the endpoint publishes `graph`).
+   * Returns the undoToken so the caller can offer "Undo".
+   */
+  function addRelation(fromId: string, toId: string, type: MemoryRelationType) {
+    return $fetch<{ undoToken: string }>('/api/memory-relations', {
+      method: 'POST',
+      body: { fromId, toId, type }
+    })
+  }
+
+  /** Redeem an undo token (relation draw, memory archive, …). */
+  function undo(token: string) {
+    return $fetch<{ ok: boolean }>('/api/agent/undo', { method: 'POST', body: { token } })
+  }
+
+  return { graph, selected, hovered, colorMode, disabledKeys, controls, flyTo, select, bindScene, toggleKey, highlight, showSimilar, addRelation, undo }
 }

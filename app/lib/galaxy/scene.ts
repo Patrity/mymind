@@ -45,6 +45,13 @@ export interface GalaxyScene {
   select(nodeId: string | null): void
   /** Eases the horizontal centre so the galaxy clears the detail pane. */
   setDetailOpen(open: boolean): void
+  /**
+   * Temporarily emphasise a set of nodes and draw links from the first id
+   * (anchor) to the rest — powers "Show similar". Emphasised nodes swell and
+   * stay full-opacity; everything else dims so the neighbours pop. Auto-clears
+   * after a few seconds. Pass `[]` to clear immediately.
+   */
+  highlight(ids: string[]): void
   dispose(): void
 }
 
@@ -224,6 +231,13 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   world.add(faintLines)
   world.add(strongLines)
 
+  // --- "Show similar" highlight links (anchor → neighbours, warm gold) ------
+  const highlightMat = new THREE.LineBasicMaterial({ color: 0xfde68a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false })
+  const highlightGeo = new THREE.BufferGeometry()
+  const highlightLines = new THREE.LineSegments(highlightGeo, highlightMat)
+  highlightLines.frustumCulled = false
+  world.add(highlightLines)
+
   // --- selection ring (billboard sprite, lives in scene not world) ---------
   const ringTex = ringTexture()
   const ringMat = new THREE.SpriteMaterial({ map: ringTex, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending })
@@ -276,6 +290,11 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   let colorMode: 'type' | 'project' = 'type'
   let disabledKeys = new Set<string>()
   let selectedId: string | null = null
+  // "Show similar" transient highlight (anchor id first, then neighbours).
+  let highlightSet = new Set<string>()
+  let highlightPairs: { a: number; b: number }[] = []
+  let highlightUntil = 0
+  const HIGHLIGHT_MS = 6500
   let hoverNode: GraphNode | null = null
   let onHoverCb: ((n: GraphNode | null) => void) | null = null
   let onSelectCb: ((n: GraphNode) => void) | null = null
@@ -406,9 +425,17 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   }
 
   function refreshAlphas() {
+    const hot = highlightSet.size > 0
     for (let i = 0; i < nodes.length; i++) {
-      alphaArr[i] = nodeVisible(nodes[i]!) ? (isHub[i] ? 1.0 : 0.85) : 0
-      sizeArr[i] = baseSize[i]!
+      const vis = nodeVisible(nodes[i]!)
+      let alpha = vis ? (isHub[i] ? 1.0 : 0.85) : 0
+      let size = baseSize[i]!
+      if (hot && vis) {
+        if (highlightSet.has(nodes[i]!.id)) { alpha = 1.0; size = baseSize[i]! * 1.7 }
+        else alpha *= 0.32 // dim the rest so the neighbours pop
+      }
+      alphaArr[i] = alpha
+      sizeArr[i] = size
     }
     const a = pointGeo.getAttribute('aAlpha') as THREE.BufferAttribute | undefined
     if (a) a.needsUpdate = true
@@ -446,6 +473,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   function writeEdgePositions() {
     writePairs(faintGeo, faintPairs)
     writePairs(strongGeo, strongPairs)
+    writePairs(highlightGeo, highlightPairs as EdgePair[])
   }
   function writePairs(geo: THREE.BufferGeometry, pairs: EdgePair[]) {
     const attr = geo.getAttribute('position') as THREE.BufferAttribute | undefined
@@ -456,6 +484,45 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
       arr[i * 6 + 3] = posArr[e.b * 3]!; arr[i * 6 + 4] = posArr[e.b * 3 + 1]!; arr[i * 6 + 5] = posArr[e.b * 3 + 2]!
     })
     attr.needsUpdate = true
+  }
+
+  // "Show similar" highlight — (re)allocate the anchor→neighbour line buffer.
+  function buildHighlightGeo() {
+    const pos = new Float32Array(highlightPairs.length * 6)
+    highlightGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage))
+    highlightGeo.computeBoundingSphere()
+  }
+
+  function clearHighlight() {
+    if (highlightSet.size === 0 && highlightPairs.length === 0) return
+    highlightSet = new Set()
+    highlightPairs = []
+    highlightUntil = 0
+    buildHighlightGeo()
+    refreshAlphas()
+  }
+
+  function highlight(ids: string[]) {
+    // Keep only ids that map to a currently-visible node.
+    const valid = ids.filter((id) => {
+      const idx = idIndex.get(id)
+      return idx !== undefined && nodeVisible(nodes[idx]!)
+    })
+    if (valid.length === 0) { clearHighlight(); return }
+    highlightSet = new Set(valid)
+    const anchor = idIndex.get(valid[0]!)
+    highlightPairs = []
+    if (anchor !== undefined) {
+      for (let i = 1; i < valid.length; i++) {
+        const b = idIndex.get(valid[i]!)
+        if (b !== undefined) highlightPairs.push({ a: anchor, b })
+      }
+    }
+    highlightUntil = now() + HIGHLIGHT_MS
+    buildHighlightGeo()
+    writePairs(highlightGeo, highlightPairs as EdgePair[])
+    refreshAlphas()
+    mark()
   }
 
   // -------------------------------------------------------------------------
@@ -652,6 +719,9 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     if (!running) return
     raf = requestAnimationFrame(loop)
 
+    // expire the transient "Show similar" highlight
+    if (highlightUntil && now() > highlightUntil) clearHighlight()
+
     // step control springs
     stepSpring(springs.spread); stepSpring(springs.zoom); stepSpring(springs.rotate)
     stepSpring(springs.size); stepSpring(springs.glow); stepSpring(springs.link)
@@ -717,8 +787,8 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     canvas.removeEventListener('webglcontextrestored', onContextRestored)
     window.removeEventListener('resize', doResize)
     ro.disconnect()
-    pointGeo.dispose(); faintGeo.dispose(); strongGeo.dispose()
-    pointMat.dispose(); faintMat.dispose(); strongMat.dispose(); ringMat.dispose()
+    pointGeo.dispose(); faintGeo.dispose(); strongGeo.dispose(); highlightGeo.dispose()
+    pointMat.dispose(); faintMat.dispose(); strongMat.dispose(); highlightMat.dispose(); ringMat.dispose()
     disc.dispose(); ringTex.dispose()
     bloom.dispose(); composer.dispose(); renderer.dispose()
   }
@@ -733,6 +803,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     onSelect: (cb) => { onSelectCb = cb },
     select,
     setDetailOpen: (open) => { detailOpen = open; mark() },
+    highlight,
     dispose,
   }
 }

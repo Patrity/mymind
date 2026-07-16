@@ -25,14 +25,21 @@ export function useMemories() {
   const search = (q: string, params?: { scope?: MemoryScope, project?: string, limit?: number }) =>
     ofetch<MemoryDTO[]>('/api/memories', { query: { q, ...params } })
 
+  const get = (id: string) =>
+    ofetch<MemoryDTO>(`/api/memories/${id}`)
+
   const create = (body: CreateMemoryBody) =>
     ofetch<MemoryDTO>('/api/memories', { method: 'POST', body })
+
+  const patch = (id: string, body: { content?: string, scope?: MemoryScope, project?: string | null, tags?: string[] }) =>
+    ofetch<MemoryDTO>(`/api/memories/${id}`, { method: 'PATCH', body })
 
   const review = (id: string) =>
     ofetch<{ ok: boolean }>(`/api/memories/${id}/review`, { method: 'POST' })
 
+  // Archive == delete; the response carries an undoToken (POST /api/agent/undo).
   const archive = (id: string) =>
-    ofetch<{ ok: boolean }>(`/api/memories/${id}/archive`, { method: 'POST' })
+    ofetch<{ ok: boolean, undoToken?: string }>(`/api/memories/${id}/archive`, { method: 'POST' })
 
   const count = () =>
     ofetch<{ unreviewed: number }>('/api/memories/count')
@@ -57,5 +64,5 @@ export function useMemories() {
     })
   }
 
-  return { list, search, create, review, archive, count, useMemoryList }
+  return { list, search, get, create, patch, review, archive, count, useMemoryList }
 }

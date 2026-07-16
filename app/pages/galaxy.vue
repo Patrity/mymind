@@ -5,12 +5,21 @@
 <script setup lang="ts">
 import { createGalaxyScene, type GalaxyScene } from '~/lib/galaxy/scene'
 import type { GalaxyRelationRow } from '~/components/galaxy/GalaxyDetail.vue'
+import type { MemoryRelationType } from '~/composables/useGalaxy'
+import type { MemoryScope } from '~~/shared/types/memory'
+import ReassignProjectModal from '~/components/sessions/ReassignProjectModal.vue'
 
 definePageMeta({ title: 'Galaxy', layout: false })
 
 const galaxy = useGalaxy()
 const { graph, selected, hovered, colorMode, disabledKeys, controls } = galaxy
 const toast = useToast()
+const memories = useMemories()
+
+function toastErr(e: unknown, fallback: string) {
+  const err = e as { data?: { statusMessage?: string }, message?: string }
+  toast.add({ color: 'error', title: fallback, description: err?.data?.statusMessage ?? err?.message })
+}
 
 watch(graph.error, (err) => {
   if (!err) return
@@ -34,7 +43,18 @@ onMounted(() => {
   galaxy.bindScene(scene)
   scene.onHover(n => (hovered.value = n))
   scene.onSelect(n => (selected.value = n))
-  watch(() => graph.data.value, d => d && scene!.setData(d), { immediate: true })
+  watch(() => graph.data.value, (d) => {
+    if (!d) return
+    scene!.setData(d)
+    // Keep `selected` in sync across live refetches so the pane shows fresh
+    // content (e.g. after an edit), and auto-close it when its node is gone
+    // (archived/deleted) — both without a manual reload.
+    if (selected.value) {
+      const fresh = d.nodes.find(n => n.id === selected.value!.id)
+      if (fresh) selected.value = fresh
+      else { selected.value = null; scene!.select(null) }
+    }
+  }, { immediate: true })
   watch(colorMode, m => scene!.setColorMode(m), { immediate: true })
   watch(controls, c => scene!.setControls({ ...c }), { deep: true, immediate: true })
   watch(() => selected.value?.id ?? null, id => scene!.setDetailOpen(!!id))
@@ -68,6 +88,98 @@ const nodeRelations = computed<GalaxyRelationRow[]>(() => {
       return { kind: e.kind, otherId: otherRef.id, otherLabel: byId.get(otherRef.id)?.label ?? otherRef.id }
     })
 })
+
+// Candidate targets for the draw-relation picker: every other memory node.
+const memoryTargets = computed(() => {
+  const sel = selected.value?.id
+  return (graph.data.value?.nodes ?? [])
+    .filter(n => n.type === 'memory' && n.id !== sel)
+    .map(n => ({ id: n.id, label: n.label }))
+})
+
+// ── Detail-pane actions (scene-/undo-/modal-coupled; the pane emits, we act) ──
+async function onShowSimilar() {
+  if (!selected.value) return
+  try {
+    const neighbors = await galaxy.showSimilar(selected.value)
+    toast.add({
+      color: neighbors.length ? 'success' : 'neutral',
+      icon: 'i-lucide-sparkles',
+      title: neighbors.length ? `Highlighting ${neighbors.length} similar node${neighbors.length > 1 ? 's' : ''}` : 'No similar nodes found'
+    })
+  } catch (e) { toastErr(e, 'Similarity search failed') }
+}
+
+async function onCreateRelation(payload: { toId: string, type: MemoryRelationType }) {
+  if (!selected.value) return
+  try {
+    const { undoToken } = await galaxy.addRelation(selected.value.id, payload.toId, payload.type)
+    toast.add({
+      color: 'success',
+      icon: 'i-lucide-git-branch',
+      title: `Relation created (${payload.type})`,
+      actions: undoToken ? [{ label: 'Undo', onClick: () => onUndo(undoToken, 'Relation removed') }] : undefined
+    })
+  } catch (e) { toastErr(e, 'Could not create relation') }
+}
+
+async function onArchiveMemory() {
+  if (!selected.value || selected.value.type !== 'memory') return
+  const id = selected.value.id
+  try {
+    const { undoToken } = await memories.archive(id)
+    selected.value = null
+    scene?.select(null)
+    toast.add({
+      color: 'success',
+      icon: 'i-lucide-archive',
+      title: 'Memory archived',
+      actions: undoToken ? [{ label: 'Undo', onClick: () => onUndo(undoToken, 'Memory restored') }] : undefined
+    })
+  } catch (e) { toastErr(e, 'Archive failed') }
+}
+
+async function onUndo(token: string, okTitle: string) {
+  try {
+    await galaxy.undo(token)
+    toast.add({ color: 'neutral', title: okTitle })
+  } catch (e) { toastErr(e, 'Undo failed') }
+}
+
+// ── Reassign a session's project (reuse the cycle-46 modal) ───────────────────
+const reassignOpen = ref(false)
+function onReassign() {
+  if (selected.value?.type === 'session') reassignOpen.value = true
+}
+
+// ── Create memory ─────────────────────────────────────────────────────────────
+const createOpen = ref(false)
+const creating = ref(false)
+const createForm = reactive<{ content: string, scope: MemoryScope, project: string, tagsRaw: string }>({
+  content: '', scope: 'user', project: '', tagsRaw: ''
+})
+const createScopeItems = [
+  { label: 'user', value: 'user' },
+  { label: 'agent', value: 'agent' },
+  { label: 'world', value: 'world' }
+]
+async function submitCreate() {
+  if (!createForm.content.trim()) return
+  creating.value = true
+  try {
+    await memories.create({
+      content: createForm.content.trim(),
+      scope: createForm.scope,
+      project: createForm.project.trim() || null,
+      tags: createForm.tagsRaw.split(',').map(t => t.trim()).filter(Boolean)
+    })
+    toast.add({ color: 'success', icon: 'i-lucide-check', title: 'Memory created', description: 'It joins the galaxy after the next layout rebuild.' })
+    createOpen.value = false
+    createForm.content = ''
+    createForm.project = ''
+    createForm.tagsRaw = ''
+  } catch (e) { toastErr(e, 'Could not create memory') } finally { creating.value = false }
+}
 
 // ── Search-to-fly ────────────────────────────────────────────────────────────
 const searchQuery = ref('')
@@ -121,6 +233,15 @@ function onSearchSubmit() {
 
       <div class="flex-1" />
 
+      <UButton
+        icon="i-lucide-plus"
+        label="New memory"
+        size="sm"
+        variant="soft"
+        class="shrink-0 bg-[rgba(167,139,250,.18)] text-[#e9eaf3] hover:bg-[rgba(167,139,250,.3)]"
+        @click="createOpen = true"
+      />
+
       <UFieldGroup size="sm">
         <UButton
           label="Type"
@@ -170,8 +291,91 @@ function onSearchSubmit() {
       v-if="selected"
       :node="selected"
       :relations="nodeRelations"
+      :memory-targets="memoryTargets"
       @close="closeDetail"
       @fly="galaxy.flyTo"
+      @show-similar="onShowSimilar"
+      @create-relation="onCreateRelation"
+      @archive-memory="onArchiveMemory"
+      @reassign="onReassign"
     />
+
+    <!-- Reassign a session's project (reused cycle-46 modal) -->
+    <ReassignProjectModal
+      v-if="selected?.type === 'session'"
+      v-model:open="reassignOpen"
+      :session-ids="[selected.id]"
+      :current-cwd="null"
+      :current-project="selected.project"
+    />
+
+    <!-- Create memory -->
+    <UModal
+      v-model:open="createOpen"
+      title="New memory"
+    >
+      <template #body>
+        <div class="space-y-4">
+          <UFormField
+            label="Content"
+            required
+          >
+            <UTextarea
+              v-model="createForm.content"
+              placeholder="What do you want to remember?"
+              :rows="4"
+              autoresize
+              autofocus
+              class="w-full"
+            />
+          </UFormField>
+          <div class="grid grid-cols-2 gap-3">
+            <UFormField label="Scope">
+              <USelectMenu
+                v-model="createForm.scope"
+                :items="createScopeItems"
+                value-key="value"
+                class="w-full"
+              />
+            </UFormField>
+            <UFormField label="Project (optional)">
+              <UInput
+                v-model="createForm.project"
+                placeholder="e.g. mymind"
+                class="w-full"
+              />
+            </UFormField>
+          </div>
+          <UFormField
+            label="Tags (optional)"
+            description="Comma-separated"
+          >
+            <UInput
+              v-model="createForm.tagsRaw"
+              placeholder="tag1, tag2"
+              class="w-full"
+            />
+          </UFormField>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <UButton
+            label="Cancel"
+            color="neutral"
+            variant="ghost"
+            @click="createOpen = false"
+          />
+          <UButton
+            label="Create"
+            color="primary"
+            icon="i-lucide-check"
+            :loading="creating"
+            :disabled="!createForm.content.trim()"
+            @click="submitCreate"
+          />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>
