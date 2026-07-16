@@ -232,8 +232,15 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   world.add(strongLines)
 
   // --- "Show similar" highlight links (anchor → neighbours, warm gold) ------
+  // Preallocated at a bounded max (showSimilar caps k=8 neighbours ⇒ ≤ 9 pairs
+  // = 18 vertices; 16 pairs leaves headroom) so highlight()/clearHighlight()
+  // mutate the existing attribute instead of allocating a new BufferAttribute
+  // (+ orphaned GPU buffer) on every "Show similar" click.
+  const MAX_HIGHLIGHT_PAIRS = 16
   const highlightMat = new THREE.LineBasicMaterial({ color: 0xfde68a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false })
   const highlightGeo = new THREE.BufferGeometry()
+  highlightGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_HIGHLIGHT_PAIRS * 6), 3).setUsage(THREE.DynamicDrawUsage))
+  highlightGeo.setDrawRange(0, 0)
   const highlightLines = new THREE.LineSegments(highlightGeo, highlightMat)
   highlightLines.frustumCulled = false
   world.add(highlightLines)
@@ -473,9 +480,9 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   function writeEdgePositions() {
     writePairs(faintGeo, faintPairs)
     writePairs(strongGeo, strongPairs)
-    writePairs(highlightGeo, highlightPairs as EdgePair[])
+    writePairs(highlightGeo, highlightPairs)
   }
-  function writePairs(geo: THREE.BufferGeometry, pairs: EdgePair[]) {
+  function writePairs(geo: THREE.BufferGeometry, pairs: { a: number; b: number }[]) {
     const attr = geo.getAttribute('position') as THREE.BufferAttribute | undefined
     if (!attr) return
     const arr = attr.array as Float32Array
@@ -486,11 +493,11 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     attr.needsUpdate = true
   }
 
-  // "Show similar" highlight — (re)allocate the anchor→neighbour line buffer.
-  function buildHighlightGeo() {
-    const pos = new Float32Array(highlightPairs.length * 6)
-    highlightGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage))
-    highlightGeo.computeBoundingSphere()
+  // "Show similar" highlight — write into the preallocated buffer and bound
+  // the visible range with setDrawRange (no per-call BufferAttribute alloc).
+  function writeHighlightGeo() {
+    writePairs(highlightGeo, highlightPairs)
+    highlightGeo.setDrawRange(0, highlightPairs.length * 2)
   }
 
   function clearHighlight() {
@@ -498,7 +505,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     highlightSet = new Set()
     highlightPairs = []
     highlightUntil = 0
-    buildHighlightGeo()
+    writeHighlightGeo()
     refreshAlphas()
   }
 
@@ -513,14 +520,13 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     const anchor = idIndex.get(valid[0]!)
     highlightPairs = []
     if (anchor !== undefined) {
-      for (let i = 1; i < valid.length; i++) {
+      for (let i = 1; i < valid.length && highlightPairs.length < MAX_HIGHLIGHT_PAIRS; i++) {
         const b = idIndex.get(valid[i]!)
         if (b !== undefined) highlightPairs.push({ a: anchor, b })
       }
     }
     highlightUntil = now() + HIGHLIGHT_MS
-    buildHighlightGeo()
-    writePairs(highlightGeo, highlightPairs as EdgePair[])
+    writeHighlightGeo()
     refreshAlphas()
     mark()
   }
