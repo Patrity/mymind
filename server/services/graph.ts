@@ -43,6 +43,43 @@ function basename(p: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Edge source rows — the four queries getGraph runs, shared with the layout job
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the four edge-source queries and shape them into `EdgeSourceRows`:
+ * project memberships (memories/documents/sessions with a project_id — images
+ * carry no project column so they never join a hub), memory→session provenance,
+ * document→image OCR links, and active supersedes/contradicts relations.
+ *
+ * LIVE rows only (soft-deleted / archived excluded) so we never build an edge
+ * into a node that isn't rendered. Shared by `getGraph` (edge assembly) and the
+ * layout job (per-node degree) so both agree on the exact same edge model.
+ */
+export async function buildEdgeSourceRows(): Promise<EdgeSourceRows> {
+  const db = useDb()
+  const [memMem, docMem, sessMem, prov, ocrRows, relRows] = await Promise.all([
+    db.select({ id: memories.id, projectId: memories.projectId }).from(memories).where(and(isNull(memories.archivedAt), isNotNull(memories.projectId))),
+    db.select({ id: documents.id, projectId: documents.projectId }).from(documents).where(and(isNull(documents.deletedAt), isNotNull(documents.projectId))),
+    db.select({ id: sessions.id, projectId: sessions.projectId }).from(sessions).where(isNotNull(sessions.projectId)),
+    db.select({ memoryId: memories.id, sessionId: memories.sessionId }).from(memories).where(and(isNull(memories.archivedAt), isNotNull(memories.sessionId))),
+    db.select({ documentId: documents.id, imageId: documents.ocrId }).from(documents).where(and(isNull(documents.deletedAt), isNotNull(documents.ocrId))),
+    db.select({ fromId: memoryRelations.fromId, toId: memoryRelations.toId, type: memoryRelations.type }).from(memoryRelations).where(and(eq(memoryRelations.status, 'active'), inArray(memoryRelations.type, ['supersedes', 'contradicts'])))
+  ])
+
+  return {
+    memberships: [
+      ...memMem.map((r) => ({ type: 'memory' as const, id: r.id, projectId: r.projectId })),
+      ...docMem.map((r) => ({ type: 'document' as const, id: r.id, projectId: r.projectId })),
+      ...sessMem.map((r) => ({ type: 'session' as const, id: r.id, projectId: r.projectId }))
+    ],
+    provenance: prov.map((r) => ({ memoryId: r.memoryId, sessionId: r.sessionId })),
+    ocr: ocrRows.map((r) => ({ documentId: r.documentId, imageId: r.imageId! })),
+    relations: relRows.map((r) => ({ fromId: r.fromId, toId: r.toId, type: r.type as 'supersedes' | 'contradicts' }))
+  }
+}
+
+// ---------------------------------------------------------------------------
 // getGraph — nodes from graph_layout (joined to live source rows) + edges
 // ---------------------------------------------------------------------------
 
@@ -91,27 +128,9 @@ export async function getGraph(): Promise<GraphData> {
     ...projRows.map((r): GraphNode => ({ type: 'project', id: r.id, label: r.slug, preview: r.name || undefined, project: r.slug, projectId: r.id, x: r.x, y: r.y, z: r.z, degree: r.degree }))
   ]
 
-  // Edge source rows — pulled from live rows only so we don't build edges into
-  // soft-deleted nodes. Images carry no project column, so they never join a hub.
-  const [memMem, docMem, sessMem, prov, ocrRows, relRows] = await Promise.all([
-    db.select({ id: memories.id, projectId: memories.projectId }).from(memories).where(and(isNull(memories.archivedAt), isNotNull(memories.projectId))),
-    db.select({ id: documents.id, projectId: documents.projectId }).from(documents).where(and(isNull(documents.deletedAt), isNotNull(documents.projectId))),
-    db.select({ id: sessions.id, projectId: sessions.projectId }).from(sessions).where(isNotNull(sessions.projectId)),
-    db.select({ memoryId: memories.id, sessionId: memories.sessionId }).from(memories).where(and(isNull(memories.archivedAt), isNotNull(memories.sessionId))),
-    db.select({ documentId: documents.id, imageId: documents.ocrId }).from(documents).where(and(isNull(documents.deletedAt), isNotNull(documents.ocrId))),
-    db.select({ fromId: memoryRelations.fromId, toId: memoryRelations.toId, type: memoryRelations.type }).from(memoryRelations).where(and(eq(memoryRelations.status, 'active'), inArray(memoryRelations.type, ['supersedes', 'contradicts'])))
-  ])
-
-  const allEdges = assembleEdges({
-    memberships: [
-      ...memMem.map((r) => ({ type: 'memory' as const, id: r.id, projectId: r.projectId })),
-      ...docMem.map((r) => ({ type: 'document' as const, id: r.id, projectId: r.projectId })),
-      ...sessMem.map((r) => ({ type: 'session' as const, id: r.id, projectId: r.projectId }))
-    ],
-    provenance: prov.map((r) => ({ memoryId: r.memoryId, sessionId: r.sessionId })),
-    ocr: ocrRows.map((r) => ({ documentId: r.documentId, imageId: r.imageId! })),
-    relations: relRows.map((r) => ({ fromId: r.fromId, toId: r.toId, type: r.type as 'supersedes' | 'contradicts' }))
-  })
+  // Edges are assembled from the same live-row source queries the layout job
+  // uses for degree (buildEdgeSourceRows) so the two never drift apart.
+  const allEdges = assembleEdges(await buildEdgeSourceRows())
 
   // Keep only edges whose endpoints are both in the rendered node set.
   const nodeKeys = new Set(nodes.map((n) => `${n.type}:${n.id}`))
