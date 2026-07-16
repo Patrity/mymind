@@ -42,6 +42,8 @@ export interface GalaxyScene {
   flyTo(nodeId: string): void
   onHover(cb: (node: GraphNode | null) => void): void
   onSelect(cb: (node: GraphNode) => void): void
+  /** Fires when wheel/flyTo change the zoom target, so the UI slider can track it. */
+  onZoom(cb: (zoom: number) => void): void
   select(nodeId: string | null): void
   /** Eases the horizontal centre so the galaxy clears the detail pane. */
   setDetailOpen(open: boolean): void
@@ -317,6 +319,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   let hoverNode: GraphNode | null = null
   let onHoverCb: ((n: GraphNode | null) => void) | null = null
   let onSelectCb: ((n: GraphNode) => void) | null = null
+  let onZoomCb: ((z: number) => void) | null = null
 
   // fly-to tween ------------------------------------------------------------
   let flyActive = false
@@ -612,6 +615,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     zoomAnchor.my = p.y
     zoomAnchor.active = true
     springs.zoom.t = clamp(springs.zoom.t * (1 - e.deltaY * 0.0012), CLAMP.zoom[0], CLAMP.zoom[1])
+    onZoomCb?.(springs.zoom.t)
     mark()
   }
 
@@ -707,6 +711,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     panX = 0
     panY = 0
     springs.zoom.t = clamp(Math.max(springs.zoom.t, 1.4), CLAMP.zoom[0], CLAMP.zoom[1])
+    onZoomCb?.(springs.zoom.t)
     select(nodeId)
     mark()
   }
@@ -873,6 +878,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
     flyTo,
     onHover: (cb) => { onHoverCb = cb },
     onSelect: (cb) => { onSelectCb = cb },
+    onZoom: (cb) => { onZoomCb = cb },
     select,
     setDetailOpen: (open) => { detailOpen = open; mark() },
     highlight,

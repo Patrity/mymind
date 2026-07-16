@@ -49,6 +49,10 @@ onMounted(() => {
   galaxy.bindScene(scene)
   scene.onHover(n => (hovered.value = n))
   scene.onSelect(onNodeSelected)
+  // Keep the Zoom slider in sync when the wheel (or flyTo) changes zoom. Setting
+  // controls.zoom re-runs the controls watcher → setControls with the same target,
+  // so it's idempotent (no feedback loop).
+  scene.onZoom(z => { controls.zoom = z })
   watch(() => graph.data.value, (d) => {
     if (!d) return
     scene!.setData(d)
