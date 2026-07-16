@@ -80,6 +80,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     to: '/memories',
     badge: (memoryCount.value?.unreviewed ?? 0) > 0 ? memoryCount.value!.unreviewed : undefined
   },
+  { label: 'Galaxy', icon: 'i-lucide-orbit', to: '/galaxy' },
   {
     label: 'Review',
     icon: 'i-lucide-inbox',
