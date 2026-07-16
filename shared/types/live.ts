@@ -12,6 +12,7 @@ export type ResourceName =
   | 'activity'
   | 'apiToken'
   | 'conversation'
+  | 'graph'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 
