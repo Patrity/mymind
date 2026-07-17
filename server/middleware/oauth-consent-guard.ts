@@ -50,6 +50,19 @@ import type { H3Event } from 'h3'
 const GUARDED_PATHNAME = '/api/auth/mcp/authorize'
 
 /**
+ * better-auth's `mcp` plugin mounts `GET /mcp/get-session` (`getMcpSession` in
+ * `plugins/mcp/index.mjs`) under our already-public `/api/auth` prefix
+ * (`PUBLIC_PREFIXES` in `server/middleware/auth.ts`). Given a valid `Bearer`
+ * access token it returns the raw `oauth_access_token` row as JSON — including
+ * `refreshToken` — over plain HTTP with no additional auth. Nothing legitimate
+ * calls it this way: our own middleware calls `useAuth().api.getMcpSession(...)`
+ * in-process (not over HTTP), and Claude's connector flow never touches this
+ * path either. Block it outright rather than leave a refresh-token-leaking
+ * route reachable.
+ */
+const BLOCKED_GET_SESSION_PATHNAME = '/api/auth/mcp/get-session'
+
+/**
  * Pure decision function: given the request method, pathname, and raw query
  * string (H3/URL's `.search`, i.e. `''` or starting with `?`), returns the
  * pathname+query to redirect to when consent must be forced, or `null` when
@@ -79,6 +92,11 @@ export function decideConsentRedirect(method: string, pathname: string, search: 
 
 function oauthConsentGuardHandler(event: H3Event) {
   const url = getRequestURL(event)
+  // Block the refresh-token-leaking get-session route regardless of method —
+  // see BLOCKED_GET_SESSION_PATHNAME above for why this is never legitimate over HTTP.
+  if (url.pathname === BLOCKED_GET_SESSION_PATHNAME) {
+    throw createError({ statusCode: 404, statusMessage: 'Not Found' })
+  }
   const redirectTo = decideConsentRedirect(event.method, url.pathname, url.search)
   if (!redirectTo) return
   return sendRedirect(event, new URL(redirectTo, url.origin).toString(), 302)
