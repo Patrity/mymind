@@ -19,7 +19,7 @@ Exposes MyMind to agents (Claude Code, etc.) over the Model Context Protocol, de
 1. **`mm_` bearer API token** — machine clients that can set a static header (Claude Code, scripts, MCP Inspector with a manual token). Checked first against `api_tokens`. Mint/manage tokens and get a copy-paste MCP config at `/settings/api-keys` — see [`api-tokens.md`](api-tokens.md). Unaffected by everything below; `api_tokens` is a separate table from the OAuth tables.
 2. **OAuth 2.1 (cycle 48)** — clients that only support a connector's browser-driven OAuth flow (claude.ai / Claude Desktop custom connectors). This is the only viable path for those surfaces: Claude's request-headers beta, which would let a header-capable client skip OAuth, is not available on this account.
 
-On `/api/mcp` specifically, a bearer that fails the `mm_` lookup is retried as an OAuth access token (`useAuth().api.getMcpSession({ headers })`); elsewhere a failed `mm_` lookup goes straight to a session check, then 401. A 401 on `/api/mcp` carries the RFC 9728 discovery pointer — `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource"` — so Claude can bootstrap OAuth discovery from a bare 401; every other route keeps the plain `WWW-Authenticate: Bearer` (unchanged).
+On `/api/mcp` specifically, a bearer that fails the `mm_` lookup is retried as an OAuth access token (`useAuth().api.getMcpSession({ headers })`); elsewhere a failed `mm_` lookup 401s immediately (the session check only runs when no Bearer header is present at all). A 401 on `/api/mcp` carries the RFC 9728 discovery pointer — `WWW-Authenticate: Bearer resource_metadata="<origin>/.well-known/oauth-protected-resource"` — so Claude can bootstrap OAuth discovery from a bare 401; every other route keeps the plain `WWW-Authenticate: Bearer` (unchanged).
 
 ### OAuth provider — better-auth `mcp` plugin
 
@@ -39,7 +39,7 @@ Three root-level Nitro routes under `server/routes/.well-known/` — outside the
 
 | Route | Serves |
 |---|---|
-| `oauth-authorization-server.get.ts` | RFC 8414 authorization-server metadata (`oAuthDiscoveryMetadata`) — issuer, the four endpoints above, `code_challenge_methods_supported: ["S256"]` |
+| `oauth-authorization-server.get.ts` | RFC 8414 authorization-server metadata (`oAuthDiscoveryMetadata`) — issuer, the authorization, token, userinfo, jwks, and registration endpoints, `code_challenge_methods_supported: ["S256"]` |
 | `oauth-protected-resource.get.ts` | RFC 9728 protected-resource metadata (`oAuthProtectedResourceMetadata`) — `resource`, `authorization_servers` |
 | `oauth-protected-resource/api/mcp.get.ts` | Same RFC 9728 doc, served at the `/api/mcp`-suffixed path Claude also probes |
 
