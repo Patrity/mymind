@@ -10,6 +10,7 @@ interface LoginForm {
   password: string
 }
 
+const route = useRoute()
 const allowSignup = useRuntimeConfig().public.allowSignup
 const mode = ref<'signin' | 'register'>('signin')
 const isRegister = computed(() => mode.value === 'register')
@@ -67,6 +68,11 @@ async function onSubmit(event: FormSubmitEvent<LoginForm>) {
         })
     if (result.error) {
       error.value = result.error.message ?? (isRegister.value ? 'Could not create account' : 'Invalid credentials')
+    } else if (route.query.client_id && route.query.response_type) {
+      // Login was reached mid-OAuth-flow (better-auth bounced the authorize
+      // request here with its full query). Resume the flow server-side.
+      const qs = new URLSearchParams(route.query as Record<string, string>).toString()
+      await navigateTo(`/api/auth/mcp/authorize?${qs}`, { external: true })
     } else {
       await navigateTo('/documents')
     }
