@@ -1,7 +1,7 @@
 import type { H3Event } from 'h3'
 
 export interface ClientContext {
-  type?: 'session' | 'api-token'
+  type?: 'session' | 'api-token' | 'oauth'
   userId?: string
   tokenId?: string
 }
