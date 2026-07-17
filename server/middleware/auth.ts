@@ -2,7 +2,7 @@ import { eq, and, isNull } from 'drizzle-orm'
 import { useDb } from '../db'
 import { apiTokens } from '../db/schema'
 import { hashToken } from '../utils/api-token'
-import { mcpAuthChallengeHeader, oauthOrigin } from '../utils/oauth-metadata'
+import { isOauthTokenLive, mcpAuthChallengeHeader, oauthOrigin } from '../utils/oauth-metadata'
 
 const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i', '/api/setup', '/api/health']
 
@@ -37,7 +37,12 @@ export default defineEventHandler(async (event) => {
     // 1b) OAuth access token (MCP connectors) — only on the MCP route
     if (isMcp) {
       const oauthToken = await useAuth().api.getMcpSession({ headers: event.headers as Headers }).catch(() => null)
-      if (oauthToken) {
+      // better-auth's getMcpSession handler (mcp/index.mjs) looks the token up by value
+      // and returns the raw oauth_access_token row unconditionally — it never checks
+      // accessTokenExpiresAt. isOauthTokenLive is the actual expiry enforcement point;
+      // an expired token falls through to `throw unauthorized()` below, whose 401 carries
+      // the RFC 9728 challenge that triggers Claude's refresh-token flow.
+      if (oauthToken && isOauthTokenLive(oauthToken.accessTokenExpiresAt)) {
         // better-auth's declared return type for getMcpSession (OAuthAccessToken, from
         // oidc-provider/types.d.mts) omits `id`, but the runtime handler returns the raw
         // oauth_access_token DB row unmodified, which always has one — see task-4-report.md.
