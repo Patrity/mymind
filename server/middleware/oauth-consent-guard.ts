@@ -23,13 +23,26 @@
  * provider's endpoints, plus `dist/api/index.mjs`, which mounts each plugin
  * endpoint at its own baked-in `path`).
  *
- * Fix: for a GET to that exact path with no `prompt` query param at all,
- * 302-redirect to the same URL with `prompt=consent` appended, preserving
- * every other query param byte-for-byte (we never re-encode the original
- * query string — only append to it). An explicit `prompt` value (including
- * `prompt=none`, which a real client may legitimately send) is left alone —
- * this only forces the *missing* case, so there is no redirect loop and no
- * overriding of client intent.
+ * Fix: for a GET to that exact path, enforce the CANONICAL value better-auth
+ * checks for — pass through only when the query carries exactly one `prompt`
+ * param whose value is exactly `consent`. Anything else (absent, `none`, a
+ * case variant like `Consent`, a multi-value like `consent login`, or
+ * duplicate `prompt` keys) 302-redirects to the same URL with all `prompt`
+ * params replaced by a single `prompt=consent`. Presence alone is NOT enough:
+ * better-auth's gate is the strict string comparison above, so e.g.
+ * `prompt=none` or `prompt=consent&prompt=none` would pass a mere
+ * has('prompt') check and still silently mint a code. Deliberate
+ * non-conformance with RFC `prompt=none` semantics: better-auth 1.6.13
+ * doesn't implement them anyway (it would silently mint instead of returning
+ * `interaction_required`), so forcing consent is the safe behavior — our
+ * spec's never-auto-approve rule wins over client prompt intent. The
+ * redirect target always normalizes to exactly one `prompt=consent`, which
+ * the pass-through branch accepts, so there is no redirect loop. When
+ * `prompt` is absent entirely we append to the raw query string (other
+ * params preserved byte-for-byte); when rewriting existing `prompt` values
+ * we rebuild via URLSearchParams, which preserves every other param's
+ * key/value but may normalize encoding — better-auth parses the query with
+ * standard URL parsing, so param order/encoding normalization is safe.
  */
 
 import type { H3Event } from 'h3'
@@ -41,13 +54,27 @@ const GUARDED_PATHNAME = '/api/auth/mcp/authorize'
  * string (H3/URL's `.search`, i.e. `''` or starting with `?`), returns the
  * pathname+query to redirect to when consent must be forced, or `null` when
  * the request should pass through untouched.
+ *
+ * Pass-through requires the canonical form: exactly one `prompt` param with
+ * the exact value `consent` — mirroring better-auth's strict
+ * `query.prompt === "consent"` gate, including its duplicate-key behavior
+ * (duplicates parse to an array upstream, which never strict-equals the
+ * string).
  */
 export function decideConsentRedirect(method: string, pathname: string, search: string): string | null {
   if (method !== 'GET') return null
   if (pathname !== GUARDED_PATHNAME) return null
-  if (new URLSearchParams(search).has('prompt')) return null
-  const suffix = search ? `${search}&prompt=consent` : '?prompt=consent'
-  return `${pathname}${suffix}`
+  const params = new URLSearchParams(search)
+  const prompts = params.getAll('prompt')
+  if (prompts.length === 1 && prompts[0] === 'consent') return null
+  if (prompts.length === 0) {
+    // Absent entirely: append to the raw string — other params byte-for-byte.
+    return `${pathname}${search ? `${search}&prompt=consent` : '?prompt=consent'}`
+  }
+  // Non-canonical value(s) present: strip them all, set exactly one.
+  params.delete('prompt')
+  params.set('prompt', 'consent')
+  return `${pathname}?${params.toString()}`
 }
 
 function oauthConsentGuardHandler(event: H3Event) {
