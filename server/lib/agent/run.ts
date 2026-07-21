@@ -37,6 +37,17 @@ export type AgentEvent =
   | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[] }
   | { type: 'done' }
 
+// Map one AI SDK v6 fullStream part to a text/reasoning event (or null for
+// anything else). AI SDK v6 carries `.delta`; test fakes may use `.text` — accept
+// both. Shared by the main loop and the forced-final follow-up below.
+function partToEvent(part: unknown): { type: 'text-delta' | 'reasoning-delta'; text: string } | null {
+  const t = (part as { type?: unknown }).type
+  if (t !== 'text-delta' && t !== 'reasoning-delta') return null
+  const p = part as { delta?: string; text?: string }
+  const text = p.delta ?? p.text ?? ''
+  return text ? { type: t, text } : null
+}
+
 // Structural type for the streamText dep: only what runAgent actually uses.
 type StreamTextFn = (args: never) => { fullStream: AsyncIterable<unknown> }
 
@@ -69,11 +80,17 @@ export async function* runAgent(
 
   publishActivity({ type: 'state', state: 'thinking' })
 
+  // Redact /api/images URLs from history so the model can't copy a real URL into a
+  // new reply (which would render the wrong/old image live). See image-embed.ts.
+  // Reused verbatim by the forced-final follow-up below.
+  const modelMessages = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: toModelContent(m.role, m.content) }))
+
   // Build the stream, trying each reasoning model in priority order. If stream
   // creation throws (bad baseURL, adapter construction), fall over to the next.
   // Mid-stream failures are NOT retried.
   const models = deps.streamText ? [undefined as never] : await reasoningModels(ctx.modelDefId)
   let result: ReturnType<typeof realStreamText> | undefined
+  let chosen: (typeof models)[number] | undefined
   let lastErr: unknown
   for (let i = 0; i < models.length; i++) {
     const model = models[i]!
@@ -82,9 +99,7 @@ export async function* runAgent(
       result = (streamTextFn as unknown as typeof realStreamText)({
         model,
         system,
-        // Redact /api/images URLs from history so the model can't copy a real URL into a
-        // new reply (which would render the wrong/old image live). See image-embed.ts.
-        messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: toModelContent(m.role, m.content) })) as never,
+        messages: modelMessages as never,
         tools,
         temperature: VOICE_TUNING.agent.temperature,
         stopWhen: stepCountIs(maxSteps),
@@ -96,6 +111,7 @@ export async function* runAgent(
         abortSignal: ctx.signal
       })
       recordEvent({ kind: 'attempt', name: 'reasoning:agent', status: 'ok', severity: 'info', usage: 'reasoning', provider: (model as { label?: string } | undefined)?.label ?? null, modelId: (model as { modelId?: string } | undefined)?.modelId ?? null, attempt: i, durationMs: Date.now() - started })
+      chosen = model
       break
     } catch (err) {
       lastErr = err
@@ -107,22 +123,49 @@ export async function* runAgent(
     throw lastErr ?? new Error('no reasoning model available')
   }
 
+  let sawText = false
+  let sawToolCall = false
   for await (const part of result.fullStream) {
     while (queue.length) yield queue.shift()!
-    if ((part as { type?: unknown }).type === 'text-delta') {
-      // AI SDK v6: text-delta part has `text`; test fakes use `delta` — accept both.
-      const p = part as { delta?: string; text?: string }
-      const text = p.delta ?? p.text ?? ''
-      if (text) yield { type: 'text-delta', text }
-    } else if ((part as { type?: unknown }).type === 'reasoning-delta') {
-      // AI SDK v6 fullStream reasoning part carries `.delta`; test fakes may use `.text`.
-      const p = part as { delta?: string; text?: string }
-      const text = p.delta ?? p.text ?? ''
-      if (text) yield { type: 'reasoning-delta', text }
-    }
+    if ((part as { type?: unknown }).type === 'tool-call') sawToolCall = true
     // tool-start / tool-result surface via the queue (buildAiTools.onEvent)
+    const ev = partToEvent(part)
+    if (ev) { if (ev.type === 'text-delta') sawText = true; yield ev }
   }
   while (queue.length) yield queue.shift()!
+
+  // Final-answer guarantee. The step-cap guard (prepareStep) forces a text-only
+  // LAST step, but a reasoning model can VOLUNTARILY stop after a tool call —
+  // emitting only tool calls / reasoning and no text, well before the cap — and
+  // the AI SDK loop ends there. That turn would otherwise yield no reply at all
+  // (live failure: "What'd we work on yesterday?" ran search_docs + list_documents
+  // then went silent). If tools ran but no text was produced, re-run ONCE with
+  // toolChoice:'none', feeding back the tool results, to force a spoken answer.
+  if (!sawText && sawToolCall && !ctx.signal.aborted) {
+    const started = Date.now()
+    try {
+      const prior = ((await result.response) as { messages?: unknown[] }).messages ?? []
+      const followup = (streamTextFn as unknown as typeof realStreamText)({
+        model: chosen as never,
+        system,
+        messages: [...modelMessages, ...prior] as never,
+        tools,
+        toolChoice: 'none',
+        temperature: VOICE_TUNING.agent.temperature,
+        abortSignal: ctx.signal
+      })
+      for await (const part of followup.fullStream) {
+        while (queue.length) yield queue.shift()!
+        const ev = partToEvent(part)
+        if (ev) { if (ev.type === 'text-delta') sawText = true; yield ev }
+      }
+      while (queue.length) yield queue.shift()!
+      recordEvent({ kind: 'attempt', name: 'reasoning:agent-forced-final', status: sawText ? 'ok' : 'warn', severity: sawText ? 'info' : 'warn', usage: 'reasoning', modelId: (chosen as { modelId?: string } | undefined)?.modelId ?? null, durationMs: Date.now() - started })
+    } catch (err) {
+      recordEvent({ kind: 'model', name: 'reasoning:agent-forced-final', status: 'error', severity: 'warn', usage: 'reasoning', durationMs: Date.now() - started, error: { message: (err as Error).message } })
+    }
+  }
+
   publishActivity({ type: 'state', state: 'idle' })
   yield { type: 'done' }
 }

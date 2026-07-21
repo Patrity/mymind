@@ -2,7 +2,7 @@
 title: Agent Surface (/agent)
 status: shipped
 cycle: 45
-updated: 2026-07-10
+updated: 2026-07-21
 ---
 
 # Agent Surface (`/agent`)
@@ -30,6 +30,7 @@ The SSE `POST /api/agent/chat` still exists but is **headless/programmatic only*
 - `maxSteps` — optional per-run override of the step cap (subagents pass their own budget).
 - The system prompt is built **once** before the model loop; start-only failover + `recordEvent` observability are unchanged. `deps.buildSystemPrompt` is injectable so tests run without the DB.
 - **Sampling + step budget (cycle 41):** `streamText` always sends `temperature` (`VOICE_TUNING.agent.temperature`, 0.7 — qwen3-recommended) so a greedy serving-stack default can't degenerate a small local model into copy-loops; `maxSteps` is 16 for every main-loop turn (single cap since cycle 42).
+- **Final-answer guarantee (two layers):** a turn must never end with tool calls and no reply. (1) `prepareStep` forces the **last allowed** step (`stepNumber ≥ maxSteps-1`) to `toolChoice:'none'`, covering the "burned all steps" case. (2) After the stream drains, if tools ran but **no text-delta was emitted** (a reasoning model can voluntarily stop after a tool call, emitting only reasoning/tool calls — the step guard never fires because it quit early), `runAgent` re-runs **once** with `toolChoice:'none'`, feeding back `(await result.response).messages` (the tool results), to force a spoken answer. Recorded as `reasoning:agent-forced-final` in the activity log (`warn` if even that yields no text). Without layer 2, the turn persisted only the user message and silently dropped the tool calls (`orchestrator.ts` returns history without an assistant turn when `assistantText===''`), leaving the question unanswered **and** poisoning the next turn's history. Live failure that motivated it: a typed "What'd we work on yesterday?" ran `search_docs` + `list_documents` then went silent.
 - **Known structural gap (cycle 43, task filed):** model history is `{role, content}` **text only** — the model never sees its own prior tool calls/results across turns (`getAgentHistory` drops them). Cross-turn it can't know it already searched; the fix is persisting tool calls with args+results and feeding them back as structured tool messages. See handover 2026-07-01.
 
 ## Subagents (cycle 42)

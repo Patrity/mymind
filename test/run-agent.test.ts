@@ -37,6 +37,53 @@ describe('runAgent', () => {
     expect(args.prepareStep({ stepNumber: 3 })).toEqual({ toolChoice: 'none' }) // last of 4 (0-indexed)
   })
 
+  it('forces a text-only follow-up when a run ends with tool calls but no assistant text', async () => {
+    // Live failure: "What'd we work on yesterday?" ran search_docs + list_documents,
+    // then the reasoning model ended the turn emitting NO text → no reply was persisted.
+    const streamText = vi.fn()
+      .mockReturnValueOnce({
+        fullStream: (async function* () {
+          yield { type: 'tool-call', toolCallId: 'c1', toolName: 'search_docs', input: {} }
+          yield { type: 'finish', finishReason: 'stop' }
+        })(),
+        response: Promise.resolve({ messages: [
+          { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'search_docs', input: {} }] },
+          { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'search_docs', output: { type: 'text', value: 'nothing' } }] }
+        ] })
+      })
+      .mockReturnValueOnce(fakeFullStream([
+        { type: 'text-delta', id: 't', delta: 'Yesterday we shipped the OAuth connector.' },
+        { type: 'finish', finishReason: 'stop' }
+      ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'what did we work on yesterday' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    const text = events.filter(e => e.type === 'text-delta').map(e => e.text).join('')
+    expect(text).toBe('Yesterday we shipped the OAuth connector.')
+    expect(streamText).toHaveBeenCalledTimes(2)
+    expect((streamText.mock.calls[1]![0] as { toolChoice?: unknown }).toolChoice).toBe('none')
+    expect(events[events.length - 1]).toEqual({ type: 'done' })
+  })
+
+  it('does NOT force a follow-up when the run already produced text (no extra model call)', async () => {
+    const streamText = vi.fn(() => fakeFullStream([
+      { type: 'tool-call', toolCallId: 'c1', toolName: 'search_docs', input: {} },
+      { type: 'text-delta', id: 't', delta: 'Done.' },
+      { type: 'finish', finishReason: 'stop' }
+    ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'hi' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    expect(streamText).toHaveBeenCalledTimes(1)
+    expect(events.filter(e => e.type === 'text-delta').map(e => e.text).join('')).toBe('Done.')
+  })
+
   it('maps fullStream reasoning-delta parts to reasoning-delta events', async () => {
     const streamText = vi.fn(() => fakeFullStream([
       { type: 'reasoning-start', id: 'r' },
