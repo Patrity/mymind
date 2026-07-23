@@ -28,3 +28,16 @@ describe('composePrompt — honesty invariant', () => {
     })
   }
 })
+
+describe('composePrompt — environment self-model', () => {
+  for (const speak of [true, false]) {
+    it(`states the real runtime topology (speak=${speak})`, () => {
+      const p = composePrompt({ ...base, speak })
+      expect(p).toMatch(/LXC 114/)
+      expect(p).toMatch(/mymind-db/)                 // Postgres is this docker container
+      expect(p).toMatch(/not sqlite/i)
+      expect(p).toMatch(/\/opt\/mymind/)             // its own source/docs are readable
+      expect(p).toMatch(/harness Tony built/i)
+    })
+  }
+})
