@@ -125,44 +125,51 @@ export async function* runAgent(
 
   let sawText = false
   let sawToolCall = false
+  let emittedText = ''
   for await (const part of result.fullStream) {
     while (queue.length) yield queue.shift()!
     if ((part as { type?: unknown }).type === 'tool-call') sawToolCall = true
     // tool-start / tool-result surface via the queue (buildAiTools.onEvent)
     const ev = partToEvent(part)
-    if (ev) { if (ev.type === 'text-delta') sawText = true; yield ev }
+    if (ev) { if (ev.type === 'text-delta') { sawText = true; emittedText += ev.text } ; yield ev }
   }
   while (queue.length) yield queue.shift()!
 
-  // Final-answer guarantee. The step-cap guard (prepareStep) forces a text-only
-  // LAST step, but a reasoning model can VOLUNTARILY stop after a tool call —
-  // emitting only tool calls / reasoning and no text, well before the cap — and
-  // the AI SDK loop ends there. That turn would otherwise yield no reply at all
-  // (live failure: "What'd we work on yesterday?" ran search_docs + list_documents
-  // then went silent). If tools ran but no text was produced, re-run ONCE with
-  // toolChoice:'none', feeding back the tool results, to force a spoken answer.
-  if (!sawText && sawToolCall && !ctx.signal.aborted) {
+  // A tool-call emitted as PLAIN TEXT (Qwen/vLLM streaming hermes-parser bug,
+  // vllm#31871) counts as text and fires no structured tool-call, so the
+  // no-text guard never triggers and the turn dead-ends. Detect a dangling
+  // <tool_call>/<function= marker when NO real tool-call fired.
+  const sawTextToolCallMarker = !sawToolCall && /<tool_call>|<function\s*=/.test(emittedText)
+  const needForcedFinal = !sawText && sawToolCall
+  if ((needForcedFinal || sawTextToolCallMarker) && !ctx.signal.aborted) {
     const started = Date.now()
+    const mode = sawTextToolCallMarker ? 'recovered-textcall' : 'forced-final'
+    let followupText = false
     try {
       const prior = ((await result.response) as { messages?: unknown[] }).messages ?? []
+      // Marker path: nudge + ALLOW tools (the call must actually run this time).
+      // No-text path: force a spoken summary (tools already ran) with toolChoice:'none'.
+      const nudge = sawTextToolCallMarker
+        ? [{ role: 'user' as const, content: 'Your previous message contained a tool call written as plain text, so it was NOT executed. If you still need it, call the tool now as a real tool call, then answer Tony.' }]
+        : []
       const followup = (streamTextFn as unknown as typeof realStreamText)({
         model: chosen as never,
         system,
-        messages: [...modelMessages, ...prior] as never,
+        messages: [...modelMessages, ...prior, ...nudge] as never,
         tools,
-        toolChoice: 'none',
+        ...(sawTextToolCallMarker ? {} : { toolChoice: 'none' as const }),
         temperature: VOICE_TUNING.agent.temperature,
         abortSignal: ctx.signal
       })
       for await (const part of followup.fullStream) {
         while (queue.length) yield queue.shift()!
         const ev = partToEvent(part)
-        if (ev) { if (ev.type === 'text-delta') sawText = true; yield ev }
+        if (ev) { if (ev.type === 'text-delta') { followupText = true; sawText = true } ; yield ev }
       }
       while (queue.length) yield queue.shift()!
-      recordEvent({ kind: 'attempt', name: 'reasoning:agent-forced-final', status: sawText ? 'ok' : 'warn', severity: sawText ? 'info' : 'warn', usage: 'reasoning', modelId: (chosen as { modelId?: string } | undefined)?.modelId ?? null, durationMs: Date.now() - started })
+      recordEvent({ kind: 'attempt', name: `reasoning:agent-${mode}`, status: followupText ? 'ok' : 'warn', severity: followupText ? 'info' : 'warn', usage: 'reasoning', modelId: (chosen as { modelId?: string } | undefined)?.modelId ?? null, durationMs: Date.now() - started })
     } catch (err) {
-      recordEvent({ kind: 'model', name: 'reasoning:agent-forced-final', status: 'error', severity: 'warn', usage: 'reasoning', durationMs: Date.now() - started, error: { message: (err as Error).message } })
+      recordEvent({ kind: 'model', name: `reasoning:agent-${mode}`, status: 'error', severity: 'warn', usage: 'reasoning', durationMs: Date.now() - started, error: { message: (err as Error).message } })
     }
   }
 

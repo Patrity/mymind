@@ -104,4 +104,48 @@ describe('runAgent', () => {
     expect(reasoning).toBe('Let me think.')
     expect(text).toBe('Answer.')
   })
+
+  it('recovers when the model emits a tool call as plain text (marker + no real tool-call)', async () => {
+    // Live failure (conversation 054f2560): the turn ended with a literal
+    // "<tool_call><function=exec>…</tool_call>" streamed as TEXT — never executed.
+    const streamText = vi.fn()
+      .mockReturnValueOnce({
+        fullStream: (async function* () {
+          yield { type: 'text-delta', id: 't', delta: 'Let me get all 10 projects.\n<tool_call>\n<function=exec>\n</tool_call>' }
+          yield { type: 'finish', finishReason: 'stop' }
+        })(),
+        response: Promise.resolve({ messages: [{ role: 'assistant', content: 'Let me get all 10 projects.' }] })
+      })
+      .mockReturnValueOnce(fakeFullStream([
+        { type: 'text-delta', id: 't2', delta: 'Here are the 10 projects: …' },
+        { type: 'finish', finishReason: 'stop' }
+      ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'do it' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    expect(streamText).toHaveBeenCalledTimes(2)
+    // recovery MUST allow tools (so the call can actually run) — not toolChoice:'none'
+    expect((streamText.mock.calls[1]![0] as { toolChoice?: unknown }).toolChoice).toBeUndefined()
+    const text = events.filter(e => e.type === 'text-delta').map(e => e.text).join('')
+    expect(text).toContain('Here are the 10 projects')
+    expect(events[events.length - 1]).toEqual({ type: 'done' })
+  })
+
+  it('does NOT recover when a real tool-call fired even if prose contains <tool_call>', async () => {
+    const streamText = vi.fn(() => fakeFullStream([
+      { type: 'tool-call', toolCallId: 'c1', toolName: 'search_docs', input: {} },
+      { type: 'text-delta', id: 't', delta: 'The <tool_call> tag is how Qwen writes calls.' },
+      { type: 'finish', finishReason: 'stop' }
+    ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'explain tool calls' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    expect(streamText).toHaveBeenCalledTimes(1) // sawToolCall true → marker is prose, no false-positive re-run
+  })
 })
