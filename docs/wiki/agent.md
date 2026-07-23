@@ -2,7 +2,7 @@
 title: Agent Surface (/agent)
 status: shipped
 cycle: 45
-updated: 2026-07-21
+updated: 2026-07-23
 ---
 
 # Agent Surface (`/agent`)
@@ -31,6 +31,8 @@ The SSE `POST /api/agent/chat` still exists but is **headless/programmatic only*
 - The system prompt is built **once** before the model loop; start-only failover + `recordEvent` observability are unchanged. `deps.buildSystemPrompt` is injectable so tests run without the DB.
 - **Sampling + step budget (cycle 41):** `streamText` always sends `temperature` (`VOICE_TUNING.agent.temperature`, 0.7 — qwen3-recommended) so a greedy serving-stack default can't degenerate a small local model into copy-loops; `maxSteps` is 16 for every main-loop turn (single cap since cycle 42).
 - **Final-answer guarantee (two layers):** a turn must never end with tool calls and no reply. (1) `prepareStep` forces the **last allowed** step (`stepNumber ≥ maxSteps-1`) to `toolChoice:'none'`, covering the "burned all steps" case. (2) After the stream drains, if tools ran but **no text-delta was emitted** (a reasoning model can voluntarily stop after a tool call, emitting only reasoning/tool calls — the step guard never fires because it quit early), `runAgent` re-runs **once** with `toolChoice:'none'`, feeding back `(await result.response).messages` (the tool results), to force a spoken answer. Recorded as `reasoning:agent-forced-final` in the activity log (`warn` if even that yields no text). Without layer 2, the turn persisted only the user message and silently dropped the tool calls (`orchestrator.ts` returns history without an assistant turn when `assistantText===''`), leaving the question unanswered **and** poisoning the next turn's history. Live failure that motivated it: a typed "What'd we work on yesterday?" ran `search_docs` + `list_documents` then went silent.
+
+> **Tool-call-as-text recovery (cycle 49):** if the model streams a `<tool_call>`/`<function=` marker as text with no real tool-call (vLLM streaming hermes bug, [vllm#31871](https://github.com/vllm-project/vllm/issues/31871)), `run.ts` re-runs once with tools allowed + a corrective nudge (`reasoning:agent-recovered-textcall`), distinct from the no-text `reasoning:agent-forced-final` path.
 - **Known structural gap (cycle 43, task filed):** model history is `{role, content}` **text only** — the model never sees its own prior tool calls/results across turns (`getAgentHistory` drops them). Cross-turn it can't know it already searched; the fix is persisting tool calls with args+results and feeding them back as structured tool messages. See handover 2026-07-01.
 
 ## Subagents (cycle 42)
@@ -92,6 +94,10 @@ Two additions to the `/agent` surface, both riding the WS pipeline only.
 - **Context-aware** — `buildLiveContext(now)` injects active projects + open tasks (assembled once per connection to bound cost).
 `composePrompt` + `timeOfDayTone` are pure + unit-tested; the DB-backed loaders are E2E-validated.
 
+> **Honesty invariant (cycle 49):** the prompt forbids reporting any mutation (create/edit/delete/move/rename/fix) as done without a tool result THIS turn, and forbids asserting unverified facts about data (schemas, references, "it's safe"). Motivated by prod conversation `054f2560`, where the agent said "Done" twice with zero tool calls.
+
+> **Environment self-model (cycle 49):** the prompt tells the agent it runs as native systemd `mymind` (root) in LXC 114, that its DB is the Docker container `mymind-db` (not sqlite, not host `db`), and that its own source/docs at `/opt/mymind` are readable via `exec`.
+
 ## UI
 
 `app/pages/agent/index.vue` (and `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send. Controls: **Visualizer** toggle (cookie `agent-canvas`), **Respond in voice** toggle (cookie `agent-speak` → per-message `speak`), the **reasoning-model dropdown** (cookie `agent-model`; cycle 45 — see above), **Enable microphone** (`enableMic()`/`disableMic()` — lazy VAD; the only voice affordance, auto-connects if needed), **New**, **History** slideover (`app/components/agent/HistorySlideover.vue`), and the composer. Assistant replies render **markdown** via the shared `<MdView>` (MDC) renderer; user turns are literal text. Streamed text deltas are appended raw (they already carry their own spacing).
@@ -117,7 +123,7 @@ Two additions to the `/agent` surface, both riding the WS pipeline only.
 | `search_projects` | read | Active + all |
 | `get_project` | read | Full model + counts |
 | `create_project` | create | |
-| `edit_project` | destructive | |
+| `edit_project` | destructive | Supports `aliases` and `newSlug` (transactional slug cascade via `updateProject`) |
 | `search_tasks` | read | Status + project filter |
 | `create_task` | create | |
 | `edit_task` | destructive | |
