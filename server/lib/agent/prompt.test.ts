@@ -17,3 +17,14 @@ describe('composePrompt — IMAGES rule', () => {
     })
   }
 })
+
+describe('composePrompt — honesty invariant', () => {
+  for (const speak of [true, false]) {
+    it(`forbids claiming an action done without a tool result (speak=${speak})`, () => {
+      const p = composePrompt({ ...base, speak })
+      expect(p).toMatch(/never report an action as done/i)
+      expect(p).toMatch(/fabricated success is the worst/i)
+      expect(p).toMatch(/have not verified with a tool/i)
+    })
+  }
+})
