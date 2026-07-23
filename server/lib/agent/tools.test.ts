@@ -40,3 +40,13 @@ describe('delete tools', () => {
     }
   })
 })
+
+describe('edit_project — aliases + rename', () => {
+  it('exposes aliases and newSlug and stays destructive', () => {
+    const t = toolByName('edit_project')
+    expect(t?.kind).toBe('destructive')
+    expect(Object.keys(t!.schema)).toEqual(
+      expect.arrayContaining(['slug', 'name', 'description', 'active', 'aliases', 'newSlug'])
+    )
+  })
+})

@@ -372,25 +372,38 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'edit_project',
-    description: 'Update an existing project. Confirm with the user before calling.',
+    description: 'Update an existing project: name, description, active, aliases, or rename its slug (pass newSlug — the slug cascade to sessions/tasks/memories/documents is transactional). Confirm with the user before calling.',
     kind: 'destructive',
     schema: {
-      slug: z.string(), name: z.string().optional(),
-      description: z.string().optional(), active: z.boolean().optional()
+      slug: z.string(),
+      name: z.string().optional(),
+      description: z.string().optional(),
+      active: z.boolean().optional(),
+      aliases: z.array(z.string()).optional(),
+      newSlug: z.string().optional()
     },
     handler: async (a) => {
-      const slug = a.slug as string
+      const args = a as { slug: string, newSlug?: string, name?: string, description?: string, active?: boolean, aliases?: string[] }
+      const slug = args.slug
       const prior = await getProject(slug)
-      const { slug: _s, ...patch } = a
-      const p = await updateProject(slug, patch as { name?: string, description?: string, active?: boolean })
-      publishChange({ resource: 'project', action: 'updated', id: slug })
+      const { slug: _s, newSlug, ...rest } = args
+      const renaming = !!newSlug && newSlug !== slug
+      const p = await updateProject(slug, { ...rest, ...(renaming ? { slug: newSlug } : {}) })
+      const finalSlug = p?.slug ?? slug
+      publishChange({ resource: 'project', action: 'updated', id: finalSlug })
       return {
         result: p ?? { error: 'not found', slug },
-        summary: `updated project "${slug}"`,
+        summary: renaming ? `renamed project "${slug}" → "${finalSlug}"` : `updated project "${slug}"`,
         undo: prior
           ? async () => {
-            await updateProject(slug, { name: prior.name, description: prior.description ?? undefined, active: prior.active })
-            publishChange({ resource: 'project', action: 'updated', id: slug })
+            await updateProject(finalSlug, {
+              slug: prior.slug,
+              name: prior.name,
+              description: prior.description ?? undefined,
+              active: prior.active,
+              aliases: prior.aliases
+            })
+            publishChange({ resource: 'project', action: 'updated', id: prior.slug })
           }
           : undefined
       }
