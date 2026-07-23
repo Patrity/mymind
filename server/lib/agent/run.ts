@@ -164,7 +164,7 @@ export async function* runAgent(
       for await (const part of followup.fullStream) {
         while (queue.length) yield queue.shift()!
         const ev = partToEvent(part)
-        if (ev) { if (ev.type === 'text-delta') { followupText = true; sawText = true } ; yield ev }
+        if (ev) { if (ev.type === 'text-delta') followupText = true; yield ev }
       }
       while (queue.length) yield queue.shift()!
       recordEvent({ kind: 'attempt', name: `reasoning:agent-${mode}`, status: followupText ? 'ok' : 'warn', severity: followupText ? 'info' : 'warn', usage: 'reasoning', modelId: (chosen as { modelId?: string } | undefined)?.modelId ?? null, durationMs: Date.now() - started })
