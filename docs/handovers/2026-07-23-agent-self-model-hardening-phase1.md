@@ -2,7 +2,7 @@
 title: Agent self-model hardening — Phase 1 (cycle 49)
 cycle: 49
 date: 2026-07-23
-status: BUILT + reviewed, gates green (typecheck 0 / test 826 / build clean). Final whole-branch review (opus) = Ready to merge (0 Critical / 0 Important). NOT merged/pushed/deployed. AWAITING Tony's merge+deploy decision, then the prod E2E (re-run the exact failing task). Phase 2 (Agent Skills subsystem) gets its own plan next.
+status: SHIPPED — merged to master (fast-forward, 4d485c0..c6a5325) + pushed 2026-07-24; CD run 30092847426 green (test + deploy jobs, 0 failed steps); prod `/api/health` 200 post-cutover. Gates green (typecheck 0 / test 826 / build clean); final whole-branch review (opus) = Ready to merge (0 Critical / 0 Important). ⚠️ STILL PENDING: the prod E2E (re-run the exact failing neo4nls task on /agent) — the only runtime proof of the rename cascade + honesty behaviour. Phase 2 (Agent Skills subsystem) gets its own plan next.
 branch: feat/agent-skills-self-model (built subagent-driven, 5 plan tasks + 1 final-review cleanup; per-task reports + ledger in .superpowers/sdd/)
 docs:
   - ../wiki/agent.md (living reference — cycle-49 notes added: honesty invariant, environment self-model, tool-call-as-text recovery, edit_project aliases/newSlug; updated 2026-07-23)
