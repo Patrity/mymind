@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { composePrompt } from './prompt'
+import { composePrompt, renderSkillsIndex } from './prompt'
 
 const base = { persona: 'You are Bridget.', toneLine: 'It is afternoon.' }
 
@@ -40,4 +40,30 @@ describe('composePrompt — environment self-model', () => {
       expect(p).toMatch(/harness Tony built/i)
     })
   }
+})
+
+describe('skills index (Tier-1)', () => {
+  const skills = [
+    { name: 'db-maintenance', description: 'Safe Postgres ops', whenToUse: 'Use when touching the DB' },
+    { name: 'deploy-and-migrate', description: 'Ship a change', whenToUse: 'Use when deploying' }
+  ]
+  it('renders one line per skill with the imperative load rule', () => {
+    const idx = renderSkillsIndex(skills)
+    expect(idx).toMatch(/use_skill/)
+    expect(idx).toMatch(/db-maintenance: Safe Postgres ops/)
+    expect(idx).toMatch(/Use when touching the DB/)
+    expect(idx).toMatch(/deploy-and-migrate/)
+  })
+  it('is absent from the prompt when no index is supplied', () => {
+    const p = composePrompt({ ...base, speak: false })
+    expect(p).not.toMatch(/use_skill/)
+  })
+  it('is included when supplied', () => {
+    const p = composePrompt({ ...base, speak: false, skillsIndex: renderSkillsIndex(skills) })
+    expect(p).toMatch(/use_skill/)
+    expect(p).toMatch(/db-maintenance/)
+  })
+  it('renders nothing for an empty skill list', () => {
+    expect(renderSkillsIndex([])).toBe('')
+  })
 })
