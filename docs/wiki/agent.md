@@ -2,7 +2,7 @@
 title: Agent Surface (/agent)
 status: shipped
 cycle: 45
-updated: 2026-07-23
+updated: 2026-07-24
 ---
 
 # Agent Surface (`/agent`)
@@ -97,6 +97,8 @@ Two additions to the `/agent` surface, both riding the WS pipeline only.
 > **Honesty invariant (cycle 49):** the prompt forbids reporting any mutation (create/edit/delete/move/rename/fix) as done without a tool result THIS turn, and forbids asserting unverified facts about data (schemas, references, "it's safe"). Motivated by prod conversation `054f2560`, where the agent said "Done" twice with zero tool calls.
 
 > **Environment self-model (cycle 49):** the prompt tells the agent it runs as native systemd `mymind` (root) in LXC 114, that its DB is the Docker container `mymind-db` (not sqlite, not host `db`), and that its own source/docs at `/opt/mymind` are readable via `exec`.
+
+> **Skills (cycle 49 Phase 2):** the system prompt now carries only a Tier-1 **index** of skill names + descriptions; the detail lives in skill documents loaded on demand via `use_skill`. The long web-research guidance moved into the `web-research-etiquette` skill, so the base prompt is smaller than before. See [agent-skills.md](./agent-skills.md).
 
 ## UI
 
