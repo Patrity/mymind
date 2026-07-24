@@ -101,7 +101,12 @@ All mutations emit `publishChange({resource:'document', action, id})` for live-u
 
 ## Seed skills (6 bundled)
 
-When the app boots, six starter skills are installed (idempotent). Run `node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts` to install or update them:
+Six starter skills ship with the repo. **Nothing installs them automatically** — run the seed script (idempotent: creates on first run, updates in place after) on each environment you want them in:
+
+```bash
+node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts
+```
+
 
 1. **`environment-and-topology`** — where you run, how to reach the database/app/logs, how to read your own source and docs.
 2. **`db-maintenance`** — when to use tools vs raw SQL, the project-slug dual-reference trap, how to verify a change happened.
