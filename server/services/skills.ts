@@ -99,17 +99,18 @@ export async function getSkill(name: string): Promise<Skill | null> {
 export async function createSkill(input: SkillInput): Promise<Skill> {
   const v = validateSkill(input)
   if (!v.ok) throw new Error(v.error)
-  if (await getSkill(input.name)) throw new Error(`skill "${input.name}" already exists`)
+  const name = input.name.trim()
+  if (await getSkill(name)) throw new Error(`skill "${name}" already exists`)
   const doc = await createDoc({
-    path: skillPath(input.name.trim()),
-    title: input.name.trim(),
+    path: skillPath(name),
+    title: name,
     content: input.body,
-    frontmatter: frontmatterFor(input),
+    frontmatter: frontmatterFor({ ...input, name }),
     project: SKILL_PROJECT,
     type: 'skill'
   })
-  const skill = await getSkill(input.name)
-  if (!skill) throw new Error(`skill "${input.name}" was created (doc ${doc.id}) but could not be read back`)
+  const skill = await getSkill(name)
+  if (!skill) throw new Error(`skill "${name}" was created (doc ${doc.id}) but could not be read back`)
   return skill
 }
 
