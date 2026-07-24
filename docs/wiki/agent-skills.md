@@ -17,7 +17,9 @@ The system prompt is context-critical on a local Qwen model — every token coun
 2. **Tier-2 (On-demand)**: `use_skill` loads the full body (up to 20,000 chars). The agent reads it before acting on a matching task.
 3. **Tier-3 (References)**: The skill body can point at other documents (e.g. "see the deploy guide at `/projects/mymind/docs/DEPLOYMENT.md`") for even longer detail, keeping individual skills focused.
 
-**Effect**: The base system prompt is ~6000 tokens (after phase 2); web-research detail moved into the `web-research-etiquette` skill instead of bloating the prompt permanently.
+**Effect (measured, not estimated).** The base prompt — with no skills indexed — went from **6187 → 5324 chars** when the four web-research bullets moved into the `web-research-etiquette` skill. With the six seed skills indexed, the assembled prompt is **7361 chars**: the Tier-1 index costs ~2,000 chars.
+
+So be precise about the win: the always-on prompt is currently *larger* than before this cycle (7361 vs 6187), because six skills are now advertised. The economy is in the ratio — ~2,000 chars of pointers stand in for ~40,000 chars of procedure detail that stays on disk until `use_skill` pulls exactly the one that's needed. Adding a seventh skill costs ~100 tokens, not its whole body. Keep `description`/`whenToUse` short for that reason, and retire unused skills with `active: false` — every active skill is charged to every turn.
 
 ## Storage: skills ARE documents
 
