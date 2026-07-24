@@ -50,3 +50,27 @@ describe('edit_project — aliases + rename', () => {
     )
   })
 })
+
+describe('skill tools', () => {
+  it('use_skill is a read tool taking a name', () => {
+    const t = toolByName('use_skill')
+    expect(t?.kind).toBe('read')
+    expect(Object.keys(t!.schema)).toEqual(expect.arrayContaining(['name']))
+  })
+  it('authoring tools are ungated (autonomous self-improvement), delete is destructive', () => {
+    expect(toolByName('create_skill')!.kind).toBe('create')
+    expect(toolByName('edit_skill')!.kind).toBe('create')
+    expect(toolByName('delete_skill')!.kind).toBe('destructive')
+    for (const n of ['use_skill', 'create_skill', 'edit_skill', 'delete_skill']) {
+      expect(toolByName(n)!.dangerous, n).toBeFalsy()
+    }
+  })
+  it('create_skill takes the full frontmatter contract', () => {
+    expect(Object.keys(toolByName('create_skill')!.schema))
+      .toEqual(expect.arrayContaining(['name', 'description', 'whenToUse', 'body']))
+  })
+  it('edit_skill can patch any field including active', () => {
+    expect(Object.keys(toolByName('edit_skill')!.schema))
+      .toEqual(expect.arrayContaining(['name', 'description', 'whenToUse', 'body', 'active']))
+  })
+})

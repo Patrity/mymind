@@ -13,6 +13,8 @@ import { searchProvider } from '../search/resolve'
 import { fetchAsMarkdown } from '../search/fetch'
 import { generateImage, editImage } from '../imagegen/comfy'
 import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getImageBytes } from '../../services/images'
+import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill } from '../../services/skills'
+import { skillsEnabled } from './skills-config'
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
@@ -665,6 +667,99 @@ export const agentTools: AgentTool[] = [
         result: doc, summary: `captured note${title ? ` "${title}"` : ''}`,
         // createDoc has no soft-delete service exposed here; undo is best-effort no-op marker.
         undo: undefined
+      }
+    }
+  },
+  // ---- skills (progressive disclosure + autonomous self-improvement) ----
+  {
+    name: 'use_skill',
+    description: 'Load the full instructions for one of your skills by name. Call this BEFORE acting whenever a task matches a skill in your AVAILABLE SKILLS index.',
+    kind: 'read',
+    schema: { name: z.string() },
+    handler: async (a) => {
+      const name = a.name as string
+      if (!(await skillsEnabled())) return { result: { error: 'skills are disabled' }, summary: 'skills disabled' }
+      const s = await getSkill(name)
+      if (!s || !s.active) {
+        const available = (await listSkills({ activeOnly: true })).map(x => x.name)
+        return { result: { error: `no active skill named "${name}"`, available }, summary: `no such skill "${name}"` }
+      }
+      return { result: { name: s.name, body: s.body }, summary: `loaded skill "${s.name}" (${s.body.length} chars)` }
+    }
+  },
+  {
+    name: 'create_skill',
+    description: 'Write a NEW skill — a durable how-to guide for your future self. Use this when you learn a procedure worth keeping (topology, a recipe, a gotcha). It goes live immediately. Keep the body focused; reference documents for long detail.',
+    kind: 'create',
+    schema: {
+      name: z.string(), description: z.string(), whenToUse: z.string(), body: z.string(),
+      active: z.boolean().optional()
+    },
+    handler: async (a) => {
+      const input = a as unknown as { name: string, description: string, whenToUse: string, body: string, active?: boolean }
+      const v = validateSkill(input)
+      if (!v.ok) return { result: { error: v.error }, summary: `skill rejected: ${v.error}` }
+      try {
+        const s = await createSkill({ ...input, source: 'agent' })
+        publishChange({ resource: 'document', action: 'created', id: s.id })
+        return {
+          result: s,
+          summary: `created skill "${s.name}"`,
+          undo: async () => { await deleteSkill(s.name); publishChange({ resource: 'document', action: 'deleted', id: s.id }) }
+        }
+      } catch (err) {
+        return { result: { error: (err as Error).message }, summary: `skill not created: ${(err as Error).message}` }
+      }
+    }
+  },
+  {
+    name: 'edit_skill',
+    description: 'Revise one of your own skills — fix a wrong step, add what you just learned, or set active:false to retire it. Changes go live immediately. Audit and improve your skills whenever you find them lacking.',
+    kind: 'create',
+    schema: {
+      name: z.string(), description: z.string().optional(), whenToUse: z.string().optional(),
+      body: z.string().optional(), active: z.boolean().optional(), newName: z.string().optional()
+    },
+    handler: async (a) => {
+      const args = a as unknown as { name: string, description?: string, whenToUse?: string, body?: string, active?: boolean, newName?: string }
+      const prior = await getSkill(args.name)
+      if (!prior) return { result: { error: `no skill named "${args.name}"` }, summary: `no such skill "${args.name}"` }
+      const { name, newName, ...rest } = args
+      try {
+        const s = await updateSkill(name, { ...rest, ...(newName ? { name: newName } : {}) })
+        if (!s) return { result: { error: `no skill named "${name}"` }, summary: `no such skill "${name}"` }
+        publishChange({ resource: 'document', action: 'updated', id: s.id })
+        return {
+          result: s,
+          summary: `updated skill "${s.name}"`,
+          undo: async () => {
+            await updateSkill(s.name, { name: prior.name, description: prior.description, whenToUse: prior.whenToUse, body: prior.body, active: prior.active, source: prior.source })
+            publishChange({ resource: 'document', action: 'updated', id: prior.id })
+          }
+        }
+      } catch (err) {
+        return { result: { error: (err as Error).message }, summary: `skill not updated: ${(err as Error).message}` }
+      }
+    }
+  },
+  {
+    name: 'delete_skill',
+    description: 'Delete one of your skills. Prefer edit_skill with active:false to retire one reversibly. Confirm with Tony before deleting a skill he wrote.',
+    kind: 'destructive',
+    schema: { name: z.string() },
+    handler: async (a) => {
+      const name = a.name as string
+      const prior = await getSkill(name)
+      if (!prior) return { result: { error: `no skill named "${name}"` }, summary: `no such skill "${name}"` }
+      await deleteSkill(name)
+      publishChange({ resource: 'document', action: 'deleted', id: prior.id })
+      return {
+        result: { deleted: name },
+        summary: `deleted skill "${name}"`,
+        undo: async () => {
+          const s = await createSkill({ name: prior.name, description: prior.description, whenToUse: prior.whenToUse, body: prior.body, active: prior.active, source: prior.source })
+          publishChange({ resource: 'document', action: 'created', id: s.id })
+        }
       }
     }
   }
