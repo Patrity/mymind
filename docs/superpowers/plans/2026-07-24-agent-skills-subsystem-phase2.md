@@ -719,25 +719,42 @@ Ensure `ne` and `or` are imported from `drizzle-orm`.
 
 (c) In `searchPassages`, add `notSkill()` to the `where(and(...))` that joins `documents`.
 
-- [ ] **Step 2: Verify against a real database**
+- [ ] **Step 2: Verify against the real dev database**
 
 Run: `pnpm typecheck && pnpm test`
 Expected: 0 type errors; the existing suite stays green (no test covers this path).
 
-Then prove the behaviour on dev. With `pnpm dev` running and an `mm_` token from `/settings/api-keys`:
+Then prove the behaviour directly against the dev DB — no HTTP server and no auth token needed. The dev Postgres is **already running and migrated** (container `mymind-db`, port 5433). Create this throwaway probe **at the repo root** (so the relative imports resolve), run it, then delete it:
+
+`skill-exclusion-probe.ts`:
+```ts
+import { createSkill, deleteSkill } from './server/services/skills'
+import { searchDocs, searchPassages } from './server/services/documents'
+
+const MARKER = 'zzqqx-unique-marker'
+
+async function main() {
+  await createSkill({ name: 'exclusion-probe', description: 'probe', whenToUse: 'probe', body: `${MARKER} in a skill body` })
+  const docs = await searchDocs(MARKER)
+  const passages = await searchPassages(MARKER)
+  console.log('searchDocs hits:', docs.length, docs.map(d => d.path))
+  console.log('searchPassages hits:', passages.length)
+  await deleteSkill('exclusion-probe')
+  const ok = docs.length === 0 && passages.length === 0
+  console.log(ok ? 'PASS — skills excluded from knowledge search' : 'FAIL — a skill leaked into search results')
+  process.exit(ok ? 0 : 1)
+}
+
+main().catch((e) => { console.error(e); process.exit(1) })
+```
 
 ```bash
-TOKEN=<mm_...>
-# 1. create a skill whose body has a distinctive word
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"name":"exclusion-probe","description":"probe","whenToUse":"probe","body":"zzqqx-unique-marker in a skill body"}' \
-  localhost:3000/api/skills > /dev/null
-# 2. that word must NOT come back from document search
-curl -s -H "Authorization: Bearer $TOKEN" "localhost:3000/api/documents/search?q=zzqqx-unique-marker"
-# 3. clean up
-curl -s -X DELETE -H "Authorization: Bearer $TOKEN" localhost:3000/api/skills/exclusion-probe
+node_modules/.bin/tsx ./skill-exclusion-probe.ts; rm -f ./skill-exclusion-probe.ts
 ```
-Expected: step 2 returns `[]` (before this change it would return the skill). Record the actual output in your report — this is the only evidence for this task.
+
+Expected: `searchDocs hits: 0`, `searchPassages hits: 0`, `PASS`. **Paste the real output into your report — it is the only evidence for this task.** If it prints FAIL, the predicate is missing from one of the lanes; fix and re-run.
+
+Note: the vector lane may log a warning and fall back to trigram-only if the local embedding rig is unreachable — that is fine and expected on dev. The trigram lane is the one that would surface the marker, so the probe is still meaningful. **Delete the probe file before committing** (it must not appear in the diff).
 
 - [ ] **Step 3: Commit**
 
