@@ -26,7 +26,9 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   memory: (c) => { c.invalidateQueries({ queryKey: ['memory', 'count'] }); invalidateGraph(c) },
   review: (c) => c.invalidateQueries({ queryKey: ['review', 'count'] }),
   activity: (c) => c.invalidateQueries({ queryKey: ['activity', 'count'] }),
-  document: (c) => invalidateGraph(c),
+  // A skill is a document (type='skill') — a background agent write needs the
+  // /settings/skills list to refresh too, not just the document graph/detail.
+  document: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); invalidateGraph(c) },
   image: (c) => invalidateGraph(c),
   session: (c) => invalidateGraph(c),
   project: (c) => invalidateGraph(c),

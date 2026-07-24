@@ -80,7 +80,6 @@ Delete a skill permanently (reversible via undo). Prefer `edit_skill` with `acti
 
 - **`GET /api/skills`** — list all skills (ordered by name)
 - **`POST /api/skills`** — create a skill; request body is `SkillInput`
-- **`GET /api/skills/:name`** — fetch one skill by name (returns full body)
 - **`PUT /api/skills/:name`** — update a skill (partial patch)
 - **`DELETE /api/skills/:name`** — delete a skill
 - **`GET /api/settings/skills-enabled`** — read the kill-switch state
@@ -91,22 +90,26 @@ All mutations emit `publishChange({resource:'document', action, id})` for live-u
 ## UI
 
 **`/settings/skills`** (`app/pages/settings/skills.vue` + `app/components/settings/SkillsTab.vue`):
-- List of all skills, sorted by name
-- Toggle `active` on/off without deleting
-- Edit inline or open in the document editor
-- Create new skill
-- Delete (with confirmation for human-authored skills)
-- Kill-switch toggle in the settings
-- Link to the individual skill page (edit in full editor)
+- List of all skills (one card each) showing name, description, `whenToUse`, a `source` badge (`human`/`agent`), and an `inactive` badge when `active` is false
+- Per-skill `active` toggle switch, flipped without opening the editor
+- **Edit** button opens a modal to revise `description`, `whenToUse`, and `body` (a Markdown `CodeEditor`), with Save/Cancel
+- **Delete** button — deletes immediately, no confirmation dialog
+- Global kill-switch (`Enabled` toggle) at the top of the tab, backed by `agentSkillsEnabled`
+- No create-new-skill UI, and no link out to a full document editor page — skills are only authored by the agent (`create_skill`) or via the seed script; the tab is view/edit/delete/toggle only
 
 ## Seed skills (6 bundled)
 
-Six starter skills ship with the repo. **Nothing installs them automatically** — run the seed script (idempotent: creates on first run, updates in place after) on each environment you want them in:
+Six starter skills ship with the repo. **Nothing installs them automatically** — run the seed script (idempotent: creates on first run, updates in place after) on each environment you want them in, or via `pnpm seed:skills` which wraps the same command:
 
 ```bash
+# dev — reads .env
 node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts
+
+# prod (native deploy, LXC 114) — reads .env.native, NOT .env
+node_modules/.bin/tsx --env-file=.env.native scripts/seed-skills.ts
 ```
 
+See `docs/DEPLOYMENT.md` for the post-deploy step that runs the prod form of this command.
 
 1. **`environment-and-topology`** — where you run, how to reach the database/app/logs, how to read your own source and docs.
 2. **`db-maintenance`** — when to use tools vs raw SQL, the project-slug dual-reference trap, how to verify a change happened.

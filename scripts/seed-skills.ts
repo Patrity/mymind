@@ -1,5 +1,7 @@
 // scripts/seed-skills.ts — idempotent: run it any time to (re)install the starter skills.
-// Usage: node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts
+// Usage: node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts   (dev — reads .env)
+//    or: node_modules/.bin/tsx --env-file=.env.native scripts/seed-skills.ts   (prod, LXC 114 — reads .env.native, NOT .env)
+// `pnpm seed:skills` runs the dev form above.
 //
 // `useDb()` reads `useRuntimeConfig().databaseUrl`, which is a Nuxt auto-import
 // not available to a bare tsx process. Polyfill both auto-imports as globals

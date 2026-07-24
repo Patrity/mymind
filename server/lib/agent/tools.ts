@@ -114,7 +114,11 @@ export const agentTools: AgentTool[] = [
     kind: 'read',
     schema: { project: z.string().optional().describe('Project slug to filter by') },
     handler: async (a) => {
-      const res = await listDocs({ project: a.project as string | undefined })
+      // listDocs applies no skill filter (it also backs the /documents page, where
+      // showing skills is intentional). Filter them out here: skills sort near the
+      // top by recency and their full body (up to 20k chars each) would otherwise
+      // dump into context on every call — and bypass the agentSkillsEnabled kill-switch.
+      const res = (await listDocs({ project: a.project as string | undefined })).filter(d => d.type !== 'skill')
       return { result: res, summary: `listed documents (${res.length})` }
     }
   },
@@ -756,10 +760,10 @@ export const agentTools: AgentTool[] = [
       return {
         result: { deleted: name },
         summary: `deleted skill "${name}"`,
-        undo: async () => {
-          const s = await createSkill({ name: prior.name, description: prior.description, whenToUse: prior.whenToUse, body: prior.body, active: prior.active, source: prior.source })
-          publishChange({ resource: 'document', action: 'created', id: s.id })
-        }
+        // Restore the original soft-deleted row (same id) rather than createSkill, which
+        // would orphan it and mint a NEW document id — breaking any audit reference to the
+        // old id. Mirrors delete_document's undo.
+        undo: async () => { await restoreDoc(prior.id); publishChange({ resource: 'document', action: 'created', id: prior.id }) }
       }
     }
   }

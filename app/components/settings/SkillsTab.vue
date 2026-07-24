@@ -68,7 +68,7 @@ const remove = useMutation({
       </UFormField>
     </div>
 
-    <UAlert v-if="error" color="error" :title="'Could not load skills'" :description="String(error)" />
+    <UAlert v-if="error" color="error" icon="i-lucide-alert-circle" :title="'Could not load skills'" :description="String(error)" />
 
     <UCard v-for="s in skills" :key="s.id">
       <div class="flex items-start justify-between gap-3">

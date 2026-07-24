@@ -146,6 +146,13 @@ The homelab prod DB (`mymind-db`) publishes **no host port** — only the app re
   ```
   Never echo `POSTGRES_PASSWORD`; pg falls back to `PGPASSWORD` when the URL omits the password. **Deploy detection:** after a push, poll `docker inspect mymind-app --format '{{.State.StartedAt}}'` for a change to know the rebuild landed.
 
+### 8b. Seeding agent skills after deploy
+The CD pipeline does not run `scripts/seed-skills.ts` — it's manual (deliberately: skills are content, not schema, and re-running it is always safe/idempotent). After a deploy that touches the seed set (or on first cutover), run it on the box:
+```bash
+pct exec 114 -- bash -lc 'cd /opt/mymind && node_modules/.bin/tsx --env-file=.env.native scripts/seed-skills.ts'
+```
+**Use `.env.native`, not `.env`** — that's prod's runtime env file (see §18); `.env` is dev-only and won't have the prod `DATABASE_URL`. `pnpm install` (no `--prod`) in the CD pipeline keeps `tsx` available at `/opt/mymind/node_modules/.bin/tsx`. Locally / in dev, the equivalent is `pnpm seed:skills` (reads `.env`).
+
 ## 9. Backups (out-of-band — not built into the app)
 Per the project's locked decision, backups are external. Schedule on the host:
 ```bash
