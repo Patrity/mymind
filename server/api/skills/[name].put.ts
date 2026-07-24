@@ -9,7 +9,12 @@ const Body = z.object({
 
 export default defineEventHandler(async (event) => {
   const name = getRouterParam(event, 'name')!
-  const patch = Body.parse(await readBody(event))
+  let patch: z.infer<typeof Body>
+  try {
+    patch = Body.parse(await readBody(event))
+  } catch (err) {
+    throw createError({ statusCode: 400, statusMessage: (err as Error).message })
+  }
   try {
     const s = await updateSkill(name, patch)
     if (!s) throw createError({ statusCode: 404, statusMessage: `no skill named "${name}"` })

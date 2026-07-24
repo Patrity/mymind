@@ -8,7 +8,12 @@ const Body = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  const input = Body.parse(await readBody(event))
+  let input: z.infer<typeof Body>
+  try {
+    input = Body.parse(await readBody(event))
+  } catch (err) {
+    throw createError({ statusCode: 400, statusMessage: (err as Error).message })
+  }
   try {
     const s = await createSkill({ ...input, source: 'human' })
     publishChange({ resource: 'document', action: 'created', id: s.id })
