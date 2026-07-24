@@ -28,10 +28,13 @@ describe('composePrompt', () => {
     expect(composePrompt({ ...base, speak: false, context: 'Active projects: mymind.' })).toContain('Active projects: mymind.')
   })
   it('includes web-research guidance', () => { expect(composePrompt({ persona: 'p', speak: false, toneLine: 't' })).toMatch(/web_search/) })
-  it('includes the degraded-search-backend honesty rule', () => {
+  // Task 8 (agent-skills cycle): the degraded-search-backend detail moved out of the
+  // always-on prompt and into the `web-research-etiquette` skill — see
+  // server/lib/agent/prompt.test.ts > "composePrompt — detail migrated into skills".
+  it('no longer carries the degraded-search-backend detail inline (migrated to the web-research-etiquette skill)', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
-    expect(p).toMatch(/warning/i)
-    expect(p).toMatch(/do not conclude the information does not exist/i)
+    expect(p).not.toMatch(/do not conclude the information does not exist/i)
+    expect(p).toMatch(/web-research-etiquette/)
   })
   it('forbids narrating a tool call without making it', () => {
     expect(composePrompt({ persona: 'p', speak: false, toneLine: 't' })).toMatch(/NEVER say you are checking\/searching/i)
@@ -44,11 +47,12 @@ describe('composePrompt', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't', nowLine: 'Current date and time: Wednesday, July 1, 2026, 3:00 PM (America/Chicago).' })
     expect(p).toContain('Current date and time: Wednesday, July 1, 2026')
   })
-  it('includes search-discipline rules (diminishing returns + bot walls)', () => {
+  // Task 8: same migration — the diminishing-returns/bot-wall detail is now in the skill.
+  it('no longer carries search-discipline detail inline (diminishing returns + bot walls migrated to skill)', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
-    expect(p).toMatch(/diminishing returns/i)
-    expect(p).toMatch(/bot walls/i)
-    expect(p).toMatch(/eBay sold listings/)
+    expect(p).not.toMatch(/diminishing returns/i)
+    expect(p).not.toMatch(/bot walls/i)
+    expect(p).not.toMatch(/eBay sold listings/)
   })
   it('includes subagent delegation guidance', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })

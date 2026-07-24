@@ -42,6 +42,28 @@ describe('composePrompt — environment self-model', () => {
   }
 })
 
+describe('composePrompt — detail migrated into skills', () => {
+  it('no longer carries the long web-research detail inline', () => {
+    const p = composePrompt({ ...base, speak: false })
+    expect(p).not.toMatch(/eBay/i)          // now in the web-research-etiquette skill
+    expect(p).not.toMatch(/price-tracker/i)
+    expect(p).not.toMatch(/diminishing returns/i)
+  })
+  it('keeps a one-line pointer to the web tools', () => {
+    const p = composePrompt({ ...base, speak: false })
+    expect(p).toMatch(/web_search/)
+  })
+  it('is meaningfully smaller than before the migration', () => {
+    // MEASURED baseline: the pre-migration prompt is 6187 chars, and the four
+    // web bullets being removed total 1311 chars; the single replacement
+    // pointer line adds ~330. Expected post-shrink ≈ 5200, so 5600 proves a
+    // real shrink with headroom. Do NOT relax this to make a failure pass —
+    // if it fails, the bullets were not actually removed.
+    const p = composePrompt({ ...base, speak: false })
+    expect(p.length).toBeLessThan(5600)
+  })
+})
+
 describe('skills index (Tier-1)', () => {
   const skills = [
     { name: 'db-maintenance', description: 'Safe Postgres ops', whenToUse: 'Use when touching the DB' },
