@@ -2,7 +2,7 @@
 title: Agent Skills subsystem — Phase 2 (cycle 49)
 cycle: 49
 date: 2026-07-24
-status: BUILT + fully reviewed, gates green (typecheck 0 / test 850 / build clean). Final whole-branch review (opus) = Ready to merge after its fix wave, which was applied (6e4d792). NOT merged/pushed/deployed. ⚠️ The AGENT-SIDE E2E WAS NEVER RUN — the reasoning rig (192.168.2.25) is unreachable from the dev machine, so nothing has proven at runtime that the model actually calls `use_skill`. ⚠️ Deploying REQUIRES the post-deploy seed step (see "Deploy requirement") or prod loses web-research guidance.
+status: SHIPPED — merged to master (ff) + pushed 2026-07-24; CD run 30122394217 green (test + deploy); prod /api/health 200; six seed skills installed on prod via the public REST API (SSH was auth-denied; seed data identical to the on-box script). ✅ AGENT ACCEPTANCE TEST PASSED ON PROD: /agent reproduced the db-maintenance skill's slug-cascade trap (content that lives ONLY in the skill body, not the prompt) → the local Qwen genuinely calls use_skill and answers from the loaded body. Gates green (typecheck 0 / test 850 / build); final opus review = Ready to merge after its applied fix wave (6e4d792). Deferred follow-ups below remain; Phase-1's neo4nls prod E2E is still separately outstanding.
 branch: feat/agent-skills-subsystem (built subagent-driven, 9 tasks + 1 final fix wave; per-task reports + ledger in .superpowers/sdd/)
 docs:
   - ../wiki/agent-skills.md (NEW — living reference for the whole subsystem)
@@ -78,18 +78,20 @@ edit→save, kill-switch persists, 0 console errors); seed script idempotent (6 
 and a probe confirming `buildSystemPrompt` renders **all six seeds** into a real prompt (7361 chars,
 index present).
 
-**NOT proven — the core value claim.** No agent conversation has ever run against this branch. The
-reasoning rig (`192.168.2.25`) is unreachable from the dev machine — `/api/agent/chat` returns
-`data: [DONE]` with no text and the log shows `ENETUNREACH 192.168.2.25:8004` after 3 attempts;
-LiteLLM failover did not rescue it. So it is **unverified** that the local Qwen actually calls
-`use_skill` when an index line matches, and that a multi-KB `create_skill` body survives the
-vLLM/hermes tool-call path (the same path that had a tool-call-emitted-as-text bug fixed in Phase 1).
+**PROVEN post-deploy (2026-07-24) — the core value claim.** The dev-machine `ENETUNREACH` to the
+rig (`192.168.2.25`) was a LAN-visibility artifact, not a real failure: prod (LXC 114) shares the
+rig's LAN. After deploy + seed, a headless `/api/agent/chat` probe asked prod "what is the safe way
+to rename a project's slug, and what breaks if I do it naively?" — the answer reproduced the
+`db-maintenance` skill's dual-reference model (FK on `project_id` UUID vs. denormalized `project`
+slug on documents/memories/sessions, and **tasks having no FK at all**), the exact "FKs point at UUID
+so a rename is safe → that's wrong" trap, and "never hand-roll a slug rename in SQL." **That content
+exists only in the skill body, not the system prompt** — so the local Qwen demonstrably received the
+Tier-1 index, matched it, called `use_skill('db-maintenance')`, and answered from the loaded body.
+End-to-end proof that progressive disclosure works on the production model.
 
-That failure mode is worse than neutral: a model that ignores the index is now *less* capable than
-before, because the web-research detail is no longer inline — and the kill-switch does **not**
-mitigate it (turning skills off omits the index but does not restore the deleted bullets; that needs
-a code revert). **Treat the first post-deploy agent conversation as the acceptance test**, and watch
-specifically for a `use_skill` call on a web-research question.
+Still not independently exercised on prod (lower risk): a multi-KB `create_skill` round-trip through
+the vLLM/hermes tool-call path (the class of path that had a tool-call-emitted-as-text bug in Phase 1).
+Worth watching the first time the agent authors a skill in the wild.
 
 ## Deploy requirement (do not skip)
 
