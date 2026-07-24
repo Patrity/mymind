@@ -53,6 +53,7 @@ const settingsChildren: NavigationMenuItem[] = [
   { label: 'Bridget', icon: 'i-lucide-bot', to: '/settings/bridget' },
   { label: 'Search', icon: 'i-lucide-search', to: '/settings/search' },
   { label: 'Agent Tools', icon: 'i-lucide-terminal', to: '/settings/agent-tools' },
+  { label: 'Agent Skills', icon: 'i-lucide-graduation-cap', to: '/settings/skills' },
   { label: 'Secrets', icon: 'i-lucide-key-square', to: '/settings/secrets' },
   { label: 'Image Gen', icon: 'i-lucide-image', to: '/settings/image-gen' },
   { label: 'Analytics', icon: 'i-lucide-chart-line', to: '/settings/analytics' }
