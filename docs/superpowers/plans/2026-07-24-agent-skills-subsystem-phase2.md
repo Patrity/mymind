@@ -686,41 +686,12 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `server/services/documents.ts`
-- Test: `server/services/documents-skills-exclusion.test.ts` (new)
 
 **Design:** Skills are documents, so without this they pollute `search_docs`/`search_passages` results — the agent would get skill prose back when searching Tony's knowledge. Exclude `type='skill'` from **both** search functions. `listDocs`/`listTree` are deliberately left alone (browsing skills in the document tree is harmless and useful).
 
-- [ ] **Step 1: Write the failing test**
+**Why no unit test here:** this behaviour is entirely SQL, and **no test in this repo touches a real database** (verified: zero `useDb()` calls in any `*.test.ts`). A test that greps `documents.ts` for the predicate would assert nothing about behaviour, so this task is verified the way this repo already verifies DB behaviour — a real-DB smoke check (see Step 2), the same approach the cycle-47 graph service used. Do **not** invent a source-text-matching test.
 
-Create `server/services/documents-skills-exclusion.test.ts`:
-
-```ts
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-
-// Guard test: the exclusion lives in SQL we cannot exercise without a DB here,
-// so assert the predicate is applied in every lane that returns documents.
-const src = readFileSync(new URL('./documents.ts', import.meta.url), 'utf8')
-
-describe('skills are excluded from knowledge search', () => {
-  it('defines a notSkill predicate', () => {
-    expect(src).toMatch(/const notSkill = \(\) =>/)
-  })
-  it('applies notSkill in searchDocs (both lanes + hydrate) and searchPassages', () => {
-    const searchDocs = src.slice(src.indexOf('export async function searchDocs'), src.indexOf('export async function setPublic'))
-    expect((searchDocs.match(/notSkill\(\)/g) ?? []).length).toBeGreaterThanOrEqual(3)
-    const passages = src.slice(src.indexOf('export async function searchPassages'))
-    expect(passages).toMatch(/notSkill\(\)/)
-  })
-})
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm vitest run server/services/documents-skills-exclusion.test.ts`
-Expected: FAIL — no `notSkill` predicate.
-
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 1: Write the implementation**
 
 In `server/services/documents.ts`:
 
@@ -748,15 +719,30 @@ Ensure `ne` and `or` are imported from `drizzle-orm`.
 
 (c) In `searchPassages`, add `notSkill()` to the `where(and(...))` that joins `documents`.
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 2: Verify against a real database**
 
-Run: `pnpm vitest run server/services/documents-skills-exclusion.test.ts && pnpm typecheck`
-Expected: PASS, 0 errors.
+Run: `pnpm typecheck && pnpm test`
+Expected: 0 type errors; the existing suite stays green (no test covers this path).
 
-- [ ] **Step 5: Commit**
+Then prove the behaviour on dev. With `pnpm dev` running and an `mm_` token from `/settings/api-keys`:
 
 ```bash
-git add server/services/documents.ts server/services/documents-skills-exclusion.test.ts
+TOKEN=<mm_...>
+# 1. create a skill whose body has a distinctive word
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"exclusion-probe","description":"probe","whenToUse":"probe","body":"zzqqx-unique-marker in a skill body"}' \
+  localhost:3000/api/skills > /dev/null
+# 2. that word must NOT come back from document search
+curl -s -H "Authorization: Bearer $TOKEN" "localhost:3000/api/documents/search?q=zzqqx-unique-marker"
+# 3. clean up
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" localhost:3000/api/skills/exclusion-probe
+```
+Expected: step 2 returns `[]` (before this change it would return the skill). Record the actual output in your report — this is the only evidence for this task.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add server/services/documents.ts
 git commit -m "feat(skills): exclude type='skill' documents from doc/passage search
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -907,16 +893,21 @@ const toggleEnabled = useMutation({
   onSuccess: () => qc.invalidateQueries({ queryKey: ['skills'] })
 })
 
+// NOTE: UModal's v-model:open takes a BOOLEAN — keep it separate from the
+// selected row, or the modal silently never opens.
 const selected = ref<Skill | null>(null)
+const editOpen = ref(false)
 const draft = reactive({ description: '', whenToUse: '', body: '' })
 function open(s: Skill) {
   selected.value = s
   Object.assign(draft, { description: s.description, whenToUse: s.whenToUse, body: s.body })
+  editOpen.value = true
 }
+function closeEdit() { editOpen.value = false; selected.value = null }
 
 const save = useMutation({
   mutationFn: (s: Skill) => $fetch(`/api/skills/${s.name}`, { method: 'PUT', body: { ...draft } }),
-  onSuccess: () => { qc.invalidateQueries({ queryKey: ['skills', 'list'] }); selected.value = null }
+  onSuccess: () => { qc.invalidateQueries({ queryKey: ['skills', 'list'] }); closeEdit() }
 })
 const setActive = useMutation({
   mutationFn: (p: { name: string; active: boolean }) => $fetch(`/api/skills/${p.name}`, { method: 'PUT', body: { active: p.active } }),
@@ -924,7 +915,7 @@ const setActive = useMutation({
 })
 const remove = useMutation({
   mutationFn: (name: string) => $fetch(`/api/skills/${name}`, { method: 'DELETE' }),
-  onSuccess: () => { qc.invalidateQueries({ queryKey: ['skills', 'list'] }); selected.value = null }
+  onSuccess: () => { qc.invalidateQueries({ queryKey: ['skills', 'list'] }); closeEdit() }
 })
 </script>
 
@@ -965,10 +956,10 @@ const remove = useMutation({
     </UCard>
 
     <p v-if="!skills.length && !error" class="text-sm text-muted">
-      No skills yet. Run <code>pnpm tsx scripts/seed-skills.ts</code> to install the starter set.
+      No skills yet. Run <code>node_modules/.bin/tsx scripts/seed-skills.ts</code> to install the starter set.
     </p>
 
-    <UModal v-model:open="selected" :title="selected?.name">
+    <UModal v-model:open="editOpen" :title="selected?.name">
       <template #content>
         <div v-if="selected" class="p-4 space-y-3">
           <UFormField label="Description"><UInput v-model="draft.description" class="w-full" /></UFormField>
@@ -977,7 +968,7 @@ const remove = useMutation({
             <DocumentsEditor v-model="draft.body" />
           </UFormField>
           <div class="flex justify-end gap-2">
-            <UButton variant="ghost" @click="selected = null">Cancel</UButton>
+            <UButton variant="ghost" @click="closeEdit()">Cancel</UButton>
             <UButton :loading="save.isPending.value" @click="save.mutate(selected)">Save</UButton>
           </div>
         </div>
@@ -1048,7 +1039,7 @@ Create `scripts/seed-skills.ts` — idempotent (upsert by name), `source: 'human
 
 ```ts
 // scripts/seed-skills.ts — idempotent: run it any time to (re)install the starter skills.
-// Usage: pnpm tsx scripts/seed-skills.ts
+// Usage: node_modules/.bin/tsx scripts/seed-skills.ts
 import { createSkill, updateSkill, getSkill, type SkillInput } from '../server/services/skills'
 
 const SEEDS: SkillInput[] = [
@@ -1241,9 +1232,14 @@ describe('composePrompt — detail migrated into skills', () => {
     const p = composePrompt({ ...base, speak: false })
     expect(p).toMatch(/web_search/)
   })
-  it('stays compact', () => {
+  it('is meaningfully smaller than before the migration', () => {
+    // MEASURED baseline: the pre-migration prompt is 6187 chars, and the four
+    // web bullets being removed total 1311 chars; the single replacement
+    // pointer line adds ~330. Expected post-shrink ≈ 5200, so 5600 proves a
+    // real shrink with headroom. Do NOT relax this to make a failure pass —
+    // if it fails, the bullets were not actually removed.
     const p = composePrompt({ ...base, speak: false })
-    expect(p.length).toBeLessThan(3600)
+    expect(p.length).toBeLessThan(5600)
   })
 })
 ```
@@ -1271,7 +1267,7 @@ Expected: PASS (all prompt tests, incl. the cycle-49 honesty/env ones), 0 errors
 - [ ] **Step 6: Install the seeds on dev and eyeball them**
 
 ```bash
-pnpm tsx scripts/seed-skills.ts
+node_modules/.bin/tsx scripts/seed-skills.ts
 ```
 Expected: six `created` lines. Then confirm they are excluded from knowledge search (Task 5) and visible in the UI:
 ```bash
@@ -1307,7 +1303,7 @@ Create `docs/wiki/agent-skills.md` with frontmatter `title: Agent Skills`, `stat
 - **Tools**: `use_skill` (read), `create_skill`/`edit_skill` (create, ungated), `delete_skill` (destructive).
 - **API**: `GET/POST /api/skills`, `PUT/DELETE /api/skills/:name`, `GET/PUT /api/settings/skills-enabled`.
 - **UI**: `/settings/skills`.
-- **Seeds**: the six, and `pnpm tsx scripts/seed-skills.ts` (idempotent).
+- **Seeds**: the six, and `node_modules/.bin/tsx scripts/seed-skills.ts` (idempotent).
 
 - [ ] **Step 2: Update `docs/wiki/agent.md`**
 
