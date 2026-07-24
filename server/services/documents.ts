@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ilike, or, sql, inArray } from 'drizzle-orm'
+import { and, desc, eq, isNull, ilike, ne, or, sql, inArray } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
@@ -59,6 +59,9 @@ export async function resolveDocProjectFromPath(
 }
 
 const live = () => isNull(documents.deletedAt)
+// Skills are documents (type='skill') but are NOT knowledge — they must never
+// surface in doc/passage search. NULL type is a normal document, so allow it.
+const notSkill = () => or(ne(documents.type, 'skill'), isNull(documents.type))
 const toDTO = (r: typeof documents.$inferSelect): DocumentDTO => ({
   id: r.id, path: r.path, title: r.title, content: r.content, language: r.language,
   frontmatter: r.frontmatter as Record<string, unknown>, project: r.project, domain: r.domain,
@@ -165,7 +168,7 @@ export async function searchDocs(q: string, opts: { project?: string } = {}): Pr
 
   // Lane 1: trigram — ILIKE filter + similarity ordering
   const trigramRows = await db.select({ id: documents.id }).from(documents)
-    .where(and(live(), projectFilter, or(ilike(documents.title, `%${q}%`), ilike(documents.content, `%${q}%`))))
+    .where(and(live(), notSkill(), projectFilter, or(ilike(documents.title, `%${q}%`), ilike(documents.content, `%${q}%`))))
     .orderBy(sql`similarity(coalesce(${documents.title},'') || ' ' || ${documents.content}, ${q}) desc`)
     .limit(50)
   const trigramIds = trigramRows.map(r => r.id)
@@ -182,7 +185,7 @@ export async function searchDocs(q: string, opts: { project?: string } = {}): Pr
     })
       .from(chunks)
       .innerJoin(documents, eq(chunks.sourceId, documents.id))
-      .where(and(eq(chunks.sourceType, 'document'), live(), projectFilter))
+      .where(and(eq(chunks.sourceType, 'document'), live(), notSkill(), projectFilter))
       .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
       .limit(100)
     vectorIds = collapseChunksToHits(chunkRows)
@@ -200,7 +203,7 @@ export async function searchDocs(q: string, opts: { project?: string } = {}): Pr
 
   // Hydrate full rows and re-order by fused rank (inArray doesn't preserve order)
   const fetched = await db.select().from(documents)
-    .where(and(live(), inArray(documents.id, fusedIds)))
+    .where(and(live(), notSkill(), inArray(documents.id, fusedIds)))
   const byId = new Map(fetched.map(r => [r.id, r]))
   return fusedIds.flatMap(id => {
     const r = byId.get(id)
@@ -236,7 +239,7 @@ export async function searchPassages(q: string, opts: { project?: string, limit?
   })
     .from(chunks)
     .innerJoin(documents, eq(chunks.sourceId, documents.id))
-    .where(and(eq(chunks.sourceType, 'document'), live(), projectFilter))
+    .where(and(eq(chunks.sourceType, 'document'), live(), notSkill(), projectFilter))
     .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
     .limit(opts.limit ?? 10)
   return rows as ChunkHit[]
