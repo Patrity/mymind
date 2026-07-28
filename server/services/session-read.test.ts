@@ -49,12 +49,16 @@ describe('mapMessage', () => {
 
 describe('mapTool', () => {
   it('stringifies + caps args/result and sums omitted chars', () => {
-    const item = mapTool({ id: 't1', toolName: 'exec', exitStatus: '0', phase: 'completed', args: { cmd: 'x'.repeat(TOOL_CAP + 5) }, result: 'r'.repeat(TOOL_CAP + 7), createdAt: at(0) }, false)
+    const args = { cmd: 'x'.repeat(TOOL_CAP + 5) }
+    const result = 'r'.repeat(TOOL_CAP + 7)
+    const argsStr = JSON.stringify(args)        // JSON adds the {"cmd":"..."} wrapper
+    const expectedOmitted = (argsStr.length - TOOL_CAP) + (result.length - TOOL_CAP)
+    const item = mapTool({ id: 't1', toolName: 'exec', exitStatus: '0', phase: 'completed', args, result, createdAt: new Date(1_700_000_000_000) }, false)
     expect(item.kind).toBe('tool')
     expect(item.toolName).toBe('exec')
     expect(item.argsSnippet.length).toBe(TOOL_CAP)
     expect(item.resultSnippet.length).toBe(TOOL_CAP)
-    expect(item.truncated).toBe(12)
+    expect(item.truncated).toBe(expectedOmitted)
   })
   it('handles null args/result', () => {
     const item = mapTool({ id: 't2', toolName: 'read', exitStatus: null, phase: 'completed', args: null, result: null, createdAt: at(0) }, false)

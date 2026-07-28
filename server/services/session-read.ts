@@ -43,22 +43,10 @@ export function mapMessage(row: MessageRow, full: boolean): MessageItem {
 export function mapTool(row: ToolRow, full: boolean): ToolEventItem {
   const argsStr = row.args == null ? '' : JSON.stringify(row.args)
   const resStr = row.result == null ? '' : (typeof row.result === 'string' ? row.result : JSON.stringify(row.result))
-
-  // For truncation reporting, measure effective data size (JSON wrapper overhead excluded for objects)
-  let argsTruncated: number | undefined
-  if (!full && argsStr) {
-    const effectiveSize = typeof row.args === 'object' && !Array.isArray(row.args) ? Math.max(0, argsStr.length - 10) : argsStr.length
-    argsTruncated = Math.max(0, effectiveSize - TOOL_CAP) || undefined
-  }
-
-  let resTruncated: number | undefined
-  if (!full && resStr) {
-    const effectiveSize = typeof row.result === 'object' && !Array.isArray(row.result) ? Math.max(0, resStr.length - 10) : resStr.length
-    resTruncated = Math.max(0, effectiveSize - TOOL_CAP) || undefined
-  }
-
-  const item: ToolEventItem = { kind: 'tool', id: row.id, toolName: row.toolName, exitStatus: row.exitStatus, phase: row.phase, argsSnippet: argsStr.slice(0, TOOL_CAP), resultSnippet: resStr.slice(0, TOOL_CAP), createdAt: row.createdAt.toISOString() }
-  const omitted = (argsTruncated ?? 0) + (resTruncated ?? 0)
+  const a = full ? { text: argsStr, truncated: undefined as number | undefined } : truncate(argsStr, TOOL_CAP)
+  const r = full ? { text: resStr, truncated: undefined as number | undefined } : truncate(resStr, TOOL_CAP)
+  const item: ToolEventItem = { kind: 'tool', id: row.id, toolName: row.toolName, exitStatus: row.exitStatus, phase: row.phase, argsSnippet: a.text, resultSnippet: r.text, createdAt: row.createdAt.toISOString() }
+  const omitted = (a.truncated ?? 0) + (r.truncated ?? 0)
   if (omitted) item.truncated = omitted
   return item
 }
