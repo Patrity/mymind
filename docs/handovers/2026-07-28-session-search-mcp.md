@@ -2,7 +2,7 @@
 title: Session search + transcript read (MCP tools) — cycle 50
 cycle: 50
 date: 2026-07-28
-status: BUILT + fully reviewed, gates green (typecheck 0 / test 861 / build clean). Final whole-branch review (opus) = Ready to merge; its one Important finding (ingest-timestamp ordering) was fixed + probe-verified on the real worst-case cluster. NOT merged/pushed/deployed — awaiting Tony's merge decision. No migration, no UI, no mutations, so nothing to seed/backfill post-deploy.
+status: SHIPPED — merged to master (ff) + pushed 2026-07-28; CD run 30382810386 green; prod /api/health 200; all 4 tools live on the prod MCP (37 total). ✅ PROD round-trip proven: a semantic search_messages("navmesh pathfinding") returned real Unity-NavMesh hits (the VECTOR lane runs on prod — dev could only exercise trigram) and chained into read_around_message (7-item chronological window, focal present). Gates green (typecheck 0 / test 861 / build); final opus review = Ready-to-merge after its applied ordering fix. No migration/UI/mutations — nothing seeded. Deferred follow-ups below remain.
 branch: feat/session-search-mcp (built subagent-driven, 5 tasks + 1 mid-flight fix + 1 final-review fix; per-task reports + ledger in .superpowers/sdd/)
 docs:
   - ../wiki/mcp.md (living reference — new "Session search + transcript read" section + 4 table rows; updated 2026-07-28)
