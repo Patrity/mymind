@@ -15,6 +15,8 @@ import { generateImage, editImage } from '../imagegen/comfy'
 import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getImageBytes } from '../../services/images'
 import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
+import { readAroundMessage, readSessionPage } from '../../services/session-read'
+import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
@@ -540,6 +542,67 @@ export const agentTools: AgentTool[] = [
         const message = err instanceof Error ? err.message : String(err)
         return { result: { url, ok: false, error: message }, summary: `web_fetch failed: ${message}` }
       }
+    }
+  },
+  // ---- session search / read ----
+  {
+    name: 'search_messages',
+    description: 'Search your past Claude Code session transcripts for a keyword or topic (hybrid semantic + exact-match). Returns message-level hits with a snippet centered on the match; follow up with read_around_message to see the surrounding conversation. `project` (slug) or `session` (id) scope it. Excludes subagent/sidechain threads.',
+    kind: 'read',
+    schema: {
+      query: z.string().describe('What to find in session transcripts'),
+      project: z.string().optional().describe('Restrict to a project slug'),
+      session: z.string().optional().describe('Restrict to one session id'),
+      limit: z.number().int().min(1).max(25).optional().describe('Max hits (default 8)')
+    },
+    handler: async (a) => {
+      const res = await searchMessagesForAgent(a.query as string, { project: a.project as string | undefined, session: a.session as string | undefined, limit: (a.limit as number | undefined) ?? 8 })
+      return { result: { results: res }, summary: `searched messages (${res.length} hits)` }
+    }
+  },
+  {
+    name: 'search_sessions',
+    description: 'Find a whole past Claude Code session by topic (hybrid search over session title + summary) — use when you do not have an exact keyword. Returns session-level hits; follow up with read_session to page the transcript. `project` (slug) scopes it.',
+    kind: 'read',
+    schema: {
+      query: z.string().describe('Topic to find a session about'),
+      project: z.string().optional().describe('Restrict to a project slug'),
+      limit: z.number().int().min(1).max(25).optional().describe('Max hits (default 8)')
+    },
+    handler: async (a) => {
+      const res = await searchSessionsForAgent(a.query as string, { project: a.project as string | undefined, limit: (a.limit as number | undefined) ?? 8 })
+      return { result: { results: res }, summary: `searched sessions (${res.length} hits)` }
+    }
+  },
+  {
+    name: 'read_around_message',
+    description: 'Read the conversation around a specific message (e.g. a search_messages hit): the message plus `radius` turns before and after, in order, with tool calls/outputs interleaved. Long content is truncated with a marker (pass full:true for everything). Excludes sidechain by default.',
+    kind: 'read',
+    schema: {
+      messageId: z.string().describe('A message id, e.g. from search_messages'),
+      radius: z.number().int().min(0).max(30).optional().describe('Messages before/after (default 8)'),
+      full: z.boolean().optional().describe('Return untruncated content'),
+      includeSidechain: z.boolean().optional().describe('Include subagent/Task threads')
+    },
+    handler: async (a) => {
+      const res = await readAroundMessage(a.messageId as string, { radius: a.radius as number | undefined, full: a.full as boolean | undefined, includeSidechain: a.includeSidechain as boolean | undefined })
+      return { result: res, summary: 'error' in res ? 'read_around_message: not found' : `read ${res.items.length} items around message` }
+    }
+  },
+  {
+    name: 'read_session',
+    description: 'Page through a whole session transcript in chronological order, tool calls/outputs interleaved. Returns session meta + a page of items + hasMore. Long content is truncated (full:true for everything). Excludes sidechain by default.',
+    kind: 'read',
+    schema: {
+      sessionId: z.string().describe('The session id'),
+      offset: z.number().int().min(0).optional().describe('Message offset (default 0)'),
+      limit: z.number().int().min(1).max(50).optional().describe('Messages per page (default 25)'),
+      full: z.boolean().optional().describe('Return untruncated content'),
+      includeSidechain: z.boolean().optional().describe('Include subagent/Task threads')
+    },
+    handler: async (a) => {
+      const res = await readSessionPage(a.sessionId as string, { offset: a.offset as number | undefined, limit: a.limit as number | undefined, full: a.full as boolean | undefined, includeSidechain: a.includeSidechain as boolean | undefined })
+      return { result: res, summary: 'error' in res ? 'read_session: not found' : `read ${res.returned} items (offset ${res.offset}${res.hasMore ? ', more' : ''})` }
     }
   },
   // ---- image generation ----

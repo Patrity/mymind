@@ -74,3 +74,16 @@ describe('skill tools', () => {
       .toEqual(expect.arrayContaining(['name', 'description', 'whenToUse', 'body', 'active']))
   })
 })
+
+describe('session tools', () => {
+  it('are all read tools with the right schema keys', () => {
+    expect(toolByName('search_messages')!.kind).toBe('read')
+    expect(Object.keys(toolByName('search_messages')!.schema)).toEqual(expect.arrayContaining(['query', 'project', 'session', 'limit']))
+    expect(toolByName('search_sessions')!.kind).toBe('read')
+    expect(toolByName('read_around_message')!.kind).toBe('read')
+    expect(Object.keys(toolByName('read_around_message')!.schema)).toEqual(expect.arrayContaining(['messageId', 'radius', 'full']))
+    expect(toolByName('read_session')!.kind).toBe('read')
+    expect(Object.keys(toolByName('read_session')!.schema)).toEqual(expect.arrayContaining(['sessionId', 'offset', 'limit', 'full']))
+    for (const n of ['search_messages', 'search_sessions', 'read_around_message', 'read_session']) expect(toolByName(n)!.dangerous, n).toBeFalsy()
+  })
+})
