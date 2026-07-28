@@ -104,7 +104,7 @@ export async function searchAll(q: string): Promise<SearchResults> {
     // sessions
     (async (): Promise<Candidate[]> => {
       try {
-        const sess = await searchSessions(q, K)
+        const sess = await searchSessions(q, { limit: K })
         return sess.map((s, i): Candidate => ({
           type: 'session', id: s.id, title: s.title, to: s.to, icon: 'i-lucide-history', meta: s.project,
           snippet: makeSnippet(s.snippet, q), rerankText: clip(`${s.title}\n${s.snippet}`),
@@ -116,7 +116,7 @@ export async function searchAll(q: string): Promise<SearchResults> {
     // messages
     (async (): Promise<Candidate[]> => {
       try {
-        const msgs = await searchMessages(q, K)
+        const msgs = await searchMessages(q, { limit: K })
         return msgs.map((m, i): Candidate => ({
           type: 'message', id: m.id, title: makeSnippet(m.snippet, q, 80), to: m.to,
           icon: 'i-lucide-message-circle', meta: m.role,
