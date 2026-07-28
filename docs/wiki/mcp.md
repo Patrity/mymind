@@ -120,10 +120,10 @@ Each tool carries a `kind` field that controls gating + description copy:
 | `web_fetch(url)` | read | fetchAsMarkdown; SSRF-guarded, untrusted content (cycle 29) |
 | `generate_image(prompt, ...)` | create | imagegen/comfy → images.createGeneratedImage (cycle 36) |
 | `edit_image(instruction, source_image_id?, quality?)` | create | Qwen-Image-Edit-2509 instruction editing → images.createGeneratedImage (cycles 37–38; img2img+strength removed) |
-| `search_messages(query, project?, session?, limit?)` | read | session-search `searchMessagesForAgent` (cycle 49) |
-| `search_sessions(query, project?, limit?)` | read | session-search `searchSessionsForAgent` (cycle 49) |
-| `read_around_message(messageId, radius?, full?, includeSidechain?)` | read | session-read `readAroundMessage` (cycle 49) |
-| `read_session(sessionId, offset?, limit?, full?, includeSidechain?)` | read | session-read `readSessionPage` (cycle 49) |
+| `search_messages(query, project?, session?, limit?)` | read | session-search `searchMessagesForAgent` (cycle 50) |
+| `search_sessions(query, project?, limit?)` | read | session-search `searchSessionsForAgent` (cycle 50) |
+| `read_around_message(messageId, radius?, full?, includeSidechain?)` | read | session-read `readAroundMessage` (cycle 50) |
+| `read_session(sessionId, offset?, limit?, full?, includeSidechain?)` | read | session-read `readSessionPage` (cycle 50) |
 
 `save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
 
@@ -133,9 +133,9 @@ Each tool carries a `kind` field that controls gating + description copy:
 
 **Pure `edit-ops.ts` module** (`server/lib/documents/edit-ops.ts`) — zero-DB string helpers underlying the cycle-40 edit tools: `outline`, `findSection`, `readSection`, `documentStats`, `grepContent`, `applyReplace`, `applyEditSection`. 26 unit tests; tool handlers do DB I/O around them.
 
-### Session search + transcript read (cycle 49)
+### Session search + transcript read (cycle 50)
 
-MyMind ingests every Claude Code session (transcript messages + tool events, project-associated) and already ran hybrid search over sessions/messages for the web UI (`server/services/session-search.ts`) — cycle 49 wraps that as four `kind:read` MCP tools, plus a new bounded-read service (`server/services/session-read.ts`) so an agent can actually consume a hit instead of just locating it. Zero migration, zero new UI — the web still has global session search + `/sessions/[id]`.
+MyMind ingests every Claude Code session (transcript messages + tool events, project-associated) and already ran hybrid search over sessions/messages for the web UI (`server/services/session-search.ts`) — cycle 50 wraps that as four `kind:read` MCP tools, plus a new bounded-read service (`server/services/session-read.ts`) so an agent can actually consume a hit instead of just locating it. Zero migration, zero new UI — the web still has global session search + `/sessions/[id]`.
 
 - **`search_messages(query, project?, session?, limit?)`** — the primary "find a keyword or topic in past sessions" tool. Same hybrid (trigram + vector, RRF-fused) ranking as the web search, filtered to `project` slug and/or one `session` id. **Always excludes sidechain (subagent/Task) messages** — there is no `includeSidechain` param here, unlike the read tools. Each hit's `snippet` is **match-centered**: `snippetAround()` (`session-read.ts`) finds the first case-insensitive occurrence of `query` in the message and returns a ~240-char window (±120 chars) around it with `…` elision, falling back to a head-slice when the hit came from the vector lane with no literal substring match. Returns `{ results: [{ messageId, sessionId, role, snippet, createdAt, sessionTitle, project }] }` — feed a `messageId` into `read_around_message` to see the surrounding conversation.
 - **`search_sessions(query, project?, limit?)`** — session-level topic search (hybrid over `title` + `summary`) for "which session was this in" when there's no exact keyword to grep for. Returns `{ results: [{ sessionId, title, snippet, project, startedAt, messageCount }] }` — feed a `sessionId` into `read_session` to page the transcript.

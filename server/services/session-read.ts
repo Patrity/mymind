@@ -4,7 +4,7 @@
 // (Task 2) build on it. Messages and tool events live in separate tables and
 // are merged chronologically so a transcript reads in order.
 
-import { and, asc, desc, eq, gt, lt, inArray } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { messages, toolEvents, sessions } from '../db/schema'
 
@@ -85,7 +85,11 @@ export async function readSessionPage(sessionId: string, opts: { offset?: number
   if (!sess) return { error: 'session not found', sessionId }
 
   const msgWhere = includeSidechain ? eq(messages.sessionId, sessionId) : and(eq(messages.sessionId, sessionId), eq(messages.isSidechain, false))
-  const msgRows = await db.select(MSG_COLS).from(messages).where(msgWhere).orderBy(asc(messages.createdAt)).offset(offset).limit(limit) as unknown as MessageRow[]
+  // Order by (createdAt, id): a batched ingest can give many rows the same createdAt
+  // (worst observed cluster ~71 messages sharing one timestamp), and Postgres has no
+  // stable order for ties — id (secondary key) makes paging deterministic, though it
+  // does not recover true intra-cluster order (that lives in the parentUuid chain).
+  const msgRows = await db.select(MSG_COLS).from(messages).where(msgWhere).orderBy(asc(messages.createdAt), asc(messages.id)).offset(offset).limit(limit) as unknown as MessageRow[]
   const toolRows = await toolEventsFor(msgRows.map(m => m.id), includeSidechain)
 
   return {
@@ -108,13 +112,29 @@ export async function readAroundMessage(messageId: string, opts: { radius?: numb
   const sessionId = focalMeta!.sessionId
 
   const side = (col: typeof messages.isSidechain) => includeSidechain ? undefined : eq(col, false)
+  // Composite-cursor (createdAt, id) comparison, not a scalar createdAt lt/gt: a batched
+  // ingest can give many rows the same createdAt (worst observed cluster ~71 messages),
+  // and a strict scalar comparison would exclude the focal message's same-timestamp
+  // siblings from both windows entirely. id only buys determinism, not true intra-cluster
+  // order (that lives in the parentUuid chain) — acceptable for a best-effort read tool.
   const before = await db.select(MSG_COLS).from(messages)
-    .where(and(eq(messages.sessionId, sessionId), lt(messages.createdAt, focal.createdAt), side(messages.isSidechain)))
-    .orderBy(desc(messages.createdAt)).limit(radius) as unknown as MessageRow[]
+    .where(and(
+      eq(messages.sessionId, sessionId),
+      sql`(${messages.createdAt}, ${messages.id}) < (${focal.createdAt}, ${focal.id})`,
+      side(messages.isSidechain)
+    ))
+    .orderBy(desc(messages.createdAt), desc(messages.id)).limit(radius) as unknown as MessageRow[]
   const after = await db.select(MSG_COLS).from(messages)
-    .where(and(eq(messages.sessionId, sessionId), gt(messages.createdAt, focal.createdAt), side(messages.isSidechain)))
-    .orderBy(asc(messages.createdAt)).limit(radius) as unknown as MessageRow[]
+    .where(and(
+      eq(messages.sessionId, sessionId),
+      sql`(${messages.createdAt}, ${messages.id}) > (${focal.createdAt}, ${focal.id})`,
+      side(messages.isSidechain)
+    ))
+    .orderBy(asc(messages.createdAt), asc(messages.id)).limit(radius) as unknown as MessageRow[]
 
+  // before.reverse() is load-bearing: interleave sorts by createdAt.getTime() (ms) and
+  // stable-sorts within a same-ms cluster, so this input order carries the intra-cluster
+  // ordering recovered above (id-ascending within the cluster, oldest-cluster-member-first).
   const msgRows = [...before.reverse(), focal, ...after]
   const toolRows = await toolEventsFor(msgRows.map(m => m.id), includeSidechain)
   const [sess] = await db.select({ title: sessions.title, project: sessions.project }).from(sessions).where(eq(sessions.id, sessionId)).limit(1)
