@@ -2,7 +2,7 @@
 title: MCP Server
 status: shipped
 cycle: 48
-updated: 2026-07-17
+updated: 2026-07-28
 ---
 
 # MCP Server
@@ -78,14 +78,14 @@ curl -si -X POST https://brain.costanzoclan.com/api/mcp | rg -i 'www-authenticat
 Added in cycle 40: `new McpServer(info, { instructions: MCP_INSTRUCTIONS })` passes a server-level preamble (verified supported by the SDK's `ServerOptions.instructions`). The preamble establishes the second-brain workflow — search before answering, persist durable facts, file under projects, prefer surgical `edit_document` — so agents reliably reach for MyMind tools rather than answering from their own recollection.
 
 ## Tools (`server/lib/mcp/server.ts`)
-The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. All 29 tools are currently non-dangerous, so the full registry is exposed (29 rows below).
+The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. The table below is not exhaustive — the live registry is 37 tools (`test/agent-tools.test.ts` pins the full name list); it also includes the `use_skill`/`create_skill`/`edit_skill`/`delete_skill` progressive-disclosure tools documented in [`agent-skills.md`](agent-skills.md). All of them are currently non-dangerous.
 
 ### `kind` policy
 Each tool carries a `kind` field that controls gating + description copy:
 - `kind:read` — pure reads; always ungated.
 - `kind:create` — write/mutate (including edits to existing docs); ungated by design (cycle 40 decision: edits must never be blocked by a confirmation gate, even if `kind:destructive` gets gated in the future).
 - `kind:destructive` — removal/archive actions; descriptive today (signals "confirm with user" language + undo); NOT hard-gated.
-- `dangerous:true` — the **only** hard runtime gate (checked in `ai-tools.ts`). A tool with `dangerous:true` is **never exposed to MCP** and is never callable without approval. Currently only `exec`. All 29 MCP tools are non-`dangerous`.
+- `dangerous:true` — the **only** hard runtime gate (checked in `ai-tools.ts`). A tool with `dangerous:true` is **never exposed to MCP** and is never callable without approval. Currently only `exec` (which lives outside `agentTools` — see [`agent-exec.md`](agent-exec.md) — so it was never a candidate for MCP exposure in the first place). All 37 `agentTools` are non-`dangerous`, so all 37 are MCP-exposed.
 
 ### Tool table
 
@@ -120,6 +120,10 @@ Each tool carries a `kind` field that controls gating + description copy:
 | `web_fetch(url)` | read | fetchAsMarkdown; SSRF-guarded, untrusted content (cycle 29) |
 | `generate_image(prompt, ...)` | create | imagegen/comfy → images.createGeneratedImage (cycle 36) |
 | `edit_image(instruction, source_image_id?, quality?)` | create | Qwen-Image-Edit-2509 instruction editing → images.createGeneratedImage (cycles 37–38; img2img+strength removed) |
+| `search_messages(query, project?, session?, limit?)` | read | session-search `searchMessagesForAgent` (cycle 49) |
+| `search_sessions(query, project?, limit?)` | read | session-search `searchSessionsForAgent` (cycle 49) |
+| `read_around_message(messageId, radius?, full?, includeSidechain?)` | read | session-read `readAroundMessage` (cycle 49) |
+| `read_session(sessionId, offset?, limit?, full?, includeSidechain?)` | read | session-read `readSessionPage` (cycle 49) |
 
 `save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
 
@@ -128,6 +132,23 @@ Each tool carries a `kind` field that controls gating + description copy:
 **Long-doc agent workflow (cycle 40)** — agents should not round-trip the whole document body to make a small change. Instead: `read_document(id)` with no selector → outline + line/char counts; `read_document(id, { heading })` → just that section; `grep_document(id, pattern)` → locate the exact unique string; `edit_document(id, old, new)` → surgical patch. `edit_section` handles structure-aware append/replace. All mutations call `publishChange` (live-data rule) and return an `undo`.
 
 **Pure `edit-ops.ts` module** (`server/lib/documents/edit-ops.ts`) — zero-DB string helpers underlying the cycle-40 edit tools: `outline`, `findSection`, `readSection`, `documentStats`, `grepContent`, `applyReplace`, `applyEditSection`. 26 unit tests; tool handlers do DB I/O around them.
+
+### Session search + transcript read (cycle 49)
+
+MyMind ingests every Claude Code session (transcript messages + tool events, project-associated) and already ran hybrid search over sessions/messages for the web UI (`server/services/session-search.ts`) — cycle 49 wraps that as four `kind:read` MCP tools, plus a new bounded-read service (`server/services/session-read.ts`) so an agent can actually consume a hit instead of just locating it. Zero migration, zero new UI — the web still has global session search + `/sessions/[id]`.
+
+- **`search_messages(query, project?, session?, limit?)`** — the primary "find a keyword or topic in past sessions" tool. Same hybrid (trigram + vector, RRF-fused) ranking as the web search, filtered to `project` slug and/or one `session` id. **Always excludes sidechain (subagent/Task) messages** — there is no `includeSidechain` param here, unlike the read tools. Each hit's `snippet` is **match-centered**: `snippetAround()` (`session-read.ts`) finds the first case-insensitive occurrence of `query` in the message and returns a ~240-char window (±120 chars) around it with `…` elision, falling back to a head-slice when the hit came from the vector lane with no literal substring match. Returns `{ results: [{ messageId, sessionId, role, snippet, createdAt, sessionTitle, project }] }` — feed a `messageId` into `read_around_message` to see the surrounding conversation.
+- **`search_sessions(query, project?, limit?)`** — session-level topic search (hybrid over `title` + `summary`) for "which session was this in" when there's no exact keyword to grep for. Returns `{ results: [{ sessionId, title, snippet, project, startedAt, messageCount }] }` — feed a `sessionId` into `read_session` to page the transcript.
+- **`read_around_message(messageId, radius?, full?, includeSidechain?)`** — the focal message plus `radius` messages before/after (default 8, max 30) in the same session, chronological. 404-shaped (`{ error: 'message not found', messageId }`) rather than throwing when the id doesn't exist.
+- **`read_session(sessionId, offset?, limit?, full?, includeSidechain?)`** — pages the whole transcript in chronological order (`offset`/`limit`, default 0/25, max 50). Returns session meta (`{ id, title, project, startedAt, endedAt, messageCount }`) plus `{ offset, limit, returned, hasMore, items }`; `hasMore` is a `returned === limit` heuristic, not a stored count, so a consumer keeps paging on `hasMore` rather than trusting `messageCount` (which is a raw ingest total that may include sidechain).
+
+**Message ↔ tool-event interleave.** Messages and tool calls/outputs live in separate tables (`messages`, `tool_events`, joined by `messageId`) — a transcript is not just a list of messages. Both read tools merge them into one `items: (MessageItem | ToolEventItem)[]` array ordered by `createdAt` (`interleave()` in `session-read.ts`), so a tool call/result sits right after the assistant turn that issued it, exactly as it read live.
+
+**Truncation and `full`.** By default (`full: false`, the default on every tool above) a `MessageItem.content` is capped at `CONTENT_CAP` (2000 chars) and `thinking` is dropped entirely; a `ToolEventItem`'s `argsSnippet`/`resultSnippet` (the JSON-stringified `args`/`result`) are each capped at `TOOL_CAP` (600 chars). Any cap that actually trims sets `truncated` to the number of chars omitted, so the agent knows there's more and can re-call with `full: true` to get the untruncated content (and `thinking`) — a deliberate token-budget default, not a hidden data loss.
+
+**Sidechain excluded by default.** Subagent/Task-tool threads are tagged `isSidechain` on both `messages` and `tool_events`. `read_around_message`/`read_session` default `includeSidechain` to `false` (opt in to see subagent chatter); `search_messages` has no such option — it always excludes sidechain, since a keyword hit inside a subagent's internal scratch space is rarely what the caller wants. `search_sessions` has no sidechain concept (session rows don't distinguish sidechain vs. main-thread content).
+
+No migration and no UI changes — this cycle is pure MCP/agent tool surface over the existing `sessions`/`messages`/`tool_events` tables and the existing hybrid search services (`project`/`session` became new optional filters on `searchSessions`/`searchMessages`, backward-compatible with the unchanged web callers).
 
 Registered via `server.tool(name, description, zodShape, handler)`; each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
 
