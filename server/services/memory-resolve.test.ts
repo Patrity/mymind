@@ -1,0 +1,74 @@
+import { describe, it, expect } from 'vitest'
+import { chooseResolution, countEvidenceSessions } from './memory-resolve'
+
+const v = (relation: string, confidence: number, existingId = 'x1') =>
+  ({ relation, confidence, existingId, reasoning: 'r' }) as never
+
+const base = { threshold: 0.8, scope: 'agent' as const, incumbentSessions: 1, challengerSessions: 1 }
+
+describe('chooseResolution — unchanged branches', () => {
+  it('still prefers a duplicate above the dup floor', () => {
+    expect(chooseResolution([v('duplicate', 0.9)], base).action).toBe('duplicate')
+  })
+
+  it('still supersedes on a confident refines', () => {
+    expect(chooseResolution([v('refines', 0.9)], base).action).toBe('supersede')
+  })
+
+  it('still routes a low-confidence refines to review', () => {
+    expect(chooseResolution([v('refines', 0.5)], base).action).toBe('review-supersede')
+  })
+
+  it('still inserts when nothing matches', () => {
+    expect(chooseResolution([], base).action).toBe('insert')
+  })
+})
+
+describe('chooseResolution — contradiction gate', () => {
+  it('never silently resolves a user-scope contradiction', () => {
+    const plan = chooseResolution([v('contradicts', 0.95)], { ...base, scope: 'user' })
+    expect(plan.action).toBe('review-contradict')
+    expect(plan.targetId).toBe('x1')
+  })
+
+  it('routes to review when the incumbent is better corroborated than the challenger', () => {
+    expect(chooseResolution([v('contradicts', 0.95)],
+      { ...base, incumbentSessions: 5, challengerSessions: 1 }).action).toBe('review-contradict')
+  })
+
+  it('auto-resolves agent-scope when corroboration is equal', () => {
+    expect(chooseResolution([v('contradicts', 0.95)],
+      { ...base, incumbentSessions: 1, challengerSessions: 1 }).action).toBe('contradict')
+  })
+
+  it('auto-resolves when the challenger is itself well corroborated', () => {
+    expect(chooseResolution([v('contradicts', 0.95)],
+      { ...base, incumbentSessions: 3, challengerSessions: 3 }).action).toBe('contradict')
+  })
+
+  it('auto-resolves world-scope with an uncorroborated incumbent', () => {
+    expect(chooseResolution([v('contradicts', 0.9)],
+      { ...base, scope: 'world', incumbentSessions: 1, challengerSessions: 1 }).action).toBe('contradict')
+  })
+
+  it('picks the highest-confidence contradiction as the target', () => {
+    const plan = chooseResolution(
+      [v('contradicts', 0.6, 'lo'), v('contradicts', 0.9, 'hi')], { ...base, scope: 'user' })
+    expect(plan.targetId).toBe('hi')
+  })
+})
+
+describe('countEvidenceSessions', () => {
+  it('counts distinct sessionIds', () => {
+    expect(countEvidenceSessions([{ sessionId: 'a' }, { sessionId: 'b' }, { sessionId: 'a' }])).toBe(2)
+  })
+  it('ignores entries with a null or missing sessionId', () => {
+    expect(countEvidenceSessions([{ sessionId: null }, {}, { sessionId: 'a' }])).toBe(1)
+  })
+  it('returns 0 for an empty array', () => {
+    expect(countEvidenceSessions([])).toBe(0)
+  })
+  it('tolerates non-object entries without throwing', () => {
+    expect(countEvidenceSessions(['nope', 42, null])).toBe(0)
+  })
+})

@@ -20,19 +20,55 @@ export interface ResolveInput {
   confidence?: number | null
   evidence?: unknown[]
 }
-export type ResolveAction = 'duplicate' | 'insert' | 'supersede' | 'review-supersede' | 'contradict'
+export type ResolveAction =
+  'duplicate' | 'insert' | 'supersede' | 'review-supersede' | 'contradict' | 'review-contradict'
 export interface ResolvePlan { action: ResolveAction, targetId?: string, confidence?: number, reasoning?: string }
+
+export interface ChooseResolutionOpts {
+  threshold: number
+  scope: MemoryScope
+  /** Distinct sessions corroborating the EXISTING memory (from its evidence chain). */
+  incumbentSessions: number
+  /** Distinct sessions behind the INCOMING memory — normally 1 on the enrichment path. */
+  challengerSessions: number
+}
 
 const DUP_MIN = 0.6
 
+/** Distinct `sessionId`s in a memory's evidence array. Defensive against malformed entries. */
+export function countEvidenceSessions(evidence: unknown[]): number {
+  const ids = new Set<string>()
+  for (const e of evidence ?? []) {
+    if (!e || typeof e !== 'object') continue
+    const id = (e as { sessionId?: unknown }).sessionId
+    if (typeof id === 'string' && id) ids.add(id)
+  }
+  return ids.size
+}
+
 /** Pure: pick the resolution from judge verdicts. */
-export function chooseResolution(verdicts: Verdict[], threshold: number): ResolvePlan {
-  const dup = verdicts.filter(v => v.relation === 'duplicate' && v.confidence >= DUP_MIN).sort((a, b) => b.confidence - a.confidence)[0]
+export function chooseResolution(verdicts: Verdict[], opts: ChooseResolutionOpts): ResolvePlan {
+  const dup = verdicts.filter(v => v.relation === 'duplicate' && v.confidence >= DUP_MIN)
+    .sort((a, b) => b.confidence - a.confidence)[0]
   if (dup) return { action: 'duplicate', targetId: dup.existingId, confidence: dup.confidence, reasoning: dup.reasoning }
+
   const refines = verdicts.filter(v => v.relation === 'refines').sort((a, b) => b.confidence - a.confidence)[0]
-  if (refines) return { action: refines.confidence >= threshold ? 'supersede' : 'review-supersede', targetId: refines.existingId, confidence: refines.confidence, reasoning: refines.reasoning }
+  if (refines) return {
+    action: refines.confidence >= opts.threshold ? 'supersede' : 'review-supersede',
+    targetId: refines.existingId, confidence: refines.confidence, reasoning: refines.reasoning
+  }
+
   const contra = verdicts.filter(v => v.relation === 'contradicts').sort((a, b) => b.confidence - a.confidence)[0]
-  if (contra) return { action: 'contradict', targetId: contra.existingId, confidence: contra.confidence, reasoning: contra.reasoning }
+  if (contra) {
+    // Identity/preference claims are never auto-resolved: a wrong resolution here is
+    // self-reinforcing (the bad memory shapes later sessions, which then corroborate it).
+    // Otherwise, defer to a human when the incumbent is corroborated across more sessions
+    // than the challenger — high confidence from ONE exploratory session is not evidence.
+    const outnumbered = opts.incumbentSessions >= 2 && opts.challengerSessions < opts.incumbentSessions
+    const action: ResolveAction = (opts.scope === 'user' || outnumbered) ? 'review-contradict' : 'contradict'
+    return { action, targetId: contra.existingId, confidence: contra.confidence, reasoning: contra.reasoning }
+  }
+
   return { action: 'insert' }
 }
 
@@ -84,13 +120,18 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const lit = `[${vec.join(',')}]`
   const projectFilter = input.projectId ? eq(memories.projectId, input.projectId) : isNull(memories.projectId)
 
-  const near = await db.select({ id: memories.id, content: memories.content }).from(memories)
+  const near = await db.select({ id: memories.id, content: memories.content, evidence: memories.evidence }).from(memories)
     .where(and(live, eq(memories.scope, scope), projectFilter, isNotNull(memories.embedding)))
     .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`).limit(8)
   if (!near.length) { await insertFresh(input, vec, contentHash, threshold); return { action: 'insert' } }
 
-  const verdicts = await judgeRelations(input.content, near)
-  const plan = chooseResolution(verdicts, threshold)
+  const verdicts = await judgeRelations(input.content, near.map(n => ({ id: n.id, content: n.content })))
+  const challengerSessions = countEvidenceSessions((input.evidence ?? []) as unknown[])
+  const preliminary = verdicts.filter(v => v.relation === 'contradicts').sort((a, b) => b.confidence - a.confidence)[0]
+  const incumbentForContra = preliminary ? near.find(n => n.id === preliminary.existingId) : undefined
+  const incumbentSessions = countEvidenceSessions((incumbentForContra?.evidence ?? []) as unknown[])
+
+  const plan = chooseResolution(verdicts, { threshold, scope, incumbentSessions, challengerSessions })
   const existing = plan.targetId ? near.find(n => n.id === plan.targetId) : undefined
 
   if (plan.action === 'duplicate') { await mergeEvidence(plan.targetId!, input.evidence ?? [], input.sourceDate ?? null); return plan }
@@ -110,6 +151,12 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   } else if (plan.action === 'contradict') {
     await db.insert(memoryRelations).values({ fromId: newId, toId: plan.targetId!, type: 'contradicts', confidence: plan.confidence ?? null, status: 'active', reason: plan.reasoning ?? null }).onConflictDoNothing()
     await db.insert(reviewQueue).values({ docId: plan.targetId!, kind: 'memory-contradict', proposed: proposed as unknown as string }).onConflictDoNothing()
+    publishChange({ resource: 'review', action: 'created', id: plan.targetId! })
+  } else if (plan.action === 'review-contradict') {
+    await db.insert(memoryRelations).values({ fromId: newId, toId: plan.targetId!, type: 'contradicts', confidence: plan.confidence ?? null, status: 'active', reason: plan.reasoning ?? null }).onConflictDoNothing()
+    await db.insert(reviewQueue).values({ docId: plan.targetId!, kind: 'memory-contradict', proposed: proposed as unknown as string }).onConflictDoNothing()
+    // Deliberately NO archivedAt/supersededBy update: both memories stay live until a human
+    // decides. An unresolved contradiction is preferable to a silently wrong resolution.
     publishChange({ resource: 'review', action: 'created', id: plan.targetId! })
   }
   return plan
