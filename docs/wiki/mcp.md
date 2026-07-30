@@ -1,8 +1,8 @@
 ---
 title: MCP Server
 status: shipped
-cycle: 48
-updated: 2026-07-28
+cycle: 51
+updated: 2026-07-29
 ---
 
 # MCP Server
@@ -93,12 +93,12 @@ Each tool carries a `kind` field that controls gating + description copy:
 
 | Tool | kind | Delegates to |
 |---|---|---|
-| `search_memories(query, scope?, project?, limit?)` | read | memory.searchMemories |
+| `search_memories(query, scope?, project?, limit?, includeUnreviewed?)` | read | memory.searchMemories |
 | `save_memory(content, scope, project?, tags?, source?, confidence?)` | create | memory.createMemory |
-| `get_recent_memories(scope?, limit?)` | read | memory.listMemories |
-| `search_docs(query, project?)` | read | documents.searchDocs |
+| `get_recent_memories(scope?, limit?, includeUnreviewed?)` | read | memory.listMemories |
+| `search_docs(query, project?, limit?, offset?)` → `{ items, total, hasMore }` (cycle 51) | read | documents.searchDocsPage |
 | `search_passages(query, project?, limit?)` | read | documents.searchPassages (chunk-level RAG, cycle 31) |
-| `list_documents(project?)` | read | documents.listDocs |
+| `list_documents(project?, limit?, offset?)` → `{ items, total, hasMore }` (cycle 51) | read | documents.listDocsSummary + countDocs |
 | `get_document(id)` | read | documents.getDoc |
 | `save_document(content, project?, title?, path?)` | create | documents.createDoc |
 | `read_document(id, { heading?, offset?, limit? })` | read | edit-ops `outline` / `readSection` (cycle 40) |
@@ -110,12 +110,12 @@ Each tool carries a `kind` field that controls gating + description copy:
 | `delete_document(id)` | destructive | documents.deleteDoc → restoreDoc undo (cycle 40) |
 | `delete_task(id)` | destructive | tasks.deleteTask → restoreTask undo (cycle 40) |
 | `forget_memory(id)` | destructive | memory.archiveMemory → unarchiveMemory undo (cycle 40) |
-| `search_projects(activeOnly?)` | read | projects.listProjects |
+| `search_projects(activeOnly?, limit?, offset?)` → `{ items, total, hasMore }` (cycle 51) | read | projects.listProjectsPage |
 | `get_project(slug)` | read | projects.getProject |
 | `create_project(name, description?)` | create | projects.createProject |
 | `edit_project(slug, name?, description?, active?)` | create | projects.updateProject |
 | `create_task(title, ...)` | create | tasks.createTask |
-| `search_tasks(status?, project?)` | read | tasks.listTasks |
+| `search_tasks(status?, project?, limit?, offset?)` → `{ items, total, hasMore }` (cycle 51) | read | tasks.listTasksSummary + countTasks |
 | `edit_task(id, ...patch)` | create | tasks.updateTask |
 | `quick_capture(text, title?)` | create | documents.createDoc |
 | `web_search(query, count?)` | read | search provider (SearXNG/Brave); untrusted results (cycle 29) |
@@ -153,6 +153,20 @@ MyMind ingests every Claude Code session (transcript messages + tool events, pro
 No migration and no UI changes — this cycle is pure MCP/agent tool surface over the existing `sessions`/`messages`/`tool_events` tables and the existing hybrid search services (`project`/`session` became new optional filters on `searchSessions`/`searchMessages`, backward-compatible with the unchanged web callers).
 
 Registered via `server.tool(name, description, zodShape, handler)`; each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
+
+### Recall defaults (cycle 51)
+
+`list_documents`, `search_docs`, `search_tasks`, and `search_projects` return **summaries**, never full bodies: `list_documents`/`search_docs` items omit `content`; `search_tasks` items omit `description`; `search_projects` items omit `aliases`/`localPaths`/`pathPrefixes`. Document bodies come from the by-id readers — `get_document`, `read_document` (outline/section/window), `grep_document` — never from a list/search result. Each tool's `description` states this explicitly so an agent doesn't conclude a document is empty.
+
+All four take `limit`/`offset` and return an envelope: `{ items, total, hasMore }`. Default page size is **25**, max **100** (`server/lib/agent/paging.ts`, `clampPaging`/`buildPage`).
+
+- For `search_docs`, `total` counts **candidate matches considered** (the fused trigram+vector RRF candidate pool, capped ~50 per lane) — it is not the size of the document corpus, and it is not guaranteed to equal the true number of matching documents.
+- For `list_documents`/`search_tasks`/`search_projects`, `total` is an exact `count(*)` over the same filter as the returned rows (built from the identical conditions array), so it can never disagree with a full page-through.
+- `search_projects` is a **misnomer**: it takes no query/keyword parameter and does no text matching. It only lists projects, optionally filtered by `activeOnly`. There has never been a `searchProjects(q)` in this codebase — the name predates any query capability, and cycle 51 confirmed and documented that rather than inventing one (see the cycle-51 handover).
+
+`search_memories`/`get_recent_memories` exclude unreviewed memories by default (`reviewedAt IS NOT NULL`) — pass `includeUnreviewed: true` to include them (e.g. to confirm a memory you just saved before it has been reviewed). The web `/memories` review surface is unaffected and still shows unreviewed rows; this filter only changes agent-facing recall.
+
+**Breaking MCP contract change:** before cycle 51, `list_documents`/`search_docs` results carried each document's full body inline (`result[].content`). Any consumer still reading that field off those two tools now gets `undefined`. Read the body via `get_document`/`read_document`/`grep_document` instead — the tool descriptions say so explicitly.
 
 ## Validate
 With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified (cycle 40 live E2E, 2026-06-30): `tools/list` → 29 tools; full MCP round-trip (`save_document` → `read_document` → `grep_document` → `edit_document` → `edit_section` → `update_document` → `move_document` → `delete_document`) against the real `/api/mcp` StreamableHTTP endpoint, 28/28 assertions. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
