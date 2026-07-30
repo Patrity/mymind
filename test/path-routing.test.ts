@@ -87,6 +87,9 @@ describe('shouldRecordLocalPath', () => {
   it('records when cwd is a PARENT of an existing path', () => {
     expect(shouldRecordLocalPath('/a', ['/a/b'], [])).toBe(true)
   })
+  it('records when cwd is a PARENT of a registered pathPrefix', () => {
+    expect(shouldRecordLocalPath('/Users/tony/x', [], ['/Users/tony/x/terawulf'])).toBe(true)
+  })
 })
 
 describe('collapseLocalPaths', () => {
@@ -100,6 +103,9 @@ describe('collapseLocalPaths', () => {
   })
   it('keeps unrelated siblings', () => {
     expect(collapseLocalPaths(['/a', '/b'], [])).toEqual(['/a', '/b'])
+  })
+  it('keeps a localPath that is an ANCESTOR of a registered prefix', () => {
+    expect(collapseLocalPaths(['/Users/tony/x'], ['/Users/tony/x/terawulf'])).toEqual(['/Users/tony/x'])
   })
   it('is idempotent', () => {
     const once = collapseLocalPaths(['/t', '/t/apps'], [])
