@@ -28,9 +28,9 @@
 
 **Item 1 — payload shape + limits**
 - Create `shared/types/summaries.ts` — `DocumentSummaryDTO`, `TaskSummaryDTO`, `ProjectSummaryDTO`, and the generic `PagedResult<T>` envelope. One place for all four, because they are consumed together by the tool layer.
-- Modify `server/services/documents.ts` — add `listDocsSummary`, `searchDocsSummary`, `countDocs`.
+- Modify `server/services/documents.ts` — add `listDocsSummary`, `countDocs`, `searchDocsPage`.
 - Modify `server/services/tasks.ts` — add `listTasksSummary`, `countTasks`.
-- Modify `server/services/projects.ts` — add `searchProjectsSummary`.
+- Modify `server/services/projects.ts` — add `searchProjectsPage`.
 - Create `server/lib/agent/paging.ts` — pure `buildPage(items, total, limit, offset)` + `clampPaging(limit, offset)`. Shared by four tools; extracted so the envelope logic is tested once.
 - Create `server/lib/agent/paging.test.ts`.
 - Modify `server/lib/agent/tools.ts` — the four tool definitions.
@@ -240,10 +240,12 @@ git commit -m "feat(agent): summary DTOs + paging envelope for read tools"
 - Produces:
   - `listDocsSummary(opts: { project?: string, limit: number, offset: number }): Promise<DocumentSummaryDTO[]>`
   - `countDocs(opts: { project?: string }): Promise<number>`
-  - `searchDocsSummary(q: string, opts: { project?: string, limit: number, offset: number }): Promise<DocumentSummaryDTO[]>`
+  - `searchDocsPage(q: string, opts: { project?: string, limit: number, offset: number }): Promise<{ items: DocumentSummaryDTO[], total: number }>`
   - `toSummaryDTO(row): DocumentSummaryDTO` (exported for its unit test)
 
-  Task 5 calls all of these.
+  Task 5 calls all of these. Note the asymmetry and keep it: the *list* path is a cheap
+  `count(*)` so it gets a separate `countDocs`; the *search* path embeds the query, so it
+  returns items and total together from one call. There is no `countSearchDocs`.
 
 - [ ] **Step 1: Read the existing implementations you are mirroring**
 
@@ -365,35 +367,42 @@ Add the `DocumentSummaryDTO` import at the top of the file.
 Run: `pnpm vitest run server/services/documents.test.ts`
 Expected: PASS — 2 tests.
 
-- [ ] **Step 6: Add `searchDocsSummary`**
+- [ ] **Step 6: Add `searchDocsPage`**
 
 In `server/services/documents.ts`, refactor `searchDocs` so the id-fusion is reusable, then add:
 
 ```ts
-export async function searchDocsSummary(
+/**
+ * One page of search results PLUS the total, from a SINGLE search.
+ *
+ * Deliberately returns both rather than exposing a separate count function: the search
+ * runs `embedOne(q)` (documents.ts:180), a network call to the embedding rig. Two
+ * functions would mean two embeddings per `search_docs` invocation.
+ */
+export async function searchDocsPage(
   q: string,
   opts: { project?: string, limit: number, offset: number }
-): Promise<DocumentSummaryDTO[]> {
-  if (!q.trim()) return []
+): Promise<{ items: DocumentSummaryDTO[], total: number }> {
+  if (!q.trim()) return { items: [], total: 0 }
+
   const ids = await searchDocIds(q, { project: opts.project })   // extracted from searchDocs
+  const total = ids.length
   const window = ids.slice(opts.offset, opts.offset + opts.limit)
-  if (!window.length) return []
+  if (!window.length) return { items: [], total }
+
   const rows = await useDb().select(SUMMARY_COLUMNS).from(documents).where(inArray(documents.id, window))
   const byId = new Map(rows.map(r => [r.id, toSummaryDTO(r)]))
   // Preserve relevance order — the SQL `in` clause does not.
-  return window.map(id => byId.get(id)).filter((d): d is DocumentSummaryDTO => !!d)
-}
-
-/** Total matches for a query, for the paging envelope. */
-export async function countSearchDocs(q: string, opts: { project?: string } = {}): Promise<number> {
-  if (!q.trim()) return 0
-  return (await searchDocIds(q, opts)).length
+  const items = window.map(id => byId.get(id)).filter((d): d is DocumentSummaryDTO => !!d)
+  return { items, total }
 }
 ```
 
 Extract the existing lane-fusion body of `searchDocs` into `async function searchDocIds(q, opts): Promise<string[]>` and have the original `searchDocs` call it, so both paths share one implementation and the web UI's behaviour is unchanged.
 
-`total` here is the count of fused candidate ids, which is itself capped by the lanes (~50/lane). That is the honest number — it is "matches we will consider", not "matches in the corpus". State this in the tool description in Task 5.
+**Do NOT add a `countSearchDocs` function.** An earlier draft of this plan had one, called alongside `searchDocsSummary` via `Promise.all` — which issued two concurrent embedding requests for a single tool call. `searchDocsPage` returning both values is the fix; keep it that way.
+
+`total` is the count of fused candidate ids, itself capped by the lanes (~50/lane). That is the honest number — "matches we will consider", not "matches in the corpus". State this in the tool description in Task 5.
 
 - [ ] **Step 7: Run the full suite and commit**
 
@@ -422,8 +431,7 @@ Expected: typecheck clean; full suite green (existing `searchDocs` callers unaff
   - `listTasksSummary(opts: { status?: string, project?: string, limit: number, offset: number }): Promise<TaskSummaryDTO[]>`
   - `countTasks(opts: { status?: string, project?: string }): Promise<number>`
   - `toTaskSummaryDTO(row): TaskSummaryDTO`
-  - `searchProjectsSummary(q: string, opts: { limit: number, offset: number }): Promise<ProjectSummaryDTO[]>`
-  - `countSearchProjects(q: string): Promise<number>`
+  - `searchProjectsPage(q: string, opts: { limit: number, offset: number }): Promise<{ items: ProjectSummaryDTO[], total: number }>` — items + total from ONE search, same reason as `searchDocsPage`
 
 - [ ] **Step 1: Write the failing test for the task summary mapper**
 
@@ -529,23 +537,25 @@ Expected: PASS — 2 tests.
 In `server/services/projects.ts`, add beside `listProjects` (:58). `ProjectSummaryDTO` drops the `aliases`/`localPaths`/`pathPrefixes` arrays (item 5 shows those can hold ~50 entries) and keeps only `documentCount` from `COUNT_COLUMNS`:
 
 ```ts
-export async function searchProjectsSummary(
+export async function searchProjectsPage(
   q: string,
   opts: { limit: number, offset: number }
-): Promise<ProjectSummaryDTO[]> {
+): Promise<{ items: ProjectSummaryDTO[], total: number }> {
   const all = await searchProjects(q)          // reuse existing matching, do not reimplement
-  return all.slice(opts.offset, opts.offset + opts.limit).map(p => ({
+  const items = all.slice(opts.offset, opts.offset + opts.limit).map(p => ({
     slug: p.slug, name: p.name, active: p.active,
     lastActivityAt: p.lastActivityAt, documentCount: p.documentCount
   }))
-}
-
-export async function countSearchProjects(q: string): Promise<number> {
-  return (await searchProjects(q)).length
+  return { items, total: all.length }
 }
 ```
 
-In-memory slicing is acceptable here and *only* here: projects number in the dozens, and the spec flags `search_projects` as included for consistency rather than because it overflows. Do not copy this pattern to documents or tasks.
+One function, one `searchProjects` call — same reasoning as `searchDocsPage`. Do not add a
+separate count function that searches again.
+
+In-memory slicing is acceptable here and *only* here: projects number in the dozens, and the
+spec flags `search_projects` as included for consistency rather than because it overflows. Do
+not copy this pattern to documents or tasks.
 
 - [ ] **Step 6: Run gates and commit**
 
@@ -600,28 +610,57 @@ if (opts.reviewed === false) baseConditions.push(isNull(memories.reviewedAt))
 
 **Both search lanes must get this filter.** `baseWhere` is used by the trigram lane at :407 and the vector lane below it; confirm both compose `baseWhere` and that neither builds its own `where` from scratch. A filter applied to only one lane would leak unreviewed rows through the other.
 
-- [ ] **Step 2: Write the test proving both lanes filter**
+- [ ] **Step 2: Write the test proving the filter is the right way round**
 
-The lanes hit the DB, so unit-test the condition-building rather than the query. If `baseConditions` is not separately extractable, extract a tiny pure helper and test it:
+Extract a pure helper `reviewedCondition(reviewed?: boolean)` and use it in **both**
+`searchMemories` and `listMemories`, replacing the duplicated pair of `if` statements in each —
+this removes the existing duplication rather than adding a third copy.
+
+The test must distinguish `IS NOT NULL` from `IS NULL`. An assertion that the value is merely
+defined would pass with the two branches swapped, which is the one bug that actually matters
+here — so inspect the generated SQL:
 
 ```ts
 import { describe, it, expect } from 'vitest'
 import { reviewedCondition } from './memory'
 
+/** Render a drizzle SQL fragment to inspectable text. */
+const sqlText = (cond: unknown): string => {
+  // drizzle conditions expose a queryChunks/sql structure; JSON round-trip is the
+  // simplest stable way to assert on which operator was chosen.
+  return JSON.stringify(cond)
+}
+
 describe('reviewedCondition', () => {
-  it('returns a NOT NULL condition for reviewed: true', () => {
-    expect(reviewedCondition(true)).toBeDefined()
+  it('builds an IS NOT NULL check for reviewed: true', () => {
+    const s = sqlText(reviewedCondition(true))
+    expect(s).toMatch(/is not null/i)
+    expect(s).not.toMatch(/is null(?! not)/i)
   })
-  it('returns a NULL condition for reviewed: false', () => {
-    expect(reviewedCondition(false)).toBeDefined()
+
+  it('builds an IS NULL check for reviewed: false', () => {
+    const s = sqlText(reviewedCondition(false))
+    expect(s).toMatch(/is null/i)
+    expect(s).not.toMatch(/is not null/i)
   })
-  it('returns undefined when unset, so no filter is applied', () => {
+
+  it('applies no filter when unset', () => {
     expect(reviewedCondition(undefined)).toBeUndefined()
+  })
+
+  it('references the reviewed_at column, not some other timestamp', () => {
+    expect(sqlText(reviewedCondition(true))).toMatch(/reviewed_at/i)
   })
 })
 ```
 
-Then use `reviewedCondition(opts.reviewed)` in both `searchMemories` and `listMemories`, replacing the duplicated pair of `if` statements in each. This removes the existing duplication rather than adding a third copy.
+**If `JSON.stringify` does not expose the operator** for this drizzle version, do not weaken the
+assertions to `toBeDefined()`. Instead prove the behaviour end-to-end: use the real dev DB
+(`DATABASE_URL` from `.env`) to insert two memories — one with `reviewedAt` set, one `null` —
+then assert `listMemories({ reviewed: true })` returns only the first and
+`{ reviewed: false }` only the second, and delete both rows afterwards. A behavioural test
+against real SQL is strictly better than a shape assertion; only the mechanism is negotiable,
+never the discrimination between the two branches.
 
 - [ ] **Step 3: Run the test and gates**
 
@@ -696,18 +735,21 @@ Apply the same shape. For `search_docs` (:94):
   },
   handler: async (a) => {
     const { limit, offset } = clampPaging(a.limit as number | undefined, a.offset as number | undefined)
-    const q = a.query as string
-    const project = a.project as string | undefined
-    const [items, total] = await Promise.all([
-      searchDocsSummary(q, { project, limit, offset }),
-      countSearchDocs(q, { project })
-    ])
+    const { items, total } = await searchDocsPage(a.query as string, {
+      project: a.project as string | undefined, limit, offset
+    })
     return { result: buildPage(items, total, limit, offset), summary: `searched docs (${items.length} of ${total})` }
   }
 }
 ```
 
-For `search_tasks` (:422) use `listTasksSummary`/`countTasks` and keep the existing `status` enum. For `search_projects` (:345) use `searchProjectsSummary`/`countSearchProjects`.
+**One call, not a `Promise.all` of two.** The search embeds the query; two calls would issue two
+embedding requests per tool invocation.
+
+For `search_tasks` (:422) use `listTasksSummary` + `countTasks` in a `Promise.all` — those are
+two cheap SQL queries with no embedding, so concurrency is free and correct there. Keep the
+existing `status` enum. For `search_projects` (:345) use `searchProjectsPage` as a single call,
+like `search_docs`.
 
 - [ ] **Step 3: Add `includeUnreviewed` to the two memory tools**
 
@@ -795,42 +837,88 @@ Save the printed token. Note `.env` also contains `BRIDGET_DATABASE_URL` — `gr
 
 Create `_e2e.mjs` at the repo root:
 
+The script both measures and asserts, exiting non-zero on any violation — so this step cannot
+"pass" by being eyeballed:
+
 ```js
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 const token = process.argv[2]
+if (!token) { console.error('usage: node _e2e.mjs <mm_token>'); process.exit(2) }
+
+// Pre-fix baselines, recorded from the sessions that overflowed.
+const BASELINE = { list_documents: 662712, search_docs: 472472, search_tasks: 282904 }
+const BUDGET = 60_000        // a tool result above this is a regression of the whole cycle
+const BANNED = ['content', 'description']
+
 const t = new StreamableHTTPClientTransport(new URL('http://localhost:3000/api/mcp'), {
   requestInit: { headers: { Authorization: 'Bearer ' + token } }
 })
 const c = new Client({ name: 'measure', version: '1.0' })
 await c.connect(t)
 
-for (const [name, args] of [['list_documents', {}], ['search_docs', { query: 'mcp' }], ['search_tasks', {}]]) {
+const failures = []
+for (const [name, args] of [
+  ['list_documents', {}],
+  ['search_docs', { query: 'mcp' }],
+  ['search_tasks', {}]
+]) {
   const res = await c.callTool({ name, arguments: args })
   const text = res.content[0].text
   const parsed = JSON.parse(text)
-  console.log(`${name}: ${text.length} chars, items=${parsed.items?.length}, total=${parsed.total}, hasMore=${parsed.hasMore}`)
+
+  const before = BASELINE[name]
+  const pct = before ? ((1 - text.length / before) * 100).toFixed(1) : 'n/a'
+  console.log(`${name}: ${text.length} chars (was ${before ?? '?'}, -${pct}%) items=${parsed.items?.length} total=${parsed.total} hasMore=${parsed.hasMore}`)
+
+  if (!Array.isArray(parsed.items)) failures.push(`${name}: no items[] — envelope missing`)
+  if (typeof parsed.total !== 'number') failures.push(`${name}: total is not a number`)
+  if (typeof parsed.hasMore !== 'boolean') failures.push(`${name}: hasMore is not a boolean`)
+  if (text.length > BUDGET) failures.push(`${name}: ${text.length} chars exceeds ${BUDGET} budget`)
+  if ((parsed.items ?? []).length > 25) failures.push(`${name}: returned more than the default 25`)
+
+  for (const key of BANNED) {
+    if ((parsed.items ?? []).some(i => key in i)) failures.push(`${name}: items[] still carries "${key}"`)
+  }
 }
 await c.close()
+
+if (failures.length) { console.error('\nFAILURES:\n' + failures.map(f => '  - ' + f).join('\n')); process.exit(1) }
+console.log('\nOK: all three tools paged, enveloped, and body-free')
 ```
 
 Run: `node _e2e.mjs <token>`
 
-Expected: each result is **a few KB**, `items` is 25 or fewer, `total` reflects the real corpus, `hasMore` is `true` where the corpus exceeds 25. Compare against the recorded pre-fix numbers (`list_documents` 662,712 / `search_docs` 472,472 / `search_tasks` 282,904 chars) and record both figures for the handover.
+Expected: exit 0, each result a few KB with a large negative percentage against its baseline.
+A non-zero exit lists exactly which invariant broke. **Copy the printed before/after lines into
+the handover verbatim** — they are this cycle's acceptance evidence.
 
-- [ ] **Step 4: Confirm bodies are actually gone**
+- [ ] **Step 4: Sanity-check paging actually pages**
 
-Assert the absence, do not eyeball it:
+The envelope can be well-formed while `offset` is ignored. Confirm the second page differs from
+the first:
 
 ```bash
 node -e "
-const t=JSON.parse(process.argv[1]);
-if (t.items.some(i=>'content' in i)) { console.error('FAIL: content leaked'); process.exit(1) }
-console.log('OK: no content field on any item')" "$(node _e2e.mjs <token> --raw-list-documents)"
+import('@modelcontextprotocol/sdk/client/index.js').then(async ({Client}) => {
+  const {StreamableHTTPClientTransport} = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
+  const t = new StreamableHTTPClientTransport(new URL('http://localhost:3000/api/mcp'),
+    { requestInit: { headers: { Authorization: 'Bearer ' + process.argv[1] } } })
+  const c = new Client({name:'page',version:'1.0'}); await c.connect(t)
+  const call = async (offset) => JSON.parse((await c.callTool({
+    name:'list_documents', arguments:{ limit:5, offset }})).content[0].text).items.map(i=>i.id)
+  const p1 = await call(0), p2 = await call(5)
+  await c.close()
+  const overlap = p1.filter(id => p2.includes(id))
+  if (overlap.length) { console.error('FAIL: pages overlap — offset ignored?', overlap); process.exit(1) }
+  console.log('OK: page 1 and page 2 are disjoint', p1.length, p2.length)
+})" "<token>"
 ```
 
-Adapt as needed — the requirement is a programmatic check that no `items[]` entry carries `content` or `description`.
+Expected: `OK` with two disjoint 5-item pages. Overlap means `offset` is not reaching the query.
+Skip only if the dev corpus holds fewer than 10 documents — in which case say so explicitly in
+the report rather than silently passing.
 
 - [ ] **Step 5: Clean up**
 
