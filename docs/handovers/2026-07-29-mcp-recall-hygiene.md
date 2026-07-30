@@ -2,10 +2,12 @@
 title: MCP recall hygiene — payload caps, review-gated recall, corroborated contradictions, path collapse (cycle 51)
 cycle: 51
 date: 2026-07-29
-status: BUILT and reviewed on branch `feat/mcp-recall-hygiene`. Gates green (typecheck 0 / test 924 across 133 files / build clean). NOT MERGED, NOT PUSHED, NOT DEPLOYED — awaiting Tony's explicit go-ahead before Task 10 (merge, deploy, prod cleanup-script run).
-branch: feat/mcp-recall-hygiene (built subagent-driven in worktree `.claude/worktrees/mcp-recall-hygiene`, 8 plan tasks + 2 mid-flight plan-defect resolutions + per-task fix rounds; per-task briefs/reports + the execution ledger live in `.superpowers/sdd/2026-07-29-mcp-recall-hygiene/`)
+status: BUILT, whole-branch reviewed (verdict MERGE WITH FIXES), and the ruled-on fix wave applied on branch `feat/mcp-recall-hygiene`. Gates green (typecheck 0 / test 934 across 133 files / build clean). NOT MERGED, NOT PUSHED, NOT DEPLOYED — awaiting Tony's explicit go-ahead before Task 10 (merge, deploy, prod cleanup-script run).
+branch: feat/mcp-recall-hygiene (built subagent-driven in worktree `.claude/worktrees/mcp-recall-hygiene`, 8 plan tasks + 2 mid-flight plan-defect resolutions + per-task fix rounds + a final whole-branch-review fix wave; per-task briefs/reports, the execution ledger, and `final-fix-report.md` live in `.superpowers/sdd/2026-07-29-mcp-recall-hygiene/`)
 docs:
   - ../wiki/mcp.md (living reference — tool table rows for `list_documents`/`search_docs`/`search_tasks`/`search_projects`/`search_memories`/`get_recent_memories` updated with `limit`/`offset`/`includeUnreviewed` + result shape; new "Recall defaults (cycle 51)" subsection; cycle bumped 48→51, updated 2026-07-29)
+  - ../wiki/memory.md (living reference — new "resolution ladder" table naming `supersede` as the ONLY archiving action, the shared scope+corroboration gate on BOTH the refines and contradicts branches, and the reviewed-only defaults on all three agent recall paths incl. the automatic voice-turn injection; corrects the old ladder line that omitted `review-contradict`; cycle bumped 5→51, updated 2026-06-16→2026-07-29)
+  - ../wiki/projects.md (living reference — `local_paths` no longer accumulates paths covered by a `path_prefixes` entry or a shorter sibling (`shouldRecordLocalPath`), plus the `scripts/collapse-local-paths.ts` runbook incl. `--project` and the no-undo snapshot command; cycle bumped 46→51, updated 2026-07-15→2026-07-29)
   - ../superpowers/specs/2026-07-29-mcp-recall-hygiene-design.md (spec)
   - ../superpowers/plans/2026-07-29-mcp-recall-hygiene.md (plan; amended mid-build at commit `0e11312` when the `searchProjects(q)` defect was found)
   - ../superpowers/plans/00-roadmap.md (cycle-51 row added by this handover)
@@ -21,9 +23,11 @@ problem: >
   scratch file; a MyMind session separately saw `search_docs` return 472,472 chars. A registry
   audit found a fourth tool of the same class the feedback doc missed entirely: `search_projects`
   (no limit at all). Independently: session-specific trivia was surfacing as durable fact via
-  unreviewed low-confidence memories; a single-session identity memory won a `contradicts`
-  resolution against a well-corroborated incumbent purely on recency/confidence, with no notion
-  of corroboration; and one project (Terawulf) had accumulated ~50 `localPaths` entries already
+  unreviewed low-confidence memories; a single-session memory could win a resolution against a
+  well-corroborated incumbent purely on recency/confidence, with no notion of corroboration
+  (**note:** the feedback doc and this cycle's spec both blamed the `contradicts` path; the path
+  that actually archives is `refines`→`supersede` — see item 3 and planning defect 5 below); and
+  one project (Terawulf) had accumulated ~50 `localPaths` entries already
   redundant with its registered `pathPrefixes`. Four of the five findings are fixed by this
   cycle; the fifth (tiered/per-project sensitivity scopes on MCP tokens) is REJECTED as a
   non-goal, not an oversight — see keydecision.
@@ -51,10 +55,17 @@ keydecision: >
 
 # MCP recall hygiene (cycle 51)
 
-## What shipped (branch `feat/mcp-recall-hygiene`, `e4f5a9e..ca9d7a5`, 12 commits)
+## What shipped (branch `feat/mcp-recall-hygiene`, `e4f5a9e..HEAD`, **15 commits**)
+
+> The header previously read `e4f5a9e..ca9d7a5` / 12 commits. That was wrong twice over: it
+> excluded the handover's own docs commit (`b7dd984`, the branch tip at the time it was
+> written), and it predates the two final-fix-wave commits (`a37909b` + this docs commit) that
+> followed the whole-branch review. Verify with
+> `git rev-list --count e4f5a9e..feat/mcp-recall-hygiene`.
 
 Four independent items from the spec, each landed as its own commit (or commit + fix-round) so
-any one is independently revertable. **No migration, no UI changes.**
+any one is independently revertable, plus a final fix wave against the whole-branch review.
+**No migration, no UI changes.**
 
 - **Item 1 — summary projections + limits.** New `shared/types/summaries.ts`
   (`DocumentSummaryDTO`, `TaskSummaryDTO`, `ProjectSummaryDTO`, `PagedResult<T>`) and
@@ -70,16 +81,32 @@ any one is independently revertable. **No migration, no UI changes.**
   (shared by `searchMemories` and `listMemories`, replacing a duplicated pair of `if` branches
   in the latter). `search_memories`/`get_recent_memories` gained `includeUnreviewed?: boolean`
   (default `false` → `reviewed: true`; `true` → `reviewed: undefined`, no filter). Web
-  `/memories` REST/UI untouched.
-- **Item 3 — corroboration-aware contradiction gate.** `chooseResolution` in
-  `server/services/memory-resolve.ts` gained a second argument (`{ threshold, scope,
-  incumbentSessions, challengerSessions }`, source-breaking from the old
-  `(verdicts, threshold)` signature) and a new `review-contradict` action: a `contradicts`
-  verdict now routes to review instead of auto-resolving when `scope === 'user'`, or when
-  `incumbentSessions >= 2 && challengerSessions < incumbentSessions`. `review-contradict`
-  inserts the `contradicts` relation + a `reviewQueue` row and does **not** archive the
-  incumbent — both memories stay live until a human decides. `countEvidenceSessions()` counts
-  distinct `sessionId`s in a memory's `evidence` jsonb array.
+  `/memories` REST/UI untouched. **Final fix wave:** `buildMemoryContext`
+  (`server/lib/agent/context.ts`) now also passes `reviewed: true`. It had been missed — an
+  `includeUnreviewed` default only covers tools an agent *chooses* to call, and this path
+  bypasses them: it fires on **every** voice turn (`server/api/voice/ws.ts:154,162`) and was
+  injecting unreviewed enrichment output as "Possibly relevant memories" regardless. It has no
+  opt-out by design.
+- **Item 3 — corroboration gate on the branch that actually archives.** See "Item 3: the
+  spec's premise was wrong" below — read that before touching this code. `chooseResolution`
+  (`server/services/memory-resolve.ts`) gained a second argument
+  (`{ threshold, scope, challengerSessions, sessionsFor }`, source-breaking from the old
+  `(verdicts, threshold)` signature) and a new `review-contradict` action. A shared
+  `gatedByCorroboration(existingId)` guards **both** the `refines` and `contradicts`
+  branches: when `scope === 'user'`, or when `sessionsFor(existingId) >= 2 &&
+  challengerSessions < sessionsFor(existingId)`, the plan routes to `review-supersede` /
+  `review-contradict` instead of `supersede` / `contradict`. On the `refines` path the gate is
+  evaluated **before** the confidence comparison, so a user-scope or out-corroborated
+  refinement routes to review even at confidence 1.0 — that ordering is the load-bearing part
+  and is mutation-tested (moving the gate after the comparison kills 7 tests). `supersede` is
+  the only action in the whole ladder that archives; `review-supersede`/`contradict`/
+  `review-contradict` all insert a relation + a `reviewQueue` row and leave both memories live.
+  `sessionsFor` is a lookup by id, not a pre-computed count, because the refines target and
+  the top contradiction are routinely different rows — the caller cannot know which one the
+  gate will judge, so it hands over a `Map<id, count>` built from the near-neighbour rows it
+  already selected (this also deleted a duplicated selection-rule coupling between
+  `chooseResolution` and its caller). `countEvidenceSessions()` counts distinct `sessionId`s in
+  a memory's `evidence` jsonb array.
 - **Item 5 — path collapse + cleanup.** `shouldRecordLocalPath`/`collapseLocalPaths` added to
   `server/lib/projects/path-routing.ts`, built on the existing `normalizePrefix`/
   `isUnderPrefix` (cycle 46). Wired into `findOrCreateProject`'s `touch` closure
@@ -136,6 +163,38 @@ Adding a bare `limit` alone would not have fixed this: 25 sufficiently long docu
 enough to overflow a tool-result budget. The load-bearing fix is the summary DTO shape (no
 `content`/`description`/`aliases`/`localPaths`/`pathPrefixes`); the `limit`/`offset` envelope is
 the secondary, necessary-but-not-sufficient part.
+
+## Item 3: the spec's premise was wrong, and the first gate shipped inert
+
+**Read this before changing `memory-resolve.ts`.** The spec, the plan, and the first two
+commits of this cycle (`716b363`, `e8473db`) all rested on the belief that a `contradicts`
+verdict could silently archive a well-corroborated memory. **It could not, and never could.**
+Verified directly against the pre-cycle code (`git show
+e4f5a9e:server/services/memory-resolve.ts`): the `contradict` branch does a `memoryRelations`
+insert, a `reviewQueue` insert, and a `publishChange` — and nothing else. There is no
+`archivedAt`/`supersededBy` write anywhere on it.
+
+Consequences, stated plainly because they are easy to misread from the commit log alone:
+
+- **`review-contradict` is byte-identical in effect to the old `contradict`.** Both insert the
+  same relation and the same review row and archive nothing. The new action is a *label* that
+  distinguishes "auto-resolved" from "human-gated" in the enrichment tally; it changed no
+  database write. The comment on that branch about "deliberately NO archivedAt" describes a
+  property `contradict` already had, not one this cycle introduced.
+- **The gate as first shipped was therefore inert** — it guarded the one branch that had no
+  destructive behaviour to guard.
+- **The branch that archives is `supersede`**, reached from a `refines` verdict and gated only
+  by `refines.confidence >= threshold`. A single exploratory session producing one confident
+  refinement could archive a memory corroborated across a dozen sessions. That is the hole the
+  spec meant to close and did not.
+
+The final fix wave extends the same gate to `supersede` (see item 3 above): the corroboration
+check now runs on the `refines` branch too, **before** the confidence comparison, and
+`ChooseResolutionOpts` takes a `sessionsFor(existingId)` lookup instead of one pre-computed
+`incumbentSessions` — because the refines target and the top contradiction are frequently
+different rows, and a count computed for the contradiction would have mis-gated the refinement.
+No new execution branch was needed: `review-supersede` already existed and already did the safe
+thing.
 
 ## Item 3 needed no migration
 
@@ -205,9 +264,11 @@ bug fix.
 
 ## Planning defects found during execution (candid)
 
-Four defects were found while implementing this cycle. **All four were in the spec/plan, none in
-the implementations that followed them** — a future session reading only the commit log would see
-clean fix rounds and miss why they happened, so recording this plainly:
+Five defects were found while building and reviewing this cycle. **All five were in the
+spec/plan, none in the implementations that followed them** — a future session reading only the
+commit log would see clean fix rounds and miss why they happened, so recording this plainly.
+Defect 5 is the most consequential and was only caught by the whole-branch review, after the
+"fix" had already shipped:
 
 1. **The nonexistent `searchProjects(q)`.** The spec's design section and the plan's Task 3 both
    instructed reusing an existing project search function that was never built (see above).
@@ -224,6 +285,16 @@ clean fix rounds and miss why they happened, so recording this plainly:
 4. **A test file named at a path that doesn't exist.** Task 8's brief named
    `server/lib/projects/path-routing.test.ts`; the real (only) test file for that module is the
    root-level `test/path-routing.test.ts`.
+5. **The false premise that `contradict` archived a memory — the most consequential of the
+   five.** The spec's entire item-3 rationale ("a single-session memory silently archives a
+   corroborated incumbent via a `contradicts` resolution") described behaviour that did not
+   exist in the code. Nobody checked the `contradict` branch's actual writes before writing the
+   spec. Item 3 as originally shipped was therefore a correct implementation of a gate on the
+   wrong branch: **inert**, while the real archiving branch (`refines`→`supersede`) stayed
+   ungated. Caught by the whole-branch review, fixed in the final fix wave; see "Item 3: the
+   spec's premise was wrong" above. **Lesson:** when a spec asserts that some code path is
+   destructive, open that path and read its writes before designing a guard for it — the guard
+   is worthless if it is on the wrong branch, and it *looks* shipped in every gate and review.
 
 **Root cause for #3 and #4, and it's the same one both times:** the pre-flight brief-writing scan
 grepped only `server/` for existing tests/callers. This repo also has a root-level `test/`
@@ -233,9 +304,14 @@ both `server/**` and `test/**` before asserting "no existing test" or "exactly N
 
 ## Verification
 
-- **Gates:** `pnpm typecheck` (clean — the only output is the two expected "Nuxt Icon" info
-  lines) · `pnpm test` (**924 passed, 133 files, 0 failed**, up from the 873-test baseline at
-  `e4f5a9e`) · `pnpm build` (clean).
+- **Gates (as of the final fix wave):** `pnpm typecheck` (clean — the only output is the two
+  expected "Nuxt Icon" info lines) · `pnpm test` (**934 passed, 133 files, 0 failed**, up from
+  the 873-test baseline at `e4f5a9e`; 924 before the final fix wave added 10) · `pnpm build`
+  (clean).
+- **Mutation check on the new supersede gate:** moving `gatedByCorroboration` to *after* the
+  `refines.confidence >= threshold` comparison makes **7 tests fail** across both
+  `memory-resolve` test files (including "user-scope refines at 0.95 → review-supersede"), then
+  all pass again on revert. The gate's *ordering*, not just its presence, is pinned.
 - **Per-task:** 8 plan tasks, most independently spec+quality reviewed (sonnet), with fix rounds
   where the reviewer found Important issues (Task 3's invented search dropped; Task 7's 4
   findings — non-array-jsonb guard, deduplicated `topContradiction`, 3 mutation-killing tests,
@@ -252,16 +328,18 @@ both `server/**` and `test/**` before asserting "no existing test" or "exactly N
   `notSkill()` filters its sibling `searchDocs` applies at hydration time — a narrow race where a
   document soft-deleted between the id-fetch and the hydrate step could leak into `items`. This
   was plan-mandated (the brief's own sample code) and is a 1-line fix if picked up later.
-- Repeated `contradicts` verdicts against a still-live incumbent have their `reviewQueue` insert
-  silently dropped by `onConflictDoNothing()` — a pre-existing pattern (predates this cycle) that
-  this cycle's new `review-contradict` action newly exercises more often. Deliberately left
-  untouched per the coordinator's review-round triage.
-- `incumbentSessions` is computed even on `duplicate`/`refines` resolution paths where it's never
-  used (harmless dead work, not a correctness issue) — deliberately deferred, not fixed.
-- No live-DB integration test proves `review-contradict`'s "incumbent stays live" guarantee at the
-  database layer; it is confirmed by code inspection only (no `archivedAt`/`supersededBy` write
-  exists anywhere on that branch) — a live DB test harness for `resolveEnrichedMemory` doesn't
+- Repeated verdicts against a still-live incumbent have their `reviewQueue` insert silently
+  dropped by `onConflictDoNothing()` — a pre-existing pattern (predates this cycle) that the new
+  `review-contradict`/gated-`review-supersede` routes newly exercise more often. Deliberately
+  left untouched per the coordinator's review-round triage.
+- No live-DB integration test proves the "incumbent stays live" guarantee for
+  `review-supersede`/`review-contradict` at the database layer; it is confirmed by code
+  inspection only (no `archivedAt`/`supersededBy` write exists on either branch — `supersede` is
+  the sole writer of those columns) — a live DB test harness for `resolveEnrichedMemory` doesn't
   exist in this repo and was out of scope to add.
+- Corroboration is now resolved lazily inside `chooseResolution` via `sessionsFor`, so the
+  earlier "`incumbentSessions` computed on paths that never use it" dead work is gone; the caller
+  instead builds a small `Map` over the (max 8) near-neighbour rows it already fetched.
 - Smaller/cosmetic, all explicitly deferred during the ledger review and not expected to matter:
   Task 1's report has line counts off by 1-2 vs. actual file contents (cosmetic only); a stale
   JSDoc line reference in `documents.ts` (`embedOne` moved after an extraction); `searchDocIds`'s
@@ -280,10 +358,19 @@ the sibling-collapse branch of `collapseLocalPaths`; the prefix-collapse branch 
 tests**, never against a real row. Terawulf — the project this cycle was written to clean up — is
 the only project with real `pathPrefixes` registered, and it lives only on prod.
 
-**Before running `--apply` on prod:** run the script in its default dry-run mode FIRST, read the
-per-project dropped-path list it now prints (each pruned entry, indented, up to 10 with an
-"…and N more" tail), and confirm the drops look right for Terawulf specifically — that will be
-this branch's first live exercise of the prefix-collapse path.
+**Before running `--apply` on prod:** there is **no undo** — snapshot first:
+
+```
+\copy (select id, slug, local_paths from projects) to '/tmp/local_paths.bak.csv' csv
+```
+
+Then run the script in its default dry-run mode, read the per-project dropped-path list it
+prints (each pruned entry, indented, cap **200** — raised from 10 in the final fix wave so a
+~50-entry project like Terawulf prints in full rather than "…and 40 more", which made the review
+this section asks for impossible), and confirm the drops look right for Terawulf specifically —
+that will be this branch's first live exercise of the prefix-collapse path. `--project <slug>`
+restricts both the dry run and `--apply` to a single project, so Terawulf can be inspected and
+applied on its own before anything else is touched.
 
 ## Next steps (Tony)
 
@@ -291,8 +378,9 @@ this branch's first live exercise of the prefix-collapse path.
 2. **Task 10** (once approved): merge + push (CD deploys) — no migration to run.
 3. Deploy per the `prod-deploy` skill; confirm `/api/health` 200 post-cutover and that the tool
    surface is still 37 (`mcp-parity`/`agent-tools` guard).
-4. Run `scripts/collapse-local-paths.ts` against prod **dry-run first** (see residual risk above),
-   read the dropped-path list, then `--apply`.
+4. Run `scripts/collapse-local-paths.ts` against prod: **snapshot, then dry-run first** (see
+   residual risk above), read the dropped-path list — `--project terawulf` to inspect the one
+   project this was written for in isolation — then `--apply`.
 5. Optional acceptance: from a live MCP session, confirm `list_documents`/`search_docs` on the
    real prod corpus now return a bounded, body-free page — the prod-scale analogue of the Task 6
    dev-corpus measurement above.

@@ -1,9 +1,9 @@
 ---
 title: Projects
 status: shipped
-cycle: 46
+cycle: 51
 phase: 3
-updated: 2026-07-15
+updated: 2026-07-29
 ---
 
 # Projects
@@ -11,7 +11,7 @@ updated: 2026-07-15
 Canonical project entities that sessions and (agent) memories hang off of. A project is matched primarily by its **git remote** — the same repo cloned to many machines/paths still resolves to one project — so the agent's work, memories, and (later) docs/tasks all roll up to a single durable identity. Phase 1 ships the data model + resolution + ingest wiring + backfill; richer project features are deferred (see end).
 
 ## Data model (`server/db/schema/projects.ts`)
-- `projects`: uuid `id` PK (`gen_random_uuid()`), `slug` (unique, `projects_slug_uidx`), `name`, `description` (default `''`), `active` (default `true`), `git_remote_key` (**canonical match key**, `host/owner/repo` lowercased — see below), `repository_url` / `production_url` / `staging_url`, `aliases text[]` (extra remote keys that resolve here), `local_paths text[]` (every observed `cwd`, passively accumulated — never used for routing), **`path_prefixes text[]`** (migration `0027_bumpy_virginia_dare.sql`, cycle 46 — **routing roots**, distinct from `local_paths`; see below), `details jsonb` (free-form KV, default `{}`), `last_activity_at`, `created_at` / `updated_at`. Indexes: unique slug, plain index on `git_remote_key`, and a **partial unique** index `projects_git_remote_key_uidx ON (git_remote_key) WHERE git_remote_key IS NOT NULL` (so many rows may have a null key, but a non-null key is unique).
+- `projects`: uuid `id` PK (`gen_random_uuid()`), `slug` (unique, `projects_slug_uidx`), `name`, `description` (default `''`), `active` (default `true`), `git_remote_key` (**canonical match key**, `host/owner/repo` lowercased — see below), `repository_url` / `production_url` / `staging_url`, `aliases text[]` (extra remote keys that resolve here), `local_paths text[]` (observed `cwd`s, passively accumulated — never used for routing; since cycle 51 a `cwd` already covered by a `path_prefixes` entry or a shorter `local_paths` entry is **not** appended — see below), **`path_prefixes text[]`** (migration `0027_bumpy_virginia_dare.sql`, cycle 46 — **routing roots**, distinct from `local_paths`; see below), `details jsonb` (free-form KV, default `{}`), `last_activity_at`, `created_at` / `updated_at`. Indexes: unique slug, plain index on `git_remote_key`, and a **partial unique** index `projects_git_remote_key_uidx ON (git_remote_key) WHERE git_remote_key IS NOT NULL` (so many rows may have a null key, but a non-null key is unique).
 - The seeded **`uncategorized`** row (migration 0019): the fallback bucket for sessions with no parseable git remote. Never auto-created twice.
 - `sessions.project_id` (uuid FK, indexed `sessions_project_id_idx`) — set on ingest. The legacy `sessions.project` text slug is kept in sync alongside it.
 - `memories.project_id` (uuid FK, indexed `memories_project_id_idx`) — **null means global / project-agnostic** (user/world memories). Only `agent`-scope memories carry a project.
@@ -193,7 +193,22 @@ The three `project_id` FK constraints exist in **prod** (raw SQL in migrations 0
 - **Auto-create** (`findOrCreateProject`, no-remote branch, step 3) seeds it with the single `cwd` that triggered the new project.
 - **Session reassignment** (below) can optionally register an additional prefix when a human moves a session to a project.
 
-This is deliberately **separate from `local_paths`** (every `cwd` a project has ever been seen at — passive history, exact-match only, not used for routing). `path_prefixes` entries are ancestor-matched: `longestPrefixMatch(cwd, candidates)` (`server/lib/projects/path-routing.ts`) picks the candidate whose registered prefix is the longest ancestor-or-equal of the session's `cwd`, so registering `…/Projects/Terawulf` also routes `…/Projects/Terawulf/subdir`. `ProjectDTO.pathPrefixes` exposes the field.
+This is deliberately **separate from `local_paths`** (every `cwd` a project has ever been seen at — passive history, not used for routing). `path_prefixes` entries are ancestor-matched: `longestPrefixMatch(cwd, candidates)` (`server/lib/projects/path-routing.ts`) picks the candidate whose registered prefix is the longest ancestor-or-equal of the session's `cwd`, so registering `…/Projects/Terawulf` also routes `…/Projects/Terawulf/subdir`. `ProjectDTO.pathPrefixes` exposes the field.
+
+### `local_paths` no longer accumulates covered subfolders (cycle 51)
+`local_paths` used to append on a bare `!localPaths.includes(cwd)` — an **exact**-match check — so every subfolder a session ran in was recorded even when a registered `path_prefixes` entry already covered the whole tree. Terawulf grew ~50 entries this way. `findOrCreateProject`'s `touch` closure (`server/services/projects.ts`) now calls **`shouldRecordLocalPath(cwd, localPaths, pathPrefixes)`** (`server/lib/projects/path-routing.ts`), which returns `false` when `cwd` is under an existing `path_prefixes` entry **or** under a shorter `local_paths` entry already stored. Both checks are ancestor matches via the cycle-46 `normalizePrefix`/`isUnderPrefix` helpers, so this is a routing-consistent notion of "already covered", not a string compare.
+
+Existing bloat is cleaned up by the one-time **`scripts/collapse-local-paths.ts`**, which applies the sibling helper `collapseLocalPaths(localPaths, pathPrefixes)` (idempotent: drops entries covered by a prefix or by a shorter sibling, keeping the shortest of each chain) to every project row:
+
+```
+node_modules/.bin/tsx --env-file=.env scripts/collapse-local-paths.ts [--apply] [--project <slug>]
+```
+
+**Dry run by default** — it prints each project's `before -> after` count plus the full list of paths it would drop (cap 200, so a real prod run is fully auditable). `--project <slug>` restricts the run to one project for isolated inspection or application; `--apply` writes. There is **no undo** — snapshot before applying:
+
+```
+\copy (select id, slug, local_paths from projects) to '/tmp/local_paths.bak.csv' csv
+```
 
 ### Session reassignment writes `path_prefixes`
 `reassignSession`/`reassignSessions` (`server/services/sessions.ts`) move a session (+ cascade its `scope='agent'` memories) onto a target project and, when the caller passes a `pathPrefix`, append it (deduped, `normalizePrefix`-ed) to that project's `path_prefixes` — teaching the router so future sessions from that folder never need a manual move again. Full detail (endpoints, UI, memory cascade, the `046ddc9` auto-import fix) lives in [sessions.md](sessions.md#cycle-46--reassignment--path-based-auto-routing--hostname).
