@@ -33,6 +33,19 @@ export function stripUnreviewed(tags: string[]): string[] {
   return result
 }
 
+/**
+ * Build the reviewed-status filter condition shared by `searchMemories` and `listMemories`.
+ *
+ * true      -> only reviewed memories (reviewedAt IS NOT NULL)
+ * false     -> only unreviewed memories (reviewedAt IS NULL)
+ * undefined -> no filter (caller should omit the condition entirely)
+ */
+export function reviewedCondition(reviewed?: boolean) {
+  if (reviewed === true) return isNotNull(memories.reviewedAt)
+  if (reviewed === false) return isNull(memories.reviewedAt)
+  return undefined
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -384,6 +397,15 @@ export interface SearchMemoriesOptions {
   project?: string | null
   tags?: string[]
   limit?: number
+  /**
+   * true  -> only reviewed memories (reviewedAt IS NOT NULL)
+   * false -> only unreviewed
+   * undefined -> no filter (previous behaviour)
+   *
+   * Mirrors ListMemoriesOptions.reviewed. The agent tools default this to `true` so
+   * unreviewed enrichment output stops surfacing as established fact.
+   */
+  reviewed?: boolean
 }
 
 export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}): Promise<MemoryDTO[]> {
@@ -400,6 +422,8 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
     else baseConditions.push(eq(memories.project, opts.project))
   }
   if (opts.tags?.length) baseConditions.push(arrayContains(memories.tags, opts.tags))
+  const reviewedCond = reviewedCondition(opts.reviewed)
+  if (reviewedCond) baseConditions.push(reviewedCond)
 
   const baseWhere = and(...baseConditions)
 
@@ -489,8 +513,8 @@ export async function listMemories(opts: ListMemoriesOptions = {}): Promise<Memo
   const db = useDb()
   const conditions = [live()]
   if (opts.scope) conditions.push(eq(memories.scope, opts.scope))
-  if (opts.reviewed === true) conditions.push(isNotNull(memories.reviewedAt))
-  if (opts.reviewed === false) conditions.push(isNull(memories.reviewedAt))
+  const reviewedCond = reviewedCondition(opts.reviewed)
+  if (reviewedCond) conditions.push(reviewedCond)
   if (opts.project !== undefined) {
     if (opts.project === null) conditions.push(isNull(memories.project))
     else conditions.push(eq(memories.project, opts.project))
