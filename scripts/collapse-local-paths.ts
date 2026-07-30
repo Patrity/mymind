@@ -18,9 +18,23 @@ import { Client } from 'pg'
 import { collapseLocalPaths, normalizePrefix } from '../server/lib/projects/path-routing'
 
 const APPLY = process.argv.includes('--apply')
-const projectIdx = process.argv.indexOf('--project')
-const ONLY_PROJECT = projectIdx === -1 ? null : process.argv[projectIdx + 1]
-if (projectIdx !== -1 && !ONLY_PROJECT) throw new Error('--project needs a slug, e.g. --project terawulf')
+let ONLY_PROJECT: string | null = null
+
+// Check for --project=<slug> form
+const eqForm = process.argv.find(arg => arg.startsWith('--project='))
+if (eqForm) {
+  ONLY_PROJECT = eqForm.substring('--project='.length)
+  if (!ONLY_PROJECT) throw new Error('--project= needs a value, e.g. --project=terawulf')
+}
+
+// Check for --project <slug> form (space-separated)
+if (!ONLY_PROJECT) {
+  const projectIdx = process.argv.indexOf('--project')
+  if (projectIdx !== -1) {
+    ONLY_PROJECT = process.argv[projectIdx + 1]
+    if (!ONLY_PROJECT) throw new Error('--project needs a value, e.g. --project terawulf')
+  }
+}
 if (!process.env.DATABASE_URL) throw new Error('set DATABASE_URL')
 const db = new Client({ connectionString: process.env.DATABASE_URL })
 await db.connect()
