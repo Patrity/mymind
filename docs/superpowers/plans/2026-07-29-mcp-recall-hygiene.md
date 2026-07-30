@@ -30,7 +30,7 @@
 - Create `shared/types/summaries.ts` — `DocumentSummaryDTO`, `TaskSummaryDTO`, `ProjectSummaryDTO`, and the generic `PagedResult<T>` envelope. One place for all four, because they are consumed together by the tool layer.
 - Modify `server/services/documents.ts` — add `listDocsSummary`, `countDocs`, `searchDocsPage`.
 - Modify `server/services/tasks.ts` — add `listTasksSummary`, `countTasks`.
-- Modify `server/services/projects.ts` — add `searchProjectsPage`.
+- Modify `server/services/projects.ts` — add `listProjectsPage`.
 - Create `server/lib/agent/paging.ts` — pure `buildPage(items, total, limit, offset)` + `clampPaging(limit, offset)`. Shared by four tools; extracted so the envelope logic is tested once.
 - Create `server/lib/agent/paging.test.ts`.
 - Modify `server/lib/agent/tools.ts` — the four tool definitions.
@@ -431,7 +431,19 @@ Expected: typecheck clean; full suite green (existing `searchDocs` callers unaff
   - `listTasksSummary(opts: { status?: string, project?: string, limit: number, offset: number }): Promise<TaskSummaryDTO[]>`
   - `countTasks(opts: { status?: string, project?: string }): Promise<number>`
   - `toTaskSummaryDTO(row): TaskSummaryDTO`
-  - `searchProjectsPage(q: string, opts: { limit: number, offset: number }): Promise<{ items: ProjectSummaryDTO[], total: number }>` — items + total from ONE search, same reason as `searchDocsPage`
+  - `listProjectsPage(opts: { activeOnly?: boolean, limit: number, offset: number }): Promise<{ items: ProjectSummaryDTO[], total: number }>`
+
+**Correction (made mid-execution, 2026-07-30).** Earlier drafts of this plan specified
+`searchProjectsPage(q, …)` "reusing the existing `searchProjects(q)`". **No such function
+exists.** The `search_projects` tool is a misnomer: its schema is `{ activeOnly?: boolean }`
+and its handler calls `listProjects({ activeOnly })` — there is no query parameter and no
+text matching anywhere in the projects service.
+
+Do **not** invent one. Adding substring matching would ship an unrequested capability and,
+worse, would break the tool: agents call `search_projects` with **no arguments** to list
+everything, and a query-required implementation returns zero rows for that call. The payload
+fix (summary shape + limit/offset) is the whole point here; the tool keeps its existing
+list semantics and its `activeOnly` flag.
 
 - [ ] **Step 1: Write the failing test for the task summary mapper**
 
@@ -537,11 +549,10 @@ Expected: PASS — 2 tests.
 In `server/services/projects.ts`, add beside `listProjects` (:58). `ProjectSummaryDTO` drops the `aliases`/`localPaths`/`pathPrefixes` arrays (item 5 shows those can hold ~50 entries) and keeps only `documentCount` from `COUNT_COLUMNS`:
 
 ```ts
-export async function searchProjectsPage(
-  q: string,
-  opts: { limit: number, offset: number }
+export async function listProjectsPage(
+  opts: { activeOnly?: boolean, limit: number, offset: number }
 ): Promise<{ items: ProjectSummaryDTO[], total: number }> {
-  const all = await searchProjects(q)          // reuse existing matching, do not reimplement
+  const all = await listProjects({ activeOnly: opts.activeOnly ?? false })
   const items = all.slice(opts.offset, opts.offset + opts.limit).map(p => ({
     slug: p.slug, name: p.name, active: p.active,
     lastActivityAt: p.lastActivityAt, documentCount: p.documentCount
@@ -550,8 +561,11 @@ export async function searchProjectsPage(
 }
 ```
 
-One function, one `searchProjects` call — same reasoning as `searchDocsPage`. Do not add a
-separate count function that searches again.
+One function, one `listProjects` call, items and total together. Do not add a separate count
+function that lists again.
+
+No query parameter, and no filtering by text — see the correction note above. A no-argument
+call must still return the first page of ALL projects, exactly as the tool does today.
 
 In-memory slicing is acceptable here and *only* here: projects number in the dozens, and the
 spec flags `search_projects` as included for consistency rather than because it overflows. Do
@@ -748,8 +762,7 @@ embedding requests per tool invocation.
 
 For `search_tasks` (:422) use `listTasksSummary` + `countTasks` in a `Promise.all` — those are
 two cheap SQL queries with no embedding, so concurrency is free and correct there. Keep the
-existing `status` enum. For `search_projects` (:345) use `searchProjectsPage` as a single call,
-like `search_docs`.
+existing `status` enum. For `search_projects` (:345) use `listProjectsPage` as a single call. Keep its `activeOnly` schema param and ADD `limit`/`offset`; do NOT add a `query` param. A no-argument call must still return the first page of all projects.
 
 - [ ] **Step 3: Add `includeUnreviewed` to the two memory tools**
 
