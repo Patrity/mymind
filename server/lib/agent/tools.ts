@@ -2,10 +2,10 @@
 import { z } from 'zod'
 import type { AgentTool } from './types'
 import { searchMemories, createMemory, listMemories, archiveMemory, unarchiveMemory } from '../../services/memory'
-import { searchDocs, searchPassages, createDoc, listDocs, getDoc, deleteDoc, updateDoc, moveDoc, restoreDoc } from '../../services/documents'
+import { searchPassages, createDoc, getDoc, deleteDoc, updateDoc, moveDoc, restoreDoc, listDocsSummary, countDocs, searchDocsPage } from '../../services/documents'
 import { outline, readSection, documentStats, grepContent, applyReplace, applyEditSection } from '../documents/edit-ops'
-import { listProjects, createProject, updateProject, getProject, deleteProject } from '../../services/projects'
-import { createTask, listTasks, updateTask, getTask, deleteTask, restoreTask } from '../../services/tasks'
+import { createProject, updateProject, getProject, deleteProject, listProjectsPage } from '../../services/projects'
+import { createTask, updateTask, getTask, deleteTask, restoreTask, listTasksSummary, countTasks } from '../../services/tasks'
 import { publishChange } from '../../utils/live-bus'
 import { slugify } from '../../../shared/utils/slugify'
 import { nanoid } from 'nanoid'
@@ -17,33 +17,48 @@ import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSk
 import { skillsEnabled } from './skills-config'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
+import { clampPaging, buildPage } from './paging'
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
   {
     name: 'search_memories',
-    description: 'Search Tony\'s durable memories (semantic + keyword). Check here before answering from your own recollection — these are facts distilled from every past session.',
+    description: 'Search Tony\'s durable memories (semantic + keyword). Check here before answering from your own recollection — these are facts distilled from every past session. Unreviewed memories (low-signal enrichment output) are excluded by default; pass `includeUnreviewed: true` to include them — e.g. to confirm a memory you just saved.',
     kind: 'read',
     schema: {
       query: z.string().describe('Search query'),
       scope: z.enum(['user', 'agent', 'world']).optional(),
       project: z.string().optional(),
-      limit: z.number().int().min(1).max(100).optional()
+      limit: z.number().int().min(1).max(100).optional(),
+      includeUnreviewed: z.boolean().optional()
+        .describe('Include memories not yet reviewed (default false — unreviewed memories are low-signal enrichment output and are hidden by default)')
     },
     handler: async (a) => {
       const res = await searchMemories(a.query as string, {
-        scope: a.scope as undefined, project: a.project as undefined, limit: a.limit as undefined
+        scope: a.scope as undefined,
+        project: a.project as undefined,
+        limit: a.limit as undefined,
+        reviewed: (a.includeUnreviewed as boolean | undefined) ? undefined : true
       })
       return { result: res, summary: `searched memories (${res.length})` }
     }
   },
   {
     name: 'get_recent_memories',
-    description: 'List recent memories, newest first (optionally by scope). A quick way to see what\'s top-of-mind before you act.',
+    description: 'List recent memories, newest first (optionally by scope). A quick way to see what\'s top-of-mind before you act. Unreviewed memories (low-signal enrichment output) are excluded by default; pass `includeUnreviewed: true` to include them — e.g. to confirm a memory you just saved.',
     kind: 'read',
-    schema: { scope: z.enum(['user', 'agent', 'world']).optional(), limit: z.number().int().min(1).max(100).optional() },
+    schema: {
+      scope: z.enum(['user', 'agent', 'world']).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+      includeUnreviewed: z.boolean().optional()
+        .describe('Include memories not yet reviewed (default false — unreviewed memories are low-signal enrichment output and are hidden by default)')
+    },
     handler: async (a) => {
-      const res = await listMemories({ scope: a.scope as undefined, limit: (a.limit as number) ?? 20 })
+      const res = await listMemories({
+        scope: a.scope as undefined,
+        limit: (a.limit as number) ?? 20,
+        reviewed: (a.includeUnreviewed as boolean | undefined) ? undefined : true
+      })
       return { result: res, summary: `recent memories (${res.length})` }
     }
   },
@@ -92,12 +107,20 @@ export const agentTools: AgentTool[] = [
   // ---- documents ----
   {
     name: 'search_docs',
-    description: 'Semantic + keyword search over stored documents — search here before creating a new one to avoid duplicates. Pass `project` (a slug) to scope to one project.',
+    description: 'Semantic + keyword search over documents, best match first. Returns summaries only (no body) as { items, total, hasMore } — read a hit with get_document or read_document. `total` is how many candidate matches were considered, not the corpus size. Pass `project` (a slug) to scope. Search here before creating a document to avoid duplicates.',
     kind: 'read',
-    schema: { query: z.string().describe('Search query'), project: z.string().optional().describe('Project slug to scope to') },
+    schema: {
+      query: z.string().describe('Search query'),
+      project: z.string().optional().describe('Project slug to scope to'),
+      limit: z.number().int().min(1).max(100).optional().describe('Page size (default 25)'),
+      offset: z.number().int().min(0).optional().describe('Rows to skip (default 0)')
+    },
     handler: async (a) => {
-      const res = await searchDocs(a.query as string, { project: a.project as string | undefined })
-      return { result: res, summary: `searched docs (${Array.isArray(res) ? res.length : 0})` }
+      const { limit, offset } = clampPaging(a.limit as number | undefined, a.offset as number | undefined)
+      const { items, total } = await searchDocsPage(a.query as string, {
+        project: a.project as string | undefined, limit, offset
+      })
+      return { result: buildPage(items, total, limit, offset), summary: `searched docs (${items.length} of ${total})` }
     }
   },
   {
@@ -112,16 +135,25 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'list_documents',
-    description: 'List documents, newest first. Pass `project` (a slug) to list only that project\'s docs. Use search_docs when you know what you\'re looking for.',
+    description: 'List documents (summaries only: id, path, title, project, type, tags, updatedAt — NOT the body), newest first. Pass `project` (a slug) to filter. Returns { items, total, hasMore } — page with `offset`. To read a document body use get_document, or read_document/grep_document for a long one. Use search_docs when you know what you are looking for.',
     kind: 'read',
-    schema: { project: z.string().optional().describe('Project slug to filter by') },
+    schema: {
+      project: z.string().optional().describe('Project slug to filter by'),
+      limit: z.number().int().min(1).max(100).optional().describe('Page size (default 25)'),
+      offset: z.number().int().min(0).optional().describe('Rows to skip (default 0)')
+    },
     handler: async (a) => {
-      // listDocs applies no skill filter (it also backs the /documents page, where
-      // showing skills is intentional). Filter them out here: skills sort near the
-      // top by recency and their full body (up to 20k chars each) would otherwise
-      // dump into context on every call — and bypass the agentSkillsEnabled kill-switch.
-      const res = (await listDocs({ project: a.project as string | undefined })).filter(d => d.type !== 'skill')
-      return { result: res, summary: `listed documents (${res.length})` }
+      const { limit, offset } = clampPaging(a.limit as number | undefined, a.offset as number | undefined)
+      const project = a.project as string | undefined
+      // Skills are excluded in SQL (notSkill() in listDocsSummary/countDocs) — they'd
+      // otherwise dump their full body into context on every call and bypass the
+      // agentSkillsEnabled kill-switch.
+      const [items, total] = await Promise.all([
+        listDocsSummary({ project, limit, offset }),
+        countDocs({ project })
+      ])
+      const page = buildPage(items, total, limit, offset)
+      return { result: page, summary: `listed documents (${items.length} of ${total})` }
     }
   },
   {
@@ -343,12 +375,17 @@ export const agentTools: AgentTool[] = [
   // ---- projects ----
   {
     name: 'search_projects',
-    description: 'List projects (optionally active-only). Projects are the top-level buckets everything files under.',
+    description: 'List projects (optionally active-only), most recently active first. Projects are the top-level buckets everything files under. Returns { items, total, hasMore } — page with `offset`. No query/keyword matching — this only lists/filters, it does not search project content.',
     kind: 'read',
-    schema: { activeOnly: z.boolean().optional() },
+    schema: {
+      activeOnly: z.boolean().optional(),
+      limit: z.number().int().min(1).max(100).optional().describe('Page size (default 25)'),
+      offset: z.number().int().min(0).optional().describe('Rows to skip (default 0)')
+    },
     handler: async (a) => {
-      const res = await listProjects({ activeOnly: (a.activeOnly as boolean) ?? false })
-      return { result: res, summary: `listed projects (${res.length})` }
+      const { limit, offset } = clampPaging(a.limit as number | undefined, a.offset as number | undefined)
+      const { items, total } = await listProjectsPage({ activeOnly: (a.activeOnly as boolean) ?? false, limit, offset })
+      return { result: buildPage(items, total, limit, offset), summary: `listed projects (${items.length} of ${total})` }
     }
   },
   {
@@ -420,15 +457,23 @@ export const agentTools: AgentTool[] = [
   // ---- tasks ----
   {
     name: 'search_tasks',
-    description: 'List tasks (optionally by status or project). Check existing tasks before creating one, and when deciding what to work on.',
+    description: 'List tasks (optionally by status or project), summaries only. Check existing tasks before creating one, and when deciding what to work on. Returns { items, total, hasMore } — page with `offset`.',
     kind: 'read',
     schema: {
       status: z.enum(['todo', 'in_progress', 'completed', 'blocked']).optional(),
-      project: z.string().optional()
+      project: z.string().optional(),
+      limit: z.number().int().min(1).max(100).optional().describe('Page size (default 25)'),
+      offset: z.number().int().min(0).optional().describe('Rows to skip (default 0)')
     },
     handler: async (a) => {
-      const res = await listTasks({ status: a.status as undefined, project: a.project as undefined })
-      return { result: res, summary: `listed tasks (${res.length})` }
+      const { limit, offset } = clampPaging(a.limit as number | undefined, a.offset as number | undefined)
+      const status = a.status as string | undefined
+      const project = a.project as string | undefined
+      const [items, total] = await Promise.all([
+        listTasksSummary({ status, project, limit, offset }),
+        countTasks({ status, project })
+      ])
+      return { result: buildPage(items, total, limit, offset), summary: `listed tasks (${items.length} of ${total})` }
     }
   },
   {
