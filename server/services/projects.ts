@@ -5,7 +5,7 @@ import type { ProjectDTO } from '../../shared/types/tasks'
 import type { ProjectSummaryDTO } from '../../shared/types/summaries'
 import { slugify } from '../../shared/utils/slugify'
 import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/projects/git-remote'
-import { longestPrefixMatch, basenameOf, isAutoCreatable, normalizePrefix } from '../lib/projects/path-routing'
+import { longestPrefixMatch, basenameOf, isAutoCreatable, normalizePrefix, shouldRecordLocalPath } from '../lib/projects/path-routing'
 
 // ---------------------------------------------------------------------------
 // Private helpers
@@ -221,7 +221,9 @@ export async function findOrCreateProject(input: { gitRemote?: string | null, cw
   // Touch a matched project: append cwd to local_paths + bump last_activity_at.
   const touch = async (proj: typeof projects.$inferSelect): Promise<typeof projects.$inferSelect> => {
     const localPaths = (proj.localPaths ?? [])
-    const nextPaths = cwd && !localPaths.includes(cwd) ? [...localPaths, cwd] : localPaths
+    const nextPaths = cwd && shouldRecordLocalPath(cwd, localPaths, proj.pathPrefixes ?? [])
+      ? [...localPaths, cwd]
+      : localPaths
     const now = new Date()
     await db.update(projects).set({ localPaths: nextPaths, lastActivityAt: now, updatedAt: now }).where(eq(projects.id, proj.id))
     return { ...proj, localPaths: nextPaths, lastActivityAt: now }

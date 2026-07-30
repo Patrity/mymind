@@ -59,3 +59,32 @@ export function isAutoCreatable(cwd: string | null | undefined): boolean {
   if (GENERIC_LEAVES.has(basenameOf(p).toLowerCase())) return false
   return true
 }
+
+/**
+ * Should `cwd` be appended to a project's localPaths?
+ *
+ * Previously this was a bare `!localPaths.includes(cwd)`, which appended every subfolder a
+ * session ran in even when pathPrefixes already covered the tree — Terawulf accumulated ~50
+ * entries that way. A path is redundant if a prefix or a shorter localPath already covers it.
+ */
+export function shouldRecordLocalPath(
+  cwd: string, localPaths: string[], pathPrefixes: string[]
+): boolean {
+  if (!cwd) return false
+  const c = normalizePrefix(cwd)
+  if (pathPrefixes.some(p => isUnderPrefix(c, normalizePrefix(p)))) return false
+  if (localPaths.some(p => isUnderPrefix(c, normalizePrefix(p)))) return false
+  return true
+}
+
+/** Idempotent: drop localPaths already covered by a prefix or by a shorter sibling entry. */
+export function collapseLocalPaths(localPaths: string[], pathPrefixes: string[]): string[] {
+  const norm = [...new Set(localPaths.map(normalizePrefix))].sort((a, b) => a.length - b.length)
+  const kept: string[] = []
+  for (const p of norm) {
+    if (pathPrefixes.some(x => isUnderPrefix(p, normalizePrefix(x)))) continue
+    if (kept.some(k => isUnderPrefix(p, k))) continue
+    kept.push(p)
+  }
+  return kept
+}

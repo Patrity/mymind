@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  normalizePrefix, basenameOf, isUnderPrefix, longestPrefixMatch, isAutoCreatable
+  normalizePrefix, basenameOf, isUnderPrefix, longestPrefixMatch, isAutoCreatable,
+  shouldRecordLocalPath, collapseLocalPaths
 } from '../server/lib/projects/path-routing'
 
 describe('normalizePrefix', () => {
@@ -58,5 +59,53 @@ describe('isAutoCreatable', () => {
   it('accepts real project folders', () => {
     expect(isAutoCreatable('/mnt/c/Users/tonyc/Documents/Projects/Terawulf')).toBe(true)
     expect(isAutoCreatable('/Users/tony/Documents/GitHub/mymind')).toBe(true)
+  })
+})
+
+describe('shouldRecordLocalPath', () => {
+  const PREFIX = ['/Users/tony/x/terawulf']
+
+  it('records a genuinely new path', () => {
+    expect(shouldRecordLocalPath('/Users/tony/other', [], [])).toBe(true)
+  })
+  it('skips an exact duplicate (existing behaviour)', () => {
+    expect(shouldRecordLocalPath('/a/b', ['/a/b'], [])).toBe(false)
+  })
+  it('skips a path already covered by a pathPrefix', () => {
+    expect(shouldRecordLocalPath('/Users/tony/x/terawulf/apps/web', [], PREFIX)).toBe(false)
+  })
+  it('skips a path under an existing localPath', () => {
+    expect(shouldRecordLocalPath('/a/b/c', ['/a/b'], [])).toBe(false)
+  })
+  it('records a sibling that no prefix covers', () => {
+    expect(shouldRecordLocalPath('/Users/tony/x/terawulf-old', [], PREFIX)).toBe(true)
+  })
+  it('normalises trailing slashes on both sides', () => {
+    expect(shouldRecordLocalPath('/a/b/', ['/a/b'], [])).toBe(false)
+    expect(shouldRecordLocalPath('/a/b/c', ['/a/b/'], [])).toBe(false)
+  })
+  it('records when cwd is a PARENT of an existing path', () => {
+    expect(shouldRecordLocalPath('/a', ['/a/b'], [])).toBe(true)
+  })
+})
+
+describe('collapseLocalPaths', () => {
+  it('drops entries covered by a prefix', () => {
+    expect(collapseLocalPaths(
+      ['/t', '/t/apps', '/t/apps/web'], ['/t']
+    )).toEqual([])
+  })
+  it('keeps the shortest ancestor when there is no prefix', () => {
+    expect(collapseLocalPaths(['/t', '/t/apps', '/t/apps/web'], [])).toEqual(['/t'])
+  })
+  it('keeps unrelated siblings', () => {
+    expect(collapseLocalPaths(['/a', '/b'], [])).toEqual(['/a', '/b'])
+  })
+  it('is idempotent', () => {
+    const once = collapseLocalPaths(['/t', '/t/apps'], [])
+    expect(collapseLocalPaths(once, [])).toEqual(once)
+  })
+  it('returns an empty array unchanged', () => {
+    expect(collapseLocalPaths([], [])).toEqual([])
   })
 })
