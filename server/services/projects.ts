@@ -67,37 +67,25 @@ export async function listProjects(filter: { activeOnly?: boolean } = {}): Promi
 }
 
 /**
- * One page of project matches PLUS the total, from a SINGLE listing — same "items + total from
- * one call" shape as `searchDocsPage`/`listTasksSummary`+`countTasks`.
+ * One page of projects PLUS the total, from a SINGLE listing — same "items + total from one
+ * call" shape as `searchDocsPage`/`listTasksSummary`+`countTasks`.
  *
- * NOTE: there is no pre-existing `searchProjects(q)` to reuse here — the current
- * `search_projects` MCP tool is just `listProjects({ activeOnly })` with no query matching at
- * all (confirmed: no `searchProjects` export existed anywhere in the repo before this change).
- * Rather than inventing a new SQL-level search implementation with unspecified matching
- * semantics, this builds directly on the existing, unmodified `listProjects()` and filters/
- * slices in memory — the in-memory approach the plan already sanctions for this function
- * ("projects number in the dozens"). Matches on `name`, `slug`, or any `alias`
- * (case-insensitive substring), the same fields `matchProjectByLabel` treats as identifying a
- * project. An empty/whitespace query returns no matches rather than the full list.
+ * This is a payload-shape fix, not a search feature: it exists to drop the fat
+ * `aliases`/`localPaths`/`pathPrefixes` arrays (`ProjectSummaryDTO` omits them) and add paging,
+ * mirroring `listProjects()` exactly otherwise. `search_projects` (the MCP tool this backs) is a
+ * misnomer inherited from its current handler (`listProjects({ activeOnly })`) — there is no
+ * query parameter, and agents call it with no arguments to list all projects. Do NOT "restore"
+ * query matching here; the plan considered and rejected it (see task-3-report.md).
  */
-export async function searchProjectsPage(
-  q: string,
-  opts: { limit: number, offset: number }
+export async function listProjectsPage(
+  opts: { activeOnly?: boolean, limit: number, offset: number }
 ): Promise<{ items: ProjectSummaryDTO[], total: number }> {
-  if (!q.trim()) return { items: [], total: 0 }
-
-  const needle = q.trim().toLowerCase()
-  const all = await listProjects()
-  const matched = all.filter(p =>
-    p.name.toLowerCase().includes(needle) ||
-    p.slug.toLowerCase().includes(needle) ||
-    p.aliases.some(a => a.toLowerCase().includes(needle))
-  )
-  const items = matched.slice(opts.offset, opts.offset + opts.limit).map(p => ({
+  const all = await listProjects({ activeOnly: opts.activeOnly ?? false })
+  const items = all.slice(opts.offset, opts.offset + opts.limit).map(p => ({
     slug: p.slug, name: p.name, active: p.active,
     lastActivityAt: p.lastActivityAt, documentCount: p.documentCount
   }))
-  return { items, total: matched.length }
+  return { items, total: all.length }
 }
 
 export async function getProject(slug: string): Promise<ProjectDTO | null> {
