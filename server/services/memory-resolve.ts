@@ -27,10 +27,15 @@ export interface ResolvePlan { action: ResolveAction, targetId?: string, confide
 export interface ChooseResolutionOpts {
   threshold: number
   scope: MemoryScope
-  /** Distinct sessions corroborating the EXISTING memory (from its evidence chain). */
-  incumbentSessions: number
   /** Distinct sessions behind the INCOMING memory — normally 1 on the enrichment path. */
   challengerSessions: number
+  /**
+   * Distinct corroborating sessions for a candidate incumbent, BY ITS ID. A lookup rather
+   * than one pre-computed number because the row the gate must judge is only known once
+   * `chooseResolution` has picked a branch — the refines target and the top contradiction
+   * are frequently different memories, and the caller cannot know which one will be acted on.
+   */
+  sessionsFor: (existingId: string) => number
 }
 
 const DUP_MIN = 0.6
@@ -49,34 +54,43 @@ export function countEvidenceSessions(evidence: unknown[]): number {
   return ids.size
 }
 
-/** Pure: the highest-confidence `contradicts` verdict, if any. Single source of truth so
- * `chooseResolution` and its caller (which must resolve the incumbent's evidence BEFORE it
- * can call chooseResolution) never drift into judging two different rows as "the"
- * contradiction. */
+/** Pure: the highest-confidence `contradicts` verdict, if any. */
 export function topContradiction(verdicts: Verdict[]): Verdict | undefined {
   return verdicts.filter(v => v.relation === 'contradicts').sort((a, b) => b.confidence - a.confidence)[0]
 }
 
 /** Pure: pick the resolution from judge verdicts. */
 export function chooseResolution(verdicts: Verdict[], opts: ChooseResolutionOpts): ResolvePlan {
+  // Defer to a human rather than let one session rewrite a corroborated memory.
+  // Identity/preference (`user`-scope) claims are NEVER auto-resolved: a wrong resolution
+  // there is self-reinforcing (the bad memory shapes later sessions, which then corroborate
+  // it). Otherwise, gate when the incumbent is corroborated across more sessions than the
+  // challenger — high confidence from ONE exploratory session is not evidence.
+  const gatedByCorroboration = (existingId: string): boolean => {
+    const incumbentSessions = opts.sessionsFor(existingId)
+    return opts.scope === 'user'
+      || (incumbentSessions >= 2 && opts.challengerSessions < incumbentSessions)
+  }
+
   const dup = verdicts.filter(v => v.relation === 'duplicate' && v.confidence >= DUP_MIN)
     .sort((a, b) => b.confidence - a.confidence)[0]
   if (dup) return { action: 'duplicate', targetId: dup.existingId, confidence: dup.confidence, reasoning: dup.reasoning }
 
   const refines = verdicts.filter(v => v.relation === 'refines').sort((a, b) => b.confidence - a.confidence)[0]
-  if (refines) return {
-    action: refines.confidence >= opts.threshold ? 'supersede' : 'review-supersede',
-    targetId: refines.existingId, confidence: refines.confidence, reasoning: refines.reasoning
+  if (refines) {
+    // The gate is checked BEFORE confidence on purpose: `supersede` is the ONLY action that
+    // archives the incumbent, so a user-scope or out-corroborated refinement must route to
+    // review even at confidence 1.0. `review-supersede` records the same `supersedes`
+    // relation and queues a review row, but leaves both memories live.
+    const action: ResolveAction = gatedByCorroboration(refines.existingId)
+      ? 'review-supersede'
+      : (refines.confidence >= opts.threshold ? 'supersede' : 'review-supersede')
+    return { action, targetId: refines.existingId, confidence: refines.confidence, reasoning: refines.reasoning }
   }
 
   const contra = topContradiction(verdicts)
   if (contra) {
-    // Identity/preference claims are never auto-resolved: a wrong resolution here is
-    // self-reinforcing (the bad memory shapes later sessions, which then corroborate it).
-    // Otherwise, defer to a human when the incumbent is corroborated across more sessions
-    // than the challenger — high confidence from ONE exploratory session is not evidence.
-    const outnumbered = opts.incumbentSessions >= 2 && opts.challengerSessions < opts.incumbentSessions
-    const action: ResolveAction = (opts.scope === 'user' || outnumbered) ? 'review-contradict' : 'contradict'
+    const action: ResolveAction = gatedByCorroboration(contra.existingId) ? 'review-contradict' : 'contradict'
     return { action, targetId: contra.existingId, confidence: contra.confidence, reasoning: contra.reasoning }
   }
 
@@ -138,11 +152,13 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
 
   const verdicts = await judgeRelations(input.content, near.map(n => ({ id: n.id, content: n.content })))
   const challengerSessions = countEvidenceSessions((input.evidence ?? []) as unknown[])
-  const preliminary = topContradiction(verdicts)
-  const incumbentForContra = preliminary ? near.find(n => n.id === preliminary.existingId) : undefined
-  const incumbentSessions = countEvidenceSessions((incumbentForContra?.evidence ?? []) as unknown[])
+  // Corroboration for EVERY near-neighbour, not just the top contradiction: `chooseResolution`
+  // resolves it for whichever candidate it is actually about to act on (refines or contradicts).
+  const sessionsById = new Map(near.map(n => [n.id, countEvidenceSessions((n.evidence ?? []) as unknown[])]))
 
-  const plan = chooseResolution(verdicts, { threshold, scope, incumbentSessions, challengerSessions })
+  const plan = chooseResolution(verdicts, {
+    threshold, scope, challengerSessions, sessionsFor: id => sessionsById.get(id) ?? 0
+  })
   const existing = plan.targetId ? near.find(n => n.id === plan.targetId) : undefined
 
   if (plan.action === 'duplicate') { await mergeEvidence(plan.targetId!, input.evidence ?? [], input.sourceDate ?? null); return plan }

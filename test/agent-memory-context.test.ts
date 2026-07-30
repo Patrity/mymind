@@ -13,7 +13,16 @@ describe('buildMemoryContext', () => {
     expect(out).toMatch(/^Possibly relevant memories/)
     expect(out).toContain('- Tony prefers pnpm')
     expect(out).toContain('- Prod is LXC 114')
-    expect(search).toHaveBeenCalledWith('how do I deploy', { limit: 5 })
+    expect(search).toHaveBeenCalledWith('how do I deploy', { limit: 5, reviewed: true })
+  })
+
+  it('excludes unreviewed memories — this path fires on every turn with no agent decision', async () => {
+    // Regression pin for cycle 51: `search_memories`/`get_recent_memories` default to
+    // reviewed-only, but this automatic injection bypasses those tools entirely, so it
+    // must carry the same filter or unreviewed enrichment output reaches the prompt anyway.
+    const search = vi.fn(async () => [mem('Tony prefers pnpm', 1)])
+    await buildMemoryContext('q', { search })
+    expect(search).toHaveBeenCalledWith('q', expect.objectContaining({ reviewed: true }))
   })
 
   it('drops low-relevance results and returns "" when nothing clears the floor', async () => {

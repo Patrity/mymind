@@ -23,6 +23,12 @@ export async function buildLiveContext(now: Date): Promise<string> {
  * message, so the agent "knows Tony" without depending on it choosing to call
  * search_memories. Best-effort and bounded — on error or slow search (>1.5s)
  * it returns '' and the turn proceeds without it. Never throws.
+ *
+ * `reviewed: true` is REQUIRED here, not incidental (cycle 51): this fires on EVERY
+ * voice turn with no agent decision behind it, so without the filter it would inject
+ * raw, unreviewed enrichment output as background fact — the exact hole the
+ * `includeUnreviewed` default on `search_memories`/`get_recent_memories` closes for the
+ * tools an agent explicitly calls. There is deliberately no opt-out on this path.
  */
 export async function buildMemoryContext(
   userText: string,
@@ -33,7 +39,7 @@ export async function buildMemoryContext(
   try {
     const search = deps.search ?? searchMemories
     const timeout = new Promise<null>(resolve => setTimeout(() => resolve(null), 1500))
-    const found = await Promise.race([search(q, { limit: 5 }), timeout])
+    const found = await Promise.race([search(q, { limit: 5, reviewed: true }), timeout])
     if (!found?.length) return ''
     const rows = found.filter(m => (m.relevance ?? 0) >= 0.2).slice(0, 5)
     if (!rows.length) return ''
