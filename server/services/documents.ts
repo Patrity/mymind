@@ -6,6 +6,7 @@ import { documents, chunks } from '../db/schema'
 import { getLanguageFromPath } from '../../shared/utils/languages'
 import { buildTree, type TreeNode } from './tree'
 import type { DocumentDTO, DocumentUpsert, ChunkHit } from '../../shared/types/documents'
+import type { DocumentSummaryDTO } from '../../shared/types/summaries'
 import { collapseChunksToHits } from '../lib/chunking/collapse'
 import { embedOne } from '../lib/ai/embeddings'
 import { getSearchConfig } from '../lib/search/config'
@@ -78,6 +79,52 @@ export async function listDocs(opts: { project?: string } = {}): Promise<Documen
     .orderBy(desc(documents.updatedAt))
     .limit(200)
   return rows.map(toDTO)
+}
+
+const SUMMARY_COLUMNS = {
+  id: documents.id,
+  path: documents.path,
+  title: documents.title,
+  project: documents.project,
+  type: documents.type,
+  tags: documents.tags,
+  updatedAt: documents.updatedAt
+}
+
+/**
+ * Body-free projection for the agent read tools. Exported for unit testing.
+ * Deliberately NOT `toDTO` minus a field — selecting fewer columns means Postgres never
+ * ships the bodies either.
+ */
+export function toSummaryDTO(r: {
+  id: string, path: string, title: string | null, project: string | null,
+  type: string | null, tags: string[], updatedAt: Date
+}): DocumentSummaryDTO {
+  return {
+    id: r.id, path: r.path, title: r.title, project: r.project,
+    type: r.type, tags: r.tags ?? [], updatedAt: r.updatedAt.toISOString()
+  }
+}
+
+export async function listDocsSummary(
+  opts: { project?: string, limit: number, offset: number }
+): Promise<DocumentSummaryDTO[]> {
+  const rows = await useDb()
+    .select(SUMMARY_COLUMNS)
+    .from(documents)
+    .where(and(live(), notSkill(), opts.project ? eq(documents.project, opts.project) : undefined))
+    .orderBy(desc(documents.updatedAt))
+    .limit(opts.limit)
+    .offset(opts.offset)
+  return rows.map(toSummaryDTO)
+}
+
+export async function countDocs(opts: { project?: string } = {}): Promise<number> {
+  const [row] = await useDb()
+    .select({ n: sql<number>`count(*)::int` })
+    .from(documents)
+    .where(and(live(), notSkill(), opts.project ? eq(documents.project, opts.project) : undefined))
+  return row?.n ?? 0
 }
 
 export async function listTree(): Promise<TreeNode[]> {
@@ -159,7 +206,12 @@ export async function restoreDoc(id: string): Promise<boolean> {
   return !!r
 }
 
-export async function searchDocs(q: string, opts: { project?: string } = {}): Promise<DocumentDTO[]> {
+/**
+ * Fused candidate ids from the trigram + vector lanes, ranked by RRF. Shared by
+ * `searchDocs` (web UI, full bodies) and `searchDocsPage` (agent tools, summaries) so
+ * there is exactly one search implementation.
+ */
+async function searchDocIds(q: string, opts: { project?: string } = {}): Promise<string[]> {
   if (!q.trim()) return []
 
   const db = useDb()
@@ -197,18 +249,46 @@ export async function searchDocs(q: string, opts: { project?: string } = {}): Pr
   }
 
   // Fuse the two ranked lanes with RRF
-  const fusedIds = rrfFuse([trigramIds, vectorIds]).slice(0, 50)
+  return rrfFuse([trigramIds, vectorIds]).slice(0, 50)
+}
 
+export async function searchDocs(q: string, opts: { project?: string } = {}): Promise<DocumentDTO[]> {
+  const fusedIds = await searchDocIds(q, opts)
   if (fusedIds.length === 0) return []
 
   // Hydrate full rows and re-order by fused rank (inArray doesn't preserve order)
-  const fetched = await db.select().from(documents)
+  const fetched = await useDb().select().from(documents)
     .where(and(live(), notSkill(), inArray(documents.id, fusedIds)))
   const byId = new Map(fetched.map(r => [r.id, r]))
   return fusedIds.flatMap(id => {
     const r = byId.get(id)
     return r ? [toDTO(r)] : []
   })
+}
+
+/**
+ * One page of search results PLUS the total, from a SINGLE search.
+ *
+ * Deliberately returns both rather than exposing a separate count function: the search
+ * runs `embedOne(q)` (documents.ts:180), a network call to the embedding rig. Two
+ * functions would mean two embeddings per `search_docs` invocation.
+ */
+export async function searchDocsPage(
+  q: string,
+  opts: { project?: string, limit: number, offset: number }
+): Promise<{ items: DocumentSummaryDTO[], total: number }> {
+  if (!q.trim()) return { items: [], total: 0 }
+
+  const ids = await searchDocIds(q, { project: opts.project })
+  const total = ids.length
+  const window = ids.slice(opts.offset, opts.offset + opts.limit)
+  if (!window.length) return { items: [], total }
+
+  const rows = await useDb().select(SUMMARY_COLUMNS).from(documents).where(inArray(documents.id, window))
+  const byId = new Map(rows.map(r => [r.id, toSummaryDTO(r)]))
+  // Preserve relevance order — the SQL `in` clause does not.
+  const items = window.map(id => byId.get(id)).filter((d): d is DocumentSummaryDTO => !!d)
+  return { items, total }
 }
 
 export async function setPublic(id: string, isPublic: boolean): Promise<DocumentDTO | null> {
