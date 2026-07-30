@@ -56,6 +56,27 @@ describe('chooseResolution — contradiction gate', () => {
       [v('contradicts', 0.6, 'lo'), v('contradicts', 0.9, 'hi')], { ...base, scope: 'user' })
     expect(plan.targetId).toBe('hi')
   })
+
+  it('auto-resolves when the incumbent has fewer than 2 corroborating sessions', () => {
+    // Pins the >=2 floor: a lone-session incumbent is not "corroborated" and must not
+    // route to review just because the challenger has even less (0) evidence.
+    expect(chooseResolution([v('contradicts', 0.95)],
+      { ...base, incumbentSessions: 1, challengerSessions: 0 }).action).toBe('contradict')
+  })
+
+  it('routes to review at the minimal real trigger (2-vs-1)', () => {
+    expect(chooseResolution([v('contradicts', 0.95)],
+      { ...base, incumbentSessions: 2, challengerSessions: 1 }).action).toBe('review-contradict')
+  })
+
+  it('does not let a user-scope contradiction hijack a verdict set that should refine', () => {
+    // Branch order matters: refines must still be checked before contradicts, even when
+    // scope is 'user' and a contradiction verdict is also present in the same batch.
+    const plan = chooseResolution(
+      [v('refines', 0.9, 'r1'), v('contradicts', 0.95, 'c1')], { ...base, scope: 'user' })
+    expect(plan.action).toBe('supersede')
+    expect(plan.targetId).toBe('r1')
+  })
 })
 
 describe('countEvidenceSessions', () => {
@@ -70,5 +91,10 @@ describe('countEvidenceSessions', () => {
   })
   it('tolerates non-object entries without throwing', () => {
     expect(countEvidenceSessions(['nope', 42, null])).toBe(0)
+  })
+  it('returns 0 for non-array jsonb without throwing', () => {
+    expect(countEvidenceSessions({} as never)).toBe(0)
+    expect(countEvidenceSessions(null as never)).toBe(0)
+    expect(countEvidenceSessions(undefined as never)).toBe(0)
   })
 })

@@ -199,6 +199,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
           else if (plan.action === 'supersede') actions.superseded++
           else if (plan.action === 'contradict') { actions.contradicted++; actions.reviewQueued++ }
           else if (plan.action === 'review-supersede') actions.reviewQueued++
+          else if (plan.action === 'review-contradict') actions.reviewQueued++
           else if (plan.action === 'duplicate') actions.duplicate++
         } catch (memErr) {
           console.warn(`[memory-enrich] failed to store candidate for session ${session.id}:`, memErr)

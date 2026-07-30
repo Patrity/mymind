@@ -35,15 +35,26 @@ export interface ChooseResolutionOpts {
 
 const DUP_MIN = 0.6
 
-/** Distinct `sessionId`s in a memory's evidence array. Defensive against malformed entries. */
+/** Distinct `sessionId`s in a memory's evidence array. Defensive against malformed entries
+ * (including non-array jsonb, which nothing produces today but which every sibling reader
+ * of this column already guards against — see `memory.ts:56` / `memory.ts:364`). */
 export function countEvidenceSessions(evidence: unknown[]): number {
+  if (!Array.isArray(evidence)) return 0
   const ids = new Set<string>()
-  for (const e of evidence ?? []) {
+  for (const e of evidence) {
     if (!e || typeof e !== 'object') continue
     const id = (e as { sessionId?: unknown }).sessionId
     if (typeof id === 'string' && id) ids.add(id)
   }
   return ids.size
+}
+
+/** Pure: the highest-confidence `contradicts` verdict, if any. Single source of truth so
+ * `chooseResolution` and its caller (which must resolve the incumbent's evidence BEFORE it
+ * can call chooseResolution) never drift into judging two different rows as "the"
+ * contradiction. */
+export function topContradiction(verdicts: Verdict[]): Verdict | undefined {
+  return verdicts.filter(v => v.relation === 'contradicts').sort((a, b) => b.confidence - a.confidence)[0]
 }
 
 /** Pure: pick the resolution from judge verdicts. */
@@ -58,7 +69,7 @@ export function chooseResolution(verdicts: Verdict[], opts: ChooseResolutionOpts
     targetId: refines.existingId, confidence: refines.confidence, reasoning: refines.reasoning
   }
 
-  const contra = verdicts.filter(v => v.relation === 'contradicts').sort((a, b) => b.confidence - a.confidence)[0]
+  const contra = topContradiction(verdicts)
   if (contra) {
     // Identity/preference claims are never auto-resolved: a wrong resolution here is
     // self-reinforcing (the bad memory shapes later sessions, which then corroborate it).
@@ -127,7 +138,7 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
 
   const verdicts = await judgeRelations(input.content, near.map(n => ({ id: n.id, content: n.content })))
   const challengerSessions = countEvidenceSessions((input.evidence ?? []) as unknown[])
-  const preliminary = verdicts.filter(v => v.relation === 'contradicts').sort((a, b) => b.confidence - a.confidence)[0]
+  const preliminary = topContradiction(verdicts)
   const incumbentForContra = preliminary ? near.find(n => n.id === preliminary.existingId) : undefined
   const incumbentSessions = countEvidenceSessions((incumbentForContra?.evidence ?? []) as unknown[])
 
