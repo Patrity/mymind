@@ -2,6 +2,7 @@ import { eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { projects, sessions, memories, tasks, documents } from '../db/schema'
 import type { ProjectDTO } from '../../shared/types/tasks'
+import type { ProjectSummaryDTO } from '../../shared/types/summaries'
 import { slugify } from '../../shared/utils/slugify'
 import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../lib/projects/git-remote'
 import { longestPrefixMatch, basenameOf, isAutoCreatable, normalizePrefix } from '../lib/projects/path-routing'
@@ -63,6 +64,40 @@ export async function listProjects(filter: { activeOnly?: boolean } = {}): Promi
   }).from(projects).where(filter.activeOnly ? eq(projects.active, true) : undefined)
     .orderBy(sql`coalesce(${projects.lastActivityAt}, ${projects.createdAt}) desc`)
   return rows.map(r => toDTO(r.project, { sessionCount: r.sessionCount, memoryCount: r.memoryCount, taskCount: r.taskCount, documentCount: r.documentCount }))
+}
+
+/**
+ * One page of project matches PLUS the total, from a SINGLE listing — same "items + total from
+ * one call" shape as `searchDocsPage`/`listTasksSummary`+`countTasks`.
+ *
+ * NOTE: there is no pre-existing `searchProjects(q)` to reuse here — the current
+ * `search_projects` MCP tool is just `listProjects({ activeOnly })` with no query matching at
+ * all (confirmed: no `searchProjects` export existed anywhere in the repo before this change).
+ * Rather than inventing a new SQL-level search implementation with unspecified matching
+ * semantics, this builds directly on the existing, unmodified `listProjects()` and filters/
+ * slices in memory — the in-memory approach the plan already sanctions for this function
+ * ("projects number in the dozens"). Matches on `name`, `slug`, or any `alias`
+ * (case-insensitive substring), the same fields `matchProjectByLabel` treats as identifying a
+ * project. An empty/whitespace query returns no matches rather than the full list.
+ */
+export async function searchProjectsPage(
+  q: string,
+  opts: { limit: number, offset: number }
+): Promise<{ items: ProjectSummaryDTO[], total: number }> {
+  if (!q.trim()) return { items: [], total: 0 }
+
+  const needle = q.trim().toLowerCase()
+  const all = await listProjects()
+  const matched = all.filter(p =>
+    p.name.toLowerCase().includes(needle) ||
+    p.slug.toLowerCase().includes(needle) ||
+    p.aliases.some(a => a.toLowerCase().includes(needle))
+  )
+  const items = matched.slice(opts.offset, opts.offset + opts.limit).map(p => ({
+    slug: p.slug, name: p.name, active: p.active,
+    lastActivityAt: p.lastActivityAt, documentCount: p.documentCount
+  }))
+  return { items, total: matched.length }
 }
 
 export async function getProject(slug: string): Promise<ProjectDTO | null> {

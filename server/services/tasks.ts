@@ -1,7 +1,8 @@
-import { and, asc, eq, isNull } from 'drizzle-orm'
+import { and, asc, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { tasks } from '../db/schema'
 import type { TaskDTO, TaskStatus, TaskPriority } from '../../shared/types/tasks'
+import type { TaskSummaryDTO } from '../../shared/types/summaries'
 
 // ---------------------------------------------------------------------------
 // Pure helper — exported for TDD
@@ -51,6 +52,50 @@ export async function listTasks(filter: { status?: string; project?: string } = 
     .orderBy(asc(tasks.order), asc(tasks.createdAt))
 
   return rows.map(toDTO)
+}
+
+const TASK_SUMMARY_COLUMNS = {
+  id: tasks.id, title: tasks.title, status: tasks.status, priority: tasks.priority,
+  project: tasks.project, dueDate: tasks.dueDate, updatedAt: tasks.updatedAt
+}
+
+/**
+ * Body-free projection for the agent read tools. Exported for unit testing.
+ * Deliberately NOT `toDTO` minus a field — selecting fewer columns means Postgres never
+ * ships the descriptions either. `dueDate` is a `timestamp` column (see schema/tasks.ts),
+ * hence `.toISOString()`.
+ */
+export function toTaskSummaryDTO(r: {
+  id: string, title: string, status: string, priority: string,
+  project: string | null, dueDate: Date | null, updatedAt: Date
+}): TaskSummaryDTO {
+  return {
+    id: r.id, title: r.title, status: r.status, priority: r.priority,
+    project: r.project,
+    dueDate: r.dueDate ? r.dueDate.toISOString() : null,
+    updatedAt: r.updatedAt.toISOString()
+  }
+}
+
+export async function listTasksSummary(
+  opts: { status?: string, project?: string, limit: number, offset: number }
+): Promise<TaskSummaryDTO[]> {
+  const conditions = [live()]
+  if (opts.status) conditions.push(eq(tasks.status, opts.status))
+  if (opts.project) conditions.push(eq(tasks.project, opts.project))
+  const rows = await useDb().select(TASK_SUMMARY_COLUMNS).from(tasks)
+    .where(and(...conditions))
+    .orderBy(asc(tasks.order), asc(tasks.createdAt))
+    .limit(opts.limit).offset(opts.offset)
+  return rows.map(toTaskSummaryDTO)
+}
+
+export async function countTasks(opts: { status?: string, project?: string } = {}): Promise<number> {
+  const conditions = [live()]
+  if (opts.status) conditions.push(eq(tasks.status, opts.status))
+  if (opts.project) conditions.push(eq(tasks.project, opts.project))
+  const [row] = await useDb().select({ n: sql<number>`count(*)::int` }).from(tasks).where(and(...conditions))
+  return row?.n ?? 0
 }
 
 export async function getTask(id: string): Promise<TaskDTO | null> {
