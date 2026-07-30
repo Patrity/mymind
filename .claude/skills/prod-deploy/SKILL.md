@@ -13,17 +13,60 @@ stay Docker containers inside that same LXC. Full reference: `docs/DEPLOYMENT.md
 
 You have SSH access. There is **no direct SSH into LXC 114**; you go through the host with `pct exec`.
 
+> ⚠️ **The single most dangerous mistake in this file — read before running anything.**
+> `ssh` joins **all** of its arguments into one command string, so your local shell's quotes are
+> stripped before the remote shell ever parses them. `bash -lc` then receives only the **first
+> word** as its script; the rest become positional parameters (`$0`, `$1`, …). This fails two
+> different ways, both silent and both exit 0:
+>
+> | Your command contains | What actually happens |
+> |---|---|
+> | an unquoted `;` or `&&` | the remote shell splits there — everything after the separator runs **on the Proxmox host**, not in the container |
+> | no separator | runs in the container, but as bare `<firstword>` with every other token discarded into `$@` (e.g. `systemctl status mymind` → plain `systemctl`, `docker exec … psql …` → plain `docker` usage) |
+>
+> ```bash
+> # ✗ BROKEN — prints a blank line, then "mini" (the HOST)
+> ssh root@192.168.2.50 -- pct exec 114 -- bash -lc 'echo hi; hostname'
+>
+> # ✓ CORRECT — prints "hi", then "mymind" (LXC 114)
+> ssh root@192.168.2.50 "pct exec 114 -- bash -lc 'echo hi; hostname'"
+> ```
+>
+> This has already burned a session: it made an intact prod look like a wiped container
+> (`/opt/mymind` "missing", `mymind` "inactive", `docker` "not found" — all true of the host,
+> none true of the LXC) and produced a confident, wrong "prod has moved" report. A
+> `systemctl restart …` or `docker exec … psql` typed the broken way silently targets the
+> **wrong machine or the wrong command**.
+> **Always verify with `hostname` when a result surprises you.**
+
+**Use these two forms.** Quote the entire remote command; never rely on an unquoted `--` chain:
+
 ```bash
 # Proxmox host
-ssh root@192.168.2.50 -- '<host command>'
+ssh root@192.168.2.50 '<host command>'
 
-# Anything INSIDE LXC 114 (the app)
-ssh root@192.168.2.50 -- pct exec 114 -- bash -lc '<command run in the LXC>'
+# Anything INSIDE LXC 114 (the app) — note the outer double quotes
+ssh root@192.168.2.50 "pct exec 114 -- bash -lc '<command run in the LXC>'"
 ```
 
-Wrap multi-line LXC scripts in single quotes; mind the nested quoting (`'"'"'` to embed a single
-quote). Run read-only checks freely. For anything that restarts the service or edits env/DB,
-prefer to say what you're about to do first — a restart is a few seconds of downtime.
+For anything with nested quotes, SQL, or `$`-expansion, skip quoting entirely and pipe base64 —
+this is the reliable form for DB work:
+
+```bash
+lxc() { local b=$(printf '%s' "$1" | base64); \
+  ssh root@192.168.2.50 "pct exec 114 -- bash -lc 'echo $b | base64 -d | bash'"; }
+
+lxc 'systemctl status mymind --no-pager'
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
+```
+
+**SSH keys:** the authorized key is `~/.ssh/claude-code`. `~/.ssh/config` maps it for both the
+alias (`mini`) and the literal IP (`192.168.2.50`), so either host form works. If you get
+`Permission denied (publickey)`, the IP's config block has lost its `IdentityFile` line — add
+`IdentityFile ~/.ssh/claude-code` back, or fall back to `ssh mini`.
+
+Run read-only checks freely. For anything that restarts the service or edits env/DB, prefer to
+say what you're about to do first — a restart is a few seconds of downtime.
 
 ## Topology
 
@@ -41,32 +84,39 @@ prefer to say what you're about to do first — a restart is a few seconds of do
 
 ## Common ops
 
+Define the `lxc` helper from the Access section first — it base64-pipes the script, so nested
+quotes, `;`, `&&`, `$(…)`, and SQL all survive intact:
+
 ```bash
-H='ssh root@192.168.2.50 -- pct exec 114 -- bash -lc'
+lxc() { local b=$(printf '%s' "$1" | base64); \
+  ssh root@192.168.2.50 "pct exec 114 -- bash -lc 'echo $b | base64 -d | bash'"; }
+
+# Sanity-check you're actually in the container before trusting anything below
+lxc 'hostname'                                    # expect "mymind", NOT "mini"
 
 # App status / logs
-$H 'systemctl status mymind --no-pager'
-$H 'journalctl -u mymind -n 120 --no-pager'
-$H 'journalctl -u mymind -f'                      # live tail
-$H 'journalctl -u mymind --since "10 min ago" --no-pager | grep -iE "error|unhandled|ECONNREFUSED"'
+lxc 'systemctl status mymind --no-pager'
+lxc 'journalctl -u mymind -n 120 --no-pager'
+lxc 'journalctl -u mymind -f'                     # live tail
+lxc 'journalctl -u mymind --since "10 min ago" --no-pager | grep -iE "error|unhandled|ECONNREFUSED"'
 
 # Restart (a few seconds of downtime)
-$H 'systemctl restart mymind && sleep 4 && systemctl is-active mymind'
+lxc 'systemctl restart mymind && sleep 4 && systemctl is-active mymind'
 
 # Health — /api/health does `select 1` (proves DB). /login is SSR-only and does NOT prove DB.
-$H 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health'   # expect 200
+lxc 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health'   # expect 200
 
 # Containers (should be ONLY mymind-db + mymind-searxng)
-$H 'docker ps'
+lxc 'docker ps'
 
 # Inspect env WITHOUT leaking secrets (mask user:pass)
-$H 'sed -E "s#://[^@]*@#://***@#" /opt/mymind/.env.native'
+lxc 'sed -E "s#://[^@]*@#://***@#" /opt/mymind/.env.native'
 
 # What env the RUNNING process actually has (the source of truth)
-$H 'pid=$(systemctl show -p MainPID --value mymind); tr "\0" "\n" < /proc/$pid/environ | grep -E "^(NUXT_DATABASE_URL|DATABASE_URL|NITRO_HOST|NODE_ENV)=" | sed -E "s#://[^@]*@#://***@#"'
+lxc 'pid=$(systemctl show -p MainPID --value mymind); tr "\0" "\n" < /proc/$pid/environ | grep -E "^(NUXT_DATABASE_URL|DATABASE_URL|NITRO_HOST|NODE_ENV)=" | sed -E "s#://[^@]*@#://***@#"'
 
 # Postgres (no host port exposed beyond loopback; go via the container)
-$H 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
 ```
 
 ## Deploy & rollback
