@@ -2,7 +2,7 @@
 title: MCP recall hygiene — payload caps, review-gated recall, corroborated contradictions, path collapse (cycle 51)
 cycle: 51
 date: 2026-07-29
-status: BUILT, whole-branch reviewed (verdict MERGE WITH FIXES), and the ruled-on fix wave applied on branch `feat/mcp-recall-hygiene`. Gates green (typecheck 0 / test 934 across 133 files / build clean). NOT MERGED, NOT PUSHED, NOT DEPLOYED — awaiting Tony's explicit go-ahead before Task 10 (merge, deploy, prod cleanup-script run).
+status: ✅ SHIPPED — merged to master (fast-forward, `e4f5a9e..dc06f1e`), pushed, and DEPLOYED via CD run 30573162535 (green, exit 0). Prod verified independently: LXC 114 `hostname` → `mymind`, `systemctl is-active mymind` → active, DB-touching `/api/health` → 200. Live prod MCP round-trip confirms the fix at production scale (see "Prod acceptance" below). Gates at merge: typecheck 0 / test 934 across 133 files / build clean. ⚠️ ONE STEP OUTSTANDING: `scripts/collapse-local-paths.ts --apply` has NOT been run on prod — the dry run is reviewed and a snapshot is saved, but the write is still pending Tony's go-ahead (see "Task 10 residual risk").
 branch: feat/mcp-recall-hygiene (built subagent-driven in worktree `.claude/worktrees/mcp-recall-hygiene`, 8 plan tasks + 2 mid-flight plan-defect resolutions + per-task fix rounds + a final whole-branch-review fix wave; per-task briefs/reports, the execution ledger, and `final-fix-report.md` live in `.superpowers/sdd/2026-07-29-mcp-recall-hygiene/`)
 docs:
   - ../wiki/mcp.md (living reference — tool table rows for `list_documents`/`search_docs`/`search_tasks`/`search_projects`/`search_memories`/`get_recent_memories` updated with `limit`/`offset`/`includeUnreviewed` + result shape; new "Recall defaults (cycle 51)" subsection; cycle bumped 48→51, updated 2026-07-29)
@@ -318,9 +318,26 @@ both `server/**` and `test/**` before asserting "no existing test" or "exactly N
   `memory-enrich.ts` tally fix; Task 8's 2 findings + 1 improvement — value-not-length skip
   check, a parent-of-registered-prefix test, dry-run now lists dropped paths). Per-task
   briefs/reports and the ledger live in `.superpowers/sdd/2026-07-29-mcp-recall-hygiene/`.
-- **No live-DB MCP round-trip was recorded for this cycle beyond the Task 6 dev-corpus
-  measurement above** — unlike cycle 50's live prod round-trip, this cycle has not yet been
-  exercised against prod at all (see status: not merged/deployed).
+## Prod acceptance (post-deploy, 2026-07-30)
+
+The Task 6 measurement above is same-corpus but dev-scale. After deploy, the same two tools were
+called through the **live prod MCP endpoint** (`POST /api/mcp`, `mm_` bearer) against the real
+production corpus — the one that actually overflowed and produced the original baselines. This is
+the apples-to-apples comparison the dev measurement could not be:
+
+| Tool | Before (prod, pre-cycle) | After (prod, live) | Reduction |
+|---|---:|---:|---:|
+| `list_documents` (no filter) | 662,712 | **6,187** | **-99.1%** |
+| `search_tasks` (no filter) | 282,904 | **5,935** | **-97.9%** |
+
+Both returned `items: 25` with `hasMore: true` (`total` 85 documents / 157 tasks), and a
+programmatic check confirmed **no `content` or `description` key on any item**. The envelope, the
+default page size, the body-free shape, and the reviewed-only defaults are all live in production.
+
+Note this supersedes the earlier caveat's concern in one direction: the prod "before" figure is a
+genuine pre-cycle measurement of the same store, so the -99.1% here does not carry the
+skill-document overstatement that applies to the dev same-corpus table (which compared 68 rows
+including 6 skill bodies). The dev table's "~97-98%" caveat still stands for *that* table.
 
 ## Deferred minors and residuals (from the ledger — none block this cycle)
 
@@ -372,15 +389,38 @@ that will be this branch's first live exercise of the prefix-collapse path. `--p
 restricts both the dry run and `--apply` to a single project, so Terawulf can be inspected and
 applied on its own before anything else is touched.
 
-## Next steps (Tony)
+## Next steps
 
-1. **Review and confirm go-ahead.** Nothing in this cycle has been merged, pushed, or deployed.
-2. **Task 10** (once approved): merge + push (CD deploys) — no migration to run.
-3. Deploy per the `prod-deploy` skill; confirm `/api/health` 200 post-cutover and that the tool
-   surface is still 37 (`mcp-parity`/`agent-tools` guard).
-4. Run `scripts/collapse-local-paths.ts` against prod: **snapshot, then dry-run first** (see
-   residual risk above), read the dropped-path list — `--project terawulf` to inspect the one
-   project this was written for in isolation — then `--apply`.
-5. Optional acceptance: from a live MCP session, confirm `list_documents`/`search_docs` on the
-   real prod corpus now return a bounded, body-free page — the prod-scale analogue of the Task 6
-   dev-corpus measurement above.
+**Done (2026-07-30):**
+
+1. ~~Go-ahead~~ — approved by Tony.
+2. ~~Merge + push~~ — fast-forward `e4f5a9e..dc06f1e`; local `master` synced afterwards.
+3. ~~Deploy~~ — CD run 30573162535 green; prod health 200, verified in-container.
+4. ~~Prod acceptance~~ — live MCP round-trip recorded above.
+5. **Cleanup script dry-run on prod — done and reviewed.** `18/34` projects would change.
+   Snapshot saved at **`/root/local_paths.bak.csv` on LXC 114** (34 rows, taken before any
+   write). Notable drops: `terawulf 62 → 0` (larger than the ~50 the feedback doc reported),
+   `2d-rpg 26 → 1`, `3d-rpg 21 → 0`, `mymind 17 → 2`; seven projects collapse to zero.
+   Verified before approving: `local_paths` is **written-only** apart from a single read in
+   `shouldRecordLocalPath` (append-or-skip). Routing uses `pathPrefixes`/`gitRemoteKey`/aliases
+   and never `local_paths`, and no UI renders it — so a project reaching zero loses no function,
+   and the entries cannot re-accumulate because the same prefix check now blocks the append.
+
+**Outstanding:**
+
+6. **`scripts/collapse-local-paths.ts --apply` on prod** — the only unfinished step of this
+   cycle. Dry run reviewed, snapshot in place, blast radius understood. `--project terawulf`
+   applies to that project alone if a smoke test is wanted first. Invocation on prod (tsx is not
+   in `node_modules/.bin` there — see the follow-up below):
+   `cd /opt/mymind && set -a && . ./.env && . ./.env.native; set +a; node node_modules/.pnpm/tsx@4.22.4/node_modules/tsx/dist/cli.mjs scripts/collapse-local-paths.ts`
+
+## Follow-up filed
+
+**`tsx` is not a declared dependency.** `scripts/collapse-local-paths.ts` is TypeScript and its
+header documents `node_modules/.bin/tsx`, but `tsx` appears in neither `dependencies` nor
+`devDependencies` — it resolves today only as a transitive package (prod has `tsx@4.22.4` in the
+pnpm store; a dev machine may have a stale shim). A clean `pnpm install` could therefore break the
+documented invocation. A Task 8 subagent had installed `tsx` as a devDependency locally to run the
+script, but that change (plus a 172-line lockfile churn) was never committed, never reviewed, and
+was **discarded** rather than slipped in unreviewed after the deploy. Tracked as its own task so it
+can be added deliberately with a real CI run.
