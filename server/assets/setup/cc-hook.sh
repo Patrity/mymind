@@ -49,7 +49,17 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then
   gb="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   gc="$(git -C "$cwd" rev-parse HEAD 2>/dev/null)"
   gr="$(git -C "$cwd" config --get remote.origin.url 2>/dev/null)"
-  gr_root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
+  # Canonical repo root — NOT --show-toplevel. From a linked worktree that returns the
+  # WORKTREE root, whose basename is the branch name ("multimodal"), and the server's
+  # no-remote fallback label-matches on basename(git_root) — so a branch name would pose
+  # as a project identity, or auto-create a project named after a branch.
+  # --git-common-dir always points at the MAIN repo's .git, so its parent is the real root.
+  # Falls back to --show-toplevel when --path-format is unsupported (git < 2.31).
+  gr_common="$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -n "$gr_common" ] && [ -d "$gr_common" ]; then
+    gr_root="$(cd "$gr_common/.." 2>/dev/null && pwd -P)"
+  fi
+  [ -z "$gr_root" ] && gr_root="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
   proj="$(basename "$cwd")"
 fi
 

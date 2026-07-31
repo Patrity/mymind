@@ -50,11 +50,21 @@ try {
 } catch { }
 
 # git context (never fails)
-$gb = ''; $gc = ''; $gr = ''; $proj = ''
+$gb = ''; $gc = ''; $gr = ''; $grRoot = ''; $proj = ''
 if ($cwd -and (Test-Path $cwd)) {
   $gb = (git -C $cwd rev-parse --abbrev-ref HEAD 2>$null)
   $gc = (git -C $cwd rev-parse HEAD 2>$null)
   $gr = (git -C $cwd config --get remote.origin.url 2>$null)
+  # Canonical repo root — NOT --show-toplevel. From a linked worktree that returns the
+  # WORKTREE root, whose basename is the branch name, and the server's no-remote fallback
+  # label-matches on basename(git_root) — so a branch name would pose as a project identity.
+  # --git-common-dir always points at the MAIN repo's .git, so its parent is the real root.
+  # Falls back to --show-toplevel when --path-format is unsupported (git < 2.31).
+  $grCommon = (git -C $cwd rev-parse --path-format=absolute --git-common-dir 2>$null)
+  if ($grCommon -and (Test-Path $grCommon)) {
+    $grRoot = (Resolve-Path (Join-Path $grCommon '..') -ErrorAction SilentlyContinue).Path
+  }
+  if (-not $grRoot) { $grRoot = (git -C $cwd rev-parse --show-toplevel 2>$null) }
   $proj = Split-Path $cwd -Leaf
 }
 
@@ -70,6 +80,7 @@ if ($sid) {
     git_branch  = (NullIfEmpty $gb)
     git_commit  = (NullIfEmpty $gc)
     git_remote  = (NullIfEmpty $gr)
+    git_root    = (NullIfEmpty $grRoot)
     machine_id  = $mid
     hostname    = $hostn
     metadata    = @{ hostname = $hostn; lastEvent = $EventName }
