@@ -297,3 +297,37 @@ describe('sync_document metadata and relocation', () => {
     expect(changes).toEqual([])
   })
 })
+
+describe('sync_document probe mode', () => {
+  it('confirms agreement without transferring a body', async () => {
+    const res = await run({ id: 'doc-1', local_hash: hashBody('server body') })
+    expect(res).toEqual({ ok: true, in_sync: true, server_hash: hashBody('server body'), id: 'doc-1' })
+    expect(changes).toEqual([])
+  })
+
+  it('reports divergence without writing', async () => {
+    const res = await run({ id: 'doc-1', local_hash: hashBody('local body') })
+    expect(res.ok).toBe(true)
+    expect(res.in_sync).toBe(false)
+    expect(res.server_hash).toBe(hashBody('server body'))
+    expect(rows['doc-1']!.content).toBe('server body')
+    expect(changes).toEqual([])
+  })
+
+  it('probes by path too', async () => {
+    const res = await run({ path: '/projects/x/a.md', local_hash: hashBody('server body') })
+    expect(res.in_sync).toBe(true)
+  })
+
+  it('reports not_found when probing an unknown target', async () => {
+    const res = await run({ id: 'nope', local_hash: 'abc' })
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe('not_found')
+  })
+
+  it('rejects a call with neither content nor local_hash', async () => {
+    const res = await run({ id: 'doc-1' })
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe('content_required')
+  })
+})

@@ -394,13 +394,14 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'sync_document',
-    description: 'Make a MyMind document match a local file in one call. Pass the file body as `content` (frontmatter stripped) plus the file\'s `mymind_id` as `id` and `mymind_hash` as `expected_hash`; if the file has no id yet, pass an absolute `path` instead and this adopts an existing doc at that path or creates one. Returns a receipt with `action`: created | adopted | updated | unchanged — write the returned `id` and `hash` back into the file\'s frontmatter. Fails closed: if the MyMind copy changed since your last sync you get ok:false with error "hash_mismatch" / "adopt_conflict" / "expected_hash_required" plus a body-free divergence report; re-call with force:true only after genuinely reconciling. Never deletes.',
+    description: 'Make a MyMind document match a local file in one call. Pass the file body as `content` (frontmatter stripped) plus the file\'s `mymind_id` as `id` and `mymind_hash` as `expected_hash`; if the file has no id yet, pass an absolute `path` instead and this adopts an existing doc at that path or creates one. Returns a receipt with `action`: created | adopted | updated | unchanged — write the returned `id` and `hash` back into the file\'s frontmatter. Fails closed: if the MyMind copy changed since your last sync you get ok:false with error "hash_mismatch" / "adopt_conflict" / "expected_hash_required" plus a body-free divergence report; re-call with force:true only after genuinely reconciling. Never deletes. Probe mode: pass `local_hash` INSTEAD of `content` to ask whether the two sides agree without transferring the body — returns { in_sync, server_hash } and never writes.',
     kind: 'create',
     schema: {
       id: z.string().optional().describe('Document id (the file\'s mymind_id)'),
       path: z.string().regex(/^\//, 'path must start with /').optional()
         .describe('Absolute path; required when there is no id. Filing under /projects/<slug>/ associates the project.'),
-      content: z.string().describe('The file body with frontmatter stripped'),
+      content: z.string().optional().describe('The file body with frontmatter stripped. Omit only in probe mode.'),
+      local_hash: z.string().optional().describe('Probe mode: pass this INSTEAD of content to ask whether the two sides agree, with no body transferred and no write.'),
       title: z.string().optional().describe('Title for a created document'),
       expected_hash: z.string().optional().describe('The file\'s mymind_hash — required when the target already exists, unless force'),
       force: z.boolean().optional().describe('Write even though the MyMind copy diverged'),
@@ -412,10 +413,24 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const id = a.id as string | undefined
       const path = a.path as string | undefined
-      const content = a.content as string
       if (!id && !path) {
         return { result: { ok: false, error: 'path_required', message: 'pass `path` when there is no `id`' }, summary: 'sync_document: path required' }
       }
+
+      // Probe: answer "do we agree?" without moving a body. Never writes.
+      const localHash = a.local_hash as string | undefined
+      if (a.content === undefined) {
+        if (!localHash) {
+          return { result: { ok: false, error: 'content_required', message: 'pass `content`, or `local_hash` for a probe' }, summary: 'sync_document: content required' }
+        }
+        const t = id ? await getDoc(id).then(d => d && { id: d.id, contentHash: d.contentHash }) : await findDocByPath(path!)
+        if (!t) return { result: docNotFound(id ?? path!), summary: 'sync_document: not found' }
+        return {
+          result: { ok: true, in_sync: t.contentHash === localHash, server_hash: t.contentHash, id: t.id },
+          summary: `sync_document probe: ${t.contentHash === localHash ? 'in sync' : 'diverged'}`
+        }
+      }
+      const content = a.content as string
 
       const incoming = hashBody(content)
       const current = id ? await getDoc(id) : null
