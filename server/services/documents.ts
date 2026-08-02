@@ -68,6 +68,7 @@ const toDTO = (r: typeof documents.$inferSelect): DocumentDTO => ({
   frontmatter: r.frontmatter as Record<string, unknown>, project: r.project, domain: r.domain,
   type: r.type, tags: r.tags, topic: r.topic, isPublic: r.isPublic, publicSlug: r.publicSlug,
   ocrId: r.ocrId,
+  contentHash: r.contentHash,
   updatedAt: r.updatedAt.toISOString()
 })
 

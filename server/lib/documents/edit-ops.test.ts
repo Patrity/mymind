@@ -98,22 +98,61 @@ describe('grepContent', () => {
 })
 
 describe('applyReplace', () => {
-  it('replaces a unique occurrence', () => {
-    expect(applyReplace('a foo b', 'foo', 'bar')).toEqual({ content: 'a bar b' })
+  it('replaces a unique occurrence and reports one replacement', () => {
+    expect(applyReplace('a foo b', 'foo', 'bar')).toEqual({ content: 'a bar b', replacements: 1 })
   })
-  it('errors when old_string is absent', () => {
-    expect(applyReplace('abc', 'zzz', 'x')).toEqual({ error: 'old_string not found in document' })
-  })
-  it('errors when old_string is non-unique without replace_all', () => {
-    expect(applyReplace('x x x', 'x', 'y')).toEqual({
-      error: 'old_string is not unique (3 matches) — add surrounding context or pass replace_all',
+  it('reports a typed no_match with a zero count when old_string is absent', () => {
+    expect(applyReplace('abc', 'zzz', 'x')).toEqual({
+      error: 'no_match',
+      message: 'old_string not found in document',
+      matches: 0,
     })
   })
-  it('replaces all occurrences with replace_all', () => {
-    expect(applyReplace('x x x', 'x', 'y', true)).toEqual({ content: 'y y y' })
+  it('reports a typed ambiguous_match with the count and candidate lines', () => {
+    const doc = ['alpha TODO', 'beta', 'gamma TODO', 'delta TODO'].join('\n')
+    expect(applyReplace(doc, 'TODO', 'DONE')).toEqual({
+      error: 'ambiguous_match',
+      message: 'old_string is not unique (3 matches) — add surrounding context or pass replace_all',
+      matches: 3,
+      candidates: [
+        { line: 1, text: 'alpha TODO' },
+        { line: 3, text: 'gamma TODO' },
+        { line: 4, text: 'delta TODO' },
+      ],
+    })
+  })
+  it('collapses several occurrences on one line into a single candidate', () => {
+    const r = applyReplace('x x x', 'x', 'y') as { matches: number, candidates: unknown[] }
+    expect(r.matches).toBe(3)
+    expect(r.candidates).toEqual([{ line: 1, text: 'x x x' }])
+  })
+  it('caps candidates so a pervasive old_string cannot flood the response', () => {
+    const doc = Array.from({ length: 40 }, (_, i) => `line ${i} TODO`).join('\n')
+    const r = applyReplace(doc, 'TODO', 'DONE') as { matches: number, candidates: unknown[] }
+    expect(r.matches).toBe(40)
+    expect(r.candidates).toHaveLength(10)
+  })
+  it('truncates candidate text so one very long line cannot blow up the response', () => {
+    const r = applyReplace('x'.repeat(5000), 'x', 'y') as { candidates: { text: string }[] }
+    expect(r.candidates[0]!.text.length).toBeLessThanOrEqual(203) // 200 + the ellipsis
+    expect(r.candidates[0]!.text.endsWith('…')).toBe(true)
+  })
+  it('leaves a short candidate line untouched', () => {
+    const r = applyReplace('a TODO\nb TODO', 'TODO', 'x') as { candidates: { text: string }[] }
+    expect(r.candidates[0]!.text).toBe('a TODO')
+  })
+  it('rejects an empty old_string with a typed error', () => {
+    expect(applyReplace('abc', '', 'x')).toEqual({
+      error: 'empty_old_string',
+      message: 'old_string must not be empty',
+      matches: 0,
+    })
+  })
+  it('replaces all occurrences with replace_all and reports the count', () => {
+    expect(applyReplace('x x x', 'x', 'y', true)).toEqual({ content: 'y y y', replacements: 3 })
   })
   it('treats $ in new_string literally (no regex specials)', () => {
-    expect(applyReplace('cost is HERE', 'HERE', '$5')).toEqual({ content: 'cost is $5' })
+    expect(applyReplace('cost is HERE', 'HERE', '$5')).toEqual({ content: 'cost is $5', replacements: 1 })
   })
 })
 

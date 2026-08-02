@@ -2,7 +2,7 @@
 title: MCP Server
 status: shipped
 cycle: 51
-updated: 2026-07-29
+updated: 2026-08-01
 ---
 
 # MCP Server
@@ -100,10 +100,10 @@ Each tool carries a `kind` field that controls gating + description copy:
 | `search_passages(query, project?, limit?)` | read | documents.searchPassages (chunk-level RAG, cycle 31) |
 | `list_documents(project?, limit?, offset?)` → `{ items, total, hasMore }` (cycle 51) | read | documents.listDocsSummary + countDocs |
 | `get_document(id)` | read | documents.getDoc |
-| `save_document(content, project?, title?, path?)` | create | documents.createDoc |
+| `save_document(content, project?, title?, path?)` | create | documents.createDoc → receipt |
 | `read_document(id, { heading?, offset?, limit? })` | read | edit-ops `outline` / `readSection` (cycle 40) |
 | `grep_document(id, pattern, { regex?, context?, max? })` | read | edit-ops `grepContent` (cycle 40) |
-| `edit_document(id, old_string, new_string, replace_all?)` | create | edit-ops `applyReplace` → documents.updateDoc (cycle 40) |
+| `edit_document(id, old_string, new_string, replace_all?)` | create | edit-ops `applyReplace` → documents.updateDoc → receipt (cycle 40) |
 | `edit_section(id, { mode, text, heading? })` | create | edit-ops `applyEditSection` → documents.updateDoc (cycle 40) |
 | `update_document(id, { title?, content?, frontmatter?, tags?, domain?, type?, project? })` | create | documents.updateDoc (cycle 40) |
 | `move_document(id, path)` | create | documents.moveDoc (cycle 40) |
@@ -133,7 +133,46 @@ Each tool carries a `kind` field that controls gating + description copy:
 
 **Long-doc agent workflow (cycle 40)** — agents should not round-trip the whole document body to make a small change. Instead: `read_document(id)` with no selector → outline + line/char counts; `read_document(id, { heading })` → just that section; `grep_document(id, pattern)` → locate the exact unique string; `edit_document(id, old, new)` → surgical patch. `edit_section` handles structure-aware append/replace. All mutations call `publishChange` (live-data rule) and return an `undo`.
 
-**Pure `edit-ops.ts` module** (`server/lib/documents/edit-ops.ts`) — zero-DB string helpers underlying the cycle-40 edit tools: `outline`, `findSection`, `readSection`, `documentStats`, `grepContent`, `applyReplace`, `applyEditSection`. 26 unit tests; tool handlers do DB I/O around them.
+**Pure `edit-ops.ts` module** (`server/lib/documents/edit-ops.ts`) — zero-DB string helpers underlying the cycle-40 edit tools: `outline`, `findSection`, `readSection`, `documentStats`, `grepContent`, `applyReplace`, `applyEditSection`. Unit-tested; tool handlers do DB I/O around them.
+
+### Write receipts + typed edit failures
+
+Document writes answer with a **body-free receipt**, never an echo of the document
+(`server/lib/agent/receipt.ts`):
+
+```jsonc
+{ "ok": true, "id": "…", "path": "/projects/x/y.md", "title": "…", "project": "x",
+  "type": null, "tags": [], "updatedAt": "…",
+  "hash": "<sha256 of content>", "bytes": { "before": 102010, "after": 102019 },
+  "replacements": 1 }            // find/replace edits only
+```
+
+Applies to `save_document`, `edit_document`, `edit_section`, `update_document`,
+`move_document`, `quick_capture`. Reads are unchanged — `get_document` still returns the full
+body on purpose.
+
+This was a **correctness** fix, not only a cost one. Echoing the document back meant a write to
+a large doc produced a response past the MCP host's tool-result cap, so a write that *had
+already committed* reached the agent as an error — which it would then either retry
+(double-applying, or failing on a now-stale `old_string`) or report as failed work. The same
+`exec.result` feeds the in-app agent (`ai-tools.ts`), so the echo was burning its context too.
+
+`hash` is the stored `documents.content_hash` (sha256 of `content`, maintained on create and on
+every content update), letting a caller compare a local copy without re-reading the body.
+
+Edit failures are **typed** — `error` is a stable code, `message` the human hint — so an agent
+branches on the outcome instead of pattern-matching prose:
+
+| `error` | Extra fields |
+|---|---|
+| `no_match` | `matches: 0` |
+| `ambiguous_match` | `matches: N`, `candidates: [{ line, text }]` (≤10 lines, each clipped to 200 chars) |
+| `empty_old_string` | `matches: 0` |
+| `not_found` | `id` — also covers the row being deleted between the read and the write landing |
+
+Nothing is written on any failure. Candidates are **distinct lines** (several hits on one line
+collapse to one entry) and both the count and the per-line length are capped — an unclipped
+candidate from a single 100 KB line would reintroduce the very overflow receipts prevent.
 
 ### Session search + transcript read (cycle 50)
 

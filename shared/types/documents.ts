@@ -13,6 +13,8 @@ export interface DocumentDTO {
   isPublic: boolean
   publicSlug: string | null
   ocrId: string | null
+  /** sha256 of `content`. Lets a caller compare a local copy without re-reading the body. */
+  contentHash: string | null
   updatedAt: string
 }
 export interface DocumentUpsert {

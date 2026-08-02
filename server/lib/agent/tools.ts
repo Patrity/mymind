@@ -18,6 +18,7 @@ import { skillsEnabled } from './skills-config'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 import { clampPaging, buildPage } from './paging'
+import { docReceipt, docNotFound } from './receipt'
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
@@ -220,7 +221,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'save_document',
-    description: 'Create a Markdown document. Search first (search_docs) to avoid duplicates. Pass `project` (a slug) to file it under /projects/<slug>/ and associate it; otherwise it lands in /input for triage. Prefer this over quick_capture for anything substantive or project-scoped; to change an existing doc use edit_document/update_document.',
+    description: 'Create a Markdown document. Search first (search_docs) to avoid duplicates. Pass `project` (a slug) to file it under /projects/<slug>/ and associate it; otherwise it lands in /input for triage. Prefer this over quick_capture for anything substantive or project-scoped; to change an existing doc use edit_document/update_document. Returns a receipt { ok, id, path, hash, bytes } — never the body.',
     kind: 'create',
     schema: {
       content: z.string().describe('Markdown body'),
@@ -238,7 +239,7 @@ export const agentTools: AgentTool[] = [
       })
       publishChange({ resource: 'document', action: 'created', id: doc.id })
       return {
-        result: doc,
+        result: docReceipt(doc, { before: 0 }),
         summary: `saved document ${doc.path}`,
         undo: async () => { await deleteDoc(doc.id) }
       }
@@ -246,7 +247,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'edit_document',
-    description: 'Surgically edit a document by exact find/replace (like a code editor\'s edit). `old_string` must appear exactly once (add surrounding lines to disambiguate) unless you pass replace_all. Cheap on long docs — do NOT rewrite the whole document for a small change. Tip: grep_document/read_document to get the exact old_string first.',
+    description: 'Surgically edit a document by exact find/replace (like a code editor\'s edit). `old_string` must appear exactly once (add surrounding lines to disambiguate) unless you pass replace_all. Cheap on long docs — do NOT rewrite the whole document for a small change. Tip: grep_document/read_document to get the exact old_string first. Returns a receipt { ok, id, path, hash, bytes, replacements } — never the body. On failure returns ok:false with error "no_match" or "ambiguous_match" (plus `candidates` line numbers to disambiguate with); nothing is written in either case.',
     kind: 'create',
     schema: {
       id: z.string().describe('Document id'),
@@ -257,21 +258,22 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const id = a.id as string
       const doc = await getDoc(id)
-      if (!doc) return { result: { error: 'document not found' }, summary: 'edit_document: not found' }
+      if (!doc) return { result: docNotFound(id), summary: 'edit_document: not found' }
       const prior = doc.content ?? ''
       const res = applyReplace(prior, a.old_string as string, a.new_string as string, a.replace_all as boolean | undefined)
-      if ('error' in res) return { result: { error: res.error }, summary: `edit_document: ${res.error}` }
+      if ('error' in res) return { result: { ok: false, ...res }, summary: `edit_document: ${res.error}` }
       const updated = await updateDoc(id, { content: res.content })
       publishChange({ resource: 'document', action: 'updated', id })
       return {
-        result: updated, summary: `edited document ${doc.path}`,
+        result: updated ? docReceipt(updated, { before: prior.length, replacements: res.replacements }) : docNotFound(id),
+        summary: `edited document ${doc.path}`,
         undo: async () => { await updateDoc(id, { content: prior }); publishChange({ resource: 'document', action: 'updated', id }) }
       }
     }
   },
   {
     name: 'edit_section',
-    description: 'Edit a document by markdown heading section. mode:"append" with no heading appends to the end of the doc; with a heading it appends inside that section. mode:"replace" needs a heading and replaces that section\'s body (the heading line is kept). For whole-content or metadata changes use update_document.',
+    description: 'Edit a document by markdown heading section. mode:"append" with no heading appends to the end of the doc; with a heading it appends inside that section. mode:"replace" needs a heading and replaces that section\'s body (the heading line is kept). For whole-content or metadata changes use update_document. Returns a receipt { ok, id, path, hash, bytes } — never the body.',
     kind: 'create',
     schema: {
       id: z.string().describe('Document id'),
@@ -282,7 +284,7 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const id = a.id as string
       const doc = await getDoc(id)
-      if (!doc) return { result: { error: 'document not found' }, summary: 'edit_section: not found' }
+      if (!doc) return { result: docNotFound(id), summary: 'edit_section: not found' }
       const prior = doc.content ?? ''
       const res = applyEditSection(prior, {
         mode: a.mode as 'append' | 'replace', text: a.text as string, heading: a.heading as string | undefined
@@ -291,14 +293,15 @@ export const agentTools: AgentTool[] = [
       const updated = await updateDoc(id, { content: res.content })
       publishChange({ resource: 'document', action: 'updated', id })
       return {
-        result: updated, summary: `edited section of ${doc.path}`,
+        result: updated ? docReceipt(updated, { before: prior.length }) : docNotFound(id),
+        summary: `edited section of ${doc.path}`,
         undo: async () => { await updateDoc(id, { content: prior }); publishChange({ resource: 'document', action: 'updated', id }) }
       }
     }
   },
   {
     name: 'update_document',
-    description: 'Update a document\'s whole content and/or metadata (title, frontmatter, tags, domain, type). Passing `project` (a slug) files/associates it under /projects/<slug>/. For a small content change prefer edit_document; to relocate by explicit path use move_document. At least one field is required.',
+    description: 'Update a document\'s whole content and/or metadata (title, frontmatter, tags, domain, type). Passing `project` (a slug) files/associates it under /projects/<slug>/. For a small content change prefer edit_document; to relocate by explicit path use move_document. At least one field is required. Returns a receipt { ok, id, path, hash, bytes } — never the body.',
     kind: 'create',
     schema: {
       id: z.string().describe('Document id'),
@@ -313,7 +316,7 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const id = a.id as string
       const doc = await getDoc(id)
-      if (!doc) return { result: { error: 'document not found' }, summary: 'update_document: not found' }
+      if (!doc) return { result: docNotFound(id), summary: 'update_document: not found' }
       // Capture the pre-mutation snapshot BEFORE updateDoc runs. Undo restores prior content +
       // metadata + original path (path wins → also reverses an assign-project relocate).
       const prior = doc
@@ -322,7 +325,10 @@ export const agentTools: AgentTool[] = [
       const updated = await updateDoc(id, patch as Record<string, unknown>)
       publishChange({ resource: 'document', action: 'updated', id })
       return {
-        result: updated ?? { error: 'not found', id }, summary: `updated document ${doc.path}`,
+        result: updated
+          ? docReceipt(updated, { before: (prior.content ?? '').length })
+          : docNotFound(id),
+        summary: `updated document ${doc.path}`,
         undo: async () => {
           await updateDoc(id, {
             path: prior.path, title: prior.title ?? undefined, content: prior.content ?? '',
@@ -345,12 +351,14 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const id = a.id as string
       const doc = await getDoc(id)
-      if (!doc) return { result: { error: 'document not found' }, summary: 'move_document: not found' }
+      if (!doc) return { result: docNotFound(id), summary: 'move_document: not found' }
       const prior = doc.path
       const updated = await moveDoc(id, a.path as string)
       publishChange({ resource: 'document', action: 'updated', id })
+      const size = (doc.content ?? '').length // a move never touches the body
       return {
-        result: updated, summary: `moved document to ${a.path}`,
+        result: updated ? docReceipt(updated, { before: size }) : docNotFound(id),
+        summary: `moved document to ${a.path}`,
         undo: async () => { await moveDoc(id, prior); publishChange({ resource: 'document', action: 'updated', id }) }
       }
     }
@@ -773,10 +781,10 @@ export const agentTools: AgentTool[] = [
     handler: async (a) => {
       const title = (a.title as string) ?? null
       const slug = title ? title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').slice(0, 64) || nanoid(8) : nanoid(10)
-      const doc = await createDoc({ path: `/input/${slug}.md`, title, content: a.text as string }) as { id?: string, path?: string }
-      publishChange({ resource: 'document', action: 'created', id: (doc as { id: string }).id })
+      const doc = await createDoc({ path: `/input/${slug}.md`, title, content: a.text as string })
+      publishChange({ resource: 'document', action: 'created', id: doc.id })
       return {
-        result: doc, summary: `captured note${title ? ` "${title}"` : ''}`,
+        result: docReceipt(doc, { before: 0 }), summary: `captured note${title ? ` "${title}"` : ''}`,
         // createDoc has no soft-delete service exposed here; undo is best-effort no-op marker.
         undo: undefined
       }
