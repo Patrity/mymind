@@ -13,13 +13,74 @@
 ## Global Constraints
 
 - Package manager is **pnpm**. Never npm/yarn.
-- Gates that must pass before any commit: `pnpm typecheck`, `pnpm vitest run`, `pnpm build`. Lint is red repo-wide and is NOT a gate.
+- Gates that must pass before any commit: `pnpm typecheck`, `pnpm test`, `pnpm build`. Lint is red repo-wide and is NOT a gate.
+- **Database-backed tests use the `*.db.test.ts` suffix and are excluded from `pnpm test`.** CI has no Postgres service and `deploy` has `needs: test`, so a real-DB test in the default suite would block every deploy. Run them with `pnpm test:db` against the local `mymind-db` on port 5433. Task 0 sets this up.
 - The hash covers the document **body only** (`documents.content`). Frontmatter lives in a separate `jsonb` column and is never hashed.
 - Every successful mutation calls `publishChange({ resource: 'document', action })` after the DB commit (see `.claude/rules/live-data.md`). Non-writing outcomes (`unchanged`, `adopted`, probe) must NOT emit.
 - Document write tools return the body-free `DocReceipt` from `server/lib/agent/receipt.ts`. Never return `content` from a write.
 - `sync_document` is `kind: 'create'`, never `dangerous` — `server/lib/mcp/server.ts` refuses to expose dangerous tools over MCP.
 - Tool `description` strings are the agent-facing interface; every new parameter and return field must be described there.
 - Deletes are out of scope. A sync never removes a document.
+
+---
+
+### Task 0: Split DB-backed tests out of the CI gate
+
+CI runs `pnpm test` with no Postgres service, and `deploy` has `needs: test`. Tasks 1 and 3 add real-database tests, so without this split every push would fail CI and block deploys.
+
+**Files:**
+- Modify: `vitest.config.ts`
+- Modify: `package.json`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: the `*.db.test.ts` convention and a `pnpm test:db` script. Every later task's DB test uses this suffix.
+
+- [ ] **Step 1: Exclude the DB suffix from the default run**
+
+In `vitest.config.ts`, add `'**/*.db.test.ts'` as the last entry of the `exclude` array, with a comment:
+
+```ts
+      '**/.claude/**',
+      // DB-backed tests (*.db.test.ts) need a real Postgres. CI has no database service and
+      // `deploy` needs `test`, so they run via `pnpm test:db` locally, never in the CI gate.
+      '**/*.db.test.ts'
+```
+
+- [ ] **Step 2: Add the script**
+
+In `package.json` scripts, after `"test:watch"`:
+
+```json
+    "test:db": "vitest run --exclude '**/node_modules/**' --exclude '**/.claude/**' --dir test",
+```
+
+Verify it can actually select a DB test once one exists; if `--exclude` overrides rather than extends the config, use `vitest run --config vitest.db.config.ts` with a config whose `include` is `['**/*.db.test.ts']` and whose `exclude` mirrors the base config minus the `.db` entry. Prove whichever form you choose actually runs a `.db.test.ts` file and that `pnpm test` does not.
+
+- [ ] **Step 3: Verify the split both ways**
+
+Create a throwaway `test/split-probe.db.test.ts` containing `import { describe, it, expect } from 'vitest'; describe('probe', () => { it('runs', () => { expect(1).toBe(1) }) })`.
+
+```bash
+pnpm test 2>&1 | grep -c "split-probe"     # expect 0 — excluded from the CI gate
+pnpm test:db 2>&1 | grep -c "split-probe"  # expect >0 — picked up by the DB runner
+rm test/split-probe.db.test.ts
+```
+
+- [ ] **Step 4: Confirm the existing suite is untouched**
+
+```bash
+pnpm test
+```
+
+Expected: 950 tests pass, exactly as before.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add vitest.config.ts package.json
+git commit -m "test: split DB-backed tests (*.db.test.ts) out of the CI gate"
+```
 
 ---
 
@@ -31,7 +92,7 @@ Closes the drift hole: `server/services/image-enrich.ts:90` writes `content` via
 - Modify: `server/db/schema/documents.ts:18`
 - Create: `server/db/migrations/<NNNN>_<generated_name>.sql` (drizzle-kit names it; hand-append custom SQL)
 - Modify: `server/services/documents.ts:153,189` (delete the JS hashing)
-- Test: `test/documents-content-hash.test.ts`
+- Test: `test/documents-content-hash.db.test.ts` (DB-backed — excluded from `pnpm test`)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -39,10 +100,10 @@ Closes the drift hole: `server/services/image-enrich.ts:90` writes `content` via
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/documents-content-hash.test.ts`. This is a real-DB test — it must run against the local `mymind-db` (port 5433), because the behaviour under test is enforced by Postgres, not by TypeScript.
+Create `test/documents-content-hash.db.test.ts`. This is a real-DB test — it must run against the local `mymind-db` (port 5433), because the behaviour under test is enforced by Postgres, not by TypeScript.
 
 ```ts
-// test/documents-content-hash.test.ts
+// test/documents-content-hash.db.test.ts
 import { describe, it, expect } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
@@ -84,7 +145,7 @@ describe('documents.content_hash is database-generated', () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-pnpm vitest run test/documents-content-hash.test.ts
+pnpm test:db test/documents-content-hash.db.test.ts
 ```
 
 Expected: FAIL. The second test fails because the column is currently writable; the first may pass by luck only if no raw update runs — it will fail once the raw update leaves the hash stale.
@@ -156,8 +217,8 @@ In `server/services/documents.ts`:
 - [ ] **Step 7: Run the tests to verify they pass**
 
 ```bash
-pnpm vitest run test/documents-content-hash.test.ts
-pnpm typecheck && pnpm vitest run && pnpm build
+pnpm test:db test/documents-content-hash.db.test.ts
+pnpm typecheck && pnpm test && pnpm build
 ```
 
 Expected: all PASS. `test/agent-doc-receipts.test.ts` must still pass — it mocks the service, so it is unaffected.
@@ -165,7 +226,7 @@ Expected: all PASS. `test/agent-doc-receipts.test.ts` must still pass — it moc
 - [ ] **Step 8: Commit**
 
 ```bash
-git add server/db/schema/documents.ts server/db/migrations server/services/documents.ts test/documents-content-hash.test.ts
+git add server/db/schema/documents.ts server/db/migrations server/services/documents.ts test/documents-content-hash.db.test.ts
 git commit -m "fix(documents): make content_hash a generated column so it cannot drift"
 ```
 
@@ -348,7 +409,7 @@ git commit -m "feat(agent): pure sync decision logic with fail-closed divergence
 
 **Files:**
 - Modify: `server/services/documents.ts`
-- Test: `test/documents-cas.test.ts`
+- Test: `test/documents-cas.db.test.ts` (DB-backed — excluded from `pnpm test`)
 
 **Interfaces:**
 - Consumes: `SyncTarget` from Task 2 (shape only).
@@ -364,7 +425,7 @@ git commit -m "feat(agent): pure sync decision logic with fail-closed divergence
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// test/documents-cas.test.ts
+// test/documents-cas.db.test.ts
 import { describe, it, expect } from 'vitest'
 import { createDoc, casUpdateContent, findDocByPath, deleteDoc } from '../server/services/documents'
 import { hashBody } from '../server/lib/agent/sync'
@@ -413,7 +474,7 @@ describe('findDocByPath', () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-pnpm vitest run test/documents-cas.test.ts
+pnpm test:db test/documents-cas.db.test.ts
 ```
 
 Expected: FAIL — `casUpdateContent is not a function`.
@@ -459,7 +520,7 @@ export async function casUpdateContent(
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-pnpm vitest run test/documents-cas.test.ts && pnpm typecheck
+pnpm test:db test/documents-cas.db.test.ts && pnpm typecheck
 ```
 
 Expected: PASS.
@@ -467,7 +528,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add server/services/documents.ts test/documents-cas.test.ts
+git add server/services/documents.ts test/documents-cas.db.test.ts
 git commit -m "feat(documents): findDocByPath + atomic content compare-and-swap"
 ```
 
@@ -759,7 +820,7 @@ Add `title: z.string().optional().describe('Title for a created document')` to t
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-pnpm vitest run test/agent-sync-document.test.ts && pnpm typecheck && pnpm vitest run && pnpm build
+pnpm vitest run test/agent-sync-document.test.ts && pnpm typecheck && pnpm test && pnpm build
 ```
 
 Expected: all PASS. `test/agent-tools.test.ts` asserts the exact tool-name list — add `sync_document` to it (alphabetically, after `search_tasks`).
@@ -915,7 +976,7 @@ Leave the `undo` closure as written — it restores content, which is the destru
 - [ ] **Step 6: Run the tests to verify they pass**
 
 ```bash
-pnpm vitest run test/agent-sync-document.test.ts && pnpm typecheck && pnpm vitest run && pnpm build
+pnpm vitest run test/agent-sync-document.test.ts && pnpm typecheck && pnpm test && pnpm build
 ```
 
 Expected: all PASS.
@@ -1024,7 +1085,7 @@ Delete the earlier `const content = a.content as string` line so it is not decla
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-pnpm vitest run test/agent-sync-document.test.ts && pnpm typecheck && pnpm vitest run && pnpm build
+pnpm vitest run test/agent-sync-document.test.ts && pnpm typecheck && pnpm test && pnpm build
 ```
 
 Expected: all PASS.
@@ -1220,7 +1281,7 @@ Bump `updated:` in the frontmatter to the date of the change.
 - [ ] **Step 7: Final gates and commit**
 
 ```bash
-pnpm typecheck && pnpm vitest run && pnpm build
+pnpm typecheck && pnpm test && pnpm build
 git add scripts/sync-document-e2e.mjs docs/wiki/mcp.md
 git commit -m "test(mcp): live E2E for sync_document; document it in the wiki"
 ```
