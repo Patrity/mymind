@@ -1,5 +1,4 @@
 import { and, desc, eq, isNull, ilike, ne, or, sql, inArray } from 'drizzle-orm'
-import { createHash } from 'node:crypto'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
 import { documents, chunks } from '../db/schema'
@@ -150,8 +149,7 @@ export async function createDoc(input: DocumentUpsert): Promise<DocumentDTO> {
     content: input.content ?? '', language: getLanguageFromPath(finalPath),
     frontmatter: (input.frontmatter ?? {}) as unknown as string,
     project, projectId, domain: input.domain,
-    type: input.type, tags: input.tags ?? [], topic: input.topic,
-    contentHash: createHash('sha256').update(input.content ?? '').digest('hex')
+    type: input.type, tags: input.tags ?? [], topic: input.topic
   }).returning()
   return toDTO(rows[0]!)
 }
@@ -187,7 +185,6 @@ export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Pro
   for (const k of ['title', 'content', 'frontmatter', 'domain', 'type', 'tags', 'topic'] as const) {
     if (input[k] !== undefined) patch[k] = input[k]
   }
-  if (input.content !== undefined) patch.contentHash = createHash('sha256').update(input.content).digest('hex')
 
   const [r] = await useDb().update(documents).set(patch as Partial<typeof documents.$inferInsert>).where(and(eq(documents.id, id), live())).returning()
   return r ? toDTO(r) : null
