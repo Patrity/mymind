@@ -1,5 +1,5 @@
 import type { DocumentDTO } from '../../../shared/types/documents'
-import { outline } from '../documents/edit-ops'
+import { outline, clip } from '../documents/edit-ops'
 
 /**
  * What a document write answers with.
@@ -34,6 +34,17 @@ export interface DocReceipt {
  */
 export const docNotFound = (id: string) =>
   ({ ok: false as const, error: 'not_found' as const, message: 'document not found', id })
+
+/**
+ * A path-addressed miss (`sync_document` called with `path` and no `id`, matching no live doc)
+ * — probe or a target lookup that comes up empty. Deliberately a SEPARATE shape from
+ * `docNotFound`: that one's `id` field is documented as the file's `mymind_id`, and an agent
+ * following the sync workflow writes whatever comes back there straight into frontmatter. Put a
+ * path in that field and a path-addressed miss would poison the file with a path where a UUID
+ * belongs. Reports the path in its own field instead, with no `id` at all.
+ */
+export const docNotFoundAtPath = (path: string) =>
+  ({ ok: false as const, error: 'not_found' as const, message: 'document not found', path })
 
 /** Body-free receipt for a document write. `before` is the pre-write byte length (0 for a create). */
 export function docReceipt(
@@ -73,7 +84,13 @@ export function divergenceReport(
       hash: server.contentHash,
       bytes: body.length,
       updatedAt: server.updatedAt,
-      headings: outline(body).map(h => h.text).slice(0, 25)
+      // Slice BEFORE map — a document with far more than 25 headings shouldn't pay to build
+      // (and clip) text for the ones that get thrown away. Each surviving heading's text is
+      // clipped (same 200-char cap as edit-ops' candidate lines) so a single pathological
+      // heading — e.g. a giant one-line blob mistaken for a heading — can't reinflate the
+      // "body-free" refusal payload back toward document size (a measured pathological case
+      // hit ~200 KB before this cap).
+      headings: outline(body).slice(0, 25).map(h => clip(h.text))
     },
     local: { bytes: localContent.length },
     hint: 'inspect with read_document/grep_document, then re-call with force:true (or sync with the server hash as expected_hash)'

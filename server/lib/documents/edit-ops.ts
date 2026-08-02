@@ -117,7 +117,12 @@ const MAX_CANDIDATES = 10
  * failure that receipts exist to prevent.
  */
 const MAX_CANDIDATE_CHARS = 200
-const clip = (s: string) => (s.length > MAX_CANDIDATE_CHARS ? s.slice(0, MAX_CANDIDATE_CHARS) + '…' : s)
+/**
+ * Clip a string to `MAX_CANDIDATE_CHARS`, appending an ellipsis when it overflows. Exported so
+ * other body-free-response builders (e.g. `divergenceReport` in `server/lib/agent/receipt.ts`)
+ * reuse the same cap instead of inventing a second one.
+ */
+export const clip = (s: string) => (s.length > MAX_CANDIDATE_CHARS ? s.slice(0, MAX_CANDIDATE_CHARS) + '…' : s)
 
 /**
  * The distinct lines an offset list falls on, capped. Several occurrences on one line

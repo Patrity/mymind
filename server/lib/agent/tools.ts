@@ -18,7 +18,7 @@ import { skillsEnabled } from './skills-config'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 import { clampPaging, buildPage } from './paging'
-import { docReceipt, docNotFound, divergenceReport } from './receipt'
+import { docReceipt, docNotFound, docNotFoundAtPath, divergenceReport } from './receipt'
 import { decideSync, hashBody } from './sync'
 import type { DocumentDTO } from '../../../shared/types/documents'
 
@@ -424,7 +424,9 @@ export const agentTools: AgentTool[] = [
           return { result: { ok: false, error: 'content_required', message: 'pass `content`, or `local_hash` for a probe' }, summary: 'sync_document: content required' }
         }
         const t = id ? await getDoc(id).then(d => d && { id: d.id, contentHash: d.contentHash }) : await findDocByPath(path!)
-        if (!t) return { result: docNotFound(id ?? path!), summary: 'sync_document: not found' }
+        // id-addressed miss keeps the genuine-id shape (docNotFound); a path-addressed miss
+        // must NOT present the path as an id — see docNotFoundAtPath.
+        if (!t) return { result: id ? docNotFound(id) : docNotFoundAtPath(path!), summary: 'sync_document: not found' }
         return {
           result: { ok: true, in_sync: t.contentHash === localHash, server_hash: t.contentHash, id: t.id },
           summary: `sync_document probe: ${t.contentHash === localHash ? 'in sync' : 'diverged'}`

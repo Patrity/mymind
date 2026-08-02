@@ -6,6 +6,8 @@
 // agent as an error.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
+import { divergenceReport } from '../server/lib/agent/receipt'
+import type { DocumentDTO } from '../shared/types/documents'
 
 const BIG = 'x'.repeat(120_000)
 const hashOf = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -74,8 +76,21 @@ describe('document write receipts', () => {
   })
 
   it('keeps the receipt small even when the document is enormous', async () => {
-    stored = BIG
-    const res = await run('edit_document', { id: 'doc-1', old_string: 'x', new_string: 'y' })
+    // Regression: the original version of this test used old_string: 'x' against a document
+    // that is 120,000 'x' characters — every single character matches, so applyReplace returns
+    // ambiguous_match (120,000 matches, no replace_all) and no receipt is ever built. The
+    // assertion below was silently measuring a ~392-byte ERROR object, not a receipt, so the
+    // branch's headline claim (a write to a huge document returns a small receipt) was asserted
+    // nowhere. Fixed by giving the huge document one genuinely unique marker to replace, so the
+    // write actually succeeds and a real receipt comes back.
+    const marker = 'UNIQUE_MARKER'
+    const big = 'x'.repeat(60_000) + marker + 'x'.repeat(60_000)
+    stored = big
+    const res = await run('edit_document', { id: 'doc-1', old_string: marker, new_string: 'y' })
+    expect(res.error).toBeUndefined()
+    expect(res.ok).toBe(true)
+    expect(typeof res.hash).toBe('string')
+    expect(res.bytes).toEqual({ before: big.length, after: big.length - marker.length + 1 })
     expect(JSON.stringify(res).length).toBeLessThan(600)
   })
 
@@ -151,5 +166,32 @@ describe('document write receipts', () => {
     stored = 'the whole thing'
     const res = await run('get_document', { id: 'doc-1' })
     expect(res.content).toBe('the whole thing')
+  })
+})
+
+// divergenceReport is the other body-free response builder alongside docReceipt (used on a
+// refused sync_document write). Its `server.headings` used to be unbounded per-entry text —
+// a measured pathological document (very long heading lines) produced a ~200 KB refusal
+// payload, defeating the entire point of a body-free response. Tested directly against the
+// pure function (no DB/tool plumbing needed) so the assertion isolates the exact bug.
+describe('divergenceReport heading clipping', () => {
+  const baseDoc: DocumentDTO = {
+    id: 'doc-1', path: '/projects/homelab/timeline.md', title: 'Timeline',
+    content: '', language: 'markdown', frontmatter: {}, project: 'homelab', domain: null,
+    type: null, tags: [], topic: null, isPublic: false, publicSlug: null, ocrId: null,
+    contentHash: 'deadbeef', updatedAt: '2026-08-01T00:00:00.000Z'
+  }
+
+  it('bounds the refusal payload even with many pathologically long headings', () => {
+    // 40 headings (more than the 25-entry cap) each ~10,000 chars (far past the 200-char clip)
+    // — unclipped this reproduces the measured ~200 KB payload.
+    const pathological = Array.from({ length: 40 }, (_, i) => `# ${'H'.repeat(10_000)}${i}`).join('\n\n')
+    const report = divergenceReport('adopt_conflict', { ...baseDoc, content: pathological }, 'local content')
+
+    expect(report.server.headings.length).toBeLessThanOrEqual(25)
+    for (const heading of report.server.headings) expect(heading.length).toBeLessThanOrEqual(201) // 200 + '…'
+    // Concrete byte ceiling: unclipped, this payload would be ~400KB (40 headings * ~10KB);
+    // even just the un-sliced-first map/slice bug alone would keep it in the hundreds of KB.
+    expect(JSON.stringify(report).length).toBeLessThan(8_000)
   })
 })

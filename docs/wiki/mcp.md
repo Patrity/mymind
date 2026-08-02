@@ -158,8 +158,9 @@ already committed* reached the agent as an error — which it would then either 
 (double-applying, or failing on a now-stale `old_string`) or report as failed work. The same
 `exec.result` feeds the in-app agent (`ai-tools.ts`), so the echo was burning its context too.
 
-`hash` is the stored `documents.content_hash` (sha256 of `content`, maintained on create and on
-every content update), letting a caller compare a local copy without re-reading the body.
+`hash` is the stored `documents.content_hash` — a Postgres **generated column** computed from
+`content` (`doc_content_hash(content)`; see File sync below for the full detail), not a value
+application code sets — letting a caller compare a local copy without re-reading the body.
 
 Edit failures are **typed** — `error` is a stable code, `message` the human hint — so an agent
 branches on the outcome instead of pattern-matching prose:
@@ -229,7 +230,15 @@ The real cost of syncing a 121 KB doc is the upload, and most days nothing chang
 Passing `path` alongside `id` **relocates** the document (and re-files its project through the
 path⟺project choke point), which is how a renamed local file converges instead of forking — this
 applies even when the body is unchanged (an `unchanged`-action sync still relocates). Once moved,
-the old path no longer resolves — a subsequent sync/probe against it behaves as `not_found`.
+the old path no longer resolves, but a probe and a sync react to that differently. A **probe**
+(`local_hash`, no `id`) against the vacated path returns `not_found`, as expected. A path-only
+**sync** (`content`, no `id`) against the vacated path does NOT return `not_found` — `decideSync`'s
+`!target && !input.id → { kind: 'create' }` falls through and it silently creates a SECOND
+document at the old path, forking the doc (this is the frozen spec's intended create-on-no-match
+behaviour, asserted by `server/lib/agent/sync.test.ts`, not a bug). This is exactly why a file
+should carry `mymind_id` in its frontmatter after its first sync: passing `id` is what makes a
+later rename relocate the existing document instead of forking a new one at whatever path the
+file used to live at.
 
 **Metadata passthrough**: `tags`, `type`, `title`, and `frontmatter` sent with a sync are always
 persisted in the same call — no separate round-trip needed to keep them in sync with the file.
@@ -283,7 +292,7 @@ All four take `limit`/`offset` and return an envelope: `{ items, total, hasMore 
 ## Validate
 With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified (cycle 40 live E2E, 2026-06-30): `tools/list` → 29 tools; full MCP round-trip (`save_document` → `read_document` → `grep_document` → `edit_document` → `edit_section` → `update_document` → `move_document` → `delete_document`) against the real `/api/mcp` StreamableHTTP endpoint, 28/28 assertions. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
 
-`scripts/sync-document-e2e.mjs` is the equivalent live E2E for `sync_document` (2026-08-02): create → idempotent adopt → adopt_conflict → CAS update → stale-hash rejection → unchanged → probe (by id and by path) → force-override → relocation → metadata (`tags`/`type`) passthrough verified via `get_document` read-back → a genuine concurrency race (two `sync_document` calls sharing one `expected_hash` fired with `Promise.all`), against the real `/api/mcp` endpoint and a real Postgres — 24/24 assertions, exactly one racer wins the CAS and the loser comes back `hash_mismatch`. Run it with `node scripts/sync-document-e2e.mjs <mm_ token> [baseUrl]` against a disposable API token; it self-cleans the one document it creates.
+`scripts/sync-document-e2e.mjs` is the equivalent live E2E for `sync_document` (2026-08-02): create → create-path metadata (`tags`/`type` on a second, dedicated document — the create branch used to silently drop them — verified in the receipt AND via a `get_document` read-back) → idempotent adopt → adopt_conflict → CAS update → stale-hash rejection → unchanged → probe (by id and by path) → force-override → relocation → old-path probe after relocation (`not_found`) → update-path metadata (`tags`/`type`) passthrough verified via `get_document` read-back → a genuine concurrency race (two `sync_document` calls sharing one `expected_hash` fired with `Promise.all`), against the real `/api/mcp` endpoint and a real Postgres — 28/28 assertions, exactly one racer wins the CAS and the loser comes back `hash_mismatch`. Run it with `node scripts/sync-document-e2e.mjs <mm_ token> [baseUrl]` against a disposable API token; it self-cleans the two documents it creates.
 
 ## Notes / follow-ups
 Stateless mode → no server-initiated notifications; tools only (no MCP resources/prompts) — sufficient for the agent tool-call use case.

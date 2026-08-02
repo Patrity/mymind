@@ -347,6 +347,18 @@ describe('sync_document probe mode', () => {
     expect(res.error).toBe('not_found')
   })
 
+  // Regression: docNotFound(id ?? path!) used to put the PATH into the `id` field on a
+  // path-addressed miss (e.g. { error: 'not_found', id: '/projects/x/missing.md' }). An agent
+  // following the documented sync workflow writes the returned `id` into the file's frontmatter
+  // as mymind_id — doing that here would poison the file with a path where a UUID belongs.
+  it('reports not_found without leaking the path into `id` when probing an unknown path', async () => {
+    const res = await run({ path: '/projects/x/missing.md', local_hash: 'abc' })
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe('not_found')
+    expect(res.path).toBe('/projects/x/missing.md')
+    expect(res.id).toBeUndefined()
+  })
+
   it('rejects a call with neither content nor local_hash', async () => {
     const res = await run({ id: 'doc-1' })
     expect(res.ok).toBe(false)
