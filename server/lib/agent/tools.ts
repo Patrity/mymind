@@ -406,7 +406,13 @@ export const agentTools: AgentTool[] = [
         }
       }
 
-      if (decision.kind === 'error' && decision.error === 'not_found') {
+      // Hoisted into a const so the "not not_found" exclusion below survives the `await getDoc`
+      // a few lines down. TypeScript's negation of a compound guard (kind === 'error' &&
+      // error === 'not_found') isn't retained on the `decision.error` property reference once
+      // `decision` is re-narrowed by a later `decision.kind === 'error'` check — narrowing on a
+      // plain const local like this one, by contrast, is stable across intervening awaits.
+      const err = decision.kind === 'error' ? decision.error : null
+      if (err === 'not_found') {
         return { result: docNotFound(id!), summary: 'sync_document: not found' }
       }
 
@@ -415,10 +421,8 @@ export const agentTools: AgentTool[] = [
       if (!server) return { result: docNotFound(id ?? target!.id), summary: 'sync_document: not found' }
 
       if (decision.kind === 'error') {
-        // The 'not_found' case already returned above, but TS can't carry that property-level
-        // narrowing across the `await getDoc(...)` call — assert what we already proved at runtime.
-        const divergenceError = decision.error as 'adopt_conflict' | 'hash_mismatch' | 'expected_hash_required'
-        return { result: divergenceReport(divergenceError, server, content), summary: `sync_document: ${decision.error}` }
+        if (!err) return { result: docNotFound(id ?? target!.id), summary: 'sync_document: not found' } // unreachable: kind==='error' always sets err above
+        return { result: divergenceReport(err, server, content), summary: `sync_document: ${err}` }
       }
 
       if (decision.kind === 'adopt' || decision.kind === 'unchanged') {
@@ -441,7 +445,10 @@ export const agentTools: AgentTool[] = [
         result: { ...docReceipt(updated, { before: prior.length }), action: 'updated' },
         summary: `synced (updated) ${updated.path}`,
         undo: async () => {
-          await casUpdateContent(decision.id, prior, null)
+          // Guard the undo too: passing null here would drop the CAS guard and let undo
+          // silently clobber a newer edit made (e.g. in the UI) after this sync landed.
+          const reverted = await casUpdateContent(decision.id, prior, updated.contentHash)
+          if (!reverted) return // someone else wrote after us — leave their work alone
           publishChange({ resource: 'document', action: 'updated', id: decision.id })
         }
       }
