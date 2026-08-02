@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import type { AgentTool } from './types'
 import { searchMemories, createMemory, listMemories, archiveMemory, unarchiveMemory } from '../../services/memory'
-import { searchPassages, createDoc, getDoc, deleteDoc, updateDoc, moveDoc, restoreDoc, listDocsSummary, countDocs, searchDocsPage } from '../../services/documents'
+import { searchPassages, createDoc, getDoc, deleteDoc, updateDoc, moveDoc, restoreDoc, listDocsSummary, countDocs, searchDocsPage, findDocByPath, casUpdateContent } from '../../services/documents'
 import { outline, readSection, documentStats, grepContent, applyReplace, applyEditSection } from '../documents/edit-ops'
 import { createProject, updateProject, getProject, deleteProject, listProjectsPage } from '../../services/projects'
 import { createTask, updateTask, getTask, deleteTask, restoreTask, listTasksSummary, countTasks } from '../../services/tasks'
@@ -18,7 +18,8 @@ import { skillsEnabled } from './skills-config'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 import { clampPaging, buildPage } from './paging'
-import { docReceipt, docNotFound } from './receipt'
+import { docReceipt, docNotFound, divergenceReport } from './receipt'
+import { decideSync, hashBody } from './sync'
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
@@ -360,6 +361,89 @@ export const agentTools: AgentTool[] = [
         result: updated ? docReceipt(updated, { before: size }) : docNotFound(id),
         summary: `moved document to ${a.path}`,
         undo: async () => { await moveDoc(id, prior); publishChange({ resource: 'document', action: 'updated', id }) }
+      }
+    }
+  },
+  {
+    name: 'sync_document',
+    description: 'Make a MyMind document match a local file in one call. Pass the file body as `content` (frontmatter stripped) plus the file\'s `mymind_id` as `id` and `mymind_hash` as `expected_hash`; if the file has no id yet, pass an absolute `path` instead and this adopts an existing doc at that path or creates one. Returns a receipt with `action`: created | adopted | updated | unchanged — write the returned `id` and `hash` back into the file\'s frontmatter. Fails closed: if the MyMind copy changed since your last sync you get ok:false with error "hash_mismatch" / "adopt_conflict" / "expected_hash_required" plus a body-free divergence report; re-call with force:true only after genuinely reconciling. Never deletes.',
+    kind: 'create',
+    schema: {
+      id: z.string().optional().describe('Document id (the file\'s mymind_id)'),
+      path: z.string().regex(/^\//, 'path must start with /').optional()
+        .describe('Absolute path; required when there is no id. Filing under /projects/<slug>/ associates the project.'),
+      content: z.string().describe('The file body with frontmatter stripped'),
+      title: z.string().optional().describe('Title for a created document'),
+      expected_hash: z.string().optional().describe('The file\'s mymind_hash — required when the target already exists, unless force'),
+      force: z.boolean().optional().describe('Write even though the MyMind copy diverged')
+    },
+    handler: async (a) => {
+      const id = a.id as string | undefined
+      const path = a.path as string | undefined
+      const content = a.content as string
+      if (!id && !path) {
+        return { result: { ok: false, error: 'path_required', message: 'pass `path` when there is no `id`' }, summary: 'sync_document: path required' }
+      }
+
+      const incoming = hashBody(content)
+      const current = id ? await getDoc(id) : null
+      const target = id
+        ? (current ? { id: current.id, contentHash: current.contentHash } : null)
+        : await findDocByPath(path!)
+
+      const decision = decideSync(
+        { id, expectedHash: a.expected_hash as string | undefined, force: a.force as boolean | undefined },
+        incoming, target
+      )
+
+      if (decision.kind === 'create') {
+        const doc = await createDoc({ path: path!, content, title: (a.title as string) ?? undefined })
+        publishChange({ resource: 'document', action: 'created', id: doc.id })
+        return {
+          result: { ...docReceipt(doc, { before: 0 }), action: 'created' },
+          summary: `synced (created) ${doc.path}`,
+          undo: async () => { await deleteDoc(doc.id) }
+        }
+      }
+
+      if (decision.kind === 'error' && decision.error === 'not_found') {
+        return { result: docNotFound(id!), summary: 'sync_document: not found' }
+      }
+
+      // Every remaining branch needs the server row.
+      const server = current ?? await getDoc(decision.kind === 'error' ? target!.id : decision.id)
+      if (!server) return { result: docNotFound(id ?? target!.id), summary: 'sync_document: not found' }
+
+      if (decision.kind === 'error') {
+        // The 'not_found' case already returned above, but TS can't carry that property-level
+        // narrowing across the `await getDoc(...)` call — assert what we already proved at runtime.
+        const divergenceError = decision.error as 'adopt_conflict' | 'hash_mismatch' | 'expected_hash_required'
+        return { result: divergenceReport(divergenceError, server, content), summary: `sync_document: ${decision.error}` }
+      }
+
+      if (decision.kind === 'adopt' || decision.kind === 'unchanged') {
+        return {
+          result: { ...docReceipt(server, { before: (server.content ?? '').length }), action: decision.kind === 'adopt' ? 'adopted' : 'unchanged' },
+          summary: `sync_document: ${decision.kind} ${server.path}`
+        }
+      }
+
+      const prior = server.content ?? ''
+      const updated = await casUpdateContent(decision.id, content, decision.expected)
+      if (!updated) {
+        // Lost the race: the row moved between our read and the write landing.
+        const fresh = await getDoc(decision.id)
+        if (!fresh) return { result: docNotFound(decision.id), summary: 'sync_document: not found' }
+        return { result: divergenceReport('hash_mismatch', fresh, content), summary: 'sync_document: hash_mismatch' }
+      }
+      publishChange({ resource: 'document', action: 'updated', id: decision.id })
+      return {
+        result: { ...docReceipt(updated, { before: prior.length }), action: 'updated' },
+        summary: `synced (updated) ${updated.path}`,
+        undo: async () => {
+          await casUpdateContent(decision.id, prior, null)
+          publishChange({ resource: 'document', action: 'updated', id: decision.id })
+        }
       }
     }
   },

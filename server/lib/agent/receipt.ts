@@ -1,4 +1,5 @@
 import type { DocumentDTO } from '../../../shared/types/documents'
+import { outline } from '../documents/edit-ops'
 
 /**
  * What a document write answers with.
@@ -51,5 +52,30 @@ export function docReceipt(
     hash: doc.contentHash ?? null,
     bytes: { before: opts.before, after: (doc.content ?? '').length },
     ...(opts.replacements === undefined ? {} : { replacements: opts.replacements })
+  }
+}
+
+/**
+ * Why a sync refused to write. Deliberately body-free: enough for the agent to decide whether
+ * to inspect, without pulling the document and re-creating the overflow receipts prevent.
+ */
+export function divergenceReport(
+  error: 'adopt_conflict' | 'hash_mismatch' | 'expected_hash_required',
+  server: DocumentDTO,
+  localContent: string
+) {
+  const body = server.content ?? ''
+  return {
+    ok: false as const,
+    error,
+    id: server.id,
+    server: {
+      hash: server.contentHash,
+      bytes: body.length,
+      updatedAt: server.updatedAt,
+      headings: outline(body).map(h => h.text).slice(0, 25)
+    },
+    local: { bytes: localContent.length },
+    hint: 'inspect with read_document/grep_document, then re-call with force:true (or sync with the server hash as expected_hash)'
   }
 }

@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { agentTools, toolByName } from '../server/lib/agent/tools'
 
 describe('agent tool registry', () => {
-  it('exposes the expected 37 tools', () => {
+  it('exposes the expected 38 tools', () => {
     const names = agentTools.map(t => t.name).sort()
     expect(names).toEqual([
       'create_project', 'create_skill', 'create_task',
@@ -18,6 +18,7 @@ describe('agent tool registry', () => {
       'quick_capture', 'read_around_message', 'read_document', 'read_session',
       'save_document', 'save_memory',
       'search_docs', 'search_memories', 'search_messages', 'search_passages', 'search_projects', 'search_sessions', 'search_tasks',
+      'sync_document',
       'update_document',
       'use_skill',
       'web_fetch', 'web_search'
