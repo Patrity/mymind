@@ -12,7 +12,10 @@ export default defineConfig({
       '**/cypress/**',
       '**/.{idea,git,cache,output,temp}/**',
       '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*',
-      '**/.claude/**'
+      '**/.claude/**',
+      // DB-backed tests (*.db.test.ts) need a real Postgres. CI has no database service and
+      // `deploy` needs `test`, so they run via `pnpm test:db` locally, never in the CI gate.
+      '**/*.db.test.ts'
     ]
   }
 })
