@@ -444,7 +444,14 @@ export const agentTools: AgentTool[] = [
       )
 
       if (decision.kind === 'create') {
-        const doc = await createDoc({ path: path!, content, title: (a.title as string) ?? undefined })
+        const doc = await createDoc({
+          path: path!,
+          content,
+          title: (a.title as string) ?? undefined,
+          tags: a.tags as string[] | undefined,
+          type: a.type as string | undefined,
+          frontmatter: a.frontmatter as Record<string, unknown> | undefined
+        })
         publishChange({ resource: 'document', action: 'created', id: doc.id })
         return {
           result: { ...docReceipt(doc, { before: 0 }), action: 'created' },

@@ -39,9 +39,12 @@ vi.mock('../server/services/documents', () => ({
     r.content = content
     return toRow(r)
   },
-  createDoc: async (input: { path: string, content?: string }) => {
+  createDoc: async (input: { path: string, content?: string, tags?: string[], type?: string, frontmatter?: Record<string, unknown> }) => {
     const id = 'new-' + Object.keys(rows).length
-    rows[id] = { id, path: input.path, content: input.content ?? '' }
+    // Mirrors the real createDoc (server/services/documents.ts): tags/type/frontmatter are
+    // genuinely recorded here, not dropped — otherwise a test asserting they persisted on
+    // create would pass even if the handler never forwarded them to createDoc at all.
+    rows[id] = { id, path: input.path, content: input.content ?? '', tags: input.tags, type: input.type, frontmatter: input.frontmatter }
     return toRow(rows[id]!)
   },
   updateDoc: async (id: string, patch: { path?: string, tags?: string[], type?: string, frontmatter?: Record<string, unknown> }) => {
@@ -82,6 +85,25 @@ describe('sync_document', () => {
     expect(res.hash).toBe(hashBody('fresh'))
     expect(res).not.toHaveProperty('content')
     expect(changes).toEqual(['created'])
+  })
+
+  // Regression: the create branch used to call createDoc({ path, content, title }) only,
+  // silently dropping tags/type/frontmatter on a sync that creates a new document (they were
+  // only ever forwarded on the update/adopt paths via applySyncMeta). Caught in review of the
+  // task-7 wiki, which claimed metadata passthrough applied unconditionally.
+  it('persists tags, type, and frontmatter when the sync creates a new document', async () => {
+    const res = await run({
+      path: '/projects/x/new-with-meta.md', content: 'fresh',
+      tags: ['x', 'y'], type: 'note', frontmatter: { foo: 'bar' }
+    })
+    expect(res.ok).toBe(true)
+    expect(res.action).toBe('created')
+    expect(res.tags).toEqual(['x', 'y'])
+    expect(res.type).toBe('note')
+    const created = Object.values(rows).find(r => r.path === '/projects/x/new-with-meta.md')!
+    expect(created.tags).toEqual(['x', 'y'])
+    expect(created.type).toBe('note')
+    expect(created.frontmatter).toEqual({ foo: 'bar' })
   })
 
   it('adopts a path match that already agrees, without writing', async () => {

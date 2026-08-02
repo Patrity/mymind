@@ -195,18 +195,26 @@ the moment you write it back into that file, so it never converges. MyMind store
 `frontmatter` as separate columns and `content_hash` is `sha256(content)`, so both sides hash the
 same bytes with no normalisation layer.
 
-| `action` | Condition | Writes |
+| `action` | Condition | Content write |
 |---|---|---|
 | `created` | no `id`, `path` matches no live doc | yes |
 | `adopted` | no `id`, `path` matches a live doc that already agrees | no — returns its `id` + `hash` |
 | `updated` | `expected_hash` matches stored, or `force: true` | yes |
-| `unchanged` | incoming content already equals stored | no, and no `publishChange` |
+| `unchanged` | incoming content already equals stored | no |
+
+`adopted`/`unchanged` never write **content**, but the `action` only describes the content
+decision — if the same call also carries a new `path` (relocation) or `title`/`tags`/`type`/
+`frontmatter`, that patch is still applied on top (see Relocation/Metadata below) and fires
+exactly one `publishChange({ action: 'updated' })`. Only a call with no content change *and* no
+such extra fields is a true no-op: no write, no event at all.
 
 Writes **fail closed** — `hash_mismatch` (stale `expected_hash`), `adopt_conflict` (a path match
 that diverges), `expected_hash_required` (an `id` write with nothing to compare). Each returns a
 body-free divergence report (`server.hash`/`bytes`/`updatedAt`/`headings`, `local.bytes`) so the
 agent can decide without pulling the document. Gated adoption is what stops a first sync from
-clobbering a doc that was edited in the MyMind UI.
+clobbering a doc that was edited in the MyMind UI. Two more errors are upfront misuse guards
+rather than sync-decision outcomes — `path_required` (neither `id` nor `path` given) and
+`content_required` (neither `content` nor `local_hash` given) — both returned before any DB read.
 
 The guard is in the `UPDATE`'s `WHERE content_hash = $expected`, not a preceding `SELECT` — a
 read-then-write would let a concurrent edit slip between the two statements. A live E2E
@@ -223,9 +231,12 @@ path⟺project choke point), which is how a renamed local file converges instead
 applies even when the body is unchanged (an `unchanged`-action sync still relocates). Once moved,
 the old path no longer resolves — a subsequent sync/probe against it behaves as `not_found`.
 
-**Metadata passthrough**: `tags`, `type`, `title`, and `frontmatter` sent with a sync are patched
-onto the document the same call that writes (or relocates) it, via the same `applySyncMeta` path
-`update_document` uses — no separate round-trip needed to keep tags/type in sync with the file.
+**Metadata passthrough**: `tags`, `type`, `title`, and `frontmatter` sent with a sync are always
+persisted in the same call — no separate round-trip needed to keep them in sync with the file.
+On `created` they're forwarded straight into the insert (`createDoc`); on every other outcome
+that isn't refused (`adopted`/`unchanged`/`updated`) they're patched on afterward via the same
+`applySyncMeta` helper `update_document` uses. A refused write (any `ok:false`) never touches
+metadata.
 
 **Deletes are out of scope.** A deleted local file does not remove its document — a sync that
 deletes on absence is one bad glob away from wiping the wiki. Retirement stays deliberate via

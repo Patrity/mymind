@@ -6,9 +6,11 @@
 //   [baseUrl]  defaults to http://127.0.0.1:3000 (or $MYMIND_BASE_URL) — override when the
 //              standard port is unavailable, e.g. another app already holds it locally.
 //
-// Cleanup: the script deletes the one document it creates in a `finally`, so it self-cleans
-// even if an assertion throws. It does NOT touch the api_tokens row or the server process —
-// the caller that minted the token / started the server is responsible for tearing those down.
+// Cleanup: the script deletes every document it creates (there are two: the main scenario doc
+// and a separate one used only to prove metadata persists on the CREATE path) in a `finally`, so
+// it self-cleans even if an assertion throws. It does NOT touch the api_tokens row or the server
+// process — the caller that minted the token / started the server is responsible for tearing
+// those down.
 import { createHash } from 'node:crypto'
 
 const TOK = process.argv[2]
@@ -37,6 +39,7 @@ async function call(name, args) {
 }
 
 let created = null
+let createdWithMeta = null
 
 try {
   const path = `/input/e2e-sync-${Date.now()}.md`
@@ -48,6 +51,22 @@ try {
   created = await call('sync_document', { path, content: big })
   ok('created', created.action === 'created' && created.hash === h(big), JSON.stringify(created).slice(0, 200))
   ok('receipt is body-free', !('content' in created) && JSON.stringify(created).length < 600)
+
+  // Metadata passthrough on the CREATE path specifically (a separate document — the main
+  // `created` doc above is reused for the rest of this script and never exercises `tags`/`type`
+  // at creation time). Regression coverage: the create branch used to call
+  // createDoc({ path, content, title }) only, silently dropping tags/type/frontmatter — caught
+  // in review, fixed in server/lib/agent/tools.ts, and unit-tested in
+  // test/agent-sync-document.test.ts. This proves it against the real database too.
+  const metaPath = `/input/e2e-sync-create-meta-${Date.now()}.md`
+  createdWithMeta = await call('sync_document', {
+    path: metaPath, content: '# Created with metadata\n', tags: ['e2e', 'create-meta'], type: 'note'
+  })
+  ok('create path persists tags in the receipt', createdWithMeta.action === 'created' && JSON.stringify(createdWithMeta.tags) === JSON.stringify(['e2e', 'create-meta']), JSON.stringify(createdWithMeta).slice(0, 200))
+  ok('create path persists type in the receipt', createdWithMeta.type === 'note', String(createdWithMeta.type))
+  const createMetaReadBack = await call('get_document', { id: createdWithMeta.id })
+  ok('create path metadata persisted (tags, read back via get_document)', JSON.stringify(createMetaReadBack.tags) === JSON.stringify(['e2e', 'create-meta']), JSON.stringify(createMetaReadBack.tags))
+  ok('create path metadata persisted (type, read back via get_document)', createMetaReadBack.type === 'note', String(createMetaReadBack.type))
 
   const adopted = await call('sync_document', { path, content: big })
   ok('adopted (idempotent re-sync)', adopted.action === 'adopted' && adopted.id === created.id)
@@ -140,14 +159,16 @@ try {
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exitCode = 1
 } finally {
-  // Mandatory, unconditional cleanup of the one document this script creates — a leftover
+  // Mandatory, unconditional cleanup of every document this script creates — a leftover
   // document collides with the unique index on live paths and poisons later runs.
-  if (created?.id) {
-    try {
-      await call('delete_document', { id: created.id })
-      console.log(`cleanup: deleted document ${created.id}`)
-    } catch (cleanupErr) {
-      console.error(`cleanup FAILED to delete document ${created?.id}:`, cleanupErr)
+  for (const doc of [created, createdWithMeta]) {
+    if (doc?.id) {
+      try {
+        await call('delete_document', { id: doc.id })
+        console.log(`cleanup: deleted document ${doc.id}`)
+      } catch (cleanupErr) {
+        console.error(`cleanup FAILED to delete document ${doc.id}:`, cleanupErr)
+      }
     }
   }
 }
