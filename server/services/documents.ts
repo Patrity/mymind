@@ -190,6 +190,38 @@ export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Pro
   return r ? toDTO(r) : null
 }
 
+/** Resolve a sync target by exact live path. Uses the existing unique index on live paths. */
+export async function findDocByPath(path: string): Promise<{ id: string, contentHash: string | null } | null> {
+  const [r] = await useDb()
+    .select({ id: documents.id, contentHash: documents.contentHash })
+    .from(documents)
+    .where(and(eq(documents.path, path), live()))
+    .limit(1)
+  return r ?? null
+}
+
+/**
+ * Atomic compare-and-swap on content. `expectedHash: null` forces the write.
+ *
+ * The guard lives in the UPDATE's WHERE clause, not in a preceding SELECT — a read-then-write
+ * would let a concurrent edit slip in between the two statements. Zero affected rows means the
+ * row is gone, soft-deleted, or its hash moved; the caller disambiguates with one follow-up read.
+ */
+export async function casUpdateContent(
+  id: string, content: string, expectedHash: string | null
+): Promise<DocumentDTO | null> {
+  const [r] = await useDb()
+    .update(documents)
+    .set({ content, updatedAt: new Date() })
+    .where(and(
+      eq(documents.id, id),
+      live(),
+      expectedHash === null ? undefined : eq(documents.contentHash, expectedHash)
+    ))
+    .returning()
+  return r ? toDTO(r) : null
+}
+
 export async function moveDoc(id: string, newPath: string) { return updateDoc(id, { path: newPath }) }
 
 export async function deleteDoc(id: string): Promise<boolean> {
