@@ -2,7 +2,7 @@
 title: MCP Server
 status: shipped
 cycle: 51
-updated: 2026-08-01
+updated: 2026-08-02
 ---
 
 # MCP Server
@@ -80,14 +80,14 @@ curl -si -X POST https://brain.costanzoclan.com/api/mcp | rg -i 'www-authenticat
 Added in cycle 40: `new McpServer(info, { instructions: MCP_INSTRUCTIONS })` passes a server-level preamble (verified supported by the SDK's `ServerOptions.instructions`). The preamble establishes the second-brain workflow — search before answering, persist durable facts, file under projects, prefer surgical `edit_document` — so agents reliably reach for MyMind tools rather than answering from their own recollection.
 
 ## Tools (`server/lib/mcp/server.ts`)
-The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. The table below is not exhaustive — the live registry is 37 tools (`test/agent-tools.test.ts` pins the full name list); it also includes the `use_skill`/`create_skill`/`edit_skill`/`delete_skill` progressive-disclosure tools documented in [`agent-skills.md`](agent-skills.md). All of them are currently non-dangerous.
+The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. The table below is not exhaustive — the live registry is 38 tools (`test/agent-tools.test.ts` pins the full name list); it also includes the `use_skill`/`create_skill`/`edit_skill`/`delete_skill` progressive-disclosure tools documented in [`agent-skills.md`](agent-skills.md). All of them are currently non-dangerous.
 
 ### `kind` policy
 Each tool carries a `kind` field that controls gating + description copy:
 - `kind:read` — pure reads; always ungated.
 - `kind:create` — write/mutate (including edits to existing docs); ungated by design (cycle 40 decision: edits must never be blocked by a confirmation gate, even if `kind:destructive` gets gated in the future).
 - `kind:destructive` — removal/archive actions; descriptive today (signals "confirm with user" language + undo); NOT hard-gated.
-- `dangerous:true` — the **only** hard runtime gate (checked in `ai-tools.ts`). A tool with `dangerous:true` is **never exposed to MCP** and is never callable without approval. Currently only `exec` (which lives outside `agentTools` — see [`agent-exec.md`](agent-exec.md) — so it was never a candidate for MCP exposure in the first place). All 37 `agentTools` are non-`dangerous`, so all 37 are MCP-exposed.
+- `dangerous:true` — the **only** hard runtime gate (checked in `ai-tools.ts`). A tool with `dangerous:true` is **never exposed to MCP** and is never callable without approval. Currently only `exec` (which lives outside `agentTools` — see [`agent-exec.md`](agent-exec.md) — so it was never a candidate for MCP exposure in the first place). All 38 `agentTools` are non-`dangerous`, so all 38 are MCP-exposed.
 
 ### Tool table
 
@@ -107,6 +107,7 @@ Each tool carries a `kind` field that controls gating + description copy:
 | `edit_section(id, { mode, text, heading? })` | create | edit-ops `applyEditSection` → documents.updateDoc (cycle 40) |
 | `update_document(id, { title?, content?, frontmatter?, tags?, domain?, type?, project? })` | create | documents.updateDoc (cycle 40) |
 | `move_document(id, path)` | create | documents.moveDoc (cycle 40) |
+| `sync_document(id?, path?, content?, local_hash?, expected_hash?, force?, title?, tags?, type?, frontmatter?)` | create | edit-ops-free; `findDocByPath` + `casUpdateContent` → receipt + `action` |
 | `delete_document(id)` | destructive | documents.deleteDoc → restoreDoc undo (cycle 40) |
 | `delete_task(id)` | destructive | tasks.deleteTask → restoreTask undo (cycle 40) |
 | `forget_memory(id)` | destructive | memory.archiveMemory → unarchiveMemory undo (cycle 40) |
@@ -174,6 +175,67 @@ Nothing is written on any failure. Candidates are **distinct lines** (several hi
 collapse to one entry) and both the count and the per-line length are capped — an unclipped
 candidate from a single 100 KB line would reintroduce the very overflow receipts prevent.
 
+### File sync (`sync_document`)
+
+Makes a MyMind document match a local file in one call, so an agent stops simulating a sync with
+N hand-replayed `edit_document` calls.
+
+The local file carries its own MyMind identity, so this works identically for a git repo, a
+directory that isn't version-controlled, and MyMind-native docs (which simply have no file):
+
+```markdown
+---
+mymind_id: 6d14a9c3-c421-4e49-a162-86536b8f534c
+mymind_hash: 189d0cfb…
+---
+```
+
+**The hash covers the body only — frontmatter is excluded.** A hash over the whole file changes
+the moment you write it back into that file, so it never converges. MyMind stores `content` and
+`frontmatter` as separate columns and `content_hash` is `sha256(content)`, so both sides hash the
+same bytes with no normalisation layer.
+
+| `action` | Condition | Writes |
+|---|---|---|
+| `created` | no `id`, `path` matches no live doc | yes |
+| `adopted` | no `id`, `path` matches a live doc that already agrees | no — returns its `id` + `hash` |
+| `updated` | `expected_hash` matches stored, or `force: true` | yes |
+| `unchanged` | incoming content already equals stored | no, and no `publishChange` |
+
+Writes **fail closed** — `hash_mismatch` (stale `expected_hash`), `adopt_conflict` (a path match
+that diverges), `expected_hash_required` (an `id` write with nothing to compare). Each returns a
+body-free divergence report (`server.hash`/`bytes`/`updatedAt`/`headings`, `local.bytes`) so the
+agent can decide without pulling the document. Gated adoption is what stops a first sync from
+clobbering a doc that was edited in the MyMind UI.
+
+The guard is in the `UPDATE`'s `WHERE content_hash = $expected`, not a preceding `SELECT` — a
+read-then-write would let a concurrent edit slip between the two statements. A live E2E
+(`scripts/sync-document-e2e.mjs`) fires two `sync_document` calls with the same `expected_hash`
+concurrently against a real Postgres and asserts exactly one lands and the other comes back
+`hash_mismatch` — the one guarantee a mocked-DB unit test cannot prove.
+
+**Probe mode**: pass `local_hash` instead of `content` to ask whether the two sides agree with no
+body transferred and no write → `{ ok, in_sync, server_hash, id }`. Works by `id` or by `path`.
+The real cost of syncing a 121 KB doc is the upload, and most days nothing changed.
+
+Passing `path` alongside `id` **relocates** the document (and re-files its project through the
+path⟺project choke point), which is how a renamed local file converges instead of forking — this
+applies even when the body is unchanged (an `unchanged`-action sync still relocates). Once moved,
+the old path no longer resolves — a subsequent sync/probe against it behaves as `not_found`.
+
+**Metadata passthrough**: `tags`, `type`, `title`, and `frontmatter` sent with a sync are patched
+onto the document the same call that writes (or relocates) it, via the same `applySyncMeta` path
+`update_document` uses — no separate round-trip needed to keep tags/type in sync with the file.
+
+**Deletes are out of scope.** A deleted local file does not remove its document — a sync that
+deletes on absence is one bad glob away from wiping the wiki. Retirement stays deliberate via
+`delete_document`.
+
+`documents.content_hash` is a **Postgres generated column** (`doc_content_hash(content)`, an
+explicitly-immutable wrapper — a bare `convert_to()` expression is rejected as not immutable).
+Application code cannot leave it stale, which matters because `image-enrich.ts` writes `content`
+via a raw `db.update()` that bypasses `updateDoc`.
+
 ### Session search + transcript read (cycle 50)
 
 MyMind ingests every Claude Code session (transcript messages + tool events, project-associated) and already ran hybrid search over sessions/messages for the web UI (`server/services/session-search.ts`) — cycle 50 wraps that as four `kind:read` MCP tools, plus a new bounded-read service (`server/services/session-read.ts`) so an agent can actually consume a hit instead of just locating it. Zero migration, zero new UI — the web still has global session search + `/sessions/[id]`.
@@ -209,6 +271,8 @@ All four take `limit`/`offset` and return an envelope: `{ items, total, hasMore 
 
 ## Validate
 With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-RPC `initialize`, `tools/list`, `tools/call`. Verified (cycle 40 live E2E, 2026-06-30): `tools/list` → 29 tools; full MCP round-trip (`save_document` → `read_document` → `grep_document` → `edit_document` → `edit_section` → `update_document` → `move_document` → `delete_document`) against the real `/api/mcp` StreamableHTTP endpoint, 28/28 assertions. (The `agent-tools` + `mcp-parity` unit tests assert the registry and that the MCP surface equals it exactly.)
+
+`scripts/sync-document-e2e.mjs` is the equivalent live E2E for `sync_document` (2026-08-02): create → idempotent adopt → adopt_conflict → CAS update → stale-hash rejection → unchanged → probe (by id and by path) → force-override → relocation → metadata (`tags`/`type`) passthrough verified via `get_document` read-back → a genuine concurrency race (two `sync_document` calls sharing one `expected_hash` fired with `Promise.all`), against the real `/api/mcp` endpoint and a real Postgres — 24/24 assertions, exactly one racer wins the CAS and the loser comes back `hash_mismatch`. Run it with `node scripts/sync-document-e2e.mjs <mm_ token> [baseUrl]` against a disposable API token; it self-cleans the one document it creates.
 
 ## Notes / follow-ups
 Stateless mode → no server-initiated notifications; tools only (no MCP resources/prompts) — sufficient for the agent tool-call use case.
