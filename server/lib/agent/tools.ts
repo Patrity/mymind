@@ -20,6 +20,34 @@ import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/s
 import { clampPaging, buildPage } from './paging'
 import { docReceipt, docNotFound, divergenceReport } from './receipt'
 import { decideSync, hashBody } from './sync'
+import type { DocumentDTO } from '../../../shared/types/documents'
+
+/**
+ * Apply path/metadata after a sync's content decision has already succeeded.
+ *
+ * Relocation is what makes a renamed local file converge instead of forking a second doc:
+ * the file keeps its mymind_id, so passing the new path moves the existing document (and
+ * re-files its project, via updateDoc's path⟺project choke point) rather than creating one.
+ * Runs only on non-error outcomes — a refused write must leave everything untouched.
+ *
+ * Deliberately does NOT call publishChange. The write branch already emits once for the
+ * content change, and the adopt/unchanged branch has no content write at all — so each of
+ * those callers decides for itself whether/how to emit, using `changed` to avoid emitting
+ * twice (or emitting on a true no-op) for a single handler invocation.
+ */
+async function applySyncMeta(
+  doc: DocumentDTO, a: Record<string, unknown>
+): Promise<{ doc: DocumentDTO, changed: boolean }> {
+  const patch: Record<string, unknown> = {}
+  const path = a.path as string | undefined
+  if (path !== undefined && path !== doc.path) patch.path = path
+  for (const k of ['title', 'tags', 'type', 'frontmatter'] as const) {
+    if (a[k] !== undefined) patch[k] = a[k]
+  }
+  if (Object.keys(patch).length === 0) return { doc, changed: false }
+  const updated = await updateDoc(doc.id, patch)
+  return { doc: updated ?? doc, changed: updated !== null }
+}
 
 export const agentTools: AgentTool[] = [
   // ---- memory ----
@@ -375,7 +403,11 @@ export const agentTools: AgentTool[] = [
       content: z.string().describe('The file body with frontmatter stripped'),
       title: z.string().optional().describe('Title for a created document'),
       expected_hash: z.string().optional().describe('The file\'s mymind_hash — required when the target already exists, unless force'),
-      force: z.boolean().optional().describe('Write even though the MyMind copy diverged')
+      force: z.boolean().optional().describe('Write even though the MyMind copy diverged'),
+      tags: z.array(z.string()).optional().describe('Replace the document\'s tags'),
+      type: z.string().optional().describe('Document type'),
+      frontmatter: z.record(z.string(), z.unknown()).optional()
+        .describe('The file\'s non-mymind frontmatter keys. Stored separately from the body and NOT covered by the hash.')
     },
     handler: async (a) => {
       const id = a.id as string | undefined
@@ -426,9 +458,14 @@ export const agentTools: AgentTool[] = [
       }
 
       if (decision.kind === 'adopt' || decision.kind === 'unchanged') {
+        const before = (server.content ?? '').length
+        const meta = await applySyncMeta(server, a)
+        // No content write happened on this branch — only emit if applySyncMeta actually
+        // changed something (a relocation and/or metadata patch), and never emit twice.
+        if (meta.changed) publishChange({ resource: 'document', action: 'updated', id: decision.id })
         return {
-          result: { ...docReceipt(server, { before: (server.content ?? '').length }), action: decision.kind === 'adopt' ? 'adopted' : 'unchanged' },
-          summary: `sync_document: ${decision.kind} ${server.path}`
+          result: { ...docReceipt(meta.doc, { before }), action: decision.kind === 'adopt' ? 'adopted' : 'unchanged' },
+          summary: `sync_document: ${decision.kind} ${meta.doc.path}`
         }
       }
 
@@ -440,10 +477,13 @@ export const agentTools: AgentTool[] = [
         if (!fresh) return { result: docNotFound(decision.id), summary: 'sync_document: not found' }
         return { result: divergenceReport('hash_mismatch', fresh, content), summary: 'sync_document: hash_mismatch' }
       }
+      // A content write happened — emit exactly once for this call, whether or not
+      // applySyncMeta also relocates/patches metadata (it never emits itself).
+      const final = await applySyncMeta(updated, a)
       publishChange({ resource: 'document', action: 'updated', id: decision.id })
       return {
-        result: { ...docReceipt(updated, { before: prior.length }), action: 'updated' },
-        summary: `synced (updated) ${updated.path}`,
+        result: { ...docReceipt(final.doc, { before: prior.length }), action: 'updated' },
+        summary: `synced (updated) ${final.doc.path}`,
         undo: async () => {
           // Guard the undo too: passing null here would drop the CAS guard and let undo
           // silently clobber a newer edit made (e.g. in the UI) after this sync landed.

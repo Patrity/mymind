@@ -2,16 +2,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashBody } from '../server/lib/agent/sync'
 
-let rows: Record<string, { id: string, path: string, content: string }> = {}
+type Row = {
+  id: string, path: string, content: string,
+  tags?: string[], type?: string | null, frontmatter?: Record<string, unknown>
+}
+let rows: Record<string, Row> = {}
 const changes: string[] = []
 // When true, the NEXT casUpdateContent call simulates a third party landing a write between the
 // handler's pre-read and this write — i.e. a genuine mid-flight CAS race, not a stale hash the
 // handler could have already seen. Reset every test in beforeEach.
 let raceOnNextCas = false
 
-const toRow = (r: { id: string, path: string, content: string }) => ({
+const toRow = (r: Row) => ({
   id: r.id, path: r.path, title: 'T', content: r.content, language: 'markdown',
-  frontmatter: {}, project: null, domain: null, type: null, tags: [], topic: null,
+  frontmatter: r.frontmatter ?? {}, project: null, domain: null, type: r.type ?? null,
+  tags: r.tags ?? [], topic: null,
   contentHash: hashBody(r.content), isPublic: false, publicSlug: null, ocrId: null,
   updatedAt: '2026-08-01T00:00:00.000Z'
 })
@@ -39,7 +44,15 @@ vi.mock('../server/services/documents', () => ({
     rows[id] = { id, path: input.path, content: input.content ?? '' }
     return toRow(rows[id]!)
   },
-  updateDoc: async (id: string) => (rows[id] ? toRow(rows[id]!) : null),
+  updateDoc: async (id: string, patch: { path?: string, tags?: string[], type?: string, frontmatter?: Record<string, unknown> }) => {
+    const r = rows[id]
+    if (!r) return null
+    if (patch.path !== undefined) r.path = patch.path
+    if (patch.tags !== undefined) r.tags = patch.tags
+    if (patch.type !== undefined) r.type = patch.type
+    if (patch.frontmatter !== undefined) r.frontmatter = patch.frontmatter
+    return toRow(r)
+  },
   moveDoc: async () => null, deleteDoc: async () => true, restoreDoc: async () => true,
   searchPassages: async () => [], listDocsSummary: async () => [],
   countDocs: async () => 0, searchDocsPage: async () => ({ items: [], total: 0 })
@@ -175,6 +188,112 @@ describe('sync_document', () => {
     await exec.undo!()
 
     expect(rows['doc-1']!.content).toBe('someone else wrote this after the sync')
+    expect(changes).toEqual([])
+  })
+})
+
+describe('sync_document metadata and relocation', () => {
+  it('relocates the document when path is passed alongside id', async () => {
+    const res = await run({
+      id: 'doc-1', path: '/projects/x/renamed.md',
+      content: 'local body', expected_hash: hashBody('server body')
+    })
+    expect(res.action).toBe('updated')
+    expect(res.path).toBe('/projects/x/renamed.md')
+    expect(rows['doc-1']!.path).toBe('/projects/x/renamed.md')
+  })
+
+  it('relocates even when the body is unchanged', async () => {
+    const res = await run({
+      id: 'doc-1', path: '/projects/x/moved.md',
+      content: 'server body', expected_hash: hashBody('server body')
+    })
+    expect(res.action).toBe('unchanged')
+    expect(rows['doc-1']!.path).toBe('/projects/x/moved.md')
+  })
+
+  it('does not relocate when path already matches', async () => {
+    const res = await run({
+      id: 'doc-1', path: '/projects/x/a.md',
+      content: 'server body', expected_hash: hashBody('server body')
+    })
+    expect(res.action).toBe('unchanged')
+    expect(rows['doc-1']!.path).toBe('/projects/x/a.md')
+  })
+
+  it('never relocates or updates metadata on a refused write', async () => {
+    // No expected_hash with an existing id + differing content => refused (expected_hash_required).
+    // path/tags/type/frontmatter are all passed to prove applySyncMeta genuinely never runs on
+    // the error branch — not merely that the mock happens to leave them alone.
+    const res = await run({
+      id: 'doc-1', path: '/projects/x/nope.md', content: 'local body',
+      tags: ['nope'], type: 'nope-type', frontmatter: { nope: true }
+    })
+    expect(res.ok).toBe(false)
+    expect(rows['doc-1']!.path).toBe('/projects/x/a.md')
+    expect(rows['doc-1']!.tags).toBeUndefined()
+    expect(rows['doc-1']!.type).toBeUndefined()
+    expect(rows['doc-1']!.frontmatter).toBeUndefined()
+  })
+
+  it('applies tags, type, and frontmatter alongside a successful write', async () => {
+    const res = await run({
+      id: 'doc-1', content: 'local body', expected_hash: hashBody('server body'),
+      tags: ['x', 'y'], type: 'note', frontmatter: { foo: 'bar' }
+    })
+    expect(res.action).toBe('updated')
+    expect(res.tags).toEqual(['x', 'y'])
+    expect(res.type).toBe('note')
+    expect(rows['doc-1']!.tags).toEqual(['x', 'y'])
+    expect(rows['doc-1']!.type).toBe('note')
+    expect(rows['doc-1']!.frontmatter).toEqual({ foo: 'bar' })
+  })
+
+  it('applies metadata-only changes on the unchanged branch (no content write)', async () => {
+    const res = await run({
+      id: 'doc-1', content: 'server body', expected_hash: hashBody('server body'),
+      tags: ['z']
+    })
+    expect(res.action).toBe('unchanged')
+    expect(res.tags).toEqual(['z'])
+    expect(rows['doc-1']!.tags).toEqual(['z'])
+    expect(changes).toEqual(['updated'])
+  })
+
+  // Double-emit guard: applySyncMeta itself never calls publishChange (see tools.ts) — each
+  // handler branch emits at most once, even when both a content write AND a relocation/metadata
+  // change happen in the same call.
+  it('emits exactly one change event when a write also relocates the path', async () => {
+    const res = await run({
+      id: 'doc-1', path: '/projects/x/renamed2.md',
+      content: 'local body 2', expected_hash: hashBody('server body')
+    })
+    expect(res.action).toBe('updated')
+    expect(res.path).toBe('/projects/x/renamed2.md')
+    expect(changes.length).toBe(1)
+    expect(changes).toEqual(['updated'])
+  })
+
+  // "adopt-with-relocation": the combined adopt/unchanged branch (decision.kind is 'unchanged'
+  // here, since an id was passed and content matches — true 'adopt' only fires with no id, and
+  // in that case path is the lookup key so it can never itself diverge) still relocates and
+  // must emit exactly once.
+  it('an unchanged-content sync that relocates the path emits exactly one change event', async () => {
+    const res = await run({
+      id: 'doc-1', path: '/projects/x/moved-unchanged2.md',
+      content: 'server body', expected_hash: hashBody('server body')
+    })
+    expect(res.action).toBe('unchanged')
+    expect(res.path).toBe('/projects/x/moved-unchanged2.md')
+    expect(changes.length).toBe(1)
+    expect(changes).toEqual(['updated'])
+  })
+
+  // "adopt-without-relocation": a true adopt (no id) where the matched path already equals the
+  // requested path and no other metadata is passed — nothing changed, so nothing is emitted.
+  it('a plain adopt with no metadata changes emits no change event', async () => {
+    const res = await run({ path: '/projects/x/a.md', content: 'server body' })
+    expect(res.action).toBe('adopted')
     expect(changes).toEqual([])
   })
 })
