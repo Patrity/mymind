@@ -2,7 +2,7 @@
 title: Agent-usable document tools — surgical edit / read / move / delete + second-brain descriptions — Cycle 40
 cycle: 40
 date: 2026-06-30
-status: built + gates green + controller-run live E2E PASS — final whole-branch review PENDING
+status: ✅ shipped — gates green + controller-run live E2E PASS + final whole-branch review COMPLETE (two Minor findings, both fixed in `f19adfb`). Live in prod since; cycle 52 later rebuilt several of these tools.
 branch: feat/agent-doc-tools (off master c6600782; subagent-driven, 7 impl tasks + docs)
 spec: ../superpowers/specs/2026-06-30-agent-document-tools-design.md
 plan: ../superpowers/plans/2026-06-30-agent-document-tools.md
@@ -46,7 +46,7 @@ verified:
   - "  Dev corpus cleaned up; dev server stopped."
   - "Built subagent-driven (7 impl tasks + docs task): Task1 (edit-ops TDD) → Task2 (edit-ops advanced + applyEditSection) → Task3 (restore helpers) → Task4 (read_document + grep_document handlers) → Task5 (edit_document + edit_section + update_document + move_document) → Task6 (delete_document + delete_task + forget_memory) → Task7 (server instructions + description re-voice). Per-task two-verdict reviews; typecheck green throughout."
 followups:
-  - "**Final whole-branch review (opus)** — pending at handover time; run before merge."
+  - "**Final whole-branch review (opus)** — was pending at handover time; it RAN and returned two Minor findings (hoist `update_document`'s prior-snapshot above `updateDoc`; the MCP parity test is dynamic, not a hardcoded 29), both fixed in `f19adfb`. Nothing outstanding."
   - "**Minors deferred (from SDD ledger):** edit-ops readSection({}) empty-opts path is defined but untested; findSection double-splits on EOF branch (negligible); no test for applyReplace('','x') empty-oldStr guard (guard is present); update_document declares `const prior = doc` AFTER the updateDoc call (cosmetic; doc is captured pre-mutation so correct — move above mutation for clarity)."
   - "**Deploy** — push master → CD (native systemd LXC 114). No migration; no env change. `pnpm install` + `pnpm build` suffice."
   - "**Non-goals / deferred**: no UI changes (/documents editor unchanged); no bulk/multi-doc ops; no chunk-level editing (chunks re-index automatically via content_hash drift); undo is an in-app-agent-loop feature, not an MCP call exposed externally; no dangerous:true tools added."
