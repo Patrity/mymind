@@ -456,7 +456,7 @@ const filterProjectItems = computed(() => [
             <UTextarea
               v-model="newForm.description"
               placeholder="Optional description…"
-              :rows="2"
+              :rows="5"
               class="w-full"
             />
           </UFormField>
@@ -553,7 +553,7 @@ const filterProjectItems = computed(() => [
             <UTextarea
               v-model="editForm.description"
               placeholder="Optional description…"
-              :rows="2"
+              :rows="5"
               class="w-full"
             />
           </UFormField>

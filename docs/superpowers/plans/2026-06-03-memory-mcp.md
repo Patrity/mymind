@@ -25,7 +25,6 @@
 - [ ] Pure `dedupDecision(candidate, existing, {threshold=0.85})` → `{ action:'insert'|'merge'|'skip', mergeId? }` (exact hash → skip/merge; cosine ≥ threshold in same scope/project → merge; else insert). Provide a `cosine(a,b)` helper. TDD it.
 - [ ] `createMemory(input)` (embed content, compute hash, run dedupDecision against same-scope/project candidates fetched by vector top-k, then insert or merge evidence), `searchMemories(q, filters)` (hybrid trigram+vector RRF, reuse `embedOne`+`rrfFuse`), `listMemories`, `getMemory`, `updateMemory` (re-embed on content change), `reviewMemory`, `archiveMemory`. DTOs.
 - [ ] typecheck + test. Commit.
-
 ### Task 3: hook endpoints (transcript ingestion)
 **Files:** `server/services/sessions.ts`, `server/api/hooks/cc/[event].post.ts`, `server/api/hooks/cc/transcript.post.ts`. (`/api/hooks` stays auth-gated — bearer token.)
 - [ ] `sessions.ts`: `upsertSession({source, externalId, project?, cwd?, metadata?})`, `ingestTranscript({source, externalId, lines})` — parse Claude Code JSONL lines (each line JSON; extract role+content+uuid from the message shape; be tolerant of shapes), upsert `messages` (idempotent), bump message_count/last_active.
