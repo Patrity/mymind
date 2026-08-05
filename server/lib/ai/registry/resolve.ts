@@ -16,6 +16,16 @@ function providerHost(baseURL: string | null): string {
   try { return new URL(baseURL).host } catch { return baseURL }
 }
 
+/**
+ * A cancelled call is the CALLER walking away (barge-in, a newer utterance, a closed
+ * socket) — not a provider failing. Failing over would just re-dial the next provider
+ * with the same dead signal, and recording it as an error made every barge-in look like
+ * an outage. Node/undici's fetch surfaces this as `name === 'AbortError'`.
+ */
+function isAbort(err: unknown): boolean {
+  return (err as Error | undefined)?.name === 'AbortError'
+}
+
 /** Pure: build the ordered, decrypted chain for a usage from a config doc. */
 export function resolveChainFrom(doc: AiConfigDoc, usage: Usage): ResolvedModel[] {
   const ids = doc.assignments[usage] ?? []
@@ -68,6 +78,18 @@ export async function withFailoverOver<T>(
       return out
     } catch (err) {
       const message = (err as Error).message
+      // Cancellation short-circuits the chain and rethrows the ORIGINAL error, so the
+      // `err.name === 'AbortError'` guards in orchestrator.ts/ws.ts still fire. Wrapping
+      // it in AiAllFailedError used to defeat them, surfacing a bogus "all models failed"
+      // error frame to the client on every barge-in.
+      if (isAbort(err)) {
+        obs.recordEvent({
+          kind: 'attempt', name: `${usage}:${m.label}`, status: 'warn', severity: 'info',
+          usage, provider: `${m.label}@${providerHost(m.baseURL)}`, modelId: m.modelId,
+          attempt: i, durationMs: Date.now() - started, error: { message }, meta: { cancelled: true }
+        })
+        throw err
+      }
       attempts.push({ label: m.label, error: message })
       obs.recordEvent({
         kind: 'attempt', name: `${usage}:${m.label}`, status: 'error', severity: 'warn',

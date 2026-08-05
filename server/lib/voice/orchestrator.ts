@@ -40,6 +40,10 @@ export interface UtteranceDeps extends TurnDeps {
 
 /** One spoken user turn: transcribe, then run the shared turn pipeline. */
 export async function handleUtterance(audio: Uint8Array, history: AgentMessage[], deps: UtteranceDeps): Promise<AgentMessage[]> {
+  // Turns queue behind the connection lock (ws.ts), but the AbortController fires the
+  // instant the NEXT frame lands — so by the time a queued turn runs, its own signal may
+  // already be dead. Don't burn an STT round-trip on it (prod showed 0-2ms transcribes).
+  if (deps.signal.aborted) return history
   let userText: string
   try {
     userText = await deps.stt.transcribe(audio, { language: VOICE_TUNING.stt.language, signal: deps.signal })

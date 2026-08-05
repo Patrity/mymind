@@ -32,6 +32,22 @@ describe('handleUtterance', () => {
     expect(stt.transcribe).toHaveBeenCalledOnce()
   })
 
+  // Turns queue behind the connection lock (ws.ts), but the AbortController is fired the
+  // instant the NEXT frame lands — so a queued turn can reach STT with an already-dead
+  // signal (prod showed 0ms/2ms transcribe attempts). Don't dial the provider at all.
+  it('skips STT entirely when the turn was already cancelled before it got the lock', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    const coldStt = { transcribe: vi.fn(async () => 'should never run') }
+    const history = [{ role: 'user' as const, content: 'earlier turn' }]
+    const out = await handleUtterance(new Uint8Array([1]), history, {
+      stt: coldStt, tts, voice: 'af_heart', speak: true, runAgent, signal: ac.signal,
+      emit: () => {}
+    })
+    expect(coldStt.transcribe).not.toHaveBeenCalled()
+    expect(out).toBe(history)
+  })
+
   it('emits state:tool on tool-start and returns to thinking on tool-result', async () => {
     const events: any[] = []
     await handleUtterance(new Uint8Array([1]), [], {

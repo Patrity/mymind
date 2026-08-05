@@ -57,12 +57,22 @@ export async function getActivityTrace(id: string): Promise<{ root: ActivityDTO 
   return { root: toDTO(row), trace: trace.map(toDTO) }
 }
 
+// The badge counts what actually needs triage, which is `severity='error'` — NOT every row
+// with `status='error'`. withFailoverOver writes two rows per failure: a per-attempt
+// diagnostic (status error / severity WARN) and the terminal all-failed row (severity
+// error). Counting on status alone double-counted every failure, and it also flagged
+// failures the chain silently recovered from (attempt 1 failed, attempt 2 succeeded).
+const unackedError = () => and(
+  eq(activityLog.status, 'error'),
+  eq(activityLog.severity, 'error'),
+  isNull(activityLog.ackedAt)
+)
+
 export async function countErrors(): Promise<ActivityCount> {
   const db = useDb()
-  const [c] = await db.select({ n: count() }).from(activityLog)
-    .where(and(eq(activityLog.status, 'error'), isNull(activityLog.ackedAt)))
+  const [c] = await db.select({ n: count() }).from(activityLog).where(unackedError())
   const [latest] = await db.select().from(activityLog)
-    .where(and(eq(activityLog.status, 'error'), isNull(activityLog.ackedAt)))
+    .where(unackedError())
     .orderBy(desc(activityLog.createdAt)).limit(1)
   return {
     unacked: c?.n ?? 0,
@@ -76,6 +86,9 @@ export async function ackActivity(id: string): Promise<void> {
   await useDb().update(activityLog).set({ ackedAt: new Date() }).where(eq(activityLog.id, id))
 }
 
+// Deliberately acks a SUPERSET of what countErrors() counts (every status='error' row,
+// including the severity='warn' per-attempt diagnostics) so "ack all" reliably drives the
+// badge to zero and clears the error surface in the list view too.
 export async function ackAllErrors(): Promise<void> {
   await useDb().update(activityLog).set({ ackedAt: new Date() })
     .where(and(eq(activityLog.status, 'error'), isNull(activityLog.ackedAt)))

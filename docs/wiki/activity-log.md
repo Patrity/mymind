@@ -73,7 +73,7 @@ badge-count hot path).
 
 | Seam | Where | Rows |
 |---|---|---|
-| Model failover | `withFailoverOver` (`ai/registry/resolve.ts`) | one `attempt` row per model tried (ok=info / fail=warn); a `model` `:all-failed` (error) when the chain is exhausted |
+| Model failover | `withFailoverOver` (`ai/registry/resolve.ts`) | one `attempt` row per model tried (ok=info / fail=`status:error`+`severity:warn`); a `model` `:all-failed` (`severity:error`) when the chain is exhausted. **A cancelled call is not a failure**: an `AbortError` records a single `status:warn` / `severity:info` attempt row (`meta.cancelled`), emits **no** `:all-failed`, stops the chain, and rethrows the original error |
 | Agent reasoning | `server/lib/agent/run.ts` loop | one `attempt` row per reasoning model tried; `model` `:agent-all-failed` on exhaustion |
 | Agent tools | `server/lib/agent/ai-tools.ts` (`buildAiTools` handler wrap) | one `tool` row per call (name + sanitized args), nested under the turn |
 | Cron jobs | the `server/tasks/*.ts` crons | one `job` row per run (liveness, always) + a `:summary` child carrying the service's return (`{proposed,skipped,…}`) **only when the run did real work** (`recordJobSummary` → `jobDidWork`: any non-`remaining` counter > 0). All-zero no-op ticks are suppressed so the feed doesn't read as constant re-embedding/churn |
@@ -97,6 +97,11 @@ live in settings.
   freezes the displayed rows, plus **Ack all**. Detail (`[id].vue`) reconstructs the nested
   **trace tree** (group by `trace_id`, indent by `parent_id`) with request/response/error/meta
   JSON and per-row **Ack**.
+- **The unacked badge counts `status='error' AND severity='error'`** (`countErrors`,
+  `server/services/activity.ts`), *not* `status='error'` alone — the per-attempt diagnostic row
+  is `status:error`/`severity:warn`, so counting on status double-counted every failure and
+  also flagged failures the chain silently recovered from. `ackAllErrors` deliberately acks the
+  wider `status='error'` set so "Ack all" clears the list view too.
 - **Alerts** (all in `observability_config`, edited at `/settings/alerts`):
   sidebar `Activity ●N` unacked-error badge, a new-error toast (de-duped by timestamp), and
   Resend email — each independently toggleable; the layout honors `alerts.badge`/`alerts.toast`.

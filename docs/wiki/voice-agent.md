@@ -103,6 +103,15 @@ The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettin
 | Text | `{type:'voice', provider, voice}` | Switch TTS provider/voice |
 | Text | `{type:'text', text}` | Typed turn, injected post-STT (`handleTurn`) — same agent loop, TTS reply, and state events as speech |
 
+**Cancellation is a non-event, end to end.** *Every* inbound frame calls `s.ac?.abort()`
+(`ws.ts`), so rapid VAD re-segmentation cancels several turns in a row. Turns then execute
+serially behind `s.lock`, so a queued turn can reach STT with an already-dead signal —
+`handleUtterance` returns early on `signal.aborted` rather than burning the round-trip.
+An abort that lands mid-flight is rethrown **unwrapped** by `withFailoverOver`, so the
+`err.name === 'AbortError'` guards in `handleUtterance` and `run()` both fire and the turn
+ends silently. Breaking any link in that chain surfaces a spurious "all models failed"
+error frame and unacked activity errors on every barge-in (prod, 2026-08-05).
+
 **Server → client**
 
 | Message | Shape | Meaning |
