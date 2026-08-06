@@ -28,7 +28,11 @@ export const conversationMessages = pgTable('conversation_messages', {
   role: text('role').notNull(),                 // 'user' | 'assistant'
   content: text('content').notNull().default(''),
   modality: text('modality').notNull(),         // 'voice' | 'text'
-  toolCalls: jsonb('tool_calls'),               // [{ name, summary, undoToken? }] for assistant turns
+  // AgentToolRecord[] for assistant turns (server/lib/agent/tool-history.ts):
+  // [{ callId, name, kind, args, result, summary, undoToken?, textOffset }]. Untyped jsonb,
+  // written additively — legacy rows still hold only { name, summary, undoToken? } and
+  // degrade to shape-only (chip renders, contributes nothing to model history).
+  toolCalls: jsonb('tool_calls'),
   reasoning: text('reasoning'),                 // assistant thinking; display/storage only, NEVER sent back to the model
   attachments: jsonb('attachments'),            // [{ id, kind, mime, name? }] for user turns (Task 5 populates)
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()

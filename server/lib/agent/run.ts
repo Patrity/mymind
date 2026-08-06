@@ -97,8 +97,16 @@ export async function* runAgent(
 
   publishActivity({ type: 'state', state: 'thinking' })
 
-  // Redact /api/images URLs from history so the model can't copy a real URL into a
-  // new reply (which would render the wrong/old image live). See image-embed.ts.
+  // THE single seam where our history becomes model messages. This one line applies all
+  // three transforms, and deliberately nothing else in the codebase may apply them:
+  //   1. image redaction — strips /api/images URLs from prior assistant turns so the model
+  //      can't copy a real URL into a new reply (see image-embed.ts);
+  //   2. tool-history POLICY (applyHistoryPolicy) — the call survives forever, args/results
+  //      cap in-window and elide out-of-window;
+  //   3. tool-history EXPANSION (toolBlocksFor) — records become paired tool-call/tool-result
+  //      messages, so live history and resumed history cannot structurally diverge.
+  // Both callers (the orchestrator's live history, getAgentHistory on resume) reach the model
+  // through here; a future edit to either physically cannot skip the policy.
   // Reused verbatim by the forced-final follow-up below.
   const modelMessages = buildModelMessages(messages)
 
