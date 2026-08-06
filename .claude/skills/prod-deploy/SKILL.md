@@ -132,6 +132,65 @@ lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from 
 - **Rollback**: the pre-B3.1 Docker app path still exists — restore the old `docker-compose.prod.yml`
   (with the `app` service) + `docker compose up -d --build app`, then `systemctl stop mymind`.
 
+### When CD never fires (manual deploy)
+
+**First confirm the push actually failed to trigger, rather than guessing.** A push can land with
+zero workflow runs created — `git ls-remote origin master` shows your SHA, but
+`gh api "repos/Patrity/mymind/actions/runs?head_sha=$(git rev-parse HEAD)" --jq .total_count`
+returns `0`. Rule out the cheap causes first (all checkable):
+`paths-ignore` (the push must contain a non-`docs/`, non-`.md` file), a `[skip ci]` directive in any
+pushed commit message, `gh api repos/Patrity/mymind/actions/permissions` → `enabled`, and
+`gh api repos/Patrity/mymind/actions/runners` → runner `online`. If those are all clean, check
+**GitHub's own status** — this is the one that has actually bitten us:
+
+```bash
+curl -s https://www.githubstatus.com/api/v2/components.json | \
+  python3 -c "import sys,json;[print(c['name'],c['status']) for c in json.load(sys.stdin)['components'] if c['name'] in ('Actions','Webhooks','Git Operations')]"
+curl -s https://www.githubstatus.com/api/v2/incidents/unresolved.json | head -c 2000
+```
+
+**2026-08-06:** Actions was in a `major_outage` throttling webhooks to ~15%, so pushes simply did
+not create runs while Git Operations stayed green. Symptom is exactly the above: push succeeds,
+`PushEvent` registers in `repos/.../events`, no run exists. Nothing is wrong with the repo.
+
+To deploy anyway, replicate `deploy.yml`'s steps over `pct exec`. Define the `lxc` helper from the
+Access section first. **Run the full local gates (`pnpm typecheck && pnpm test && pnpm build`) on the
+exact commit you are deploying** — you are skipping the CI `test` job that normally gates `deploy`.
+
+```bash
+# 1. clear the tracked tree, preserving runtime state
+lxc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 ! -name .git ! -name .env ! -name .env.native \
+  ! -name .data ! -name .output ! -name .nuxt ! -name node_modules ! -name workspace -exec rm -rf {} +'
+
+# 2. sync — `git archive` beats `tar` here: it ships EXACTLY the tracked tree at HEAD,
+#    so local gitignored scratch (.superpowers/, .claude/worktrees/) cannot leak into prod
+git archive --format=tar HEAD | ssh root@192.168.2.50 "pct exec 114 -- tar -C /opt/mymind -xf -"
+
+# 3-5. same as CD; the OLD app keeps serving until the restart in step 6
+lxc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d db searxng'
+lxc 'cd /opt/mymind && bash deploy/provision-native.sh'
+lxc 'cd /opt/mymind && pnpm install --frozen-lockfile'
+lxc 'cd /opt/mymind && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build'
+lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && pnpm db:migrate'
+
+# 6. cutover (the only downtime) + health
+lxc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng && systemctl restart mymind'
+lxc 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health'   # expect 200
+```
+
+**Then prove the NEW code is live — a restart plus a 200 does not prove the build changed.** Grep the
+running bundle for a symbol unique to what you shipped, and check the authed path separately:
+
+```bash
+lxc 'ls -la --time-style=+%Y-%m-%dT%H:%M /opt/mymind/.output/server/index.mjs'   # fresh timestamp
+lxc 'grep -rl "<symbol-new-in-this-cycle>" /opt/mymind/.output/server/ | head -3'
+lxc 'journalctl -u mymind --since "3 min ago" --no-pager | grep -icE "error|unhandled|ECONNREFUSED"'
+curl -s -o /dev/null -w "%{http_code}\n" https://brain.costanzoclan.com/api/health   # external path
+```
+
+Best authed canary: call any `mcp__mymind__*` tool — they point at PROD, so a successful round-trip
+proves auth + DB end-to-end (gotcha #2), which `/login` cannot.
+
 ## Gotchas that have bitten us (read before debugging a 5xx)
 
 1. **`NUXT_DATABASE_URL`, not just `DATABASE_URL`.** `useDb()` reads `useRuntimeConfig().databaseUrl`,
