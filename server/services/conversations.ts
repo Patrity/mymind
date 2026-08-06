@@ -2,7 +2,7 @@ import { and, desc, eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { conversations, conversationMessages } from '../db/schema'
 import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO } from '../../shared/types/conversation'
-import type { AgentMessage } from '../lib/agent/run'
+import type { AgentMessage, AgentContentPart } from '../lib/agent/run'
 import type { AgentToolRecord } from '../lib/agent/tool-history'
 import { TOOL_HISTORY_WINDOW } from '../lib/agent/tool-history'
 import { buildUserMessageParts } from '../lib/agent/attachments'
@@ -160,6 +160,25 @@ export function rowToAgentMessage(
 }
 
 /**
+ * `buildUserMessageParts` (live-turn code, unmodified here) degrades a single failed read to
+ * an `[attachment unavailable…]` text note. That's fine for a ONE-SHOT live turn, but
+ * `hydrateAttachments` re-runs it on every `getAgentHistory` call — a durably-missing blob
+ * would otherwise re-inject that note into replayed history on every resume, which is the
+ * same repeating-marker-in-history shape as the `[image]` imitation bug. Strip it here, on
+ * the resume path only, so a failed within-window read degrades the same way an
+ * out-of-window turn does: silently. If nothing usable survives the strip (no text, no
+ * other attachment), fall back to the plain text content rather than an empty parts array.
+ */
+function stripUnavailableMarkers(
+  content: string | AgentContentPart[],
+  fallbackText: string
+): string | AgentContentPart[] {
+  if (typeof content === 'string') return content
+  const filtered = content.filter(p => !(p.type === 'text' && /^\[attachment unavailable/.test(p.text)))
+  return filtered.length ? filtered : fallbackText
+}
+
+/**
  * Re-attach image/file bytes to the most recent user turns so a resumed agent can still SEE
  * them. Older turns degrade to plain text with NO placeholder — a marker is exactly the
  * artifact cycle 39 removed, and reintroducing one here would re-open the imitation bug.
@@ -177,7 +196,9 @@ export async function hydrateAttachments(
   return Promise.all(msgs.map(async (m, i) => {
     if (!keep.has(i)) return m
     const refs = rows[i]!.attachments as AttachmentRef[]
-    return { ...m, content: await buildUserMessageParts(m.content as string, refs, readBytes) }
+    const text = m.content as string
+    const built = await buildUserMessageParts(text, refs, readBytes)
+    return { ...m, content: stripUnavailableMarkers(built, text) }
   }))
 }
 

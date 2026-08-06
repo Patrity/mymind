@@ -40,6 +40,47 @@ describe('hydrateAttachments', () => {
 
     expect(Array.isArray(out.at(-1)!.content)).toBe(true)         // newest: real image parts
     expect(out[0]!.content).toBe('q0')                            // oldest: plain text, no marker
-    expect(JSON.stringify(out)).not.toMatch(/\[image\]|\[attachment\]/)
+    // NOTE: `[attachment\]` (no trailing text) never matches the real marker text emitted by
+    // buildUserMessageParts, which is `[attachment unavailable...]` — corrected below so this
+    // assertion can actually catch a leaked marker, not just the out-of-window (never-called)
+    // case which was already guaranteed marker-free by construction.
+    expect(JSON.stringify(out)).not.toMatch(/\[image\]|\[attachment unavailable/)
+  })
+
+  it('drops the unavailable-marker for a failed within-window read (readBytes resolves null), keeping the turn\'s other real content', async () => {
+    const rows = [{
+      role: 'user', content: 'q0', toolCalls: null,
+      attachments: [
+        { id: 'ok', kind: 'image', mime: 'image/webp' },
+        { id: 'missing', kind: 'image', mime: 'image/webp' }
+      ]
+    }]
+    const out = await hydrateAttachments(
+      rows.map(rowToAgentMessage),
+      rows,
+      async (a) => (a.id === 'ok' ? { bytes: Buffer.from([1, 2, 3]), mime: 'image/webp' } : null)
+    )
+
+    expect(JSON.stringify(out)).not.toMatch(/\[attachment unavailable/)
+    // usable: the successfully-read image is still present, not just dropped along with the marker
+    expect(Array.isArray(out[0]!.content)).toBe(true)
+    const parts = out[0]!.content as { type: string }[]
+    expect(parts.some(p => p.type === 'image')).toBe(true)
+  })
+
+  it('falls back to the plain text (not an empty parts array) when readBytes throws and nothing else survives the strip', async () => {
+    const rows = [{
+      role: 'user', content: '', toolCalls: null,
+      attachments: [{ id: 'missing', kind: 'image', mime: 'image/webp' }]
+    }]
+    const out = await hydrateAttachments(
+      rows.map(rowToAgentMessage),
+      rows,
+      async () => { throw new Error('missing blob') }
+    )
+
+    expect(JSON.stringify(out)).not.toMatch(/\[attachment unavailable/)
+    expect(out).toHaveLength(1)
+    expect(out[0]!.content).toBe('')   // fallback to plain text, never an empty [] parts array
   })
 })
