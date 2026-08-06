@@ -29,13 +29,6 @@ describe('buildModelMessages', () => {
     expect(firstToolMsg.content[0]!.output!.value).toEqual({ elided: true, bytes: expect.any(Number) })
   })
 
-  it('IMAGE INVARIANT: no /api/images URL survives into model messages', () => {
-    const out = buildModelMessages([
-      { role: 'assistant', content: 'here', toolRecords: [rec({ name: 'generate_image', kind: 'create', result: { ok: true, id: 'img1', summary: 'a cat' } })] }
-    ])
-    expect(JSON.stringify(out)).not.toMatch(/\/api\/images/)
-  })
-
   it('legacy records produce no unpaired tool message', () => {
     const out = buildModelMessages([
       { role: 'assistant', content: 'old turn', toolRecords: [{ name: 'x', summary: 's' } as unknown as AgentToolRecord] }

@@ -105,6 +105,24 @@ it('emits callId, args, result and kind on tool-result', async () => {
   expect(done.result).toEqual({ hits: 3 })
 })
 
+it('keeps display image URLs OUT of the model-facing result', async () => {
+  const events: Record<string, unknown>[] = []
+  const set = buildAiTools([{
+    name: 'generate_image', description: 'd', schema: {}, kind: 'create',
+    handler: async () => ({
+      result: { ok: true, image_id: 'img1' },
+      summary: 'made an image',
+      display: { images: [{ url: '/api/images/img1' }] }
+    })
+  } as never], { signal: new AbortController().signal, onEvent: e => events.push(e as never) })
+
+  await (set.generate_image!.execute as (i: unknown, o: unknown) => Promise<unknown>)({}, { toolCallId: 'c1' })
+
+  const done = events.find(e => e.type === 'tool-result')!
+  expect(JSON.stringify(done.result)).not.toMatch(/\/api\/images/)   // model-facing: no URL
+  expect(JSON.stringify(done.images)).toMatch(/\/api\/images/)       // display channel: URL present
+})
+
 it('emits a record for a FAILED tool so the agent sees the failure next turn', async () => {
   const events: Record<string, unknown>[] = []
   const set = buildAiTools([{
