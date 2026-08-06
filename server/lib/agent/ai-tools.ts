@@ -30,7 +30,19 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
       inputSchema: z.object(t.schema),
       execute: async (input: Record<string, unknown>, opts?: { toolCallId?: string }) => {
         const callId = opts?.toolCallId ?? ''
-        hooks.onEvent({ type: 'tool-start', name: t.name, args: input })
+        // Mask ONCE, up front, and use the masked copy for every RECORDED/EMITTED args field
+        // below. Those args are persisted to conversation_messages.tool_calls and shipped to
+        // the browser via msgToDTO, so a tool whose input can carry literal secret values
+        // (exec — see tools/exec.ts redactForLog) must never emit them raw. The handler still
+        // receives the ORIGINAL `input`; only the copy we record is masked.
+        // A THROWING redactForLog (e.g. secrets undecryptable) no longer fails the whole tool
+        // — it degrades to a body-free marker and lets the handler run and report for itself.
+        let safeArgs: Record<string, unknown> = input
+        if (t.redactForLog) {
+          try { safeArgs = await t.redactForLog(input) as Record<string, unknown> }
+          catch { safeArgs = { redacted: true, reason: 'redaction failed' } }
+        }
+        hooks.onEvent({ type: 'tool-start', name: t.name, args: safeArgs })
         // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
         // autoApprove fast-path clears it (allowlist-first).
         if (t.dangerous) {
@@ -43,26 +55,25 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
               const summary = `denied: ${t.name}`
               const result = { denied: true }
               publishActivity({ type: 'tool', name: t.name, summary })
-              hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: input, result, kind: t.kind })
+              hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: safeArgs, result, kind: t.kind })
               return result
             }
           }
         }
         try {
-          const reqForLog = t.redactForLog ? await t.redactForLog(input) : input
           const exec = await withSpan(
-            { kind: 'tool', name: t.name, request: reqForLog as Record<string, unknown> },
+            { kind: 'tool', name: t.name, request: safeArgs },
             () => t.handler(input, ctx)
           )
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: input, result: exec.result, kind: t.kind })
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: safeArgs, result: exec.result, kind: t.kind })
           return exec.result
         } catch (err) {
           const summary = `failed: ${t.name}`
           const result = { error: (err as Error).message }
           publishActivity({ type: 'tool', name: t.name, summary })
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: input, result, kind: t.kind })
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: safeArgs, result, kind: t.kind })
           return result
         }
       }

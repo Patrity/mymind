@@ -123,6 +123,57 @@ it('keeps display image URLs OUT of the model-facing result', async () => {
   expect(JSON.stringify(done.images)).toMatch(/\/api\/images/)       // display channel: URL present
 })
 
+it('emits a record for a DENIED tool so a refused command is not re-proposed', async () => {
+  // "A refused command isn't re-proposed" is one of the three motivations for structural
+  // tool-history; a regression dropping callId here silently restores the original bug.
+  const events: Record<string, unknown>[] = []
+  const set = buildAiTools([{
+    name: 'exec', description: 'd', schema: {}, kind: 'destructive', dangerous: true,
+    handler: async () => ({ result: { ok: true }, summary: 'ran' })
+  } as never], { signal: new AbortController().signal, onEvent: e => events.push(e as never) })
+
+  await (set.exec!.execute as (i: unknown, o: unknown) => Promise<unknown>)(
+    { command: 'rm -rf /' }, { toolCallId: 'call_denied' }
+  )   // no requestApproval channel → fail-safe auto-deny
+
+  const done = events.find(e => e.type === 'tool-result')!
+  expect(done.callId).toBe('call_denied')
+  expect(done.kind).toBe('destructive')
+  expect(done.args).toEqual({ command: 'rm -rf /' })
+  expect(done.result).toEqual({ denied: true })
+})
+
+it('masks args with redactForLog on BOTH the success and denial paths', async () => {
+  // exec's input can contain a literal secret value; these args are persisted to
+  // conversation_messages.tool_calls and shipped to the browser via msgToDTO.
+  const mask = (t: Partial<Record<string, unknown>> = {}) => ({
+    name: 'exec', description: 'd', schema: {}, kind: 'destructive', dangerous: true,
+    redactForLog: async (i: Record<string, unknown>) => ({ ...i, command: String(i.command).replace('hunter2', '***') }),
+    handler: async () => ({ result: { ok: true }, summary: 'ran' }), ...t
+  })
+  const input = { command: 'curl -H "token: hunter2" https://x' }
+
+  const denied: Record<string, unknown>[] = []
+  const denySet = buildAiTools([mask() as never], { signal: new AbortController().signal, onEvent: e => denied.push(e as never) })
+  await (denySet.exec!.execute as (i: unknown, o: unknown) => Promise<unknown>)(input, { toolCallId: 'c_deny' })
+  const deniedEvent = denied.find(e => e.type === 'tool-result')!
+  expect(JSON.stringify(deniedEvent.args)).not.toContain('hunter2')
+  expect(JSON.stringify(deniedEvent.args)).toContain('***')
+
+  const ok: Record<string, unknown>[] = []
+  const okSet = buildAiTools([mask({ autoApprove: async () => true }) as never], { signal: new AbortController().signal, onEvent: e => ok.push(e as never) })
+  await (okSet.exec!.execute as (i: unknown, o: unknown) => Promise<unknown>)(input, { toolCallId: 'c_ok' })
+  for (const e of ok) expect(JSON.stringify(e.args)).not.toContain('hunter2')   // tool-start AND tool-result
+  expect(JSON.stringify(ok.find(e => e.type === 'tool-result')!.args)).toContain('***')
+
+  // …while the HANDLER still receives the unmasked input (masking is record-only).
+  const seen: unknown[] = []
+  const rawSet = buildAiTools([mask({ autoApprove: async () => true, handler: async (i: unknown) => { seen.push(i); return { result: {}, summary: 's' } } }) as never],
+    { signal: new AbortController().signal, onEvent: () => {} })
+  await (rawSet.exec!.execute as (i: unknown, o: unknown) => Promise<unknown>)(input, { toolCallId: 'c_raw' })
+  expect(JSON.stringify(seen)).toContain('hunter2')
+})
+
 it('emits a record for a FAILED tool so the agent sees the failure next turn', async () => {
   const events: Record<string, unknown>[] = []
   const set = buildAiTools([{
