@@ -13,7 +13,9 @@ import { redactImageUrlsForModel } from './image-embed'
 export type { AgentContentPart } from './types'
 import type { AgentContentPart } from './types'
 
-export interface AgentMessage { role: 'system' | 'user' | 'assistant'; content: string | AgentContentPart[] }
+export type AgentMessage =
+  | { role: 'system' | 'user'; content: string | AgentContentPart[] }
+  | { role: 'assistant'; content: string | AgentContentPart[]; toolRecords?: import('./tool-history').AgentToolRecord[] }
 
 export function messageText(content: string | AgentContentPart[]): string {
   return typeof content === 'string'

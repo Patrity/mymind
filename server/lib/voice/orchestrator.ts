@@ -8,6 +8,7 @@ import { applyImageEmbeds, type DisplayImage } from '../agent/image-embed'
 import { getImageBytes } from '../../services/images'
 import { getFileBytes } from '../../services/files'
 import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
+import { capResult, WRITE_RESULT_CAP, type AgentToolRecord } from '../agent/tool-history'
 
 export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
@@ -76,6 +77,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const chunker = new SentenceChunker(VOICE_TUNING.tts.sentenceMinChars)
   let assistantText = ''
   const turnImages: DisplayImage[] = []
+  const toolRecords: AgentToolRecord[] = []
 
   const speak = async (text: string) => {
     if (deps.signal.aborted) return
@@ -109,6 +111,13 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
       deps.emit({ type: 'state', state: 'tool' })
     } else if (ev.type === 'tool-result') {
       if (ev.images?.length) turnImages.push(...ev.images)
+      if (ev.callId) {
+        toolRecords.push({
+          callId: ev.callId, name: ev.name, kind: ev.kind ?? 'read',
+          args: ev.args ?? {}, result: capResult(ev.result, WRITE_RESULT_CAP), summary: ev.summary,
+          undoToken: ev.undoToken, textOffset: assistantText.length
+        })
+      }
       deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images })
       deps.emit({ type: 'state', state: 'thinking' })
     }
@@ -125,5 +134,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     if (appended) deps.emit({ type: 'transcript', role: 'assistant', text: appended })  // live render
     assistantText = content
   }
-  return assistantText ? [...messages, { role: 'assistant', content: assistantText }] : messages
+  return assistantText
+    ? [...messages, { role: 'assistant', content: assistantText, ...(toolRecords.length ? { toolRecords } : {}) }]
+    : messages
 }

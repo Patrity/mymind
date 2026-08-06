@@ -109,4 +109,53 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     // …and never merged into the persisted assistant content.
     expect(history.at(-1)).toEqual({ role: 'assistant', content: 'Final answer.' })
   })
+
+  it('attaches tool records with the text offset at which each fired', async () => {
+    const events: any[] = []
+    const runTools = (async function* () {
+      yield { type: 'text-delta', text: 'Looking. ' }
+      yield { type: 'tool-result', name: 'web_search', summary: 's', callId: 'c1', args: { q: 'a' }, result: { hits: 1 }, kind: 'read' }
+      yield { type: 'text-delta', text: 'Found it.' }
+      yield { type: 'done' }
+    }) as never
+    const history = await handleTurn('hi', [], {
+      tts, voice: 'af_heart', speak: false, runAgent: runTools,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+
+    const assistant = history.at(-1) as { toolRecords?: { callId: string; textOffset: number }[] }
+    expect(assistant.toolRecords).toHaveLength(1)
+    expect(assistant.toolRecords![0]!.callId).toBe('c1')
+    expect(assistant.toolRecords![0]!.textOffset).toBe('Looking. '.length)
+  })
+
+  it('omits toolRecords entirely when no tool ran', async () => {
+    const events: any[] = []
+    const runPlain = (async function* () {
+      yield { type: 'text-delta', text: 'just chat' }
+      yield { type: 'done' }
+    }) as never
+    const history = await handleTurn('hi', [], {
+      tts, voice: 'af_heart', speak: false, runAgent: runPlain,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+    expect((history.at(-1) as { toolRecords?: unknown[] }).toolRecords).toBeUndefined()
+  })
+
+  it('caps an oversized result at the write ceiling before it is ever stored', async () => {
+    const events: any[] = []
+    const runBig = (async function* () {
+      yield { type: 'tool-result', name: 'web_fetch', summary: 's', callId: 'c1', args: {}, result: { body: 'z'.repeat(50_000) }, kind: 'read' }
+      yield { type: 'text-delta', text: 'done' }
+      yield { type: 'done' }
+    }) as never
+    const history = await handleTurn('hi', [], {
+      tts, voice: 'af_heart', speak: false, runAgent: runBig,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+
+    const rec = (history.at(-1) as { toolRecords: { result: { truncated?: boolean } }[] }).toolRecords[0]!
+    expect(rec.result.truncated).toBe(true)
+    expect(JSON.stringify(rec.result).length).toBeLessThan(10_000)
+  })
 })
