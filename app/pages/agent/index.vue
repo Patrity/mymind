@@ -70,8 +70,11 @@ async function resume(id: string) {
   voice.transcript.value = messages.flatMap<TranscriptEntry>((m) => {
     const records = (m.role === 'assistant' && m.toolCalls?.length) ? m.toolCalls : []
     // Legacy rows have no textOffset — fall back to the old "chips first" render.
-    const ordered = records.filter(t => typeof t.textOffset === 'number')
-    if (!ordered.length) {
+    // All-or-nothing: only take the structured-split branch when EVERY record carries
+    // an offset. A message mixing offset and offset-less records must not silently
+    // drop the offset-less ones by filtering them out of the loop.
+    const allOffset = records.length > 0 && records.every(t => typeof t.textOffset === 'number')
+    if (!allOffset) {
       return [
         ...records.map((t, i) => ({ id: `${m.id}-tool-${i}`, role: 'tool' as const, text: '', name: t.name, summary: t.summary, undoToken: t.undoToken })),
         { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined }
@@ -80,13 +83,20 @@ async function resume(id: string) {
 
     const entries: TranscriptEntry[] = []
     let cursor = 0
-    ordered.forEach((t, i) => {
+    records.forEach((t, i) => {
       const at = Math.min(Math.max(t.textOffset!, 0), m.content.length)
       if (at > cursor) entries.push({ id: `${m.id}-txt-${i}`, role: m.role, text: m.content.slice(cursor, at) })
       entries.push({ id: `${m.id}-tool-${i}`, role: 'tool', text: '', name: t.name, summary: t.summary, undoToken: t.undoToken })
       cursor = at
     })
-    entries.push({ id: m.id, role: m.role, text: m.content.slice(cursor), attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined })
+    // A chip at the very end of the reply (no trailing commentary) must not leave a
+    // floating empty "Bridget" bubble — Transcript.vue renders the role label
+    // regardless of text. Only skip the trailing entry when it would carry nothing at
+    // all; reasoning/attachments still need to ride on it even with empty text.
+    const trailingText = m.content.slice(cursor)
+    if (trailingText || m.reasoning || m.attachments?.length) {
+      entries.push({ id: m.id, role: m.role, text: trailingText, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined })
+    }
     return entries
   })
   await voice.loadConversation(id)
