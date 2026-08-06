@@ -3,15 +3,17 @@ title: Structural tool-history — the agent sees its own tool calls and results
 cycle: 43
 date: 2026-08-05
 status: >
-  🔨 BUILT, NOT MERGED. 13 commits on `feat/structural-tool-history` (branched from master
+  🔨 BUILT, NOT MERGED. 21 commits on `feat/structural-tool-history` (branched from master
   `c6cc68e`), every task's per-task review clean (3 fix rounds across the branch — Tasks 4,
-  7, and 8, one round each — all re-reviewed clean), no whole-branch review run yet. NOT
-  merged, NOT pushed, NOT deployed.
-  Gates at HEAD `9ee44a2`, re-run fresh for this handover on 2026-08-06 (not copied from the
-  execution ledger — the numbers moved during the cycle): **typecheck 0 errors / test 1027
-  passed across 139 files / build clean (65.7 MB, 19.5 MB gzip)**. No migration — additive
-  jsonb only.
-branch: feat/structural-tool-history (off master c6cc68e; 13 commits, ad5025f..9ee44a2)
+  7, and 8, one round each — all re-reviewed clean), **plus a whole-branch review and its
+  fix wave (1 Critical + 4 Important + 3 must-fix minors, all fixed — see "Whole-branch
+  review fix wave" below)**. NOT merged, NOT pushed, NOT deployed.
+  Gates measured at `0d84fb1` — the last code-bearing commit of the fix wave; any commit
+  after it is documentation only: **typecheck 0 errors / test 1049 passed across 140 files /
+  build clean (65.7 MB, 19.5 MB gzip)**. (The pre-fix-wave numbers, at `9ee44a2`, were 1027
+  across 139 files.) No migration — additive jsonb only.
+branch: feat/structural-tool-history (off master c6cc68e; 21 commits, ad5025f..HEAD — build
+  ad5025f..9ee44a2, docs f0378ff..15c50b6, whole-branch fix wave 3960589..0d84fb1)
 spec: ../superpowers/specs/2026-08-05-structural-tool-history-design.md
 plan: ../superpowers/plans/2026-08-05-structural-tool-history.md
 docs:
@@ -70,11 +72,13 @@ deferred: >
 
 ## Status, plainly
 
-**Built, not merged.** `feat/structural-tool-history` has 13 commits off master `c6cc68e`
-(`ad5025f` spec/plan docs → `9ee44a2` HEAD). Every one of the 9 plan tasks passed its
-per-task review (Tasks 4, 7, and 8 needed fix rounds — all re-reviewed clean; Task 4 needed
-one round, Task 7 one round, Task 8 one round). No whole-branch final review has run yet.
-The branch is **not merged to master, not pushed, and not deployed**. There is **no
+**Built, not merged.** `feat/structural-tool-history` has 21 commits off master `c6cc68e`
+(`ad5025f` spec/plan docs → the fix wave ending `0d84fb1` + this doc update). Every one of
+the 9 plan tasks passed its per-task review (Tasks 4, 7, and 8 needed fix rounds — all
+re-reviewed clean; one round each). **A whole-branch review has now run**, found what the
+per-task reviews structurally could not, and its fix wave has landed — see
+[Whole-branch review fix wave](#whole-branch-review-fix-wave-1-critical--4-important). The
+branch is **not merged to master, not pushed, and not deployed**. There is **no
 migration** — `conversation_messages.tool_calls` is untyped jsonb, so every new key added
 this cycle is additive and every legacy row still loads.
 
@@ -88,18 +92,27 @@ blindness at both seams the spec identified:
   denial, and a thrown handler — into an enriched `tool-result` `AgentEvent` carrying
   `callId`, `args`, `result`, `kind`. Denials and thrown errors are captured exactly like
   successes; that is what stops the agent re-proposing a refused command on the next turn.
+  The recorded/emitted `args` are the **`redactForLog` copy** (computed once at the top of
+  `execute`, used at every emit site and for the observability span) — `exec`'s command can
+  carry literal secret values and these args are persisted + shipped to the browser. The
+  handler still gets the raw input. *(Fix wave, Important 3.)*
 - **Records** (`server/lib/agent/tool-history.ts`, new). `AgentToolRecord { callId, name,
   kind, args, result, summary, undoToken?, textOffset }`. `orchestrator.ts` collects these
   onto the assistant turn as `toolRecords?: AgentToolRecord[]` — one new optional field on
-  `AgentMessage`'s assistant arm, no new role. `textOffset` (`assistantText.length` at call
-  time) is the ordering fix that both the model-replay grouping and the UI resume-splitting
-  depend on.
+  `AgentMessage`'s assistant arm, no new role. `textOffset` is the ordering fix that both the
+  model-replay grouping and the UI resume-splitting depend on; it is recorded as
+  **`sanitizedOffset(textSoFar)`**, an index into the *persisted* (whitespace-collapsed)
+  content, not the raw stream. *(Fix wave, Important 2.)*
 - **Decay policy** (`applyHistoryPolicy`, pure, unit-tested). Walking newest-to-oldest and
   counting only tool-*bearing* assistant turns (plain chat turns don't consume the window):
-  the call always survives; the last 3 tool-bearing turns keep their result (`read` capped
-  1500 chars on replay / 8192 chars at write; `create`/`destructive` — already body-free
-  receipts since cycle 52 — kept whole); older turns elide the result to
-  `{ elided: true, bytes: n }` while keeping the call.
+  the call (`callId` + `name`) always survives; the last 3 tool-bearing turns keep their
+  payloads, capped (`read` results 1500 chars on replay / 8192 at write;
+  `create`/`destructive` results kept whole — mostly body-free receipts since cycle 52,
+  except `exec`, which returns full stdout/stderr and is bounded by the write cap alone;
+  **`args` 1024 on replay / 4096 at write**); older turns elide **both** payloads to
+  `{ elided: true, bytes: n }` while keeping the call. Args are capped for the same reason
+  results are — the write tools take unbounded `content`/`body` strings. *(Fix wave,
+  Critical 1.)* A malformed record element passes through untouched instead of throwing.
 - **Replay — the single call site** (`buildModelMessages`, `server/lib/agent/run.ts`).
   `runAgent` runs `applyHistoryPolicy` then `toolBlocksFor` immediately before building the
   model messages. `toolBlocksFor` groups records by `textOffset` into paired
@@ -121,7 +134,8 @@ blindness at both seams the spec identified:
   degrade to plain text with no placeholder. A within-window read that fails has its
   `[attachment unavailable...]` note stripped before the message re-enters history
   (`stripUnavailableMarkers`) — this was added in a fix round (see Task 7 below).
-- **UI: inline chip ordering on resume** (`app/pages/agent/index.vue`). `resume()` splits a
+- **UI: inline chip ordering on resume** (`app/lib/agent/transcript.ts`, called from
+  `app/pages/agent/index.vue`). `buildResumeTranscript` splits a
   resumed assistant message at each record's `textOffset`, interleaving text → chip → text
   the same way the live stream already renders. Split only fires when *every* tool call on
   the message carries an offset (all-or-nothing); any offset-less record, mixed or alone,
@@ -233,18 +247,76 @@ mandatory, scripted "break the assertion, confirm RED, revert" step is not optio
 process theater — it is the only thing in this cycle that caught 4 of 6 plan defects that a
 fully green suite hid.
 
-## Gates (re-run fresh for this handover, 2026-08-06, HEAD `9ee44a2`)
+## Whole-branch review fix wave (1 Critical + 4 Important)
+
+Nine tasks shipped and each passed its own review; the whole-branch review found what those
+structurally could not — every finding here spans two tasks' seams. All fixed in one pass
+(`3960589..0d84fb1`); the full report, with the verbatim RED output proving each new test can
+fail, is `.superpowers/sdd/2026-08-05-structural-tool-history/final-fix-report.md`.
+
+- **CRITICAL — tool-call `args` were never capped and never decayed.** The decay design capped
+  and elided `result` and touched `args` nowhere, while `toolBlocksFor` replayed `input:
+  r.args` in full for every record with a `callId`, forever. `save_document`/`update_document`/
+  `sync_document` `content`, `edit_document` `old_string`/`new_string` and `create_skill`
+  `body` are unbounded strings, and this is a document manager: a 60 KB write was persisted
+  and re-sent on *every* subsequent turn, un-elidable → context overflow → conversation
+  permanently unusable. The design comment's "a call costs ~50 tokens" was false for every
+  write tool. Fixed with the same two-tier shape as results (`ARGS_WRITE_CAP` 4096 at capture,
+  `ARGS_REPLAY_CAP` 1024 in-window, `{elided,bytes}` out-of-window); the call itself still
+  survives forever, which is the part of the design that was right.
+- **IMPORTANT — `textOffset` was pre-sanitization while resume splits post-sanitized text.**
+  Offsets were `assistantText.length`, but what is persisted is
+  `applyImageEmbeds(assistantText, turnImages).content`, which runs unconditionally and
+  trims/collapses whitespace. Stream `"\nOkay. "` → tool → `" Done."` persists as
+  `"Okay. Done."` and resume rendered `"Okay. D"` | chip | `"one."`. Model replay was
+  unaffected (offsets are only compared for equality) so this was resume-render only; Task 8's
+  browser validation used hand-authored offsets, so it structurally could not catch it. Fixed
+  by recording `sanitizedOffset(textSoFar)`.
+- **IMPORTANT — `args` bypassed `redactForLog`, persisting secrets.** All three emit sites
+  passed the raw input; `redactForLog` was computed only for the observability span, and only
+  in the success branch. The denial path was sharpest — a refused `exec`'s raw command was
+  written to Postgres unmasked and shipped to the browser. Fixed by hoisting the masked copy.
+- **IMPORTANT — the PARITY test never crossed a serialization boundary.** Both sides were
+  built from the same in-memory objects. The resumed side now round-trips through JSON. It
+  still passes; the remaining in-memory asymmetry (`capResult` returns the handler's object by
+  identity) does not reach the provider, which JSON-serializes both paths identically.
+- **IMPORTANT — `applyHistoryPolicy` threw on a malformed record.** `toolBlocksFor` defends
+  with `r?.callId`; the policy dereferenced `r.result`/`r.kind` bare, so a `[null]` element
+  500'd the turn, contradicting `rowToAgentMessage`'s documented never-throws contract. No
+  longer "only our own writer" — `/api/agent/chat.post.ts` `readBody`s an unvalidated
+  `messages` array straight into `runAgent`.
+- Plus three must-fix minors: the denial path's emitted fields had **zero** test coverage
+  (and "a refused command isn't re-proposed" is one of the three motivations for this branch);
+  the `run.ts` call-site comment described only image redaction; the `tool_calls` column
+  comment still read `[{ name, summary, undoToken? }]`.
+- Also closed while in the code: the deferred **"no unit test for `resume()`'s slicing
+  logic"**. The transcript rebuild moved out of the SFC into `app/lib/agent/transcript.ts`
+  and is now unit-tested (8 cases) — both of Task 8's Important findings lived in that
+  untested logic. Two of those tests were mutation-*insensitive* on the first draft and were
+  strengthened until the mutation went red.
+
+Carried, deliberately not fixed in this wave: legacy records counting toward the window;
+`textOffset` grouping conflating "same step" with "no interleaved text";
+`stripUnavailableMarkers` not covering `[unsupported file: …]`; elided `bytes` understating
+original size; `msgToDTO` payload weight; the dead `LoopEvent` type; an unused
+`READ_RESULT_CAP` import in a test; subagent digests capped as `read`; stale undo tokens
+after restart.
+
+## Gates (measured at `0d84fb1`, the last code-bearing commit of the fix wave)
 
 | Gate | Result |
 |---|---|
 | `pnpm typecheck` | 0 errors |
-| `pnpm test` | **1027 passed**, 139 test files |
+| `pnpm test` | **1049 passed**, 140 test files |
 | `pnpm build` | clean — 65.7 MB total (19.5 MB gzip); only pre-existing, unrelated Rollup/Tailwind sourcemap warnings |
+
+Every commit after `0d84fb1` on this branch is documentation only, so these numbers stand at
+HEAD. Before the fix wave, at `9ee44a2`, the suite was 1027 across 139 files.
 
 Do not reuse the numbers recorded in individual task reports in
 `.superpowers/sdd/2026-08-05-structural-tool-history/` — they were correct at the time each
 task closed but moved as later tasks landed (e.g. 1020 after Task 4, 1025 after Task 5, 1027
-from Task 7 onward). These are the numbers at the branch's current HEAD.
+from Task 7 onward).
 
 ## Browser validation — what was and wasn't proven live
 
@@ -265,15 +337,17 @@ network path to the homelab AI stack is available.
 
 ## Deferred / follow-ups
 
-- **Merge decision.** No whole-branch review has run. Recommended next step before merge:
-  run a final whole-branch review, then a live smoke test per the browser-validation note
-  above.
+- **Merge decision.** The whole-branch review has run and its fix wave has landed. Remaining
+  step before merge: a live smoke test per the browser-validation note above (send a message
+  that triggers a tool, reload, resume) once a network path to the homelab AI stack exists.
+  That smoke test is now the only way to exercise the corrected `textOffset` capture against
+  a real stream — the fix is unit-tested at both ends of the seam, but never run live.
 - **The live-path attachment marker** (see "Open question" above) — tracked as a MyMind
   task, not fixed in this cycle.
 - **Minor, deferred by task (from the execution ledger, not exhaustive — see
   `.superpowers/sdd/2026-08-05-structural-tool-history/progress.md` for the full list):**
-  - `capResult`'s byte-length computation is duplicated between the cap path and the elided
-    branch (`tool-history.ts`); worth extracting if the file grows.
+  - ~~`capResult`'s byte-length computation is duplicated~~ — extracted as `byteLen` in the
+    fix wave.
   - The parity test (Task 6) structurally cannot protect `summary`/`undoToken` (chip/UI-only
     fields, never read by `toolBlocksFor`/`toModelContent`) — a round-trip bug dropping them
     would pass Task 6's test but break resumed chips; only Task 8's browser validation is a
@@ -302,3 +376,10 @@ network path to the homelab AI stack is available.
 - Task 8 — `app/pages/agent/index.vue`
 - Task 9 (this) — `docs/wiki/agent.md`, `docs/handovers/2026-08-05-structural-tool-history.md`
   (new), `docs/superpowers/plans/00-roadmap.md`
+- Whole-branch fix wave — `server/lib/agent/tool-history.ts` (+ its test),
+  `server/lib/agent/ai-tools.ts` (+ its test), `server/lib/agent/image-embed.ts` (+ its test),
+  `server/lib/voice/orchestrator.ts`, `test/orchestrator.test.ts`,
+  `server/lib/agent/run-history.test.ts`, `server/lib/agent/run.ts` (comment),
+  `server/db/schema/conversations.ts` (comment), `app/lib/agent/transcript.ts` (new) +
+  `transcript.test.ts` (new), `app/pages/agent/index.vue`, this handover, `docs/wiki/agent.md`,
+  `docs/superpowers/plans/00-roadmap.md`
