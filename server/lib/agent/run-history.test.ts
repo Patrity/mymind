@@ -82,8 +82,13 @@ describe('buildModelMessages', () => {
       }
     ]
 
-    // The same turns as they come back out of Postgres.
-    const resumed = [
+    // The same turns as they come back out of Postgres — round-tripped through JSON, because
+    // that is what the jsonb column actually does to them. Without this the "parity" both
+    // sides were built from the same in-memory objects and the test was blind to exactly the
+    // asymmetry it claims to cover: `capResult` returns the handler's object BY IDENTITY when
+    // it fits, so the live path sends a raw JS object into `output.value` while the resume
+    // path sends a jsonb-normalized one (undefined dropped, Dates stringified, NaN -> null).
+    const rows = JSON.parse(JSON.stringify([
       { role: 'user', content: 'find x', toolCalls: null, attachments: null },
       {
         role: 'assistant',
@@ -91,7 +96,8 @@ describe('buildModelMessages', () => {
         toolCalls: [rec({ callId: 'c1', textOffset: 0 }), rec({ callId: 'c2', textOffset: 10 })],
         attachments: null
       }
-    ].map(rowToAgentMessage)
+    ])) as { role: string; content: string; toolCalls: unknown; attachments: unknown }[]
+    const resumed = rows.map(rowToAgentMessage)
 
     expect(buildModelMessages(resumed)).toEqual(buildModelMessages(live))
   })
