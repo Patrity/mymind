@@ -9,6 +9,7 @@ import { VOICE_TUNING } from '../voice/tuning'
 import type { AgentTool } from './types'
 import { recordEvent } from '../observability/record'
 import { redactImageUrlsForModel } from './image-embed'
+import { applyHistoryPolicy, toolBlocksFor } from './tool-history'
 
 export type { AgentContentPart } from './types'
 import type { AgentContentPart } from './types'
@@ -30,6 +31,20 @@ export function toModelContent(role: AgentMessage['role'], content: string | Age
   return content.map(p => p.type === 'text'
     ? { type: 'text', text: redact(p.text) }
     : { type: 'image', image: p.image })
+}
+
+/**
+ * The ONE place history becomes model messages. Policy + expansion live here rather than at
+ * the two callers (orchestrator live history, getAgentHistory on resume) so those paths
+ * cannot drift apart — a future edit to either physically cannot skip this.
+ */
+export function buildModelMessages(messages: AgentMessage[]): unknown[] {
+  const policed = applyHistoryPolicy(messages.filter(m => m.role !== 'system'))
+  return policed.flatMap(m => {
+    const text = { role: m.role, content: toModelContent(m.role, m.content) }
+    const records = m.role === 'assistant' ? m.toolRecords : undefined
+    return records?.length ? [...toolBlocksFor(records), text] : [text]
+  })
 }
 
 export type AgentEvent =
@@ -85,7 +100,7 @@ export async function* runAgent(
   // Redact /api/images URLs from history so the model can't copy a real URL into a
   // new reply (which would render the wrong/old image live). See image-embed.ts.
   // Reused verbatim by the forced-final follow-up below.
-  const modelMessages = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: toModelContent(m.role, m.content) }))
+  const modelMessages = buildModelMessages(messages)
 
   // Build the stream, trying each reasoning model in priority order. If stream
   // creation throws (bad baseURL, adapter construction), fall over to the next.
