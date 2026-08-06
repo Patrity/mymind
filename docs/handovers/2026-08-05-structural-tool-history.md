@@ -56,8 +56,14 @@ keydecision: >
   textual marker in history gets copied back by the model, which is precisely how cycle
   39's 7-character `[image]` placeholder became a habit instead of a tool call.
 deferred: >
-  Not merged, pushed, or deployed — awaiting a whole-branch review and Tony's merge
-  decision. The live path was never exercised end-to-end with a real tool call in this
+  Not merged, pushed, or deployed — awaiting Tony's merge decision. The whole-branch review
+  HAS run (verdict: ready to merge after its fix wave; see "Whole-branch review" below), and
+  its residuals are tracked as MyMind tasks rather than carried in prose: `03957401` (high —
+  exec RESULTS still return the raw command on the hard-block and disabled paths, the same
+  leak class this cycle closed on the args channel, and cycle 43 is what makes results
+  durable) and `fa2a9e0e` (low — sanitized `textOffset` is no longer monotonic, so an image
+  marker straddling a tool call can duplicate a resume fragment).
+  The live path was never exercised end-to-end with a real tool call in this
   cycle's browser validation (the homelab AI backend at 192.168.2.25:8004 is unreachable
   from the build sandbox, a pre-existing LAN-visibility limitation — see cycle 49);
   validation instead seeded real DB rows in the exact shape Task 5's persistence writes and
