@@ -4,6 +4,10 @@ import { conversations, conversationMessages } from '../db/schema'
 import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO } from '../../shared/types/conversation'
 import type { AgentMessage } from '../lib/agent/run'
 import type { AgentToolRecord } from '../lib/agent/tool-history'
+import { TOOL_HISTORY_WINDOW } from '../lib/agent/tool-history'
+import { buildUserMessageParts } from '../lib/agent/attachments'
+import { getImageBytes } from './images'
+import { getFileBytes } from './files'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -155,6 +159,28 @@ export function rowToAgentMessage(
   return { ...base, role: 'assistant', toolRecords: r.toolCalls as AgentToolRecord[] } as AgentMessage
 }
 
+/**
+ * Re-attach image/file bytes to the most recent user turns so a resumed agent can still SEE
+ * them. Older turns degrade to plain text with NO placeholder — a marker is exactly the
+ * artifact cycle 39 removed, and reintroducing one here would re-open the imitation bug.
+ */
+export async function hydrateAttachments(
+  msgs: AgentMessage[],
+  rows: { role: string; attachments: unknown }[],
+  readBytes: (a: AttachmentRef) => Promise<{ bytes: Buffer; mime: string } | null>
+): Promise<AgentMessage[]> {
+  const withAttachments = rows
+    .map((r, i) => (r.role === 'user' && Array.isArray(r.attachments) && r.attachments.length ? i : -1))
+    .filter(i => i >= 0)
+  const keep = new Set(withAttachments.slice(-TOOL_HISTORY_WINDOW))
+
+  return Promise.all(msgs.map(async (m, i) => {
+    if (!keep.has(i)) return m
+    const refs = rows[i]!.attachments as AttachmentRef[]
+    return { ...m, content: await buildUserMessageParts(m.content as string, refs, readBytes) }
+  }))
+}
+
 export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
   const rows = await useDb()
     .select({
@@ -167,7 +193,19 @@ export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
     .where(eq(conversationMessages.conversationId, id))
     .orderBy(conversationMessages.createdAt)
 
-  return rows.map(rowToAgentMessage)
+  const msgs = rows.map(rowToAgentMessage)
+
+  // A missing blob, an unreadable file, or any other thrown error must never break resume —
+  // fall back to the un-hydrated (plain-text) messages rather than propagating.
+  try {
+    return await hydrateAttachments(
+      msgs,
+      rows,
+      (a: AttachmentRef) => (a.kind === 'image' ? getImageBytes(a.id) : getFileBytes(a.id))
+    )
+  } catch {
+    return msgs
+  }
 }
 
 export async function listConversations(
