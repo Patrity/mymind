@@ -86,3 +86,35 @@ describe('buildAiTools gate — autoApprove fast-path', () => {
     expect(result).toMatchObject({ ok: true })
   })
 })
+
+it('emits callId, args, result and kind on tool-result', async () => {
+  const events: Record<string, unknown>[] = []
+  const set = buildAiTools([{
+    name: 'search_docs', description: 'd', schema: {}, kind: 'read',
+    handler: async () => ({ result: { hits: 3 }, summary: 'found 3' })
+  } as never], { signal: new AbortController().signal, onEvent: e => events.push(e as never) })
+
+  await (set.search_docs!.execute as (i: unknown, o: unknown) => Promise<unknown>)(
+    { q: 'nuxt' }, { toolCallId: 'call_abc' }
+  )
+
+  const done = events.find(e => e.type === 'tool-result')!
+  expect(done.callId).toBe('call_abc')
+  expect(done.kind).toBe('read')
+  expect(done.args).toEqual({ q: 'nuxt' })
+  expect(done.result).toEqual({ hits: 3 })
+})
+
+it('emits a record for a FAILED tool so the agent sees the failure next turn', async () => {
+  const events: Record<string, unknown>[] = []
+  const set = buildAiTools([{
+    name: 'web_fetch', description: 'd', schema: {}, kind: 'read',
+    handler: async () => { throw new Error('boom') }
+  } as never], { signal: new AbortController().signal, onEvent: e => events.push(e as never) })
+
+  await (set.web_fetch!.execute as (i: unknown, o: unknown) => Promise<unknown>)({}, { toolCallId: 'call_err' })
+
+  const done = events.find(e => e.type === 'tool-result')!
+  expect(done.callId).toBe('call_err')
+  expect(done.result).toEqual({ error: 'boom' })
+})

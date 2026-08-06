@@ -56,7 +56,7 @@ export interface AgentTool {
 export type LoopEvent
   = | { type: 'text-delta', text: string }
     | { type: 'tool-start', name: string, args: Record<string, unknown> }
-    | { type: 'tool-result', name: string, summary: string, undoToken?: string, images?: DisplayImage[] }
+    | { type: 'tool-result', name: string, summary: string, undoToken?: string, images?: DisplayImage[], callId?: string, args?: Record<string, unknown>, result?: unknown, kind?: ToolKind }
     | { type: 'done' }
 
 /** Events published on the activity bus for the client side-channel. */

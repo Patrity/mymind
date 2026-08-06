@@ -34,7 +34,7 @@ export type AgentEvent =
   | { type: 'text-delta'; text: string }
   | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-start'; name: string; args: Record<string, unknown> }
-  | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[] }
+  | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: import('./types').ToolKind }
   | { type: 'done' }
 
 // Map one AI SDK v6 fullStream part to a text/reasoning event (or null for

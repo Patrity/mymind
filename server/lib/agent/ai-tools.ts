@@ -1,7 +1,7 @@
 // server/lib/agent/ai-tools.ts
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
-import type { AgentTool, ToolContext, ApprovalRequest } from './types'
+import type { AgentTool, ToolContext, ApprovalRequest, ToolKind } from './types'
 import { publishActivity } from './bus'
 import { registerUndo } from './undo'
 import { withSpan } from '../observability/record'
@@ -12,7 +12,7 @@ export interface RunHooks {
   attachmentImageIds?: string[]
   onEvent: (e:
     | { type: 'tool-start'; name: string; args: Record<string, unknown> }
-    | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[] }) => void
+    | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: ToolKind }) => void
 }
 
 function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
@@ -28,7 +28,8 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     set[t.name] = tool({
       description: t.description,
       inputSchema: z.object(t.schema),
-      execute: async (input: Record<string, unknown>) => {
+      execute: async (input: Record<string, unknown>, opts?: { toolCallId?: string }) => {
+        const callId = opts?.toolCallId ?? ''
         hooks.onEvent({ type: 'tool-start', name: t.name, args: input })
         // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
         // autoApprove fast-path clears it (allowlist-first).
@@ -40,9 +41,10 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
               : { approved: false } // fail-safe: no channel → auto-deny
             if (decision.approved !== true) {
               const summary = `denied: ${t.name}`
+              const result = { denied: true }
               publishActivity({ type: 'tool', name: t.name, summary })
-              hooks.onEvent({ type: 'tool-result', name: t.name, summary })
-              return { denied: true }
+              hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: input, result, kind: t.kind })
+              return result
             }
           }
         }
@@ -54,13 +56,14 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           )
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images })
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: input, result: exec.result, kind: t.kind })
           return exec.result
         } catch (err) {
           const summary = `failed: ${t.name}`
+          const result = { error: (err as Error).message }
           publishActivity({ type: 'tool', name: t.name, summary })
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary })
-          return { error: (err as Error).message }
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: input, result, kind: t.kind })
+          return result
         }
       }
     })
