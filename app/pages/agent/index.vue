@@ -67,15 +67,28 @@ async function toggleMic() {
 
 async function resume(id: string) {
   const { messages } = await useConversations().getConversation(id)
-  // Rebuild inline tool chips from the persisted toolCalls. Exact stream position
-  // isn't stored (one assistant row per turn), so chips render before the reply
-  // they belong to — tools run before the final answer.
-  voice.transcript.value = messages.flatMap<TranscriptEntry>(m => [
-    ...(m.role === 'assistant' && m.toolCalls?.length
-      ? m.toolCalls.map((t, i) => ({ id: `${m.id}-tool-${i}`, role: 'tool' as const, text: '', name: t.name, summary: t.summary, undoToken: t.undoToken }))
-      : []),
-    { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined }
-  ])
+  voice.transcript.value = messages.flatMap<TranscriptEntry>((m) => {
+    const records = (m.role === 'assistant' && m.toolCalls?.length) ? m.toolCalls : []
+    // Legacy rows have no textOffset — fall back to the old "chips first" render.
+    const ordered = records.filter(t => typeof t.textOffset === 'number')
+    if (!ordered.length) {
+      return [
+        ...records.map((t, i) => ({ id: `${m.id}-tool-${i}`, role: 'tool' as const, text: '', name: t.name, summary: t.summary, undoToken: t.undoToken })),
+        { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined }
+      ]
+    }
+
+    const entries: TranscriptEntry[] = []
+    let cursor = 0
+    ordered.forEach((t, i) => {
+      const at = Math.min(Math.max(t.textOffset!, 0), m.content.length)
+      if (at > cursor) entries.push({ id: `${m.id}-txt-${i}`, role: m.role, text: m.content.slice(cursor, at) })
+      entries.push({ id: `${m.id}-tool-${i}`, role: 'tool', text: '', name: t.name, summary: t.summary, undoToken: t.undoToken })
+      cursor = at
+    })
+    entries.push({ id: m.id, role: m.role, text: m.content.slice(cursor), attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined })
+    return entries
+  })
   await voice.loadConversation(id)
   historyOpen.value = false
 }
