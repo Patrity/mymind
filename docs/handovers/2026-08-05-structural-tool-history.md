@@ -4,8 +4,9 @@ cycle: 43
 date: 2026-08-05
 status: >
   🔨 BUILT, NOT MERGED. 13 commits on `feat/structural-tool-history` (branched from master
-  `c6cc68e`), every task's per-task review clean (7 fix rounds across the branch, all
-  re-reviewed clean), no whole-branch review run yet. NOT merged, NOT pushed, NOT deployed.
+  `c6cc68e`), every task's per-task review clean (3 fix rounds across the branch — Tasks 4,
+  7, and 8, one round each — all re-reviewed clean), no whole-branch review run yet. NOT
+  merged, NOT pushed, NOT deployed.
   Gates at HEAD `9ee44a2`, re-run fresh for this handover on 2026-08-06 (not copied from the
   execution ledger — the numbers moved during the cycle): **typecheck 0 errors / test 1027
   passed across 139 files / build clean (65.7 MB, 19.5 MB gzip)**. No migration — additive
