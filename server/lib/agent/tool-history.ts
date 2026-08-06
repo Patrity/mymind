@@ -23,6 +23,21 @@ export const TOOL_HISTORY_WINDOW = 3
 export const READ_RESULT_CAP = 1500
 /** Persist-time ceiling, generous so the replay cap can be retuned with no backfill. */
 export const WRITE_RESULT_CAP = 8192
+/**
+ * Persist-time ceiling for a call's ARGUMENTS — the same two-tier shape as the result caps.
+ * Args are NOT cheap: the write tools take unbounded strings (`save_document.content`,
+ * `update_document`/`sync_document.content`, `edit_document.old_string`/`new_string`,
+ * `create_skill.body`), and this is a document manager, so 60 KB bodies are routine. Left
+ * generous relative to the replay cap so that cap can be retuned with no backfill.
+ */
+export const ARGS_WRITE_CAP = 4096
+/**
+ * Replay cap for arguments — what the model actually re-reads for an in-window call. The
+ * anti-fabrication signal is "this call happened, roughly with this input": a query, a path,
+ * an id, a title all fit in a few hundred chars. Also bounds rows written before the write
+ * cap existed, since this runs at the single replay call site.
+ */
+export const ARGS_REPLAY_CAP = 1024
 
 /**
  * Shrink an oversized result to a preview. Returns the ORIGINAL object by identity when it
@@ -40,8 +55,27 @@ export function capResult(result: unknown, max: number): unknown {
   return { truncated: true, bytes: json.length, preview: json.slice(0, max) }
 }
 
+/**
+ * `capResult` for an arguments object. A truncated payload becomes
+ * `{ truncated, bytes, preview }` — still a `Record<string, unknown>`, and the AI SDK types
+ * `ToolCallPart.input` as `unknown`, so the replayed call part stays valid either way.
+ * Returns the ORIGINAL object by identity when it already fits (same contract as capResult).
+ */
+export function capArgs(args: Record<string, unknown> | undefined, max: number): Record<string, unknown> {
+  if (args === undefined) return {}
+  return capResult(args, max) as Record<string, unknown>
+}
+
+/** Serialized size, never throwing — a circular/unserializable value reports 0. */
+function byteLen(v: unknown): number {
+  try { return (JSON.stringify(v) ?? '').length } catch { return 0 }
+}
+
 function capForKind(kind: ToolKind): number {
-  // create/destructive already return body-free receipts (cycle 52) — keep them whole.
+  // `read` returns the bulk content (search hits, file bodies, fetched pages) — cap it.
+  // create/destructive mostly return body-free receipts (cycle 52's write receipts), so they
+  // stay whole here. The one outlier is `exec` (kind: 'destructive'), which returns full
+  // stdout/stderr; what bounds that is WRITE_RESULT_CAP at capture, not this function.
   return kind === 'read' ? READ_RESULT_CAP : Infinity
 }
 
@@ -49,8 +83,9 @@ function capForKind(kind: ToolKind): number {
  * Tier + decay. Walks newest-to-oldest counting only TOOL-BEARING assistant turns, so
  * ordinary chat turns never consume the window.
  *
- * The CALL always survives for the life of the conversation — it is the anti-fabrication
- * signal and costs ~50 tokens. Only the RESULT decays.
+ * The CALL always survives for the life of the conversation — `callId` + `name` are the
+ * anti-fabrication signal and cost ~50 tokens. Both PAYLOADS decay: the result, and (since
+ * a write tool's args carry the whole document body) the args too.
  */
 export function applyHistoryPolicy<T extends { role: string; toolRecords?: AgentToolRecord[] }>(
   messages: T[]
@@ -68,13 +103,19 @@ export function applyHistoryPolicy<T extends { role: string; toolRecords?: Agent
     out[i] = {
       ...m,
       toolRecords: m.toolRecords.map(r => {
+        // Malformed jsonb (a null or primitive element) must not 500 the turn: `toolBlocksFor`
+        // already tolerates it, `rowToAgentMessage` promises never to throw on bad tool_calls,
+        // and /api/agent/chat.post.ts forwards an unvalidated client-supplied `messages` array
+        // straight into runAgent. Pass it through untouched — toolBlocksFor drops it later.
+        if (!r || typeof r !== 'object') return r
         if (!withinWindow) {
-          let bytes = 0
-          try { bytes = (JSON.stringify(r.result) ?? '').length } catch { bytes = 0 }
-          return { ...r, result: { elided: true, bytes } }
+          // Out of window: keep the CALL (callId + name), shed BOTH payloads. An uncapped
+          // args blob would otherwise sit in the prompt for the life of the conversation.
+          return { ...r, args: { elided: true, bytes: byteLen(r.args) }, result: { elided: true, bytes: byteLen(r.result) } }
         }
-        const capped = capResult(r.result, capForKind(r.kind))
-        return capped === r.result ? r : { ...r, result: capped }
+        const args = capArgs(r.args, ARGS_REPLAY_CAP)
+        const result = capResult(r.result, capForKind(r.kind))
+        return args === r.args && result === r.result ? r : { ...r, args, result }
       })
     }
   }

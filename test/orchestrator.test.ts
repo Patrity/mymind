@@ -158,4 +158,23 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     expect(rec.result.truncated).toBe(true)
     expect(JSON.stringify(rec.result).length).toBeLessThan(10_000)
   })
+
+  it('caps oversized tool ARGS at the write ceiling before they are ever stored', async () => {
+    // save_document's body used to be persisted raw and replayed on every later turn.
+    const body = 'y'.repeat(60_000)
+    const events: any[] = []
+    const runWrite = (async function* () {
+      yield { type: 'tool-result', name: 'save_document', summary: 's', callId: 'c1', args: { path: '/a.md', content: body }, result: { ok: true }, kind: 'create' }
+      yield { type: 'text-delta', text: 'saved' }
+      yield { type: 'done' }
+    }) as never
+    const history = await handleTurn('hi', [], {
+      tts, voice: 'af_heart', speak: false, runAgent: runWrite,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+
+    const rec = (history.at(-1) as { toolRecords: { args: Record<string, unknown> }[] }).toolRecords[0]!
+    expect(JSON.stringify(rec.args)).not.toContain(body)
+    expect(JSON.stringify(rec.args).length).toBeLessThan(6000)
+  })
 })

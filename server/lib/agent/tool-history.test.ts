@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  capResult, applyHistoryPolicy, toolBlocksFor,
-  READ_RESULT_CAP, type AgentToolRecord
+  capResult, capArgs, applyHistoryPolicy, toolBlocksFor,
+  READ_RESULT_CAP, ARGS_REPLAY_CAP, type AgentToolRecord
 } from './tool-history'
 
 function rec(over: Partial<AgentToolRecord> = {}): AgentToolRecord {
@@ -75,6 +75,49 @@ describe('applyHistoryPolicy', () => {
   it('leaves messages without toolRecords untouched by identity', () => {
     const plain = { role: 'assistant', content: 'no tools' }
     expect(applyHistoryPolicy([plain])[0]).toBe(plain)
+  })
+
+  it('caps an oversized args payload for an IN-window call, whatever the kind', () => {
+    // save_document's `content` is unbounded and this is a document manager — a 60 KB body
+    // must not be re-sent on every later turn just because the turn is still in the window.
+    const body = 'y'.repeat(60_000)
+    const out = applyHistoryPolicy([
+      assistant([rec({ name: 'save_document', kind: 'create', args: { path: '/a.md', content: body } })])
+    ])
+    const args = out[0]!.toolRecords![0]!.args as { truncated?: boolean; preview?: string }
+    expect(args.truncated).toBe(true)
+    expect(JSON.stringify(args).length).toBeLessThanOrEqual(ARGS_REPLAY_CAP + 200)
+    expect(JSON.stringify(args)).not.toContain(body)
+  })
+
+  it('elides the args of an out-of-window call but keeps the call itself', () => {
+    const msgs = [
+      assistant([rec({ callId: 'old', args: { query: 'q'.repeat(5000) } })]),  // 4th newest
+      assistant([rec({ callId: 'c3' })]), assistant([rec({ callId: 'c2' })]), assistant([rec({ callId: 'c1' })])
+    ]
+    const old = applyHistoryPolicy(msgs)[0]!.toolRecords![0]!
+    expect(old.args).toEqual({ elided: true, bytes: expect.any(Number) })
+    expect(old.callId).toBe('old')            // the CALL survives forever — anti-fabrication
+    expect(old.name).toBe('web_search')
+  })
+
+  it('never throws on a malformed record element (bad jsonb / unvalidated client body)', () => {
+    const msgs = [{ role: 'assistant', content: 'x', toolRecords: [null, rec()] as unknown as AgentToolRecord[] }]
+    expect(() => applyHistoryPolicy(msgs)).not.toThrow()
+    // …and the same holds out of window, where the elide branch dereferences the record.
+    const deep = [
+      { role: 'assistant', content: 'x', toolRecords: [null] as unknown as AgentToolRecord[] },
+      assistant([rec()]), assistant([rec()]), assistant([rec()])
+    ]
+    expect(() => applyHistoryPolicy(deep)).not.toThrow()
+  })
+})
+
+describe('capArgs', () => {
+  it('returns a fitting args object by identity, and {} for a missing one', () => {
+    const args = { q: 'x' }
+    expect(capArgs(args, 100)).toBe(args)
+    expect(capArgs(undefined, 100)).toEqual({})
   })
 })
 

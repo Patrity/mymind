@@ -8,7 +8,7 @@ import { applyImageEmbeds, type DisplayImage } from '../agent/image-embed'
 import { getImageBytes } from '../../services/images'
 import { getFileBytes } from '../../services/files'
 import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
-import { capResult, WRITE_RESULT_CAP, type AgentToolRecord } from '../agent/tool-history'
+import { capResult, capArgs, WRITE_RESULT_CAP, ARGS_WRITE_CAP, type AgentToolRecord } from '../agent/tool-history'
 
 export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
@@ -113,8 +113,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
       if (ev.images?.length) turnImages.push(...ev.images)
       if (ev.callId) {
         toolRecords.push({
+          // BOTH payloads are capped at capture: a write tool's args carry the whole document
+          // body, and an uncapped one would be persisted and re-sent on every later turn.
           callId: ev.callId, name: ev.name, kind: ev.kind ?? 'read',
-          args: ev.args ?? {}, result: capResult(ev.result, WRITE_RESULT_CAP), summary: ev.summary,
+          args: capArgs(ev.args, ARGS_WRITE_CAP), result: capResult(ev.result, WRITE_RESULT_CAP), summary: ev.summary,
           undoToken: ev.undoToken, textOffset: assistantText.length
         })
       }

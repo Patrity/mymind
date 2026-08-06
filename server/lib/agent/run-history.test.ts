@@ -30,9 +30,35 @@ describe('buildModelMessages', () => {
     expect(firstToolMsg.content[0]!.output!.value).toEqual({ elided: true, bytes: expect.any(Number) })
   })
 
+  it('WIRING: an oversized args payload never reaches the model at full size', () => {
+    // A 60 KB save_document body used to be replayed verbatim on EVERY later turn (args were
+    // capped nowhere) — context overflow, and un-elidable because only results decayed.
+    const body = 'y'.repeat(60_000)
+    const out = buildModelMessages([
+      { role: 'user', content: 'save it' },
+      { role: 'assistant', content: 'Saved.', toolRecords: [rec({ name: 'save_document', kind: 'create', args: { path: '/a.md', content: body } })] }
+    ]) as { role: string; content: unknown }[]
+
+    const callMsg = out.find(m => m.role === 'assistant' && Array.isArray(m.content))!
+    const serialized = JSON.stringify(callMsg.content)
+    expect(serialized).not.toContain(body)
+    expect(serialized.length).toBeLessThan(2000)
+    // …and the call itself still survives, which is the whole anti-fabrication signal.
+    expect((callMsg.content as { toolCallId: string; toolName: string }[])[0]).toMatchObject({ toolCallId: 'c1', toolName: 'save_document' })
+  })
+
   it('legacy records produce no unpaired tool message', () => {
     const out = buildModelMessages([
       { role: 'assistant', content: 'old turn', toolRecords: [{ name: 'x', summary: 's' } as unknown as AgentToolRecord] }
+    ]) as { role: string }[]
+    expect(out.map(m => m.role)).toEqual(['assistant'])
+  })
+
+  it('a malformed record survives the whole pipeline without throwing', () => {
+    // /api/agent/chat.post.ts readBody<{messages}>s with no validation and hands the array
+    // straight to runAgent, so a `[null]` element must degrade, not 500 the turn.
+    const out = buildModelMessages([
+      { role: 'assistant', content: 'x', toolRecords: [null as unknown as AgentToolRecord] }
     ]) as { role: string }[]
     expect(out.map(m => m.role)).toEqual(['assistant'])
   })
