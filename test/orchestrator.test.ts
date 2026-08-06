@@ -129,6 +129,29 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     expect(assistant.toolRecords![0]!.textOffset).toBe('Looking. '.length)
   })
 
+  it('records an offset that indexes the PERSISTED text, not the raw stream', async () => {
+    // The persisted content is applyImageEmbeds(assistantText).content, which trims and
+    // collapses whitespace; a raw `assistantText.length` offset split the bubble mid-word
+    // on resume ("Okay. D" | chip | "one.").
+    const events: any[] = []
+    const runSan = (async function* () {
+      yield { type: 'text-delta', text: '\nOkay. ' }
+      yield { type: 'tool-result', name: 'web_search', summary: 's', callId: 'c1', args: {}, result: {}, kind: 'read' }
+      yield { type: 'text-delta', text: ' Done.' }
+      yield { type: 'done' }
+    }) as never
+    const history = await handleTurn('hi', [], {
+      tts, voice: 'af_heart', speak: false, runAgent: runSan,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+
+    const msg = history.at(-1) as { content: string; toolRecords: { textOffset: number }[] }
+    expect(msg.content).toBe('Okay. Done.')
+    const at = msg.toolRecords[0]!.textOffset
+    expect(msg.content.slice(0, at)).toBe('Okay. ')
+    expect(msg.content.slice(at)).toBe('Done.')
+  })
+
   it('omits toolRecords entirely when no tool ran', async () => {
     const events: any[] = []
     const runPlain = (async function* () {

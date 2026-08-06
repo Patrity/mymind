@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyImageEmbeds, redactImageUrlsForModel } from './image-embed'
+import { applyImageEmbeds, redactImageUrlsForModel, sanitizedOffset } from './image-embed'
 
 const img = (id: string) => ({ id, url: `/api/images/${id}/raw`, alt: 'a cat' })
 
@@ -49,5 +49,45 @@ describe('redactImageUrlsForModel', () => {
 
   it('leaves normal prose untouched', () => {
     expect(redactImageUrlsForModel('Done — here is your image.')).toBe('Done — here is your image.')
+  })
+})
+
+describe('sanitizedOffset', () => {
+  // A tool-call offset is recorded mid-stream but is used to slice the PERSISTED content,
+  // which applyImageEmbeds has trimmed and collapsed. Raw `assistantText.length` therefore
+  // pointed into a string that no longer exists — the chip landed mid-word on resume.
+  const split = (raw: string, at: number) => {
+    const { content } = applyImageEmbeds(raw, [])
+    const cut = Math.min(Math.max(at, 0), content.length)          // resume()'s clamp
+    return [content.slice(0, cut), content.slice(cut)]
+  }
+
+  it('indexes the persisted content, not the raw stream', () => {
+    const before = '\nOkay. '                 // leading \n is trimmed away on persist
+    const raw = before + ' Done.'             // the double space collapses to one
+    expect(applyImageEmbeds(raw, []).content).toBe('Okay. Done.')
+
+    expect(split(raw, sanitizedOffset(before))).toEqual(['Okay. ', 'Done.'])
+    expect(split(raw, before.length)).toEqual(['Okay. D', 'one.'])   // the old raw-length bug
+  })
+
+  it('handles a call that fires before any text at all', () => {
+    expect(sanitizedOffset('')).toBe(0)
+    expect(sanitizedOffset('\n\n  ')).toBe(0)
+  })
+
+  it('maps a multi-step turn to every one of its persisted boundaries', () => {
+    const s1 = 'First.\n\n\n'                 // \n{3,} collapses to \n\n
+    const s2 = s1 + 'Second.  '               // trailing double space collapses
+    const raw = s2 + 'Third.'
+    const { content } = applyImageEmbeds(raw, [])
+    expect(content.slice(0, sanitizedOffset(s1))).toBe('First.\n\n')
+    expect(content.slice(sanitizedOffset(s1), sanitizedOffset(s2))).toBe('Second. ')
+    expect(content.slice(sanitizedOffset(s2))).toBe('Third.')
+  })
+
+  it('is not shifted by a stripped image embed earlier in the turn', () => {
+    const before = 'Here: ![x](/api/images/abc/raw) and then '
+    expect(sanitizedOffset(before)).toBe(applyImageEmbeds(before + 'more', []).content.indexOf('more'))
   })
 })

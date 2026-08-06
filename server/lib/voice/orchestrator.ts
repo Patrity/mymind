@@ -4,7 +4,7 @@ import { VOICE_TUNING } from './tuning'
 import type { SttProvider, TtsProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
 import { runAgent as realRunAgent } from '../agent/run'
-import { applyImageEmbeds, type DisplayImage } from '../agent/image-embed'
+import { applyImageEmbeds, sanitizedOffset, type DisplayImage } from '../agent/image-embed'
 import { getImageBytes } from '../../services/images'
 import { getFileBytes } from '../../services/files'
 import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
@@ -117,7 +117,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
           // body, and an uncapped one would be persisted and re-sent on every later turn.
           callId: ev.callId, name: ev.name, kind: ev.kind ?? 'read',
           args: capArgs(ev.args, ARGS_WRITE_CAP), result: capResult(ev.result, WRITE_RESULT_CAP), summary: ev.summary,
-          undoToken: ev.undoToken, textOffset: assistantText.length
+          // Offset into the SANITIZED text, not the raw stream: what gets persisted below is
+          // applyImageEmbeds(assistantText).content, which trims and collapses whitespace, so
+          // a raw length would index a string that no longer exists (see sanitizedOffset).
+          undoToken: ev.undoToken, textOffset: sanitizedOffset(assistantText)
         })
       }
       deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images })

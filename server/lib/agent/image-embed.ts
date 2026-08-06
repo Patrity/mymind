@@ -11,8 +11,41 @@ const MODEL_IMG_RE = /!?\[[^\]]*\]\((?:https?:\/\/[^)]*)?\/api\/images\/[^)]*\)/
 // placeholder never reaches the user, even on a turn that called no image tool (turnImages empty).
 const STRAY_IMG_MARKER_RE = /!?\[image\]/gi
 
+// The strip/collapse chain applied to EVERY assistant turn before it is persisted. Factored
+// out so `sanitizedOffset` below cannot drift from what `applyImageEmbeds` actually produces.
+// Whitespace-only, position-independent: applying it to a prefix gives the same result as
+// applying it to the whole string and taking that prefix — except across the seam (see below).
+function collapse(text: string): string {
+  return (text ?? '')
+    .replace(MODEL_IMG_RE, '').replace(STRAY_IMG_MARKER_RE, '')
+    .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ')
+}
+
+/**
+ * Where a PREFIX of the streamed assistant text lands inside the PERSISTED (sanitized)
+ * content — i.e. the offset a tool-call record must carry.
+ *
+ * `applyImageEmbeds` runs unconditionally on the final text (even with no images) and
+ * trims/collapses whitespace, so a raw `assistantText.length` offset indexes a string that no
+ * longer exists: any collapse before the offset shifts it, and resume then splits the bubble
+ * mid-word ("Okay. D" | chip | "one."). Recording `sanitizedOffset(textSoFar)` instead makes
+ * the offset an index into the string that is actually stored.
+ *
+ * Only the START is trimmed: the full text's leading whitespace is also the prefix's leading
+ * whitespace, but the full text's TRAILING trim applies to the end of the whole reply, not to
+ * this boundary — trimming the prefix's tail would push every chip one word to the left.
+ *
+ * Residual: when a collapse STRADDLES the boundary (prefix ends "a  ", suffix starts " b" →
+ * persisted "a b") the split can land one character either side of the collapsed run. That is
+ * inside whitespace, so the rendered text stays word-correct; resume additionally clamps to
+ * `content.length`, which absorbs the whole-text trailing trim.
+ */
+export function sanitizedOffset(text: string): number {
+  return collapse(text).trimStart().length
+}
+
 export function applyImageEmbeds(text: string, images: DisplayImage[]): { content: string; appended: string } {
-  const stripped = (text ?? '').replace(MODEL_IMG_RE, '').replace(STRAY_IMG_MARKER_RE, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim()
+  const stripped = collapse(text).trim()
   if (!images.length) return { content: stripped, appended: '' }
   const sanitize = (s: string) => s.replace(/[\r\n]+/g, ' ').replace(/[[\]]/g, '').trim().slice(0, 120)
   const embeds = images.map(i => `![${sanitize(i.alt)}](${i.url})`).join('\n\n')
