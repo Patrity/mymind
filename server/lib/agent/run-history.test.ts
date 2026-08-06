@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { buildModelMessages, type AgentMessage } from './run'
 import type { AgentToolRecord } from './tool-history'
+import { rowToAgentMessage } from '../../services/conversations'
 
 const rec = (o: Partial<AgentToolRecord> = {}): AgentToolRecord => ({
   callId: 'c1', name: 'web_search', kind: 'read', args: { q: 'x' },
@@ -39,5 +40,33 @@ describe('buildModelMessages', () => {
   it('drops system messages, as before', () => {
     const out = buildModelMessages([{ role: 'system', content: 'sys' }, { role: 'user', content: 'u' }]) as { role: string }[]
     expect(out.map(m => m.role)).toEqual(['user'])
+  })
+
+  it('PARITY: a resumed conversation yields identical model messages to the live one', () => {
+    // Two calls at different textOffsets so the round-trip exercises block-splitting,
+    // not just a single call/result pair (see task-6 report: a single-call fixture
+    // cannot detect textOffset corruption — toolBlocksFor only reads textOffset to
+    // decide where a turn's calls split into separate replay steps).
+    const live: AgentMessage[] = [
+      { role: 'user', content: 'find x' },
+      {
+        role: 'assistant',
+        content: 'Found it. Then more.',
+        toolRecords: [rec({ callId: 'c1', textOffset: 0 }), rec({ callId: 'c2', textOffset: 10 })]
+      }
+    ]
+
+    // The same turns as they come back out of Postgres.
+    const resumed = [
+      { role: 'user', content: 'find x', toolCalls: null, attachments: null },
+      {
+        role: 'assistant',
+        content: 'Found it. Then more.',
+        toolCalls: [rec({ callId: 'c1', textOffset: 0 }), rec({ callId: 'c2', textOffset: 10 })],
+        attachments: null
+      }
+    ].map(rowToAgentMessage)
+
+    expect(buildModelMessages(resumed)).toEqual(buildModelMessages(live))
   })
 })
