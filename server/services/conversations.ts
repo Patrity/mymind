@@ -1,7 +1,9 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { conversations, conversationMessages } from '../db/schema'
-import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef } from '../../shared/types/conversation'
+import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO } from '../../shared/types/conversation'
+import type { AgentMessage } from '../lib/agent/run'
+import type { AgentToolRecord } from '../lib/agent/tool-history'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -21,7 +23,7 @@ export interface NewConvMessage {
   role: 'user' | 'assistant'
   content: string
   modality: 'voice' | 'text'
-  toolCalls?: { name: string; summary: string; undoToken?: string }[] | null
+  toolCalls?: ToolCallRecordDTO[] | null
   reasoning?: string | null
   attachments?: AttachmentRef[] | null
 }
@@ -47,7 +49,7 @@ export function msgToDTO(r: typeof conversationMessages.$inferSelect): Conversat
     role: r.role as 'user' | 'assistant',
     content: r.content,
     modality: r.modality as 'voice' | 'text',
-    toolCalls: (r.toolCalls as { name: string; summary: string; undoToken?: string }[] | null) ?? null,
+    toolCalls: (r.toolCalls as ToolCallRecordDTO[] | null) ?? null,
     reasoning: r.reasoning ?? null,
     attachments: (r.attachments as AttachmentRef[] | null) ?? null,
     createdAt: r.createdAt.toISOString()
@@ -144,16 +146,28 @@ export async function getConversation(
   }
 }
 
-export async function getAgentHistory(
-  id: string
-): Promise<{ role: 'user' | 'assistant'; content: string }[]> {
+/** Row → AgentMessage. Never throws: a malformed tool_calls jsonb yields no records. */
+export function rowToAgentMessage(
+  r: { role: string; content: string; toolCalls: unknown; attachments: unknown }
+): AgentMessage {
+  const base = { role: r.role as 'user' | 'assistant', content: r.content }
+  if (r.role !== 'assistant' || !Array.isArray(r.toolCalls) || !r.toolCalls.length) return base as AgentMessage
+  return { ...base, role: 'assistant', toolRecords: r.toolCalls as AgentToolRecord[] } as AgentMessage
+}
+
+export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
   const rows = await useDb()
-    .select({ role: conversationMessages.role, content: conversationMessages.content })
+    .select({
+      role: conversationMessages.role,
+      content: conversationMessages.content,
+      toolCalls: conversationMessages.toolCalls,
+      attachments: conversationMessages.attachments
+    })
     .from(conversationMessages)
     .where(eq(conversationMessages.conversationId, id))
     .orderBy(conversationMessages.createdAt)
 
-  return rows.map(r => ({ role: r.role as 'user' | 'assistant', content: r.content }))
+  return rows.map(rowToAgentMessage)
 }
 
 export async function listConversations(

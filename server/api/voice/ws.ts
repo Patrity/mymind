@@ -173,13 +173,11 @@ export default defineWebSocketHandler({
         // once-per-connection cache went stale (a task created mid-conversation
         // never appeared).
         const context = (await buildLiveContext(new Date())) || undefined
-        const toolCalls: { name: string; summary: string; undoToken?: string }[] = []
         let reasoningText = ''
         const prevLen = s.history.length
         const emit = (e: VoiceEvent) => {
           if (e.type === 'audio') peer.send(e.bytes)
           else {
-            if (e.type === 'tool') toolCalls.push({ name: e.name, summary: e.summary, undoToken: e.undoToken })
             if (e.type === 'reasoning') reasoningText += e.text
             peer.send(JSON.stringify(e))
           }
@@ -193,7 +191,7 @@ export default defineWebSocketHandler({
             role: m.role as 'user' | 'assistant',
             content: messageText(m.content),
             modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
-            toolCalls: m.role === 'assistant' && toolCalls.length ? toolCalls : null,
+            toolCalls: m.role === 'assistant' && m.toolRecords?.length ? m.toolRecords : null,
             reasoning: m.role === 'assistant' ? (reasoningText || null) : null,
             attachments: m.role === 'user' ? turnAttachments : null
           })))

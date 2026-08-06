@@ -5,12 +5,24 @@ export interface AttachmentRef {
   name?: string
 }
 
+/** Legacy rows carry only name/summary/undoToken; every field added later is optional. */
+export interface ToolCallRecordDTO {
+  name: string
+  summary: string
+  undoToken?: string
+  callId?: string
+  kind?: 'read' | 'create' | 'destructive'
+  args?: Record<string, unknown>
+  result?: unknown
+  textOffset?: number
+}
+
 export interface ConversationMessageDTO {
   id: string
   role: 'user' | 'assistant'
   content: string
   modality: 'voice' | 'text'
-  toolCalls: { name: string; summary: string; undoToken?: string }[] | null
+  toolCalls: ToolCallRecordDTO[] | null
   reasoning: string | null
   attachments: AttachmentRef[] | null
   createdAt: string
