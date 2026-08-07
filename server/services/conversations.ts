@@ -5,7 +5,7 @@ import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, Att
 import type { AgentMessage, AgentContentPart } from '../lib/agent/run'
 import type { AgentToolRecord } from '../lib/agent/tool-history'
 import { TOOL_HISTORY_WINDOW } from '../lib/agent/tool-history'
-import { buildUserMessageParts } from '../lib/agent/attachments'
+import { buildUserMessageParts, withoutAttachmentMarkers } from '../lib/agent/attachments'
 import { getImageBytes } from './images'
 import { getFileBytes } from './files'
 
@@ -174,7 +174,7 @@ function stripUnavailableMarkers(
   fallbackText: string
 ): string | AgentContentPart[] {
   if (typeof content === 'string') return content
-  const filtered = content.filter(p => !(p.type === 'text' && /^\[attachment unavailable/.test(p.text)))
+  const filtered = withoutAttachmentMarkers(content) as AgentContentPart[]
   return filtered.length ? filtered : fallbackText
 }
 
@@ -196,7 +196,11 @@ export async function hydrateAttachments(
   return Promise.all(msgs.map(async (m, i) => {
     if (!keep.has(i)) return m
     const refs = rows[i]!.attachments as AttachmentRef[]
-    const text = m.content as string
+    // Clean the STORED text before it re-enters: rows written before markers were stripped at
+    // the persist boundary carry them inline, where they are no longer their own part and the
+    // part-level filter below can never reach them. This also keeps `fallbackText` marker-free,
+    // so the empty-parts fallback cannot hand a marker straight back.
+    const text = withoutAttachmentMarkers(m.content as string) as string
     const built = await buildUserMessageParts(text, refs, readBytes)
     return { ...m, content: stripUnavailableMarkers(built, text) }
   }))

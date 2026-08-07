@@ -84,3 +84,22 @@ describe('hydrateAttachments', () => {
     expect(out[0]!.content).toBe('')   // fallback to plain text, never an empty [] parts array
   })
 })
+
+describe('hydrateAttachments — no marker survives into replayed history', () => {
+  const ref = [{ id: 'f1', kind: 'file', mime: 'application/zip', name: 'archive.zip' }]
+
+  it('strips the unsupported-file marker (the gap the original strip missed)', async () => {
+    const rows = [{ role: 'user', content: 'have a look', toolCalls: null, attachments: ref }]
+    const out = await hydrateAttachments(rows.map(rowToAgentMessage), rows,
+      async () => ({ bytes: Buffer.from([1]), mime: 'application/zip' }))
+    expect(JSON.stringify(out)).not.toMatch(/\[unsupported file/)
+  })
+
+  it('does not re-inject the marker via the empty-parts fallback', async () => {
+    // A row already stored with a marker and no other text: stripping every part leaves the
+    // fallback, which must not simply hand the marker back.
+    const rows = [{ role: 'user', content: '[attachment unavailable: photo.png]', toolCalls: null, attachments: ref }]
+    const out = await hydrateAttachments(rows.map(rowToAgentMessage), rows, async () => null)
+    expect(JSON.stringify(out)).not.toMatch(/\[attachment unavailable/)
+  })
+})

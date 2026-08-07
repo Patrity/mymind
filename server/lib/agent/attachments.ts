@@ -12,6 +12,31 @@ export function isTextLikeMime(mime: string): boolean {
   return TEXT_LIKE.test(mime) || TEXT_LIKE_EXACT.has(mime)
 }
 
+/**
+ * The markers below stand in for an attachment that could not be used. Keep this list next to
+ * the code that emits them — the resume-path stripper previously knew only about the first,
+ * so `[unsupported file: …]` leaked straight through it.
+ */
+const ATTACHMENT_MARKER = /^\[(?:attachment unavailable|unsupported file)\b[^\]]*\]$/
+
+/**
+ * Strip attachment markers from model-facing content.
+ *
+ * A marker's job is to tell the model, during ONE live turn, that an attachment could not be
+ * read. It must never become durable: `ws.ts` flattens parts into
+ * `conversation_messages.content`, and `hydrateAttachments` feeds that stored content back in
+ * as the `text` argument on every resume. So a marker that reaches storage is replayed on every
+ * future turn AND can no longer be filtered — it is now part of a larger text blob rather than
+ * its own part. Strip at the persist boundary; the string form also cleans rows written before
+ * that was true.
+ */
+export function withoutAttachmentMarkers(content: string | AgentContentPart[]): string | AgentContentPart[] {
+  if (typeof content === 'string') {
+    return content.split('\n').filter(l => !ATTACHMENT_MARKER.test(l.trim())).join('\n').trim()
+  }
+  return content.filter(p => !(p.type === 'text' && ATTACHMENT_MARKER.test(p.text.trim())))
+}
+
 type ReadBytes = (a: AttachmentRef) => Promise<{ bytes: Buffer; mime: string } | null>
 type RenderPdf = (bytes: Buffer) => Promise<{ bytes: Buffer; mime: 'image/webp' }[]>
 

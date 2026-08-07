@@ -89,3 +89,26 @@ describe('buildResumeTranscript', () => {
     expect(entries.map(e => [e.id, e.role, e.text])).toEqual([['u1', 'user', 'hi'], ['a1', 'assistant', 'hey']])
   })
 })
+
+// sanitizedOffset is NOT monotonic: it strips image markdown, so a marker completing between
+// two tool calls makes the later offset smaller than the earlier one. An unguarded cursor
+// then walks backwards and the trailing slice re-emits already-rendered characters.
+describe('buildResumeTranscript — regressing offsets', () => {
+  it('never duplicates or loses text when a later offset is smaller than an earlier one', () => {
+    const content = 'abcdefghij'
+    const entries = buildResumeTranscript([msg({
+      content,
+      toolCalls: [tc({ callId: 'c1', textOffset: 6 }), tc({ callId: 'c2', textOffset: 2 })]
+    })])
+    const rendered = entries.filter(e => e.role !== 'tool').map(e => e.text).join('')
+    expect(rendered).toBe(content)
+  })
+
+  it('still renders both chips when offsets regress', () => {
+    const entries = buildResumeTranscript([msg({
+      content: 'abcdefghij',
+      toolCalls: [tc({ callId: 'c1', textOffset: 6 }), tc({ callId: 'c2', textOffset: 2 })]
+    })])
+    expect(entries.filter(e => e.role === 'tool')).toHaveLength(2)
+  })
+})

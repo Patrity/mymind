@@ -35,10 +35,18 @@ function collapse(text: string): string {
  * whitespace, but the full text's TRAILING trim applies to the end of the whole reply, not to
  * this boundary — trimming the prefix's tail would push every chip one word to the left.
  *
- * Residual: when a collapse STRADDLES the boundary (prefix ends "a  ", suffix starts " b" →
- * persisted "a b") the split can land one character either side of the collapsed run. That is
- * inside whitespace, so the rendered text stays word-correct; resume additionally clamps to
- * `content.length`, which absorbs the whole-text trailing trim.
+ * Residual 1 — whitespace straddle: when a collapse spans the boundary (prefix ends "a  ",
+ * suffix starts " b" → persisted "a b") the split can land one character either side of the
+ * collapsed run. That is inside whitespace, so the rendered text stays word-correct; resume
+ * additionally clamps to `content.length`, which absorbs the whole-text trailing trim.
+ *
+ * Residual 2 — pattern straddle, and this one is NOT word-safe: `collapse` also strips image
+ * markdown, so a marker that is half-typed at the boundary and complete by the end of the reply
+ * shrinks by its whole length rather than by a space. `sanitizedOffset('a ![imag')` is 8 while
+ * `sanitizedOffset('a ![image]b')` is 3 — so offsets are NOT monotonic across a turn, and the
+ * split can land mid-word. `buildResumeTranscript` guards the consequence with
+ * `cursor = Math.max(cursor, at)`, which prevents re-emitting text but cannot recover the exact
+ * position. Rare: it needs a tool call to fire while the model is part-way through a marker.
  */
 export function sanitizedOffset(text: string): number {
   return collapse(text).trimStart().length

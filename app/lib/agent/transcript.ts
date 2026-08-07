@@ -39,7 +39,10 @@ export function buildResumeTranscript(messages: ResumeMessage[]): TranscriptEntr
       const at = Math.min(Math.max(t.textOffset!, 0), m.content.length)
       if (at > cursor) entries.push({ id: `${m.id}-txt-${i}`, role: m.role, text: m.content.slice(cursor, at) })
       entries.push({ id: `${m.id}-tool-${i}`, role: 'tool', text: '', name: t.name, summary: t.summary, undoToken: t.undoToken })
-      cursor = at
+      // Never walk backwards: sanitizedOffset is NOT monotonic (it strips image markdown, so
+      // a marker completing between two calls shrinks the later offset). An unguarded cursor
+      // would make the trailing slice re-emit text an earlier bubble already rendered.
+      cursor = Math.max(cursor, at)
     })
     // A chip at the very end of the reply (no trailing commentary) must not leave a
     // floating empty "Bridget" bubble — Transcript.vue renders the role label

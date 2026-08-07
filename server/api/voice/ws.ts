@@ -13,7 +13,7 @@ import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
 import { randomUUID } from 'node:crypto'
-import type { AttachmentRef } from '../../lib/agent/attachments'
+import { withoutAttachmentMarkers, type AttachmentRef } from '../../lib/agent/attachments'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'voice',voice} | {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
@@ -189,7 +189,10 @@ export default defineWebSocketHandler({
           if (!s.conversationId) s.conversationId = (await createConversation({ title: deriveTitle(messageText(added[0]!.content)) })).id
           await appendMessages(s.conversationId, added.map(m => ({
             role: m.role as 'user' | 'assistant',
-            content: messageText(m.content),
+            // Attachment markers are a live-turn signal only. Persisting one makes it durable:
+            // it is replayed on every future turn and, once flattened into `content`, is no
+            // longer a separate part the resume-path filter can remove.
+            content: messageText(withoutAttachmentMarkers(m.content)),
             modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
             toolCalls: m.role === 'assistant' && m.toolRecords?.length ? m.toolRecords : null,
             reasoning: m.role === 'assistant' ? (reasoningText || null) : null,
