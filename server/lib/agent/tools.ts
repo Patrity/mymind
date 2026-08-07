@@ -296,7 +296,15 @@ export const agentTools: AgentTool[] = [
       return {
         result: updated ? docReceipt(updated, { before: prior.length, replacements: res.replacements }) : docNotFound(id),
         summary: `edited document ${doc.path}`,
-        undo: async () => { await updateDoc(id, { content: prior }); publishChange({ resource: 'document', action: 'updated', id }) }
+        undo: async () => {
+          // CAS against the hash OUR write produced — if the document changed since (web UI,
+          // another agent, a sync), restoring `prior` unconditionally would silently destroy
+          // that newer write. Refuse instead; the caller can reconcile and retry.
+          const restored = await casUpdateContent(id, prior, updated?.contentHash ?? null)
+          if (!restored) return { ok: false, reason: 'document changed since the edit — nothing was undone' }
+          publishChange({ resource: 'document', action: 'updated', id })
+          return { ok: true }
+        }
       }
     }
   },
@@ -324,7 +332,13 @@ export const agentTools: AgentTool[] = [
       return {
         result: updated ? docReceipt(updated, { before: prior.length }) : docNotFound(id),
         summary: `edited section of ${doc.path}`,
-        undo: async () => { await updateDoc(id, { content: prior }); publishChange({ resource: 'document', action: 'updated', id }) }
+        undo: async () => {
+          // Same CAS guard as edit_document's undo — see its comment.
+          const restored = await casUpdateContent(id, prior, updated?.contentHash ?? null)
+          if (!restored) return { ok: false, reason: 'document changed since the edit — nothing was undone' }
+          publishChange({ resource: 'document', action: 'updated', id })
+          return { ok: true }
+        }
       }
     }
   },
@@ -512,8 +526,9 @@ export const agentTools: AgentTool[] = [
           // Guard the undo too: passing null here would drop the CAS guard and let undo
           // silently clobber a newer edit made (e.g. in the UI) after this sync landed.
           const reverted = await casUpdateContent(decision.id, prior, updated.contentHash)
-          if (!reverted) return // someone else wrote after us — leave their work alone
+          if (!reverted) return { ok: false, reason: 'document changed since the sync — nothing was undone' }
           publishChange({ resource: 'document', action: 'updated', id: decision.id })
+          return { ok: true }
         }
       }
     }
