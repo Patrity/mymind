@@ -5,7 +5,7 @@ export interface Heading { level: number; text: string; line: number }
 export interface Section { startLine: number; endLine: number; level: number }
 export interface ReadResult { text: string; startLine: number; endLine: number }
 export interface GrepMatch { line: number; text: string; context: { line: number; text: string }[] }
-export interface GrepResult { matches: GrepMatch[]; total: number; truncated: boolean }
+export interface GrepResult { matches: GrepMatch[]; total: number; truncated: boolean; hint?: string }
 
 /** Every failure this module returns: a stable machine code plus human prose. */
 export interface OpFailure { error: string; message: string }
@@ -35,6 +35,22 @@ export function outline(content: string): Heading[] {
   }
   return out
 }
+
+/**
+ * Cap on headings returned in a FAILURE payload. Distinct from MAX_CANDIDATES (10), which bounds
+ * candidate lines on an ambiguous match: an outline entry is one short heading line, so it stays
+ * cheap where a candidate line can be arbitrarily wide. 50 is enough to orient in a large document
+ * without the error result becoming the oversized payload it exists to report.
+ */
+export const MAX_ERROR_OUTLINE = 50
+
+export function clipOutline(content: string): { outline: Heading[]; outlineTruncated: boolean } {
+  const full = outline(content)
+  return { outline: full.slice(0, MAX_ERROR_OUTLINE), outlineTruncated: full.length > MAX_ERROR_OUTLINE }
+}
+
+/** Characters that only mean something under `regex: true`. */
+const REGEX_METACHARS = /[.*+?^${}()|[\]\\]/
 
 /** The span of a uniquely-named section: heading line → line before the next heading of level <= its own (or EOF). */
 export function findSection(content: string, heading: string): Section | OpFailure {
@@ -98,10 +114,14 @@ export function grepContent(
   const hits: number[] = []
   for (let i = 0; i < lines.length; i++) if (test(lines[i]!)) hits.push(i)
   const kept = hits.slice(0, max)
+  const hint = (!opts.regex && hits.length === 0 && REGEX_METACHARS.test(pattern))
+    ? 'pattern looks like a regex — retry with regex: true'
+    : undefined
   return {
     matches: kept.map(i => ({ line: i + 1, text: lines[i]!, context: contextLines(lines, i, ctx) })),
     total: hits.length,
     truncated: hits.length > kept.length,
+    ...(hint ? { hint } : {})
   }
 }
 

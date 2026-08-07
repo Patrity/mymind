@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { outline, findSection, readSection, documentStats, grepContent, applyReplace, applyEditSection } from './edit-ops'
+import { outline, findSection, readSection, documentStats, grepContent, applyReplace, applyEditSection, clipOutline, MAX_ERROR_OUTLINE } from './edit-ops'
 
 const DOC = [
   '# Title',            // 1
@@ -180,6 +180,44 @@ describe('applyEditSection', () => {
   })
   it('passes through a missing-heading error', () => {
     expect(applyEditSection(DOC, { mode: 'replace', heading: 'Z', text: 'x' })).toEqual({ error: 'heading_not_found', message: 'heading not found: "Z"' })
+  })
+})
+
+describe('clipOutline', () => {
+  it('caps a large outline and flags it', () => {
+    const content = Array.from({ length: 80 }, (_, i) => `# H${i}`).join('\n\n')
+    const r = clipOutline(content)
+    expect(r.outline).toHaveLength(MAX_ERROR_OUTLINE)
+    expect(r.outlineTruncated).toBe(true)
+  })
+
+  it('leaves a small outline whole and unflagged', () => {
+    const r = clipOutline('# A\n\n# B')
+    expect(r.outline).toHaveLength(2)
+    expect(r.outlineTruncated).toBe(false)
+  })
+})
+
+describe('grepContent hint', () => {
+  it('suggests regex:true when a 0-match pattern looks like a regex', () => {
+    const r = grepContent('plain text', 'foo.*bar', {}) as { total: number; hint?: string }
+    expect(r.total).toBe(0)
+    expect(r.hint).toMatch(/regex: true/)
+  })
+
+  it('stays silent when the pattern has no metacharacters', () => {
+    const r = grepContent('plain text', 'zebra', {}) as { hint?: string }
+    expect(r.hint).toBeUndefined()
+  })
+
+  it('stays silent when regex was already requested', () => {
+    const r = grepContent('plain text', 'foo.*bar', { regex: true }) as { hint?: string }
+    expect(r.hint).toBeUndefined()
+  })
+
+  it('stays silent when there are matches', () => {
+    const r = grepContent('xx foo.*bar yy', 'foo.*bar', {}) as { hint?: string }
+    expect(r.hint).toBeUndefined()
   })
 })
 
