@@ -7,6 +7,9 @@ export interface ReadResult { text: string; startLine: number; endLine: number }
 export interface GrepMatch { line: number; text: string; context: { line: number; text: string }[] }
 export interface GrepResult { matches: GrepMatch[]; total: number; truncated: boolean }
 
+/** Every failure this module returns: a stable machine code plus human prose. */
+export interface OpFailure { error: string; message: string }
+
 /** A typed edit failure: `error` is a stable machine code, `message` the human-readable hint. */
 export interface ReplaceFailure {
   error: 'empty_old_string' | 'no_match' | 'ambiguous_match'
@@ -34,12 +37,12 @@ export function outline(content: string): Heading[] {
 }
 
 /** The span of a uniquely-named section: heading line → line before the next heading of level <= its own (or EOF). */
-export function findSection(content: string, heading: string): Section | { error: string } {
+export function findSection(content: string, heading: string): Section | OpFailure {
   const heads = outline(content)
   const target = heading.trim()
   const matches = heads.filter(h => h.text === target)
-  if (matches.length === 0) return { error: `heading not found: "${heading}"` }
-  if (matches.length > 1) return { error: `heading "${heading}" is ambiguous (${matches.length} matches)` }
+  if (matches.length === 0) return { error: 'heading_not_found', message: `heading not found: "${heading}"` }
+  if (matches.length > 1) return { error: 'ambiguous_heading', message: `heading "${heading}" is ambiguous (${matches.length} matches)` }
   const h = matches[0]!
   const next = heads.find(x => x.line > h.line && x.level <= h.level)
   const endLine = next ? next.line - 1 : content.split('\n').length
@@ -49,7 +52,7 @@ export function findSection(content: string, heading: string): Section | { error
 export function readSection(
   content: string,
   opts: { heading?: string; offset?: number; limit?: number },
-): ReadResult | { error: string } {
+): ReadResult | OpFailure {
   const lines = content.split('\n')
   if (opts.heading !== undefined) {
     const sec = findSection(content, opts.heading)
@@ -80,14 +83,14 @@ export function grepContent(
   content: string,
   pattern: string,
   opts: { regex?: boolean; context?: number; max?: number } = {},
-): GrepResult | { error: string } {
+): GrepResult | OpFailure {
   const ctx = opts.context ?? 2
   const max = opts.max ?? 50
   const lines = content.split('\n')
   let test: (s: string) => boolean
   if (opts.regex) {
     let re: RegExp
-    try { re = new RegExp(pattern) } catch (e) { return { error: `invalid regex: ${(e as Error).message}` } }
+    try { re = new RegExp(pattern) } catch (e) { return { error: 'invalid_regex', message: `invalid regex: ${(e as Error).message}` } }
     test = (s) => re.test(s)
   } else {
     test = (s) => s.includes(pattern)
@@ -180,9 +183,9 @@ export function applyReplace(
 /** Structure-aware append/replace by heading. */
 export function applyEditSection(
   content: string, args: { mode: 'append' | 'replace'; text: string; heading?: string },
-): { content: string } | { error: string } {
+): { content: string } | OpFailure {
   if (args.heading === undefined) {
-    if (args.mode === 'replace') return { error: 'replace mode requires a heading; use update_document to replace whole content' }
+    if (args.mode === 'replace') return { error: 'replace_needs_heading', message: 'replace mode requires a heading; use update_document to replace whole content' }
     return { content: content.replace(/\n*$/, '') + '\n\n' + args.text + '\n' } // append to end of doc
   }
   const sec = findSection(content, args.heading)

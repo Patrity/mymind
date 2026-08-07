@@ -43,10 +43,10 @@ describe('findSection', () => {
     expect(findSection(DOC, 'Beta')).toEqual({ startLine: 7, endLine: 11, level: 2 })
   })
   it('errors when the heading is missing', () => {
-    expect(findSection(DOC, 'Nope')).toEqual({ error: 'heading not found: "Nope"' })
+    expect(findSection(DOC, 'Nope')).toEqual({ error: 'heading_not_found', message: 'heading not found: "Nope"' })
   })
   it('errors when the heading is ambiguous', () => {
-    expect(findSection(DOC, 'Alpha')).toEqual({ error: 'heading "Alpha" is ambiguous (2 matches)' })
+    expect(findSection(DOC, 'Alpha')).toEqual({ error: 'ambiguous_heading', message: 'heading "Alpha" is ambiguous (2 matches)' })
   })
 })
 
@@ -63,7 +63,7 @@ describe('readSection', () => {
     })
   })
   it('passes through a findSection error', () => {
-    expect(readSection(DOC, { heading: 'Nope' })).toEqual({ error: 'heading not found: "Nope"' })
+    expect(readSection(DOC, { heading: 'Nope' })).toEqual({ error: 'heading_not_found', message: 'heading not found: "Nope"' })
   })
 })
 
@@ -174,10 +174,37 @@ describe('applyEditSection', () => {
   })
   it('errors on replace with no heading', () => {
     expect(applyEditSection(DOC, { mode: 'replace', text: 'x' })).toEqual({
-      error: 'replace mode requires a heading; use update_document to replace whole content',
+      error: 'replace_needs_heading',
+      message: 'replace mode requires a heading; use update_document to replace whole content',
     })
   })
   it('passes through a missing-heading error', () => {
-    expect(applyEditSection(DOC, { mode: 'replace', heading: 'Z', text: 'x' })).toEqual({ error: 'heading not found: "Z"' })
+    expect(applyEditSection(DOC, { mode: 'replace', heading: 'Z', text: 'x' })).toEqual({ error: 'heading_not_found', message: 'heading not found: "Z"' })
+  })
+})
+
+describe('typed error codes', () => {
+  it('findSection reports heading_not_found with the prose in message', () => {
+    const r = findSection('# A\n\ntext', 'Missing') as { error: string; message: string }
+    expect(r.error).toBe('heading_not_found')
+    expect(r.message).toBe('heading not found: "Missing"')
+  })
+
+  it('findSection reports ambiguous_heading and names the count', () => {
+    const r = findSection('# Dup\n\na\n\n# Dup\n\nb', 'Dup') as { error: string; message: string }
+    expect(r.error).toBe('ambiguous_heading')
+    expect(r.message).toMatch(/2 matches/)
+  })
+
+  it('grepContent reports invalid_regex', () => {
+    const r = grepContent('body', '([', { regex: true }) as { error: string; message: string }
+    expect(r.error).toBe('invalid_regex')
+    expect(r.message).toMatch(/invalid regex/)
+  })
+
+  it('applyEditSection reports replace_needs_heading', () => {
+    const r = applyEditSection('# A\n\nx', { mode: 'replace', text: 'y' }) as { error: string; message: string }
+    expect(r.error).toBe('replace_needs_heading')
+    expect(r.message).toMatch(/requires a heading/)
   })
 })
