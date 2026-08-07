@@ -705,7 +705,144 @@ git commit -m "fix(mcp): preamble points at sync_document and stops overpromisin
 
 ---
 
-### Task 9: Reconcile the three frontmatter-in-content documents
+### Task 9: Surface the undo refusal in the client
+
+Once undo can refuse, a silent no-op is indistinguishable from a broken button. `reason` reaches the HTTP response but no client surface reads it — all three destructure `ok` and drop the rest.
+
+**Files:**
+- Create: `app/lib/agent/undo-feedback.ts`, `app/lib/agent/undo-feedback.test.ts`, `app/composables/useUndo.ts`
+- Modify: `app/composables/useAgentActivity.ts` (the `undo` function), `app/pages/agent/index.vue` (`undoTool`), `app/composables/useGalaxy.ts` (the `undo` function)
+
+**Interfaces:**
+- Consumes: `POST /api/agent/undo` → `{ ok: boolean; reason?: string }`.
+- Produces: `export function undoFeedback(res: { ok: boolean; reason?: string }): { title: string; description: string; color: 'error' } | null`; `export function useUndo(): (token: string) => Promise<{ ok: boolean; reason?: string }>`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `app/lib/agent/undo-feedback.test.ts`:
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { undoFeedback } from './undo-feedback'
+
+describe('undoFeedback', () => {
+  it('says nothing on success', () => {
+    expect(undoFeedback({ ok: true })).toBeNull()
+  })
+
+  it('surfaces the server reason verbatim on a refusal', () => {
+    const f = undoFeedback({ ok: false, reason: 'document changed since the edit — nothing was undone' })
+    expect(f).toMatchObject({ color: 'error' })
+    expect(f!.description).toBe('document changed since the edit — nothing was undone')
+  })
+
+  it('falls back to a usable message when the server gave no reason', () => {
+    const f = undoFeedback({ ok: false })
+    expect(f).not.toBeNull()
+    expect(f!.description.length).toBeGreaterThan(0)
+  })
+})
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `pnpm vitest run app/lib/agent/undo-feedback.test.ts`
+Expected: FAIL — `Failed to resolve import "./undo-feedback"`.
+
+- [ ] **Step 3: Write the pure helper**
+
+```ts
+// app/lib/agent/undo-feedback.ts
+//
+// Undo can REFUSE: the server declines rather than clobbering a write that landed after the
+// action. A refusal that shows nothing is indistinguishable from a broken button, so every
+// caller renders the same thing. Pure so it is testable without a Nuxt runtime.
+export function undoFeedback(
+  res: { ok: boolean; reason?: string }
+): { title: string; description: string; color: 'error' } | null {
+  if (res.ok) return null
+  return {
+    title: 'Nothing was undone',
+    description: res.reason ?? 'the undo is no longer available',
+    color: 'error'
+  }
+}
+```
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `pnpm vitest run app/lib/agent/undo-feedback.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Wire it once, in a shared composable**
+
+```ts
+// app/composables/useUndo.ts
+import { undoFeedback } from '~/lib/agent/undo-feedback'
+
+/** Redeem an undo token, surfacing a refusal instead of failing silently. */
+export function useUndo() {
+  const toast = useToast()
+  return async function redeem(token: string): Promise<{ ok: boolean; reason?: string }> {
+    const res = await $fetch<{ ok: boolean; reason?: string }>('/api/agent/undo', {
+      method: 'POST', body: { token }
+    })
+    const feedback = undoFeedback(res)
+    if (feedback) toast.add(feedback)
+    return res
+  }
+}
+```
+
+Check the import alias against a neighbouring composable before committing — if the codebase uses a different prefix for `app/lib`, match it.
+
+- [ ] **Step 6: Replace the three call sites**
+
+Each currently does its own `$fetch<{ ok: boolean }>` and drops `reason`. Route all three through `useUndo()`:
+
+```ts
+// app/composables/useAgentActivity.ts — inside useAgentActivity(), alongside the other state
+const redeem = useUndo()
+async function undo(chip: ToolChip) {
+  if (!chip.undoToken) return
+  const { ok } = await redeem(chip.undoToken)
+  if (ok) chip.undone = true
+}
+
+// app/pages/agent/index.vue
+const redeem = useUndo()
+async function undoTool(entry: TranscriptEntry) {
+  if (!entry.undoToken) return
+  const { ok } = await redeem(entry.undoToken)
+  if (ok) entry.undone = true
+}
+
+// app/composables/useGalaxy.ts — inside useGalaxy()
+const redeem = useUndo()
+function undo(token: string) { return redeem(token) }
+```
+
+`useToast()` must be called during setup, and all three of these are already in setup context (two composables invoked from setup, one SFC `<script setup>`). If any site turns out not to be, say so rather than calling it lazily inside the handler.
+
+- [ ] **Step 7: Gates**
+
+Run: `pnpm vitest run app/lib/agent/undo-feedback.test.ts && pnpm typecheck && pnpm test && pnpm build`
+Expected: PASS, 0 type errors, clean build. `pnpm build` matters — this task touches a `.vue` file.
+
+- [ ] **Step 8: Prove the helper test can fail**
+
+Make `undoFeedback` return `null` unconditionally, re-run, confirm the two refusal tests go RED, revert.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add app/lib/agent/undo-feedback.ts app/lib/agent/undo-feedback.test.ts app/composables/useUndo.ts app/composables/useAgentActivity.ts app/pages/agent/index.vue app/composables/useGalaxy.ts
+git commit -m "feat(agent): tell the user when an undo refuses instead of failing silently"
+```
+
+---
+
+### Task 10: Reconcile the three frontmatter-in-content documents
 
 Data only. No code, no migration.
 
@@ -741,7 +878,7 @@ No commit — this is data. Put the ids, before/after hashes, and the probe resu
 
 ---
 
-### Task 10: Docs, wiki, handover, roadmap
+### Task 11: Docs, wiki, handover, roadmap
 
 **Files:**
 - Modify: `docs/wiki/mcp.md`, `docs/superpowers/plans/00-roadmap.md`
@@ -753,7 +890,7 @@ No commit — this is data. Put the ids, before/after hashes, and the probe resu
 
 - [ ] **Step 2: Write the handover**
 
-Match the frontmatter shape of `docs/handovers/2026-08-05-structural-tool-history.md`. Record the real gate numbers, the three reconciled document ids from Task 9, and — plainly — that **the CAS guard's tests do not run in CI**, because `pnpm test:db` is not wired into the deploy gate. That is `70bcc740`, which stays open.
+Match the frontmatter shape of `docs/handovers/2026-08-05-structural-tool-history.md`. Record the real gate numbers, the three reconciled document ids from Task 10, and — plainly — that **the CAS guard's tests do not run in CI**, because `pnpm test:db` is not wired into the deploy gate. That is `70bcc740`, which stays open.
 
 - [ ] **Step 3: Roadmap row**
 
@@ -779,7 +916,8 @@ git commit -m "docs(cycle-53): wiki, handover and roadmap row for MCP doc-tool e
 - [ ] `pnpm test` → all pass, count recorded in the handover
 - [ ] `pnpm test:db` → all pass (run manually; NOT in CI)
 - [ ] `pnpm build` → clean
-- [ ] Every mutation check in Tasks 1, 2, 4, 5, 7 was actually run and observed RED
+- [ ] Every mutation check in Tasks 1, 2, 4, 5, 7, 9 was actually run and observed RED
 - [ ] No migration added
 - [ ] Every converted tool's `description` lists its failure codes
 - [ ] The three reconciled document ids are recorded in the handover
+- [ ] A refused undo is visible to the user, not a silent no-op
