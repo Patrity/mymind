@@ -297,10 +297,16 @@ export const agentTools: AgentTool[] = [
         result: updated ? docReceipt(updated, { before: prior.length, replacements: res.replacements }) : docNotFound(id),
         summary: `edited document ${doc.path}`,
         undo: async () => {
+          // `updated` is null when the write itself never landed (the row vanished between the
+          // getDoc above and this handler's updateDoc call) — there is nothing to undo, and
+          // `?? null` here would be a bug: casUpdateContent treats expectedHash: null as FORCE,
+          // so it would disable the guard entirely and overwrite whatever now lives at this id.
+          // Refuse outright instead of ever constructing that forced call.
+          if (!updated) return { ok: false, reason: 'the edit did not land — nothing to undo' }
           // CAS against the hash OUR write produced — if the document changed since (web UI,
           // another agent, a sync), restoring `prior` unconditionally would silently destroy
           // that newer write. Refuse instead; the caller can reconcile and retry.
-          const restored = await casUpdateContent(id, prior, updated?.contentHash ?? null)
+          const restored = await casUpdateContent(id, prior, updated.contentHash)
           if (!restored) return { ok: false, reason: 'document changed since the edit — nothing was undone' }
           publishChange({ resource: 'document', action: 'updated', id })
           return { ok: true }
@@ -333,8 +339,9 @@ export const agentTools: AgentTool[] = [
         result: updated ? docReceipt(updated, { before: prior.length }) : docNotFound(id),
         summary: `edited section of ${doc.path}`,
         undo: async () => {
-          // Same CAS guard as edit_document's undo — see its comment.
-          const restored = await casUpdateContent(id, prior, updated?.contentHash ?? null)
+          // Same guard as edit_document's undo — see its comment.
+          if (!updated) return { ok: false, reason: 'the edit did not land — nothing to undo' }
+          const restored = await casUpdateContent(id, prior, updated.contentHash)
           if (!restored) return { ok: false, reason: 'document changed since the edit — nothing was undone' }
           publishChange({ resource: 'document', action: 'updated', id })
           return { ok: true }
@@ -373,12 +380,28 @@ export const agentTools: AgentTool[] = [
           : docNotFound(id),
         summary: `updated document ${doc.path}`,
         undo: async () => {
-          await updateDoc(id, {
-            path: prior.path, title: prior.title ?? undefined, content: prior.content ?? '',
+          // `updated` is null when the write itself never landed (row vanished mid-write) —
+          // nothing to undo. See edit_document's undo for why this must refuse, not fall
+          // through to a null-forced CAS.
+          if (!updated) return { ok: false, reason: 'the update did not land — nothing to undo' }
+          // This is the broadest overwrite in the tool surface (path, title, content,
+          // frontmatter, tags, domain, type all in one write), so CAS the content restore
+          // FIRST and refuse the whole undo on a mismatch — never restore metadata over a
+          // document whose content has since moved on from what we wrote.
+          const restored = await casUpdateContent(id, prior.content, updated.contentHash)
+          if (!restored) return { ok: false, reason: 'document changed since the update — nothing was undone' }
+          // Content is confirmed reverted. Restore the rest (path/title/frontmatter/tags/
+          // domain/type) — path wins, so this also reverses an assign-project relocate.
+          const metaRestored = await updateDoc(id, {
+            path: prior.path, title: prior.title ?? undefined,
             frontmatter: prior.frontmatter, tags: prior.tags ?? [],
             domain: prior.domain ?? undefined, type: prior.type ?? undefined
           })
+          if (!metaRestored) {
+            return { ok: false, reason: 'content was reverted, but the document vanished before metadata could be restored' }
+          }
           publishChange({ resource: 'document', action: 'updated', id })
+          return { ok: true }
         }
       }
     }
@@ -396,13 +419,31 @@ export const agentTools: AgentTool[] = [
       const doc = await getDoc(id)
       if (!doc) return { result: docNotFound(id), summary: 'move_document: not found' }
       const prior = doc.path
-      const updated = await moveDoc(id, a.path as string)
+      const newPath = a.path as string
+      const updated = await moveDoc(id, newPath)
       publishChange({ resource: 'document', action: 'updated', id })
       const size = (doc.content ?? '').length // a move never touches the body
       return {
         result: updated ? docReceipt(updated, { before: size }) : docNotFound(id),
         summary: `moved document to ${a.path}`,
-        undo: async () => { await moveDoc(id, prior); publishChange({ resource: 'document', action: 'updated', id }) }
+        undo: async () => {
+          if (!updated) return { ok: false, reason: 'the move did not land — nothing to undo' }
+          // No CAS primitive exists for `path` — casUpdateContent only guards content, and this
+          // task deliberately doesn't add a new DB helper for path. Best available guard is
+          // read-then-compare: only restore if the document's path is still exactly what OUR
+          // move set it to. NOTE this does not close the race the way CAS does: a second move
+          // landing between this read and the moveDoc write below would still be silently
+          // overwritten (classic TOCTOU) — but it is strictly better than the previous
+          // unconditional restore, which had no guard at all.
+          const current = await getDoc(id)
+          if (!current || current.path !== newPath) {
+            return { ok: false, reason: 'document moved again since — nothing was undone' }
+          }
+          const reverted = await moveDoc(id, prior)
+          if (!reverted) return { ok: false, reason: 'document changed since the move — nothing was undone' }
+          publishChange({ resource: 'document', action: 'updated', id })
+          return { ok: true }
+        }
       }
     }
   },
