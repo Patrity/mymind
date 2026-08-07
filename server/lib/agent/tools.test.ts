@@ -1,6 +1,15 @@
 // server/lib/agent/tools.test.ts
-import { describe, it, expect } from 'vitest'
-import { toolByName } from './tools'
+import { describe, it, expect, vi } from 'vitest'
+import { toolByName, agentTools } from './tools'
+import { getDoc } from '../../services/documents'
+
+// The mock must export EVERY name tools.ts imports (see tools.ts:5) or the module fails to load.
+vi.mock('../../services/documents', () => ({
+  searchPassages: vi.fn(), createDoc: vi.fn(), getDoc: vi.fn(async () => null),
+  deleteDoc: vi.fn(), updateDoc: vi.fn(), moveDoc: vi.fn(), restoreDoc: vi.fn(),
+  listDocsSummary: vi.fn(), countDocs: vi.fn(), searchDocsPage: vi.fn(),
+  findDocByPath: vi.fn(), casUpdateContent: vi.fn()
+}))
 
 describe('read tools', () => {
   it('read_document is a read tool with id/heading/offset/limit', () => {
@@ -85,5 +94,50 @@ describe('session tools', () => {
     expect(toolByName('read_session')!.kind).toBe('read')
     expect(Object.keys(toolByName('read_session')!.schema)).toEqual(expect.arrayContaining(['sessionId', 'offset', 'limit', 'full']))
     for (const n of ['search_messages', 'search_sessions', 'read_around_message', 'read_session']) expect(toolByName(n)!.dangerous, n).toBeFalsy()
+  })
+})
+
+describe('document tools: unified failure shape', () => {
+  const tool = (n: string) => agentTools.find(t => t.name === n)!
+  const ctx = { signal: new AbortController().signal }
+
+  for (const name of ['read_document', 'grep_document', 'delete_document']) {
+    it(`${name} returns {ok:false, error:'not_found'} for a missing doc`, async () => {
+      const r = await tool(name).handler({ id: 'nope', pattern: 'x' }, ctx as never)
+      expect(r.result).toMatchObject({ ok: false, error: 'not_found', message: 'document not found' })
+    })
+  }
+
+  it('update_document returns no_fields when the patch is empty', async () => {
+    vi.mocked(getDoc).mockResolvedValueOnce({ id: 'x', content: '', path: '/p.md' } as never)
+    const r = await tool('update_document').handler({ id: 'x' }, ctx as never)
+    expect(r.result).toMatchObject({ ok: false, error: 'no_fields' })
+  })
+
+  // These exercise the other converted sites — the ones where the op-failure `{ error, message }`
+  // from edit-ops.ts is spread into the tool result (`{ ok: false, ...res }`), not the docNotFound
+  // sites above. Before the fix these returned `{ error, outline }` with no `ok` field, so
+  // `toMatchObject({ ok: false, ... })` would fail on the missing key.
+  it('grep_document returns invalid_regex with a message for a bad pattern', async () => {
+    vi.mocked(getDoc).mockResolvedValueOnce({ id: 'x', content: 'hello', path: '/p.md' } as never)
+    const r = await tool('grep_document').handler({ id: 'x', pattern: '(', regex: true }, ctx as never)
+    expect(r.result).toMatchObject({ ok: false, error: 'invalid_regex' })
+    expect((r.result as { message?: string }).message).toBeTruthy()
+  })
+
+  it('read_document returns heading_not_found with a message and a clipped outline', async () => {
+    vi.mocked(getDoc).mockResolvedValueOnce({ id: 'x', content: '# A\n\ntext', path: '/p.md' } as never)
+    const r = await tool('read_document').handler({ id: 'x', heading: 'Nope' }, ctx as never)
+    expect(r.result).toMatchObject({ ok: false, error: 'heading_not_found' })
+    expect((r.result as { message?: string }).message).toBeTruthy()
+    expect((r.result as { outline?: unknown[] }).outline).toBeDefined()
+  })
+
+  it('edit_section returns heading_not_found with a message and a clipped outline', async () => {
+    vi.mocked(getDoc).mockResolvedValueOnce({ id: 'x', content: '# A\n\ntext', path: '/p.md' } as never)
+    const r = await tool('edit_section').handler({ id: 'x', mode: 'replace', heading: 'Nope', text: 'new' }, ctx as never)
+    expect(r.result).toMatchObject({ ok: false, error: 'heading_not_found' })
+    expect((r.result as { message?: string }).message).toBeTruthy()
+    expect((r.result as { outline?: unknown[] }).outline).toBeDefined()
   })
 })
