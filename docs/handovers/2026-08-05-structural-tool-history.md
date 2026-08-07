@@ -63,15 +63,16 @@ deferred: >
   leak class this cycle closed on the args channel, and cycle 43 is what makes results
   durable) and `fa2a9e0e` (low — sanitized `textOffset` is no longer monotonic, so an image
   marker straddling a tool call can duplicate a resume fragment).
-  The live path was never exercised end-to-end with a real tool call in this
-  cycle's browser validation (the homelab AI backend at 192.168.2.25:8004 is unreachable
-  from the build sandbox, a pre-existing LAN-visibility limitation — see cycle 49);
-  validation instead seeded real DB rows in the exact shape Task 5's persistence writes and
-  drove them through the real `getConversation` → `resume()` path. A live smoke test before
-  merge is recommended. One open question was deliberately left unresolved this cycle — the
-  live-path `[attachment unavailable]` marker can still be written permanently into stored
-  user content on a failed read — and is tracked as MyMind task (see "Open question" below),
-  not fixed here.
+  ✅ LIVE-VALIDATED ON PROD by Tony, 2026-08-07 — "working well". This was the one thing the
+  cycle could not prove itself: during the build the homelab AI backend at 192.168.2.25:8004
+  was unreachable from the sandbox (pre-existing LAN-visibility limitation, see cycle 49), so
+  validation seeded real DB rows in the exact shape Task 5's persistence writes and drove them
+  through the real `getConversation` → `resume()` path. Prod shares the rig's LAN, and the
+  real capture → persist → resume → replay round trip is now confirmed against a live model
+  turn. Both follow-ups above are also fixed and deployed (`bc6a5ce`), as is the live-path
+  `[attachment unavailable]` marker question this cycle had deliberately left open — see task
+  `4ef76235`, which turned out to be three defects including one in this cycle's own
+  resume-path strip.
 ---
 
 # Structural tool-history (cycle 43)
