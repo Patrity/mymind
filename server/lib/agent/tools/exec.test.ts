@@ -114,3 +114,46 @@ describe('execTool.handler — catastrophic hard-block', () => {
     expect(r.result).toMatchObject({ exitCode: 0 })
   })
 })
+
+// A tool's `result` and `summary` are both PERSISTED (conversation_messages.tool_calls),
+// replayed into model history, and shipped to the browser. Cycle 43 masked the ARGS
+// channel; these guard the RESULT channel, where the refusal and failure paths were
+// still echoing the raw command back.
+describe('execTool.handler — never echoes a raw command back on any path', () => {
+  const SECRET = 'ghp_supersecretvalue'
+
+  beforeEach(() => {
+    vi.mocked(getDecryptedSecrets).mockResolvedValue({ GITHUB_TOKEN: SECRET })
+  })
+
+  it('masks the secret in the catastrophic-refusal result', async () => {
+    const r = await execTool.handler({ command: `rm -rf / --token ${SECRET}` }, ctx)
+    expect(JSON.stringify(r.result)).not.toContain(SECRET)
+  })
+
+  it('masks the secret in the catastrophic-refusal summary', async () => {
+    const r = await execTool.handler({ command: `rm -rf / --token ${SECRET}` }, ctx)
+    expect(r.summary).not.toContain(SECRET)
+  })
+
+  it('masks the secret when exec is disabled', async () => {
+    const { runConstrained, ExecDisabledError } = await import('../../exec/run')
+    vi.mocked(runConstrained).mockRejectedValueOnce(new ExecDisabledError('exec is disabled: not root'))
+    const r = await execTool.handler({ command: `curl -H "auth: ${SECRET}" https://api.example.com` }, ctx)
+    expect(JSON.stringify(r.result)).not.toContain(SECRET)
+    expect(r.summary).not.toContain(SECRET)
+  })
+
+  it('fails closed — withholds the command when the secret store is unreadable', async () => {
+    vi.mocked(getDecryptedSecrets).mockRejectedValue(new Error('vault unavailable'))
+    const r = await execTool.handler({ command: `rm -rf / --token ${SECRET}` }, ctx)
+    expect(JSON.stringify(r.result)).not.toContain(SECRET)
+    expect(r.summary).not.toContain(SECRET)
+  })
+
+  it('still reports WHY a command was refused, so the refusal stays actionable', async () => {
+    const r = await execTool.handler({ command: `rm -rf / --token ${SECRET}` }, ctx)
+    expect(r.result).toMatchObject({ ok: false, blocked: true, error: 'refused: catastrophic command' })
+    expect(r.summary).toMatch(/catastrophic/)
+  })
+})
