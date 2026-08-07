@@ -1,6 +1,7 @@
 // server/lib/agent/types.ts
 import type { ZodRawShape } from 'zod'
 import type { DisplayImage } from './image-embed'
+import type { UndoFn } from './undo'
 
 /** A single content part in a multimodal agent message. */
 export type AgentContentPart =
@@ -26,7 +27,7 @@ export interface ToolContext {
 export interface ToolExecution {
   result: unknown // structured result fed back to the model
   summary: string // short spoken/UI-friendly line, e.g. "added 'buy milk' to todo"
-  undo?: () => Promise<void> // present for create/destructive tools
+  undo?: UndoFn // present for create/destructive tools
   display?: { images: DisplayImage[] } // server-authored embeds; the model never receives the URL
 }
 
