@@ -544,7 +544,34 @@ export const agentTools: AgentTool[] = [
         if (meta.changed) publishChange({ resource: 'document', action: 'updated', id: decision.id })
         return {
           result: { ...docReceipt(meta.doc, { before }), action: decision.kind === 'adopt' ? 'adopted' : 'unchanged' },
-          summary: `sync_document: ${decision.kind} ${meta.doc.path}`
+          summary: `sync_document: ${decision.kind} ${meta.doc.path}`,
+          // applySyncMeta can patch five fields (path, title, tags, type, frontmatter — see
+          // its definition above); restore all five, not just path/title, or a partial undo
+          // would silently leave some fields patched while reporting ok:true. Only register
+          // when something actually changed — nothing to reverse otherwise.
+          //
+          // There's no CAS primitive for these fields (only content has one), so guard the
+          // way move_document does: read back and refuse if the path has moved on from what
+          // we set since the sync landed. title/tags/type/frontmatter restore unconditionally
+          // once that guard passes — the same trade-off update_document's undo already makes
+          // (CAS-guard content, then restore the rest of the metadata unconditionally).
+          ...(meta.changed
+            ? {
+                undo: async () => {
+                  const current = await getDoc(decision.id)
+                  if (!current || current.path !== meta.doc.path) {
+                    return { ok: false, reason: 'document changed since the sync — nothing was undone' }
+                  }
+                  const reverted = await updateDoc(decision.id, {
+                    path: server.path, title: server.title, tags: server.tags,
+                    type: server.type, frontmatter: server.frontmatter
+                  })
+                  if (!reverted) return { ok: false, reason: 'document changed since the sync — nothing was undone' }
+                  publishChange({ resource: 'document', action: 'updated', id: decision.id })
+                  return { ok: true }
+                }
+              }
+            : {})
         }
       }
 

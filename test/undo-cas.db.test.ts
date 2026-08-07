@@ -212,6 +212,73 @@ describe('undo refuses instead of force-writing when the row vanished mid-write 
   })
 })
 
+describe('sync_document adopt/unchanged undo', () => {
+  it('registers no undo when the sync changed nothing', async () => {
+    const doc = await createDoc({ path: uniquePath('sync-noop'), content: 'body' })
+    try {
+      const exec = await tool('sync_document').handler(
+        { id: doc.id, content: 'body', expected_hash: doc.contentHash }, ctx)
+      expect((exec.result as { action?: string }).action).toBe('unchanged')
+      expect(exec.undo).toBeUndefined()
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+
+  it('a rename-only sync can be undone, restoring path/title/tags/type/frontmatter', async () => {
+    const original = uniquePath('sync-rename-original')
+    const doc = await createDoc({
+      path: original, content: 'body', title: 'Original Title',
+      tags: ['keep'], type: 'note', frontmatter: { keep: true }
+    })
+    try {
+      const newPath = uniquePath('sync-rename-target')
+      const exec = await tool('sync_document').handler({
+        id: doc.id, content: 'body', expected_hash: doc.contentHash,
+        path: newPath, title: 'New Title', tags: ['changed'], type: 'log', frontmatter: { changed: true }
+      }, ctx)
+      // Body is unchanged and id is addressed, so decideSync reports 'unchanged' (not
+      // 'adopt' — that's the path-addressed, no-id variant). Both share this exact code path.
+      expect((exec.result as { action?: string }).action).toBe('unchanged')
+      expect(exec.undo).toBeDefined()
+
+      const afterSync = await getDoc(doc.id)
+      expect(afterSync!.path).toBe(newPath)
+      expect(afterSync!.title).toBe('New Title')
+
+      expect(await exec.undo!()).toMatchObject({ ok: true })
+      const after = await getDoc(doc.id)
+      expect(after!.path).toBe(original)
+      expect(after!.title).toBe('Original Title')
+      expect(after!.tags).toEqual(['keep'])
+      expect(after!.type).toBe('note')
+      expect(after!.frontmatter).toEqual({ keep: true })
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+
+  it('refuses to undo when the document moved again since the sync', async () => {
+    const original = uniquePath('sync-rename-refuse-original')
+    const doc = await createDoc({ path: original, content: 'body' })
+    try {
+      const newPath = uniquePath('sync-rename-refuse-target')
+      const exec = await tool('sync_document').handler(
+        { id: doc.id, content: 'body', expected_hash: doc.contentHash, path: newPath }, ctx)
+      expect(exec.undo).toBeDefined()
+
+      const movedAgain = uniquePath('sync-rename-refuse-moved-again')
+      await updateDoc(doc.id, { path: movedAgain })
+
+      const res = await exec.undo!()
+      expect(res).toMatchObject({ ok: false })
+      expect((await getDoc(doc.id))!.path).toBe(movedAgain)
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+})
+
 describe('update_document undo CAS guard', () => {
   it('refuses to undo when the document changed after the update, and does not touch metadata either', async () => {
     const doc = await createDoc({ path: uniquePath('update-doc-refuse'), content: 'original', title: 'Original Title' })
