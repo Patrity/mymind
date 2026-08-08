@@ -43,6 +43,25 @@ export function computeFinalPath(path: string, project: string | null | undefine
   return targetPathForAssign(path, project)
 }
 
+const basenameOfPath = (p: string) => p.split('/').filter(Boolean).pop() ?? null
+
+/**
+ * A title that still equals its old basename was never curated, so it keeps tracking the filename.
+ * Anything else is a human's choice and survives the move. An explicit title always wins.
+ * `undefined` means "do not touch the title".
+ *
+ * `explicit` is `string | null` (not just `string`) because callers pass `DocumentUpsert['title']`
+ * verbatim — a caller-supplied `null` (e.g. an undo restoring a document that was genuinely
+ * titleless) must win exactly like a caller-supplied string, never fall through to basename sync.
+ */
+export function nextTitleOnMove(opts: {
+  explicit?: string | null; currentTitle: string | null; currentPath: string; finalPath: string
+}): string | null | undefined {
+  if (opts.explicit !== undefined) return undefined
+  const wasAuto = opts.currentTitle === null || opts.currentTitle === basenameOfPath(opts.currentPath)
+  return wasAuto ? basenameOfPath(opts.finalPath) : undefined
+}
+
 /**
  * Derives the project_id + project slug from a path. The path is the single
  * source of truth — if the path is under /projects/<seg>/ and a matching
@@ -160,10 +179,10 @@ export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Pro
   // Apply association logic only when path or project is part of the input.
   const pathOrProjectChanged = input.path !== undefined || input.project !== undefined
   if (pathOrProjectChanged) {
-    // We need the current path to compute the final path when only project changes.
-    // Fetch the existing row (lightweight — id + path only).
+    // We need the current path (to compute the final path when only project changes) and the
+    // current title (to tell an auto-tracking title from a curated one below).
     const [existing] = await useDb()
-      .select({ path: documents.path })
+      .select({ path: documents.path, title: documents.title })
       .from(documents)
       .where(and(eq(documents.id, id), live()))
       .limit(1)
@@ -177,8 +196,12 @@ export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Pro
     patch.project = project
     patch.projectId = projectId
     patch.language = getLanguageFromPath(finalPath)
-    // Sync title to basename on path change unless caller explicitly set one
-    if (input.title === undefined) patch.title = finalPath.split('/').filter(Boolean).pop() ?? null
+    // Only re-sync the title to the new basename if it was tracking the old one — a curated
+    // title survives the move. An explicit input.title always wins (handled below either way).
+    const nextTitle = nextTitleOnMove({
+      explicit: input.title, currentTitle: existing.title, currentPath: existing.path, finalPath
+    })
+    if (nextTitle !== undefined) patch.title = nextTitle
   }
 
   // Copy remaining scalar fields (title override honoured when explicitly set)
