@@ -155,8 +155,12 @@ async function onArchiveMemory() {
 
 async function onUndo(token: string, okTitle: string) {
   try {
-    await galaxy.undo(token)
-    toast.add({ color: 'neutral', title: okTitle })
+    // The endpoint answers 200 with { ok: false, reason } on a refusal — it never throws
+    // for that case (only a genuine transport/server error lands in `catch`). useUndo()
+    // already toasted the refusal reason; showing this success toast unconditionally would
+    // contradict it (two toasts asserting opposite outcomes), so gate on `ok`.
+    const { ok } = await galaxy.undo(token)
+    if (ok) toast.add({ color: 'neutral', title: okTitle })
   } catch (e) { toastErr(e, 'Undo failed') }
 }
 
