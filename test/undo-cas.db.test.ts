@@ -23,6 +23,12 @@ import { toolByName } from '../server/lib/agent/tools'
 const tool = (n: string) => toolByName(n)!
 const ctx: ToolContext = { signal: new AbortController().signal }
 const uniquePath = (tag: string) => `/tmp-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}.md`
+// The sync_document/update_document undo guards below compare `updatedAt`, which is
+// millisecond-resolution (`new Date()`). A "third party" write issued immediately after the
+// tool call can land inside the same millisecond and produce an identical timestamp, which
+// would make the guard fail to detect drift and flake the test. A few ms of real separation
+// avoids that without asserting anything about the guard's own (accepted) same-ms residual gap.
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 describe('edit_document undo CAS guard', () => {
   it('refuses to undo when the document changed after the edit', async () => {
@@ -277,6 +283,35 @@ describe('sync_document adopt/unchanged undo', () => {
       await deleteDoc(doc.id)
     }
   })
+
+  // Fix round 1, Finding 1: a path-only guard misses drift in the other four fields this
+  // undo restores. Here the sync only ever touches `tags` (path never changes), so a guard
+  // that compares path alone would see "unchanged" and clobber the third party's tags edit.
+  it('refuses to undo when metadata drifted without a path change', async () => {
+    const original = uniquePath('sync-meta-drift')
+    const doc = await createDoc({
+      path: original, content: 'body', tags: ['keep'], type: 'note', frontmatter: { keep: true }
+    })
+    try {
+      const exec = await tool('sync_document').handler(
+        { id: doc.id, content: 'body', expected_hash: doc.contentHash, tags: ['changed'] }, ctx)
+      expect(exec.undo).toBeDefined()
+      expect((await getDoc(doc.id))!.path).toBe(original) // no path change in this sync
+
+      await sleep(5)
+      await updateDoc(doc.id, { tags: ['third-party'] })
+
+      const res = await exec.undo!()
+      expect(res).toMatchObject({ ok: false })
+      const after = await getDoc(doc.id)
+      expect(after!.tags).toEqual(['third-party'])
+      // type/frontmatter must not have been touched either — the whole undo refused.
+      expect(after!.type).toBe('note')
+      expect(after!.frontmatter).toEqual({ keep: true })
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
 })
 
 describe('update_document undo CAS guard', () => {
@@ -309,6 +344,60 @@ describe('update_document undo CAS guard', () => {
       const after = await getDoc(doc.id)
       expect(after!.content).toBe('original')
       expect(after!.title).toBe('Original Title')
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+
+  // Fix round 1, Finding 3: CAS-guarding content alone misses drift in the other five fields
+  // this undo restores. Here the update only ever touches `type` (content untouched, so the
+  // content CAS trivially matches), so a CAS-only guard would clobber the third party's edit.
+  it('refuses to undo when metadata (not content) drifted since the update', async () => {
+    const doc = await createDoc({
+      path: uniquePath('update-doc-meta-drift'), content: 'x', type: 'note', domain: 'work'
+    })
+    try {
+      const exec = await tool('update_document').handler({ id: doc.id, type: 'changed' }, ctx)
+
+      await sleep(5)
+      await updateDoc(doc.id, { domain: 'third-party' })
+
+      const res = await exec.undo!()
+      expect(res).toMatchObject({ ok: false })
+      const after = await getDoc(doc.id)
+      expect(after!.domain).toBe('third-party')
+      expect(after!.content).toBe('x') // untouched throughout — never even reached the CAS
+      // The whole undo refused — type must not have been partially reverted either.
+      expect(after!.type).toBe('changed')
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+
+  // Fix round 1, Finding 2: `prior.title ?? undefined` treats a real null the same as "field
+  // not provided". Combined with `path: prior.path` always being in the restore patch, that
+  // trips updateDoc's path-change branch into re-deriving title from the path basename —
+  // so a null title came back as the filename, not null.
+  it('undo restores a null title exactly, not the path basename', async () => {
+    const original = uniquePath('update-doc-null-title')
+    const doc = await createDoc({ path: original, content: 'x', title: 'Something' })
+    try {
+      // createDoc can't produce a genuinely null title (`input.title ?? basename` treats an
+      // explicit null the same as absent). updateDoc's copy loop has no such fallback when
+      // path isn't also changing, so this sets title to null for real.
+      await updateDoc(doc.id, { title: null })
+      expect((await getDoc(doc.id))!.title).toBeNull()
+
+      const exec = await tool('update_document').handler(
+        { id: doc.id, content: 'edited', title: 'New Title' }, ctx)
+      expect((await getDoc(doc.id))!.title).toBe('New Title')
+
+      expect(await exec.undo!()).toMatchObject({ ok: true })
+      const after = await getDoc(doc.id)
+      expect(after!.content).toBe('x')
+      expect(after!.title).toBeNull()
+      // Not the path basename — proves this isn't silently "working" by coincidence.
+      expect(after!.title).not.toBe(original.split('/').pop())
     } finally {
       await deleteDoc(doc.id)
     }

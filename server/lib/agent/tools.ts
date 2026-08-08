@@ -384,6 +384,19 @@ export const agentTools: AgentTool[] = [
           // nothing to undo. See edit_document's undo for why this must refuse, not fall
           // through to a null-forced CAS.
           if (!updated) return { ok: false, reason: 'the update did not land — nothing to undo' }
+          // updatedAt is bumped by every write (content or metadata) and is the only guard
+          // that covers the FULL field set this undo restores — CAS-guarding content alone
+          // would let a metadata-only edit (tags/type/domain/frontmatter, no content change)
+          // land after our write and get silently clobbered by the unconditional metadata
+          // restore below. Read-then-compare, not CAS (no CAS primitive exists for anything
+          // but content): residual TOCTOU window between this check and the writes below,
+          // same trade-off move_document's guard accepts. Also millisecond-resolution
+          // (`new Date()`), so a third-party write inside the same millisecond as ours
+          // produces an identical timestamp and could still slip past this guard undetected.
+          const current = await getDoc(id)
+          if (!current || current.updatedAt !== updated.updatedAt) {
+            return { ok: false, reason: 'document changed since the update — nothing was undone' }
+          }
           // This is the broadest overwrite in the tool surface (path, title, content,
           // frontmatter, tags, domain, type all in one write), so CAS the content restore
           // FIRST and refuse the whole undo on a mismatch — never restore metadata over a
@@ -391,11 +404,16 @@ export const agentTools: AgentTool[] = [
           const restored = await casUpdateContent(id, prior.content, updated.contentHash)
           if (!restored) return { ok: false, reason: 'document changed since the update — nothing was undone' }
           // Content is confirmed reverted. Restore the rest (path/title/frontmatter/tags/
-          // domain/type) — path wins, so this also reverses an assign-project relocate.
+          // domain/type) — path wins, so this also reverses an assign-project relocate. Pass
+          // values directly, not `field ?? undefined`: undefined means "leave untouched" to
+          // updateDoc, so swallowing a null that way skips the restore for a nullable field
+          // like domain/type — and for `title` specifically, updateDoc's path-change branch
+          // re-derives title from the path basename whenever title is undefined, so a null
+          // title would come back as the filename instead of null.
           const metaRestored = await updateDoc(id, {
-            path: prior.path, title: prior.title ?? undefined,
-            frontmatter: prior.frontmatter, tags: prior.tags ?? [],
-            domain: prior.domain ?? undefined, type: prior.type ?? undefined
+            path: prior.path, title: prior.title,
+            frontmatter: prior.frontmatter, tags: prior.tags,
+            domain: prior.domain, type: prior.type
           })
           if (!metaRestored) {
             return { ok: false, reason: 'content was reverted, but the document vanished before metadata could be restored' }
@@ -550,16 +568,19 @@ export const agentTools: AgentTool[] = [
           // would silently leave some fields patched while reporting ok:true. Only register
           // when something actually changed — nothing to reverse otherwise.
           //
-          // There's no CAS primitive for these fields (only content has one), so guard the
-          // way move_document does: read back and refuse if the path has moved on from what
-          // we set since the sync landed. title/tags/type/frontmatter restore unconditionally
-          // once that guard passes — the same trade-off update_document's undo already makes
-          // (CAS-guard content, then restore the rest of the metadata unconditionally).
+          // There's no CAS primitive for these fields (only content has one), so read-then-
+          // compare. Guard on `updatedAt`, not just `path`: every write bumps it (updateDoc,
+          // casUpdateContent), so it's the one field that covers drift in ANY of the five we
+          // restore — a metadata-only edit (tags/type/frontmatter, no path change) landing
+          // after this sync would otherwise pass a path-only guard and get silently clobbered.
+          // Residual gap: `new Date()` is millisecond-resolution, so a third-party write inside
+          // the same millisecond as ours produces an identical timestamp and could still slip
+          // past this guard undetected — same class of accepted TOCTOU as move_document's guard.
           ...(meta.changed
             ? {
                 undo: async () => {
                   const current = await getDoc(decision.id)
-                  if (!current || current.path !== meta.doc.path) {
+                  if (!current || current.updatedAt !== meta.doc.updatedAt) {
                     return { ok: false, reason: 'document changed since the sync — nothing was undone' }
                   }
                   const reverted = await updateDoc(decision.id, {
