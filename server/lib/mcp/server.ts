@@ -10,8 +10,8 @@ export const MCP_INSTRUCTIONS = `MyMind is Tony's second brain — a persistent,
 Work with it, not around it:
 - Before answering from your own recollection, SEARCH here first (search_memories, search_docs, search_passages). What you remember may be stale; this is the source of truth.
 - Persist durable outcomes: save_memory for a one-sentence fact; save_document for substantive work. File things under their project (pass a project slug).
-- Editing: hold the file? sync_document matches it in one call — probe with local_hash first to skip the transfer when nothing changed. No file? read_document/grep_document to locate, then edit_document (find/replace) or edit_section — don't rewrite a whole doc for a small change. Undo here refuses rather than clobbering a newer change.
-- Keep it tidy: move_document to file, delete_document / delete_task / forget_memory to retire — all undoable.
+- Editing: hold the file? sync_document matches it in one call — probe with local_hash first to skip the transfer when nothing changed. No file? read_document/grep_document to locate, then edit_document (find/replace) or edit_section — don't rewrite a whole doc for a small change.
+- Keep it tidy: move_document to file, delete_document / delete_task / forget_memory to retire. Most writes are undoable; an undo can decline, so check the result.
 
 Records here outlive this conversation — keep them accurate and well-filed.`
 
