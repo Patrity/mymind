@@ -16,6 +16,7 @@ export function useGalaxy() {
     queryKey: ['graph'],
     queryFn: () => $fetch<GraphData>('/api/graph')
   })
+  const redeem = useUndo()
 
   const selected = ref<GraphNode | null>(null)
   const hovered = ref<GraphNode | null>(null)
@@ -79,7 +80,7 @@ export function useGalaxy() {
 
   /** Redeem an undo token (relation draw, memory archive, …). */
   function undo(token: string) {
-    return $fetch<{ ok: boolean }>('/api/agent/undo', { method: 'POST', body: { token } })
+    return redeem(token)
   }
 
   return { graph, selected, hovered, colorMode, activeKeys, controls, flyTo, select, bindScene, toggleKey, highlight, showSimilar, addRelation, undo }

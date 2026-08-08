@@ -4,6 +4,7 @@ export interface ToolChip { name: string, summary: string, undoToken?: string, u
 export function useAgentActivity() {
   const chips = ref<ToolChip[]>([])
   const agentState = ref<'idle' | 'thinking' | 'tool'>('idle')
+  const redeem = useUndo()
   let es: EventSource | null = null
 
   function connect() {
@@ -21,7 +22,7 @@ export function useAgentActivity() {
 
   async function undo(chip: ToolChip) {
     if (!chip.undoToken) return
-    const { ok } = await $fetch<{ ok: boolean }>('/api/agent/undo', { method: 'POST', body: { token: chip.undoToken } })
+    const { ok } = await redeem(chip.undoToken)
     if (ok) chip.undone = true
   }
 

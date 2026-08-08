@@ -49,9 +49,10 @@ const caption = computed(() => {
 })
 
 // Undo a tool call from its inline transcript chip.
+const redeem = useUndo()
 async function undoTool(entry: TranscriptEntry) {
   if (!entry.undoToken) return
-  const { ok } = await $fetch<{ ok: boolean }>('/api/agent/undo', { method: 'POST', body: { token: entry.undoToken } })
+  const { ok } = await redeem(entry.undoToken)
   if (ok) entry.undone = true
 }
 
