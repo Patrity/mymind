@@ -5,13 +5,13 @@ export function mcpToolNames(): string[] {
   return agentTools.filter(t => !t.dangerous).map(t => t.name)
 }
 
-const MCP_INSTRUCTIONS = `MyMind is Tony's second brain — a persistent, cross-session store of his documents, memories, tasks, and projects.
+export const MCP_INSTRUCTIONS = `MyMind is Tony's second brain — a persistent, cross-session store of his documents, memories, tasks, and projects.
 
 Work with it, not around it:
 - Before answering from your own recollection, SEARCH here first (search_memories, search_docs, search_passages). What you remember may be stale; this is the source of truth.
 - Persist durable outcomes: save_memory for a one-sentence fact; save_document for substantive work. File things under their project (pass a project slug).
-- Edit in place. For a long document, read_document (outline/section) or grep_document to locate, then edit_document (exact find/replace) or edit_section — do NOT rewrite a whole document for a small change.
-- Keep it tidy: move_document to file, delete_document / delete_task / forget_memory to retire. All are reversible via undo.
+- Editing: hold the file? sync_document matches it in one call — probe with local_hash first to skip the transfer when nothing changed. No file? read_document/grep_document to locate, then edit_document (find/replace) or edit_section — don't rewrite a whole doc for a small change.
+- Keep it tidy: move_document to file, delete_document / delete_task / forget_memory to retire. Most writes are undoable; undo refuses rather than clobbering a newer change.
 
 Records here outlive this conversation — keep them accurate and well-filed.`
 

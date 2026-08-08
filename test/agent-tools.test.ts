@@ -1,6 +1,7 @@
 // test/agent-tools.test.ts
 import { describe, it, expect } from 'vitest'
 import { agentTools, toolByName } from '../server/lib/agent/tools'
+import { MCP_INSTRUCTIONS } from '../server/lib/mcp/server'
 
 describe('agent tool registry', () => {
   it('exposes the expected 38 tools', () => {
@@ -41,5 +42,15 @@ describe('agent tool registry', () => {
       expect(t.description.length).toBeGreaterThan(0)
       expect(typeof t.schema).toBe('object')
     }
+  })
+})
+
+describe('MCP preamble', () => {
+  it('points agents at sync_document', () => {
+    expect(MCP_INSTRUCTIONS).toMatch(/sync_document/)
+  })
+
+  it('does not promise that every write is reversible', () => {
+    expect(MCP_INSTRUCTIONS).not.toMatch(/All are reversible via undo/)
   })
 })
