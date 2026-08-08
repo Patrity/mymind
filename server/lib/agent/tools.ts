@@ -384,15 +384,25 @@ export const agentTools: AgentTool[] = [
           // nothing to undo. See edit_document's undo for why this must refuse, not fall
           // through to a null-forced CAS.
           if (!updated) return { ok: false, reason: 'the update did not land — nothing to undo' }
-          // updatedAt is bumped by every write (content or metadata) and is the only guard
-          // that covers the FULL field set this undo restores — CAS-guarding content alone
-          // would let a metadata-only edit (tags/type/domain/frontmatter, no content change)
-          // land after our write and get silently clobbered by the unconditional metadata
-          // restore below. Read-then-compare, not CAS (no CAS primitive exists for anything
-          // but content): residual TOCTOU window between this check and the writes below,
-          // same trade-off move_document's guard accepts. Also millisecond-resolution
-          // (`new Date()`), so a third-party write inside the same millisecond as ours
-          // produces an identical timestamp and could still slip past this guard undetected.
+          // updatedAt is bumped by every writer that touches path/title/tags/type/domain/
+          // frontmatter/content: updateDoc and casUpdateContent both set it, and the two
+          // other call sites that bypass them — projects.ts's slug-rename cascade and
+          // project-merge.ts's merge — set it explicitly themselves. image-enrich.ts's
+          // document-spinoff write was the one gap (a raw `db.update(documents)` that set
+          // neither), closed by routing it through updateDoc instead (see that file). Verified
+          // by auditing every `update(documents)` call site as of this fix — a FUTURE raw
+          // writer to `documents` that skips updatedAt would silently reopen this gap, so any
+          // new document writer belongs behind updateDoc/casUpdateContent, not a raw update.
+          //
+          // That makes updatedAt the one guard that covers the FULL field set this undo
+          // restores — CAS-guarding content alone would let a metadata-only edit (tags/type/
+          // domain/frontmatter, no content change) land after our write and get silently
+          // clobbered by the unconditional metadata restore below. Read-then-compare, not CAS
+          // (no CAS primitive exists for anything but content): residual TOCTOU window between
+          // this check and the writes below, same trade-off move_document's guard accepts.
+          // Also millisecond-resolution (`new Date()`), so a third-party write inside the same
+          // millisecond as ours produces an identical timestamp and could still slip past this
+          // guard undetected.
           const current = await getDoc(id)
           if (!current || current.updatedAt !== updated.updatedAt) {
             return { ok: false, reason: 'document changed since the update — nothing was undone' }
@@ -400,7 +410,12 @@ export const agentTools: AgentTool[] = [
           // This is the broadest overwrite in the tool surface (path, title, content,
           // frontmatter, tags, domain, type all in one write), so CAS the content restore
           // FIRST and refuse the whole undo on a mismatch — never restore metadata over a
-          // document whose content has since moved on from what we wrote.
+          // document whose content has since moved on from what we wrote. This CAS is also a
+          // second, independent net against the updatedAt guard's same-millisecond gap above:
+          // it keys on the DB-generated `contentHash` column, so a content-touching drift is
+          // caught here regardless of what updatedAt says. sync_document's adopt/unchanged
+          // branch below has no equivalent — it never writes content, so there's nothing to
+          // CAS, and updatedAt is its only line of defense.
           const restored = await casUpdateContent(id, prior.content, updated.contentHash)
           if (!restored) return { ok: false, reason: 'document changed since the update — nothing was undone' }
           // Content is confirmed reverted. Restore the rest (path/title/frontmatter/tags/
@@ -569,13 +584,25 @@ export const agentTools: AgentTool[] = [
           // when something actually changed — nothing to reverse otherwise.
           //
           // There's no CAS primitive for these fields (only content has one), so read-then-
-          // compare. Guard on `updatedAt`, not just `path`: every write bumps it (updateDoc,
-          // casUpdateContent), so it's the one field that covers drift in ANY of the five we
-          // restore — a metadata-only edit (tags/type/frontmatter, no path change) landing
-          // after this sync would otherwise pass a path-only guard and get silently clobbered.
-          // Residual gap: `new Date()` is millisecond-resolution, so a third-party write inside
-          // the same millisecond as ours produces an identical timestamp and could still slip
-          // past this guard undetected — same class of accepted TOCTOU as move_document's guard.
+          // compare. Guard on `updatedAt`, not just `path`: every writer that touches path/
+          // title/tags/type/frontmatter/content bumps it — updateDoc and casUpdateContent both
+          // set it, and the two call sites that bypass them (projects.ts's slug-rename cascade,
+          // project-merge.ts's merge) set it explicitly themselves. image-enrich.ts's document-
+          // spinoff write was the one gap (a raw `db.update(documents)` that set neither),
+          // closed by routing it through updateDoc instead (see that file). Verified by
+          // auditing every `update(documents)` call site as of this fix — a FUTURE raw writer
+          // to `documents` that skips updatedAt would silently reopen this gap, so any new
+          // document writer belongs behind updateDoc/casUpdateContent, not a raw update.
+          //
+          // updatedAt is the one field that covers drift in ANY of the five we restore — a
+          // metadata-only edit (tags/type/frontmatter, no path change) landing after this sync
+          // would otherwise pass a path-only guard and get silently clobbered. Unlike
+          // update_document's undo, this branch never writes content, so it has no independent
+          // content-hash CAS to fall back on if updatedAt ever misses something — updatedAt is
+          // this guard's *only* line of defense. Residual gap: `new Date()` is millisecond-
+          // resolution, so a third-party write inside the same millisecond as ours produces an
+          // identical timestamp and could still slip past this guard undetected — same class of
+          // accepted TOCTOU as move_document's guard.
           ...(meta.changed
             ? {
                 undo: async () => {

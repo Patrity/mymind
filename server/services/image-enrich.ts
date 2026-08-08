@@ -8,7 +8,7 @@ import { embed } from '../lib/ai/embeddings'
 import { splitTags, buildTagLibrary } from './tag-library'
 import { capTags } from '../../shared/utils/cap-tags'
 import { cleanToMarkdown } from '../lib/ai/transcribe'
-import { createDoc } from './documents'
+import { createDoc, updateDoc } from './documents'
 import { slugify } from '../../shared/utils/slugify'
 import { publishChange } from '../utils/live-bus'
 import { chunkAndEmbedSource } from '../lib/chunking/embed-source'
@@ -87,8 +87,13 @@ export async function enrichImage(id: string): Promise<typeof images.$inferSelec
       const [existingDoc] = await db.select({ id: documents.id }).from(documents)
         .where(and(eq(documents.ocrId, id), isNull(documents.deletedAt))).limit(1)
       if (existingDoc) {
-        await db.update(documents).set({ content: markdown || '(no text recognized)', title: effectiveTitle })
-          .where(eq(documents.id, existingDoc.id))
+        // Route through updateDoc (not a raw table write) so this bumps `updatedAt` like
+        // every other document writer — undo guards elsewhere (sync_document, update_document)
+        // key off it to detect a write landing between their own write and an undo call. No
+        // `path`/`project` in this patch, so updateDoc's relocate/basename-sync branch never
+        // fires; behaviour is otherwise identical to the raw update this replaced, plus the
+        // `live()` guard (no-ops instead of writing to an already-deleted row).
+        await updateDoc(existingDoc.id, { content: markdown || '(no text recognized)', title: effectiveTitle })
       } else {
         const doc = await createDoc({
           path: `/input/${slugify(effectiveTitle)}-${nanoid(8)}.md`,

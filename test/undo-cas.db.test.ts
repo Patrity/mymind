@@ -312,6 +312,35 @@ describe('sync_document adopt/unchanged undo', () => {
       await deleteDoc(doc.id)
     }
   })
+
+  // Fix round 2: the updatedAt invariant this guard relies on ("every documents writer bumps
+  // it") was FALSE — server/services/image-enrich.ts's document-spinoff branch used to do a
+  // raw `db.update(documents).set({content, title})` that skipped updatedAt entirely,
+  // reachable in prod via POST /api/images/[id]/reprocess. Fixed by routing that write through
+  // updateDoc instead (see image-enrich.ts). This replicates the exact call shape (content +
+  // title, no path/project) image-enrich.ts's fixed code now makes, proving that shape is
+  // caught — this is the concrete race the review finding described: a tags-only sync,
+  // followed by a reprocess rewriting title+content before undo runs.
+  it('refuses to undo when the document is rewritten the way image-enrich writes it (content+title, no path)', async () => {
+    const doc = await createDoc({ path: uniquePath('sync-image-enrich-shape'), content: 'body', tags: ['keep'] })
+    try {
+      const exec = await tool('sync_document').handler(
+        { id: doc.id, content: 'body', expected_hash: doc.contentHash, tags: ['changed'] }, ctx)
+      expect(exec.undo).toBeDefined()
+
+      await sleep(5)
+      // Post-fix image-enrich.ts call shape, verbatim: content + title, no path/project.
+      await updateDoc(doc.id, { content: 'freshly OCR-d text', title: 'OCR Title' })
+
+      const res = await exec.undo!()
+      expect(res).toMatchObject({ ok: false })
+      const after = await getDoc(doc.id)
+      expect(after!.content).toBe('freshly OCR-d text')
+      expect(after!.title).toBe('OCR Title')
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
 })
 
 describe('update_document undo CAS guard', () => {
