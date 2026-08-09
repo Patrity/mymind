@@ -276,7 +276,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'edit_document',
-    description: 'Surgically edit a document by exact find/replace (like a code editor\'s edit). `old_string` must appear exactly once (add surrounding lines to disambiguate) unless you pass replace_all. Cheap on long docs — do NOT rewrite the whole document for a small change. Tip: grep_document/read_document to get the exact old_string first. Returns a receipt { ok, id, path, hash, bytes, replacements } — never the body. On failure returns ok:false with error "no_match" or "ambiguous_match" (plus `candidates` line numbers to disambiguate with); nothing is written in either case.',
+    description: 'Surgically edit a document by exact find/replace (like a code editor\'s edit). `old_string` must appear exactly once (add surrounding lines to disambiguate) unless you pass replace_all. Cheap on long docs — do NOT rewrite the whole document for a small change. Tip: grep_document/read_document to get the exact old_string first. Returns a receipt { ok, id, path, hash, bytes, replacements } — never the body. On failure returns ok:false with error "not_found", "no_match" or "ambiguous_match" (the match failures carry `candidates` line numbers to disambiguate with); nothing is written in any case.',
     kind: 'create',
     schema: {
       id: z.string().describe('Document id'),
@@ -441,7 +441,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'move_document',
-    description: 'Move or rename a document to a new absolute path (must start with "/"). Filing it under /projects/<slug>/... associates it with that project. Reversible.',
+    description: 'Move or rename a document to a new absolute path (must start with "/"). Filing it under /projects/<slug>/... associates it with that project. On failure returns ok:false with error "not_found".',
     kind: 'create',
     schema: {
       id: z.string().describe('Document id'),
@@ -482,7 +482,7 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'sync_document',
-    description: 'Make a MyMind document match a local file in one call. Pass the file body as `content` (frontmatter stripped) plus the file\'s `mymind_id` as `id` and `mymind_hash` as `expected_hash`; if the file has no id yet, pass an absolute `path` instead and this adopts an existing doc at that path or creates one. Returns a receipt with `action`: created | adopted | updated | unchanged — write the returned `id` and `hash` back into the file\'s frontmatter. Fails closed: if the MyMind copy changed since your last sync you get ok:false with error "hash_mismatch" / "adopt_conflict" / "expected_hash_required" plus a body-free divergence report; re-call with force:true only after genuinely reconciling. Never deletes. Probe mode: pass `local_hash` INSTEAD of `content` to ask whether the two sides agree without transferring the body — returns { in_sync, server_hash } and never writes.',
+    description: 'Make a MyMind document match a local file in one call. Pass the file body as `content` (frontmatter stripped) plus the file\'s `mymind_id` as `id` and `mymind_hash` as `expected_hash`; if the file has no id yet, pass an absolute `path` instead and this adopts an existing doc at that path or creates one. Returns a receipt with `action`: created | adopted | updated | unchanged — write the returned `id` and `hash` back into the file\'s frontmatter. Fails closed: if the MyMind copy changed since your last sync you get ok:false with error "hash_mismatch" / "adopt_conflict" / "expected_hash_required" plus a body-free divergence report (carries `hint`, not `message`); re-call with force:true only after genuinely reconciling. Other failures return ok:false with error "not_found" (no live document at that id/path), "path_required" (neither `id` nor `path` given) or "content_required" (neither `content` nor `local_hash` given). Never deletes. Probe mode: pass `local_hash` INSTEAD of `content` to ask whether the two sides agree without transferring the body — returns { in_sync, server_hash } and never writes.',
     kind: 'create',
     schema: {
       id: z.string().optional().describe('Document id (the file\'s mymind_id)'),

@@ -3,15 +3,17 @@ title: MCP document-tool ergonomics — unified errors, guarded undo, honest pre
 cycle: 53
 date: 2026-08-08
 status: >
-  🔨 BUILT, NOT MERGED. 17 code commits on `feat/mcp-doc-tool-ergonomics` (branched from master
+  🔨 BUILT, NOT MERGED. 16 code commits (plus 3 docs commits) on `feat/mcp-doc-tool-ergonomics`
+  (branched from master
   `f16648f`), Tasks 1-9 each review-clean (5 fix rounds across the branch — Tasks 5, 6, 7, 8 ×2,
   9 — all re-reviewed clean). Task 10 (prod document reconciliation) executed directly by the
   controller after the dispatched subagent correctly refused a relayed "the human authorised
   this" instruction it could not itself verify — see "Task 10" below. **NOT merged, NOT pushed,
   NOT deployed.**
-  Gates measured at HEAD (2026-08-09): **typecheck 0 errors / test 1097 passed across 143 files /
-  test:db 30 passed across 4 files / build clean (65.7 MB, 19.5 MB gzip)**. No migration.
-branch: feat/mcp-doc-tool-ergonomics (off master f16648f; 17 code commits, 088889a..ce7dd21)
+  Gates measured at HEAD after the final fix wave (2026-08-09): **typecheck 0 errors / test 1102
+  passed across 143 files / test:db 33 passed across 4 files / build clean (65.7 MB, 19.5 MB
+  gzip)**. No migration.
+branch: feat/mcp-doc-tool-ergonomics (off master f16648f; 19 commits total — 16 code, 3 docs)
 spec: ../superpowers/specs/2026-08-07-mcp-doc-tool-ergonomics-design.md
 plan: ../superpowers/plans/2026-08-07-mcp-doc-tool-ergonomics.md
 docs:
@@ -36,7 +38,8 @@ problem: >
   significant out-of-scope finding turned up mid-cycle, false in a much bigger way: the MCP
   transport itself never hands out an undo token at all.
 keydecision: >
-  One failure shape everywhere — `{ ok: false, error: <code>, message: <prose> }` — with codes
+  One failure shape everywhere — `{ ok: false, error: <code> }` plus prose (`message`, or `hint`
+  on `sync_document`'s three divergence errors, which carry no `message`) — with codes
   owned by the pure `server/lib/documents/edit-ops.ts` module and passed through verbatim by
   `tools.ts` (`{ ok: false, ...res }`); a tool never re-spells a code edit-ops already owns. The
   undo contract widened *additively* (`UndoFn` return type `Promise<void | {ok, reason?}>`) so
@@ -46,16 +49,18 @@ keydecision: >
   the DB-generated `content_hash` column (`casUpdateContent`); everything else (path, title,
   tags, type, domain, frontmatter) has no CAS primitive, so those undo closures read-then-compare
   on `updatedAt` (accepted TOCTOU, documented in the code). The preamble stopped naming a
-  mechanism at all after three rounds of per-tool wording each turned out wrong for some branch —
-  round 3 states only the one thing true of every undo without carve-out ("an undo can decline;
-  check the result").
+  mechanism at all after three rounds of per-tool wording each turned out wrong for some branch;
+  the final fix wave then cut the undo clause entirely — `MCP_INSTRUCTIONS` is read only by MCP
+  clients, and they cannot invoke undo at all, so it now says "There is no undo tool here — get
+  writes right the first time."
+
 deferred: >
   Not merged, pushed, or deployed — awaiting Tony's merge decision, plus a live smoke test of the
   in-app undo-refusal UX (galaxy + agent chip) once dev has a network path to a real turn. Also
   carried forward, all pre-existing and explicitly not fixed in this cycle (see the four sections
   below for detail): the MCP transport never issues an undo token to any MCP client (structural,
   not a regression — `server/lib/mcp/server.ts:22-26`); `get_document` is the one remaining
-  unconverted tool on the old raw-doc/null shape; `pnpm test:db`'s 30 CAS/guard tests are not
+  unconverted tool on the old raw-doc/null shape; `pnpm test:db`'s 33 CAS/guard tests are not
   wired into the deploy gate (MyMind task `70bcc740`, stays open); and the plan's stale
   three-document reconciliation count was corrected to ten during Task 10, with all ten now
   promoted (see "Task 10" below).
@@ -72,9 +77,9 @@ deferred: >
 
 ## Status, plainly
 
-**Built, not merged.** `feat/mcp-doc-tool-ergonomics` has 17 code commits off master `f16648f`
-(`088889a` the first Task-1 commit → `ce7dd21` the last Task-9 fix-round commit), plus this
-docs-only task. Tasks 1-9 each passed review (Tasks 5, 6, 7, and 8 needed fix rounds — 8 needed
+**Built, not merged.** `feat/mcp-doc-tool-ergonomics` has 19 commits off master `f16648f` — 16
+code and 3 docs (`088889a` the first Task-1 commit → `ce7dd21` the last Task-9 fix-round commit,
+plus `90dd3ff` which added Task 9 to the plan, this docs task, and the final fix wave below). Tasks 1-9 each passed review (Tasks 5, 6, 7, and 8 needed fix rounds — 8 needed
 two — all re-reviewed clean; 9 needed one). Task 10 (reconciling ten production documents whose
 frontmatter had been embedded in `content`) was performed directly by the controller, not a
 subagent — see [Task 10](#task-10-ten-documents-reconciled-not-three) below for why. The branch
@@ -93,7 +98,9 @@ is **not merged to master, not pushed, and not deployed**. There is **no migrati
   (`not_found`, `no_fields`, and `sync_document`'s own `path_required`/`content_required`/
   `adopt_conflict`/`hash_mismatch`/`expected_hash_required`) are owned directly by `tools.ts`.
   Every converted tool's `description` now states its failure codes, so an agent can branch on
-  `error` without guessing what's possible. A heading-failure result includes the document's
+  `error` without guessing what's possible — three of them (`edit_document`, `move_document`,
+  `sync_document`) were incomplete until the final fix wave, which is when this claim became
+  true. A heading-failure result includes the document's
   outline (`clipOutline`, capped at `MAX_ERROR_OUTLINE` = 50 headings, `outlineTruncated` set when
   the real outline is longer) so the agent can retry immediately instead of round-tripping a
   second `read_document` call. `get_document` is the one tool this cycle deliberately left
@@ -136,10 +143,12 @@ is **not merged to master, not pushed, and not deployed**. There is **no migrati
 - **Curated titles survive a relocation** (Task 7). `update_document`/`sync_document`'s
   path-change branch used to re-derive `title` from the new path's basename whenever the caller
   didn't explicitly pass one, silently overwriting a title someone had hand-edited. A new
-  `nextTitleOnMove(current, explicit, wasAuto, newPath)` helper (typed `explicit: string | null`,
-  not `string | undefined` — see "Eight plan defects") only re-derives the title when the current
-  one was itself auto-derived (`wasAuto`); an explicit `null` short-circuits to "leave it alone"
-  rather than falling through to a basename sync.
+  `nextTitleOnMove({ explicit?, currentTitle, currentPath, finalPath })` helper — one options
+  object, `explicit` typed `string | null` and not `string | undefined` (see "Eight plan
+  defects") — only re-derives the title when the current one was itself auto-derived (that
+  `wasAuto` test is computed inside the helper from `currentTitle`/`currentPath`, it is not a
+  parameter); an explicit `null` short-circuits to "leave it alone" rather than falling through
+  to a basename sync.
 - **Ten production documents reconciled** (Task 10 — see its own section below for the full
   accounting; the plan said three).
 
@@ -190,7 +199,7 @@ plus the three call sites it replaced), but the three call sites land in three d
 ## The CAS guards ship without CI coverage
 
 `pnpm test:db` (`vitest.db.config.ts`) holds the real-Postgres tests that actually exercise
-`casUpdateContent` and the `content_hash` generated column — 30 tests across 4 files, all green
+`casUpdateContent` and the `content_hash` generated column — 33 tests across 4 files, all green
 at HEAD. **It is not wired into the deploy gate.** `pnpm test` (the CI-gating command) never runs
 these; CI has no Postgres service (a cycle-52 constraint, unchanged here). This means breaking
 the CAS guard, or breaking the `doc_content_hash()` generated-column expression, leaves
@@ -322,13 +331,77 @@ history.md` names as its own top lesson: a mandatory "does this assertion actual
 bug it claims to catch" check is not process theater, it is the only thing that caught most of
 these.
 
-## Gates (measured at HEAD, 2026-08-09)
+## Final fix wave (whole-branch review)
+
+Each of the eleven tasks passed its own review; the final cross-cutting review over the whole
+branch found four things those missed. All fixed in one pass, on this branch, before merge.
+Full evidence (per-finding diffs, commands, verbatim RED output for every new test) lives in
+`.superpowers/sdd/2026-08-07-mcp-doc-tool-ergonomics/final-fix-report.md`.
+
+- **`sync_document`'s update branch undid the body but not the metadata — and reported success.**
+  That branch runs `applySyncMeta` (up to five fields: `path`, `title`, `tags`, `type`,
+  `frontmatter`) *after* the content CAS, but its undo only CASed the body back. Since
+  `applySyncMeta` never touches `content`, the CAS still matched: the undo reverted the body,
+  left the rename/retag/frontmatter patch in place, and answered `ok:true`. This is the exact
+  defect Task 6 caught and fixed on the sibling adopt/unchanged branch — the same tool shipped
+  with two branches of opposite undo fidelity, on its primary documented use case (relocation is
+  "what makes a renamed local file converge instead of forking a second doc"). Fixed by
+  snapshotting the five fields before the write and restoring them after the content CAS, values
+  passed directly (never `?? undefined` — `path` is always in the restore patch, so an undefined
+  `title` would come back as the new basename). Restoring metadata also makes the content CAS
+  insufficient on its own, so the undo now read-then-compares `updatedAt` **before** the CAS: a
+  metadata-only third-party edit leaves the content hash exactly where our write left it, and
+  would otherwise be silently clobbered. Two new DB tests.
+- **The preamble's undo clause was dead advice for its only audience.** `Most writes are
+  undoable; an undo can decline, so check the result.` — but `MCP_INSTRUCTIONS` is consumed only
+  by `buildMcpServer`, which hands out no undo token, exposes no `undo` tool, and whose clients
+  cannot reach `POST /api/agent/undo` (the section above). The line told an agent to check the
+  result of something it structurally cannot invoke. Replaced with `There is no undo tool here —
+  get writes right the first time.` (block shrinks 998 → 993 chars); `buildMcpServer` carries a
+  comment saying to revisit that line if an `undo` tool is ever exposed; two new preamble tests
+  (no `undoable`/`reversible`, must say "no undo tool", stays ≤ 998 chars).
+- **A throwing undo escaped the `{ok:false, reason}` contract — repeatably.** Neither `runUndo`
+  nor the endpoint caught, so a closure that throws produced a raw 500; and because this branch
+  gates token consumption on `res.ok`, a throw never reached the delete, so the token survived
+  its full 10-minute TTL and the same 500 repeated on every click. Concretely reachable:
+  `documents_path_live_uidx` is unique on live paths, and `move_document`'s /
+  `update_document`'s undo write the old path back while only checking that *our* row hasn't
+  moved — a re-occupied path raises a unique violation (for `update_document` that lands *after*
+  its content CAS has committed). `runUndo` now catches: `{ ok:false, reason }`, logged, **and
+  the token is consumed** — consume-on-success exists to keep a reconcilable *refusal* retryable,
+  and a thrown error is not reconcilable. `app/pages/agent/index.vue`'s `undoTool` gained the
+  `try/catch` `galaxy.vue` already had (it was an unhandled rejection with no user feedback —
+  the silent no-op Task 9 exists to remove). Four new tests, including a real Postgres
+  unique-violation redeemed through `runUndo`.
+- **False claims in shipped docs**, since this cycle exists to stop exactly that: the "same
+  shape" claim covered `message` but `divergenceReport` carries `hint` and no `message` (wiki +
+  handover + the tool's own description now say so); "every converted tool's description states
+  its failure codes" was false for three tools, now completed (`edit_document` and
+  `move_document` were missing `not_found`; `sync_document` was missing `not_found`,
+  `path_required`, `content_required`) — completing them beats correcting the claim, because the
+  description is what the model actually sees; `server/db/schema/documents.ts`'s comment still
+  described image-enrich as a raw `db.update()` writer, which this branch made false; and the
+  commit count (16 code + 3 docs, not 17) and `nextTitleOnMove`'s signature are corrected above.
+
+**Deliberately carried, not fixed** (all pre-existing, none introduced by the fix wave): reads
+still lack `ok:true` on success; `get_document` stays on the raw shape; the image/memory/task/
+project/skill tools keep their own conventions; `move_document`'s title asymmetry on undo; the
+missing `publishChange` on the soft-delete mid-window path; `basenameOfPath` duplicated between
+`edit-ops.ts` and `documents.ts`; `useAgentActivity` dead code; the millisecond-resolution TOCTOU
+in every `updatedAt` guard. **One new observation:** with the preamble now saying there is no
+undo tool, the three descriptions that still promise "Reversible — undo restores it"
+(`forget_memory`, `delete_document`, `delete_task`) read as a contradiction to an MCP client.
+They are true of the data (soft-deleted rows are restorable *from the app*) but not of the
+caller's own capability. `move_document`'s bare "Reversible." was dropped while editing that
+description; the other three were left alone as out-of-scope for this wave.
+
+## Gates (measured at HEAD, 2026-08-09 — after the final fix wave)
 
 | Gate | Result |
 |---|---|
 | `pnpm typecheck` | 0 errors |
-| `pnpm test` | **1097 passed**, 143 test files |
-| `pnpm test:db` | **30 passed**, 4 test files (manual — not in CI, see above) |
+| `pnpm test` | **1102 passed**, 143 test files |
+| `pnpm test:db` | **33 passed**, 4 test files (manual — not in CI, see above) |
 | `pnpm build` | clean — 65.7 MB total (19.5 MB gzip) |
 
 ## Files touched (by task)
@@ -350,3 +423,8 @@ these.
 - Task 10 — ten production documents (MCP writes, no repo files)
 - Task 11 (this) — `docs/wiki/mcp.md`, `docs/handovers/2026-08-08-mcp-doc-tool-ergonomics.md`
   (new), `docs/superpowers/plans/00-roadmap.md`
+- Final fix wave — `server/lib/agent/tools.ts` (`sync_document` update-branch undo + three tool
+  descriptions), `server/lib/agent/undo.ts`, `server/api/agent/undo.post.ts`,
+  `server/lib/mcp/server.ts`, `server/db/schema/documents.ts`, `app/pages/agent/index.vue`,
+  `test/undo-cas.db.test.ts`, `test/agent-undo.test.ts`, `test/agent-tools.test.ts`,
+  `docs/wiki/mcp.md`, this handover, `docs/superpowers/plans/00-roadmap.md`

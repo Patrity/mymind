@@ -170,9 +170,12 @@ application code sets — letting a caller compare a local copy without re-readi
 
 Every document tool that can fail — `read_document`, `grep_document`, `edit_document`,
 `edit_section`, `update_document`, `move_document`, `delete_document`, `sync_document` — answers
-a failure with the **same shape**: `{ ok: false, error: <stable code>, message: <human prose> }`,
-plus whatever extra fields that particular code carries. An agent branches on `error`, never on
-`message` (`message` is prose for a human/log, not a spelling to pattern-match). The codes
+a failure with the **same shape**: `{ ok: false, error: <stable code> }` plus human-readable prose
+and whatever extra fields that particular code carries. The prose field is `message` everywhere
+**except** `sync_document`'s three divergence errors (`adopt_conflict`, `hash_mismatch`,
+`expected_hash_required`), whose `divergenceReport` (`server/lib/agent/receipt.ts`) carries `hint`
+— a next-action instruction — and no `message` at all. An agent branches on `error`, never on the
+prose (it is for a human/log, not a spelling to pattern-match). The codes
 `edit-ops.ts` produces (`server/lib/documents/edit-ops.ts`) are passed through verbatim by the
 tool handler that calls it (`{ ok: false, ...res }`); the codes with no `edit-ops.ts` equivalent
 (`not_found`, `no_fields`, and `sync_document`'s own `path_required`/`content_required`/
@@ -192,7 +195,12 @@ tool re-spells a code `edit-ops.ts` already owns.
 | `no_fields` | `update_document` | none — no field in the patch at all |
 | `path_required` | `sync_document` | upfront misuse guard: neither `id` nor `path` given |
 | `content_required` | `sync_document` | upfront misuse guard: neither `content` nor `local_hash` given |
-| `adopt_conflict` / `hash_mismatch` / `expected_hash_required` | `sync_document` | body-free divergence report — see File sync below |
+| `adopt_conflict` / `hash_mismatch` / `expected_hash_required` | `sync_document` | body-free divergence report: `id`, `server: { hash, bytes, updatedAt, headings }`, `local: { bytes }`, `hint` — **no `message`** — see File sync below |
+
+Every one of these tools' `description` lists its own codes — the description is what the model
+actually sees, so a code missing there is a code the agent cannot branch on. (`edit_document` and
+`move_document` were missing `not_found`, and `sync_document` was missing `not_found`/
+`path_required`/`content_required`, until the cycle-53 final fix wave.)
 
 Nothing is written on any failure. Candidates are **distinct lines** (several hits on one line
 collapse to one entry) and both the count and the per-line length are capped — an unclipped
