@@ -79,6 +79,8 @@ curl -si -X POST https://brain.costanzoclan.com/api/mcp | rg -i 'www-authenticat
 ## Server `instructions` preamble
 Added in cycle 40: `new McpServer(info, { instructions: MCP_INSTRUCTIONS })` passes a server-level preamble (verified supported by the SDK's `ServerOptions.instructions`; exported as `MCP_INSTRUCTIONS` from `server/lib/mcp/server.ts` so `test/agent-tools.test.ts` can assert on it). The preamble establishes the second-brain workflow — search before answering, persist durable facts, file under projects, `sync_document` when the agent holds the file (probe with `local_hash` first to skip the transfer when nothing changed) or surgical `edit_document`/`edit_section` otherwise — so agents reliably reach for MyMind tools rather than answering from their own recollection. It does not promise every write is reversible: most writes are undoable, but an undo can decline instead of applying — every undo shares that much, since `runUndo` refuses outright on an expired/spent token (`server/lib/agent/undo.ts:30`) regardless of tool. The decline mechanism beyond that is not uniform, so the preamble doesn't name one: `edit_document`/`edit_section`/`update_document` and `sync_document`'s update branch CAS the content restore (`casUpdateContent`); `move_document`, `update_document`'s metadata fields, and `sync_document`'s adopt/unchanged branch instead read-then-compare on `updatedAt`/`path` — an accepted TOCTOU, per the code's own comments, since no CAS primitive exists for those fields; `sync_document`'s create branch and the three retire tools (`delete_document`/`delete_task`/`forget_memory`) have no changed-since guard at all — their undo restores unconditionally once past the token check.
 
+**The preamble's undo advice is dead advice on the MCP surface itself.** `buildMcpServer` (`server/lib/mcp/server.ts:22-26`) registers each tool's handler and returns only `{ content: [{ type: 'text', text: JSON.stringify(exec.result) }] }` — it never calls `registerUndo(exec.undo)`, so no undo token is ever handed to an MCP client. There is no `undo` tool anywhere in `agentTools`, and the only way to redeem a token, `runUndo` via `POST /api/agent/undo`, is a plain REST route an MCP session has no way to call. So every CAS/`updatedAt` guard described above is real, but it is real for the **in-app agent surface only** (`server/lib/agent/ai-tools.ts` registers the token on every mutating call; `app/pages/agent/index.vue` and `app/pages/galaxy.vue` redeem it through `useUndo()`/`app/composables/useUndo.ts`, which POSTs that same route from inside the app). An MCP client — Claude Code, the MCP Inspector, claude.ai's connector — can call `edit_document` and get back a receipt, but it structurally cannot ever call undo on it. This is pre-existing (the gap predates this cycle), not something this cycle introduced or closed.
+
 ## Tools (`server/lib/mcp/server.ts`)
 The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. The table below is not exhaustive — the live registry is 38 tools (`test/agent-tools.test.ts` pins the full name list); it also includes the `use_skill`/`create_skill`/`edit_skill`/`delete_skill` progressive-disclosure tools documented in [`agent-skills.md`](agent-skills.md). All of them are currently non-dangerous.
 
@@ -162,19 +164,51 @@ already committed* reached the agent as an error — which it would then either 
 `content` (`doc_content_hash(content)`; see File sync below for the full detail), not a value
 application code sets — letting a caller compare a local copy without re-reading the body.
 
-Edit failures are **typed** — `error` is a stable code, `message` the human hint — so an agent
-branches on the outcome instead of pattern-matching prose:
+### One failure shape across the document tools
 
-| `error` | Extra fields |
-|---|---|
-| `no_match` | `matches: 0` |
-| `ambiguous_match` | `matches: N`, `candidates: [{ line, text }]` (≤10 lines, each clipped to 200 chars) |
-| `empty_old_string` | `matches: 0` |
-| `not_found` | `id` — also covers the row being deleted between the read and the write landing |
+Every document tool that can fail — `read_document`, `grep_document`, `edit_document`,
+`edit_section`, `update_document`, `move_document`, `delete_document`, `sync_document` — answers
+a failure with the **same shape**: `{ ok: false, error: <stable code>, message: <human prose> }`,
+plus whatever extra fields that particular code carries. An agent branches on `error`, never on
+`message` (`message` is prose for a human/log, not a spelling to pattern-match). The codes
+`edit-ops.ts` produces (`server/lib/documents/edit-ops.ts`) are passed through verbatim by the
+tool handler that calls it (`{ ok: false, ...res }`); the codes with no `edit-ops.ts` equivalent
+(`not_found`, `no_fields`, and `sync_document`'s own `path_required`/`content_required`/
+`adopt_conflict`/`hash_mismatch`/`expected_hash_required`) are owned by `tools.ts` directly. No
+tool re-spells a code `edit-ops.ts` already owns.
+
+| `error` | Which tool(s) | Extra fields |
+|---|---|---|
+| `not_found` | `read_document`, `grep_document`, `edit_document`, `edit_section`, `update_document`, `move_document`, `delete_document`, `sync_document` | `id` (or `path` for a `sync_document` path-addressed miss — see File sync below) — also covers the row being deleted between the read and the write landing |
+| `no_match` | `edit_document` | `matches: 0` |
+| `ambiguous_match` | `edit_document` | `matches: N`, `candidates: [{ line, text }]` (≤10 distinct lines, each clipped to 200 chars) |
+| `empty_old_string` | `edit_document` | `matches: 0` |
+| `heading_not_found` | `read_document`, `edit_section` | `outline`, `outlineTruncated` — see outline cap below |
+| `ambiguous_heading` | `read_document`, `edit_section` | `outline`, `outlineTruncated` |
+| `replace_needs_heading` | `edit_section` | `outline`, `outlineTruncated` |
+| `invalid_regex` | `grep_document` | none beyond `message` (the native `RegExp` constructor's error text) |
+| `no_fields` | `update_document` | none — no field in the patch at all |
+| `path_required` | `sync_document` | upfront misuse guard: neither `id` nor `path` given |
+| `content_required` | `sync_document` | upfront misuse guard: neither `content` nor `local_hash` given |
+| `adopt_conflict` / `hash_mismatch` / `expected_hash_required` | `sync_document` | body-free divergence report — see File sync below |
 
 Nothing is written on any failure. Candidates are **distinct lines** (several hits on one line
 collapse to one entry) and both the count and the per-line length are capped — an unclipped
 candidate from a single 100 KB line would reintroduce the very overflow receipts prevent.
+
+**Outline cap on a heading failure.** `heading_not_found`/`ambiguous_heading`/
+`replace_needs_heading` return the document's heading outline alongside the error, so the agent
+can immediately retry with a real heading instead of a second `read_document` round-trip — but an
+unclipped outline on a document with hundreds of headings would reinflate the failure payload back
+toward document size, the exact overflow receipts exist to prevent. `clipOutline`
+(`server/lib/documents/edit-ops.ts`) caps it at `MAX_ERROR_OUTLINE` (50) and sets
+`outlineTruncated: true` when the real outline is longer.
+
+**`get_document` is the one remaining unconverted outlier.** It still returns the raw document (or
+`null`) on a miss — no `ok`, no `error`, no `message`. Reads are otherwise unchanged: `get_document`
+returns the full body on purpose (it's the by-id whole-document reader), and `list_documents`/
+`search_docs`/`search_tasks`/`search_projects` return summaries as documented under
+[Recall defaults](#recall-defaults-cycle-51) below — neither of those is a failure-shape question.
 
 ### File sync (`sync_document`)
 
