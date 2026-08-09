@@ -59,6 +59,13 @@ deferred: >
   wired into the deploy gate (MyMind task `70bcc740`, stays open); and the plan's stale
   three-document reconciliation count was corrected to ten during Task 10, with all ten now
   promoted (see "Task 10" below).
+  ONE STEP OUTSTANDING — this handover is NOT yet mirrored to MyMind
+  (`/projects/mymind/handovers/2026-08-08-mcp-doc-tool-ergonomics.md` does not exist). Three separate
+  attempts died mid-response on the `sync_document` call with an API transport error, at real token
+  cost, so it was deferred rather than retried a fourth time. Prod was verified healthy throughout
+  (`/api/health` 200 in ~180ms across five samples; `/api/mcp` answering 401 in 165ms), and a small
+  `search_docs` read also timed out, so this was this session's MCP transport rather than the app or
+  the payload size. The repo copy is authoritative; re-run the mirror when the transport is stable.
 ---
 
 # MCP document-tool ergonomics (cycle 53)
