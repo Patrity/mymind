@@ -437,3 +437,43 @@ description; the other three were left alone as out-of-scope for this wave.
   `server/lib/mcp/server.ts`, `server/db/schema/documents.ts`, `app/pages/agent/index.vue`,
   `test/undo-cas.db.test.ts`, `test/agent-undo.test.ts`, `test/agent-tools.test.ts`,
   `docs/wiki/mcp.md`, this handover, `docs/superpowers/plans/00-roadmap.md`
+
+## Parked residuals from the final re-review
+
+The whole-branch review's three Important findings were all fixed in the fix wave. The re-review then
+returned six Minor items, adjudicated and parked rather than opening a second fix wave. None is
+load-bearing; none corrupts data or breaks a contract. Listed worst-first.
+
+1. **A failed undo can return a SQL dump as its user-facing reason.** `server/lib/agent/undo.ts:47`
+   interpolates the caught error's `message` into `reason`. Drizzle wraps every pg error in
+   `DrizzleQueryError`, whose message is `` `Failed query: ${query}\nparams: ${params}` ``. So the
+   toast rendered by `undo-feedback.ts:11` becomes a multi-line SQL statement with the document's
+   path, title, project and UUIDs — and on a **content**-restoring undo the params include the entire
+   prior document body. This is the unbounded-payload class this cycle's receipts and `clipOutline`
+   cap exist to prevent, arriving through a new door. Same-user and auth-gated, so no data or auth
+   impact, and a one-line clip or a generic string closes it. **Fix this first.**
+2. **A throw after the committed CAS reports "Nothing was undone" when the body *was* reverted.**
+   Reachable when a sync relocates a doc, something else takes the original path, the `updatedAt`
+   guard passes, the content CAS commits, and the metadata `updateDoc` then raises a unique
+   violation. Messaging only — the data outcome is no worse than the pre-fix behaviour, which
+   reported `ok:true` for the same mixed state, and a retry could not have succeeded.
+3. **`undo.ts:39-45`'s rationale for consuming the token on a throw overstates its case.** True for a
+   unique violation; false for a transient failure (connection reset, timeout, deadlock), which is
+   precisely the retryable class. The decision is right for the dominant case; the comment claims
+   more than it can.
+4. **Three tool descriptions still say "Reversible — undo restores it"** (`delete_document`,
+   `delete_task`, `forget_memory`) — true for the in-app agent, false for an MCP reader who is now
+   told there is no undo tool. Deleting them outright would cost the in-app agent real information;
+   the zero-risk fix is an audience qualifier ("reversible from the app"). Note the same commit
+   dropped `move_document`'s bare "Reversible.", so the set is currently inconsistent.
+5. **`edit_document`'s description omits `empty_old_string`**, which the wiki's code table attributes
+   to it. Unreachable in practice — `old_string: z.string().min(1)` is validated before the handler —
+   but page and description disagree under a completeness claim.
+6. **The wiki says `sync_document`'s update branch read-then-compares on `updatedAt`.** True only when
+   `applySyncMeta` patched something; a content-only sync's undo is CAS-guarded alone. Correct
+   behaviour, imprecise sentence.
+
+Also noted and unresolved: the commit count in this document's frontmatter was corrected during the
+fix wave and then invalidated by that wave's own five commits. At HEAD, `master..HEAD` is **24
+commits — 19 code, 5 docs**. A count written inside the commit that ships it is structurally hard to
+keep true; trust `git log` over this line.
