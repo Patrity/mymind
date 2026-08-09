@@ -19,6 +19,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 import { createDoc, getDoc, updateDoc, deleteDoc } from '../server/services/documents'
 import * as documentsService from '../server/services/documents'
 import { toolByName } from '../server/lib/agent/tools'
+import { registerUndo, runUndo } from '../server/lib/agent/undo'
 
 const tool = (n: string) => toolByName(n)!
 const ctx: ToolContext = { signal: new AbortController().signal }
@@ -513,6 +514,37 @@ describe('move_document undo guard (read-then-compare)', () => {
       expect((await getDoc(doc.id))!.path).toBe(movedAgain)
     } finally {
       await deleteDoc(doc.id)
+    }
+  })
+
+  // Final fix wave, Finding 3: this undo's guard only checks that OUR row is still where our
+  // move put it — it says nothing about the ORIGINAL path, which `documents_path_live_uidx`
+  // (unique on live paths) will refuse to hand back if something else has taken it since. The
+  // closure therefore throws a real Postgres unique violation. Redeemed through runUndo, that
+  // must come back as { ok: false, reason } — before the fix it propagated as a raw 500 from
+  // POST /api/agent/undo, and (since the token is only consumed on `res.ok`) repeated on every
+  // click for the full 10-minute TTL.
+  it('a unique-violation throw comes back through runUndo as a refusal, not a rejection', async () => {
+    const original = uniquePath('move-doc-throw-original')
+    const doc = await createDoc({ path: original, content: 'x' })
+    let squatter: string | null = null
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const target = uniquePath('move-doc-throw-target')
+      const exec = await tool('move_document').handler({ id: doc.id, path: target }, ctx)
+
+      // Someone else takes the path this undo wants to move back to.
+      squatter = (await createDoc({ path: original, content: 'squatter' })).id
+
+      const token = registerUndo(exec.undo!)
+      const res = await runUndo(token)
+      expect(res.ok).toBe(false)
+      expect(res.reason).toMatch(/the undo failed:/)
+      expect((await getDoc(doc.id))!.path).toBe(target) // nothing moved
+    } finally {
+      consoleErr.mockRestore()
+      await deleteDoc(doc.id)
+      if (squatter) await deleteDoc(squatter)
     }
   })
 

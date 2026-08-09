@@ -49,11 +49,21 @@ const caption = computed(() => {
 })
 
 // Undo a tool call from its inline transcript chip.
+const toast = useToast()
 const redeem = useUndo()
 async function undoTool(entry: TranscriptEntry) {
   if (!entry.undoToken) return
-  const { ok } = await redeem(entry.undoToken)
-  if (ok) entry.undone = true
+  try {
+    // A refusal comes back as { ok: false, reason } with a 200 and useUndo() has already
+    // toasted it. Only a genuine transport/server error lands here — without this catch it
+    // became an unhandled rejection and the chip just did nothing, which is the silent no-op
+    // this whole flow exists to remove. Same handling as galaxy.vue's onUndo.
+    const { ok } = await redeem(entry.undoToken)
+    if (ok) entry.undone = true
+  } catch (e) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Undo failed', description: err?.data?.statusMessage ?? err?.message })
+  }
 }
 
 async function toggleMic() {
