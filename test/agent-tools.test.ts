@@ -53,4 +53,18 @@ describe('MCP preamble', () => {
   it('does not promise that every write is reversible', () => {
     expect(MCP_INSTRUCTIONS).not.toMatch(/All are reversible via undo/)
   })
+
+  // MCP_INSTRUCTIONS is consumed ONLY by buildMcpServer, and that surface hands out no undo
+  // token: no `undo` tool exists in agentTools, and POST /api/agent/undo is unreachable from an
+  // MCP session. So any undo advice here — "most writes are undoable", "check the undo result" —
+  // is advice about a capability its only audience cannot invoke.
+  it('offers no undo advice an MCP client cannot act on', () => {
+    expect(MCP_INSTRUCTIONS).not.toMatch(/undoable|reversible/i)
+    expect(MCP_INSTRUCTIONS).toMatch(/no undo tool/i)
+  })
+
+  // The preamble is prepended to every MCP session; it earns its tokens or it goes.
+  it('stays within its budget', () => {
+    expect(MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(998)
+  })
 })
