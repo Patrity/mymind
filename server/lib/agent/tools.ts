@@ -624,6 +624,15 @@ export const agentTools: AgentTool[] = [
       }
 
       const prior = server.content ?? ''
+      // Pre-write metadata snapshot. `server` is the last read taken before ANY write this call
+      // makes, so these are the values an undo has to put back. applySyncMeta below patches the
+      // same five fields (path, title, tags, type, frontmatter — see its definition); restoring
+      // only the body would leave a rename/retag/frontmatter patch in place while reporting
+      // ok:true, which is exactly the partial-undo defect the adopt/unchanged branch above fixes.
+      const priorMeta = {
+        path: server.path, title: server.title, tags: server.tags,
+        type: server.type, frontmatter: server.frontmatter
+      }
       const updated = await casUpdateContent(decision.id, content, decision.expected)
       if (!updated) {
         // Lost the race: the row moved between our read and the write landing.
@@ -639,10 +648,34 @@ export const agentTools: AgentTool[] = [
         result: { ...docReceipt(final.doc, { before: prior.length }), action: 'updated' },
         summary: `synced (updated) ${final.doc.path}`,
         undo: async () => {
+          // When applySyncMeta also patched metadata, the content CAS below is NOT a sufficient
+          // guard on its own: a third party could edit only tags/type/frontmatter/path after our
+          // sync, leaving the content hash exactly where our write left it, and the metadata
+          // restore would silently clobber that edit. Same guard update_document's undo uses, for
+          // the same reason — read-then-compare on `updatedAt` (no CAS primitive exists for those
+          // fields), with the same accepted millisecond-resolution TOCTOU. Checked BEFORE the CAS
+          // so a drifted document leaves the body untouched too: refuse the whole undo or none.
+          if (final.changed) {
+            const current = await getDoc(decision.id)
+            if (!current || current.updatedAt !== final.doc.updatedAt) {
+              return { ok: false, reason: 'document changed since the sync — nothing was undone' }
+            }
+          }
           // Guard the undo too: passing null here would drop the CAS guard and let undo
           // silently clobber a newer edit made (e.g. in the UI) after this sync landed.
           const reverted = await casUpdateContent(decision.id, prior, updated.contentHash)
           if (!reverted) return { ok: false, reason: 'document changed since the sync — nothing was undone' }
+          // Content is confirmed reverted — now put the metadata back. Pass the captured values
+          // DIRECTLY, never `?? undefined`: undefined means "leave untouched" to updateDoc, and
+          // since `path` is always in this patch, an undefined `title` would be re-derived from
+          // the new basename instead of restored (the null-title trap update_document's undo
+          // documents at length).
+          if (final.changed) {
+            const metaRestored = await updateDoc(decision.id, priorMeta)
+            if (!metaRestored) {
+              return { ok: false, reason: 'content was reverted, but the document vanished before metadata could be restored' }
+            }
+          }
           publishChange({ resource: 'document', action: 'updated', id: decision.id })
           return { ok: true }
         }

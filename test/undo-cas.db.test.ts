@@ -123,6 +123,71 @@ describe('sync_document write-branch undo CAS guard', () => {
       await deleteDoc(doc.id)
     }
   })
+
+  // Final fix wave, Finding 1: this branch runs applySyncMeta after the content CAS, so a single
+  // sync can rename/retag/re-type/rewrite-frontmatter AND rewrite the body. Its undo used to CAS
+  // the body back and stop there — the CAS still matched (applySyncMeta never touches content),
+  // so the undo reported ok:true while leaving every patched metadata field in place. That is the
+  // exact defect already fixed on the sibling adopt/unchanged branch.
+  it('undoes BOTH the body and the metadata the same sync wrote', async () => {
+    const original = uniquePath('sync-write-meta-original')
+    const doc = await createDoc({
+      path: original, content: 'original body', title: 'Original Title',
+      tags: ['keep'], type: 'note', frontmatter: { keep: true }
+    })
+    try {
+      const newPath = uniquePath('sync-write-meta-target')
+      const exec = await tool('sync_document').handler({
+        id: doc.id, content: 'synced body', expected_hash: doc.contentHash,
+        path: newPath, title: 'New Title', tags: ['changed'], type: 'log', frontmatter: { changed: true }
+      }, ctx)
+      expect((exec.result as { action?: string }).action).toBe('updated')
+
+      const afterSync = await getDoc(doc.id)
+      expect(afterSync!.content).toBe('synced body')
+      expect(afterSync!.path).toBe(newPath)
+      expect(afterSync!.title).toBe('New Title')
+
+      expect(await exec.undo!()).toMatchObject({ ok: true })
+      const after = await getDoc(doc.id)
+      expect(after!.content).toBe('original body')
+      expect(after!.path).toBe(original)
+      expect(after!.title).toBe('Original Title')
+      expect(after!.tags).toEqual(['keep'])
+      expect(after!.type).toBe('note')
+      expect(after!.frontmatter).toEqual({ keep: true })
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+
+  // Companion to the test above: once this undo restores metadata, the content CAS alone stops
+  // being a sufficient guard — a metadata-only third-party edit leaves the content hash exactly
+  // where our write left it, so the CAS would match and the metadata restore would clobber it.
+  // Hence the updatedAt read-then-compare, checked before the CAS so nothing at all is written.
+  it('refuses when metadata drifted after a body+metadata sync, leaving the body alone too', async () => {
+    const doc = await createDoc({
+      path: uniquePath('sync-write-meta-drift'), content: 'original body', tags: ['keep'], type: 'note'
+    })
+    try {
+      const exec = await tool('sync_document').handler({
+        id: doc.id, content: 'synced body', expected_hash: doc.contentHash, tags: ['changed']
+      }, ctx)
+      expect((exec.result as { action?: string }).action).toBe('updated')
+
+      await sleep(5)
+      // Metadata only — content (and therefore content_hash) is untouched, so the CAS still matches.
+      await updateDoc(doc.id, { tags: ['third-party'] })
+
+      const res = await exec.undo!()
+      expect(res).toMatchObject({ ok: false })
+      const after = await getDoc(doc.id)
+      expect(after!.tags).toEqual(['third-party'])
+      expect(after!.content).toBe('synced body') // the body was not reverted either
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
 })
 
 // Fix round 1, Finding 1: `updated?.contentHash ?? null` was itself a defect — casUpdateContent
