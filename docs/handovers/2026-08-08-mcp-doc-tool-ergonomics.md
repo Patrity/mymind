@@ -383,6 +383,15 @@ Full evidence (per-finding diffs, commands, verbatim RED output for every new te
   described image-enrich as a raw `db.update()` writer, which this branch made false; and the
   commit count (16 code + 3 docs, not 17) and `nextTitleOnMove`'s signature are corrected above.
 
+**Browser validation.** `POST /api/agent/undo` verified live from an authenticated page: unknown
+token → HTTP 200 `{ ok:false, reason }`. The agent page's chip-undo could **not** be exercised in
+the UI because **`/agent` renders blank in dev** (`#__nuxt` empty, zero console errors) — verified
+pre-existing by restoring `7f461d0`'s copy of the page and restarting the dev server cleanly (same
+blank render), while `/galaxy` and `/documents` render fine on the same server and session. Likely
+the page's `<Suspense>` boundary never resolving without a live voice/WS backend in dev. Not
+caused by, and not fixed in, this fix wave — but it is a second blocker on the deferred live
+smoke test of the undo-refusal UX.
+
 **Deliberately carried, not fixed** (all pre-existing, none introduced by the fix wave): reads
 still lack `ok:true` on success; `get_document` stays on the raw shape; the image/memory/task/
 project/skill tools keep their own conventions; `move_document`'s title asymmetry on undo; the
