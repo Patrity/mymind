@@ -1,8 +1,8 @@
 ---
 title: MCP Server
 status: shipped
-cycle: 51
-updated: 2026-08-02
+cycle: 53
+updated: 2026-08-10
 ---
 
 # MCP Server
