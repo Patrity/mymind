@@ -3,17 +3,19 @@ title: MCP document-tool ergonomics — unified errors, guarded undo, honest pre
 cycle: 53
 date: 2026-08-08
 status: >
-  🔨 BUILT, NOT MERGED. 16 code commits (plus 3 docs commits) on `feat/mcp-doc-tool-ergonomics`
-  (branched from master
-  `f16648f`), Tasks 1-9 each review-clean (5 fix rounds across the branch — Tasks 5, 6, 7, 8 ×2,
-  9 — all re-reviewed clean). Task 10 (prod document reconciliation) executed directly by the
-  controller after the dispatched subagent correctly refused a relayed "the human authorised
-  this" instruction it could not itself verify — see "Task 10" below. **NOT merged, NOT pushed,
-  NOT deployed.**
-  Gates measured at HEAD after the final fix wave (2026-08-09): **typecheck 0 errors / test 1102
-  passed across 143 files / test:db 33 passed across 4 files / build clean (65.7 MB, 19.5 MB
-  gzip)**. No migration.
-branch: feat/mcp-doc-tool-ergonomics (off master f16648f; 19 commits total — 16 code, 3 docs)
+  ✅ SHIPPED. Merged to `master` fast-forward on 2026-08-10 (`f16648f..aa9e068`, 25 commits — 19
+  code, 6 docs), pushed, and deployed by CD run **31387137325** (test ✅ / deploy ✅ — install +
+  build + migrate, cut over to native, DB-touching `/api/health` 200). Prod verified after
+  cutover: public `/api/health` 200 in 0.76s, and an authenticated `search_tasks` MCP call
+  succeeded — proving auth and the DB on the new build. Tasks 1-9 each review-clean (5 fix rounds
+  across the branch — Tasks 5, 6, 7, 8 ×2, 9 — all re-reviewed clean). Task 10 (prod document
+  reconciliation) executed directly by the controller after the dispatched subagent correctly
+  refused a relayed "the human authorised this" instruction it could not itself verify — see
+  "Task 10" below.
+  Gates measured at HEAD before merge (2026-08-09, after the final fix wave): **typecheck 0
+  errors / test 1102 passed across 143 files / test:db 33 passed across 4 files / build clean
+  (65.7 MB, 19.5 MB gzip)**. No migration.
+branch: feat/mcp-doc-tool-ergonomics — merged fast-forward into master at aa9e068, branch deleted
 spec: ../superpowers/specs/2026-08-07-mcp-doc-tool-ergonomics-design.md
 plan: ../superpowers/plans/2026-08-07-mcp-doc-tool-ergonomics.md
 docs:
@@ -55,35 +57,38 @@ keydecision: >
   writes right the first time."
 
 deferred: >
-  Not merged, pushed, or deployed — awaiting Tony's merge decision, plus a live smoke test of the
-  in-app undo-refusal UX (galaxy + agent chip) once dev has a network path to a real turn. Also
-  carried forward, all pre-existing and explicitly not fixed in this cycle (see the four sections
-  below for detail): the MCP transport never issues an undo token to any MCP client (structural,
-  not a regression — `server/lib/mcp/server.ts:22-26`); `get_document` is the one remaining
-  unconverted tool on the old raw-doc/null shape; `pnpm test:db`'s 33 CAS/guard tests are not
-  wired into the deploy gate (MyMind task `70bcc740`, stays open); and the plan's stale
+  Still outstanding after the deploy: a live smoke test of the in-app undo-refusal UX (galaxy +
+  agent chip), blocked on `/agent` rendering blank in dev (pre-existing, MyMind task `3201e7a4`).
+  Also carried forward, all pre-existing and explicitly not fixed in this cycle (see the four
+  sections below for detail): the MCP transport never issues an undo token to any MCP client
+  (structural, not a regression — `server/lib/mcp/server.ts:22-26`); `get_document` is the one
+  remaining unconverted tool on the old raw-doc/null shape; `pnpm test:db`'s 33 CAS/guard tests
+  are not wired into the deploy gate (MyMind task `70bcc740`, stays open); and the plan's stale
   three-document reconciliation count was corrected to ten during Task 10, with all ten now
-  promoted (see "Task 10" below).
-  ONE STEP OUTSTANDING — this handover is NOT yet mirrored to MyMind
-  (`/projects/mymind/handovers/2026-08-08-mcp-doc-tool-ergonomics.md` does not exist). Three separate
-  attempts died mid-response on the `sync_document` call with an API transport error, at real token
-  cost, so it was deferred rather than retried a fourth time. Prod was verified healthy throughout
-  (`/api/health` 200 in ~180ms across five samples; `/api/mcp` answering 401 in 165ms), and a small
-  `search_docs` read also timed out, so this was this session's MCP transport rather than the app or
-  the payload size. The repo copy is authoritative; re-run the mirror when the transport is stable.
+  promoted (see "Task 10" below). The worst parked residual — `undo.ts:47` interpolating a raw
+  `DrizzleQueryError` (and therefore an entire prior document body) into the user-facing reason —
+  is now filed as MyMind task `0ff0f619`.
+  The MyMind mirror, deferred at write time after three `sync_document` attempts died mid-response
+  on that session's MCP transport, completed on 2026-08-10 once the transport recovered:
+  `/projects/mymind/handovers/2026-08-08-mcp-doc-tool-ergonomics.md`.
 ---
 
 # MCP document-tool ergonomics (cycle 53)
 
 ## Status, plainly
 
-**Built, not merged.** `feat/mcp-doc-tool-ergonomics` has 19 commits off master `f16648f` — 16
-code and 3 docs (`088889a` the first Task-1 commit → `ce7dd21` the last Task-9 fix-round commit,
-plus `90dd3ff` which added Task 9 to the plan, this docs task, and the final fix wave below). Tasks 1-9 each passed review (Tasks 5, 6, 7, and 8 needed fix rounds — 8 needed
+**Shipped.** `feat/mcp-doc-tool-ergonomics` landed on `master` as a fast-forward — `f16648f..aa9e068`,
+25 commits (19 code, 6 docs), from `088889a` (first Task-1 commit) to `aa9e068` (the residuals
+entry below). Tasks 1-9 each passed review (Tasks 5, 6, 7, and 8 needed fix rounds — 8 needed
 two — all re-reviewed clean; 9 needed one). Task 10 (reconciling ten production documents whose
 frontmatter had been embedded in `content`) was performed directly by the controller, not a
-subagent — see [Task 10](#task-10-ten-documents-reconciled-not-three) below for why. The branch
-is **not merged to master, not pushed, and not deployed**. There is **no migration**.
+subagent — see [Task 10](#task-10-ten-documents-reconciled-not-three) below for why.
+
+Deployed by CD run **31387137325** on 2026-08-10: test ✅, deploy ✅ (install + build + migrate →
+cut over to native → DB-touching `/api/health` 200). Verified after cutover from outside the LAN —
+public `/api/health` 200 in 0.76s, and an authenticated `search_tasks` MCP call succeeded, which
+exercises both the auth middleware's `api_tokens` query and the DB on the new build. There is **no
+migration**, so there was nothing schema-shaped to roll back.
 
 ## What shipped
 
@@ -473,7 +478,10 @@ load-bearing; none corrupts data or breaks a contract. Listed worst-first.
    `applySyncMeta` patched something; a content-only sync's undo is CAS-guarded alone. Correct
    behaviour, imprecise sentence.
 
-Also noted and unresolved: the commit count in this document's frontmatter was corrected during the
-fix wave and then invalidated by that wave's own five commits. At HEAD, `master..HEAD` is **24
-commits — 19 code, 5 docs**. A count written inside the commit that ships it is structurally hard to
-keep true; trust `git log` over this line.
+Residual 1 is now MyMind task **`0ff0f619`** (high priority) — the one this section says to fix first.
+
+Also noted: the commit count in this document's frontmatter was corrected during the fix wave, then
+invalidated by that wave's own commits, then invalidated again by the commit that parked these
+residuals. The final merged range `f16648f..aa9e068` is **25 commits — 19 code, 6 docs**. A count
+written inside the commit that ships it is structurally hard to keep true; trust `git log` over this
+line.
