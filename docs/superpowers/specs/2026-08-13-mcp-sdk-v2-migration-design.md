@@ -102,26 +102,55 @@ new round-trip test; nothing at runtime needs a client).
 ```ts
 server.registerTool(
   tool.name,
-  { description: tool.description, inputSchema: z.object(tool.schema) },
+  { description: tool.description, inputSchema: tool.schema },
   handler
 )
 ```
+
+**Verified against the real package, not the docs prose:** `registerTool` carries a
+`ZodRawShape` overload alongside the `StandardSchemaWithJSON` one, so `tool.schema` is passed
+**bare** — no `z.object(...)` wrapper. A spike confirmed the generated JSON Schema is identical to
+today's (`properties: {query, limit}`, `required: ['query']`). This is strictly simpler than
+originally designed.
 
 `mcpToolNames()` and `MCP_INSTRUCTIONS` stay **byte-identical**. That is a deliberate constraint,
 not an accident of scope: it means both existing test files must pass without modification, which
 turns them into a regression check on the migration rather than something rewritten alongside it.
 `MCP_INSTRUCTIONS` in particular is pinned by a cycle-53 wording test and a ≤998-char budget.
 
-**`server/api/mcp/index.post.ts`** — the transport plumbing is replaced by a single call:
+**`server/api/mcp/index.post.ts`** — the transport plumbing is replaced by a bridge to the
+handler's web-standard face:
 
 ```ts
-return handler.fetch(request, { authInfo })
+const body = await readBody(event)
+const request = toWebRequest(event)
+return await mcpHandler.fetch(request, { parsedBody: body })
 ```
 
-`createMcpHandler` returns a `{ fetch }` object taking a web-standard `Request` and returning a
-`Response`. Both the `readBody` workaround and the `event._handled` assignment disappear, because we
-no longer write to the Node response ourselves. The project runs Nitro 2.13.4 on h3 v2, which is
-web-standard native, so the bridge should be direct.
+The `event._handled` assignment disappears, because we no longer write to the Node response
+ourselves — h3 accepts a returned web `Response` directly.
+
+**Corrected after probing the tree:** an earlier draft of this spec claimed the project runs h3 v2
+and could bridge natively. It does not. Nitro 2.13.4's runtime resolves to **h3 1.15.11** (the
+`h3@2.0.1-rc.20` present in the pnpm store belongs to a different consumer and never reaches the
+server runtime), which is why the current code correctly uses `event.node.req` and `event._handled`.
+h3 v1 does export `toWebRequest(event): Request`, and `parsedBody` exists on
+`McpHandlerRequestOptions` for exactly this case — the body has already been consumed by `readBody`,
+so the payload is supplied out-of-band rather than re-read from the stream. This is the same pattern
+the SDK documents for Express's `req.body`.
+
+**This path is spiked and working**, not assumed: an h3 1.15.11 app wired exactly as above served a
+real `Client` over real HTTP, on both eras, with `tools/list` and `tools/call` succeeding. The
+h3-bridge risk this spec originally flagged as its main unknown is therefore retired before
+implementation begins.
+
+### The handler is module-scoped, not per-request
+
+`createMcpHandler` returns `{ fetch, close, notify, bus }` and owns a subscription bus, so it is
+constructed **once at module scope**. This is a real inversion of the current design, where a new
+`McpServer` *and* a new transport are built inside the request handler. Under v2 the handler is the
+long-lived object and the *factory* is what runs per request — so per-request isolation of the
+`McpServer` is preserved exactly, while the transport-level plumbing is created once.
 
 ### Era policy: dual, defaulting to legacy
 
@@ -143,12 +172,18 @@ paths (`mm_` bearer tokens and OAuth access tokens), emitting the RFC 9728 chall
 route specifically. None of that moves.
 
 This layering is not merely convenient, it is what the SDK prescribes: the v2 handler derives no
-auth from request headers at all, and expects the caller to verify identity and pass the result as
-`fetch`'s second argument, which handlers then read as `ctx.http.authInfo`. The SDK's own guidance
-is that auth settles before era — a `401` never decides which era a connection is on, and the auth
-wall answers before the MCP layer ever sees a `server/discover` probe. So the existing middleware
-stays exactly where it is, and the route forwards the already-verified `event.context.client` as
-`authInfo`.
+auth from request headers at all. The SDK's own guidance is that auth settles before era — a `401`
+never decides which era a connection is on, and the auth wall answers before the MCP layer ever sees
+a `server/discover` probe. So the existing middleware stays exactly where it is.
+
+**We do not pass `authInfo`, and that is deliberate.** An earlier draft said the route would forward
+`event.context.client` as `authInfo`; the real type does not permit it. `AuthInfo` requires
+`{ token: string, clientId: string, scopes: string[] }`, whereas `event.context.client` is
+`{ type: 'api-token', tokenId }`. Populating it would mean inventing a `clientId` and a scope list
+that nothing reads — MyMind's connector is deliberately single-operator and unscoped, and no tool
+handler consumes auth context (handlers receive `(args, { signal })` only). The v1 code passed no
+auth to the MCP layer either, so omitting it keeps behaviour **identical**, which is this cycle's
+whole standard. If per-client scoping is ever wanted, that is the OAuth cycle's job, not this one.
 
 ### DNS-rebinding protection must be added, not inherited
 
@@ -158,6 +193,13 @@ without replacing it would be a silent security regression, so `hostHeaderValida
 `originValidationResponse` (both from `@modelcontextprotocol/server`) go in front of `fetch`,
 allow-listing the production host. A request with no `Origin` header always passes, so machine
 clients are unaffected.
+
+Behaviour confirmed by direct probe: a bad `Host` returns `403`, a bad `Origin` returns `403`, and
+both a matching `Host` and an absent `Origin` pass. **Test these by calling the guard functions
+directly, not over HTTP** — Node's `fetch` treats `Host` as a forbidden header and silently strips
+it, so a round-trip "bad host" test never exercises the guard at all and reports an unrelated status
+(a first spike attempt returned `406` from content negotiation, which would have been easy to
+mistake for a passing guard).
 
 ### What must not change
 
@@ -196,10 +238,12 @@ client that matters, not a simulated one.
 
 ## Risks
 
-**The h3 v2 → web `Request` bridge is the one genuine unknown.** The tree resolves h3 to
-`2.0.1-rc.20` (linked under Nitro), and release-candidate web-standard plumbing is exactly where an
-assumption can be wrong. This gets verified in dev before anything else is built. Fallback: a small
-Node-to-`Request` adapter inside the route, which keeps the blast radius identical.
+**~~The h3 → web `Request` bridge~~ — RETIRED before planning.** This was the spec's main unknown.
+It was spiked against real h3 1.15.11 + `createMcpHandler` + a real `Client` over real HTTP, on both
+eras, and works (see "The three changes"). The spike also corrected the version assumption this spec
+was originally built on. What remains is integration inside Nitro specifically — the same bridge,
+but with the auth middleware and Nitro's own body handling in front of it, which Task 1 verifies in
+the running dev server before any other task starts.
 
 **v2.0.0 is roughly two weeks old** (published 2026-07-27, after five alphas and five betas). It is
 a `.0` of a repackaged SDK. That argues for the round-trip test being written early rather than as
