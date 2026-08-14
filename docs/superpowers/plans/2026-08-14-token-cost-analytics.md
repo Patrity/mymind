@@ -812,7 +812,11 @@ export async function getDispatches(range: UsageRangeKey): Promise<DispatchRespo
 }
 ```
 
-Note `db.execute` returns `{ rows }`; if this project's Drizzle wrapper differs, follow the existing convention in `server/services/` rather than this shape — read one neighbouring service first.
+`db.execute()` returns a node-postgres `QueryResult` — **verified empirically against this project's
+own `useDb()` wiring**, not assumed: `Array.isArray(result) === false`, `result.rows` is the array of
+row objects. The code above is correct as written. (The repo's only other `db.execute` call,
+`server/services/activity.ts:117`, is a DELETE that discards its result, so it offers no precedent —
+hence the check.)
 
 - [ ] **Step 4: Run to verify the range tests pass**
 
