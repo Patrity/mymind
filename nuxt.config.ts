@@ -104,6 +104,8 @@ export default defineNuxtConfig({
       '*/4 * * * *': ['embed-messages'],
       // Prices change rarely; daily is ample.
       '0 4 * * *': ['sync-model-prices'],
+      // Shortly after midnight UTC: summarise yesterday's LiteLLM traffic.
+      '20 0 * * *': ['rollup-litellm-daily'],
       // UMAP over ~2000+ vectors is heavy + synchronous (blocks the event loop),
       // so the hourly run SKIPS the recompute unless the eligible node count
       // changed (see the job's force guard). Manual /api/graph/recompute forces
