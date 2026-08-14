@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import type { RangeKey, SeriesResponse, SnapshotResponse, RequestLogResponse } from '~~/shared/types/analytics'
+import type { UsageRangeKey, UsageResponse, DispatchResponse } from '~~/shared/types/usage'
 
 export interface AnalyticsSettings {
   prometheusUrl: string
@@ -37,6 +38,22 @@ export function useAnalytics() {
     })
   }
 
+  const useUsage = (range: MaybeRefOrGetter<UsageRangeKey>) => {
+    const r = computed(() => toValue(range))
+    return useQuery({
+      queryKey: computed(() => ['analytics', 'usage', r.value] as const),
+      queryFn: () => $fetch<UsageResponse>('/api/analytics/usage', { query: { range: r.value } }),
+    })
+  }
+
+  const useDispatches = (range: MaybeRefOrGetter<UsageRangeKey>) => {
+    const r = computed(() => toValue(range))
+    return useQuery({
+      queryKey: computed(() => ['analytics', 'dispatches', r.value] as const),
+      queryFn: () => $fetch<DispatchResponse>('/api/analytics/dispatches', { query: { range: r.value } }),
+    })
+  }
+
   const useSettings = () => useQuery({
     queryKey: ['analytics', 'config'] as const,
     queryFn: () => $fetch<AnalyticsSettings>('/api/settings/analytics-config'),
@@ -49,5 +66,5 @@ export function useAnalytics() {
     return saved
   }
 
-  return { useSnapshot, useSeries, useRequests, useSettings, saveSettings }
+  return { useSnapshot, useSeries, useRequests, useUsage, useDispatches, useSettings, saveSettings }
 }
