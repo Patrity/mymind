@@ -33,16 +33,29 @@ when its host opts into `versionNegotiation: { mode: 'auto' }` — so in practic
 each leg. **Never pass `legacy: 'reject'`:** it would sever every existing connector.
 
 `authInfo` is deliberately not forwarded to the handler. `AuthInfo` requires
-`{ token, clientId, scopes }` while `event.context.client` is `{ type, tokenId }`, no tool handler
-reads auth context, and the connector is intentionally single-operator. Authorization is enforced
-entirely by `server/middleware/auth.ts`, ahead of this route.
+`{ token, clientId, scopes }` while `event.context.client` (`ClientContext`, `server/utils/auth-guard.ts`)
+is `{ type?, userId?, tokenId? }` — the `session` variant (`server/middleware/auth.ts`) carries
+`userId` and no `tokenId`, the `api-token`/`oauth` variants carry `tokenId` (`oauth` also carries
+`userId`). No variant carries `token`, `clientId`, or `scopes`, so none can satisfy `AuthInfo`; no
+tool handler reads auth context anyway, and the connector is intentionally single-operator.
+Authorization is enforced entirely by `server/middleware/auth.ts`, ahead of this route.
 
 ### DNS-rebinding protection
-`createMcpHandler` performs **no** Host/Origin validation (the v1 transport did), so
-`hostHeaderValidationResponse` / `originValidationResponse` run before `fetch`, allow-listing the
-configured host plus `localhost`/`127.0.0.1`. A request with no `Origin` passes, so machine clients
-are unaffected. Note when testing: Node's `fetch` silently strips the forbidden `Host` header, so
-guard tests must call the helpers directly rather than over HTTP.
+`createMcpHandler` performs **no** Host/Origin validation of its own. The v1 SDK *offered* this as
+an opt-in (`enableDnsRebindingProtection`, defaulting to `false` — validation is skipped entirely
+unless a caller turns it on), but the old route (`git show 91c3122:server/api/mcp/index.post.ts`)
+constructed its transport with only `{ sessionIdGenerator: undefined }` and never enabled it, so
+`/api/mcp` had **no** Host/Origin validation before this branch either. `hostHeaderValidationResponse` /
+`originValidationResponse` run before `fetch`, allow-listing the configured host plus
+`localhost`/`127.0.0.1`/`[::1]` — this is **net-new hardening, not a restoration**. A request with
+no `Origin` passes, so machine clients are unaffected. Note when testing: Node's `fetch` silently
+strips the forbidden `Host` header, so guard tests must call the helpers directly rather than over
+HTTP.
+
+**Operational consequence:** because this check is new, it has never seen production traffic — in
+particular the claude.ai OAuth connector has never been exercised against it. If Anthropic's
+connector fetcher sends an `Origin` header whose host isn't the configured one, it will now receive
+a 403. Machine clients like Claude Code send no `Origin` and are unaffected.
 
 ## Authentication
 
@@ -372,6 +385,15 @@ With a bearer token + `Accept: application/json, text/event-stream`, POST JSON-R
 
 ## Notes / follow-ups
 Stateless mode → no server-initiated notifications; tools only (no MCP resources/prompts) — sufficient for the agent tool-call use case.
+
+**h3's `sendStream` does not cancel a web `ReadableStream` on client disconnect.** h3 1.15.11 pipes
+a web stream response via `pipeTo` with no abort path wired to the underlying Node response closing,
+so a stream the client walks away from is never told to stop. Consequence: a **modern-era**
+`subscriptions/listen` stream whose client vanishes would orphan its bus subscription and keepalive
+interval on the module-scoped handler; after `maxSubscriptions` (default 1024) further
+`subscriptions/listen` calls would return `-32603`. This is **unreachable today** — no client speaks
+the modern era yet, and the route is auth-gated — but it's the one place the module-scoped handler
+can accumulate state, worth knowing before that era sees real traffic.
 
 **OAuth (cycle 48) deferred items:**
 - **DCR cleanup cron** — `POST /api/auth/mcp/register` is open (no allowlist); rows are inert without an approved consent, but nothing yet prunes stale/abandoned `oauth_application` rows. Follow-up task, not merge-blocking.
