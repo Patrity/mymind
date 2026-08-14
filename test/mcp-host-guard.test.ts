@@ -15,7 +15,7 @@ describe('MCP DNS-rebinding guards', () => {
 
   it('falls back to localhost-only when no URL is configured', () => {
     // Fail closed: an unset config must not silently allow every Host.
-    expect(mcpAllowedHosts(undefined)).toEqual(['localhost', '127.0.0.1'])
+    expect(mcpAllowedHosts(undefined)).toEqual(['localhost', '127.0.0.1', '[::1]'])
   })
 
   it('allows the production host', () => {
@@ -24,6 +24,10 @@ describe('MCP DNS-rebinding guards', () => {
 
   it('allows localhost for dev', () => {
     expect(hostHeaderValidationResponse(req({ host: 'localhost:3000' }), allowed)).toBeUndefined()
+  })
+
+  it('allows IPv6 loopback ([::1]) for dev', () => {
+    expect(hostHeaderValidationResponse(req({ host: '[::1]:3000' }), allowed)).toBeUndefined()
   })
 
   it('rejects an unknown Host with 403', () => {

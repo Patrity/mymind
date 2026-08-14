@@ -11,7 +11,7 @@
  * Returns hostnames only — the SDK's validators are port-agnostic.
  */
 export function mcpAllowedHosts(betterAuthUrl?: string): string[] {
-  const local = ['localhost', '127.0.0.1']
+  const local = ['localhost', '127.0.0.1', '[::1]']
   if (!betterAuthUrl) return local // fail closed: never allow every Host when unconfigured
   try {
     return [new URL(betterAuthUrl).hostname, ...local]
