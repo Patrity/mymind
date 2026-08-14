@@ -32,7 +32,7 @@
     "@codemirror/view": "^6.43.0",
     "@iconify-json/lucide": "^1.2.111",
     "@iconify-json/simple-icons": "^1.2.84",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@nuxt/ui": "^4.8.1",
     "@nuxtjs/mdc": "^0.22.0",
     "@ricky0123/vad-web": "^0.0.30",
@@ -60,6 +60,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "@nuxt/eslint": "^1.15.2",
     "@nuxt/test-utils": "^4.0.3",
     "@types/pg": "^8.20.0",

@@ -1,4 +1,4 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { McpServer } from '@modelcontextprotocol/server'
 import { agentTools } from '../agent/tools'
 
 export function mcpToolNames(): string[] {
@@ -28,7 +28,19 @@ export function buildMcpServer() {
   const server = new McpServer({ name: 'mymind', version: '1.0.0' }, { instructions: MCP_INSTRUCTIONS })
   for (const tool of agentTools) {
     if (tool.dangerous) continue // MCP has no approval channel — never expose a gated tool here
-    server.tool(tool.name, tool.description, tool.schema, async (args: Record<string, unknown>) => {
+    // `tool.schema` is a bare ZodRawShape and is passed as-is: registerTool carries a ZodRawShape
+    // overload alongside the StandardSchema one, so no z.object() wrapper is needed (and adding one
+    // would fork the shape shared with the OpenAI/agent tool path).
+    //
+    // The cast below bridges a real (non-cosmetic) TS structural gap, not a shortcut around one:
+    // zod's own back-compat `ZodRawShape` alias (what `AgentTool.schema` is typed as, from `zod`)
+    // resolves to the looser core shape `Record<string, $ZodType>`, while this SDK's bundled
+    // `ZodRawShape` is declared against zod/v4's *classic* `Record<string, ZodType>` (classic
+    // ZodType is a structural superset of core $ZodType — extra methods, same runtime object).
+    // Every value in `tool.schema` is a full classic zod schema at runtime either way; only the
+    // static type differs. The MCP boundary adapts to `AgentTool.schema`'s declared type here —
+    // never the reverse — so the cast lives on this side, not in agent/types.ts.
+    server.registerTool(tool.name, { description: tool.description, inputSchema: tool.schema as NonNullable<Parameters<typeof server.registerTool>[1]>['inputSchema'] }, async (args: Record<string, unknown>) => {
       const ac = new AbortController()
       const exec = await tool.handler(args, { signal: ac.signal })
       return { content: [{ type: 'text' as const, text: JSON.stringify(exec.result) }] }

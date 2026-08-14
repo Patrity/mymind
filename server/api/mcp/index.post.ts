@@ -1,28 +1,26 @@
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { createMcpHandler } from '@modelcontextprotocol/server'
 import { buildMcpServer } from '../../lib/mcp/server'
+
+// Created ONCE, at module scope. Unlike the v1 transport, this handler is a long-lived object
+// (it owns a subscription bus and a close() lifecycle). Per-request isolation still holds: the
+// factory below runs per request, so every request still gets its own fresh McpServer.
+//
+// `legacy` is deliberately omitted, which selects the 'stateless' default: 2025-era clients (every
+// Claude client today) are served alongside 2026-07-28 clients from this one endpoint. Passing
+// 'reject' here would sever every existing connector.
+const mcpHandler = createMcpHandler(() => buildMcpServer())
 
 export default defineEventHandler(async (event) => {
   // Auth is already enforced by server/middleware/auth.ts (runs before all /api/** routes).
   // That middleware accepts both Bearer tokens and sessions, so if we reach this point
-  // event.context.client is set and the caller is authenticated.
+  // event.context.client is set and the caller is authenticated. We deliberately do NOT forward
+  // it as `authInfo`: AuthInfo wants { token, clientId, scopes }, no tool handler reads auth, and
+  // v1 passed none either — inventing a shape here would be a behaviour change, not a migration.
 
-  // readBody so h3 doesn't leave the body stream half-consumed
+  // readBody consumes and caches the body, so the Request built below carries no readable stream.
+  // `parsedBody` is the SDK's supported channel for exactly that case (same as Express req.body).
   const body = await readBody(event)
+  const request = toWebRequest(event)
 
-  const server = buildMcpServer()
-  const transport = new StreamableHTTPServerTransport({
-    // stateless: no session tracking, new server+transport per request
-    sessionIdGenerator: undefined
-  })
-
-  await server.connect(transport)
-
-  // handleRequest writes directly to the Node.js ServerResponse via @hono/node-server.
-  // We await it so that the response is fully written before we return.
-  await transport.handleRequest(event.node.req, event.node.res, body)
-
-  // Mark the h3 event as handled so the framework does not attempt to write a second
-  // response (h3 v1 checks event._handled; v2 also checks res.headersSent which will
-  // already be true once handleRequest completes, but being explicit is safer).
-  event._handled = true
+  return await mcpHandler.fetch(request, { parsedBody: body })
 })
