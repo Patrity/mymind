@@ -1,8 +1,8 @@
 ---
 title: MCP Server
 status: shipped
-cycle: 53
-updated: 2026-08-10
+cycle: 54
+updated: 2026-08-13
 ---
 
 # MCP Server
@@ -10,7 +10,39 @@ updated: 2026-08-10
 Exposes MyMind to agents (Claude Code, etc.) over the Model Context Protocol, deprecating bridget's FastMCP server.
 
 ## Endpoint
-`POST /api/mcp` — `@modelcontextprotocol/sdk` `StreamableHTTPServerTransport` in **stateless** mode (fresh `McpServer` + transport per request; no session store). Wired into the Nitro h3 handler (`server/api/mcp/index.post.ts`): reads the body, `server.connect(transport)`, `transport.handleRequest(event.node.req, event.node.res, body)`, then `event._handled = true` (h3 v1). Responses are SSE-framed JSON-RPC (clients send `Accept: application/json, text/event-stream`).
+`POST /api/mcp` — `@modelcontextprotocol/server` v2 `createMcpHandler`, serving **both protocol
+eras** from this one endpoint.
+
+The handler is built **once at module scope** (it owns a subscription bus and a `close()`
+lifecycle); `buildMcpServer()` is the factory it calls **per request**, so every request still gets
+a fresh `McpServer` with no shared state. Wired into the Nitro h3 handler
+(`server/api/mcp/index.post.ts`): `readBody(event)` → `toWebRequest(event)` →
+`mcpHandler.fetch(request, { parsedBody })`, returning a web `Response` that h3 sends directly.
+The body is passed as `parsedBody` because `readBody` has already consumed the stream.
+
+### Protocol eras
+| | 2025 era (`legacy`) | 2026-07-28 era (`modern`) |
+|---|---|---|
+| Revisions | `2024-10-07` … `2025-11-25` | `2026-07-28` |
+| Handshake | `initialize` | `server/discover` probe |
+| Served? | **Yes** — `legacy: 'stateless'` (the default, by omitting the option) | Yes |
+
+Every Claude client today opens with the 2025 `initialize` handshake — the v2 *client* only probes
+when its host opts into `versionNegotiation: { mode: 'auto' }` — so in practice all live traffic is
+`legacy`. Both eras are proven by `test/mcp-transport.test.ts`, which asserts `getProtocolEra()` on
+each leg. **Never pass `legacy: 'reject'`:** it would sever every existing connector.
+
+`authInfo` is deliberately not forwarded to the handler. `AuthInfo` requires
+`{ token, clientId, scopes }` while `event.context.client` is `{ type, tokenId }`, no tool handler
+reads auth context, and the connector is intentionally single-operator. Authorization is enforced
+entirely by `server/middleware/auth.ts`, ahead of this route.
+
+### DNS-rebinding protection
+`createMcpHandler` performs **no** Host/Origin validation (the v1 transport did), so
+`hostHeaderValidationResponse` / `originValidationResponse` run before `fetch`, allow-listing the
+configured host plus `localhost`/`127.0.0.1`. A request with no `Origin` passes, so machine clients
+are unaffected. Note when testing: Node's `fetch` silently strips the forbidden `Host` header, so
+guard tests must call the helpers directly rather than over HTTP.
 
 ## Authentication
 
