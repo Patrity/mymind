@@ -1,5 +1,6 @@
-import { createMcpHandler } from '@modelcontextprotocol/server'
+import { createMcpHandler, hostHeaderValidationResponse, originValidationResponse } from '@modelcontextprotocol/server'
 import { buildMcpServer } from '../../lib/mcp/server'
+import { mcpAllowedHosts } from '../../lib/mcp/guards'
 
 // Created ONCE, at module scope. Unlike the v1 transport, this handler is a long-lived object
 // (it owns a subscription bus and a close() lifecycle). Per-request isolation still holds: the
@@ -21,6 +22,12 @@ export default defineEventHandler(async (event) => {
   // `parsedBody` is the SDK's supported channel for exactly that case (same as Express req.body).
   const body = await readBody(event)
   const request = toWebRequest(event)
+
+  // A request with no Origin always passes both helpers, so machine clients are unaffected.
+  const allowed = mcpAllowedHosts(useRuntimeConfig().betterAuthUrl as string | undefined)
+  const rejected = hostHeaderValidationResponse(request, allowed)
+    ?? originValidationResponse(request, allowed)
+  if (rejected) return rejected
 
   return await mcpHandler.fetch(request, { parsedBody: body })
 })
