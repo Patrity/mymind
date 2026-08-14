@@ -1,6 +1,6 @@
 import { createMcpHandler, hostHeaderValidationResponse, originValidationResponse } from '@modelcontextprotocol/server'
 import { buildMcpServer } from '../../lib/mcp/server'
-import { mcpAllowedHosts } from '../../lib/mcp/guards'
+import { mcpAllowedHosts, mcpAllowedOrigins } from '../../lib/mcp/guards'
 
 // Created ONCE, at module scope. Unlike the v1 transport, this handler is a long-lived object
 // (it owns a subscription bus and a close() lifecycle). Per-request isolation still holds: the
@@ -24,9 +24,12 @@ export default defineEventHandler(async (event) => {
   const request = toWebRequest(event)
 
   // A request with no Origin always passes both helpers, so machine clients are unaffected.
-  const allowed = mcpAllowedHosts(useRuntimeConfig().betterAuthUrl as string | undefined)
-  const rejected = hostHeaderValidationResponse(request, allowed)
-    ?? originValidationResponse(request, allowed)
+  // Host and Origin use DIFFERENT allowlists on purpose — see the comment on mcpAllowedOrigins
+  // for why. Host stays narrow (our domain + loopback); Origin also allows claude.ai/claude.com
+  // so the OAuth connector's cross-site requests aren't rejected.
+  const betterAuthUrl = useRuntimeConfig().betterAuthUrl as string | undefined
+  const rejected = hostHeaderValidationResponse(request, mcpAllowedHosts(betterAuthUrl))
+    ?? originValidationResponse(request, mcpAllowedOrigins(betterAuthUrl))
   if (rejected) return rejected
 
   return await mcpHandler.fetch(request, { parsedBody: body })

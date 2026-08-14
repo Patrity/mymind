@@ -5,7 +5,7 @@
 // negotiation) that looks deceptively like a pass.
 import { describe, it, expect } from 'vitest'
 import { hostHeaderValidationResponse, originValidationResponse } from '@modelcontextprotocol/server'
-import { mcpAllowedHosts } from '../server/lib/mcp/guards'
+import { mcpAllowedHosts, mcpAllowedOrigins } from '../server/lib/mcp/guards'
 
 const req = (headers: Record<string, string>) =>
   new Request('http://brain.costanzoclan.com/api/mcp', { method: 'POST', headers })
@@ -41,5 +41,33 @@ describe('MCP DNS-rebinding guards', () => {
 
   it('allows a request with no Origin — machine clients never send one', () => {
     expect(originValidationResponse(req({ host: 'brain.costanzoclan.com' }), allowed)).toBeUndefined()
+  })
+})
+
+describe('MCP Origin/Host allowlist split (claude.ai connector)', () => {
+  const allowedOrigins = mcpAllowedOrigins('https://brain.costanzoclan.com')
+
+  it('originValidationResponse ACCEPTS Origin: https://claude.ai', () => {
+    const r = req({ host: 'brain.costanzoclan.com', origin: 'https://claude.ai' })
+    expect(originValidationResponse(r, allowedOrigins)).toBeUndefined()
+  })
+
+  it('originValidationResponse ACCEPTS another Anthropic origin (claude.com)', () => {
+    const r = req({ host: 'brain.costanzoclan.com', origin: 'https://claude.com' })
+    expect(originValidationResponse(r, allowedOrigins)).toBeUndefined()
+  })
+
+  it('hostHeaderValidationResponse still REJECTS Host: claude.ai with 403 — the Host surface was NOT widened', () => {
+    const allowedHosts = mcpAllowedHosts('https://brain.costanzoclan.com')
+    expect(hostHeaderValidationResponse(req({ host: 'claude.ai' }), allowedHosts)?.status).toBe(403)
+  })
+
+  it('originValidationResponse still rejects an unrelated cross-site origin with 403', () => {
+    const r = req({ host: 'brain.costanzoclan.com', origin: 'https://evil.example.com' })
+    expect(originValidationResponse(r, allowedOrigins)?.status).toBe(403)
+  })
+
+  it('originValidationResponse still allows a request with no Origin', () => {
+    expect(originValidationResponse(req({ host: 'brain.costanzoclan.com' }), allowedOrigins)).toBeUndefined()
   })
 })

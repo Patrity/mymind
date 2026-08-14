@@ -46,16 +46,28 @@ an opt-in (`enableDnsRebindingProtection`, defaulting to `false` — validation 
 unless a caller turns it on), but the old route (`git show 91c3122:server/api/mcp/index.post.ts`)
 constructed its transport with only `{ sessionIdGenerator: undefined }` and never enabled it, so
 `/api/mcp` had **no** Host/Origin validation before this branch either. `hostHeaderValidationResponse` /
-`originValidationResponse` run before `fetch`, allow-listing the configured host plus
-`localhost`/`127.0.0.1`/`[::1]` — this is **net-new hardening, not a restoration**. A request with
-no `Origin` passes, so machine clients are unaffected. Note when testing: Node's `fetch` silently
-strips the forbidden `Host` header, so guard tests must call the helpers directly rather than over
-HTTP.
+`originValidationResponse` (`server/api/mcp/index.post.ts`) run before `fetch` — this is **net-new
+hardening, not a restoration**. A request with no `Origin` passes, so machine clients are
+unaffected. Note when testing: Node's `fetch` silently strips the forbidden `Host` header, so guard
+tests must call the helpers directly rather than over HTTP.
 
-**Operational consequence:** because this check is new, it has never seen production traffic — in
-particular the claude.ai OAuth connector has never been exercised against it. If Anthropic's
-connector fetcher sends an `Origin` header whose host isn't the configured one, it will now receive
-a 403. Machine clients like Claude Code send no `Origin` and are unaffected.
+**Two allowlists, not one** (`server/lib/mcp/guards.ts`). `mcpAllowedHosts()` and
+`mcpAllowedOrigins()` both start from the configured host plus `localhost`/`127.0.0.1`/`[::1]`, but
+they diverge from there, because Host and Origin defend different things:
+- `mcpAllowedHosts()` stays narrow — our domain plus loopback, nothing else. This is what a
+  DNS-rebinding attacker controls to make a victim's browser believe it's talking to this origin
+  server, so widening it to a third party (even a trusted one) would reopen the hole this guard
+  exists to close.
+- `mcpAllowedOrigins()` builds on top of `mcpAllowedHosts()` and adds Anthropic's connector
+  origins — `claude.ai`, `www.claude.ai`, `claude.com`, `www.claude.com` — because Origin is the
+  cross-site check, and the claude.ai OAuth connector legitimately sends `Origin: https://claude.ai`
+  on its cross-site fetches. That header never needs to equal our Host, so allow-listing it here
+  doesn't touch the DNS-rebinding surface at all.
+
+`index.post.ts` passes `mcpAllowedHosts(...)` to `hostHeaderValidationResponse` and
+`mcpAllowedOrigins(...)` to `originValidationResponse` — never the same list to both. If Anthropic
+ever adds another connector domain, extend `mcpAllowedOrigins()` only; `mcpAllowedHosts()` must stay
+untouched.
 
 ## Authentication
 
