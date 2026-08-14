@@ -349,7 +349,7 @@ MyMind ingests every Claude Code session (transcript messages + tool events, pro
 
 No migration and no UI changes — this cycle is pure MCP/agent tool surface over the existing `sessions`/`messages`/`tool_events` tables and the existing hybrid search services (`project`/`session` became new optional filters on `searchSessions`/`searchMessages`, backward-compatible with the unchanged web callers).
 
-Registered via `server.tool(name, description, zodShape, handler)`; each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
+Registered via `server.registerTool(name, { description, inputSchema }, handler)` (v2 SDK — the description and Zod shape move into an options object, replacing v1's flat `server.tool(name, description, zodShape, handler)` args); each returns `{ content: [{ type:'text', text: JSON.stringify(result) }] }`.
 
 ### Recall defaults (cycle 51)
 
