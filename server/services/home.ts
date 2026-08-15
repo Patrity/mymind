@@ -29,7 +29,7 @@ async function metrics(db: ReturnType<typeof useDb>, start: Date): Promise<HomeM
     db.execute(sql`select count(*) as total, count(*) filter (where created_at >= ${iso}) as delta
                    from documents where deleted_at is null`),
     db.execute(sql`select count(*) as total, count(*) filter (where created_at >= ${iso}) as delta
-                   from images`)
+                   from images where deleted_at is null`)
   ])
   return { sessions: one(ses), memories: one(mem), documents: one(doc), images: one(img) }
 }
@@ -64,7 +64,7 @@ async function timelineEvents(db: ReturnType<typeof useDb>, start: Date): Promis
                    where created_at >= ${iso} and deleted_at is null
                    order by created_at desc limit ${PER_SOURCE_LIMIT}`),
     db.execute(sql`select id, original_name, summary, created_at from images
-                   where created_at >= ${iso}
+                   where created_at >= ${iso} and deleted_at is null
                    order by created_at desc limit ${PER_SOURCE_LIMIT}`),
     db.execute(sql`select id, body_text, kind, created_at from clip_messages
                    where created_at >= ${iso}
@@ -153,17 +153,27 @@ async function recentProjects(db: ReturnType<typeof useDb>, start: Date): Promis
   const iso = start.toISOString()
   const r = await db.execute(sql`
     with touched as (
-      select project as slug, started_at as at from sessions where started_at >= ${iso} and project is not null
+      (select project as slug, started_at as at from sessions
+       where started_at >= ${iso} and project is not null
+       order by started_at desc limit ${PER_SOURCE_LIMIT})
       union all
-      select project, created_at from memories  where created_at >= ${iso} and project is not null and archived_at is null
+      (select project, created_at from memories
+       where created_at >= ${iso} and project is not null and archived_at is null
+       order by created_at desc limit ${PER_SOURCE_LIMIT})
       union all
-      select project, created_at from documents where created_at >= ${iso} and project is not null and deleted_at is null
+      (select project, created_at from documents
+       where created_at >= ${iso} and project is not null and deleted_at is null
+       order by created_at desc limit ${PER_SOURCE_LIMIT})
       union all
-      select project, created_at from tasks     where created_at >= ${iso} and project is not null and deleted_at is null
+      -- Keyed on created_at, unlike timelineEvents' tasks query (coalesce(completed_at,
+      -- created_at)): "touched" means new activity on the project, not task completions,
+      -- so a project only counts as touched here when a task was CREATED in range.
+      (select project, created_at from tasks
+       where created_at >= ${iso} and project is not null and deleted_at is null
+       order by created_at desc limit ${PER_SOURCE_LIMIT})
     )
     select p.slug, p.name, p.color,
            max(t.at)                                        as last_at,
-           count(*) filter (where t.at is not null)          as touches,
            (select count(*) from sessions s where s.project = p.slug and s.started_at >= ${iso}) as sessions,
            (select count(*) from memories m where m.project = p.slug and m.created_at >= ${iso} and m.archived_at is null) as memories
     from touched t join projects p on p.slug = t.slug
