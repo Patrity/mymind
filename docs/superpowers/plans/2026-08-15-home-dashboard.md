@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Nuxt UI v4 components only.** No hand-rolled `<div>`/`<button>` where a `U*` exists. Invoke the `nuxt-ui-docs` skill before using a component — training-data knowledge of its props is stale.
+- **Nuxt UI v4 for every control and container.** Buttons, inputs, cards, badges, links, alerts, skeletons are `U*` — never hand-rolled. Plain `<div>`/`<span>` are fine for grid/flex layout and for text nodes; the rule binds interactive and themed elements, not layout scaffolding. Invoke the `nuxt-ui-docs` skill before using a component — training-data knowledge of its props is stale.
 - **Semantic colour tokens only.** `primary`/`error`/`neutral`, `text-muted`/`bg-elevated`/`border-default`. Never `text-gray-200`, `bg-purple-600`, `slate-*`, `zinc-*`.
 - **Every timeline row is a real `<NuxtLink>` with a populated `href`.** Never a `<div @click>`. Tests assert tag + href, not presence.
 - **Day boundaries are UTC.** `date_trunc('day', created_at AT TIME ZONE 'UTC')` in SQL; `.toISOString().slice(0,10)` in TS.
@@ -600,7 +600,11 @@ Expected: the index is listed, and the plan shows an index scan rather than `Seq
 
 - [ ] **Step 4: Split `getUsage` without changing its signature**
 
-In `server/services/usage.ts`, rename the body and add a delegating wrapper. Replace the `export async function getUsage(range: UsageRangeKey)` line with:
+Three edits in `server/services/usage.ts`. `getUsage` keeps its exact public signature so every
+existing caller and test is untouched. `getUsageSince` returns `Omit<UsageResponse, 'range'>`
+because it no longer knows the range key — `getUsage` puts it back.
+
+**(a)** Replace the single line `export async function getUsage(range: UsageRangeKey): Promise<UsageResponse> {` with this block (note the wrapper closes, then the new function opens):
 
 ```ts
 /**
@@ -609,26 +613,16 @@ In `server/services/usage.ts`, rename the body and add a delegating wrapper. Rep
  * must NOT share a range enum (see the comment in shared/types/usage.ts).
  */
 export async function getUsage(range: UsageRangeKey): Promise<UsageResponse> {
-  return getUsageSince(rangeStart(range))
-}
-
-/** `start === null` means no lower bound (the Usage tab's `all`). */
-export async function getUsageSince(start: Date | null): Promise<UsageResponse> {
-```
-
-Then inside the (now) `getUsageSince` body, delete the old `const start = rangeStart(range)` line — `start` is now the parameter.
-
-The response's `range` field is still typed `UsageRangeKey`. Since `getUsageSince` no longer knows the key, thread it through: keep `range` out of `getUsageSince`'s return by having it return `Omit<UsageResponse, 'range'>`, and have `getUsage` add it back:
-
-```ts
-export async function getUsage(range: UsageRangeKey): Promise<UsageResponse> {
   return { range, ...(await getUsageSince(rangeStart(range))) }
 }
 
+/** `start === null` means no lower bound (the Usage tab's `all`). */
 export async function getUsageSince(start: Date | null): Promise<Omit<UsageResponse, 'range'>> {
 ```
 
-Update the `return { ... }` at the end of the function body to drop its `range` property.
+**(b)** Delete the now-shadowed `const start = rangeStart(range)` line inside that body — `start` is the parameter now.
+
+**(c)** In that body's final `return { ... }`, remove the `range` property. Everything else in the return object stays exactly as-is.
 
 - [ ] **Step 5: Run the existing analytics tests to prove nothing regressed**
 
@@ -675,24 +669,26 @@ import type {
 /** Rows pulled per source before grouping. Generous — grouping collapses the noise. */
 const PER_SOURCE_LIMIT = 200
 
+// Written out per table rather than via a helper that `sql.raw`s identifiers —
+// the table/column names would be the only interpolated parts, and this file
+// should contain zero raw interpolation so a reviewer never has to reason about it.
 async function metrics(db: ReturnType<typeof useDb>, start: Date): Promise<HomeMetrics> {
   const iso = start.toISOString()
-  const one = async (table: string, dateCol = 'created_at', extra = '') => {
-    const r = await db.execute(sql`
-      select
-        count(*)                                              as total,
-        count(*) filter (where ${sql.raw(dateCol)} >= ${iso})  as delta
-      from ${sql.raw(table)} where true ${sql.raw(extra)}`)
+  const one = (r: { rows: unknown[] }) => {
     const row = (r.rows as Record<string, unknown>[])[0] ?? {}
     return { total: Number(row.total ?? 0), delta: Number(row.delta ?? 0) }
   }
-  const [sessions, memories, documents, images] = await Promise.all([
-    one('sessions', 'started_at'),
-    one('memories', 'created_at', 'and archived_at is null'),
-    one('documents', 'created_at', 'and deleted_at is null'),
-    one('images', 'created_at')
+  const [ses, mem, doc, img] = await Promise.all([
+    db.execute(sql`select count(*) as total, count(*) filter (where started_at >= ${iso}) as delta
+                   from sessions`),
+    db.execute(sql`select count(*) as total, count(*) filter (where created_at >= ${iso}) as delta
+                   from memories where archived_at is null`),
+    db.execute(sql`select count(*) as total, count(*) filter (where created_at >= ${iso}) as delta
+                   from documents where deleted_at is null`),
+    db.execute(sql`select count(*) as total, count(*) filter (where created_at >= ${iso}) as delta
+                   from images`)
   ])
-  return { sessions, memories, documents, images }
+  return { sessions: one(ses), memories: one(mem), documents: one(doc), images: one(img) }
 }
 
 /** NOT range-scoped — absolute backlog. See the spec. */
@@ -1257,21 +1253,30 @@ const tiles = computed(() => [
 
 The one panel that fetches its own data, so Prometheus dying degrades this tile alone.
 
+The real shape is `ServiceHealth = { id: string, label: string, up: boolean | null }` from
+`shared/types/analytics.ts:23`. **`up: null` means "no data", which is NOT the same as down** —
+treating null as down would report a false outage whenever Prometheus has a gap.
+
 ```vue
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
-
-interface SnapshotService { name: string, up: boolean }
+import type { SnapshotResponse } from '~~/shared/types/analytics'
 
 const { data, error } = useQuery({
   queryKey: ['analytics', 'snapshot'],
-  queryFn: () => $fetch<{ services: SnapshotService[] }>('/api/analytics/snapshot'),
+  queryFn: () => $fetch<SnapshotResponse>('/api/analytics/snapshot'),
   // Home must not go red because the homelab is off. Fail quietly into one tile.
   retry: false
 })
 
 const services = computed(() => data.value?.services ?? [])
-const down = computed(() => services.value.filter(s => !s.up).length)
+// `up === null` is "no data", deliberately excluded from the down count.
+const down = computed(() => services.value.filter(s => s.up === false).length)
+
+const colorFor = (up: boolean | null) => up === false ? 'error' as const
+  : up === true ? 'success' as const
+  : 'neutral' as const
+const glyphFor = (up: boolean | null) => up === false ? '✕' : up === true ? '✓' : '–'
 </script>
 
 <template>
@@ -1284,20 +1289,18 @@ const down = computed(() => services.value.filter(s => !s.up).length)
     <div v-else class="flex flex-wrap gap-1">
       <UBadge
         v-for="s in services"
-        :key="s.name"
-        :color="s.up ? 'success' : 'error'"
+        :key="s.id"
+        :color="colorFor(s.up)"
         variant="subtle"
         size="sm"
-        :label="s.up ? '✓' : '✕'"
-        :title="s.name"
+        :label="glyphFor(s.up)"
+        :title="s.label"
       />
     </div>
     <p v-if="!error && down > 0" class="text-xs text-error mt-1">{{ down }} down</p>
   </ULink>
 </template>
 ```
-
-Before writing this, read `server/api/analytics/snapshot.get.ts` and match the **actual** response shape — if it does not expose `{ services: [{ name, up }] }`, adapt the types here rather than changing the endpoint.
 
 - [ ] **Step 5: Retarget the post-login landing**
 
@@ -1517,11 +1520,13 @@ import type { HomeAttention } from '~~/shared/types/home'
 
 const props = defineProps<{ attention: HomeAttention }>()
 
+// Static class strings — Tailwind scans source text, so a constructed
+// `bg-${color}` would be purged from the build and render colourless.
 const rows = computed(() => [
-  { key: 'errors', n: props.attention.unackedErrors, label: 'errors unacked', to: '/activity', color: 'error' as const },
-  { key: 'conflicts', n: props.attention.conflicts, label: 'memory conflicts to resolve', to: '/review', color: 'primary' as const },
-  { key: 'unreviewed', n: props.attention.unreviewedMemories, label: 'memories unreviewed', to: '/memories', color: 'primary' as const },
-  { key: 'unfiled', n: props.attention.unfiledCaptures, label: 'captures still in /input', to: '/documents', color: 'success' as const }
+  { key: 'errors', n: props.attention.unackedErrors, label: 'errors unacked', to: '/activity', dot: 'bg-error' },
+  { key: 'conflicts', n: props.attention.conflicts, label: 'memory conflicts to resolve', to: '/review', dot: 'bg-primary' },
+  { key: 'unreviewed', n: props.attention.unreviewedMemories, label: 'memories unreviewed', to: '/memories', dot: 'bg-primary' },
+  { key: 'unfiled', n: props.attention.unfiledCaptures, label: 'captures still in /input', to: '/documents', dot: 'bg-success' }
 ].filter(r => r.n > 0))
 
 const total = computed(() => rows.value.length)
@@ -1557,7 +1562,7 @@ const total = computed(() => rows.value.length)
         :to="r.to"
         class="flex items-center gap-2 py-1.5 text-sm hover:text-primary transition-colors"
       >
-        <span class="size-2 rounded-full shrink-0" :class="`bg-${r.color}`" />
+        <span class="size-2 rounded-full shrink-0" :class="r.dot" />
         <span class="font-semibold tabular-nums">{{ r.n }}</span>
         <span class="text-muted truncate">{{ r.label }}</span>
       </ULink>
@@ -1623,7 +1628,10 @@ import type { HomeProjectRow } from '~~/shared/types/home'
 defineProps<{ projects: HomeProjectRow[] }>()
 
 // "1 session" not "1 sessions" — the audit found 11 hard-coded plurals across 5 files.
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+// Irregulars are explicit; naive +'s' would render "1.2k memorys".
+const PLURALS: Record<string, string> = { session: 'sessions', memory: 'memories' }
+const plural = (n: number, word: string) =>
+  `${n} ${n === 1 ? word : (PLURALS[word] ?? `${word}s`)}`
 </script>
 
 <template>
@@ -1653,22 +1661,13 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
           :to="null"
         />
         <span class="text-xs text-dimmed truncate">
-          {{ plural(p.sessions, 'session') }} · {{ plural(p.memories, 'memory').replace('memorys', 'memories') }}
+          {{ plural(p.sessions, 'session') }} · {{ plural(p.memories, 'memory') }}
         </span>
       </ULink>
     </div>
   </UCard>
 </template>
 ```
-
-Replace that `.replace('memorys', 'memories')` hack with a proper irregular-plural map before committing:
-
-```ts
-const PLURALS: Record<string, string> = { session: 'sessions', memory: 'memories' }
-const plural = (n: number, word: string) => `${n} ${n === 1 ? word : PLURALS[word] ?? `${word}s`}`
-```
-
-and call it as `{{ plural(p.sessions, 'session') }} · {{ plural(p.memories, 'memory') }}`.
 
 - [ ] **Step 4: Typecheck and commit**
 
