@@ -1076,124 +1076,27 @@ git commit -m "feat(home): debounced ['home'] invalidation across nine resources
 
 ---
 
-### Task 6: Page shell, range switch, metrics strip, rig health
+### Task 6: Metrics strip and rig health
+
+> **Ordering note.** The page that renders these components is assembled in Task 9,
+> deliberately last, so that no task ever ends with `/` in a knowingly-broken state.
+> Tasks 6-8 create components that nothing renders yet — unused, not broken. Do NOT
+> touch `app/pages/index.vue` in this task.
 
 **Files:**
-- Modify: `app/pages/index.vue` (replace the redirect entirely)
 - Create: `app/components/home/MetricsStrip.vue`
 - Create: `app/components/home/RigHealth.vue`
-- Modify: `app/pages/login.vue:77` (`navigateTo('/documents')` → `navigateTo('/')`)
+- Modify: `app/pages/login.vue` (the post-login `navigateTo('/documents')` → `navigateTo('/')`)
 
 **Interfaces:**
-- Consumes: `HomeResponse`, `HomeRangeKey`, `HOME_RANGE_KEYS`, `HOME_RANGE_DEFAULT` (Task 1); `GET /api/home` (Task 4).
+- Consumes: `HomeMetrics`, `HomeUsage` (Task 1); `SnapshotResponse` from `shared/types/analytics.ts`.
 - Produces: `<HomeMetricsStrip :metrics :usage />`, `<HomeRigHealth />` (self-fetching, deliberately — it is the one separate query).
 
 - [ ] **Step 1: Invoke the `nuxt-ui-docs` skill**
 
-Confirm current v4 props for `UDashboardPanel`, `UDashboardNavbar`, `UDashboardSidebarCollapse`, `UButtonGroup`, `UButton`, `USkeleton`, `UAlert`, `UCard`. Do not write component markup from memory.
+Confirm current v4 props for `UBadge`, `ULink`. Do not write component markup from memory.
 
-- [ ] **Step 2: Replace `app/pages/index.vue`**
-
-```vue
-<script setup lang="ts">
-import { useQuery } from '@tanstack/vue-query'
-import { HOME_RANGE_KEYS, HOME_RANGE_DEFAULT } from '~~/shared/types/home'
-import type { HomeRangeKey, HomeResponse } from '~~/shared/types/home'
-
-definePageMeta({ title: 'Home' })
-
-// Range persists across visits, like the existing mm.documents.* prefs.
-const range = useCookie<HomeRangeKey>('mm.home.range', { default: () => HOME_RANGE_DEFAULT })
-
-const { data, isPending, error, refetch } = useQuery({
-  // Reactive key — the getter alone would have stable identity and never refetch.
-  queryKey: computed(() => ['home', range.value]),
-  queryFn: () => $fetch<HomeResponse>('/api/home', { query: { range: range.value } })
-})
-</script>
-
-<template>
-  <UDashboardPanel id="home" grow>
-    <template #header>
-      <UDashboardNavbar title="Home">
-        <template #leading>
-          <UDashboardSidebarCollapse />
-        </template>
-        <template #right>
-          <!-- shrink-0 + wrapping guard: the Tasks page's CTA currently clips
-               20px off-screen at 390px. This must not. -->
-          <UButtonGroup size="xs" class="shrink-0">
-            <UButton
-              v-for="k in HOME_RANGE_KEYS"
-              :key="k"
-              :color="range === k ? 'primary' : 'neutral'"
-              :variant="range === k ? 'solid' : 'outline'"
-              :label="k"
-              @click="range = k"
-            />
-          </UButtonGroup>
-        </template>
-      </UDashboardNavbar>
-    </template>
-
-    <template #body>
-      <div
-        v-if="error"
-        class="p-6"
-      >
-        <UAlert
-          color="error"
-          icon="i-lucide-circle-alert"
-          title="Couldn't load your dashboard"
-          :description="(error as Error).message"
-          :actions="[{ label: 'Retry', onClick: () => refetch() }]"
-        />
-      </div>
-
-      <div
-        v-else-if="isPending"
-        class="flex flex-col gap-4 p-4 sm:p-6"
-      >
-        <USkeleton class="h-20 w-full" />
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <USkeleton class="h-96 lg:col-span-2" />
-          <USkeleton class="h-96" />
-        </div>
-      </div>
-
-      <div
-        v-else-if="data"
-        class="flex flex-col gap-4 p-4 sm:p-6"
-      >
-        <HomeMetricsStrip
-          :metrics="data.metrics"
-          :usage="data.usage"
-        />
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
-          <div class="lg:col-span-2 min-w-0">
-            <HomeTimeline
-              :timeline="data.timeline"
-              :range="data.range"
-            />
-          </div>
-          <div class="flex flex-col gap-4 min-w-0">
-            <HomeNeedsAttention :attention="data.attention" />
-            <HomeQuickCapture />
-            <HomeAskBrain />
-            <HomeActiveTasks :tasks="data.tasks" />
-            <HomeRecentProjects :projects="data.projects" />
-          </div>
-        </div>
-      </div>
-    </template>
-  </UDashboardPanel>
-</template>
-```
-
-Note: Nuxt auto-imports directory-prefix component names, so `app/components/home/MetricsStrip.vue` is `<HomeMetricsStrip>`. Task 7-9 create the remaining five referenced components; until they exist the page will not render — that is expected and is why those tasks follow immediately.
-
-- [ ] **Step 3: Write `app/components/home/MetricsStrip.vue`**
+- [ ] **Step 2: Write `app/components/home/MetricsStrip.vue`**
 
 The metrics row: four tiles on desktop, one horizontally scrollable row below `sm` (mobile treatment 2 — DOM order preserved, compacted).
 
@@ -1249,7 +1152,7 @@ const tiles = computed(() => [
 </template>
 ```
 
-- [ ] **Step 4: Write `app/components/home/RigHealth.vue`**
+- [ ] **Step 3: Write `app/components/home/RigHealth.vue`**
 
 The one panel that fetches its own data, so Prometheus dying degrades this tile alone.
 
@@ -1302,7 +1205,7 @@ const glyphFor = (up: boolean | null) => up === false ? '✕' : up === true ? '�
 </template>
 ```
 
-- [ ] **Step 5: Retarget the post-login landing**
+- [ ] **Step 4: Retarget the post-login landing**
 
 In `app/pages/login.vue`, change the success branch:
 
@@ -1312,12 +1215,12 @@ In `app/pages/login.vue`, change the success branch:
     }
 ```
 
-- [ ] **Step 6: Typecheck and commit**
+- [ ] **Step 5: Typecheck and commit**
 
 ```bash
 pnpm typecheck
-git add app/pages/index.vue app/components/home/MetricsStrip.vue app/components/home/RigHealth.vue app/pages/login.vue
-git commit -m "feat(home): page shell, range switch, metrics strip, rig tile"
+git add app/components/home/MetricsStrip.vue app/components/home/RigHealth.vue app/pages/login.vue
+git commit -m "feat(home): metrics strip, rig health tile, post-login landing"
 ```
 
 ---
@@ -1685,6 +1588,7 @@ git commit -m "feat(home): attention, active tasks and recent projects panels"
 - Create: `app/components/home/QuickCapture.vue`
 - Create: `app/components/home/AskBrain.vue`
 - Modify: `app/pages/agent/index.vue` (accept `?q=`)
+- Modify: `app/pages/index.vue` (replace the redirect — the page assembly, Steps 7-9)
 
 **Interfaces:**
 - Consumes: `POST /api/capture/note` with `{ text: string, title?: string }` returning `DocumentDTO`.
@@ -1843,6 +1747,128 @@ git add app/components/home/QuickCapture.vue app/components/home/AskBrain.vue ap
 git commit -m "feat(home): quick capture + ask-the-brain handoff to /agent"
 ```
 
+- [ ] **Step 7: Assemble the page — replace `app/pages/index.vue`**
+
+```vue
+<script setup lang="ts">
+import { useQuery } from '@tanstack/vue-query'
+import { HOME_RANGE_KEYS, HOME_RANGE_DEFAULT } from '~~/shared/types/home'
+import type { HomeRangeKey, HomeResponse } from '~~/shared/types/home'
+
+definePageMeta({ title: 'Home' })
+
+// Range persists across visits, like the existing mm.documents.* prefs.
+const range = useCookie<HomeRangeKey>('mm.home.range', { default: () => HOME_RANGE_DEFAULT })
+
+const { data, isPending, error, refetch } = useQuery({
+  // Reactive key — the getter alone would have stable identity and never refetch.
+  queryKey: computed(() => ['home', range.value]),
+  queryFn: () => $fetch<HomeResponse>('/api/home', { query: { range: range.value } })
+})
+</script>
+
+<template>
+  <UDashboardPanel id="home" grow>
+    <template #header>
+      <UDashboardNavbar title="Home">
+        <template #leading>
+          <UDashboardSidebarCollapse />
+        </template>
+        <template #right>
+          <!-- shrink-0 + wrapping guard: the Tasks page's CTA currently clips
+               20px off-screen at 390px. This must not. -->
+          <UButtonGroup size="xs" class="shrink-0">
+            <UButton
+              v-for="k in HOME_RANGE_KEYS"
+              :key="k"
+              :color="range === k ? 'primary' : 'neutral'"
+              :variant="range === k ? 'solid' : 'outline'"
+              :label="k"
+              @click="range = k"
+            />
+          </UButtonGroup>
+        </template>
+      </UDashboardNavbar>
+    </template>
+
+    <template #body>
+      <div
+        v-if="error"
+        class="p-6"
+      >
+        <UAlert
+          color="error"
+          icon="i-lucide-circle-alert"
+          title="Couldn't load your dashboard"
+          :description="(error as Error).message"
+          :actions="[{ label: 'Retry', onClick: () => refetch() }]"
+        />
+      </div>
+
+      <div
+        v-else-if="isPending"
+        class="flex flex-col gap-4 p-4 sm:p-6"
+      >
+        <USkeleton class="h-20 w-full" />
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <USkeleton class="h-96 lg:col-span-2" />
+          <USkeleton class="h-96" />
+        </div>
+      </div>
+
+      <div
+        v-else-if="data"
+        class="flex flex-col gap-4 p-4 sm:p-6"
+      >
+        <HomeMetricsStrip
+          :metrics="data.metrics"
+          :usage="data.usage"
+        />
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+          <div class="lg:col-span-2 min-w-0">
+            <HomeTimeline
+              :timeline="data.timeline"
+              :range="data.range"
+            />
+          </div>
+          <div class="flex flex-col gap-4 min-w-0">
+            <HomeNeedsAttention :attention="data.attention" />
+            <HomeQuickCapture />
+            <HomeAskBrain />
+            <HomeActiveTasks :tasks="data.tasks" />
+            <HomeRecentProjects :projects="data.projects" />
+          </div>
+        </div>
+      </div>
+    </template>
+  </UDashboardPanel>
+</template>
+```
+
+Note: Nuxt auto-imports directory-prefix component names, so `app/components/home/MetricsStrip.vue` is `<HomeMetricsStrip>`. All eight referenced components exist by now (Tasks 6-9), so this step is the first moment `/` renders as a dashboard.
+
+- [ ] **Step 8: Verify the assembled page renders end to end**
+
+```bash
+playwright-cli goto "http://localhost:3000/"
+playwright-cli eval "() => ({
+  path: location.pathname,
+  panels: ['What happened','Needs attention','Active tasks','Projects'].filter(t => document.body.innerText.includes(t)),
+  anchors: document.querySelectorAll('a[href]').length
+})"
+```
+
+Expected: `path: '/'` (no redirect), all four panel headings present, `anchors > 0`.
+
+- [ ] **Step 9: Typecheck and commit the assembly**
+
+```bash
+pnpm typecheck
+git add app/pages/index.vue
+git commit -m "feat(home): assemble the dashboard at /"
+```
+
 ---
 
 ### Task 10: Full-gate run, responsive validation, and docs
@@ -1931,4 +1957,6 @@ git commit -m "docs(cycle-56): home dashboard wiki, roadmap row, backlog, handov
 
 **Type consistency.** `HomeRangeKey`, `HomeResponse`, `HomeTimeline`, `TimelineEntry`, `RawEvent`, `HomeAttention`, `HomeTaskRow`, `HomeProjectRow`, `HomeUsage` are defined once in Task 1 and used with the same shapes in Tasks 2, 4, 6, 7, 8. `buildTimeline(events, opts)` is declared in Task 2 and called with one argument in Task 4 (cap defaults). `getUsageSince(start)` is produced in Task 3 and consumed in Task 4, and Task 3 returns `Omit<UsageResponse, 'range'>` — Task 4 reads only `.totals` and `.unpriced`, both of which survive the Omit. `HOME_DEBOUNCE_MS` is produced in Task 5 and imported by its own test only.
 
-**One thing a reviewer should watch:** Task 6 Step 2 references five components that Tasks 7-9 create. The page will not render between Task 6 and Task 9. If tasks are executed by separate subagents, Task 6's reviewer must not treat the broken render as a defect — it is resolved by Task 9.
+**Ordering.** The page assembly lives at the END of Task 9, after every component it
+references exists (Tasks 6-8). No task ever ends with `/` in a knowingly-broken state, so no
+reviewer is asked to overlook one. Tasks 6-8 leave components unrendered — unused, not broken.
