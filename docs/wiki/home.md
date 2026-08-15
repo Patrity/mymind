@@ -8,7 +8,7 @@ updated: 2026-08-15
 # Home dashboard — `/`
 
 **status: shipped, unmerged.** Built on `feat/home-dashboard` (cycle 56); not yet merged to
-master, not yet deployed. Gates green (typecheck 0 / test 1158 across 150 files / build
+master, not yet deployed. Gates green (typecheck 0 / test 1159 across 150 files / build
 clean) and browser-validated on dev. See the [roadmap](../superpowers/plans/00-roadmap.md)
 row 56 and the [cycle-56 handover](../handovers/2026-08-15-home-dashboard.md).
 
@@ -238,7 +238,7 @@ back-button navigation into `/agent?q=...`.
 - Zero active tasks → "Nothing in progress."
 - Zero recent projects → "No project activity in this range."
 
-## Mobile (< `sm`, validated at 390×844)
+## Narrow viewports (< `lg`, validated at 390×844)
 
 DOM order is unchanged from desktop — nothing is reordered or tabbed:
 
