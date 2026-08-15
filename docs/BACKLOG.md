@@ -65,6 +65,31 @@ Automated deploy on merge to `master`.
 - Delivery options (pick one): a **self-hosted runner** on the LXC that runs `docker compose -f docker-compose.prod.yml up -d --build`; OR push the image to a registry (GHCR) + a **pull-based** updater on the LXC (watchtower/cron `docker compose pull && up -d`); OR SSH deploy over a tunnel. Pull-based is simplest for a NAT'd homelab.
 - Run `pnpm db:migrate` as part of the deploy (the prod image already self-migrates on start).
 
+### From the 2026-08-15 UX audit — deferred out of cycle 56 (Home dashboard)
+The [cycle-56 spec](superpowers/specs/2026-08-15-home-dashboard-design.md)'s "Out of scope"
+section named four adjacent findings from [`docs/explorations/2026-08-15-ux-audit-product.md`](explorations/2026-08-15-ux-audit-product.md)
+and deliberately left each out — "folding any of them in makes this unshippable." Each is its
+own future cycle:
+
+- **Capture titling.** User captures get machine-generated names (e.g. `/input/9O8RQk4EOZ.md`),
+  so the `/input` inbox can't be browsed by anything meaningful — every row reads as a random
+  slug. The single highest-value follow-up per the audit. Needs a title-inference pass (mirrors
+  the cycle-7 md-first transcription title inference already shipped for uploads) applied to
+  quick-capture notes too.
+- **Sidebar IA.** Four separate inboxes, four activity surfaces, conversations split across two
+  stores under three different names — the navigation no longer reflects one coherent
+  information architecture as features have accreted cycle over cycle. Needs a dedicated
+  audit-and-consolidate pass, not a drive-by fix.
+- **Login deep-link preservation.** `navigateTo('/login')` (`app/middleware/auth.global.ts`)
+  carries no `redirect` param, so a bookmarked or shared deep link (e.g. `/projects/mymind`)
+  always lands the user on the post-login default page instead of where they were headed.
+  Needs the redirect middleware to capture the original path and the login page to consume it
+  on success.
+- **Document editor silent data loss.** The 1.5s autosave debounce has no dirty indicator and no
+  navigation guard; the audit reproduced losing typed text by navigating away inside the
+  debounce window. Unrelated to Home, but flagged as the most severe open bug in the app —
+  should be prioritized ahead of the other three.
+
 ---
 
 ## 3. Open items from build reviews (quality · security · scale)
