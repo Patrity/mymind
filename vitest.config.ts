@@ -16,7 +16,6 @@ export default defineConfig({
       // DB-backed tests (*.db.test.ts) need a real Postgres. CI has no database service and
       // `deploy` needs `test`, so they run via `pnpm test:db` locally, never in the CI gate.
       '**/*.db.test.ts'
-    ],
-    testTimeout: 10000
+    ]
   }
 })

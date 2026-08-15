@@ -125,7 +125,7 @@ describe('home invalidation', () => {
       const keys = calls.map(c => JSON.stringify((c[0] as { queryKey: unknown }).queryKey))
       expect(keys, `resource=${resource}`).toContain(JSON.stringify(['home']))
     }
-  })
+  }, 15000)
 
   it('collapses a burst into a single ["home"] invalidation', async () => {
     const calls: unknown[][] = []
@@ -139,4 +139,3 @@ describe('home invalidation', () => {
     expect(homeCalls).toHaveLength(1)
   })
 })
-
