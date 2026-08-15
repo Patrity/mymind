@@ -74,7 +74,7 @@ async function onSubmit(event: FormSubmitEvent<LoginForm>) {
       const qs = new URLSearchParams(route.query as Record<string, string>).toString()
       await navigateTo(`/api/auth/mcp/authorize?${qs}`, { external: true })
     } else {
-      await navigateTo('/documents')
+      await navigateTo('/')
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : (isRegister.value ? 'Sign up failed' : 'Sign in failed')
