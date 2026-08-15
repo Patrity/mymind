@@ -1,15 +1,22 @@
 <script setup lang="ts">
+import { useMediaQuery } from '@vueuse/core'
 import type { HomeTimeline, HomeRangeKey } from '~~/shared/types/home'
 
 const props = defineProps<{ timeline: HomeTimeline, range: HomeRangeKey }>()
 
 // Mobile treatment 2: cap the list and expand on demand rather than reordering.
+// Scoped to below `lg` — the breakpoint where the right rail actually drops
+// under the timeline (see the `lg:grid-cols-3` layout in pages/index.vue).
+// Above `lg` there is no cramped single column to protect, so every row the
+// server sent renders.
 const MOBILE_PREVIEW = 12
+const isBelowLg = useMediaQuery('(max-width: 1023px)')
 const expanded = ref(false)
 
 const flat = computed(() => props.timeline.days.flatMap(d => d.entries.map(e => ({ day: d.day, entry: e }))))
-const visible = computed(() => expanded.value ? flat.value : flat.value.slice(0, MOBILE_PREVIEW))
-const hasMore = computed(() => flat.value.length > MOBILE_PREVIEW)
+const clientCapped = computed(() => isBelowLg.value && !expanded.value && flat.value.length > MOBILE_PREVIEW)
+const visible = computed(() => clientCapped.value ? flat.value.slice(0, MOBILE_PREVIEW) : flat.value)
+const hasMore = computed(() => isBelowLg.value && flat.value.length > MOBILE_PREVIEW)
 
 const dayLabel = (day: string) => {
   const today = new Date().toISOString().slice(0, 10)
@@ -66,12 +73,18 @@ const showHeader = (i: number) => i === 0 || visible.value[i]!.day !== visible.v
           :label="expanded ? 'Show less' : `Show ${flat.length - MOBILE_PREVIEW} more`"
           @click="expanded = !expanded"
         />
-        <!-- Truncation is DISCLOSED, never silent. -->
+        <!-- Truncation is DISCLOSED, never silent. Driven off `visible.length`
+             (what's actually in the DOM right now), not the server's `shown`
+             count — those two diverge whenever the client-side mobile cap is
+             also active, and a disclosure built from `shown` alone would say
+             "Showing 60 of 214" while only 12 rows are rendered. Comparing
+             the rendered count to the true total instead can never contradict
+             the screen, in any combination of server/client truncation. -->
         <span
-          v-if="timeline.shown < timeline.total"
+          v-if="visible.length < timeline.total"
           class="text-xs text-dimmed ml-auto"
         >
-          Showing {{ timeline.shown }} of {{ timeline.total }}
+          Showing {{ visible.length }} of {{ timeline.total }}
         </span>
       </div>
     </div>

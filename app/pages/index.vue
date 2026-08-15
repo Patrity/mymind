@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, keepPreviousData } from '@tanstack/vue-query'
 import { HOME_RANGE_KEYS, HOME_RANGE_DEFAULT } from '~~/shared/types/home'
 import type { HomeRangeKey, HomeResponse } from '~~/shared/types/home'
 
@@ -11,7 +11,10 @@ const range = useCookie<HomeRangeKey>('mm.home.range', { default: () => HOME_RAN
 const { data, isPending, error, refetch } = useQuery({
   // Reactive key — the getter alone would have stable identity and never refetch.
   queryKey: computed(() => ['home', range.value]),
-  queryFn: () => $fetch<HomeResponse>('/api/home', { query: { range: range.value } })
+  queryFn: () => $fetch<HomeResponse>('/api/home', { query: { range: range.value } }),
+  // Keep the previous range's data on screen during a range switch instead of
+  // dropping to the full skeleton — v5's replacement for v4's keepPreviousData: true.
+  placeholderData: keepPreviousData
 })
 </script>
 
@@ -40,8 +43,16 @@ const { data, isPending, error, refetch } = useQuery({
     </template>
 
     <template #body>
+      <!-- A hard initial failure (no data ever loaded) still replaces the
+           page with the error card. A failed BACKGROUND refetch (vue-query
+           keeps the last-good `data` populated and sets `error` alongside
+           it) must never destroy an already-rendered dashboard — that only
+           recovers on the next successful invalidation, and this page
+           refetches on almost any app activity (9 live resources + deploy
+           restarts), so a transient failure could otherwise blank the page
+           for good. -->
       <div
-        v-if="error"
+        v-if="error && !data"
         class="p-6"
       >
         <UAlert
@@ -68,6 +79,20 @@ const { data, isPending, error, refetch } = useQuery({
         v-else-if="data"
         class="flex flex-col gap-4 p-4 sm:p-6"
       >
+        <!-- Stale-but-served: a background refetch failed while the previous
+             successful payload is still on screen. Non-destructive — a
+             banner, not a swap — and visually distinct (subtle variant) from
+             the page-level error card above. -->
+        <UAlert
+          v-if="error"
+          color="error"
+          variant="subtle"
+          icon="i-lucide-circle-alert"
+          title="Couldn't refresh your dashboard"
+          description="Showing the last loaded data."
+          :actions="[{ label: 'Retry', onClick: () => { refetch() } }]"
+        />
+
         <HomeMetricsStrip
           :metrics="data.metrics"
           :usage="data.usage"

@@ -155,15 +155,23 @@ DOM order (not reordered, not tabbed).
 | Active tasks | `ActiveTasks.vue` | no (always the current 5) |
 | Recent projects | `RecentProjects.vue` | yes |
 
-All eight are dumb presentational components taking props from the single `/api/home`
-payload (`RigHealth` is the one exception — it fetches its own snapshot). None fetch panel
-data of their own, which keeps the one-query invariant enforceable.
+Nine components in total (`Timeline.vue` renders each row via a separate `TimelineRow.vue`,
+not counted as its own table row above). Eight of the nine are dumb presentational
+components taking props from the single `/api/home` payload — `RigHealth` is the one
+exception, self-fetching its own snapshot. None of the eight fetch panel data of their own,
+which keeps the one-query invariant enforceable.
 
 **Metrics strip.** Sessions / Memories / Documents tiles (`fmt()`: `k`/`M` suffixed) plus a
 Tokens tile carrying cycle 55's **API-equivalent value** ("at API rates — not billed" — Claude
-Code is subscription-billed, this is never real spend) and Rig health. If any usage model has
-no `model_prices` row (cold start after a fresh deploy), the tile shows "N model(s) unpriced —
-value pending" instead of a bare `$0.00`.
+Code is subscription-billed, this is never real spend) and Rig health. The value always
+renders (matching `UsageTiles.vue`'s additive pattern from cycle 55) — it is never suppressed
+wholesale just because some model in the window is unpriced, since `model_prices` syncs
+nightly and a single newly-seen model (or the permanent `<synthetic>` entry) would otherwise
+hide the whole figure until the next cron run. If any usage model has no `model_prices` row
+(cold start after a fresh deploy, or simply a brand-new model name), an *additional* warning
+line appends below the value: "1 model unpriced — value pending" or "N models unpriced —
+value pending" (correctly pluralized — the same singular/plural pattern `NeedsAttention.vue`
+uses, not a naive `+ 's'`).
 
 **Needs attention — deliberately not range-scoped.** Four absolute-backlog counts: unacked
 errors (`activity_log`, severity `error`, `acked_at is null`), memory conflicts
@@ -207,12 +215,23 @@ back-button navigation into `/agent?q=...`.
 
 ## Errors and empty states
 
-- `/api/home` fails → page-level `UAlert` with a Retry button, driven off the query's `error`
-  ref (per the live-data convention: watch `error`, never `isFetching`).
+- `/api/home` fails on the **initial** load (no data ever fetched) → page-level `UAlert` with
+  a Retry button, driven off the query's `error` ref (per the live-data convention: watch
+  `error`, never `isFetching`).
+- `/api/home` fails on a **background refetch** while a previous successful payload is still
+  cached (vue-query keeps `data` populated and sets `error` alongside it — this page refetches
+  on almost any app activity via nine live-bus resources, including during a deploy restart) →
+  the dashboard stays fully rendered; a `UAlert` banner (`variant="subtle"`, visually distinct
+  from the page-level error card) appears above it with its own Retry action. The page-level
+  branch only fires when `error && !data`, so a transient refetch failure can never blank an
+  already-rendered dashboard.
+- A range switch keeps the previous range's data on screen via `placeholderData:
+  keepPreviousData` (v5's replacement for v4's `keepPreviousData: true`) instead of dropping to
+  the full skeleton.
 - Rig snapshot fails → that one tile reads "Unavailable"; the other panels are unaffected
   (`retry: false` on its own query so a down rig can't retry-storm).
-- No usage price rows (post-deploy cold start, see cycle 55) → the value tile shows the
-  unpriced note, never a bare `$0.00`.
+- No usage price rows (post-deploy cold start, see cycle 55) → the value tile still renders,
+  with an additional unpriced note; never suppressed to a bare `$0.00`.
 - Empty range → "Nothing in the last {range}. Try a wider range." (not the command palette's
   bare "No data").
 - Zero attention items → "Nothing waiting."
@@ -230,9 +249,16 @@ DOM order is unchanged from desktop — nothing is reordered or tabbed:
   container's own right edge sits inside the viewport, and `document.documentElement`'s
   `scrollWidth === clientWidth`, i.e. no page-level horizontal scroll).
 - **Timeline** caps its visible rows at `MOBILE_PREVIEW = 12` with a "Show N more" / "Show
-  less" toggle (`Timeline.vue`) — progressive disclosure of rows the server already sent, not
-  a second re-grouping of server data. This is orthogonal to the server-side 60-row cap and
-  its "Showing X of Y" disclosure, which still applies underneath it.
+  less" toggle (`Timeline.vue`) — client-side progressive disclosure of rows the server
+  already sent, not a second re-grouping of server data. **The cap is viewport-conditional**
+  (`useMediaQuery('(max-width: 1023px)')` from `@vueuse/core`), gated to the `lg` breakpoint —
+  the same one where the right rail drops under the timeline (`lg:grid-cols-3` in
+  `pages/index.vue`) — not to `sm`, so despite living in this section it's really a "< `lg`"
+  behaviour and also applies at tablet/narrow-desktop widths above 390px. Above `lg` every row
+  the server sent renders, uncapped. This is orthogonal to the server-side 60-row cap, but the
+  two interact: the "Showing X of Y" disclosure is driven off `visible.length` (what's
+  literally in the DOM), not the server's raw `shown` count, specifically so it can never
+  claim more rows are showing than actually are while the client cap is also truncating.
 - **Range buttons** sit in a `shrink-0` `UFieldGroup` in the navbar specifically so they don't
   clip past the viewport — the Tasks page's "New task" CTA currently does exactly that
   (clips ~20px off-screen at 390px) and Home must not repeat it.

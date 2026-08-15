@@ -60,6 +60,7 @@ const settingsChildren: NavigationMenuItem[] = [
 ]
 
 const mainItems = computed<NavigationMenuItem[]>(() => [
+  { label: 'Home', icon: 'i-lucide-house', to: '/' },
   { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
   { label: 'Clipboard', icon: 'i-lucide-clipboard', to: '/clipboard' },
   { label: 'Agent', icon: 'i-lucide-bot', to: '/agent' },
@@ -112,7 +113,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     >
       <template #header="{ collapsed }">
         <ULink
-          to="/documents"
+          to="/"
           class="flex items-center gap-2 mx-1"
         >
           <UIcon

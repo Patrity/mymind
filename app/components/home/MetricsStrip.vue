@@ -35,12 +35,15 @@ const tiles = computed(() => [
     >
       <p class="text-xl font-semibold text-highlighted">{{ fmt(usage.tokens) }}</p>
       <p class="text-xs text-muted uppercase tracking-wide">Tokens</p>
-      <!-- Cycle 55: this is API-EQUIVALENT value, never money, never summed with LiteLLM spend. -->
-      <p v-if="usage.unpricedModels.length === 0" class="text-xs text-dimmed mt-0.5">
+      <!-- Cycle 55: this is API-EQUIVALENT value, never money, never summed with LiteLLM spend.
+           Always render the figure (matches UsageTiles.vue's additive pattern) — gating it
+           entirely on unpricedModels.length === 0 meant one newly-seen model (or the permanent
+           <synthetic> entry) hid the value until the nightly model_prices sync caught up. -->
+      <p class="text-xs text-dimmed mt-0.5">
         {{ money(usage.valueUsd) }} at API rates — not billed
       </p>
-      <p v-else class="text-xs text-warning mt-0.5">
-        {{ usage.unpricedModels.length }} model(s) unpriced — value pending
+      <p v-if="usage.unpricedModels.length > 0" class="text-xs text-warning mt-0.5">
+        {{ usage.unpricedModels.length }} {{ usage.unpricedModels.length === 1 ? 'model' : 'models' }} unpriced — value pending
       </p>
     </ULink>
 

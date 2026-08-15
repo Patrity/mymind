@@ -15,9 +15,23 @@ describe('utcDay', () => {
 })
 
 describe('buildTimeline grouping', () => {
+  it('pins COLLAPSE_THRESHOLD to 3', () => {
+    expect(COLLAPSE_THRESHOLD).toBe(3)
+  })
+
   it('leaves a collapsible type alone at exactly the threshold', () => {
+    // Date.UTC(...) with `i` as the minute component, not a hand-rolled hour
+    // string — the array length is COLLAPSE_THRESHOLD-derived, so under the
+    // plan's own prescribed mutation check (temporarily bumping the constant
+    // to 99 to prove this test actually bites) a fixed 2-digit HOUR field
+    // would still overflow past valid range (hour 25+ is genuinely invalid,
+    // unlike hour 24 which JS rolls to next-day midnight) and RangeError
+    // before the real assertions ever run. Minutes give far more headroom
+    // and Date.UTC normalizes overflow instead of producing Invalid Date —
+    // the same pattern the "defaults the cap to TIMELINE_CAP" test below
+    // already relies on for a similarly mutation-sized loop.
     const evs = Array.from({ length: COLLAPSE_THRESHOLD }, (_, i) =>
-      ev('memory', `2026-08-15T0${i}:00:00.000Z`, `mem${i}`))
+      ev('memory', new Date(Date.UTC(2026, 7, 15, 0, i)).toISOString(), `mem${i}`))
     const { days } = buildTimeline(evs)
     expect(days[0]!.entries).toHaveLength(COLLAPSE_THRESHOLD)
     expect(days[0]!.entries.every(e => e.count === undefined)).toBe(true)
@@ -25,7 +39,7 @@ describe('buildTimeline grouping', () => {
 
   it('collapses one over the threshold into a single summary row', () => {
     const evs = Array.from({ length: COLLAPSE_THRESHOLD + 1 }, (_, i) =>
-      ev('memory', `2026-08-15T0${i}:00:00.000Z`, `mem${i}`))
+      ev('memory', new Date(Date.UTC(2026, 7, 15, 0, i)).toISOString(), `mem${i}`))
     const { days } = buildTimeline(evs)
     expect(days[0]!.entries).toHaveLength(1)
     const row = days[0]!.entries[0]!
