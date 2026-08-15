@@ -8,9 +8,14 @@ type Invalidator = Pick<QueryClient, 'invalidateQueries'>
 // A burst of graph-invalidating events (e.g. the enrich-memories cron firing many
 // memory events within a few seconds) would otherwise refetch the whole ~1,900-node
 // galaxy graph + rebuild all GPU buffers once per event. Trailing-debounce so a burst
-// collapses into ONE ['graph'] refetch — this is the ONLY invalidation debounced here;
-// every other resource's invalidateQueries call above/around it stays immediate.
+// collapses into ONE ['graph'] refetch. The home dashboard below is debounced for the
+// same reason; every other resource's invalidateQueries call stays immediate.
 export const GRAPH_DEBOUNCE_MS = 700
+
+// Home (cycle 56) is a cross-type view keyed on ['home'] and fed by nine resources.
+// A Claude Code session streaming in produces the same burst shape the graph sees, so
+// it gets the same treatment and the same figure — there is no reason for two.
+export const HOME_DEBOUNCE_MS = 700
 
 // The galaxy is a cross-type view keyed on ['graph'] alone (no id/list split), so
 // any resource that can move a node or edge in it needs to invalidate that key too.
@@ -20,18 +25,26 @@ const debouncedInvalidateGraph = useDebounceFn(
 )
 const invalidateGraph = (c: Invalidator) => { void debouncedInvalidateGraph(c) }
 
+const debouncedInvalidateHome = useDebounceFn(
+  (c: Invalidator) => c.invalidateQueries({ queryKey: ['home'] }),
+  HOME_DEBOUNCE_MS
+)
+const invalidateHome = (c: Invalidator) => { void debouncedInvalidateHome(c) }
+
 // Per-resource override hook. Default behaviour (invalidate detail + list) covers
 // every resource today; add an entry here only when a resource needs extra keys.
 const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => void>> = {
-  memory: (c) => { c.invalidateQueries({ queryKey: ['memory', 'count'] }); invalidateGraph(c) },
-  review: (c) => c.invalidateQueries({ queryKey: ['review', 'count'] }),
-  activity: (c) => c.invalidateQueries({ queryKey: ['activity', 'count'] }),
+  memory: (c) => { c.invalidateQueries({ queryKey: ['memory', 'count'] }); invalidateGraph(c); invalidateHome(c) },
+  review: (c) => { c.invalidateQueries({ queryKey: ['review', 'count'] }); invalidateHome(c) },
+  activity: (c) => { c.invalidateQueries({ queryKey: ['activity', 'count'] }); invalidateHome(c) },
   // A skill is a document (type='skill') — a background agent write needs the
   // /settings/skills list to refresh too, not just the document graph/detail.
-  document: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); invalidateGraph(c) },
-  image: (c) => invalidateGraph(c),
-  session: (c) => invalidateGraph(c),
-  project: (c) => invalidateGraph(c),
+  document: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); invalidateGraph(c); invalidateHome(c) },
+  image: (c) => { invalidateGraph(c); invalidateHome(c) },
+  session: (c) => { invalidateGraph(c); invalidateHome(c) },
+  project: (c) => { invalidateGraph(c); invalidateHome(c) },
+  task: (c) => invalidateHome(c),
+  clipboard: (c) => invalidateHome(c),
   graph: (c) => invalidateGraph(c)
 }
 

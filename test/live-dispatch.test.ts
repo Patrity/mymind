@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS } from '../app/utils/live-dispatch'
+import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS } from '../app/utils/live-dispatch'
 import type { LiveEvent } from '../shared/types/live'
 
 function fakeClient() {
@@ -109,3 +109,34 @@ describe('dispatchLiveEvent — galaxy graph invalidation', () => {
     expect(memoryDetailCalls).toHaveLength(1)
   })
 })
+
+describe('home invalidation', () => {
+  const HOME_RESOURCES = [
+    'document', 'image', 'memory', 'review',
+    'project', 'task', 'session', 'clipboard', 'activity'
+  ] as const
+
+  it('every home-feeding resource eventually invalidates ["home"]', async () => {
+    for (const resource of HOME_RESOURCES) {
+      const calls: unknown[][] = []
+      const client = { invalidateQueries: (a: unknown) => { calls.push([a]); return Promise.resolve() } }
+      dispatchLiveEvent(client, { v: 1, resource, action: 'created', id: 'x', at: Date.now() })
+      await new Promise(r => setTimeout(r, HOME_DEBOUNCE_MS + 60))
+      const keys = calls.map(c => JSON.stringify((c[0] as { queryKey: unknown }).queryKey))
+      expect(keys, `resource=${resource}`).toContain(JSON.stringify(['home']))
+    }
+  })
+
+  it('collapses a burst into a single ["home"] invalidation', async () => {
+    const calls: unknown[][] = []
+    const client = { invalidateQueries: (a: unknown) => { calls.push([a]); return Promise.resolve() } }
+    for (let i = 0; i < 12; i++) {
+      dispatchLiveEvent(client, { v: 1, resource: 'memory', action: 'created', id: `m${i}`, at: Date.now() })
+    }
+    await new Promise(r => setTimeout(r, HOME_DEBOUNCE_MS + 60))
+    const homeCalls = calls.filter(c =>
+      JSON.stringify((c[0] as { queryKey: unknown }).queryKey) === JSON.stringify(['home']))
+    expect(homeCalls).toHaveLength(1)
+  })
+})
+
