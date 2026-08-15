@@ -35,10 +35,8 @@ describe('extractRates', () => {
     expect(r!.cacheCreationAbove1hCostPerToken).toBe(r!.cacheCreationCostPerToken)
   })
 
-  it('defaults absent cache rates to 0 rather than dropping the model', () => {
-    const [r] = extractRates(MAP, ['model-without-cache'])
-    expect(r!.cacheReadCostPerToken).toBe('0')
-    expect(r!.cacheCreationCostPerToken).toBe('0')
+  it('skips a model with no cache_read_input_token_cost — a silent $0 on ~95% of its volume is worse than a gap', () => {
+    expect(extractRates(MAP, ['model-without-cache'])).toEqual([])
   })
 
   it('skips models absent from the map entirely — they become the unpriced bucket', () => {

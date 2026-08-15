@@ -20,13 +20,20 @@ export function extractRates(map: Record<string, unknown>, models: string[]): Ne
     if (!e) continue
     const input = e.input_cost_per_token
     const output = e.output_cost_per_token
-    if (typeof input !== 'number' || typeof output !== 'number') continue
+    const cacheRead = e.cache_read_input_token_cost
+    // Cache reads are ~95% of token volume on the real corpus — a model missing this rate is
+    // NOT "no cache tier", it's a price-map gap. Defaulting it to 0 would silently zero-price
+    // the bulk of that model's usage while still landing it in `model_prices`, which would
+    // wrongly EXCLUDE it from the unpriced bucket (a zero that looks like priced data is worse
+    // than a gap that admits it — the whole point of the unpriced bucket). Skip the model
+    // instead, exactly like a missing input/output cost.
+    if (typeof input !== 'number' || typeof output !== 'number' || typeof cacheRead !== 'number') continue
     const creation = numStr(e.cache_creation_input_token_cost)
     out.push({
       model,
       inputCostPerToken: numStr(input),
       outputCostPerToken: numStr(output),
-      cacheReadCostPerToken: numStr(e.cache_read_input_token_cost),
+      cacheReadCostPerToken: numStr(cacheRead),
       cacheCreationCostPerToken: creation,
       // Absent 1h tier means the model has no separate long-cache rate — fall back to the 5m
       // rate rather than writing null, which would make the whole row unusable.
