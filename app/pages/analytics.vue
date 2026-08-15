@@ -23,8 +23,13 @@ const usageRangeItems = [
   { label: '7d', value: '7d' }, { label: '30d', value: '30d' },
   { label: '90d', value: '90d' }, { label: 'All', value: 'all' },
 ]
-const { data: usage, isPending: usagePending } = useUsage(usageRange)
-const { data: dispatches } = useDispatches(usageRange)
+// Gated to the Usage tab — an Infrastructure-only visit should not pay for this aggregation.
+// (measured on prod at range=30d: 86ms and a 22MB external-merge spill). Deliberately no
+// `staleTime` here, unlike the canonical `useUsage('all')` fetch below — these are range-scoped
+// and should stay fresh whenever the user is actually looking at the Usage tab.
+const usageTabActive = computed(() => tab.value === 'usage')
+const { data: usage, isPending: usagePending } = useUsage(usageRange, { enabled: usageTabActive })
+const { data: dispatches } = useDispatches(usageRange, { enabled: usageTabActive })
 
 // Hash-coloured in the child components by name, not by this order — kept alphabetical
 // here only so the stack order in UsageStackedChart doesn't reshuffle on every fetch
@@ -46,16 +51,17 @@ const usageModels = computed(() => [...(usage.value?.byModel.map(r => r.model) ?
 // `created_at` lower bound, so it's an unbounded full-history aggregation that grows
 // with the corpus (see server/services/usage.ts). Two guards keep it from being a
 // tax on every page load:
-//  - `enabled` gates it to the Usage tab. Both this and the range-scoped `useUsage`
-//    call above run unconditionally in <script setup> (Vue composables can't be
-//    called conditionally), so without this an Infrastructure-only visit would
-//    still fire it — the `v-if="tab === 'usage'"` in the template only gates
-//    rendering, not the fetch itself.
+//  - `enabled: usageTabActive` gates it to the Usage tab, same as the range-scoped
+//    `useUsage`/`useDispatches` calls above — all three composables run unconditionally
+//    in <script setup> (Vue composables can't be called conditionally), so without
+//    this an Infrastructure-only visit would still fire it — the `v-if="tab === 'usage'"`
+//    in the template only gates rendering, not the fetch itself.
 //  - `staleTime` of 30 minutes: the model roster changes about as often as
 //    Anthropic ships a model, so refetching it on every tab switch/navigation is
-//    pure waste.
+//    pure waste. Deliberately NOT applied to the two range-scoped fetches above —
+//    those should stay fresh whenever the user is actually looking at them.
 const { data: usageAll } = useUsage('all', {
-  enabled: computed(() => tab.value === 'usage'),
+  enabled: usageTabActive,
   staleTime: 30 * 60 * 1000,
 })
 const canonicalModels = computed(() => [...(usageAll.value?.byModel.map(r => r.model) ?? [])].sort())

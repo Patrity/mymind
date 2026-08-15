@@ -52,11 +52,15 @@ export function useAnalytics() {
     })
   }
 
-  const useDispatches = (range: MaybeRefOrGetter<UsageRangeKey>) => {
+  // Mirrors `useUsage`'s optional `enabled` gate above — same rationale: a range-scoped call site
+  // (e.g. the Usage tab's ungated dispatches fetch) can pause this behind tab visibility without
+  // every other call site paying for it.
+  const useDispatches = (range: MaybeRefOrGetter<UsageRangeKey>, options?: { enabled?: MaybeRefOrGetter<boolean> }) => {
     const r = computed(() => toValue(range))
     return useQuery({
       queryKey: computed(() => ['analytics', 'dispatches', r.value] as const),
       queryFn: () => $fetch<DispatchResponse>('/api/analytics/dispatches', { query: { range: r.value } }),
+      enabled: options?.enabled,
     })
   }
 
