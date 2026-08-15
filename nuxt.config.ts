@@ -38,7 +38,6 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
 
   routeRules: {
-    '/': { redirect: '/documents' },
     '/voice': { redirect: '/agent' },
     // Catch-all: every route is SPA by default so new pages never forget.
     '/**': { ssr: false },
