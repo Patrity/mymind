@@ -1,0 +1,399 @@
+<title>Multi-User MyMind — Feasibility</title>
+<style>
+  :root{
+    --ground:#F5F2EC; --panel:#FBF9F4; --panel-2:#EFEBE1;
+    --ink:#1A1D24; --ink-soft:#4A4E58; --ink-faint:#7A7E88;
+    --rule:#DAD4C7; --rule-soft:#E7E2D6;
+    --accent:#B87514; --accent-bright:#E0A339;
+    --blocker:#C0442E; --major:#B57A1E; --minor:#3F8577;
+    --ready:#3F8577;
+    --shadow:0 1px 0 rgba(26,29,36,.04), 0 10px 34px -20px rgba(26,29,36,.30);
+    --mono:'Space Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#111318; --panel:#181B22; --panel-2:#1F232B;
+      --ink:#ECE7DC; --ink-soft:#A9AEBA; --ink-faint:#6C7280;
+      --rule:#2A2F39; --rule-soft:#20242C;
+      --accent:#E0A339; --accent-bright:#F0BC5C;
+      --blocker:#E4674E; --major:#E0A339; --minor:#5FB3A2;
+      --ready:#5FB3A2;
+      --shadow:0 1px 0 rgba(0,0,0,.30), 0 18px 44px -24px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#111318; --panel:#181B22; --panel-2:#1F232B;
+    --ink:#ECE7DC; --ink-soft:#A9AEBA; --ink-faint:#6C7280;
+    --rule:#2A2F39; --rule-soft:#20242C;
+    --accent:#E0A339; --accent-bright:#F0BC5C;
+    --blocker:#E4674E; --major:#E0A339; --minor:#5FB3A2;
+    --ready:#5FB3A2;
+    --shadow:0 1px 0 rgba(0,0,0,.30), 0 18px 44px -24px rgba(0,0,0,.7);
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--sans); line-height:1.6;
+    font-size:16px; letter-spacing:-.003em;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1000px; margin:0 auto; padding:0 24px}
+
+  .eyebrow{
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.22em;
+    text-transform:uppercase; color:var(--ink-faint);
+  }
+  h1,h2,h3{text-wrap:balance; letter-spacing:-.02em; line-height:1.08; font-weight:700}
+  a{color:var(--accent); text-underline-offset:3px}
+
+  /* ---- hero ---- */
+  header{
+    border-bottom:1px solid var(--rule);
+    background:
+      linear-gradient(var(--ground),var(--ground)) padding-box,
+      repeating-linear-gradient(90deg,var(--rule-soft) 0 1px,transparent 1px 64px) padding-box;
+  }
+  .hero{padding:66px 0 46px}
+  .hero .eyebrow{display:flex; gap:14px; align-items:center; flex-wrap:wrap}
+  .hero .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--accent-bright);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent-bright) 22%,transparent)}
+  .hero h1{
+    font-size:clamp(2.35rem,6vw,4.1rem); margin:.5em 0 .35em;
+  }
+  .hero h1 .em{color:var(--accent)}
+  .lede{font-size:clamp(1.05rem,2.2vw,1.3rem); color:var(--ink-soft); max-width:60ch; margin:0}
+  .lede strong{color:var(--ink); font-weight:600}
+
+  /* ---- verdict wiring ---- */
+  .verdict{
+    margin:40px 0 4px; display:grid; grid-template-columns:1fr auto 1fr; gap:0;
+    border:1px solid var(--rule); border-radius:14px; overflow:hidden;
+    background:var(--panel); box-shadow:var(--shadow);
+  }
+  .verdict .cell{padding:26px 24px}
+  .verdict .cell.mid{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding:26px 20px; background:var(--panel-2); border-left:1px solid var(--rule); border-right:1px solid var(--rule);
+    min-width:120px;
+  }
+  .verdict .tag{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; margin-bottom:10px}
+  .verdict .ready .tag{color:var(--ready)}
+  .verdict .notready .tag{color:var(--blocker)}
+  .verdict h3{font-size:1.18rem; margin:0 0 6px}
+  .verdict p{margin:0; color:var(--ink-soft); font-size:.94rem}
+  .verdict .arrow{font-family:var(--mono); color:var(--ink-faint); font-size:12px; letter-spacing:.1em; text-align:center; line-height:1.4}
+  .verdict .arrow b{display:block; color:var(--accent); font-size:22px; letter-spacing:0}
+  @media(max-width:680px){
+    .verdict{grid-template-columns:1fr}
+    .verdict .cell.mid{flex-direction:row; gap:12px; border:0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule)}
+  }
+
+  /* ---- generic section ---- */
+  section{padding:52px 0}
+  section + section{border-top:1px solid var(--rule-soft)}
+  .sec-head{display:flex; align-items:baseline; gap:16px; margin-bottom:26px; flex-wrap:wrap}
+  .sec-head .num{font-family:var(--mono); font-size:12px; color:var(--accent); letter-spacing:.1em}
+  .sec-head h2{font-size:clamp(1.5rem,3.4vw,2rem); margin:0}
+  .sec-head .sub{color:var(--ink-faint); font-size:.9rem; margin-left:auto; font-family:var(--mono)}
+
+  /* ---- metric strip ---- */
+  .metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--rule); border:1px solid var(--rule); border-radius:12px; overflow:hidden}
+  .metrics .m{background:var(--panel); padding:20px 18px}
+  .metrics .big{font-size:2rem; font-weight:700; letter-spacing:-.03em; font-variant-numeric:tabular-nums; line-height:1}
+  .metrics .big.zero{color:var(--blocker)}
+  .metrics .lab{font-size:.82rem; color:var(--ink-soft); margin-top:8px; line-height:1.35}
+  @media(max-width:720px){.metrics{grid-template-columns:repeat(2,1fr)}}
+  .callout{
+    margin-top:20px; border:1px solid var(--rule); border-left:3px solid var(--blocker);
+    background:var(--panel); border-radius:10px; padding:18px 20px; font-size:.95rem; color:var(--ink-soft);
+  }
+  .callout b{color:var(--ink)}
+
+  /* ---- ready list ---- */
+  .ready-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  @media(max-width:680px){.ready-grid{grid-template-columns:1fr}}
+  .ready-card{background:var(--panel); border:1px solid var(--rule); border-radius:12px; padding:20px 22px; box-shadow:var(--shadow)}
+  .ready-card h3{font-size:1.02rem; margin:0 0 8px; display:flex; align-items:center; gap:9px}
+  .ready-card h3::before{content:""; width:8px; height:8px; border-radius:2px; background:var(--ready); flex:none}
+  .ready-card p{margin:0; font-size:.9rem; color:var(--ink-soft)}
+  code{font-family:var(--mono); font-size:.85em; background:var(--panel-2); padding:.12em .4em; border-radius:5px; color:var(--ink); white-space:nowrap}
+  @media(max-width:520px){code{white-space:normal}}
+
+  /* ---- blocker list ---- */
+  .blockers{display:flex; flex-direction:column; gap:10px; counter-reset:b}
+  .bl{
+    display:grid; grid-template-columns:auto 1fr auto; align-items:start; gap:18px;
+    background:var(--panel); border:1px solid var(--rule); border-radius:12px;
+    padding:18px 20px 18px 20px; position:relative; overflow:hidden;
+  }
+  .bl::before{content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--sev)}
+  .bl .rank{font-family:var(--mono); font-size:15px; font-weight:700; color:var(--ink-faint); font-variant-numeric:tabular-nums; padding-left:6px; min-width:1.6ch}
+  .bl .body h3{font-size:1.01rem; margin:0 0 5px}
+  .bl .body p{margin:0; font-size:.9rem; color:var(--ink-soft)}
+  .bl .sev{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--sev); border:1px solid var(--sev); border-radius:100px; padding:4px 9px; white-space:nowrap; align-self:center;
+    background:color-mix(in srgb,var(--sev) 8%,transparent);
+  }
+  .bl[data-sev="blocker"]{--sev:var(--blocker)}
+  .bl[data-sev="major"]{--sev:var(--major)}
+  @media(max-width:600px){
+    .bl{grid-template-columns:auto 1fr; gap:12px}
+    .bl .sev{grid-column:2; justify-self:start; margin-top:4px}
+  }
+
+  .subhead{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin:34px 0 14px}
+  ul.tight{margin:0; padding-left:0; list-style:none; display:flex; flex-direction:column; gap:11px}
+  ul.tight li{padding-left:22px; position:relative; font-size:.94rem; color:var(--ink-soft)}
+  ul.tight li::before{content:"→"; position:absolute; left:0; color:var(--accent); font-family:var(--mono); font-size:.85em; top:.15em}
+  ul.tight li b{color:var(--ink); font-weight:600}
+
+  /* ---- scorecard table ---- */
+  .tablewrap{overflow-x:auto; border:1px solid var(--rule); border-radius:12px; box-shadow:var(--shadow)}
+  table{width:100%; border-collapse:collapse; min-width:560px; background:var(--panel)}
+  th,td{text-align:left; padding:13px 18px; border-bottom:1px solid var(--rule-soft); font-size:.9rem}
+  thead th{font-family:var(--mono); font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-faint); font-weight:400; background:var(--panel-2)}
+  tbody tr:last-child td{border-bottom:0}
+  td.eff{font-family:var(--mono); font-weight:700; font-size:.82rem; white-space:nowrap}
+  .pill{display:inline-block; font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.05em; padding:3px 8px; border-radius:6px}
+  .e-S{color:var(--minor); background:color-mix(in srgb,var(--minor) 14%,transparent)}
+  .e-M{color:var(--major); background:color-mix(in srgb,var(--major) 14%,transparent)}
+  .e-L{color:var(--blocker); background:color-mix(in srgb,var(--blocker) 12%,transparent)}
+  .e-XL{color:#fff; background:var(--blocker)}
+  :root[data-theme="dark"] .e-XL, :root:not([data-theme="light"]) .e-XL{color:#111318}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .e-XL{color:#111318}}
+  td .h{color:var(--ink-soft)}
+
+  /* ---- paths ---- */
+  .paths{display:flex; flex-direction:column; gap:16px}
+  .path{
+    border:1px solid var(--rule); border-radius:14px; background:var(--panel);
+    padding:26px 26px; box-shadow:var(--shadow); position:relative;
+  }
+  .path.rec{border-color:var(--accent); background:linear-gradient(180deg,color-mix(in srgb,var(--accent-bright) 7%,var(--panel)),var(--panel))}
+  .path .phead{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px}
+  .path .code{font-family:var(--mono); font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); font-weight:700}
+  .path h3{font-size:1.28rem; margin:0}
+  .path .cost{margin-left:auto; font-family:var(--mono); font-size:12px; color:var(--ink-soft); border:1px solid var(--rule); padding:5px 11px; border-radius:100px; white-space:nowrap}
+  .path .recflag{position:absolute; top:-11px; right:20px; font-family:var(--mono); font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; background:var(--accent); color:#1A1D24; padding:4px 11px; border-radius:100px; font-weight:700}
+  .path > p{margin:.4em 0 0; color:var(--ink-soft); font-size:.96rem}
+  .path ol{margin:16px 0 0; padding-left:0; list-style:none; counter-reset:step; display:flex; flex-direction:column; gap:9px}
+  .path ol li{position:relative; padding-left:34px; font-size:.9rem; color:var(--ink-soft); counter-increment:step}
+  .path ol li::before{content:counter(step); position:absolute; left:0; top:-1px; width:22px; height:22px; border-radius:6px; background:var(--panel-2); border:1px solid var(--rule); font-family:var(--mono); font-size:11px; font-weight:700; color:var(--accent); display:grid; place-items:center}
+  .path ol li b{color:var(--ink); font-weight:600}
+
+  /* ---- forks / recs ---- */
+  .forks{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  @media(max-width:680px){.forks{grid-template-columns:1fr}}
+  .fork{background:var(--panel); border:1px solid var(--rule); border-radius:11px; padding:18px 20px}
+  .fork .q{font-weight:650; font-size:.96rem; margin:0 0 6px}
+  .fork p{margin:0; font-size:.88rem; color:var(--ink-soft)}
+  .fork .rec{color:var(--accent); font-weight:600}
+
+  .recs{display:flex; flex-direction:column; gap:12px; counter-reset:r}
+  .rec-row{display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:start; background:var(--panel); border:1px solid var(--rule); border-radius:12px; padding:18px 22px; box-shadow:var(--shadow)}
+  .rec-row .when{font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:#1A1D24; background:var(--accent-bright); padding:5px 10px; border-radius:6px; white-space:nowrap; align-self:center; font-weight:700}
+  .rec-row.q .when{background:var(--panel-2); color:var(--accent); border:1px solid var(--rule)}
+  .rec-row p{margin:0; font-size:.95rem; color:var(--ink-soft)}
+  .rec-row p b{color:var(--ink)}
+
+  footer{border-top:1px solid var(--rule); padding:34px 0 60px; color:var(--ink-faint); font-size:.82rem; font-family:var(--mono); line-height:1.7}
+  footer .wrap > div{max-width:80ch}
+</style>
+
+<header>
+  <div class="wrap hero">
+    <div class="eyebrow"><span class="dot"></span> Systems Feasibility · MyMind · 2026-08-10</div>
+    <h1>Going <span class="em">multi-user</span> isn't a feature. It's an authorization re-architecture.</h1>
+    <p class="lede"><strong>Feasible — and cheaper than it looks — because of how the app is built, not what it stores.</strong> The layering is clean and better-auth is already multi-user-ready. The data model and the trust model are purely single-user: today, "authenticated" means "owner of everything."</p>
+
+    <div class="verdict" role="group" aria-label="Verdict summary">
+      <div class="cell ready notready">
+        <div class="tag">Not ready — the data &amp; trust model</div>
+        <h3>0 tables know who owns them</h3>
+        <p>No domain table carries an owner. Every query is corpus-wide. Any second account reads and edits everything.</p>
+      </div>
+      <div class="cell mid">
+        <div class="arrow">bridged by<b>~6–8</b>cycles</div>
+      </div>
+      <div class="cell ready">
+        <div class="tag">Ready — the architecture</div>
+        <h3>One clean seam to scope</h3>
+        <p>Thin handlers over ~171 service functions. better-auth, per-request MCP, one storage driver — all already N-user-shaped.</p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">01</span>
+      <h2>Where it stands today</h2>
+      <span class="sub">measured, not estimated</span>
+    </div>
+    <div class="metrics">
+      <div class="m"><div class="big zero">0</div><div class="lab">domain tables referencing <code>user.id</code> (the one that exists is dead code)</div></div>
+      <div class="m"><div class="big">~20</div><div class="lab">tables needing an owner column + backfill</div></div>
+      <div class="m"><div class="big">~171</div><div class="lab">service functions to thread ownership through</div></div>
+      <div class="m"><div class="big zero">none</div><div class="lab">roles, and no rate limiting anywhere</div></div>
+    </div>
+    <div class="callout">
+      <b>Live risk today, before a single user is added:</b> the only thing separating a stranger from your entire corpus, all AI keys, exec secrets, and a root shell is the <code>ALLOW_SIGNUP</code> env flag being left off. The bootstrap toggle is the whole wall.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">02</span>
+      <h2>Why it's more feasible than it looks</h2>
+      <span class="sub">the architecture is on your side</span>
+    </div>
+    <div class="ready-grid">
+      <div class="ready-card"><h3>better-auth is already multi-user</h3><p>Sessions, accounts, OAuth-token→user binding, PKCE + consent — all N-user-ready. The MCP lane <em>already resolves a real <code>userId</code></em>… which <code>buildMcpServer()</code> then throws away.</p></div>
+      <div class="ready-card"><h3>The enforcement seam exists</h3><p>Handlers are uniformly thin; nearly everything funnels through <code>server/services/</code>. Scoping is wide but mechanical — thread an <code>ownerId</code>, back it with Postgres RLS.</p></div>
+      <div class="ready-card"><h3>Stateless where it counts</h3><p>The MCP server is built fresh per request. The live-bus comment already sketches the fix. Storage funnels through one driver with no path-based serving.</p></div>
+      <div class="ready-card"><h3>The frontend is clean</h3><p>No "Tony" hardcoded anywhere in <code>app/</code>. Auth middleware is a pure session check. The API-keys page is already shaped as personal data.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">03</span>
+      <h2>The blockers, ranked</h2>
+      <span class="sub">everything is downstream of #1</span>
+    </div>
+    <div class="blockers">
+      <div class="bl" data-sev="blocker"><div class="rank">1</div><div class="body"><h3>No tenant column, no ownership predicate, anywhere</h3><p>Every list / get / search / update / delete is table-wide across documents, memories, tasks, projects, sessions, images, conversations, activity, search. The rest of this list is downstream of this one fact.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="blocker"><div class="rank">2</div><div class="body"><h3><code>api_tokens</code> are userless skeleton keys</h3><p>No owner column; middleware grants full access with no identity. Every mm_ token — ShareX, cc-hook, MCP — is whole-corpus access. A leaked token is a god-token.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="blocker"><div class="rank">3</div><div class="body"><h3>Agent exec = root RCE on the shared host</h3><p><code>/bin/sh</code> as root, no cwd jail, <b>all decrypted service secrets injected into the child env</b>, and the prompt hands the model the DB-access command. Incompatible with untrusted users; per-tenant sandboxing is a near-rewrite. v1 answer: exec admin-only.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="blocker"><div class="rank">4</div><div class="body"><h3>Skills are cross-user prompt injection</h3><p>One global namespace; agent-authored skills go live immediately with only structural validation. One user's skill becomes live instructions inside every other user's agent.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="blocker"><div class="rank">5</div><div class="body"><h3>No roles</h3><p>Any authenticated principal — including any bearer token — can rewrite AI keys, exec secrets, the shared persona, and fire <code>/api/admin/*</code> LLM-cost batch jobs over everyone's data.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="blocker"><div class="rank">6</div><div class="body"><h3>All three SSE surfaces are global</h3><p>The change bus leaks ids and slugs to every client. <b>Clipboard SSE pushes full message contents to any subscriber with zero ownership check.</b> Agent-activity broadcasts tool summaries globally.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="blocker"><div class="rank">7</div><div class="body"><h3><code>activity_log</code> stores raw model payloads, unowned</h3><p>Full prompts and document content persisted with no owner, listed globally — one user's private content readable by all.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="blocker"><div class="rank">8</div><div class="body"><h3>Account lifecycle is a bootstrap hack</h3><p><code>ALLOW_SIGNUP</code> toggle into a shared corpus. No invites, no email verification, no password reset. There is no <em>safe</em> way to add a second account today.</p></div><div class="sev">Blocker</div></div>
+      <div class="bl" data-sev="major"><div class="rank">9</div><div class="body"><h3>Global config singletons + zero metering</h3><p>One <code>ai_config</code> with the operator's keys, one persona, one observability config. No per-user cost attribution, budgets, quotas, or billing exist anywhere in the repo.</p></div><div class="sev">Major</div></div>
+      <div class="bl" data-sev="major"><div class="rank">10</div><div class="body"><h3>Global uniqueness = collisions, injected writes, and oracles</h3><p>Two users can't both own <code>notes/inbox.md</code>. A hostile client can <b>inject into another user's session</b> via a colliding external_id. Two tenants cloning the same repo merge into one project.</p></div><div class="sev">Major</div></div>
+    </div>
+
+    <div class="subhead">Cross-tenant writes people forget about — not just read leaks</div>
+    <ul class="tight">
+      <li>The <b>memory relations judge</b> pools neighbors across owners and can <b>auto-archive another user's memory</b> via LLM "supersede."</li>
+      <li><b>Enrichment cross-pollination:</b> the filing prompt sees <em>all</em> projects (files your doc into my project); the image tag library unions <em>everyone's</em> tags.</li>
+      <li><b>Blob dedup</b> is a cross-tenant existence oracle, and un-sharing an image doesn't revoke it (immutable 1-year cache + slug reuse).</li>
+    </ul>
+
+    <div class="subhead">Operational blockers for hosting anyone</div>
+    <ul class="tight">
+      <li>No rate limiting; no quotas; vision + embedding spend on every upload with no cap.</li>
+      <li>UMAP recompute is synchronous and event-loop-blocking; <code>/api/graph/recompute</code> is a free DoS button.</li>
+      <li>Crons have no locks — a second replica silently double-runs every job and <b>doubles LLM spend</b>.</li>
+      <li>Backups are a manual <code>pg_dump</code>; monitoring emails itself from inside the process it monitors.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">04</span>
+      <h2>Subsystem scorecard</h2>
+      <span class="sub">effort to make this subsystem properly multi-user</span>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Subsystem</th><th>Effort</th><th>Headline</th></tr></thead>
+        <tbody>
+          <tr><td>DB schema &amp; migrations</td><td class="eff"><span class="pill e-M">M</span></td><td class="h">~20 owner columns + composite uniques + backfill</td></tr>
+          <tr><td>Auth &amp; identity</td><td class="eff"><span class="pill e-M">M</span></td><td class="h">Core ready; needs token→user, roles, invites, verification</td></tr>
+          <tr><td>HTTP API + services scoping</td><td class="eff"><span class="pill e-L">L</span></td><td class="h">~171 functions / 126 handlers; mechanical; RLS backstop advised</td></tr>
+          <tr><td>MCP + hooks ingestion</td><td class="eff"><span class="pill e-L">L</span></td><td class="h"><code>buildMcpServer(userId)</code>, stamp ingest, per-user project keying</td></tr>
+          <tr><td>Background workers</td><td class="eff"><span class="pill e-L">L</span></td><td class="h">8 crons → per-user slicing + fairness + budgets + locks</td></tr>
+          <tr><td>Live SSE + clipboard</td><td class="eff"><span class="pill e-M">M</span></td><td class="h">Scope the bus; fix clipboard's fat-payload leak</td></tr>
+          <tr><td>Storage &amp; sharing</td><td class="eff"><span class="pill e-M">M</span></td><td class="h">Ownership on 3 blob tables, quotas, GC decision</td></tr>
+          <tr><td>Search + galaxy</td><td class="eff"><span class="pill e-L">L</span></td><td class="h">Owner-thread 7 search lanes; per-user UMAP off-thread</td></tr>
+          <tr><td>Frontend (SPA)</td><td class="eff"><span class="pill e-M">M</span></td><td class="h">User menu (none exists!), role-gate 12 settings pages</td></tr>
+          <tr><td>AI config + agent + <b>exec</b></td><td class="eff"><span class="pill e-XL">XL</span></td><td class="h">Dominated by exec sandboxing; M–L if exec goes admin-only</td></tr>
+          <tr><td>Deploy &amp; ops</td><td class="eff"><span class="pill e-L">L</span></td><td class="h">Rate limits, email, backups, monitoring (XL for real SaaS)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">05</span>
+      <h2>Three paths</h2>
+      <span class="sub">pick by intent, not by ambition</span>
+    </div>
+    <div class="paths">
+      <div class="path rec">
+        <span class="recflag">★ Start here</span>
+        <div class="phead"><span class="code">Path 0</span><h3>Instance-per-user</h3><span class="cost">days · near-zero code</span></div>
+        <p>Don't multi-tenant the code — multiply the instances. Proxmox is already the substrate: clone an LXC per person, own DB, own storage, own subdomain. <b>The LXC boundary per-tenant-sandboxes exec by construction</b> — the exact property the shared codebase can't offer. Validates whether interest survives contact with reality, at zero corpus risk.</p>
+      </div>
+      <div class="path">
+        <div class="phead"><span class="code">Path A</span><h3>True multi-tenancy, invite-only</h3><span class="cost">~6–8 cycles</span></div>
+        <p>For trusted-but-real users on one instance. In dependency order:</p>
+        <ol>
+          <li><b>Identity &amp; roles</b> — <code>api_tokens.user_id</code>, role column, <code>buildMcpServer(userId)</code>, invites + email verification via the existing Resend key.</li>
+          <li><b>Tenancy migration</b> — owner columns on ~20 tables, composite uniques, backfill to the bootstrap user.</li>
+          <li><b>Scoping</b> — thread ownership through services; <b>enable Postgres RLS as backstop</b>; ship a two-user isolation test harness.</li>
+          <li><b>Async &amp; live</b> — per-user cron slicing + budgets, scoped <code>publishChange</code>, per-user galaxy, per-user badges.</li>
+          <li><b>Frontend</b> — user menu / sign-out, role-gated nav, settings split, per-account cache + cookie scoping.</li>
+          <li><b>Ops hardening</b> — rate limiting, quotas, off-box backups. Exec + skills authoring: <b>admin-only</b>.</li>
+        </ol>
+      </div>
+      <div class="path">
+        <div class="phead"><span class="code">Path B</span><h3>Hosted SaaS</h3><span class="cost">a different product</span></div>
+        <p>Everything in A, plus: leave the homelab (managed PG, S3, orchestration), metered AI + billing (nothing exists), exec removed or per-tenant microVMs, multi-instance safety, compliance (per-user export/delete — impossible today), abuse moderation for the public image host, real on-call. Only worth it if this becomes a business.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">06</span>
+      <h2>Decision forks</h2>
+      <span class="sub">settle these before any spec</span>
+    </div>
+    <div class="forks">
+      <div class="fork"><p class="q">AI keys: operator-paid or BYO?</p><p>Global registry with per-user budgets, or per-user keys? The entire onboarding + settings IA forks on this.</p></div>
+      <div class="fork"><p class="q">Exec capability?</p><p><span class="rec">Admin-only (ships Path A)</span> vs per-tenant sandbox (XL) vs removed for tenants.</p></div>
+      <div class="fork"><p class="q">Blob store?</p><p>Keep global dedup + refcounted GC (accepts the existence oracle) vs per-user key prefixes (loses dedup).</p></div>
+      <div class="fork"><p class="q">Enforcement depth?</p><p>Service-arg threading alone, or <span class="rec">+ Postgres RLS</span>. One missed WHERE clause anywhere is a silent corpus leak.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">07</span>
+      <h2>Recommendation</h2>
+    </div>
+    <div class="recs">
+      <div class="rec-row"><span class="when">Now</span><p><b>Path 0</b> for the interested people. Days of ops work; validates demand; gives each person the same trusted single-user product you actually built — including their own exec.</p></div>
+      <div class="rec-row"><span class="when">This month</span><p><b>Add <code>api_tokens.user_id</code> + a role column anyway.</b> Small effort — it closes the god-token and settings-takeover risks even on the single-user instance. Keep <code>ALLOW_SIGNUP</code> off.</p></div>
+      <div class="rec-row q"><span class="when">If demand is real</span><p><b>Path A behind invites</b>, exec + skills admin-only, RLS on. Budget ~6–8 cycles. The work is wide and mechanical, not deep.</p></div>
+      <div class="rec-row q"><span class="when">Only with revenue</span><p><b>Path B.</b> It is a re-platform, not an upgrade — don't drift into it by accident.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap"><div>
+    Method — 11 parallel subsystem explorers + 1 independent gap-hunting critic (12 agents, ~957k tokens, 432 tool calls). Every claim file:line-cited against the repo; load-bearing counts re-verified by hand. The critic re-derived the top-10 blockers from the source without seeing the explorers' output and corroborated them.<br>
+    Canonical write-up: docs/explorations/2026-08-10-multi-user-feasibility.md · Status: pre-brainstorm exploration — no cycle committed.
+  </div></div>
+</footer>
