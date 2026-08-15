@@ -7,6 +7,15 @@ definePageMeta({ title: 'Agent' })
 const voice = useVoice()
 const route = useRoute()
 
+// Home's "Ask the brain" box hands the question over via ?q=. PREFILL ONLY —
+// passed down to VoiceComposer's initial-text prop, which only ever seeds its
+// local text ref. Never auto-send: a bookmark or a back-button navigation
+// would otherwise fire a model call with no user intent.
+const initialComposerText = computed(() => {
+  const q = route.query.q
+  return typeof q === 'string' && q.trim() ? q : undefined
+})
+
 // Persistent preferences (cookie-backed so they survive page reloads)
 const showCanvas = useCookie<boolean>('agent-canvas', { default: () => true })
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
@@ -294,6 +303,7 @@ onMounted(async () => {
           :entries="voice.transcript.value"
           :send-text="voice.sendText"
           :speak="speakReply"
+          :initial-text="initialComposerText"
         />
       </template>
     </UDashboardPanel>

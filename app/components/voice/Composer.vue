@@ -10,10 +10,24 @@ const props = defineProps<{
   sendText?: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>
   /** When true, typed sends request a spoken reply from the agent. */
   speak?: boolean
+  /**
+   * Prefill the composer (e.g. the agent page's `?q=` handoff from Home's
+   * "Ask the brain" box). PREFILL ONLY — this component never calls send()
+   * on its own; only a real user click/Enter on the form submits.
+   */
+  initialText?: string
 }>()
 
 const toast = useToast()
-const text = ref('')
+const text = ref(props.initialText ?? '')
+// The agent page's route (same path, different `?q=`) doesn't remount this
+// component — Vue Router reuses the instance when only the query changes, so
+// the ref init above only covers the first mount. Watch for later prop
+// changes too (non-immediate: the init already handled the first value).
+// Never touches send() — prefill only.
+watch(() => props.initialText, (v) => {
+  if (v) text.value = v
+})
 const pending = ref<File[]>([])
 const uploading = ref(false)
 const dragging = ref(false)
