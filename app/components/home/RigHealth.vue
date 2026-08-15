@@ -17,6 +17,10 @@ const colorFor = (up: boolean | null) => up === false ? 'error' as const
   : up === true ? 'success' as const
   : 'neutral' as const
 const glyphFor = (up: boolean | null) => up === false ? '✕' : up === true ? '✓' : '–'
+const stateFor = (up: boolean | null) => up === false ? 'down' : up === true ? 'up' : 'no data'
+// `title` alone is hover-only (inconsistent with screen readers, unreachable on
+// touch) — this is the accessible text alternative carrying service identity + state.
+const labelFor = (s: { label: string, up: boolean | null }) => `${s.label}: ${stateFor(s.up)}`
 </script>
 
 <template>
@@ -35,6 +39,7 @@ const glyphFor = (up: boolean | null) => up === false ? '✕' : up === true ? '�
         size="sm"
         :label="glyphFor(s.up)"
         :title="s.label"
+        :aria-label="labelFor(s)"
       />
     </div>
     <p v-if="!error && down > 0" class="text-xs text-error mt-1">{{ down }} down</p>
