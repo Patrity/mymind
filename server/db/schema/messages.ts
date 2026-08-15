@@ -20,6 +20,9 @@ export const messages = pgTable('messages', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   index('messages_session_idx').on(t.sessionId),
+  // Home (cycle 56) and the Usage tab (cycle 55) both filter `created_at >= start`.
+  // Without this it is a seq scan over ~147k prod rows on the landing page.
+  index('messages_created_at_idx').on(t.createdAt.desc()),
   uniqueIndex('messages_session_extuuid_uidx').on(t.sessionId, t.externalUuid)
 ])
 

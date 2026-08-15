@@ -44,9 +44,18 @@ const toTokens = (r: Record<string, unknown>): UsageTokens => ({
 
 const totalOf = (t: UsageTokens) => t.input + t.output + t.cacheRead + t.cacheCreation
 
+/**
+ * Range-key entry point for the Usage tab (cycle 55). Home (cycle 56) has its own
+ * range vocabulary and calls `getUsageSince` directly with a Date — the two surfaces
+ * must NOT share a range enum (see the comment in shared/types/usage.ts).
+ */
 export async function getUsage(range: UsageRangeKey): Promise<UsageResponse> {
+  return { range, ...(await getUsageSince(rangeStart(range))) }
+}
+
+/** `start === null` means no lower bound (the Usage tab's `all`). */
+export async function getUsageSince(start: Date | null): Promise<Omit<UsageResponse, 'range'>> {
   const db = useDb()
-  const start = rangeStart(range)
   // Bound parameter, never interpolated — and `range` is already validated at the endpoint.
   const since = start ? sql`and created_at >= ${start.toISOString()}` : sql``
 
@@ -114,7 +123,6 @@ export async function getUsage(range: UsageRangeKey): Promise<UsageResponse> {
   ])
 
   return {
-    range,
     totals: {
       tokens: totalTokens,
       cacheReadPct: totalTokens > 0 ? (totalCacheRead / totalTokens) * 100 : 0,

@@ -225,6 +225,13 @@
       "when": 1786744768830,
       "tag": "0031_zippy_random",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786812015809,
+      "tag": "0032_abandoned_carlie_cooper",
+      "breakpoints": true
     }
   ]
 }
