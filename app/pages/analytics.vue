@@ -31,6 +31,57 @@ const { data: dispatches } = useDispatches(usageRange)
 // (byModel itself is sorted by valueUsd desc, which changes per range).
 const usageModels = computed(() => [...(usage.value?.byModel.map(r => r.model) ?? [])].sort())
 
+// Colour-slot resolution input is deliberately NOT `usageModels` above — that's
+// scoped to whatever range is currently selected, and the resolve algorithm's
+// linear-probe fallback (see resolveColorSlots) can land a collision-victim model
+// on a different slot depending on which OTHER models are competing for it. If the
+// resolution input reshuffled with `usageRange` (e.g. 9 models at "all" vs. 4 at
+// "90d"), a model's colour could silently reshuffle across a range switch too — the
+// exact failure mode this fix exists to prevent, just moved from "per panel" to
+// "per range". Fetching the "all" range's model list here (cached/deduped with the
+// visible query if the user ever selects "All" — same vue-query key) pins the
+// resolution to a fixed, range-independent universe: ranges are nested time windows
+// (7d ⊆ 30d ⊆ 90d ⊆ all), so "all"'s model set is always a superset of every other
+// range's.
+const { data: usageAll } = useUsage('all')
+const canonicalModels = computed(() => [...(usageAll.value?.byModel.map(r => r.model) ?? [])].sort())
+
+// Model -> palette slot, resolved ONCE here (over `canonicalModels`, not any single
+// panel's or range's rendered subset) and passed to both UsageStackedChart and the
+// "Where the value went" breakdown bars, so a given model renders in the same
+// colour in both places AND stays on that colour across a range switch. Two
+// independent resolutions over different subsets are NOT guaranteed to agree —
+// dropping a label from the input can free its slot for a different, later-sorted
+// label — so this must be computed once, over a stable input, and shared rather
+// than recomputed per panel/range from whatever subset happens to be visible.
+// PALETTE_SIZE must match CATEGORICAL_LIGHT/DARK's length in both chart components
+// (their palette itself isn't duplicated here — only this integer needs to agree).
+const MODEL_PALETTE_SIZE = 8
+
+function hashIndex(key: string, mod: number): number {
+  let h = 0
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0
+  return Math.abs(h) % mod
+}
+
+function resolveColorSlots(labels: string[], mod: number): Record<string, number> {
+  const slots: Record<string, number> = {}
+  const used = new Set<number>()
+  for (const label of [...labels].sort()) {
+    let idx = hashIndex(label, mod)
+    let attempts = 0
+    while (used.has(idx) && attempts < mod) {
+      idx = (idx + 1) % mod
+      attempts++
+    }
+    used.add(idx)
+    slots[label] = idx
+  }
+  return slots
+}
+
+const modelColorSlots = computed(() => resolveColorSlots(canonicalModels.value, MODEL_PALETTE_SIZE))
+
 // Unpriced models (valueUsd === null) are excluded here, not zero-valued — mixing them
 // in would misrepresent "no price data" as "worth $0" in the breakdown bars.
 const valueByModelRows = computed(() => (usage.value?.byModel ?? [])
@@ -87,9 +138,9 @@ const litellmTotalTokens = computed(() => (usage.value?.litellm ?? []).reduce((s
       <div v-else class="space-y-6 p-4">
         <UTabs v-model="usageRange" :items="usageRangeItems" size="xs" :content="false" />
         <AnalyticsUsageTiles :usage="usage" :pending="usagePending" />
-        <AnalyticsUsageStackedChart :daily="usage?.daily ?? []" :models="usageModels" />
+        <AnalyticsUsageStackedChart :daily="usage?.daily ?? []" :models="usageModels" :color-slots="modelColorSlots" />
         <div class="grid gap-4 lg:grid-cols-2">
-          <AnalyticsUsageBreakdownBars title="Where the value went" :rows="valueByModelRows" :format="currency" />
+          <AnalyticsUsageBreakdownBars title="Where the value went" :rows="valueByModelRows" :format="currency" :color-slots="modelColorSlots" />
           <AnalyticsUsageBreakdownBars title="Fleet composition" :rows="dispatchRows" />
         </div>
         <UCard :ui="{ root: 'ring-2 ring-warning/50', body: 'p-3 sm:p-4' }">

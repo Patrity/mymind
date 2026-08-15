@@ -2,7 +2,7 @@
 import { VisXYContainer, VisStackedBar, VisAxis, VisTooltip, VisStackedBarSelectors } from '@unovis/vue'
 import type { UsageDayPoint } from '~~/shared/types/usage'
 
-const props = defineProps<{ daily: UsageDayPoint[], models: string[] }>()
+const props = defineProps<{ daily: UsageDayPoint[], models: string[], colorSlots?: Record<string, number> }>()
 
 // dataviz skill categorical palette (references/palette.md) — 8 hues, fixed order,
 // validated for both modes. Copied verbatim from TimeSeriesChart.vue (that file
@@ -15,17 +15,56 @@ const colorMode = useColorMode()
 const isDark = computed(() => colorMode.value === 'dark')
 const palette = computed(() => (isDark.value ? CATEGORICAL_DARK : CATEGORICAL_LIGHT))
 
-// Deterministic model -> palette index (hash of the model name), NOT its position in
-// `props.models`. The page derives `models` from `byModel`, which the server sorts by
-// valueUsd descending — an order that reshuffles on every range switch. Indexing by
-// position would reassign a model's colour whenever the value ranking changed; hashing
-// the name keeps a given model on the same colour regardless of range or rank.
+// Deterministic model -> palette slot. Two properties are both required:
+//  1. Stable per model across a range switch — so NOT a function of position in
+//     `props.models`. The page derives `models` from `byModel`, which the server
+//     sorts by valueUsd descending — an order that reshuffles on every range
+//     switch. Indexing by position would reassign a model's colour whenever the
+//     value ranking changed.
+//  2. Collision-free whenever the rendered set is <= the palette size. A raw
+//     hash alone doesn't guarantee that: verified colliding on this app's real
+//     9-model set (`<synthetic>` and `claude-sonnet-4-20250514` both hashed to
+//     slot 5; `claude-opus-4-6` and `claude-sonnet-4-6` both hashed to slot 2).
+// Fix: sort the labels alphabetically (a criterion that doesn't depend on any
+// range-varying rank) and walk them in that order, taking each one's hashed
+// slot if free, else linear-probing forward — wrapping, bounded to `mod`
+// attempts so it can't spin forever once every slot is taken. Alphabetical
+// order is itself stable across range switches, so the resulting assignment
+// is too. Beyond `mod` distinct labels collision-free is impossible
+// (pigeonhole) — the bounded probe degrades to a deterministic reuse instead
+// of hanging.
 function hashIndex(key: string, mod: number): number {
   let h = 0
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0
   return Math.abs(h) % mod
 }
-const seriesColor = (model: string) => palette.value[hashIndex(model, palette.value.length)]!
+
+function resolveColorSlots(labels: string[], mod: number): Record<string, number> {
+  const slots: Record<string, number> = {}
+  const used = new Set<number>()
+  for (const label of [...labels].sort()) {
+    let idx = hashIndex(label, mod)
+    let attempts = 0
+    while (used.has(idx) && attempts < mod) {
+      idx = (idx + 1) % mod
+      attempts++
+    }
+    used.add(idx)
+    slots[label] = idx
+  }
+  return slots
+}
+
+// `props.colorSlots`, when supplied by the page, is the resolution computed once
+// over the canonical model set — shared with the "Where the value went" breakdown
+// bars so the same model renders in the same colour in both panels (see
+// analytics.vue). Falls back to resolving over this component's own `props.models`
+// so it still works stand-alone.
+const ownSlots = computed(() => resolveColorSlots(props.models, palette.value.length))
+const seriesColor = (model: string) => {
+  const slot = props.colorSlots?.[model] ?? ownSlots.value[model] ?? hashIndex(model, palette.value.length)
+  return palette.value[slot]!
+}
 
 // Chart chrome (gridlines/axes/tooltip) — copied verbatim from TimeSeriesChart.vue.
 // Unovis's built-in dark-mode CSS selectors (`html.dark-theme` etc.) don't match

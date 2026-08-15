@@ -7,6 +7,7 @@ const props = defineProps<{
   title: string
   rows: { label: string, value: number }[]
   format?: (v: number) => string
+  colorSlots?: Record<string, number>
 }>()
 
 // Copied verbatim from TimeSeriesChart.vue (dataviz skill categorical palette,
@@ -19,14 +20,45 @@ const colorMode = useColorMode()
 const isDark = computed(() => colorMode.value === 'dark')
 const palette = computed(() => (isDark.value ? CATEGORICAL_DARK : CATEGORICAL_LIGHT))
 
-// Deterministic label -> palette index, same rationale as UsageStackedChart.vue:
-// keeps a given label's colour stable regardless of its sort position.
+// Deterministic label -> palette slot, collision-resolved by alphabetical-order
+// linear probing — same algorithm and rationale as UsageStackedChart.vue (a raw
+// hash alone collides on this app's real model set; alphabetical order is stable
+// across range switches, unlike sort-by-value/count rank).
 function hashIndex(key: string, mod: number): number {
   let h = 0
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0
   return Math.abs(h) % mod
 }
-const barColor = (label: string) => palette.value[hashIndex(label, palette.value.length)]!
+
+function resolveColorSlots(labels: string[], mod: number): Record<string, number> {
+  const slots: Record<string, number> = {}
+  const used = new Set<number>()
+  for (const label of [...labels].sort()) {
+    let idx = hashIndex(label, mod)
+    let attempts = 0
+    while (used.has(idx) && attempts < mod) {
+      idx = (idx + 1) % mod
+      attempts++
+    }
+    used.add(idx)
+    slots[label] = idx
+  }
+  return slots
+}
+
+// `props.colorSlots`, when supplied by the caller, is a mapping resolved
+// elsewhere over a wider label set (e.g. the page resolves it once over the
+// canonical model set and passes the same map to UsageStackedChart AND this
+// component's "Where the value went" instance, so a model gets the same
+// colour in both places even though this panel only renders the priced
+// subset). Falls back to resolving over this instance's own rows so the
+// component still works stand-alone (e.g. "Fleet composition", which has no
+// shared label space with the model panels).
+const ownSlots = computed(() => resolveColorSlots(props.rows.map(r => r.label), palette.value.length))
+const barColor = (label: string) => {
+  const slot = props.colorSlots?.[label] ?? ownSlots.value[label] ?? hashIndex(label, palette.value.length)
+  return palette.value[slot]!
+}
 
 const sorted = computed(() => [...props.rows].sort((a, b) => b.value - a.value))
 const maxValue = computed(() => sorted.value.reduce((m, r) => Math.max(m, r.value), 0))
