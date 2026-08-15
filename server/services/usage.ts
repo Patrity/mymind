@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { parseUsage, computeValue } from '../lib/analytics/cost'
+import { computeValue } from '../lib/analytics/cost'
 import { USAGE_RANGE_KEYS } from '../../shared/types/usage'
 import type {
   UsageRangeKey, UsageResponse, DispatchResponse, ModelRates, ModelUsageRow, UsageTokens
@@ -20,8 +20,11 @@ export function rangeStart(range: UsageRangeKey, now = new Date()): Date | null 
   return d
 }
 
-// The six token fields, extracted with the SAME json paths parseUsage reads. Summing in SQL and
-// applying computeValue per (model, day) group — not per row — keeps ~82k rows inside Postgres.
+// The six token fields, matching the json paths `parseUsage` (server/lib/analytics/cost.ts) reads
+// — but summed in SQL, not by calling that parser. Reused by two queries below: `perModel` groups
+// by model only, and `computeValue` is applied once per model over that model's whole-range
+// totals; `perDay` groups by (day, model) and returns raw token sums that are NEVER priced —
+// `UsageDayPoint` has no value field — it only feeds the daily stacked chart's token counts.
 const TOKEN_SUMS = sql`
   sum(coalesce((usage->>'input_tokens')::bigint, 0))                                   as input,
   sum(coalesce((usage->>'output_tokens')::bigint, 0))                                  as output,
@@ -67,8 +70,13 @@ export async function getUsage(range: UsageRangeKey): Promise<UsageResponse> {
     where usage is not null and model is not null ${since}
     group by model`)
 
+  // `created_at` is `timestamptz`; `date_trunc('day', ...)` on it uses the DATABASE SESSION's
+  // TimeZone setting, not UTC. `rangeStart()` above and `litellm_daily.day` are hard UTC, so an
+  // unpinned bucket here is an implicit dependency on the session TimeZone being UTC — true today
+  // (`Etc/UTC`), but a session with a different TimeZone set would bucket days differently and
+  // silently disagree with the rest of this response. Pin it explicitly.
   const perDay = await db.execute(sql`
-    select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day, model, ${TOKEN_SUMS}
+    select to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') as day, model, ${TOKEN_SUMS}
     from messages
     where usage is not null and model is not null ${since}
     group by 1, 2 order by 1`)

@@ -19,9 +19,10 @@ export function parseUsage(raw: unknown): UsageTokens {
 /**
  * API-equivalent value for one usage row. NOT money spent — Claude Code is subscription-billed.
  *
- * Five token classes, five rates. The residual term is load-bearing, not padding: 3 rows of
- * 81,954 in the real corpus report `cache_creation_input_tokens` while both ephemeral tiers read
- * 0, and dropping it would silently under-report. It is priced at the cheaper 5m rate so an
+ * Five token classes, five rates. The residual term is load-bearing, not padding: 3 of the 81,954
+ * usage-bearing rows in the real corpus report a non-zero `cache_creation_input_tokens` (3,028
+ * each, 9,084 total) while both ephemeral tiers read 0, and dropping it would silently
+ * under-report. It is priced at the cheaper 5m rate so an
  * unknown tier cannot inflate the figure, and clamped at 0 so an over-counted split cannot make
  * the total negative.
  */
