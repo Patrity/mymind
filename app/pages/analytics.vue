@@ -38,12 +38,26 @@ const usageModels = computed(() => [...(usage.value?.byModel.map(r => r.model) ?
 // resolution input reshuffled with `usageRange` (e.g. 9 models at "all" vs. 4 at
 // "90d"), a model's colour could silently reshuffle across a range switch too — the
 // exact failure mode this fix exists to prevent, just moved from "per panel" to
-// "per range". Fetching the "all" range's model list here (cached/deduped with the
-// visible query if the user ever selects "All" — same vue-query key) pins the
-// resolution to a fixed, range-independent universe: ranges are nested time windows
-// (7d ⊆ 30d ⊆ 90d ⊆ all), so "all"'s model set is always a superset of every other
-// range's.
-const { data: usageAll } = useUsage('all')
+// "per range". The "all" range's model list is a fixed, range-independent universe
+// (ranges are nested time windows — 7d ⊆ 30d ⊆ 90d ⊆ all — so "all"'s model set is
+// always a superset of every other range's).
+//
+// That query is also the single most expensive thing this endpoint serves — no
+// `created_at` lower bound, so it's an unbounded full-history aggregation that grows
+// with the corpus (see server/services/usage.ts). Two guards keep it from being a
+// tax on every page load:
+//  - `enabled` gates it to the Usage tab. Both this and the range-scoped `useUsage`
+//    call above run unconditionally in <script setup> (Vue composables can't be
+//    called conditionally), so without this an Infrastructure-only visit would
+//    still fire it — the `v-if="tab === 'usage'"` in the template only gates
+//    rendering, not the fetch itself.
+//  - `staleTime` of 30 minutes: the model roster changes about as often as
+//    Anthropic ships a model, so refetching it on every tab switch/navigation is
+//    pure waste.
+const { data: usageAll } = useUsage('all', {
+  enabled: computed(() => tab.value === 'usage'),
+  staleTime: 30 * 60 * 1000,
+})
 const canonicalModels = computed(() => [...(usageAll.value?.byModel.map(r => r.model) ?? [])].sort())
 
 // Model -> palette slot, resolved ONCE here (over `canonicalModels`, not any single
@@ -80,7 +94,21 @@ function resolveColorSlots(labels: string[], mod: number): Record<string, number
   return slots
 }
 
-const modelColorSlots = computed(() => resolveColorSlots(canonicalModels.value, MODEL_PALETTE_SIZE))
+// While the gated canonical fetch hasn't settled yet (tab just switched to Usage,
+// or the 30-minute cache hasn't been warmed), `canonicalModels` is empty. Falling
+// back to each visible model's raw hash slot — rather than an empty map, which
+// would push every consumer onto ITS OWN self-resolution (see UsageStackedChart's
+// and UsageBreakdownBars' `ownSlots` fallback) — means no flash for the common
+// case: raw hash is exactly what resolveColorSlots starts from, so any model that
+// isn't part of a collision keeps the identical slot once the real resolution
+// lands. Only the rare, pigeonhole-forced colliding labels can still shift once,
+// when the canonical set arrives.
+const modelColorSlots = computed(() => {
+  if (canonicalModels.value.length) return resolveColorSlots(canonicalModels.value, MODEL_PALETTE_SIZE)
+  const raw: Record<string, number> = {}
+  for (const m of usageModels.value) raw[m] = hashIndex(m, MODEL_PALETTE_SIZE)
+  return raw
+})
 
 // Unpriced models (valueUsd === null) are excluded here, not zero-valued — mixing them
 // in would misrepresent "no price data" as "worth $0" in the breakdown bars.

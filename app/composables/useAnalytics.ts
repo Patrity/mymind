@@ -38,11 +38,17 @@ export function useAnalytics() {
     })
   }
 
-  const useUsage = (range: MaybeRefOrGetter<UsageRangeKey>) => {
+  // `options.enabled`/`staleTime` let a caller gate an expensive fetch (e.g. the
+  // unbounded `range=all` aggregation) behind visibility and cache it aggressively,
+  // without every other call site paying for it — passing neither preserves the
+  // previous always-on, always-fresh behaviour.
+  const useUsage = (range: MaybeRefOrGetter<UsageRangeKey>, options?: { enabled?: MaybeRefOrGetter<boolean>, staleTime?: number }) => {
     const r = computed(() => toValue(range))
     return useQuery({
       queryKey: computed(() => ['analytics', 'usage', r.value] as const),
       queryFn: () => $fetch<UsageResponse>('/api/analytics/usage', { query: { range: r.value } }),
+      enabled: options?.enabled,
+      staleTime: options?.staleTime,
     })
   }
 
