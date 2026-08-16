@@ -7,11 +7,30 @@ import { describe, it, expect, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { applyTask, applyNote } from '../server/services/triage'
+// applyMemory (below) is the first thing in this suite to reach createMemory ->
+// embedOne -> withFailover, which call the Nitro-global `$fetch` (ofetch). That global
+// only exists inside the Nuxt/Nitro runtime — this harness runs server/services/* as
+// plain Node, so nothing provides it. `ofetch` itself isn't resolvable as a bare import
+// here either (it's a transitive dep of `nuxt`, not a direct project dependency; pnpm's
+// strict node_modules hides it from plain-Node/vitest resolution outside Nuxt's Vite
+// build). Shim `$fetch` with native `fetch` instead: same {method, headers, body:object}
+// -> parsed-JSON calling convention the embeddings adapter expects, still a real HTTP
+// call against whatever embeddings model is configured in the dev DB.
+vi.stubGlobal('$fetch', async (url: string, opts: { method?: string, headers?: Record<string, string>, body?: unknown } = {}) => {
+  const res = await fetch(url, {
+    method: opts.method ?? 'GET',
+    headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined
+  })
+  if (!res.ok) throw new Error(`$fetch ${url} -> ${res.status} ${res.statusText}`)
+  return res.json()
+})
+
+import { applyTask, applyNote, applyMemory } from '../server/services/triage'
 import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
 import { getTask, deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
-import { tasks, triageActions } from '../server/db/schema'
+import { tasks, triageActions, memories } from '../server/db/schema'
 import { eq } from 'drizzle-orm'
 import { runUndo } from '../server/lib/agent/undo'
 
@@ -150,6 +169,81 @@ describe('applyNote', () => {
       expect((await getDoc(doc.id))!.path).toBe(original)
     } finally {
       await deleteDoc(doc.id)
+    }
+  })
+})
+
+// The brief's applyMemory tests don't route through a deleteMemory helper (none exists —
+// createMemory is the only sanctioned write path and there is no hard-delete accessor), so
+// cleanup here is a direct `db.delete(memories)` in a finally block. That is fixture teardown
+// in a test file, not a production write path, so it doesn't touch the createMemory-only
+// constraint the actuator itself is held to. Mirrors Task 5's try/finally convention so
+// `pnpm test:db` doesn't leave rows behind in Tony's real dev Postgres.
+const purgeMemory = (id: string | null) =>
+  id ? useDb().delete(memories).where(eq(memories.id, id)) : Promise.resolve()
+
+describe('applyMemory', () => {
+  it('creates a memory with the triage source and confidence', async () => {
+    const doc = await jot('Pangolin drops websocket upgrades over 60s idle')
+    const r = await applyMemory(doc.id, {
+      kind: 'memory', confidence: 0.88, scope: 'agent', project: 'homelab',
+      content: 'Pangolin drops websocket upgrades after 60s idle.'
+    })
+    try {
+      const [m] = await useDb().select().from(memories).where(eq(memories.id, r.entityId!))
+      expect(m!.content).toContain('Pangolin')
+      expect(m!.project).toBe('homelab')
+      expect(m!.source).toBe(`triage:${doc.id}`)
+      expect(Number(m!.confidence)).toBeCloseTo(0.88)
+    } finally {
+      await purgeMemory(r.entityId)
+    }
+  })
+
+  it('soft-deletes the courier document', async () => {
+    const doc = await jot('a durable fact')
+    const r = await applyMemory(doc.id, { kind: 'memory', confidence: 0.9, content: 'A durable fact.' })
+    try {
+      expect(await getDoc(doc.id)).toBeNull()
+    } finally {
+      await purgeMemory(r.entityId)
+    }
+  })
+
+  // createMemory returns the EXISTING row when dedup decides skip/merge. The actuator
+  // must not crash, must not double-insert, and must still record its action row.
+  it('handles the dedup skip path without creating a second memory', async () => {
+    const content = `dedup probe ${Math.random()}`
+    const d1 = await jot('first')
+    const r1 = await applyMemory(d1.id, { kind: 'memory', confidence: 0.9, content })
+    try {
+      const d2 = await jot('second')
+      const r2 = await applyMemory(d2.id, { kind: 'memory', confidence: 0.9, content })
+      expect(r2.entityId).toBe(r1.entityId)                        // same memory, deduped
+      const rows = await useDb().select().from(memories).where(eq(memories.id, r1.entityId!))
+      expect(rows).toHaveLength(1)
+      expect(r2.actionRowId).not.toBe(r1.actionRowId)              // but both actions recorded
+    } finally {
+      await purgeMemory(r1.entityId)
+    }
+  })
+
+  it('undo archives the memory and restores the document', async () => {
+    const doc = await jot('undo the memory')
+    const r = await applyMemory(doc.id, {
+      kind: 'memory', confidence: 0.9, content: `undo probe ${Math.random()}`
+    })
+    try {
+      expect((await runUndo(r.undoToken)).ok).toBe(true)
+      const [m] = await useDb().select().from(memories).where(eq(memories.id, r.entityId!))
+      expect(m!.archivedAt).not.toBeNull()
+      expect(await getDoc(doc.id)).not.toBeNull()
+    } finally {
+      // Undo restored the doc live at its original /input/... path — without this it leaks
+      // into the real dev DB's "unfiled captures" count on every `pnpm test:db` run (same
+      // reasoning as applyTask's undo test above).
+      await deleteDoc(doc.id)
+      await purgeMemory(r.entityId)
     }
   })
 })

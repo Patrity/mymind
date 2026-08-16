@@ -1,8 +1,9 @@
 import { eq } from 'drizzle-orm'
 import { useDb } from '../db'
-import { triageActions } from '../db/schema'
+import { triageActions, memories } from '../db/schema'
 import { createTask, deleteTask } from './tasks'
 import { getDoc, moveDoc, updateDoc, deleteDoc, restoreDoc } from './documents'
+import { createMemory } from './memory'
 import { registerUndo } from '../lib/agent/undo'
 import { publishChange } from '../utils/live-bus'
 import type { TriageAction } from '../../shared/types/triage'
@@ -89,4 +90,45 @@ export async function applyNote(docId: string, action: TriageAction, autoApplied
   })
 
   return { actionRowId, entityType: 'document', entityId: docId, undoToken }
+}
+
+/**
+ * The jot becomes a durable memory; the document was a courier, so it is soft-deleted.
+ *
+ * MUST go through createMemory() — it owns dedup (buildDedupCandidates + dedupDecision:
+ * skip | merge | insert) and shouldAutoReview. A direct insert here would silently
+ * bypass dedup, and enrich-memories dedup under-catching (task f80622b9) is still open.
+ * createMemory may return an EXISTING memory on the skip/merge paths; that is correct.
+ */
+export async function applyMemory(docId: string, action: TriageAction, autoApplied = true): Promise<AppliedAction> {
+  const doc = await getDoc(docId)
+  if (!doc) throw new Error(`triage: document ${docId} not found`)
+
+  const memory = await createMemory({
+    content: action.content ?? doc.content,
+    scope: action.scope ?? 'user',
+    project: action.project ?? null,
+    tags: action.tags ?? [],
+    confidence: action.confidence,
+    source: `triage:${docId}`
+  })
+
+  await deleteDoc(docId)
+
+  const actionRowId = await recordAction({ docId, action, entityType: 'memory', entityId: memory.id, autoApplied })
+
+  publishChange({ resource: 'memory', action: 'created', id: memory.id })
+  publishChange({ resource: 'document', action: 'deleted', id: docId })
+
+  const undoToken = registerUndo(async () => {
+    // Archive rather than hard-delete: dedup may have MERGED into a pre-existing
+    // memory, and destroying that row would take unrelated evidence with it.
+    await useDb().update(memories).set({ archivedAt: new Date() }).where(eq(memories.id, memory.id))
+    await restoreDoc(docId)
+    await useDb().update(triageActions).set({ revertedAt: new Date() }).where(eq(triageActions.id, actionRowId))
+    publishChange({ resource: 'memory', action: 'updated', id: memory.id })
+    publishChange({ resource: 'document', action: 'updated', id: docId })
+  })
+
+  return { actionRowId, entityType: 'memory', entityId: memory.id, undoToken }
 }
