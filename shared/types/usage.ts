@@ -36,6 +36,21 @@ export interface ModelUsageRow {
 
 export interface UsageDayPoint { day: string, byModel: Record<string, number> }
 
+/**
+ * The pricing slice of a usage window: everything derivable from `model_prices` plus ONE
+ * aggregation over `messages`. Deliberately excludes the per-day series, the session and
+ * dispatch counts, and the LiteLLM rollup that `UsageResponse` also carries.
+ *
+ * Home (cycle 56) reads only these fields, and it runs on the landing page on every load —
+ * computing the rest there meant a second full scan of `messages` plus three more queries
+ * for data nothing rendered.
+ */
+export interface UsagePricing {
+  totals: { tokens: number, cacheReadPct: number, valueUsd: number }
+  byModel: ModelUsageRow[]
+  unpriced: { models: string[], tokens: number }
+}
+
 export interface UsageResponse {
   range: UsageRangeKey
   totals: {

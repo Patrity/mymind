@@ -3,7 +3,7 @@ import { useDb } from '../db'
 import { computeValue } from '../lib/analytics/cost'
 import { USAGE_RANGE_KEYS } from '../../shared/types/usage'
 import type {
-  UsageRangeKey, UsageResponse, DispatchResponse, ModelRates, ModelUsageRow, UsageTokens
+  UsageRangeKey, UsageResponse, UsagePricing, DispatchResponse, ModelRates, ModelUsageRow, UsageTokens
 } from '../../shared/types/usage'
 
 const DAYS: Record<Exclude<UsageRangeKey, 'all'>, number> = { '7d': 7, '30d': 30, '90d': 90 }
@@ -53,11 +53,25 @@ export async function getUsage(range: UsageRangeKey): Promise<UsageResponse> {
   return { range, ...(await getUsageSince(rangeStart(range))) }
 }
 
-/** `start === null` means no lower bound (the Usage tab's `all`). */
-export async function getUsageSince(start: Date | null): Promise<Omit<UsageResponse, 'range'>> {
+/** Shared `and created_at >= …` fragment. Bound parameter, never interpolated. */
+const sinceClause = (start: Date | null) =>
+  start ? sql`and created_at >= ${start.toISOString()}` : sql``
+
+/**
+ * The cheap half of a usage window: `model_prices` + ONE aggregation over `messages`.
+ *
+ * This is everything Home needs. Split out of `getUsageSince` because Home runs on the
+ * landing page on every load, and the rest of that function — the per-day series (a SECOND
+ * full `messages` scan, grouped by day AND model), the distinct-session count, the
+ * `tool_events` dispatch count, and the `litellm_daily` rollup — produced four queries'
+ * worth of data that Home rendered nowhere. Adding `messages_created_at_idx` to make one
+ * scan affordable and then running two was the wrong trade.
+ *
+ * `start === null` means no lower bound (the Usage tab's `all`).
+ */
+export async function getUsagePricingSince(start: Date | null): Promise<UsagePricing> {
   const db = useDb()
-  // Bound parameter, never interpolated — and `range` is already validated at the endpoint.
-  const since = start ? sql`and created_at >= ${start.toISOString()}` : sql``
+  const since = sinceClause(start)
 
   // Rates first: a model absent here is UNPRICED, never zero-valued.
   const priceRows = await db.execute(sql`select * from model_prices`)
@@ -79,17 +93,6 @@ export async function getUsageSince(start: Date | null): Promise<Omit<UsageRespo
     where usage is not null and model is not null ${since}
     group by model`)
 
-  // `created_at` is `timestamptz`; `date_trunc('day', ...)` on it uses the DATABASE SESSION's
-  // TimeZone setting, not UTC. `rangeStart()` above and `litellm_daily.day` are hard UTC, so an
-  // unpinned bucket here is an implicit dependency on the session TimeZone being UTC — true today
-  // (`Etc/UTC`), but a session with a different TimeZone set would bucket days differently and
-  // silently disagree with the rest of this response. Pin it explicitly.
-  const perDay = await db.execute(sql`
-    select to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') as day, model, ${TOKEN_SUMS}
-    from messages
-    where usage is not null and model is not null ${since}
-    group by 1, 2 order by 1`)
-
   const byModel: ModelUsageRow[] = []
   const unpricedModels: string[] = []
   let unpricedTokens = 0, totalTokens = 0, totalCacheRead = 0, totalValue = 0
@@ -106,6 +109,41 @@ export async function getUsageSince(start: Date | null): Promise<Omit<UsageRespo
     byModel.push({ model, tokens, valueUsd })
   }
   byModel.sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0))
+
+  return {
+    totals: {
+      tokens: totalTokens,
+      cacheReadPct: totalTokens > 0 ? (totalCacheRead / totalTokens) * 100 : 0,
+      valueUsd: totalValue
+    },
+    byModel,
+    unpriced: { models: unpricedModels, tokens: unpricedTokens }
+  }
+}
+
+/**
+ * The full Usage-tab payload: the pricing slice above plus the per-day series, session and
+ * dispatch counts, and the LiteLLM rollup. `start === null` means no lower bound.
+ *
+ * Callers that only need totals/byModel/unpriced should use `getUsagePricingSince` — it
+ * skips four queries, two of which scan `messages`.
+ */
+export async function getUsageSince(start: Date | null): Promise<Omit<UsageResponse, 'range'>> {
+  const db = useDb()
+  const since = sinceClause(start)
+
+  const pricing = await getUsagePricingSince(start)
+
+  // `created_at` is `timestamptz`; `date_trunc('day', ...)` on it uses the DATABASE SESSION's
+  // TimeZone setting, not UTC. `rangeStart()` above and `litellm_daily.day` are hard UTC, so an
+  // unpinned bucket here is an implicit dependency on the session TimeZone being UTC — true today
+  // (`Etc/UTC`), but a session with a different TimeZone set would bucket days differently and
+  // silently disagree with the rest of this response. Pin it explicitly.
+  const perDay = await db.execute(sql`
+    select to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') as day, model, ${TOKEN_SUMS}
+    from messages
+    where usage is not null and model is not null ${since}
+    group by 1, 2 order by 1`)
 
   const dailyMap = new Map<string, Record<string, number>>()
   for (const row of perDay.rows as Record<string, unknown>[]) {
@@ -124,15 +162,13 @@ export async function getUsageSince(start: Date | null): Promise<Omit<UsageRespo
 
   return {
     totals: {
-      tokens: totalTokens,
-      cacheReadPct: totalTokens > 0 ? (totalCacheRead / totalTokens) * 100 : 0,
-      valueUsd: totalValue,
+      ...pricing.totals,
       sessions: Number((sessRow as Record<string, unknown>)?.n ?? 0),
       dispatches: Number((dispRow as Record<string, unknown>)?.n ?? 0)
     },
-    byModel,
+    byModel: pricing.byModel,
     daily: [...dailyMap.entries()].map(([day, byModel]) => ({ day, byModel })),
-    unpriced: { models: unpricedModels, tokens: unpricedTokens },
+    unpriced: pricing.unpriced,
     litellm: (litellmRes.rows as Record<string, unknown>[]).map(r => ({
       day: String(r.day), spendUsd: Number(r.spend ?? 0), tokens: Number(r.tokens ?? 0)
     }))

@@ -3,7 +3,7 @@ import { useDb } from '../db'
 import { homeRangeStart } from '../lib/home/range'
 import { buildTimeline } from '../lib/home/timeline'
 import type { RawEvent } from '../lib/home/timeline'
-import { getUsageSince } from './usage'
+import { getUsagePricingSince } from './usage'
 import type {
   HomeRangeKey, HomeResponse, HomeMetrics, HomeAttention,
   HomeTaskRow, HomeProjectRow, HomeUsage
@@ -208,7 +208,10 @@ export async function getHome(range: HomeRangeKey): Promise<HomeResponse> {
     timelineEvents(db, start),
     activeTasks(db),
     recentProjects(db, start),
-    getUsageSince(start)
+    // Pricing slice only — Home renders none of the per-day series, session/dispatch
+    // counts or LiteLLM rollup that the full getUsageSince also computes, and this runs on
+    // the landing page on every load.
+    getUsagePricingSince(start)
   ])
 
   const usage: HomeUsage = {

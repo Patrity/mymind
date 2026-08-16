@@ -11,7 +11,7 @@ import { sql } from 'drizzle-orm'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 const { useDb } = await import('../server/db')
-const { getUsage } = await import('../server/services/usage')
+const { getUsage, getUsagePricingSince } = await import('../server/services/usage')
 
 const SESSION = '00000000-0000-4000-8000-00000000dead'
 
@@ -79,5 +79,54 @@ describe('usage aggregation (real DB)', () => {
     // input 1000*1e-6 + output 1500*2e-6 + cacheRead 1000*1e-7 + residual 400*5e-7
     //   = 0.001 + 0.003 + 0.0001 + 0.0002 = 0.0043
     expect(m.valueUsd).toBeCloseTo(0.0043, 9)
+  })
+
+  // `cacheReadPct` is the "N% cache reads" figure on /analytics and the dashboard, and until
+  // this test nothing asserted it — a mutation zeroing the cache-read accumulator passed the
+  // whole suite. The expectation is derived from `byModel` (independently asserted above)
+  // rather than hardcoded, because these functions aggregate the WHOLE messages table, not
+  // just this file's fixture rows.
+  it('cacheReadPct is derived from the same rows byModel reports', async () => {
+    const r = await getUsagePricingSince(null)
+    const totalOf = (t: { input: number, output: number, cacheRead: number, cacheCreation: number }) =>
+      t.input + t.output + t.cacheRead + t.cacheCreation
+
+    const tokens = r.byModel.reduce((s, m) => s + totalOf(m.tokens), 0)
+    const cacheRead = r.byModel.reduce((s, m) => s + m.tokens.cacheRead, 0)
+
+    expect(r.totals.tokens).toBe(tokens)
+    expect(r.totals.cacheReadPct).toBeCloseTo((cacheRead / tokens) * 100, 9)
+    // Guard: on an all-zero corpus the assertion above would hold trivially.
+    expect(cacheRead).toBeGreaterThan(0)
+  })
+
+  // NOTE: this is a FORWARD guard, not proof the extraction was safe. `getUsageSince` now
+  // delegates to `getUsagePricingSince`, so today the two cannot diverge by construction and
+  // this test would pass even if both were wrong. What actually proved the refactor preserved
+  // behaviour is the four `getUsage`-based tests above, which assert exact values through the
+  // full path and passed unchanged. This test earns its place if anyone ever re-inlines the
+  // pricing math into `getUsageSince` — then Home and /analytics could silently disagree.
+  it('getUsagePricingSince matches getUsage on every field the dashboard reads', async () => {
+    const full = await getUsage('all')
+    const cheap = await getUsagePricingSince(null)
+
+    expect(cheap.totals.tokens).toBe(full.totals.tokens)
+    expect(cheap.totals.cacheReadPct).toBe(full.totals.cacheReadPct)
+    expect(cheap.totals.valueUsd).toBe(full.totals.valueUsd)
+    expect(cheap.unpriced.models).toEqual(full.unpriced.models)
+    expect(cheap.unpriced.tokens).toBe(full.unpriced.tokens)
+    expect(cheap.byModel).toEqual(full.byModel)
+
+    // Guard against the assertions above passing on empty fixtures.
+    expect(cheap.totals.tokens).toBeGreaterThan(0)
+    expect(cheap.unpriced.models.length).toBeGreaterThan(0)
+  })
+
+  it('honours the start bound the same way the full path does', async () => {
+    // Day 2 only: excludes the two day-1 rows (1000/1000/1000 and the 500 sidechain).
+    const day2 = await getUsagePricingSince(new Date('2026-05-02T00:00:00Z'))
+    const priced = day2.byModel.find(x => x.model === 'test-priced')
+    expect(priced?.tokens.cacheCreation).toBe(400)
+    expect(priced?.tokens.output).toBe(0) // the 1500 output tokens are all day 1
   })
 })

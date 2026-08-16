@@ -9,7 +9,7 @@ updated: 2026-08-15
 
 **status: shipped and deployed.** Built on `feat/home-dashboard` (cycle 56), merged fast-forward
 into `master` and deployed to prod on 2026-08-15 by CD run 31924474991, which applied migration 0032
-(`messages_created_at_idx`). Gates green (typecheck 0 / test 1159 across 150 files / build
+(`messages_created_at_idx`). Gates green (typecheck 0 / test 1164 across 152 files / build
 clean) and browser-validated on dev. See the [roadmap](../superpowers/plans/00-roadmap.md)
 row 56 and the [cycle-56 handover](../handovers/2026-08-15-home-dashboard.md).
 
@@ -67,7 +67,7 @@ badge — a tooltip is hover-only, so it cannot be the sole carrier of service i
 touch or for screen readers.
 
 `getHome()` fans out `metrics`, `attention`, `timelineEvents`, `activeTasks`,
-`recentProjects`, and `getUsageSince(start)` via `Promise.all`. Every DB query is written out
+`recentProjects`, and `getUsagePricingSince(start)` via `Promise.all`. Every DB query is written out
 by hand per table (no `sql.raw`'d identifiers anywhere in the file, so nothing there ever
 needs review for injection). Every soft-deletable source (`documents`, `images`, `tasks`)
 filters `deleted_at is null`; `memories` filters `archived_at is null`. Per-source event rows
@@ -75,20 +75,31 @@ are capped at `PER_SOURCE_LIMIT = 200` before grouping, each with its own `order
 limit 200` **inside** the CTE branch, so a cap takes the newest rows of that source, not an
 arbitrary 200.
 
-### The usage split — `getUsageSince`
+### The usage split — `getUsagePricingSince`
 
 `/api/analytics/usage` only accepts `UsageRangeKey` and 400s on `1d`/`3d`. Rather than widen
 that enum (which would put `1d`/`3d` buttons on the Analytics tab where they don't belong),
-`server/services/usage.ts` was split: `getUsage(range: UsageRangeKey)` now derives its start
-date and delegates to `getUsageSince(start: Date | null)`, which does the real work and is
-callable directly with any `Date`. Home calls `getUsageSince(homeRangeStart(range))` and reads
-only `.totals` and `.unpriced` off the result — each surface owns its own range vocabulary and
-passes a `Date`, no shared enum, no duplicated pricing math. `getUsage`'s signature and every
-existing caller are unchanged.
+`server/services/usage.ts` was split into three layers:
+
+| Function | Queries | Used by |
+|---|---|---|
+| `getUsagePricingSince(start)` | 2 — `model_prices` + one `messages` aggregation | **Home** |
+| `getUsageSince(start)` | 6 — the above plus per-day series, session count, dispatch count, LiteLLM rollup | the Usage tab |
+| `getUsage(range)` | delegates to `getUsageSince` | the Usage tab endpoint |
+
+Home reads only `totals.tokens`, `totals.cacheReadPct`, `totals.valueUsd` and `unpriced`, so it
+calls the pricing layer directly. Before that split it called `getUsageSince` and discarded
+two-thirds of the result — including a **second full scan of `messages`** (the per-day series,
+grouped by day *and* model) on the landing page, on every load. Adding `messages_created_at_idx`
+to make one scan affordable and then running two was the wrong trade.
+
+`getUsage`'s signature and every existing caller are unchanged, and `getUsageSince` still
+returns the identical `UsageResponse` — it now composes the pricing layer rather than
+recomputing it, so the two surfaces cannot disagree about tokens or value.
 
 ### The required index
 
-`messages.created_at` had no index — every `getUsage`/`getUsageSince` call was a sequential
+`messages.created_at` had no index — every usage aggregation was a sequential
 scan over the full `messages` table (~147k rows in prod), and Home puts that query on the
 landing page, on every load. Migration `0032` adds
 `messages_created_at_idx` (`btree`, `created_at desc nulls last`). No other schema change in

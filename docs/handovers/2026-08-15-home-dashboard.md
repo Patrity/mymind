@@ -13,7 +13,7 @@ status: >
   `GET /` **200 with no redirect** (proving the routeRule removal is live) while `/voice` still
   307s to `/agent` (proving the other routeRules survived); zero errors in the journal since
   cutover; an authenticated MCP round-trip succeeded, proving auth + DB end-to-end.
-  Gates on the merged master before push: **typecheck 0 / test 1159 across 150 files / build clean**.
+  Gates on the merged master before push: **typecheck 0 / test 1164 across 152 files / build clean** (an earlier draft of this handover said 1159/150 — that reading was wrong; the committed tree measures 1164/152).
 branch: feat/home-dashboard — merged fast-forward into master at adcccda, branch deleted
 spec: ../superpowers/specs/2026-08-15-home-dashboard-design.md
 plan: ../superpowers/plans/2026-08-15-home-dashboard.md
