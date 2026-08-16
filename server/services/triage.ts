@@ -223,9 +223,19 @@ export async function sweepUntriaged({ limit = 20 }: { limit?: number } = {}) {
   let triaged = 0
   let skipped = 0
   for (const c of candidates) {
-    const out = await triageCapture(c.id)
-    if (out.skipped) skipped++
-    else triaged++
+    // Isolate each candidate: claim() inside triageCapture already stamped triaged_at
+    // before any of this can throw, so an uncaught exception here wouldn't just abort
+    // the rest of the batch (stalling it until the next 10-minute tick) — it would leave
+    // that one document claimed forever with no applied action and no review row, i.e.
+    // silently stuck. Same reasoning the retired runEnrichInput's per-doc try/catch was for.
+    try {
+      const out = await triageCapture(c.id)
+      if (out.skipped) skipped++
+      else triaged++
+    } catch (err) {
+      console.warn(`[triage] sweep failed for ${c.id}:`, err)
+      skipped++
+    }
   }
   return { triaged, skipped }
 }
