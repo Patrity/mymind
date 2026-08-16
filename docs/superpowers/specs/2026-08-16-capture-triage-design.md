@@ -239,9 +239,11 @@ one you created by hand.
 
 ## Live reactivity
 
-Every actuator publishes on the existing bus: `tasks`, `documents`, `memory`, `review`, and
-`home` (the Needs Attention panel counts `/input` captures, which triage drains). Follow
-`publishChange({ resource, action, id })` as in `createMemoryRelation`.
+Every actuator publishes on the existing bus via `publishChange({ resource, action, id })`, as
+`createMemoryRelation` does. `ResourceName` is **singular** — `document`, `task`, `memory`,
+`review`. There is no `home` resource: `app/utils/live-dispatch.ts` already maps each of those
+four to a debounced `['home']` invalidation, so the Needs Attention panel (which counts `/input`
+captures) refreshes without any new dispatch entry. Do not add one.
 
 ## Testing
 
@@ -302,9 +304,12 @@ introducing a new one.
 
 Two binding requirements follow:
 
-1. The Memory actuator **must** route through the same dedup path as the enrichment loop
-   (`server/services/memory-dedup.ts`), never a parallel implementation. An implementer who
-   finds that path awkward to call must escalate rather than reimplement it.
+1. The Memory actuator **must** call `createMemory()` and must never insert into the `memories`
+   table directly. `createMemory` already runs `buildDedupCandidates` + `dedupDecision`
+   internally (skip / merge / insert) and applies `shouldAutoReview` against
+   `memoryAutoReviewThreshold` — so calling it is what buys the dedup, and a raw insert is what
+   silently bypasses it. An implementer who finds `createMemory` awkward must escalate rather
+   than hand-roll the insert.
 2. The Memory threshold **ships at `1.1` and stays there until `f80622b9` is closed.** Every
    memory proposal goes to `/review` until then. This is not a tuning preference — lowering it
    early is the one change in this cycle that can quietly degrade recall everywhere, and recall
