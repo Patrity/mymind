@@ -539,7 +539,11 @@ describe('move_document undo guard (read-then-compare)', () => {
       const token = registerUndo(exec.undo!)
       const res = await runUndo(token)
       expect(res.ok).toBe(false)
-      expect(res.reason).toMatch(/the undo failed:/)
+      expect(res.reason).toBeTruthy()
+      // The reason is user-facing, so it must NOT carry the Postgres error: a
+      // DrizzleQueryError embeds the failed query AND its bound params, which for a
+      // document undo is the entire prior document body (fixed 2026-08-16, 4a3792f).
+      expect(res.reason).not.toMatch(/duplicate key|documents_path_live_uidx|insert into|update "documents"/i)
       expect((await getDoc(doc.id))!.path).toBe(target) // nothing moved
     } finally {
       consoleErr.mockRestore()
