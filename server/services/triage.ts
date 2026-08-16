@@ -1,12 +1,14 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { useDb } from '../db'
-import { triageActions, memories } from '../db/schema'
+import { triageActions, memories, documents, reviewQueue, projects as projectsTable } from '../db/schema'
 import { createTask, deleteTask } from './tasks'
 import { getDoc, moveDoc, updateDoc, deleteDoc, restoreDoc } from './documents'
 import { createMemory } from './memory'
 import { registerUndo } from '../lib/agent/undo'
 import { publishChange } from '../utils/live-bus'
-import type { TriageAction } from '../../shared/types/triage'
+import { classify } from '../lib/ai/triage'
+import { route } from '../lib/triage/route'
+import type { TriageAction, TriageOutcome } from '../../shared/types/triage'
 
 export interface AppliedAction {
   actionRowId: string
@@ -131,4 +133,71 @@ export async function applyMemory(docId: string, action: TriageAction, autoAppli
   })
 
   return { actionRowId, entityType: 'memory', entityId: memory.id, undoToken }
+}
+
+/** Conditional claim. Returns false if another caller already owns this document. */
+async function claim(docId: string): Promise<boolean> {
+  const rows = await useDb().update(documents)
+    .set({ triagedAt: new Date() })
+    .where(and(eq(documents.id, docId), isNull(documents.triagedAt)))
+    .returning({ id: documents.id })
+  return rows.length > 0
+}
+
+const APPLY: Record<TriageAction['kind'], (docId: string, a: TriageAction) => Promise<AppliedAction>> = {
+  task: applyTask,
+  note: applyNote,
+  memory: applyMemory,
+  append: applyNote   // replaced by applyAppend in Task 10
+}
+
+export async function triageCapture(docId: string): Promise<TriageOutcome> {
+  // Claim BEFORE the model call so a racing caller cannot also pay for one.
+  if (!await claim(docId)) return { docId, applied: [], queued: false, skipped: 'already-triaged' }
+
+  const doc = await getDoc(docId)
+  if (!doc) return { docId, applied: [], queued: false, skipped: 'already-triaged' }
+
+  const activeProjects = (await useDb()
+    .select({ slug: projectsTable.slug, name: projectsTable.name, description: projectsTable.description })
+    .from(projectsTable)
+    .where(eq(projectsTable.active, true)))
+    .filter(p => p.slug !== 'uncategorized')
+
+  const proposal = await classify({ path: doc.path, content: doc.content }, activeProjects)
+  // triaged_at STAYS stamped on failure: retrying a doc the model cannot parse on every
+  // sweep would burn tokens forever. The sweeper's job is coverage, not retry-until-success.
+  if (!proposal) return { docId, applied: [], queued: false, skipped: 'parse-failed' }
+
+  const thresholds = useRuntimeConfig().triageThresholds as Record<TriageAction['kind'], number>
+  const routed = route(proposal, thresholds)
+
+  const applied: TriageAction[] = []
+  const queued: TriageAction[] = []
+
+  for (const { action, autoApply } of routed) {
+    if (!autoApply) { queued.push(action); continue }
+    // A note/append rewrites or removes the source document, so once one of those has
+    // applied, later actions in the same proposal have no courier left to consume.
+    try {
+      await APPLY[action.kind](docId, action)
+      applied.push(action)
+    } catch (err) {
+      console.warn(`[triage] actuator ${action.kind} failed for ${docId}:`, err)
+      queued.push(action)
+    }
+  }
+
+  if (queued.length > 0) {
+    // ONE row per document — review_queue_one_pending_per_doc is a partial unique index.
+    await useDb().insert(reviewQueue).values({
+      docId,
+      kind: 'triage',
+      proposed: { primary: proposal.primary, secondary: proposal.secondary,
+                  reasoning: proposal.reasoning, queued, applied } as unknown as Record<string, unknown>
+    }).onConflictDoNothing()
+    publishChange({ resource: 'review', action: 'created', id: docId })
+  }
+
+  return { docId, applied, queued: queued.length > 0 }
 }
