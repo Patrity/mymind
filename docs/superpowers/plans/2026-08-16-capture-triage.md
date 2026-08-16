@@ -48,7 +48,7 @@ Every task's requirements implicitly include this section.
 **Modified:**
 - `server/db/schema/documents.ts` — add `triagedAt`.
 - `server/db/schema/index.ts` — export the new table.
-- `server/api/capture/note.post.ts`, `server/api/capture/transcribe.post.ts` — fire triage.
+- `server/api/capture/note.post.ts` — fire triage. (There is no `transcribe.post.ts`; it was deleted in `8e96834` on 2026-06-12. The stale `docs/wiki/quick-capture.md` said otherwise when this plan was written.)
 - `server/api/review/[id]/approve.post.ts`, `reject.post.ts` — replace the if/else chain with the handler map.
 - `app/pages/review.vue` — render the `triage` kind + the recently-applied strip.
 - `nuxt.config.ts` — `triageThresholds` config, swap the `enrich-input` schedule for `triage-input`.
@@ -1293,7 +1293,6 @@ git commit -m "feat(triage): triageCapture orchestrator with a conditional claim
 
 **Files:**
 - Modify: `server/api/capture/note.post.ts`
-- Modify: `server/api/capture/transcribe.post.ts`
 
 **Interfaces:**
 - Consumes: `triageCapture` from `server/services/triage`.
@@ -1314,9 +1313,7 @@ In `server/api/capture/note.post.ts`, after `createDoc(...)` returns and **befor
 
 with `import { triageCapture } from '../../services/triage'` at the top.
 
-- [ ] **Step 2: Do the same in the transcribe endpoint**
-
-Apply the identical two lines in `server/api/capture/transcribe.post.ts`, after its `createDoc` call.
+- [ ] **Step 2: (void)** There is no transcribe endpoint — it was deleted in `8e96834` (2026-06-12). Note capture is the only capture endpoint that creates an `/input` document; every other inlet (MCP `quick_capture`, `save_document` with no project, direct `POST /api/documents`) is covered by the Task 9 sweeper.
 
 - [ ] **Step 3: Verify capture is still synchronous**
 
@@ -1347,7 +1344,7 @@ Expected: `ms` in the low hundreds — capture did not wait on a model call. The
 
 ```bash
 git add server/api/capture/
-git commit -m "feat(triage): fire triage after note and transcribe capture"
+git commit -m "feat(triage): fire triage after note capture"
 ```
 
 ---

@@ -81,7 +81,7 @@ triageCapture(docId: string): Promise<TriageOutcome>
 
 Called from two places:
 
-- **Immediately** after `/api/capture/note` and `/api/capture/transcribe` create the document —
+- **Immediately** after `/api/capture/note` creates the document —
   fire-and-forget, so capture returns at write speed and never waits on a model.
 - **From the `triage-input` cron sweeper**, catching whatever the immediate path missed: server
   restart mid-flight, model timeout, and documents created by other routes (MCP `quick_capture`,
