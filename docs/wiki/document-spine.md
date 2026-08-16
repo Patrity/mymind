@@ -2,7 +2,9 @@
 title: Document Spine
 status: shipped
 cycle: 26
-updated: 2026-06-17
+updated: 2026-08-16
+mymind_id: 541b04de-a9f9-4809-8001-50082fdafaa1
+mymind_hash: 2da8ca3a5e840492184577f9c83d8452aeb77b110419637fc25d4e5890e81b1a
 ---
 
 # Document Spine
@@ -24,7 +26,14 @@ All document access goes through `server/services/documents.ts`: `listTree`, `ge
 `GET tree` · `POST /` (create) · `GET|PUT|DELETE [id]` · `POST [id]/move` · `POST [id]/share` · `GET search?q=` · public `GET /api/share/[slug]` (auth-exempt, read-only). Client wrapper: `app/composables/useDocuments.ts`.
 
 ## UI
-`app/pages/documents.vue` — `UDashboardPanel` split: left `DocumentsTree` (browse/select/delete, search box) + right `DocumentsEditor`. Editor: CodeMirror (`CodeEditor.client.vue`) + MDC preview (`MdView.vue`), `edit|preview|split` toggle (cookie-persisted), ~1.5s debounced autosave, metadata form (title/project/domain/type/tags), share toggle showing `/share/<slug>`. Public read-only page: `app/pages/share/[slug].vue` (`layout: false`).
+`app/pages/documents.vue` — `UDashboardPanel` split: left `DocumentsTree` (browse/select/delete, search box) + right `DocumentsEditor`. Editor: CodeMirror (`CodeEditor.client.vue`) + MDC preview (`MdView.vue`), `edit|preview|split` toggle (cookie-persisted), ~1.5s debounced autosave, metadata form (title/project/domain/type/tags), share toggle showing `/share/<slug>`.
+
+**Autosave semantics** (`app/lib/documents/autosave.ts` + `DocumentsEditor`). The pending edit is held as an `(id, content)` pair, not as a timer over "whatever document is selected now". Three rules follow from that:
+- **Leaving flushes, never discards.** Switching documents or unmounting the editor writes the pending edit rather than cancelling its timer. Both paths capture the *outgoing* document's id/values synchronously before the incoming document loads, so a late save can't land on the wrong document.
+- **Unwritten text is always visible.** The status badge reads `unsaved` (amber) whenever the buffer differs from what was last written, alongside `saving…`/`saved`/`save failed`. A `beforeunload` handler warns on tab close/reload while content or metadata is dirty — the one exit a flush can't cover.
+- **Only what was actually written is marked saved.** The save marks the body it sent, not the current buffer, so text typed while a request is in flight stays dirty and gets its own save.
+
+Metadata (800ms debounce) follows the same explicit-id rule and is flushed on the same paths. Public read-only page: `app/pages/share/[slug].vue` (`layout: false`).
 
 ## Search
 **Hybrid (cycle 2):** `searchDocs` fuses a trigram lane (`ilike` + `similarity()`) and a vector cosine lane (`embedding <=> query::halfvec` over the HNSW index) via RRF, falling back to trigram-only if embeddings are unavailable. See [enrichment.md](enrichment.md).
@@ -37,4 +46,4 @@ All document access goes through `server/services/documents.ts`: `listTree`, `ge
 - **Last-open doc** persisted via `useCookie('mm.lastDoc')` (`?doc=` query wins).
 
 ## Known gaps (see handover)
-Deep-link `?doc=<id>` doesn't auto-load; `useDocuments` uses raw ofetch. Tree drag-drop shipped (cycle 9, see Power-editor above). Project association doc-tree/search `?project=` filtering deferred (dashboard uses flat `listDocs`); per-doc deep-link route (`?doc=<id>`) from the project Documents tab is deferred (rows link to `/documents`).
+`useDocuments` uses raw ofetch. (Deep-link `?doc=<id>` **does** auto-load — `documents.vue` watches `route.query.doc` and selects it; verified in-browser 2026-08-16. The former "doesn't auto-load" note here was stale.) Tree drag-drop shipped (cycle 9, see Power-editor above). Project association doc-tree/search `?project=` filtering deferred (dashboard uses flat `listDocs`); per-doc deep-link route (`?doc=<id>`) from the project Documents tab is deferred (rows link to `/documents`).

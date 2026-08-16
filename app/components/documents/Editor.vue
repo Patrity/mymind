@@ -6,6 +6,7 @@ type Mode = 'edit' | 'preview' | 'split'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
+import { createAutosave } from '~/lib/documents/autosave'
 
 const props = defineProps<{
   documentId: string | null
@@ -20,8 +21,10 @@ const doc = ref<DocumentDTO | null>(null)
 const content = ref('')
 const loading = ref(false)
 const saveStatus = ref<SaveStatus>('idle')
-let savedContent = ''
-let saveTimer: ReturnType<typeof setTimeout> | null = null
+// Reactive so `dirty` can drive a visible unsaved indicator — text typed but not yet written
+// used to be completely invisible in the UI.
+const savedContent = ref('')
+const dirty = computed(() => content.value !== savedContent.value)
 
 // Live detail query — keeps metadata in sync when remote changes arrive.
 // We do NOT replace the content ref if the user has unsaved edits.
@@ -42,9 +45,9 @@ watch(liveDocData, (fresh) => {
     metaTags.value = (fresh.tags ?? []).join(', ')
   }
   // Only sync content when there are no local unsaved edits
-  if (content.value === savedContent) {
+  if (!dirty.value) {
     content.value = fresh.content
-    savedContent = fresh.content
+    savedContent.value = fresh.content
     doc.value = { ...doc.value, content: fresh.content }
   }
 })
@@ -118,19 +121,20 @@ const statusBadge = computed(() => {
     case 'saving': return { label: 'saving…', color: 'neutral' as const }
     case 'saved': return { label: 'saved', color: 'success' as const }
     case 'error': return { label: 'save failed', color: 'error' as const }
-    default: return null
+    // Idle with unwritten text used to render nothing at all, so the one state where the
+    // user could still lose work was the one state with no indicator.
+    default: return dirty.value ? { label: 'unsaved', color: 'warning' as const } : null
   }
 })
 
 async function loadDoc(id: string) {
   loading.value = true
   saveStatus.value = 'idle'
-  if (saveTimer) clearTimeout(saveTimer)
   try {
     const d = await get(id)
     doc.value = d
     content.value = d.content
-    savedContent = d.content
+    savedContent.value = d.content
     // Populate metadata fields
     metaPath.value = d.path
     metaTitle.value = d.title ?? ''
@@ -146,60 +150,81 @@ async function loadDoc(id: string) {
   }
 }
 
-watch(() => props.documentId, (id) => {
+watch(() => props.documentId, (id, prevId) => {
+  // Write the outgoing document's pending edits before swapping. This used to clearTimeout()
+  // them, so clicking another document within the debounce window discarded whatever had just
+  // been typed. Both saves capture the OLD id/values synchronously here, before loadDoc()
+  // overwrites the refs below.
+  if (prevId) {
+    void autosave.flush()
+    if (metaDirty.value) void saveMetadata(prevId)
+  }
   if (id) loadDoc(id)
   else {
     doc.value = null
     content.value = ''
-    savedContent = ''
+    savedContent.value = ''
     saveStatus.value = 'idle'
   }
 }, { immediate: true })
 
-// Autosave content — debounced 1.5s
-async function saveContent() {
-  if (!props.documentId || !doc.value || content.value === savedContent) return
-  saveStatus.value = 'saving'
+// Autosave content — debounced 1.5s. The (id, content) pair travels with the pending edit
+// (see ~/lib/documents/autosave) so a save that lands after a document switch still writes to
+// the document the text was typed in.
+const autosave = createAutosave(async (id, body) => {
+  // A flush can outlive the selection that scheduled it; status is only meaningful while the
+  // save's own document is still on screen.
+  const isCurrent = () => props.documentId === id
+  if (isCurrent()) saveStatus.value = 'saving'
   try {
-    await update(props.documentId, { content: content.value })
-    savedContent = content.value
-    saveStatus.value = 'saved'
-    setTimeout(() => {
-      if (saveStatus.value === 'saved') saveStatus.value = 'idle'
-    }, 2000)
+    await update(id, { content: body })
+    if (isCurrent()) {
+      // Mark exactly what was written — not content.value, which may have moved on while the
+      // request was in flight; that text is still genuinely unsaved.
+      if (body === content.value) savedContent.value = body
+      saveStatus.value = 'saved'
+      setTimeout(() => {
+        if (saveStatus.value === 'saved') saveStatus.value = 'idle'
+      }, 2000)
+    }
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
-    saveStatus.value = 'error'
+    if (isCurrent()) saveStatus.value = 'error'
+    // Toast even when the document is no longer selected — a background save that failed on
+    // the way out is precisely the case the user must not miss.
     toast.add({ color: 'error', title: 'Autosave failed', description: err.data?.statusMessage ?? err.message })
   }
-}
+}, 1500)
 
 function onContentUpdate(v: string) {
   content.value = v
-  if (saveTimer) clearTimeout(saveTimer)
-  if (v !== savedContent) {
-    saveTimer = setTimeout(() => saveContent(), 1500)
-  }
+  if (props.documentId && v !== savedContent.value) autosave.schedule(props.documentId, v)
 }
 
 function onSaveShortcut() {
-  if (saveTimer) clearTimeout(saveTimer)
-  saveContent()
+  void autosave.flush()
 }
 
-// Metadata save — debounced 800ms after any meta field change
-async function saveMetadata() {
-  if (!props.documentId || !doc.value) return
+// Metadata save — debounced 800ms after any meta field change.
+// `id` is explicit for the same reason the content save takes one: on a document switch this
+// runs while props.documentId already points at the INCOMING document, so reading it here
+// would write the outgoing document's title/project onto the new one. Every meta*.value read
+// below is synchronous, so calling this before loadDoc() captures the right values.
+async function saveMetadata(id = props.documentId) {
+  if (!id || !doc.value) return
   const tags = metaTags.value.split(',').map(t => t.trim()).filter(Boolean)
   try {
-    await update(props.documentId, {
+    await update(id, {
       title: metaTitle.value || null,
       project: metaProject.value || null,
       domain: metaDomain.value || null,
       type: metaType.value || null,
       tags
     })
-    // Update local doc reference
+    // Update local doc reference — but only while this save's own document is still selected.
+    // A flush from a document switch must not write the outgoing metadata onto the incoming
+    // document's local state.
+    if (props.documentId !== id) return
     if (doc.value) {
       doc.value = {
         ...doc.value,
@@ -276,9 +301,23 @@ async function copyPublicLink() {
   toast.add({ color: copied ? 'success' : 'warning', title: copied ? 'Link copied' : 'Could not copy — link shown above' })
 }
 
+// Tab close / reload can't be made to wait for an in-flight save, so warn instead — this is
+// the one exit route a flush cannot cover.
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (dirty.value || autosave.hasPending() || metaDirty.value) e.preventDefault()
+}
+onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
+
 onUnmounted(() => {
-  if (saveTimer) clearTimeout(saveTimer)
-  if (metaSaveTimer.value) clearTimeout(metaSaveTimer.value)
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  // Flush, don't discard. Navigating away used to clearTimeout() the pending save outright,
+  // so any edit typed in the last 1.5s was lost with no warning. Fire-and-forget is fine: the
+  // request outlives the component, and the save callback guards its own status updates.
+  void autosave.flush()
+  if (metaSaveTimer.value) {
+    clearTimeout(metaSaveTimer.value)
+    if (metaDirty.value) void saveMetadata()
+  }
 })
 </script>
 

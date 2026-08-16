@@ -26,8 +26,31 @@ describe('undo store', () => {
     try {
       const token = registerUndo(async () => { throw new Error('duplicate key value violates unique constraint') })
       const res = await runUndo(token)
+      // Resolves with the { ok, reason } contract rather than rejecting — that's the subject
+      // here. What the reason may NOT contain is covered by the leak test below.
+      expect(res).toEqual({ ok: false, reason: expect.any(String) })
+    } finally {
+      err.mockRestore()
+    }
+  })
+
+  // The reason is user-facing: it goes back through POST /api/agent/undo into the chat
+  // transcript. A DrizzleQueryError's message embeds the failed query AND its bound params,
+  // and for a document undo those params are the entire prior document body — so
+  // interpolating err.message republished the whole document as an error string.
+  it('does not leak the thrown error message into the user-facing reason', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const body = 'PRIOR-DOCUMENT-BODY-fca19b'
+      const token = registerUndo(async () => {
+        throw new Error(`Failed query: update "documents" set "content" = $1\nparams: ${body}`)
+      })
+      const res = await runUndo(token)
       expect(res.ok).toBe(false)
-      expect(res.reason).toContain('duplicate key value violates unique constraint')
+      expect(res.reason).not.toContain(body)
+      expect(res.reason).not.toContain('Failed query')
+      // The operator still gets the real error — it moves to the log, it doesn't vanish.
+      expect(err).toHaveBeenCalledWith('[undo] closure threw:', expect.any(Error))
     } finally {
       err.mockRestore()
     }

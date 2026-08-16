@@ -42,9 +42,15 @@ export async function runUndo(token: string): Promise<UndoResult> {
     // *refusal* — "the document changed, reconcile and try again" — stays retryable. A thrown
     // error is not that: nothing the caller can do turns the same closure into a success, so
     // leaving the token live would just let the failure repeat on every click for the full TTL.
+    //
+    // The reason is USER-FACING (it returns through POST /api/agent/undo into the chat
+    // transcript), so the thrown error's message must not go into it. A DrizzleQueryError
+    // embeds the failed query and its bound params in `message`, and for a document undo
+    // those params are the entire prior document body — interpolating it republished the
+    // whole document as an error string. The real error goes to the log instead.
     console.error('[undo] closure threw:', err)
     store.delete(token)
-    return { ok: false, reason: `the undo failed: ${err instanceof Error ? err.message : String(err)}` }
+    return { ok: false, reason: 'the undo failed — the document may have changed since. Check its current state and reconcile manually.' }
   }
   // Consume ONLY on success: a refused undo must stay retryable once the caller reconciles.
   if (res.ok) store.delete(token)
