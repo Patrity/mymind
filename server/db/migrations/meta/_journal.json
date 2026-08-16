@@ -232,6 +232,13 @@
       "when": 1786812015809,
       "tag": "0032_abandoned_carlie_cooper",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786909497665,
+      "tag": "0033_lean_triton",
+      "breakpoints": true
     }
   ]
 }

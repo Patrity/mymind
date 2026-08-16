@@ -28,13 +28,15 @@ export const documents = pgTable('documents', {
   embedding: halfvec(2560), // schema only in cycle 1; stays null
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  deletedAt: timestamp('deleted_at', { withTimezone: true })
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  triagedAt: timestamp('triaged_at', { withTimezone: true })
 }, (t) => ({
   pathUnique: uniqueIndex('documents_path_live_uidx').on(t.path).where(sql`${t.deletedAt} is null`),
   publicSlugUnique: uniqueIndex('documents_public_slug_uidx').on(t.publicSlug),
   tagsIdx: index('documents_tags_gin').using('gin', t.tags),
   projectIdx: index('documents_project_idx').on(t.project),
-  projectIdIdx: index('documents_project_id_idx').on(t.projectId)
+  projectIdIdx: index('documents_project_id_idx').on(t.projectId),
+  triagedAtIdx: index('documents_triaged_at_idx').on(t.triagedAt)
 }))
 
 export type Document = typeof documents.$inferSelect
