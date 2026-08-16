@@ -3,7 +3,9 @@ import type { MemoryDTO, MemoryRelationDTO, MemoryScope } from '~~/shared/types/
 
 definePageMeta({ title: 'Memories' })
 
-const { create: createMemory, review: reviewMemory, archive: archiveMemory, useMemoryList } = useMemories()
+// Approval ("Mark reviewed") moved to /review (task-13) — the single review surface.
+// This page keeps create/archive/list plus the "Unreviewed only" filter view.
+const { create: createMemory, archive: archiveMemory, useMemoryList } = useMemories()
 const { useProjectList } = useProjects()
 const toast = useToast()
 
@@ -84,20 +86,6 @@ const filteredMemories = computed(() => {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 const actioning = ref<Record<string, boolean>>({})
-
-async function doReview(id: string) {
-  actioning.value[id] = true
-  try {
-    await reviewMemory(id)
-    toast.add({ color: 'success', title: 'Marked as reviewed' })
-    await refetch()
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Review failed', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    actioning.value[id] = false
-  }
-}
 
 const archiveConfirmId = ref<string | null>(null)
 
@@ -420,18 +408,6 @@ function firstEvidence(mem: MemoryDTO) {
 
           <template #footer>
             <div class="flex justify-end gap-2">
-              <UButton
-                v-if="!mem.reviewedAt"
-                color="primary"
-                variant="soft"
-                size="sm"
-                icon="i-lucide-check"
-                :loading="actioning[mem.id]"
-                @click="doReview(mem.id)"
-              >
-                Mark reviewed
-              </UButton>
-
               <!-- Archive confirm inline -->
               <template v-if="archiveConfirmId === mem.id">
                 <span class="text-xs text-muted self-center">Archive this memory?</span>

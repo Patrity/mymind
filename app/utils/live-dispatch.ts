@@ -34,7 +34,9 @@ const invalidateHome = (c: Invalidator) => { void debouncedInvalidateHome(c) }
 // Per-resource override hook. Default behaviour (invalidate detail + list) covers
 // every resource today; add an entry here only when a resource needs extra keys.
 const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => void>> = {
-  memory: (c) => { c.invalidateQueries({ queryKey: ['memory', 'count'] }); invalidateGraph(c); invalidateHome(c) },
+  // Unreviewed memories are folded into the single `/review` feed (task-13) — a
+  // memory update (e.g. marking one reviewed) can change the review badge/list too.
+  memory: (c) => { c.invalidateQueries({ queryKey: ['memory', 'count'] }); c.invalidateQueries({ queryKey: ['review', 'count'] }); c.invalidateQueries({ queryKey: ['review', 'list'] }); invalidateGraph(c); invalidateHome(c) },
   review: (c) => { c.invalidateQueries({ queryKey: ['review', 'count'] }); invalidateHome(c) },
   activity: (c) => { c.invalidateQueries({ queryKey: ['activity', 'count'] }); invalidateHome(c) },
   // A skill is a document (type='skill') — a background agent write needs the

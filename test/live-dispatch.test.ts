@@ -46,6 +46,17 @@ describe('dispatchLiveEvent', () => {
     dispatchLiveEvent(c as never, ev({ resource: 'review', id: 'r-1' }))
     expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
   })
+
+  // task-13: unreviewed memories are folded into the single /review feed, so a memory
+  // update (e.g. marking one reviewed) must also refresh the review badge + list —
+  // otherwise a second tab's Review badge/queue would go stale after a Mark-reviewed
+  // click on a `memory-unreviewed` row.
+  it('memory events also invalidate the review badge and list', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'memory', id: 'm-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
+    expect(c.calls).toContainEqual([{ queryKey: ['review', 'list'] }])
+  })
 })
 
 describe('dispatchLiveEvent — activity', () => {

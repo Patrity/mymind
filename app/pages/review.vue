@@ -23,6 +23,17 @@ interface MemoryConflictProposed {
   existingContent?: string | null
 }
 
+// A synthetic item (task-13) — NOT a review_queue row. `id` is a memories.id, so approving
+// it goes through reviewMemory(id) via useMemories(), never POST /api/review/[id]/approve
+// (which looks up review_queue by id and would 404 on a memories.id).
+interface MemoryUnreviewedProposed {
+  content: string
+  scope: 'user' | 'agent' | 'world'
+  tags: string[]
+  project?: string | null
+  confidence?: number | null
+}
+
 // Mirrors shared/types/triage.ts TriageAction — a DESTINATION, not a doc classification.
 type TriageActionKind = 'task' | 'note' | 'memory' | 'append'
 
@@ -50,9 +61,10 @@ interface TriageProposed {
 
 interface ReviewItem {
   id: string
-  docId: string
+  // null for a synthetic memory-unreviewed item — it has no backing document.
+  docId: string | null
   kind: string
-  proposed: DocProposed | MemoryConflictProposed | TriageProposed
+  proposed: DocProposed | MemoryConflictProposed | TriageProposed | MemoryUnreviewedProposed
   createdAt: string
   docPath: string | null
 }
@@ -83,6 +95,10 @@ function isTriage(item: ReviewItem): item is ReviewItem & { proposed: TriageProp
   return item.kind === 'triage'
 }
 
+function isMemoryUnreviewed(item: ReviewItem): item is ReviewItem & { proposed: MemoryUnreviewedProposed } {
+  return item.kind === 'memory-unreviewed'
+}
+
 /** "1 action" / "2 actions" — never "1 actions". */
 function pluralize(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`
@@ -102,6 +118,13 @@ const TRIAGE_KIND_COLOR: Record<TriageActionKind, 'info' | 'neutral' | 'primary'
   append: 'warning'
 }
 
+// Mirrors the scopeColor map in app/pages/memories.vue.
+const MEMORY_SCOPE_COLOR: Record<'user' | 'agent' | 'world', 'primary' | 'info' | 'warning'> = {
+  user: 'primary',
+  agent: 'info',
+  world: 'warning'
+}
+
 /** Human-readable destination for a proposed triage action. */
 function triageDestination(action: TriageActionDTO): string {
   switch (action.kind) {
@@ -119,6 +142,10 @@ function triageDestination(action: TriageActionDTO): string {
 }
 
 const toast = useToast()
+
+// The one action a memory-unreviewed item supports (task-13) — reuses the same composable
+// action app/pages/memories.vue used for its now-removed "Mark reviewed" button.
+const { review: reviewMemoryAction } = useMemories()
 
 const { data, refetch, isPending, error } = useQuery({
   queryKey: ['review', 'list'],
@@ -257,6 +284,26 @@ async function keepBoth(id: string) {
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Keep-both failed', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    actioning.value[id] = false
+  }
+}
+
+// ── memory-unreviewed helpers ─────────────────────────────────────────────
+//
+// `id` here is a memories.id, not a review_queue.id — go through reviewMemory(id),
+// never POST /api/review/[id]/approve (that endpoint 404s on an id review_queue
+// doesn't have).
+
+async function markMemoryReviewed(id: string) {
+  actioning.value[id] = true
+  try {
+    await reviewMemoryAction(id)
+    toast.add({ color: 'success', title: 'Marked as reviewed' })
+    await refetch()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Review failed', description: err.data?.statusMessage ?? err.message })
   } finally {
     actioning.value[id] = false
   }
@@ -499,6 +546,74 @@ async function keepBoth(id: string) {
                   @click="approve(item)"
                 >
                   Approve
+                </UButton>
+              </div>
+            </template>
+          </UCard>
+
+          <!-- Unreviewed-memory card (task-13: folded in from /memories' removed
+               "Mark reviewed" action). Synthetic item — id is a memories.id, not a
+               review_queue.id, so it gets its own action (markMemoryReviewed), not
+               approve/reject. -->
+          <UCard v-else-if="isMemoryUnreviewed(item)">
+            <template #header>
+              <div class="flex items-start justify-between gap-2">
+                <div class="flex items-center gap-2 flex-wrap min-w-0">
+                  <UBadge
+                    label="unreviewed memory"
+                    color="neutral"
+                    variant="outline"
+                    size="xs"
+                  />
+                  <UBadge
+                    :label="(item.proposed as MemoryUnreviewedProposed).scope"
+                    :color="MEMORY_SCOPE_COLOR[(item.proposed as MemoryUnreviewedProposed).scope]"
+                    variant="subtle"
+                    size="xs"
+                  />
+                  <span
+                    v-if="(item.proposed as MemoryUnreviewedProposed).confidence != null"
+                    class="text-xs text-muted"
+                  >
+                    {{ Math.round(((item.proposed as MemoryUnreviewedProposed).confidence ?? 0) * 100) }}% confidence
+                  </span>
+                </div>
+                <p class="text-xs text-dimmed shrink-0">
+                  {{ new Date(item.createdAt).toLocaleString() }}
+                </p>
+              </div>
+            </template>
+
+            <div class="space-y-3">
+              <p class="text-sm text-default leading-relaxed">
+                {{ (item.proposed as MemoryUnreviewedProposed).content }}
+              </p>
+              <div
+                v-if="(item.proposed as MemoryUnreviewedProposed).tags.length > 0"
+                class="flex flex-wrap gap-1"
+              >
+                <UBadge
+                  v-for="tag in (item.proposed as MemoryUnreviewedProposed).tags"
+                  :key="tag"
+                  :label="tag"
+                  color="neutral"
+                  variant="subtle"
+                  size="xs"
+                />
+              </div>
+            </div>
+
+            <template #footer>
+              <div class="flex justify-end gap-2">
+                <UButton
+                  color="primary"
+                  variant="soft"
+                  size="sm"
+                  icon="i-lucide-check"
+                  :loading="actioning[item.id]"
+                  @click="markMemoryReviewed(item.id)"
+                >
+                  Mark reviewed
                 </UButton>
               </div>
             </template>

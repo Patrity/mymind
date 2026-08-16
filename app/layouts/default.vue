@@ -3,14 +3,12 @@ import { useQuery } from '@tanstack/vue-query'
 import type { NavigationMenuItem } from '@nuxt/ui'
 import type { ActivityCount } from '~~/shared/types/activity'
 
+// The single Review badge (below) covers unreviewed memories too (task-13 folded
+// GET /api/memories/count's unreviewed items into GET /api/review/count's `pending`) —
+// no separate Memory badge query.
 const { data: reviewCount } = useQuery({
   queryKey: ['review', 'count'],
   queryFn: () => $fetch<{ pending: number }>('/api/review/count')
-})
-
-const { data: memoryCount } = useQuery({
-  queryKey: ['memory', 'count'],
-  queryFn: () => $fetch<{ unreviewed: number }>('/api/memories/count')
 })
 
 const { data: activityCount } = useQuery({
@@ -76,12 +74,7 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     to: '/activity',
     badge: (obsConfig.value?.alerts.badge !== false && (activityCount.value?.unacked ?? 0) > 0) ? activityCount.value!.unacked : undefined
   },
-  {
-    label: 'Memory',
-    icon: 'i-lucide-brain',
-    to: '/memories',
-    badge: (memoryCount.value?.unreviewed ?? 0) > 0 ? memoryCount.value!.unreviewed : undefined
-  },
+  { label: 'Memory', icon: 'i-lucide-brain', to: '/memories' },
   { label: 'Galaxy', icon: 'i-lucide-orbit', to: '/galaxy' },
   {
     label: 'Review',
