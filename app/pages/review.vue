@@ -22,11 +22,36 @@ interface MemoryConflictProposed {
   existingContent?: string | null
 }
 
+// Mirrors shared/types/triage.ts TriageAction — a DESTINATION, not a doc classification.
+type TriageActionKind = 'task' | 'note' | 'memory' | 'append'
+
+interface TriageActionDTO {
+  kind: TriageActionKind
+  confidence: number
+  title?: string | null
+  project?: string | null
+  priority?: 'low' | 'medium' | 'high'
+  dueDate?: string | null
+  scope?: 'user' | 'agent' | 'world'
+  content?: string | null
+  targetDocId?: string | null
+  tags?: string[] | null
+  path?: string | null
+}
+
+interface TriageProposed {
+  primary: TriageActionDTO
+  secondary: TriageActionDTO[]
+  reasoning: string
+  queued: TriageActionDTO[]
+  applied: TriageActionDTO[]
+}
+
 interface ReviewItem {
   id: string
   docId: string
   kind: string
-  proposed: DocProposed | MemoryConflictProposed
+  proposed: DocProposed | MemoryConflictProposed | TriageProposed
   createdAt: string
   docPath: string | null
 }
@@ -35,6 +60,45 @@ const MEMORY_CONFLICT_KINDS = new Set(['memory-supersede', 'memory-contradict'])
 
 function isMemoryConflict(item: ReviewItem): item is ReviewItem & { proposed: MemoryConflictProposed } {
   return MEMORY_CONFLICT_KINDS.has(item.kind)
+}
+
+function isTriage(item: ReviewItem): item is ReviewItem & { proposed: TriageProposed } {
+  return item.kind === 'triage'
+}
+
+/** "1 action" / "2 actions" — never "1 actions". */
+function pluralize(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+const TRIAGE_KIND_LABEL: Record<TriageActionKind, string> = {
+  task: 'Task',
+  note: 'Note',
+  memory: 'Memory',
+  append: 'Append'
+}
+
+const TRIAGE_KIND_COLOR: Record<TriageActionKind, 'info' | 'neutral' | 'primary' | 'warning'> = {
+  task: 'info',
+  note: 'neutral',
+  memory: 'primary',
+  append: 'warning'
+}
+
+/** Human-readable destination for a proposed triage action. */
+function triageDestination(action: TriageActionDTO): string {
+  switch (action.kind) {
+    case 'task':
+      return action.project ? `“${action.title ?? 'Untitled task'}” → ${action.project}` : `“${action.title ?? 'Untitled task'}”`
+    case 'note':
+      return action.path ?? action.title ?? 'New note'
+    case 'memory':
+      return action.scope ? `Memory (${action.scope})` : 'Memory'
+    case 'append':
+      return 'Append to closest matching document'
+    default:
+      return action.kind
+  }
 }
 
 const toast = useToast()
@@ -55,31 +119,34 @@ watch(error, (err) => {
 
 const actioning = ref<Record<string, boolean>>({})
 
-async function approve(id: string) {
-  actioning.value[id] = true
+async function approve(item: ReviewItem) {
+  actioning.value[item.id] = true
   try {
-    await $fetch(`/api/review/${id}/approve`, { method: 'POST' })
-    toast.add({ color: 'success', title: 'Proposal approved', description: 'Document updated.' })
+    await $fetch(`/api/review/${item.id}/approve`, { method: 'POST' })
+    const description = isTriage(item)
+      ? `Applied ${pluralize(item.proposed.queued.length, 'action')}.`
+      : 'Document updated.'
+    toast.add({ color: 'success', title: 'Proposal approved', description })
     await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Approve failed', description: err.data?.statusMessage ?? err.message })
   } finally {
-    actioning.value[id] = false
+    actioning.value[item.id] = false
   }
 }
 
-async function reject(id: string) {
-  actioning.value[id] = true
+async function reject(item: ReviewItem) {
+  actioning.value[item.id] = true
   try {
-    await $fetch(`/api/review/${id}/reject`, { method: 'POST' })
+    await $fetch(`/api/review/${item.id}/reject`, { method: 'POST' })
     toast.add({ color: 'neutral', title: 'Proposal rejected' })
     await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Reject failed', description: err.data?.statusMessage ?? err.message })
   } finally {
-    actioning.value[id] = false
+    actioning.value[item.id] = false
   }
 }
 
@@ -245,6 +312,117 @@ async function keepBoth(id: string) {
             </template>
           </UCard>
 
+          <!-- Triage card (capture-triage proposals: task / note / memory / append) -->
+          <UCard v-else-if="isTriage(item)">
+            <template #header>
+              <div class="flex items-start justify-between gap-2">
+                <div class="flex items-center gap-2 flex-wrap min-w-0">
+                  <UBadge
+                    label="triage"
+                    color="neutral"
+                    variant="outline"
+                    size="xs"
+                  />
+                  <p class="text-xs text-muted font-mono truncate">
+                    {{ item.docPath ?? item.docId }}
+                  </p>
+                </div>
+                <p class="text-xs text-dimmed shrink-0">
+                  {{ new Date(item.createdAt).toLocaleString() }}
+                </p>
+              </div>
+            </template>
+
+            <div class="space-y-4">
+              <!-- Actions awaiting a human decision -->
+              <div class="space-y-2">
+                <p class="text-xs font-semibold text-highlighted uppercase tracking-wide">
+                  {{ pluralize(item.proposed.queued.length, 'action') }} awaiting review
+                </p>
+                <div
+                  v-for="(action, i) in item.proposed.queued"
+                  :key="`queued-${i}`"
+                  class="p-3 rounded-md bg-muted space-y-1"
+                >
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <UBadge
+                      :label="TRIAGE_KIND_LABEL[action.kind]"
+                      :color="TRIAGE_KIND_COLOR[action.kind]"
+                      variant="subtle"
+                      size="xs"
+                    />
+                    <span class="text-xs text-muted">{{ Math.round(action.confidence * 100) }}% confidence</span>
+                  </div>
+                  <p class="text-sm text-default">
+                    {{ triageDestination(action) }}
+                  </p>
+                </div>
+              </div>
+
+              <!-- Reasoning -->
+              <div class="p-3 rounded-md bg-elevated text-xs text-muted leading-relaxed">
+                <span class="font-semibold text-default">Reasoning: </span>{{ item.proposed.reasoning }}
+              </div>
+
+              <!-- Already auto-applied actions — read-only context -->
+              <div
+                v-if="item.proposed.applied.length > 0"
+                class="space-y-2"
+              >
+                <USeparator />
+                <p class="text-xs font-semibold text-dimmed uppercase tracking-wide">
+                  {{ pluralize(item.proposed.applied.length, 'action') }} already applied automatically
+                </p>
+                <div
+                  v-for="(action, i) in item.proposed.applied"
+                  :key="`applied-${i}`"
+                  class="p-3 rounded-md bg-muted/50 space-y-1"
+                >
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <UBadge
+                      :label="TRIAGE_KIND_LABEL[action.kind]"
+                      color="neutral"
+                      variant="subtle"
+                      size="xs"
+                    />
+                    <UBadge
+                      label="auto-applied"
+                      color="success"
+                      variant="subtle"
+                      size="xs"
+                    />
+                    <span class="text-xs text-dimmed">{{ Math.round(action.confidence * 100) }}% confidence</span>
+                  </div>
+                  <p class="text-sm text-muted">
+                    {{ triageDestination(action) }}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <template #footer>
+              <div class="flex justify-end gap-2">
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  :loading="actioning[item.id]"
+                  @click="reject(item)"
+                >
+                  Reject
+                </UButton>
+                <UButton
+                  color="primary"
+                  size="sm"
+                  :loading="actioning[item.id]"
+                  @click="approve(item)"
+                >
+                  Approve
+                </UButton>
+              </div>
+            </template>
+          </UCard>
+
           <!-- Enrichment-doc card (original behaviour) -->
           <UCard v-else>
             <template #header>
@@ -335,7 +513,7 @@ async function keepBoth(id: string) {
                   variant="ghost"
                   size="sm"
                   :loading="actioning[item.id]"
-                  @click="reject(item.id)"
+                  @click="reject(item)"
                 >
                   Reject
                 </UButton>
@@ -343,7 +521,7 @@ async function keepBoth(id: string) {
                   color="primary"
                   size="sm"
                   :loading="actioning[item.id]"
-                  @click="approve(item.id)"
+                  @click="approve(item)"
                 >
                   Approve
                 </UButton>

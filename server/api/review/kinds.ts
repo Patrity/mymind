@@ -1,11 +1,28 @@
 import { and, eq } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { reviewQueue, memories, memoryRelations } from '../../db/schema'
+import { reviewQueue, memories, memoryRelations, documents } from '../../db/schema'
 import type { ReviewItem } from '../../db/schema'
 import { getDoc, updateDoc, moveDoc } from '../../services/documents'
+import { applyTask, applyNote, applyMemory, applyAppend } from '../../services/triage'
 import { publishChange } from '../../utils/live-bus'
+import type { TriageAction } from '../../../shared/types/triage'
 
 type Handler = (item: ReviewItem) => Promise<void>
+
+interface TriageProposedRow {
+  primary: TriageAction
+  secondary: TriageAction[]
+  reasoning: string
+  queued: TriageAction[]
+  applied: TriageAction[]
+}
+
+const APPLY: Record<TriageAction['kind'], (docId: string, action: TriageAction, autoApplied?: boolean) => Promise<unknown>> = {
+  task: applyTask,
+  note: applyNote,
+  memory: applyMemory,
+  append: applyAppend
+}
 
 // ── Memory conflict kinds (memory-supersede / memory-contradict) ────────────
 
@@ -103,14 +120,65 @@ async function rejectEnrichment(item: ReviewItem): Promise<void> {
   publishChange({ resource: 'review', action: 'updated', id: item.id })
 }
 
+// ── Triage kind ───────────────────────────────────────────────────────────
+//
+// One review_queue row per document; `proposed.queued` holds the action(s) that fell
+// below their auto-apply confidence threshold. Approve runs each queued action through
+// its actuator with autoApplied=false (a human decided, not the classifier). Reject
+// re-stamps documents.triaged_at — it is already set from triageCapture's claim(), but
+// stamping it again here keeps the sweeper's "don't immediately re-propose" guarantee
+// intact even if that invariant ever changes upstream.
+
+async function approveTriage(item: ReviewItem): Promise<void> {
+  const db = useDb()
+  const p = item.proposed as TriageProposedRow
+
+  for (const action of p.queued ?? []) {
+    try {
+      await APPLY[action.kind](item.docId, action, false)
+    } catch (err) {
+      // task/memory/append all consume the courier document (delete or rewrite it), so
+      // once one queued action in this same proposal has applied, a second one aimed at
+      // the same docId legitimately has nothing left to act on — mirrors the exact
+      // tolerance triageCapture's own auto-apply loop needs for the identical reason
+      // (see that loop's comment). A human already approved this proposal; one action
+      // losing the race for the courier must not roll back the ones that succeeded or
+      // leave the row stuck pending forever.
+      console.warn(`[review] triage actuator ${action.kind} failed for ${item.docId}:`, err)
+    }
+  }
+
+  await db.update(reviewQueue)
+    .set({ status: 'approved', resolvedAt: new Date() })
+    .where(eq(reviewQueue.id, item.id))
+
+  publishChange({ resource: 'review', action: 'updated', id: item.id })
+}
+
+async function rejectTriage(item: ReviewItem): Promise<void> {
+  const db = useDb()
+
+  await db.update(documents)
+    .set({ triagedAt: new Date() })
+    .where(eq(documents.id, item.docId))
+
+  await db.update(reviewQueue)
+    .set({ status: 'rejected', resolvedAt: new Date() })
+    .where(eq(reviewQueue.id, item.id))
+
+  publishChange({ resource: 'review', action: 'updated', id: item.id })
+}
+
 export const approveHandlers: Record<string, Handler> = {
   enrichment: approveEnrichment,
   'memory-supersede': approveMemoryConflict,
-  'memory-contradict': approveMemoryConflict
+  'memory-contradict': approveMemoryConflict,
+  triage: approveTriage
 }
 
 export const rejectHandlers: Record<string, Handler> = {
   enrichment: rejectEnrichment,
   'memory-supersede': rejectMemoryConflict,
-  'memory-contradict': rejectMemoryConflict
+  'memory-contradict': rejectMemoryConflict,
+  triage: rejectTriage
 }
