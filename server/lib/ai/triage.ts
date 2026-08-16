@@ -1,4 +1,6 @@
 import type { TriageAction, TriageKind, TriageProposal } from '../../../shared/types/triage'
+import { chat } from './chat'
+import type { ProjectCandidate } from './enrich'
 
 const KINDS = new Set<TriageKind>(['task', 'note', 'memory', 'append'])
 const MAX_SECONDARY = 2
@@ -60,6 +62,56 @@ export function parseTriage(raw: string): TriageProposal | null {
       reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : ''
     }
   } catch {
+    return null
+  }
+}
+
+const TRIAGE_SYSTEM_PROMPT = `You triage a single captured note in a personal knowledge base and decide WHERE it belongs. Reply with STRICT JSON only, no prose.
+
+Choose a "kind" for the primary action:
+- "task"   — the note asks for something to be DONE. Set title (imperative, concise), priority (low|medium|high), and dueDate (ISO date) only if the note states one.
+- "note"   — the note is reference material worth keeping as a document. Set title, and set path to a NEW destination path that moves it out of /input. The path MUST include a new, human-readable filename (kebab-case, .md) — never reuse the incoming random filename.
+- "memory" — a durable fact, preference, or gotcha worth recalling in future sessions. Set content to one self-contained sentence and scope to user|agent|world.
+- "append" — the note adds to a topic an existing document already covers. Set content to the text to append. Do NOT guess a target document; it is resolved separately.
+
+Also set "confidence" (0..1) on every action: how sure you are that this is the right destination. Be honest — a low score routes to a human instead of acting.
+
+If the note carries a second, genuinely distinct intent (for example an action AND a durable fact), add it to "secondary" (at most 2). If it does not, return an empty array.
+
+Shape:
+{"primary":{"kind":"...","confidence":0.0,...},"secondary":[],"reasoning":"one sentence"}`
+
+export function buildTriageMessages(
+  doc: { path: string, content: string },
+  projects: ProjectCandidate[]
+): Array<{ role: 'system' | 'user', content: string }> {
+  let system = TRIAGE_SYSTEM_PROMPT
+
+  if (projects.length > 0) {
+    const list = projects.map(p => `  ${p.slug} — ${p.name} — ${p.description}`).join('\n')
+    system += `\n\nAvailable projects (slug — name — description):\n${list}\n\nSet "project" to the single best-matching SLUG from this list, or null if none clearly fits. For a "note", if you chose a project, path must be /projects/<slug>/<new-filename>.md.`
+  } else {
+    system += `\n\nNo projects are available. Set project to null.`
+  }
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: `Path: ${doc.path}\n\nContent:\n${doc.content.slice(0, 6000)}` }
+  ]
+}
+
+/** One bulk-model call. Returns null on any AI or parse failure — the caller decides what that means. */
+export async function classify(
+  doc: { path: string, content: string },
+  projects: ProjectCandidate[]
+): Promise<TriageProposal | null> {
+  try {
+    // 'bulk' = the no-think model. The reasoning alias emits <think>/reasoning_content
+    // and returns null content under the token cap, which chat() throws on.
+    const raw = await chat('bulk', buildTriageMessages(doc, projects), { temperature: 0.1 })
+    return parseTriage(raw)
+  } catch (err) {
+    console.warn('[triage] classify failed:', err)
     return null
   }
 }
