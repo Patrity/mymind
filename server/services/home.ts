@@ -175,7 +175,12 @@ async function recentProjects(db: ReturnType<typeof useDb>, start: Date): Promis
     select p.slug, p.name, p.color,
            max(t.at)                                        as last_at,
            (select count(*) from sessions s where s.project = p.slug and s.started_at >= ${iso}) as sessions,
-           (select count(*) from memories m where m.project = p.slug and m.created_at >= ${iso} and m.archived_at is null) as memories
+           (select count(*) from memories m where m.project = p.slug and m.created_at >= ${iso} and m.archived_at is null) as memories,
+           (select count(*) from documents d where d.project = p.slug and d.created_at >= ${iso} and d.deleted_at is null) as documents,
+           -- Deliberately NOT range-scoped: this is current backlog, like the attention panel.
+           -- "tasks opened in the last 1d" would read as zero on a quiet day and imply no work.
+           (select count(*) from tasks tk where tk.project = p.slug and tk.deleted_at is null
+              and tk.status <> 'completed') as open_tasks
     from touched t join projects p on p.slug = t.slug
     group by p.slug, p.name, p.color
     order by last_at desc
@@ -186,6 +191,8 @@ async function recentProjects(db: ReturnType<typeof useDb>, start: Date): Promis
     color: p.color == null ? null : String(p.color),
     sessions: Number(p.sessions ?? 0),
     memories: Number(p.memories ?? 0),
+    documents: Number(p.documents ?? 0),
+    openTasks: Number(p.open_tasks ?? 0),
     lastActivityAt: new Date(String(p.last_at)).toISOString(),
     href: `/projects/${String(p.slug)}`
   }))
@@ -208,7 +215,8 @@ export async function getHome(range: HomeRangeKey): Promise<HomeResponse> {
     tokens: usageRaw.totals.tokens,
     cacheReadPct: usageRaw.totals.cacheReadPct,
     valueUsd: usageRaw.totals.valueUsd,
-    unpricedModels: usageRaw.unpriced.models
+    unpricedModels: usageRaw.unpriced.models,
+    unpricedTokens: usageRaw.unpriced.tokens
   }
 
   return {

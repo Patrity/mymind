@@ -7,13 +7,20 @@ definePageMeta({ title: 'Agent' })
 const voice = useVoice()
 const route = useRoute()
 
-// Home's "Ask the brain" box hands the question over via ?q=. PREFILL ONLY —
-// passed down to VoiceComposer's initial-text prop, which only ever seeds its
-// local text ref. Never auto-send: a bookmark or a back-button navigation
-// would otherwise fire a model call with no user intent.
-const initialComposerText = computed(() => {
-  const q = route.query.q
-  return typeof q === 'string' && q.trim() ? q : undefined
+// Home's "Ask the brain" box hands the question over via ?q=, and the composer submits it
+// automatically on arrival — you land in a running answer, not a filled-in box.
+// Read ONCE at setup, deliberately not a computed: the composer must receive it on its
+// first mount, and it must NOT go undefined when the URL is stripped below.
+const handoffQuery = route.query.q
+const initialComposerText = typeof handoffQuery === 'string' && handoffQuery.trim() ? handoffQuery : undefined
+
+// Strip `q` from the URL as soon as we've captured it. The question is auto-submitted, so
+// leaving it in the address bar would mean a refresh, a bookmark, or a back-button
+// navigation silently fires the same model call again.
+const router = useRouter()
+onMounted(() => {
+  if (!initialComposerText) return
+  void router.replace({ path: route.path, query: { ...route.query, q: undefined } })
 })
 
 // Persistent preferences (cookie-backed so they survive page reloads)
@@ -304,6 +311,7 @@ onMounted(async () => {
           :send-text="voice.sendText"
           :speak="speakReply"
           :initial-text="initialComposerText"
+          :auto-send="!!initialComposerText"
         />
       </template>
     </UDashboardPanel>

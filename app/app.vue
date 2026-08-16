@@ -18,7 +18,10 @@ useSeoMeta({
 </script>
 
 <template>
-  <UApp>
+  <!-- delayDuration: 0 — tooltips are used here to carry real information (rig service
+       identity, per-project stat meanings), not decorative hints, so the default hover
+       delay just makes the data feel unreachable. Applies app-wide via TooltipProvider. -->
+  <UApp :tooltip="{ delayDuration: 0 }">
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>

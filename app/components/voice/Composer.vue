@@ -12,10 +12,16 @@ const props = defineProps<{
   speak?: boolean
   /**
    * Prefill the composer (e.g. the agent page's `?q=` handoff from Home's
-   * "Ask the brain" box). PREFILL ONLY — this component never calls send()
-   * on its own; only a real user click/Enter on the form submits.
+   * "Ask the brain" box).
    */
   initialText?: string
+  /**
+   * Submit `initialText` automatically on arrival, so the Home handoff lands you in a
+   * running answer rather than a filled-in box. Fires at most ONCE per distinct value —
+   * and the agent page strips `q` from the URL as soon as it hands it over, so a
+   * refresh, a bookmark, or a back-button navigation cannot re-fire a model call.
+   */
+  autoSend?: boolean
 }>()
 
 const toast = useToast()
@@ -24,9 +30,10 @@ const text = ref(props.initialText ?? '')
 // component — Vue Router reuses the instance when only the query changes, so
 // the ref init above only covers the first mount. Watch for later prop
 // changes too (non-immediate: the init already handled the first value).
-// Never touches send() — prefill only.
 watch(() => props.initialText, (v) => {
-  if (v) text.value = v
+  if (!v) return
+  text.value = v
+  void maybeAutoSend(v)
 })
 const pending = ref<File[]>([])
 const uploading = ref(false)
@@ -174,6 +181,19 @@ async function send() {
   // (text + audio + states) over the WS — nothing to await or append here.
   await props.sendText?.(q, props.speak ?? false, attachments)
 }
+
+// Remembers the value already submitted, so neither the mount hook nor the watcher can
+// double-fire on the same question. `sendText` auto-connects the WS, so there is nothing
+// to wait for beyond the DOM settling.
+let autoSentText: string | undefined
+async function maybeAutoSend(value: string | undefined) {
+  if (!props.autoSend || !value || autoSentText === value) return
+  autoSentText = value
+  await nextTick()
+  await send()
+}
+
+onMounted(() => { void maybeAutoSend(props.initialText) })
 </script>
 
 <template>

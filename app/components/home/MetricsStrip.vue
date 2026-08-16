@@ -42,9 +42,21 @@ const tiles = computed(() => [
       <p class="text-xs text-dimmed mt-0.5">
         {{ money(usage.valueUsd) }} at API rates — not billed
       </p>
-      <p v-if="usage.unpricedModels.length > 0" class="text-xs text-warning mt-0.5">
-        {{ usage.unpricedModels.length }} {{ usage.unpricedModels.length === 1 ? 'model' : 'models' }} unpriced — value pending
-      </p>
+      <!-- Gated on unpriced TOKENS, not on the model count. `<synthetic>` (Claude Code's
+           local-message marker) is permanently absent from model_prices and carries zero
+           tokens, so a count-based gate warned forever about a model that excludes nothing
+           from the value. This matches UsageTiles.vue's `unpriced.tokens > 0`. -->
+      <UTooltip
+        v-if="usage.unpricedTokens > 0"
+        :text="`Excluded from the value above: ${usage.unpricedModels.join(', ')}`"
+      >
+        <p
+          class="text-xs text-warning mt-0.5"
+          :aria-label="`${fmt(usage.unpricedTokens)} tokens excluded from the value — unpriced models: ${usage.unpricedModels.join(', ')}`"
+        >
+          {{ fmt(usage.unpricedTokens) }} tokens unpriced
+        </p>
+      </UTooltip>
     </ULink>
 
     <HomeRigHealth />

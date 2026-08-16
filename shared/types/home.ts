@@ -65,8 +65,15 @@ export interface HomeUsage {
   cacheReadPct: number
   /** API-equivalent value, not money. Label: "at API rates — not billed". */
   valueUsd: number
-  /** Non-empty ⇒ some models had no price row (cold start); never render 0 for these. */
+  /** Models with no `model_prices` row. Their tokens are excluded from `valueUsd`, never priced at 0. */
   unpricedModels: string[]
+  /**
+   * Tokens excluded from `valueUsd` because their model was unpriced. Gate the UI warning on
+   * THIS, not on `unpricedModels.length` — `<synthetic>` (Claude Code's local-message marker)
+   * is permanently unpriced and carries zero tokens, so a count-based gate warns forever about
+   * nothing. Matches `UsageTiles.vue`'s `unpriced.tokens > 0` gate (cycle 55).
+   */
+  unpricedTokens: number
 }
 
 export interface HomeTaskRow {
@@ -83,8 +90,12 @@ export interface HomeProjectRow {
   slug: string
   name: string
   color: string | null
+  /** Counts scoped to the selected range. */
   sessions: number
   memories: number
+  documents: number
+  /** Current open-task backlog — NOT range-scoped, since "tasks opened in the last 1d" is meaningless. */
+  openTasks: number
   lastActivityAt: string
   href: string
 }

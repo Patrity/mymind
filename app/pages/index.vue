@@ -110,7 +110,10 @@ const { data, isPending, error, refetch } = useQuery({
             <HomeQuickCapture />
             <HomeAskBrain />
             <HomeActiveTasks :tasks="data.tasks" />
-            <HomeRecentProjects :projects="data.projects" />
+            <HomeRecentProjects
+              :projects="data.projects"
+              :range="data.range"
+            />
           </div>
         </div>
       </div>

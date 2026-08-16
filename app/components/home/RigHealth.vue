@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
-import type { SnapshotResponse } from '~~/shared/types/analytics'
+import type { ServiceHealth, SnapshotResponse } from '~~/shared/types/analytics'
 
 const { data, error } = useQuery({
   queryKey: ['analytics', 'snapshot'],
@@ -13,14 +13,18 @@ const services = computed(() => data.value?.services ?? [])
 // `up === null` is "no data", deliberately excluded from the down count.
 const down = computed(() => services.value.filter(s => s.up === false).length)
 
+// Three-way, never a truthiness check: null (no scrape data) must not read as down.
+// Static literal class/prop values only — Tailwind purges constructed class strings.
 const colorFor = (up: boolean | null) => up === false ? 'error' as const
   : up === true ? 'success' as const
   : 'neutral' as const
-const glyphFor = (up: boolean | null) => up === false ? '✕' : up === true ? '✓' : '–'
+const iconFor = (up: boolean | null) => up === false ? 'i-lucide-circle-x'
+  : up === true ? 'i-lucide-circle-check'
+  : 'i-lucide-circle-dashed'
 const stateFor = (up: boolean | null) => up === false ? 'down' : up === true ? 'up' : 'no data'
-// `title` alone is hover-only (inconsistent with screen readers, unreachable on
-// touch) — this is the accessible text alternative carrying service identity + state.
-const labelFor = (s: { label: string, up: boolean | null }) => `${s.label}: ${stateFor(s.up)}`
+// The tooltip is hover-only; this is the text alternative carrying identity + state to
+// screen readers and touch users, which an icon-only badge otherwise loses entirely.
+const labelFor = (s: ServiceHealth) => `${s.label}: ${stateFor(s.up)}`
 </script>
 
 <template>
@@ -28,20 +32,38 @@ const labelFor = (s: { label: string, up: boolean | null }) => `${s.label}: ${st
     to="/analytics"
     class="shrink-0 min-w-36 sm:min-w-0 rounded-lg border border-default bg-elevated/40 p-3 hover:bg-elevated transition-colors"
   >
-    <p class="text-xs text-muted uppercase tracking-wide mb-1">Rig</p>
-    <p v-if="error" class="text-xs text-dimmed">Unavailable</p>
-    <div v-else class="flex flex-wrap gap-1">
-      <UBadge
+    <p class="text-xs text-muted uppercase tracking-wide mb-1">
+      Rig
+    </p>
+    <p
+      v-if="error"
+      class="text-xs text-dimmed"
+    >
+      Unavailable
+    </p>
+    <div
+      v-else
+      class="flex flex-wrap gap-1"
+    >
+      <UTooltip
         v-for="s in services"
         :key="s.id"
-        :color="colorFor(s.up)"
-        variant="subtle"
-        size="sm"
-        :label="glyphFor(s.up)"
-        :title="s.label"
-        :aria-label="labelFor(s)"
-      />
+        :text="labelFor(s)"
+      >
+        <UBadge
+          :color="colorFor(s.up)"
+          variant="subtle"
+          size="sm"
+          :icon="iconFor(s.up)"
+          :aria-label="labelFor(s)"
+        />
+      </UTooltip>
     </div>
-    <p v-if="!error && down > 0" class="text-xs text-error mt-1">{{ down }} down</p>
+    <p
+      v-if="!error && down > 0"
+      class="text-xs text-error mt-1"
+    >
+      {{ down }} down
+    </p>
   </ULink>
 </template>
