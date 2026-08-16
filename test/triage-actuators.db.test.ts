@@ -35,7 +35,7 @@ import { applyTask, applyNote, applyMemory, applyAppend, resolveAppendTarget } f
 import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
 import { getTask, deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
-import { tasks, triageActions, memories, chunks } from '../server/db/schema'
+import { tasks, triageActions, memories, chunks, documents } from '../server/db/schema'
 import { eq } from 'drizzle-orm'
 import { runUndo } from '../server/lib/agent/undo'
 
@@ -249,6 +249,80 @@ describe('applyMemory', () => {
       // reasoning as applyTask's undo test above).
       await deleteDoc(doc.id)
       await purgeMemory(r.entityId)
+    }
+  })
+})
+
+// Task 11b regression: the spec's locked multi-intent decision ("one primary + up to two
+// secondary actions in the same proposal") requires every courier-consuming actuator to
+// still be able to read the document after an EARLIER action in the SAME proposal has
+// already soft-deleted it. Before the fix, every actuator opened with the live-only
+// getDoc(docId), so the second courier-consuming action on a shared docId always threw
+// "document ... not found" — silently defeating multi-intent. See task-11b-brief.md.
+describe('multi-destination proposals (same docId, two courier-consuming actions)', () => {
+  it('applyTask then applyMemory on the same docId both succeed', async () => {
+    const doc = await jot('finish the report; also the office wifi password is hunter2')
+    const taskResult = await applyTask(doc.id, { kind: 'task', confidence: 0.9, title: 'Finish the report' })
+    let memoryResult: Awaited<ReturnType<typeof applyMemory>> | undefined
+    try {
+      // Same docId as the task above — applyTask already soft-deleted the courier.
+      memoryResult = await applyMemory(doc.id, {
+        kind: 'memory', confidence: 0.9, content: 'The office wifi password is hunter2.'
+      })
+
+      const [t] = await useDb().select().from(tasks).where(eq(tasks.id, taskResult.entityId!))
+      expect(t!.title).toBe('Finish the report')
+
+      const [m] = await useDb().select().from(memories).where(eq(memories.id, memoryResult.entityId!))
+      expect(m!.content).toContain('hunter2')
+
+      const actionRows = await useDb().select().from(triageActions).where(eq(triageActions.docId, doc.id))
+      expect(actionRows).toHaveLength(2)
+      expect(actionRows.map(r => r.kind).sort()).toEqual(['memory', 'task'])
+    } finally {
+      await deleteTask(taskResult.entityId!)
+      if (memoryResult) await purgeMemory(memoryResult.entityId)
+    }
+  })
+
+  it('applyMemory after the courier is already deleted still stores the captured content', async () => {
+    const doc = await jot('deleted-courier probe content')
+    await deleteDoc(doc.id) // simulate an earlier action in the same proposal consuming it
+    let memoryResult: Awaited<ReturnType<typeof applyMemory>> | undefined
+    try {
+      // No explicit action.content — applyMemory must fall back to doc.content, which
+      // means it has to actually READ the already-deleted row, not merely tolerate its
+      // absence with a null-content memory.
+      memoryResult = await applyMemory(doc.id, { kind: 'memory', confidence: 0.9 })
+      const [m] = await useDb().select().from(memories).where(eq(memories.id, memoryResult.entityId!))
+      expect(m!.content).toContain('deleted-courier probe content')
+    } finally {
+      if (memoryResult) await purgeMemory(memoryResult.entityId)
+    }
+  })
+
+  // Judgment call (see task-11b-report.md): a note's document IS its artifact — unlike
+  // task/memory/append, applyNote never deletes the courier, so it must never resurrect
+  // one that a sibling action in the same proposal already consumed. It stays on the
+  // live-only getDoc, and — to distinguish "already consumed by a sibling action" from
+  // "genuinely does not exist" in logs/diagnostics — takes one extra deleted-inclusive
+  // read ONLY on the failure path, purely to phrase the error; it never uses that row's
+  // content to proceed.
+  it('applyNote refuses (does not resurrect) an already-soft-deleted courier', async () => {
+    const doc = await jot('will be consumed by a task first')
+    const taskResult = await applyTask(doc.id, { kind: 'task', confidence: 0.9, title: 'Consume me' })
+    try {
+      await expect(
+        applyNote(doc.id, { kind: 'note', confidence: 0.9, title: 'Should not resurrect' })
+      ).rejects.toThrow(/already consumed/i)
+
+      // Still soft-deleted — applyNote must not have restored, retitled, or moved it.
+      expect(await getDoc(doc.id)).toBeNull()
+      const [raw] = await useDb().select().from(documents).where(eq(documents.id, doc.id))
+      expect(raw!.deletedAt).not.toBeNull()
+      expect(raw!.title).not.toBe('Should not resurrect')
+    } finally {
+      await deleteTask(taskResult.entityId!)
     }
   })
 })

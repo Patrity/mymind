@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { triageActions, memories, documents, chunks, reviewQueue, projects as projectsTable } from '../db/schema'
 import { createTask, deleteTask } from './tasks'
-import { getDoc, moveDoc, updateDoc, deleteDoc, restoreDoc, notSkill } from './documents'
+import { getDoc, getDocIncludingDeleted, moveDoc, updateDoc, deleteDoc, restoreDoc, notSkill } from './documents'
 import { createMemory } from './memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { registerUndo } from '../lib/agent/undo'
@@ -35,9 +35,16 @@ async function recordAction(input: {
   return row!.id
 }
 
-/** The jot becomes a task; the document was only a courier, so it is soft-deleted. */
+/**
+ * The jot becomes a task; the document was only a courier, so it is soft-deleted.
+ *
+ * Reads via getDocIncludingDeleted, not getDoc: in a multi-destination proposal an earlier
+ * courier-consuming action (task/memory/append, in any order the proposal's action list
+ * puts them) may have already soft-deleted this same docId, and this actuator still needs
+ * the captured text to build its own entity. See task-11b-brief.md.
+ */
 export async function applyTask(docId: string, action: TriageAction, autoApplied = true): Promise<AppliedAction> {
-  const doc = await getDoc(docId)
+  const doc = await getDocIncludingDeleted(docId)
   if (!doc) throw new Error(`triage: document ${docId} not found`)
 
   const task = await createTask({
@@ -66,10 +73,29 @@ export async function applyTask(docId: string, action: TriageAction, autoApplied
   return { actionRowId, entityType: 'task', entityId: task.id, undoToken }
 }
 
-/** The document IS the artifact: retitle, rename, and move it out of /input. */
+/**
+ * The document IS the artifact: retitle, rename, and move it out of /input.
+ *
+ * Deliberately stays on the live-only getDoc, unlike applyTask/applyMemory/applyAppend —
+ * a note never deletes its courier, so if it's already gone (soft-deleted by a sibling
+ * courier-consuming action earlier in the same multi-destination proposal), there is
+ * nothing left that a "note" can mean: the artifact it would retitle/move was already
+ * turned into something else. Resurrecting it here (restoring deleted_at just so this
+ * actuator has something to act on) would silently duplicate that other action's output
+ * as a second, stale copy. Refusing is correct; see task-11b-report.md for the reasoning.
+ *
+ * The getDocIncludingDeleted lookup below runs ONLY on the failure path, and only to
+ * phrase the error — it never reads that row's content to proceed.
+ */
 export async function applyNote(docId: string, action: TriageAction, autoApplied = true): Promise<AppliedAction> {
   const doc = await getDoc(docId)
-  if (!doc) throw new Error(`triage: document ${docId} not found`)
+  if (!doc) {
+    const consumed = await getDocIncludingDeleted(docId)
+    if (consumed) {
+      throw new Error(`triage: document ${docId} already consumed by an earlier action in this proposal — note cannot act on it`)
+    }
+    throw new Error(`triage: document ${docId} not found`)
+  }
   const originalPath = doc.path
 
   if (action.title) await updateDoc(docId, { title: action.title })
@@ -103,9 +129,11 @@ export async function applyNote(docId: string, action: TriageAction, autoApplied
  * skip | merge | insert) and shouldAutoReview. A direct insert here would silently
  * bypass dedup, and enrich-memories dedup under-catching (task f80622b9) is still open.
  * createMemory may return an EXISTING memory on the skip/merge paths; that is correct.
+ *
+ * Reads via getDocIncludingDeleted, not getDoc — see applyTask's comment for why.
  */
 export async function applyMemory(docId: string, action: TriageAction, autoApplied = true): Promise<AppliedAction> {
-  const doc = await getDoc(docId)
+  const doc = await getDocIncludingDeleted(docId)
   if (!doc) throw new Error(`triage: document ${docId} not found`)
 
   const memory = await createMemory({
@@ -144,9 +172,14 @@ export async function applyMemory(docId: string, action: TriageAction, autoAppli
  * never rewrites, reorders, or removes existing content. If no target is resolved it
  * DEGRADES TO A NOTE rather than guessing — a wrong append edits a document the user
  * never opened, which is the most expensive mistake this pipeline can make.
+ *
+ * The courier read below uses getDocIncludingDeleted, not getDoc — see applyTask's
+ * comment for why. The SEPARATE `target` read further down (the document being appended
+ * INTO) stays on the live-only getDoc: that document is never the courier and must never
+ * be a soft-deleted row.
  */
 export async function applyAppend(docId: string, action: TriageAction, autoApplied = true): Promise<AppliedAction> {
-  const doc = await getDoc(docId)
+  const doc = await getDocIncludingDeleted(docId)
   if (!doc) throw new Error(`triage: document ${docId} not found`)
 
   const targetId = action.targetDocId ?? await resolveAppendTarget(doc.content)
@@ -292,8 +325,11 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
 
   for (const { action, autoApply } of routed) {
     if (!autoApply) { queued.push(action); continue }
-    // A note/append rewrites or removes the source document, so once one of those has
-    // applied, later actions in the same proposal have no courier left to consume.
+    // applyTask/applyMemory/applyAppend all consume (soft-delete) the courier document;
+    // applyNote never does. Each of those three now reads via getDocIncludingDeleted, so
+    // a later action in the same proposal can still see the courier after an earlier one
+    // has consumed it (task-11b) — this try/catch is a genuine last-resort backstop (e.g.
+    // a downstream write failure), not the primary defense against a missing courier.
     try {
       await APPLY[action.kind](docId, action)
       applied.push(action)

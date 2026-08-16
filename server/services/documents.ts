@@ -159,6 +159,18 @@ export async function getDoc(id: string): Promise<DocumentDTO | null> {
   return r ? toDTO(r) : null
 }
 
+/**
+ * Like getDoc, but ALSO returns soft-deleted rows.
+ *
+ * Triage actuators need this: a multi-destination proposal consumes the courier document on
+ * its first courier-consuming action, and the later actions still need the captured text to
+ * build their own entity. A live-only read makes every action after the first throw.
+ */
+export async function getDocIncludingDeleted(id: string): Promise<DocumentDTO | null> {
+  const [r] = await useDb().select().from(documents).where(eq(documents.id, id)).limit(1)
+  return r ? toDTO(r) : null
+}
+
 export async function createDoc(input: DocumentUpsert): Promise<DocumentDTO> {
   // Compute the final path applying assign-project relocate logic, then derive
   // project_id + project slug from that path. The path always wins.
