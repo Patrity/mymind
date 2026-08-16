@@ -1,9 +1,10 @@
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { triageActions, memories, documents, reviewQueue, projects as projectsTable } from '../db/schema'
+import { triageActions, memories, documents, chunks, reviewQueue, projects as projectsTable } from '../db/schema'
 import { createTask, deleteTask } from './tasks'
 import { getDoc, moveDoc, updateDoc, deleteDoc, restoreDoc } from './documents'
 import { createMemory } from './memory'
+import { embedOne } from '../lib/ai/embeddings'
 import { registerUndo } from '../lib/agent/undo'
 import { publishChange } from '../utils/live-bus'
 import { classify } from '../lib/ai/triage'
@@ -135,6 +136,96 @@ export async function applyMemory(docId: string, action: TriageAction, autoAppli
   return { actionRowId, entityType: 'memory', entityId: memory.id, undoToken }
 }
 
+/**
+ * The jot is added to a document that already covers the topic.
+ *
+ * APPEND-ONLY, and that is a hard constraint: it concatenates a delimited block and
+ * never rewrites, reorders, or removes existing content. If no target is resolved it
+ * DEGRADES TO A NOTE rather than guessing — a wrong append edits a document the user
+ * never opened, which is the most expensive mistake this pipeline can make.
+ */
+export async function applyAppend(docId: string, action: TriageAction, autoApplied = true): Promise<AppliedAction> {
+  const doc = await getDoc(docId)
+  if (!doc) throw new Error(`triage: document ${docId} not found`)
+
+  const targetId = action.targetDocId ?? await resolveAppendTarget(doc.content)
+  if (!targetId) return applyNote(docId, { ...action, kind: 'note' }, autoApplied)
+
+  const target = await getDoc(targetId)
+  if (!target) return applyNote(docId, { ...action, kind: 'note' }, autoApplied)
+
+  const previousContent = target.content
+  const stamp = new Date().toISOString().slice(0, 10)
+  const block = `\n\n<!-- triage:${docId} ${stamp} -->\n${action.content ?? doc.content}\n`
+  await updateDoc(targetId, { content: previousContent + block })
+
+  await deleteDoc(docId)
+
+  // priorContent + appendedBlock ride in the payload so the DURABLE reversal path
+  // (Task 12) can verify the target is byte-identical before restoring. The closure
+  // below cannot help it: registerUndo's state dies with the process.
+  const actionRowId = await recordAction({
+    docId, action: { ...action, priorContent: previousContent, appendedBlock: block } as TriageAction,
+    entityType: 'document', entityId: targetId, autoApplied
+  })
+
+  publishChange({ resource: 'document', action: 'updated', id: targetId })
+  publishChange({ resource: 'document', action: 'deleted', id: docId })
+
+  const undoToken = registerUndo(async () => {
+    // Restore the exact prior body rather than string-subtracting the block —
+    // the document may have been edited since, and a blind slice would corrupt it.
+    const current = await getDoc(targetId)
+    if (current && current.content === previousContent + block) {
+      await updateDoc(targetId, { content: previousContent })
+    }
+    await restoreDoc(docId)
+    await useDb().update(triageActions).set({ revertedAt: new Date() }).where(eq(triageActions.id, actionRowId))
+    publishChange({ resource: 'document', action: 'updated', id: targetId })
+    publishChange({ resource: 'document', action: 'updated', id: docId })
+  })
+
+  return { actionRowId, entityType: 'document', entityId: targetId, undoToken }
+}
+
+/**
+ * Pick the document this jot belongs to, or null.
+ *
+ * This is the ONE place in triage that runs its own vector query, and that is
+ * deliberate: searchDocs() fuses a trigram lane and a vector lane with RRF and returns
+ * DocumentDTO[] ordered by fused RANK — it exposes no cosine score, so it cannot answer
+ * "is the best match actually similar enough". The floor guardrail needs a real
+ * similarity number, so we ask for one directly. Do NOT "simplify" this back to
+ * searchDocs; that silently removes the guardrail.
+ *
+ * documents.embedding is schema-only (cycle 1) and always NULL (server/db/schema/documents.ts:28)
+ * — the real per-document vectors live in `chunks` (sourceType='document'). This copies the
+ * halfvec cast + `<=>` ordering verbatim from searchDocIds's vector lane in
+ * server/services/documents.ts, the known-working reference, rather than the brief's
+ * documents.embedding sketch, which would silently never match anything.
+ */
+async function resolveAppendTarget(content: string): Promise<string | null> {
+  const floor = useRuntimeConfig().triageAppendSimilarityFloor as number
+  const qv = await embedOne(content)
+  const lit = `[${qv.join(',')}]`
+  const [best] = await useDb()
+    .select({
+      sourceId: chunks.sourceId,
+      distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
+    })
+    .from(chunks)
+    .innerJoin(documents, eq(chunks.sourceId, documents.id))
+    .where(and(
+      eq(chunks.sourceType, 'document'),
+      isNull(documents.deletedAt),
+      sql`${documents.path} NOT LIKE '/input/%'`     // never append into the inbox itself
+    ))
+    .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
+    .limit(1)
+
+  return best && (1 - best.distance) >= floor ? best.sourceId : null
+}
+
 /** Conditional claim. Returns false if another caller already owns this document. */
 async function claim(docId: string): Promise<boolean> {
   const rows = await useDb().update(documents)
@@ -148,7 +239,7 @@ const APPLY: Record<TriageAction['kind'], (docId: string, a: TriageAction) => Pr
   task: applyTask,
   note: applyNote,
   memory: applyMemory,
-  append: applyNote   // replaced by applyAppend in Task 10
+  append: applyAppend
 }
 
 export async function triageCapture(docId: string): Promise<TriageOutcome> {

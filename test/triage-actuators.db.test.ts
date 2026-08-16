@@ -23,7 +23,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // near-duplicate (cosine >= 0.85) branch.
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
-import { applyTask, applyNote, applyMemory } from '../server/services/triage'
+import { applyTask, applyNote, applyMemory, applyAppend } from '../server/services/triage'
 import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
 import { getTask, deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
@@ -241,6 +241,97 @@ describe('applyMemory', () => {
       // reasoning as applyTask's undo test above).
       await deleteDoc(doc.id)
       await purgeMemory(r.entityId)
+    }
+  })
+})
+
+// Unlike applyNote's fixed target paths, append targets don't hit a uniqueness
+// constraint on rerun (the path already carries Math.random()), so the try/finally
+// cleanup below is purely hygiene — same reasoning as applyTask's leftover-task
+// cleanup above: without it, every `pnpm test:db` run leaves another live
+// "append-target-*"/"append-undo-*" document behind in the real dev DB.
+describe('applyAppend', () => {
+  it('appends a delimited block without touching existing content', async () => {
+    const target = await createDoc({
+      path: `/projects/mymind/append-target-${Math.random().toString(36).slice(2, 8)}.md`,
+      content: '# Existing\n\nOriginal body that must survive.'
+    })
+    try {
+      const doc = await jot('also: the reranker needs ef_search raised')
+      const r = await applyAppend(doc.id, {
+        kind: 'append', confidence: 0.9, content: 'The reranker needs ef_search raised.',
+        targetDocId: target.id
+      })
+      const after = await getDoc(target.id)
+      expect(after!.content).toContain('Original body that must survive.')   // untouched
+      expect(after!.content).toContain('The reranker needs ef_search raised.')
+      expect(after!.content.indexOf('Original body')).toBeLessThan(after!.content.indexOf('ef_search raised'))
+      expect(r.entityId).toBe(target.id)
+    } finally {
+      await deleteDoc(target.id)
+    }
+  })
+
+  it('stamps the appended block with the source doc id', async () => {
+    const target = await createDoc({
+      path: `/projects/mymind/append-src-${Math.random().toString(36).slice(2, 8)}.md`, content: '# T'
+    })
+    try {
+      const doc = await jot('a fact')
+      await applyAppend(doc.id, { kind: 'append', confidence: 0.9, content: 'A fact.', targetDocId: target.id })
+      expect((await getDoc(target.id))!.content).toContain(doc.id)
+    } finally {
+      await deleteDoc(target.id)
+    }
+  })
+
+  it('soft-deletes the courier document', async () => {
+    const target = await createDoc({
+      path: `/projects/mymind/append-del-${Math.random().toString(36).slice(2, 8)}.md`, content: '# T'
+    })
+    try {
+      const doc = await jot('courier')
+      await applyAppend(doc.id, { kind: 'append', confidence: 0.9, content: 'x', targetDocId: target.id })
+      expect(await getDoc(doc.id)).toBeNull()
+    } finally {
+      await deleteDoc(target.id)
+    }
+  })
+
+  // The degrade path: no target means file it as a note rather than guess.
+  it('degrades to a note when no target document is resolved', async () => {
+    const doc = await jot('orphan thought with no home')
+    try {
+      const r = await applyAppend(doc.id, {
+        kind: 'append', confidence: 0.9, content: 'Orphan thought.', title: 'Orphan thought'
+      })
+      expect(r.entityType).toBe('document')
+      expect(r.entityId).toBe(doc.id)                       // the doc survived as the artifact
+      expect(await getDoc(doc.id)).not.toBeNull()
+    } finally {
+      // applyNote (the degrade target) does not move or delete the doc when no path is
+      // given, so it stays live at its original /input/... path unless we clean it up here.
+      await deleteDoc(doc.id)
+    }
+  })
+
+  it('undo removes the appended block and leaves the original content intact', async () => {
+    const original = '# Existing\n\nUntouched.'
+    const target = await createDoc({
+      path: `/projects/mymind/append-undo-${Math.random().toString(36).slice(2, 8)}.md`, content: original
+    })
+    try {
+      const doc = await jot('revert me')
+      const r = await applyAppend(doc.id, {
+        kind: 'append', confidence: 0.9, content: 'Revert me.', targetDocId: target.id
+      })
+      expect((await runUndo(r.undoToken)).ok).toBe(true)
+      expect((await getDoc(target.id))!.content).toBe(original)
+      // The undo above restored the doc live at its original /input/... path — clean it up
+      // too, mirroring applyTask/applyMemory's undo-test cleanup above.
+      await deleteDoc(doc.id)
+    } finally {
+      await deleteDoc(target.id)
     }
   })
 })
