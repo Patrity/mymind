@@ -1,8 +1,9 @@
 // server/api/voice/ws.ts
 import { handleUtterance, handleTurn, type VoiceEvent } from '../../lib/voice/orchestrator'
 import { classifyFrame } from '../../lib/voice/frames'
-import { sttFromModel, ttsFromModel } from '../../lib/voice/providers'
+import { sttFromModel } from '../../lib/voice/providers'
 import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
+import { ttsSynth } from '../../lib/voice/tts-failover'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
@@ -25,6 +26,8 @@ interface ConnState {
   history: AgentMessage[]
   ac: AbortController | null
   voice: string
+  /** Label of the TTS model that owns `voice` (client sends it with the pick); null = registry order. */
+  ttsProvider: string | null
   model: string | null
   lock: Promise<void>
   conversationId: string | null
@@ -37,22 +40,10 @@ const stt: SttProvider = {
   transcribe: (audio, opts) =>
     withFailover('stt', m => sttFromModel(m).transcribe(audio, opts))
 }
-const tts: TtsProvider = {
-  synthesize: (text, opts) => ttsSynthFailover(text, opts)
-}
-
-async function* ttsSynthFailover(text: string, opts: { voice: string; signal?: AbortSignal }) {
-  // tts-openai buffers the whole WAV per call, so we can collect all chunks
-  // INSIDE withFailover — a provider that errors on synthesis falls over to the
-  // next, and only a fully-synthesized result is yielded. (Failover is per turn,
-  // not mid-stream — acceptable since each utterance is one buffered WAV.)
-  const chunks = await withFailover('tts', async (m) => {
-    const out: Uint8Array[] = []
-    for await (const c of ttsFromModel(m).synthesize(text, opts)) out.push(c)
-    return out
-  })
-  yield* chunks
-}
+// TTS: registry chain pinned to the provider that owns the chosen voice, then failover
+// (see lib/voice/tts-failover.ts — the picker mixes every provider's voices, so dialing
+// the chain head with another provider's voice name is a guaranteed 400 → failover).
+const tts: TtsProvider = { synthesize: ttsSynth }
 
 export default defineWebSocketHandler({
   // Server middleware does NOT run for WS upgrades (crossws handles them directly),
@@ -63,7 +54,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, voice: '', model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
+    conns.set(peer, { history: [], ac: null, voice: '', ttsProvider: null, model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -103,7 +94,11 @@ export default defineWebSocketHandler({
     if (frame.kind === 'control') {
       const msg = frame.msg
       if (msg.type === 'interrupt') { s.ac?.abort(); return }
-      if (msg.type === 'voice') { s.voice = msg.voice as string; return }
+      if (msg.type === 'voice') {
+        s.voice = msg.voice as string
+        s.ttsProvider = typeof msg.provider === 'string' && msg.provider ? msg.provider : null
+        return
+      }
       if (msg.type === 'model') { s.model = typeof msg.modelDefId === 'string' ? msg.modelDefId : null; return }
       // 'profile' / 'execEnabled' frames from old clients are silently ignored —
       // the agent is always fully armed now (single profile; approval gate = safety).
@@ -151,7 +146,7 @@ export default defineWebSocketHandler({
         turnAttachments = attachments
         inputModality = 'text'
         speakFlag = speak
-        turn = (signal, emit, context) => handleTurn(text, s.history, { tts, voice: s.voice, speak, context, modelDefId: s.model, buildMemoryContext, requestApproval, attachments, signal, emit })
+        turn = (signal, emit, context) => handleTurn(text, s.history, { tts, voice: s.voice, ttsProvider: s.ttsProvider, speak, context, modelDefId: s.model, buildMemoryContext, requestApproval, attachments, signal, emit })
       } else {
         return
       }
@@ -159,7 +154,7 @@ export default defineWebSocketHandler({
       const audio = frame.bytes
       inputModality = 'voice'
       speakFlag = true
-      turn = (signal, emit, context) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, speak: true, context, modelDefId: s.model, buildMemoryContext, requestApproval, signal, emit })
+      turn = (signal, emit, context) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, ttsProvider: s.ttsProvider, speak: true, context, modelDefId: s.model, buildMemoryContext, requestApproval, signal, emit })
     }
     s.ac?.abort()
     for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }

@@ -2,7 +2,7 @@
 title: Voice Agent
 status: shipped
 cycle: 19
-updated: 2026-06-10
+updated: 2026-08-16
 ---
 
 # Voice Agent
@@ -67,7 +67,18 @@ All providers are OpenAI-spec endpoints — swapping a model means changing `*_B
 | TTS Kokoro | `AI_TTS_KOKORO_*` | `:8880` | voices `af_heart`, `af_sky`, … — see `/v1/voices` |
 | TTS Chatterbox | `AI_TTS_CHATTERBOX_*` | `:8884` | voices `happy-us.wav`, `Emily.wav`, … — **voice param is required** (422 if omitted) |
 
-Active TTS provider is selected by `VOICE_TUNING.tts.provider` (`'kokoro'` or `'chatterbox'`).
+**Which TTS provider actually gets dialed (current behaviour).** STT/TTS models come from the
+AI config registry (`assignments.stt` / `assignments.tts`, see [ai-providers.md](ai-providers.md)),
+not from env or `VOICE_TUNING.tts.provider` (that constant is legacy and unused for routing).
+`/api/voice/voices` aggregates `/v1/audio/voices` from **every** tts model and tags each voice with
+its model **label**, so a chosen voice exists on exactly one provider. `server/lib/voice/tts-failover.ts`
+(`createTtsSynth` → `pinChainToProvider`) therefore moves the model whose label matches the
+client's `provider` to the head of the chain and only then runs `withFailoverOver('tts', …)`.
+Absent/unknown provider (legacy clients) → registry order. Failover is unchanged: if the pinned
+provider errors, the rest of the chain is tried. *Why:* before 2026-08-16 `ws.ts` dropped the
+`provider` field, so with a Chatterbox voice picked every sentence dialed Kokoro first → instant
+400 `Voice 'X' not found` → failover to Chatterbox — 190 warn rows and ~1s extra latency per
+chunk in one prod session, invisible to the user because the audio still played.
 
 See [`docs/model-requirements.md`](../model-requirements.md) for rig setup instructions.
 
@@ -100,7 +111,7 @@ The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettin
 |---|---|---|
 | Binary | `ArrayBuffer` (WAV/PCM, RIFF) | Utterance audio to transcribe |
 | Text | `{type:'interrupt'}` | Barge-in: abort current turn |
-| Text | `{type:'voice', provider, voice}` | Switch TTS provider/voice |
+| Text | `{type:'voice', provider, voice}` | Switch TTS voice; `provider` = the tts model **label** that owns `voice` (from `/api/voice/voices`) and pins the failover chain to it (`ConnState.ttsProvider` → `TurnDeps.ttsProvider` → `synthesize(text, {voice, provider})`) |
 | Text | `{type:'text', text}` | Typed turn, injected post-STT (`handleTurn`) — same agent loop, TTS reply, and state events as speech |
 
 **Cancellation is a non-event, end to end.** *Every* inbound frame calls `s.ac?.abort()`

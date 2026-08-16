@@ -20,6 +20,8 @@ export type VoiceEvent =
 export interface TurnDeps {
   tts: TtsProvider
   voice: string
+  /** Label of the TTS model that owns `voice` (from the client's voice pick); null/absent = registry order. */
+  ttsProvider?: string | null
   signal: AbortSignal
   speak: boolean
   context?: string
@@ -83,7 +85,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     if (deps.signal.aborted) return
     deps.emit({ type: 'state', state: 'speaking' })
     try {
-      for await (const bytes of deps.tts.synthesize(text, { voice: deps.voice, signal: deps.signal })) {
+      for await (const bytes of deps.tts.synthesize(text, { voice: deps.voice, provider: deps.ttsProvider, signal: deps.signal })) {
         if (deps.signal.aborted) return
         deps.emit({ type: 'audio', bytes })
       }
