@@ -7,7 +7,15 @@ import { applyTask, applyNote, applyMemory, applyAppend } from '../../services/t
 import { publishChange } from '../../utils/live-bus'
 import type { TriageAction } from '../../../shared/types/triage'
 
-type Handler = (item: ReviewItem) => Promise<void>
+/**
+ * Most handlers have nothing to report beyond success. approveTriage is the exception:
+ * the caller (the approve endpoint, then the UI toast) needs to know how many of the
+ * QUEUED actions actually applied — after task-11b, that should be all of them, but the
+ * count must come from what really happened, not from the pre-request queue length.
+ */
+export interface HandlerResult { applied?: TriageAction[] }
+
+type Handler = (item: ReviewItem) => Promise<HandlerResult | void>
 
 interface TriageProposedRow {
   primary: TriageAction
@@ -129,21 +137,23 @@ async function rejectEnrichment(item: ReviewItem): Promise<void> {
 // stamping it again here keeps the sweeper's "don't immediately re-propose" guarantee
 // intact even if that invariant ever changes upstream.
 
-async function approveTriage(item: ReviewItem): Promise<void> {
+async function approveTriage(item: ReviewItem): Promise<HandlerResult> {
   const db = useDb()
   const p = item.proposed as TriageProposedRow
+  const applied: TriageAction[] = []
 
   for (const action of p.queued ?? []) {
     try {
       await APPLY[action.kind](item.docId, action, false)
+      applied.push(action)
     } catch (err) {
-      // task/memory/append all consume the courier document (delete or rewrite it), so
-      // once one queued action in this same proposal has applied, a second one aimed at
-      // the same docId legitimately has nothing left to act on — mirrors the exact
-      // tolerance triageCapture's own auto-apply loop needs for the identical reason
-      // (see that loop's comment). A human already approved this proposal; one action
-      // losing the race for the courier must not roll back the ones that succeeded or
-      // leave the row stuck pending forever.
+      // Since task-11b, task/memory/append all read the courier via getDocIncludingDeleted,
+      // so a sibling queued action having already consumed it is no longer a reason for
+      // this to throw — a throw here means a genuine actuator failure (bad payload,
+      // downstream write error). A human already approved this proposal; one action
+      // failing must not roll back the ones that succeeded or leave the row stuck pending
+      // forever, but it also must NOT be counted as applied — that's exactly the silent
+      // "approved but did nothing" failure task-11b exists to close.
       console.warn(`[review] triage actuator ${action.kind} failed for ${item.docId}:`, err)
     }
   }
@@ -153,6 +163,8 @@ async function approveTriage(item: ReviewItem): Promise<void> {
     .where(eq(reviewQueue.id, item.id))
 
   publishChange({ resource: 'review', action: 'updated', id: item.id })
+
+  return { applied }
 }
 
 async function rejectTriage(item: ReviewItem): Promise<void> {

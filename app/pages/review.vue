@@ -122,9 +122,12 @@ const actioning = ref<Record<string, boolean>>({})
 async function approve(item: ReviewItem) {
   actioning.value[item.id] = true
   try {
-    await $fetch(`/api/review/${item.id}/approve`, { method: 'POST' })
+    // `applied` is what the server actually applied (only populated for kind: 'triage') —
+    // not item.proposed.queued.length, which is the pre-request queue and would silently
+    // over-report if an action failed to apply.
+    const res = await $fetch<{ ok: boolean, applied?: TriageActionDTO[] }>(`/api/review/${item.id}/approve`, { method: 'POST' })
     const description = isTriage(item)
-      ? `Applied ${pluralize(item.proposed.queued.length, 'action')}.`
+      ? `Applied ${pluralize(res.applied?.length ?? 0, 'action')}.`
       : 'Document updated.'
     toast.add({ color: 'success', title: 'Proposal approved', description })
     await refetch()

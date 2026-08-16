@@ -12,7 +12,9 @@ export default defineEventHandler(async (event) => {
   const handler = approveHandlers[item.kind]
   if (!handler) throw createError({ statusCode: 400, statusMessage: `Unknown review kind: ${item.kind}` })
 
-  await handler(item)
+  const result = await handler(item)
 
-  return { ok: true }
+  // Only approveTriage (kind: 'triage') returns `applied` — the actual actions it
+  // applied, not the pre-request queue length. Other kinds have nothing to report.
+  return { ok: true, applied: result?.applied }
 })
