@@ -171,9 +171,9 @@ Code is subscription-billed, this is never real spend) and Rig health. The value
 renders (matching `UsageTiles.vue`'s additive pattern from cycle 55) — it is never suppressed
 wholesale just because some model in the window is unpriced, since `model_prices` syncs
 nightly and a single newly-seen model (or the permanent `<synthetic>` entry) would otherwise
-hide the whole figure until the next cron run. If any usage model has no `model_prices` row
-whose tokens are actually excluded from the value, an *additional* warning line appends below
-it: "N tokens unpriced", with a tooltip naming the models. **The gate is `unpricedTokens > 0`,
+hide the whole figure until the next cron run. When tokens really are excluded from the value
+because their model has no `model_prices` row, an *additional* warning line appends below it:
+"N tokens unpriced", with a tooltip naming the models. **The gate is `unpricedTokens > 0`,
 not `unpricedModels.length > 0`** — `<synthetic>` (Claude Code's marker for locally-generated
 messages) is permanently absent from `model_prices` and carries zero tokens, so a count-based
 gate warned forever about a model that excludes nothing. This matches `UsageTiles.vue`'s
@@ -311,8 +311,9 @@ RecentProjects}.vue` · `server/api/home.get.ts` · `server/services/home.ts` ·
 `0032_abandoned_carlie_cooper.sql` (`messages_created_at_idx`) · `server/services/usage.ts`
 (`getUsageSince` split, `getUsage` unchanged) · `app/utils/live-dispatch.ts`
 (`invalidateHome`, `HOME_DEBOUNCE_MS`) · `app/components/voice/Composer.vue`
-(`initialText` prop) · `app/pages/agent/index.vue` (`?q=` read) · `nuxt.config.ts`
-(`/` redirect removed) · `app/pages/login.vue` (post-login target).
+(`initialText` + `autoSend` props) · `app/pages/agent/index.vue` (`?q=` read + URL strip) ·
+`app/app.vue` (global zero-delay tooltips) · `nuxt.config.ts` (`/` redirect removed) ·
+`app/pages/login.vue` (post-login target).
 
 Tests: `test/home-range.test.ts`, `test/home-timeline.test.ts`,
 `test/live-dispatch.test.ts` (existing file, extended for `HOME_DEBOUNCE_MS`/`invalidateHome`),
