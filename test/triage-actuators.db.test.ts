@@ -10,21 +10,18 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // applyMemory (below) is the first thing in this suite to reach createMemory ->
 // embedOne -> withFailover, which call the Nitro-global `$fetch` (ofetch). That global
 // only exists inside the Nuxt/Nitro runtime — this harness runs server/services/* as
-// plain Node, so nothing provides it. `ofetch` itself isn't resolvable as a bare import
-// here either (it's a transitive dep of `nuxt`, not a direct project dependency; pnpm's
-// strict node_modules hides it from plain-Node/vitest resolution outside Nuxt's Vite
-// build). Shim `$fetch` with native `fetch` instead: same {method, headers, body:object}
-// -> parsed-JSON calling convention the embeddings adapter expects, still a real HTTP
-// call against whatever embeddings model is configured in the dev DB.
-vi.stubGlobal('$fetch', async (url: string, opts: { method?: string, headers?: Record<string, string>, body?: unknown } = {}) => {
-  const res = await fetch(url, {
-    method: opts.method ?? 'GET',
-    headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined
-  })
-  if (!res.ok) throw new Error(`$fetch ${url} -> ${res.status} ${res.statusText}`)
-  return res.json()
-})
+// plain Node, so nothing provides it. Canned mock, not a real network call — matches the
+// pattern in server/lib/imagegen/comfy.test.ts / edit.test.ts: a real HTTP call here would
+// make `pnpm test:db` (a binding gate for this cycle) depend on a homelab embeddings rig
+// being reachable and warmed for a task whose subject (the actuator + dedup routing) has
+// nothing to do with embedding quality. TEI's raw response shape is number[][], one vector
+// per input (server/lib/ai/embeddings.ts normalizeResponse); embedOne always requests a
+// single text, so one fixed 2560-dim vector per call is enough. The one dedup scenario this
+// suite asserts (the skip path) is decided by the exact-content-hash branch in
+// dedupDecision (server/services/memory-dedup.ts) BEFORE any embedding comparison runs, so
+// a fixed vector drives it deterministically; no test here exercises the semantic
+// near-duplicate (cosine >= 0.85) branch.
+vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
 import { applyTask, applyNote, applyMemory } from '../server/services/triage'
 import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
