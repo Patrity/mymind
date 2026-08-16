@@ -107,7 +107,7 @@ export default defineNuxtConfig({
     serverAssets: [{ baseName: 'setup', dir: 'server/assets/setup' }],
     scheduledTasks: {
       '*/5 * * * *': ['embed-documents', 'summarize-sessions'],
-      '*/10 * * * *': ['enrich-input'],
+      '*/10 * * * *': ['triage-input'],
       '*/7 * * * *': ['enrich-images'],
       '*/15 * * * *': ['enrich-memories'],
       '0 3 * * *': ['prune-activity-log'],

@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { triageActions, memories, documents, reviewQueue, projects as projectsTable } from '../db/schema'
 import { createTask, deleteTask } from './tasks'
@@ -200,4 +200,32 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
   }
 
   return { docId, applied, queued: queued.length > 0 }
+}
+
+/**
+ * Backstop for anything the immediate post-capture path missed: server restart
+ * mid-flight, model timeout, MCP quick_capture, direct POST /api/documents.
+ *
+ * Candidates are simply "live /input docs not yet triaged" — deliberately NOT the
+ * old enrich-input filter (project IS NULL AND tags = '{}' AND no review_queue row),
+ * which made a document eligible exactly once ever and left /input unable to drain.
+ */
+export async function sweepUntriaged({ limit = 20 }: { limit?: number } = {}) {
+  const candidates = await useDb().select({ id: documents.id })
+    .from(documents)
+    .where(and(
+      isNull(documents.deletedAt),
+      isNull(documents.triagedAt),
+      sql`${documents.path} LIKE '/input/%'`
+    ))
+    .limit(limit)
+
+  let triaged = 0
+  let skipped = 0
+  for (const c of candidates) {
+    const out = await triageCapture(c.id)
+    if (out.skipped) skipped++
+    else triaged++
+  }
+  return { triaged, skipped }
 }
