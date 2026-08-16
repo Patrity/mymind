@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { nanoid } from 'nanoid'
 import { createDoc } from '../../services/documents'
 import { publishChange } from '../../utils/live-bus'
+import { triageCapture } from '../../services/triage'
 
 const Body = z.object({
   text: z.string().min(1, 'text is required'),
@@ -30,5 +31,11 @@ export default defineEventHandler(async (event) => {
     content: body.text
   })
   publishChange({ resource: 'document', action: 'created', id: doc.id })
+
+  // Fire-and-forget: capture must return at write speed (spec: capture never blocks).
+  // A triage failure must never fail the capture, hence the catch. The cron sweeper
+  // (server/tasks/triage-input.ts) is the backstop if this never runs.
+  void triageCapture(doc.id).catch(err => console.warn('[capture] triage failed:', err))
+
   return doc
 })
