@@ -76,7 +76,18 @@ export default defineNuxtConfig({
       accessKeyId: process.env.STORAGE_S3_ACCESS_KEY_ID,
       secretAccessKey: process.env.STORAGE_S3_SECRET_ACCESS_KEY
     },
-    memoryAutoReviewThreshold: Number(process.env.MEMORY_AUTO_REVIEW_THRESHOLD ?? 0.75)
+    memoryAutoReviewThreshold: Number(process.env.MEMORY_AUTO_REVIEW_THRESHOLD ?? 0.75),
+    // Capture triage confidence bars, per destination. ALL ship at 1.1 (= never
+    // auto-apply) so the pipeline can be calibrated against real captures before it
+    // is allowed to write. Lower by hand, one destination at a time, per the spec's
+    // rollout. The memory bar is GATED on task f80622b9 (dedup under-catching).
+    triageThresholds: {
+      task: 1.1,
+      note: 1.1,
+      memory: 1.1,
+      append: 1.1
+    },
+    triageAppendSimilarityFloor: 0.75
   },
 
   nitro: {
