@@ -354,6 +354,60 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
 }
 
 /**
+ * Reverse an applied action WITHOUT a live undo token.
+ *
+ * registerUndo's TTL is 10 minutes; with auto-apply as the norm, the user needs to be
+ * able to reverse something they noticed the next day. This reverses from the persisted
+ * triage_actions row instead.
+ */
+export async function revertTriageAction(actionRowId: string): Promise<{ ok: boolean, reason?: string }> {
+  const db = useDb()
+  const [row] = await db.select().from(triageActions).where(eq(triageActions.id, actionRowId)).limit(1)
+  if (!row) return { ok: false, reason: 'that action no longer exists' }
+  if (row.revertedAt) return { ok: false, reason: 'that action was already reverted' }
+
+  const payload = row.payload as unknown as TriageAction
+
+  try {
+    if (row.entityType === 'task' && row.entityId) {
+      await deleteTask(row.entityId)
+      await restoreDoc(row.docId)
+      publishChange({ resource: 'task', action: 'deleted', id: row.entityId })
+    } else if (row.entityType === 'memory' && row.entityId) {
+      // Archive, never hard-delete: dedup may have merged into a pre-existing memory.
+      await db.update(memories).set({ archivedAt: new Date() }).where(eq(memories.id, row.entityId))
+      await restoreDoc(row.docId)
+      publishChange({ resource: 'memory', action: 'updated', id: row.entityId })
+    } else if (row.entityType === 'document' && row.entityId) {
+      if (row.kind === 'note') {
+        // The doc IS the artifact — move it back to where it was captured.
+        const original = (payload as TriageAction & { originalPath?: string }).originalPath
+        if (original) await moveDoc(row.entityId, original)
+      } else {
+        // append — only revert if the target is byte-identical to what we wrote.
+        const applied = (payload as TriageAction & { appendedBlock?: string, priorContent?: string })
+        const current = await getDoc(row.entityId)
+        if (current && applied.priorContent !== undefined && applied.appendedBlock !== undefined
+            && current.content === applied.priorContent + applied.appendedBlock) {
+          await updateDoc(row.entityId, { content: applied.priorContent })
+        }
+        await restoreDoc(row.docId)
+      }
+      publishChange({ resource: 'document', action: 'updated', id: row.entityId })
+    }
+  } catch (err) {
+    // The reason is USER-FACING. Never interpolate a caught error into it: runUndo
+    // leaked entire prior document bodies exactly that way, because a DrizzleQueryError
+    // embeds its bound params in `message` (fixed 2026-08-16, commit 4a3792f).
+    console.error('[triage] revert failed:', err)
+    return { ok: false, reason: 'the reversal failed — check the item and undo it manually' }
+  }
+
+  await db.update(triageActions).set({ revertedAt: new Date() }).where(eq(triageActions.id, actionRowId))
+  return { ok: true }
+}
+
+/**
  * Backstop for anything the immediate post-capture path missed: server restart
  * mid-flight, model timeout, MCP quick_capture, direct POST /api/documents.
  *

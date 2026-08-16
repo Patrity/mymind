@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
+import { useTimeAgo } from '@vueuse/core'
 
 definePageMeta({ title: 'Review' })
 
@@ -52,6 +53,22 @@ interface ReviewItem {
   docId: string
   kind: string
   proposed: DocProposed | MemoryConflictProposed | TriageProposed
+  createdAt: string
+  docPath: string | null
+}
+
+// A row from GET /api/triage/recent — one EXECUTED triage_actions row (auto-applied or
+// human-approved), not a proposal. This is the "recently applied" feed's data shape,
+// deliberately separate from ReviewItem/TriageProposed above.
+interface TriageRecentDTO {
+  id: string
+  docId: string
+  kind: TriageActionKind
+  entityType: 'task' | 'memory' | 'document'
+  entityId: string | null
+  confidence: number
+  autoApplied: boolean
+  payload: TriageActionDTO
   createdAt: string
   docPath: string | null
 }
@@ -116,6 +133,67 @@ watch(error, (err) => {
     toast.add({ color: 'error', title: 'Failed to load review queue', description: e.data?.statusMessage ?? e.message })
   }
 })
+
+// ── Recently applied (Task 12) ───────────────────────────────────────────────
+//
+// A FEED of already-executed actions, not a queue — nothing here is waiting on the
+// user, and this deliberately never touches review_queue, so it cannot affect the
+// sidebar Review badge (GET /api/review/count).
+
+const { data: recentData, refetch: refetchRecent } = useQuery({
+  queryKey: ['triage', 'recent'],
+  queryFn: () => $fetch<TriageRecentDTO[]>('/api/triage/recent')
+})
+
+const recentItems = computed(() => recentData.value ?? [])
+
+function rel(iso: string) { return useTimeAgo(new Date(iso)).value }
+
+/**
+ * Applied-context destination text. Deliberately separate from triageDestination
+ * (above) rather than reused: that one renders a PROPOSAL, where an append's real
+ * target is not resolved yet ("Append to closest matching document" is the best it can
+ * say). Here the action already ran, so payload.content is worth previewing instead.
+ */
+function recentDestination(row: TriageRecentDTO): string {
+  const a = row.payload
+  switch (row.kind) {
+    case 'task':
+      return a.project ? `“${a.title ?? 'Untitled task'}” → ${a.project}` : `“${a.title ?? 'Untitled task'}”`
+    case 'note':
+      return a.path ?? a.title ?? 'Filed as a note'
+    case 'memory':
+      return a.scope ? `Memory (${a.scope})` : 'Memory'
+    case 'append': {
+      const preview = a.content ? a.content.slice(0, 60) + (a.content.length > 60 ? '…' : '') : null
+      return preview ? `Appended: “${preview}”` : 'Appended to a document'
+    }
+    default:
+      return row.kind
+  }
+}
+
+const undoing = ref<Record<string, boolean>>({})
+
+async function undoRecent(row: TriageRecentDTO) {
+  undoing.value[row.id] = true
+  try {
+    // revertTriageAction always resolves { ok, reason } with a 200 (never throws
+    // the actuator's raw error through) — mirror POST /api/agent/undo's contract.
+    const res = await $fetch<{ ok: boolean, reason?: string }>(`/api/triage/${row.id}/revert`, { method: 'POST' })
+    if (res.ok) {
+      toast.add({ color: 'success', title: 'Reverted', description: `${TRIAGE_KIND_LABEL[row.kind]} action undone.` })
+    } else {
+      toast.add({ color: 'error', title: 'Undo failed', description: res.reason ?? 'That action could not be undone.' })
+    }
+    await refetchRecent()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Undo failed', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    undoing.value[row.id] = false
+  }
+}
 
 const actioning = ref<Record<string, boolean>>({})
 
@@ -532,6 +610,66 @@ async function keepBoth(id: string) {
             </template>
           </UCard>
         </template>
+
+        <!-- Recently applied (Task 12) — a FEED of already-executed actions, not the
+             pending queue above. Kept deliberately flat (one bordered container, no
+             card stack, no primary-colored buttons, no Approve/Reject) so it reads as
+             a passive log rather than more work waiting on the user. -->
+        <div class="pt-2">
+          <div class="flex items-center gap-2 mb-2">
+            <UIcon
+              name="i-lucide-history"
+              class="size-4 text-dimmed"
+            />
+            <p class="text-xs font-semibold text-dimmed uppercase tracking-wide">
+              Recently applied
+            </p>
+          </div>
+
+          <div
+            v-if="recentItems.length === 0"
+            class="rounded-lg border border-dashed border-default px-4 py-6 text-center text-xs text-dimmed"
+          >
+            Nothing applied automatically yet.
+          </div>
+
+          <div
+            v-else
+            class="rounded-lg border border-default divide-y divide-default overflow-hidden bg-muted/30"
+          >
+            <div
+              v-for="row in recentItems"
+              :key="row.id"
+              class="flex items-center gap-3 px-3 py-2"
+            >
+              <UBadge
+                :label="TRIAGE_KIND_LABEL[row.kind]"
+                color="neutral"
+                variant="subtle"
+                size="xs"
+              />
+              <UBadge
+                :label="row.autoApplied ? 'Auto' : 'Approved'"
+                :color="row.autoApplied ? 'success' : 'neutral'"
+                variant="subtle"
+                size="xs"
+              />
+              <span class="text-sm text-muted truncate flex-1 min-w-0">
+                {{ recentDestination(row) }}
+              </span>
+              <span class="text-xs text-dimmed shrink-0">{{ rel(row.createdAt) }}</span>
+              <UButton
+                size="xs"
+                variant="ghost"
+                color="neutral"
+                icon="i-lucide-undo-2"
+                label="Undo"
+                :loading="undoing[row.id]"
+                @click="undoRecent(row)"
+              />
+            </div>
+          </div>
+        </div>
       </div>
     </template>
   </UDashboardPanel>

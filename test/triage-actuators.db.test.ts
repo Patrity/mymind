@@ -31,8 +31,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({
 // near-duplicate (cosine >= 0.85) branch.
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
-import { applyTask, applyNote, applyMemory, applyAppend, resolveAppendTarget } from '../server/services/triage'
-import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
+import { applyTask, applyNote, applyMemory, applyAppend, resolveAppendTarget, revertTriageAction } from '../server/services/triage'
+import { createDoc, getDoc, deleteDoc, restoreDoc } from '../server/services/documents'
 import { getTask, deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
 import { tasks, triageActions, memories, chunks, documents } from '../server/db/schema'
@@ -502,6 +502,82 @@ describe('resolveAppendTarget', () => {
       expect(await resolveAppendTarget('content is irrelevant')).toBeNull()
     } finally {
       await cleanup(target.id)
+    }
+  })
+})
+
+// Task 12: the undo TOKEN (registerUndo) dies with the process and expires after 10
+// minutes — with auto-apply as the norm, the user needs to be able to reverse something
+// they noticed the next day. revertTriageAction reverses from the persisted triage_actions
+// row instead, so it works with no live token at all.
+describe('revertTriageAction (durable, post-TTL)', () => {
+  it('reverses an applied task without a live undo token', async () => {
+    const doc = await jot('durable revert')
+    const r = await applyTask(doc.id, { kind: 'task', confidence: 0.9, title: 'Durable revert' })
+    // Consume the token so only the durable path can possibly work.
+    await runUndo(r.undoToken)
+    await restoreDoc(doc.id)                       // undo the undo, back to applied-ish state
+    const again = await applyTask(doc.id, { kind: 'task', confidence: 0.9, title: 'Durable revert 2' })
+
+    try {
+      expect((await revertTriageAction(again.actionRowId)).ok).toBe(true)
+      // deleteTask (server/services/tasks.ts:177) is a SOFT delete — a raw, unfiltered
+      // `select().from(tasks)` would still find the row and pass even if reversal did
+      // nothing. Assert through getTask, which filters deleted rows, same as the
+      // applyTask "undo removes the task" test above.
+      expect(await getTask(again.entityId!)).toBeNull()
+      expect(await getDoc(doc.id)).not.toBeNull()
+      const [row] = await useDb().select().from(triageActions).where(eq(triageActions.id, again.actionRowId))
+      expect(row!.revertedAt).not.toBeNull()
+    } finally {
+      // Both deleteTask calls are no-ops if the task is already soft-deleted (live()
+      // filters it out of the UPDATE), so these are safe regardless of which assertion
+      // above failed.
+      await deleteTask(r.entityId!)
+      await deleteTask(again.entityId!)
+      await deleteDoc(doc.id)
+    }
+  })
+
+  it('is idempotent — a second revert is a no-op, not a crash', async () => {
+    const doc = await jot('twice')
+    const r = await applyTask(doc.id, { kind: 'task', confidence: 0.9, title: 'Twice' })
+    try {
+      expect((await revertTriageAction(r.actionRowId)).ok).toBe(true)
+      const second = await revertTriageAction(r.actionRowId)
+      expect(second.ok).toBe(false)
+      expect(second.reason).toContain('already')
+    } finally {
+      await deleteTask(r.entityId!)
+      await deleteDoc(doc.id)
+    }
+  })
+
+  // Mirrors test/agent-undo.test.ts's leak guard for runUndo: a caught error's message
+  // must never reach the user-facing `reason`. Forces the note-revert branch's moveDoc
+  // to throw a real unique-constraint violation (documents_path_live_uidx) by occupying
+  // the original path with another live document before reverting, then asserts the
+  // fixed sentence comes back — not the raw Postgres/Drizzle error text.
+  it('does not leak a caught error message into the user-facing reason', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const doc = await jot('will collide on revert')
+    const originalPath = doc.path
+    const target = uniqueNotePath('collide-target')
+    const r = await applyNote(doc.id, { kind: 'note', confidence: 0.9, title: 'Collide', path: target })
+    // Occupy the note's original path so the durable revert's moveDoc-back fails.
+    const blocker = await createDoc({ path: originalPath, content: 'BLOCKER-CONTENT-a1b2c3' })
+    try {
+      const res = await revertTriageAction(r.actionRowId)
+      expect(res.ok).toBe(false)
+      expect(res.reason).not.toContain('BLOCKER-CONTENT-a1b2c3')
+      expect(res.reason).not.toContain('duplicate key')
+      expect(res.reason).not.toContain('documents_path_live_uidx')
+      expect(res.reason).toBe('the reversal failed — check the item and undo it manually')
+      expect(err).toHaveBeenCalledWith('[triage] revert failed:', expect.any(Error))
+    } finally {
+      err.mockRestore()
+      await deleteDoc(blocker.id)
+      await deleteDoc(r.entityId!)
     }
   })
 })
