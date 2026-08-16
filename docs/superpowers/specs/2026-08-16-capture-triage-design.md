@@ -3,6 +3,9 @@ title: Capture triage — inferring intent from a jot and routing it
 cycle: 57
 date: 2026-08-16
 status: spec — approved in brainstorm, not yet planned
+blocked_by:
+  - "MyMind task f80622b9 (enrich-memories dedup under-catching) — HARD dependency, gates the
+    Memory threshold only. See Rollout step 3 and Risks. The rest of the cycle ships without it."
 related:
   - ../../wiki/quick-capture.md (the capture surfaces this triages)
   - ../../wiki/enrichment.md (the pipeline this supersedes for /input)
@@ -267,7 +270,9 @@ nothing. Each policy test must name the production change that would make it fai
    an unwanted write.
 2. Read the queue for a few days. Compare what the model proposed against what you'd have done.
 3. Lower the bars to the table's defaults once the proposals look right, one destination at a
-   time, starting with Task.
+   time, starting with Task. **The Memory threshold is gated: it stays at `1.1` until MyMind
+   task `f80622b9` (enrich-memories dedup under-catching) is closed.** Task, Note, and Append may
+   be lowered independently and are not blocked by it.
 4. **Backfill** the existing `/input` backlog with the sweeper once thresholds are trusted.
 
 Step 1 is not ceremony. It is the only way to calibrate thresholds against your actual captures
@@ -290,11 +295,23 @@ brainstorm chose auto-apply for all four destinations after the risk was raised.
 the highest bar, append-only semantics, the recently-applied strip, and durable reversal. The
 staged rollout means it cannot fire at all until you have read real proposals.
 
-**Memory bloat.** Task `f80622b9` (enrich-memories dedup under-catching) is open and unresolved.
-Triage adds a *second* inlet to the same table. The Memory actuator must run through the same
-dedup path as the enrichment loop, not a parallel one — if that path is genuinely
-under-catching, this cycle makes it worse, so it is worth confirming before lowering the memory
-threshold below 1.1.
+**Memory bloat — HARD DEPENDENCY.** Task `f80622b9` (enrich-memories dedup under-catching) is
+open and unresolved. Triage adds a *second* inlet to the same table, so shipping an active
+Memory actuator on top of a known-leaky dedup path multiplies an existing defect rather than
+introducing a new one.
+
+Two binding requirements follow:
+
+1. The Memory actuator **must** route through the same dedup path as the enrichment loop
+   (`server/services/memory-dedup.ts`), never a parallel implementation. An implementer who
+   finds that path awkward to call must escalate rather than reimplement it.
+2. The Memory threshold **ships at `1.1` and stays there until `f80622b9` is closed.** Every
+   memory proposal goes to `/review` until then. This is not a tuning preference — lowering it
+   early is the one change in this cycle that can quietly degrade recall everywhere, and recall
+   degradation is invisible until someone notices a bad answer weeks later.
+
+The rest of the cycle — Task, Note, Append, the review consolidation — is **not** blocked by
+`f80622b9` and ships independently.
 
 **Model quality on short input.** A five-word jot carries little signal. Expect low confidence,
 which correctly routes to review. The failure mode to watch for is *confident and wrong* on
