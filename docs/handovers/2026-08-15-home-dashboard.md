@@ -3,12 +3,15 @@ title: Home dashboard — the app's front door (cycle 56)
 cycle: 56
 date: 2026-08-15
 status: >
-  Built, gates green, browser-validated on dev. Ten build/doc tasks complete, all per-task
-  reviews clean after their fix rounds. **NOT merged, NOT pushed, NOT deployed** — awaiting
-  Tony's whole-branch review and merge decision.
-  Gates measured at this handover: **typecheck 0 errors / test 1158 passed across 150 files
-  / build clean**.
-branch: feat/home-dashboard
+  ✅ MERGED to `master` locally (fast-forward `98e6111..adcccda`, 19 commits) on 2026-08-15,
+  after a whole-branch review by Tony and one fix wave. **NOT pushed, NOT deployed** — master
+  is 22 commits ahead of `origin/master`, so CD has not run and migration **0032**
+  (`messages_created_at_idx`) has NOT been applied to prod.
+  Ten build/doc tasks, all per-task reviews clean after their fix rounds; the final
+  whole-branch review returned "with fixes" and all of them were applied and re-reviewed clean.
+  Gates re-measured ON THE MERGED master: **typecheck 0 errors / test 1159 passed across
+  150 files / build clean**.
+branch: feat/home-dashboard (merged and deleted)
 spec: ../superpowers/specs/2026-08-15-home-dashboard-design.md
 plan: ../superpowers/plans/2026-08-15-home-dashboard.md
 docs:
