@@ -80,7 +80,9 @@ export async function resolveDocProjectFromPath(
 const live = () => isNull(documents.deletedAt)
 // Skills are documents (type='skill') but are NOT knowledge — they must never
 // surface in doc/passage search. NULL type is a normal document, so allow it.
-const notSkill = () => or(ne(documents.type, 'skill'), isNull(documents.type))
+// Exported so other services (triage's resolveAppendTarget) share this exact
+// predicate instead of re-deriving a copy that can drift out of sync.
+export const notSkill = () => or(ne(documents.type, 'skill'), isNull(documents.type))
 const toDTO = (r: typeof documents.$inferSelect): DocumentDTO => ({
   id: r.id, path: r.path, title: r.title, content: r.content, language: r.language,
   frontmatter: r.frontmatter as Record<string, unknown>, project: r.project, domain: r.domain,

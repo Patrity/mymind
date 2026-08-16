@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { triageActions, memories, documents, chunks, reviewQueue, projects as projectsTable } from '../db/schema'
 import { createTask, deleteTask } from './tasks'
-import { getDoc, moveDoc, updateDoc, deleteDoc, restoreDoc } from './documents'
+import { getDoc, moveDoc, updateDoc, deleteDoc, restoreDoc, notSkill } from './documents'
 import { createMemory } from './memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { registerUndo } from '../lib/agent/undo'
@@ -10,6 +10,7 @@ import { publishChange } from '../utils/live-bus'
 import { classify } from '../lib/ai/triage'
 import { route } from '../lib/triage/route'
 import type { TriageAction, TriageOutcome } from '../../shared/types/triage'
+import type { DocumentDTO } from '../../shared/types/documents'
 
 export interface AppliedAction {
   actionRowId: string
@@ -151,8 +152,13 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
   const targetId = action.targetDocId ?? await resolveAppendTarget(doc.content)
   if (!targetId) return applyNote(docId, { ...action, kind: 'note' }, autoApplied)
 
+  // Re-validate even a targetDocId the CALLER supplied directly — resolveAppendTarget's
+  // own SQL guard only protects its own output. Today the model never emits targetDocId
+  // (parseAction strips it), so this branch is currently unreachable from the classifier,
+  // but "safe only because an upstream step cooperates" isn't structural safety, and this
+  // is the actuator that edits a document the user never opened.
   const target = await getDoc(targetId)
-  if (!target) return applyNote(docId, { ...action, kind: 'note' }, autoApplied)
+  if (!target || !isValidAppendTarget(target)) return applyNote(docId, { ...action, kind: 'note' }, autoApplied)
 
   const previousContent = target.content
   const stamp = new Date().toISOString().slice(0, 10)
@@ -202,9 +208,16 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
  * — the real per-document vectors live in `chunks` (sourceType='document'). This copies the
  * halfvec cast + `<=>` ordering verbatim from searchDocIds's vector lane in
  * server/services/documents.ts, the known-working reference, rather than the brief's
- * documents.embedding sketch, which would silently never match anything.
+ * documents.embedding sketch, which would silently never match anything. notSkill() is the
+ * same import that lane uses too — skills are documents but are never knowledge, and a
+ * false-positive append here would corrupt a file that drives agent behaviour rather than
+ * just misfiling a note.
+ *
+ * Exported for direct unit testing — mirrors documents.ts's toSummaryDTO convention. Its
+ * output still passes through isValidAppendTarget in applyAppend, so this SQL guard and
+ * that guard are deliberately redundant rather than the only line of defense.
  */
-async function resolveAppendTarget(content: string): Promise<string | null> {
+export async function resolveAppendTarget(content: string): Promise<string | null> {
   const floor = useRuntimeConfig().triageAppendSimilarityFloor as number
   const qv = await embedOne(content)
   const lit = `[${qv.join(',')}]`
@@ -218,12 +231,23 @@ async function resolveAppendTarget(content: string): Promise<string | null> {
     .where(and(
       eq(chunks.sourceType, 'document'),
       isNull(documents.deletedAt),
+      notSkill(),
       sql`${documents.path} NOT LIKE '/input/%'`     // never append into the inbox itself
     ))
     .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
     .limit(1)
 
   return best && (1 - best.distance) >= floor ? best.sourceId : null
+}
+
+/**
+ * The same guardrails resolveAppendTarget enforces in SQL (not /input/, not a skill),
+ * re-checked against a resolved document. Applied to EVERY targetId applyAppend acts on,
+ * not just the auto-resolved one — see the call site's comment for why an explicitly
+ * supplied targetDocId can't skip this.
+ */
+function isValidAppendTarget(doc: DocumentDTO): boolean {
+  return doc.type !== 'skill' && !doc.path.startsWith('/input/')
 }
 
 /** Conditional claim. Returns false if another caller already owns this document. */

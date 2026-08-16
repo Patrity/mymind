@@ -5,7 +5,15 @@
 process.loadEnvFile('.env')
 import { describe, it, expect, vi } from 'vitest'
 
-vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+// triageAppendSimilarityFloor mirrors nuxt.config.ts's default (0.75). Without it here,
+// resolveAppendTarget's `best.sim >= floor` compares against `undefined`, which is always
+// false — every one of its own tests below needs a real floor to exercise the pick vs.
+// degrade branches, not just the "no candidate at all" case the original applyAppend
+// tests happened to hit.
+vi.stubGlobal('useRuntimeConfig', () => ({
+  databaseUrl: process.env.DATABASE_URL,
+  triageAppendSimilarityFloor: 0.75
+}))
 
 // applyMemory (below) is the first thing in this suite to reach createMemory ->
 // embedOne -> withFailover, which call the Nitro-global `$fetch` (ofetch). That global
@@ -23,11 +31,11 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // near-duplicate (cosine >= 0.85) branch.
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
-import { applyTask, applyNote, applyMemory, applyAppend } from '../server/services/triage'
+import { applyTask, applyNote, applyMemory, applyAppend, resolveAppendTarget } from '../server/services/triage'
 import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
 import { getTask, deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
-import { tasks, triageActions, memories } from '../server/db/schema'
+import { tasks, triageActions, memories, chunks } from '../server/db/schema'
 import { eq } from 'drizzle-orm'
 import { runUndo } from '../server/lib/agent/undo'
 
@@ -332,6 +340,94 @@ describe('applyAppend', () => {
       await deleteDoc(doc.id)
     } finally {
       await deleteDoc(target.id)
+    }
+  })
+})
+
+// applyAppend's own tests above all pass targetDocId explicitly (or exercise only the
+// null/no-candidate path), so none of them reach resolveAppendTarget's actual ranking
+// logic — the part that decides which of Tony's real documents gets edited. These tests
+// insert real chunk rows with CONTROLLED embeddings and call the resolver directly.
+//
+// embedOne is the same $fetch stub used everywhere in this file (line 24 above): every
+// call — regardless of input text — resolves to the identical fixed 2560-dim vector.
+// That makes the "query vector" constant across every test here, so determinism comes
+// from the CANDIDATE vectors we insert, not from crafting realistic content.
+describe('resolveAppendTarget', () => {
+  // Exact match to what embedOne always returns (see the $fetch stub above) — cosine
+  // distance 0, similarity 1.0, the mathematical maximum. No ambient corpus chunk can
+  // outscore it (only tie, and only by coincidentally storing this exact synthetic
+  // vector, which nothing in a real corpus does), so a fixture using this vector is
+  // guaranteed to be the global best match regardless of what else is in the dev DB.
+  const EXACT_MATCH_VECTOR = Array(2560).fill(0.01)
+  // The true minimum possible cosine similarity (-1, i.e. the opposite direction) — no
+  // real corpus chunk can score lower, so a fixture using this vector is guaranteed to
+  // clear no reasonable floor.
+  const OPPOSITE_VECTOR = Array(2560).fill(-0.01)
+
+  const insertChunk = (sourceId: string, embedding: number[]) =>
+    useDb().insert(chunks).values({ sourceType: 'document', sourceId, ord: 0, content: 'probe', embedding })
+
+  // Chunk rows have no soft-delete of their own — deleteDoc only marks the owning
+  // document deleted_at, which resolveAppendTarget's join already filters on, but a
+  // stray chunk row pointing at nothing is still a row left behind in the real DB.
+  const cleanup = (id: string) => Promise.all([deleteDoc(id), useDb().delete(chunks).where(eq(chunks.sourceId, id))])
+
+  it('picks the intended document when a chunk clears the floor', async () => {
+    const target = await createDoc({
+      path: `/projects/mymind/resolve-hit-${Math.random().toString(36).slice(2, 8)}.md`,
+      content: '# candidate'
+    })
+    try {
+      await insertChunk(target.id, EXACT_MATCH_VECTOR)
+      expect(await resolveAppendTarget('content is irrelevant — embedOne ignores it in the stub')).toBe(target.id)
+    } finally {
+      await cleanup(target.id)
+    }
+  })
+
+  it('returns null when the best match is below the similarity floor', async () => {
+    const target = await createDoc({
+      path: `/projects/mymind/resolve-miss-${Math.random().toString(36).slice(2, 8)}.md`,
+      content: '# candidate'
+    })
+    try {
+      await insertChunk(target.id, OPPOSITE_VECTOR)
+      expect(await resolveAppendTarget('content is irrelevant')).toBeNull()
+    } finally {
+      await cleanup(target.id)
+    }
+  })
+
+  it('never returns a document under /input/', async () => {
+    const target = await createDoc({
+      path: `/input/resolve-inbox-${Math.random().toString(36).slice(2, 8)}.md`,
+      content: '# inbox candidate'
+    })
+    try {
+      // Maximum possible similarity — if the /input/ exclusion were not applied, this
+      // fixture would win over anything else in the corpus (see EXACT_MATCH_VECTOR).
+      await insertChunk(target.id, EXACT_MATCH_VECTOR)
+      expect(await resolveAppendTarget('content is irrelevant')).toBeNull()
+    } finally {
+      await cleanup(target.id)
+    }
+  })
+
+  // Regression guard for the missing notSkill() predicate (code review finding): this
+  // test FAILS if resolveAppendTarget's WHERE clause omits notSkill() — the skill doc's
+  // unbeatable EXACT_MATCH_VECTOR chunk wins and gets returned — and PASSES once it's
+  // present.
+  it('never returns a type=skill document', async () => {
+    const target = await createDoc({
+      path: `/projects/mymind/resolve-skill-${Math.random().toString(36).slice(2, 8)}.md`,
+      content: '# skill candidate', type: 'skill'
+    })
+    try {
+      await insertChunk(target.id, EXACT_MATCH_VECTOR)
+      expect(await resolveAppendTarget('content is irrelevant')).toBeNull()
+    } finally {
+      await cleanup(target.id)
     }
   })
 })
