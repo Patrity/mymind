@@ -58,10 +58,13 @@ page) would be eight skeletons and eight failure modes.
 **Rig health is deliberately NOT part of that payload.** `app/components/home/RigHealth.vue`
 self-fetches `['analytics', 'snapshot']` (the cycle-44 endpoint, which hits Prometheus) with
 `retry: false`, so a dead rig degrades to one "Unavailable" tile instead of failing the whole
-page. `up === false` renders red (`✕`), `up === true` green (`✓`), `up === null` (unscraped,
-not down) neutral (`–`) — collapsing that three-way state into a boolean would misreport "no
-data" as "down". Each badge carries an `aria-label` (`"<service>: <state>"`) — the `title`
-attribute alone is hover-only and unreachable on touch/screen readers.
+page. Each service is a `UBadge` with an icon inside a `UTooltip`: `up === false` renders red
+(`i-lucide-circle-x`), `up === true` green (`i-lucide-circle-check`), `up === null` (unscraped,
+**not down**) neutral (`i-lucide-circle-dashed`) — collapsing that three-way state into a
+boolean would misreport "no data" as "down", and `null` is excluded from the "N down" count.
+The tooltip carries `"<service>: <state>"`, and the same string is an `aria-label` on the
+badge — a tooltip is hover-only, so it cannot be the sole carrier of service identity on
+touch or for screen readers.
 
 `getHome()` fans out `metrics`, `attention`, `timelineEvents`, `activeTasks`,
 `recentProjects`, and `getUsageSince(start)` via `Promise.all`. Every DB query is written out
@@ -169,10 +172,12 @@ renders (matching `UsageTiles.vue`'s additive pattern from cycle 55) — it is n
 wholesale just because some model in the window is unpriced, since `model_prices` syncs
 nightly and a single newly-seen model (or the permanent `<synthetic>` entry) would otherwise
 hide the whole figure until the next cron run. If any usage model has no `model_prices` row
-(cold start after a fresh deploy, or simply a brand-new model name), an *additional* warning
-line appends below the value: "1 model unpriced — value pending" or "N models unpriced —
-value pending" (correctly pluralized — the same singular/plural pattern `NeedsAttention.vue`
-uses, not a naive `+ 's'`).
+whose tokens are actually excluded from the value, an *additional* warning line appends below
+it: "N tokens unpriced", with a tooltip naming the models. **The gate is `unpricedTokens > 0`,
+not `unpricedModels.length > 0`** — `<synthetic>` (Claude Code's marker for locally-generated
+messages) is permanently absent from `model_prices` and carries zero tokens, so a count-based
+gate warned forever about a model that excludes nothing. This matches `UsageTiles.vue`'s
+`unpriced.tokens > 0` gate from cycle 55.
 
 **Needs attention — deliberately not range-scoped.** Four absolute-backlog counts: unacked
 errors (`activity_log`, severity `error`, `acked_at is null`), memory conflicts
@@ -191,7 +196,16 @@ desc, due_date asc nulls last`). Overdue renders as a colored **text** badge ("o
 color alone.
 
 **Recent projects.** Up to 5 projects with at least one session, memory, document, or task
-whose activity falls inside the range ("touched"), ranked by most recent activity. The
+whose activity falls inside the range ("touched"), ranked by most recent activity. Each row
+renders the project badge, four icon+count stats, and a compact relative age (`2h`, `3d`,
+`3w`) right-aligned. The icons match the sidebar's, so a count reads as "the thing behind that
+nav item": sessions (`i-lucide-history`), memories (`i-lucide-brain`), documents
+(`i-lucide-files`), open tasks (`i-lucide-square-kanban`). **The first three are range-scoped;
+open tasks is current backlog and is NOT** — "tasks opened in the last 1d" reads as zero on a
+quiet day and would imply no outstanding work. Because those four numbers sit side by side,
+each stat's tooltip states its own window explicitly. The per-stat `aria-label`s are
+deliberately terser than the tooltips (`"6 documents"`, not `"6 documents added in the last
+3d"`) because they concatenate into the row link's accessible name. The
 `touched` CTE unions four branches, each capped at `PER_SOURCE_LIMIT` (200) with its own
 `order by ... desc limit 200` inside the branch. That cap is **global across projects, not
 per-project** — a project can in principle drop out of a source's top-200 if 200+ more recent
@@ -202,17 +216,35 @@ scale.
 `/api/capture/note` and invalidates `['home']` directly on success (see Live reactivity
 above). Ask the brain never calls a model itself — see next section.
 
+## Tooltips
+
+`app.vue` wraps the app in `<UApp :tooltip="{ delayDuration: 0 }">`, so tooltips app-wide open
+with no hover delay. That is deliberate: on this page tooltips carry *information* (which rig
+service a badge is, which window a project stat counts, which models are unpriced) rather than
+decorative hints, and the default delay makes that data feel unreachable. Anything a tooltip
+says must also exist as an `aria-label` — a tooltip is hover-only and never reaches touch or
+screen-reader users.
+
 ## The `/agent?q=` hand-off
 
-Ask the brain does `navigateTo({ path: '/agent', query: { q } })` — **navigate only, never
-send.** `/agent`'s page (`app/pages/agent/index.vue`) reads `?q=` and passes it as an
-`initialText` prop into `app/components/voice/Composer.vue`, a new optional prop
-(`initialText?: string`) that seeds the composer's private `text` ref
-(`ref(props.initialText ?? '')`) plus a non-immediate `watch` on `initialText` so a second
-Ask hand-off while already on `/agent` (same route, new `?q=`) also lands, which a simpler
-`onMounted`-only seed would have missed. The user still has to press send — auto-sending
-straight from a URL was rejected because it would fire a real model call on any bookmark or
-back-button navigation into `/agent?q=...`.
+Ask the brain does `navigateTo({ path: '/agent', query: { q } })`, and `/agent`
+**auto-submits the question on arrival** — you land in a running answer, not a filled-in box.
+
+`app/pages/agent/index.vue` reads `?q=` **once at setup** (deliberately a plain const, not a
+`computed`, so it survives the URL rewrite below) and passes it to
+`app/components/voice/Composer.vue` as `initialText` + `autoSend`. The composer seeds its
+private `text` ref (`ref(props.initialText ?? '')`), plus a non-immediate `watch` so a second
+Ask hand-off while already on `/agent` also lands — which a simpler `onMounted`-only seed
+would have missed.
+
+**Two guards keep a URL from silently firing repeat model calls**, which is the reason
+auto-send was initially rejected:
+
+1. The page `router.replace`s `q` out of the URL on mount. Because it is a *replace*, the
+   `?q=` entry never enters history — a refresh, a bookmark, or a back/forward navigation
+   lands on a bare `/agent` and sends nothing.
+2. The composer remembers the value it submitted (`autoSentText`) and fires at most once per
+   distinct question, so neither the mount hook nor the watcher can double-send.
 
 ## Errors and empty states
 
@@ -232,7 +264,9 @@ back-button navigation into `/agent?q=...`.
 - Rig snapshot fails → that one tile reads "Unavailable"; the other panels are unaffected
   (`retry: false` on its own query so a down rig can't retry-storm).
 - No usage price rows (post-deploy cold start, see cycle 55) → the value tile still renders,
-  with an additional unpriced note; never suppressed to a bare `$0.00`.
+  with an additional unpriced note; never suppressed to a bare `$0.00`. The note appears only
+  when unpriced **tokens** are non-zero, so the permanently-unpriced, zero-token `<synthetic>`
+  entry does not raise a standing warning about nothing.
 - Empty range → "Nothing in the last {range}. Try a wider range." (not the command palette's
   bare "No data").
 - Zero attention items → "Nothing waiting."
