@@ -119,6 +119,32 @@ lxc 'pid=$(systemctl show -p MainPID --value mymind); tr "\0" "\n" < /proc/$pid/
 lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
 ```
 
+### "There are errors in prod" — AI/provider errors are in `activity_log`, NOT the journal
+
+The journal only carries request-level `[request error]` lines and job progress. Every AI
+call (reasoning/bulk/embeddings/stt/tts/…) is recorded by `withFailoverOver` into
+`activity_log` (kind `attempt` per model tried, `name = <usage>:<model label>`, plus a
+`<usage>:all-failed` row when the whole chain fails) — that table is what the Activity page
+shows. Start here (the `\$\$…\$\$` quoting survives the base64 hop):
+
+```bash
+# 1. What's failing, how often, and when — last 7 days
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select usage, provider, name, status, count(*), min(created_at), max(created_at) from activity_log where (status=\$\$error\$\$ or severity in (\$\$error\$\$,\$\$warn\$\$)) and created_at > now() - interval \$\$7 days\$\$ group by 1,2,3,4 order by max(created_at) desc limit 40;"'
+# 2. The actual error messages for one usage
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select created_at, name, attempt, duration_ms, left(error->>\$\$message\$\$,300) from activity_log where usage=\$\$tts\$\$ and status=\$\$error\$\$ order by created_at desc limit 20;"'
+# 3. Which JOB fired it — walk the trace (job rows are kind=job in the same trace_id)
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -Atc "select created_at, kind, name, status, left(meta::text,120) from activity_log where trace_id in (select trace_id from activity_log where usage=\$\$bulk\$\$ and status=\$\$error\$\$ and created_at > now() - interval \$\$7 days\$\$) order by created_at;"'
+```
+
+Read the **attempt pattern**, not just the count: an `attempt=0 error` immediately followed
+(ms apart) by an `attempt=1 ok` on every call means the chain **head is wrong for the
+request** (e.g. a voice/model the primary doesn't have) and failover is masking a routing
+bug — the provider itself is fine (2026-08-16: 190 Kokoro `400 Voice 'X' not found` because
+ws.ts dropped the client's chosen provider). Errors that appear/vanish on a 5-min cadence with
+`5xx`/`fetch failed` are the upstream (LiteLLM `192.168.2.85:4000`, TTS `192.168.2.25`) —
+curl it from the LXC before touching app code. `usage='reasoning'` rows are the agent; a
+provider *labelled* "Reasoning …" under `usage='bulk'` is just the bulk chain's failover model.
+
 ## Deploy & rollback
 
 - **Deploy = push to `master`.** CD: sync tree → `docker compose up -d db searxng` (old app keeps
