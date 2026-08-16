@@ -3,19 +3,22 @@ title: Home dashboard — the app's front door (cycle 56)
 cycle: 56
 date: 2026-08-15
 status: >
-  ✅ MERGED to `master` locally (fast-forward `98e6111..adcccda`, 19 commits) on 2026-08-15,
-  after a whole-branch review by Tony and one fix wave. **NOT pushed, NOT deployed** — master
-  is 22 commits ahead of `origin/master`, so CD has not run and migration **0032**
-  (`messages_created_at_idx`) has NOT been applied to prod.
-  Ten build/doc tasks, all per-task reviews clean after their fix rounds; the final
-  whole-branch review returned "with fixes" and all of them were applied and re-reviewed clean.
-  Gates re-measured ON THE MERGED master: **typecheck 0 errors / test 1159 passed across
-  150 files / build clean**.
-branch: feat/home-dashboard (merged and deleted)
+  ✅ SHIPPED. Merged to `master` fast-forward (`98e6111..adcccda`, 19 commits) on 2026-08-15,
+  pushed, and deployed by CD run **31924474991** (test ✅ / deploy ✅ — the run that applied
+  migration 0032). Prod verified in-container after cutover: `drizzle.__drizzle_migrations`
+  32 → **33**, `messages_created_at_idx` present, and `EXPLAIN` on home's own query shape now
+  reports **Index Only Scan using messages_created_at_idx** where it was a sequential scan over
+  ~148k rows. Existing data intact (**148,376** messages / **601** sessions / **1,598** live
+  memories). `/api/health` 200 internally and through Pangolin; unauthenticated `/api/home` 401;
+  `GET /` **200 with no redirect** (proving the routeRule removal is live) while `/voice` still
+  307s to `/agent` (proving the other routeRules survived); zero errors in the journal since
+  cutover; an authenticated MCP round-trip succeeded, proving auth + DB end-to-end.
+  Gates on the merged master before push: **typecheck 0 / test 1159 across 150 files / build clean**.
+branch: feat/home-dashboard — merged fast-forward into master at adcccda, branch deleted
 spec: ../superpowers/specs/2026-08-15-home-dashboard-design.md
 plan: ../superpowers/plans/2026-08-15-home-dashboard.md
 docs:
-  - ../wiki/home.md (new page, status "shipped (unmerged)") — mirrored to MyMind at
+  - ../wiki/home.md (new page, status "shipped, deployed") — mirrored to MyMind at
     /projects/mymind/wiki/home.md
   - ../superpowers/plans/00-roadmap.md (cycle 56 row added)
   - ../BACKLOG.md (four deferred UX-audit findings recorded as named follow-ups)

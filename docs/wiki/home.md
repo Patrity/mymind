@@ -1,15 +1,15 @@
 ---
 title: Home dashboard — the app's front door
-status: shipped (merged to master locally, unpushed — CD has not run)
+status: shipped (merged, deployed to prod 2026-08-15 via CD run 31924474991)
 cycle: 56
 updated: 2026-08-15
 ---
 
 # Home dashboard — `/`
 
-**status: shipped, merged locally, not deployed.** Built on `feat/home-dashboard` (cycle 56),
-merged fast-forward into `master` on 2026-08-15. Not pushed, so CD has not run and migration 0032
-is not yet applied to prod. Gates green (typecheck 0 / test 1159 across 150 files / build
+**status: shipped and deployed.** Built on `feat/home-dashboard` (cycle 56), merged fast-forward
+into `master` and deployed to prod on 2026-08-15 by CD run 31924474991, which applied migration 0032
+(`messages_created_at_idx`). Gates green (typecheck 0 / test 1159 across 150 files / build
 clean) and browser-validated on dev. See the [roadmap](../superpowers/plans/00-roadmap.md)
 row 56 and the [cycle-56 handover](../handovers/2026-08-15-home-dashboard.md).
 
