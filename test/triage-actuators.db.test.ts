@@ -32,7 +32,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
 import { applyTask, applyNote, applyMemory, applyAppend, resolveAppendTarget, revertTriageAction } from '../server/services/triage'
-import { createDoc, getDoc, deleteDoc, restoreDoc } from '../server/services/documents'
+import { createDoc, getDoc, deleteDoc, restoreDoc, updateDoc } from '../server/services/documents'
 import { getTask, deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
 import { tasks, triageActions, memories, chunks, documents } from '../server/db/schema'
@@ -569,7 +569,15 @@ describe('revertTriageAction (durable, post-TTL)', () => {
     try {
       const res = await revertTriageAction(r.actionRowId)
       expect(res.ok).toBe(false)
-      expect(res.reason).not.toContain('BLOCKER-CONTENT-a1b2c3')
+      // originalPath IS a bound param of the failing UPDATE (moveDoc writes it back into
+      // the `path` column, and it's the exact value the unique-constraint violation is
+      // about) — Postgres's DETAIL clause and/or Drizzle's bound-params list would surface
+      // it verbatim if the leak bug reappeared. Code review (Task 12, Minor finding)
+      // caught that the equivalent check against the blocker's `content` could never fail:
+      // that column is never among this query's bound params (it touches path / project /
+      // project_id / language / title / updated_at), so it asserted coverage it didn't
+      // have. originalPath is the real "would this actually catch a regression" value.
+      expect(res.reason).not.toContain(originalPath)
       expect(res.reason).not.toContain('duplicate key')
       expect(res.reason).not.toContain('documents_path_live_uidx')
       expect(res.reason).toBe('the reversal failed — check the item and undo it manually')
@@ -578,6 +586,50 @@ describe('revertTriageAction (durable, post-TTL)', () => {
       err.mockRestore()
       await deleteDoc(blocker.id)
       await deleteDoc(r.entityId!)
+    }
+  })
+
+  // Code review (Task 12, Important finding): the durable path only restored the PATH,
+  // not the title — applyNote's own live-token undo closure does both
+  // (moveDoc + updateDoc({ title: doc.title })), but the payload only ever carried
+  // originalPath, so revertTriageAction had no data to restore the title from. It
+  // returned { ok: true } while leaving the AI-assigned title in place — a success
+  // reported that wasn't fully delivered, the same failure class Task 11b fixed for
+  // multi-intent proposals.
+  it('durably restores both the path and the pre-triage title', async () => {
+    const doc = await jot('has a real pre-triage title')
+    await updateDoc(doc.id, { title: 'Original Courier Title' })
+    const originalPath = doc.path
+    const target = uniqueNotePath('title-restore')
+    const r = await applyNote(doc.id, { kind: 'note', confidence: 0.9, title: 'AI Assigned Title', path: target })
+    try {
+      // Sanity: the AI's title really did take effect, so the assertion below is
+      // proving a REVERT, not just that the title was never touched.
+      expect((await getDoc(r.entityId!))!.title).toBe('AI Assigned Title')
+
+      expect((await revertTriageAction(r.actionRowId)).ok).toBe(true)
+      const reverted = await getDoc(doc.id)
+      expect(reverted!.path).toBe(originalPath)
+      expect(reverted!.title).toBe('Original Courier Title')
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+
+  // originalTitle: null is a real, distinct state ("this document had no title before
+  // triage") from originalTitle being entirely absent (pre-fix rows) — must round-trip
+  // faithfully rather than being coerced to '' or skipped.
+  it('durably restores a null pre-triage title', async () => {
+    const doc = await jot('no title before triage')
+    await updateDoc(doc.id, { title: null })
+    const target = uniqueNotePath('null-title-restore')
+    const r = await applyNote(doc.id, { kind: 'note', confidence: 0.9, title: 'AI Assigned Title', path: target })
+    try {
+      expect((await getDoc(r.entityId!))!.title).toBe('AI Assigned Title') // sanity
+      expect((await revertTriageAction(r.actionRowId)).ok).toBe(true)
+      expect((await getDoc(doc.id))!.title).toBeNull()
+    } finally {
+      await deleteDoc(doc.id)
     }
   })
 })

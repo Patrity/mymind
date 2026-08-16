@@ -102,11 +102,14 @@ export async function applyNote(docId: string, action: TriageAction, autoApplied
   // moveDoc, not a direct column write — project/project_id derive from path.
   if (action.path && action.path !== originalPath) await moveDoc(docId, action.path)
 
-  // originalPath rides in the payload because the DURABLE reversal path (Task 12) has no
-  // access to this closure — registerUndo's state dies with the process, and its token
-  // expires after 10 minutes. Without this, an undo the next day cannot restore the path.
+  // originalPath + originalTitle ride in the payload because the DURABLE reversal path
+  // (Task 12) has no access to this closure — registerUndo's state dies with the process,
+  // and its token expires after 10 minutes. Without these, an undo the next day cannot
+  // restore the path/title. doc.title is nullable — preserved faithfully (not coerced to
+  // '' or dropped) because "this document had no title before triage" is a real state
+  // revertTriageAction must be able to round-trip.
   const actionRowId = await recordAction({
-    docId, action: { ...action, originalPath } as TriageAction, entityType: 'document',
+    docId, action: { ...action, originalPath, originalTitle: doc.title } as TriageAction, entityType: 'document',
     entityId: docId, autoApplied
   })
 
@@ -380,9 +383,17 @@ export async function revertTriageAction(actionRowId: string): Promise<{ ok: boo
       publishChange({ resource: 'memory', action: 'updated', id: row.entityId })
     } else if (row.entityType === 'document' && row.entityId) {
       if (row.kind === 'note') {
-        // The doc IS the artifact — move it back to where it was captured.
-        const original = (payload as TriageAction & { originalPath?: string }).originalPath
-        if (original) await moveDoc(row.entityId, original)
+        // The doc IS the artifact — move it back to where it was captured, and restore
+        // its pre-triage title (applyNote's own live-token undo does both; the durable
+        // path must match it, not just the path half).
+        //
+        // originalTitle may be entirely ABSENT on rows written before this field existed
+        // — `!== undefined` leaves the title alone in that case rather than clobbering it
+        // with undefined. A PRESENT-but-null originalTitle is a different, real state
+        // ("this document had no title before triage") and must round-trip faithfully.
+        const notePayload = payload as TriageAction & { originalPath?: string, originalTitle?: string | null }
+        if (notePayload.originalPath) await moveDoc(row.entityId, notePayload.originalPath)
+        if (notePayload.originalTitle !== undefined) await updateDoc(row.entityId, { title: notePayload.originalTitle })
       } else {
         // append — only revert if the target is byte-identical to what we wrote.
         const applied = (payload as TriageAction & { appendedBlock?: string, priorContent?: string })
