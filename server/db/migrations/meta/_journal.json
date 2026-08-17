@@ -239,6 +239,13 @@
       "when": 1786909497665,
       "tag": "0033_lean_triton",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1787000437893,
+      "tag": "0034_crazy_genesis",
+      "breakpoints": true
     }
   ]
 }

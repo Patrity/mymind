@@ -1,8 +1,28 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { tasks } from '../db/schema'
+import { tasks, taskColumns } from '../db/schema'
 import type { TaskDTO, TaskStatus, TaskPriority } from '../../shared/types/tasks'
 import type { TaskSummaryDTO } from '../../shared/types/summaries'
+
+// TEMPORARY scaffolding: task_columns.kind mirrors this exact status mapping (see the Task 1
+// migration backfill). This inline map + resolver exists only so `createTask` can populate the
+// new NOT NULL `tasks.column_id` FK; Task 2 replaces the map with `kindForStatus`
+// (server/lib/tasks/status-kind.ts) and Task 4 replaces this resolver with the real
+// `defaultColumnFor` compat seam (plus the status/column dual-write). Delete this block then.
+const STATUS_TO_KIND: Record<TaskStatus, string> = {
+  todo: 'open', in_progress: 'started', completed: 'done', blocked: 'blocked'
+}
+
+async function resolveDefaultColumnId(status: TaskStatus): Promise<string> {
+  const kind = STATUS_TO_KIND[status]
+  const [col] = await useDb()
+    .select({ id: taskColumns.id })
+    .from(taskColumns)
+    .where(and(eq(taskColumns.kind, kind), eq(taskColumns.isDefault, true)))
+    .limit(1)
+  if (!col) throw new Error(`no default task_columns row for kind "${kind}" (status "${status}")`)
+  return col.id
+}
 
 // ---------------------------------------------------------------------------
 // Pure helper — exported for TDD
@@ -120,12 +140,14 @@ export interface CreateTaskInput {
 export async function createTask(input: CreateTaskInput): Promise<TaskDTO> {
   const status: TaskStatus = input.status ?? 'todo'
   const now = new Date()
+  const columnId = await resolveDefaultColumnId(status)
   const rows = await useDb()
     .insert(tasks)
     .values({
       title: input.title,
       description: input.description ?? '',
       status,
+      columnId,
       priority: input.priority ?? 'low',
       dueDate: input.dueDate ?? null,
       project: input.project ?? null,
