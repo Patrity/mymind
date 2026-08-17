@@ -367,6 +367,11 @@ compiling. It is marked for deletion. Replace it with the real `kindForStatus` (
 `defaultColumnFor` (Task 3) — do not leave two resolvers in the file, and do not build on the
 stopgap.
 
+**Acceptance check for this task:** `grep -n "STATUS_TO_KIND\|resolveDefaultColumnId" server/services/tasks.ts`
+must return nothing. "Delete this block" instructions have a way of surviving under time pressure,
+and the stopgap is a second copy of the status→kind mapping that would silently diverge from
+`server/lib/tasks/status-kind.ts` if left behind.
+
 **Dual-write, deliberately.** Every write that sets `column_id` must ALSO write the matching
 `tasks.status` (`statusForKind(column.kind)`). The column is shadowed until Task 10, and the point
 of shadowing is that it stays a truthful rollback target — a stale `status` would make the safety
