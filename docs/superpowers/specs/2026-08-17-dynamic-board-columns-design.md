@@ -49,6 +49,7 @@ integration break the first time a column is renamed.
 | Scope of this cycle | Columns + the drag rewrite (`useSortable`, in-column reordering) + the 8 `USelect` → `USelectMenu` swaps. |
 | Deferred to cycle 59 | Card content/density, filtering + saved filters, grouping. Pure presentation; reads better once columns settle. |
 | Deleting a non-empty column | The user chooses: **delete the cards** (soft) or **move them to a named column**. |
+| Column color | Each column carries a semantic-alias `color`, used for the board tint **and** for that task's status badge app-wide. |
 
 ## Data model
 
@@ -59,6 +60,7 @@ integration break the first time a column is renamed.
 | `id` | uuid pk | |
 | `name` | text not null | User-facing. Code never reads this. |
 | `kind` | text not null | `open \| started \| done \| blocked` |
+| `color` | text not null | One of the app's semantic aliases (see Column color) |
 | `position` | integer not null | Left-to-right board order |
 | `is_default` | boolean not null | Exactly one per `kind` — the compat mapping's resolution target |
 | `created_at` | timestamptz | |
@@ -126,16 +128,56 @@ silently returns nothing — the compat seam above would break. Renaming is alwa
 **Also in scope:** the 8 remaining `<USelect>` in `tasks.vue` become `<USelectMenu>`. It is the only
 file in the app still on plain `USelect`; every other project dropdown already migrated.
 
+## Column color
+
+Each column carries a **`color`**, used two ways: as a tint on the column itself on the board, and
+as the color of that task's **status badge everywhere else in the app**. Today
+`app/pages/projects/[slug].vue:107` hardcodes exactly this mapping:
+
+```ts
+const statusColor: Record<string, 'neutral' | 'primary' | 'success' | 'error'> = {
+  todo: 'neutral', in_progress: 'primary', completed: 'success', blocked: 'error'
+}
+```
+
+That map is **deleted** and replaced by the column's own color, so renaming or recoloring a column
+propagates to every badge without a code change. Any other surface that renders a task status badge
+resolves it the same way.
+
+**`color` is one of the app's semantic aliases** — `primary | secondary | success | info | warning |
+error | neutral` — not a hex value and not a raw Tailwind palette name. Two reasons, both binding:
+
+1. The project rule is semantic tokens only (`.claude/rules/web-vue-ui.md`); the theme maps
+   `primary → gold`, `secondary`/`info` → thunder, `neutral` → panel, so an alias keeps working when
+   the theme changes and a hex does not.
+2. `UBadge`'s `color` prop already takes exactly this set, so a badge is `:color="column.color"` with
+   no translation layer.
+
+> **The trap this must avoid.** Column color arrives as *data*, so the obvious implementation is a
+> constructed class — `` :class="`bg-${column.color}-500/10`" ``. **That silently renders nothing.**
+> Tailwind's scanner is static: it only emits classes it can see literally in source, and an
+> interpolated name is invisible to it, so the utility is purged from the build. Cycle 56's plan
+> review caught this exact pattern before it shipped.
+>
+> The column tint must therefore come from a **static lookup map with literal class strings** —
+> `const TINT: Record<ColumnColor, string> = { primary: 'bg-primary/5', success: 'bg-success/5', … }` —
+> so every class appears verbatim in the source the scanner reads. Badges are unaffected (`UBadge`
+> takes the alias as a prop value, not a class), but the board tint is exactly the shape that breaks.
+
+Seeded columns keep today's colors: Todo `neutral`, In Progress `primary`, Completed `success`,
+Blocked `error` — the same four values that map is using now, so no badge changes appearance on
+deploy.
+
 ## Migration
 
 Seed exactly the four columns the board shows today, in today's order, all `is_default`:
 
-| name | kind | position |
-|---|---|---|
-| Todo | `open` | 0 |
-| In Progress | `started` | 1 |
-| Completed | `done` | 2 |
-| Blocked | `blocked` | 3 |
+| name | kind | color | position |
+|---|---|---|---|
+| Todo | `open` | `neutral` | 0 |
+| In Progress | `started` | `primary` | 1 |
+| Completed | `done` | `success` | 2 |
+| Blocked | `blocked` | `error` | 3 |
 
 Then backfill `tasks.column_id` from each task's current `status`. **Nothing visibly changes on
 deploy** — same columns, same order, same cards. The feature is what you can do afterwards.
@@ -159,6 +201,10 @@ say why — not discover it at typecheck time.
   `search_tasks(status='in_progress')` behave identically before and after the migration, and
   `agent/context.ts` still returns the same open tasks. If this suite is weak, an agent integration
   breaks silently and nobody notices for days.
+- **Color, and this one is easy to fake:** asserting a column renders *a* background class proves
+  nothing — a purged class still leaves the element in the DOM. The browser check must read the
+  **computed** background of a tinted column and confirm it is not transparent, and confirm a status
+  badge elsewhere in the app changes color after that column is recoloured.
 - **Browser (`playwright-cli`, never the MCP):** drag a card between columns; drag to reorder within a
   column and confirm it *sticks* (the snap-back trap); add, rename, reorder and delete a column down
   both delete branches.
