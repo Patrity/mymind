@@ -171,9 +171,10 @@ CREATE INDEX "tasks_column_idx" ON "tasks" ("column_id");
 Run: `pnpm db:migrate`, then:
 
 ```sql
-select c.name, c.kind, c.color, count(t.id)
+select c.name, c.kind, c.color, c.position, count(t.id)
 from task_columns c left join tasks t on t.column_id = c.id and t.deleted_at is null
-group by 1,2,3 order by c.position;
+group by c.name, c.kind, c.color, c.position
+order by c.position;
 ```
 
 Expected: four rows, and the per-column counts match what the board showed before the migration. **If any count is zero where the board had cards, stop and report BLOCKED** — the backfill mapped wrongly and re-running will not fix already-migrated rows.
@@ -359,6 +360,12 @@ export async function deleteColumn(
 **Files:** Modify `server/services/tasks.ts`. Test: extend `test/task-columns.db.test.ts` or add `test/tasks-columns.db.test.ts`.
 
 **Interfaces:** `createTask` / `updateTask` keep accepting `status?: TaskStatus` **and** gain `columnId?: string`. `TaskDTO` carries both `columnId` and a derived `status` (from the column's kind, via `statusForKind`) so every existing consumer keeps reading `.status`.
+
+**First, delete Task 1's stopgap.** `column_id` is `notNull` with no default, so Task 1 had to add a
+small temporary status→column resolver inside `server/services/tasks.ts` just to keep `createTask`
+compiling. It is marked for deletion. Replace it with the real `kindForStatus` (Task 2) +
+`defaultColumnFor` (Task 3) — do not leave two resolvers in the file, and do not build on the
+stopgap.
 
 **Dual-write, deliberately.** Every write that sets `column_id` must ALSO write the matching
 `tasks.status` (`statusForKind(column.kind)`). The column is shadowed until Task 10, and the point
