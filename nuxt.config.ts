@@ -81,9 +81,15 @@ export default defineNuxtConfig({
     // fact mechanically, without asking the LLM judge. Closes task f80622b9: the enrichment
     // path (memory-resolve.insertFresh) never ran dedupDecision, so after the exact-hash
     // check the judge alone decided — and it let 95 same-partition pairs at >= 0.85 through,
-    // including near-verbatim restatements at 0.995. 0.92 leaves the 0.85-0.92 grey zone to
-    // the judge, where its reasoning actually earns the call.
-    memoryDuplicateThreshold: Number(process.env.MEMORY_DUPLICATE_THRESHOLD ?? 0.92),
+    // including near-verbatim restatements at 0.995.
+    //
+    // Set to 0.96, not the 0.92 originally proposed, after dry-running the backfill against
+    // the real corpus: at 0.92 two of fifteen pairs were DISTINCT facts the embedding merely
+    // scored close (an MCP tool-surface fact vs. an MCP default-limit fact, 0.956). A merge
+    // absorbs evidence into the incumbent and discards the new phrasing, so a false positive
+    // loses a fact permanently — unrecoverable in a way a surviving duplicate is not. Every
+    // pair at or above 0.96 was a genuine restatement; below it goes to the judge.
+    memoryDuplicateThreshold: Number(process.env.MEMORY_DUPLICATE_THRESHOLD ?? 0.96),
     // Capture triage confidence bars, per destination. ALL ship at 1.1 (= never
     // auto-apply) so the pipeline can be calibrated against real captures before it
     // is allowed to write. Lower by hand, one destination at a time, per the spec's

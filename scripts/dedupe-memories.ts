@@ -5,7 +5,7 @@
  * Until 2026-08-17 the enrichment path (`memory-resolve.insertFresh`) had no similarity
  * floor — after the exact-hash check, whether a near-duplicate merged was entirely
  * `judgeRelations`' opinion, and it let near-verbatim restatements through. The resolver
- * now short-circuits at `memoryDuplicateThreshold` (0.92), which stops NEW duplicates.
+ * now short-circuits at `memoryDuplicateThreshold` (0.96), which stops NEW duplicates.
  * This cleans up the ones already stored.
  *
  * Pairs are matched within the SAME (scope, project) partition only — the same partition
@@ -27,7 +27,7 @@ import pg from 'pg'
 
 const APPLY = process.argv.includes('--apply')
 const barIdx = process.argv.indexOf('--bar')
-const BAR = barIdx > -1 ? Number(process.argv[barIdx + 1]) : 0.92
+const BAR = barIdx > -1 ? Number(process.argv[barIdx + 1]) : 0.96
 
 const url = process.env.DATABASE_URL
 if (!url) throw new Error('DATABASE_URL is required')

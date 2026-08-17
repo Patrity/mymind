@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({
   databaseUrl: process.env.DATABASE_URL,
   memoryAutoReviewThreshold: 0.75,
-  memoryDuplicateThreshold: 0.92
+  memoryDuplicateThreshold: 0.96
 }))
 
 // The whole point of this test is that the mechanical short-circuit fires BEFORE the LLM
@@ -57,7 +57,7 @@ describe('resolveEnrichedMemory — mechanical duplicate short-circuit', () => {
       expect(first.action).toBe('insert')
 
       // Second: different text (so the exact-hash short-circuit can't fire) but an
-      // identical embedding => similarity 1.0, comfortably above the 0.92 bar.
+      // identical embedding => similarity 1.0, comfortably above the 0.96 bar.
       judgeRelations.mockClear()
       const second = await resolveEnrichedMemory({
         content: `${tag} the reranker requires a higher ef_search`, scope: 'agent', project: PROJECT
