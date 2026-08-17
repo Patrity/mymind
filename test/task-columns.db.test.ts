@@ -237,7 +237,12 @@ describe('deleteColumn', () => {
   })
 
   it('mode "reassign" moves every live card to the target and deletes the column', async () => {
-    const kind = uniqueKind('reassign')
+    // Real kind, not uniqueKind(): the moved tasks stay live and get read back through
+    // getTask below, and (as of Task 4) toDTO derives .status via statusForKind(kind) for
+    // every live row it returns — a synthetic kind would make that throw. A non-default
+    // sibling of 'open' doesn't touch the seeded default ('Todo'), which defaultColumnFor
+    // resolves by isDefault, not by being the only row of that kind.
+    const kind: TaskColumnKind = 'open'
     const col1 = await insertColumn(kind, { name: 'Col1' })
     const col2 = await insertColumn(kind, { name: 'Col2' })
     const t1 = await insertTask(col1.id, 'Task A')
