@@ -4,7 +4,7 @@ status: shipped
 cycle: 57
 updated: 2026-08-16
 mymind_id: 323bbf97-f177-429b-beea-675ff0388799
-mymind_hash: d61d2c1b2af1fe9b66a745fde172d56c168e696d6a3e5d58ad1a1d8f86dc179e
+mymind_hash: 2d36a299c7e266b5ba07c8ac6d9a7cd366d0e8aaa8bebc21605e21a50b19ece3
 ---
 
 # Capture Triage
@@ -41,6 +41,21 @@ One entry point, `triageCapture(docId)` (`server/services/triage.ts`), fired fro
 `{ skipped: 'already-triaged' }`, not an error. A parse failure (`classify` returns `null`)
 still leaves `triaged_at` stamped — retrying a doc the model can't parse on every ten-minute
 sweep would burn tokens forever; the sweeper's job is coverage, not retry-until-success.
+
+**The pending-review guard.** Before claiming, `triageCapture` checks whether the document
+already has a `review_queue` row with `status = 'pending'` of a kind *other than* `triage`; if
+so it returns `{ skipped: 'review-pending' }` **without claiming**, leaving `triaged_at` NULL so
+the document stays eligible for a later sweep.
+
+This is not hypothetical tidiness. `review_queue_one_pending_per_doc` is a partial unique index
+on `doc_id WHERE status = 'pending'` spanning **all kinds**, so a document still holding a
+pending `enrichment` row from the retired `enrich-input` cron would have had its triage row
+silently swallowed by `onConflictDoNothing()` — after the claim was stamped and the model call
+paid for. The document would have gone terminal with no proposal to show. Both of production's
+live `/input` documents were in exactly that state when this shipped, so the first sweep after
+deploy would have consumed the entire backlog this cycle exists to drain while appearing inert.
+The `ne(kind, 'triage')` exclusion is load-bearing: without it, a proposal's own queued row would
+trip the guard on every later call for that document.
 
 **Sweeper candidates** are simply live `/input` documents with `triaged_at IS NULL` —
 deliberately **not** the retired `enrich-input`'s filter (`project IS NULL AND tags = '{}' AND
@@ -162,6 +177,14 @@ error rather than silently duplicating the other action's output as a second, st
     never actually emits `targetDocId` (`parseAction` strips it), so this re-validation branch
     is currently reachable only via a direct actuator call, not the classifier — kept as
     structural defense-in-depth rather than "safe because an upstream step cooperates."
+  - The degrade **synthesizes a real note action** (`degradeAppendToNote`) rather than passing
+    the append action through. The classifier's `append` prompt only asks for `content`, never a
+    `title` or `path`, so a bare pass-through reached `applyNote` with neither, mutated nothing,
+    and still recorded an action and reported success — "Applied 1 action" for a document that
+    never left `/input`. `applyNote` now **throws on any action that would produce zero
+    mutation**, which closes that class for every caller rather than only this one. Because the
+    similarity floor is 0.75 cosine, degrade is the *common* outcome for short jots, so this
+    path is well-travelled, not an edge case.
 - Append-only: it concatenates a delimited block (`<!-- triage:<docId> <date> -->` + content)
   and never rewrites, reorders, or removes existing content.
 
