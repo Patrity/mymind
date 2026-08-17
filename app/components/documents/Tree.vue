@@ -235,6 +235,31 @@ async function shareDoc(id: string) {
   }
 }
 
+/**
+ * Put a document back in the triage sweeper's pool.
+ *
+ * Only offered for `/input/` files, because that is where a stranded capture sits: triage
+ * stamps `documents.triaged_at` on its one automatic pass and deliberately never clears it
+ * on a rejection or an undo (auto-clearing would re-propose the same jot every ten minutes,
+ * and re-apply it once a confidence bar drops below 1.0). So a capture whose proposal you
+ * rejected — or whose applied action you undid — stays in /input forever with no way back.
+ * This is the way back.
+ */
+async function retriageDoc(id: string, label: string) {
+  try {
+    await $fetch(`/api/documents/${id}/retriage`, { method: 'POST' })
+    toast.add({
+      color: 'success',
+      title: 'Queued for re-triage',
+      description: `“${label}” will be reconsidered on the next sweep (within 10 minutes).`
+    })
+    emit('refresh')
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Re-triage failed', description: err.data?.statusMessage ?? err.message })
+  }
+}
+
 // ---- Context menu items ----
 function contextMenuItems(item: TreeItem): ContextMenuItem[][] {
   return [
@@ -255,7 +280,15 @@ function contextMenuItems(item: TreeItem): ContextMenuItem[][] {
         label: 'Share / Copy link',
         icon: 'i-lucide-link',
         onSelect: () => shareDoc(item.id)
-      }
+      },
+      // Only meaningful for the inbox — see retriageDoc's note.
+      ...(item.nodeType === 'file' && item.path.startsWith('/input/')
+        ? [{
+            label: 'Re-triage',
+            icon: 'i-lucide-refresh-cw',
+            onSelect: () => retriageDoc(item.id, item.label)
+          }]
+        : [])
     ],
     [
       {

@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
 import { triageActions, memories, documents, chunks, reviewQueue, projects as projectsTable } from '../db/schema'
@@ -470,6 +470,49 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
  * able to reverse something they noticed the next day. This reverses from the persisted
  * triage_actions row instead.
  */
+/** Kinds whose actuator soft-deletes the courier. `note` is absent: the document IS its artifact. */
+const COURIER_CONSUMING = ['task', 'memory', 'append'] as const
+
+/**
+ * Is any OTHER non-reverted action still holding this courier?
+ *
+ * A multi-destination proposal (the spec's primary + secondaries) can consume one courier
+ * across several actions. Reverting ONE of them must not hand the document back while a
+ * sibling still exists, or a single jot leaves the user holding BOTH a live task and the
+ * original note — the duplicate this pipeline exists to avoid.
+ */
+async function courierStillHeld(docId: string, excludingActionId: string): Promise<boolean> {
+  const [row] = await useDb().select({ id: triageActions.id })
+    .from(triageActions)
+    .where(and(
+      eq(triageActions.docId, docId),
+      ne(triageActions.id, excludingActionId),
+      isNull(triageActions.revertedAt),
+      inArray(triageActions.kind, COURIER_CONSUMING as unknown as string[])
+    ))
+    .limit(1)
+  return !!row
+}
+
+/**
+ * Put a document back in the sweeper's candidate pool by clearing `triaged_at`.
+ *
+ * This is deliberately an EXPLICIT user action and never an automatic consequence of a
+ * revert or a rejection. `sweepUntriaged`'s candidate query is `triaged_at IS NULL`, so
+ * clearing it whenever an action is reverted would re-propose the same jot within ten
+ * minutes — and once a confidence bar sits below 1.0, that is an apply → undo → re-apply
+ * loop on a ten-minute timer. A rejection or an undo is the user saying "this proposal was
+ * wrong"; respecting that means the way back is a button, not a side effect.
+ */
+export async function retriageDocument(docId: string): Promise<{ ok: boolean, reason?: string }> {
+  const doc = await getDoc(docId)     // live-only: never resurrect a consumed courier
+  if (!doc) return { ok: false, reason: 'that document no longer exists' }
+
+  await useDb().update(documents).set({ triagedAt: null }).where(eq(documents.id, docId))
+  publishChange({ resource: 'document', action: 'updated', id: docId })
+  return { ok: true }
+}
+
 export async function revertTriageAction(actionRowId: string): Promise<{ ok: boolean, reason?: string }> {
   const db = useDb()
   const [row] = await db.select().from(triageActions).where(eq(triageActions.id, actionRowId)).limit(1)
@@ -481,13 +524,15 @@ export async function revertTriageAction(actionRowId: string): Promise<{ ok: boo
   try {
     if (row.entityType === 'task' && row.entityId) {
       await deleteTask(row.entityId)
-      await restoreDoc(row.docId)
+      if (!await courierStillHeld(row.docId, actionRowId)) await restoreDoc(row.docId)
       publishChange({ resource: 'task', action: 'deleted', id: row.entityId })
+      publishChange({ resource: 'document', action: 'updated', id: row.docId })
     } else if (row.entityType === 'memory' && row.entityId) {
       // Archive, never hard-delete: dedup may have merged into a pre-existing memory.
       await db.update(memories).set({ archivedAt: new Date() }).where(eq(memories.id, row.entityId))
-      await restoreDoc(row.docId)
+      if (!await courierStillHeld(row.docId, actionRowId)) await restoreDoc(row.docId)
       publishChange({ resource: 'memory', action: 'updated', id: row.entityId })
+      publishChange({ resource: 'document', action: 'updated', id: row.docId })
     } else if (row.entityType === 'document' && row.entityId) {
       if (row.kind === 'note') {
         // The doc IS the artifact — move it back to where it was captured, and restore
@@ -509,7 +554,7 @@ export async function revertTriageAction(actionRowId: string): Promise<{ ok: boo
             && current.content === applied.priorContent + applied.appendedBlock) {
           await updateDoc(row.entityId, { content: applied.priorContent })
         }
-        await restoreDoc(row.docId)
+        if (!await courierStillHeld(row.docId, actionRowId)) await restoreDoc(row.docId)
       }
       publishChange({ resource: 'document', action: 'updated', id: row.entityId })
     }
