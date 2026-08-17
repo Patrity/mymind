@@ -82,8 +82,15 @@ export default defineNuxtConfig({
     // is allowed to write. Lower by hand, one destination at a time, per the spec's
     // rollout. The memory bar is GATED on task f80622b9 (dedup under-catching).
     triageThresholds: {
-      task: 1.1,
+      // Task lowered to 0.70 on 2026-08-17, the first step of the staged rollout, after a
+      // day of reading real proposals in /review. Task is the safest bar to drop first:
+      // the action is one row you can delete, and an undo now fully recovers (the courier
+      // returns to /input and "Re-triage" puts it back in the sweeper's pool).
+      task: 0.70,
       note: 1.1,
+      // GATED on MyMind task f80622b9 (enrich-memories dedup under-catching). Triage is a
+      // second inlet to the memories table; lowering this before that closes amplifies a
+      // known defect, and bad memories degrade recall everywhere, invisibly.
       memory: 1.1,
       append: 1.1
     },

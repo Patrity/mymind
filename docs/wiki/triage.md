@@ -2,9 +2,9 @@
 title: Capture Triage
 status: shipped
 cycle: 57
-updated: 2026-08-16
+updated: 2026-08-17
 mymind_id: 323bbf97-f177-429b-beea-675ff0388799
-mymind_hash: 2d36a299c7e266b5ba07c8ac6d9a7cd366d0e8aaa8bebc21605e21a50b19ece3
+mymind_hash: 09bffc61baa5d3e391fc51628e33727a220c9c6edb0ce80b8eb16c33b3297379
 ---
 
 # Capture Triage
@@ -14,12 +14,23 @@ addition to an existing document — and routes it there. Confident results appl
 genuine uncertainty lands in `/review`. Supersedes `enrich-input` as the owner of `/input` (see
 [enrichment.md](enrichment.md)).
 
-**Rollout state, read this before touching config:** all four confidence bars ship at `1.1`,
-which is above the maximum possible confidence (`1.0`) — **nothing auto-applies yet.** Every
-proposal today lands in `/review`. The Memory bar additionally **stays at `1.1` until MyMind
-task `f80622b9`** (enrich-memories dedup under-catching) closes — a hard dependency, not a
-tuning preference. Task, Note, and Append may be lowered independently once the queue has been
-read against real captures for a few days. See Rollout below.
+**Rollout state, read this before touching config** (updated 2026-08-17):
+
+| Destination | Bar | Auto-applies? |
+|---|---|---|
+| Task | **0.70** | **Yes** — lowered 2026-08-17, first step of the staged rollout |
+| Note | `1.1` | No |
+| Memory | `1.1` | No — **gated on MyMind task `f80622b9`** |
+| Append | `1.1` | No |
+
+`1.1` is above the maximum possible confidence (`1.0`), so those three destinations cannot
+auto-apply at all; every such proposal lands in `/review`. Task was lowered first because it is
+the safest bar to drop: the action is one row you can delete, and an undo now fully recovers.
+
+The Memory bar **stays at `1.1` until `f80622b9`** (enrich-memories dedup under-catching)
+closes — a hard dependency, not a tuning preference. Triage is a second inlet to the same
+table, and a bad memory degrades recall everywhere, invisibly, until someone notices a wrong
+answer weeks later.
 
 ## Pipeline
 
@@ -72,6 +83,28 @@ place so a document the model can't parse isn't retried every ten minutes foreve
 then, the sweeper's population is "documents that have never been through `triageCapture`" — a
 real fix for the old permanently-invisible-document bug, but not the literal "rejected items
 become eligible again" the design doc describes; see the handover.
+
+**Re-triage is the way back (added 2026-08-17).** Automatic one-pass semantics left a real hole:
+a capture whose proposal you rejected — or whose applied action you *undid* — sat in `/input`
+under its machine name with nothing able to reconsider it. That fired on day one in production:
+an approved task was undone, the courier was restored, and the sweeper's candidate count went to
+zero.
+
+The fix is deliberately **not** "clear `triaged_at` on revert." The sweeper runs every ten
+minutes, so that re-proposes the same jot immediately, and once a bar sits below `1.0` it
+becomes an apply → undo → re-apply loop on a timer. A rejection or an undo is the user saying
+the proposal was wrong. So re-eligibility is an explicit action:
+
+- `retriageDocument(docId)` (`server/services/triage.ts`) clears `triaged_at`. It reads with the
+  live-only `getDoc`, so it can never resurrect a soft-deleted courier.
+- `POST /api/documents/[id]/retriage` exposes it.
+- The documents-tree context menu shows **Re-triage** for `/input` files only — it is
+  meaningless anywhere else.
+
+**Reverting one action of a multi-destination proposal** no longer hands the courier back while
+a sibling action still holds it (`courierStillHeld`). Previously, undoing the task half of a
+task+memory proposal restored the document while the memory still existed, leaving one jot as
+both a live entity and the original note.
 
 ## The classifier contract
 
