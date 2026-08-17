@@ -401,6 +401,20 @@ Resolution helper used by create/update: if `columnId` is given use it; else if 
 
 **Files:** Modify `server/api/tasks/index.post.ts`, `[id].patch.ts`, `[id]/move.post.ts`, `index.get.ts`. Create `server/api/task-columns/{index.get,index.post,reorder.post}.ts`, `server/api/task-columns/[id].{patch,delete}.ts`.
 
+- [ ] **Step 0: Close the `kind` schema gap before opening column creation to HTTP callers.**
+`task_columns.kind` is plain `text` with no constraint, but as of Task 4 `toDTO` calls
+`statusForKind(column.kind)` on **every live task read** — and that throws on any value outside
+`open|started|done|blocked`. So one bad `kind` row makes every task in that column unreadable: an
+availability regression, not a display bug. `is_default` already gets DB-level protection (a partial
+unique index) precisely because the app depends on it structurally; `kind` is now equally structural
+and has none. This task is where column creation becomes reachable over HTTP, so close it here:
+  - Add `TASK_COLUMN_KINDS = ['open','started','done','blocked'] as const` to
+    `shared/types/task-columns.ts`, mirroring the existing `TASK_COLUMN_COLORS` pattern, and derive
+    `TaskColumnKind` from it.
+  - Validate `kind` and `color` with `z.enum(...)` built from those arrays in the column routes.
+  - Add a migration with `CHECK (kind IN ('open','started','done','blocked'))` on `task_columns`.
+    Generate it, then verify the emitted SQL contains only that constraint.
+
 - [ ] **Step 1:** In all three task routes, **keep** `status: z.enum(['todo','in_progress','completed','blocked']).optional()` exactly as it is and **add** `columnId: z.string().uuid().optional()`. Removing or renaming `status` breaks every existing caller.
 - [ ] **Step 2:** `GET /api/tasks` gains an optional `columnId` filter; the existing `status` filter now maps through `kindForStatus` and filters on the joined kind.
 - [ ] **Step 3:** Column routes are thin wrappers over Task 3's service. `DELETE` takes `{ mode, targetColumnId? }` in the body and returns the service's `{ ok, reason, affected }` — a refusal is a 409 with `reason` as `statusMessage`, not a 500.
@@ -411,7 +425,18 @@ Resolution helper used by create/update: if `columnId` is given use it; else if 
 
 ### Task 6: Compat regression suite
 
-**Files:** Modify `server/lib/agent/tools.ts` (3 schemas), `server/lib/agent/context.ts`, `server/services/home.ts`. Create `test/tasks-compat.db.test.ts`.
+**Files:** Modify `server/lib/agent/tools.ts` (3 schemas), `server/lib/agent/context.ts`, `server/services/home.ts`, **`server/services/tasks.ts` (the summary projection — see below)**. Create `test/tasks-compat.db.test.ts`.
+
+**Do not skip the summary projection.** `listTasksSummary`, `countTasks`, `toTaskSummaryDTO` and
+`listTasks`'s status filter still read/filter `tasks.status` **directly, with no join**. That is
+accurate today only because Task 4 dual-writes it — and **Task 10 drops the column**, at which point
+`TASK_SUMMARY_COLUMNS`' `status: tasks.status` and `eq(tasks.status, filter.status)` become compile
+errors. Worse, a compat test like `search_tasks(status:'in_progress')` **passes today via the
+dual-write without anyone touching these functions**, so a green suite does not prove the join
+exists. Convert them to the same join pattern Task 4 established, and add a test that would fail if
+they still read the shadow column — the technique is already in
+`test/tasks-columns.db.test.ts`: corrupt `tasks.status` via raw SQL and assert the read still
+returns the column-derived value.
 
 **This is the highest-risk task in the cycle.** Your Claude Code sessions call these tools continuously; a break here looks like an agent problem, not a board problem, and could go unnoticed for days.
 
