@@ -43,6 +43,7 @@ function toDTO(r: typeof tasks.$inferSelect): TaskDTO {
     title: r.title,
     description: r.description,
     status: r.status as TaskStatus,
+    columnId: r.columnId,
     priority: r.priority as TaskPriority,
     dueDate: r.dueDate ? r.dueDate.toISOString() : null,
     project: r.project ?? null,

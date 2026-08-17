@@ -6,6 +6,7 @@ export interface TaskDTO {
   title: string
   description: string
   status: TaskStatus
+  columnId: string
   priority: TaskPriority
   dueDate: string | null
   project: string | null
