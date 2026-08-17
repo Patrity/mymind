@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS } from '../app/utils/live-dispatch'
+import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS, REVIEW_DEBOUNCE_MS } from '../app/utils/live-dispatch'
 import type { LiveEvent } from '../shared/types/live'
 
 function fakeClient() {
@@ -41,21 +41,13 @@ describe('dispatchLiveEvent', () => {
     expect(c.calls).toContainEqual([{ queryKey: ['memory', 'count'] }])
   })
 
+  // A real review_queue decision is a single user-driven action (the actor who just
+  // clicked Approve/Reject), not cron-bursty — this stays immediate, unlike the debounced
+  // memory->review invalidation below.
   it('review events also invalidate the badge count', () => {
     const c = fakeClient()
     dispatchLiveEvent(c as never, ev({ resource: 'review', id: 'r-1' }))
     expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
-  })
-
-  // task-13: unreviewed memories are folded into the single /review feed, so a memory
-  // update (e.g. marking one reviewed) must also refresh the review badge + list —
-  // otherwise a second tab's Review badge/queue would go stale after a Mark-reviewed
-  // click on a `memory-unreviewed` row.
-  it('memory events also invalidate the review badge and list', () => {
-    const c = fakeClient()
-    dispatchLiveEvent(c as never, ev({ resource: 'memory', id: 'm-1' }))
-    expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
-    expect(c.calls).toContainEqual([{ queryKey: ['review', 'list'] }])
   })
 })
 
@@ -118,6 +110,68 @@ describe('dispatchLiveEvent — galaxy graph invalidation', () => {
     // The per-resource detail/list invalidations are NOT debounced — one pair per event.
     const memoryDetailCalls = invalidateQueries.mock.calls.filter(c => JSON.stringify(c[0]!.queryKey) === JSON.stringify(['memory', 'm-1']))
     expect(memoryDetailCalls).toHaveLength(1)
+  })
+})
+
+describe('dispatchLiveEvent — memory -> review badge/list invalidation (debounced)', () => {
+  // task-13: unreviewed memories are folded into the single /review feed, so a memory
+  // update (e.g. marking one reviewed) must also refresh the review badge + list —
+  // otherwise a second tab's Review badge/queue would go stale after a Mark-reviewed
+  // click on a `memory-unreviewed` row. Code-review finding (Important): `memory` events
+  // fire from several bursty sites (memory-resolve.ts, triage.ts, incl. the enrich-memories
+  // cron's resolve path emitting several per tick) — mirrors the ['graph']/['home']
+  // debounce above so a burst collapses into ONE review-badge refetch instead of one
+  // countReviewPending() round-trip per event.
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('invalidates the review badge + list after the debounce window, not immediately', () => {
+    const invalidateQueries = vi.fn()
+    dispatchLiveEvent({ invalidateQueries }, { v: 1, resource: 'memory', action: 'updated', id: 'm-1', at: 0 })
+
+    const keysNow = invalidateQueries.mock.calls.map(c => JSON.stringify(c[0]!.queryKey))
+    expect(keysNow).not.toContain(JSON.stringify(['review', 'count']))
+    expect(keysNow).not.toContain(JSON.stringify(['review', 'list']))
+
+    vi.advanceTimersByTime(REVIEW_DEBOUNCE_MS)
+
+    const keysAfter = invalidateQueries.mock.calls.map(c => JSON.stringify(c[0]!.queryKey))
+    expect(keysAfter).toContain(JSON.stringify(['review', 'count']))
+    expect(keysAfter).toContain(JSON.stringify(['review', 'list']))
+  })
+
+  it('collapses a burst of memory events into ONE review-badge/list invalidation', () => {
+    const invalidateQueries = vi.fn()
+    const client = { invalidateQueries }
+
+    // Simulate an enrich-memories-cron-style burst of memory events within the window.
+    for (let i = 0; i < 5; i++) {
+      dispatchLiveEvent(client, { v: 1, resource: 'memory', action: 'updated', id: `m-${i}`, at: 0 })
+      vi.advanceTimersByTime(REVIEW_DEBOUNCE_MS / 2)
+    }
+
+    const reviewCallsSoFar = invalidateQueries.mock.calls.filter(c => JSON.stringify(c[0]!.queryKey) === JSON.stringify(['review', 'count']))
+    expect(reviewCallsSoFar).toHaveLength(0) // still within the (re-armed) debounce window
+
+    vi.advanceTimersByTime(REVIEW_DEBOUNCE_MS)
+
+    const reviewCountCalls = invalidateQueries.mock.calls.filter(c => JSON.stringify(c[0]!.queryKey) === JSON.stringify(['review', 'count']))
+    const reviewListCalls = invalidateQueries.mock.calls.filter(c => JSON.stringify(c[0]!.queryKey) === JSON.stringify(['review', 'list']))
+    expect(reviewCountCalls).toHaveLength(1)
+    expect(reviewListCalls).toHaveLength(1)
+
+    // The per-event memory detail/list invalidations are NOT debounced — one pair per event.
+    const memoryDetailCalls = invalidateQueries.mock.calls.filter(c => JSON.stringify(c[0]!.queryKey) === JSON.stringify(['memory', 'm-0']))
+    expect(memoryDetailCalls).toHaveLength(1)
+  })
+
+  it('does not invalidate the review keys for an unrelated resource', () => {
+    const invalidateQueries = vi.fn()
+    dispatchLiveEvent({ invalidateQueries }, { v: 1, resource: 'task', action: 'updated', id: 't-1', at: 0 })
+    vi.advanceTimersByTime(REVIEW_DEBOUNCE_MS)
+    const keys = invalidateQueries.mock.calls.map(c => JSON.stringify(c[0]!.queryKey))
+    expect(keys).not.toContain(JSON.stringify(['review', 'count']))
+    expect(keys).not.toContain(JSON.stringify(['review', 'list']))
   })
 })
 

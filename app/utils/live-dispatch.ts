@@ -31,12 +31,30 @@ const debouncedInvalidateHome = useDebounceFn(
 )
 const invalidateHome = (c: Invalidator) => { void debouncedInvalidateHome(c) }
 
+// Unreviewed memories are folded into the single `/review` feed (task-13) — a memory
+// update can change the review badge/list too. `memory` events fire from several sites
+// (memory-resolve.ts, triage.ts) including the enrich-memories cron's resolve path, which
+// emits several per tick — the same burst shape ['graph']/['home'] above exist to absorb.
+// Debounced for the same reason: ['review','count'] is always mounted (the sidebar badge),
+// so without this a burst re-runs countReviewPending()'s two COUNT queries once per event
+// instead of once per burst.
+export const REVIEW_DEBOUNCE_MS = 700
+const debouncedInvalidateReview = useDebounceFn(
+  (c: Invalidator) => {
+    c.invalidateQueries({ queryKey: ['review', 'count'] })
+    c.invalidateQueries({ queryKey: ['review', 'list'] })
+  },
+  REVIEW_DEBOUNCE_MS
+)
+const invalidateReview = (c: Invalidator) => { void debouncedInvalidateReview(c) }
+
 // Per-resource override hook. Default behaviour (invalidate detail + list) covers
 // every resource today; add an entry here only when a resource needs extra keys.
 const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => void>> = {
-  // Unreviewed memories are folded into the single `/review` feed (task-13) — a
-  // memory update (e.g. marking one reviewed) can change the review badge/list too.
-  memory: (c) => { c.invalidateQueries({ queryKey: ['memory', 'count'] }); c.invalidateQueries({ queryKey: ['review', 'count'] }); c.invalidateQueries({ queryKey: ['review', 'list'] }); invalidateGraph(c); invalidateHome(c) },
+  memory: (c) => { c.invalidateQueries({ queryKey: ['memory', 'count'] }); invalidateReview(c); invalidateGraph(c); invalidateHome(c) },
+  // A real review_queue decision (approve/reject/triage) is a single user-driven action,
+  // not cron-bursty — keep this one immediate so the badge updates the instant the actor
+  // who just clicked sees feedback.
   review: (c) => { c.invalidateQueries({ queryKey: ['review', 'count'] }); invalidateHome(c) },
   activity: (c) => { c.invalidateQueries({ queryKey: ['activity', 'count'] }); invalidateHome(c) },
   // A skill is a document (type='skill') — a background agent write needs the

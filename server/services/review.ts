@@ -1,4 +1,4 @@
-import { eq, and, isNull, count } from 'drizzle-orm'
+import { eq, and, isNull, count, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { reviewQueue, documents, memories } from '../db/schema'
 import type { MemoryScope } from '../../shared/types/memory'
@@ -47,8 +47,32 @@ export interface MemoryUnreviewedFeedItem {
 
 export type ReviewFeedItem = ReviewQueueFeedItem | MemoryUnreviewedFeedItem
 
-/** Shared "still needs a human" filter for unreviewed memories: live + not yet reviewed. */
-const unreviewedLive = () => and(isNull(memories.archivedAt), isNull(memories.reviewedAt))
+/**
+ * Shared "still needs a human" filter for unreviewed memories: live, not yet reviewed, AND
+ * not already the subject of a PENDING memory-supersede/memory-contradict decision.
+ *
+ * A conflict row's `proposed.newId` (server/services/memory-resolve.ts's `review-supersede`/
+ * `review-contradict` branches) points at the newly-inserted memory — that memory's OWN
+ * `reviewed_at` comes from a DIFFERENT gate (`shouldAutoReview(confidence, threshold)` in
+ * `insertFresh`), so a low-confidence new memory (routine at cycle 24's 0.6 parse floor,
+ * below the 0.75 auto-review threshold) can have `reviewed_at IS NULL` even though its
+ * conflict is already a real, separately-actionable review_queue row. Without this
+ * exclusion the same memory surfaces TWICE in /review — once as the conflict card, once as
+ * a synthetic memory-unreviewed card keyed on the same memories.id — double-counting the
+ * badge, and "Mark reviewed" on the synthetic card would stamp reviewed_at while the
+ * sibling conflict decision sits unresolved in the same feed. Both listReviewFeed and
+ * countReviewPending call this one function, so the exclusion covers both.
+ */
+const unreviewedLive = () => and(
+  isNull(memories.archivedAt),
+  isNull(memories.reviewedAt),
+  sql`not exists (
+    select 1 from ${reviewQueue} rq
+    where rq.status = 'pending'
+      and rq.kind in ('memory-supersede', 'memory-contradict')
+      and rq.proposed->>'newId' = ${memories.id}::text
+  )`
+)
 
 /** The merged, newest-first feed backing `GET /api/review`. */
 export async function listReviewFeed(): Promise<ReviewFeedItem[]> {

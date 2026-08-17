@@ -10,9 +10,20 @@
 // discriminator; a synthetic item's id IS the memories.id (never a review_queue.id); marking
 // the memory reviewed removes ONLY that synthetic item (a sibling review_queue row is
 // untouched); and an archived-but-unreviewed memory never surfaces (it's not live).
+//
+// Code-review finding (Important): a memory-supersede/memory-contradict review_queue row's
+// `proposed.newId` points at the NEW memory (memory-resolve.ts's review-supersede/
+// review-contradict branches) — but that memory's own `reviewed_at` comes from a DIFFERENT
+// gate (shouldAutoReview(confidence, threshold) in insertFresh). A low-confidence new memory
+// (routine at cycle 24's 0.6 parse floor, below the 0.75 auto-review threshold) can have
+// reviewed_at IS NULL while its conflict is already a real, separately-actionable
+// review_queue row — so unreviewedLive() must exclude it, or it surfaces TWICE (once as the
+// conflict card, once as a synthetic memory-unreviewed card on the same memories.id) and
+// "Mark reviewed" on the synthetic card would falsely resolve an unresolved conflict.
 process.loadEnvFile('.env')
 import { describe, it, expect, vi } from 'vitest'
 import { sql, eq } from 'drizzle-orm'
+import { randomUUID } from 'node:crypto'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
@@ -43,6 +54,22 @@ async function insertUnreviewedMemory(content: string) {
     values (${content}, encode(sha256(convert_to(${content}, 'UTF8')), 'hex'), '{}', null, 'user', 0.5)
     returning id, content, created_at
   `).then(r => r.rows)
+  return row!
+}
+
+/**
+ * Insert a pending memory-supersede/memory-contradict row shaped like
+ * memory-resolve.ts's `proposed` (newId/existingId/confidence/reasoning/*Content) —
+ * mirrors the real writer at server/services/memory-resolve.ts:168-184.
+ */
+async function insertConflictQueueRow(kind: 'memory-supersede' | 'memory-contradict', newId: string) {
+  const db = useDb()
+  const [row] = await db.insert(reviewQueue).values({
+    docId: sql`gen_random_uuid()` as unknown as string,
+    kind,
+    proposed: { newId, existingId: randomUUID(), confidence: 0.9, reasoning: 'probe', newContent: 'new', existingContent: 'existing' },
+    status: 'pending'
+  }).returning()
   return row!
 }
 
@@ -120,4 +147,40 @@ describe('listReviewFeed / countReviewPending (the single /review surface)', () 
       await db.delete(memories).where(eq(memories.id, memRow.id))
     }
   })
+
+  // Code-review finding (Important, addressed post-initial-review): a new memory whose own
+  // confidence fell below the auto-review threshold has reviewed_at IS NULL EVEN THOUGH it
+  // already has a pending memory-supersede/memory-contradict decision pointed at it via
+  // proposed.newId — it must not also surface as a synthetic memory-unreviewed item.
+  it.each(['memory-supersede', 'memory-contradict'] as const)(
+    'does not double-list or double-count a memory with a pending %s decision (its own reviewed_at is null)',
+    async (kind) => {
+      const db = useDb()
+      const before = await countReviewPending()
+
+      const memRow = await insertUnreviewedMemory(`${MARK} ${kind} ${Date.now()}`)
+      const conflictRow = await insertConflictQueueRow(kind, memRow.id)
+
+      try {
+        const feed = await listReviewFeed()
+
+        // Exactly ONE item carries this memory's identity in the feed — the real conflict
+        // card (id === conflictRow.id) — never a second synthetic memory-unreviewed card
+        // keyed on memRow.id.
+        const itemsForThisMemory = feed.filter(i => i.id === memRow.id || i.id === conflictRow.id)
+        expect(itemsForThisMemory).toHaveLength(1)
+        expect(itemsForThisMemory[0]!.id).toBe(conflictRow.id)
+        expect(itemsForThisMemory[0]!.kind).toBe(kind)
+
+        // The synthetic memory-unreviewed item must not exist at all for this memory.
+        expect(feed.find(i => i.id === memRow.id && i.kind === 'memory-unreviewed')).toBeUndefined()
+
+        // Counted once (the conflict row), not twice.
+        expect(await countReviewPending()).toBe(before + 1)
+      } finally {
+        await db.delete(reviewQueue).where(eq(reviewQueue.id, conflictRow.id))
+        await db.delete(memories).where(eq(memories.id, memRow.id))
+      }
+    }
+  )
 })
