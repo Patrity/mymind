@@ -2,12 +2,14 @@
 title: Quick Capture
 status: shipped
 cycle: 3
-updated: 2026-06-03
+updated: 2026-08-16
+mymind_id: b831487e-6419-4fa7-96ed-c9e655be5db1
+mymind_hash: 09bf134e43b480748f564350b3c41ea3c6e0ac6b133b27941b65c3cb3a6989b0
 ---
 
 # Quick Capture
 
-The low-friction inbox: anything captured lands in `/input` and rides the cycle-2 enrichment pipeline (auto-embed + LLM frontmatter proposals into the review queue).
+The low-friction inbox: anything captured lands in `/input` and is organized afterward, out of band, by **capture triage** (cycle 57) — see "Why /input" below and [triage.md](triage.md).
 
 ## UI — `app/pages/capture.vue`
 **Two** tabs (sidebar nav "Capture", `i-lucide-plus`, top of menu):
@@ -29,4 +31,13 @@ Capture is not the only inlet, which is why triage has a sweeper and not just a 
 The Image tab accepts input three ways: clipboard **paste**, **camera** capture (`CameraCapture.vue` via VueUse `useUserMedia`; works desktop + mobile), and **drag-drop** — all feeding the same upload handler. (The Transcribe tab this originally also covered was removed in `8e96834`; see above.)
 
 ## Why /input
-Everything dropped here is automatically embedded and gets LLM-proposed frontmatter (project/domain/type/tags + a destination path) into the review queue — so capture is fast and organization happens later via Approve. See [enrichment.md](enrichment.md).
+Everything dropped here is fast to write and gets organized later, out of band, by **capture
+triage** (cycle 57) rather than by the retired `enrich-input` frontmatter-proposal pipeline this
+section used to describe. Triage infers what a jot actually *is* — a task, a durable memory, a
+properly-renamed filed note, or an addition to a document that already covers the topic — and
+routes it there: confident results apply on their own, genuine uncertainty lands in `/review`.
+It fires immediately after `POST /api/capture/note` (fire-and-forget, so capture still returns
+at write speed) plus a cron sweeper backstop that also covers the other `/input` inlets listed
+above. All four confidence bars currently ship at `1.1` (above the max possible `1.0`), so
+**nothing auto-applies yet** — every capture lands in `/review` while thresholds are calibrated
+by hand. See [triage.md](triage.md) for the full pipeline, routing table, and actuators.

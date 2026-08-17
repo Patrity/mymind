@@ -4,7 +4,7 @@ status: shipped
 cycle: 26
 updated: 2026-08-16
 mymind_id: 541b04de-a9f9-4809-8001-50082fdafaa1
-mymind_hash: 2da8ca3a5e840492184577f9c83d8452aeb77b110419637fc25d4e5890e81b1a
+mymind_hash: af7795c1b173c6b1bb9bf69c9fbbccc17951df5a796ae59d5b73bcddcf8ac865
 ---
 
 # Document Spine
@@ -12,8 +12,25 @@ mymind_hash: 2da8ca3a5e840492184577f9c83d8452aeb77b110419637fc25d4e5890e81b1a
 The shared content core every feature is a view over: documents stored in Postgres with a hybrid path-tree + frontmatter model, browsed/edited in a split file-tree/editor UI, keyword-searchable, and publicly shareable.
 
 ## Data model — `documents` (`server/db/schema/documents.ts`)
-`id` uuid PK · `path` text (canonical tree location, e.g. `/input/x.md`; unique where `deleted_at is null`) · `title` · `content` · `language` (from `getLanguageFromPath`) · `frontmatter` jsonb · **promoted queryable columns** `project` text (denormalized slug) / `project_id` uuid FK → `projects.id` (nullable, indexed; migration 0021) / `domain` / `type` / `tags` text[] / `topic` ltree · `content_hash` · `is_public` + `public_slug` (unique) · `embedding` halfvec(2560) (**NULL until cycle 2**) · `created_at` / `updated_at` / `deleted_at` (soft delete).
-Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `project`, btree `project_id`, GIN trigram on `title` and `content`, GiST on `topic`.
+`id` uuid PK · `path` text (canonical tree location, e.g. `/input/x.md`; unique where `deleted_at is null`) · `title` · `content` · `language` (from `getLanguageFromPath`) · `frontmatter` jsonb · **promoted queryable columns** `project` text (denormalized slug) / `project_id` uuid FK → `projects.id` (nullable, indexed; migration 0021) / `domain` / `type` / `tags` text[] / `topic` ltree · `content_hash` · `is_public` + `public_slug` (unique) · `embedding` halfvec(2560) — **vestigial, see correction below** · `created_at` / `updated_at` / `deleted_at` (soft delete) · `triaged_at` (cycle 57, capture triage's idempotency claim — see [triage.md](triage.md)).
+Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `project`, btree `project_id`, GIN trigram on `title` and `content`, GiST on `topic`, btree `triaged_at`.
+
+> **Correction (2026-08-16, cycle 57) — `documents.embedding` is NOT the document vector; it
+> has never been written to.** This page previously said the column went "NULL until cycle 2"
+> and described it as the vector this table's rows carry. Both were wrong. The column's own
+> schema comment has read `// schema only in cycle 1; stays null` since cycle 1
+> (`server/db/schema/documents.ts:28`), no writer in this codebase has ever populated it, and a
+> live count on this dev box shows only a handful of legacy rows non-null out of thousands —
+> noise, not signal. **The real per-document vector lane lives in `chunks`**
+> (`sourceType = 'document'`, cycle 31's chunking work), joined back to `documents` by
+> `sourceId` — see `searchDocIds`'s vector lane in `server/services/documents.ts` and
+> `resolveAppendTarget` in `server/services/triage.ts`, which copies that exact join rather
+> than querying `documents.embedding`. This mistake was not cosmetic: cycle 57's own
+> implementation plan sketched a resolver against `documents.embedding` on the strength of this
+> page's old wording, which would have compiled, run, and silently degraded every append-target
+> resolution forever with no test catching it — caught only because Task 10's implementer
+> checked the live column instead of trusting the wiki. The `embedding` column itself stays in
+> the schema (untouched, still declared, still never written) — this note is the only change.
 
 **Project association (cycle 26):** a doc is associated with project X **iff** its `path` is under `/projects/<X-slug>/` (lowercase). The `project` slug and `project_id` are derived from the final path on every write — the path is the single source of truth. Three triggers: manual move into/out of `/projects/<slug>/`; setting `project=X` on a doc (which relocates it to `/projects/X/<basename>`); or the `/input` enrichment classifying a doc into a project (proposes a new path via the `review_queue → approve` flow). See [projects.md](projects.md) for full detail.
 
@@ -36,7 +53,12 @@ All document access goes through `server/services/documents.ts`: `listTree`, `ge
 Metadata (800ms debounce) follows the same explicit-id rule and is flushed on the same paths. Public read-only page: `app/pages/share/[slug].vue` (`layout: false`).
 
 ## Search
-**Hybrid (cycle 2):** `searchDocs` fuses a trigram lane (`ilike` + `similarity()`) and a vector cosine lane (`embedding <=> query::halfvec` over the HNSW index) via RRF, falling back to trigram-only if embeddings are unavailable. See [enrichment.md](enrichment.md).
+**Hybrid (cycle 2, vector lane moved in cycle 31):** `searchDocs`/`searchDocIds` fuse a trigram
+lane (`ilike` + `similarity()` directly on `documents.title`/`content`) and a vector cosine lane
+via RRF, falling back to trigram-only if embeddings are unavailable. **The vector lane queries
+`chunks.embedding` joined to `documents` on `sourceId`** (`chunks.sourceType = 'document'`), not
+`documents.embedding` — see the correction in the data model section above. See
+[enrichment.md](enrichment.md) for the embedding pipeline that actually populates `chunks`.
 
 ## Power-editor (cycle 9)
 - **Tree**: right-click `UContextMenu` (rename/move/share/delete) + drag-drop move between folders (native HTML5 DnD) + copy-public-link (full URL).
