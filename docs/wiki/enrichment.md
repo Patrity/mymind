@@ -2,7 +2,9 @@
 title: AI Enrichment + Review Queue
 status: shipped
 cycle: 2
-updated: 2026-06-17
+updated: 2026-08-16
+mymind_id: 32b3e56a-40ca-4286-a222-39b1bb6ec9a5
+mymind_hash: 521435a59a2a1b26833281ba3c49b5b23460f5f0cc43d143bff393fb8f9cf2cb
 ---
 
 # AI Enrichment + Review Queue
@@ -24,6 +26,7 @@ Auto-embeds documents and proposes frontmatter for `/input` docs via the local L
 - `review_queue` table: `id, doc_id, kind, proposed jsonb, status (pending|approved|rejected), created_at, resolved_at`.
 - API `server/api/review/*`: `GET /api/review` (pending + doc path), `GET /api/review/count`, `POST /api/review/[id]/approve` (applies proposal via `updateDoc` + optional `moveDoc` out of `/input`, then `approved`), `POST /api/review/[id]/reject`.
 - UI `app/pages/review.vue` + sidebar "Review" nav item with a reactive pending-count badge.
+- **capture-triage task 13 — `/review` is the single approval surface.** `server/services/review.ts` (`listReviewFeed`/`countReviewPending`, called by the two GET endpoints above) merges real `review_queue` rows with **synthetic `memory-unreviewed` items** sourced from `memories` where `reviewed_at IS NULL` (live only). A synthetic item's `id` is a `memories.id`, never a `review_queue.id` — `docId`/`docPath` are `null`, and approving it calls `reviewMemory(id)` (`useMemories()`'s `review` action) directly, not `POST /api/review/[id]/approve` (which 404s on an id `review_queue` doesn't have). `GET /api/review/count`'s `pending` sums both sources — it's the sidebar's only badge now; `/memories` lost its separate "Mark reviewed" button and unreviewed-count badge (kept the "Unreviewed only" filter as a view). See [memory.md](memory.md)'s UI section.
 
 ## Auth UX (cycle-1 fast-follow)
 `app/pages/login.vue` (UAuthForm) + `app/middleware/auth.global.ts` (client-only guard; redirects anon to `/login`, exempts `/login` and `/share/**`) + `app/lib/auth-client.ts` (better-auth Vue client).

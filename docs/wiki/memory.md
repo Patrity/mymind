@@ -2,7 +2,9 @@
 title: Memory System
 status: shipped
 cycle: 51
-updated: 2026-07-29
+updated: 2026-08-16
+mymind_id: c17a75f7-52f5-4024-8e2d-c0e173245096
+mymind_hash: bc0dac8f04891cd0e81d296528899805fd85e0ee98499d65400f7cb2a81860b2
 ---
 
 # Memory System
@@ -80,7 +82,16 @@ different memories, so the caller cannot know which row the gate will judge; it 
 > archives is `supersede`, which is why the gate now covers it.
 
 ## UI — `app/pages/memories.vue`
-Search (hybrid), scope filter, unreviewed toggle, cards (content/scope/tags/source). Search results show a **relevance** badge; list mode shows **confidence**. Mark reviewed (the human gate; strips the `unreviewed` chip) + Archive. **Provenance (cycle 13):** each card surfaces its source-session link, the verbatim `quote` + `reasoning` from its evidence, and relation badges (→ supersedes / ← superseded-by / ⚠ contradicts). `/review` renders memory-conflict items (New vs Existing + Accept / Keep-both). Sidebar "Memory" nav with unreviewed badge. **Cycle 24:** cards show the **source date** (`sourceDate ?? createdAt`, so imported history reads backdated, not "today") + a **project** badge, with a **project filter** (`USelectMenu`) alongside scope/tags.
+Search (hybrid), scope filter, unreviewed toggle, cards (content/scope/tags/source). Search results show a **relevance** badge; list mode shows **confidence**. Archive only — see below for where the human review gate moved. **Provenance (cycle 13):** each card surfaces its source-session link, the verbatim `quote` + `reasoning` from its evidence, and relation badges (→ supersedes / ← superseded-by / ⚠ contradicts). `/review` renders memory-conflict items (New vs Existing + Accept / Keep-both). **Cycle 24:** cards show the **source date** (`sourceDate ?? createdAt`, so imported history reads backdated, not "today") + a **project** badge, with a **project filter** (`USelectMenu`) alongside scope/tags.
+
+**capture-triage task 13 — the human review gate ("Mark reviewed") moved to `/review`.**
+`/memories`' "Unreviewed only" toggle is now a **filter/view only**; the button that strips
+the `unreviewed` tag and sets `reviewed_at` was removed from this page. `/review` renders
+every unreviewed memory as a `memory-unreviewed` card (content/scope/tags/confidence) with
+its own "Mark reviewed" action, wired to the same `reviewMemory(id)` composable call this
+page used to make. `GET /api/review/count`'s `pending` now includes unreviewed memories, so
+the sidebar's single "Review" badge covers them — the separate "Memory" nav badge is gone.
+See [enrichment.md](enrichment.md)'s review-queue section for the merged-feed mechanics.
 
 > The 457 imported bridget sessions (cycle 13 phase 3) feed this enrichment locally — no bridget memories were imported; they're regenerated here with provenance + the relationship graph.
 
