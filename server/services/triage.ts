@@ -1,4 +1,5 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, ne, sql } from 'drizzle-orm'
+import { nanoid } from 'nanoid'
 import { useDb } from '../db'
 import { triageActions, memories, documents, chunks, reviewQueue, projects as projectsTable } from '../db/schema'
 import { createTask, deleteTask } from './tasks'
@@ -9,6 +10,8 @@ import { registerUndo } from '../lib/agent/undo'
 import { publishChange } from '../utils/live-bus'
 import { classify } from '../lib/ai/triage'
 import { route } from '../lib/triage/route'
+import { PROJECTS_ROOT } from '../lib/projects/doc-path'
+import { slugify } from '../../shared/utils/slugify'
 import type { TriageAction, TriageOutcome } from '../../shared/types/triage'
 import type { DocumentDTO } from '../../shared/types/documents'
 
@@ -97,10 +100,46 @@ export async function applyNote(docId: string, action: TriageAction, autoApplied
     throw new Error(`triage: document ${docId} not found`)
   }
   const originalPath = doc.path
+  const originalTitle = doc.title
 
-  if (action.title) await updateDoc(docId, { title: action.title })
-  // moveDoc, not a direct column write — project/project_id derive from path.
-  if (action.path && action.path !== originalPath) await moveDoc(docId, action.path)
+  const willRetitle = !!action.title
+  const requestsMove = !!action.path && action.path !== originalPath
+  // Final-review Finding B: a caller (e.g. applyAppend's degrade branch, pre-fix) could reach
+  // this actuator with neither a title nor a path — no mutation at all — yet the old code
+  // still wrote a triage_actions row and returned a successful AppliedAction while the
+  // document sat untouched. Refuse up front so that class of silent no-op can never be
+  // counted as applied by any caller.
+  if (!willRetitle && !requestsMove) {
+    throw new Error(`triage: note action for document ${docId} would change nothing (no title, no path) — refusing to record a no-op as applied`)
+  }
+
+  if (willRetitle) await updateDoc(docId, { title: action.title })
+
+  // Final-review Finding C: documents_path_live_uidx is unique on live paths, so moveDoc can
+  // throw 23505 when the model's proposed path is already taken (plausible — it derives
+  // filenames from content). Catching it here — mirroring approveEnrichment's identical
+  // moveDoc call in server/api/review/kinds.ts ("path taken — leave in place") — means a
+  // collision leaves the document coherent: the title write above (if any) still lands, and
+  // recordAction below still runs, so originalTitle is captured and the change stays
+  // revertible, instead of the pre-fix behaviour where the throw propagated straight out of
+  // this function BEFORE recordAction ever ran — no audit row, no way to recover the
+  // pre-triage title, and re-approving the same proposal would collide and throw forever.
+  let moved = false
+  if (requestsMove) {
+    try {
+      await moveDoc(docId, action.path!)
+      moved = true
+    } catch (err) {
+      console.warn(`[triage] note move to ${action.path} collided for ${docId}, leaving in place:`, err)
+    }
+  }
+
+  // If the only requested change was the move and it collided, nothing actually happened —
+  // same silent-no-op class the guard above exists to close, just discovered at runtime
+  // instead of upfront.
+  if (!willRetitle && !moved) {
+    throw new Error(`triage: note action for document ${docId} could not move to ${action.path} (path taken) and no title change was requested — refusing to record a no-op as applied`)
+  }
 
   // originalPath + originalTitle ride in the payload because the DURABLE reversal path
   // (Task 12) has no access to this closure — registerUndo's state dies with the process,
@@ -109,7 +148,7 @@ export async function applyNote(docId: string, action: TriageAction, autoApplied
   // '' or dropped) because "this document had no title before triage" is a real state
   // revertTriageAction must be able to round-trip.
   const actionRowId = await recordAction({
-    docId, action: { ...action, originalPath, originalTitle: doc.title } as TriageAction, entityType: 'document',
+    docId, action: { ...action, originalPath, originalTitle } as TriageAction, entityType: 'document',
     entityId: docId, autoApplied
   })
 
@@ -186,7 +225,7 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
   if (!doc) throw new Error(`triage: document ${docId} not found`)
 
   const targetId = action.targetDocId ?? await resolveAppendTarget(doc.content)
-  if (!targetId) return applyNote(docId, { ...action, kind: 'note' }, autoApplied)
+  if (!targetId) return applyNote(docId, degradeAppendToNote(action, doc), autoApplied)
 
   // Re-validate even a targetDocId the CALLER supplied directly — resolveAppendTarget's
   // own SQL guard only protects its own output. Today the model never emits targetDocId
@@ -194,7 +233,7 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
   // but "safe only because an upstream step cooperates" isn't structural safety, and this
   // is the actuator that edits a document the user never opened.
   const target = await getDoc(targetId)
-  if (!target || !isValidAppendTarget(target)) return applyNote(docId, { ...action, kind: 'note' }, autoApplied)
+  if (!target || !isValidAppendTarget(target)) return applyNote(docId, degradeAppendToNote(action, doc), autoApplied)
 
   const previousContent = target.content
   const stamp = new Date().toISOString().slice(0, 10)
@@ -286,6 +325,35 @@ function isValidAppendTarget(doc: DocumentDTO): boolean {
   return doc.type !== 'skill' && !doc.path.startsWith('/input/')
 }
 
+/** First non-empty line, heading markers/bullets stripped, clipped — a readable fallback title. */
+function deriveTitleFromContent(content: string): string {
+  const firstLine = content.split('\n').map(l => l.trim()).find(l => l.length > 0) ?? ''
+  const cleaned = firstLine.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').slice(0, 80).trim()
+  return cleaned || 'Untitled note'
+}
+
+/**
+ * Turns a degraded append action into a REAL note action — one that actually mutates
+ * something when it reaches applyNote.
+ *
+ * The classifier's append system prompt (server/lib/ai/triage.ts) only ever asks the model
+ * for "content" on an append action — never title or path. Before this fix, a degraded
+ * append reached applyNote as `{ ...action, kind: 'note' }` unchanged: no title, no path,
+ * which is a no-op that still recorded a "successful" applied action while the document sat
+ * untouched under its random /input filename. This derives both: a title from
+ * action.title / the courier's own title / its content, and a destination path that moves
+ * the document OUT of /input — under the doc's proposed project if one was given, mirroring
+ * targetPathForAssign's /projects/<slug>/<file> convention, or /notes/<file> otherwise,
+ * matching this file's own test fixtures' convention for a plain filed note.
+ */
+function degradeAppendToNote(action: TriageAction, doc: DocumentDTO): TriageAction {
+  const title = action.title ?? doc.title ?? deriveTitleFromContent(action.content ?? doc.content)
+  if (action.path) return { ...action, kind: 'note', title }
+  const filename = `${slugify(title) || 'note'}-${nanoid(8)}.md`
+  const path = action.project ? `${PROJECTS_ROOT}/${action.project}/${filename}` : `/notes/${filename}`
+  return { ...action, kind: 'note', title, path }
+}
+
 /** Conditional claim. Returns false if another caller already owns this document. */
 async function claim(docId: string): Promise<boolean> {
   const rows = await useDb().update(documents)
@@ -293,6 +361,29 @@ async function claim(docId: string): Promise<boolean> {
     .where(and(eq(documents.id, docId), isNull(documents.triagedAt)))
     .returning({ id: documents.id })
   return rows.length > 0
+}
+
+/**
+ * review_queue_one_pending_per_doc (migration 0005) is a partial unique index on doc_id
+ * WHERE status='pending' — across ALL kinds, not just 'triage'. If a document already has
+ * a pending review row from ANOTHER flow (e.g. a leftover `enrichment` row from the retired
+ * enrich-input cron), a triage proposal that needs to queue would silently lose the INSERT
+ * race via onConflictDoNothing. Checked BEFORE claim() so a document in this state is never
+ * stamped triaged_at — it stays eligible and gets triaged properly on a later sweep, once
+ * the blocking row is resolved. See the cycle-57 final review, Finding A.
+ *
+ * Deliberately excludes kind='triage': a pending triage row can ONLY exist on a document
+ * this same function already claimed (the insert further down only ever runs after claim()
+ * succeeds), so a doc with one always already has triaged_at set — claim() below already
+ * reports that case as 'already-triaged', and this guard doesn't need to (and must not,
+ * or two concurrent calls would race this SELECT against the winner's own insert and
+ * misreport 'review-pending' instead of the existing 'already-triaged' contract).
+ */
+async function hasPendingReview(docId: string): Promise<boolean> {
+  const [row] = await useDb().select({ id: reviewQueue.id }).from(reviewQueue)
+    .where(and(eq(reviewQueue.docId, docId), eq(reviewQueue.status, 'pending'), ne(reviewQueue.kind, 'triage')))
+    .limit(1)
+  return !!row
 }
 
 const APPLY: Record<TriageAction['kind'], (docId: string, a: TriageAction) => Promise<AppliedAction>> = {
@@ -303,6 +394,12 @@ const APPLY: Record<TriageAction['kind'], (docId: string, a: TriageAction) => Pr
 }
 
 export async function triageCapture(docId: string): Promise<TriageOutcome> {
+  // Checked BEFORE claim() — see hasPendingReview's doc comment. Without this, claim()
+  // would stamp triaged_at, the model call would run, and (if the proposal needed to queue)
+  // the review_queue insert would silently no-op against the existing pending row — a
+  // terminal, unrecoverable state for the document since triaged_at is never cleared.
+  if (await hasPendingReview(docId)) return { docId, applied: [], queued: false, skipped: 'review-pending' }
+
   // Claim BEFORE the model call so a racing caller cannot also pay for one.
   if (!await claim(docId)) return { docId, applied: [], queued: false, skipped: 'already-triaged' }
 
@@ -343,13 +440,23 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
   }
 
   if (queued.length > 0) {
-    // ONE row per document — review_queue_one_pending_per_doc is a partial unique index.
-    await useDb().insert(reviewQueue).values({
+    // ONE row per document — review_queue_one_pending_per_doc is a partial unique index
+    // across ALL kinds. hasPendingReview above is the primary defense against colliding with
+    // an existing pending row; this is belt-and-braces for a race between that check and this
+    // insert — .returning() lets us tell a real insert apart from a silent onConflictDoNothing
+    // no-op instead of assuming success.
+    const [inserted] = await useDb().insert(reviewQueue).values({
       docId,
       kind: 'triage',
       proposed: { primary: proposal.primary, secondary: proposal.secondary,
                   reasoning: proposal.reasoning, queued, applied } as unknown as Record<string, unknown>
-    }).onConflictDoNothing()
+    }).onConflictDoNothing().returning({ id: reviewQueue.id })
+
+    if (!inserted) {
+      console.warn(`[triage] review_queue insert conflicted for ${docId} — a pending row already exists`)
+      return { docId, applied, queued: false, skipped: 'review-pending' }
+    }
+
     publishChange({ resource: 'review', action: 'created', id: docId })
   }
 

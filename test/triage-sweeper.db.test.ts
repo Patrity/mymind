@@ -156,6 +156,30 @@ describe('sweepUntriaged candidate query', () => {
   })
 })
 
+// Finding K (same root cause as Finding A in triage-idempotency.db.test.ts): a candidate
+// that already carries a pending review_queue row of another kind must be tallied as
+// SKIPPED, not TRIAGED — before the fix, triageCapture returned `{ queued: true }` with no
+// `skipped` field for this case (the insert silently no-opped via onConflictDoNothing), so
+// this loop's `if (out.skipped) skipped++ else triaged++` counted it as a triaged success
+// and recordJobSummary reported the sweep as clean.
+describe('sweepUntriaged pending-review guard', () => {
+  it('counts a doc with an existing pending review row as skipped, not triaged', async () => {
+    const doc = await jot()
+    await useDb().insert(reviewQueue).values({ docId: doc.id, kind: 'enrichment', proposed: { stub: true } })
+    try {
+      const result = await sweepUntriaged({ limit: 50 })
+      expect(result.skipped).toBeGreaterThanOrEqual(1)
+      expect((await docRow(doc.id))!.triagedAt).toBeNull()          // never claimed
+      const triageRows = await useDb().select().from(reviewQueue)
+        .where(and(eq(reviewQueue.docId, doc.id), eq(reviewQueue.kind, 'triage')))
+      expect(triageRows).toHaveLength(0)
+    } finally {
+      await useDb().delete(reviewQueue).where(eq(reviewQueue.docId, doc.id))
+      await deleteDoc(doc.id)
+    }
+  })
+})
+
 describe('sweepUntriaged error isolation', () => {
   // Reproduces the Task 9 review finding: before the fix, an uncaught throw from one
   // candidate propagated out of the `for` loop and aborted every candidate after it in that

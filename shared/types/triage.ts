@@ -27,5 +27,5 @@ export interface TriageOutcome {
   docId: string
   applied: TriageAction[]
   queued: boolean                         // true if a review_queue row was created
-  skipped?: 'already-triaged' | 'parse-failed'
+  skipped?: 'already-triaged' | 'parse-failed' | 'review-pending'
 }

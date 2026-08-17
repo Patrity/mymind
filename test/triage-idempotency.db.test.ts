@@ -39,7 +39,7 @@ import { createDoc, deleteDoc } from '../server/services/documents'
 import { deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
 import { reviewQueue, triageActions, documents } from '../server/db/schema'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 
 const jot = () => createDoc({ path: `/input/i-${Math.random().toString(36).slice(2, 10)}.md`, content: 'do a thing' })
 
@@ -140,6 +140,41 @@ describe('triageCapture queueing', () => {
       expect((await triageCapture(doc.id)).skipped).toBe('parse-failed')
       const [row] = await useDb().select().from(documents).where(eq(documents.id, doc.id))
       expect(row!.triagedAt).not.toBeNull()
+    } finally {
+      await cleanupTriaged(doc.id)
+    }
+  })
+})
+
+// Final-review Finding A: review_queue_one_pending_per_doc (migration 0005) is a partial
+// unique index on doc_id WHERE status='pending' ACROSS ALL KINDS, not just 'triage'. Before
+// this fix, a document that already carried a pending row of another kind (e.g. a leftover
+// `enrichment` row from the retired enrich-input cron) would still get claim()'d — stamping
+// triaged_at — classified, and routed to review, only for the INSERT to silently no-op via
+// onConflictDoNothing. Result: triaged_at set, no triage row, proposal discarded, and because
+// triaged_at is never cleared anywhere in this codebase, the document became terminal —
+// never re-swept. Measured in prod: both live /input docs (including the motivating
+// vpxm_harpS.md capture) carried exactly this leftover state.
+describe('triageCapture pending-review guard', () => {
+  it('does not claim or classify a doc that already has a pending review row of another kind', async () => {
+    const doc = await jot()
+    await useDb().insert(reviewQueue).values({ docId: doc.id, kind: 'enrichment', proposed: { stub: true } })
+    try {
+      const out = await triageCapture(doc.id)
+
+      expect(out.skipped).toBe('review-pending')
+      expect(out.queued).toBe(false)
+      expect(out.applied).toEqual([])
+      // Never even reached the model — proves the guard runs before claim(), not just
+      // before the insert.
+      expect(vi.mocked(classify)).not.toHaveBeenCalled()
+
+      const [row] = await useDb().select().from(documents).where(eq(documents.id, doc.id))
+      expect(row!.triagedAt).toBeNull()                 // NOT claimed — stays eligible for a later sweep
+
+      const triageRows = await useDb().select().from(reviewQueue)
+        .where(and(eq(reviewQueue.docId, doc.id), eq(reviewQueue.kind, 'triage')))
+      expect(triageRows).toHaveLength(0)                // no triage row was created (and none silently dropped)
     } finally {
       await cleanupTriaged(doc.id)
     }

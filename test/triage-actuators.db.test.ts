@@ -176,6 +176,66 @@ describe('applyNote', () => {
       await deleteDoc(doc.id)
     }
   })
+
+  // Final-review Finding B: a degraded append action (no title, no path — the classifier's
+  // append prompt never asks the model for either) used to reach this function unchanged and
+  // hit BOTH no-op guards (no title -> skip updateDoc, no path -> skip moveDoc), yet still
+  // wrote a triage_actions row and returned a successful AppliedAction. The document sat
+  // unchanged under its random /input filename, terminal (triaged_at set), while every
+  // caller — approveTriage's applied count, the toast, "recently applied" — reported success.
+  it('refuses to record a no-op action (no title, no path change)', async () => {
+    const doc = await jot('nothing to change')
+    try {
+      await expect(
+        applyNote(doc.id, { kind: 'note', confidence: 0.9 })
+      ).rejects.toThrow(/no mutation|no-op|no title|no path/i)
+
+      // Nothing should have happened: no audit row, document untouched at its original path.
+      const rows = await useDb().select().from(triageActions).where(eq(triageActions.docId, doc.id))
+      expect(rows).toHaveLength(0)
+      expect((await getDoc(doc.id))!.path).toBe(doc.path)
+    } finally {
+      await deleteDoc(doc.id)
+    }
+  })
+
+  // Final-review Finding C: documents_path_live_uidx is unique on live paths, so moveDoc
+  // throws 23505 when the model proposes a path that's already taken (plausible — it derives
+  // filenames from content). Before the fix, updateDoc(title) ran FIRST, then moveDoc threw
+  // straight out of this function before recordAction ever ran: the title was already
+  // overwritten live, no triage_actions row was written, and originalTitle was never captured
+  // anywhere — the pre-triage title became unrecoverable and re-approving the same proposal
+  // would collide and throw forever. approveEnrichment (server/api/review/kinds.ts) already
+  // handles the identical moveDoc collision with a try/catch; this mirrors that.
+  it('leaves the document coherent on a destination path collision (no half-written state)', async () => {
+    const doc = await jot('will collide on triage note apply')
+    await updateDoc(doc.id, { title: 'Pre-Triage Title' })
+    const target = uniqueNotePath('collide-on-apply')
+    // Squat the destination BEFORE calling applyNote, forcing moveDoc's 23505.
+    const squatter = await createDoc({ path: target, content: 'squatter' })
+    try {
+      const r = await applyNote(doc.id, { kind: 'note', confidence: 0.9, title: 'New Title', path: target })
+
+      // Never silently moved into the squatted path.
+      const after = await getDoc(doc.id)
+      expect(after!.path).toBe(doc.path)
+
+      // Coherent: an audit row exists either way, and whichever of the two acceptable
+      // outcomes happened (title left alone, or title changed AND durably revertible), the
+      // pre-triage title is never simply lost.
+      const [row] = await useDb().select().from(triageActions).where(eq(triageActions.id, r.actionRowId))
+      expect(row).toBeDefined()
+      const payload = row!.payload as { originalTitle?: string | null }
+      if (after!.title === 'New Title') {
+        expect(payload.originalTitle).toBe('Pre-Triage Title')
+      } else {
+        expect(after!.title).toBe('Pre-Triage Title')
+      }
+    } finally {
+      await deleteDoc(squatter.id)
+      await deleteDoc(doc.id)
+    }
+  })
 })
 
 // The brief's applyMemory tests don't route through a deleteMemory helper (none exists —
@@ -391,9 +451,29 @@ describe('applyAppend', () => {
       expect(r.entityId).toBe(doc.id)                       // the doc survived as the artifact
       expect(await getDoc(doc.id)).not.toBeNull()
     } finally {
-      // applyNote (the degrade target) does not move or delete the doc when no path is
-      // given, so it stays live at its original /input/... path unless we clean it up here.
       await deleteDoc(doc.id)
+    }
+  })
+
+  // Final-review Finding B: the classifier's append system prompt (server/lib/ai/triage.ts)
+  // only ever asks the model for "content" on an append action — never title or path. Before
+  // the fix, a degraded append with neither reached applyNote unchanged, which is a no-op:
+  // no title to set, no path to move to, yet it still recorded a "successful" applied action
+  // while the document sat untouched under its random /input filename with triaged_at set —
+  // terminal, never re-swept. Because triageAppendSimilarityFloor is 0.75 cosine, this
+  // degrade path is the COMMON outcome for short jots, not an edge case.
+  it('degrading with NO title and NO resolvable target moves the document out of /input rather than reporting a silent no-op success', async () => {
+    const doc = await jot('a wandering thought that matches nothing in the corpus')
+    try {
+      const r = await applyAppend(doc.id, { kind: 'append', confidence: 0.9, content: 'A wandering thought.' })
+      const after = await getDoc(r.entityId!)
+      // Assert the document actually moved — not merely that applyAppend returned something.
+      expect(after).not.toBeNull()
+      expect(after!.path.startsWith('/input/')).toBe(false)
+      expect(after!.title).toBeTruthy()
+    } finally {
+      const leftover = await getDoc(doc.id)
+      if (leftover) await deleteDoc(leftover.id)
     }
   })
 
