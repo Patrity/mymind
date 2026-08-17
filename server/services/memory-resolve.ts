@@ -145,10 +145,32 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const lit = `[${vec.join(',')}]`
   const projectFilter = input.projectId ? eq(memories.projectId, input.projectId) : isNull(memories.projectId)
 
-  const near = await db.select({ id: memories.id, content: memories.content, evidence: memories.evidence }).from(memories)
+  const near = await db.select({
+    id: memories.id, content: memories.content, evidence: memories.evidence,
+    sim: sql<number>`1 - (${memories.embedding} <=> ${lit}::halfvec)`
+  }).from(memories)
     .where(and(live, eq(memories.scope, scope), projectFilter, isNotNull(memories.embedding)))
     .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`).limit(8)
   if (!near.length) { await insertFresh(input, vec, contentHash, threshold); return { action: 'insert' } }
+
+  // Mechanical duplicate short-circuit — task f80622b9.
+  //
+  // This path (the enrich-memories loop) never ran createMemory's dedupDecision, so after
+  // the exact-hash check above, whether a near-duplicate merged was entirely judgeRelations'
+  // opinion — with no similarity floor at all. Measured on prod: 95 same-partition pairs at
+  // or above 0.85 both survived, including near-verbatim restatements at 0.995/0.980/0.967,
+  // still accruing as of 2026-08-12. An LLM asked "are these the same?" about two phrasings
+  // of one fact says "no" often enough to matter.
+  //
+  // At or above the bar the answer is not a judgment call, so don't buy one: merge evidence
+  // and return. This runs BEFORE judgeRelations, so it also saves the call on the obvious
+  // cases. `near` is ordered by distance ascending, so near[0] is the nearest.
+  const dupBar = (config.memoryDuplicateThreshold as number) ?? 0.92
+  const nearest = near[0]
+  if (nearest && Number(nearest.sim) >= dupBar) {
+    await mergeEvidence(nearest.id, input.evidence ?? [], input.sourceDate ?? null)
+    return { action: 'duplicate', targetId: nearest.id }
+  }
 
   const verdicts = await judgeRelations(input.content, near.map(n => ({ id: n.id, content: n.content })))
   const challengerSessions = countEvidenceSessions((input.evidence ?? []) as unknown[])
