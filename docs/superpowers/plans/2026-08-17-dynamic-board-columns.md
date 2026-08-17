@@ -26,6 +26,11 @@ Every task's requirements implicitly include this section.
 - **`publishChange({ resource, action, id })` after every successful mutation.** `ResourceName` is singular and `app/utils/live-dispatch.ts` is keyed by that union.
 - **Singular/plural in user-facing copy must be explicit.** Never "1 tasks".
 - `test/home-endpoint.db.test.ts` has a known intermittent ambient-state failure. It is not yours.
+- **`tasks.status` is SHADOWED, not dropped, until Task 10.** Task 1 adds `column_id` and backfills
+  it but leaves `status` in place; the services dual-write both during the cycle. Every task
+  boundary therefore has green gates and is independently reviewable, and `status` stays a live
+  safety net through the risky consumer rewrites. Task 10 drops it once every consumer reads
+  columns. **Do not drop it early**, and do not "clean up" the dual-write before Task 10.
 
 ---
 
@@ -42,7 +47,7 @@ Every task's requirements implicitly include this section.
 - Tests: `test/status-kind.test.ts` (pure), `test/task-columns.db.test.ts`, `test/tasks-compat.db.test.ts`
 
 **Modified:**
-- `server/db/schema/tasks.ts` — `status` → `column_id`.
+- `server/db/schema/tasks.ts` — adds `column_id`; `status` shadowed until Task 10.
 - `server/services/tasks.ts` — resolve status→column; `completedAtFor` keyed on kind.
 - `server/lib/agent/tools.ts` (3 schemas), `server/lib/agent/context.ts`, `server/services/home.ts` (raw SQL).
 - `server/api/tasks/index.post.ts`, `[id].patch.ts`, `[id]/move.post.ts`, `index.get.ts`
@@ -57,7 +62,7 @@ Every task's requirements implicitly include this section.
 
 | # | Task | Gate |
 |---|---|---|
-| 1 | Schema + migration (table, seed, backfill, index swap) | `pnpm test` + manual SQL read |
+| 1 | Schema + migration (table, seed, backfill; `status` kept) | `pnpm test` + manual SQL read |
 | 2 | Shared types + pure status↔kind mapping | `pnpm test` |
 | 3 | Column service (CRUD, delete-with-cards, defaults) | `pnpm test:db` |
 | 4 | Tasks service on columns | `pnpm test:db` |
@@ -66,7 +71,8 @@ Every task's requirements implicitly include this section.
 | 7 | Board renders columns from data + colour tint | browser |
 | 8 | `useSortable` drag: cross-column + in-column reorder | browser |
 | 9 | Column management UI + `USelectMenu` swap | browser |
-| 10 | Wiki + handover + roadmap | — |
+| 10 | Final migration: drop `tasks.status` | `pnpm test:db` + manual SQL read |
+| 11 | Wiki + handover + roadmap | — |
 
 ---
 
@@ -112,7 +118,12 @@ export type TaskColumn = typeof taskColumns.$inferSelect
 
 - [ ] **Step 2: Swap `status` for `column_id` on tasks**
 
-In `server/db/schema/tasks.ts`: delete the `status` line, add `columnId: uuid('column_id').notNull().references(() => taskColumns.id)`, and in the index array replace `index('tasks_status_idx').on(t.status)` with `index('tasks_column_idx').on(t.columnId)`.
+In `server/db/schema/tasks.ts`: **keep the `status` line exactly as it is**, add
+`columnId: uuid('column_id').notNull().references(() => taskColumns.id)`, and **add**
+`index('tasks_column_idx').on(t.columnId)` alongside the existing `tasks_status_idx` (do not
+remove it).
+
+`status` is shadowed through this cycle and dropped in Task 10 — see Global Constraints.
 
 - [ ] **Step 3: Export from the barrel** — append `export * from './task-columns'` to `server/db/schema/index.ts`.
 
@@ -150,8 +161,9 @@ ALTER TABLE "tasks" ALTER COLUMN "column_id" SET NOT NULL;
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_column_id_fk"
   FOREIGN KEY ("column_id") REFERENCES "task_columns"("id");
 CREATE INDEX "tasks_column_idx" ON "tasks" ("column_id");
-DROP INDEX IF EXISTS "tasks_status_idx";
-ALTER TABLE "tasks" DROP COLUMN "status";
+-- NOTE: tasks.status and tasks_status_idx are deliberately LEFT IN PLACE. They are dropped in
+-- Task 10, once every consumer reads columns. Dropping here would leave the branch red for six
+-- tasks and throw away the rollback path during the riskiest part of the cycle.
 ```
 
 - [ ] **Step 5: Apply and verify the data survived**
@@ -168,7 +180,9 @@ Expected: four rows, and the per-column counts match what the board showed befor
 
 - [ ] **Step 6: Gates + commit**
 
-Run: `pnpm typecheck` (expect errors in files that reference `tasks.status` — those are Tasks 2-6's job; the SCHEMA must compile). Commit:
+Run: `pnpm typecheck && pnpm test`. **Both must be green.** Nothing yet reads `column_id`, and
+`status` is untouched, so this task is purely additive — if anything is red, the schema change is
+wrong, not merely incomplete. Commit:
 
 ```bash
 git add server/db/ && git commit -m "feat(tasks): task_columns table; tasks.status -> column_id"
@@ -346,6 +360,12 @@ export async function deleteColumn(
 
 **Interfaces:** `createTask` / `updateTask` keep accepting `status?: TaskStatus` **and** gain `columnId?: string`. `TaskDTO` carries both `columnId` and a derived `status` (from the column's kind, via `statusForKind`) so every existing consumer keeps reading `.status`.
 
+**Dual-write, deliberately.** Every write that sets `column_id` must ALSO write the matching
+`tasks.status` (`statusForKind(column.kind)`). The column is shadowed until Task 10, and the point
+of shadowing is that it stays a truthful rollback target — a stale `status` would make the safety
+net a lie. Reads should already prefer the column join; the shadow write exists for rollback, not
+for reading.
+
 - [ ] **Step 1: Failing tests** — `createTask({status:'todo'})` lands in the default open column; `createTask({columnId})` honours the explicit column; `columnId` wins if both are passed; `updateTask({status:'completed'})` moves the card to the default done column **and stamps `completedAt`**; moving into a *custom* column whose kind is `done` also stamps `completedAt` (this is the whole point — assert against a column you create named something else); moving out of a done column clears `completedAt`; `toDTO` returns a `status` derived from the column's kind.
 
 - [ ] **Step 2: Verify failure. Step 3: Implement.**
@@ -449,7 +469,32 @@ const TINT: Record<TaskColumnColor, string> = {
 
 ---
 
-### Task 10: Wiki + handover + roadmap
+### Task 10: Final migration — drop `tasks.status`
+
+**Files:** Modify `server/db/schema/tasks.ts`; new generated migration; remove the dual-write from `server/services/tasks.ts`.
+
+**Do this only when Tasks 1-9 are complete and green.** Until now `status` has been a shadow copy
+and a rollback target; this is the point of no return.
+
+- [ ] **Step 1: Prove nothing reads it.** `grep -rn "tasks.status\|\.status" server/ app/ shared/ --include='*.ts' --include='*.vue' | grep -v node_modules` and account for every hit. Hits on a `TaskDTO.status` field are fine (it is derived from the column's kind). A hit that reads or writes the DB column is a Task 4-6 gap — **fix it before proceeding, do not drop around it.**
+- [ ] **Step 2: Verify the shadow agreed with the column right up to the end** — this is the last moment the check is possible:
+
+```sql
+select count(*) from tasks t join task_columns c on c.id = t.column_id
+where t.deleted_at is null and t.status <> case c.kind
+  when 'open' then 'todo' when 'started' then 'in_progress'
+  when 'done' then 'completed' else 'blocked' end;
+```
+
+Expected: **0**. Any non-zero means the dual-write drifted and some consumer wrote one side only — stop and report BLOCKED with the offending rows.
+
+- [ ] **Step 3:** Remove `status` from `server/db/schema/tasks.ts` and its `tasks_status_idx`, remove the dual-write from the services, then `pnpm db:generate`. Read the generated SQL: it must contain only the index drop and the column drop.
+- [ ] **Step 4:** `pnpm db:migrate`, then `pnpm typecheck && pnpm test && pnpm test:db && pnpm build`. All green.
+- [ ] **Step 5:** Commit.
+
+---
+
+### Task 11: Wiki + handover + roadmap
 
 - [ ] **Step 1:** Rewrite the board/status sections of `docs/wiki/tasks-projects.md`: the column model, `kind` semantics, the compat mapping, colour, and the delete rules. State plainly that `TaskStatus` is now an **alias vocabulary**, not storage.
 - [ ] **Step 2:** Update `docs/wiki/mcp.md` — the task tools' `status` param still works and what it now means.
