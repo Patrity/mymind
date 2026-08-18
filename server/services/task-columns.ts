@@ -5,6 +5,14 @@ import { deleteTask } from './tasks'
 import { publishChange } from '../utils/live-bus'
 import type { TaskColumnDTO, TaskColumnKind, TaskColumnColor } from '../../shared/types/task-columns'
 
+// Every publishChange call below deliberately uses `resource: 'task'`, NOT a dedicated
+// `taskColumn` member of ResourceName. `task` already invalidates the board and the Home
+// panel (app/utils/live-dispatch.ts) — the entire audience for a column change, since columns
+// only ever render as part of the task board. Adding a `taskColumn` union member would require
+// a matching live-dispatch.ts entry (ResourceName is exhaustively keyed there; omitting one is
+// a type error) for no additional reach. Do not "fix" this by adding one — if a future surface
+// needs column-only invalidation (independent of the task board), add the member then.
+
 function toDTO(r: typeof taskColumns.$inferSelect): TaskColumnDTO {
   return {
     id: r.id,

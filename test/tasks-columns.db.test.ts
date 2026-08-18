@@ -19,7 +19,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 import { eq } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { tasks, taskColumns } from '../server/db/schema'
-import { createTask, updateTask, getTask } from '../server/services/tasks'
+import { createTask, updateTask, getTask, listTasks } from '../server/services/tasks'
 import { defaultColumnFor } from '../server/services/task-columns'
 import type { TaskColumnKind } from '../shared/types/task-columns'
 
@@ -164,6 +164,32 @@ describe('reads derive status from the column join', () => {
       expect(reread?.status).toBe('in_progress') // derived from the 'started' column's kind
     } finally {
       await removeTask(created.id)
+    }
+  })
+
+  it('listTasks filters via the joined column kind, not the corrupted shadow status column (cycle-58 Task 5)', async () => {
+    // GET /api/tasks?status=... now maps through kindForStatus and filters on taskColumns.kind
+    // rather than tasks.status directly — same "don't trust the dual-write" reasoning as
+    // getTask above. A custom, non-default 'started'-kind column plus a corrupted shadow
+    // column is what would have broken the OLD eq(tasks.status, filter.status) implementation:
+    // it would have missed this task under status:'in_progress' and wrongly matched it under
+    // status:'todo'.
+    const custom = await insertRealKindColumn('started', 'Custom Started (list filter)')
+    try {
+      const created = await createTask({ title: 'RED-9', columnId: custom.id })
+      try {
+        await useDb().update(tasks).set({ status: 'todo' }).where(eq(tasks.id, created.id))
+
+        const inProgress = await listTasks({ status: 'in_progress' })
+        expect(inProgress.some(t => t.id === created.id)).toBe(true)
+
+        const todo = await listTasks({ status: 'todo' })
+        expect(todo.some(t => t.id === created.id)).toBe(false)
+      } finally {
+        await removeTask(created.id)
+      }
+    } finally {
+      await removeColumn(custom.id)
     }
   })
 })

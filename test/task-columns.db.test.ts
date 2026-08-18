@@ -5,10 +5,16 @@
 //
 // The four seeded task_columns rows (Todo/open, In Progress/started, Completed/done,
 // Blocked/blocked — see server/db/migrations/0034_crazy_genesis.sql) are real production-shaped
-// data the rest of cycle 58 depends on. Every fixture below uses a fresh, per-run-unique `kind`
-// string (task_columns.kind is plain `text`, not a DB enum, so this is a legitimate value) so
-// tests never touch, reorder, or delete the seeded rows. Only `defaultColumnFor`'s "returns the
-// seeded default" case reads real seeded data, and only ever reads it.
+// data the rest of cycle 58 depends on; fixtures never touch, reorder, or delete them.
+//
+// `kind` is now a CLOSED vocabulary (task_columns_kind_check, added in cycle-58 Task 5 —
+// server/db/migrations/0035_married_gorilla_man.sql), so a synthetic per-run string is no
+// longer a legitimate value for an INSERT: every fixture below uses one of the four real kinds
+// ('open'|'started'|'done'|'blocked'), same convention as test/tasks-columns.db.test.ts.
+// Isolation comes from tracking each fixture's own row id (and cleaning it up in `finally`),
+// not from a unique kind. The one exception is `defaultColumnFor`'s "no columns at all" case,
+// which only ever SELECTs by kind (never inserts) — Postgres doesn't check a CHECK constraint
+// on a WHERE clause, so a synthetic value there still legitimately matches zero rows.
 process.loadEnvFile('.env')
 import { describe, it, expect, vi } from 'vitest'
 
@@ -23,12 +29,13 @@ import {
 } from '../server/services/task-columns'
 import type { TaskColumnKind } from '../shared/types/task-columns'
 
+// Only safe for values that are never inserted — see the file header.
 const uniqueKind = (tag: string) => `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 // Raw fixture helpers — bypass createColumn/deleteColumn so tests for those functions don't
 // depend on the functions under test to set up or tear down their own fixtures.
 async function insertColumn(
-  kind: string, opts: { name?: string, color?: string, position?: number, isDefault?: boolean } = {}
+  kind: TaskColumnKind, opts: { name?: string, color?: string, position?: number, isDefault?: boolean } = {}
 ) {
   const [row] = await useDb().insert(taskColumns).values({
     kind,
@@ -55,7 +62,7 @@ async function removeTask(id: string) {
 
 describe('listColumns', () => {
   it('orders columns by position', async () => {
-    const kind = uniqueKind('list')
+    const kind = 'open'
     const c1 = await insertColumn(kind, { name: 'C1', position: 500 })
     const c2 = await insertColumn(kind, { name: 'C2', position: 100 })
     const c3 = await insertColumn(kind, { name: 'C3', position: 300 })
@@ -88,8 +95,8 @@ describe('createColumn', () => {
   it('appends the new column after the current highest position', async () => {
     const before = await listColumns()
     const maxBefore = Math.max(...before.map(c => c.position))
-    const kind = uniqueKind('create')
-    const created = await createColumn({ name: 'New Col', kind: kind as TaskColumnKind, color: 'info' })
+    const kind = 'open'
+    const created = await createColumn({ name: 'New Col', kind, color: 'info' })
     try {
       expect(created.position).toBe(maxBefore + 1)
       expect(created.name).toBe('New Col')
@@ -102,8 +109,8 @@ describe('createColumn', () => {
   })
 
   it('accepts an explicit position', async () => {
-    const kind = uniqueKind('create-pos')
-    const created = await createColumn({ name: 'Positioned', kind: kind as TaskColumnKind, color: 'warning', position: 777 })
+    const kind = 'started'
+    const created = await createColumn({ name: 'Positioned', kind, color: 'warning', position: 777 })
     try {
       expect(created.position).toBe(777)
     } finally {
@@ -114,7 +121,7 @@ describe('createColumn', () => {
 
 describe('updateColumn', () => {
   it('renames and recolours, and the change persists', async () => {
-    const kind = uniqueKind('update')
+    const kind = 'done'
     const col = await insertColumn(kind, { name: 'Before', color: 'neutral' })
     try {
       const updated = await updateColumn(col.id, { name: 'After', color: 'success' })
@@ -136,7 +143,7 @@ describe('updateColumn', () => {
 
 describe('reorderColumns', () => {
   it('rewrites positions to match the given order', async () => {
-    const kind = uniqueKind('reorder')
+    const kind = 'open'
     const a = await insertColumn(kind, { name: 'A', position: 10 })
     const b = await insertColumn(kind, { name: 'B', position: 20 })
     const c = await insertColumn(kind, { name: 'C', position: 30 })
@@ -154,9 +161,8 @@ describe('reorderColumns', () => {
   })
 
   it('does not touch columns whose ids are not in the given list', async () => {
-    const kind = uniqueKind('reorder-untouched')
-    const untouched = await insertColumn(kind, { name: 'Untouched', position: 999 })
-    const other = await insertColumn(uniqueKind('reorder-other'), { name: 'Other', position: 1 })
+    const untouched = await insertColumn('open', { name: 'Untouched', position: 999 })
+    const other = await insertColumn('started', { name: 'Other', position: 1 })
     try {
       await reorderColumns([other.id])
       const reread = (await listColumns()).find(c => c.id === untouched.id)
@@ -170,19 +176,20 @@ describe('reorderColumns', () => {
 
 describe('deleteColumn', () => {
   it('refuses to delete the last column of a kind', async () => {
-    const kind = uniqueKind('lastofkind')
-    const col = await insertColumn(kind, { name: 'Solo' })
-    try {
-      const result = await deleteColumn(col.id, { mode: 'delete' })
-      expect(result.ok).toBe(false)
-      expect(result.affected).toBe(0)
-      expect(result.reason).toBeTruthy()
+    // Can no longer synthesize an isolated solo kind (task_columns_kind_check closes the
+    // vocabulary to the four real kinds) — so this exercises the refusal directly against the
+    // seeded 'blocked' default, which the whole suite's cleanup discipline (every fixture
+    // above/below removes what it creates in `finally`) guarantees is the only 'blocked'-kind
+    // column at this point. The refusal branch returns before any write, so nothing is created
+    // and the seeded row is never touched either way — no cleanup needed.
+    const seeded = await defaultColumnFor('blocked')
+    const result = await deleteColumn(seeded.id, { mode: 'delete' })
+    expect(result.ok).toBe(false)
+    expect(result.affected).toBe(0)
+    expect(result.reason).toBeTruthy()
 
-      const stillThere = (await listColumns()).some(c => c.id === col.id)
-      expect(stillThere).toBe(true)
-    } finally {
-      await removeColumn(col.id)
-    }
+    const stillThere = (await listColumns()).some(c => c.id === seeded.id)
+    expect(stillThere).toBe(true)
   })
 
   it('refuses when the column does not exist', async () => {
@@ -192,7 +199,7 @@ describe('deleteColumn', () => {
   })
 
   it('mode "delete" soft-deletes every live card and removes the column', async () => {
-    const kind = uniqueKind('del-cards')
+    const kind = 'open'
     const col1 = await insertColumn(kind, { name: 'Col1' })
     const col2 = await insertColumn(kind, { name: 'Col2' })
     const t1 = await insertTask(col1.id, 'Task A')
@@ -217,7 +224,7 @@ describe('deleteColumn', () => {
   })
 
   it('mode "delete" tolerates a pre-existing soft-deleted card still pointing at the column', async () => {
-    const kind = uniqueKind('del-stray')
+    const kind = 'started'
     const col1 = await insertColumn(kind, { name: 'Col1' })
     const col2 = await insertColumn(kind, { name: 'Col2' })
     const stray = await insertTask(col1.id, 'Already gone')
@@ -237,11 +244,12 @@ describe('deleteColumn', () => {
   })
 
   it('mode "reassign" moves every live card to the target and deletes the column', async () => {
-    // Real kind, not uniqueKind(): the moved tasks stay live and get read back through
-    // getTask below, and (as of Task 4) toDTO derives .status via statusForKind(kind) for
-    // every live row it returns — a synthetic kind would make that throw. A non-default
-    // sibling of 'open' doesn't touch the seeded default ('Todo'), which defaultColumnFor
-    // resolves by isDefault, not by being the only row of that kind.
+    // Real kind: the moved tasks stay live and get read back through getTask below, and (as
+    // of Task 4) toDTO derives .status via statusForKind(kind) for every live row it returns
+    // — a synthetic kind would make that throw (moot now anyway: task_columns_kind_check
+    // would reject the insert outright). A non-default sibling of 'open' doesn't touch the
+    // seeded default ('Todo'), which defaultColumnFor resolves by isDefault, not by being the
+    // only row of that kind.
     const kind: TaskColumnKind = 'open'
     const col1 = await insertColumn(kind, { name: 'Col1' })
     const col2 = await insertColumn(kind, { name: 'Col2' })
@@ -266,7 +274,7 @@ describe('deleteColumn', () => {
   })
 
   it('reassign refuses when targetColumnId is missing', async () => {
-    const kind = uniqueKind('reassign-missing')
+    const kind = 'done'
     const col1 = await insertColumn(kind, { name: 'Col1' })
     const col2 = await insertColumn(kind, { name: 'Col2' })
     try {
@@ -283,7 +291,7 @@ describe('deleteColumn', () => {
   })
 
   it('reassign refuses when targetColumnId is unknown', async () => {
-    const kind = uniqueKind('reassign-unknown')
+    const kind = 'started'
     const col1 = await insertColumn(kind, { name: 'Col1' })
     const col2 = await insertColumn(kind, { name: 'Col2' })
     try {
@@ -299,7 +307,7 @@ describe('deleteColumn', () => {
   })
 
   it('reassign refuses when targetColumnId equals the column being deleted', async () => {
-    const kind = uniqueKind('reassign-self')
+    const kind = 'open'
     const col1 = await insertColumn(kind, { name: 'Col1' })
     const col2 = await insertColumn(kind, { name: 'Col2' })
     try {

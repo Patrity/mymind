@@ -1,0 +1,1 @@
+ALTER TABLE "task_columns" ADD CONSTRAINT "task_columns_kind_check" CHECK ("task_columns"."kind" in ('open', 'started', 'done', 'blocked'));

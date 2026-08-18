@@ -86,11 +86,16 @@ const TASK_SELECT_WITH_KIND = () => ({ ...getTableColumns(tasks), columnKind: ta
 // Service functions
 // ---------------------------------------------------------------------------
 
-export async function listTasks(filter: { status?: string; project?: string } = {}): Promise<TaskDTO[]> {
+export async function listTasks(
+  filter: { status?: TaskStatus; project?: string; columnId?: string } = {}
+): Promise<TaskDTO[]> {
   const db = useDb()
   const conditions = [live()]
-  if (filter.status) conditions.push(eq(tasks.status, filter.status))
+  // Filter on the joined column's kind, not the tasks.status shadow column — same reasoning
+  // as toDTO below: this read path must not trust the dual-write, since Task 10 drops it.
+  if (filter.status) conditions.push(eq(taskColumns.kind, kindForStatus(filter.status)))
   if (filter.project) conditions.push(eq(tasks.project, filter.project))
+  if (filter.columnId) conditions.push(eq(tasks.columnId, filter.columnId))
 
   const rows = await db
     .select(TASK_SELECT_WITH_KIND())
@@ -230,7 +235,9 @@ export async function updateTask(id: string, patch: UpdateTaskInput): Promise<Ta
   return toDTO({ ...r, columnKind: kind })
 }
 
-export async function moveTask(id: string, move: { status?: TaskStatus; order?: number }): Promise<TaskDTO | null> {
+export async function moveTask(
+  id: string, move: { status?: TaskStatus; columnId?: string; order?: number }
+): Promise<TaskDTO | null> {
   return updateTask(id, move)
 }
 

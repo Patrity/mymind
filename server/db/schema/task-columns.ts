@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, integer, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, integer, boolean, timestamp, index, uniqueIndex, check } from 'drizzle-orm/pg-core'
 
 // A board column. `kind` is what CODE reads; `name` is user-facing and never switched on.
 // `color` is one of the app's semantic aliases (primary|secondary|success|info|warning|error|
@@ -17,7 +17,13 @@ export const taskColumns = pgTable('task_columns', {
   // The compat seam resolves status -> "the default column of this kind". Exactly one per
   // kind, enforced here rather than in application code: if a kind ever loses its default,
   // create_task(status=...) has nothing to resolve to and fails at runtime.
-  uniqueIndex('task_columns_one_default_per_kind').on(t.kind).where(sql`is_default`)
+  uniqueIndex('task_columns_one_default_per_kind').on(t.kind).where(sql`is_default`),
+  // toDTO (server/services/tasks.ts) calls statusForKind(kind) on every LIVE task read, and
+  // that throws on anything outside open|started|done|blocked — so one bad `kind` row makes
+  // every task in that column unreadable, not just mis-displayed. `is_default` gets the same
+  // DB-level treatment above for the same reason: the app depends on this structurally, not
+  // just by convention. Mirrors shared/types/task-columns.ts TASK_COLUMN_KINDS.
+  check('task_columns_kind_check', sql`${t.kind} in ('open', 'started', 'done', 'blocked')`)
 ])
 
 export type TaskColumn = typeof taskColumns.$inferSelect
