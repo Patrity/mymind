@@ -4,6 +4,8 @@ import { homeRangeStart } from '../lib/home/range'
 import { buildTimeline } from '../lib/home/timeline'
 import type { RawEvent } from '../lib/home/timeline'
 import { getUsagePricingSince } from './usage'
+import { statusForKind } from '../lib/tasks/status-kind'
+import type { TaskColumnKind } from '../../shared/types/task-columns'
 import type {
   HomeRangeKey, HomeResponse, HomeMetrics, HomeAttention,
   HomeTaskRow, HomeProjectRow, HomeUsage
@@ -69,8 +71,11 @@ async function timelineEvents(db: ReturnType<typeof useDb>, start: Date): Promis
     db.execute(sql`select id, body_text, kind, created_at from clip_messages
                    where created_at >= ${iso}
                    order by created_at desc limit ${PER_SOURCE_LIMIT}`),
-    db.execute(sql`select id, title, status, project, coalesce(completed_at, created_at) as at
-                   from tasks where coalesce(completed_at, created_at) >= ${iso} and deleted_at is null
+    // Joined on task_columns for `kind`, not `tasks.status` — that shadow column is dual-written
+    // only as a Task-10 rollback target (cycle-58) and must not be trusted by reads.
+    db.execute(sql`select t.id, t.title, tc.kind, t.project, coalesce(t.completed_at, t.created_at) as at
+                   from tasks t join task_columns tc on tc.id = t.column_id
+                   where coalesce(t.completed_at, t.created_at) >= ${iso} and t.deleted_at is null
                    order by at desc limit ${PER_SOURCE_LIMIT}`),
     db.execute(sql`select id, created_at from review_queue
                    where created_at >= ${iso} and status = 'pending'
@@ -115,7 +120,7 @@ async function timelineEvents(db: ReturnType<typeof useDb>, start: Date): Promis
     })),
     ...rows(task).map((r): RawEvent => ({
       id: `task:${str(r.id)}`, type: 'task', at: new Date(str(r.at)),
-      title: str(r.status) === 'completed' ? `Completed: ${str(r.title)}` : str(r.title),
+      title: str(r.kind) === 'done' ? `Completed: ${str(r.title)}` : str(r.title),
       href: '/tasks', ...proj(r.project)
     })),
     ...rows(conf).map((r): RawEvent => ({
@@ -131,17 +136,20 @@ async function timelineEvents(db: ReturnType<typeof useDb>, start: Date): Promis
 
 async function activeTasks(db: ReturnType<typeof useDb>): Promise<HomeTaskRow[]> {
   const now = new Date().toISOString()
+  // Joined on task_columns for `kind`, not `tasks.status` — see the comment on the timeline
+  // task query above for why (same shadow-column rollback-target reasoning, cycle-58 Task 6).
   const r = await db.execute(sql`
-    select id, title, status, due_date, project,
-           (due_date is not null and due_date < ${now} and status <> 'completed') as overdue
-    from tasks
-    where deleted_at is null and status in ('in_progress', 'todo', 'blocked')
-    order by overdue desc, due_date asc nulls last, "order" asc
+    select t.id, t.title, tc.kind, t.due_date, t.project,
+           (t.due_date is not null and t.due_date < ${now} and tc.kind <> 'done') as overdue
+    from tasks t
+    join task_columns tc on tc.id = t.column_id
+    where t.deleted_at is null and tc.kind in ('started', 'open', 'blocked')
+    order by overdue desc, t.due_date asc nulls last, t."order" asc
     limit 5`)
   return (r.rows as Record<string, unknown>[]).map(t => ({
     id: String(t.id),
     title: String(t.title),
-    status: String(t.status),
+    status: statusForKind(String(t.kind) as TaskColumnKind),
     dueDate: t.due_date ? new Date(String(t.due_date)).toISOString() : null,
     overdue: t.overdue === true,
     projectSlug: t.project == null ? null : String(t.project),
@@ -179,8 +187,11 @@ async function recentProjects(db: ReturnType<typeof useDb>, start: Date): Promis
            (select count(*) from documents d where d.project = p.slug and d.created_at >= ${iso} and d.deleted_at is null) as documents,
            -- Deliberately NOT range-scoped: this is current backlog, like the attention panel.
            -- "tasks opened in the last 1d" would read as zero on a quiet day and imply no work.
-           (select count(*) from tasks tk where tk.project = p.slug and tk.deleted_at is null
-              and tk.status <> 'completed') as open_tasks
+           -- Joined on task_columns for kind, not tk.status — same shadow-column reasoning
+           -- as the queries above (cycle-58 Task 6).
+           (select count(*) from tasks tk join task_columns tc2 on tc2.id = tk.column_id
+              where tk.project = p.slug and tk.deleted_at is null
+              and tc2.kind <> 'done') as open_tasks
     from touched t join projects p on p.slug = t.slug
     group by p.slug, p.name, p.color
     order by last_at desc

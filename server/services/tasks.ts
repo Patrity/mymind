@@ -107,24 +107,29 @@ export async function listTasks(
   return rows.map(toDTO)
 }
 
-const TASK_SUMMARY_COLUMNS = {
-  id: tasks.id, title: tasks.title, status: tasks.status, priority: tasks.priority,
-  project: tasks.project, dueDate: tasks.dueDate, updatedAt: tasks.updatedAt
-}
+// Function (not a bare object), matching TASK_SELECT_WITH_KIND above — a fresh object per call
+// keeps drizzle's column-selection references from being shared/mutated across query builds.
+const TASK_SUMMARY_COLUMNS = () => ({
+  id: tasks.id, title: tasks.title, priority: tasks.priority,
+  project: tasks.project, dueDate: tasks.dueDate, updatedAt: tasks.updatedAt,
+  columnKind: taskColumns.kind
+})
 
 /**
- * Body-free projection for the agent read tools. Exported for unit testing.
+ * Body-free projection for the agent read tools (MCP search_tasks). Exported for unit testing.
  * Deliberately NOT `toDTO` minus a field — selecting fewer columns means Postgres never
  * ships the descriptions either. `dueDate` is a `timestamp` column (see schema/tasks.ts),
- * hence `.toISOString()`. Reads `tasks.status` directly (not the column join): every write
- * dual-writes it, so it's accurate, and this projection is intentionally join-free/cheap.
+ * hence `.toISOString()`. `status` is DERIVED from the joined column's kind — same reasoning
+ * as toDTO above: `tasks.status` is dual-written only as a Task-10 rollback target, and this
+ * projection backs the tools Claude Code calls continuously, so it must not trust it either
+ * (cycle-58 Task 6).
  */
 export function toTaskSummaryDTO(r: {
-  id: string, title: string, status: string, priority: string,
+  id: string, title: string, columnKind: string, priority: string,
   project: string | null, dueDate: Date | null, updatedAt: Date
 }): TaskSummaryDTO {
   return {
-    id: r.id, title: r.title, status: r.status, priority: r.priority,
+    id: r.id, title: r.title, status: statusForKind(r.columnKind as TaskColumnKind), priority: r.priority,
     project: r.project,
     dueDate: r.dueDate ? r.dueDate.toISOString() : null,
     updatedAt: r.updatedAt.toISOString()
@@ -132,23 +137,29 @@ export function toTaskSummaryDTO(r: {
 }
 
 export async function listTasksSummary(
-  opts: { status?: string, project?: string, limit: number, offset: number }
+  opts: { status?: TaskStatus, project?: string, limit: number, offset: number }
 ): Promise<TaskSummaryDTO[]> {
   const conditions = [live()]
-  if (opts.status) conditions.push(eq(tasks.status, opts.status))
+  // Filter on the joined column's kind, not tasks.status — see toTaskSummaryDTO above.
+  if (opts.status) conditions.push(eq(taskColumns.kind, kindForStatus(opts.status)))
   if (opts.project) conditions.push(eq(tasks.project, opts.project))
-  const rows = await useDb().select(TASK_SUMMARY_COLUMNS).from(tasks)
+  const rows = await useDb().select(TASK_SUMMARY_COLUMNS())
+    .from(tasks)
+    .innerJoin(taskColumns, eq(tasks.columnId, taskColumns.id))
     .where(and(...conditions))
     .orderBy(asc(tasks.order), asc(tasks.createdAt))
     .limit(opts.limit).offset(opts.offset)
   return rows.map(toTaskSummaryDTO)
 }
 
-export async function countTasks(opts: { status?: string, project?: string } = {}): Promise<number> {
+export async function countTasks(opts: { status?: TaskStatus, project?: string } = {}): Promise<number> {
   const conditions = [live()]
-  if (opts.status) conditions.push(eq(tasks.status, opts.status))
+  if (opts.status) conditions.push(eq(taskColumns.kind, kindForStatus(opts.status)))
   if (opts.project) conditions.push(eq(tasks.project, opts.project))
-  const [row] = await useDb().select({ n: sql<number>`count(*)::int` }).from(tasks).where(and(...conditions))
+  const [row] = await useDb().select({ n: sql<number>`count(*)::int` })
+    .from(tasks)
+    .innerJoin(taskColumns, eq(tasks.columnId, taskColumns.id))
+    .where(and(...conditions))
   return row?.n ?? 0
 }
 
