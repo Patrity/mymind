@@ -10,8 +10,11 @@ const Body = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  const body = Body.parse(await readBody(event))
+  const parsed = Body.safeParse(await readBody(event))
+  if (!parsed.success) {
+    throw createError({ statusCode: 400, statusMessage: 'Bad Request', data: parsed.error.issues })
+  }
   // createColumn (server/services/task-columns.ts) already calls publishChange on success —
   // don't double-emit here.
-  return createColumn(body)
+  return createColumn(parsed.data)
 })

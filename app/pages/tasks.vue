@@ -8,7 +8,7 @@ import type { TaskColumnDTO, TaskColumnColor } from '~~/shared/types/task-column
 definePageMeta({ title: 'Tasks' })
 
 const { useTaskList, create: createTask, update: updateTask, move: moveTask, remove: removeTask } = useTasks()
-const { useColumnList } = useTaskColumns()
+const { useColumnList, reorder: reorderColumns } = useTaskColumns()
 const { useProjectList } = useProjects()
 const toast = useToast()
 
@@ -34,7 +34,7 @@ const tasks = computed<TaskDTO[]>(() => taskData.value ?? [])
 // ── Column definitions (server data, NOT hardcoded) ─────────────────────────────
 // GET /api/task-columns already returns rows ordered by `position` — render that
 // order as-is, never re-sort or re-cap it client-side.
-const { data: columnsData, isPending: isColumnsPending } = useColumnList()
+const { data: columnsData, isPending: isColumnsPending, refetch: refetchColumns } = useColumnList()
 const columns = computed<TaskColumnDTO[]>(() => columnsData.value ?? [])
 
 // Show the skeleton until BOTH the tasks and the columns have loaded at least once.
@@ -260,6 +260,101 @@ onMounted(() => {
   }, { immediate: true })
 })
 
+// ── Column reordering (drag column headers) ─────────────────────────────────────
+// A locally-owned mirror of `columns` (server truth is read-only — see the live-data rule),
+// rebuilt whenever the server list changes but never mid-drag, exactly mirroring
+// columnsTasks/rebuildColumns above. This is what the board actually renders (v-for="col in
+// orderedColumns" below); `columns` itself stays the source of truth for ensureSortable/
+// rebuildColumns/columnItems.
+const orderedColumns = ref<TaskColumnDTO[]>([])
+const isDraggingColumns = ref(false)
+let syncingColumnsFromServer = false
+
+watch(columns, (cols) => {
+  if (isDraggingColumns.value) return
+  syncingColumnsFromServer = true
+  orderedColumns.value = [...cols]
+  nextTick(() => { syncingColumnsFromServer = false })
+}, { immediate: true })
+
+const boardRef = ref<HTMLElement | null>(null)
+
+// orderedColumns is bound as a Ref (not a reactive()-owned array like columnsTasks), so
+// vueuse's default onUpdate takes the "isRef" branch: it clones the array, splices the
+// detached copy, and reassigns `orderedColumns.value` ONCE (see the useSortable-onEnd-snapback
+// memory / Task 8's report) — unlike columnsTasks' live in-place splice, this doesn't fire the
+// watch below on a half-settled intermediate state. The debounce is kept anyway as a cheap,
+// consistent safety margin (matches persistTouchedColumns' shape below), not because it's load-
+// bearing here the way it is for the card lists.
+// watchElement: true is required, not cosmetic: without it useSortable's default init path is
+// tryOnMounted(start) (see @vueuse/integrations/useSortable's source), which resolves boardRef
+// ONCE at mount time — but boardRef's element doesn't exist yet then (the board is behind the
+// loading skeleton's v-if/v-else, same as every colRefs[col.id] target below), so the sortable
+// would silently never attach. watchElement switches it to a reactive watcher that (re)inits
+// when the ref actually resolves, exactly mirroring ensureSortable's own colRefs binding.
+useSortable(boardRef, orderedColumns, {
+  watchElement: true,
+  handle: '.column-drag-handle',
+  draggable: '.board-column',
+  animation: 150,
+  onStart: () => { isDraggingColumns.value = true },
+  onEnd: () => { isDraggingColumns.value = false }
+})
+
+let columnPersisting = false
+let columnDebounceHandle: ReturnType<typeof setTimeout> | null = null
+
+function scheduleColumnPersist() {
+  if (columnDebounceHandle != null) clearTimeout(columnDebounceHandle)
+  columnDebounceHandle = setTimeout(() => {
+    columnDebounceHandle = null
+    persistColumnOrder()
+  }, 0)
+}
+
+async function persistColumnOrder() {
+  if (columnPersisting) return
+  columnPersisting = true
+  try {
+    await reorderColumns(orderedColumns.value.map(c => c.id))
+    // Explicit local reconcile — useColumnList() is NOT SSE-wired (see useTaskColumns.ts).
+    await refetchColumns()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Failed to save column order', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    columnPersisting = false
+  }
+}
+
+watch(orderedColumns, () => {
+  if (syncingColumnsFromServer) return
+  scheduleColumnPersist()
+}, { deep: true })
+
+// ── Column management (create / edit / delete) ──────────────────────────────────
+const showColumnFormModal = ref(false)
+const editingColumn = ref<TaskColumnDTO | null>(null) // null = create mode
+const showDeleteColumnModal = ref(false)
+const deletingColumn = ref<TaskColumnDTO | null>(null)
+const deletingColumnTaskCount = computed(() =>
+  columnsTasks[deletingColumn.value?.id ?? '']?.length ?? 0)
+
+function openCreateColumn() {
+  editingColumn.value = null
+  showColumnFormModal.value = true
+}
+
+function openEditColumn(col: TaskColumnDTO) {
+  editingColumn.value = col
+  showColumnFormModal.value = true
+}
+
+function openDeleteColumn(col: TaskColumnDTO) {
+  deletingColumn.value = col
+  showDeleteColumnModal.value = true
+}
+
 // ── New task modal ────────────────────────────────────────────────────────────
 const showNewModal = ref(false)
 const saving = ref(false)
@@ -421,16 +516,18 @@ const filterProjectItems = computed(() => [
         </template>
         <template #right>
           <!-- Priority filter -->
-          <USelect
+          <USelectMenu
             v-model="filterPriority"
             :items="filterPriorityItems"
+            value-key="value"
             size="xs"
             class="w-36"
           />
           <!-- Project filter -->
-          <USelect
+          <USelectMenu
             v-model="filterProject"
             :items="filterProjectItems"
+            value-key="value"
             size="xs"
             class="w-36"
           />
@@ -468,24 +565,24 @@ const filterProjectItems = computed(() => [
       <!-- Kanban board -->
       <div
         v-else
+        ref="boardRef"
         class="flex gap-4 p-4 h-full overflow-x-auto"
       >
         <div
-          v-for="col in columns"
+          v-for="col in orderedColumns"
           :key="col.id"
-          class="flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg p-2"
+          :data-column-id="col.id"
+          class="board-column flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg p-2"
           :class="TINT[col.color]"
         >
-          <!-- Column header -->
-          <div class="flex items-center gap-2 px-1">
-            <span class="text-sm font-semibold text-highlighted">{{ col.name }}</span>
-            <UBadge
-              :label="String(columnsTasks[col.id]?.length ?? 0)"
-              color="neutral"
-              variant="soft"
-              size="xs"
-            />
-          </div>
+          <!-- Column header: name, card count, actions menu (rename/recolour/delete);
+               '.column-drag-handle' inside is the grab target for column reordering. -->
+          <TasksColumnHeader
+            :column="col"
+            :task-count="columnsTasks[col.id]?.length ?? 0"
+            @edit="openEditColumn"
+            @remove="openDeleteColumn"
+          />
 
           <!-- Card list (sortable container; group 'tasks'). Keeps a min height
                so empty columns remain a valid drop target; dashed border + hint
@@ -540,6 +637,19 @@ const filterProjectItems = computed(() => [
             </div>
           </div>
         </div>
+
+        <!-- Add-column control (not part of the reorder sortable — draggable: '.board-column'
+             above only picks up the actual column divs). -->
+        <div class="flex flex-col gap-3 min-w-64 w-64 shrink-0 p-2">
+          <UButton
+            icon="i-lucide-plus"
+            color="neutral"
+            variant="outline"
+            block
+            label="Add column"
+            @click="openCreateColumn"
+          />
+        </div>
       </div>
     </template>
   </UDashboardPanel>
@@ -583,17 +693,19 @@ const filterProjectItems = computed(() => [
 
           <div class="grid grid-cols-2 gap-3">
             <UFormField label="Column">
-              <USelect
+              <USelectMenu
                 v-model="newForm.columnId"
                 :items="columnItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
 
             <UFormField label="Priority">
-              <USelect
+              <USelectMenu
                 v-model="newForm.priority"
                 :items="priorityItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
@@ -609,9 +721,10 @@ const filterProjectItems = computed(() => [
             </UFormField>
 
             <UFormField label="Project">
-              <USelect
+              <USelectMenu
                 :model-value="newForm.project ?? PROJECT_NONE"
                 :items="projectItems"
+                value-key="value"
                 class="w-full"
                 @update:model-value="newForm.project = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
               />
@@ -680,17 +793,19 @@ const filterProjectItems = computed(() => [
 
           <div class="grid grid-cols-2 gap-3">
             <UFormField label="Column">
-              <USelect
+              <USelectMenu
                 v-model="editForm.columnId"
                 :items="columnItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
 
             <UFormField label="Priority">
-              <USelect
+              <USelectMenu
                 v-model="editForm.priority"
                 :items="priorityItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
@@ -706,9 +821,10 @@ const filterProjectItems = computed(() => [
             </UFormField>
 
             <UFormField label="Project">
-              <USelect
+              <USelectMenu
                 :model-value="editForm.project ?? PROJECT_NONE"
                 :items="projectItems"
+                value-key="value"
                 class="w-full"
                 @update:model-value="editForm.project = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
               />
@@ -748,4 +864,15 @@ const filterProjectItems = computed(() => [
       </UCard>
     </template>
   </UModal>
+
+  <!-- ── Column management modals ───────────────────────────────────────────── -->
+  <TasksColumnFormModal
+    v-model:open="showColumnFormModal"
+    :column="editingColumn"
+  />
+  <TasksDeleteColumnModal
+    v-model:open="showDeleteColumnModal"
+    :column="deletingColumn"
+    :task-count="deletingColumnTaskCount"
+  />
 </template>

@@ -521,7 +521,7 @@ const tabItems = [
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                   <UBadge
-                    :label="task.status.replace('_', ' ')"
+                    :label="columnById.get(task.columnId)?.name ?? task.status.replace('_', ' ')"
                     :color="columnById.get(task.columnId)?.color ?? 'neutral'"
                     variant="subtle"
                     size="xs"

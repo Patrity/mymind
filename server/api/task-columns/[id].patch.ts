@@ -12,10 +12,13 @@ const Body = z.object({
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
-  const body = Body.parse(await readBody(event))
+  const parsed = Body.safeParse(await readBody(event))
+  if (!parsed.success) {
+    throw createError({ statusCode: 400, statusMessage: 'Bad Request', data: parsed.error.issues })
+  }
   try {
     // updateColumn already calls publishChange on success — don't double-emit here.
-    return await updateColumn(id, body)
+    return await updateColumn(id, parsed.data)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('no such column')) throw createError({ statusCode: 404, statusMessage: msg })
