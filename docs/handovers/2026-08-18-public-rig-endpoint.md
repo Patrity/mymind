@@ -63,14 +63,22 @@ into `statusCode: 500`. The portfolio strip first painted "rig asleep" for that 
 raw client fetch and hides on any status-less failure or 4xx, showing "asleep" only for a 5xx that
 actually carried CORS (i.e. this handler's own generic 502) or a 200 with no GPU reporting.
 
-## Follow-up (same day)
+## Follow-ups (same day, both shipped)
 
-Tony's review of the live strip: the vision service is retired (it only ever showed "down"), and
-`engines` under-reports the rig because only vLLM exposes running/waiting — llama.cpp, TEI, TTS and
-image gen all route through LiteLLM. Added `models24h` (LiteLLM request roster over 24h, by
-model, most-used first, capped at 12) to the payload and dropped `vllm-vision` from
-`PUBLIC_RIG_SERVICE_IDS`. Private `SERVICES` in `snapshot.ts` still lists the vision job — that is
-the analytics dashboard's call, not this endpoint's.
+1. **`ab0d561`** (CD run 32167782531): Tony's review of the live strip — the vision service is
+   retired (it only ever showed "down"), and `engines` under-reports the rig because only vLLM
+   exposes running/waiting; llama.cpp, TEI, TTS and image gen all route through LiteLLM. Added a
+   `models24h` roster and dropped `vllm-vision` from `PUBLIC_RIG_SERVICE_IDS`. Private `SERVICES` in
+   `snapshot.ts` still lists the vision job — that is the analytics dashboard's call.
+2. **`a663948`** (CD run 32168989266): the first live roster put `model="unknown"` on top with
+   **16.5M "requests"/24h** — the LiteLLM exporter's unattributed bucket — and request counts alone
+   were a thin signal (15 vs 2). The roster now merges `sum by (model) increase()` over
+   `litellm_total_tokens` and `litellm_requests_total`, ranks by tokens then requests, and never
+   publishes `unknown`/unlabelled samples. `PublicRigModel` is `{model, tokens, requests}`; `model`
+   stays LiteLLM's provider-prefixed label (`openai/qwen3.6-35b-a3b`) — the consumer shortens it.
+   Live payload after cutover: `openai/qwen3.6-35b-a3b` 598,525 tok / 15 req, then the TEI
+   embedding model. The `unknown` bucket is worth a look on the private dashboard too: the
+   `litellm-requests` panel shows the same series unfiltered.
 
 ## Open question
 
