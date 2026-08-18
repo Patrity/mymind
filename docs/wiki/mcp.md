@@ -1,8 +1,10 @@
 ---
 title: MCP Server
 status: shipped
-cycle: 54
-updated: 2026-08-13
+cycle: 58
+updated: 2026-08-18
+mymind_id: b80c674d-2121-4c7e-90b3-91b97aa0015b
+mymind_hash: 80fc9d3f056ae7bacccfadd1148ec5dcd32a620a74b2872e1d566b4b3a52f6d9
 ---
 
 # MCP Server
@@ -190,6 +192,24 @@ Each tool carries a `kind` field that controls gating + description copy:
 | `read_session(sessionId, offset?, limit?, full?, includeSidechain?)` | read | session-read `readSessionPage` (cycle 50) |
 
 `save_memory` params: `content` (string, max 20k), `scope` (user|agent|world), `project?` (slug), `tags?` (string[]), `source?` (string), `confidence?` (0–1 float). A `confidence >= 0.75` auto-reviews the memory; omitting it leaves it for manual review.
+
+**`status` on `create_task`/`edit_task`/`search_tasks` still works exactly as before — its meaning
+changed underneath it (cycle 58).** The board's columns are now user-defined (add/rename/recolour/
+reorder/delete — see [`tasks-projects.md`](tasks-projects.md)), so `tasks.status` no longer exists
+as a stored value. The `status` param on all three tools is unchanged — same closed
+`z.enum(['todo','in_progress','completed','blocked'])`, same required/optional shape, nothing
+removed or renamed — but it is now a **fixed alias vocabulary** resolved through
+`server/lib/tasks/status-kind.ts`, not a column read/write:
+`create_task(status: 'todo')`/`edit_task(id, { status: 'todo' })` file the task into **the default
+column of the matching kind** (`todo`→`open`, `in_progress`→`started`, `completed`→`done`,
+`blocked`→`blocked`); `search_tasks(status: 'in_progress')` matches every task whose column's
+`kind` is `started`, including one sitting in a custom column an agent has never seen (e.g. a
+"Playtesting" column with `kind:'started'`) — not just a column literally named "In Progress".
+Nothing about calling these three tools needs to change for this cycle's board work to be usable:
+an agent that has only ever spoken the four-value vocabulary keeps working forever, and never needs
+to learn a column id exists. (The web UI additionally accepts a `columnId` to place a card in one
+*specific* column among several of the same kind — there is no MCP-facing equivalent, and none is
+needed for the four-value contract to hold.)
 
 **Project-aware document tools** — for agents working inside a project: `search_docs`/`list_documents` accept a `project` slug to scope to one project; `get_document(id)` returns a doc's full content + frontmatter; `save_document(content, project?, …)` creates a doc and — when `project` is set — **auto-files it under `/projects/<slug>/`** via the cycle-26 path⟺project choke point (vs `quick_capture`, which drops a quick note in `/input`). `get_project(slug)` returns the full project model + session/memory/task/document counts.
 

@@ -240,6 +240,11 @@ function ensureSortable(col: TaskColumnDTO) {
   if (sortableInitialized.has(col.id)) return
   sortableInitialized.add(col.id)
   if (!columnsTasks[col.id]) columnsTasks[col.id] = []
+  // columnsTasks[col.id] is a plain array living inside reactive(), NOT a ref — useSortable's
+  // moveArrayElement mutates a reactive-array binding LIVE in two steps (unlike a ref, which it
+  // clones/splices/reassigns once), which is why persistence below needs the macrotask defer and
+  // not a bare watch. Compare orderedColumns (ref-bound, below) and AssignmentChain.vue (also
+  // ref-bound, where a bare watch is correct and sufficient) before copying this pattern.
   useSortable(() => colRefs[col.id], columnsTasks[col.id]!, {
     watchElement: true,
     group: 'tasks',

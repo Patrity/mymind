@@ -26,6 +26,11 @@ watch(() => props.ids, (v) => {
   nextTick(() => { syncingFromProps = false })
 })
 
+// `list` above is a ref, not a plain array inside reactive() — moveArrayElement takes the
+// clone/splice/reassign-once branch for a ref, so the bare deep watch below is correct and
+// sufficient here. app/pages/tasks.vue's card lists (columnsTasks) are reactive-array-bound
+// instead and need an additional macrotask defer for the same watch to be safe — see the note
+// at that useSortable call before assuming a bare watch is safe on a new reactive-array binding.
 useSortable(el, list, { animation: 150, handle: '.drag-handle' })
 
 watch(list, (v) => {
