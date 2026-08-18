@@ -23,8 +23,12 @@ const { remove, useColumnList } = useTaskColumns()
 const { data: columnsData, refetch: refetchColumns } = useColumnList()
 const toast = useToast()
 
+// Reassign targets must share the doomed column's `kind` — status is DERIVED from the target's
+// kind, so moving cards across kinds (e.g. an open column's cards into a done one) would mark
+// them completed/uncompleted everywhere with no user intent behind it. Renaming stays available
+// for every kind; this list exists only to pick WHERE within the same kind the cards land.
 const remainingColumns = computed(() =>
-  (columnsData.value ?? []).filter(c => c.id !== props.column?.id)
+  (columnsData.value ?? []).filter(c => c.id !== props.column?.id && c.kind === props.column?.kind)
 )
 const targetItems = computed(() => remainingColumns.value.map(c => ({ label: c.name, value: c.id })))
 
@@ -43,6 +47,12 @@ watch(open, (isOpen) => {
   if (!isOpen) return
   mode.value = 'delete'
   targetColumnId.value = undefined
+  errorMessage.value = ''
+})
+
+// A 409 refusal rendered inline (e.g. "choose a different column") is scoped to the mode that
+// produced it — switching modes makes it stale, so it must not sit next to the now-irrelevant UI.
+watch(mode, () => {
   errorMessage.value = ''
 })
 

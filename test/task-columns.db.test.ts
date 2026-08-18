@@ -23,7 +23,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 import { eq } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { taskColumns, tasks } from '../server/db/schema'
-import { getTask } from '../server/services/tasks'
+import { getTask, createTask } from '../server/services/tasks'
 import {
   listColumns, defaultColumnFor, createColumn, updateColumn, reorderColumns, deleteColumn
 } from '../server/services/task-columns'
@@ -317,6 +317,107 @@ describe('deleteColumn', () => {
     } finally {
       await removeColumn(col1.id)
       await removeColumn(col2.id)
+    }
+  })
+
+  // C1 (final whole-branch review): deleteColumn had exactly one structural guard — "this is
+  // the last column of its kind" — and NEVER read, checked, or reassigned is_default. The
+  // partial unique index (task_columns_one_default_per_kind) enforces AT MOST one default per
+  // kind; it cannot enforce AT LEAST one. Deleting a kind's current default left that kind with
+  // ZERO defaults, permanently: defaultColumnFor(kind) throws, so every write that resolves a
+  // status onto that kind (create_task/edit_task, POST/PATCH /api/tasks, /move, triage's
+  // applyTask) breaks — reads keep working (they filter on kind, not is_default), so it
+  // presents as "writes randomly broke" with nothing in the journal.
+  //
+  // This test proves the guard by deleting THE column currently holding is_default for the
+  // 'done' kind — the exact repro from the finding ("add a done column, delete the seeded
+  // default"). It deliberately never runs deleteColumn against a seeded row: the four seeded
+  // columns must never be structurally touched by a test, and 'Completed' in particular may
+  // carry real dev-DB tasks that deleteColumn's mode:'delete' would soft-delete for real if it
+  // were the row actually removed. Instead, a disposable fixture ("Doomed Default") is made the
+  // CURRENT default for 'done' — which requires briefly flipping the seeded row's is_default
+  // off, since the unique index allows only one true row per kind no matter who holds it — and
+  // deleteColumn is called on the FIXTURE, never on 'Completed'. `finally` restores the seeded
+  // row's is_default to true unconditionally (deleting the temporary heir FIRST, so the index
+  // never sees two true rows at once) — net effect on 'Completed': is_default toggles
+  // false-then-true and ends exactly where it started; id/name/kind/color/position never change.
+  //
+  // (The alternative the task brief offered — running deleteColumn on the seeded row inside a
+  // DB transaction that's rolled back — isn't reachable here: deleteColumn always resolves its
+  // own connection via the module-singleton useDb(), so a JS-level transaction wrapped around
+  // the call wouldn't actually contain its writes without adding transaction-injection plumbing
+  // to the service, which is out of scope for this fix.)
+  it('promotes the lowest-position sibling to is_default when the CURRENT default of a kind is deleted (C1)', async () => {
+    const seededDone = await defaultColumnFor('done')
+    // Deliberately far below any realistic position (including another test's un-cleaned-up
+    // stray, which would default to 0) — the heir-vs-doomed ordering must be unambiguous, not
+    // resting on a tiebreak against whatever else happens to share position 0.
+    const heir = await insertColumn('done', { name: `Heir ${Date.now()}`, position: -1000, isDefault: false })
+    const doomed = await insertColumn('done', { name: `Doomed Default ${Date.now()}`, position: -999, isDefault: false })
+    try {
+      await useDb().update(taskColumns).set({ isDefault: false }).where(eq(taskColumns.id, seededDone.id))
+      await useDb().update(taskColumns).set({ isDefault: true }).where(eq(taskColumns.id, doomed.id))
+
+      const result = await deleteColumn(doomed.id, { mode: 'delete' })
+      expect(result.ok).toBe(true)
+
+      // The guard itself: some 'done' column must still carry is_default, or every surface that
+      // resolves status='completed' throws from here on. Also asserts the heir is the
+      // deterministic lowest-position sibling (heir, position 0), not an unordered pick —
+      // closes the ledger's Task-3 "unordered siblings[0]" minor at the same time.
+      const stillDefault = await defaultColumnFor('done')
+      expect(stillDefault.id).toBe(heir.id)
+
+      const created = await createTask({ title: `c1-regression-${Date.now()}`, status: 'completed' })
+      expect(created.columnId).toBe(heir.id)
+      await useDb().delete(tasks).where(eq(tasks.id, created.id))
+    } finally {
+      // doomed was already removed by deleteColumn above; this is a no-op if so.
+      await removeColumn(doomed.id)
+      // heir currently holds is_default:true — delete it BEFORE restoring the seeded row, or
+      // the partial unique index would see two true 'done' rows simultaneously.
+      await removeColumn(heir.id)
+      await useDb().update(taskColumns).set({ isDefault: true }).where(eq(taskColumns.id, seededDone.id))
+    }
+  })
+
+  // I1 (final whole-branch review): reassign did a raw `set({ columnId, updatedAt })` with no
+  // completedAt handling. Since status is DERIVED from the target column's kind, an open->done
+  // reassign marked cards completed everywhere while leaving completed_at NULL, and a
+  // done->open reassign left a stale completed_at on a task that now reads as todo — Home's
+  // timeline keys on coalesce(completed_at, created_at), so those rows are mislabelled/misdated
+  // permanently. completedAtFor must run for the TARGET's kind on every reassigned card.
+  it('reassign stamps completedAt for the target column\'s kind in both directions', async () => {
+    const openCol = await insertColumn('open', { name: `Open Src ${Date.now()}` })
+    const doneCol = await insertColumn('done', { name: `Done Target ${Date.now()}` })
+    // Created up front (not nested) so cleanup is flat and resilient regardless of where an
+    // assertion fails — a task/column FK violation in a nested `finally` would otherwise mask
+    // the real assertion failure that triggered unwinding in the first place.
+    const openCol2 = await insertColumn('open', { name: `Open Target 2 ${Date.now()}` })
+    const openTask = await insertTask(openCol.id, 'Open task')
+    const [doneTask] = await useDb().insert(tasks).values({
+      title: 'Done task', columnId: doneCol.id, completedAt: new Date('2020-01-01T00:00:00Z')
+    }).returning()
+    try {
+      const intoDone = await deleteColumn(openCol.id, { mode: 'reassign', targetColumnId: doneCol.id })
+      expect(intoDone.ok).toBe(true)
+      const movedOpen = await getTask(openTask.id)
+      expect(movedOpen?.completedAt).not.toBeNull()
+
+      const intoOpen = await deleteColumn(doneCol.id, { mode: 'reassign', targetColumnId: openCol2.id })
+      expect(intoOpen.ok).toBe(true)
+      const movedDone = await getTask(doneTask!.id)
+      expect(movedDone?.completedAt).toBeNull()
+    } finally {
+      // Tasks first (FK references columns), columns after. Both task rows end up pointing at
+      // whichever column they last reached — openCol2 if both reassigns ran, doneCol if only
+      // the first did, their original column if neither did — so deleting the tasks before any
+      // column is unconditionally safe.
+      await removeTask(openTask.id)
+      await removeTask(doneTask!.id)
+      await removeColumn(openCol.id) // no-op if deleteColumn already removed it
+      await removeColumn(doneCol.id) // no-op if deleteColumn already removed it
+      await removeColumn(openCol2.id)
     }
   })
 })

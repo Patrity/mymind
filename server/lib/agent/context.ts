@@ -1,5 +1,5 @@
 // server/lib/agent/context.ts
-import { desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { projects, tasks, taskColumns } from '../../db/schema'
 import { searchMemories } from '../../services/memory'
@@ -10,7 +10,11 @@ import type { TaskColumnKind } from '../../../shared/types/task-columns'
  * Cheap live-state block injected into Bridget's prompt; rebuilt per turn.
  *
  * The open-task query filters on the joined column's `kind` ('open' | 'started') — there is
- * no `tasks.status` column anymore (cycle-58 Task 10 dropped it).
+ * no `tasks.status` column anymore (cycle-58 Task 10 dropped it). It also excludes
+ * soft-deleted rows (isNull(tasks.deletedAt)) — every other task reader does the same, and
+ * deleteColumn's 'delete' mode can leave dead rows repointed at a live sibling column (the FK
+ * is enforced against soft-deleted rows too), so without this filter a deleted column's cards
+ * would get injected into every agent turn.
  */
 export async function buildLiveContext(now: Date): Promise<string> {
   const db = useDb()
@@ -19,7 +23,7 @@ export async function buildLiveContext(now: Date): Promise<string> {
     db.select({ title: tasks.title, project: tasks.project, kind: taskColumns.kind })
       .from(tasks)
       .innerJoin(taskColumns, eq(tasks.columnId, taskColumns.id))
-      .where(inArray(taskColumns.kind, ['open', 'started']))
+      .where(and(inArray(taskColumns.kind, ['open', 'started']), isNull(tasks.deletedAt)))
       .orderBy(desc(tasks.updatedAt)).limit(10)
   ])
   const lines: string[] = []

@@ -155,6 +155,61 @@ describe('agent/context.ts buildLiveContext: open-task injection reads the colum
       await removeTask(task.id)
     }
   })
+
+  // I3 (final whole-branch review): the open-task query had no isNull(tasks.deletedAt) filter.
+  // The root is pre-existing, but this branch created a bulk path into it — deleteColumn's
+  // 'delete' mode soft-deletes a whole column of cards then repoints ALL of them, dead rows
+  // included, to a live same-kind sibling (the FK is ON DELETE NO ACTION and enforced even
+  // against soft-deleted rows). Delete a column with cards and the ghost tasks land in a live
+  // column and get injected into every agent turn from then on. Every other reader filters
+  // deleted_at; this was the sole outlier.
+  it('excludes a soft-deleted open-kind task', async () => {
+    const custom = await insertRealKindColumn('open', `Ctx Deleted ${tag()}`)
+    try {
+      const title = `compat-context-deleted-${tag()}`
+      const task = await createTask({ title, columnId: custom.id })
+      try {
+        await useDb().update(tasks).set({ deletedAt: new Date() }).where(eq(tasks.id, task.id))
+        const text = await buildLiveContext(new Date())
+        expect(text).not.toContain(title)
+      } finally {
+        await removeTask(task.id)
+      }
+    } finally {
+      await removeColumn(custom.id)
+    }
+  })
+})
+
+// I2 (final whole-branch review): edit_task's undo restored `status: prior.status`. status is
+// DERIVED from the old column's kind, so undo resolved to that kind's DEFAULT column, not the
+// specific column the task was actually sitting in — a task in a custom "Playtesting" (started)
+// column, edited to completed then undone, came back in "In Progress" (the started default),
+// not "Playtesting". TaskDTO carries columnId; undo must restore that instead of re-deriving a
+// kind from the stale status string.
+describe('edit_task tool: undo restores the exact prior column, not just its kind', () => {
+  it('undo returns a task to its CUSTOM prior column, not the kind default', async () => {
+    const custom = await insertRealKindColumn('started', `Undo Custom ${tag()}`)
+    try {
+      const created = await createTask({ title: `compat-undo-${tag()}`, columnId: custom.id })
+      try {
+        const exec = await tool('edit_task').handler({ id: created.id, status: 'completed' }, ctx)
+        const updated = exec.result as { columnId: string }
+        expect(updated.columnId).not.toBe(custom.id) // sanity: it did move
+
+        await exec.undo!()
+
+        const reread = await getTask(created.id)
+        expect(reread?.columnId).toBe(custom.id) // restored to the exact prior column…
+        const defaultStarted = await defaultColumnFor('started')
+        expect(reread?.columnId).not.toBe(defaultStarted.id) // …not the kind's default column
+      } finally {
+        await removeTask(created.id)
+      }
+    } finally {
+      await removeColumn(custom.id)
+    }
+  })
 })
 
 describe('home.ts getHome: activeTasks reads the column join', () => {

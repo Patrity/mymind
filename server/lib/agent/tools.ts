@@ -861,9 +861,12 @@ export const agentTools: AgentTool[] = [
         summary: `updated task`,
         undo: prior
           ? async () => {
+            // Restore columnId, not status: status is DERIVED from the column's kind, so
+            // re-sending it would resolve to that kind's DEFAULT column — not the specific
+            // (possibly custom) column the task was actually sitting in before this edit.
             await updateTask(id, {
               title: prior.title, description: prior.description ?? undefined,
-              status: prior.status, priority: prior.priority,
+              columnId: prior.columnId, priority: prior.priority,
               project: prior.project, dueDate: prior.dueDate ? new Date(prior.dueDate) : null
             })
             publishChange({ resource: 'task', action: 'updated', id })

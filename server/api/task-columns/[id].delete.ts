@@ -8,8 +8,11 @@ const Body = z.object({
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
-  const body = Body.parse(await readBody(event))
-  const result = await deleteColumn(id, body)
+  const parsed = Body.safeParse(await readBody(event))
+  if (!parsed.success) {
+    throw createError({ statusCode: 400, statusMessage: 'Bad Request', data: parsed.error.issues })
+  }
+  const result = await deleteColumn(id, parsed.data)
   // A refusal (last column of its kind, missing target, etc.) is a deliberate, explainable
   // no-op — surface it as a 409 with the service's reason as statusMessage so the UI can
   // render it inline, not a generic 500. deleteColumn already calls publishChange on success.

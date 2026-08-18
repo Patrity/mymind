@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull, ne, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { taskColumns, tasks } from '../db/schema'
-import { deleteTask } from './tasks'
+import { completedAtFor, deleteTask } from './tasks'
 import { publishChange } from '../utils/live-bus'
 import type { TaskColumnDTO, TaskColumnKind, TaskColumnColor } from '../../shared/types/task-columns'
 
@@ -111,10 +111,15 @@ export async function deleteColumn(
   // The last column of a kind can never be deleted, whatever happens to its cards: with no
   // `done` column, create_task(status='completed') has nothing to resolve to and
   // search_tasks(status='completed') silently returns nothing. Renaming is always available.
+  //
+  // Ordered by position (lowest first) so every "pick a sibling" decision below — the
+  // same-kind repoint target for stray dead rows in `mode: 'delete'`, and the is_default heir
+  // a few lines down — is deterministic, not an arbitrary row-order artifact.
   const siblings = await db
-    .select({ id: taskColumns.id })
+    .select({ id: taskColumns.id, position: taskColumns.position })
     .from(taskColumns)
     .where(and(eq(taskColumns.kind, col.kind), ne(taskColumns.id, id)))
+    .orderBy(asc(taskColumns.position))
   if (siblings.length === 0) {
     return {
       ok: false,
@@ -130,12 +135,18 @@ export async function deleteColumn(
     if (!targetId || targetId === id) {
       return { ok: false, reason: 'choose a different column to move these cards to', affected: 0 }
     }
-    const [target] = await db.select({ id: taskColumns.id }).from(taskColumns)
+    const [target] = await db.select({ id: taskColumns.id, kind: taskColumns.kind }).from(taskColumns)
       .where(eq(taskColumns.id, targetId)).limit(1)
     if (!target) return { ok: false, reason: 'that target column no longer exists', affected: 0 }
 
+    // completedAt is derived from the TARGET's kind, same as every other write path
+    // (resolveColumn/updateTask in server/services/tasks.ts) — status itself is already
+    // correct (derived from the joined column's kind on read), but without this a
+    // reassign-into-done left completed_at NULL and a reassign-out-of-done left a stale
+    // completed_at behind, both permanently mislabelling/misdating the row on Home's timeline.
+    const now = new Date()
     const moved = await db.update(tasks)
-      .set({ columnId: targetId, updatedAt: new Date() })
+      .set({ columnId: targetId, updatedAt: now, completedAt: completedAtFor(target.kind as TaskColumnKind, now) })
       .where(and(eq(tasks.columnId, id), isNull(tasks.deletedAt)))
       .returning({ id: tasks.id })
     affected = moved.length
@@ -143,7 +154,8 @@ export async function deleteColumn(
     // A card that was already soft-deleted before this call still carries column_id = id, and
     // tasks_column_id_task_columns_id_fk is ON DELETE NO ACTION — the DELETE below would fail
     // with a live FK violation if any row, live or dead, still points here. Repoint the
-    // stragglers too; they don't count toward `affected` since nothing user-visible moved.
+    // stragglers too; they don't count toward `affected` since nothing user-visible moved, and
+    // completedAt is deliberately left alone (dead rows, no live surface reads them).
     await db.update(tasks).set({ columnId: targetId }).where(eq(tasks.columnId, id))
   } else {
     const liveCards = await db.select({ id: tasks.id }).from(tasks)
@@ -158,6 +170,23 @@ export async function deleteColumn(
   }
 
   await db.delete(taskColumns).where(eq(taskColumns.id, id))
+
+  // is_default is an invariant, not a hint (spec: "Exactly one column per kind must carry it.
+  // Deleting, reordering, or renaming must never leave a kind without one"). The partial unique
+  // index (task_columns_one_default_per_kind) only enforces AT MOST one true row per kind — it
+  // physically cannot enforce AT LEAST one, and nothing else in this file ever reassigned
+  // is_default after the migration seed. Deleting a kind's default left that kind with ZERO
+  // defaults, permanently: defaultColumnFor(kind) throws, so every write that resolves onto
+  // that kind (create_task/edit_task, POST/PATCH /api/tasks, /move, triage's applyTask) breaks.
+  //
+  // The row is already gone above, so the index sees zero true rows for this kind right now —
+  // promoting exactly one sibling here can't collide with it (0 -> 1, never 2 at once). Heir =
+  // lowest position (the same deterministic `siblings` ordering used for the stray repoint
+  // above), not an unordered pick.
+  if (col.isDefault) {
+    await db.update(taskColumns).set({ isDefault: true }).where(eq(taskColumns.id, siblings[0]!.id))
+  }
+
   publishChange({ resource: 'task', action: 'updated', id })
   return { ok: true, affected }
 }
