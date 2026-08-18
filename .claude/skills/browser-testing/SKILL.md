@@ -96,6 +96,48 @@ Server-side (Nitro) changes hot-reload reliably. **Client `.vue` changes sometim
 ## Gotcha: port :3000 contention across projects — verify the page is actually MyMind
 This machine runs several Nuxt dev servers (e.g. `2d-rpg`). They all default to :3000, so **when you restart the mymind dev server another project can grab :3000** during the gap. Symptoms: the browser shows a *different app* (e.g. a game HUD at `/dev/hud`), or `/api/clipboard/*` starts 401ing because the session was dropped on restart. Diagnose + fix: `lsof -ti tcp:3000 | xargs ps -p` to confirm the owner is `…/mymind/…nuxt`; if not, kill the foreign listener and restart mymind's `pnpm dev`; re-login (the session cookie is lost across a restart). Then re-validate.
 
+## Gotcha: running `pnpm build` while `pnpm dev` is up corrupts the dev server
+`nuxt dev` and `nuxt build` both default to the **same** `.nuxt` buildDir. Kicking off `pnpm build`
+in the background while validating against a running `pnpm dev` races that shared directory —
+symptom: the dev server silently starts serving Nuxt's own default `<NuxtWelcome/>` scaffold
+("Welcome to Nuxt!", the framework's stock get-started page) instead of the app, even though
+`app/app.vue` is untouched and correct. It looks exactly like an app-level routing/config bug but
+isn't one. Fix: don't run `pnpm build` while `pnpm dev` is up. If you need both in a session, finish
+browser validation first, kill the dev server, then run `pnpm build`. If the dev server does get
+corrupted, killing it and restarting cleanly (fresh `.nuxt`) resolves it — no code change needed.
+
+## Gotcha: `--port` via `pnpm dev -- --port N` is unreliable — use `PORT=N` instead
+`pnpm dev -- --port 3010` sometimes silently falls back to the default port (3000, then 3001, …)
+instead of binding 3010 — inconsistent across runs, not fully understood. `PORT=3010 pnpm dev`
+(the Nitro-conventional env var) reliably binds the requested port. Always verify with
+`lsof -ti tcp:<port> | xargs ps -p` (confirm it's mymind's own `nuxt` process) rather than trusting
+the flag was honored.
+
+## Gotcha: fresh dev server can 504 on first navigation ("Outdated Optimize Dep")
+Right after a cold `pnpm dev` start (especially after a `.nuxt`/Vite cache wipe), the very first
+`playwright-cli goto` can hit Vite's dep-optimizer mid-rebuild and return a blank page with console
+errors like `504 (Outdated Optimize Dep)` or `Failed to fetch dynamically imported module`. A single
+`playwright-cli reload` resolves it (Vite serves the freshly-optimized bundle on the retry) — no
+server restart needed. Don't mistake this for the `<NuxtWelcome/>` buildDir-corruption gotcha above:
+that one renders real (wrong) content with no console errors; this one renders blank with 504s.
+
+## Gotcha: SortableJS drag needs REAL delays between synthetic mouse events, not a single jump
+A raw `mousemove(target) → mousedown → mousemove(dest) → mouseup` (one jump, no intermediate steps)
+often does **not** register as a drag — SortableJS needs enough real time between pointer events to
+cross its internal move/threshold detection. Symptom: `mouseup` completes with no error, but the DOM
+order is completely unchanged (no `onEnd` side effect at all). Fix: step the mouse in several
+`mousemove` calls with a short `sleep` (~0.15s) between each, plus a brief pause after `mousedown`
+and before the final `mouseup`:
+```bash
+playwright-cli mousemove <sx> <sy>; sleep 0.2
+playwright-cli mousedown; sleep 0.3
+playwright-cli mousemove <x1> <y1>; sleep 0.15   # repeat for 4-6 intermediate points
+playwright-cli mousemove <dx> <dy>; sleep 0.4
+playwright-cli mouseup
+```
+Verify the drag actually registered by reading DOM order (`data-id` order inside the drop
+container) **before** trusting a screenshot or moving on to the reload check.
+
 ## Checklist for a UI change
 1. Dev server up; logged in.
 2. Exercise the new UI with real clicks (reka components: click by ref).

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useSortable } from '@vueuse/integrations/useSortable'
+import { useSortable, insertNodeAt, removeNode } from '@vueuse/integrations/useSortable'
 import type Sortable from 'sortablejs'
 import type { ComponentPublicInstance } from 'vue'
 import type { TaskDTO, TaskPriority, ProjectDTO } from '~~/shared/types/tasks'
@@ -76,19 +76,28 @@ const columnsTasks = reactive<Record<string, TaskDTO[]>>({})
 
 // True while a card is held. A live refetch (SSE invalidation) that lands mid-drag
 // must NOT rebuild the columns — that would yank the card out of the user's hand.
-// onStart sets this true; onCardMoved clears it in a finally after persisting.
+// onStart sets this true; onCardMoved clears it synchronously (see onCardMoved).
 const isDragging = ref(false)
+
+// True while rebuildColumns is writing server truth into columnsTasks. The drag-persistence
+// watch below (watch(columnsTasks, ...)) must NOT treat that as a user edit to re-persist —
+// same "which direction did this change come from" problem AssignmentChain.vue solves with
+// `syncingFromProps`. Reset via nextTick (not synchronously) so it's still true when the watch's
+// own flush runs for this mutation, mirroring AssignmentChain.vue:24-26.
+let syncingFromServer = false
 
 function rebuildColumns(cols: TaskColumnDTO[], list: TaskDTO[]) {
   const byColumn: Record<string, TaskDTO[]> = Object.fromEntries(cols.map(c => [c.id, [] as TaskDTO[]]))
   for (const t of list) {
     if (byColumn[t.columnId]) byColumn[t.columnId]!.push(t)
   }
+  syncingFromServer = true
   for (const col of cols) {
     if (!columnsTasks[col.id]) columnsTasks[col.id] = []
     // Rebuild in place so the reactive proxy + Sortable observe the same array.
     columnsTasks[col.id]!.splice(0, columnsTasks[col.id]!.length, ...byColumn[col.id]!)
   }
+  nextTick(() => { syncingFromServer = false })
 }
 
 // Rebuild whenever the columns or the (priority-filtered) task data change — but
@@ -99,12 +108,16 @@ watch([columns, filteredTasks], ([cols, list]) => {
 
 // ── Drag-and-drop (useSortable, shared-group columns) ──────────────────────────
 // One sortable per column, all in group 'tasks' so cards drag between columns.
-// We read the move from DOM dataset (evt.item.dataset.id, evt.to/from.dataset.columnId)
-// — reliable during onEnd — NOT from the bound arrays (which Sortable mutates after
-// the drop, racing any read). On a cross-column move we persist + refetch() to
-// reconcile; a same-column reorder is a no-op FOR PERSISTENCE only (no order
-// field to save) — vueuse's default onUpdate still splices the local column
-// array to match the DOM, since we override onEnd, not onUpdate.
+//
+// THE TRAP (see AssignmentChain.vue:9-14 for the canonical writeup): useSortable's default
+// onUpdate (same-column reorder) splices the bound array only after a nextTick — reading that
+// array inside onEnd races the splice and persists the PRE-drop order (the row "snaps back"
+// after refetch). So persistence here is driven by a deep watch on columnsTasks, never by
+// reading list state inside onEnd. onEnd is used ONLY for the one thing it's safe to read
+// synchronously — stable DOM attributes (evt.item.dataset.id, evt.to/from.dataset.columnId) —
+// and, for a cross-column move, to make the column-array mutation happen at all (vueuse's
+// default onUpdate only wires same-list reorders; a drag between two different useSortable
+// instances/arrays isn't handled unless we do it ourselves).
 const colRefs = shallowReactive<Record<string, HTMLElement | null>>({})
 
 function setColRef(id: string, el: Element | ComponentPublicInstance | null) {
@@ -113,32 +126,109 @@ function setColRef(id: string, el: Element | ComponentPublicInstance | null) {
   return
 }
 
-async function onCardMoved(evt: Sortable.SortableEvent) {
-  const id = evt.item.dataset.id
-  const toColumnId = evt.to.dataset.columnId
+// Columns touched by the most recent drag(s) — set from onCardMoved's stable DOM attributes,
+// drained by persistTouchedColumns below. Scoping to just the touched column(s) (rather than
+// re-diffing every column on every change) means a drag inside one column never rewrites order
+// on tasks in a column the user never touched (see "don't re-sort/re-cap server data beyond the
+// drag's own reordering").
+const touchedColumnIds = new Set<string>()
+
+function onCardMoved(evt: Sortable.SortableEvent) {
+  // Clear the drag guard synchronously (same timing the pre-existing same-column branch already
+  // relied on): the model mutation below (same-column via vueuse, cross-column via the nextTick
+  // splice) lands on the microtask queue well before any SSE-driven refetch could arrive over
+  // the network, so re-opening the rebuild watcher here doesn't race it.
+  isDragging.value = false
+
   const fromColumnId = evt.from.dataset.columnId
-  // Same-column reorder: no column change to persist (no order field). This is a
-  // no-op for persistence only — vueuse's default onUpdate already spliced the
-  // local column array to match the DOM (we override onEnd, not onUpdate). We
-  // still clear the drag guard, and skip the refetch to preserve the current
-  // "visual reorder not persisted" behavior (an SSE-driven refetch would snap
-  // the DOM order back to server truth anyway).
-  if (!id || !toColumnId || toColumnId === fromColumnId) {
-    isDragging.value = false
-    return
-  }
+  const toColumnId = evt.to.dataset.columnId
+  if (!fromColumnId || !toColumnId) return
+  // Recorded synchronously, BEFORE the watch below's (deferred) callback ever runs — whichever
+  // mutation path fires it (vueuse's default onUpdate for same-column, or the splice below for
+  // cross-column) always triggers watch(columnsTasks) on its own, so this only needs to record
+  // WHICH column(s), not schedule anything itself.
+  touchedColumnIds.add(fromColumnId)
+  touchedColumnIds.add(toColumnId)
+  if (fromColumnId === toColumnId) return // same-column: vueuse's default onUpdate already handles the splice
+
+  const fromList = columnsTasks[fromColumnId]
+  const toList = columnsTasks[toColumnId]
+  const { oldIndex, newIndex } = evt
+  if (!fromList || !toList || oldIndex == null || newIndex == null) return
+
+  // Cross-column move: replicate vueuse's own moveArrayElement dance (see useSortable.js) across
+  // TWO arrays instead of one. Sortable has already physically moved evt.item into the
+  // destination container's DOM — undo that (removeNode + insertNodeAt back at its ORIGINAL
+  // position) so the DOM matches what Vue last rendered, then let Vue perform the actual visual
+  // move itself by splicing the bound arrays a tick later. Skipping the undo would leave the DOM
+  // and Vue's vnode model disagreeing about which container owns the node.
+  removeNode(evt.item)
+  insertNodeAt(evt.from, evt.item, oldIndex)
+  nextTick(() => {
+    const [moved] = fromList.splice(oldIndex, 1)
+    if (moved) toList.splice(newIndex, 0, moved)
+  })
+}
+
+// The actual persistence — reads touchedColumnIds (not the raw watch trigger) and only fires from
+// a SETTLED array state, never from onEnd itself (the trap, see onCardMoved above and
+// AssignmentChain.vue:9-14). "Settled" matters because useSortable's default onUpdate (same-
+// column reorder) — and our own cross-column splice above — both mutate the bound array in TWO
+// steps: a synchronous removal, then a Vue `nextTick`-deferred re-insertion. A deep watch on
+// columnsTasks fires on EACH step, so reading state on the FIRST fire (item removed, not yet
+// re-inserted) computes a wrong diff from a half-settled array — confirmed by instrumenting this
+// watch during browser validation: dragging a card to the top of its column right past a task
+// that has the same stored `order` produced a diff that skipped the dragged card entirely.
+// Debouncing past the mutation via a macrotask (setTimeout 0, which always runs after every
+// currently-queued microtask/nextTick has drained) guarantees we only ever read the fully-settled
+// array. `while (touchedColumnIds.size)` inside persistTouchedColumns re-drains anything a NEW
+// drag adds while a previous persist's network calls are still in flight, so a rapid second drag
+// can't get silently dropped.
+let persisting = false
+let debounceHandle: ReturnType<typeof setTimeout> | null = null
+
+function schedulePersist() {
+  if (debounceHandle != null) clearTimeout(debounceHandle)
+  debounceHandle = setTimeout(() => {
+    debounceHandle = null
+    persistTouchedColumns()
+  }, 0)
+}
+
+async function persistTouchedColumns() {
+  if (persisting) return
+  persisting = true
   try {
-    await moveTask(id, { columnId: toColumnId })
+    while (touchedColumnIds.size > 0) {
+      const colIds = [...touchedColumnIds]
+      touchedColumnIds.clear()
+      for (const colId of colIds) {
+        const list = [...(columnsTasks[colId] ?? [])]
+        for (const [order, task] of list.entries()) {
+          const patch: { columnId?: string, order?: number } = {}
+          if (task.columnId !== colId) patch.columnId = colId
+          if (task.order !== order) patch.order = order
+          if (Object.keys(patch).length === 0) continue
+          await moveTask(task.id, patch)
+        }
+      }
+    }
+    // Explicit local reconcile (each move's own SSE emit also invalidates).
+    await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to move task', description: err.data?.statusMessage ?? err.message })
+    toast.add({ color: 'error', title: 'Failed to save card order', description: err.data?.statusMessage ?? err.message })
   } finally {
-    // Re-open the watcher BEFORE refetch so the rebuild from server truth lands.
-    isDragging.value = false
-    // Explicit local reconcile (the move's own SSE emit also invalidates).
-    await refetch()
+    persisting = false
   }
 }
+
+// Deep watch on columnsTasks is what tells us a drag's mutation actually landed (see the trap
+// writeup above) — it only drives WHEN to check, never what to persist (that's touchedColumnIds).
+watch(columnsTasks, () => {
+  if (syncingFromServer) return
+  schedulePersist()
+}, { deep: true })
 
 // The column set isn't known until the (async) columns query resolves, so sortables
 // are set up lazily per column the first time it's seen, rather than in one static
