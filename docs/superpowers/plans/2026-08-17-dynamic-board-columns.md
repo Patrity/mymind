@@ -513,6 +513,12 @@ const TINT: Record<TaskColumnColor, string> = {
 **Do this only when Tasks 1-9 are complete and green.** Until now `status` has been a shadow copy
 and a rollback target; this is the point of no return.
 
+- [ ] **Step 0: One known hit, found in Task 6's review — convert it first.** `server/services/search.ts`
+(around line 82) does `meta: t.status`, a raw read of the shadow column in the global search /
+command-palette task results. It is a fifth production consumer that Tasks 4-6 all missed, harmless
+today because of the dual-write, and a guaranteed compile error the moment `status` is dropped.
+Convert it to the join pattern and cover it before Step 1's grep.
+
 - [ ] **Step 1: Prove nothing reads it.** `grep -rn "tasks.status\|\.status" server/ app/ shared/ --include='*.ts' --include='*.vue' | grep -v node_modules` and account for every hit. Hits on a `TaskDTO.status` field are fine (it is derived from the column's kind). A hit that reads or writes the DB column is a Task 4-6 gap — **fix it before proceeding, do not drop around it.**
 - [ ] **Step 2: Verify the shadow agreed with the column right up to the end** — this is the last moment the check is possible:
 
