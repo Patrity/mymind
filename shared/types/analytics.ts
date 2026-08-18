@@ -74,4 +74,8 @@ export interface PublicRigResponse {
   services: ServiceHealth[]
   /** LiteLLM tokens over the trailing 24h, or null when the metric is absent. */
   tokens24h: number | null
+  /** Models LiteLLM routed requests to in the trailing 24h, most-used first (capped). */
+  models24h: PublicRigModel[]
 }
+
+export interface PublicRigModel { model: string, requests: number }

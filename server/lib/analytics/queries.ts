@@ -96,12 +96,16 @@ export const PUBLIC_RIG_SNAPSHOT_IDS: SnapshotQueryId[] = [
   'engineRunning', 'engineWaiting', 'up', 'probes'
 ]
 
-export type PublicRigExtraQueryId = 'tokens24h'
+export type PublicRigExtraQueryId = 'tokens24h' | 'models24h'
 export const PUBLIC_RIG_EXTRA_QUERIES: Record<PublicRigExtraQueryId, string> = {
   // Same series the litellm-tokens panel and the daily rollup read; a single scalar vector.
-  tokens24h: 'sum(increase(litellm_total_tokens[24h]))'
+  tokens24h: 'sum(increase(litellm_total_tokens[24h]))',
+  // The "model roster": every model LiteLLM routed a request to in the last 24h, with counts.
+  // vLLM engines alone under-report the rig (llama.cpp, TEI, TTS, image gen all go through LiteLLM).
+  models24h: 'sum by (model) (increase(litellm_requests_total[24h])) > 0'
 }
 
 // Service ids (from snapshot.ts SERVICES) that are user-facing enough to publish. The
-// LiteLLM exporter/edge probe and Prometheus itself are plumbing and stay private.
-export const PUBLIC_RIG_SERVICE_IDS = ['vllm-coder', 'vllm-vision', 'tei', 'llama-autocomplete', 'reranker'] as const
+// LiteLLM exporter/edge probe and Prometheus itself are plumbing and stay private; the
+// vision engine is retired and would only ever read "down".
+export const PUBLIC_RIG_SERVICE_IDS = ['vllm-coder', 'tei', 'llama-autocomplete', 'reranker'] as const

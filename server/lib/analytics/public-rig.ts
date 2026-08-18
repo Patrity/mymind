@@ -12,10 +12,14 @@ const num = (r: PromVectorResult | undefined): number | null => {
   return Number.isFinite(n) ? n : null
 }
 
+/** Roster cap: the homepage strip shows a handful and tooltips the rest; nobody needs 40 rows. */
+export const PUBLIC_RIG_MODEL_CAP = 12
+
 export function buildPublicRig(
   snapshot: SnapshotResponse,
   tokens24hVec: PromVectorResult[] | undefined,
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  models24hVec: PromVectorResult[] | undefined = undefined
 ): PublicRigResponse {
   const allowed = new Set<string>(PUBLIC_RIG_SERVICE_IDS)
   return {
@@ -32,6 +36,11 @@ export function buildPublicRig(
       .filter(s => allowed.has(s.id))
       .map(s => ({ id: s.id, label: s.label, up: s.up })),
     // `sum(increase(...))` returns a single label-less sample, or nothing when the series is absent.
-    tokens24h: tokens24hVec?.length ? num(tokens24hVec[0]) : null
+    tokens24h: tokens24hVec?.length ? num(tokens24hVec[0]) : null,
+    models24h: (models24hVec ?? [])
+      .map(r => ({ model: r.metric.model ?? '?', requests: Math.round(num(r) ?? 0) }))
+      .filter(m => m.model !== '?' && m.requests > 0)
+      .sort((a, b) => b.requests - a.requests)
+      .slice(0, PUBLIC_RIG_MODEL_CAP)
   }
 }

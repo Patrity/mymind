@@ -12,7 +12,7 @@ import type { PublicRigResponse } from '../../../shared/types/analytics'
  * curated homelab status for techhivelabs.net's "Live from the rig" strip.
  *
  * Same Prometheus catalog as /api/analytics/snapshot, minus spend and power, plus a 24h
- * LiteLLM token total. Assembled by the pure `buildPublicRig` — the allow-list lives there.
+ * LiteLLM token total and the 24h model roster (models LiteLLM routed to, by request count). Assembled by the pure `buildPublicRig` — the allow-list lives there.
  *
  * Because it is unauthenticated it is cached in-process for CACHE_MS so a burst of
  * anonymous traffic costs Prometheus at most one fan-out per window, and it sends
@@ -40,12 +40,14 @@ export default defineEventHandler(async (event) => {
   const cfg = await loadAnalyticsConfig()
   let entries: [SnapshotQueryId, PromVectorResult[]][]
   let tokens24h: PromVectorResult[]
+  let models24h: PromVectorResult[]
   try {
-    ;[entries, tokens24h] = await Promise.all([
+    ;[entries, tokens24h, models24h] = await Promise.all([
       Promise.all(PUBLIC_RIG_SNAPSHOT_IDS.map(async id =>
         [id, await promInstant(cfg.prometheusUrl, SNAPSHOT_QUERIES[id])] as [SnapshotQueryId, PromVectorResult[]]
       )),
       promInstant(cfg.prometheusUrl, PUBLIC_RIG_EXTRA_QUERIES.tokens24h),
+      promInstant(cfg.prometheusUrl, PUBLIC_RIG_EXTRA_QUERIES.models24h),
     ])
   } catch {
     // Deliberately generic: the private snapshot route echoes the upstream error, but this
@@ -53,7 +55,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 502, statusMessage: 'Prometheus unreachable' })
   }
 
-  const body = buildPublicRig(buildSnapshot(Object.fromEntries(entries), cfg.gpuLabels), tokens24h)
+  const body = buildPublicRig(buildSnapshot(Object.fromEntries(entries), cfg.gpuLabels), tokens24h, Date.now(), models24h)
   cache = { at: Date.now(), body }
   setResponseHeader(event, 'Cache-Control', 'public, max-age=30, s-maxage=30')
   return body

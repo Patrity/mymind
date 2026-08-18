@@ -63,6 +63,15 @@ into `statusCode: 500`. The portfolio strip first painted "rig asleep" for that 
 raw client fetch and hides on any status-less failure or 4xx, showing "asleep" only for a 5xx that
 actually carried CORS (i.e. this handler's own generic 502) or a 200 with no GPU reporting.
 
+## Follow-up (same day)
+
+Tony's review of the live strip: the vision service is retired (it only ever showed "down"), and
+`engines` under-reports the rig because only vLLM exposes running/waiting — llama.cpp, TEI, TTS and
+image gen all route through LiteLLM. Added `models24h` (LiteLLM request roster over 24h, by
+model, most-used first, capped at 12) to the payload and dropped `vllm-vision` from
+`PUBLIC_RIG_SERVICE_IDS`. Private `SERVICES` in `snapshot.ts` still lists the vision job — that is
+the analytics dashboard's call, not this endpoint's.
+
 ## Open question
 
 The `Cache-Control` also lands on Pangolin/Cloudflare-side caches. 30s is intentional; if the

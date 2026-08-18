@@ -40,6 +40,7 @@ describe('buildPublicRig', () => {
   it('publishes only user-facing services and keeps the tri-state', () => {
     const out = buildPublicRig(snapshot, [], 1_700_000_000_000)
     expect(out.services.map(s => s.id)).toEqual(['vllm-coder', 'reranker'])
+    expect(PUBLIC_RIG_SERVICE_IDS).not.toContain('vllm-vision') // retired engine, would only ever read down
     expect(out.services.find(s => s.id === 'reranker')?.up).toBeNull()
     for (const s of out.services) expect(PUBLIC_RIG_SERVICE_IDS).toContain(s.id)
   })
@@ -49,6 +50,22 @@ describe('buildPublicRig', () => {
     expect(buildPublicRig(snapshot, [], 0).tokens24h).toBeNull()
     expect(buildPublicRig(snapshot, undefined, 0).tokens24h).toBeNull()
     expect(buildPublicRig(snapshot, [v({}, 'NaN')], 0).tokens24h).toBeNull()
+  })
+
+  it('models24h is the LiteLLM roster: most-used first, zero/unknown dropped, capped', () => {
+    const vec = [
+      v({ model: 'kokoro' }, '12'), v({ model: 'ornith-1.0-35b' }, '840.4'), v({ model: 'qwen2.5-coder-3b' }, '311'),
+      v({ model: 'ghost' }, '0'), v({}, '99')
+    ]
+    const out = buildPublicRig(snapshot, [], 0, vec)
+    expect(out.models24h).toEqual([
+      { model: 'ornith-1.0-35b', requests: 840 },
+      { model: 'qwen2.5-coder-3b', requests: 311 },
+      { model: 'kokoro', requests: 12 }
+    ])
+    const many = Array.from({ length: 30 }, (_, i) => v({ model: `m${i}` }, String(100 - i)))
+    expect(buildPublicRig(snapshot, [], 0, many).models24h).toHaveLength(12)
+    expect(buildPublicRig(snapshot, [], 0, undefined).models24h).toEqual([])
   })
 
   it('stamps generatedAt from the supplied clock', () => {
@@ -73,5 +90,9 @@ describe('public rig query catalog', () => {
 
   it('tokens24h is a bounded increase over the litellm token series', () => {
     expect(PUBLIC_RIG_EXTRA_QUERIES.tokens24h).toBe('sum(increase(litellm_total_tokens[24h]))')
+  })
+
+  it('models24h is a bounded per-model increase over the litellm request series', () => {
+    expect(PUBLIC_RIG_EXTRA_QUERIES.models24h).toBe('sum by (model) (increase(litellm_requests_total[24h])) > 0')
   })
 })
