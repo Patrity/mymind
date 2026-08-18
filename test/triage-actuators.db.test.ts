@@ -63,7 +63,10 @@ describe('applyTask', () => {
       project: 'finances', priority: 'medium'
     })
     try {
-      const [t] = await useDb().select().from(tasks).where(eq(tasks.id, r.entityId!))
+      // getTask, not a raw `select().from(tasks)` — `status` no longer lives on the tasks
+      // row (cycle-58 Task 10 dropped the shadow column); it's derived from the joined
+      // task_columns kind, which is exactly what the service's DTO mapper does.
+      const t = await getTask(r.entityId!)
       expect(t!.title).toBe('Fix the Yukon loan link')
       expect(t!.description).toContain('remind me to fix the yukon loan link')
       expect(t!.project).toBe('finances')

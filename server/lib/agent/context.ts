@@ -9,9 +9,8 @@ import type { TaskColumnKind } from '../../../shared/types/task-columns'
 /**
  * Cheap live-state block injected into Bridget's prompt; rebuilt per turn.
  *
- * The open-task query filters on the joined column's `kind` ('open' | 'started'), not
- * `tasks.status` — that shadow column is dual-written only as a Task-10 rollback target
- * (cycle-58) and this block is injected into EVERY agent turn, so it must not trust it.
+ * The open-task query filters on the joined column's `kind` ('open' | 'started') — there is
+ * no `tasks.status` column anymore (cycle-58 Task 10 dropped it).
  */
 export async function buildLiveContext(now: Date): Promise<string> {
   const db = useDb()

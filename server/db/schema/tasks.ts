@@ -6,7 +6,6 @@ export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   title: text('title').notNull(),
   description: text('description').notNull().default(''),
-  status: text('status').notNull().default('todo'),      // todo | in_progress | completed | blocked
   columnId: uuid('column_id').notNull().references(() => taskColumns.id),
   priority: text('priority').notNull().default('low'),   // low | medium | high
   dueDate: timestamp('due_date', { withTimezone: true }),
@@ -17,7 +16,6 @@ export const tasks = pgTable('tasks', {
   completedAt: timestamp('completed_at', { withTimezone: true }),
   deletedAt: timestamp('deleted_at', { withTimezone: true })
 }, (t) => [
-  index('tasks_status_idx').on(t.status),
   index('tasks_column_idx').on(t.columnId),
   index('tasks_project_idx').on(t.project)
 ])

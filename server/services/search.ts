@@ -1,6 +1,6 @@
-import { and, isNull, ilike, or } from 'drizzle-orm'
+import { and, eq, getTableColumns, isNull, ilike, or } from 'drizzle-orm'
 import { useDb } from '../db'
-import { tasks, projects } from '../db/schema'
+import { tasks, taskColumns, projects } from '../db/schema'
 import { searchDocs, searchPassages } from './documents'
 import { searchMemories } from './memory'
 import { searchImages } from './images'
@@ -10,6 +10,8 @@ import { makeSnippet } from '../lib/search/snippet'
 import { rankCandidates, type Candidate } from '../lib/search/rank'
 import { rerank } from '../lib/ai/rerank'
 import { resolveChain } from '../lib/ai/registry/resolve'
+import { statusForKind } from '../lib/tasks/status-kind'
+import type { TaskColumnKind } from '../../shared/types/task-columns'
 import type { SearchResults } from '../../shared/types/search'
 
 const RERANK_TEXT_MAX = 512
@@ -75,11 +77,16 @@ export async function searchAll(q: string): Promise<SearchResults> {
       try {
         const db = useDb()
         const pattern = `%${q}%`
-        const rows = await db.select().from(tasks)
+        // `meta` is DERIVED from the joined column's kind — there is no `tasks.status` column
+        // anymore (cycle-58 Task 10 dropped it; see status-kind.ts).
+        const rows = await db.select({ ...getTableColumns(tasks), columnKind: taskColumns.kind })
+          .from(tasks)
+          .innerJoin(taskColumns, eq(tasks.columnId, taskColumns.id))
           .where(and(isNull(tasks.deletedAt), or(ilike(tasks.title, pattern), ilike(tasks.description, pattern))))
           .limit(K)
         return rows.map((t, i): Candidate => ({
-          type: 'task', id: t.id, title: t.title, to: '/tasks', icon: 'i-lucide-square-kanban', meta: t.status,
+          type: 'task', id: t.id, title: t.title, to: '/tasks', icon: 'i-lucide-square-kanban',
+          meta: statusForKind(t.columnKind as TaskColumnKind),
           snippet: makeSnippet(t.description || t.title, q), rerankText: clip(`${t.title}\n${t.description ?? ''}`),
           lexicalExact: true, rrfRank: i
         }))

@@ -24,8 +24,8 @@ export function completedAtFor(kind: TaskColumnKind, now: Date): Date | null {
  * Resolves the target column (id + kind) for a create/update: an explicit `columnId` always
  * wins; otherwise the default column for the kind implied by `status`; otherwise the default
  * open column. The kind is returned alongside the id because every caller needs it right away
- * — to dual-write `tasks.status` (`statusForKind`) and to compute `completedAt`
- * (`completedAtFor`).
+ * — to compute `completedAt` (`completedAtFor`) and to derive the DTO's `status`
+ * (`statusForKind`).
  */
 async function resolveColumn(
   input: { columnId?: string; status?: TaskStatus }
@@ -58,8 +58,8 @@ async function kindForColumnId(columnId: string): Promise<TaskColumnKind> {
 // DTO mapper
 // ---------------------------------------------------------------------------
 
-// `status` is DERIVED from the joined column's kind, not read off `tasks.status` — that shadow
-// column exists only as a rollback target (dual-written below) and reads must not trust it.
+// `status` is DERIVED from the joined column's kind — `tasks.status` no longer exists as a
+// column (cycle-58 Task 10 dropped the dual-write shadow it used to be read from).
 function toDTO(r: typeof tasks.$inferSelect & { columnKind: string }): TaskDTO {
   return {
     id: r.id,
@@ -91,8 +91,7 @@ export async function listTasks(
 ): Promise<TaskDTO[]> {
   const db = useDb()
   const conditions = [live()]
-  // Filter on the joined column's kind, not the tasks.status shadow column — same reasoning
-  // as toDTO below: this read path must not trust the dual-write, since Task 10 drops it.
+  // Filter on the joined column's kind — same reasoning as toDTO below.
   if (filter.status) conditions.push(eq(taskColumns.kind, kindForStatus(filter.status)))
   if (filter.project) conditions.push(eq(tasks.project, filter.project))
   if (filter.columnId) conditions.push(eq(tasks.columnId, filter.columnId))
@@ -120,9 +119,7 @@ const TASK_SUMMARY_COLUMNS = () => ({
  * Deliberately NOT `toDTO` minus a field — selecting fewer columns means Postgres never
  * ships the descriptions either. `dueDate` is a `timestamp` column (see schema/tasks.ts),
  * hence `.toISOString()`. `status` is DERIVED from the joined column's kind — same reasoning
- * as toDTO above: `tasks.status` is dual-written only as a Task-10 rollback target, and this
- * projection backs the tools Claude Code calls continuously, so it must not trust it either
- * (cycle-58 Task 6).
+ * as toDTO above (cycle-58 Task 6; the column itself is gone as of Task 10).
  */
 export function toTaskSummaryDTO(r: {
   id: string, title: string, columnKind: string, priority: string,
@@ -140,7 +137,7 @@ export async function listTasksSummary(
   opts: { status?: TaskStatus, project?: string, limit: number, offset: number }
 ): Promise<TaskSummaryDTO[]> {
   const conditions = [live()]
-  // Filter on the joined column's kind, not tasks.status — see toTaskSummaryDTO above.
+  // Filter on the joined column's kind — see toTaskSummaryDTO above.
   if (opts.status) conditions.push(eq(taskColumns.kind, kindForStatus(opts.status)))
   if (opts.project) conditions.push(eq(tasks.project, opts.project))
   const rows = await useDb().select(TASK_SUMMARY_COLUMNS())
@@ -192,7 +189,6 @@ export async function createTask(input: CreateTaskInput): Promise<TaskDTO> {
     .values({
       title: input.title,
       description: input.description ?? '',
-      status: statusForKind(column.kind), // dual-write: rollback target until Task 10
       columnId: column.id,
       priority: input.priority ?? 'low',
       dueDate: input.dueDate ?? null,
@@ -230,7 +226,6 @@ export async function updateTask(id: string, patch: UpdateTaskInput): Promise<Ta
   if (patch.columnId !== undefined || patch.status !== undefined) {
     const column = await resolveColumn({ columnId: patch.columnId, status: patch.status })
     update.columnId = column.id
-    update.status = statusForKind(column.kind) // dual-write: rollback target until Task 10
     update.completedAt = completedAtFor(column.kind, now)
     resolvedKind = column.kind
   }

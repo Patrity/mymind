@@ -38,12 +38,6 @@ async function removeTask(id: string) {
   await useDb().delete(tasks).where(eq(tasks.id, id))
 }
 
-/** Reads tasks.status directly, bypassing the service/DTO layer — proves the dual-write. */
-async function rawStatus(id: string): Promise<string> {
-  const [row] = await useDb().select({ status: tasks.status }).from(tasks).where(eq(tasks.id, id)).limit(1)
-  return row!.status
-}
-
 describe('createTask column resolution', () => {
   it('status only: lands in the default column for that status\'s kind', async () => {
     const openCol = await defaultColumnFor('open')
@@ -51,7 +45,6 @@ describe('createTask column resolution', () => {
     try {
       expect(task.columnId).toBe(openCol.id)
       expect(task.status).toBe('todo')
-      expect(await rawStatus(task.id)).toBe('todo') // dual-write
     } finally {
       await removeTask(task.id)
     }
@@ -75,7 +68,6 @@ describe('createTask column resolution', () => {
       try {
         expect(task.columnId).toBe(custom.id)
         expect(task.status).toBe('in_progress')
-        expect(await rawStatus(task.id)).toBe('in_progress')
       } finally {
         await removeTask(task.id)
       }
@@ -110,7 +102,6 @@ describe('updateTask column moves and completedAt', () => {
       expect(updated?.columnId).toBe(doneCol.id)
       expect(updated?.status).toBe('completed')
       expect(updated?.completedAt).not.toBeNull()
-      expect(await rawStatus(created.id)).toBe('completed')
     } finally {
       await removeTask(created.id)
     }
@@ -126,7 +117,6 @@ describe('updateTask column moves and completedAt', () => {
         expect(updated?.columnId).toBe(shipped.id)
         expect(updated?.status).toBe('completed')
         expect(updated?.completedAt).not.toBeNull()
-        expect(await rawStatus(created.id)).toBe('completed')
       } finally {
         await removeTask(created.id)
       }
@@ -145,7 +135,6 @@ describe('updateTask column moves and completedAt', () => {
       expect(updated?.columnId).toBe(openCol.id)
       expect(updated?.status).toBe('todo')
       expect(updated?.completedAt).toBeNull()
-      expect(await rawStatus(created.id)).toBe('todo')
     } finally {
       await removeTask(created.id)
     }
@@ -153,13 +142,12 @@ describe('updateTask column moves and completedAt', () => {
 })
 
 describe('reads derive status from the column join', () => {
-  it('getTask derives status from the column\'s kind, not a stale shadow status column', async () => {
+  it('getTask derives status from the column\'s kind via a fresh read, not just the insert-time DTO', async () => {
     const started = await defaultColumnFor('started')
     const created = await createTask({ title: 'RED-8', columnId: started.id })
     try {
-      // Corrupt the shadow column directly, bypassing the service layer entirely, to prove
-      // reads don't trust it — they must re-derive status from the column join.
-      await useDb().update(tasks).set({ status: 'blocked' }).where(eq(tasks.id, created.id))
+      // A re-SELECT (not the DTO createTask already returned) — proves getTask's own join
+      // derives status correctly, independent of whatever createTask computed at insert time.
       const reread = await getTask(created.id)
       expect(reread?.status).toBe('in_progress') // derived from the 'started' column's kind
     } finally {
@@ -167,19 +155,14 @@ describe('reads derive status from the column join', () => {
     }
   })
 
-  it('listTasks filters via the joined column kind, not the corrupted shadow status column (cycle-58 Task 5)', async () => {
-    // GET /api/tasks?status=... now maps through kindForStatus and filters on taskColumns.kind
-    // rather than tasks.status directly — same "don't trust the dual-write" reasoning as
-    // getTask above. A custom, non-default 'started'-kind column plus a corrupted shadow
-    // column is what would have broken the OLD eq(tasks.status, filter.status) implementation:
-    // it would have missed this task under status:'in_progress' and wrongly matched it under
-    // status:'todo'.
+  it('listTasks filters via the joined column kind on a CUSTOM, non-default column (cycle-58 Task 5)', async () => {
+    // GET /api/tasks?status=... maps through kindForStatus and filters on taskColumns.kind.
+    // A custom, non-default 'started'-kind column (not just the seeded "In Progress") proves
+    // the filter generalizes rather than special-casing the seeded rows.
     const custom = await insertRealKindColumn('started', 'Custom Started (list filter)')
     try {
       const created = await createTask({ title: 'RED-9', columnId: custom.id })
       try {
-        await useDb().update(tasks).set({ status: 'todo' }).where(eq(tasks.id, created.id))
-
         const inProgress = await listTasks({ status: 'in_progress' })
         expect(inProgress.some(t => t.id === created.id)).toBe(true)
 

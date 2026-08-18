@@ -797,8 +797,8 @@ export const agentTools: AgentTool[] = [
       const { limit, offset } = clampPaging(a.limit as number | undefined, a.offset as number | undefined)
       // Schema stays the same closed z.enum the calling agent has always seen (widen, never
       // replace) — only the internal type narrows from `string` to `TaskStatus`, matching
-      // listTasksSummary/countTasks below, which now resolve it through the column join
-      // (kindForStatus) rather than reading tasks.status directly (cycle-58 Task 6).
+      // listTasksSummary/countTasks below, which resolve it through the column join
+      // (kindForStatus) rather than a `tasks.status` column (cycle-58 Task 6; dropped in Task 10).
       const status = a.status as TaskStatus | undefined
       const project = a.project as string | undefined
       const [items, total] = await Promise.all([
