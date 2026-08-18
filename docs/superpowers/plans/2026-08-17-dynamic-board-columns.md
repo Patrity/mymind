@@ -555,6 +555,13 @@ Expected: **0**. Any non-zero means the dual-write drifted and some consumer wro
 - [ ] **Step 2:** Update `docs/wiki/mcp.md` — the task tools' `status` param still works and what it now means.
 - [ ] **Step 3:** Mirror every changed wiki page to MyMind via `sync_document`, writing the returned `mymind_id`/`mymind_hash` back into each file's frontmatter. Check existing frontmatter first so you update rather than fork.
 - [ ] **Step 4:** Write `docs/handovers/2026-08-XX-dynamic-board-columns.md` with accurate frontmatter, the gate numbers **you measure yourself**, what the review loop caught, and every deferred item.
+- [ ] **Step 4b: Record the useSortable binding distinction** — Task 8's review established that a bare
+deep watch is correct for a `ref`-bound list (`AssignmentChain.vue`) but WRONG for a plain array nested
+in `reactive()` (`tasks.vue`), because `moveArrayElement` branches on `isRef` and only the ref path
+settles atomically. Add a one-line note to both call sites naming the distinction, so a future reader
+neither "fixes" AssignmentChain (it is fine) nor assumes a new reactive-array call site is safe with a
+bare watch (it is not).
+
 - [ ] **Step 5:** Add the cycle 58 row to `docs/superpowers/plans/00-roadmap.md`.
 - [ ] **Step 6:** Close MyMind tasks `a1575210` (blocked/subsumed → completed) and `7be76abc`. Commit.
 
