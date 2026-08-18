@@ -14,6 +14,7 @@ export function useTasks() {
     title: string
     description?: string
     status?: TaskStatus
+    columnId?: string
     priority?: 'low' | 'medium' | 'high'
     dueDate?: string | null
     project?: string | null
@@ -23,13 +24,14 @@ export function useTasks() {
     title?: string
     description?: string
     status?: TaskStatus
+    columnId?: string
     priority?: 'low' | 'medium' | 'high'
     dueDate?: string | null
     project?: string | null
     order?: number
   }) => ofetch<TaskDTO>(`/api/tasks/${id}`, { method: 'PATCH', body })
 
-  const move = (id: string, body: { status?: TaskStatus, order?: number }) =>
+  const move = (id: string, body: { status?: TaskStatus, columnId?: string, order?: number }) =>
     ofetch<TaskDTO>(`/api/tasks/${id}/move`, { method: 'POST', body })
 
   const remove = (id: string) =>
