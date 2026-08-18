@@ -15,12 +15,31 @@ const num = (r: PromVectorResult | undefined): number | null => {
 /** Roster cap: the homepage strip shows a handful and tooltips the rest; nobody needs 40 rows. */
 export const PUBLIC_RIG_MODEL_CAP = 12
 
+// LiteLLM's exporter emits an `unknown` model bucket (unattributed calls) that dwarfs the real
+// series and means nothing to a reader. Never publish it, or any unlabelled sample.
+const UNPUBLISHABLE_MODELS = new Set(['unknown', '?', ''])
+
 export function buildPublicRig(
   snapshot: SnapshotResponse,
   tokens24hVec: PromVectorResult[] | undefined,
   nowMs = Date.now(),
-  models24hVec: PromVectorResult[] | undefined = undefined
+  modelTokensVec: PromVectorResult[] | undefined = undefined,
+  modelRequestsVec: PromVectorResult[] | undefined = undefined
 ): PublicRigResponse {
+  const roster = new Map<string, { tokens: number, requests: number }>()
+  const bump = (vec: PromVectorResult[] | undefined, key: 'tokens' | 'requests') => {
+    for (const r of vec ?? []) {
+      const model = r.metric.model ?? '?'
+      if (UNPUBLISHABLE_MODELS.has(model)) continue
+      const n = Math.round(num(r) ?? 0)
+      if (n <= 0) continue
+      const row = roster.get(model) ?? { tokens: 0, requests: 0 }
+      row[key] += n
+      roster.set(model, row)
+    }
+  }
+  bump(modelTokensVec, 'tokens')
+  bump(modelRequestsVec, 'requests')
   const allowed = new Set<string>(PUBLIC_RIG_SERVICE_IDS)
   return {
     generatedAt: new Date(nowMs).toISOString(),
@@ -37,10 +56,9 @@ export function buildPublicRig(
       .map(s => ({ id: s.id, label: s.label, up: s.up })),
     // `sum(increase(...))` returns a single label-less sample, or nothing when the series is absent.
     tokens24h: tokens24hVec?.length ? num(tokens24hVec[0]) : null,
-    models24h: (models24hVec ?? [])
-      .map(r => ({ model: r.metric.model ?? '?', requests: Math.round(num(r) ?? 0) }))
-      .filter(m => m.model !== '?' && m.requests > 0)
-      .sort((a, b) => b.requests - a.requests)
+    models24h: [...roster.entries()]
+      .map(([model, v]) => ({ model, tokens: v.tokens, requests: v.requests }))
+      .sort((a, b) => b.tokens - a.tokens || b.requests - a.requests)
       .slice(0, PUBLIC_RIG_MODEL_CAP)
   }
 }

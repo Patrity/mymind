@@ -52,20 +52,22 @@ describe('buildPublicRig', () => {
     expect(buildPublicRig(snapshot, [v({}, 'NaN')], 0).tokens24h).toBeNull()
   })
 
-  it('models24h is the LiteLLM roster: most-used first, zero/unknown dropped, capped', () => {
-    const vec = [
-      v({ model: 'kokoro' }, '12'), v({ model: 'ornith-1.0-35b' }, '840.4'), v({ model: 'qwen2.5-coder-3b' }, '311'),
-      v({ model: 'ghost' }, '0'), v({}, '99')
+  it('models24h is the LiteLLM roster: ranked by tokens, requests merged in, unknown/zero dropped, capped', () => {
+    const tokens = [
+      v({ model: 'unknown' }, '16503616'), v({ model: 'openai/qwen3.6-35b-a3b' }, '590000.4'),
+      v({ model: 'huggingface/tei/Qwen/Qwen3-Embedding-4B' }, '30000'), v({ model: 'ghost' }, '0'), v({}, '99')
     ]
-    const out = buildPublicRig(snapshot, [], 0, vec)
+    const requests = [v({ model: 'openai/qwen3.6-35b-a3b' }, '15'), v({ model: 'kokoro' }, '96'), v({ model: 'unknown' }, '5')]
+    const out = buildPublicRig(snapshot, [], 0, tokens, requests)
     expect(out.models24h).toEqual([
-      { model: 'ornith-1.0-35b', requests: 840 },
-      { model: 'qwen2.5-coder-3b', requests: 311 },
-      { model: 'kokoro', requests: 12 }
+      { model: 'openai/qwen3.6-35b-a3b', tokens: 590000, requests: 15 },
+      { model: 'huggingface/tei/Qwen/Qwen3-Embedding-4B', tokens: 30000, requests: 0 },
+      { model: 'kokoro', tokens: 0, requests: 96 }
     ])
+    expect(JSON.stringify(out)).not.toContain('unknown')
     const many = Array.from({ length: 30 }, (_, i) => v({ model: `m${i}` }, String(100 - i)))
-    expect(buildPublicRig(snapshot, [], 0, many).models24h).toHaveLength(12)
-    expect(buildPublicRig(snapshot, [], 0, undefined).models24h).toEqual([])
+    expect(buildPublicRig(snapshot, [], 0, many, undefined).models24h).toHaveLength(12)
+    expect(buildPublicRig(snapshot, [], 0, undefined, undefined).models24h).toEqual([])
   })
 
   it('stamps generatedAt from the supplied clock', () => {
@@ -92,7 +94,8 @@ describe('public rig query catalog', () => {
     expect(PUBLIC_RIG_EXTRA_QUERIES.tokens24h).toBe('sum(increase(litellm_total_tokens[24h]))')
   })
 
-  it('models24h is a bounded per-model increase over the litellm request series', () => {
-    expect(PUBLIC_RIG_EXTRA_QUERIES.models24h).toBe('sum by (model) (increase(litellm_requests_total[24h])) > 0')
+  it('the roster reads bounded per-model increases over the litellm token and request series', () => {
+    expect(PUBLIC_RIG_EXTRA_QUERIES.modelTokens24h).toBe('sum by (model) (increase(litellm_total_tokens[24h])) > 0')
+    expect(PUBLIC_RIG_EXTRA_QUERIES.modelRequests24h).toBe('sum by (model) (increase(litellm_requests_total[24h])) > 0')
   })
 })

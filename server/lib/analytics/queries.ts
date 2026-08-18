@@ -96,13 +96,15 @@ export const PUBLIC_RIG_SNAPSHOT_IDS: SnapshotQueryId[] = [
   'engineRunning', 'engineWaiting', 'up', 'probes'
 ]
 
-export type PublicRigExtraQueryId = 'tokens24h' | 'models24h'
+export type PublicRigExtraQueryId = 'tokens24h' | 'modelTokens24h' | 'modelRequests24h'
 export const PUBLIC_RIG_EXTRA_QUERIES: Record<PublicRigExtraQueryId, string> = {
   // Same series the litellm-tokens panel and the daily rollup read; a single scalar vector.
   tokens24h: 'sum(increase(litellm_total_tokens[24h]))',
-  // The "model roster": every model LiteLLM routed a request to in the last 24h, with counts.
-  // vLLM engines alone under-report the rig (llama.cpp, TEI, TTS, image gen all go through LiteLLM).
-  models24h: 'sum by (model) (increase(litellm_requests_total[24h])) > 0'
+  // The "model roster": every model LiteLLM routed to in the last 24h. Ranked by tokens (the
+  // honest usage signal for LLMs), requests kept as a secondary count. vLLM engines alone
+  // under-report the rig: llama.cpp, TEI, TTS and image gen all go through LiteLLM.
+  modelTokens24h: 'sum by (model) (increase(litellm_total_tokens[24h])) > 0',
+  modelRequests24h: 'sum by (model) (increase(litellm_requests_total[24h])) > 0'
 }
 
 // Service ids (from snapshot.ts SERVICES) that are user-facing enough to publish. The
