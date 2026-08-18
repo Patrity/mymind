@@ -501,6 +501,18 @@ const TINT: Record<TaskColumnColor, string> = {
 - [ ] **Step 2:** `ColumnFormModal` — name input + colour picker over `TASK_COLUMN_COLORS` (render each swatch from the same static `TINT`/badge map; no interpolated classes). `kind` is chosen on create and **not editable afterwards** — changing it would silently reclassify every card in the column.
 - [ ] **Step 3:** `DeleteColumnModal` — states the card count with explicit singular/plural ("1 task", "3 tasks"), offers **Delete the tasks** or **Move them to →** (`USelectMenu` of remaining columns). Disable the confirm until a target is chosen in reassign mode. A 409 refusal (last of kind) renders its `reason` inline rather than as a generic error.
 - [ ] **Step 4:** Swap the 8 `<USelect>` in `tasks.vue` for `<USelectMenu>`.
+
+- [ ] **Step 4b: Finish what Task 7 half-did.** `app/pages/projects/[slug].vue:524` renders the badge
+LABEL as `task.status.replace('_',' ')` while its colour (line 525) now derives from the column. The
+moment this task lets a user rename a column, "Completed" → "Shipped" produces a correctly-recoloured
+badge that still reads "completed". Read the label from the column's name with the status as fallback:
+`columnById.get(task.columnId)?.name ?? task.status.replace('_',' ')`.
+
+- [ ] **Step 4c: `useColumnList()` is NOT SSE-wired.** `app/utils/live-dispatch.ts`'s `task` dispatch
+invalidates `['task', …]` but never `['task-columns','list']` — deliberate (see the rationale comment
+in `server/services/task-columns.ts`). So every column mutation you add here must call the query's
+`refetch()` explicitly, exactly as the other mutations in `tasks.vue` already do. A column you create
+or rename will otherwise not appear until a reload.
 - [ ] **Step 5: Browser-validate** — add a column, rename it, recolour it and confirm a task badge elsewhere in the app changes colour, reorder it by dragging the header, then delete it down **both** branches (cards deleted; cards reassigned). Attempt to delete the last `done` column and confirm the inline refusal. Screenshot.
 - [ ] **Step 6:** Commit.
 
