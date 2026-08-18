@@ -4,7 +4,9 @@ import { apiTokens } from '../db/schema'
 import { hashToken } from '../utils/api-token'
 import { isOauthTokenLive, mcpAuthChallengeHeader, oauthOrigin } from '../utils/oauth-metadata'
 
-const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i', '/api/setup', '/api/health']
+// `/api/public/**` is the deliberate home for unauthenticated, read-only, curated endpoints
+// (today: /api/public/rig for techhivelabs.net). Anything under it is internet-visible by design.
+const PUBLIC_PREFIXES = ['/api/auth', '/api/share', '/api/i', '/api/setup', '/api/health', '/api/public']
 
 export default defineEventHandler(async (event) => {
   const url = getRequestURL(event).pathname

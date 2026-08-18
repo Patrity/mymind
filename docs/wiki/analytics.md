@@ -2,7 +2,7 @@
 title: Local AI Analytics
 status: shipped
 cycle: 55
-updated: 2026-08-14
+updated: 2026-08-18
 ---
 
 # Local AI Analytics — `/analytics`
@@ -27,6 +27,22 @@ The browser never talks to Prometheus or LiteLLM. A fixed **named-query catalog*
 | `GET/PUT /api/settings/analytics-config` | Config | GET is redacted (`hasLitellmKey`, never the key); PUT zod-validates + probes a **changed** `prometheusUrl` against `/api/v1/status/buildinfo` (3s) before saving |
 
 Upstream fetches: 5s timeouts, failures → 502, panel-level isolation in the UI (one source down never blanks the page).
+
+### Public rig endpoint — `GET /api/public/rig` (2026-08-18)
+
+The one **unauthenticated** analytics route, added for techhivelabs.net's homepage "Live from the rig" strip so the portfolio does not need its own scraper/cron. `/api/public/**` is a new entry in `PUBLIC_PREFIXES` (`server/middleware/auth.ts`) — the deliberate home for read-only, curated, internet-visible endpoints; nothing else lives there yet.
+
+| | |
+|---|---|
+| Handler | `server/api/public/rig.get.ts` |
+| Fan-out | `PUBLIC_RIG_SNAPSHOT_IDS` (a named subset of `SNAPSHOT_QUERIES`: gpu info/util/mem/temp, engine running/waiting, `up`, `probes` — **no `spend`, no power**) plus `PUBLIC_RIG_EXTRA_QUERIES.tokens24h` = `sum(increase(litellm_total_tokens[24h]))`. All in `queries.ts`, the catalog remains the security boundary. |
+| Curation | Pure `buildPublicRig()` in `server/lib/analytics/public-rig.ts` copies fields **by name** into `PublicRigResponse` (`shared/types/analytics.ts`): `generatedAt`, `gpus[{label, utilPct, vramUsedBytes, vramTotalBytes, tempC}]` (no uuid), `engines[{model, running, waiting}]`, `services` filtered to `PUBLIC_RIG_SERVICE_IDS` (vllm-coder, vllm-vision, tei, llama-autocomplete, reranker — the LiteLLM exporter/edge probe and Prometheus stay private), `tokens24h` (null when the series is absent). |
+| Caching | In-process 30s (one Prometheus fan-out per window no matter how many anonymous hits) + `Cache-Control: public, max-age=30`; errors carry `max-age=15` so an outage cannot become a retry storm against the homelab. |
+| CORS | `Access-Control-Allow-Origin: *` — the payload is public by definition and the consumer is a static site on another origin. |
+| Errors | Prometheus unreachable → **502 with a generic message** (unlike the private snapshot route, which echoes the upstream error — that text carries the internal Prometheus URL). "Rig powered off" is not an error: Prometheus still answers, `gpus` is just empty, and the consumer renders that as asleep. |
+| Tests | `test/analytics-public-rig.test.ts` — allow-list (no uuid/power/spend), service filter + tri-state, tokens24h scalar/null, catalog never fans out spend/power. |
+
+Anything added to `PublicRigResponse` is visible to the whole internet — extend it in `buildPublicRig()` only, and only with fields a homepage badge needs.
 
 ### Panel catalog (ids)
 

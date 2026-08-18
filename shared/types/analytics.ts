@@ -49,3 +49,29 @@ export interface RequestLogResponse {
   pageSize: number
   totalPages: number | null // null when upstream doesn't report it
 }
+
+/**
+ * The PUBLIC, unauthenticated rig-status payload served by `GET /api/public/rig` and consumed by
+ * techhivelabs.net's "Live from the rig" strip. A deliberate, curated subset of `SnapshotResponse`:
+ * no GPU uuids, no power draw, no spend (money), no LiteLLM/Prometheus plumbing services. Anything
+ * added here is visible to the whole internet — keep it to what a homepage badge needs.
+ */
+export interface PublicRigGpu {
+  label: string
+  utilPct: number | null
+  vramUsedBytes: number | null
+  vramTotalBytes: number | null
+  tempC: number | null
+}
+
+export interface PublicRigResponse {
+  /** ISO timestamp of when this payload was assembled (server-side cache may serve it for ~30s). */
+  generatedAt: string
+  gpus: PublicRigGpu[]
+  /** vLLM engines by model name (running / waiting request counts). */
+  engines: EngineSnapshot[]
+  /** Curated user-facing services only (see PUBLIC_RIG_SERVICE_IDS). */
+  services: ServiceHealth[]
+  /** LiteLLM tokens over the trailing 24h, or null when the metric is absent. */
+  tokens24h: number | null
+}
