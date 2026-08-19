@@ -82,8 +82,11 @@ export const SNAPSHOT_QUERIES: Record<SnapshotQueryId, string> = {
   gpuPowerLimit: 'nvidia_smi_enforced_power_limit_watts',
   engineRunning: 'vllm:num_requests_running',
   engineWaiting: 'vllm:num_requests_waiting',
-  up: 'up{job=~"vllm-coder|vllm-vision|tei|llama-cpp-autocomplete|litellm|nvidia-gpu|prometheus"}',
-  probes: 'probe_success{instance=~"https://lite.costanzoclan.com|http://192.168.2.25:8883/health"}',
+  // vllm-vision was retired (stopped + disabled 2026-06-19) and its scrape job removed 2026-08-19.
+  up: 'up{job=~"vllm-coder|tei|llama-cpp-autocomplete|litellm|nvidia-gpu|prometheus"}',
+  // Every blackbox probe on the AI rig (reranker, Speaches STT, Kokoro/Chatterbox TTS, ComfyUI,
+  // Heretic llama.cpp — added to Prometheus 2026-08-19) plus the public LiteLLM edge.
+  probes: 'probe_success{instance=~"https://lite.costanzoclan.com|http://192.168.2.25:.*"}',
   spend: 'topk(10, litellm_total_spend > 0)',
 }
 
@@ -96,10 +99,19 @@ export const PUBLIC_RIG_SNAPSHOT_IDS: SnapshotQueryId[] = [
   'engineRunning', 'engineWaiting', 'up', 'probes'
 ]
 
-export type PublicRigExtraQueryId = 'tokens24h' | 'modelTokens24h' | 'modelRequests24h'
+export type PublicRigExtraQueryId
+  = 'tokens24h' | 'modelTokens24h' | 'modelRequests24h'
+    | 'vllmPrompt24h' | 'vllmGen24h' | 'llamaPrompt24h' | 'llamaGen24h'
 export const PUBLIC_RIG_EXTRA_QUERIES: Record<PublicRigExtraQueryId, string> = {
-  // Same series the litellm-tokens panel and the daily rollup read; a single scalar vector.
+  // LiteLLM GATEWAY tokens (what the litellm-tokens panel and the daily rollup read). Kept as a
+  // breakdown line only: it under-counts the rig ~7x because MyMind's voice loop and other
+  // clients call vLLM directly, so the public total counts local inference at the engines below.
   tokens24h: 'sum(increase(litellm_total_tokens[24h]))',
+  // Local inference at the source engines (complete, direct + routed): vLLM + llama.cpp counters.
+  vllmPrompt24h: 'sum(increase(vllm:prompt_tokens_total[24h]))',
+  vllmGen24h: 'sum(increase(vllm:generation_tokens_total[24h]))',
+  llamaPrompt24h: 'sum(increase(llamacpp:prompt_tokens_total[24h]))',
+  llamaGen24h: 'sum(increase(llamacpp:tokens_predicted_total[24h]))',
   // The "model roster": every model LiteLLM routed to in the last 24h. Ranked by tokens (the
   // honest usage signal for LLMs), requests kept as a secondary count. vLLM engines alone
   // under-report the rig: llama.cpp, TEI, TTS and image gen all go through LiteLLM.
@@ -108,6 +120,8 @@ export const PUBLIC_RIG_EXTRA_QUERIES: Record<PublicRigExtraQueryId, string> = {
 }
 
 // Service ids (from snapshot.ts SERVICES) that are user-facing enough to publish. The
-// LiteLLM exporter/edge probe and Prometheus itself are plumbing and stay private; the
-// vision engine is retired and would only ever read "down".
-export const PUBLIC_RIG_SERVICE_IDS = ['vllm-coder', 'tei', 'llama-autocomplete', 'reranker'] as const
+// LiteLLM exporter/edge probe and Prometheus itself are plumbing and stay private.
+export const PUBLIC_RIG_SERVICE_IDS = [
+  'vllm-coder', 'llama-heretic', 'llama-autocomplete', 'tei', 'reranker',
+  'speaches-stt', 'kokoro-tts', 'chatterbox-tts', 'comfyui'
+] as const

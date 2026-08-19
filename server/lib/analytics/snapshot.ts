@@ -6,14 +6,23 @@ import { resolveGpuLabel } from './queries'
 import type { GpuSnapshot, ServiceHealth, SnapshotResponse } from '../../../shared/types/analytics'
 
 // The fixed service list for the health strip. `match` is tested against up{}/probe_success vectors.
+// Probe targets carry a `service` label from prometheus.yml; the port fallback keeps older
+// configs working. vllm-vision was retired 2026-06-19 and its job removed 2026-08-19.
+const rigProbe = (service: string, port: string) => (l: Record<string, string>) =>
+  l.service === service || (l.instance ?? '').includes(`192.168.2.25:${port}`)
+
 const SERVICES: { id: string, label: string, source: 'up' | 'probes', match: (l: Record<string, string>) => boolean }[] = [
   { id: 'vllm-coder', label: 'vLLM Coder', source: 'up', match: l => l.job === 'vllm-coder' },
-  { id: 'vllm-vision', label: 'vLLM Vision', source: 'up', match: l => l.job === 'vllm-vision' },
+  { id: 'llama-heretic', label: 'Heretic (llama.cpp)', source: 'probes', match: rigProbe('llama-heretic', '8007') },
   { id: 'tei', label: 'TEI Embeddings', source: 'up', match: l => l.job === 'tei' },
   { id: 'llama-autocomplete', label: 'Autocomplete', source: 'up', match: l => l.job === 'llama-cpp-autocomplete' },
+  { id: 'reranker', label: 'Reranker', source: 'probes', match: rigProbe('reranker', '8883') },
+  { id: 'speaches-stt', label: 'Speaches STT', source: 'probes', match: rigProbe('speaches-stt', '8881') },
+  { id: 'kokoro-tts', label: 'Kokoro TTS', source: 'probes', match: rigProbe('kokoro-tts', '8880') },
+  { id: 'chatterbox-tts', label: 'Chatterbox TTS', source: 'probes', match: rigProbe('chatterbox-tts', '8884') },
+  { id: 'comfyui', label: 'ComfyUI', source: 'probes', match: rigProbe('comfyui', '8188') },
   { id: 'litellm-exporter', label: 'LiteLLM Exporter', source: 'up', match: l => l.job === 'litellm' },
   { id: 'litellm-edge', label: 'LiteLLM (edge)', source: 'probes', match: l => (l.instance ?? '').includes('lite.costanzoclan.com') },
-  { id: 'reranker', label: 'Reranker', source: 'probes', match: l => (l.instance ?? '').includes('8883') },
   { id: 'prometheus', label: 'Prometheus', source: 'up', match: l => l.job === 'prometheus' },
 ]
 

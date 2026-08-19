@@ -72,10 +72,27 @@ export interface PublicRigResponse {
   engines: EngineSnapshot[]
   /** Curated user-facing services only (see PUBLIC_RIG_SERVICE_IDS). */
   services: ServiceHealth[]
-  /** LiteLLM tokens over the trailing 24h, or null when the metric is absent. */
+  /**
+   * All tokens the setup pushed in the trailing 24h: Claude Code sessions (MyMind's `messages`)
+   * + local inference counted at the engines (vLLM + llama.cpp). LiteLLM-gateway tokens are NOT
+   * summed (they overlap vLLM and under-count it); they appear in the breakdown only.
+   * null only when every source is absent.
+   */
   tokens24h: number | null
+  tokensBreakdown24h: PublicRigTokenBreakdown
   /** Models LiteLLM routed to in the trailing 24h, most tokens first (capped). */
   models24h: PublicRigModel[]
+}
+
+export interface PublicRigTokenBreakdown {
+  /** Claude Code session tokens (input + output + cache read + cache creation) from Postgres. */
+  claudeCode: number | null
+  /** vLLM prompt + generation tokens at the engine (Prometheus). */
+  vllm: number | null
+  /** llama.cpp prompt + predicted tokens at the engine (Prometheus). */
+  llamacpp: number | null
+  /** LiteLLM gateway tokens — informational, overlaps vllm/llamacpp, never added to the total. */
+  litellm: number | null
 }
 
 /** `model` is LiteLLM's label as-is (often provider-prefixed, e.g. `openai/qwen3.6-35b-a3b`). */

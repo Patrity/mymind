@@ -80,6 +80,16 @@ actually carried CORS (i.e. this handler's own generic 502) or a 200 with no GPU
    embedding model. The `unknown` bucket is worth a look on the private dashboard too: the
    `litellm-requests` panel shows the same series unfiltered.
 
+3. **2026-08-19**: Tony noticed TTS/STT had no status. Root cause: only the reranker was probed on
+   the rig; Speaches, Kokoro, Chatterbox, ComfyUI and the Heretic llama.cpp had no Prometheus
+   target at all, and `vllm-vision` was still a (dead) scrape job. Fixed homelab-side (five blackbox
+   probes with `service` labels, vision job removed — see the wiki's "Homelab-side changes") and in
+   MyMind (`SERVICES` + `probes`/`up` catalog + `PUBLIC_RIG_SERVICE_IDS`). Same pass: the strip's
+   token figure was LiteLLM-gateway only (248K/24h) while vLLM's own counters read 1.73M and Claude
+   Code sessions were not counted at all. `tokens24h` is now Claude Code (Postgres, new
+   `getSessionTokensSince`) + vLLM + llama.cpp engine counters, with `tokensBreakdown24h` for the
+   strip's tooltip; the gateway figure is breakdown-only.
+
 ## Open question
 
 The `Cache-Control` also lands on Pangolin/Cloudflare-side caches. 30s is intentional; if the

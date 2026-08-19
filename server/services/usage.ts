@@ -45,6 +45,20 @@ const toTokens = (r: Record<string, unknown>): UsageTokens => ({
 const totalOf = (t: UsageTokens) => t.input + t.output + t.cacheRead + t.cacheCreation
 
 /**
+ * Total Claude Code session tokens (input + output + cache read + cache creation, sidechains
+ * included) since `start`. ONE aggregation over `messages` (indexed on created_at), no pricing —
+ * the public rig endpoint reads this every ~30s, so it must stay this cheap.
+ */
+export async function getSessionTokensSince(start: Date): Promise<number> {
+  const r = await useDb().execute(sql`
+    select ${TOKEN_SUMS}
+    from messages
+    where usage is not null ${sinceClause(start)}`)
+  const row = (r.rows as Record<string, unknown>[])[0] ?? {}
+  return totalOf(toTokens(row))
+}
+
+/**
  * Range-key entry point for the Usage tab (cycle 55). Home (cycle 56) has its own
  * range vocabulary and calls `getUsageSince` directly with a Date — the two surfaces
  * must NOT share a range enum (see the comment in shared/types/usage.ts).

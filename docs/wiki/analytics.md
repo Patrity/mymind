@@ -2,7 +2,7 @@
 title: Local AI Analytics
 status: shipped
 cycle: 55
-updated: 2026-08-18
+updated: 2026-08-19
 ---
 
 # Local AI Analytics — `/analytics`
@@ -36,11 +36,13 @@ The one **unauthenticated** analytics route, added for techhivelabs.net's homepa
 |---|---|
 | Handler | `server/api/public/rig.get.ts` |
 | Fan-out | `PUBLIC_RIG_SNAPSHOT_IDS` (a named subset of `SNAPSHOT_QUERIES`: gpu info/util/mem/temp, engine running/waiting, `up`, `probes` — **no `spend`, no power**) plus `PUBLIC_RIG_EXTRA_QUERIES`: `tokens24h` = `sum(increase(litellm_total_tokens[24h]))`, plus the "model roster" pair `modelTokens24h` = `sum by (model) (increase(litellm_total_tokens[24h])) > 0` and `modelRequests24h` = the same over `litellm_requests_total`. All in `queries.ts`, the catalog remains the security boundary. |
-| Curation | Pure `buildPublicRig()` in `server/lib/analytics/public-rig.ts` copies fields **by name** into `PublicRigResponse` (`shared/types/analytics.ts`): `generatedAt`, `gpus[{label, utilPct, vramUsedBytes, vramTotalBytes, tempC}]` (no uuid), `engines[{model, running, waiting}]`, `services` filtered to `PUBLIC_RIG_SERVICE_IDS` (vllm-coder, tei, llama-autocomplete, reranker — the LiteLLM exporter/edge probe and Prometheus stay private; the retired vllm-vision engine was dropped 2026-08-18 because it only ever read "down"), `tokens24h` (null when the series is absent), `models24h[{model, tokens, requests}]` (models LiteLLM routed to in 24h, ranked by tokens then requests, capped at `PUBLIC_RIG_MODEL_CAP` = 12; the exporter's `unknown` bucket and unlabelled samples are never published, `model` is LiteLLM's provider-prefixed label as-is). |
+| Curation | Pure `buildPublicRig()` in `server/lib/analytics/public-rig.ts` copies fields **by name** into `PublicRigResponse` (`shared/types/analytics.ts`): `generatedAt`, `gpus[{label, utilPct, vramUsedBytes, vramTotalBytes, tempC}]` (no uuid), `engines[{model, running, waiting}]`, `services` filtered to `PUBLIC_RIG_SERVICE_IDS` (vllm-coder, llama-heretic, llama-autocomplete, tei, reranker, speaches-stt, kokoro-tts, chatterbox-tts, comfyui — the LiteLLM exporter/edge probe and Prometheus stay private; the retired vllm-vision engine was dropped 2026-08-18), `tokens24h` + `tokensBreakdown24h{claudeCode, vllm, llamacpp, litellm}` (see **Token accounting** below), `models24h[{model, tokens, requests}]` (models LiteLLM routed to in 24h, ranked by tokens then requests, capped at `PUBLIC_RIG_MODEL_CAP` = 12; the exporter's `unknown` bucket and unlabelled samples are never published, `model` is LiteLLM's provider-prefixed label as-is). |
 | Caching | In-process 30s (one Prometheus fan-out per window no matter how many anonymous hits) + `Cache-Control: public, max-age=30`; errors carry `max-age=15` so an outage cannot become a retry storm against the homelab. |
 | CORS | `Access-Control-Allow-Origin: *` — the payload is public by definition and the consumer is a static site on another origin. |
 | Errors | Prometheus unreachable → **502 with a generic message** (unlike the private snapshot route, which echoes the upstream error — that text carries the internal Prometheus URL). "Rig powered off" is not an error: Prometheus still answers, `gpus` is just empty, and the consumer renders that as asleep. |
-| Tests | `test/analytics-public-rig.test.ts` — allow-list (no uuid/power/spend), service filter + tri-state, tokens24h scalar/null, catalog never fans out spend/power. |
+| Tests | `test/analytics-public-rig.test.ts` — allow-list (no uuid/power/spend), service filter + tri-state, token accounting (sum/partial/null, gateway never summed), roster ranking, catalog never fans out spend/power. |
+
+**Token accounting (2026-08-19).** `tokens24h` is *everything the setup pushed in 24h*: **Claude Code sessions** (`getSessionTokensSince(now-24h)` in `server/services/usage.ts` — one aggregation over `messages`, input + output + cache read + cache creation, sidechains included, no pricing) **plus local inference counted at the engines** — `vllm:prompt_tokens_total + vllm:generation_tokens_total` and `llamacpp:prompt_tokens_total + llamacpp:tokens_predicted_total`, each `sum(increase(...[24h]))`. The **LiteLLM gateway** figure (`litellm_total_tokens`) is returned in `tokensBreakdown24h.litellm` only and never summed: it overlaps the engine counters for routed traffic and under-counts them badly (measured 2026-08-19: gateway 248K vs vLLM 1.73M — MyMind's voice loop and other clients call `:8004` directly). A Postgres failure degrades `claudeCode` to `null` instead of 502ing; `tokens24h` is `null` only when every source is absent (a gateway-only sample is not a total).
 
 Anything added to `PublicRigResponse` is visible to the whole internet — extend it in `buildPublicRig()` only, and only with fields a homepage badge needs.
 
@@ -144,7 +146,13 @@ The resolution input is deliberately the **canonical** model set — every model
 
 $25,267.88 API-equivalent value, 26.56B tokens (95.5% cache reads), 2,671 agent dispatches across 454 sessions.
 
-## Homelab-side change (2026-07-06)
+## Homelab-side changes
+
+### 2026-08-19 — rig service probes + vision job retired
+
+Prometheus on LXC 111 (`/etc/prometheus/prometheus.yml`, backup `prometheus.yml.bak-rig-probes-20260819`, `promtool` validated, `systemctl reload`) gained five **blackbox-http** targets on the AI rig, each with a `service` label: `http://192.168.2.25:8880/health` (kokoro-tts), `:8881/health` (speaches-stt), `:8884/openapi.json` (chatterbox-tts — it has no `/health`), `:8188/system_stats` (comfyui), `:8007/health` (llama-heretic). All six rig probes (with the reranker) reported `ok=1` immediately. The **`vllm-vision` scrape job was removed** (engine stopped + disabled 2026-06-19, `up=0` ever since). In MyMind: `SNAPSHOT_QUERIES.probes` now matches `http://192.168.2.25:.*` (every rig probe) and `up` no longer names vllm-vision; `SERVICES` in `snapshot.ts` drops vLLM Vision and adds Heretic (llama.cpp), Speaches STT, Kokoro TTS, Chatterbox TTS, ComfyUI — matched by the probe's `service` label with a port fallback (`rigProbe()`). Still unmonitored: nothing on the rig (the llama.cpp `/metrics` for autocomplete is scraped with its API key; Heretic's `/metrics` would need its key added as a job if per-model token counts for it are ever wanted — today it is health-probed only, and its tokens are not in the `llamacpp:*` sums).
+
+### 2026-07-06
 
 Added the missing **`vllm-vision`** scrape job (`192.168.2.25:8005`, Bearer `VllmCoderTest2026`, 30s) to Prometheus on LXC 111 (`promtool` validated; backup at `prometheus.yml.bak-vllm-vision`). The homelab AI-stack doc in MyMind gained a **Monitoring** section (Prometheus/Grafana/exporter inventory — previously undocumented). At change time the vision service was **stopped** (chip correctly red) and the Zotac near-idle — flagged to Tony to confirm intended rig state.
 

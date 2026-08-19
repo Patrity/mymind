@@ -4,6 +4,8 @@ import { SNAPSHOT_QUERIES, PUBLIC_RIG_SNAPSHOT_IDS, PUBLIC_RIG_EXTRA_QUERIES } f
 import type { SnapshotQueryId } from '../../lib/analytics/queries'
 import { buildSnapshot } from '../../lib/analytics/snapshot'
 import { buildPublicRig } from '../../lib/analytics/public-rig'
+import type { PublicRigExtras } from '../../lib/analytics/public-rig'
+import { getSessionTokensSince } from '../../services/usage'
 import type { PromVectorResult } from '../../lib/analytics/prom'
 import type { PublicRigResponse } from '../../../shared/types/analytics'
 
@@ -11,8 +13,9 @@ import type { PublicRigResponse } from '../../../shared/types/analytics'
  * GET /api/public/rig — PUBLIC (see PUBLIC_PREFIXES in middleware/auth.ts), read-only,
  * curated homelab status for techhivelabs.net's "Live from the rig" strip.
  *
- * Same Prometheus catalog as /api/analytics/snapshot, minus spend and power, plus a 24h
- * LiteLLM token total and the 24h model roster (models LiteLLM routed to, ranked by tokens). Assembled by the pure `buildPublicRig` — the allow-list lives there.
+ * Same Prometheus catalog as /api/analytics/snapshot, minus spend and power, plus the 24h
+ * token picture (Claude Code sessions from Postgres + vLLM/llama.cpp engine counters, with the
+ * LiteLLM gateway figure as a breakdown line) and the 24h model roster. Assembled by the pure `buildPublicRig` — the allow-list lives there.
  *
  * Because it is unauthenticated it is cached in-process for CACHE_MS so a burst of
  * anonymous traffic costs Prometheus at most one fan-out per window, and it sends
@@ -38,26 +41,35 @@ export default defineEventHandler(async (event) => {
   }
 
   const cfg = await loadAnalyticsConfig()
+  const q = (expr: string) => promInstant(cfg.prometheusUrl, expr)
+  const X = PUBLIC_RIG_EXTRA_QUERIES
   let entries: [SnapshotQueryId, PromVectorResult[]][]
-  let tokens24h: PromVectorResult[]
-  let modelTokens: PromVectorResult[]
-  let modelRequests: PromVectorResult[]
+  let extras: PublicRigExtras
   try {
-    ;[entries, tokens24h, modelTokens, modelRequests] = await Promise.all([
+    const [snap, tokens24h, modelTokens, modelRequests, vllmPrompt, vllmGen, llamaPrompt, llamaGen] = await Promise.all([
       Promise.all(PUBLIC_RIG_SNAPSHOT_IDS.map(async id =>
-        [id, await promInstant(cfg.prometheusUrl, SNAPSHOT_QUERIES[id])] as [SnapshotQueryId, PromVectorResult[]]
+        [id, await q(SNAPSHOT_QUERIES[id])] as [SnapshotQueryId, PromVectorResult[]]
       )),
-      promInstant(cfg.prometheusUrl, PUBLIC_RIG_EXTRA_QUERIES.tokens24h),
-      promInstant(cfg.prometheusUrl, PUBLIC_RIG_EXTRA_QUERIES.modelTokens24h),
-      promInstant(cfg.prometheusUrl, PUBLIC_RIG_EXTRA_QUERIES.modelRequests24h),
+      q(X.tokens24h), q(X.modelTokens24h), q(X.modelRequests24h),
+      q(X.vllmPrompt24h), q(X.vllmGen24h), q(X.llamaPrompt24h), q(X.llamaGen24h),
     ])
+    entries = snap
+    extras = { tokens24h, modelTokens, modelRequests, vllmPrompt, vllmGen, llamaPrompt, llamaGen }
   } catch {
     // Deliberately generic: the private snapshot route echoes the upstream error, but this
     // route is public and the message would carry the internal Prometheus URL.
     throw createError({ statusCode: 502, statusMessage: 'Prometheus unreachable' })
   }
 
-  const body = buildPublicRig(buildSnapshot(Object.fromEntries(entries), cfg.gpuLabels), tokens24h, Date.now(), modelTokens, modelRequests)
+  // Claude Code tokens come from Postgres, not Prometheus. A DB hiccup must not take the
+  // whole strip down with it: the breakdown line just reads null.
+  try {
+    extras.claudeCodeTokens = await getSessionTokensSince(new Date(Date.now() - 24 * 60 * 60 * 1000))
+  } catch {
+    extras.claudeCodeTokens = null
+  }
+
+  const body = buildPublicRig(buildSnapshot(Object.fromEntries(entries), cfg.gpuLabels), extras)
   cache = { at: Date.now(), body }
   setResponseHeader(event, 'Cache-Control', 'public, max-age=30, s-maxage=30')
   return body

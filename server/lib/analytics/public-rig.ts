@@ -19,12 +19,32 @@ export const PUBLIC_RIG_MODEL_CAP = 12
 // series and means nothing to a reader. Never publish it, or any unlabelled sample.
 const UNPUBLISHABLE_MODELS = new Set(['unknown', '?', ''])
 
+export interface PublicRigExtras {
+  /** LiteLLM gateway total (scalar vector). */
+  tokens24h?: PromVectorResult[]
+  modelTokens?: PromVectorResult[]
+  modelRequests?: PromVectorResult[]
+  vllmPrompt?: PromVectorResult[]
+  vllmGen?: PromVectorResult[]
+  llamaPrompt?: PromVectorResult[]
+  llamaGen?: PromVectorResult[]
+  /** Claude Code session tokens over the window, from Postgres (null when the DB read failed). */
+  claudeCodeTokens?: number | null
+}
+
+const scalar = (vec: PromVectorResult[] | undefined): number | null =>
+  vec?.length ? num(vec[0]) : null
+
+/** Sum of nullable parts; null only when every part is null. */
+const sumNullable = (...parts: (number | null | undefined)[]): number | null => {
+  const present = parts.filter((p): p is number => typeof p === 'number' && Number.isFinite(p))
+  return present.length ? present.reduce((a, b) => a + b, 0) : null
+}
+
 export function buildPublicRig(
   snapshot: SnapshotResponse,
-  tokens24hVec: PromVectorResult[] | undefined,
-  nowMs = Date.now(),
-  modelTokensVec: PromVectorResult[] | undefined = undefined,
-  modelRequestsVec: PromVectorResult[] | undefined = undefined
+  extras: PublicRigExtras = {},
+  nowMs = Date.now()
 ): PublicRigResponse {
   const roster = new Map<string, { tokens: number, requests: number }>()
   const bump = (vec: PromVectorResult[] | undefined, key: 'tokens' | 'requests') => {
@@ -38,8 +58,17 @@ export function buildPublicRig(
       roster.set(model, row)
     }
   }
-  bump(modelTokensVec, 'tokens')
-  bump(modelRequestsVec, 'requests')
+  bump(extras.modelTokens, 'tokens')
+  bump(extras.modelRequests, 'requests')
+
+  const round = (n: number | null) => (n == null ? null : Math.round(n))
+  const breakdown = {
+    claudeCode: round(extras.claudeCodeTokens ?? null),
+    vllm: round(sumNullable(scalar(extras.vllmPrompt), scalar(extras.vllmGen))),
+    llamacpp: round(sumNullable(scalar(extras.llamaPrompt), scalar(extras.llamaGen))),
+    litellm: round(scalar(extras.tokens24h))
+  }
+
   const allowed = new Set<string>(PUBLIC_RIG_SERVICE_IDS)
   return {
     generatedAt: new Date(nowMs).toISOString(),
@@ -54,8 +83,10 @@ export function buildPublicRig(
     services: snapshot.services
       .filter(s => allowed.has(s.id))
       .map(s => ({ id: s.id, label: s.label, up: s.up })),
-    // `sum(increase(...))` returns a single label-less sample, or nothing when the series is absent.
-    tokens24h: tokens24hVec?.length ? num(tokens24hVec[0]) : null,
+    // The total deliberately excludes the LiteLLM gateway figure: it overlaps the engine counters
+    // (routed vLLM/llama.cpp traffic) and under-counts them (direct callers bypass the gateway).
+    tokens24h: sumNullable(breakdown.claudeCode, breakdown.vllm, breakdown.llamacpp),
+    tokensBreakdown24h: breakdown,
     models24h: [...roster.entries()]
       .map(([model, v]) => ({ model, tokens: v.tokens, requests: v.requests }))
       .sort((a, b) => b.tokens - a.tokens || b.requests - a.requests)
