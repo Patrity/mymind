@@ -21,6 +21,7 @@ import { clampPaging, buildPage } from './paging'
 import { docReceipt, docNotFound, docNotFoundAtPath, divergenceReport } from './receipt'
 import { decideSync, hashBody } from './sync'
 import type { DocumentDTO } from '../../../shared/types/documents'
+import type { TaskStatus } from '../../../shared/types/tasks'
 
 /**
  * Apply path/metadata after a sync's content decision has already succeeded.
@@ -794,7 +795,11 @@ export const agentTools: AgentTool[] = [
     },
     handler: async (a) => {
       const { limit, offset } = clampPaging(a.limit as number | undefined, a.offset as number | undefined)
-      const status = a.status as string | undefined
+      // Schema stays the same closed z.enum the calling agent has always seen (widen, never
+      // replace) — only the internal type narrows from `string` to `TaskStatus`, matching
+      // listTasksSummary/countTasks below, which resolve it through the column join
+      // (kindForStatus) rather than a `tasks.status` column (cycle-58 Task 6; dropped in Task 10).
+      const status = a.status as TaskStatus | undefined
       const project = a.project as string | undefined
       const [items, total] = await Promise.all([
         listTasksSummary({ status, project, limit, offset }),
@@ -856,9 +861,12 @@ export const agentTools: AgentTool[] = [
         summary: `updated task`,
         undo: prior
           ? async () => {
+            // Restore columnId, not status: status is DERIVED from the column's kind, so
+            // re-sending it would resolve to that kind's DEFAULT column — not the specific
+            // (possibly custom) column the task was actually sitting in before this edit.
             await updateTask(id, {
               title: prior.title, description: prior.description ?? undefined,
-              status: prior.status, priority: prior.priority,
+              columnId: prior.columnId, priority: prior.priority,
               project: prior.project, dueDate: prior.dueDate ? new Date(prior.dueDate) : null
             })
             publishChange({ resource: 'task', action: 'updated', id })

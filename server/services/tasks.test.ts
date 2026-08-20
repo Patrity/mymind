@@ -5,7 +5,7 @@ const row = {
   id: 't1',
   title: 'Do the thing',
   description: 'x'.repeat(20_000),
-  status: 'todo',
+  columnKind: 'open', // -> statusForKind('open') === 'todo'
   priority: 'high',
   dueDate: null,
   project: 'mymind',

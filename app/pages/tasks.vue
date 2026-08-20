@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { useSortable } from '@vueuse/integrations/useSortable'
+import { useSortable, insertNodeAt, removeNode } from '@vueuse/integrations/useSortable'
 import type Sortable from 'sortablejs'
 import type { ComponentPublicInstance } from 'vue'
-import type { TaskDTO, TaskStatus, TaskPriority, ProjectDTO } from '~~/shared/types/tasks'
+import type { TaskDTO, TaskPriority, ProjectDTO } from '~~/shared/types/tasks'
+import type { TaskColumnDTO, TaskColumnColor } from '~~/shared/types/task-columns'
 
 definePageMeta({ title: 'Tasks' })
 
 const { useTaskList, create: createTask, update: updateTask, move: moveTask, remove: removeTask } = useTasks()
+const { useColumnList, reorder: reorderColumns } = useTaskColumns()
 const { useProjectList } = useProjects()
 const toast = useToast()
 
@@ -28,16 +30,35 @@ const { data: taskData, refetch, isPending } = useTaskList(
   () => (filterProject.value !== FILTER_ALL ? filterProject.value : undefined)
 )
 const tasks = computed<TaskDTO[]>(() => taskData.value ?? [])
-// Show the skeleton only on the very first fetch (no data yet).
-const loading = computed(() => isPending.value && !taskData.value)
 
-// ── Column definitions ────────────────────────────────────────────────────────
-const COLUMNS: { key: TaskStatus, label: string }[] = [
-  { key: 'todo', label: 'Todo' },
-  { key: 'in_progress', label: 'In Progress' },
-  { key: 'completed', label: 'Completed' },
-  { key: 'blocked', label: 'Blocked' }
-]
+// ── Column definitions (server data, NOT hardcoded) ─────────────────────────────
+// GET /api/task-columns already returns rows ordered by `position` — render that
+// order as-is, never re-sort or re-cap it client-side.
+const { data: columnsData, isPending: isColumnsPending, refetch: refetchColumns } = useColumnList()
+const columns = computed<TaskColumnDTO[]>(() => columnsData.value ?? [])
+
+// Show the skeleton until BOTH the tasks and the columns have loaded at least once.
+const loading = computed(() =>
+  (isPending.value && !taskData.value) || (isColumnsPending.value && !columnsData.value)
+)
+// A fixed placeholder count for the loading skeleton — the real column count isn't known
+// until the columns query resolves (which is exactly what `loading` is gating on).
+const SKELETON_COLUMN_COUNT = 4
+
+// Column colour arrives as DATA (column.color), so the tint can't be a constructed class
+// like `bg-${column.color}/5` — Tailwind's scanner only emits classes it can see literally
+// in source, so an interpolated name gets purged from the build and the column renders with
+// no background at all. This static map keeps every class string literal so the scanner
+// picks it up.
+const TINT: Record<TaskColumnColor, string> = {
+  primary: 'bg-primary/5',
+  secondary: 'bg-secondary/5',
+  success: 'bg-success/5',
+  info: 'bg-info/5',
+  warning: 'bg-warning/5',
+  error: 'bg-error/5',
+  neutral: 'bg-elevated'
+}
 
 // Priority filter is client-side only (project is handled server-side by the query).
 const filteredTasks = computed(() => {
@@ -46,100 +67,298 @@ const filteredTasks = computed(() => {
   })
 })
 
-// Mutable per-column arrays that useSortable splices in place. Each column binds
-// to its OWN array so Sortable's in-place mutation doesn't fight a shared list.
-// Rebuilt from server truth via the drag-guarded watcher below.
-const columnsTasks = reactive(
-  Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]]))
-) as Record<TaskStatus, TaskDTO[]>
+// Mutable per-column arrays that useSortable splices in place, keyed by column id
+// (not status — a board can carry several columns of the same kind). Each column
+// binds to its OWN array so Sortable's in-place mutation doesn't fight a shared
+// list. Rebuilt from server truth via the drag-guarded watcher below. Populated
+// lazily as columns arrive (the columns query is async), not from a static list.
+const columnsTasks = reactive<Record<string, TaskDTO[]>>({})
 
 // True while a card is held. A live refetch (SSE invalidation) that lands mid-drag
 // must NOT rebuild the columns — that would yank the card out of the user's hand.
-// onStart sets this true; onCardMoved clears it in a finally after persisting.
+// onStart sets this true; onCardMoved clears it synchronously (see onCardMoved).
 const isDragging = ref(false)
 
-function rebuildColumns(list: TaskDTO[]) {
-  const byStatus = Object.fromEntries(COLUMNS.map(c => [c.key, [] as TaskDTO[]])) as Record<TaskStatus, TaskDTO[]>
+// True while rebuildColumns is writing server truth into columnsTasks. The drag-persistence
+// watch below (watch(columnsTasks, ...)) must NOT treat that as a user edit to re-persist —
+// same "which direction did this change come from" problem AssignmentChain.vue solves with
+// `syncingFromProps`. Reset via nextTick (not synchronously) so it's still true when the watch's
+// own flush runs for this mutation, mirroring AssignmentChain.vue:24-26.
+let syncingFromServer = false
+
+function rebuildColumns(cols: TaskColumnDTO[], list: TaskDTO[]) {
+  const byColumn: Record<string, TaskDTO[]> = Object.fromEntries(cols.map(c => [c.id, [] as TaskDTO[]]))
   for (const t of list) {
-    if (byStatus[t.status]) byStatus[t.status].push(t)
+    if (byColumn[t.columnId]) byColumn[t.columnId]!.push(t)
   }
-  for (const col of COLUMNS) {
+  syncingFromServer = true
+  for (const col of cols) {
+    if (!columnsTasks[col.id]) columnsTasks[col.id] = []
     // Rebuild in place so the reactive proxy + Sortable observe the same array.
-    columnsTasks[col.key].splice(0, columnsTasks[col.key].length, ...byStatus[col.key])
+    columnsTasks[col.id]!.splice(0, columnsTasks[col.id]!.length, ...byColumn[col.id]!)
   }
+  nextTick(() => { syncingFromServer = false })
 }
 
-// Rebuild whenever the (priority-filtered) data changes — but never mid-drag.
-watch(filteredTasks, (list) => {
-  if (!isDragging.value) rebuildColumns(list)
+// Rebuild whenever the columns or the (priority-filtered) task data change — but
+// never mid-drag.
+watch([columns, filteredTasks], ([cols, list]) => {
+  if (!isDragging.value) rebuildColumns(cols, list)
 }, { immediate: true })
 
 // ── Drag-and-drop (useSortable, shared-group columns) ──────────────────────────
 // One sortable per column, all in group 'tasks' so cards drag between columns.
-// We read the move from DOM dataset (evt.item.dataset.id, evt.to/from.dataset.status)
-// — reliable during onEnd — NOT from the bound arrays (which Sortable mutates after
-// the drop, racing any read). On a cross-column move we persist + refetch() to
-// reconcile; a same-column reorder is a no-op FOR PERSISTENCE only (no order
-// field to save) — vueuse's default onUpdate still splices the local column
-// array to match the DOM, since we override onEnd, not onUpdate.
-const colRefs = shallowReactive(
-  Object.fromEntries(COLUMNS.map(c => [c.key, null])) as Record<TaskStatus, HTMLElement | null>
-)
+//
+// THE TRAP (see AssignmentChain.vue:9-14 for the canonical writeup): useSortable's default
+// onUpdate (same-column reorder) splices the bound array only after a nextTick — reading that
+// array inside onEnd races the splice and persists the PRE-drop order (the row "snaps back"
+// after refetch). So persistence here is driven by a deep watch on columnsTasks, never by
+// reading list state inside onEnd. onEnd is used ONLY for the one thing it's safe to read
+// synchronously — stable DOM attributes (evt.item.dataset.id, evt.to/from.dataset.columnId) —
+// and, for a cross-column move, to make the column-array mutation happen at all (vueuse's
+// default onUpdate only wires same-list reorders; a drag between two different useSortable
+// instances/arrays isn't handled unless we do it ourselves).
+const colRefs = shallowReactive<Record<string, HTMLElement | null>>({})
 
-function setColRef(key: TaskStatus, el: Element | ComponentPublicInstance | null) {
+function setColRef(id: string, el: Element | ComponentPublicInstance | null) {
   // Vue function refs must return void — wrap the assignment in a block statement.
-  colRefs[key] = (el as HTMLElement | null) ?? null
+  colRefs[id] = (el as HTMLElement | null) ?? null
   return
 }
 
-async function onCardMoved(evt: Sortable.SortableEvent) {
-  const id = evt.item.dataset.id
-  const toStatus = evt.to.dataset.status as TaskStatus | undefined
-  const fromStatus = evt.from.dataset.status as TaskStatus | undefined
-  // Same-column reorder: no status change to persist (no order field). This is a
-  // no-op for persistence only — vueuse's default onUpdate already spliced the
-  // local column array to match the DOM (we override onEnd, not onUpdate). We
-  // still clear the drag guard, and skip the refetch to preserve the current
-  // "visual reorder not persisted" behavior (an SSE-driven refetch would snap
-  // the DOM order back to server truth anyway).
-  if (!id || !toStatus || toStatus === fromStatus) {
-    isDragging.value = false
-    return
-  }
+// Columns touched by the most recent drag(s) — set from onCardMoved's stable DOM attributes,
+// drained by persistTouchedColumns below. Scoping to just the touched column(s) (rather than
+// re-diffing every column on every change) means a drag inside one column never rewrites order
+// on tasks in a column the user never touched (see "don't re-sort/re-cap server data beyond the
+// drag's own reordering").
+const touchedColumnIds = new Set<string>()
+
+function onCardMoved(evt: Sortable.SortableEvent) {
+  // Clear the drag guard synchronously (same timing the pre-existing same-column branch already
+  // relied on): the model mutation below (same-column via vueuse, cross-column via the nextTick
+  // splice) lands on the microtask queue well before any SSE-driven refetch could arrive over
+  // the network, so re-opening the rebuild watcher here doesn't race it.
+  isDragging.value = false
+
+  const fromColumnId = evt.from.dataset.columnId
+  const toColumnId = evt.to.dataset.columnId
+  if (!fromColumnId || !toColumnId) return
+  // Recorded synchronously, BEFORE the watch below's (deferred) callback ever runs — whichever
+  // mutation path fires it (vueuse's default onUpdate for same-column, or the splice below for
+  // cross-column) always triggers watch(columnsTasks) on its own, so this only needs to record
+  // WHICH column(s), not schedule anything itself.
+  touchedColumnIds.add(fromColumnId)
+  touchedColumnIds.add(toColumnId)
+  if (fromColumnId === toColumnId) return // same-column: vueuse's default onUpdate already handles the splice
+
+  const fromList = columnsTasks[fromColumnId]
+  const toList = columnsTasks[toColumnId]
+  const { oldIndex, newIndex } = evt
+  if (!fromList || !toList || oldIndex == null || newIndex == null) return
+
+  // Cross-column move: replicate vueuse's own moveArrayElement dance (see useSortable.js) across
+  // TWO arrays instead of one. Sortable has already physically moved evt.item into the
+  // destination container's DOM — undo that (removeNode + insertNodeAt back at its ORIGINAL
+  // position) so the DOM matches what Vue last rendered, then let Vue perform the actual visual
+  // move itself by splicing the bound arrays a tick later. Skipping the undo would leave the DOM
+  // and Vue's vnode model disagreeing about which container owns the node.
+  removeNode(evt.item)
+  insertNodeAt(evt.from, evt.item, oldIndex)
+  nextTick(() => {
+    const [moved] = fromList.splice(oldIndex, 1)
+    if (moved) toList.splice(newIndex, 0, moved)
+  })
+}
+
+// The actual persistence — reads touchedColumnIds (not the raw watch trigger) and only fires from
+// a SETTLED array state, never from onEnd itself (the trap, see onCardMoved above and
+// AssignmentChain.vue:9-14). "Settled" matters because useSortable's default onUpdate (same-
+// column reorder) — and our own cross-column splice above — both mutate the bound array in TWO
+// steps: a synchronous removal, then a Vue `nextTick`-deferred re-insertion. A deep watch on
+// columnsTasks fires on EACH step, so reading state on the FIRST fire (item removed, not yet
+// re-inserted) computes a wrong diff from a half-settled array — confirmed by instrumenting this
+// watch during browser validation: dragging a card to the top of its column right past a task
+// that has the same stored `order` produced a diff that skipped the dragged card entirely.
+// Debouncing past the mutation via a macrotask (setTimeout 0, which always runs after every
+// currently-queued microtask/nextTick has drained) guarantees we only ever read the fully-settled
+// array. `while (touchedColumnIds.size)` inside persistTouchedColumns re-drains anything a NEW
+// drag adds while a previous persist's network calls are still in flight, so a rapid second drag
+// can't get silently dropped.
+let persisting = false
+let debounceHandle: ReturnType<typeof setTimeout> | null = null
+
+function schedulePersist() {
+  if (debounceHandle != null) clearTimeout(debounceHandle)
+  debounceHandle = setTimeout(() => {
+    debounceHandle = null
+    persistTouchedColumns()
+  }, 0)
+}
+
+async function persistTouchedColumns() {
+  if (persisting) return
+  persisting = true
   try {
-    await moveTask(id, { status: toStatus })
+    while (touchedColumnIds.size > 0) {
+      const colIds = [...touchedColumnIds]
+      touchedColumnIds.clear()
+      for (const colId of colIds) {
+        const list = [...(columnsTasks[colId] ?? [])]
+        for (const [order, task] of list.entries()) {
+          const patch: { columnId?: string, order?: number } = {}
+          if (task.columnId !== colId) patch.columnId = colId
+          if (task.order !== order) patch.order = order
+          if (Object.keys(patch).length === 0) continue
+          await moveTask(task.id, patch)
+        }
+      }
+    }
+    // Explicit local reconcile (each move's own SSE emit also invalidates).
+    await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Failed to move task', description: err.data?.statusMessage ?? err.message })
+    toast.add({ color: 'error', title: 'Failed to save card order', description: err.data?.statusMessage ?? err.message })
   } finally {
-    // Re-open the watcher BEFORE refetch so the rebuild from server truth lands.
-    isDragging.value = false
-    // Explicit local reconcile (the move's own SSE emit also invalidates).
-    await refetch()
+    persisting = false
   }
 }
 
+// Deep watch on columnsTasks is what tells us a drag's mutation actually landed (see the trap
+// writeup above) — it only drives WHEN to check, never what to persist (that's touchedColumnIds).
+watch(columnsTasks, () => {
+  if (syncingFromServer) return
+  schedulePersist()
+}, { deep: true })
+
+// The column set isn't known until the (async) columns query resolves, so sortables
+// are set up lazily per column the first time it's seen, rather than in one static
+// onMounted loop. `watchElement: true` still handles late DOM binding for the loading
+// skeleton -> board swap, same as before.
+const sortableInitialized = new Set<string>()
+
+function ensureSortable(col: TaskColumnDTO) {
+  if (sortableInitialized.has(col.id)) return
+  sortableInitialized.add(col.id)
+  if (!columnsTasks[col.id]) columnsTasks[col.id] = []
+  // columnsTasks[col.id] is a plain array living inside reactive(), NOT a ref — useSortable's
+  // moveArrayElement mutates a reactive-array binding LIVE in two steps (unlike a ref, which it
+  // clones/splices/reassigns once), which is why persistence below needs the macrotask defer and
+  // not a bare watch. Compare orderedColumns (ref-bound, below) and AssignmentChain.vue (also
+  // ref-bound, where a bare watch is correct and sufficient) before copying this pattern.
+  useSortable(() => colRefs[col.id], columnsTasks[col.id]!, {
+    watchElement: true,
+    group: 'tasks',
+    animation: 150,
+    handle: '.task-card',
+    ghostClass: 'opacity-40',
+    dragClass: 'ring-2',
+    // Guard the drag window: while a card is held, a live refetch must not
+    // rebuild the columns (see isDragging + the watcher above).
+    onStart: () => { isDragging.value = true },
+    onEnd: onCardMoved
+  })
+}
+
 onMounted(() => {
-  for (const col of COLUMNS) {
-    useSortable(() => colRefs[col.key], columnsTasks[col.key], {
-      // Re-watch the element ref so Sortable (re)initializes whenever the column
-      // mounts. The board is gated behind v-else (loading skeleton is the v-if);
-      // on first mount the query is pending so `loading` is true and colRefs are
-      // null at the single tryOnMounted(start) tick. With watchElement we rebind
-      // once the v-else board renders, and again on every loading toggle.
-      watchElement: true,
-      group: 'tasks',
-      animation: 150,
-      handle: '.task-card',
-      ghostClass: 'opacity-40',
-      dragClass: 'ring-2',
-      // Guard the drag window: while a card is held, a live refetch must not
-      // rebuild the columns (see isDragging + the filteredTasks watcher).
-      onStart: () => { isDragging.value = true },
-      onEnd: onCardMoved
-    })
-  }
+  watch(columns, (cols) => {
+    for (const col of cols) ensureSortable(col)
+  }, { immediate: true })
 })
+
+// ── Column reordering (drag column headers) ─────────────────────────────────────
+// A locally-owned mirror of `columns` (server truth is read-only — see the live-data rule),
+// rebuilt whenever the server list changes but never mid-drag, exactly mirroring
+// columnsTasks/rebuildColumns above. This is what the board actually renders (v-for="col in
+// orderedColumns" below); `columns` itself stays the source of truth for ensureSortable/
+// rebuildColumns/columnItems.
+const orderedColumns = ref<TaskColumnDTO[]>([])
+const isDraggingColumns = ref(false)
+let syncingColumnsFromServer = false
+
+watch(columns, (cols) => {
+  if (isDraggingColumns.value) return
+  syncingColumnsFromServer = true
+  orderedColumns.value = [...cols]
+  nextTick(() => { syncingColumnsFromServer = false })
+}, { immediate: true })
+
+const boardRef = ref<HTMLElement | null>(null)
+
+// orderedColumns is bound as a Ref (not a reactive()-owned array like columnsTasks), so
+// vueuse's default onUpdate takes the "isRef" branch: it clones the array, splices the
+// detached copy, and reassigns `orderedColumns.value` ONCE (see the useSortable-onEnd-snapback
+// memory / Task 8's report) — unlike columnsTasks' live in-place splice, this doesn't fire the
+// watch below on a half-settled intermediate state. The debounce is kept anyway as a cheap,
+// consistent safety margin (matches persistTouchedColumns' shape below), not because it's load-
+// bearing here the way it is for the card lists.
+// watchElement: true is required, not cosmetic: without it useSortable's default init path is
+// tryOnMounted(start) (see @vueuse/integrations/useSortable's source), which resolves boardRef
+// ONCE at mount time — but boardRef's element doesn't exist yet then (the board is behind the
+// loading skeleton's v-if/v-else, same as every colRefs[col.id] target below), so the sortable
+// would silently never attach. watchElement switches it to a reactive watcher that (re)inits
+// when the ref actually resolves, exactly mirroring ensureSortable's own colRefs binding.
+useSortable(boardRef, orderedColumns, {
+  watchElement: true,
+  handle: '.column-drag-handle',
+  draggable: '.board-column',
+  animation: 150,
+  onStart: () => { isDraggingColumns.value = true },
+  onEnd: () => { isDraggingColumns.value = false }
+})
+
+let columnPersisting = false
+let columnDebounceHandle: ReturnType<typeof setTimeout> | null = null
+
+function scheduleColumnPersist() {
+  if (columnDebounceHandle != null) clearTimeout(columnDebounceHandle)
+  columnDebounceHandle = setTimeout(() => {
+    columnDebounceHandle = null
+    persistColumnOrder()
+  }, 0)
+}
+
+async function persistColumnOrder() {
+  if (columnPersisting) return
+  columnPersisting = true
+  try {
+    await reorderColumns(orderedColumns.value.map(c => c.id))
+    // Explicit local reconcile — useColumnList() is NOT SSE-wired (see useTaskColumns.ts).
+    await refetchColumns()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Failed to save column order', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    columnPersisting = false
+  }
+}
+
+watch(orderedColumns, () => {
+  if (syncingColumnsFromServer) return
+  scheduleColumnPersist()
+}, { deep: true })
+
+// ── Column management (create / edit / delete) ──────────────────────────────────
+const showColumnFormModal = ref(false)
+const editingColumn = ref<TaskColumnDTO | null>(null) // null = create mode
+const showDeleteColumnModal = ref(false)
+const deletingColumn = ref<TaskColumnDTO | null>(null)
+const deletingColumnTaskCount = computed(() =>
+  columnsTasks[deletingColumn.value?.id ?? '']?.length ?? 0)
+
+function openCreateColumn() {
+  editingColumn.value = null
+  showColumnFormModal.value = true
+}
+
+function openEditColumn(col: TaskColumnDTO) {
+  editingColumn.value = col
+  showColumnFormModal.value = true
+}
+
+function openDeleteColumn(col: TaskColumnDTO) {
+  deletingColumn.value = col
+  showDeleteColumnModal.value = true
+}
 
 // ── New task modal ────────────────────────────────────────────────────────────
 const showNewModal = ref(false)
@@ -148,7 +367,7 @@ const saving = ref(false)
 const emptyForm = () => ({
   title: '',
   description: '',
-  status: 'todo' as TaskStatus,
+  columnId: columns.value[0]?.id ?? '',
   priority: 'medium' as TaskPriority,
   dueDate: '',
   project: null as string | null
@@ -168,7 +387,7 @@ async function submitNew() {
     await createTask({
       title: newForm.value.title.trim(),
       description: newForm.value.description || undefined,
-      status: newForm.value.status,
+      columnId: newForm.value.columnId || undefined,
       priority: newForm.value.priority,
       dueDate: newForm.value.dueDate || null,
       project: newForm.value.project || null
@@ -196,7 +415,7 @@ function openEditModal(task: TaskDTO) {
   editForm.value = {
     title: task.title,
     description: task.description ?? '',
-    status: task.status,
+    columnId: task.columnId,
     priority: task.priority,
     dueDate: task.dueDate ? task.dueDate.slice(0, 10) : '',
     project: task.project
@@ -211,7 +430,7 @@ async function submitEdit() {
     await updateTask(editingTask.value.id, {
       title: editForm.value.title.trim(),
       description: editForm.value.description || undefined,
-      status: editForm.value.status,
+      columnId: editForm.value.columnId || undefined,
       priority: editForm.value.priority,
       dueDate: editForm.value.dueDate || null,
       project: editForm.value.project || null
@@ -261,7 +480,7 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-const statusItems = COLUMNS.map(c => ({ label: c.label, value: c.key }))
+const columnItems = computed(() => columns.value.map(c => ({ label: c.name, value: c.id })))
 
 const priorityItems = [
   { label: 'Low', value: 'low' as TaskPriority },
@@ -302,16 +521,18 @@ const filterProjectItems = computed(() => [
         </template>
         <template #right>
           <!-- Priority filter -->
-          <USelect
+          <USelectMenu
             v-model="filterPriority"
             :items="filterPriorityItems"
+            value-key="value"
             size="xs"
             class="w-36"
           />
           <!-- Project filter -->
-          <USelect
+          <USelectMenu
             v-model="filterProject"
             :items="filterProjectItems"
+            value-key="value"
             size="xs"
             class="w-36"
           />
@@ -333,14 +554,14 @@ const filterProjectItems = computed(() => [
         class="flex gap-4 p-4 h-full overflow-x-auto"
       >
         <div
-          v-for="col in COLUMNS"
-          :key="col.key"
+          v-for="i in SKELETON_COLUMN_COUNT"
+          :key="i"
           class="flex flex-col gap-3 min-w-64 w-64 shrink-0"
         >
           <USkeleton class="h-7 w-full" />
           <USkeleton
-            v-for="i in 3"
-            :key="i"
+            v-for="j in 3"
+            :key="j"
             class="h-28 w-full"
           />
         </div>
@@ -349,44 +570,45 @@ const filterProjectItems = computed(() => [
       <!-- Kanban board -->
       <div
         v-else
+        ref="boardRef"
         class="flex gap-4 p-4 h-full overflow-x-auto"
       >
         <div
-          v-for="col in COLUMNS"
-          :key="col.key"
-          class="flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg"
+          v-for="col in orderedColumns"
+          :key="col.id"
+          :data-column-id="col.id"
+          class="board-column flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg p-2"
+          :class="TINT[col.color]"
         >
-          <!-- Column header -->
-          <div class="flex items-center gap-2 px-1">
-            <span class="text-sm font-semibold text-highlighted">{{ col.label }}</span>
-            <UBadge
-              :label="String(columnsTasks[col.key].length)"
-              color="neutral"
-              variant="soft"
-              size="xs"
-            />
-          </div>
+          <!-- Column header: name, card count, actions menu (rename/recolour/delete);
+               '.column-drag-handle' inside is the grab target for column reordering. -->
+          <TasksColumnHeader
+            :column="col"
+            :task-count="columnsTasks[col.id]?.length ?? 0"
+            @edit="openEditColumn"
+            @remove="openDeleteColumn"
+          />
 
           <!-- Card list (sortable container; group 'tasks'). Keeps a min height
                so empty columns remain a valid drop target; dashed border + hint
                act as the empty affordance. -->
           <div
-            :ref="(el: Element | ComponentPublicInstance | null) => setColRef(col.key, el)"
-            :data-status="col.key"
+            :ref="(el: Element | ComponentPublicInstance | null) => setColRef(col.id, el)"
+            :data-column-id="col.id"
             class="flex flex-col gap-3 min-h-20 rounded-lg"
-            :class="columnsTasks[col.key].length === 0
+            :class="(columnsTasks[col.id]?.length ?? 0) === 0
               ? 'items-center justify-center border border-dashed border-muted text-muted'
               : ''"
           >
             <!-- Empty hint (non-sortable: only rendered when no cards) -->
             <span
-              v-if="columnsTasks[col.key].length === 0"
+              v-if="(columnsTasks[col.id]?.length ?? 0) === 0"
               class="text-sm pointer-events-none"
             >No tasks</span>
 
             <!-- Task cards -->
             <div
-              v-for="task in columnsTasks[col.key]"
+              v-for="task in columnsTasks[col.id]"
               :key="task.id"
               :data-id="task.id"
               class="task-card w-full rounded-lg border border-default bg-elevated/50 p-3 flex flex-col gap-2 cursor-grab active:cursor-grabbing hover:bg-elevated transition-colors select-none"
@@ -419,6 +641,19 @@ const filterProjectItems = computed(() => [
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- Add-column control (not part of the reorder sortable — draggable: '.board-column'
+             above only picks up the actual column divs). -->
+        <div class="flex flex-col gap-3 min-w-64 w-64 shrink-0 p-2">
+          <UButton
+            icon="i-lucide-plus"
+            color="neutral"
+            variant="outline"
+            block
+            label="Add column"
+            @click="openCreateColumn"
+          />
         </div>
       </div>
     </template>
@@ -462,18 +697,20 @@ const filterProjectItems = computed(() => [
           </UFormField>
 
           <div class="grid grid-cols-2 gap-3">
-            <UFormField label="Status">
-              <USelect
-                v-model="newForm.status"
-                :items="statusItems"
+            <UFormField label="Column">
+              <USelectMenu
+                v-model="newForm.columnId"
+                :items="columnItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
 
             <UFormField label="Priority">
-              <USelect
+              <USelectMenu
                 v-model="newForm.priority"
                 :items="priorityItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
@@ -489,9 +726,10 @@ const filterProjectItems = computed(() => [
             </UFormField>
 
             <UFormField label="Project">
-              <USelect
+              <USelectMenu
                 :model-value="newForm.project ?? PROJECT_NONE"
                 :items="projectItems"
+                value-key="value"
                 class="w-full"
                 @update:model-value="newForm.project = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
               />
@@ -559,18 +797,20 @@ const filterProjectItems = computed(() => [
           </UFormField>
 
           <div class="grid grid-cols-2 gap-3">
-            <UFormField label="Status">
-              <USelect
-                v-model="editForm.status"
-                :items="statusItems"
+            <UFormField label="Column">
+              <USelectMenu
+                v-model="editForm.columnId"
+                :items="columnItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
 
             <UFormField label="Priority">
-              <USelect
+              <USelectMenu
                 v-model="editForm.priority"
                 :items="priorityItems"
+                value-key="value"
                 class="w-full"
               />
             </UFormField>
@@ -586,9 +826,10 @@ const filterProjectItems = computed(() => [
             </UFormField>
 
             <UFormField label="Project">
-              <USelect
+              <USelectMenu
                 :model-value="editForm.project ?? PROJECT_NONE"
                 :items="projectItems"
+                value-key="value"
                 class="w-full"
                 @update:model-value="editForm.project = ($event as string) === PROJECT_NONE ? null : ($event as string) || null"
               />
@@ -628,4 +869,15 @@ const filterProjectItems = computed(() => [
       </UCard>
     </template>
   </UModal>
+
+  <!-- ── Column management modals ───────────────────────────────────────────── -->
+  <TasksColumnFormModal
+    v-model:open="showColumnFormModal"
+    :column="editingColumn"
+  />
+  <TasksDeleteColumnModal
+    v-model:open="showDeleteColumnModal"
+    :column="deletingColumn"
+    :task-count="deletingColumnTaskCount"
+  />
 </template>

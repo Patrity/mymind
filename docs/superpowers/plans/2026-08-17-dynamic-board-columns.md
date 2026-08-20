@@ -26,6 +26,11 @@ Every task's requirements implicitly include this section.
 - **`publishChange({ resource, action, id })` after every successful mutation.** `ResourceName` is singular and `app/utils/live-dispatch.ts` is keyed by that union.
 - **Singular/plural in user-facing copy must be explicit.** Never "1 tasks".
 - `test/home-endpoint.db.test.ts` has a known intermittent ambient-state failure. It is not yours.
+- **`tasks.status` is SHADOWED, not dropped, until Task 10.** Task 1 adds `column_id` and backfills
+  it but leaves `status` in place; the services dual-write both during the cycle. Every task
+  boundary therefore has green gates and is independently reviewable, and `status` stays a live
+  safety net through the risky consumer rewrites. Task 10 drops it once every consumer reads
+  columns. **Do not drop it early**, and do not "clean up" the dual-write before Task 10.
 
 ---
 
@@ -42,7 +47,7 @@ Every task's requirements implicitly include this section.
 - Tests: `test/status-kind.test.ts` (pure), `test/task-columns.db.test.ts`, `test/tasks-compat.db.test.ts`
 
 **Modified:**
-- `server/db/schema/tasks.ts` — `status` → `column_id`.
+- `server/db/schema/tasks.ts` — adds `column_id`; `status` shadowed until Task 10.
 - `server/services/tasks.ts` — resolve status→column; `completedAtFor` keyed on kind.
 - `server/lib/agent/tools.ts` (3 schemas), `server/lib/agent/context.ts`, `server/services/home.ts` (raw SQL).
 - `server/api/tasks/index.post.ts`, `[id].patch.ts`, `[id]/move.post.ts`, `index.get.ts`
@@ -57,7 +62,7 @@ Every task's requirements implicitly include this section.
 
 | # | Task | Gate |
 |---|---|---|
-| 1 | Schema + migration (table, seed, backfill, index swap) | `pnpm test` + manual SQL read |
+| 1 | Schema + migration (table, seed, backfill; `status` kept) | `pnpm test` + manual SQL read |
 | 2 | Shared types + pure status↔kind mapping | `pnpm test` |
 | 3 | Column service (CRUD, delete-with-cards, defaults) | `pnpm test:db` |
 | 4 | Tasks service on columns | `pnpm test:db` |
@@ -66,7 +71,8 @@ Every task's requirements implicitly include this section.
 | 7 | Board renders columns from data + colour tint | browser |
 | 8 | `useSortable` drag: cross-column + in-column reorder | browser |
 | 9 | Column management UI + `USelectMenu` swap | browser |
-| 10 | Wiki + handover + roadmap | — |
+| 10 | Final migration: drop `tasks.status` | `pnpm test:db` + manual SQL read |
+| 11 | Wiki + handover + roadmap | — |
 
 ---
 
@@ -112,7 +118,12 @@ export type TaskColumn = typeof taskColumns.$inferSelect
 
 - [ ] **Step 2: Swap `status` for `column_id` on tasks**
 
-In `server/db/schema/tasks.ts`: delete the `status` line, add `columnId: uuid('column_id').notNull().references(() => taskColumns.id)`, and in the index array replace `index('tasks_status_idx').on(t.status)` with `index('tasks_column_idx').on(t.columnId)`.
+In `server/db/schema/tasks.ts`: **keep the `status` line exactly as it is**, add
+`columnId: uuid('column_id').notNull().references(() => taskColumns.id)`, and **add**
+`index('tasks_column_idx').on(t.columnId)` alongside the existing `tasks_status_idx` (do not
+remove it).
+
+`status` is shadowed through this cycle and dropped in Task 10 — see Global Constraints.
 
 - [ ] **Step 3: Export from the barrel** — append `export * from './task-columns'` to `server/db/schema/index.ts`.
 
@@ -150,8 +161,9 @@ ALTER TABLE "tasks" ALTER COLUMN "column_id" SET NOT NULL;
 ALTER TABLE "tasks" ADD CONSTRAINT "tasks_column_id_fk"
   FOREIGN KEY ("column_id") REFERENCES "task_columns"("id");
 CREATE INDEX "tasks_column_idx" ON "tasks" ("column_id");
-DROP INDEX IF EXISTS "tasks_status_idx";
-ALTER TABLE "tasks" DROP COLUMN "status";
+-- NOTE: tasks.status and tasks_status_idx are deliberately LEFT IN PLACE. They are dropped in
+-- Task 10, once every consumer reads columns. Dropping here would leave the branch red for six
+-- tasks and throw away the rollback path during the riskiest part of the cycle.
 ```
 
 - [ ] **Step 5: Apply and verify the data survived**
@@ -159,16 +171,19 @@ ALTER TABLE "tasks" DROP COLUMN "status";
 Run: `pnpm db:migrate`, then:
 
 ```sql
-select c.name, c.kind, c.color, count(t.id)
+select c.name, c.kind, c.color, c.position, count(t.id)
 from task_columns c left join tasks t on t.column_id = c.id and t.deleted_at is null
-group by 1,2,3 order by c.position;
+group by c.name, c.kind, c.color, c.position
+order by c.position;
 ```
 
 Expected: four rows, and the per-column counts match what the board showed before the migration. **If any count is zero where the board had cards, stop and report BLOCKED** — the backfill mapped wrongly and re-running will not fix already-migrated rows.
 
 - [ ] **Step 6: Gates + commit**
 
-Run: `pnpm typecheck` (expect errors in files that reference `tasks.status` — those are Tasks 2-6's job; the SCHEMA must compile). Commit:
+Run: `pnpm typecheck && pnpm test`. **Both must be green.** Nothing yet reads `column_id`, and
+`status` is untouched, so this task is purely additive — if anything is red, the schema change is
+wrong, not merely incomplete. Commit:
 
 ```bash
 git add server/db/ && git commit -m "feat(tasks): task_columns table; tasks.status -> column_id"
@@ -346,6 +361,23 @@ export async function deleteColumn(
 
 **Interfaces:** `createTask` / `updateTask` keep accepting `status?: TaskStatus` **and** gain `columnId?: string`. `TaskDTO` carries both `columnId` and a derived `status` (from the column's kind, via `statusForKind`) so every existing consumer keeps reading `.status`.
 
+**First, delete Task 1's stopgap.** `column_id` is `notNull` with no default, so Task 1 had to add a
+small temporary status→column resolver inside `server/services/tasks.ts` just to keep `createTask`
+compiling. It is marked for deletion. Replace it with the real `kindForStatus` (Task 2) +
+`defaultColumnFor` (Task 3) — do not leave two resolvers in the file, and do not build on the
+stopgap.
+
+**Acceptance check for this task:** `grep -n "STATUS_TO_KIND\|resolveDefaultColumnId" server/services/tasks.ts`
+must return nothing. "Delete this block" instructions have a way of surviving under time pressure,
+and the stopgap is a second copy of the status→kind mapping that would silently diverge from
+`server/lib/tasks/status-kind.ts` if left behind.
+
+**Dual-write, deliberately.** Every write that sets `column_id` must ALSO write the matching
+`tasks.status` (`statusForKind(column.kind)`). The column is shadowed until Task 10, and the point
+of shadowing is that it stays a truthful rollback target — a stale `status` would make the safety
+net a lie. Reads should already prefer the column join; the shadow write exists for rollback, not
+for reading.
+
 - [ ] **Step 1: Failing tests** — `createTask({status:'todo'})` lands in the default open column; `createTask({columnId})` honours the explicit column; `columnId` wins if both are passed; `updateTask({status:'completed'})` moves the card to the default done column **and stamps `completedAt`**; moving into a *custom* column whose kind is `done` also stamps `completedAt` (this is the whole point — assert against a column you create named something else); moving out of a done column clears `completedAt`; `toDTO` returns a `status` derived from the column's kind.
 
 - [ ] **Step 2: Verify failure. Step 3: Implement.**
@@ -369,6 +401,20 @@ Resolution helper used by create/update: if `columnId` is given use it; else if 
 
 **Files:** Modify `server/api/tasks/index.post.ts`, `[id].patch.ts`, `[id]/move.post.ts`, `index.get.ts`. Create `server/api/task-columns/{index.get,index.post,reorder.post}.ts`, `server/api/task-columns/[id].{patch,delete}.ts`.
 
+- [ ] **Step 0: Close the `kind` schema gap before opening column creation to HTTP callers.**
+`task_columns.kind` is plain `text` with no constraint, but as of Task 4 `toDTO` calls
+`statusForKind(column.kind)` on **every live task read** — and that throws on any value outside
+`open|started|done|blocked`. So one bad `kind` row makes every task in that column unreadable: an
+availability regression, not a display bug. `is_default` already gets DB-level protection (a partial
+unique index) precisely because the app depends on it structurally; `kind` is now equally structural
+and has none. This task is where column creation becomes reachable over HTTP, so close it here:
+  - Add `TASK_COLUMN_KINDS = ['open','started','done','blocked'] as const` to
+    `shared/types/task-columns.ts`, mirroring the existing `TASK_COLUMN_COLORS` pattern, and derive
+    `TaskColumnKind` from it.
+  - Validate `kind` and `color` with `z.enum(...)` built from those arrays in the column routes.
+  - Add a migration with `CHECK (kind IN ('open','started','done','blocked'))` on `task_columns`.
+    Generate it, then verify the emitted SQL contains only that constraint.
+
 - [ ] **Step 1:** In all three task routes, **keep** `status: z.enum(['todo','in_progress','completed','blocked']).optional()` exactly as it is and **add** `columnId: z.string().uuid().optional()`. Removing or renaming `status` breaks every existing caller.
 - [ ] **Step 2:** `GET /api/tasks` gains an optional `columnId` filter; the existing `status` filter now maps through `kindForStatus` and filters on the joined kind.
 - [ ] **Step 3:** Column routes are thin wrappers over Task 3's service. `DELETE` takes `{ mode, targetColumnId? }` in the body and returns the service's `{ ok, reason, affected }` — a refusal is a 409 with `reason` as `statusMessage`, not a 500.
@@ -379,7 +425,18 @@ Resolution helper used by create/update: if `columnId` is given use it; else if 
 
 ### Task 6: Compat regression suite
 
-**Files:** Modify `server/lib/agent/tools.ts` (3 schemas), `server/lib/agent/context.ts`, `server/services/home.ts`. Create `test/tasks-compat.db.test.ts`.
+**Files:** Modify `server/lib/agent/tools.ts` (3 schemas), `server/lib/agent/context.ts`, `server/services/home.ts`, **`server/services/tasks.ts` (the summary projection — see below)**. Create `test/tasks-compat.db.test.ts`.
+
+**Do not skip the summary projection.** `listTasksSummary`, `countTasks`, `toTaskSummaryDTO` and
+`listTasks`'s status filter still read/filter `tasks.status` **directly, with no join**. That is
+accurate today only because Task 4 dual-writes it — and **Task 10 drops the column**, at which point
+`TASK_SUMMARY_COLUMNS`' `status: tasks.status` and `eq(tasks.status, filter.status)` become compile
+errors. Worse, a compat test like `search_tasks(status:'in_progress')` **passes today via the
+dual-write without anyone touching these functions**, so a green suite does not prove the join
+exists. Convert them to the same join pattern Task 4 established, and add a test that would fail if
+they still read the shadow column — the technique is already in
+`test/tasks-columns.db.test.ts`: corrupt `tasks.status` via raw SQL and assert the read still
+returns the column-derived value.
 
 **This is the highest-risk task in the cycle.** Your Claude Code sessions call these tools continuously; a break here looks like an agent problem, not a board problem, and could go unnoticed for days.
 
@@ -444,17 +501,67 @@ const TINT: Record<TaskColumnColor, string> = {
 - [ ] **Step 2:** `ColumnFormModal` — name input + colour picker over `TASK_COLUMN_COLORS` (render each swatch from the same static `TINT`/badge map; no interpolated classes). `kind` is chosen on create and **not editable afterwards** — changing it would silently reclassify every card in the column.
 - [ ] **Step 3:** `DeleteColumnModal` — states the card count with explicit singular/plural ("1 task", "3 tasks"), offers **Delete the tasks** or **Move them to →** (`USelectMenu` of remaining columns). Disable the confirm until a target is chosen in reassign mode. A 409 refusal (last of kind) renders its `reason` inline rather than as a generic error.
 - [ ] **Step 4:** Swap the 8 `<USelect>` in `tasks.vue` for `<USelectMenu>`.
+
+- [ ] **Step 4b: Finish what Task 7 half-did.** `app/pages/projects/[slug].vue:524` renders the badge
+LABEL as `task.status.replace('_',' ')` while its colour (line 525) now derives from the column. The
+moment this task lets a user rename a column, "Completed" → "Shipped" produces a correctly-recoloured
+badge that still reads "completed". Read the label from the column's name with the status as fallback:
+`columnById.get(task.columnId)?.name ?? task.status.replace('_',' ')`.
+
+- [ ] **Step 4c: `useColumnList()` is NOT SSE-wired.** `app/utils/live-dispatch.ts`'s `task` dispatch
+invalidates `['task', …]` but never `['task-columns','list']` — deliberate (see the rationale comment
+in `server/services/task-columns.ts`). So every column mutation you add here must call the query's
+`refetch()` explicitly, exactly as the other mutations in `tasks.vue` already do. A column you create
+or rename will otherwise not appear until a reload.
 - [ ] **Step 5: Browser-validate** — add a column, rename it, recolour it and confirm a task badge elsewhere in the app changes colour, reorder it by dragging the header, then delete it down **both** branches (cards deleted; cards reassigned). Attempt to delete the last `done` column and confirm the inline refusal. Screenshot.
 - [ ] **Step 6:** Commit.
 
 ---
 
-### Task 10: Wiki + handover + roadmap
+### Task 10: Final migration — drop `tasks.status`
+
+**Files:** Modify `server/db/schema/tasks.ts`; new generated migration; remove the dual-write from `server/services/tasks.ts`.
+
+**Do this only when Tasks 1-9 are complete and green.** Until now `status` has been a shadow copy
+and a rollback target; this is the point of no return.
+
+- [ ] **Step 0: One known hit, found in Task 6's review — convert it first.** `server/services/search.ts`
+(around line 82) does `meta: t.status`, a raw read of the shadow column in the global search /
+command-palette task results. It is a fifth production consumer that Tasks 4-6 all missed, harmless
+today because of the dual-write, and a guaranteed compile error the moment `status` is dropped.
+Convert it to the join pattern and cover it before Step 1's grep.
+
+- [ ] **Step 1: Prove nothing reads it.** `grep -rn "tasks.status\|\.status" server/ app/ shared/ --include='*.ts' --include='*.vue' | grep -v node_modules` and account for every hit. Hits on a `TaskDTO.status` field are fine (it is derived from the column's kind). A hit that reads or writes the DB column is a Task 4-6 gap — **fix it before proceeding, do not drop around it.**
+- [ ] **Step 2: Verify the shadow agreed with the column right up to the end** — this is the last moment the check is possible:
+
+```sql
+select count(*) from tasks t join task_columns c on c.id = t.column_id
+where t.deleted_at is null and t.status <> case c.kind
+  when 'open' then 'todo' when 'started' then 'in_progress'
+  when 'done' then 'completed' else 'blocked' end;
+```
+
+Expected: **0**. Any non-zero means the dual-write drifted and some consumer wrote one side only — stop and report BLOCKED with the offending rows.
+
+- [ ] **Step 3:** Remove `status` from `server/db/schema/tasks.ts` and its `tasks_status_idx`, remove the dual-write from the services, then `pnpm db:generate`. Read the generated SQL: it must contain only the index drop and the column drop.
+- [ ] **Step 4:** `pnpm db:migrate`, then `pnpm typecheck && pnpm test && pnpm test:db && pnpm build`. All green.
+- [ ] **Step 5:** Commit.
+
+---
+
+### Task 11: Wiki + handover + roadmap
 
 - [ ] **Step 1:** Rewrite the board/status sections of `docs/wiki/tasks-projects.md`: the column model, `kind` semantics, the compat mapping, colour, and the delete rules. State plainly that `TaskStatus` is now an **alias vocabulary**, not storage.
 - [ ] **Step 2:** Update `docs/wiki/mcp.md` — the task tools' `status` param still works and what it now means.
 - [ ] **Step 3:** Mirror every changed wiki page to MyMind via `sync_document`, writing the returned `mymind_id`/`mymind_hash` back into each file's frontmatter. Check existing frontmatter first so you update rather than fork.
 - [ ] **Step 4:** Write `docs/handovers/2026-08-XX-dynamic-board-columns.md` with accurate frontmatter, the gate numbers **you measure yourself**, what the review loop caught, and every deferred item.
+- [ ] **Step 4b: Record the useSortable binding distinction** — Task 8's review established that a bare
+deep watch is correct for a `ref`-bound list (`AssignmentChain.vue`) but WRONG for a plain array nested
+in `reactive()` (`tasks.vue`), because `moveArrayElement` branches on `isRef` and only the ref path
+settles atomically. Add a one-line note to both call sites naming the distinction, so a future reader
+neither "fixes" AssignmentChain (it is fine) nor assumes a new reactive-array call site is safe with a
+bare watch (it is not).
+
 - [ ] **Step 5:** Add the cycle 58 row to `docs/superpowers/plans/00-roadmap.md`.
 - [ ] **Step 6:** Close MyMind tasks `a1575210` (blocked/subsumed → completed) and `7be76abc`. Commit.
 

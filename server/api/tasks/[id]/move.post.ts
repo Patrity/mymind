@@ -4,6 +4,7 @@ import { publishChange } from '../../../utils/live-bus'
 
 const Body = z.object({
   status: z.enum(['todo', 'in_progress', 'completed', 'blocked']).optional(),
+  columnId: z.uuid().optional(),
   order: z.number().int().optional()
 })
 

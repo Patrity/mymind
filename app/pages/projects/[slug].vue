@@ -28,6 +28,14 @@ const sessions = computed(() => sessionData.value ?? [])
 const { data: taskData, isPending: tasksLoading, error: tasksError } = useTaskList(slug)
 const tasks = computed(() => taskData.value ?? [])
 
+// Column colour/name lookup — task status badges read colour from the task's column (data),
+// not a hardcoded status->colour map, so recolouring a column propagates here automatically.
+const { useColumnList } = useTaskColumns()
+const { data: columnsData } = useColumnList()
+const columnById = computed(() => new Map(
+  (columnsData.value ?? []).map(c => [c.id, c] as const)
+))
+
 const { data: memoryData, isPending: memoriesLoading, error: memoriesError } = useMemoryList(
   () => ({ project: slug.value })
 )
@@ -102,13 +110,6 @@ const priorityColor: Record<TaskPriority, 'neutral' | 'warning' | 'error'> = {
   low: 'neutral',
   medium: 'warning',
   high: 'error'
-}
-
-const statusColor: Record<string, 'neutral' | 'primary' | 'success' | 'error'> = {
-  todo: 'neutral',
-  in_progress: 'primary',
-  completed: 'success',
-  blocked: 'error'
 }
 
 const scopeColor: Record<MemoryScope, 'primary' | 'info' | 'warning'> = {
@@ -520,8 +521,8 @@ const tabItems = [
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                   <UBadge
-                    :label="task.status.replace('_', ' ')"
-                    :color="statusColor[task.status] ?? 'neutral'"
+                    :label="columnById.get(task.columnId)?.name ?? task.status.replace('_', ' ')"
+                    :color="columnById.get(task.columnId)?.color ?? 'neutral'"
                     variant="subtle"
                     size="xs"
                   />

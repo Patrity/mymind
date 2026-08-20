@@ -7,6 +7,7 @@ const Body = z.object({
   title: z.string().optional(),
   description: z.string().optional(),
   status: z.enum(['todo', 'in_progress', 'completed', 'blocked']).optional(),
+  columnId: z.uuid().optional(),
   priority: z.enum(['low', 'medium', 'high']).optional(),
   dueDate: z.string().nullish(),
   project: z.string().nullish(),
