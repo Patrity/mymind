@@ -567,7 +567,7 @@ const filterProjectItems = computed(() => [
         <div
           v-for="i in SKELETON_COLUMN_COUNT"
           :key="i"
-          class="flex flex-col gap-3 min-w-64 w-64 shrink-0"
+          class="flex flex-col gap-3 flex-1 basis-80 min-w-64 max-w-md"
         >
           <USkeleton class="h-7 w-full" />
           <USkeleton
@@ -578,7 +578,14 @@ const filterProjectItems = computed(() => [
         </div>
       </div>
 
-      <!-- Kanban board. min-h-0 is load-bearing, not decoration: a flex child defaults to
+      <!-- Kanban board. Columns FLEX to fill the board rather than sitting at a fixed width:
+           `flex-1 basis-80 min-w-64 max-w-md` means columns GROW to consume spare board width
+           (a 320px preferred size, capped at 448px so one or two don't stretch absurdly), and
+           only shrink toward the 256px floor when the count demands it — past that the board
+           scrolls horizontally rather than squeezing cards unreadably and then the board scrolls horizontally
+           (overflow-x-auto below) instead of squeezing cards unreadably. The max-w cap exists
+           so one or two columns don't stretch to absurd card widths.
+           min-h-0 is load-bearing, not decoration: a flex child defaults to
            min-height:auto, which refuses to shrink below its content — so without it the
            columns push the board taller than its parent and the PAGE scrolls instead of
            each column. Same reason min-h-0 appears on the column and the card list below. -->
@@ -591,7 +598,7 @@ const filterProjectItems = computed(() => [
           v-for="col in orderedColumns"
           :key="col.id"
           :data-column-id="col.id"
-          class="board-column flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg p-2 max-h-full min-h-0"
+          class="board-column flex flex-col gap-3 flex-1 basis-80 min-w-64 max-w-md rounded-lg p-2 max-h-full min-h-0"
           :class="TINT[col.color]"
         >
           <!-- Column header: name, card count, actions menu (rename/recolour/delete);
@@ -662,16 +669,22 @@ const filterProjectItems = computed(() => [
         </div>
 
         <!-- Add-column control (not part of the reorder sortable — draggable: '.board-column'
-             above only picks up the actual column divs). -->
-        <div class="flex flex-col gap-3 min-w-64 w-64 shrink-0 p-2 self-start">
-          <UButton
-            icon="i-lucide-plus"
-            color="neutral"
-            variant="outline"
-            block
-            label="Add column"
-            @click="openCreateColumn"
-          />
+             above only picks up the actual column divs). Icon-only and shrink-0 on purpose:
+             it is a control, not a column. As a full-width labelled button it occupied a
+             column's worth of board (224px), which is width the real columns then could not
+             use — at 1440px that alone was enough to push a 4-column board into horizontal
+             scrolling. -->
+        <div class="shrink-0 p-2 self-start">
+          <UTooltip text="Add column">
+            <UButton
+              icon="i-lucide-plus"
+              color="neutral"
+              variant="outline"
+              square
+              aria-label="Add column"
+              @click="openCreateColumn"
+            />
+          </UTooltip>
         </div>
       </div>
     </template>
