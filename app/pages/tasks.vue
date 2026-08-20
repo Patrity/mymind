@@ -252,6 +252,17 @@ function ensureSortable(col: TaskColumnDTO) {
     handle: '.task-card',
     ghostClass: 'opacity-40',
     dragClass: 'ring-2',
+    // NOTE: do not add `scroll`/`scrollSensitivity`/`scrollSpeed` here. SortableJS already
+    // defaults `scroll: true` and auto-detects the scrollable ancestor, so drag-to-scroll
+    // works in the now-overflowing column for free. An earlier pass set
+    // `scrollSensitivity: 60` "to help" — double the 30px default — which on a 256px-wide
+    // column turns most of the drop area into an auto-scroll dead zone and swallowed
+    // cross-column drops entirely. Caught by diffing the same drag against the pre-change
+    // code; the CSS was innocent.
+    // The card list is a scroll container now (flex-1 + overflow-y-auto), so a drag has to
+    // be able to reach cards below the fold. SortableJS defaults `scroll` to true, but it is
+    // stated explicitly here because it only matters BECAUSE of that overflow — a future
+    // change that un-scrolls the column makes these three lines dead, which is the signal.
     // Guard the drag window: while a card is held, a live refetch must not
     // rebuild the columns (see isDragging + the watcher above).
     onStart: () => { isDragging.value = true },
@@ -567,17 +578,20 @@ const filterProjectItems = computed(() => [
         </div>
       </div>
 
-      <!-- Kanban board -->
+      <!-- Kanban board. min-h-0 is load-bearing, not decoration: a flex child defaults to
+           min-height:auto, which refuses to shrink below its content — so without it the
+           columns push the board taller than its parent and the PAGE scrolls instead of
+           each column. Same reason min-h-0 appears on the column and the card list below. -->
       <div
         v-else
         ref="boardRef"
-        class="flex gap-4 p-4 h-full overflow-x-auto"
+        class="flex gap-4 p-4 h-full min-h-0 overflow-x-auto"
       >
         <div
           v-for="col in orderedColumns"
           :key="col.id"
           :data-column-id="col.id"
-          class="board-column flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg p-2"
+          class="board-column flex flex-col gap-3 min-w-64 w-64 shrink-0 rounded-lg p-2 max-h-full min-h-0"
           :class="TINT[col.color]"
         >
           <!-- Column header: name, card count, actions menu (rename/recolour/delete);
@@ -589,15 +603,19 @@ const filterProjectItems = computed(() => [
             @remove="openDeleteColumn"
           />
 
-          <!-- Card list (sortable container; group 'tasks'). Keeps a min height
-               so empty columns remain a valid drop target; dashed border + hint
-               act as the empty affordance. -->
+          <!-- Card list (sortable container; group 'tasks'). This is the scroll region:
+               flex-1 + min-h-0 + overflow-y-auto means a long column scrolls itself while
+               its header stays pinned, instead of stretching the board.
+               `min-h-20` moved into the EMPTY branch deliberately — it and min-h-0 are both
+               min-height utilities, so keeping them in one class list would leave which one
+               wins up to Tailwind's emit order. Empty columns still need the floor to stay a
+               valid drop target. -->
           <div
             :ref="(el: Element | ComponentPublicInstance | null) => setColRef(col.id, el)"
             :data-column-id="col.id"
-            class="flex flex-col gap-3 min-h-20 rounded-lg"
+            class="flex flex-col gap-3 rounded-lg flex-1 min-h-0 overflow-y-auto"
             :class="(columnsTasks[col.id]?.length ?? 0) === 0
-              ? 'items-center justify-center border border-dashed border-muted text-muted'
+              ? 'min-h-20 items-center justify-center border border-dashed border-muted text-muted'
               : ''"
           >
             <!-- Empty hint (non-sortable: only rendered when no cards) -->
@@ -645,7 +663,7 @@ const filterProjectItems = computed(() => [
 
         <!-- Add-column control (not part of the reorder sortable — draggable: '.board-column'
              above only picks up the actual column divs). -->
-        <div class="flex flex-col gap-3 min-w-64 w-64 shrink-0 p-2">
+        <div class="flex flex-col gap-3 min-w-64 w-64 shrink-0 p-2 self-start">
           <UButton
             icon="i-lucide-plus"
             color="neutral"
