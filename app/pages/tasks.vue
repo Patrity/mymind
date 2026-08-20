@@ -259,10 +259,6 @@ function ensureSortable(col: TaskColumnDTO) {
     // column turns most of the drop area into an auto-scroll dead zone and swallowed
     // cross-column drops entirely. Caught by diffing the same drag against the pre-change
     // code; the CSS was innocent.
-    // The card list is a scroll container now (flex-1 + overflow-y-auto), so a drag has to
-    // be able to reach cards below the fold. SortableJS defaults `scroll` to true, but it is
-    // stated explicitly here because it only matters BECAUSE of that overflow — a future
-    // change that un-scrolls the column makes these three lines dead, which is the signal.
     // Guard the drag window: while a card is held, a live refetch must not
     // rebuild the columns (see isDragging + the watcher above).
     onStart: () => { isDragging.value = true },
@@ -636,11 +632,21 @@ const filterProjectItems = computed(() => [
               v-for="task in columnsTasks[col.id]"
               :key="task.id"
               :data-id="task.id"
-              class="task-card w-full rounded-lg border border-default bg-elevated/50 p-3 flex flex-col gap-2 cursor-grab active:cursor-grabbing hover:bg-elevated transition-colors select-none"
+              class="task-card w-full min-w-0 rounded-lg border border-default bg-elevated/50 p-3 flex flex-col gap-2 cursor-grab active:cursor-grabbing hover:bg-elevated transition-colors select-none"
               @click="openEditModal(task)"
             >
-              <!-- Title -->
-              <p class="text-sm font-medium text-highlighted leading-snug">
+              <!-- Title. `break-words` is the fix for titles carrying an unbreakable token —
+                   a path, an identifier chain like `read_around_message/read_session`, a URL.
+                   Normal wrapping only breaks at spaces, so one long token overflows the card
+                   AND the column, drawing over its neighbour. `line-clamp-4` then stops a
+                   pathological title from eating the whole column; `title` keeps the full text
+                   reachable on hover, and the card opens the editor on click regardless.
+                   min-w-0 on the card is the flex-child companion: without it the card refuses
+                   to shrink below its own min-content width, so break-words never engages. -->
+              <p
+                class="text-sm font-medium text-highlighted leading-snug break-words line-clamp-4"
+                :title="task.title"
+              >
                 {{ task.title }}
               </p>
 
