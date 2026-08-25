@@ -69,7 +69,8 @@ Automated deploy on merge to `master`.
 The [cycle-56 spec](superpowers/specs/2026-08-15-home-dashboard-design.md)'s "Out of scope"
 section named four adjacent findings from [`docs/explorations/2026-08-15-ux-audit-product.md`](explorations/2026-08-15-ux-audit-product.md)
 and deliberately left each out — "folding any of them in makes this unshippable." Each is its
-own future cycle:
+own future cycle. **Two of the four are now closed** (2026-08-25 reconcile — see the struck
+entries below); the remaining two are capture titling and sidebar IA:
 
 - **Capture titling.** User captures get machine-generated names (e.g. `/input/9O8RQk4EOZ.md`),
   so the `/input` inbox can't be browsed by anything meaningful — every row reads as a random
@@ -80,15 +81,18 @@ own future cycle:
   stores under three different names — the navigation no longer reflects one coherent
   information architecture as features have accreted cycle over cycle. Needs a dedicated
   audit-and-consolidate pass, not a drive-by fix.
-- **Login deep-link preservation.** `navigateTo('/login')` (`app/middleware/auth.global.ts`)
-  carries no `redirect` param, so a bookmarked or shared deep link (e.g. `/projects/mymind`)
-  always lands the user on the post-login default page instead of where they were headed.
-  Needs the redirect middleware to capture the original path and the login page to consume it
-  on success.
-- **Document editor silent data loss.** The 1.5s autosave debounce has no dirty indicator and no
-  navigation guard; the audit reproduced losing typed text by navigating away inside the
-  debounce window. Unrelated to Home, but flagged as the most severe open bug in the app —
-  should be prioritized ahead of the other three.
+- ~~**Login deep-link preservation.**~~ ✅ **fixed 2026-08-25.** The guard now bounces to
+  `/login?redirect=<to.fullPath>` and `login.vue` consumes it through `safeRedirect()`
+  (`app/lib/auth-redirect.ts`, unit-tested), which rejects `//host`, `/\host`, absolute URLs,
+  control characters and `/login` itself so the param can't become an open redirect. Verified
+  in the browser both ways: with the fix a logged-out hit on `/projects/mymind` lands back
+  there after sign-in; stashing it reproduced the old bare `/login`. See [`wiki/auth.md`](wiki/auth.md).
+- ~~**Document editor silent data loss.**~~ ✅ **already fixed 2026-08-16** by `4a3792f`, the day
+  after the audit — this entry was stale at the time of the cycle-56 reconcile. `Editor.vue`
+  now tracks `savedContent`/`dirty`, renders an `unsaved` badge, guards tab close with
+  `beforeunload`, and **flushes** (rather than discarding) the pending save on unmount and on
+  document switch; the debounce logic moved to a tested `app/lib/documents/autosave.ts` that
+  carries the `(id, content)` pair so a late save can't write into the wrong document.
 
 ---
 

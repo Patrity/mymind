@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { FormSubmitEvent } from '#ui/types'
 import { authClient } from '~/lib/auth-client'
+import { safeRedirect } from '~/lib/auth-redirect'
 
 definePageMeta({ layout: false })
 
@@ -74,7 +75,9 @@ async function onSubmit(event: FormSubmitEvent<LoginForm>) {
       const qs = new URLSearchParams(route.query as Record<string, string>).toString()
       await navigateTo(`/api/auth/mcp/authorize?${qs}`, { external: true })
     } else {
-      await navigateTo('/')
+      // The auth guard parks the route the user was actually headed for in `?redirect=`.
+      // Anything that isn't a plain same-origin path falls back to the default page.
+      await navigateTo(safeRedirect(route.query.redirect) ?? '/')
     }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : (isRegister.value ? 'Sign up failed' : 'Sign in failed')

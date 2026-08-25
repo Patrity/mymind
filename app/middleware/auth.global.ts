@@ -9,6 +9,12 @@ export default defineNuxtRouteMiddleware(async (to) => {
 
   const { data } = await authClient.getSession()
   if (!data?.session) {
-    return navigateTo('/login')
+    // Carry the intended route through the login round-trip. Without this, a bookmarked or
+    // shared deep link (`/projects/mymind`, `/gallery?image=…`) was dropped here and the user
+    // always landed on `/` after signing in. `fullPath` so query + hash survive too.
+    // The login page re-validates the param before using it (see ~/lib/auth-redirect).
+    return to.fullPath === '/'
+      ? navigateTo('/login')
+      : navigateTo({ path: '/login', query: { redirect: to.fullPath } })
   }
 })
