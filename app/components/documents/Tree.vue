@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { TreeNode } from '~~/server/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
-import { collectFolderPaths, dirnameOf } from '~/lib/documents/folder-list'
+import { collectFolderPaths } from '~/lib/documents/folder-list'
+import { basenameOf } from '~/composables/useDocumentTree'
 
 interface TreeItem {
   id: string
@@ -24,7 +25,7 @@ const emit = defineEmits<{
 }>()
 
 const toast = useToast()
-const { get, remove, update, move, share } = useDocuments()
+const { move } = useDocuments()
 
 function getFileIcon(name: string): string {
   if (name.endsWith('.md') || name.endsWith('.markdown')) return 'i-lucide-file-text'
@@ -77,172 +78,20 @@ watch(topLevelFolders, (dirs) => {
 
 // ---- helpers ----
 
-function basenameOf(path: string): string {
-  return path.split('/').filter(Boolean).pop() ?? path
-}
-
 const allFolders = computed(() => collectFolderPaths(props.tree))
 
-async function copyText(text: string) {
-  if (window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return true
-    } catch { /* fall through */ }
-  }
-  // Legacy fallback
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.setAttribute('readonly', '')
-  ta.style.position = 'fixed'
-  ta.style.top = '0'
-  ta.style.left = '-9999px'
-  document.body.appendChild(ta)
-  ta.select()
-  ta.setSelectionRange(0, text.length)
-  let ok = false
-  try { ok = document.execCommand('copy') } catch { ok = false }
-  document.body.removeChild(ta)
-  return ok
-}
-
-// ---- Delete ----
-const showDeleteModal = ref(false)
-const deleteTarget = ref<{ id: string, label: string } | null>(null)
-const deleteLoading = ref(false)
-
-function promptDelete(id: string, label: string) {
-  deleteTarget.value = { id, label }
-  showDeleteModal.value = true
-}
-
-async function confirmDelete() {
-  if (!deleteTarget.value) return
-  deleteLoading.value = true
-  try {
-    await remove(deleteTarget.value.id)
-    toast.add({ color: 'success', title: `Deleted "${deleteTarget.value.label}"` })
-    showDeleteModal.value = false
-    deleteTarget.value = null
-    emit('refresh')
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Delete failed', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    deleteLoading.value = false
-  }
-}
-
-// ---- Rename ----
-const showRenameModal = ref(false)
-const renameTarget = ref<{ id: string, path: string, label: string } | null>(null)
-const renameName = ref('')
-const renameLoading = ref(false)
-
-function promptRename(id: string, path: string, label: string) {
-  renameTarget.value = { id, path, label }
-  renameName.value = basenameOf(path)
-  showRenameModal.value = true
-}
-
-async function confirmRename() {
-  if (!renameTarget.value || !renameName.value.trim()) return
-  renameLoading.value = true
-  const dir = dirnameOf(renameTarget.value.path)
-  const newPath = dir === '/' ? '/' + renameName.value.trim() : dir + '/' + renameName.value.trim()
-  try {
-    await update(renameTarget.value.id, { path: newPath })
-    toast.add({ color: 'success', title: `Renamed to "${renameName.value.trim()}"` })
-    showRenameModal.value = false
-    emit('refresh')
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Rename failed', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    renameLoading.value = false
-  }
-}
-
-// ---- Move ----
-const showMoveModal = ref(false)
-const moveTarget = ref<{ id: string, path: string, label: string } | null>(null)
-const moveDestFolder = ref('')
-const moveLoading = ref(false)
-
-function promptMove(id: string, path: string, label: string) {
-  moveTarget.value = { id, path, label }
-  moveDestFolder.value = dirnameOf(path)
-  showMoveModal.value = true
-}
-
-async function confirmMove() {
-  if (!moveTarget.value || !moveDestFolder.value) return
-  const base = basenameOf(moveTarget.value.path)
-  const dest = moveDestFolder.value === '/' ? '/' + base : moveDestFolder.value + '/' + base
-  // Same-folder no-op: destination equals current path — just close.
-  if (dest === moveTarget.value.path) {
-    showMoveModal.value = false
-    return
-  }
-  moveLoading.value = true
-  try {
-    await move(moveTarget.value.id, dest)
-    toast.add({ color: 'success', title: `Moved to "${moveDestFolder.value}"` })
-    showMoveModal.value = false
-    emit('refresh')
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Move failed', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    moveLoading.value = false
-  }
-}
-
-// ---- Share ----
-async function shareDoc(id: string) {
-  try {
-    // Fetch current state then toggle
-    const doc = await get(id)
-    const nowPublic = !doc.isPublic
-    const updated = await share(id, nowPublic)
-    if (nowPublic && updated.publicSlug) {
-      const url = `${window.location.origin}/share/${updated.publicSlug}`
-      await copyText(url)
-      toast.add({ color: 'success', title: 'Document shared', description: 'Public link copied to clipboard' })
-    } else {
-      toast.add({ color: 'success', title: 'Document is now private' })
-    }
-    emit('refresh')
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Share failed', description: err.data?.statusMessage ?? err.message })
-  }
-}
-
-/**
- * Put a document back in the triage sweeper's pool.
- *
- * Only offered for `/input/` files, because that is where a stranded capture sits: triage
- * stamps `documents.triaged_at` on its one automatic pass and deliberately never clears it
- * on a rejection or an undo (auto-clearing would re-propose the same jot every ten minutes,
- * and re-apply it once a confidence bar drops below 1.0). So a capture whose proposal you
- * rejected — or whose applied action you undid — stays in /input forever with no way back.
- * This is the way back.
- */
-async function retriageDoc(id: string, label: string) {
-  try {
-    await $fetch(`/api/documents/${id}/retriage`, { method: 'POST' })
-    toast.add({
-      color: 'success',
-      title: 'Queued for re-triage',
-      description: `“${label}” will be reconsidered on the next sweep (within 10 minutes).`
-    })
-    emit('refresh')
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Re-triage failed', description: err.data?.statusMessage ?? err.message })
-  }
-}
+const {
+  promptRename,
+  promptMove,
+  promptDelete,
+  confirmDelete,
+  shareDoc,
+  retriageDoc,
+  renameState,
+  moveState,
+  deleteState,
+  deleteLoading
+} = useDocumentTree(() => emit('refresh'))
 
 // ---- Context menu items ----
 function contextMenuItems(item: TreeItem): ContextMenuItem[][] {
@@ -279,7 +128,7 @@ function contextMenuItems(item: TreeItem): ContextMenuItem[][] {
         label: 'Delete',
         icon: 'i-lucide-trash-2',
         color: 'error' as const,
-        onSelect: () => promptDelete(item.id, item.label)
+        onSelect: () => promptDelete(item.id, item.path, item.label)
       }
     ]
   ]
@@ -430,7 +279,7 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
                 variant="ghost"
                 color="error"
                 class="opacity-0 group-hover:opacity-100 shrink-0"
-                @click.stop="promptDelete(item.id, item.label)"
+                @click.stop="promptDelete(item.id, item.path, item.label)"
               />
             </div>
           </UContextMenu>
@@ -456,7 +305,7 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
     </div>
 
     <!-- Delete confirmation modal -->
-    <UModal v-model:open="showDeleteModal">
+    <UModal v-model:open="deleteState.open">
       <template #content>
         <UCard>
           <template #header>
@@ -470,7 +319,7 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
           </template>
 
           <p class="text-sm">
-            Delete <strong>{{ deleteTarget?.label }}</strong>? This cannot be undone.
+            Delete <strong>{{ deleteState.target?.label }}</strong>? This cannot be undone.
           </p>
 
           <template #footer>
@@ -478,7 +327,7 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
               <UButton
                 color="neutral"
                 variant="ghost"
-                @click="showDeleteModal = false"
+                @click="deleteState.open = false"
               >
                 Cancel
               </UButton>
@@ -496,97 +345,20 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
     </UModal>
 
     <!-- Rename modal -->
-    <UModal v-model:open="showRenameModal">
-      <template #content>
-        <UCard>
-          <template #header>
-            <div class="flex items-center gap-2">
-              <UIcon
-                name="i-lucide-pencil"
-                class="size-5"
-              />
-              <span class="font-semibold">Rename document</span>
-            </div>
-          </template>
-
-          <UFormField label="New name">
-            <UInput
-              v-model="renameName"
-              autofocus
-              class="w-full font-mono text-sm"
-              placeholder="filename.md"
-              @keyup.enter="confirmRename"
-            />
-          </UFormField>
-
-          <template #footer>
-            <div class="flex justify-end gap-2">
-              <UButton
-                color="neutral"
-                variant="ghost"
-                @click="showRenameModal = false"
-              >
-                Cancel
-              </UButton>
-              <UButton
-                :loading="renameLoading"
-                :disabled="!renameName.trim()"
-                @click="confirmRename"
-              >
-                Rename
-              </UButton>
-            </div>
-          </template>
-        </UCard>
-      </template>
-    </UModal>
+    <DocumentsRenameModal
+      :target="renameState.target"
+      :open="renameState.open"
+      @update:open="renameState.open = $event"
+      @done="emit('refresh')"
+    />
 
     <!-- Move modal -->
-    <UModal v-model:open="showMoveModal">
-      <template #content>
-        <UCard>
-          <template #header>
-            <div class="flex items-center gap-2">
-              <UIcon
-                name="i-lucide-folder-input"
-                class="size-5"
-              />
-              <span class="font-semibold">Move document</span>
-            </div>
-          </template>
-
-          <UFormField
-            label="Destination folder"
-            :description="moveTarget ? `Moving: ${moveTarget.label}` : ''"
-          >
-            <USelectMenu
-              v-model="moveDestFolder"
-              :items="allFolders"
-              class="w-full font-mono text-sm"
-              placeholder="Select folder"
-            />
-          </UFormField>
-
-          <template #footer>
-            <div class="flex justify-end gap-2">
-              <UButton
-                color="neutral"
-                variant="ghost"
-                @click="showMoveModal = false"
-              >
-                Cancel
-              </UButton>
-              <UButton
-                :loading="moveLoading"
-                :disabled="!moveDestFolder"
-                @click="confirmMove"
-              >
-                Move
-              </UButton>
-            </div>
-          </template>
-        </UCard>
-      </template>
-    </UModal>
+    <DocumentsMoveModal
+      :target="moveState.target"
+      :open="moveState.open"
+      :folders="allFolders"
+      @update:open="moveState.open = $event"
+      @done="emit('refresh')"
+    />
   </div>
 </template>
