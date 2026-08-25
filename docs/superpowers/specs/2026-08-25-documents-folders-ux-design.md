@@ -2,6 +2,8 @@
 title: Documents — real folders, colour, and a UX pass on the whole surface
 cycle: 59
 date: 2026-08-25
+mymind_id: e86c4eea-131e-4332-9f5f-805e505be47f
+mymind_hash: 709d12e402733e46e6079f39ebe0776305481be39ed1ee9e7a53b83148bc86aa
 status: spec — approved in brainstorm, not yet planned
 related:
   - ../../wiki/document-spine.md (the document model and tree this rewrites)
