@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, timestamp, uniqueIndex, check } from 'drizzle-orm/pg-core'
 
 /**
  * A folder in the document tree.
@@ -22,7 +22,13 @@ export const folders = pgTable('folders', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 }, t => [
-  uniqueIndex('folders_path_uidx').on(t.path)
+  uniqueIndex('folders_path_uidx').on(t.path),
+  // `documents.path` has no format CHECK and several writers (documents POST/PUT, and Task 4's
+  // ensureFolders + Task 6's folder ops on this table) don't all validate shape independently —
+  // trusting every future writer to normalize is how `/projects//mymind/` or `/projects/` slips
+  // in. Enforced here, once, structurally, the same call task_columns made for `kind` (see the
+  // comment on task_columns_kind_check): a bad path corrupts the tree everywhere it's read.
+  check('folders_path_format_check', sql`${t.path} ~ '^/' AND ${t.path} !~ '/$' AND ${t.path} !~ '//'`)
 ])
 
 export type Folder = typeof folders.$inferSelect

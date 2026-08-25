@@ -1,5 +1,5 @@
 {
-  "id": "e1910637-d84f-4f6b-9702-e53e8c6bda11",
+  "id": "a4af8788-72ca-4e25-924d-248d0953a465",
   "prevId": "675e5a81-e639-4bb0-8647-afebb4f4b295",
   "version": "7",
   "dialect": "postgresql",
@@ -3932,7 +3932,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "folders_path_format_check": {
+          "name": "folders_path_format_check",
+          "value": "\"folders\".\"path\" ~ '^/' AND \"folders\".\"path\" !~ '/$' AND \"folders\".\"path\" !~ '//'"
+        }
+      },
       "isRLSEnabled": false
     }
   },
