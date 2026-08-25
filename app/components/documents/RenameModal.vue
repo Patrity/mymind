@@ -1,39 +1,109 @@
 <script setup lang="ts">
 import { dirnameOf } from '~/lib/documents/folder-list'
-import { basenameOf, type DocTreeTarget } from '~/composables/useDocumentTree'
+import { basenameOf, describeFolderError, type DocTreeTarget } from '~/composables/useDocumentTree'
+import type { FolderImpact } from '~/composables/useFolders'
 
 const props = defineProps<{
   target: DocTreeTarget | null
   open: boolean
+  /** Files call the document endpoints; folders call `useFolders().patch` at `PATCH
+   *  /api/folders/[id]` — see useDocumentTree.ts's `describeFolderError` for why the two can't
+   *  share one error path. */
+  kind: 'file' | 'folder'
 }>()
 
 const emit = defineEmits<{ 'update:open': [boolean], done: [] }>()
 
 const toast = useToast()
 const { update } = useDocuments()
+const { patch: patchFolder, impact: fetchImpact } = useFolders()
 
 const renameName = ref('')
 const renameLoading = ref(false)
+
+// A folder rename is a move within the same parent (moveFolder handles both identically), and
+// renaming the folder that IS a project's `/projects/<slug>` directory changes which project
+// every document beneath it belongs to. Preview via `impact()` before committing, same as Move.
+const impact = ref<FolderImpact | null>(null)
+const impactLoading = ref(false)
+const projectChangeAck = ref(false)
+// The proposed path this preview was fetched for — a stale preview must never authorize a
+// DIFFERENT proposed name silently if the user keeps typing after seeing a clean preview.
+const previewedPath = ref<string | null>(null)
+
+const title = computed(() => props.kind === 'folder' ? 'Rename folder' : 'Rename document')
+
+const proposedPath = computed(() => {
+  if (!props.target || !renameName.value.trim()) return null
+  const dir = dirnameOf(props.target.path)
+  const name = renameName.value.trim()
+  return dir === '/' ? '/' + name : dir + '/' + name
+})
+
+const needsAck = computed(() =>
+  !!impact.value?.projectChanges.length && previewedPath.value === proposedPath.value)
 
 // Reset on each open so a previous attempt never leaks into the next one.
 watch(() => props.open, (isOpen) => {
   if (!isOpen || !props.target) return
   renameName.value = basenameOf(props.target.path)
+  impact.value = null
+  previewedPath.value = null
+  projectChangeAck.value = false
+})
+
+// Typing a different name invalidates whatever was last previewed.
+watch(renameName, () => {
+  impact.value = null
+  previewedPath.value = null
+  projectChangeAck.value = false
 })
 
 async function confirmRename() {
-  if (!props.target || !renameName.value.trim()) return
+  if (!props.target || !proposedPath.value) return
+  const newPath = proposedPath.value
+
+  if (props.kind === 'folder' && newPath !== props.target.path && previewedPath.value !== newPath) {
+    // First pass on a new proposed path: fetch the impact preview and, if it changes project
+    // membership, stop here and wait for explicit approval (the checkbox below) rather than
+    // committing on the same click that revealed the warning.
+    impactLoading.value = true
+    try {
+      impact.value = await fetchImpact(props.target.id, newPath)
+    } catch {
+      impact.value = null
+    } finally {
+      impactLoading.value = false
+      previewedPath.value = newPath
+    }
+    if (impact.value?.projectChanges.length) return
+  }
+  if (needsAck.value && !projectChangeAck.value) return
+
   renameLoading.value = true
-  const dir = dirnameOf(props.target.path)
-  const newPath = dir === '/' ? '/' + renameName.value.trim() : dir + '/' + renameName.value.trim()
   try {
-    await update(props.target.id, { path: newPath })
+    if (props.kind === 'folder') {
+      const result = await patchFolder(props.target.id, { path: newPath })
+      // Defend against the known repo-wide trap: an unmatched relative route resolves to the
+      // SPA shell with a 200, which ofetch does not throw on. A real PATCH always answers
+      // `{ ok: true }` — anything else (including a parsed non-JSON body) is treated as failure
+      // rather than reported as a success toast.
+      if (!result || result.ok !== true) {
+        throw new Error('The server did not confirm the folder rename')
+      }
+    } else {
+      await update(props.target.id, { path: newPath })
+    }
     toast.add({ color: 'success', title: `Renamed to "${renameName.value.trim()}"` })
     emit('update:open', false)
     emit('done')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Rename failed', description: err.data?.statusMessage ?? err.message })
+    toast.add({
+      color: 'error',
+      title: 'Rename failed',
+      description: props.kind === 'folder' ? describeFolderError(e) : (err.data?.statusMessage ?? err.message)
+    })
   } finally {
     renameLoading.value = false
   }
@@ -53,19 +123,48 @@ async function confirmRename() {
               name="i-lucide-pencil"
               class="size-5"
             />
-            <span class="font-semibold">Rename document</span>
+            <span class="font-semibold">{{ title }}</span>
           </div>
         </template>
 
-        <UFormField label="New name">
-          <UInput
-            v-model="renameName"
-            autofocus
-            class="w-full font-mono text-sm"
-            placeholder="filename.md"
-            @keyup.enter="confirmRename"
-          />
-        </UFormField>
+        <div class="space-y-3">
+          <UFormField label="New name">
+            <UInput
+              v-model="renameName"
+              autofocus
+              class="w-full font-mono text-sm"
+              placeholder="filename.md"
+              @keyup.enter="confirmRename"
+            />
+          </UFormField>
+
+          <UAlert
+            v-if="needsAck"
+            color="warning"
+            icon="i-lucide-triangle-alert"
+            title="This changes project membership"
+          >
+            <template #description>
+              <ul class="text-xs space-y-0.5">
+                <li
+                  v-for="c in impact!.projectChanges"
+                  :key="`${c.from}-${c.to}`"
+                >
+                  {{ c.count }} document{{ c.count === 1 ? '' : 's' }}:
+                  {{ c.from ?? 'no project' }} → {{ c.to ?? 'no project' }}
+                </li>
+              </ul>
+            </template>
+          </UAlert>
+
+          <div
+            v-if="needsAck"
+            class="flex items-center gap-2"
+          >
+            <UCheckbox v-model="projectChangeAck" />
+            <span class="text-sm text-muted">I understand this will change project membership</span>
+          </div>
+        </div>
 
         <template #footer>
           <div class="flex justify-end gap-2">
@@ -77,8 +176,8 @@ async function confirmRename() {
               Cancel
             </UButton>
             <UButton
-              :loading="renameLoading"
-              :disabled="!renameName.trim()"
+              :loading="renameLoading || impactLoading"
+              :disabled="!renameName.trim() || (needsAck && !projectChangeAck)"
               @click="confirmRename"
             >
               Rename

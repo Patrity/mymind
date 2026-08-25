@@ -10,6 +10,15 @@ interface DialogState {
   target: DocTreeTarget | null
 }
 
+/**
+ * Rename and Move are shared between files and folders — one modal component per action,
+ * dispatched by `kind` to the right endpoint (`useDocuments()` for files, `useFolders()` for
+ * folders). See RenameModal.vue / MoveModal.vue.
+ */
+interface KindedDialogState extends DialogState {
+  kind: 'file' | 'folder'
+}
+
 export function basenameOf(path: string): string {
   return path.split('/').filter(Boolean).pop() ?? path
 }
@@ -43,6 +52,30 @@ export async function copyText(text: string) {
 }
 
 /**
+ * Turn a folder-operation error into user-facing copy.
+ *
+ * `moveFolder` (rename and move both go through it — a rename is a move within the same
+ * parent) REFUSES to land on an occupied path rather than merging the two folders together,
+ * and reports it as a bare colliding PATH (`folder-http.ts`'s `"Path already taken: <path>"`).
+ * On its own that reads as an unexplained rejection with no indication that the fix is "pick a
+ * different name" rather than "try again" — this names the actual constraint (no merge) instead
+ * of leaving the user to infer it from a path string.
+ *
+ * Folder-specific: file rename/move keep their existing generic error copy untouched, since
+ * they can't hit this collision shape (`documents_path_live_uidx` never reports a bare path).
+ */
+export function describeFolderError(e: unknown): string {
+  const err = e as { status?: number, statusCode?: number, data?: { statusMessage?: string }, message?: string }
+  const status = err.status ?? err.statusCode
+  const raw = err.data?.statusMessage ?? err.message ?? 'Something went wrong.'
+  if (status === 409) {
+    const path = raw.replace(/^Path already taken:\s*/, '')
+    return `A folder or document already exists at "${path}" — merging folders isn't supported. Choose a different name or destination.`
+  }
+  return raw
+}
+
+/**
  * Rename/move/delete/share/re-triage actions for a document in the tree, plus the
  * open/target state for each confirmation dialog. Extracted from Tree.vue so the dialogs
  * (RenameModal, MoveModal, and the delete confirmation still inline in Tree.vue) and the
@@ -55,7 +88,7 @@ export function useDocumentTree(onRefresh: () => void) {
   const toast = useToast()
   const { get, remove, share } = useDocuments()
 
-  // ---- Delete ----
+  // ---- Delete (file) ----
   const deleteState = reactive<DialogState>({ open: false, target: null })
   const deleteLoading = ref(false)
 
@@ -81,19 +114,33 @@ export function useDocumentTree(onRefresh: () => void) {
     }
   }
 
-  // ---- Rename ----
-  const renameState = reactive<DialogState>({ open: false, target: null })
+  // ---- Rename (file or folder — RenameModal branches on `kind`) ----
+  const renameState = reactive<KindedDialogState>({ open: false, target: null, kind: 'file' })
 
   function promptRename(id: string, path: string, label: string) {
     renameState.target = { id, path, label }
+    renameState.kind = 'file'
     renameState.open = true
   }
 
-  // ---- Move ----
-  const moveState = reactive<DialogState>({ open: false, target: null })
+  function promptFolderRename(folder: DocTreeTarget) {
+    renameState.target = folder
+    renameState.kind = 'folder'
+    renameState.open = true
+  }
+
+  // ---- Move (file or folder — MoveModal branches on `kind`) ----
+  const moveState = reactive<KindedDialogState>({ open: false, target: null, kind: 'file' })
 
   function promptMove(id: string, path: string, label: string) {
     moveState.target = { id, path, label }
+    moveState.kind = 'file'
+    moveState.open = true
+  }
+
+  function promptFolderMove(folder: DocTreeTarget) {
+    moveState.target = folder
+    moveState.kind = 'folder'
     moveState.open = true
   }
 
@@ -143,55 +190,24 @@ export function useDocumentTree(onRefresh: () => void) {
     }
   }
 
-  // ---- Folder create / rename / move / delete ----
-  // STUBS for Task 12 ("Folder create / rename / move / delete in the UI"), which builds
-  // FolderDeleteModal and makes RenameModal/MoveModal folder-aware. The folder context menu
-  // (Task 10) needs somewhere real to call today rather than nothing, so these give clear
-  // toast feedback instead of silently doing nothing. Task 12 replaces the bodies in place —
-  // same call sites in Tree.vue, no signature change expected.
+  // ---- New folder ----
+  // Input state (the name being typed) lives in NewFolderModal itself, mirroring
+  // NewDocumentModal/RenameModal/MoveModal — this composable only owns open/target-ish state.
+  const newFolderState = reactive<{ open: boolean, parentPath: string | null }>({ open: false, parentPath: null })
 
-  /** STUB — Task 12 wires this to a real create flow against `POST /api/folders`. */
   function promptNewFolder(path: string) {
-    toast.add({
-      color: 'info',
-      title: 'Not built yet',
-      description: `Creating a folder under "${path}" ships in a later update.`
-    })
+    newFolderState.parentPath = path
+    newFolderState.open = true
   }
 
-  /** STUB — Task 12 wires this to `FolderDeleteModal` (impact counts from `GET /api/folders/[id]/impact`). */
+  // ---- Folder delete ----
+  // FolderDeleteModal owns its own impact-fetch and delete call (same pattern as
+  // Rename/MoveModal owning their submit logic) — this only tracks which folder is targeted.
+  const folderDeleteState = reactive<DialogState>({ open: false, target: null })
+
   function promptFolderDelete(folder: DocTreeTarget) {
-    toast.add({
-      color: 'info',
-      title: 'Not built yet',
-      description: `Deleting "${folder.label}" ships in a later update.`
-    })
-  }
-
-  // Folder Rename/Move do NOT reuse promptRename/promptMove. Those submit to the document
-  // endpoints (`PUT /api/documents/[id]`, `POST /api/documents/[id]/move`) keyed by a real
-  // document id; a folder's tree-item id is its path, so the resulting URL never matches the
-  // single-segment `[id]` route and falls through to Nitro's SPA shell, which ofetch treats
-  // as a non-throwing 200 — a false "success" toast with zero actual effect. Stub instead
-  // (same inert pattern as promptNewFolder/promptFolderDelete) until Task 12 routes these at
-  // `PATCH /api/folders/[id]` for real.
-
-  /** STUB — Task 12 wires this to a real folder-aware rename (`PATCH /api/folders/[id]`). */
-  function promptFolderRename(folder: DocTreeTarget) {
-    toast.add({
-      color: 'info',
-      title: 'Not built yet',
-      description: `Renaming "${folder.label}" ships in a later update.`
-    })
-  }
-
-  /** STUB — Task 12 wires this to a real folder-aware move (`PATCH /api/folders/[id]`). */
-  function promptFolderMove(folder: DocTreeTarget) {
-    toast.add({
-      color: 'info',
-      title: 'Not built yet',
-      description: `Moving "${folder.label}" ships in a later update.`
-    })
+    folderDeleteState.target = folder
+    folderDeleteState.open = true
   }
 
   return {
@@ -208,6 +224,8 @@ export function useDocumentTree(onRefresh: () => void) {
     renameState,
     moveState,
     deleteState,
-    deleteLoading
+    deleteLoading,
+    newFolderState,
+    folderDeleteState
   }
 }

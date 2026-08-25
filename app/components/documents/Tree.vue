@@ -3,7 +3,7 @@ import type { TreeNode } from '~~/server/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
 import type { FolderColorSource } from '~~/shared/types/folders'
 import { collectFolderPaths, dirnameOf } from '~/lib/documents/folder-list'
-import { basenameOf, copyText } from '~/composables/useDocumentTree'
+import { basenameOf, copyText, type DocTreeTarget } from '~/composables/useDocumentTree'
 
 interface TreeItem {
   id: string
@@ -106,8 +106,27 @@ const {
   renameState,
   moveState,
   deleteState,
-  deleteLoading
+  deleteLoading,
+  newFolderState,
+  folderDeleteState
 } = useDocumentTree(() => emit('refresh'))
+
+/**
+ * A folder's tree-item `id` is its PATH (see `toTreeItems` above) — `PATCH`/`DELETE
+ * /api/folders/[id]` need the folder's real registry uuid instead, which is carried
+ * separately as `folderId`. Every folder-menu action that hits `/api/folders/[id]` goes
+ * through this guard so none of them can accidentally submit a path where an id belongs
+ * (exactly the bug that produced Task 10's false-success rename/move).
+ */
+function folderTarget(item: TreeItem): DocTreeTarget | null {
+  if (!item.folderId) {
+    // Real data never leaves a folder without a registry row — every writer that can produce
+    // one runs `ensureFolders`/`createFolder` first (same guarantee `promptColor` relies on).
+    toast.add({ color: 'error', title: "Can't do that yet", description: `"${item.label}" has no folder id yet — try refreshing.` })
+    return null
+  }
+  return { id: item.folderId, path: item.path, label: item.label }
+}
 
 // ---- File menu ----
 function fileMenuItems(item: TreeItem): ContextMenuItem[][] {
@@ -240,12 +259,18 @@ function folderMenuItems(item: TreeItem): ContextMenuItem[][] {
       {
         label: 'Rename',
         icon: 'i-lucide-pencil',
-        onSelect: () => promptFolderRename({ id: item.id, path: item.path, label: item.label })
+        onSelect: () => {
+          const t = folderTarget(item)
+          if (t) promptFolderRename(t)
+        }
       },
       {
         label: 'Move',
         icon: 'i-lucide-folder-input',
-        onSelect: () => promptFolderMove({ id: item.id, path: item.path, label: item.label })
+        onSelect: () => {
+          const t = folderTarget(item)
+          if (t) promptFolderMove(t)
+        }
       },
       {
         label: 'Colour',
@@ -270,7 +295,10 @@ function folderMenuItems(item: TreeItem): ContextMenuItem[][] {
         label: 'Delete',
         icon: 'i-lucide-trash-2',
         color: 'error' as const,
-        onSelect: () => promptFolderDelete({ id: item.id, path: item.path, label: item.label })
+        onSelect: () => {
+          const t = folderTarget(item)
+          if (t) promptFolderDelete(t)
+        }
       }
     ]
   ]
@@ -548,21 +576,39 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
       </template>
     </UModal>
 
-    <!-- Rename modal -->
+    <!-- Rename modal — shared by files and folders, dispatched by `kind` -->
     <DocumentsRenameModal
       :target="renameState.target"
       :open="renameState.open"
+      :kind="renameState.kind"
       @update:open="renameState.open = $event"
       @done="emit('refresh')"
     />
 
-    <!-- Move modal -->
+    <!-- Move modal — shared by files and folders, dispatched by `kind` -->
     <DocumentsMoveModal
       :target="moveState.target"
       :open="moveState.open"
       :folders="allFolders"
+      :kind="moveState.kind"
       @update:open="moveState.open = $event"
       @done="emit('refresh')"
+    />
+
+    <!-- New folder modal -->
+    <DocumentsNewFolderModal
+      :open="newFolderState.open"
+      :parent-path="newFolderState.parentPath"
+      @update:open="newFolderState.open = $event"
+      @done="emit('refresh')"
+    />
+
+    <!-- Folder delete confirmation -->
+    <DocumentsFolderDeleteModal
+      :open="folderDeleteState.open"
+      :folder="folderDeleteState.target"
+      @update:open="folderDeleteState.open = $event"
+      @deleted="emit('refresh')"
     />
 
     <!-- Folder colour picker. No @done here — the PATCH publishes a `folder` live event that
