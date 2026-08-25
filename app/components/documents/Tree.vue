@@ -2,8 +2,8 @@
 import type { TreeNode } from '~~/server/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
 import type { FolderColorSource } from '~~/shared/types/folders'
-import { collectFolderPaths } from '~/lib/documents/folder-list'
-import { basenameOf } from '~/composables/useDocumentTree'
+import { collectFolderPaths, dirnameOf } from '~/lib/documents/folder-list'
+import { basenameOf, copyText } from '~/composables/useDocumentTree'
 
 interface TreeItem {
   id: string
@@ -25,10 +25,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [id: string]
   refresh: []
+  /** A "New document here" / "New document" menu item was chosen — path is where to create it. */
+  newDocument: [path: string]
 }>()
 
 const toast = useToast()
-const { move } = useDocuments()
+const { move, get, create } = useDocuments()
 
 function getFileIcon(name: string): string {
   if (name.endsWith('.md') || name.endsWith('.markdown')) return 'i-lucide-file-text'
@@ -92,15 +94,24 @@ const {
   confirmDelete,
   shareDoc,
   retriageDoc,
+  promptNewFolder,
+  promptFolderDelete,
   renameState,
   moveState,
   deleteState,
   deleteLoading
 } = useDocumentTree(() => emit('refresh'))
 
-// ---- Context menu items ----
-function contextMenuItems(item: TreeItem): ContextMenuItem[][] {
+// ---- File menu ----
+function fileMenuItems(item: TreeItem): ContextMenuItem[][] {
   return [
+    [
+      {
+        label: 'Open',
+        icon: 'i-lucide-external-link',
+        onSelect: () => emit('select', item.id)
+      }
+    ],
     [
       {
         label: 'Rename',
@@ -111,9 +122,19 @@ function contextMenuItems(item: TreeItem): ContextMenuItem[][] {
         label: 'Move',
         icon: 'i-lucide-folder-input',
         onSelect: () => promptMove(item.id, item.path, item.label)
+      },
+      {
+        label: 'Duplicate',
+        icon: 'i-lucide-copy',
+        onSelect: () => duplicateDoc(item)
       }
     ],
     [
+      {
+        label: 'Copy path',
+        icon: 'i-lucide-clipboard',
+        onSelect: () => copyText(item.path)
+      },
       {
         label: 'Share / Copy link',
         icon: 'i-lucide-link',
@@ -137,6 +158,169 @@ function contextMenuItems(item: TreeItem): ContextMenuItem[][] {
       }
     ]
   ]
+}
+
+/**
+ * Copy a file's full content to a sibling path — "<name> copy.<ext>" next to the original,
+ * uniquified against paths already in the tree so a repeat "Duplicate" doesn't collide.
+ * No server endpoint for this; it's a plain read-then-create against the existing document API.
+ */
+async function duplicateDoc(item: TreeItem) {
+  try {
+    const doc = await get(item.id)
+    const dir = dirnameOf(item.path)
+    const base = basenameOf(item.path)
+    const dot = base.lastIndexOf('.')
+    const [name, ext] = dot > 0 ? [base.slice(0, dot), base.slice(dot)] : [base, '']
+
+    const existing = collectFilePaths(props.tree)
+    const pathFor = (n: string) => (dir === '/' ? `/${n}` : `${dir}/${n}`)
+    let candidate = `${name} copy${ext}`
+    let i = 2
+    while (existing.has(pathFor(candidate))) {
+      candidate = `${name} copy ${i}${ext}`
+      i++
+    }
+
+    // Only carry the title across if it was curated (differs from the auto-derived
+    // filename) — otherwise the duplicate should auto-derive its own from ITS filename,
+    // or the tree shows two rows both labelled with the original's stale filename.
+    const carriedTitle = doc.title && doc.title !== base ? doc.title : undefined
+
+    const created = await create({
+      path: pathFor(candidate),
+      title: carriedTitle,
+      content: doc.content,
+      frontmatter: doc.frontmatter,
+      project: doc.project,
+      domain: doc.domain,
+      type: doc.type,
+      tags: doc.tags,
+      topic: doc.topic
+    })
+    toast.add({ color: 'success', title: 'Duplicated', description: created.path })
+    emit('refresh')
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }; message?: string }
+    toast.add({ color: 'error', title: "Couldn't duplicate", description: err.data?.statusMessage ?? err.message })
+  }
+}
+
+function collectFilePaths(nodes: TreeNode[], out: Set<string> = new Set()): Set<string> {
+  for (const n of nodes) {
+    if (n.type === 'file') out.add(n.path)
+    if (n.children) collectFilePaths(n.children, out)
+  }
+  return out
+}
+
+// ---- Folder menu ----
+function folderMenuItems(item: TreeItem): ContextMenuItem[][] {
+  return [
+    [
+      {
+        label: 'New document here',
+        icon: 'i-lucide-file-plus',
+        onSelect: () => emit('newDocument', item.path)
+      },
+      {
+        label: 'New subfolder',
+        icon: 'i-lucide-folder-plus',
+        onSelect: () => promptNewFolder(item.path)
+      }
+    ],
+    [
+      {
+        label: 'Rename',
+        icon: 'i-lucide-pencil',
+        onSelect: () => promptRename(item.id, item.path, item.label)
+      },
+      {
+        label: 'Move',
+        icon: 'i-lucide-folder-input',
+        onSelect: () => promptMove(item.id, item.path, item.label)
+      },
+      {
+        label: 'Colour',
+        icon: 'i-lucide-palette',
+        onSelect: () => promptColor(item)
+      }
+    ],
+    [
+      {
+        label: 'Copy path',
+        icon: 'i-lucide-clipboard',
+        onSelect: () => copyText(item.path)
+      },
+      {
+        label: 'Collapse all',
+        icon: 'i-lucide-chevrons-down-up',
+        onSelect: () => collapseUnder(item.path)
+      }
+    ],
+    [
+      {
+        label: 'Delete',
+        icon: 'i-lucide-trash-2',
+        color: 'error' as const,
+        onSelect: () => promptFolderDelete({ id: item.id, path: item.path, label: item.label })
+      }
+    ]
+  ]
+}
+
+/** STUB — Task 11 wires this to `FolderColorPicker` (its own composable, `useFolders`). */
+function promptColor(item: TreeItem) {
+  toast.add({
+    color: 'info',
+    title: 'Not built yet',
+    description: `A colour picker for "${item.label}" ships in a later update.`
+  })
+}
+
+// ---- Root / empty-space menu ----
+function rootMenuItems(): ContextMenuItem[][] {
+  return [
+    [
+      {
+        label: 'New document',
+        icon: 'i-lucide-file-plus',
+        onSelect: () => emit('newDocument', '/')
+      },
+      {
+        label: 'New folder',
+        icon: 'i-lucide-folder-plus',
+        onSelect: () => promptNewFolder('/')
+      }
+    ],
+    [
+      {
+        label: 'Expand all',
+        icon: 'i-lucide-chevrons-up-down',
+        onSelect: expandAll
+      },
+      {
+        label: 'Collapse all',
+        icon: 'i-lucide-chevrons-down-up',
+        onSelect: collapseAll
+      }
+    ]
+  ]
+}
+
+/** Expand every folder in the tree, root included. */
+function expandAll() {
+  expandedKeys.value = allFolders.value.filter(p => p !== '/')
+}
+
+/** Collapse every folder in the tree. */
+function collapseAll() {
+  expandedKeys.value = []
+}
+
+/** Collapse one folder and any expanded descendants under it — scoped, unlike `collapseAll`. */
+function collapseUnder(path: string) {
+  expandedKeys.value = expandedKeys.value.filter(p => p !== path && !p.startsWith(path + '/'))
 }
 
 function onSelect(_e: unknown, item: TreeItem) {
@@ -235,71 +419,75 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
 
 <template>
   <div class="h-full flex flex-col">
-    <div class="flex-1 overflow-auto p-2">
-      <div
-        v-if="tree.length === 0"
-        class="flex flex-col items-center justify-center py-12 text-dimmed text-sm"
-      >
-        <UIcon
-          name="i-lucide-folder-open"
-          class="size-8 mb-2 opacity-50"
-        />
-        <p>No documents yet.</p>
-        <p class="text-xs mt-1">
-          Create one to get started.
-        </p>
+    <!-- Root menu — right-clicking empty space below the tree, not any row. Row-level menus
+         below preventDefault first, so a right-click ON a row never falls through to this one. -->
+    <UContextMenu :items="rootMenuItems()">
+      <div class="flex-1 overflow-auto p-2">
+        <div
+          v-if="tree.length === 0"
+          class="flex flex-col items-center justify-center py-12 text-dimmed text-sm"
+        >
+          <UIcon
+            name="i-lucide-folder-open"
+            class="size-8 mb-2 opacity-50"
+          />
+          <p>No documents yet.</p>
+          <p class="text-xs mt-1">
+            Create one to get started.
+          </p>
+        </div>
+
+        <UTree
+          v-else
+          v-model:expanded="expandedKeys"
+          :items="treeItems"
+          :get-key="(item: TreeItem) => item.id"
+          color="primary"
+          @select="onSelect"
+        >
+          <template #item="{ item, expanded }">
+            <!-- File nodes get context menu + draggable -->
+            <UContextMenu
+              v-if="item.nodeType === 'file'"
+              :items="fileMenuItems(item)"
+            >
+              <div
+                draggable="true"
+                class="w-full cursor-grab active:cursor-grabbing"
+                @dragstart="onDragStart($event, item)"
+                @dragend="onDragEnd"
+              >
+                <DocumentsTreeRow
+                  :item="item"
+                  :expanded="expanded"
+                  :selected="selectedId === item.id"
+                />
+              </div>
+            </UContextMenu>
+
+            <!-- Folder row — drop target, plus its own menu. -->
+            <UContextMenu
+              v-else
+              :items="folderMenuItems(item)"
+            >
+              <div
+                class="w-full rounded transition-colors"
+                :class="dropTargetPath === item.path ? 'bg-primary/20 ring-1 ring-primary/40' : ''"
+                @dragover="onFolderDragOver($event, item.path)"
+                @dragleave="onFolderDragLeave(item.path)"
+                @drop.stop="onFolderDrop($event, item.path)"
+              >
+                <DocumentsTreeRow
+                  :item="item"
+                  :expanded="expanded"
+                  :selected="selectedId === item.id"
+                />
+              </div>
+            </UContextMenu>
+          </template>
+        </UTree>
       </div>
-
-      <UTree
-        v-else
-        v-model:expanded="expandedKeys"
-        :items="treeItems"
-        :get-key="(item: TreeItem) => item.id"
-        color="primary"
-        @select="onSelect"
-      >
-        <template #item="{ item, expanded }">
-          <!-- File nodes get context menu + draggable -->
-          <UContextMenu
-            v-if="item.nodeType === 'file'"
-            :items="contextMenuItems(item)"
-          >
-            <div
-              draggable="true"
-              class="w-full cursor-grab active:cursor-grabbing"
-              @dragstart="onDragStart($event, item)"
-              @dragend="onDragEnd"
-            >
-              <DocumentsTreeRow
-                :item="item"
-                :expanded="expanded"
-                :selected="selectedId === item.id"
-              />
-            </div>
-          </UContextMenu>
-
-          <!-- Folder row — drop target. Context menu is empty for now; Task 10 fills it. -->
-          <UContextMenu
-            v-else
-            :items="[]"
-          >
-            <div
-              class="w-full rounded transition-colors"
-              :class="dropTargetPath === item.path ? 'bg-primary/20 ring-1 ring-primary/40' : ''"
-              @dragover="onFolderDragOver($event, item.path)"
-              @dragleave="onFolderDragLeave(item.path)"
-              @drop.stop="onFolderDrop($event, item.path)"
-            >
-              <DocumentsTreeRow
-                :item="item"
-                :expanded="expanded"
-                :selected="selectedId === item.id"
-              />
-            </div>
-          </UContextMenu>
-        </template>
-      </UTree>
-    </div>
+    </UContextMenu>
 
     <!-- Delete confirmation modal -->
     <UModal v-model:open="deleteState.open">

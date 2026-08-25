@@ -39,6 +39,19 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 // New document modal
 const showNewModal = ref(false)
+// Folder the tree's context menu right-clicked ("New document here" / root "New document").
+// Overrides `currentFolder` for one open; cleared so the toolbar buttons fall back to it.
+const newDocFolder = ref<string | null>(null)
+
+function openNewDocumentDefault() {
+  newDocFolder.value = null
+  showNewModal.value = true
+}
+
+function openNewDocumentAt(path: string) {
+  newDocFolder.value = path
+  showNewModal.value = true
+}
 
 function onSearchInput(val: string) {
   searchQuery.value = val
@@ -66,11 +79,13 @@ function selectSearchResult(id: string) {
   searchResults.value = []
 }
 
-// The folder the New-document modal should preselect: the open document's folder.
+// The folder the New-document modal should preselect: the open document's folder, unless a
+// context-menu "New document here" / "New document" click named one explicitly.
 const currentFolder = computed(() => {
   const path = findSelectedPathInTree(treeData.value, selectedId.value)
   return path ? dirnameOf(path) : '/'
 })
+const newDocumentDefaultFolder = computed(() => newDocFolder.value ?? currentFolder.value)
 
 // Open document from ?doc=<id> deep-link (e.g. from the command palette)
 watch(
@@ -136,7 +151,7 @@ onUnmounted(() => {
               variant="ghost"
               color="primary"
               aria-label="New document"
-              @click="showNewModal = true"
+              @click="openNewDocumentDefault"
             />
           </template>
         </UDashboardNavbar>
@@ -198,6 +213,7 @@ onUnmounted(() => {
           :selected-id="selectedId"
           @select="selectedId = $event"
           @refresh="refetchTree"
+          @new-document="openNewDocumentAt"
         />
       </template>
     </UDashboardPanel>
@@ -221,7 +237,7 @@ onUnmounted(() => {
               color="primary"
               label="New"
               class="lg:hidden"
-              @click="showNewModal = true"
+              @click="openNewDocumentDefault"
             />
           </template>
         </UDashboardNavbar>
@@ -235,7 +251,7 @@ onUnmounted(() => {
     <DocumentsNewDocumentModal
       v-model:open="showNewModal"
       :tree="treeData"
-      :default-folder="currentFolder"
+      :default-folder="newDocumentDefaultFolder"
       @created="selectedId = $event"
     />
   </div>
