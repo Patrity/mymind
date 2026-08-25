@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { TreeNode } from '~~/server/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
+import type { FolderColorSource } from '~~/shared/types/folders'
 import { collectFolderPaths } from '~/lib/documents/folder-list'
 import { basenameOf } from '~/composables/useDocumentTree'
 
@@ -12,6 +13,8 @@ interface TreeItem {
   icon?: string
   defaultExpanded?: boolean
   children?: TreeItem[]
+  color?: string | null
+  colorSource?: FolderColorSource | null
 }
 
 const props = defineProps<{
@@ -45,6 +48,8 @@ function toTreeItems(nodes: TreeNode[]): TreeItem[] {
         path: n.path,
         nodeType: 'folder',
         defaultExpanded: true,
+        color: n.color ?? null,
+        colorSource: n.colorSource ?? null,
         children: n.children ? toTreeItems(n.children) : []
       }
     }
@@ -261,45 +266,37 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
           >
             <div
               draggable="true"
-              class="flex items-center gap-2 w-full rounded px-1 -mx-1 transition-colors group cursor-grab active:cursor-grabbing"
-              :class="selectedId === item.id ? 'bg-primary/10' : ''"
+              class="w-full cursor-grab active:cursor-grabbing"
               @dragstart="onDragStart($event, item)"
               @dragend="onDragEnd"
             >
-              <UIcon
-                v-if="item.icon"
-                :name="item.icon"
-                class="size-4 shrink-0 text-dimmed"
-              />
-              <span class="truncate text-sm flex-1">{{ item.label }}</span>
-              <!-- Delete button, shown on hover for files only -->
-              <UButton
-                icon="i-lucide-trash-2"
-                size="xs"
-                variant="ghost"
-                color="error"
-                class="opacity-0 group-hover:opacity-100 shrink-0"
-                @click.stop="promptDelete(item.id, item.path, item.label)"
+              <DocumentsTreeRow
+                :item="item"
+                :expanded="expanded"
+                :selected="selectedId === item.id"
               />
             </div>
           </UContextMenu>
 
-          <!-- Folder row — drop target -->
-          <div
+          <!-- Folder row — drop target. Context menu is empty for now; Task 10 fills it. -->
+          <UContextMenu
             v-else
-            class="flex items-center gap-2 w-full rounded px-1 -mx-1 transition-colors"
-            :class="dropTargetPath === item.path ? 'bg-primary/20 ring-1 ring-primary/40' : ''"
-            @dragover="onFolderDragOver($event, item.path)"
-            @dragleave="onFolderDragLeave(item.path)"
-            @drop.stop="onFolderDrop($event, item.path)"
+            :items="[]"
           >
-            <UIcon
-              :name="dropTargetPath === item.path ? 'i-lucide-folder-open' : (expanded ? 'i-lucide-folder-open' : 'i-lucide-folder')"
-              class="size-4 shrink-0"
-              :class="dropTargetPath === item.path ? 'text-primary' : 'text-dimmed'"
-            />
-            <span class="truncate text-sm flex-1">{{ item.label }}</span>
-          </div>
+            <div
+              class="w-full rounded transition-colors"
+              :class="dropTargetPath === item.path ? 'bg-primary/20 ring-1 ring-primary/40' : ''"
+              @dragover="onFolderDragOver($event, item.path)"
+              @dragleave="onFolderDragLeave(item.path)"
+              @drop.stop="onFolderDrop($event, item.path)"
+            >
+              <DocumentsTreeRow
+                :item="item"
+                :expanded="expanded"
+                :selected="selectedId === item.id"
+              />
+            </div>
+          </UContextMenu>
         </template>
       </UTree>
     </div>
