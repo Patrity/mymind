@@ -3,7 +3,12 @@ import type { FolderDTO } from '~~/shared/types/folders'
 
 export interface FolderImpact {
   documents: number
-  folders: number
+  // Deliberately distinct from `remove()`'s `foldersDeleted` below — this counts only what's
+  // INSIDE the folder (see `folderImpact()` in server/services/folders.ts), which differs by
+  // exactly one from a delete's count (the folder itself). Collapsing the two to one name
+  // would let a confirm dialog and the toast that follows it show numbers off by one against
+  // each other with nothing in the types to catch it — keep them separate on purpose.
+  foldersInside: number
   projectChanges: { from: string | null, to: string | null, count: number }[]
 }
 
@@ -19,24 +24,15 @@ export function useFolders() {
   const patch = (id: string, body: { path?: string, color?: string | null }) =>
     ofetch<{ ok: true }>(`/api/folders/${id}`, { method: 'PATCH', body })
 
-  // `DELETE /api/folders/[id]` returns `{ documents, foldersDeleted }` (deliberately distinct
-  // from `folderImpact()`'s `foldersInside`, which counts only what's INSIDE — see
-  // server/services/folders.ts). Remapped to `folders` here so this composable's public
-  // shape matches `impact()`'s below and the mismatch lives in one place, not every call site.
-  const remove = async (id: string) => {
-    const r = await ofetch<{ documents: number, foldersDeleted: number }>(`/api/folders/${id}`, { method: 'DELETE' })
-    return { documents: r.documents, folders: r.foldersDeleted }
-  }
+  // `DELETE /api/folders/[id]` returns `{ documents, foldersDeleted }` — `foldersDeleted`
+  // counts the folder ITSELF too, deliberately distinct from `impact()`'s `foldersInside`
+  // below (see server/services/folders.ts). Kept as its own name rather than normalised to
+  // a shared `folders` field, so the two can never be swapped by accident at a call site.
+  const remove = (id: string) =>
+    ofetch<{ documents: number, foldersDeleted: number }>(`/api/folders/${id}`, { method: 'DELETE' })
 
-  // The service's `folderImpact()` names the count `foldersInside`. Remapped here to the
-  // `folders` name this composable's consumers (Task 12's dialogs) are documented to expect.
-  const impact = async (id: string, to?: string) => {
-    const r = await ofetch<{ documents: number, foldersInside: number, projectChanges: FolderImpact['projectChanges'] }>(
-      `/api/folders/${id}/impact`,
-      { query: to ? { to } : undefined }
-    )
-    return { documents: r.documents, folders: r.foldersInside, projectChanges: r.projectChanges }
-  }
+  const impact = (id: string, to?: string) =>
+    ofetch<FolderImpact>(`/api/folders/${id}/impact`, { query: to ? { to } : undefined })
 
   return { create, patch, remove, impact }
 }
