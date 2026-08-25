@@ -143,7 +143,7 @@ export function useDocumentTree(onRefresh: () => void) {
     }
   }
 
-  // ---- Folder create / delete ----
+  // ---- Folder create / rename / move / delete ----
   // STUBS for Task 12 ("Folder create / rename / move / delete in the UI"), which builds
   // FolderDeleteModal and makes RenameModal/MoveModal folder-aware. The folder context menu
   // (Task 10) needs somewhere real to call today rather than nothing, so these give clear
@@ -168,6 +168,32 @@ export function useDocumentTree(onRefresh: () => void) {
     })
   }
 
+  // Folder Rename/Move do NOT reuse promptRename/promptMove. Those submit to the document
+  // endpoints (`PUT /api/documents/[id]`, `POST /api/documents/[id]/move`) keyed by a real
+  // document id; a folder's tree-item id is its path, so the resulting URL never matches the
+  // single-segment `[id]` route and falls through to Nitro's SPA shell, which ofetch treats
+  // as a non-throwing 200 — a false "success" toast with zero actual effect. Stub instead
+  // (same inert pattern as promptNewFolder/promptFolderDelete) until Task 12 routes these at
+  // `PATCH /api/folders/[id]` for real.
+
+  /** STUB — Task 12 wires this to a real folder-aware rename (`PATCH /api/folders/[id]`). */
+  function promptFolderRename(folder: DocTreeTarget) {
+    toast.add({
+      color: 'info',
+      title: 'Not built yet',
+      description: `Renaming "${folder.label}" ships in a later update.`
+    })
+  }
+
+  /** STUB — Task 12 wires this to a real folder-aware move (`PATCH /api/folders/[id]`). */
+  function promptFolderMove(folder: DocTreeTarget) {
+    toast.add({
+      color: 'info',
+      title: 'Not built yet',
+      description: `Moving "${folder.label}" ships in a later update.`
+    })
+  }
+
   return {
     promptRename,
     promptMove,
@@ -177,6 +203,8 @@ export function useDocumentTree(onRefresh: () => void) {
     retriageDoc,
     promptNewFolder,
     promptFolderDelete,
+    promptFolderRename,
+    promptFolderMove,
     renameState,
     moveState,
     deleteState,

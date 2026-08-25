@@ -96,6 +96,8 @@ const {
   retriageDoc,
   promptNewFolder,
   promptFolderDelete,
+  promptFolderRename,
+  promptFolderMove,
   renameState,
   moveState,
   deleteState,
@@ -233,12 +235,12 @@ function folderMenuItems(item: TreeItem): ContextMenuItem[][] {
       {
         label: 'Rename',
         icon: 'i-lucide-pencil',
-        onSelect: () => promptRename(item.id, item.path, item.label)
+        onSelect: () => promptFolderRename({ id: item.id, path: item.path, label: item.label })
       },
       {
         label: 'Move',
         icon: 'i-lucide-folder-input',
-        onSelect: () => promptMove(item.id, item.path, item.label)
+        onSelect: () => promptFolderMove({ id: item.id, path: item.path, label: item.label })
       },
       {
         label: 'Colour',
