@@ -1,9 +1,9 @@
 import { and, desc, eq, isNull, ilike, ne, or, sql, inArray } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
-import { documents, chunks } from '../db/schema'
+import { documents, chunks, folders, projects } from '../db/schema'
 import { getLanguageFromPath } from '../../shared/utils/languages'
-import { buildTree, type TreeNode } from './tree'
+import { buildTree, applyFolderColors, type TreeNode } from './tree'
 import type { DocumentDTO, DocumentUpsert, ChunkHit } from '../../shared/types/documents'
 import type { DocumentSummaryDTO } from '../../shared/types/summaries'
 import { collapseChunksToHits } from '../lib/chunking/collapse'
@@ -150,9 +150,21 @@ export async function countDocs(opts: { project?: string } = {}): Promise<number
 }
 
 export async function listTree(): Promise<TreeNode[]> {
-  const rows = await useDb().select({ id: documents.id, path: documents.path, title: documents.title })
-    .from(documents).where(live())
-  return buildTree(rows)
+  const db = useDb()
+  const [docRows, folderRows, projectRows] = await Promise.all([
+    db.select({ id: documents.id, path: documents.path, title: documents.title })
+      .from(documents).where(live()),
+    db.select({ path: folders.path, color: folders.color }).from(folders),
+    db.select({ slug: projects.slug, color: projects.color }).from(projects)
+  ])
+
+  const tree = buildTree(docRows, folderRows)
+  return applyFolderColors(tree, {
+    own: new Map(folderRows.map(f => [f.path, f.color])),
+    projects: new Map(
+      projectRows.filter(p => p.color).map(p => [p.slug, p.color as string])
+    )
+  })
 }
 
 export async function getDoc(id: string): Promise<DocumentDTO | null> {

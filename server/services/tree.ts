@@ -1,3 +1,5 @@
+import type { FolderColorSource } from '../../shared/types/folders'
+
 export interface TreeNode {
   name: string
   path: string
@@ -5,30 +7,98 @@ export interface TreeNode {
   id?: string
   title?: string | null
   children?: TreeNode[]
+  /** Folders only: the colour to render, after inheritance. */
+  color?: string | null
+  /** Folders only: where that colour came from, for the picker's hint. */
+  colorSource?: FolderColorSource | null
 }
 
 interface DocLite { id: string, path: string, title?: string | null }
+interface FolderLite { path: string }
 
-export function buildTree(docs: DocLite[]): TreeNode[] {
+/**
+ * Build the document tree from document paths, unioned with the folder registry.
+ *
+ * The registry is what makes an empty folder survive: a folder with no documents left has
+ * no path to derive it from, so without `folderRows` it would simply disappear from the
+ * tree — which is exactly the bug the folders table exists to fix.
+ */
+export function buildTree(docs: DocLite[], folderRows: FolderLite[] = []): TreeNode[] {
   const root: TreeNode = { name: '', path: '', type: 'folder', children: [] }
-  for (const doc of docs) {
-    const parts = doc.path.split('/').filter(Boolean)
+
+  /** Walk to a folder path, creating any missing folder nodes on the way. */
+  const folderAt = (parts: string[]): TreeNode => {
     let cur = root
     parts.forEach((part, i) => {
-      const isFile = i === parts.length - 1
       const path = '/' + parts.slice(0, i + 1).join('/')
-      let next = cur.children!.find(c => c.name === part)
+      let next = cur.children!.find(c => c.name === part && c.type === 'folder')
       if (!next) {
-        next = isFile
-          ? { name: part, path, type: 'file', id: doc.id, title: doc.title }
-          : { name: part, path, type: 'folder', children: [] }
+        next = { name: part, path, type: 'folder', children: [] }
         cur.children!.push(next)
       }
       cur = next
     })
+    return cur
   }
+
+  for (const doc of docs) {
+    const parts = doc.path.split('/').filter(Boolean)
+    const name = parts.pop()!
+    const parent = folderAt(parts)
+    if (!parent.children!.some(c => c.type === 'file' && c.path === doc.path)) {
+      parent.children!.push({ name, path: doc.path, type: 'file', id: doc.id, title: doc.title })
+    }
+  }
+
+  // Registry rows second: any folder a document already implied is found, not duplicated.
+  for (const f of folderRows) {
+    folderAt(f.path.split('/').filter(Boolean))
+  }
+
   const sort = (nodes: TreeNode[]): TreeNode[] =>
     nodes.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'folder' ? -1 : 1))
       .map(n => (n.children ? { ...n, children: sort(n.children) } : n))
   return sort(root.children!)
+}
+
+/** '/projects/mymind/wiki' → 'mymind'; anything not exactly two levels under /projects → null. */
+function projectSlugOfFolder(path: string): string | null {
+  const parts = path.split('/').filter(Boolean)
+  return parts.length === 2 && parts[0] === 'projects' ? parts[1]! : null
+}
+
+/**
+ * Resolve each folder's rendered colour, top-down.
+ *
+ * Precedence: the folder's own colour, else the owning project's colour when the folder IS
+ * the project root, else whatever cascaded from an ancestor, else nothing. An override
+ * cascades in turn, so a colour set deep in a tree colours everything below it.
+ *
+ * Pure, and resolved on the server so the client never has to know the precedence rules.
+ */
+export function applyFolderColors(
+  nodes: TreeNode[],
+  opts: { own: Map<string, string | null>, projects: Map<string, string> },
+  inherited: string | null = null
+): TreeNode[] {
+  return nodes.map((n) => {
+    if (n.type !== 'folder') return n
+
+    const ownColor = opts.own.get(n.path) ?? null
+    const slug = projectSlugOfFolder(n.path)
+    const projectColor = slug ? opts.projects.get(slug) ?? null : null
+
+    let color: string | null = null
+    let colorSource: FolderColorSource | null = null
+    if (ownColor) { color = ownColor; colorSource = 'own' }
+    else if (projectColor) { color = projectColor; colorSource = 'project' }
+    else if (inherited) { color = inherited; colorSource = 'inherited' }
+
+    return {
+      ...n,
+      color,
+      colorSource,
+      children: n.children ? applyFolderColors(n.children, opts, color) : n.children
+    }
+  })
 }
