@@ -64,6 +64,19 @@ describe('buildTree with folder rows', () => {
     )
     expect(tree.map(n => n.path)).toEqual(['/alpha', '/zebra.md'])
   })
+
+  it("attaches a folder row's real id to its node, even when a document implied it first", () => {
+    // The colour picker PATCHes `/api/folders/[id]` with this id — a folder's tree-item KEY
+    // is its path (see Tree.vue), which is not a valid id for that route, so the real id has
+    // to travel with the node. Both construction orders are covered: /projects/mymind is
+    // implied by the document below AND has a registry row; /archive has only a row.
+    const tree = buildTree(
+      [{ id: 'd1', path: '/projects/mymind/note.md', title: 'note' }],
+      [{ path: '/projects', id: 'f-projects' }, { path: '/projects/mymind', id: 'f-mymind' }, { path: '/archive', id: 'f-archive' }]
+    )
+    expect(find(tree, '/projects/mymind')).toMatchObject({ id: 'f-mymind' })
+    expect(find(tree, '/archive')).toMatchObject({ id: 'f-archive' })
+  })
 })
 
 describe('applyFolderColors', () => {
@@ -89,6 +102,18 @@ describe('applyFolderColors', () => {
       projects: new Map([['mymind', '#3b82f6']])
     })
     expect(find(out, '/projects/mymind/wiki')).toMatchObject({ color: '#3b82f6', colorSource: 'inherited' })
+  })
+
+  it('cascades an own colour to a further descendant (not just its immediate child) as inherited', () => {
+    // Carried from Task 5's review: the project-colour cascade above is proven two levels
+    // deep, but the SAME recursive line also carries an own-colour override — this closes
+    // that gap. '/projects' sets its own colour; '/projects/mymind/wiki' is two levels below
+    // it, with '/projects/mymind' in between contributing nothing of its own.
+    const out = applyFolderColors(tree(), {
+      own: new Map([['/projects', '#ec4899']]),
+      projects: new Map()
+    })
+    expect(find(out, '/projects/mymind/wiki')).toMatchObject({ color: '#ec4899', colorSource: 'inherited' })
   })
 
   it("lets a folder's own colour beat the inherited one and cascade in turn", () => {

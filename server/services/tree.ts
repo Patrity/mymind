@@ -4,6 +4,10 @@ export interface TreeNode {
   name: string
   path: string
   type: 'file' | 'folder'
+  /** The row's own identifier: a document id for files, the `folders` registry id for
+   *  folders (present once `ensureFolders`/`createFolder` has materialized that path).
+   *  The colour picker needs this to call `PATCH /api/folders/[id]` — a folder's tree-item
+   *  key is its PATH (see Tree.vue), which is not a valid id for that route. */
   id?: string
   title?: string | null
   children?: TreeNode[]
@@ -14,7 +18,7 @@ export interface TreeNode {
 }
 
 interface DocLite { id: string, path: string, title?: string | null }
-interface FolderLite { path: string }
+interface FolderLite { path: string, id?: string }
 
 /**
  * Build the document tree from document paths, unioned with the folder registry.
@@ -51,8 +55,11 @@ export function buildTree(docs: DocLite[], folderRows: FolderLite[] = []): TreeN
   }
 
   // Registry rows second: any folder a document already implied is found, not duplicated.
+  // Every registry row also carries the folder's real id, so this is where a doc-derived
+  // stub node (created above with no id) picks one up.
   for (const f of folderRows) {
-    folderAt(f.path.split('/').filter(Boolean))
+    const node = folderAt(f.path.split('/').filter(Boolean))
+    if (f.id) node.id = f.id
   }
 
   const sort = (nodes: TreeNode[]): TreeNode[] =>

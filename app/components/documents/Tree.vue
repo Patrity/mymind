@@ -15,6 +15,10 @@ interface TreeItem {
   children?: TreeItem[]
   color?: string | null
   colorSource?: FolderColorSource | null
+  /** Folders only: the folder's real `folders` table id. NOT the same as `id` above, which
+   *  is the tree-item's path — the colour picker needs the real id to PATCH by. Absent only
+   *  if this folder somehow has no registry row yet, which real data never leaves it in. */
+  folderId?: string | null
 }
 
 const props = defineProps<{
@@ -52,6 +56,7 @@ function toTreeItems(nodes: TreeNode[]): TreeItem[] {
         defaultExpanded: true,
         color: n.color ?? null,
         colorSource: n.colorSource ?? null,
+        folderId: n.id ?? null,
         children: n.children ? toTreeItems(n.children) : []
       }
     }
@@ -271,13 +276,25 @@ function folderMenuItems(item: TreeItem): ContextMenuItem[][] {
   ]
 }
 
-/** STUB — Task 11 wires this to `FolderColorPicker` (its own composable, `useFolders`). */
+// ---- Folder colour ----
+interface ColorPromptTarget {
+  folderId: string
+  path: string
+  color: string | null
+  colorSource: FolderColorSource | null
+}
+const colorState = reactive<{ open: boolean, target: ColorPromptTarget | null }>({ open: false, target: null })
+
 function promptColor(item: TreeItem) {
-  toast.add({
-    color: 'info',
-    title: 'Not built yet',
-    description: `A colour picker for "${item.label}" ships in a later update.`
-  })
+  if (!item.folderId) {
+    // Real data never leaves a folder without a registry row — every writer that can produce
+    // one runs `ensureFolders`/`createFolder` first. Guarded anyway rather than opening a
+    // picker that would 404 on save.
+    toast.add({ color: 'error', title: "Can't set colour", description: `"${item.label}" has no folder id yet — try refreshing.` })
+    return
+  }
+  colorState.target = { folderId: item.folderId, path: item.path, color: item.color ?? null, colorSource: item.colorSource ?? null }
+  colorState.open = true
 }
 
 // ---- Root / empty-space menu ----
@@ -546,6 +563,18 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
       :folders="allFolders"
       @update:open="moveState.open = $event"
       @done="emit('refresh')"
+    />
+
+    <!-- Folder colour picker. No @done here — the PATCH publishes a `folder` live event that
+         invalidates the ['document','list'] query the tree is fed from (see live-dispatch.ts),
+         so the rail/colorSource update on their own without an explicit refresh. -->
+    <DocumentsFolderColorPicker
+      :open="colorState.open"
+      :folder-id="colorState.target?.folderId ?? ''"
+      :folder-path="colorState.target?.path ?? ''"
+      :current="colorState.target?.color ?? null"
+      :source="colorState.target?.colorSource ?? null"
+      @update:open="colorState.open = $event"
     />
   </div>
 </template>

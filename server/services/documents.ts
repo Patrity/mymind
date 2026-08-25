@@ -154,7 +154,7 @@ export async function listTree(): Promise<TreeNode[]> {
   const [docRows, folderRows, projectRows] = await Promise.all([
     db.select({ id: documents.id, path: documents.path, title: documents.title })
       .from(documents).where(live()),
-    db.select({ path: folders.path, color: folders.color }).from(folders),
+    db.select({ id: folders.id, path: folders.path, color: folders.color }).from(folders),
     db.select({ slug: projects.slug, color: projects.color }).from(projects)
   ])
 
