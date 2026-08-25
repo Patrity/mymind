@@ -2,11 +2,11 @@
 import type { DocumentDTO } from '~~/shared/types/documents'
 
 type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'json' | 'sql' | 'yaml'
-type Mode = 'edit' | 'preview' | 'split'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
 import { createAutosave } from '~/lib/documents/autosave'
+import { resolveViewMode, type ViewMode } from '~/lib/documents/view-mode'
 
 const props = defineProps<{
   documentId: string | null
@@ -89,11 +89,17 @@ const metaSaveTimer: Ref<ReturnType<typeof setTimeout> | null> = ref(null)
 // so an incoming SSE refresh can't overwrite a field mid-edit.
 const metaDirty = ref(false)
 
-// View mode persisted in cookie
-const mode = useCookie<Mode>('mm.documents.viewMode', {
+// View mode preference, persisted in a cookie. This is the user's INTENT — the mode
+// actually rendered is `mode` below, which can differ for one document without
+// overwriting the preference.
+const storedMode = useCookie<ViewMode>('mm.documents.viewMode', {
   default: () => 'edit',
   maxAge: 60 * 60 * 24 * 365
 })
+
+const mode = computed<ViewMode>(() =>
+  resolveViewMode(storedMode.value, { content: content.value, isMarkdown: isMarkdown.value })
+)
 
 function detectLanguage(path: string): CodeLanguage {
   const lower = path.toLowerCase()
@@ -110,11 +116,6 @@ const language = computed<CodeLanguage>(() =>
   doc.value ? detectLanguage(doc.value.path) : 'plaintext'
 )
 const isMarkdown = computed(() => language.value === 'markdown')
-
-// Fall back to edit for non-markdown files
-watch(isMarkdown, (md) => {
-  if (!md && mode.value !== 'edit') mode.value = 'edit'
-})
 
 const statusBadge = computed(() => {
   switch (saveStatus.value) {
@@ -385,7 +386,7 @@ onUnmounted(() => {
             :variant="mode === 'edit' ? 'solid' : 'ghost'"
             :color="mode === 'edit' ? 'primary' : 'neutral'"
             class="rounded-none"
-            @click="mode = 'edit'"
+            @click="storedMode = 'edit'"
           />
           <UButton
             icon="i-lucide-columns-2"
@@ -393,7 +394,7 @@ onUnmounted(() => {
             :variant="mode === 'split' ? 'solid' : 'ghost'"
             :color="mode === 'split' ? 'primary' : 'neutral'"
             class="rounded-none border-x border-default"
-            @click="mode = 'split'"
+            @click="storedMode = 'split'"
           />
           <UButton
             icon="i-lucide-eye"
@@ -401,7 +402,7 @@ onUnmounted(() => {
             :variant="mode === 'preview' ? 'solid' : 'ghost'"
             :color="mode === 'preview' ? 'primary' : 'neutral'"
             class="rounded-none"
-            @click="mode = 'preview'"
+            @click="storedMode = 'preview'"
           />
         </div>
 
