@@ -60,6 +60,10 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   // A skill is a document (type='skill') — a background agent write needs the
   // /settings/skills list to refresh too, not just the document graph/detail.
   document: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); invalidateGraph(c); invalidateHome(c) },
+  // A folder mutation rewrites document paths, and the tree the user is looking at is keyed
+  // ['document','list'] — invalidating only ['folder',*] (the default below) would leave the
+  // tree stale, which is the whole point of wiring folders into live reactivity.
+  folder: (c) => { c.invalidateQueries({ queryKey: ['document', 'list'] }); invalidateGraph(c); invalidateHome(c) },
   image: (c) => { invalidateGraph(c); invalidateHome(c) },
   session: (c) => { invalidateGraph(c); invalidateHome(c) },
   project: (c) => { invalidateGraph(c); invalidateHome(c) },
