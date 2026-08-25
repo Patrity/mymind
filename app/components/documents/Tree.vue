@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { TreeNode } from '~~/server/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
+import { collectFolderPaths } from '~/lib/documents/folder-list'
 
 interface TreeItem {
   id: string
@@ -86,18 +87,7 @@ function basenameOf(path: string): string {
   return path.split('/').filter(Boolean).pop() ?? path
 }
 
-/** Collect all folder paths from the tree recursively */
-function collectFolders(nodes: TreeNode[], acc: string[] = []): string[] {
-  for (const n of nodes) {
-    if (n.type === 'folder') {
-      acc.push(n.path || '/')
-      if (n.children) collectFolders(n.children, acc)
-    }
-  }
-  return acc
-}
-
-const allFolders = computed(() => collectFolders(props.tree))
+const allFolders = computed(() => collectFolderPaths(props.tree))
 
 async function copyText(text: string) {
   if (window.isSecureContext) {
@@ -575,9 +565,9 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
             label="Destination folder"
             :description="moveTarget ? `Moving: ${moveTarget.label}` : ''"
           >
-            <USelect
+            <USelectMenu
               v-model="moveDestFolder"
-              :items="allFolders.length ? allFolders : ['/']"
+              :items="allFolders"
               class="w-full font-mono text-sm"
               placeholder="Select folder"
             />

@@ -4,8 +4,7 @@ import type { DocumentDTO } from '~~/shared/types/documents'
 
 definePageMeta({ title: 'Documents' })
 
-const { create, search, useDocTree } = useDocuments()
-const toast = useToast()
+const { search, useDocTree } = useDocuments()
 
 /** Check if a doc id exists anywhere in the loaded tree */
 function docExistsInTree(nodes: TreeNode[], id: string): boolean {
@@ -35,8 +34,6 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 // New document modal
 const showNewModal = ref(false)
-const newPath = ref('/input/untitled.md')
-const creating = ref(false)
 
 function onSearchInput(val: string) {
   searchQuery.value = val
@@ -64,27 +61,25 @@ function selectSearchResult(id: string) {
   searchResults.value = []
 }
 
-async function createDocument() {
-  if (!newPath.value.trim()) return
-  creating.value = true
-  try {
-    const doc = await create({ path: newPath.value.trim() })
-    await refetchTree()
-    selectedId.value = doc.id
-    showNewModal.value = false
-    newPath.value = '/input/untitled.md'
-    toast.add({ color: 'success', title: 'Document created', description: doc.path })
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Create failed', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    creating.value = false
-  }
-}
+// The folder the New-document modal should preselect: the open document's folder.
+const currentFolder = computed(() => {
+  const path = findSelectedPathInTree(treeData.value, selectedId.value)
+  if (!path) return '/'
+  const parts = path.split('/').filter(Boolean)
+  parts.pop()
+  return parts.length ? '/' + parts.join('/') : '/'
+})
 
-function openNewModal() {
-  newPath.value = '/input/untitled.md'
-  showNewModal.value = true
+function findSelectedPathInTree(nodes: TreeNode[], id: string | null): string | null {
+  if (!id) return null
+  for (const n of nodes) {
+    if (n.type === 'file' && (n.id === id || n.path === id)) return n.path
+    if (n.children) {
+      const found = findSelectedPathInTree(n.children, id)
+      if (found) return found
+    }
+  }
+  return null
 }
 
 // Open document from ?doc=<id> deep-link (e.g. from the command palette)
@@ -152,7 +147,7 @@ onUnmounted(() => {
               variant="ghost"
               color="primary"
               aria-label="New document"
-              @click="openNewModal"
+              @click="showNewModal = true"
             />
           </template>
         </UDashboardNavbar>
@@ -237,7 +232,7 @@ onUnmounted(() => {
               color="primary"
               label="New"
               class="lg:hidden"
-              @click="openNewModal"
+              @click="showNewModal = true"
             />
           </template>
         </UDashboardNavbar>
@@ -248,53 +243,11 @@ onUnmounted(() => {
       </template>
     </UDashboardPanel>
 
-    <!-- New document modal -->
-    <UModal v-model:open="showNewModal">
-      <template #content>
-        <UCard>
-          <template #header>
-            <div class="flex items-center gap-2">
-              <UIcon
-                name="i-lucide-file-plus"
-                class="size-5"
-              />
-              <span class="font-semibold">New document</span>
-            </div>
-          </template>
-
-          <UFormField
-            label="Path"
-            description="e.g. /input/my-note.md"
-          >
-            <UInput
-              v-model="newPath"
-              placeholder="/input/untitled.md"
-              autofocus
-              class="w-full font-mono text-sm"
-              @keyup.enter="createDocument"
-            />
-          </UFormField>
-
-          <template #footer>
-            <div class="flex justify-end gap-2">
-              <UButton
-                color="neutral"
-                variant="ghost"
-                @click="showNewModal = false"
-              >
-                Cancel
-              </UButton>
-              <UButton
-                :loading="creating"
-                :disabled="!newPath.trim()"
-                @click="createDocument"
-              >
-                Create
-              </UButton>
-            </div>
-          </template>
-        </UCard>
-      </template>
-    </UModal>
+    <DocumentsNewDocumentModal
+      v-model:open="showNewModal"
+      :tree="treeData"
+      :default-folder="currentFolder"
+      @created="selectedId = $event"
+    />
   </div>
 </template>
