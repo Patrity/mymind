@@ -12,6 +12,7 @@ import { getSearchConfig } from '../lib/search/config'
 import { rrfFuse } from '../lib/ai/rrf'
 import { projectFromPath, PROJECTS_ROOT } from '../lib/projects/doc-path'
 import { matchProjectByLabel } from './projects'
+import { ensureFolders } from './folders'
 
 // ---------------------------------------------------------------------------
 // Path↔project association helpers
@@ -184,7 +185,11 @@ export async function createDoc(input: DocumentUpsert): Promise<DocumentDTO> {
     project, projectId, domain: input.domain,
     type: input.type, tags: input.tags ?? [], topic: input.topic
   }).returning()
-  return toDTO(rows[0]!)
+  const doc = toDTO(rows[0]!)
+  // Materialize the folders this path implies. Every writer reaches this function, so this
+  // is what keeps the registry complete without touching a single route handler.
+  await ensureFolders(doc.path)
+  return doc
 }
 
 export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Promise<DocumentDTO | null> {
@@ -224,7 +229,10 @@ export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Pro
   }
 
   const [r] = await useDb().update(documents).set(patch as Partial<typeof documents.$inferInsert>).where(and(eq(documents.id, id), live())).returning()
-  return r ? toDTO(r) : null
+  if (!r) return null
+  // A move can create folders that did not exist before — same reasoning as createDoc.
+  if (patch.path) await ensureFolders(r.path)
+  return toDTO(r)
 }
 
 /** Resolve a sync target by exact live path. Uses the existing unique index on live paths. */
