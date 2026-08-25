@@ -22,3 +22,15 @@ export function collectFolderPaths(nodes: TreeNode[]): string[] {
   walk(nodes)
   return out
 }
+
+/**
+ * The containing folder of a path — `/a/b/c.md` → `/a/b`, `/c.md` → `/`. Shared so
+ * documents.vue's "preselect the open document's folder" and Tree.vue's rename/move
+ * "default to the current folder" logic can't drift apart the way `collectFolderPaths`
+ * was extracted to stop happening to the folder list itself.
+ */
+export function dirnameOf(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  parts.pop()
+  return parts.length ? '/' + parts.join('/') : '/'
+}

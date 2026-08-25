@@ -1,18 +1,23 @@
 <script setup lang="ts">
 import type { TreeNode } from '~~/server/services/tree'
 import type { DocumentDTO } from '~~/shared/types/documents'
+import { dirnameOf } from '~/lib/documents/folder-list'
 
 definePageMeta({ title: 'Documents' })
 
 const { search, useDocTree } = useDocuments()
 
-/** Check if a doc id exists anywhere in the loaded tree */
-function docExistsInTree(nodes: TreeNode[], id: string): boolean {
+/** Find a file's path in the tree by id — null if it isn't there (doubles as an existence check). */
+function findSelectedPathInTree(nodes: TreeNode[], id: string | null): string | null {
+  if (!id) return null
   for (const n of nodes) {
-    if (n.type === 'file' && (n.id === id || n.path === id)) return true
-    if (n.children && docExistsInTree(n.children, id)) return true
+    if (n.type === 'file' && (n.id === id || n.path === id)) return n.path
+    if (n.children) {
+      const found = findSelectedPathInTree(n.children, id)
+      if (found) return found
+    }
   }
-  return false
+  return null
 }
 
 // Tree query (live-reactive via vue-query + SSE)
@@ -64,23 +69,8 @@ function selectSearchResult(id: string) {
 // The folder the New-document modal should preselect: the open document's folder.
 const currentFolder = computed(() => {
   const path = findSelectedPathInTree(treeData.value, selectedId.value)
-  if (!path) return '/'
-  const parts = path.split('/').filter(Boolean)
-  parts.pop()
-  return parts.length ? '/' + parts.join('/') : '/'
+  return path ? dirnameOf(path) : '/'
 })
-
-function findSelectedPathInTree(nodes: TreeNode[], id: string | null): string | null {
-  if (!id) return null
-  for (const n of nodes) {
-    if (n.type === 'file' && (n.id === id || n.path === id)) return n.path
-    if (n.children) {
-      const found = findSelectedPathInTree(n.children, id)
-      if (found) return found
-    }
-  }
-  return null
-}
 
 // Open document from ?doc=<id> deep-link (e.g. from the command palette)
 watch(
@@ -101,8 +91,7 @@ watch(selectedId, (id) => {
 // Restore last-open doc once the tree has loaded (and no ?doc= deep-link)
 watch(treeData, (nodes) => {
   if (nodes.length && !route.query.doc && !selectedId.value && lastDoc.value) {
-    const exists = docExistsInTree(nodes, lastDoc.value)
-    if (exists) {
+    if (findSelectedPathInTree(nodes, lastDoc.value) !== null) {
       selectedId.value = lastDoc.value
     }
   }

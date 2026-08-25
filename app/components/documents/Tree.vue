@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { TreeNode } from '~~/server/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
-import { collectFolderPaths } from '~/lib/documents/folder-list'
+import { collectFolderPaths, dirnameOf } from '~/lib/documents/folder-list'
 
 interface TreeItem {
   id: string
@@ -77,12 +77,6 @@ watch(topLevelFolders, (dirs) => {
 
 // ---- helpers ----
 
-function dirOf(path: string): string {
-  const parts = path.split('/').filter(Boolean)
-  parts.pop()
-  return parts.length ? '/' + parts.join('/') : '/'
-}
-
 function basenameOf(path: string): string {
   return path.split('/').filter(Boolean).pop() ?? path
 }
@@ -154,7 +148,7 @@ function promptRename(id: string, path: string, label: string) {
 async function confirmRename() {
   if (!renameTarget.value || !renameName.value.trim()) return
   renameLoading.value = true
-  const dir = dirOf(renameTarget.value.path)
+  const dir = dirnameOf(renameTarget.value.path)
   const newPath = dir === '/' ? '/' + renameName.value.trim() : dir + '/' + renameName.value.trim()
   try {
     await update(renameTarget.value.id, { path: newPath })
@@ -177,7 +171,7 @@ const moveLoading = ref(false)
 
 function promptMove(id: string, path: string, label: string) {
   moveTarget.value = { id, path, label }
-  moveDestFolder.value = dirOf(path)
+  moveDestFolder.value = dirnameOf(path)
   showMoveModal.value = true
 }
 

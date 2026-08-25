@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { collectFolderPaths } from './folder-list'
+import { collectFolderPaths, dirnameOf } from './folder-list'
 import type { TreeNode } from '~~/server/services/tree'
 
 const f = (name: string, path: string, children: TreeNode[] = []): TreeNode =>
@@ -28,5 +28,19 @@ describe('collectFolderPaths', () => {
   it('never emits a duplicate even if the tree repeats a path', () => {
     const tree = [f('input', '/input'), f('input', '/input')]
     expect(collectFolderPaths(tree)).toEqual(['/', '/input'])
+  })
+})
+
+describe('dirnameOf', () => {
+  it('returns the containing folder of a nested path', () => {
+    expect(dirnameOf('/projects/mymind/auth.md')).toBe('/projects/mymind')
+  })
+
+  it('returns root for a file at the top level', () => {
+    expect(dirnameOf('/untitled.md')).toBe('/')
+  })
+
+  it('ignores duplicate slashes', () => {
+    expect(dirnameOf('//input//note.md')).toBe('/input')
   })
 })
