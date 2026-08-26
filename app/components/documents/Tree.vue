@@ -972,12 +972,31 @@ function onBulkConfirmOpenChange(open: boolean) {
   else bulkConfirm.open = open
 }
 
+/**
+ * Is a move already waiting on an answer from the user?
+ *
+ * BOTH confirmation surfaces are component-scoped singletons — `moveState` (the folder gate's
+ * MoveModal, shared with the context menu's own Move) and `bulkPending`/`bulkConfirm` (the
+ * multi-document confirm). They outlive any single `persistPendingMoves()` call, so a call-local
+ * flag cannot protect them: a second qualifying drag would overwrite the pending move, and the
+ * first would vanish with no write, no toast and no error while the dialog quietly started
+ * describing the second one instead. One move conversation at a time; the rest are refused out
+ * loud. (Deliberately stricter than "same kind clobbers same kind" — stacking two dialogs over
+ * each other is not an improvement on replacing one.)
+ *
+ * A plain function, NOT a computed: `bulkPending` is a non-reactive `let`, so a computed would
+ * cache against `moveState.open`/`bulkConfirm.open` alone and could answer from a stale cache.
+ * Nothing renders from this, so there is nothing to memoise anyway.
+ */
+function awaitingConfirmation(): boolean {
+  return moveState.open || bulkConfirm.open || bulkPending !== null
+}
+
 async function persistPendingMoves() {
   if (persisting) return
   persisting = true
   const failures: string[] = []
-  const moved: { label: string, nodeType: 'file' | 'folder' }[] = []
-  let destination = '/'
+  const moved: { label: string, nodeType: 'file' | 'folder', toFolder: string }[] = []
   let gated = false
   try {
     // `while` rather than a single pass: a second drag landing while the first one's network
@@ -990,6 +1009,12 @@ async function persistPendingMoves() {
         if (!mv.confirmed) {
           const crossing = crossProjectFiles(mv)
           if (crossing.length) {
+            if (awaitingConfirmation()) {
+              const n = mv.paths.length
+              failures.push(`${n} ${n === 1 ? 'item' : 'items'}: not moved — answer the move already waiting first`)
+              gated = true
+              continue
+            }
             bulkPending = mv
             bulkConfirm.count = crossing.length
             bulkConfirm.toProject = projectSlugOfPath(mv.toFolder)
@@ -999,7 +1024,6 @@ async function persistPendingMoves() {
             continue
           }
         }
-        destination = mv.toFolder
         for (const path of mv.paths) {
           const item = itemByPath.value.get(path)
           if (!item) continue
@@ -1007,19 +1031,18 @@ async function persistPendingMoves() {
           const dest = destinationPathFor(path, mv.toFolder)
           try {
             if (item.nodeType === 'folder') {
-              // Only ONE folder can be waiting on the acknowledgement modal at a time — a second
-              // call would silently replace the first folder's dialog with the second's, and the
-              // first would be dropped with no dialog and no message. Skip it loudly instead.
-              if (gated) {
-                failures.push(`${item.label}: not moved — confirm the folder move already waiting first`)
+              // Same singleton problem as the bulk confirm above, and the same answer.
+              if (awaitingConfirmation()) {
+                failures.push(`${item.label}: not moved — answer the move already waiting first`)
+                gated = true
                 continue
               }
               const handedOff = await moveFolder(item, mv.toFolder, dest)
-              gated = handedOff
-              if (!handedOff) moved.push({ label: item.label, nodeType: 'folder' })
+              gated = handedOff || gated
+              if (!handedOff) moved.push({ label: item.label, nodeType: 'folder', toFolder: mv.toFolder })
             } else {
               await move(item.id, dest)
-              moved.push({ label: item.label, nodeType: 'file' })
+              moved.push({ label: item.label, nodeType: 'file', toFolder: mv.toFolder })
             }
           } catch (e: unknown) {
             failures.push(`${item.label}: ${item.nodeType === 'folder' ? describeFolderError(e) : errorText(e)}`)
@@ -1039,10 +1062,13 @@ async function persistPendingMoves() {
   if (moved.length) {
     const allFiles = moved.every(m => m.nodeType === 'file')
     const noun = allFiles ? (moved.length === 1 ? 'document' : 'documents') : (moved.length === 1 ? 'item' : 'items')
+    // One pass can drain two drags (see the `while` above), and they need not share a
+    // destination — naming the last one would attribute every row to a folder some never went to.
+    const destinations = new Set(moved.map(m => m.toFolder))
     toast.add({
       color: 'success',
       title: moved.length === 1 ? `Moved "${moved[0]!.label}"` : `Moved ${moved.length} ${noun}`,
-      description: `→ ${destination}`
+      description: destinations.size === 1 ? `→ ${[...destinations][0]}` : undefined
     })
   }
   // A gated folder move has not happened yet (the Move modal is asking for an acknowledgement),
