@@ -13,7 +13,7 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean] }>()
 
 const toast = useToast()
-const { patch } = useFolders()
+const setColor = useSetFolderColorMutation()
 
 /** The hex being applied, or the sentinel 'inherit' for the clear-override option; null when idle. */
 const saving = ref<string | null>(null)
@@ -23,7 +23,7 @@ const saving = ref<string | null>(null)
 async function choose(hex: string | null) {
   saving.value = hex ?? 'inherit'
   try {
-    await patch(props.folderId, { color: hex })
+    await setColor.mutateAsync({ id: props.folderId, color: hex })
     toast.add({
       color: 'success',
       title: hex ? 'Folder colour updated' : 'Colour cleared',

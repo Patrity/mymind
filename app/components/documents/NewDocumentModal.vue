@@ -12,7 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean], created: [id: string] }>()
 
 const toast = useToast()
-const { create } = useDocuments()
+const createDocument = useCreateDocumentMutation()
 
 const folder = ref('/')
 const filename = ref('untitled.md')
@@ -41,7 +41,7 @@ async function submit() {
   if (!finalPath.value) return
   creating.value = true
   try {
-    const doc = await create({ path: finalPath.value })
+    const doc = await createDocument.mutateAsync({ body: { path: finalPath.value } })
     emit('created', doc.id)
     emit('update:open', false)
     toast.add({ color: 'success', title: 'Document created', description: doc.path })

@@ -1,3 +1,15 @@
+import { useMutation, useQueryClient } from '@tanstack/vue-query'
+import type { TreeNode } from '~~/server/services/tree'
+import type { DocumentDTO } from '~~/shared/types/documents'
+import type { FolderDTO } from '~~/shared/types/folders'
+import {
+  moveNodeInTree,
+  removeNodeFromTree,
+  setFolderColorInTree,
+  insertDocumentInTree,
+  insertFolderInTree
+} from '~/lib/documents/tree-mutate'
+
 /** Shared shape for the target of a rename/move/delete dialog. */
 export interface DocTreeTarget {
   id: string
@@ -75,6 +87,144 @@ export function describeFolderError(e: unknown): string {
   return raw
 }
 
+// ---------------------------------------------------------------------------
+// Optimistic tree mutations (Task 15)
+// ---------------------------------------------------------------------------
+//
+// Rename, move-via-dialog, colour and delete used to end in `emit('refresh')` — a full
+// `refetchTree()` round-trip before the UI showed anything. These wrap `useFolders()`/
+// `useDocuments()` (kept as thin HTTP fetchers on purpose) in `useMutation`, painting the
+// guessed-at tree into the `['document','list']` cache immediately (`onMutate`), rolling back
+// to the pre-mutation snapshot on failure (`onError`), and always invalidating afterwards
+// (`onSettled`) so the server's real answer — sort order, colour cascade, real ids — wins.
+//
+// Deliberately NOT used by Tree.vue's drag-and-drop path: Task 13's `childrenByPath`/
+// `pendingMoves` machinery already has its own optimistic mechanism for drag moves, reviewed
+// hard over two fix rounds. Layering a second cache-writing path onto the SAME move operation
+// would race it — exactly the "two sources of truth" bug that machinery exists to prevent. A
+// dialog-driven move (context-menu Move, or a drag's cross-project MoveModal hand-off) runs
+// AFTER the drag layer has already reverted its own local splice, so there is no overlap.
+
+const TREE_KEY = ['document', 'list'] as const
+
+/**
+ * Shared onMutate/onError/onSettled scaffolding for every tree-cache-optimistic mutation below.
+ * `applyOptimistic` is a pure function (see `~/lib/documents/tree-mutate.ts`) — this only owns
+ * the snapshot/restore/invalidate plumbing, never the tree maths itself.
+ */
+function useOptimisticTreeMutation<TVars, TResult>(opts: {
+  mutationFn: (vars: TVars) => Promise<TResult>
+  applyOptimistic: (tree: TreeNode[], vars: TVars) => TreeNode[]
+}) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: opts.mutationFn,
+    onMutate: async (vars: TVars) => {
+      await queryClient.cancelQueries({ queryKey: TREE_KEY })
+      const previous = queryClient.getQueryData<TreeNode[]>(TREE_KEY)
+      if (previous) {
+        queryClient.setQueryData(TREE_KEY, opts.applyOptimistic(previous, vars))
+      }
+      return { previous }
+    },
+    onError: (_err, _vars, context) => {
+      // A failed mutation must roll back — an optimistic write that survives a rejection is
+      // worse than no optimism at all. `previous` is undefined only when the cache was empty
+      // to begin with, in which case there is nothing to restore.
+      if (context?.previous) {
+        queryClient.setQueryData(TREE_KEY, context.previous)
+      }
+    },
+    onSettled: () => {
+      // Always — success or failure. A success reconciles the guess with the server's real
+      // shape (sort order, colour cascade, real ids); a failure re-confirms the rollback.
+      void queryClient.invalidateQueries({ queryKey: TREE_KEY })
+    }
+  })
+}
+
+interface RenameOrMoveVars { id: string, oldPath: string, newPath: string }
+
+/** File rename — `PUT /api/documents/[id]`. Also used for a file's dialog-driven "Move" (a move
+ *  is a rename to a path under a different parent; the endpoint and the optimistic shape are
+ *  identical either way). */
+export function useRenameDocumentMutation() {
+  const { update } = useDocuments()
+  return useOptimisticTreeMutation<RenameOrMoveVars, DocumentDTO>({
+    mutationFn: ({ id, newPath }) => update(id, { path: newPath }),
+    applyOptimistic: (tree, { oldPath, newPath }) => moveNodeInTree(tree, oldPath, newPath)
+  })
+}
+
+/** File move-via-dialog — `POST /api/documents/[id]/move`. Kept distinct from rename above only
+ *  because MoveModal and RenameModal call different endpoints; the tree-side effect is the same. */
+export function useMoveDocumentMutation() {
+  const { move } = useDocuments()
+  return useOptimisticTreeMutation<RenameOrMoveVars, DocumentDTO>({
+    mutationFn: ({ id, newPath }) => move(id, newPath),
+    applyOptimistic: (tree, { oldPath, newPath }) => moveNodeInTree(tree, oldPath, newPath)
+  })
+}
+
+/** Folder rename AND folder move-via-dialog both go through `PATCH /api/folders/[id]` with a new
+ *  `path` — a rename is a move within the same parent (see `describeFolderError`'s note above),
+ *  so one mutation covers both call sites (RenameModal and MoveModal, kind: 'folder'). */
+export function useMoveFolderMutation() {
+  const { patch } = useFolders()
+  return useOptimisticTreeMutation<RenameOrMoveVars, { ok: true }>({
+    mutationFn: ({ id, newPath }) => patch(id, { path: newPath }),
+    applyOptimistic: (tree, { oldPath, newPath }) => moveNodeInTree(tree, oldPath, newPath)
+  })
+}
+
+/** Folder colour — `PATCH /api/folders/[id]`. */
+export function useSetFolderColorMutation() {
+  const { patch } = useFolders()
+  return useOptimisticTreeMutation<{ id: string, color: string | null }, { ok: true }>({
+    mutationFn: ({ id, color }) => patch(id, { color }),
+    applyOptimistic: (tree, { id, color }) => setFolderColorInTree(tree, id, color)
+  })
+}
+
+/** File delete — `DELETE /api/documents/[id]`. */
+export function useDeleteDocumentMutation() {
+  const { remove } = useDocuments()
+  return useOptimisticTreeMutation<{ id: string, path: string }, unknown>({
+    mutationFn: ({ id }) => remove(id),
+    applyOptimistic: (tree, { path }) => removeNodeFromTree(tree, path)
+  })
+}
+
+/** Folder delete — `DELETE /api/folders/[id]`. */
+export function useDeleteFolderMutation() {
+  const { remove } = useFolders()
+  return useOptimisticTreeMutation<{ id: string, path: string }, { documents: number, foldersDeleted: number }>({
+    mutationFn: ({ id }) => remove(id),
+    applyOptimistic: (tree, { path }) => removeNodeFromTree(tree, path)
+  })
+}
+
+/** Document create — `POST /api/documents`. The optimistic row uses a throwaway temp id; the
+ *  real DTO (and its real id) comes back from `mutateAsync`'s resolved value the same as before
+ *  this task, so callers that need the real id (opening the new doc in the editor) are unaffected
+ *  — only the tree's OWN row appears sooner now. */
+export function useCreateDocumentMutation() {
+  const { create } = useDocuments()
+  return useOptimisticTreeMutation<{ body: Partial<DocumentDTO> & { path: string } }, DocumentDTO>({
+    mutationFn: ({ body }) => create(body),
+    applyOptimistic: (tree, { body }) => insertDocumentInTree(tree, `temp-${crypto.randomUUID()}`, body.path)
+  })
+}
+
+/** Folder create — `POST /api/folders`. Same temp-id approach as document create above. */
+export function useCreateFolderMutation() {
+  const { create } = useFolders()
+  return useOptimisticTreeMutation<{ path: string }, FolderDTO>({
+    mutationFn: ({ path }) => create(path),
+    applyOptimistic: (tree, { path }) => insertFolderInTree(tree, `temp-${crypto.randomUUID()}`, path)
+  })
+}
+
 /**
  * Rename/move/delete/share/re-triage actions for a document in the tree, plus the
  * open/target state for each confirmation dialog. Extracted from Tree.vue so the dialogs
@@ -86,7 +236,8 @@ export function describeFolderError(e: unknown): string {
  */
 export function useDocumentTree(onRefresh: () => void) {
   const toast = useToast()
-  const { get, remove, share } = useDocuments()
+  const { get, share } = useDocuments()
+  const deleteDocument = useDeleteDocumentMutation()
 
   // ---- Delete (file) ----
   const deleteState = reactive<DialogState>({ open: false, target: null })
@@ -101,7 +252,7 @@ export function useDocumentTree(onRefresh: () => void) {
     if (!deleteState.target) return
     deleteLoading.value = true
     try {
-      await remove(deleteState.target.id)
+      await deleteDocument.mutateAsync({ id: deleteState.target.id, path: deleteState.target.path })
       toast.add({ color: 'success', title: `Deleted "${deleteState.target.label}"` })
       deleteState.open = false
       deleteState.target = null

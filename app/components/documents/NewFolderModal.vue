@@ -8,7 +8,7 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean], done: [] }>()
 
 const toast = useToast()
-const { create } = useFolders()
+const createFolder = useCreateFolderMutation()
 
 const name = ref('')
 const creating = ref(false)
@@ -31,7 +31,7 @@ async function submit() {
   if (!finalPath.value) return
   creating.value = true
   try {
-    const folder = await create(finalPath.value)
+    const folder = await createFolder.mutateAsync({ path: finalPath.value })
     // Defend against the known repo-wide trap: an unmatched relative route resolves to the SPA
     // shell with a 200, which ofetch does not throw on. A real create always answers a folder
     // with a real id — anything else is treated as failure, never reported as a success toast.

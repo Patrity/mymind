@@ -10,7 +10,8 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean], deleted: [] }>()
 
 const toast = useToast()
-const { impact: fetchImpact, remove } = useFolders()
+const { impact: fetchImpact } = useFolders()
+const deleteFolder = useDeleteFolderMutation()
 
 // `impact()` reports `foldersInside` — what the folder CONTAINS, excluding itself — which is
 // exactly right for a preview shown before the delete happens (see useFolders.ts's comment on
@@ -70,7 +71,7 @@ async function confirmDelete() {
     // `remove()` returns `foldersDeleted`, which INCLUDES the folder itself — the right count
     // to report back as "what actually happened", as distinct from the pre-delete preview's
     // `foldersInside` above.
-    const result = await remove(props.folder.id)
+    const result = await deleteFolder.mutateAsync({ id: props.folder.id, path: props.folder.path })
     // Defend against the known repo-wide trap: an unmatched relative route resolves to the SPA
     // shell with a 200, which ofetch does not throw on. A real DELETE always answers numeric
     // counts — anything else is treated as failure, never reported as a success toast.

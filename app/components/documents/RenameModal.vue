@@ -15,8 +15,9 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean], done: [] }>()
 
 const toast = useToast()
-const { update } = useDocuments()
-const { patch: patchFolder, impact: fetchImpact } = useFolders()
+const { impact: fetchImpact } = useFolders()
+const renameDocument = useRenameDocumentMutation()
+const renameFolder = useMoveFolderMutation()
 
 const renameName = ref('')
 const renameLoading = ref(false)
@@ -94,7 +95,7 @@ async function confirmRename() {
   renameLoading.value = true
   try {
     if (props.kind === 'folder') {
-      const result = await patchFolder(props.target.id, { path: newPath })
+      const result = await renameFolder.mutateAsync({ id: props.target.id, oldPath: props.target.path, newPath })
       // Defend against the known repo-wide trap: an unmatched relative route resolves to the
       // SPA shell with a 200, which ofetch does not throw on. A real PATCH always answers
       // `{ ok: true }` — anything else (including a parsed non-JSON body) is treated as failure
@@ -103,7 +104,7 @@ async function confirmRename() {
         throw new Error('The server did not confirm the folder rename')
       }
     } else {
-      await update(props.target.id, { path: newPath })
+      await renameDocument.mutateAsync({ id: props.target.id, oldPath: props.target.path, newPath })
     }
     toast.add({ color: 'success', title: `Renamed to "${renameName.value.trim()}"` })
     emit('update:open', false)

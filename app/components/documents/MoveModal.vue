@@ -20,8 +20,9 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean], done: [] }>()
 
 const toast = useToast()
-const { move } = useDocuments()
-const { patch: patchFolder, impact: fetchImpact } = useFolders()
+const { impact: fetchImpact } = useFolders()
+const moveDocument = useMoveDocumentMutation()
+const moveFolder = useMoveFolderMutation()
 
 const moveDestFolder = ref('')
 const moveLoading = ref(false)
@@ -163,7 +164,7 @@ async function confirmMove() {
   moveLoading.value = true
   try {
     if (props.kind === 'folder') {
-      const result = await patchFolder(props.target.id, { path: dest })
+      const result = await moveFolder.mutateAsync({ id: props.target.id, oldPath: props.target.path, newPath: dest })
       // Defend against the known repo-wide trap: an unmatched relative route resolves to the
       // SPA shell with a 200, which ofetch does not throw on. A real PATCH always answers
       // `{ ok: true }` — anything else is treated as failure, never reported as success.
@@ -171,7 +172,7 @@ async function confirmMove() {
         throw new Error('The server did not confirm the folder move')
       }
     } else {
-      await move(props.target.id, dest)
+      await moveDocument.mutateAsync({ id: props.target.id, oldPath: props.target.path, newPath: dest })
     }
     toast.add({ color: 'success', title: `Moved to "${moveDestFolder.value}"` })
     emit('update:open', false)
