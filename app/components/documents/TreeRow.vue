@@ -18,7 +18,7 @@ withDefaults(defineProps<{
 
 <template>
   <div
-    class="flex items-center gap-2 w-full rounded px-1 -mx-1 py-0.5 transition-colors group"
+    class="flex items-center gap-2 w-full rounded px-1 -mx-1 py-0.5 transition-colors group cursor-grab active:cursor-grabbing"
     :class="[
       selected || marked ? 'bg-primary/10 text-default' : 'text-muted',
       dropActive ? 'ring-1 ring-primary/50 bg-primary/5' : ''
@@ -43,14 +43,5 @@ withDefaults(defineProps<{
     />
 
     <span class="truncate text-sm flex-1">{{ item.label }}</span>
-
-    <!-- Drag affordance — and the ONLY place a drag can start from: Tree.vue configures
-         Sortable with `handle: '.drag-handle'`, so dragging the row body never begins a drag
-         (it would fight click-to-select and text selection). Hidden until hover so a static
-         tree stays quiet. -->
-    <UIcon
-      name="i-lucide-grip-vertical"
-      class="drag-handle size-3.5 shrink-0 text-dimmed opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing"
-    />
   </div>
 </template>
