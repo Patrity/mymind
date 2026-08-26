@@ -31,6 +31,13 @@ const selectedId = ref<string | null>(null)
 // Last-open cookie — persists selected doc across sessions
 const lastDoc = useCookie<string | null>('mm.lastDoc', { default: () => null })
 
+// Inspector panel collapse state, persisted in a cookie. UDashboardPanel has no built-in
+// collapse (only UDashboardSidebar does), so this drives a manual full-panel/icon-strip swap.
+const inspectorCollapsed = useCookie<boolean>('mm.documents.inspector', {
+  default: () => true,
+  maxAge: 60 * 60 * 24 * 365
+})
+
 // Search
 const searchQuery = ref('')
 const searchResults = ref<DocumentDTO[]>([])
@@ -247,6 +254,53 @@ onUnmounted(() => {
         <DocumentsEditor :document-id="selectedId" />
       </template>
     </UDashboardPanel>
+
+    <!-- Inspector panel -->
+    <UDashboardPanel
+      v-if="!inspectorCollapsed"
+      id="documents-inspector"
+      resizable
+      :default-size="20"
+      :min-size="14"
+      :max-size="32"
+      class="hidden lg:flex"
+    >
+      <template #header>
+        <UDashboardNavbar>
+          <template #title>
+            <span class="text-sm font-medium">Inspector</span>
+          </template>
+          <template #right>
+            <UButton
+              icon="i-lucide-panel-right-close"
+              size="xs"
+              variant="ghost"
+              color="neutral"
+              aria-label="Collapse inspector"
+              @click="inspectorCollapsed = true"
+            />
+          </template>
+        </UDashboardNavbar>
+      </template>
+      <template #body>
+        <DocumentsInspector :document-id="selectedId" />
+      </template>
+    </UDashboardPanel>
+
+    <!-- Inspector collapsed to an icon strip -->
+    <div
+      v-else
+      class="hidden lg:flex flex-col items-center gap-2 border-s border-default shrink-0 w-12 py-3"
+    >
+      <UButton
+        icon="i-lucide-panel-right-open"
+        size="xs"
+        variant="ghost"
+        color="neutral"
+        aria-label="Expand inspector"
+        @click="inspectorCollapsed = false"
+      />
+    </div>
 
     <DocumentsNewDocumentModal
       v-model:open="showNewModal"

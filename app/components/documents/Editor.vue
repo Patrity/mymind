@@ -26,24 +26,16 @@ const saveStatus = ref<SaveStatus>('idle')
 const savedContent = ref('')
 const dirty = computed(() => content.value !== savedContent.value)
 
-// Live detail query — keeps metadata in sync when remote changes arrive.
-// We do NOT replace the content ref if the user has unsaved edits.
+// Live detail query — keeps content and share state in sync when remote changes arrive.
+// We do NOT replace the content ref if the user has unsaved edits. Metadata (title, project,
+// domain, type, tags) is synced by Inspector.vue's own copy of this watcher, guarded by its
+// own metaDirty.
 const { data: liveDocData } = useDocDetail(() => props.documentId)
 watch(liveDocData, (fresh) => {
   if (!fresh || !doc.value || fresh.id !== doc.value.id) return
-  // Sync metadata only when the user isn't mid-edit — don't clobber a pending
-  // title/path/project edit inside the 800ms meta-save debounce window.
-  if (!metaDirty.value) {
-    doc.value = { ...doc.value, title: fresh.title, path: fresh.path, project: fresh.project,
-      domain: fresh.domain, type: fresh.type, tags: fresh.tags,
-      isPublic: fresh.isPublic, publicSlug: fresh.publicSlug }
-    metaPath.value = fresh.path
-    metaTitle.value = fresh.title ?? ''
-    metaProject.value = fresh.project ?? ''
-    metaDomain.value = fresh.domain ?? ''
-    metaType.value = fresh.type ?? ''
-    metaTags.value = (fresh.tags ?? []).join(', ')
-  }
+  // isPublic/publicSlug aren't part of the metadata form (they're toggled via a single button
+  // click, not typed), so there's no debounce window to protect — sync unconditionally.
+  doc.value = { ...doc.value, isPublic: fresh.isPublic, publicSlug: fresh.publicSlug }
   // Only sync content when there are no local unsaved edits
   if (!dirty.value) {
     content.value = fresh.content
@@ -76,18 +68,6 @@ async function onEditorImage(file: File) {
     toast.add({ color: 'error', title: 'Upload failed', description: err.data?.statusMessage ?? err.message })
   }
 }
-
-// Metadata form fields (separate from content)
-const metaPath = ref('')
-const metaTitle = ref('')
-const metaProject = ref('')
-const metaDomain = ref('')
-const metaType = ref('')
-const metaTags = ref('') // comma-separated
-const metaSaveTimer: Ref<ReturnType<typeof setTimeout> | null> = ref(null)
-// True while the user has pending metadata edits; gates the live-sync watcher
-// so an incoming SSE refresh can't overwrite a field mid-edit.
-const metaDirty = ref(false)
 
 // View mode preference, persisted in a cookie. This is the user's INTENT — the mode
 // actually rendered is `mode` below, which can differ for one document without
@@ -136,13 +116,6 @@ async function loadDoc(id: string) {
     doc.value = d
     content.value = d.content
     savedContent.value = d.content
-    // Populate metadata fields
-    metaPath.value = d.path
-    metaTitle.value = d.title ?? ''
-    metaProject.value = d.project ?? ''
-    metaDomain.value = d.domain ?? ''
-    metaType.value = d.type ?? ''
-    metaTags.value = (d.tags ?? []).join(', ')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Failed to load document', description: err.data?.statusMessage ?? err.message })
@@ -152,13 +125,12 @@ async function loadDoc(id: string) {
 }
 
 watch(() => props.documentId, (id, prevId) => {
-  // Write the outgoing document's pending edits before swapping. This used to clearTimeout()
-  // them, so clicking another document within the debounce window discarded whatever had just
-  // been typed. Both saves capture the OLD id/values synchronously here, before loadDoc()
-  // overwrites the refs below.
+  // Write the outgoing document's pending content edit before swapping. This used to
+  // clearTimeout() it, so clicking another document within the debounce window discarded
+  // whatever had just been typed. The save captures the OLD id/content synchronously here,
+  // before loadDoc() overwrites the refs below. (Inspector.vue does the same for metadata.)
   if (prevId) {
     void autosave.flush()
-    if (metaDirty.value) void saveMetadata(prevId)
   }
   if (id) loadDoc(id)
   else {
@@ -204,50 +176,6 @@ function onContentUpdate(v: string) {
 
 function onSaveShortcut() {
   void autosave.flush()
-}
-
-// Metadata save — debounced 800ms after any meta field change.
-// `id` is explicit for the same reason the content save takes one: on a document switch this
-// runs while props.documentId already points at the INCOMING document, so reading it here
-// would write the outgoing document's title/project onto the new one. Every meta*.value read
-// below is synchronous, so calling this before loadDoc() captures the right values.
-async function saveMetadata(id = props.documentId) {
-  if (!id || !doc.value) return
-  const tags = metaTags.value.split(',').map(t => t.trim()).filter(Boolean)
-  try {
-    await update(id, {
-      title: metaTitle.value || null,
-      project: metaProject.value || null,
-      domain: metaDomain.value || null,
-      type: metaType.value || null,
-      tags
-    })
-    // Update local doc reference — but only while this save's own document is still selected.
-    // A flush from a document switch must not write the outgoing metadata onto the incoming
-    // document's local state.
-    if (props.documentId !== id) return
-    if (doc.value) {
-      doc.value = {
-        ...doc.value,
-        title: metaTitle.value || null,
-        project: metaProject.value || null,
-        domain: metaDomain.value || null,
-        type: metaType.value || null,
-        tags
-      }
-    }
-    // Edits are persisted — let the live watcher resume syncing this doc.
-    metaDirty.value = false
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Metadata save failed', description: err.data?.statusMessage ?? err.message })
-  }
-}
-
-function scheduleMetaSave() {
-  metaDirty.value = true
-  if (metaSaveTimer.value) clearTimeout(metaSaveTimer.value)
-  metaSaveTimer.value = setTimeout(() => saveMetadata(), 800)
 }
 
 // Share toggle
@@ -305,7 +233,7 @@ async function copyPublicLink() {
 // Tab close / reload can't be made to wait for an in-flight save, so warn instead — this is
 // the one exit route a flush cannot cover.
 function onBeforeUnload(e: BeforeUnloadEvent) {
-  if (dirty.value || autosave.hasPending() || metaDirty.value) e.preventDefault()
+  if (dirty.value || autosave.hasPending()) e.preventDefault()
 }
 onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
 
@@ -315,10 +243,6 @@ onUnmounted(() => {
   // so any edit typed in the last 1.5s was lost with no warning. Fire-and-forget is fine: the
   // request outlives the component, and the save callback guards its own status updates.
   void autosave.flush()
-  if (metaSaveTimer.value) {
-    clearTimeout(metaSaveTimer.value)
-    if (metaDirty.value) void saveMetadata()
-  }
 })
 </script>
 
@@ -494,104 +418,6 @@ onUnmounted(() => {
       >
         <MdView :source="content" />
       </div>
-    </div>
-
-    <!-- Metadata panel -->
-    <div class="shrink-0 border-t border-default bg-muted/30">
-      <details class="group">
-        <summary class="flex items-center gap-2 px-3 py-2 cursor-pointer select-none text-xs text-muted hover:text-default list-none">
-          <UIcon
-            name="i-lucide-chevron-right"
-            class="size-3.5 transition-transform group-open:rotate-90"
-          />
-          Metadata
-          <div
-            v-if="doc.tags?.length || doc.project || doc.domain || doc.type"
-            class="flex gap-1 ml-2"
-          >
-            <UBadge
-              v-if="doc.project"
-              color="neutral"
-              variant="outline"
-              size="xs"
-            >
-              {{ doc.project }}
-            </UBadge>
-            <UBadge
-              v-if="doc.domain"
-              color="neutral"
-              variant="outline"
-              size="xs"
-            >
-              {{ doc.domain }}
-            </UBadge>
-            <UBadge
-              v-for="tag in doc.tags?.slice(0, 3)"
-              :key="tag"
-              color="primary"
-              variant="outline"
-              size="xs"
-            >
-              {{ tag }}
-            </UBadge>
-          </div>
-        </summary>
-
-        <div class="px-3 pb-3 grid grid-cols-2 gap-2">
-          <UFormField
-            label="Title"
-            class="col-span-2"
-          >
-            <UInput
-              v-model="metaTitle"
-              placeholder="Document title"
-              size="xs"
-              class="w-full"
-              @input="scheduleMetaSave"
-            />
-          </UFormField>
-
-          <UFormField label="Project">
-            <UInput
-              v-model="metaProject"
-              placeholder="project name"
-              size="xs"
-              class="w-full"
-              @input="scheduleMetaSave"
-            />
-          </UFormField>
-
-          <UFormField label="Domain">
-            <UInput
-              v-model="metaDomain"
-              placeholder="domain"
-              size="xs"
-              class="w-full"
-              @input="scheduleMetaSave"
-            />
-          </UFormField>
-
-          <UFormField label="Type">
-            <UInput
-              v-model="metaType"
-              placeholder="note, spec, ref…"
-              size="xs"
-              class="w-full"
-              @input="scheduleMetaSave"
-            />
-          </UFormField>
-
-          <UFormField label="Tags">
-            <UInput
-              v-model="metaTags"
-              placeholder="tag1, tag2, tag3"
-              size="xs"
-              class="w-full"
-              @input="scheduleMetaSave"
-            />
-          </UFormField>
-        </div>
-      </details>
     </div>
   </div>
 </template>
