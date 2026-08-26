@@ -104,20 +104,41 @@ export function removeNodeFromTree(tree: TreeNode[], path: string): TreeNode[] {
 }
 
 /**
- * Set a folder's OWN colour. Deliberately does not touch descendants or re-derive
- * project-inherited colour for siblings — that cascade lives in `applyFolderColors`
- * server-side and reproducing it here is exactly the "duplicated server logic" this file's
- * top comment warns against. Any folder inheriting from this one shows the old colour for one
- * settle cycle, which `onSettled`'s invalidate corrects.
+ * Set a folder's OWN colour override, or clear it back toward inheriting.
+ *
+ * `TreeNode.color` is documented (server/services/tree.ts) as the colour to render AFTER
+ * inheritance — every folder already carries its fully-resolved colour, override or not. That
+ * means clearing an override can be guessed correctly without reproducing the server's cascade:
+ * the target's nearest ANCESTOR FOLDER's `.color` in the tree we already hold IS what this folder
+ * would inherit (that ancestor's own value is itself already fully resolved, however it got
+ * there), so walking up to it is enough — no need to re-derive anything.
+ *
+ * What this can't see: `projects.color`. If `folderId` IS a project root (e.g. `/projects/foo`)
+ * with no coloured ancestor FOLDER above it, clearing its override server-side reveals the
+ * PROJECT's colour — but that colour isn't present anywhere in the cached tree while the
+ * override is active (only one of own/project/inherited is ever resolved into `.color` at a
+ * time), so this one case still optimistically blanks to null/null. `onSettled`'s invalidate
+ * corrects it a moment later, the same trade-off already made for descendants below.
+ *
+ * Deliberately does not touch DESCENDANTS: a folder inheriting colour from the one just
+ * recoloured/cleared shows its old colour for one settle cycle, which the same invalidate fixes.
+ * Reproducing that cascade too would mean re-implementing `applyFolderColors` — exactly the
+ * "duplicated server logic that could get it wrong" this file's top comment warns against.
  */
 export function setFolderColorInTree(tree: TreeNode[], folderId: string, color: string | null): TreeNode[] {
-  const walk = (nodes: TreeNode[]): TreeNode[] => nodes.map((n) => {
-    if (n.type === 'folder' && n.id === folderId) {
-      return { ...n, color, colorSource: color ? 'own' : null }
+  const walk = (nodes: TreeNode[], ancestorColor: string | null): TreeNode[] => nodes.map((n) => {
+    if (n.type !== 'folder') return n
+    if (n.id === folderId) {
+      if (color) return { ...n, color, colorSource: 'own' }
+      return ancestorColor
+        ? { ...n, color: ancestorColor, colorSource: 'inherited' }
+        : { ...n, color: null, colorSource: null }
     }
-    return n.children ? { ...n, children: walk(n.children) } : n
+    // `n.color` is already fully resolved (own, project, or inherited) — that's exactly what a
+    // child of `n` would itself inherit, so it's all the next level down needs to know.
+    return n.children ? { ...n, children: walk(n.children, n.color ?? null) } : n
   })
-  return walk(cloneTree(tree))
+  return walk(cloneTree(tree), null)
 }
 
 /** Insert a new file node at `path` under a temporary id, standing in until the real DTO settles. */

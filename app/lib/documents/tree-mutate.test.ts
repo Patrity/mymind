@@ -116,6 +116,43 @@ describe('setFolderColorInTree', () => {
     const next = setFolderColorInTree(tree, 'folder-1', '#fff')
     expect(next[1]).toMatchObject({ color: '#000' })
   })
+
+  it('clearing under a coloured parent optimistically inherits the PARENT colour, not blank', () => {
+    const tree = [
+      f('parent', '/parent', [
+        f('child', '/parent/child', [], { id: 'folder-child', color: '#ef4444', colorSource: 'own' })
+      ], { id: 'folder-parent', color: '#3b82f6', colorSource: 'own' })
+    ]
+    const next = setFolderColorInTree(tree, 'folder-child', null)
+    const child = next[0]!.children![0]!
+    expect(child).toMatchObject({ color: '#3b82f6', colorSource: 'inherited' })
+    // The parent itself is untouched.
+    expect(next[0]).toMatchObject({ color: '#3b82f6', colorSource: 'own' })
+  })
+
+  it('clearing under a parent that itself only inherits still picks up that already-resolved colour', () => {
+    // The parent's OWN `.color` is already fully resolved (inherited from further up, or from a
+    // project) by the time it lands in the tree — the child doesn't need to walk past it.
+    const tree = [
+      f('parent', '/parent', [
+        f('child', '/parent/child', [], { id: 'folder-child', color: '#ef4444', colorSource: 'own' })
+      ], { id: 'folder-parent', color: '#10b981', colorSource: 'inherited' })
+    ]
+    const next = setFolderColorInTree(tree, 'folder-child', null)
+    const child = next[0]!.children![0]!
+    expect(child).toMatchObject({ color: '#10b981', colorSource: 'inherited' })
+  })
+
+  it('clearing with no coloured ancestor anywhere blanks to null (the documented project-root gap)', () => {
+    const tree = [
+      f('parent', '/parent', [
+        f('child', '/parent/child', [], { id: 'folder-child', color: '#ef4444', colorSource: 'own' })
+      ], { id: 'folder-parent', color: null, colorSource: null })
+    ]
+    const next = setFolderColorInTree(tree, 'folder-child', null)
+    const child = next[0]!.children![0]!
+    expect(child).toMatchObject({ color: null, colorSource: null })
+  })
 })
 
 describe('insertDocumentInTree', () => {

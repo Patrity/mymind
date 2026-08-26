@@ -105,14 +105,32 @@ export function describeFolderError(e: unknown): string {
 // dialog-driven move (context-menu Move, or a drag's cross-project MoveModal hand-off) runs
 // AFTER the drag layer has already reverted its own local splice, so there is no overlap.
 
-const TREE_KEY = ['document', 'list'] as const
+export const TREE_KEY = ['document', 'list'] as const
+
+/**
+ * Monotonic counter bumped once per `onMutate` across EVERY tree-optimistic mutation (rename,
+ * move, colour, delete, create all share this — there's one `['document','list']` key for all
+ * of them to race on). A failing mutation's rollback compares its own stamped generation against
+ * this before restoring: if another mutation has started (and so painted its own optimistic
+ * guess into the cache) since this one wrote, restoring `previous` here would discard that
+ * unrelated, still-in-flight-or-already-succeeded write — the classic "two concurrent edits, the
+ * failing one clobbers the surviving one" bug. `previous` itself can't be used as the "did
+ * something else write since" signal: `setQueryData` runs the new value through vue-query's
+ * structural-sharing (`replaceEqualDeep`), which returns a freshly-built object even when nothing
+ * changed, so `getQueryData() === (the exact object I wrote)` is never reliably true — a plain
+ * module-level ordinal sidesteps that entirely.
+ */
+let treeMutationGeneration = 0
 
 /**
  * Shared onMutate/onError/onSettled scaffolding for every tree-cache-optimistic mutation below.
  * `applyOptimistic` is a pure function (see `~/lib/documents/tree-mutate.ts`) — this only owns
- * the snapshot/restore/invalidate plumbing, never the tree maths itself.
+ * the snapshot/restore/invalidate plumbing, never the tree maths itself. Exported (rather than
+ * kept module-private) so it can be driven directly against a real `QueryClient` in tests — see
+ * `useDocumentTree.test.ts` for the onMutate → onError → rollback → onSettled sequence, including
+ * the concurrent-mutation case above.
  */
-function useOptimisticTreeMutation<TVars, TResult>(opts: {
+export function useOptimisticTreeMutation<TVars, TResult>(opts: {
   mutationFn: (vars: TVars) => Promise<TResult>
   applyOptimistic: (tree: TreeNode[], vars: TVars) => TreeNode[]
 }) {
@@ -122,22 +140,30 @@ function useOptimisticTreeMutation<TVars, TResult>(opts: {
     onMutate: async (vars: TVars) => {
       await queryClient.cancelQueries({ queryKey: TREE_KEY })
       const previous = queryClient.getQueryData<TreeNode[]>(TREE_KEY)
+      const generation = ++treeMutationGeneration
       if (previous) {
         queryClient.setQueryData(TREE_KEY, opts.applyOptimistic(previous, vars))
       }
-      return { previous }
+      return { previous, generation }
     },
     onError: (_err, _vars, context) => {
       // A failed mutation must roll back — an optimistic write that survives a rejection is
-      // worse than no optimism at all. `previous` is undefined only when the cache was empty
-      // to begin with, in which case there is nothing to restore.
-      if (context?.previous) {
+      // worse than no optimism at all. But it must roll back ONLY its own write: restoring
+      // `previous` unconditionally would also discard a concurrent mutation that started after
+      // this one and is still in flight (or has already succeeded) — its own optimistic guess
+      // silently clobbered by this one's stale snapshot. The generation check below is what
+      // limits the restore to "nothing else has written since I did".
+      // `previous` is undefined only when the cache was empty to begin with, in which case
+      // there is nothing to restore either way.
+      if (context?.previous && context.generation === treeMutationGeneration) {
         queryClient.setQueryData(TREE_KEY, context.previous)
       }
     },
     onSettled: () => {
       // Always — success or failure. A success reconciles the guess with the server's real
-      // shape (sort order, colour cascade, real ids); a failure re-confirms the rollback.
+      // shape (sort order, colour cascade, real ids); a failure re-confirms the rollback (or,
+      // when the rollback above was skipped for being stale, corrects the cache the honest way —
+      // via the server's real answer — instead of via a snapshot that was no longer valid).
       void queryClient.invalidateQueries({ queryKey: TREE_KEY })
     }
   })
