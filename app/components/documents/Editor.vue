@@ -261,21 +261,33 @@ onUnmounted(() => {
     </p>
   </div>
 
-  <!-- Loading state -->
+  <!-- Cold-load skeleton — only when there's no previous document to keep showing. A
+       document switch (doc already set) dims the existing editor below instead. -->
   <div
-    v-else-if="loading"
-    class="h-full flex items-center justify-center"
+    v-else-if="loading && !doc"
+    class="h-full flex flex-col"
   >
-    <UIcon
-      name="i-lucide-loader-2"
-      class="size-6 animate-spin text-dimmed"
-    />
+    <div class="flex items-center gap-2 px-3 py-2 border-b border-default shrink-0">
+      <USkeleton class="size-4 rounded" />
+      <USkeleton class="h-3 w-40" />
+    </div>
+    <div class="flex-1 min-h-0 p-4 space-y-3">
+      <USkeleton class="h-4 w-3/4" />
+      <USkeleton class="h-4 w-full" />
+      <USkeleton class="h-4 w-5/6" />
+      <USkeleton class="h-4 w-2/3" />
+      <USkeleton class="h-4 w-full" />
+      <USkeleton class="h-4 w-1/2" />
+    </div>
   </div>
 
-  <!-- Editor -->
+  <!-- Editor — stays mounted and dimmed (not unmounted) while switching to another
+       document, so the pane never blanks. `read-only` blocks keystrokes from landing in
+       the outgoing document while it fades; `pointer-events-none` blocks clicks. -->
   <div
     v-else-if="doc"
     class="h-full flex flex-col"
+    :class="{ 'opacity-60 pointer-events-none transition-opacity': loading }"
   >
     <!-- Toolbar -->
     <div class="flex items-center gap-2 px-3 py-2 border-b border-default text-sm flex-wrap shrink-0">
@@ -355,6 +367,13 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- Slim progress indicator while switching to another document -->
+    <UProgress
+      v-if="loading"
+      size="xs"
+      class="shrink-0"
+    />
+
     <!-- Public URL notice — click anywhere to copy the absolute URL -->
     <div
       v-if="publicUrl"
@@ -404,6 +423,7 @@ onUnmounted(() => {
           ref="codeEditorRef"
           :model-value="content"
           :language="language"
+          :read-only="loading"
           :on-image="onEditorImage"
           @update:model-value="onContentUpdate"
           @save="onSaveShortcut"

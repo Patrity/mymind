@@ -12,7 +12,7 @@ const { update, useDocDetail } = useDocuments()
 // vue-query convention here forbids a parallel hand-rolled fetch). `doc` below is a local
 // snapshot taken from it: it drives the summary badges and lets saveMetadata() know a document
 // has actually loaded before it writes anything.
-const { data: liveDocData } = useDocDetail(() => props.documentId)
+const { data: liveDocData, isPending } = useDocDetail(() => props.documentId)
 const doc = ref<DocumentDTO | null>(null)
 
 // Metadata form fields (separate from content, which lives in Editor.vue)
@@ -146,6 +146,30 @@ onUnmounted(() => {
     <p class="text-sm">
       Select a document to see its metadata
     </p>
+  </div>
+
+  <!-- Skeleton — shown only while the detail query has no data yet for this document
+       (a fresh id, not a cached revisit); avoids flashing the previous document's
+       metadata under the new document's id while the fetch is in flight. -->
+  <div
+    v-else-if="isPending"
+    class="p-3 space-y-4"
+  >
+    <div class="flex items-center gap-2">
+      <USkeleton class="size-3.5 rounded-full" />
+      <USkeleton class="h-3 w-16" />
+    </div>
+
+    <div class="flex flex-col gap-3">
+      <div
+        v-for="i in 5"
+        :key="i"
+        class="flex flex-col gap-1.5"
+      >
+        <USkeleton class="h-3 w-12" />
+        <USkeleton class="h-7 w-full" />
+      </div>
+    </div>
   </div>
 
   <div
