@@ -106,7 +106,8 @@ async function confirmRename() {
     } else {
       await renameDocument.mutateAsync({ id: props.target.id, oldPath: props.target.path, newPath })
     }
-    toast.add({ color: 'success', title: `Renamed to "${renameName.value.trim()}"` })
+    // No success toast (Task 17 toast discipline): the row's new name is immediately visible in
+    // the tree, for both a file and a folder.
     emit('update:open', false)
     emit('done')
   } catch (e: unknown) {

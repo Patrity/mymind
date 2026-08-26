@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { FOLDER_PALETTE, type FolderColorSource } from '~~/shared/types/folders'
-import { basenameOf } from '~/composables/useDocumentTree'
 
 const props = defineProps<{
   open: boolean
@@ -24,11 +23,8 @@ async function choose(hex: string | null) {
   saving.value = hex ?? 'inherit'
   try {
     await setColor.mutateAsync({ id: props.folderId, color: hex })
-    toast.add({
-      color: 'success',
-      title: hex ? 'Folder colour updated' : 'Colour cleared',
-      description: hex ? undefined : `"${basenameOf(props.folderPath)}" now inherits its colour.`
-    })
+    // No success toast (Task 17 toast discipline): the folder's colour rail updates immediately
+    // and this modal closes, both visible results.
     emit('update:open', false)
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }

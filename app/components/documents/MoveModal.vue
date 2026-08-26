@@ -20,7 +20,7 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean], done: [] }>()
 
 const toast = useToast()
-const { impact: fetchImpact } = useFolders()
+const { impact: fetchImpact, patch: patchFolder } = useFolders()
 const moveDocument = useMoveDocumentMutation()
 const moveFolder = useMoveFolderMutation()
 
@@ -162,6 +162,11 @@ async function confirmMove() {
   }
 
   moveLoading.value = true
+  // Captured before the mutation resolves. `props.target` is set once when this dialog opens
+  // and never mutated underneath it, so these are genuinely the PRE-move id/path — exactly what
+  // Undo below needs to hand back to `patch()`.
+  const folderId = props.target.id
+  const originalPath = props.target.path
   try {
     if (props.kind === 'folder') {
       const result = await moveFolder.mutateAsync({ id: props.target.id, oldPath: props.target.path, newPath: dest })
@@ -174,7 +179,18 @@ async function confirmMove() {
     } else {
       await moveDocument.mutateAsync({ id: props.target.id, oldPath: props.target.path, newPath: dest })
     }
-    toast.add({ color: 'success', title: `Moved to "${moveDestFolder.value}"` })
+    // Task 17 toast discipline: a FILE move gets no toast — its new location is immediately
+    // visible in the tree. A FOLDER move keeps one specifically because it earns an Undo — a
+    // folder move can carry many documents out of view at once (scrolled away, or into a
+    // collapsed sibling), so a one-click way back is worth the toast that a plain file move
+    // no longer gets.
+    if (props.kind === 'folder') {
+      toast.add({
+        color: 'success',
+        title: `Moved to "${moveDestFolder.value}"`,
+        actions: [{ label: 'Undo', onClick: () => undoFolderMove(folderId, originalPath) }]
+      })
+    }
     emit('update:open', false)
     emit('done')
   } catch (e: unknown) {
@@ -186,6 +202,23 @@ async function confirmMove() {
     })
   } finally {
     moveLoading.value = false
+  }
+}
+
+/**
+ * Undo a folder move by patching it straight back to where it was. Deliberately the raw
+ * `patch()` fetcher, not `useMoveFolderMutation()` — Undo is a rare escape hatch clicked from a
+ * toast that may already be gone from screen, not a path that needs its own optimistic paint;
+ * the folder PATCH endpoint publishes its own live event either way, which is what actually
+ * repaints the tree (see FolderColorPicker.vue's identical note on that).
+ */
+async function undoFolderMove(id: string, originalPath: string) {
+  try {
+    const result = await patchFolder(id, { path: originalPath })
+    if (!result || result.ok !== true) throw new Error('The server did not confirm the undo')
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Undo failed', description: err.data?.statusMessage ?? err.message })
   }
 }
 </script>

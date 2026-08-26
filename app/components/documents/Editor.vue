@@ -4,12 +4,19 @@ import type { DocumentDTO } from '~~/shared/types/documents'
 type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'json' | 'sql' | 'yaml'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
+import type { BreadcrumbItem } from '@nuxt/ui'
 import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
 import { createAutosave } from '~/lib/documents/autosave'
 import { resolveViewMode, type ViewMode } from '~/lib/documents/view-mode'
 
 const props = defineProps<{
   documentId: string | null
+}>()
+
+const emit = defineEmits<{
+  /** A folder segment in the breadcrumb was clicked — documents.vue forwards this to
+   *  Tree.vue's exposed `revealFolder()`, which expands and highlights it there. */
+  selectFolder: [path: string]
 }>()
 
 const toast = useToast()
@@ -96,6 +103,34 @@ const language = computed<CodeLanguage>(() =>
   doc.value ? detectLanguage(doc.value.path) : 'plaintext'
 )
 const isMarkdown = computed(() => language.value === 'markdown')
+
+/**
+ * The toolbar's breadcrumb — replaces the old raw `font-mono` path string. Every segment except
+ * the last (the document itself, rendered inactive/current) is a folder: clicking it emits
+ * `selectFolder` so documents.vue can hand the path to Tree.vue's `revealFolder()`.
+ *
+ * `to`/`href` are deliberately never set — a real link would navigate via NuxtLink, but this
+ * isn't a route change, it's "reveal this folder in the sibling tree pane". Without `to`,
+ * UBreadcrumb renders a plain `<span>` (see its theme's `to: true` compound variant), so the
+ * hover affordance is recreated by hand via `class` on the clickable segments only.
+ */
+const breadcrumbItems = computed<BreadcrumbItem[]>(() => {
+  if (!doc.value) return []
+  const parts = doc.value.path.split('/').filter(Boolean)
+  const items: BreadcrumbItem[] = [{ icon: 'i-lucide-house' }]
+  let acc = ''
+  parts.forEach((part, i) => {
+    acc += `/${part}`
+    const folderPath = acc
+    const isLast = i === parts.length - 1
+    items.push({
+      label: part,
+      class: isLast ? undefined : 'cursor-pointer hover:text-default transition-colors',
+      onClick: isLast ? undefined : () => emit('selectFolder', folderPath)
+    })
+  })
+  return items
+})
 
 const statusBadge = computed(() => {
   switch (saveStatus.value) {
@@ -295,10 +330,12 @@ onUnmounted(() => {
         name="i-lucide-file-text"
         class="size-4 text-dimmed shrink-0"
       />
-      <span
-        class="font-mono text-xs text-muted truncate"
+      <UBreadcrumb
+        :items="breadcrumbItems"
         :title="doc.path"
-      >{{ doc.path }}</span>
+        class="min-w-0"
+        :ui="{ list: 'flex-wrap', link: 'text-xs', linkLeadingIcon: 'size-3.5', separatorIcon: 'size-3.5 shrink-0' }"
+      />
 
       <!-- Save status badge -->
       <UBadge

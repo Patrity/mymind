@@ -42,9 +42,10 @@ async function submit() {
   creating.value = true
   try {
     const doc = await createDocument.mutateAsync({ body: { path: finalPath.value } })
+    // No success toast (Task 17 toast discipline): `created` opens the document straight into
+    // the editor and its row appears in the tree, both immediately visible.
     emit('created', doc.id)
     emit('update:open', false)
-    toast.add({ color: 'success', title: 'Document created', description: doc.path })
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Create failed', description: err.data?.statusMessage ?? err.message })

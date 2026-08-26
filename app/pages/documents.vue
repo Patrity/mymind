@@ -28,6 +28,13 @@ const treeData = computed(() => treeQueryData.value ?? [])
 const route = useRoute()
 const selectedId = ref<string | null>(null)
 
+// The tree pane, so a breadcrumb click in the editor can reveal a folder there (Tree.vue
+// exposes `revealFolder` for exactly this — see its `defineExpose`).
+const treeRef = ref<{ revealFolder: (path: string) => void } | null>(null)
+function onSelectFolder(path: string) {
+  treeRef.value?.revealFolder(path)
+}
+
 // Last-open cookie — persists selected doc across sessions
 const lastDoc = useCookie<string | null>('mm.lastDoc', { default: () => null })
 
@@ -200,7 +207,7 @@ onUnmounted(() => {
           v-else-if="searchQuery && !searchLoading && searchResults.length === 0"
           class="px-3 py-2 text-xs text-muted"
         >
-          No results
+          No documents match <span class="italic text-default">"{{ searchQuery }}"</span>
         </div>
 
         <!-- Tree -->
@@ -216,6 +223,7 @@ onUnmounted(() => {
         </div>
         <DocumentsTree
           v-else
+          ref="treeRef"
           :tree="treeData"
           :selected-id="selectedId"
           @select="selectedId = $event"
@@ -251,7 +259,10 @@ onUnmounted(() => {
       </template>
 
       <template #body>
-        <DocumentsEditor :document-id="selectedId" />
+        <DocumentsEditor
+          :document-id="selectedId"
+          @select-folder="onSelectFolder"
+        />
       </template>
     </UDashboardPanel>
 

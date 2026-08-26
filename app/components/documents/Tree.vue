@@ -272,7 +272,7 @@ async function duplicateDoc(item: TreeItem) {
     // or the tree shows two rows both labelled with the original's stale filename.
     const carriedTitle = doc.title && doc.title !== base ? doc.title : undefined
 
-    const created = await create({
+    await create({
       path: pathFor(candidate),
       title: carriedTitle,
       content: doc.content,
@@ -283,7 +283,8 @@ async function duplicateDoc(item: TreeItem) {
       tags: doc.tags,
       topic: doc.topic
     })
-    toast.add({ color: 'success', title: 'Duplicated', description: created.path })
+    // No success toast: the duplicate is a "create" under Task 17's toast discipline — its row
+    // appears in the tree from the refresh below, which is the visible result.
     emit('refresh')
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }; message?: string }
@@ -471,13 +472,6 @@ function onRowPointer(e: MouseEvent, item: TreeItem) {
   activateRow(e, item)
 }
 
-/** Enter on a focused row. Keyed events target the focused `<li>` itself, so the ownership test
- *  is a plain identity check rather than `onRowPointer`'s row lookup. */
-function onRowKey(e: KeyboardEvent, item: TreeItem) {
-  if (e.target !== e.currentTarget) return
-  activateRow(e, item)
-}
-
 function activateRow(e: MouseEvent | KeyboardEvent, item: TreeItem) {
   if (e.metaKey || e.ctrlKey) {
     marked.value = marked.value.includes(item.path)
@@ -502,6 +496,197 @@ function activateRow(e: MouseEvent | KeyboardEvent, item: TreeItem) {
   if (item.nodeType === 'folder') toggleExpanded(item.path)
   else emit('select', item.id)
 }
+
+// ---- Keyboard navigation (roving tabindex, arrows, typeahead, F2, Delete) ----
+//
+// `UTree` (reka-ui's `TreeRoot`) gave all of this for free: a `RovingFocusGroup` so exactly one
+// row was ever a Tab stop, arrow-key movement, and typeahead. Task 13 replaced `UTree` with the
+// hand-rolled recursion above because it structurally cannot host `useSortable` (no `<ul>` for
+// an empty folder, no per-path hooks, no mutable arrays for Sortable to bind) — and losing
+// `UTree` meant losing all of the above along with it, silently: every row still renders with
+// `tabindex="0"`, so Tab was walking the entire tree row by row.
+//
+// This section owns exactly the interaction layer — which row is focused, and what a key does
+// to it — and touches NOTHING about how rows are clicked or dragged. `onRowPointer`/
+// `activateRow` above and the whole drag block below are unchanged; this only adds `onKeydown`
+// and a `focus` listener on the same `<li>`.
+
+/** The one row the roving tab stop currently names. Anything else visible is `tabindex="-1"` —
+ *  reachable by click or `.focus()`, never by Tab. */
+const focusedPath = ref<string | null>(null)
+
+/** The path that is ACTUALLY in the tab order right now: `focusedPath` when it still names a
+ *  visible row, else the first visible row — so there is always exactly one Tab stop, even
+ *  before anything has been focused or after a collapse hides the last-focused row. */
+const rovingTabIndexPath = computed<string | null>(() => {
+  if (focusedPath.value && visiblePaths.value.includes(focusedPath.value)) return focusedPath.value
+  return visiblePaths.value[0] ?? null
+})
+
+// One stable `<li>` ref-setter per path, mirroring `listRefFor` above — arrow keys and typeahead
+// both need to call `.focus()` on a row by path.
+const rowRefs = shallowReactive<Record<string, HTMLElement | null>>({})
+const rowRefSetters = new Map<string, (el: Element | ComponentPublicInstance | null) => void>()
+
+function rowRefFor(path: string) {
+  let setter = rowRefSetters.get(path)
+  if (!setter) {
+    setter = (el) => {
+      rowRefs[path] = (el as HTMLElement | null) ?? null
+    }
+    rowRefSetters.set(path, setter)
+  }
+  return setter
+}
+
+/** Move the roving tab stop AND real DOM focus to `path`. Deferred to `nextTick` because the
+ *  target row may not exist yet — e.g. expanding a folder renders its children a tick later. */
+function moveFocusTo(path: string | null | undefined) {
+  if (!path) return
+  focusedPath.value = path
+  nextTick(() => rowRefs[path]?.focus())
+}
+
+function renameFocused(item: TreeItem) {
+  if (item.nodeType === 'folder') {
+    const t = folderTarget(item)
+    if (t) promptFolderRename(t)
+  } else {
+    promptRename(item.id, item.path, item.label)
+  }
+}
+
+function deleteFocused(item: TreeItem) {
+  if (item.nodeType === 'folder') {
+    const t = folderTarget(item)
+    if (t) promptFolderDelete(t)
+  } else {
+    promptDelete(item.id, item.path, item.label)
+  }
+}
+
+/** Typeahead: keystrokes buffer for `TYPEAHEAD_MS` and then reset, so a fresh word starts a
+ *  fresh search instead of appending forever. Search starts at the row AFTER the focused one
+ *  and wraps around — the same shape `TreeRoot`'s typeahead used to give for free. */
+const TYPEAHEAD_MS = 600
+let typeaheadBuffer = ''
+let typeaheadTimer: ReturnType<typeof setTimeout> | null = null
+
+function handleTypeahead(e: KeyboardEvent, item: TreeItem) {
+  // Single printable character, no modifier — rules out Tab/Escape/arrow keys already handled
+  // above and shortcuts like Cmd+A reaching in here.
+  if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return
+  e.preventDefault()
+  if (typeaheadTimer) clearTimeout(typeaheadTimer)
+  typeaheadBuffer += e.key.toLowerCase()
+  typeaheadTimer = setTimeout(() => { typeaheadBuffer = '' }, TYPEAHEAD_MS)
+
+  const rows = visiblePaths.value
+  const start = rows.indexOf(item.path)
+  if (start === -1 || rows.length === 0) return
+  for (let step = 1; step <= rows.length; step++) {
+    const path = rows[(start + step) % rows.length]!
+    if (itemByPath.value.get(path)?.label.toLowerCase().startsWith(typeaheadBuffer)) {
+      moveFocusTo(path)
+      return
+    }
+  }
+}
+
+/**
+ * Every key the tree answers to, dispatched from the focused `<li>`.
+ *
+ * Ownership mirrors `onRowPointer`'s: a keydown on a focused CHILD row bubbles through every
+ * ancestor folder's `<li>` (they are nested elements, each with its own listener), so this only
+ * acts when the event's target IS this row, never a descendant's — same identity check
+ * `onRowKey` used to make alone.
+ */
+function onRowKeydown(e: KeyboardEvent, item: TreeItem) {
+  if (e.target !== e.currentTarget) return
+
+  switch (e.key) {
+    case 'Enter':
+    case ' ':
+      e.preventDefault()
+      activateRow(e, item)
+      return
+    case 'ArrowDown': {
+      e.preventDefault()
+      const rows = visiblePaths.value
+      const i = rows.indexOf(item.path)
+      if (i !== -1 && i < rows.length - 1) moveFocusTo(rows[i + 1])
+      return
+    }
+    case 'ArrowUp': {
+      e.preventDefault()
+      const rows = visiblePaths.value
+      const i = rows.indexOf(item.path)
+      if (i > 0) moveFocusTo(rows[i - 1])
+      return
+    }
+    case 'ArrowRight':
+      e.preventDefault()
+      // Two-stage, matching a native tree: collapsed folder expands (focus stays put); an
+      // already-expanded folder instead hands focus to its first child. Files have no
+      // children, so this is a no-op for them.
+      if (item.nodeType === 'folder') {
+        if (!isExpanded(item.path)) expand(item.path)
+        else moveFocusTo(childrenByPath[item.path]?.[0]?.path)
+      }
+      return
+    case 'ArrowLeft': {
+      e.preventDefault()
+      // Same two-stage shape in reverse: an expanded folder collapses (focus stays put);
+      // anything else (a collapsed folder, or a file) hands focus up to its parent folder's
+      // row — unless the parent IS the root, which has no row of its own to land on.
+      if (item.nodeType === 'folder' && isExpanded(item.path)) {
+        collapse(item.path)
+      } else {
+        const parent = dirnameOf(item.path)
+        if (parent !== '/') moveFocusTo(parent)
+      }
+      return
+    }
+    case 'F2':
+      e.preventDefault()
+      renameFocused(item)
+      return
+    case 'Delete':
+      e.preventDefault()
+      deleteFocused(item)
+      return
+    default:
+      handleTypeahead(e, item)
+  }
+}
+
+/** All ancestor folder paths of `path`, root-first, `path` itself last — e.g.
+ *  `"/a/b"` → `["/a", "/a/b"]`. */
+function folderChainOf(path: string): string[] {
+  const parts = path.split('/').filter(Boolean)
+  const out: string[] = []
+  let acc = ''
+  for (const part of parts) {
+    acc += `/${part}`
+    out.push(acc)
+  }
+  return out
+}
+
+/**
+ * Called by documents.vue when a breadcrumb segment is clicked: expand every ancestor down to
+ * `path` (and `path` itself), highlight it the same way a single cmd/shift pick does, and move
+ * the roving tab stop and real keyboard focus onto its row.
+ */
+function revealFolder(path: string) {
+  if (path === '/') return
+  for (const p of folderChainOf(path)) expand(p)
+  clearMarks()
+  marked.value = [path]
+  moveFocusTo(path)
+}
+
+defineExpose({ revealFolder })
 
 // ── Drag and drop (useSortable, one sortable per folder, one shared group) ─────────────────
 //
@@ -996,7 +1181,6 @@ async function persistPendingMoves() {
   if (persisting) return
   persisting = true
   const failures: string[] = []
-  const moved: { label: string, nodeType: 'file' | 'folder', toFolder: string }[] = []
   let gated = false
   try {
     // `while` rather than a single pass: a second drag landing while the first one's network
@@ -1039,10 +1223,8 @@ async function persistPendingMoves() {
               }
               const handedOff = await moveFolder(item, mv.toFolder, dest)
               gated = handedOff || gated
-              if (!handedOff) moved.push({ label: item.label, nodeType: 'folder', toFolder: mv.toFolder })
             } else {
               await move(item.id, dest)
-              moved.push({ label: item.label, nodeType: 'file', toFolder: mv.toFolder })
             }
           } catch (e: unknown) {
             failures.push(`${item.label}: ${item.nodeType === 'folder' ? describeFolderError(e) : errorText(e)}`)
@@ -1057,20 +1239,14 @@ async function persistPendingMoves() {
   if (failures.length) {
     toast.add({ color: 'error', title: "Couldn't move", description: failures.join('\n') })
   }
-  // A drag can move several rows at once now, and the destination is often scrolled away or
-  // collapsed — so unlike a rename there is nothing to watch happen. Say what landed where.
-  if (moved.length) {
-    const allFiles = moved.every(m => m.nodeType === 'file')
-    const noun = allFiles ? (moved.length === 1 ? 'document' : 'documents') : (moved.length === 1 ? 'item' : 'items')
-    // One pass can drain two drags (see the `while` above), and they need not share a
-    // destination — naming the last one would attribute every row to a folder some never went to.
-    const destinations = new Set(moved.map(m => m.toFolder))
-    toast.add({
-      color: 'success',
-      title: moved.length === 1 ? `Moved "${moved[0]!.label}"` : `Moved ${moved.length} ${noun}`,
-      description: destinations.size === 1 ? `→ ${[...destinations][0]}` : undefined
-    })
-  }
+  // No success toast here (Task 17 toast discipline): the optimistic splice above already put
+  // every moved row where it landed, and a drop via `dropOverrideFolder` expands the destination
+  // — so the result is visible the same way a menu-driven Move's is, and that one lost its own
+  // success toast in this same pass. Singling out drag would be an arbitrary exception: both
+  // share the "destination scrolled out of view" gap, and neither gets worse than the other by
+  // staying quiet. A FOLDER move keeps a toast only when it goes through MoveModal (menu, or a
+  // drag's cross-project hand-off) — see MoveModal.vue's Undo action — because that path asked
+  // for a conscious confirmation and can offer one-click Undo; a plain drag-drop cannot.
   // A gated folder move has not happened yet (the Move modal is asking for an acknowledgement),
   // so the optimistic splice must not be left standing as if it had.
   if (failures.length || gated) revertOptimistic()
@@ -1177,19 +1353,21 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
         <li
           v-for="(item, index) in childrenByPath[path] ?? []"
           :key="item.id"
+          :ref="rowRefFor(item.path)"
           class="mm-tree-node relative w-full focus:outline-none"
           :class="level > 1 ? 'ps-1.5 -ms-px' : ''"
           :data-path="item.path"
           :data-node-type="item.nodeType"
           role="treeitem"
-          tabindex="0"
+          :tabindex="rovingTabIndexPath === item.path ? 0 : -1"
           :aria-level="level"
           :aria-setsize="(childrenByPath[path] ?? []).length"
           :aria-posinset="index + 1"
           :aria-expanded="item.nodeType === 'folder' ? isExpanded(item.path) : undefined"
           :aria-selected="selectedId === item.id || marked.includes(item.path)"
           @click="onRowPointer($event, item)"
-          @keydown.enter.prevent="onRowKey($event, item)"
+          @keydown="onRowKeydown($event, item)"
+          @focus="focusedPath = item.path"
         >
           <UContextMenu :items="item.nodeType === 'file' ? fileMenuItems(item) : folderMenuItems(item)">
             <div class="mm-tree-row w-full flex items-center rounded-md px-2.5 py-1.5 text-sm select-none cursor-pointer">
@@ -1208,6 +1386,25 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
             :path="item.path"
             :level="level + 1"
           />
+
+          <!-- Empty-folder state — distinct from the root cold-state below. The (empty) <ul>
+               ReuseList still rendered above stays the drop target `emptyInsertThreshold` needs;
+               this is a plain sibling, never a child of it, so it can't be mistaken for a
+               sortable item. -->
+          <div
+            v-if="item.nodeType === 'folder' && isExpanded(item.path) && (childrenByPath[item.path] ?? []).length === 0"
+            class="ms-5 border-s border-default ps-2.5 py-2 flex items-center gap-2 text-xs text-dimmed"
+          >
+            <span>This folder is empty</span>
+            <UButton
+              label="New document here"
+              icon="i-lucide-file-plus"
+              size="xs"
+              variant="ghost"
+              color="neutral"
+              @click="emit('newDocument', item.path)"
+            />
+          </div>
         </li>
       </ul>
     </DefineList>

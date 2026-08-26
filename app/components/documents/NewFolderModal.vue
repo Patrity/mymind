@@ -38,7 +38,8 @@ async function submit() {
     if (!folder?.id || !folder?.path) {
       throw new Error('The server did not confirm the folder was created')
     }
-    toast.add({ color: 'success', title: 'Folder created', description: folder.path })
+    // No success toast (Task 17 toast discipline): the new folder's row appears in the tree,
+    // which is the visible result.
     emit('update:open', false)
     emit('done')
   } catch (e: unknown) {
