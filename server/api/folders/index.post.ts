@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import { createFolder } from '../../services/folders'
 import { publishChange } from '../../utils/live-bus'
-import { folderOpError } from '../../utils/folder-http'
+import { folderOpError, FOLDER_PATH_SCHEMA } from '../../utils/folder-http'
 
 const Body = z.object({
-  path: z.string().regex(/^\/(?!.*\/$).+/, 'path must be absolute and have no trailing slash')
+  path: FOLDER_PATH_SCHEMA
 })
 
 export default defineEventHandler(async (event) => {

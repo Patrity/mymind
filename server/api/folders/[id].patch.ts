@@ -2,10 +2,10 @@ import { z } from 'zod'
 import { moveFolder, setFolderColor } from '../../services/folders'
 import { FOLDER_PALETTE } from '../../../shared/types/folders'
 import { publishChange } from '../../utils/live-bus'
-import { folderOpError } from '../../utils/folder-http'
+import { folderOpError, requireFolderId, FOLDER_PATH_SCHEMA } from '../../utils/folder-http'
 
 const Body = z.object({
-  path: z.string().regex(/^\/(?!.*\/$).+/, 'path must be absolute and have no trailing slash').optional(),
+  path: FOLDER_PATH_SCHEMA.optional(),
   // Present + null clears the colour override back to inheriting; key omitted entirely means
   // "leave colour untouched" — the two are distinguished by `undefined` vs `null` below, not
   // collapsed into one falsy check.
@@ -19,7 +19,7 @@ const Body = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  const id = getRouterParam(event, 'id')!
+  const id = requireFolderId(event)
   const parsed = Body.safeParse(await readBody(event))
   if (!parsed.success) {
     throw createError({ statusCode: 400, statusMessage: 'Bad Request', data: parsed.error.issues })
@@ -33,7 +33,10 @@ export default defineEventHandler(async (event) => {
 
   if (body.color !== undefined) {
     const updated = await setFolderColor(id, body.color)
-    if (!updated) throw createError({ statusCode: 404, statusMessage: 'Folder not found' })
+    // Same 404 shape as `folderOpError`'s 'not-found' branch (`moveFolder`'s failure path just
+    // above) — one route must not describe the same "no such folder" outcome two different ways
+    // depending on which field happened to be in the body.
+    if (!updated) throw createError({ statusCode: 404, statusMessage: `no folder with id ${id}` })
   }
 
   publishChange({ resource: 'folder', action: 'updated', id })
