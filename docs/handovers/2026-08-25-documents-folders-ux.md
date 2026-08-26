@@ -39,7 +39,9 @@ about how the cycle went, what was found, and what's still open.
 ## Read this first: the honest caveats
 
 The controller's ledger (`docs/superpowers/sdd/2026-08-25-documents-folders-ux/progress.md`) is the
-authoritative record of all 17 build tasks. These items must not be quietly dropped:
+authoritative record of all 17 build tasks (Tasks 1–17; the 18th task — this validation sweep,
+wiki and handover pass — is what produced this document, bringing the cycle to its full 18 tasks
+total). These items must not be quietly dropped:
 
 1. **The migration's backfill was verified against a local corpus of only 8 live documents / 4
    folders.** Production's corpus is orders of magnitude larger with deeper, messier paths. A
@@ -247,7 +249,10 @@ races were fixed in).
   not merged, not deployed. No merge/deploy authorization was requested or granted as part of this
   task — that decision belongs to Tony, same as cycle 58's precedent.
 - Migration 0037 (`folders` table + backfill + CHECK constraint) has only run against local dev.
-  Caveat 1 above applies before running it on production's real corpus.
+  Caveat 1 above applies before running it on production's real corpus. **Operationally: this
+  migration backfills `folders` automatically the next time migrations run, including in
+  production** — there is no separate backfill script or manual step to remember; running
+  `pnpm db:migrate` (or its CI/deploy equivalent) against production IS the backfill.
 - The hover-delete-icon removal (see "What shipped") is worth a two-second gut check against real
   usage before merging — it's the one place this cycle removed an existing affordance rather than
   only adding new ones.

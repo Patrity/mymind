@@ -4,7 +4,7 @@ status: shipped
 cycle: 59
 updated: 2026-08-26
 mymind_id: 541b04de-a9f9-4809-8001-50082fdafaa1
-mymind_hash: c4d73c2579200371a2beac8dcdbfabbad900b7ab03bb8da63e3d4ef5e4c879fb
+mymind_hash: bcde0a33768de3ec52efa250acb2412b5ff15513d81fcdc4d9a3231e1667ccdb
 ---
 
 # Document Spine
@@ -102,8 +102,9 @@ All document access goes through `server/services/documents.ts`: `listTree`, `ge
 of path-derived folders (so a folder with documents always renders, registry row or not) and
 `folders` registry rows (so an *empty* folder — no documents at all — still renders, which is the
 whole reason the table exists: the old prefix-only tree made an emptied folder vanish). A registry
-row's real `id` is attached to whichever node its path resolves to. `TreeNode` (returned to the
-client, also consumed by the MCP tree tools) carries: `name`, `path`, `type: 'file' | 'folder'`,
+row's real `id` is attached to whichever node its path resolves to. `TreeNode`'s only consumers
+are `server/services/documents.ts`, the `GET tree` route (`tree.get.ts`), and the client — there
+are no MCP tree tools. `TreeNode` carries: `name`, `path`, `type: 'file' | 'folder'`,
 `id?` (a **document id for files**, the **`folders` registry id for folders** — not the same kind
 of thing, and not the same as a folder's tree key, which is its `path`), `title?`, `children?`,
 and — folders only — `color?` / `colorSource?` after `applyFolderColors` has run.
@@ -123,6 +124,12 @@ added to the service is a compile error here, not a silent 409): `'not-found'` �
 (`app/utils/live-dispatch.ts`) invalidates `['document','list']` on it — a folder mutation rewrites
 document paths, so the tree query itself has to refetch, not just a folder-scoped cache entry.
 Client wrapper: `app/composables/useFolders.ts` (`create`/`patch`/`remove`/`impact`).
+
+**Route param validation:** all three `[id]`-scoped folder routes (`PATCH`/`DELETE`/`GET impact`)
+validate `id` as a uuid (`requireFolderId`, `server/utils/folder-http.ts`) before it ever reaches
+`eq(folders.id, id)`, throwing the same `no folder with id <id>` 404 shape a real not-found gets —
+a malformed id (e.g. a client's optimistic `temp-<uuid>` acted on before it settles) used to reach
+the database as a raw string and 500 with a Postgres `invalid input syntax for type uuid` error.
 
 **Known asymmetry:** a *file*-rename path collision surfaces as a generic 500, where a folder
 collision returns a clean 409 naming the conflicting path. Pre-existing on the file side; not
@@ -144,6 +151,12 @@ Edit whenever the stored mode would otherwise show a blank Preview pane.
 the outgoing document and being autosaved onto whatever id the switch resolves to next (see the
 metadata-timer bug below).
 
+**Deleting the currently-open document clears the editor.** `documents.vue` watches the tree for a
+present→absent transition on `selectedId` and clears it — without this, `Editor.vue` kept showing
+the deleted document's stale content and silently retried a 404 GET against it. Only fires once the
+id has been observed present (never on the very first load for a cookie/deep-link-restored id that
+simply hasn't arrived in the tree yet, which is a load race, not a delete).
+
 **The tree is a hand-rolled recursive renderer (`Tree.vue`), not Nuxt UI's `UTree`** (cycle 59). Reka-ui's
 `UTree`/`TreeRoot` could not host the drag interaction this cycle needed — it renders no `<ul>` for
 an empty folder, exposes no path-keyed DOM hooks, and binds no mutable array `useSortable` could
@@ -153,20 +166,25 @@ arrow-key navigation are gone with the library and have been **hand-rebuilt** in
 `app/lib/documents/tree-keyboard.ts` (`folderChainOf`, `arrowLeftAction`/`arrowRightAction`,
 `neighborPathFor`, `nextVisiblePath`, `typeaheadMatch`) with no library behind them going forward —
 a future reka-ui upgrade will not carry any of this along for free. `aria-level`/`aria-setsize`/
-`aria-posinset` are set by hand to compensate.
+`aria-posinset` are set by hand to compensate. A single move-conversation guard (`awaitingConfirmation()`
+in `Tree.vue`) serializes every path that can open `MoveModal` — the drag-driven cross-project
+hand-off, and the file/folder context menus' own Move — so a second one can never silently re-point
+an already-open dialog at a different target mid-flight.
 
 **Autosave semantics** (`app/lib/documents/autosave.ts` + `Editor.vue`). The pending edit is held as an `(id, content)` pair, not as a timer over "whatever document is selected now". Three rules follow from that:
 - **Leaving flushes, never discards.** Switching documents or unmounting the editor writes the pending edit rather than cancelling its timer. Both paths capture the *outgoing* document's id/values synchronously before the incoming document loads, so a late save can't land on the wrong document.
 - **Unwritten text is always visible.** The status badge reads `unsaved` (amber) whenever the buffer differs from what was last written, alongside `saving…`/`saved`/`save failed`. A `beforeunload` handler warns on tab close/reload while content or metadata is dirty — the one exit a flush can't cover.
 - **Only what was actually written is marked saved.** The save marks the body it sent, not the current buffer, so text typed while a request is in flight stays dirty and gets its own save.
 
-Metadata (800ms debounce, `Inspector.vue`) follows the same explicit-id rule and is flushed on the
-same paths. **A pre-existing timer leak here was found and fixed in cycle 59:** the document-switch
-watcher never cancelled a pending metadata-save timer, so it could fire ~800ms after a switch and
-write the *outgoing* document's stale edit onto the *incoming* document — reachable whenever the
-incoming document's own fetch took longer than 800ms, so the skeleton branch (above) was mid-flight
-when the stale timer fired. Predates cycle 59; caught only because this cycle deliberately
-constructed the switch-during-debounce hazard rather than assuming it was safe. Public read-only page: `app/pages/share/[slug].vue` (`layout: false`).
+`createAutosave` is generic over its payload (`<T>`, not just a content string) — `Inspector.vue`'s
+metadata save (title/project/domain/type/tags) now shares this exact module (`createAutosave<MetadataPatch>`)
+instead of a hand-rolled copy of the same (timer + document-id pairing) mechanism, closing a real
+data-corruption bug: a pending metadata-save timer that survived a document switch used to fire
+against whatever document was selected by the time it went off, writing the outgoing document's
+metadata onto the incoming one. Predates cycle 59; caught only because this cycle deliberately
+constructed the switch-during-debounce hazard rather than assuming it was safe. Regression-tested
+in `autosave.test.ts` with a metadata-shaped payload, not just Editor.vue's string content. Public
+read-only page: `app/pages/share/[slug].vue` (`layout: false`).
 
 ## Search
 **Hybrid (cycle 2, vector lane moved in cycle 31):** `searchDocs`/`searchDocIds` fuse a trigram
@@ -188,7 +206,10 @@ via RRF, falling back to trigram-only if embeddings are unavailable. **The vecto
   list — files the drop into that folder, matching Explorer/Finder. A folder drag that crosses a
   `/projects/<slug>/` boundary (and a multi-file drag whose destination project differs) routes
   through `MoveModal`'s impact preview and requires acknowledgement before it writes — silently
-  re-associating a document's project on a drag would be worse than asking. **Folders persist with
+  re-associating a document's project on a drag would be worse than asking. A mid-drag tree change
+  (e.g. an MCP write, or the triage sweep) that lands while a drag is held is caught up the moment
+  the drag ends, even on a same-folder no-op drop, rather than leaving the visible tree frozen on
+  its pre-drag snapshot. **Folders persist with
   no documents at all** — deleting a folder's last document leaves the empty folder in the tree
   (the second and third complaints this cycle closed): the registry row survives independently of
   content.
