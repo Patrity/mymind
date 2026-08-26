@@ -11,6 +11,7 @@ import {
   canDropInto,
   destinationPathFor,
   isNoOpDrop,
+  projectSlugOfPath,
   prunePathsUnderFolders
 } from '~/lib/documents/tree-drag'
 import { basenameOf, copyText, describeFolderError, type DocTreeTarget } from '~/composables/useDocumentTree'
@@ -105,26 +106,40 @@ const expandedKeys = useCookie<string[]>('mm.documents.expanded', {
   watch: 'shallow'
 })
 
+/**
+ * Every READ of the cookie goes through here.
+ *
+ * `useCookie`'s `default` only applies when the cookie is absent at init — a cookie that is
+ * cleared, emptied or corrupted *later* (by hand, by an older build, or by another tab) leaves
+ * `expandedKeys.value` null, and the render path dereferences it on every row. Left unguarded
+ * that is not a degraded tree, it is a `Cannot read properties of null` that takes the whole
+ * component down. Found exactly that way: clearing the cookie in a browser session blanked the
+ * panel. Writes still go to `expandedKeys` so the cookie is repaired on the next change.
+ */
+const expandedPaths = computed<string[]>(() =>
+  Array.isArray(expandedKeys.value) ? expandedKeys.value : []
+)
+
 // Seed top-level folders as expanded on first visit
 const topLevelFolders = computed(() =>
   props.tree.filter(n => n.type === 'folder').map(n => n.path)
 )
 watch(topLevelFolders, (dirs) => {
-  if (expandedKeys.value.length === 0 && dirs.length) {
+  if (expandedPaths.value.length === 0 && dirs.length) {
     expandedKeys.value = [...dirs]
   }
 }, { immediate: true })
 
 function isExpanded(path: string): boolean {
-  return expandedKeys.value.includes(path)
+  return expandedPaths.value.includes(path)
 }
 
 function expand(path: string) {
-  if (!isExpanded(path)) expandedKeys.value = [...expandedKeys.value, path]
+  if (!isExpanded(path)) expandedKeys.value = [...expandedPaths.value, path]
 }
 
 function collapse(path: string) {
-  if (isExpanded(path)) expandedKeys.value = expandedKeys.value.filter(p => p !== path)
+  if (isExpanded(path)) expandedKeys.value = expandedPaths.value.filter(p => p !== path)
 }
 
 function toggleExpanded(path: string) {
@@ -411,7 +426,7 @@ function collapseAll() {
 
 /** Collapse one folder and any expanded descendants under it — scoped, unlike `collapseAll`. */
 function collapseUnder(path: string) {
-  expandedKeys.value = expandedKeys.value.filter(p => p !== path && !p.startsWith(path + '/'))
+  expandedKeys.value = expandedPaths.value.filter(p => p !== path && !p.startsWith(path + '/'))
 }
 
 // ---- Selection (click, plus cmd/shift multi-select for drag) ----
@@ -438,11 +453,32 @@ function clearMarks() {
   if (marked.value.length) marked.value = []
 }
 
-function onRowClick(e: MouseEvent | KeyboardEvent, item: TreeItem) {
+/**
+ * A click anywhere inside a row.
+ *
+ * The handler lives on the `<li role="treeitem">` (that is the element that carries the row's
+ * identity to assistive tech, so it is the element that must be focusable and interactive), which
+ * means a click on a NESTED row bubbles through every ancestor folder's `<li>` too. Both guards
+ * below exist to stop that: the event is only ours when it landed inside THIS row's own
+ * `.mm-tree-row` — which also rules out clicks on the indented strip of a folder's child list.
+ */
+function onRowPointer(e: MouseEvent, item: TreeItem) {
+  const row = (e.target as HTMLElement | null)?.closest('.mm-tree-row')
+  if (!row || row.parentElement !== e.currentTarget) return
   // The grip is a drag handle, not a button — a click that lands on it must not also toggle
   // the folder it belongs to.
   if ((e.target as HTMLElement | null)?.closest('.drag-handle')) return
+  activateRow(e, item)
+}
 
+/** Enter on a focused row. Keyed events target the focused `<li>` itself, so the ownership test
+ *  is a plain identity check rather than `onRowPointer`'s row lookup. */
+function onRowKey(e: KeyboardEvent, item: TreeItem) {
+  if (e.target !== e.currentTarget) return
+  activateRow(e, item)
+}
+
+function activateRow(e: MouseEvent | KeyboardEvent, item: TreeItem) {
   if (e.metaKey || e.ctrlKey) {
     marked.value = marked.value.includes(item.path)
       ? marked.value.filter(p => p !== item.path)
@@ -668,8 +704,92 @@ function onNodeDragStart(evt: Sortable.SortableEvent) {
   dragPaths = path && marked.value.includes(path) && marked.value.length > 1
     ? prunePathsUnderFolders(marked.value, p => itemByPath.value.get(p)?.nodeType)
     : (path ? [path] : [])
+  draggingPath = path ?? null
+  draggingType = (evt.item.dataset.nodeType as 'file' | 'folder' | undefined) ?? null
+  startPointerTracking()
 }
 
+/**
+ * The folder whose ROW the pointer is directly over, which overrides `evt.to` when the drop lands.
+ *
+ * Why this exists: a folder's row `<li>` lives in its PARENT's `<ul>`, and the folder's own `<ul>`
+ * renders below the row, inside that `<li>`. So while the pointer sits on a folder's row, `evt.to`
+ * is the parent list — and a drop there would file the document into the folder's parent, silently
+ * and with no error. For a COLLAPSED folder there is no child list to aim at at all until
+ * hover-to-expand fires 600ms later, and even then it appears below the row, so a quick drop still
+ * lands in the parent. That is the gesture the original HTML5 code got right (its `@drop` was on
+ * the folder row) and it is the gesture both user complaints are about, so the nested-list model
+ * has to be corrected at the edges rather than taken literally.
+ */
+let dropOverrideFolder: string | null = null
+
+/** What is being dragged, captured at `onStart` for the pointer tracker below. */
+let draggingPath: string | null = null
+let draggingType: 'file' | 'folder' | null = null
+
+/**
+ * Track the pointer for the whole drag and derive the destination from what is UNDER it.
+ *
+ * Deliberately not driven off Sortable's `onMove`. `sort: false` makes `_onDragOver` bail at its
+ * `isOwner ? canSort …` gate *before* it ever calls `onMove`, so Sortable reports nothing at all
+ * while the pointer is inside the list the row came from — which would leave "drop this onto that
+ * sibling folder" silently doing nothing, the same class of bug as the parent-folder one above.
+ * It also reports the LAST row as `related` when the pointer is in the empty space below a list
+ * (the `_ghostIsLast` branch), which must keep meaning "the containing folder", not "the last
+ * folder in it". Hit-testing the pointer answers both cases the same way, and answers them for the
+ * cue and the outcome at once — so what lights up and where the row lands cannot disagree.
+ */
+function trackDragPointer(e: MouseEvent) {
+  if (!draggingPath || !draggingType) return
+  const dragged = { path: draggingPath, nodeType: draggingType }
+  const under = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+
+  // A row, and the <li> that owns it — the row div is UContextMenu's `as-child` trigger, so it is
+  // always the <li>'s direct child.
+  const row = under?.closest<HTMLElement>('.mm-tree-row')
+  const li = row?.parentElement as HTMLElement | null
+  const folderPath = li?.dataset.nodeType === 'folder' ? li.dataset.path : undefined
+
+  // An override that would be an illegal drop (a folder onto itself or into its own subtree) is
+  // discarded rather than honoured — it must not become a back door around `canDropInto`.
+  dropOverrideFolder = folderPath && canDropInto(dragged, folderPath) ? folderPath : null
+
+  if (dropOverrideFolder) {
+    activeDropPath.value = dropOverrideFolder
+  } else {
+    // Not on a folder row: the destination is whichever list the pointer is inside.
+    const listPath = under?.closest<HTMLElement>('[data-folder-path]')?.dataset.folderPath
+    activeDropPath.value = listPath && canDropInto(dragged, listPath) ? listPath : null
+  }
+
+  scheduleHoverExpand(li ?? undefined)
+}
+
+function startPointerTracking() {
+  // CAPTURE phase, not bubble. SortableJS's `_onDragOver` ends every handled event with
+  // `evt.stopPropagation()` (that is how nested lists claim a drop — see the group notes above),
+  // so a bubble-phase listener on window hears nothing at all while the pointer is over the tree,
+  // which is the only place it matters. Capture runs top-down before any of that.
+  //
+  // `dragover` covers Sortable's native-draggable path; `mousemove` covers its fallback. Read-only
+  // — neither handler calls preventDefault, so drop semantics are untouched.
+  window.addEventListener('dragover', trackDragPointer, true)
+  window.addEventListener('mousemove', trackDragPointer, true)
+}
+
+function stopPointerTracking() {
+  window.removeEventListener('dragover', trackDragPointer, true)
+  window.removeEventListener('mousemove', trackDragPointer, true)
+}
+
+/**
+ * Sortable's own veto, narrowed to one job: deciding whether the row may be PHYSICALLY inserted
+ * where Sortable wants to put it. The destination and the cue are the pointer tracker's business.
+ *
+ * Ordering note: the tracker listens on `dragover` in the capture phase, so `dropOverrideFolder`
+ * is always up to date by the time this runs for the same event (capture on window precedes the
+ * list element's own handler, which is what invokes `onMove`).
+ */
 function onNodeDragMove(evt: Sortable.MoveEvent): boolean | void {
   const dragged = evt.dragged as HTMLElement
   const to = evt.to as HTMLElement
@@ -678,13 +798,19 @@ function onNodeDragMove(evt: Sortable.MoveEvent): boolean | void {
   const toPath = to?.dataset.folderPath
   if (!draggedPath || !nodeType || !toPath) return false
 
+  // Pointer is on a folder ROW: the drop is already decided (into that folder) and needs no
+  // insertion. Refusing it is not merely an optimisation — Sortable inserts the placeholder AT
+  // the pointer, which pushes the very row being aimed at out from under it, so the next dragover
+  // reports the placeholder instead of the folder and the drop lands somewhere else entirely.
+  // Confirmed by hit-testing mid-drag: aiming at a folder's row put the dragged row in its place.
+  // Declining the insertion keeps the tree still while the user aims, which is also how it should
+  // feel: the ring on the destination folder says where it will go, and nothing else moves.
+  if (dropOverrideFolder) return false
+
   // Belt and braces alongside the path check: moving a node into a list it physically contains
   // is a DOM error, not just an invalid move.
   if (dragged.contains(to)) return false
   if (!canDropInto({ path: draggedPath, nodeType }, toPath)) return false
-
-  activeDropPath.value = toPath
-  scheduleHoverExpand(evt.related as HTMLElement | undefined)
 }
 
 /**
@@ -694,40 +820,66 @@ function onNodeDragMove(evt: Sortable.MoveEvent): boolean | void {
  * the trap write-up above. The deep watch below decides WHEN to drain this; it never decides
  * what is in it.
  */
-const pendingMoves: { paths: string[], toFolder: string }[] = []
+interface PendingMove {
+  paths: string[]
+  toFolder: string
+  /** Set once the user has acknowledged a multi-document project change (see `bulkConfirm`), so
+   *  re-queueing the move after the dialog doesn't re-open the same dialog forever. */
+  confirmed?: boolean
+}
+
+const pendingMoves: PendingMove[] = []
 
 function onNodeDragEnd(evt: Sortable.SortableEvent) {
   // Cleared synchronously, exactly as tasks.vue's onCardMoved does: the model mutation below
   // lands on the microtask queue long before any SSE-driven refetch could arrive, so re-opening
   // the rebuild watch here doesn't race it.
   isDragging.value = false
+  stopPointerTracking()
+  draggingPath = null
+  draggingType = null
   clearHoverExpand()
   activeDropPath.value = null
   evt.item.removeAttribute('data-drag-count')
 
   const fromFolder = (evt.from as HTMLElement).dataset.folderPath
-  const toFolder = (evt.to as HTMLElement).dataset.folderPath
   const itemPath = evt.item.dataset.path
   const paths = dragPaths.length ? dragPaths : (itemPath ? [itemPath] : [])
   dragPaths = []
 
-  // `sort: false` means a same-list drop moved nothing — Sortable already reverted it.
+  // The folder row under the pointer wins over the list the node was physically dropped in —
+  // see `dropOverrideFolder`. Read and cleared here so a later drag can never inherit it.
+  const override = dropOverrideFolder
+  dropOverrideFolder = null
+
+  // Sortable has physically moved the row into whichever <ul> it decided on. Undo that FIRST and
+  // unconditionally — Vue owns this DOM, and it must be put back where Vue last rendered it
+  // before any early return below, or the DOM and the vnode model disagree about which list owns
+  // the node. Same dance as tasks.vue's cross-column branch, but it can no longer be skipped: an
+  // override means the logical destination and the physical one legitimately differ, so
+  // "nothing to persist" no longer implies "nothing was physically moved".
+  const { oldIndex } = evt
+  if (evt.from !== evt.to && oldIndex != null) {
+    removeNode(evt.item)
+    insertNodeAt(evt.from, evt.item, oldIndex)
+  }
+
+  const toFolder = override ?? (evt.to as HTMLElement).dataset.folderPath
+  // `sort: false` means a same-folder drop moved nothing.
   if (!fromFolder || !toFolder || !paths.length || fromFolder === toFolder) return
 
-  const { oldIndex } = evt
   const toList = childrenByPath[toFolder]
-  if (oldIndex == null || !toList) return
+  if (!toList) return
+
+  // Dropping onto a collapsed folder's row would otherwise make the row simply vanish, with the
+  // destination given no chance to show what it received. Open it.
+  if (override) expand(override)
 
   // Record BEFORE the deferred splice: whichever array mutation fires the watch below, this is
   // already sitting there waiting to be drained.
   pendingMoves.push({ paths, toFolder })
 
-  // Sortable has physically moved the row into the destination <ul>. Undo that (put the node
-  // back where Vue last rendered it) and let Vue perform the real move by re-rendering from the
-  // spliced arrays a tick later — otherwise the DOM and Vue's vnode model disagree about which
-  // list owns the node. Same dance as tasks.vue's cross-column branch, across N items.
-  removeNode(evt.item)
-  insertNodeAt(evt.from, evt.item, oldIndex)
+  // Let Vue perform the real move by re-rendering from the spliced arrays a tick later.
   nextTick(() => {
     for (const p of paths) {
       const source = childrenByPath[dirnameOf(p)]
@@ -769,10 +921,63 @@ function revertOptimistic() {
   rebuild(treeItems.value)
 }
 
+/**
+ * Does this drag re-file several documents across a project boundary?
+ *
+ * `documents.path` decides project membership, so filing a document into `/projects/<slug>/…`
+ * re-associates it. Doing that to ONE document is the intended way to associate it and stays
+ * ungated, exactly as it always has been. Doing it to fourteen in a single gesture is new in this
+ * task — multi-select is — and it is the same "a drag must not re-associate 14 documents with no
+ * dialog" principle the folder gate exists for, so it gets a confirm of its own. A count, not the
+ * full `impact` round-trip: both paths and the count are already known here, and a FOLDER in the
+ * selection still goes through the real `impact` check in `moveFolder`.
+ */
+function crossProjectFiles(mv: PendingMove): string[] {
+  if (mv.paths.length < 2) return []
+  const toProject = projectSlugOfPath(mv.toFolder)
+  return mv.paths.filter((p) => {
+    const item = itemByPath.value.get(p)
+    if (!item || item.nodeType !== 'file') return false
+    if (isNoOpDrop(p, mv.toFolder)) return false
+    return projectSlugOfPath(dirnameOf(p)) !== toProject
+  })
+}
+
+/** A multi-document drag parked on the count confirm above. */
+const bulkConfirm = reactive<{ open: boolean, count: number, toProject: string | null, toFolder: string }>({
+  open: false, count: 0, toProject: null, toFolder: '/'
+})
+let bulkPending: PendingMove | null = null
+
+function acceptBulkMove() {
+  bulkConfirm.open = false
+  const mv = bulkPending
+  bulkPending = null
+  if (!mv) return
+  pendingMoves.push({ ...mv, confirmed: true })
+  schedulePersist()
+}
+
+function cancelBulkMove() {
+  bulkConfirm.open = false
+  bulkPending = null
+  // Nothing was written, so the optimistic splice must not be left standing as if it had.
+  revertOptimistic()
+  emit('refresh')
+}
+
+function onBulkConfirmOpenChange(open: boolean) {
+  // Dismissing the dialog any other way (Escape, the overlay) is a cancel, not a silent accept.
+  if (!open && bulkPending) cancelBulkMove()
+  else bulkConfirm.open = open
+}
+
 async function persistPendingMoves() {
   if (persisting) return
   persisting = true
   const failures: string[] = []
+  const moved: { label: string, nodeType: 'file' | 'folder' }[] = []
+  let destination = '/'
   let gated = false
   try {
     // `while` rather than a single pass: a second drag landing while the first one's network
@@ -780,6 +985,21 @@ async function persistPendingMoves() {
     while (pendingMoves.length > 0) {
       const batch = pendingMoves.splice(0, pendingMoves.length)
       for (const mv of batch) {
+        // Ask once for the whole drag, BEFORE writing any of it — a confirm that arrived after
+        // the third of fourteen documents had already moved would not be a confirm.
+        if (!mv.confirmed) {
+          const crossing = crossProjectFiles(mv)
+          if (crossing.length) {
+            bulkPending = mv
+            bulkConfirm.count = crossing.length
+            bulkConfirm.toProject = projectSlugOfPath(mv.toFolder)
+            bulkConfirm.toFolder = mv.toFolder
+            bulkConfirm.open = true
+            gated = true
+            continue
+          }
+        }
+        destination = mv.toFolder
         for (const path of mv.paths) {
           const item = itemByPath.value.get(path)
           if (!item) continue
@@ -794,9 +1014,12 @@ async function persistPendingMoves() {
                 failures.push(`${item.label}: not moved — confirm the folder move already waiting first`)
                 continue
               }
-              gated = await moveFolder(item, mv.toFolder, dest)
+              const handedOff = await moveFolder(item, mv.toFolder, dest)
+              gated = handedOff
+              if (!handedOff) moved.push({ label: item.label, nodeType: 'folder' })
             } else {
               await move(item.id, dest)
+              moved.push({ label: item.label, nodeType: 'file' })
             }
           } catch (e: unknown) {
             failures.push(`${item.label}: ${item.nodeType === 'folder' ? describeFolderError(e) : errorText(e)}`)
@@ -810,6 +1033,17 @@ async function persistPendingMoves() {
 
   if (failures.length) {
     toast.add({ color: 'error', title: "Couldn't move", description: failures.join('\n') })
+  }
+  // A drag can move several rows at once now, and the destination is often scrolled away or
+  // collapsed — so unlike a rename there is nothing to watch happen. Say what landed where.
+  if (moved.length) {
+    const allFiles = moved.every(m => m.nodeType === 'file')
+    const noun = allFiles ? (moved.length === 1 ? 'document' : 'documents') : (moved.length === 1 ? 'item' : 'items')
+    toast.add({
+      color: 'success',
+      title: moved.length === 1 ? `Moved "${moved[0]!.label}"` : `Moved ${moved.length} ${noun}`,
+      description: `→ ${destination}`
+    })
   }
   // A gated folder move has not happened yet (the Move modal is asking for an acknowledgement),
   // so the optimistic splice must not be left standing as if it had.
@@ -881,6 +1115,7 @@ function onMoveModalOpenChange(open: boolean) {
 
 onBeforeUnmount(() => {
   clearHoverExpand()
+  stopPointerTracking()
   if (persistHandle != null) clearTimeout(persistHandle)
 })
 
@@ -897,33 +1132,41 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
         :ref="listRefFor(path)"
         :data-folder-path="path"
         :role="level === 1 ? 'tree' : 'group'"
+        :aria-multiselectable="level === 1 ? 'true' : undefined"
         :class="[
           level === 1 ? 'min-h-full' : 'border-s border-default ms-5',
-          // An expanded folder with no children is a zero-height list nobody can point at. It
-          // keeps a hairline of its own at rest, and opens into a real 1.5rem drop zone for the
-          // duration of a drag — `emptyInsertThreshold` only widens the catch radius around a
-          // list, it cannot conjure one out of nothing.
-          level === 1 ? '' : (isDragging ? 'min-h-6' : 'min-h-2')
+          // A hairline so an expanded empty folder's list is not literally zero-height (which is
+          // what `emptyInsertThreshold` needs something to widen). It is deliberately NOT grown
+          // during a drag: an earlier pass expanded every empty list to 1.5rem while dragging,
+          // which moved every row below it the instant the drag began — so the folder you had
+          // aimed at was no longer under the pointer. An empty folder is reached by dropping on
+          // its ROW instead (see `dropOverrideFolder`), which needs no layout change at all.
+          level === 1 ? '' : 'min-h-2'
         ]"
       >
+        <!-- Interactivity lives on the <li>, NOT on the row <div> inside it: this is the element
+             that carries role="treeitem" and the row's state, so it has to be the one that takes
+             focus — otherwise focus lands on a generic div and a screen reader announces no item
+             at all. `onRowPointer` filters out clicks bubbling up from nested rows. -->
         <li
-          v-for="item in childrenByPath[path] ?? []"
+          v-for="(item, index) in childrenByPath[path] ?? []"
           :key="item.id"
-          class="mm-tree-node relative w-full"
+          class="mm-tree-node relative w-full focus:outline-none"
           :class="level > 1 ? 'ps-1.5 -ms-px' : ''"
           :data-path="item.path"
           :data-node-type="item.nodeType"
           role="treeitem"
+          tabindex="0"
+          :aria-level="level"
+          :aria-setsize="(childrenByPath[path] ?? []).length"
+          :aria-posinset="index + 1"
           :aria-expanded="item.nodeType === 'folder' ? isExpanded(item.path) : undefined"
           :aria-selected="selectedId === item.id || marked.includes(item.path)"
+          @click="onRowPointer($event, item)"
+          @keydown.enter.prevent="onRowKey($event, item)"
         >
           <UContextMenu :items="item.nodeType === 'file' ? fileMenuItems(item) : folderMenuItems(item)">
-            <div
-              class="w-full flex items-center rounded-md px-2.5 py-1.5 text-sm select-none cursor-pointer focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              tabindex="0"
-              @click="onRowClick($event, item)"
-              @keydown.enter.prevent="onRowClick($event, item)"
-            >
+            <div class="mm-tree-row w-full flex items-center rounded-md px-2.5 py-1.5 text-sm select-none cursor-pointer">
               <DocumentsTreeRow
                 :item="item"
                 :expanded="isExpanded(item.path)"
@@ -1011,6 +1254,65 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
       </template>
     </UModal>
 
+    <!-- Multi-document project-change confirm. A single-file drag into a project folder is the
+         intended way to associate a document and stays ungated; doing it to a whole selection in
+         one gesture is what this stops from happening silently. Folders in the selection are
+         gated separately by the real `impact` check (see `moveFolder`). -->
+    <UModal
+      :open="bulkConfirm.open"
+      @update:open="onBulkConfirmOpenChange"
+    >
+      <template #content>
+        <UCard>
+          <template #header>
+            <div class="flex items-center gap-2 text-warning">
+              <UIcon
+                name="i-lucide-triangle-alert"
+                class="size-5"
+              />
+              <span class="font-semibold">This changes project membership</span>
+            </div>
+          </template>
+
+          <p class="text-sm">
+            <template v-if="bulkConfirm.toProject">
+              Move <strong>{{ bulkConfirm.count }}</strong>
+              document{{ bulkConfirm.count === 1 ? '' : 's' }} into project
+              <strong class="font-mono">{{ bulkConfirm.toProject }}</strong>?
+            </template>
+            <template v-else>
+              Move <strong>{{ bulkConfirm.count }}</strong>
+              document{{ bulkConfirm.count === 1 ? '' : 's' }} out of their project?
+            </template>
+          </p>
+          <p class="text-xs text-muted mt-2">
+            A document's project follows its path, so filing
+            {{ bulkConfirm.count === 1 ? 'it' : 'them' }} under
+            <span class="font-mono">{{ bulkConfirm.toFolder }}</span> re-associates
+            {{ bulkConfirm.count === 1 ? 'it' : 'them' }}.
+          </p>
+
+          <template #footer>
+            <div class="flex justify-end gap-2">
+              <UButton
+                color="neutral"
+                variant="ghost"
+                @click="cancelBulkMove"
+              >
+                Cancel
+              </UButton>
+              <UButton
+                color="warning"
+                @click="acceptBulkMove"
+              >
+                Move {{ bulkConfirm.count }} document{{ bulkConfirm.count === 1 ? '' : 's' }}
+              </UButton>
+            </div>
+          </template>
+        </UCard>
+      </template>
+    </UModal>
+
     <!-- Rename modal — shared by files and folders, dispatched by `kind` -->
     <DocumentsRenameModal
       :target="renameState.target"
@@ -1081,6 +1383,15 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
   border-radius: 1px;
   background: var(--ui-primary);
   pointer-events: none;
+}
+
+/* Focus lives on the <li role="treeitem">, but that element encloses the folder's whole open
+   subtree — a ring on it would draw a box around every descendant. Paint the ring on the row it
+   owns instead, so keyboard focus reads as one row. */
+.mm-tree-node:focus-visible > .mm-tree-row {
+  outline: 2px solid var(--ui-primary);
+  outline-offset: -2px;
+  border-radius: 0.375rem;
 }
 
 /* Multi-drag ghost. Stamped by `onChoose` (before the browser snapshots the drag image) and

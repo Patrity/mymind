@@ -63,3 +63,16 @@ export function prunePathsUnderFolders(
   const folders = paths.filter(p => nodeTypeOf(p) === 'folder')
   return paths.filter(p => !folders.some(f => f !== p && isSelfOrDescendant(p, f)))
 }
+
+/**
+ * The project a path belongs to — `/projects/<slug>/…` → `<slug>`, anything else → `null`.
+ *
+ * `documents.path` is what decides project membership (see `resolveDocProjectFromPath`), so this
+ * is enough to tell a drag that crosses a project boundary from one that doesn't, without a
+ * server round-trip. It is a *warning* input only: the authoritative re-association still happens
+ * server-side on the move, and a FOLDER move is gated by the real `impact` call instead.
+ */
+export function projectSlugOfPath(path: string): string | null {
+  const parts = path.split('/').filter(Boolean)
+  return parts.length >= 2 && parts[0] === 'projects' ? parts[1]! : null
+}

@@ -4,7 +4,8 @@ import {
   isSelfOrDescendant,
   canDropInto,
   isNoOpDrop,
-  prunePathsUnderFolders
+  prunePathsUnderFolders,
+  projectSlugOfPath
 } from '../app/lib/documents/tree-drag'
 
 describe('destinationPathFor', () => {
@@ -92,5 +93,27 @@ describe('prunePathsUnderFolders', () => {
 
   it('leaves a plain file selection untouched', () => {
     expect(prunePathsUnderFolders(['/a/b.md', '/z.md'], nodeTypeOf)).toEqual(['/a/b.md', '/z.md'])
+  })
+})
+
+describe('projectSlugOfPath', () => {
+  it('reads the slug from a project folder', () => {
+    expect(projectSlugOfPath('/projects/mymind')).toBe('mymind')
+  })
+
+  it('reads the slug from a document deep inside a project', () => {
+    expect(projectSlugOfPath('/projects/mymind/wiki/auth.md')).toBe('mymind')
+  })
+
+  it('is null outside /projects', () => {
+    expect(projectSlugOfPath('/notes/thing.md')).toBeNull()
+  })
+
+  it('is null for /projects itself — that is not a project', () => {
+    expect(projectSlugOfPath('/projects')).toBeNull()
+  })
+
+  it('is null at the root', () => {
+    expect(projectSlugOfPath('/')).toBeNull()
   })
 })
