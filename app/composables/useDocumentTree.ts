@@ -259,8 +259,16 @@ export function useCreateFolderMutation() {
  *
  * `onRefresh` is called after every successful mutation — pass through `() => emit('refresh')`
  * from the caller.
+ *
+ * `isMoveBlocked` answers "is a move conversation already waiting on the user?" — the SAME
+ * singleton question Tree.vue's own `awaitingConfirmation()` answers for the drag paths (it
+ * also covers the drag-only bulk-confirm dialog, which has no state in this composable). Without
+ * this, `promptMove`/`promptFolderMove` below could silently re-point an already-open MoveModal
+ * at a different target: setting `moveState.open = true` while it is already `true` does not
+ * re-fire MoveModal's reset watcher, so the dialog would show the NEW target's label with the
+ * OLD target's destination/preview state still attached.
  */
-export function useDocumentTree(onRefresh: () => void) {
+export function useDocumentTree(onRefresh: () => void, isMoveBlocked: () => boolean = () => false) {
   const toast = useToast()
   const { get, share } = useDocuments()
   const deleteDocument = useDeleteDocumentMutation()
@@ -310,12 +318,20 @@ export function useDocumentTree(onRefresh: () => void) {
   const moveState = reactive<KindedDialogState>({ open: false, target: null, kind: 'file' })
 
   function promptMove(id: string, path: string, label: string) {
+    if (isMoveBlocked()) {
+      toast.add({ color: 'error', title: "Couldn't move", description: `"${label}" not opened — answer the move already waiting first.` })
+      return
+    }
     moveState.target = { id, path, label }
     moveState.kind = 'file'
     moveState.open = true
   }
 
   function promptFolderMove(folder: DocTreeTarget) {
+    if (isMoveBlocked()) {
+      toast.add({ color: 'error', title: "Couldn't move", description: `"${folder.label}" not opened — answer the move already waiting first.` })
+      return
+    }
     moveState.target = folder
     moveState.kind = 'folder'
     moveState.open = true

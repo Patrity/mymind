@@ -95,12 +95,20 @@ async function previewImpact(dir: string) {
   }
 }
 
-// Reset on each open so a previous attempt never leaks into the next one — and preview straight
-// away rather than waiting for the destination to *change*. Re-opening on the same destination
-// (a repeated drag to the same folder) leaves `moveDestFolder` untouched, so without this the
-// watch below never fires and the user is left pressing a Move button that silently refuses for
-// want of an acknowledgement it was never shown.
-watch(() => props.open, (isOpen) => {
+// Reset on each open AND on every target swap — not just `open` — so a previous attempt never
+// leaks into the next one, and preview straight away rather than waiting for the destination to
+// *change*. Watching `target` too matters because `open` can already be `true` when the target
+// changes: a menu-driven Move can open this dialog for one target while a drag's cross-project
+// impact check is still resolving in the background; when that check later hands off to
+// `openMoveModal`, it re-points the SAME open dialog at the folder it gates, without ever
+// toggling `open`. A `watch(() => props.open, …)` would miss that entirely — `open` stays `true`
+// throughout, so it would never re-fire, leaving `moveDestFolder`/`impact`/`previewedPath`/
+// `projectChangeAck` all showing state for the PREVIOUS target while the dialog now claims to be
+// about a different one. Re-opening on the same destination (a repeated drag to the same folder)
+// leaves `moveDestFolder` untouched too, so without this the watch below never fires and the
+// user is left pressing a Move button that silently refuses for want of an acknowledgement it
+// was never shown.
+watch([() => props.open, () => props.target], ([isOpen]) => {
   if (!isOpen || !props.target) return
   moveDestFolder.value = props.destination ?? dirnameOf(props.target.path)
   void previewImpact(moveDestFolder.value)
@@ -162,9 +170,13 @@ async function confirmMove() {
   }
 
   moveLoading.value = true
-  // Captured before the mutation resolves. `props.target` is set once when this dialog opens
-  // and never mutated underneath it, so these are genuinely the PRE-move id/path — exactly what
-  // Undo below needs to hand back to `patch()`.
+  // Captured synchronously, before the mutation's `await` below — NOT because `props.target` is
+  // guaranteed stable while this dialog is open (it can be swapped for a different target if the
+  // dialog is re-pointed while already open; see the `open`+`target` watcher above and the
+  // `promptMove`/`promptFolderMove` guards that stop a swap from landing while a move is
+  // actually IN FLIGHT). Reading `props.target` again after the await could observe a swapped
+  // value, so these are captured now to guarantee they're the PRE-move id/path Undo needs to
+  // hand back to `patch()`.
   const folderId = props.target.id
   const originalPath = props.target.path
   try {

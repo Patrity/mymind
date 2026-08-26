@@ -24,7 +24,10 @@ import {
 } from '~/lib/documents/tree-keyboard'
 import { basenameOf, copyText, describeFolderError, type DocTreeTarget } from '~/composables/useDocumentTree'
 
-interface TreeItem {
+/** Exported so TreeRow.vue imports this instead of re-declaring its own copy — a prior copy
+ *  drifted (it lacked `folderId` after that field was added here), which is exactly the failure
+ *  mode a single shared type prevents. */
+export interface TreeItem {
   id: string
   label: string
   path: string
@@ -184,7 +187,7 @@ const {
   // rendered, so there is nothing to defer.
   applyPendingFocus()
   emit('refresh')
-})
+}, () => awaitingConfirmation())
 
 /**
  * A folder's tree-item `id` is its PATH (see `toTreeItems` above) — `PATCH`/`DELETE
@@ -776,6 +779,14 @@ const childrenByPath = reactive<Record<string, TreeItem[]>>({})
  * makes hover-to-expand legal. */
 const isDragging = ref(false)
 
+/** Set by the `treeItems` watcher below whenever it skips a rebuild because `isDragging` was
+ *  true. A skipped rebuild is not automatically retried — `onNodeDragEnd` is what checks this
+ *  flag and catches up once the drag ends, including on a same-folder no-op drop (`sort: false`
+ *  makes that the common "grabbed a row and let go" case), which returns early and would
+ *  otherwise never touch `childrenByPath` again until some unrelated later tree change happened
+ *  to self-correct it — leaving the tree showing a stale, pre-drag snapshot in the meantime. */
+let missedRebuild = false
+
 /** True while `rebuild` is writing server truth into `childrenByPath`. The persistence watch
  *  must not treat that as a user edit and write it straight back out — the same "which
  *  direction did this change come from" problem AssignmentChain.vue solves with
@@ -808,7 +819,11 @@ function rebuild(items: TreeItem[]) {
 }
 
 watch(treeItems, (items) => {
-  if (!isDragging.value) rebuild(items)
+  if (isDragging.value) {
+    missedRebuild = true
+    return
+  }
+  rebuild(items)
 }, { immediate: true })
 
 // One <ul> element per folder path. Function refs rather than template refs because the lists
@@ -1067,6 +1082,17 @@ function onNodeDragEnd(evt: Sortable.SortableEvent) {
   // lands on the microtask queue long before any SSE-driven refetch could arrive, so re-opening
   // the rebuild watch here doesn't race it.
   isDragging.value = false
+  // A tree-changing event was skipped by the watcher above while this drag was in progress
+  // (rebuilding mid-drag would have destroyed the Sortable instance and aborted the drag — see
+  // `isDragging`'s comment). Catch up now, BEFORE the early returns below: a same-folder no-op
+  // drop (the common "grabbed a row and let go" case, since `sort: false`) or a missing
+  // destination list returns early without ever touching `childrenByPath`, which would otherwise
+  // leave the tree frozen on its pre-drag snapshot until an unrelated later change self-corrects
+  // it.
+  if (missedRebuild) {
+    missedRebuild = false
+    rebuild(treeItems.value)
+  }
   stopPointerTracking()
   draggingPath = null
   draggingType = null
@@ -1337,6 +1363,20 @@ async function moveFolder(item: TreeItem, toFolder: string, dest: string): Promi
   }
 
   if (impact.projectChanges.length) {
+    // Re-check: `awaitingConfirmation()` was true-or-false back when the caller checked it,
+    // BEFORE this function's `await fetchImpact` above — a menu-driven Move can open (and set)
+    // `moveState` during that round-trip, since no modal was up yet to block it. Opening this
+    // modal now would silently re-point that ALREADY-OPEN dialog at this folder while its
+    // destination/preview state still belongs to whatever it was showing — see MoveModal.vue's
+    // `open`+`target` watcher for the other half of this fix.
+    if (awaitingConfirmation()) {
+      toast.add({
+        color: 'error',
+        title: "Couldn't move",
+        description: `"${item.label}" was not moved — answer the move already waiting first.`
+      })
+      return true
+    }
     openMoveModal(target, toFolder)
     return true
   }

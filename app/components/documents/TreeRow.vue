@@ -1,17 +1,9 @@
 <!-- app/components/documents/TreeRow.vue -->
 <script setup lang="ts">
-import type { FolderColorSource } from '~~/shared/types/folders'
+import type { TreeItem } from '~/components/documents/Tree.vue'
 
 withDefaults(defineProps<{
-  item: {
-    id: string
-    label: string
-    path: string
-    nodeType: 'file' | 'folder'
-    icon?: string
-    color?: string | null
-    colorSource?: FolderColorSource | null
-  }
+  item: TreeItem
   expanded: boolean
   selected: boolean
   /** Part of a cmd/shift multi-selection (Tree.vue) — a drag carries the whole set. */
