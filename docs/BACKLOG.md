@@ -94,6 +94,27 @@ entries below); the remaining two are capture titling and sidebar IA:
   document switch; the debounce logic moved to a tested `app/lib/documents/autosave.ts` that
   carries the `(id, content)` pair so a late save can't write into the wrong document.
 
+### Six documents-page complaints (raised 2026-08-25) — ✅ all closed same-cycle (cycle 59)
+Tony's own words, closed by [cycle 59](superpowers/plans/00-roadmap.md) (`worktree-feat+documents-folders-ux`,
+built but not yet merged — see the [handover](handovers/2026-08-25-documents-folders-ux.md)) and
+browser-verified with evidence rather than assumed from the diff:
+- ~~**Right-clicking a folder did nothing.**~~ ✅ Full context menu now (New document here/New
+  subfolder/Rename/Move/Colour/Copy path/Collapse all/Delete).
+- ~~**Only files could be dragged, not folders.**~~ ✅ Both drag via `useSortable`; dropping a file
+  onto a folder's own row files it into that folder.
+- ~~**Deleting a folder's last document made the folder vanish.**~~ ✅ Folders are now a real
+  registry row (`folders` table) independent of content — they persist empty until explicitly deleted.
+- ~~**Creating a document required hand-typing a path.**~~ ✅ A `USelectMenu` folder picker replaces it.
+- ~~**Opening an empty document showed a blank preview pane.**~~ ✅ An empty document now always
+  opens in Edit mode.
+- ~~**Folders couldn't be coloured.**~~ ✅ A 14-swatch colour picker, inherited down the tree the
+  same way project colours already worked.
+
+Also closes cycle 58's `USelectMenu` sweep note: MyMind task `7be76abc` ("All project select
+dropdowns should be USelectMenu") was already completed in cycle 58 itself (the last 8 `<USelect>`
+in `tasks.vue` converted) — restated here as complete since cycle 59's own task brief asked this
+doc to confirm it.
+
 ---
 
 ## 3. Open items from build reviews (quality · security · scale)
