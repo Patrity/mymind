@@ -88,7 +88,10 @@ onMounted(() => {
         return false
       },
       paste(e) {
-        if (!props.onImage) return false
+        // readOnly locks out built-in edit commands and native text paste via the CodeMirror
+        // compartments below, but an app-issued dispatch (like the image insert below) bypasses
+        // that entirely — so this custom handler needs its own readOnly check.
+        if (props.readOnly || !props.onImage) return false
         const items = e.clipboardData?.items
         if (!items) return false
         for (let i = 0; i < items.length; i++) {
@@ -105,7 +108,9 @@ onMounted(() => {
         return false
       },
       drop(e) {
-        if (!props.onImage) return false
+        // Same readOnly bypass risk as paste() above — pointer-events-none on the wrapper
+        // likely already blocks this via hit-testing, but don't rely on the caller for it.
+        if (props.readOnly || !props.onImage) return false
         const files = e.dataTransfer?.files
         if (!files) return false
         for (let i = 0; i < files.length; i++) {

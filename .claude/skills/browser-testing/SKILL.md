@@ -113,6 +113,16 @@ instead of binding 3010 — inconsistent across runs, not fully understood. `POR
 `lsof -ti tcp:<port> | xargs ps -p` (confirm it's mymind's own `nuxt` process) rather than trusting
 the flag was honored.
 
+## Gotcha: a spare-port dev server 400s every login with "Invalid origin"
+Running on a non-default port (`PORT=3010 pnpm dev`) makes every sign-in attempt fail with
+"Invalid origin" and the browser stays on `/login` no matter how correct the credentials are.
+Cause: better-auth's `trustedOrigins` is derived solely from `BETTER_AUTH_URL`
+(`server/utils/auth.ts`), which `.env` pins to `http://localhost:3000` — a request whose Origin
+header doesn't match that gets rejected before credentials are even checked. Fix: also override
+`BETTER_AUTH_URL` to match the port, e.g. `PORT=3010 BETTER_AUTH_URL=http://localhost:3010 pnpm dev`.
+(Verified 2026-08-26: plain `PORT=3010 pnpm dev` reproduced the failure; adding the matching
+`BETTER_AUTH_URL` fixed it immediately, same credentials.)
+
 ## Gotcha: fresh dev server can 504 on first navigation ("Outdated Optimize Dep")
 Right after a cold `pnpm dev` start (especially after a `.nuxt`/Vite cache wipe), the very first
 `playwright-cli goto` can hit Vite's dep-optimizer mid-rebuild and return a blank page with console

@@ -1,9 +1,9 @@
 import { and, desc, eq, isNull, ilike, ne, or, sql, inArray } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { useDb } from '../db'
-import { documents, chunks } from '../db/schema'
+import { documents, chunks, folders, projects } from '../db/schema'
 import { getLanguageFromPath } from '../../shared/utils/languages'
-import { buildTree, type TreeNode } from './tree'
+import { buildTree, applyFolderColors, type TreeNode } from './tree'
 import type { DocumentDTO, DocumentUpsert, ChunkHit } from '../../shared/types/documents'
 import type { DocumentSummaryDTO } from '../../shared/types/summaries'
 import { collapseChunksToHits } from '../lib/chunking/collapse'
@@ -12,6 +12,7 @@ import { getSearchConfig } from '../lib/search/config'
 import { rrfFuse } from '../lib/ai/rrf'
 import { projectFromPath, PROJECTS_ROOT } from '../lib/projects/doc-path'
 import { matchProjectByLabel } from './projects'
+import { ensureFolders } from './folders'
 
 // ---------------------------------------------------------------------------
 // Path↔project association helpers
@@ -149,9 +150,21 @@ export async function countDocs(opts: { project?: string } = {}): Promise<number
 }
 
 export async function listTree(): Promise<TreeNode[]> {
-  const rows = await useDb().select({ id: documents.id, path: documents.path, title: documents.title })
-    .from(documents).where(live())
-  return buildTree(rows)
+  const db = useDb()
+  const [docRows, folderRows, projectRows] = await Promise.all([
+    db.select({ id: documents.id, path: documents.path, title: documents.title })
+      .from(documents).where(live()),
+    db.select({ id: folders.id, path: folders.path, color: folders.color }).from(folders),
+    db.select({ slug: projects.slug, color: projects.color }).from(projects)
+  ])
+
+  const tree = buildTree(docRows, folderRows)
+  return applyFolderColors(tree, {
+    own: new Map(folderRows.map(f => [f.path, f.color])),
+    projects: new Map(
+      projectRows.filter(p => p.color).map(p => [p.slug, p.color as string])
+    )
+  })
 }
 
 export async function getDoc(id: string): Promise<DocumentDTO | null> {
@@ -184,7 +197,11 @@ export async function createDoc(input: DocumentUpsert): Promise<DocumentDTO> {
     project, projectId, domain: input.domain,
     type: input.type, tags: input.tags ?? [], topic: input.topic
   }).returning()
-  return toDTO(rows[0]!)
+  const doc = toDTO(rows[0]!)
+  // Materialize the folders this path implies. Every writer reaches this function, so this
+  // is what keeps the registry complete without touching a single route handler.
+  await ensureFolders(doc.path)
+  return doc
 }
 
 export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Promise<DocumentDTO | null> {
@@ -224,7 +241,10 @@ export async function updateDoc(id: string, input: Partial<DocumentUpsert>): Pro
   }
 
   const [r] = await useDb().update(documents).set(patch as Partial<typeof documents.$inferInsert>).where(and(eq(documents.id, id), live())).returning()
-  return r ? toDTO(r) : null
+  if (!r) return null
+  // A move can create folders that did not exist before — same reasoning as createDoc.
+  if (patch.path) await ensureFolders(r.path)
+  return toDTO(r)
 }
 
 /** Resolve a sync target by exact live path. Uses the existing unique index on live paths. */

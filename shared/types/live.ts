@@ -2,6 +2,7 @@
 // (single-user app — see docs/superpowers/specs/2026-06-12-live-reactivity-design.md).
 export type ResourceName =
   | 'document'
+  | 'folder'
   | 'image'
   | 'memory'
   | 'review'
