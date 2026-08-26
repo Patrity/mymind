@@ -17,20 +17,31 @@ const { impact: fetchImpact, remove } = useFolders()
 // why this is deliberately not the same field `remove()` returns).
 const impact = ref<FolderImpact | null>(null)
 const impactLoading = ref(false)
+const impactError = ref(false)
 const deleting = ref(false)
 
-watch(() => props.open, async (isOpen) => {
-  impact.value = null
-  if (!isOpen || !props.folder) return
+async function loadImpact() {
+  if (!props.folder) return
   impactLoading.value = true
+  impactError.value = false
   try {
     impact.value = await fetchImpact(props.folder.id)
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: "Couldn't check folder contents", description: err.data?.statusMessage ?? err.message })
+  } catch {
+    // Fail CLOSED: a failed check leaves `impact` null and `impactError` true — the template
+    // swaps the Delete button for a Retry button (below) rather than showing zeros or letting
+    // an irreversible bulk soft-delete proceed with the user shown nothing about its contents.
+    impact.value = null
+    impactError.value = true
   } finally {
     impactLoading.value = false
   }
+}
+
+watch(() => props.open, (isOpen) => {
+  impact.value = null
+  impactError.value = false
+  if (!isOpen || !props.folder) return
+  loadImpact()
 })
 
 const isEmpty = computed(() =>
@@ -50,6 +61,10 @@ const confirmLabel = computed(() => {
 
 async function confirmDelete() {
   if (!props.folder) return
+  // Fail CLOSED: never delete without having successfully shown what it contains. The template
+  // already swaps this action out for a Retry button while `impactError` is set, but this holds
+  // even if that ever gets out of sync.
+  if (!impact.value) return
   deleting.value = true
   try {
     // `remove()` returns `foldersDeleted`, which INCLUDES the folder itself — the right count
@@ -107,6 +122,14 @@ async function confirmDelete() {
         >
           Checking contents…
         </p>
+        <UAlert
+          v-else-if="impactError"
+          color="error"
+          icon="i-lucide-triangle-alert"
+          title="Couldn't check this folder's contents"
+          description="We don't know what this would remove — try the check again before deleting."
+          class="mt-2"
+        />
         <template v-else-if="impact">
           <p
             v-if="!isEmpty"
@@ -133,10 +156,21 @@ async function confirmDelete() {
             >
               Cancel
             </UButton>
+            <!-- Fail CLOSED: a failed contents check swaps Delete out for Retry entirely, rather
+                 than leaving the destructive action clickable once `impactLoading` clears. -->
             <UButton
+              v-if="impactError"
+              color="neutral"
+              :loading="impactLoading"
+              @click="loadImpact"
+            >
+              Retry
+            </UButton>
+            <UButton
+              v-else
               color="error"
               :loading="deleting"
-              :disabled="impactLoading"
+              :disabled="impactLoading || !impact"
               @click="confirmDelete"
             >
               {{ confirmLabel }}

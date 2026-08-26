@@ -26,6 +26,7 @@ const renameLoading = ref(false)
 // every document beneath it belongs to. Preview via `impact()` before committing, same as Move.
 const impact = ref<FolderImpact | null>(null)
 const impactLoading = ref(false)
+const impactError = ref(false)
 const projectChangeAck = ref(false)
 // The proposed path this preview was fetched for — a stale preview must never authorize a
 // DIFFERENT proposed name silently if the user keeps typing after seeing a clean preview.
@@ -49,6 +50,7 @@ watch(() => props.open, (isOpen) => {
   renameName.value = basenameOf(props.target.path)
   impact.value = null
   previewedPath.value = null
+  impactError.value = false
   projectChangeAck.value = false
 })
 
@@ -56,6 +58,7 @@ watch(() => props.open, (isOpen) => {
 watch(renameName, () => {
   impact.value = null
   previewedPath.value = null
+  impactError.value = false
   projectChangeAck.value = false
 })
 
@@ -63,22 +66,30 @@ async function confirmRename() {
   if (!props.target || !proposedPath.value) return
   const newPath = proposedPath.value
 
-  if (props.kind === 'folder' && newPath !== props.target.path && previewedPath.value !== newPath) {
-    // First pass on a new proposed path: fetch the impact preview and, if it changes project
-    // membership, stop here and wait for explicit approval (the checkbox below) rather than
-    // committing on the same click that revealed the warning.
-    impactLoading.value = true
-    try {
-      impact.value = await fetchImpact(props.target.id, newPath)
-    } catch {
-      impact.value = null
-    } finally {
-      impactLoading.value = false
-      previewedPath.value = newPath
+  if (props.kind === 'folder' && newPath !== props.target.path) {
+    // Ensure a FRESH, matching preview before ever committing — (re)fetch if we don't already
+    // hold one for this exact proposed path, or the last attempt failed. On success, only
+    // `previewedPath` moves — never on failure, or a failed check would silently read as "no
+    // project changes" on the very next line.
+    if (previewedPath.value !== newPath || impactError.value) {
+      impactLoading.value = true
+      impactError.value = false
+      try {
+        impact.value = await fetchImpact(props.target.id, newPath)
+        previewedPath.value = newPath
+      } catch {
+        impact.value = null
+        previewedPath.value = null
+        impactError.value = true
+      } finally {
+        impactLoading.value = false
+      }
     }
-    if (impact.value?.projectChanges.length) return
+    // Fail CLOSED: a folder rename that changes its path never proceeds without a successful,
+    // matching preview — an unknown outcome blocks, it does not default to "safe".
+    if (impactError.value || previewedPath.value !== newPath) return
+    if (impact.value?.projectChanges.length && !projectChangeAck.value) return
   }
-  if (needsAck.value && !projectChangeAck.value) return
 
   renameLoading.value = true
   try {
@@ -137,6 +148,14 @@ async function confirmRename() {
               @keyup.enter="confirmRename"
             />
           </UFormField>
+
+          <UAlert
+            v-if="impactError"
+            color="error"
+            icon="i-lucide-triangle-alert"
+            title="Couldn't check what this rename affects"
+            description="We can't confirm whether this crosses a project boundary — click Rename to try the check again before it commits to anything."
+          />
 
           <UAlert
             v-if="needsAck"

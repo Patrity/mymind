@@ -27,7 +27,13 @@ const moveLoading = ref(false)
 // explicit checkbox when it changes anything, so this can't be missed or hidden.
 const impact = ref<FolderImpact | null>(null)
 const impactLoading = ref(false)
+const impactError = ref(false)
 const projectChangeAck = ref(false)
+// The destination this preview was actually fetched for — `confirmMove` re-checks this against
+// the CURRENT destination before ever writing, rather than trusting `impact.value` on its own.
+// That's what closes the race below: a background preview fetch resolving late (or never) can't
+// silently authorize a commit for a destination it never actually confirmed.
+const previewedPath = ref<string | null>(null)
 
 const title = computed(() => props.kind === 'folder' ? 'Move folder' : 'Move document')
 
@@ -50,14 +56,20 @@ watch(() => props.open, (isOpen) => {
   if (!isOpen || !props.target) return
   moveDestFolder.value = dirnameOf(props.target.path)
   impact.value = null
+  previewedPath.value = null
+  impactError.value = false
   projectChangeAck.value = false
 })
 
 // Re-preview every time the chosen destination changes — a discrete selection, not a keystroke
 // stream, so fetching eagerly here (rather than only on submit) is cheap and shows the warning
 // the moment it becomes true instead of only after the user has already decided to submit.
+// This is a UX convenience only: `confirmMove` below does NOT trust it on its own (see the
+// `previewedPath` re-check there) — clicking Move before this resolves must not skip the check.
 watch(moveDestFolder, async (dir) => {
   impact.value = null
+  previewedPath.value = null
+  impactError.value = false
   projectChangeAck.value = false
   if (props.kind !== 'folder' || !props.target) return
   const dest = destinationPath(dir)
@@ -65,14 +77,18 @@ watch(moveDestFolder, async (dir) => {
   impactLoading.value = true
   try {
     impact.value = await fetchImpact(props.target.id, dest)
+    previewedPath.value = dest
   } catch {
     impact.value = null
+    previewedPath.value = null
+    impactError.value = true
   } finally {
     impactLoading.value = false
   }
 })
 
-const needsAck = computed(() => !!impact.value?.projectChanges.length)
+const needsAck = computed(() =>
+  !!impact.value?.projectChanges.length && previewedPath.value === destinationPath(moveDestFolder.value))
 
 async function confirmMove() {
   if (!props.target || !moveDestFolder.value) return
@@ -83,7 +99,32 @@ async function confirmMove() {
     emit('update:open', false)
     return
   }
-  if (needsAck.value && !projectChangeAck.value) return
+
+  if (props.kind === 'folder') {
+    // CRITICAL: never commit without a FRESH, matching preview. The watch above is a UX
+    // convenience that can still be in flight (or have failed) the instant this runs — awaiting
+    // it here, unconditionally, is what actually closes the "click Move before the background
+    // fetch resolves" race. Skip the extra round-trip only when we already hold a preview for
+    // this EXACT destination.
+    if (previewedPath.value !== dest || impactError.value) {
+      impactLoading.value = true
+      impactError.value = false
+      try {
+        impact.value = await fetchImpact(props.target.id, dest)
+        previewedPath.value = dest
+      } catch {
+        impact.value = null
+        previewedPath.value = null
+        impactError.value = true
+      } finally {
+        impactLoading.value = false
+      }
+    }
+    // Fail CLOSED: a folder move never proceeds without a successful, matching preview — an
+    // unknown outcome is treated as "assume the worst", not "assume it's fine".
+    if (impactError.value || previewedPath.value !== dest) return
+    if (impact.value?.projectChanges.length && !projectChangeAck.value) return
+  }
 
   moveLoading.value = true
   try {
@@ -152,6 +193,14 @@ async function confirmMove() {
           </p>
 
           <UAlert
+            v-if="impactError"
+            color="error"
+            icon="i-lucide-triangle-alert"
+            title="Couldn't check what this move affects"
+            description="We can't confirm whether this crosses a project boundary — click Move to try the check again before it commits to anything."
+          />
+
+          <UAlert
             v-if="needsAck"
             color="warning"
             icon="i-lucide-triangle-alert"
@@ -190,7 +239,7 @@ async function confirmMove() {
             </UButton>
             <UButton
               :loading="moveLoading"
-              :disabled="!moveDestFolder || (needsAck && !projectChangeAck)"
+              :disabled="!moveDestFolder || impactLoading || (needsAck && !projectChangeAck)"
               @click="confirmMove"
             >
               Move
