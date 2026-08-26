@@ -179,7 +179,7 @@ watch(() => props.documentId, (id, prevId) => {
 // Autosave content — debounced 1.5s. The (id, content) pair travels with the pending edit
 // (see ~/lib/documents/autosave) so a save that lands after a document switch still writes to
 // the document the text was typed in.
-const autosave = createAutosave<string>(async (id, body) => {
+const autosave = createAutosave(async (id, body) => {
   // A flush can outlive the selection that scheduled it; status is only meaningful while the
   // save's own document is still on screen.
   const isCurrent = () => props.documentId === id

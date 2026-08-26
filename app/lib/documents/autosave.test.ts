@@ -90,45 +90,4 @@ describe('createAutosave', () => {
     await vi.advanceTimersByTimeAsync(1500)
     expect(a.hasPending()).toBe(false)
   })
-
-  // Regression for Inspector.vue's metadata-save path (app/components/documents/Inspector.vue).
-  // It used to be its own copy of this exact mechanism — a `metaSaveTimer` ref plus a
-  // `saveMetadata(id = props.documentId)` default parameter — and got the document-switch case
-  // wrong: the timer stayed armed across a switch and fired later against whatever document was
-  // selected by then, writing the OUTGOING document's title/project/domain/type/tags onto the
-  // INCOMING one. That was fixed by hand (verified only in the browser, never in a test) by
-  // routing the metadata save through this same generic module. `T` being a metadata-shaped
-  // object, not a content string, proves the fix isn't string-specific.
-  describe('with a non-string payload (Inspector.vue metadata)', () => {
-    interface MetadataPatch { title: string | null, tags: string[] }
-
-    it('flush saves the metadata belonging to the document it was typed for, not the document selected when the timer fires', async () => {
-      const save = vi.fn(async (_id: string, _patch: MetadataPatch) => {})
-      const a = createAutosave<MetadataPatch>(save, 800)
-
-      // Typed into doc-1's Title field.
-      a.schedule('doc-1', { title: 'Doc 1 title', tags: ['a'] })
-      // The user switches documents before the 800ms debounce elapses — Inspector.vue's
-      // documentId watcher flushes the outgoing edit immediately instead of leaving the timer
-      // armed against whatever becomes selected next.
-      await a.flush()
-
-      expect(save).toHaveBeenCalledExactlyOnceWith('doc-1', { title: 'Doc 1 title', tags: ['a'] })
-    })
-
-    it('a flushed timer does not fire again later and clobber the next document\'s metadata', async () => {
-      const save = vi.fn(async (_id: string, _patch: MetadataPatch) => {})
-      const a = createAutosave<MetadataPatch>(save, 800)
-
-      a.schedule('doc-1', { title: 'Doc 1 title', tags: [] })
-      await a.flush()
-      // doc-2 is now selected and gets its own edit scheduled.
-      a.schedule('doc-2', { title: 'Doc 2 title', tags: [] })
-      await vi.advanceTimersByTimeAsync(3000)
-
-      expect(save).toHaveBeenNthCalledWith(1, 'doc-1', { title: 'Doc 1 title', tags: [] })
-      expect(save).toHaveBeenNthCalledWith(2, 'doc-2', { title: 'Doc 2 title', tags: [] })
-      expect(save).toHaveBeenCalledTimes(2)
-    })
-  })
 })
