@@ -14,6 +14,14 @@ import {
   projectSlugOfPath,
   prunePathsUnderFolders
 } from '~/lib/documents/tree-drag'
+import {
+  arrowLeftAction,
+  arrowRightAction,
+  folderChainOf,
+  neighborPathFor,
+  nextVisiblePath,
+  typeaheadMatch
+} from '~/lib/documents/tree-keyboard'
 import { basenameOf, copyText, describeFolderError, type DocTreeTarget } from '~/composables/useDocumentTree'
 
 interface TreeItem {
@@ -168,7 +176,15 @@ const {
   deleteLoading,
   newFolderState,
   folderDeleteState
-} = useDocumentTree(() => emit('refresh'))
+} = useDocumentTree(() => {
+  // `applyPendingFocus` is a no-op unless a keyboard-driven FILE delete just planted a plan for
+  // it (see `deleteFocused`/`planFocusAfterDelete` below) — share/retriage, the other two
+  // callers of this refresh, never set one. `confirmDelete` above only reaches this callback
+  // after its mutation has already succeeded, by which point the optimistic removal has
+  // rendered, so there is nothing to defer.
+  applyPendingFocus()
+  emit('refresh')
+})
 
 /**
  * A folder's tree-item `id` is its PATH (see `toTreeItems` above) — `PATCH`/`DELETE
@@ -547,6 +563,29 @@ function moveFocusTo(path: string | null | undefined) {
   nextTick(() => rowRefs[path]?.focus())
 }
 
+/**
+ * Path to refocus once a pending delete's optimistic removal has landed — set by
+ * `deleteFocused` (via `neighborPathFor`, computed BEFORE the delete, from state that still
+ * includes the target) and consumed the moment the corresponding success path fires
+ * (`applyPendingFocus`, called from the wrapped `useDocumentTree` refresh below and from
+ * `onFolderDeleted`). If the user cancels instead, the two `open` watchers further down clear
+ * it unconsumed — a stale plan must not steal focus for some unrelated LATER action.
+ */
+let pendingFocusPath: string | null = null
+
+function applyPendingFocus() {
+  if (!pendingFocusPath) return
+  const path = pendingFocusPath
+  pendingFocusPath = null
+  moveFocusTo(path)
+}
+
+function planFocusAfterDelete(item: TreeItem) {
+  const parent = dirnameOf(item.path)
+  const siblingPaths = (childrenByPath[parent] ?? []).map(s => s.path)
+  pendingFocusPath = neighborPathFor(item.path, siblingPaths, parent)
+}
+
 function renameFocused(item: TreeItem) {
   if (item.nodeType === 'folder') {
     const t = folderTarget(item)
@@ -559,15 +598,45 @@ function renameFocused(item: TreeItem) {
 function deleteFocused(item: TreeItem) {
   if (item.nodeType === 'folder') {
     const t = folderTarget(item)
-    if (t) promptFolderDelete(t)
+    if (!t) return // no id — folderTarget already toasted; no dialog opens, nothing to plan for
+    planFocusAfterDelete(item)
+    promptFolderDelete(t)
   } else {
+    planFocusAfterDelete(item)
     promptDelete(item.id, item.path, item.label)
   }
 }
 
+/** Refocus the renamed row at its NEW path. Called directly rather than through
+ *  `pendingFocusPath` — RenameModal only tells us the new path AFTER its mutation resolves, and
+ *  by then the optimistic tree update (`useOptimisticTreeMutation`'s `onMutate`, which runs
+ *  before the network round-trip even starts) has long since rendered, so there is nothing left
+ *  to defer. */
+function onRenameDone(newPath: string) {
+  moveFocusTo(newPath)
+  emit('refresh')
+}
+
+/** Cancelling a delete dialog must drop any focus-plan made for it. Both `target`s are only
+ *  ever nulled by US, exactly at the point a delete SUCCEEDS (`useDocumentTree`'s own
+ *  `confirmDelete` for files; `onFolderDeleted` below for folders) — so seeing one still set
+ *  here means its dialog closed WITHOUT anything being deleted. */
+watch(() => deleteState.open, (open) => {
+  if (!open && deleteState.target) pendingFocusPath = null
+})
+watch(() => folderDeleteState.open, (open) => {
+  if (!open && folderDeleteState.target) pendingFocusPath = null
+})
+
+function onFolderDeleted() {
+  folderDeleteState.target = null
+  applyPendingFocus()
+  emit('refresh')
+}
+
 /** Typeahead: keystrokes buffer for `TYPEAHEAD_MS` and then reset, so a fresh word starts a
- *  fresh search instead of appending forever. Search starts at the row AFTER the focused one
- *  and wraps around — the same shape `TreeRoot`'s typeahead used to give for free. */
+ *  fresh search instead of appending forever. Matching itself is pure (`typeaheadMatch`,
+ *  `~/lib/documents/tree-keyboard`) — this only owns the buffer's lifetime. */
 const TYPEAHEAD_MS = 600
 let typeaheadBuffer = ''
 let typeaheadTimer: ReturnType<typeof setTimeout> | null = null
@@ -581,16 +650,8 @@ function handleTypeahead(e: KeyboardEvent, item: TreeItem) {
   typeaheadBuffer += e.key.toLowerCase()
   typeaheadTimer = setTimeout(() => { typeaheadBuffer = '' }, TYPEAHEAD_MS)
 
-  const rows = visiblePaths.value
-  const start = rows.indexOf(item.path)
-  if (start === -1 || rows.length === 0) return
-  for (let step = 1; step <= rows.length; step++) {
-    const path = rows[(start + step) % rows.length]!
-    if (itemByPath.value.get(path)?.label.toLowerCase().startsWith(typeaheadBuffer)) {
-      moveFocusTo(path)
-      return
-    }
-  }
+  const match = typeaheadMatch(visiblePaths.value, p => itemByPath.value.get(p)?.label, item.path, typeaheadBuffer)
+  if (match) moveFocusTo(match)
 }
 
 /**
@@ -599,52 +660,51 @@ function handleTypeahead(e: KeyboardEvent, item: TreeItem) {
  * Ownership mirrors `onRowPointer`'s: a keydown on a focused CHILD row bubbles through every
  * ancestor folder's `<li>` (they are nested elements, each with its own listener), so this only
  * acts when the event's target IS this row, never a descendant's — same identity check
- * `onRowKey` used to make alone.
+ * `onRowKey` used to make alone. The actual up/down/left/right DECISIONS are pure functions from
+ * `~/lib/documents/tree-keyboard`; this only reads the live state they need and acts on the
+ * verdict.
  */
 function onRowKeydown(e: KeyboardEvent, item: TreeItem) {
   if (e.target !== e.currentTarget) return
 
   switch (e.key) {
     case 'Enter':
+      e.preventDefault()
+      // Cmd/Ctrl+Enter on a folder is "New document here" — the keyboard route to the same
+      // action an empty folder's own button offers. That button is `tabindex="-1"` (see the
+      // empty-folder-state markup below) precisely so it is NOT a second, native Tab stop
+      // alongside the roving one; this is how a keyboard-only user still reaches it.
+      if ((e.metaKey || e.ctrlKey) && item.nodeType === 'folder') {
+        emit('newDocument', item.path)
+        return
+      }
+      activateRow(e, item)
+      return
     case ' ':
       e.preventDefault()
       activateRow(e, item)
       return
-    case 'ArrowDown': {
+    case 'ArrowDown':
       e.preventDefault()
-      const rows = visiblePaths.value
-      const i = rows.indexOf(item.path)
-      if (i !== -1 && i < rows.length - 1) moveFocusTo(rows[i + 1])
+      moveFocusTo(nextVisiblePath(visiblePaths.value, item.path, 'down'))
+      return
+    case 'ArrowUp':
+      e.preventDefault()
+      moveFocusTo(nextVisiblePath(visiblePaths.value, item.path, 'up'))
+      return
+    case 'ArrowRight': {
+      e.preventDefault()
+      const firstChild = childrenByPath[item.path]?.[0]?.path ?? null
+      const action = arrowRightAction({ nodeType: item.nodeType, expanded: isExpanded(item.path) }, firstChild)
+      if (action.type === 'expand') expand(item.path)
+      else if (action.type === 'moveTo') moveFocusTo(action.path)
       return
     }
-    case 'ArrowUp': {
-      e.preventDefault()
-      const rows = visiblePaths.value
-      const i = rows.indexOf(item.path)
-      if (i > 0) moveFocusTo(rows[i - 1])
-      return
-    }
-    case 'ArrowRight':
-      e.preventDefault()
-      // Two-stage, matching a native tree: collapsed folder expands (focus stays put); an
-      // already-expanded folder instead hands focus to its first child. Files have no
-      // children, so this is a no-op for them.
-      if (item.nodeType === 'folder') {
-        if (!isExpanded(item.path)) expand(item.path)
-        else moveFocusTo(childrenByPath[item.path]?.[0]?.path)
-      }
-      return
     case 'ArrowLeft': {
       e.preventDefault()
-      // Same two-stage shape in reverse: an expanded folder collapses (focus stays put);
-      // anything else (a collapsed folder, or a file) hands focus up to its parent folder's
-      // row — unless the parent IS the root, which has no row of its own to land on.
-      if (item.nodeType === 'folder' && isExpanded(item.path)) {
-        collapse(item.path)
-      } else {
-        const parent = dirnameOf(item.path)
-        if (parent !== '/') moveFocusTo(parent)
-      }
+      const action = arrowLeftAction({ nodeType: item.nodeType, expanded: isExpanded(item.path) }, dirnameOf(item.path))
+      if (action.type === 'collapse') collapse(item.path)
+      else if (action.type === 'moveTo') moveFocusTo(action.path)
       return
     }
     case 'F2':
@@ -658,19 +718,6 @@ function onRowKeydown(e: KeyboardEvent, item: TreeItem) {
     default:
       handleTypeahead(e, item)
   }
-}
-
-/** All ancestor folder paths of `path`, root-first, `path` itself last — e.g.
- *  `"/a/b"` → `["/a", "/a/b"]`. */
-function folderChainOf(path: string): string[] {
-  const parts = path.split('/').filter(Boolean)
-  const out: string[] = []
-  let acc = ''
-  for (const part of parts) {
-    acc += `/${part}`
-    out.push(acc)
-  }
-  return out
 }
 
 /**
@@ -1390,7 +1437,13 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
           <!-- Empty-folder state — distinct from the root cold-state below. The (empty) <ul>
                ReuseList still rendered above stays the drop target `emptyInsertThreshold` needs;
                this is a plain sibling, never a child of it, so it can't be mistaken for a
-               sortable item. -->
+               sortable item. `tabindex="-1"` on the button is load-bearing, not decoration: a
+               plain UButton is natively Tab-reachable, so with it left at its default tabindex
+               every empty EXPANDED folder would add its own native Tab stop on top of the
+               tree's single roving one — breaking "exactly one tab stop for the whole tree" the
+               moment any folder is empty. Mouse clicks still work (tabindex doesn't affect
+               that); Cmd/Ctrl+Enter on the focused row is the keyboard route to the same action
+               (see `onRowKeydown`'s `Enter` case). -->
           <div
             v-if="item.nodeType === 'folder' && isExpanded(item.path) && (childrenByPath[item.path] ?? []).length === 0"
             class="ms-5 border-s border-default ps-2.5 py-2 flex items-center gap-2 text-xs text-dimmed"
@@ -1402,6 +1455,7 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
               size="xs"
               variant="ghost"
               color="neutral"
+              tabindex="-1"
               @click="emit('newDocument', item.path)"
             />
           </div>
@@ -1536,13 +1590,15 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
       </template>
     </UModal>
 
-    <!-- Rename modal — shared by files and folders, dispatched by `kind` -->
+    <!-- Rename modal — shared by files and folders, dispatched by `kind`. `done` carries the
+         NEW path so a keyboard (F2) rename can refocus the row there instead of losing the
+         roving tab stop to the top of the tree — see `onRenameDone`. -->
     <DocumentsRenameModal
       :target="renameState.target"
       :open="renameState.open"
       :kind="renameState.kind"
       @update:open="renameState.open = $event"
-      @done="emit('refresh')"
+      @done="onRenameDone($event)"
     />
 
     <!-- Move modal — shared by files and folders, dispatched by `kind`. `destination` is set
@@ -1565,12 +1621,14 @@ const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: nu
       @done="emit('refresh')"
     />
 
-    <!-- Folder delete confirmation -->
+    <!-- Folder delete confirmation. `deleted` (not a raw `emit('refresh')`) also nulls
+         `folderDeleteState.target` and applies any pending keyboard-delete focus plan — see
+         `onFolderDeleted` and the `folderDeleteState.open` watcher above. -->
     <DocumentsFolderDeleteModal
       :open="folderDeleteState.open"
       :folder="folderDeleteState.target"
       @update:open="folderDeleteState.open = $event"
-      @deleted="emit('refresh')"
+      @deleted="onFolderDeleted"
     />
 
     <!-- Folder colour picker. No @done here — the PATCH publishes a `folder` live event that

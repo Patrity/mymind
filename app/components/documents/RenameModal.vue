@@ -12,7 +12,9 @@ const props = defineProps<{
   kind: 'file' | 'folder'
 }>()
 
-const emit = defineEmits<{ 'update:open': [boolean], done: [] }>()
+// `done` carries the new path — Tree.vue's `onRenameDone` uses it to refocus the renamed row
+// there instead of losing a keyboard (F2) rename's roving tab stop to the top of the tree.
+const emit = defineEmits<{ 'update:open': [boolean], done: [newPath: string] }>()
 
 const toast = useToast()
 const { impact: fetchImpact } = useFolders()
@@ -109,7 +111,7 @@ async function confirmRename() {
     // No success toast (Task 17 toast discipline): the row's new name is immediately visible in
     // the tree, for both a file and a folder.
     emit('update:open', false)
-    emit('done')
+    emit('done', newPath)
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({
