@@ -126,6 +126,30 @@ watch(treeData, (nodes) => {
   }
 }, { once: true })
 
+// Clear the editor when the currently-open document disappears from the tree — deleted by this
+// session's own confirm, another session, or the triage sweep. Without this, DocumentsEditor
+// keeps showing the deleted document's stale content and silently retries a 404 fetch against
+// it forever. `selectedSeenInTree` guards against clearing on the very FIRST tree load for a
+// cookie/deep-link-restored id that simply hasn't arrived in `treeData` yet — that's a load
+// race, not a delete — by only clearing on a PRESENT → ABSENT transition, never on "never seen
+// present at all". Watches both `treeData` (the delete itself) and `selectedId` (so switching TO
+// a doc marks it seen before anything can delete it out from under the new selection).
+let selectedSeenInTree: string | null = null
+watch([treeData, selectedId], ([nodes, id]) => {
+  if (!id) {
+    selectedSeenInTree = null
+    return
+  }
+  if (findSelectedPathInTree(nodes, id) !== null) {
+    selectedSeenInTree = id
+    return
+  }
+  if (selectedSeenInTree === id) {
+    selectedSeenInTree = null
+    selectedId.value = null
+  }
+}, { immediate: true })
+
 onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer)
 })
