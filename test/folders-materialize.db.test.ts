@@ -14,7 +14,11 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 const { useDb } = await import('../server/db')
 const { createDoc, moveDoc, deleteDoc } = await import('../server/services/documents')
 
-const ROOT = '/zz-folders-probe'
+// Per-RUN unique root, matching test/folders-cascade.db.test.ts's fixture scoping: a fixed
+// prefix left behind by a crashed run would otherwise surface on the NEXT run as a
+// `documents_path_live_uidx` duplicate-key 23505 instead of that run's real failure.
+const TAG = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+const ROOT = `/zz-folders-probe-${TAG}`
 
 afterEach(async () => {
   const db = useDb()
