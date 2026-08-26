@@ -10,6 +10,11 @@ const props = defineProps<{
   /** Files call the document endpoints; folders call `useFolders().patch` at `PATCH
    *  /api/folders/[id]`. */
   kind: 'file' | 'folder'
+  /** Destination folder to open with, instead of the target's current parent. Set by Tree.vue
+   *  when a *drag* lands a folder somewhere that changes project membership: the drop can't be
+   *  performed silently, so it is handed to this modal — already pointed at where the user
+   *  dropped it — to collect the same acknowledgement a menu-driven move requires. */
+  destination?: string | null
 }>()
 
 const emit = defineEmits<{ 'update:open': [boolean], done: [] }>()
@@ -51,22 +56,21 @@ function destinationPath(dir: string): string | null {
   return dir === '/' ? '/' + base : dir + '/' + base
 }
 
-// Reset on each open so a previous attempt never leaks into the next one.
-watch(() => props.open, (isOpen) => {
-  if (!isOpen || !props.target) return
-  moveDestFolder.value = dirnameOf(props.target.path)
-  impact.value = null
-  previewedPath.value = null
-  impactError.value = false
-  projectChangeAck.value = false
-})
+// Monotonic token for the preview fetch below. Two previews can be in flight at once (opening
+// with a `destination` sets `moveDestFolder`, which also fires the destination watch), and an
+// out-of-order response must never be the one that sets `previewedPath` — that field is what
+// `confirmMove` treats as authorization, so a stale winner would authorize a commit for a
+// destination it never actually checked.
+let previewToken = 0
 
-// Re-preview every time the chosen destination changes — a discrete selection, not a keystroke
-// stream, so fetching eagerly here (rather than only on submit) is cheap and shows the warning
-// the moment it becomes true instead of only after the user has already decided to submit.
-// This is a UX convenience only: `confirmMove` below does NOT trust it on its own (see the
-// `previewedPath` re-check there) — clicking Move before this resolves must not skip the check.
-watch(moveDestFolder, async (dir) => {
+/**
+ * Preview what moving the target folder into `dir` would change, and reset the acknowledgement.
+ *
+ * A UX convenience only: `confirmMove` below does NOT trust it on its own (see the
+ * `previewedPath` re-check there) — clicking Move before this resolves must not skip the check.
+ */
+async function previewImpact(dir: string) {
+  const token = ++previewToken
   impact.value = null
   previewedPath.value = null
   impactError.value = false
@@ -76,15 +80,36 @@ watch(moveDestFolder, async (dir) => {
   if (!dest || dest === props.target.path) return
   impactLoading.value = true
   try {
-    impact.value = await fetchImpact(props.target.id, dest)
+    const result = await fetchImpact(props.target.id, dest)
+    if (token !== previewToken) return
+    impact.value = result
     previewedPath.value = dest
   } catch {
+    if (token !== previewToken) return
     impact.value = null
     previewedPath.value = null
     impactError.value = true
   } finally {
-    impactLoading.value = false
+    if (token === previewToken) impactLoading.value = false
   }
+}
+
+// Reset on each open so a previous attempt never leaks into the next one — and preview straight
+// away rather than waiting for the destination to *change*. Re-opening on the same destination
+// (a repeated drag to the same folder) leaves `moveDestFolder` untouched, so without this the
+// watch below never fires and the user is left pressing a Move button that silently refuses for
+// want of an acknowledgement it was never shown.
+watch(() => props.open, (isOpen) => {
+  if (!isOpen || !props.target) return
+  moveDestFolder.value = props.destination ?? dirnameOf(props.target.path)
+  void previewImpact(moveDestFolder.value)
+})
+
+// Re-preview every time the chosen destination changes — a discrete selection, not a keystroke
+// stream, so fetching eagerly here (rather than only on submit) is cheap and shows the warning
+// the moment it becomes true instead of only after the user has already decided to submit.
+watch(moveDestFolder, (dir) => {
+  void previewImpact(dir)
 })
 
 const needsAck = computed(() =>
@@ -107,17 +132,26 @@ async function confirmMove() {
     // fetch resolves" race. Skip the extra round-trip only when we already hold a preview for
     // this EXACT destination.
     if (previewedPath.value !== dest || impactError.value) {
+      // Claim the preview token so any background `previewImpact` still in flight can no longer
+      // write `previewedPath` — deliberately NOT a call to `previewImpact` itself, which would
+      // clear `projectChangeAck` and throw away the acknowledgement we are about to check.
+      const token = ++previewToken
       impactLoading.value = true
       impactError.value = false
       try {
-        impact.value = await fetchImpact(props.target.id, dest)
-        previewedPath.value = dest
+        const result = await fetchImpact(props.target.id, dest)
+        if (token === previewToken) {
+          impact.value = result
+          previewedPath.value = dest
+        }
       } catch {
-        impact.value = null
-        previewedPath.value = null
-        impactError.value = true
+        if (token === previewToken) {
+          impact.value = null
+          previewedPath.value = null
+          impactError.value = true
+        }
       } finally {
-        impactLoading.value = false
+        if (token === previewToken) impactLoading.value = false
       }
     }
     // Fail CLOSED: a folder move never proceeds without a successful, matching preview — an

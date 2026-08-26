@@ -1,9 +1,19 @@
 <script setup lang="ts">
+import { useSortable, insertNodeAt, removeNode } from '@vueuse/integrations/useSortable'
+import { createReusableTemplate } from '@vueuse/core'
+import type Sortable from 'sortablejs'
+import type { ComponentPublicInstance } from 'vue'
 import type { TreeNode } from '~~/server/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
 import type { FolderColorSource } from '~~/shared/types/folders'
 import { collectFolderPaths, dirnameOf } from '~/lib/documents/folder-list'
-import { basenameOf, copyText, type DocTreeTarget } from '~/composables/useDocumentTree'
+import {
+  canDropInto,
+  destinationPathFor,
+  isNoOpDrop,
+  prunePathsUnderFolders
+} from '~/lib/documents/tree-drag'
+import { basenameOf, copyText, describeFolderError, type DocTreeTarget } from '~/composables/useDocumentTree'
 
 interface TreeItem {
   id: string
@@ -11,7 +21,6 @@ interface TreeItem {
   path: string
   nodeType: 'file' | 'folder'
   icon?: string
-  defaultExpanded?: boolean
   children?: TreeItem[]
   color?: string | null
   colorSource?: FolderColorSource | null
@@ -35,6 +44,7 @@ const emit = defineEmits<{
 
 const toast = useToast()
 const { move, get, create } = useDocuments()
+const { patch: patchFolder, impact: fetchImpact } = useFolders()
 
 function getFileIcon(name: string): string {
   if (name.endsWith('.md') || name.endsWith('.markdown')) return 'i-lucide-file-text'
@@ -53,7 +63,6 @@ function toTreeItems(nodes: TreeNode[]): TreeItem[] {
         label: n.name,
         path: n.path,
         nodeType: 'folder',
-        defaultExpanded: true,
         color: n.color ?? null,
         colorSource: n.colorSource ?? null,
         folderId: n.id ?? null,
@@ -72,6 +81,24 @@ function toTreeItems(nodes: TreeNode[]): TreeItem[] {
 
 const treeItems = computed(() => toTreeItems(props.tree))
 
+/**
+ * Server truth indexed by path. Deliberately derived from `treeItems` (the props) and NOT from
+ * the drag-mutated `childrenByPath` below: the persistence pass needs each node's real id
+ * (document id / folder registry id) as it stands on the SERVER, which an optimistic local
+ * splice must not be able to influence.
+ */
+const itemByPath = computed(() => {
+  const out = new Map<string, TreeItem>()
+  const walk = (list: TreeItem[]) => {
+    for (const it of list) {
+      out.set(it.path, it)
+      if (it.children) walk(it.children)
+    }
+  }
+  walk(treeItems.value)
+  return out
+})
+
 const expandedKeys = useCookie<string[]>('mm.documents.expanded', {
   default: () => [],
   maxAge: 60 * 60 * 24 * 365,
@@ -87,6 +114,23 @@ watch(topLevelFolders, (dirs) => {
     expandedKeys.value = [...dirs]
   }
 }, { immediate: true })
+
+function isExpanded(path: string): boolean {
+  return expandedKeys.value.includes(path)
+}
+
+function expand(path: string) {
+  if (!isExpanded(path)) expandedKeys.value = [...expandedKeys.value, path]
+}
+
+function collapse(path: string) {
+  if (isExpanded(path)) expandedKeys.value = expandedKeys.value.filter(p => p !== path)
+}
+
+function toggleExpanded(path: string) {
+  if (isExpanded(path)) collapse(path)
+  else expand(path)
+}
 
 // ---- helpers ----
 
@@ -269,7 +313,7 @@ function folderMenuItems(item: TreeItem): ContextMenuItem[][] {
         icon: 'i-lucide-folder-input',
         onSelect: () => {
           const t = folderTarget(item)
-          if (t) promptFolderMove(t)
+          if (t) openMoveModal(t, null)
         }
       },
       {
@@ -370,102 +414,535 @@ function collapseUnder(path: string) {
   expandedKeys.value = expandedKeys.value.filter(p => p !== path && !p.startsWith(path + '/'))
 }
 
-function onSelect(_e: unknown, item: TreeItem) {
-  if (item.nodeType === 'file') {
-    emit('select', item.id)
-  }
-}
+// ---- Selection (click, plus cmd/shift multi-select for drag) ----
 
-// Find selected item's path to highlight it
-function findSelectedPath(nodes: TreeNode[], id: string | null | undefined): string | null {
-  if (!id) return null
-  for (const n of nodes) {
-    if (n.type === 'file' && (n.id === id || n.path === id)) return n.path
-    if (n.children) {
-      const found = findSelectedPath(n.children, id)
-      if (found) return found
+/** Paths in a cmd/shift multi-selection. A drag started on any of them carries the whole set. */
+const marked = ref<string[]>([])
+/** Anchor for a shift-click range — the last row picked without shift. */
+const markAnchor = ref<string | null>(null)
+
+/** Every currently *visible* row, top to bottom — the coordinate space a shift-range works in. */
+const visiblePaths = computed(() => {
+  const out: string[] = []
+  const walk = (path: string) => {
+    for (const it of childrenByPath[path] ?? []) {
+      out.push(it.path)
+      if (it.nodeType === 'folder' && isExpanded(it.path)) walk(it.path)
     }
   }
-  return null
+  walk('/')
+  return out
+})
+
+function clearMarks() {
+  if (marked.value.length) marked.value = []
 }
 
-function findNodeId(nodes: TreeNode[], path: string): string | null {
-  for (const n of nodes) {
-    if (n.type === 'file' && n.path === path) return n.id ?? null
-    if (n.children) {
-      const found = findNodeId(n.children, path)
-      if (found) return found
+function onRowClick(e: MouseEvent | KeyboardEvent, item: TreeItem) {
+  // The grip is a drag handle, not a button — a click that lands on it must not also toggle
+  // the folder it belongs to.
+  if ((e.target as HTMLElement | null)?.closest('.drag-handle')) return
+
+  if (e.metaKey || e.ctrlKey) {
+    marked.value = marked.value.includes(item.path)
+      ? marked.value.filter(p => p !== item.path)
+      : [...marked.value, item.path]
+    markAnchor.value = item.path
+    return
+  }
+
+  if (e.shiftKey && markAnchor.value) {
+    const rows = visiblePaths.value
+    const from = rows.indexOf(markAnchor.value)
+    const to = rows.indexOf(item.path)
+    if (from !== -1 && to !== -1) {
+      marked.value = rows.slice(Math.min(from, to), Math.max(from, to) + 1)
+      return
     }
   }
-  return null
+
+  clearMarks()
+  markAnchor.value = item.path
+  if (item.nodeType === 'folder') toggleExpanded(item.path)
+  else emit('select', item.id)
 }
 
-// ---- Drag-and-drop ----
+// ── Drag and drop (useSortable, one sortable per folder, one shared group) ─────────────────
+//
+// SHAPE: every folder renders its own <ul data-folder-path="…"> bound to its own mutable array
+// in `childrenByPath`, and every one of those lists joins group 'documents'. That is what makes
+// a drag between two folders a *cross-list* move rather than a reorder — the tree's structure
+// is the drop-target model, so "which folder did this land in" is answered by the destination
+// list's own `data-folder-path`, never by arithmetic on indices. The tree's scroll container
+// holds the root list (`data-folder-path="/"`), so the top level is a drop target like any other.
+//
+// `sort: false` on every list is load-bearing, not decoration: row order here is derived
+// (folders first, then alphabetical, applied server-side in `buildTree`) and this cycle adds no
+// `sort_order` column, so a within-list reorder would be a gesture the app cannot honour — it
+// would animate and then snap back on the next refetch. With `sort: false`, Sortable reverts a
+// same-list drop and only ever hands us moves that actually change containment. Dropping INTO
+// another list is unaffected: the target's `sort` is not consulted, only the group's put/pull.
+//
+// THE TRAP (canonical write-up: AssignmentChain.vue:9-14, app/pages/tasks.vue:109-120):
+// useSortable mutates the bound array on a `nextTick`, so reading list state inside `onEnd`
+// races that splice and persists the PRE-drop state — the "rows snap back" bug recorded in the
+// `usesortable-onend-snapback` memory. So `onEnd` here reads ONLY stable DOM attributes
+// (`evt.item.dataset.path`, `evt.from/to.dataset.folderPath`) and performs the cross-list splice
+// that vueuse does not wire for you; a deep watch on `childrenByPath` is what tells us the
+// mutation landed and drives persistence.
 
-/** Currently dragged file; shared across all recursive tree instances */
-const draggedFile = ref<{ id: string; path: string } | null>(null)
+/** Mutable per-folder children arrays keyed by folder path; `'/'` is the root list. */
+const childrenByPath = reactive<Record<string, TreeItem[]>>({})
 
-/** Path of the folder currently being hovered during a drag */
-const dropTargetPath = ref<string | null>(null)
+/** True while a row is held. A live refetch (SSE invalidation) landing mid-drag must NOT
+ *  rebuild the tree — that would yank the row out of the user's hand.
+ *
+ * This guard is sharper than the tasks board's: vueuse's `watchElement` calls
+ * `sortable.destroy()` whenever a bound element goes away, and SortableJS's `destroy()` runs
+ * `_onDrop()` — which ABORTS the drag in progress, whichever list was destroyed. So nothing may
+ * unmount a folder's <ul> mid-drag. Found the hard way: collapsing the dragged folder to make a
+ * tidier one-row placeholder silently killed every drag of an EXPANDED folder — the drop just
+ * did nothing, with no error anywhere. So an expanded folder drags at its full subtree height;
+ * that is cosmetic, and worth far less than the drag working. Expanding a folder mid-drag is
+ * safe in the other direction: `cleanup()` on an undefined instance is a no-op, which is what
+ * makes hover-to-expand legal. */
+const isDragging = ref(false)
 
-function onDragStart(e: DragEvent, item: TreeItem) {
-  draggedFile.value = { id: item.id, path: item.path }
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/mymind-file', JSON.stringify({ id: item.id, path: item.path }))
+/** True while `rebuild` is writing server truth into `childrenByPath`. The persistence watch
+ *  must not treat that as a user edit and write it straight back out — the same "which
+ *  direction did this change come from" problem AssignmentChain.vue solves with
+ *  `syncingFromProps`. Cleared on `nextTick` so it is still true for this mutation's flush. */
+let syncingFromServer = false
+
+function rebuild(items: TreeItem[]) {
+  const next: Record<string, TreeItem[]> = {}
+  const walk = (list: TreeItem[], path: string) => {
+    next[path] = list
+    for (const it of list) {
+      if (it.nodeType === 'folder') walk(it.children ?? [], it.path)
+    }
   }
-}
+  walk(items, '/')
 
-function onDragEnd() {
-  draggedFile.value = null
-  dropTargetPath.value = null
-}
-
-function onFolderDragOver(e: DragEvent, folderPath: string) {
-  // Only highlight if we have a file being dragged (intra-tree)
-  if (!draggedFile.value) return
-  e.preventDefault()
-  dropTargetPath.value = folderPath
-}
-
-function onFolderDragLeave(folderPath: string) {
-  if (dropTargetPath.value === folderPath) {
-    dropTargetPath.value = null
+  syncingFromServer = true
+  for (const [path, list] of Object.entries(next)) {
+    if (!childrenByPath[path]) childrenByPath[path] = []
+    // Rebuild in place: the array identity is what Sortable and the reactive proxy both hold.
+    childrenByPath[path]!.splice(0, childrenByPath[path]!.length, ...list)
   }
+  // A folder that no longer exists is emptied, never deleted — its key stays so that if the
+  // folder comes back (undo, a refetch race, a rename back) the SAME array is still the one its
+  // already-registered sortable is bound to. Emptied lists are unreachable from the render walk.
+  for (const path of Object.keys(childrenByPath)) {
+    if (!(path in next)) childrenByPath[path]!.splice(0, childrenByPath[path]!.length)
+  }
+  nextTick(() => { syncingFromServer = false })
 }
 
-async function onFolderDrop(e: DragEvent, folderPath: string) {
-  e.stopPropagation() // prevent bubbling to ancestor folder drop handlers
-  dropTargetPath.value = null
+watch(treeItems, (items) => {
+  if (!isDragging.value) rebuild(items)
+}, { immediate: true })
 
-  const file = draggedFile.value
-  draggedFile.value = null
+// One <ul> element per folder path. Function refs rather than template refs because the lists
+// are produced by a recursive template, and they mount/unmount as folders expand and collapse.
+const listRefs = shallowReactive<Record<string, HTMLElement | null>>({})
 
-  if (!file) return
+/**
+ * One STABLE ref-setter per folder path, memoised.
+ *
+ * An inline `:ref="el => …"` arrow is a new function on every render, and Vue re-invokes a
+ * function ref whose identity changed — first with `null`, then with the element. That churn
+ * feeds `watchElement`, which would tear down and rebuild the folder's Sortable on unrelated
+ * re-renders (including one landing mid-drag). A memoised setter keeps the identity stable, so
+ * Vue only calls it when the element genuinely mounts or unmounts.
+ */
+const listRefSetters = new Map<string, (el: Element | ComponentPublicInstance | null) => void>()
 
-  const base = basenameOf(file.path)
-  const dest = folderPath === '/' ? '/' + base : folderPath + '/' + base
+function listRefFor(path: string) {
+  let setter = listRefSetters.get(path)
+  if (!setter) {
+    setter = (el) => {
+      // Vue function refs must return void — wrap the assignment in a block statement.
+      listRefs[path] = (el as HTMLElement | null) ?? null
+    }
+    listRefSetters.set(path, setter)
+  }
+  return setter
+}
 
-  // Same folder — no-op
-  if (dest === file.path) return
+/** The folder whose list the in-flight drag would drop into — drives the row's destination cue. */
+const activeDropPath = ref<string | null>(null)
 
+/** Paths this drag carries: the multi-selection when the grabbed row is part of it, else just
+ *  the grabbed row. Plain `let` — nothing renders from it. */
+let dragPaths: string[] = []
+
+const HOVER_EXPAND_MS = 600
+let hoverExpandPath: string | null = null
+let hoverExpandTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearHoverExpand() {
+  if (hoverExpandTimer) clearTimeout(hoverExpandTimer)
+  hoverExpandTimer = null
+  hoverExpandPath = null
+}
+
+/** Rest the pointer on a collapsed folder mid-drag and it opens, so you can reach inside it
+ *  without dropping first. Restarted whenever the hovered row changes; cleared on drop. */
+function scheduleHoverExpand(row: HTMLElement | null | undefined) {
+  const path = row?.dataset.path
+  const nodeType = row?.dataset.nodeType
+  if (!path || nodeType !== 'folder' || isExpanded(path)) {
+    if (hoverExpandPath) clearHoverExpand()
+    return
+  }
+  if (hoverExpandPath === path) return
+  clearHoverExpand()
+  hoverExpandPath = path
+  hoverExpandTimer = setTimeout(() => {
+    hoverExpandTimer = null
+    hoverExpandPath = null
+    expand(path)
+  }, HOVER_EXPAND_MS)
+}
+
+const sortableInitialized = new Set<string>()
+
+function ensureSortable(path: string) {
+  if (sortableInitialized.has(path)) return
+  sortableInitialized.add(path)
+  if (!childrenByPath[path]) childrenByPath[path] = []
+  // `childrenByPath[path]` is a plain array living inside reactive(), NOT a ref — see the note
+  // at app/pages/tasks.vue's ensureSortable: that binding mutates live in two steps, which is
+  // why persistence below defers past a macrotask instead of trusting the first watch fire.
+  useSortable(() => listRefs[path], childrenByPath[path]!, {
+    // Required, not cosmetic: a folder's <ul> does not exist at mount (it appears when the
+    // folder expands, and again after every collapse), so useSortable's default mount-time
+    // resolution would silently never attach.
+    watchElement: true,
+    group: 'documents',
+    animation: 150,
+    // R4: the hover-revealed grip is the ONLY drag origin. Without this the whole row drags and
+    // fights click-to-select and text selection, and the grip becomes a lie.
+    handle: '.drag-handle',
+    draggable: '.mm-tree-node',
+    sort: false,
+    fallbackOnBody: true,
+    invertSwap: true,
+    // Without this, an expanded folder with no children is a zero-height list that the pointer
+    // can never be "inside", so dropping into an empty folder would be impossible.
+    emptyInsertThreshold: 8,
+    ghostClass: 'mm-drop-indicator',
+    onChoose: onNodeChoose,
+    onUnchoose: onNodeUnchoose,
+    onStart: onNodeDragStart,
+    onMove: onNodeDragMove,
+    onEnd: onNodeDragEnd
+  })
+}
+
+onMounted(() => {
+  // Folder paths aren't known until the tree query resolves, and they change as folders are
+  // created/renamed — so sortables are registered lazily per path rather than in one static loop.
+  watch(allFolders, (paths) => {
+    for (const p of paths) ensureSortable(p)
+  }, { immediate: true })
+})
+
+/** Fires on mousedown, before the browser snapshots the native drag image — which is why the
+ *  multi-drag count badge has to be stamped on here and not in `onStart`. */
+function onNodeChoose(evt: Sortable.SortableEvent) {
+  const path = evt.item.dataset.path
+  if (!path || !marked.value.includes(path) || marked.value.length < 2) return
+  const allFiles = marked.value.every(p => itemByPath.value.get(p)?.nodeType === 'file')
+  evt.item.setAttribute('data-drag-count', `${marked.value.length} ${allFiles ? 'documents' : 'items'}`)
+}
+
+function onNodeUnchoose(evt: Sortable.SortableEvent) {
+  evt.item.removeAttribute('data-drag-count')
+}
+
+function onNodeDragStart(evt: Sortable.SortableEvent) {
+  isDragging.value = true
+  const path = evt.item.dataset.path
+  dragPaths = path && marked.value.includes(path) && marked.value.length > 1
+    ? prunePathsUnderFolders(marked.value, p => itemByPath.value.get(p)?.nodeType)
+    : (path ? [path] : [])
+}
+
+function onNodeDragMove(evt: Sortable.MoveEvent): boolean | void {
+  const dragged = evt.dragged as HTMLElement
+  const to = evt.to as HTMLElement
+  const draggedPath = dragged?.dataset.path
+  const nodeType = dragged?.dataset.nodeType as 'file' | 'folder' | undefined
+  const toPath = to?.dataset.folderPath
+  if (!draggedPath || !nodeType || !toPath) return false
+
+  // Belt and braces alongside the path check: moving a node into a list it physically contains
+  // is a DOM error, not just an invalid move.
+  if (dragged.contains(to)) return false
+  if (!canDropInto({ path: draggedPath, nodeType }, toPath)) return false
+
+  activeDropPath.value = toPath
+  scheduleHoverExpand(evt.related as HTMLElement | undefined)
+}
+
+/**
+ * Moves recorded by `onEnd` and drained by `persistPendingMoves`.
+ *
+ * Every field comes from a DOM attribute read while it was stable, never from list state — see
+ * the trap write-up above. The deep watch below decides WHEN to drain this; it never decides
+ * what is in it.
+ */
+const pendingMoves: { paths: string[], toFolder: string }[] = []
+
+function onNodeDragEnd(evt: Sortable.SortableEvent) {
+  // Cleared synchronously, exactly as tasks.vue's onCardMoved does: the model mutation below
+  // lands on the microtask queue long before any SSE-driven refetch could arrive, so re-opening
+  // the rebuild watch here doesn't race it.
+  isDragging.value = false
+  clearHoverExpand()
+  activeDropPath.value = null
+  evt.item.removeAttribute('data-drag-count')
+
+  const fromFolder = (evt.from as HTMLElement).dataset.folderPath
+  const toFolder = (evt.to as HTMLElement).dataset.folderPath
+  const itemPath = evt.item.dataset.path
+  const paths = dragPaths.length ? dragPaths : (itemPath ? [itemPath] : [])
+  dragPaths = []
+
+  // `sort: false` means a same-list drop moved nothing — Sortable already reverted it.
+  if (!fromFolder || !toFolder || !paths.length || fromFolder === toFolder) return
+
+  const { oldIndex } = evt
+  const toList = childrenByPath[toFolder]
+  if (oldIndex == null || !toList) return
+
+  // Record BEFORE the deferred splice: whichever array mutation fires the watch below, this is
+  // already sitting there waiting to be drained.
+  pendingMoves.push({ paths, toFolder })
+
+  // Sortable has physically moved the row into the destination <ul>. Undo that (put the node
+  // back where Vue last rendered it) and let Vue perform the real move by re-rendering from the
+  // spliced arrays a tick later — otherwise the DOM and Vue's vnode model disagree about which
+  // list owns the node. Same dance as tasks.vue's cross-column branch, across N items.
+  removeNode(evt.item)
+  insertNodeAt(evt.from, evt.item, oldIndex)
+  nextTick(() => {
+    for (const p of paths) {
+      const source = childrenByPath[dirnameOf(p)]
+      if (!source) continue
+      const i = source.findIndex(n => n.path === p)
+      if (i === -1) continue
+      const [moved] = source.splice(i, 1)
+      // Position is meaningless (order is derived server-side) — append and let the refetch
+      // put it where the sort says it belongs.
+      if (moved) toList.push(moved)
+    }
+  })
+}
+
+// The persistence trigger. Reading `childrenByPath` here would be the trap all over again, so
+// this only ever asks "did a drag's mutation land?" and drains `pendingMoves`, whose contents
+// were captured from stable DOM attributes in `onEnd`. The macrotask defer (setTimeout 0 runs
+// after every queued microtask/nextTick has drained) means the optimistic splice above is fully
+// settled before anything is written.
+let persisting = false
+let persistHandle: ReturnType<typeof setTimeout> | null = null
+
+function schedulePersist() {
+  if (persistHandle != null) clearTimeout(persistHandle)
+  persistHandle = setTimeout(() => {
+    persistHandle = null
+    void persistPendingMoves()
+  }, 0)
+}
+
+watch(childrenByPath, () => {
+  if (syncingFromServer) return
+  if (!pendingMoves.length) return
+  schedulePersist()
+}, { deep: true })
+
+/** Undo an optimistic splice by re-seeding from the server truth we already hold. */
+function revertOptimistic() {
+  rebuild(treeItems.value)
+}
+
+async function persistPendingMoves() {
+  if (persisting) return
+  persisting = true
+  const failures: string[] = []
+  let gated = false
   try {
-    await move(file.id, dest)
-    toast.add({ color: 'success', title: 'Moved', description: `"${base}" → ${folderPath}` })
-    emit('refresh')
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }; message?: string }
+    // `while` rather than a single pass: a second drag landing while the first one's network
+    // calls are in flight must not be silently dropped.
+    while (pendingMoves.length > 0) {
+      const batch = pendingMoves.splice(0, pendingMoves.length)
+      for (const mv of batch) {
+        for (const path of mv.paths) {
+          const item = itemByPath.value.get(path)
+          if (!item) continue
+          if (isNoOpDrop(path, mv.toFolder)) continue
+          const dest = destinationPathFor(path, mv.toFolder)
+          try {
+            if (item.nodeType === 'folder') {
+              // Only ONE folder can be waiting on the acknowledgement modal at a time — a second
+              // call would silently replace the first folder's dialog with the second's, and the
+              // first would be dropped with no dialog and no message. Skip it loudly instead.
+              if (gated) {
+                failures.push(`${item.label}: not moved — confirm the folder move already waiting first`)
+                continue
+              }
+              gated = await moveFolder(item, mv.toFolder, dest)
+            } else {
+              await move(item.id, dest)
+            }
+          } catch (e: unknown) {
+            failures.push(`${item.label}: ${item.nodeType === 'folder' ? describeFolderError(e) : errorText(e)}`)
+          }
+        }
+      }
+    }
+  } finally {
+    persisting = false
+  }
+
+  if (failures.length) {
+    toast.add({ color: 'error', title: "Couldn't move", description: failures.join('\n') })
+  }
+  // A gated folder move has not happened yet (the Move modal is asking for an acknowledgement),
+  // so the optimistic splice must not be left standing as if it had.
+  if (failures.length || gated) revertOptimistic()
+  clearMarks()
+  emit('refresh')
+}
+
+function errorText(e: unknown): string {
+  const err = e as { data?: { statusMessage?: string }, message?: string }
+  return err.data?.statusMessage ?? err.message ?? 'Name collision?'
+}
+
+/**
+ * Move a folder by drag — through the SAME safety gate a menu-driven move goes through.
+ *
+ * `documents.path` decides project membership, so dropping a folder across a `/projects/<slug>/`
+ * boundary silently re-associates every document inside it. A drag is an easier gesture to
+ * trigger by accident than a dialog, so it gets the stricter treatment, not the looser one:
+ * `impact` is fetched first and, when it reports project changes, the write is NOT performed —
+ * the drop is handed to MoveModal (already pointed at the folder it was dropped on), which owns
+ * Task 12's warning, its acknowledgement checkbox and its fail-closed re-check.
+ *
+ * Returns true when the move was handed to the modal instead of being performed.
+ */
+async function moveFolder(item: TreeItem, toFolder: string, dest: string): Promise<boolean> {
+  const target = folderTarget(item)
+  if (!target) return true // no registry id: nothing was moved, so the splice must be reverted
+
+  let impact: Awaited<ReturnType<typeof fetchImpact>>
+  try {
+    impact = await fetchImpact(target.id, dest)
+  } catch {
+    // Fail CLOSED, matching MoveModal: an unknown outcome is "assume the worst", never "assume
+    // it's fine". A drag must not be the one path that commits without the check.
     toast.add({
       color: 'error',
-      title: "Couldn't move",
-      description: err.data?.statusMessage ?? err.message ?? 'Name collision?'
+      title: "Couldn't check what this move affects",
+      description: `"${item.label}" was not moved — we can't confirm whether it crosses a project boundary.`
     })
+    return true
   }
+
+  if (impact.projectChanges.length) {
+    openMoveModal(target, toFolder)
+    return true
+  }
+
+  const result = await patchFolder(target.id, { path: dest })
+  // An unmatched relative route resolves to the SPA shell with a 200, which ofetch does not
+  // throw on — a real PATCH always answers `{ ok: true }`.
+  if (!result || result.ok !== true) throw new Error('The server did not confirm the folder move')
+  return false
 }
+
+/** Destination handed to MoveModal — set only when a *drag* opened it. */
+const moveDestination = ref<string | null>(null)
+
+function openMoveModal(target: DocTreeTarget, destination: string | null) {
+  // Set first: MoveModal reads `destination` in its `open` watcher.
+  moveDestination.value = destination
+  promptFolderMove(target)
+}
+
+function onMoveModalOpenChange(open: boolean) {
+  moveState.open = open
+  if (!open) moveDestination.value = null
+}
+
+onBeforeUnmount(() => {
+  clearHoverExpand()
+  if (persistHandle != null) clearTimeout(persistHandle)
+})
+
+// Recursive list renderer. One template, reused at every depth, so the sortable wiring, the
+// context menus and the selection handlers all stay in this one setup scope instead of being
+// prop-drilled through a child component per level.
+const [DefineList, ReuseList] = createReusableTemplate<{ path: string, level: number }>()
 </script>
 
 <template>
   <div class="h-full flex flex-col">
+    <DefineList v-slot="{ path, level }">
+      <ul
+        :ref="listRefFor(path)"
+        :data-folder-path="path"
+        :role="level === 1 ? 'tree' : 'group'"
+        :class="[
+          level === 1 ? 'min-h-full' : 'border-s border-default ms-5',
+          // An expanded folder with no children is a zero-height list nobody can point at. It
+          // keeps a hairline of its own at rest, and opens into a real 1.5rem drop zone for the
+          // duration of a drag — `emptyInsertThreshold` only widens the catch radius around a
+          // list, it cannot conjure one out of nothing.
+          level === 1 ? '' : (isDragging ? 'min-h-6' : 'min-h-2')
+        ]"
+      >
+        <li
+          v-for="item in childrenByPath[path] ?? []"
+          :key="item.id"
+          class="mm-tree-node relative w-full"
+          :class="level > 1 ? 'ps-1.5 -ms-px' : ''"
+          :data-path="item.path"
+          :data-node-type="item.nodeType"
+          role="treeitem"
+          :aria-expanded="item.nodeType === 'folder' ? isExpanded(item.path) : undefined"
+          :aria-selected="selectedId === item.id || marked.includes(item.path)"
+        >
+          <UContextMenu :items="item.nodeType === 'file' ? fileMenuItems(item) : folderMenuItems(item)">
+            <div
+              class="w-full flex items-center rounded-md px-2.5 py-1.5 text-sm select-none cursor-pointer focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              tabindex="0"
+              @click="onRowClick($event, item)"
+              @keydown.enter.prevent="onRowClick($event, item)"
+            >
+              <DocumentsTreeRow
+                :item="item"
+                :expanded="isExpanded(item.path)"
+                :selected="selectedId === item.id"
+                :marked="marked.includes(item.path)"
+                :drop-active="item.nodeType === 'folder' && activeDropPath === item.path"
+              />
+            </div>
+          </UContextMenu>
+
+          <ReuseList
+            v-if="item.nodeType === 'folder' && isExpanded(item.path)"
+            :path="item.path"
+            :level="level + 1"
+          />
+        </li>
+      </ul>
+    </DefineList>
+
     <!-- Root menu — right-clicking empty space below the tree, not any row. Row-level menus
          below preventDefault first, so a right-click ON a row never falls through to this one. -->
     <UContextMenu :items="rootMenuItems()">
@@ -484,55 +961,13 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
           </p>
         </div>
 
-        <UTree
+        <!-- The root list IS the scroll container's child, so dropping in the empty space below
+             the tree lands a document at the top level. -->
+        <ReuseList
           v-else
-          v-model:expanded="expandedKeys"
-          :items="treeItems"
-          :get-key="(item: TreeItem) => item.id"
-          color="primary"
-          @select="onSelect"
-        >
-          <template #item="{ item, expanded }">
-            <!-- File nodes get context menu + draggable -->
-            <UContextMenu
-              v-if="item.nodeType === 'file'"
-              :items="fileMenuItems(item)"
-            >
-              <div
-                draggable="true"
-                class="w-full cursor-grab active:cursor-grabbing"
-                @dragstart="onDragStart($event, item)"
-                @dragend="onDragEnd"
-              >
-                <DocumentsTreeRow
-                  :item="item"
-                  :expanded="expanded"
-                  :selected="selectedId === item.id"
-                />
-              </div>
-            </UContextMenu>
-
-            <!-- Folder row — drop target, plus its own menu. -->
-            <UContextMenu
-              v-else
-              :items="folderMenuItems(item)"
-            >
-              <div
-                class="w-full rounded transition-colors"
-                :class="dropTargetPath === item.path ? 'bg-primary/20 ring-1 ring-primary/40' : ''"
-                @dragover="onFolderDragOver($event, item.path)"
-                @dragleave="onFolderDragLeave(item.path)"
-                @drop.stop="onFolderDrop($event, item.path)"
-              >
-                <DocumentsTreeRow
-                  :item="item"
-                  :expanded="expanded"
-                  :selected="selectedId === item.id"
-                />
-              </div>
-            </UContextMenu>
-          </template>
-        </UTree>
+          path="/"
+          :level="1"
+        />
       </div>
     </UContextMenu>
 
@@ -585,13 +1020,15 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
       @done="emit('refresh')"
     />
 
-    <!-- Move modal — shared by files and folders, dispatched by `kind` -->
+    <!-- Move modal — shared by files and folders, dispatched by `kind`. `destination` is set
+         only when a cross-project folder DRAG handed the move over for acknowledgement. -->
     <DocumentsMoveModal
       :target="moveState.target"
       :open="moveState.open"
       :folders="allFolders"
       :kind="moveState.kind"
-      @update:open="moveState.open = $event"
+      :destination="moveDestination"
+      @update:open="onMoveModalOpenChange"
       @done="emit('refresh')"
     />
 
@@ -624,3 +1061,43 @@ async function onFolderDrop(e: DragEvent, folderPath: string) {
     />
   </div>
 </template>
+
+<style scoped>
+/* The insert indicator. Sortable leaves the dragged row in place as the placeholder and tags it
+   with `ghostClass`; drawing a line on its leading edge turns that placeholder into "it goes
+   here", which is what replaces the old whole-row drag-over tint. `--ui-primary` is the theme's
+   own token (same one MdView.vue and AppLogo.vue read), so it follows a theme change. */
+.mm-drop-indicator {
+  background: var(--ui-bg-elevated);
+  border-radius: 0.375rem;
+}
+
+.mm-drop-indicator::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  top: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ui-primary);
+  pointer-events: none;
+}
+
+/* Multi-drag ghost. Stamped by `onChoose` (before the browser snapshots the drag image) and
+   removed on unchoose/end, so the thing following the pointer says how many rows are coming. */
+.mm-tree-node[data-drag-count]::after {
+  content: attr(data-drag-count);
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 0.4rem;
+  border-radius: 9999px;
+  font-size: 0.625rem;
+  line-height: 1.1rem;
+  font-weight: 600;
+  color: var(--ui-bg);
+  background: var(--ui-primary);
+  pointer-events: none;
+}
+</style>
