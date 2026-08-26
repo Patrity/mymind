@@ -485,9 +485,6 @@ function clearMarks() {
 function onRowPointer(e: MouseEvent, item: TreeItem) {
   const row = (e.target as HTMLElement | null)?.closest('.mm-tree-row')
   if (!row || row.parentElement !== e.currentTarget) return
-  // The grip is a drag handle, not a button — a click that lands on it must not also toggle
-  // the folder it belongs to.
-  if ((e.target as HTMLElement | null)?.closest('.drag-handle')) return
   activateRow(e, item)
 }
 
@@ -905,9 +902,14 @@ function ensureSortable(path: string) {
     watchElement: true,
     group: 'documents',
     animation: 150,
-    // R4: the hover-revealed grip is the ONLY drag origin. Without this the whole row drags and
-    // fights click-to-select and text selection, and the grip becomes a lie.
-    handle: '.drag-handle',
+    // The whole row is the drag origin (no `handle`) — reaching for a small grip on the far
+    // right was the complaint. This does not fight click-to-select: SortableJS only begins a
+    // drag once the pointer MOVES past its threshold, so a stationary press-and-release still
+    // falls through to the row's click handler. `filter` keeps genuinely interactive children
+    // clickable, and `preventOnFilter: false` lets their own handlers (and the context menu)
+    // run normally instead of Sortable swallowing the event.
+    filter: 'button, a, input, textarea, select, [role="menuitem"]',
+    preventOnFilter: false,
     draggable: '.mm-tree-node',
     sort: false,
     fallbackOnBody: true,

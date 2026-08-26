@@ -21,7 +21,9 @@ const metaTitle = ref('')
 const metaProject = ref('')
 const metaDomain = ref('')
 const metaType = ref('')
-const metaTags = ref('') // comma-separated
+// Tags are edited as real chips (UInputTags), so this mirrors the stored shape directly
+// rather than round-tripping through a comma-joined string.
+const metaTags = ref<string[]>([])
 const metaSaveTimer: Ref<ReturnType<typeof setTimeout> | null> = ref(null)
 // True while the user has pending metadata edits; gates the live-sync watcher
 // so an incoming SSE refresh can't overwrite a field mid-edit.
@@ -38,7 +40,7 @@ watch(liveDocData, (fresh) => {
   metaProject.value = fresh.project ?? ''
   metaDomain.value = fresh.domain ?? ''
   metaType.value = fresh.type ?? ''
-  metaTags.value = (fresh.tags ?? []).join(', ')
+  metaTags.value = [...(fresh.tags ?? [])]
 }, { immediate: true })
 
 watch(() => props.documentId, (id, prevId) => {
@@ -69,7 +71,7 @@ watch(() => props.documentId, (id, prevId) => {
     metaProject.value = ''
     metaDomain.value = ''
     metaType.value = ''
-    metaTags.value = ''
+    metaTags.value = []
   }
 })
 
@@ -81,7 +83,7 @@ watch(() => props.documentId, (id, prevId) => {
 // values.
 async function saveMetadata(id = props.documentId) {
   if (!id || !doc.value) return
-  const tags = metaTags.value.split(',').map(t => t.trim()).filter(Boolean)
+  const tags = metaTags.value.map(t => t.trim()).filter(Boolean)
   try {
     await update(id, {
       title: metaTitle.value || null,
@@ -176,55 +178,42 @@ onUnmounted(() => {
     v-else
     class="p-3 space-y-4"
   >
-    <div class="flex items-center gap-2 text-xs text-muted">
-      <UIcon
-        name="i-lucide-tag"
-        class="size-3.5"
-      />
-      Metadata
-      <div
-        v-if="doc?.tags?.length || doc?.project || doc?.domain || doc?.type"
-        class="flex gap-1 flex-wrap"
-      >
-        <UBadge
-          v-if="doc.project"
-          color="neutral"
-          variant="outline"
-          size="xs"
-        >
-          {{ doc.project }}
-        </UBadge>
-        <UBadge
-          v-if="doc.domain"
-          color="neutral"
-          variant="outline"
-          size="xs"
-        >
-          {{ doc.domain }}
-        </UBadge>
-        <UBadge
-          v-for="tag in doc.tags?.slice(0, 3)"
-          :key="tag"
-          color="primary"
-          variant="outline"
-          size="xs"
-        >
-          {{ tag }}
-        </UBadge>
+    <!-- Header. The badge row that used to live here echoed project/domain/tags directly above
+         the very fields holding them — it existed to give the old collapsed <details> a summary,
+         and became pure duplication once this turned into a permanent panel. The document's
+         location is shown instead: information the panel genuinely lacked. -->
+    <div class="space-y-1">
+      <div class="flex items-center gap-2 text-xs text-muted">
+        <UIcon
+          name="i-lucide-info"
+          class="size-3.5"
+        />
+        Metadata
       </div>
+      <p
+        v-if="metaPath"
+        class="font-mono text-xs text-dimmed truncate"
+        :title="metaPath"
+      >
+        {{ metaPath }}
+      </p>
     </div>
 
-    <div class="flex flex-col gap-3">
-      <UFormField label="Title">
-        <UInput
-          v-model="metaTitle"
-          placeholder="Document title"
-          size="xs"
-          class="w-full"
-          @input="scheduleMetaSave"
-        />
-      </UFormField>
+    <!-- Title is the field that gets edited often; the rest is classification set once and
+         rarely revisited, so it sits in its own group below a divider. -->
+    <UFormField label="Title">
+      <UInput
+        v-model="metaTitle"
+        placeholder="Document title"
+        size="xs"
+        class="w-full"
+        @input="scheduleMetaSave"
+      />
+    </UFormField>
 
+    <USeparator />
+
+    <div class="flex flex-col gap-3">
       <UFormField label="Project">
         <UInput
           v-model="metaProject"
@@ -256,12 +245,16 @@ onUnmounted(() => {
       </UFormField>
 
       <UFormField label="Tags">
-        <UInput
+        <!-- `@update:model-value` rather than `@input`: v-model's own setter is merged first,
+             so the ref is written before this fires. (`scheduleMetaSave` only arms a timer that
+             reads the refs when it fires, so ordering is not load-bearing here — but binding the
+             model event keeps it correct even if that ever changes.) -->
+        <UInputTags
           v-model="metaTags"
-          placeholder="tag1, tag2, tag3"
+          placeholder="Add a tag…"
           size="xs"
           class="w-full"
-          @input="scheduleMetaSave"
+          @update:model-value="scheduleMetaSave"
         />
       </UFormField>
     </div>

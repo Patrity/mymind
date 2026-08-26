@@ -56,6 +56,23 @@ Use it to create docs/tasks/memories/projects, exercise a flow (e.g. a slug rena
 ## Clean up test data
 Leave the dev corpus clean. Delete what you created (`DELETE /api/documents/[id]`, `/api/tasks/[id]`, etc.). Hard-deleting a project FK-fails while sessions/memories/documents still reference it (`project_id` FK, `ON DELETE NO ACTION`) — clear the child rows first, or use the merge flow. For a quick direct cleanup, a `node -e` script against the dev `DATABASE_URL` (in `.env`) works (`pg` is installed).
 
+## Gotcha: a wrong subcommand name is a SILENT no-op — it looks like a failing feature
+
+`playwright-cli` does not error usefully on an unknown subcommand, so a typo reads as "the app
+is broken". Two that have burned real time (2026-08-26), both producing a confident, wrong
+"my change regressed this" conclusion:
+
+| Wrong (silent no-op) | Correct |
+|---|---|
+| `playwright-cli rightclick <ref>` | `playwright-cli click <ref> right` |
+| `playwright-cli key Enter` | `playwright-cli press Enter` |
+
+The right-click one made a working context menu look deleted; the `key` one made a working
+tags input look like it never committed a chip (the text piled up in the field as `alphabeta`).
+**When an interaction "does nothing", check `playwright-cli --help` for the exact verb before
+touching code.** The diagnostic tell is that the DOM shows the *input* was received but the
+*action* never happened.
+
 ## Gotcha: `type` treats a leading `-` as CLI flags
 `playwright-cli type "-EDITED"` fails with `Unknown options: --E, --D, --I, --T` — the text is parsed as
 options. It exits non-zero, so if you've suppressed output (`>/dev/null 2>&1`) it looks like a silent
