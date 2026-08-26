@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DocumentDTO } from '~~/shared/types/documents'
+import { createAutosave } from '~/lib/documents/autosave'
 
 const props = defineProps<{
   documentId: string | null
@@ -10,8 +11,8 @@ const { update, useDocDetail } = useDocuments()
 
 // Live detail query — the single source of truth for this document's data (read-only; the
 // vue-query convention here forbids a parallel hand-rolled fetch). `doc` below is a local
-// snapshot taken from it: it drives the summary badges and lets saveMetadata() know a document
-// has actually loaded before it writes anything.
+// snapshot taken from it, kept current by `metaAutosave`'s save callback below — it drives the
+// summary badges.
 const { data: liveDocData, isPending } = useDocDetail(() => props.documentId)
 const doc = ref<DocumentDTO | null>(null)
 
@@ -22,10 +23,33 @@ const metaProject = ref('')
 const metaDomain = ref('')
 const metaType = ref('')
 const metaTags = ref('') // comma-separated
-const metaSaveTimer: Ref<ReturnType<typeof setTimeout> | null> = ref(null)
 // True while the user has pending metadata edits; gates the live-sync watcher
 // so an incoming SSE refresh can't overwrite a field mid-edit.
 const metaDirty = ref(false)
+
+type MetadataPatch = Pick<DocumentDTO, 'title' | 'project' | 'domain' | 'type' | 'tags'>
+
+/** Debounced metadata save — the SAME (id, payload)-pairing module Editor.vue's content
+ *  autosave uses (`~/lib/documents/autosave`), not a hand-rolled timer. This used to be its own
+ *  copy of that mechanism (a `metaSaveTimer` ref plus a `saveMetadata(id = props.documentId)`
+ *  default parameter) and got the document-switch case wrong: the timer stayed armed across a
+ *  switch and fired later against whatever document was selected BY THEN, writing the outgoing
+ *  document's title/project/domain/type/tags onto the incoming one. Owning the pair here is what
+ *  makes `flush()` below safe to call from a switch or an unmount — see autosave.test.ts's
+ *  "non-string payload" tests for the regression coverage. */
+const metaAutosave = createAutosave<MetadataPatch>(async (id, patch) => {
+  try {
+    await update(id, patch)
+    // Only while this save's own document is still selected — a flush from a document switch
+    // must not write the outgoing metadata onto the incoming document's local state.
+    if (props.documentId !== id) return
+    if (doc.value) doc.value = { ...doc.value, ...patch }
+    metaDirty.value = false
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Metadata save failed', description: err.data?.statusMessage ?? err.message })
+  }
+}, 800)
 
 watch(liveDocData, (fresh) => {
   if (!fresh || fresh.id !== props.documentId) return
@@ -42,22 +66,15 @@ watch(liveDocData, (fresh) => {
 }, { immediate: true })
 
 watch(() => props.documentId, (id, prevId) => {
-  // Write the outgoing document's pending metadata edit before swapping — see saveMetadata's
-  // comment below for why `prevId` (not the prop) is passed explicitly. Every meta*.value read
-  // it makes is synchronous, so this capture happens before the watcher above (driven by
-  // useDocDetail's query resolving for the new id) ever repopulates the draft.
+  // Flush the outgoing document's pending metadata edit before swapping. `metaAutosave` already
+  // paired the edit with `prevId` at schedule time — `scheduleMetaSave` below captures both the
+  // id and a snapshot of the fields synchronously, while `props.documentId` still WAS the
+  // outgoing document — so unlike the old hand-rolled timer (a `metaSaveTimer` ref plus a
+  // `saveMetadata(id = props.documentId)` default parameter), there is no later read of
+  // `props.documentId` here for this switch to invalidate: `flush()` alone is correct, with
+  // nothing to pass.
   if (prevId && metaDirty.value) {
-    // Cancel the pending debounce timer too. Without this, the ORIGINAL 800ms timer is still
-    // armed and fires later — after props.documentId has become the incoming document — calling
-    // saveMetadata() with no argument, whose default `id = props.documentId` now resolves to the
-    // INCOMING document while these fields still hold the OUTGOING one's stale text. That
-    // silently overwrites the incoming document's metadata. (autosave.ts's flush()/take() clears
-    // its timer the same way, for the identical reason, on the content side.)
-    if (metaSaveTimer.value) {
-      clearTimeout(metaSaveTimer.value)
-      metaSaveTimer.value = null
-    }
-    void saveMetadata(prevId)
+    void metaAutosave.flush()
     // The outgoing edit has been handed off to the save above; the incoming document hasn't
     // been touched yet, so let the live watcher populate it normally instead of staying gated.
     metaDirty.value = false
@@ -73,49 +90,20 @@ watch(() => props.documentId, (id, prevId) => {
   }
 })
 
-// Metadata save — debounced 800ms after any meta field change.
-// `id` is explicit for the same reason the content save takes one: on a document switch this
-// runs while props.documentId already points at the INCOMING document, so reading it here
-// would write the outgoing document's title/project onto the new one. Every meta*.value read
-// below is synchronous, so calling this before the incoming document loads captures the right
-// values.
-async function saveMetadata(id = props.documentId) {
-  if (!id || !doc.value) return
-  const tags = metaTags.value.split(',').map(t => t.trim()).filter(Boolean)
-  try {
-    await update(id, {
-      title: metaTitle.value || null,
-      project: metaProject.value || null,
-      domain: metaDomain.value || null,
-      type: metaType.value || null,
-      tags
-    })
-    // Update local doc reference — but only while this save's own document is still selected.
-    // A flush from a document switch must not write the outgoing metadata onto the incoming
-    // document's local state.
-    if (props.documentId !== id) return
-    if (doc.value) {
-      doc.value = {
-        ...doc.value,
-        title: metaTitle.value || null,
-        project: metaProject.value || null,
-        domain: metaDomain.value || null,
-        type: metaType.value || null,
-        tags
-      }
-    }
-    // Edits are persisted — let the live watcher resume syncing this doc.
-    metaDirty.value = false
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Metadata save failed', description: err.data?.statusMessage ?? err.message })
+function currentMetaPatch(): MetadataPatch {
+  return {
+    title: metaTitle.value || null,
+    project: metaProject.value || null,
+    domain: metaDomain.value || null,
+    type: metaType.value || null,
+    tags: metaTags.value.split(',').map(t => t.trim()).filter(Boolean)
   }
 }
 
+// Metadata save — debounced 800ms after any meta field change, via `metaAutosave` above.
 function scheduleMetaSave() {
   metaDirty.value = true
-  if (metaSaveTimer.value) clearTimeout(metaSaveTimer.value)
-  metaSaveTimer.value = setTimeout(() => saveMetadata(), 800)
+  if (props.documentId) metaAutosave.schedule(props.documentId, currentMetaPatch())
 }
 
 // Tab close / reload can't be made to wait for an in-flight save, so warn instead — mirrors
@@ -127,10 +115,7 @@ onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
 
 onUnmounted(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)
-  if (metaSaveTimer.value) {
-    clearTimeout(metaSaveTimer.value)
-    if (metaDirty.value) void saveMetadata()
-  }
+  if (metaAutosave.hasPending()) void metaAutosave.flush()
 })
 </script>
 
