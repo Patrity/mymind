@@ -14,6 +14,7 @@ export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[] }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
   | { type: 'audio'; bytes: Uint8Array }
   | { type: 'state'; state: 'thinking' | 'speaking' | 'typing' | 'tool' | 'idle' }
 
@@ -99,6 +100,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {
       deps.emit({ type: 'reasoning', text: ev.text })   // display only — never chunked/spoken/persisted here
+    } else if (ev.type === 'usage') {
+      // Metadata only, same as reasoning above: never touches assistantText, the
+      // transcript events, or the TTS chunker — it isn't part of what the user hears/reads.
+      deps.emit({ type: 'usage', inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, totalTokens: ev.totalTokens })
     } else if (ev.type === 'text-delta') {
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })

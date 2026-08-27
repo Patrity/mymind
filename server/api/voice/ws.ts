@@ -169,11 +169,17 @@ export default defineWebSocketHandler({
         // never appeared).
         const context = (await buildLiveContext(new Date())) || undefined
         let reasoningText = ''
+        let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null = null
         const prevLen = s.history.length
         const emit = (e: VoiceEvent) => {
           if (e.type === 'audio') peer.send(e.bytes)
           else {
             if (e.type === 'reasoning') reasoningText += e.text
+            // Overwrite, not accumulate: at most one usage event per turn in the common
+            // case, and if the rare forced-final recovery path (run.ts) yields a second
+            // one, it's from the streamText call that actually produced the visible text —
+            // that supersedes the aborted first call's usage rather than adding to it.
+            else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens }
             peer.send(JSON.stringify(e))
           }
         }
@@ -192,12 +198,7 @@ export default defineWebSocketHandler({
             toolCalls: m.role === 'assistant' && m.toolRecords?.length ? m.toolRecords : null,
             reasoning: m.role === 'assistant' ? (reasoningText || null) : null,
             attachments: m.role === 'user' ? turnAttachments : null,
-            // NOT populated: runAgent's fullStream loop (server/lib/agent/run.ts) never turns
-            // the AI SDK's `finish` part (which carries `totalUsage`) into an AgentEvent, so
-            // there is no VoiceEvent for this closure to accumulate the way it does reasoning/
-            // tool_calls above. Wiring it needs run.ts + orchestrator.ts changes, out of this
-            // task's scope (see task-4-report.md).
-            usage: null
+            usage: m.role === 'assistant' ? turnUsage : null
           })))
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }

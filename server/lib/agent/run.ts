@@ -52,6 +52,7 @@ export type AgentEvent =
   | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-start'; name: string; args: Record<string, unknown> }
   | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: import('./types').ToolKind }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
   | { type: 'done' }
 
 // Map one AI SDK v6 fullStream part to a text/reasoning event (or null for
@@ -63,6 +64,24 @@ function partToEvent(part: unknown): { type: 'text-delta' | 'reasoning-delta'; t
   const p = part as { delta?: string; text?: string }
   const text = p.delta ?? p.text ?? ''
   return text ? { type: t, text } : null
+}
+
+// Map one AI SDK v6 fullStream `finish` part to a usage event (or null for anything
+// else, including a `finish` with no usable usage). Read defensively the same way
+// partToEvent tolerates `.delta` vs `.text` — the SDK has moved field names before
+// (`usage` → `totalUsage`), so a missing or differently-shaped payload degrades to
+// "no usage event" rather than a thrown error or a fabricated zero.
+function partToUsageEvent(part: unknown): { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number } | null {
+  if ((part as { type?: unknown }).type !== 'finish') return null
+  const p = part as { totalUsage?: unknown; usage?: unknown }
+  const raw = p.totalUsage ?? p.usage
+  if (!raw || typeof raw !== 'object') return null
+  const u = raw as { inputTokens?: unknown; outputTokens?: unknown; totalTokens?: unknown }
+  const inputTokens = typeof u.inputTokens === 'number' ? u.inputTokens : undefined
+  const outputTokens = typeof u.outputTokens === 'number' ? u.outputTokens : undefined
+  const totalTokens = typeof u.totalTokens === 'number' ? u.totalTokens : undefined
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return null
+  return { type: 'usage', inputTokens, outputTokens, totalTokens }
 }
 
 // Structural type for the streamText dep: only what runAgent actually uses.
@@ -157,6 +176,8 @@ export async function* runAgent(
     // tool-start / tool-result surface via the queue (buildAiTools.onEvent)
     const ev = partToEvent(part)
     if (ev) { if (ev.type === 'text-delta') { sawText = true; emittedText += ev.text } ; yield ev }
+    const usageEv = partToUsageEvent(part)
+    if (usageEv) yield usageEv
   }
   while (queue.length) yield queue.shift()!
 
@@ -190,6 +211,11 @@ export async function* runAgent(
         while (queue.length) yield queue.shift()!
         const ev = partToEvent(part)
         if (ev) { if (ev.type === 'text-delta') followupText = true; yield ev }
+        // This is a SEPARATE streamText call, so its usage does not include the aborted
+        // main call's tokens — it supersedes (not adds to) any usage already yielded above,
+        // since it's what actually produced the text the user sees.
+        const usageEv = partToUsageEvent(part)
+        if (usageEv) yield usageEv
       }
       while (queue.length) yield queue.shift()!
       recordEvent({ kind: 'attempt', name: `reasoning:agent-${mode}`, status: followupText ? 'ok' : 'warn', severity: followupText ? 'info' : 'warn', usage: 'reasoning', modelId: (chosen as { modelId?: string } | undefined)?.modelId ?? null, durationMs: Date.now() - started })
