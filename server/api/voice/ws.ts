@@ -7,6 +7,7 @@ import { ttsSynth } from '../../lib/voice/tts-failover'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
+import { buildTurnPersistPayload } from '../../lib/voice/turn-persist'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
 import { buildLiveContext, buildMemoryContext } from '../../lib/agent/context'
 import { publishChange } from '../../utils/live-bus'
@@ -14,7 +15,7 @@ import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
 import { randomUUID } from 'node:crypto'
-import { withoutAttachmentMarkers, type AttachmentRef } from '../../lib/agent/attachments'
+import type { AttachmentRef } from '../../lib/agent/attachments'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'voice',voice} | {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
@@ -188,18 +189,13 @@ export default defineWebSocketHandler({
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId
           if (!s.conversationId) s.conversationId = (await createConversation({ title: deriveTitle(messageText(added[0]!.content)) })).id
-          await appendMessages(s.conversationId, added.map(m => ({
-            role: m.role as 'user' | 'assistant',
-            // Attachment markers are a live-turn signal only. Persisting one makes it durable:
-            // it is replayed on every future turn and, once flattened into `content`, is no
-            // longer a separate part the resume-path filter can remove.
-            content: messageText(withoutAttachmentMarkers(m.content)),
-            modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
-            toolCalls: m.role === 'assistant' && m.toolRecords?.length ? m.toolRecords : null,
-            reasoning: m.role === 'assistant' ? (reasoningText || null) : null,
-            attachments: m.role === 'user' ? turnAttachments : null,
-            usage: m.role === 'assistant' ? turnUsage : null
-          })))
+          await appendMessages(s.conversationId, buildTurnPersistPayload(added, {
+            inputModality,
+            speakFlag,
+            attachments: turnAttachments,
+            reasoning: reasoningText,
+            usage: turnUsage
+          }))
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }
       } catch (err) {

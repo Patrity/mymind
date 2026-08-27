@@ -31,7 +31,7 @@ export interface ConversationMessageDTO {
   toolCalls: ToolCallRecordDTO[] | null
   reasoning: string | null
   attachments: AttachmentRef[] | null
-  usage?: MessageUsage | null
+  usage: MessageUsage | null
   createdAt: string
 }
 export interface ConversationDTO {
