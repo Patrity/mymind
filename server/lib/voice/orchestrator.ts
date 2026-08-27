@@ -1,5 +1,5 @@
 // server/lib/voice/orchestrator.ts
-import { SentenceChunker } from './chunker'
+import { SpeechChunker } from './segment'
 import { VOICE_TUNING } from './tuning'
 import type { SttProvider, TtsProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
@@ -76,7 +76,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   // context block. Best-effort (returns '' on error/timeout) — never blocks a turn.
   const memoryBlock = deps.buildMemoryContext ? await deps.buildMemoryContext(userText) : ''
   const context = [deps.context, memoryBlock].filter(Boolean).join('\n\n') || undefined
-  const chunker = new SentenceChunker(VOICE_TUNING.tts.sentenceMinChars)
+  const chunker = new SpeechChunker(VOICE_TUNING.tts.sentenceMinChars)
   let assistantText = ''
   const turnImages: DisplayImage[] = []
   const toolRecords: AgentToolRecord[] = []
