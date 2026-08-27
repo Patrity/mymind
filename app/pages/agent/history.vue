@@ -52,6 +52,17 @@ async function doDelete(id: string) {
     deleting.value[id] = false
   }
 }
+
+// ── Delete confirmation ──────────────────────────────────────────────────────
+const confirmId = ref<string | null>(null)
+const confirmTitle = computed(() =>
+  conversations.value.find(c => c.id === confirmId.value)?.title || 'this conversation')
+
+async function confirmDelete() {
+  const id = confirmId.value
+  confirmId.value = null
+  if (id) await doDelete(id)
+}
 </script>
 
 <template>
@@ -181,11 +192,25 @@ async function doDelete(id: string) {
               :loading="deleting[c.id]"
               class="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
               aria-label="Delete conversation"
-              @click.stop="doDelete(c.id)"
+              @click.stop="confirmId = c.id"
             />
           </div>
         </div>
       </div>
+
+      <UModal
+        :open="!!confirmId"
+        title="Delete conversation?"
+        :description="`“${confirmTitle}” and all of its messages will be permanently deleted. This cannot be undone.`"
+        @update:open="(v: boolean) => { if (!v) confirmId = null }"
+      >
+        <template #footer>
+          <div class="flex justify-end gap-2 w-full">
+            <UButton label="Cancel" color="neutral" variant="ghost" @click="confirmId = null" />
+            <UButton label="Delete" color="error" @click="confirmDelete" />
+          </div>
+        </template>
+      </UModal>
     </template>
   </UDashboardPanel>
 </template>
