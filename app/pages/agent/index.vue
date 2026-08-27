@@ -23,23 +23,16 @@ onMounted(() => {
   void router.replace({ path: route.path, query: { ...route.query, q: undefined } })
 })
 
-// Persistent preferences (cookie-backed so they survive page reloads)
-const showCanvas = useCookie<boolean>('agent-canvas', { default: () => true })
+// Persistent preference (cookie-backed so it survives page reloads)
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
 
 // Reasoning-model override (ephemeral, cookie-backed). Empty cookie = default chain order.
 // reka-ui's USelectMenu rejects an empty-string item value, so the "Default" option uses a
 // non-empty sentinel that maps back to "no override" (empty cookie / null to setModel).
+// AgentToolbar builds the item list around the same sentinel.
 const DEFAULT_MODEL = '__default__'
 const { load: loadAiConfig, draft: aiDraft } = useAiConfig()
 const agentModel = useCookie<string>('agent-model', { default: () => '' })
-const modelItems = computed(() => {
-  const models = aiDraft.value.models
-  const chain = (aiDraft.value.assignments.reasoning ?? [])
-    .map(id => models.find(m => m.id === id))
-    .filter((m): m is NonNullable<typeof m> => !!m)
-  return [{ label: 'Default (chain order)', value: DEFAULT_MODEL }, ...chain.map(m => ({ label: m.label, value: m.id }))]
-})
 const selectedModel = computed({
   get: () => agentModel.value || DEFAULT_MODEL,
   set: (val: string) => {
@@ -52,12 +45,20 @@ const selectedModel = computed({
 // Mic-on state is local — it reflects whether the VAD is actually running
 const micOn = ref(false)
 
-// History slideover open state
-const historyOpen = ref(false)
+// Which thread the conversation column is showing. Drives the rail's active row and
+// the toolbar title; null means an unsaved/new conversation.
+const activeConversationId = ref<string | null>(null)
+const activeTitle = ref<string | null>(null)
 
-// Caption over the canvas: the message currently being spoken/typed. On small
-// screens (transcript hidden) this is the only live text. Tool chips are not
-// captions — show the latest user/assistant text instead.
+// Thread rail as a slideover — the only way to reach threads under lg, where the rail
+// column is hidden.
+const threadsOpen = ref(false)
+
+// Full-bleed voice mode (the overlay itself lands with the avatar work).
+const fullBleed = ref(false)
+
+// Caption over the avatar: the message currently being spoken/typed. Tool chips are not
+// captions — show the latest user/assistant text instead. Consumed by full-bleed mode.
 const caption = computed(() => {
   const t = voice.transcript.value
   for (let i = t.length - 1; i >= 0; i--) if (t[i]!.role !== 'tool') return t[i]!
@@ -96,10 +97,27 @@ async function toggleMic() {
 // Transcript rebuild (chip placement, legacy fallback, trailing-bubble rule) lives in
 // ~/lib/agent/transcript so it can be unit-tested — it used to be inline here, untested.
 async function resume(id: string) {
-  const { messages } = await useConversations().getConversation(id)
-  voice.transcript.value = buildResumeTranscript(messages)
-  await voice.loadConversation(id)
-  historyOpen.value = false
+  try {
+    const { conversation, messages } = await useConversations().getConversation(id)
+    voice.transcript.value = buildResumeTranscript(messages)
+    await voice.loadConversation(id)
+    activeConversationId.value = conversation.id
+    activeTitle.value = conversation.title
+  } catch (e) {
+    // The rail is now the primary way into a thread, so a failed load must say so rather
+    // than leaving the previous transcript on screen with a new row highlighted.
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Could not open conversation', description: err?.data?.statusMessage ?? err?.message })
+  } finally {
+    threadsOpen.value = false
+  }
+}
+
+function startNewConversation() {
+  voice.newConversation()
+  activeConversationId.value = null
+  activeTitle.value = null
+  threadsOpen.value = false
 }
 
 // Auto-connect the WS on mount so the chat is usable immediately — typing and
@@ -121,176 +139,56 @@ onMounted(async () => {
 </script>
 
 <template>
-  <!-- Resizable panels don't have a single root element — wrap in a flex container.
-       When showCanvas is false the canvas panel is hidden and the transcript takes full
-       width. The canvas is the sized/resizable panel (left), the transcript is fluid
-       (right). Double-clicking the resize handle resets the split. -->
+  <!-- Three columns: threads / conversation / Bridget. Resizable panels don't have a
+       single root element — wrap them in a flex container.
+
+       Sizing constraint: Nuxt UI's resize handle only ever sizes the panel to its LEFT,
+       so `agent-threads` and `agent-conversation` carry the sizes and Bridget is the
+       fluid remainder, clamped in CSS. Double-clicking a handle resets that split.
+
+       Under lg both side columns collapse and the conversation takes the full width —
+       that is the fix for the page having had no usable composer below 1024px. -->
   <div class="flex flex-1 min-w-0 h-full">
     <UDashboardPanel
-      v-if="showCanvas"
-      id="agent-canvas"
+      id="agent-threads"
       resizable
-      :default-size="75"
-      :min-size="50"
-      :max-size="90"
-      :ui="{ body: '!p-0 !gap-0 overflow-hidden' }"
-    >
-      <template #header>
-        <UDashboardNavbar title="Agent">
-          <template #leading>
-            <UDashboardSidebarCollapse />
-          </template>
-          <template #right>
-            <!-- Visualizer toggle -->
-            <USwitch
-              v-model="showCanvas"
-              label="Visualizer"
-              size="sm"
-            />
-            <!-- Respond-in-voice toggle -->
-            <USwitch
-              v-model="speakReply"
-              label="Voice replies"
-              size="sm"
-            />
-            <!-- History button -->
-            <UButton
-              icon="i-lucide-history"
-              label="History"
-              variant="ghost"
-              color="neutral"
-              @click="historyOpen = true"
-            />
-            <!-- New conversation -->
-            <UButton
-              icon="i-lucide-plus"
-              label="New"
-              variant="ghost"
-              color="neutral"
-              @click="voice.newConversation()"
-            />
-            <!-- Mic toggle (auto-connects if needed) -->
-            <UButton
-              :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
-              :color="micOn ? 'primary' : 'neutral'"
-              :variant="micOn ? 'soft' : 'ghost'"
-              :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
-              @click="toggleMic"
-            />
-            <!-- Reasoning-model override (ephemeral, cookie-persisted) -->
-            <USelectMenu
-              v-model="selectedModel"
-              :items="modelItems"
-              value-key="value"
-              icon="i-lucide-cpu"
-              size="sm"
-              class="w-44"
-              aria-label="Agent model"
-            />
-            <VoiceSettingsSlideover :voice="voice" />
-          </template>
-        </UDashboardNavbar>
-      </template>
-
-      <template #body>
-        <div class="relative flex-1 min-h-0 bg-elevated/20">
-          <VoiceReactor
-            :state="voice.state.value"
-            :connected="voice.connected.value"
-            :mic-analyser="voice.micAnalyser"
-            :out-analyser="voice.outAnalyser"
-            :on-viz-event="voice.onVizEvent"
-          />
-          <div
-            v-if="caption"
-            class="absolute inset-x-4 bottom-12 z-10 mx-auto w-fit max-w-2xl rounded-lg bg-elevated/50 px-4 py-2.5 shadow-lg"
-          >
-            <span class="text-xs font-semibold uppercase tracking-wider text-muted">
-              {{ caption.role === 'user' ? 'You' : 'Bridget' }}
-            </span>
-            <p class="mt-0.5 line-clamp-3 text-sm text-highlighted">{{ caption.text }}</p>
-          </div>
-          <span class="absolute bottom-4 inset-x-0 text-center text-xs uppercase tracking-widest text-muted">
-            {{ voice.state.value }}
-          </span>
-          <UAlert
-            v-if="voice.error.value"
-            color="error"
-            class="absolute top-4 mx-4"
-            :title="voice.error.value"
-          />
-        </div>
-      </template>
-    </UDashboardPanel>
-
-    <!-- Transcript panel — always visible; takes full width when canvas is hidden -->
-    <UDashboardPanel
-      id="agent-transcript"
+      :default-size="14"
+      :min-size="10"
+      :max-size="24"
       class="hidden lg:flex"
       :ui="{ body: '!p-0 !gap-0' }"
     >
+      <template #body>
+        <AgentThreadRail
+          :active-id="activeConversationId"
+          @select="resume"
+          @new="startNewConversation"
+        />
+      </template>
+    </UDashboardPanel>
+
+    <UDashboardPanel
+      id="agent-conversation"
+      resizable
+      :default-size="58"
+      :min-size="35"
+      :max-size="80"
+      :ui="{ body: '!p-0 !gap-0' }"
+    >
       <template #header>
-        <UDashboardNavbar :title="showCanvas ? 'Transcript' : 'Agent'">
-          <!-- Show the control bar in the transcript header when canvas is hidden -->
-          <template
-            v-if="!showCanvas"
-            #leading
-          >
-            <UDashboardSidebarCollapse />
-          </template>
-          <template
-            v-if="!showCanvas"
-            #right
-          >
-            <!-- Visualizer toggle (restore canvas) -->
-            <USwitch
-              v-model="showCanvas"
-              label="Visualizer"
-              size="sm"
-            />
-            <!-- Respond-in-voice toggle -->
-            <USwitch
-              v-model="speakReply"
-              label="Voice replies"
-              size="sm"
-            />
-            <!-- History button -->
-            <UButton
-              icon="i-lucide-history"
-              label="History"
-              variant="ghost"
-              color="neutral"
-              @click="historyOpen = true"
-            />
-            <!-- New conversation -->
-            <UButton
-              icon="i-lucide-plus"
-              label="New"
-              variant="ghost"
-              color="neutral"
-              @click="voice.newConversation()"
-            />
-            <!-- Mic toggle (auto-connects if needed) -->
-            <UButton
-              :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
-              :color="micOn ? 'primary' : 'neutral'"
-              :variant="micOn ? 'soft' : 'ghost'"
-              :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
-              @click="toggleMic"
-            />
-            <!-- Reasoning-model override (ephemeral, cookie-persisted) -->
-            <USelectMenu
-              v-model="selectedModel"
-              :items="modelItems"
-              value-key="value"
-              icon="i-lucide-cpu"
-              size="sm"
-              class="w-44"
-              aria-label="Agent model"
-            />
+        <AgentToolbar
+          v-model:speak="speakReply"
+          v-model:model="selectedModel"
+          :title="activeTitle"
+          :mic-on="micOn"
+          @toggle-mic="toggleMic"
+          @threads="threadsOpen = true"
+          @full-bleed="fullBleed = true"
+        >
+          <template #actions>
             <VoiceSettingsSlideover :voice="voice" />
           </template>
-        </UDashboardNavbar>
+        </AgentToolbar>
       </template>
 
       <template #body>
@@ -299,7 +197,10 @@ onMounted(async () => {
           :entries="voice.transcript.value"
           @undo="undoTool"
         />
-        <div v-if="voice.pendingApproval.value" class="px-4 pb-2">
+        <div
+          v-if="voice.pendingApproval.value"
+          class="px-4 pb-2"
+        >
           <AgentApprovalPrompt
             :approval="voice.pendingApproval.value"
             @approve="(d) => voice.sendApproval(voice.pendingApproval.value!.requestId, true, d)"
@@ -316,10 +217,47 @@ onMounted(async () => {
       </template>
     </UDashboardPanel>
 
-    <!-- History slideover -->
-    <AgentHistorySlideover
-      v-model:open="historyOpen"
-      @select="resume"
-    />
+    <!-- Bridget: the fluid remainder. Clamped in CSS because Nuxt UI cannot size a panel
+         to the RIGHT of a handle. -->
+    <UDashboardPanel
+      id="agent-bridget"
+      class="hidden lg:flex min-w-[240px] max-w-[420px]"
+      :ui="{ body: '!p-0 !gap-0 overflow-hidden' }"
+    >
+      <template #body>
+        <div class="relative flex flex-col flex-1 min-h-0 bg-elevated/20">
+          <VoiceReactor
+            :state="voice.state.value"
+            :connected="voice.connected.value"
+            :mic-analyser="voice.micAnalyser"
+            :out-analyser="voice.outAnalyser"
+            :on-viz-event="voice.onVizEvent"
+          />
+          <UAlert
+            v-if="voice.error.value"
+            color="error"
+            class="absolute top-3 mx-3"
+            :title="voice.error.value"
+          />
+        </div>
+      </template>
+    </UDashboardPanel>
+
+    <!-- Threads under lg, where the rail column is hidden. -->
+    <USlideover
+      v-model:open="threadsOpen"
+      side="left"
+      title="Conversations"
+      description="Pick a thread to resume it."
+      :ui="{ body: '!p-0' }"
+    >
+      <template #body>
+        <AgentThreadRail
+          :active-id="activeConversationId"
+          @select="resume"
+          @new="startNewConversation"
+        />
+      </template>
+    </USlideover>
   </div>
 </template>
