@@ -1,7 +1,7 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { conversations, conversationMessages } from '../db/schema'
-import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO } from '../../shared/types/conversation'
+import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO, MessageUsage } from '../../shared/types/conversation'
 import type { AgentMessage, AgentContentPart } from '../lib/agent/run'
 import type { AgentToolRecord } from '../lib/agent/tool-history'
 import { TOOL_HISTORY_WINDOW } from '../lib/agent/tool-history'
@@ -30,6 +30,8 @@ export interface NewConvMessage {
   toolCalls?: ToolCallRecordDTO[] | null
   reasoning?: string | null
   attachments?: AttachmentRef[] | null
+  // Assistant-turn token usage from streamText, for the transcript's token readout.
+  usage?: MessageUsage | null
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,7 @@ export function msgToDTO(r: typeof conversationMessages.$inferSelect): Conversat
     toolCalls: (r.toolCalls as ToolCallRecordDTO[] | null) ?? null,
     reasoning: r.reasoning ?? null,
     attachments: (r.attachments as AttachmentRef[] | null) ?? null,
+    usage: (r.usage as MessageUsage | null) ?? null,
     createdAt: r.createdAt.toISOString()
   }
 }
@@ -107,7 +110,8 @@ export async function appendMessages(
         modality: msg.modality,
         toolCalls: msg.toolCalls ?? null,
         reasoning: msg.reasoning ?? null,
-        attachments: msg.attachments ?? null
+        attachments: msg.attachments ?? null,
+        usage: msg.usage ?? null
       })
       .returning({ id: conversationMessages.id })
     prevId = inserted!.id

@@ -17,6 +17,12 @@ export interface ToolCallRecordDTO {
   textOffset?: number
 }
 
+export interface MessageUsage {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+}
+
 export interface ConversationMessageDTO {
   id: string
   role: 'user' | 'assistant'
@@ -25,6 +31,7 @@ export interface ConversationMessageDTO {
   toolCalls: ToolCallRecordDTO[] | null
   reasoning: string | null
   attachments: AttachmentRef[] | null
+  usage?: MessageUsage | null
   createdAt: string
 }
 export interface ConversationDTO {

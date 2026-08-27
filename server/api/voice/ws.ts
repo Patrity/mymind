@@ -191,7 +191,13 @@ export default defineWebSocketHandler({
             modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
             toolCalls: m.role === 'assistant' && m.toolRecords?.length ? m.toolRecords : null,
             reasoning: m.role === 'assistant' ? (reasoningText || null) : null,
-            attachments: m.role === 'user' ? turnAttachments : null
+            attachments: m.role === 'user' ? turnAttachments : null,
+            // NOT populated: runAgent's fullStream loop (server/lib/agent/run.ts) never turns
+            // the AI SDK's `finish` part (which carries `totalUsage`) into an AgentEvent, so
+            // there is no VoiceEvent for this closure to accumulate the way it does reasoning/
+            // tool_calls above. Wiring it needs run.ts + orchestrator.ts changes, out of this
+            // task's scope (see task-4-report.md).
+            usage: null
           })))
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }

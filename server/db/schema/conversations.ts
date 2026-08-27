@@ -35,6 +35,10 @@ export const conversationMessages = pgTable('conversation_messages', {
   toolCalls: jsonb('tool_calls'),
   reasoning: text('reasoning'),                 // assistant thinking; display/storage only, NEVER sent back to the model
   attachments: jsonb('attachments'),            // [{ id, kind, mime, name? }] for user turns (Task 5 populates)
+  // Per-turn model usage from streamText, for the transcript's token readout.
+  // Nullable and additive: messages written before this column omit the count
+  // rather than showing a zero. { inputTokens, outputTokens, totalTokens }.
+  usage: jsonb('usage'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   index('conversation_messages_convo_idx').on(t.conversationId, t.createdAt),
