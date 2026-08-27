@@ -3,7 +3,7 @@ title: Agent surface — three-column rewrite, the voice pipeline, and Bridget's
 cycle: 60
 date: 2026-08-27
 mymind_id: f1d110e7-f2d2-4397-beb1-e48e136f2172
-mymind_hash: 641959a012006ee554ebcc16b7f92cc1b0dc09ca907f9dbeea4cd88f0b6f0f3d
+mymind_hash: 69c2ae3081489cb62d9a25dc2264c7d62b9e0f49b779d1f383a96a681a02d2b5
 status: spec — approved in brainstorm, not yet planned
 related:
   - ../../wiki/agent.md (the surface this rewrites — convergence principle, conversation store, tool history)
@@ -75,7 +75,7 @@ and a mic readout that answers "am I being heard".
 | Rejected mesh sources | FLAME, Basel Face Model | Both research-licence only. Recorded so a future session does not reach for them. |
 | Lip-sync | Amplitude-driven jaw, **not** visemes | Neither Kokoro nor Chatterbox returns phoneme timings. Real visemes need a forced-aligner pass per chunk. Gets the rhythm right, not the shapes. |
 | Mic readout | Baseline band at the foot of her column | Replaces the 96-bar ring, which the user dislikes and which cannot tell you whether you are being picked up. |
-| TTS | Stay self-hosted; upgrade the model **after** the pipeline | Judging a synth on mangled input proves nothing. |
+| TTS | Stay self-hosted. Replace Kokoro with **Orpheus 3B**, **after** the pipeline is fixed | Kokoro is non-autoregressive and structurally incapable of emotion or paralinguistics — no setting fixes it. Judging a new synth on mangled input proves nothing, so ordering matters. |
 | Scope | One cycle, five workstreams | User's explicit call. Quick fixes roll into the rewrite rather than landing ahead of it. |
 
 ## Layout and shell
@@ -218,22 +218,67 @@ as context so intonation carries across the seam.
 `VOICE_TUNING.tts.playbackRate` 1.1 → 1.0. It is already user-tunable through `useVoiceSettings`;
 only the default changes.
 
-### Model bake-off
+### Model replacement
 
-Run **after** the sanitizer and segmenter are in, so the candidates are judged on clean input. One
-fixed paragraph containing an IP address, a version number, a list and a question, synthesized
-through each candidate and listened to back-to-back:
+**Kokoro cannot be tuned into expressiveness — the model has to change.** Kokoro-82M is a
+non-autoregressive StyleTTS 2 + ISTFTNet model with 54 fixed voices, no emotion control and no
+cloning. Paralinguistics (laughs, sighs, inline emotion) require an autoregressive speech-LLM that
+emits audio tokens. No setting closes that gap. The pipeline fixes above make the input clean; they
+cannot make this model expressive.
 
-1. **Chatterbox** — already installed on the rig as the tts failover, with female voices (Olivia,
-   Elena, Emily, Jade). Costs nothing to try and may end the search.
-2. **Orpheus** — expressive, GPU, handles paralinguistics.
-3. **Chatterbox-Turbo** — 350M, emotion control, sub-200 ms.
-4. **Kokoro at `playbackRate: 1.0`** — the control.
+**Target: Orpheus 3B (Canopy Labs, Apache 2.0 / Llama-3.2 base).** Eight fixed voices, emotion tags
+(`<laugh>`, `<sigh>`, `<chuckle>`, `<gasp>`…), token-by-token streaming, commercial-safe licence.
+4.22 MOS against Sesame CSM's 4.10 with a 53.2%/34.0% A/B preference (ASTRA study, arXiv 2606.18319)
+— the strongest conversational-quality evidence for an openly-licensed model. Fits one 3090 at
+~8–9 GB FP8 or ~16 GB FP16, leaving three cards for the Qwen3.6 35B-A3B reasoning model.
 
-Every swap is a `/settings` change through the model registry; no code and no redeploy. The published
-comparisons for these models come from vendor posts and SEO round-ups of mixed quality that disagree
-with each other — the shortlist is "worth twenty minutes of listening each", not a result. Tony's
-ears on the rig decide, and the chosen voice is recorded in the handover.
+**Rig prerequisite (a human step, like the mesh).** Orpheus must be stood up on the rig before this
+workstream can be validated:
+
+- `vllm serve` the Llama-3B backbone → **SNAC decoder** (7-token frames, sliding window) → a FastAPI
+  wrapper exposing OpenAI-compatible `/v1/audio/speech`. Use `Lex-au/Orpheus-FastAPI` or
+  `NoCodingAi/Orpheus-TTS-FastAPI-server`.
+- **Do NOT use the `orpheus-speech` PyPI package.** It returns HTTP 200 with an empty body — the
+  internal SNAC post-processing never emits bytes into the response. Independently reproduced at
+  100-concurrent on an A100. This would present as "TTS silently returns nothing" and burn a day.
+- **Core vLLM does not serve TTS.** Text-to-speech lives in the separate `vllm-omni` subproject.
+- Expect ~200–400 ms first-audio on a 3090 (Canopy measured 280 ms on A100 / 180 ms on H100;
+  a community single-3090 FP8 build is documented). If it exceeds ~500 ms, drop to the Orpheus
+  1B/400M variant.
+
+**Comparison, once Orpheus is up.** One fixed paragraph containing an IP address, a version number,
+a list and a question, synthesized through each and listened to back-to-back:
+
+1. **Orpheus 3B** — the expected winner.
+2. **Chatterbox Turbo** (350M, MIT) — the fallback if Orpheus latency disappoints. Note the rig
+   currently runs the **original** Chatterbox, which independent 100-concurrent benchmarking found
+   at **4 s TTFB at concurrency 1** — a non-starter for live conversation, and the reason the
+   installed copy is not a shortcut. Turbo specifically fixes this. Serve via
+   `devnen/Chatterbox-TTS-Server` v2.0 (dodges the `PerthImplicitWatermarker is None` load bug).
+   All Chatterbox output carries inaudible PerTh watermarking.
+3. **CosyVoice2/3-0.5B** (Apache 2.0) — the only candidate with true *bidirectional* streaming
+   (text in, audio out) at ~150 ms first-packet. Worth a look if turn-taking still feels slow after
+   Orpheus.
+4. **Kokoro at `playbackRate: 1.0`** — the control, and the registry failover afterwards.
+
+**Rejected on licence** (recorded so a future session does not reach for them): Fish Audio S2 Pro
+(Fish Audio Research License), Voxtral TTS and F5-TTS weights (CC BY-NC), Breeze TTS 2 (research),
+XTTS v2 (CPML, and Coqui is defunct so no commercial licence can be bought). **Rejected as
+non-streaming or immature for live use:** Step Audio EditX (a clip editor, <30 s), Qwen3-TTS-1.7B
+(~33 s per request, no streaming decoder), Sesame CSM-1B, Maya1 (inconsistent emotion tags, spoken
+tag names, ~1.8× real-time even on an A100).
+
+**No single-turn voice mixing.** A tempting optimisation — route the pre-tool filler ("let me
+check…") through Kokoro at 40 ms and the substantive reply through Orpheus — is rejected. The prompt
+emits that filler *inside* a single reply, and Orpheus's `tara` and Kokoro's `af_heart` are different
+speakers, so the turn would be two people talking. Kokoro stays as the chain failover only, where a
+voice change during a real outage is acceptable.
+
+Every swap is a `/settings` change through the model registry; no app code and no redeploy. Published
+comparisons for these models are largely vendor-run or single-source (the only rigorous 3090-specific
+first-audio figures come from one benchmark vendor), and the Speech Arena leaderboard measures
+single-utterance naturalness, which disadvantages dialogue models. Treat the shortlist as directional.
+Tony's ears on the rig decide, and the chosen model and voice are recorded in the handover.
 
 ## Microphone
 
@@ -419,8 +464,13 @@ features in one cycle. Raised in the brainstorm and confirmed as the user's call
 the `Avatar` interface: the avatar workstream is the one with an external dependency and the most
 unknowns, and it is the designated cut line.
 
-**The mesh is a human step.** The bake script cannot run until a MakeHuman export exists. Everything
-except the avatar workstream is independent of it, so this blocks one workstream, not the cycle.
+**Two human steps gate two workstreams.** The bake script cannot run until a MakeHuman export exists,
+and the voice comparison cannot run until Orpheus is serving on the rig. Both are outside the app and
+outside the plan's control, and both block exactly one workstream each — the rest of the cycle is
+independent of them. The app side of the TTS change is *already* config: the registry means any
+OpenAI-compatible `/v1/audio/speech` endpoint drops in without code. The risk is the serving stack,
+not the integration, and the `orpheus-speech` package failure mode (HTTP 200, empty body) is the
+specific trap to avoid.
 
 **Nuxt UI's resize handle constraint** (sized panel must sit left of the handle) shapes the three
 column layout. If resizing the conversation to size Bridget feels wrong in the browser, the fallback
