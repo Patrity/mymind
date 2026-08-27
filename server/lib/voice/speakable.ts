@@ -29,12 +29,18 @@ function digitsToWords(s: string): string {
   return s.split('').map(d => ONES[Number(d)] ?? d).join(' ')
 }
 
-/** IPv4 octets: hundreds digit as-is, then the remainder 0-99. E.g., 192 -> "one ninety two". */
+/** IPv4 octets: hundreds digit as-is, then the remainder 0-99. E.g., 192 -> "one ninety two", 100 -> "one zero zero". */
 function ipv4GroupToWords(n: number): string {
   if (n >= 100) {
     const h = Math.floor(n / 100)
     const r = n % 100
-    return r ? `${ONES[h]} ${numberToWords(r)}` : ONES[h]!
+    if (r === 0) {
+      return `${ONES[h]} zero zero`
+    } else if (r < 10) {
+      return `${ONES[h]} zero ${ONES[r]}`
+    } else {
+      return `${ONES[h]} ${numberToWords(r)}`
+    }
   }
   return numberToWords(n)
 }
@@ -79,9 +85,11 @@ export function toSpeakable(text: string): string {
     (_m, a, b, c, d) => [a, b, c, d].map((g: string) => ipv4GroupToWords(Number(g))).join(' dot '))
 
   // Versions: "v1.2" and a bare "3.6". Integer part as a number, fraction digit-by-digit.
-  s = s.replace(/\bv(\d+)\.(\d+)\b/gi,
+  // Negative lookbehind prevents matching if preceded by digit+dot (part of a 3+ component).
+  // Negative lookahead prevents matching if followed by dot+digit (part of a 3+ component).
+  s = s.replace(/(?<!\d\.)\bv(\d+)\.(\d+)(?!\.\d)\b/gi,
     (_m, maj, min) => `version ${numberToWords(Number(maj))} point ${digitsToWords(min)}`)
-  s = s.replace(/\b(\d+)\.(\d+)\b/g,
+  s = s.replace(/(?<!\d\.)\b(\d+)\.(\d+)(?!\.\d)\b/g,
     (_m, maj, min) => `${numberToWords(Number(maj))} point ${digitsToWords(min)}`)
 
   // App routes read as page names rather than spelled slashes.

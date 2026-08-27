@@ -64,6 +64,27 @@ describe('toSpeakable', () => {
     expect(toSpeakable(s)).toBe(s)
   })
 
+  it('handles IPv4 octets that are exact multiples of 100', () => {
+    expect(toSpeakable('at 10.100.0.200'))
+      .toBe('at ten dot one zero zero dot zero dot two zero zero')
+    expect(toSpeakable('server 100.100.100.100'))
+      .toBe('server one zero zero dot one zero zero dot one zero zero dot one zero zero')
+  })
+
+  it('handles IPv4 octets with leading zeros', () => {
+    expect(toSpeakable('address 192.101.105.1'))
+      .toBe('address one ninety two dot one zero one dot one zero five dot one')
+    expect(toSpeakable('at 10.0.1.5'))
+      .toBe('at ten dot zero dot one dot five')
+  })
+
+  it('leaves three-part version numbers and URLs untouched', () => {
+    expect(toSpeakable('app version 1.2.3 released'))
+      .toBe('app version 1.2.3 released')
+    expect(toSpeakable('see https://example.com/path.to.thing?x=1.2.3'))
+      .toBe('see https://example.com/path.to.thing?x=1.2.3')
+  })
+
   it('never throws on malformed markdown', () => {
     expect(() => toSpeakable('**unclosed and ```also unclosed')).not.toThrow()
   })
