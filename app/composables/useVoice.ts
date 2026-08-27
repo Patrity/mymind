@@ -37,6 +37,14 @@ export function useVoice() {
   /** Live Silero speech probability (0..1) — feeds the settings tuning meter. */
   const speechProb = ref(0)
   const pendingApproval = ref<{ requestId: string; tool: string; command: string; proposedPattern: string } | null>(null)
+  /**
+   * The thread this connection is in. Written from three places and nowhere else:
+   * the server's `conversation` frame (first turn of a NEW thread — the only way the
+   * client can learn the id/title the server derived), the page after a successful
+   * resume, and newConversation() which clears both.
+   */
+  const conversationId = ref<string | null>(null)
+  const conversationTitle = ref<string | null>(null)
   const { settings } = useVoiceSettings()
 
   const events = createEmitter<VizEvent>()
@@ -196,6 +204,10 @@ export function useVoice() {
         for (const ev of fx.events) events.emit(ev)
         if (fx.approval) pendingApproval.value = fx.approval
         if (fx.approvalResolved && pendingApproval.value?.requestId === fx.approvalResolved) pendingApproval.value = null
+        if (fx.conversation) {
+          conversationId.value = fx.conversation.id
+          conversationTitle.value = fx.conversation.title
+        }
       }
     }
     // Resolve only once the socket is OPEN. A pre-open error/close rejects → connect()'s
@@ -396,8 +408,12 @@ export function useVoice() {
      */
     newConversation: () => {
       transcript.value = []
+      conversationId.value = null
+      conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))
     },
+    conversationId,
+    conversationTitle,
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,
     onVizEvent: events.on,

@@ -22,7 +22,8 @@ import type { AttachmentRef } from '../../lib/agent/attachments'
 //   {type:'text',text,speak?} (typed turn, injected post-STT) |
 //   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset) |
 //   {type:'approve'|'deny',requestId,...} (resolve a pending exec approval)
-// Server→client: binary = audio bytes | text JSON = transcript/reasoning/tool/state/error events.
+// Server→client: binary = audio bytes | text JSON = transcript/reasoning/tool/state/error events |
+//   {type:'conversation',conversationId,title} (emitted once, when the first turn lazily creates the thread).
 interface ConnState {
   history: AgentMessage[]
   ac: AbortController | null
@@ -188,7 +189,14 @@ export default defineWebSocketHandler({
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId
-          if (!s.conversationId) s.conversationId = (await createConversation({ title: deriveTitle(messageText(added[0]!.content)) })).id
+          if (!s.conversationId) {
+            const title = deriveTitle(messageText(added[0]!.content))
+            s.conversationId = (await createConversation({ title })).id
+            // Tell the client which thread it just landed in. Without this frame the page
+            // has no way to learn the id/title the server derived on the first turn — the
+            // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
+            peer.send(JSON.stringify({ type: 'conversation', conversationId: s.conversationId, title }))
+          }
           await appendMessages(s.conversationId, buildTurnPersistPayload(added, {
             inputModality,
             speakFlag,

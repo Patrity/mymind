@@ -64,6 +64,22 @@ describe('mapServerMessage', () => {
   })
 })
 
+describe('mapServerMessage conversation frame', () => {
+  it('maps the lazily-created thread id + derived title', () => {
+    const fx = mapServerMessage({ type: 'conversation', conversationId: 'c1', title: 'Where is my cat' }, false)
+    expect(fx.conversation).toEqual({ id: 'c1', title: 'Where is my cat' })
+    expect(fx.delta).toBeUndefined()
+    expect(fx.events).toEqual([])
+  })
+  it('a null/absent title maps to null, not undefined', () => {
+    expect(mapServerMessage({ type: 'conversation', conversationId: 'c1' }, false).conversation).toEqual({ id: 'c1', title: null })
+    expect(mapServerMessage({ type: 'conversation', conversationId: 'c1', title: null }, false).conversation).toEqual({ id: 'c1', title: null })
+  })
+  it('a conversation frame without an id is inert', () => {
+    expect(mapServerMessage({ type: 'conversation', title: 'x' }, false).conversation).toBeUndefined()
+  })
+})
+
 describe('mapServerMessage approval frames', () => {
   it('maps an approval request', () => {
     const fx = mapServerMessage({ type: 'approval', requestId: 'r1', tool: 'exec', command: 'git status', proposedPattern: 'git *' }, false)

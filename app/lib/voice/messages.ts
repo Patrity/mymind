@@ -2,7 +2,7 @@
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { VizEvent } from '../viz/types'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own
@@ -16,6 +16,8 @@ export interface MsgEffect {
   events: VizEvent[]
   approval?: { requestId: string; tool: string; command: string; proposedPattern: string }
   approvalResolved?: string // requestId that was settled server-side (timeout)
+  /** The server lazily created a thread on this turn — id + its derived title. */
+  conversation?: { id: string; title: string | null }
 }
 
 export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
@@ -49,6 +51,10 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   }
   if (m.type === 'approval-resolved' && m.requestId) {
     return { approvalResolved: m.requestId, events }
+  }
+  // Sent once, when the first turn of a new thread creates the conversation row.
+  if (m.type === 'conversation' && m.conversationId) {
+    return { conversation: { id: m.conversationId, title: m.title ?? null }, events }
   }
   return { events }
 }

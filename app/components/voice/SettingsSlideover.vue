@@ -2,6 +2,12 @@
 <script setup lang="ts">
 const props = defineProps<{ voice: ReturnType<typeof useVoice> }>()
 
+// Spoken replies. The model is bound to the page's `agent-speak` cookie ref — the SAME
+// ref the toolbar switch uses — so the two controls cannot drift. The toolbar switch is
+// hidden under sm (the navbar overflows a phone otherwise), and this slideover is
+// reachable at every width, so this is the only way to turn voice replies on there.
+const speak = defineModel<boolean>('speak', { required: true })
+
 const { settings } = useVoiceSettings()
 
 // Voice picker — same-origin proxy aggregating both TTS providers.
@@ -55,6 +61,16 @@ onUnmounted(() => clearTimeout(timer))
 
     <template #body>
       <div class="flex flex-col gap-6">
+        <UFormField
+          label="Voice replies"
+          help="Speak each reply aloud as well as showing it. Same setting as the toolbar switch on wide screens."
+        >
+          <USwitch
+            v-model="speak"
+            :label="speak ? 'Enabled' : 'Disabled'"
+          />
+        </UFormField>
+
         <UFormField
           label="Voice"
           help="Applies immediately and persists."

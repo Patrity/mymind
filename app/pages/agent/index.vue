@@ -45,10 +45,11 @@ const selectedModel = computed({
 // Mic-on state is local — it reflects whether the VAD is actually running
 const micOn = ref(false)
 
-// Which thread the conversation column is showing. Drives the rail's active row and
-// the toolbar title; null means an unsaved/new conversation.
-const activeConversationId = ref<string | null>(null)
-const activeTitle = ref<string | null>(null)
+// Which thread the conversation column is showing lives in useVoice, because the
+// SERVER is what decides it: a brand-new thread is created lazily on the first turn
+// and its id + derived title come back over the WS. Mirroring that into page-local
+// refs would have meant the toolbar and rail only learned about a new thread on a
+// reload.
 
 // Thread rail as a slideover — the only way to reach threads under lg, where the rail
 // column is hidden.
@@ -99,10 +100,13 @@ async function toggleMic() {
 async function resume(id: string) {
   try {
     const { conversation, messages } = await useConversations().getConversation(id)
-    voice.transcript.value = buildResumeTranscript(messages)
+    // Build first, commit last: if loadConversation throws, the old thread must stay
+    // on screen intact rather than showing the new transcript under the old row.
+    const next = buildResumeTranscript(messages)
     await voice.loadConversation(id)
-    activeConversationId.value = conversation.id
-    activeTitle.value = conversation.title
+    voice.transcript.value = next
+    voice.conversationId.value = conversation.id
+    voice.conversationTitle.value = conversation.title
   } catch (e) {
     // The rail is now the primary way into a thread, so a failed load must say so rather
     // than leaving the previous transcript on screen with a new row highlighted.
@@ -114,9 +118,7 @@ async function resume(id: string) {
 }
 
 function startNewConversation() {
-  voice.newConversation()
-  activeConversationId.value = null
-  activeTitle.value = null
+  voice.newConversation() // also clears voice.conversationId / conversationTitle
   threadsOpen.value = false
 }
 
@@ -160,33 +162,42 @@ onMounted(async () => {
     >
       <template #body>
         <AgentThreadRail
-          :active-id="activeConversationId"
+          :active-id="voice.conversationId.value"
           @select="resume"
           @new="startNewConversation"
         />
       </template>
     </UDashboardPanel>
 
+    <!-- `grow` matters: Bridget's column is capped, and a capped flex item freezes and
+         leaves the surplus as dead space at the right edge (196px at 2560, and ~80px at
+         1440 once handle 2 is dragged left). Growing here means the conversation absorbs
+         that surplus instead. Bridget's grow factor is far larger, so she still takes the
+         space first and this only collects what her cap refuses. -->
     <UDashboardPanel
       id="agent-conversation"
       resizable
       :default-size="58"
       :min-size="35"
       :max-size="80"
+      class="grow"
       :ui="{ body: '!p-0 !gap-0' }"
     >
       <template #header>
         <AgentToolbar
           v-model:speak="speakReply"
           v-model:model="selectedModel"
-          :title="activeTitle"
+          :title="voice.conversationTitle.value"
           :mic-on="micOn"
           @toggle-mic="toggleMic"
           @threads="threadsOpen = true"
           @full-bleed="fullBleed = true"
         >
           <template #actions>
-            <VoiceSettingsSlideover :voice="voice" />
+            <VoiceSettingsSlideover
+              v-model:speak="speakReply"
+              :voice="voice"
+            />
           </template>
         </AgentToolbar>
       </template>
@@ -221,7 +232,7 @@ onMounted(async () => {
          to the RIGHT of a handle. -->
     <UDashboardPanel
       id="agent-bridget"
-      class="hidden lg:flex min-w-[240px] max-w-[420px]"
+      class="hidden lg:flex grow-[9999] min-w-[240px] max-w-[420px]"
       :ui="{ body: '!p-0 !gap-0 overflow-hidden' }"
     >
       <template #body>
@@ -253,7 +264,7 @@ onMounted(async () => {
     >
       <template #body>
         <AgentThreadRail
-          :active-id="activeConversationId"
+          :active-id="voice.conversationId.value"
           @select="resume"
           @new="startNewConversation"
         />
