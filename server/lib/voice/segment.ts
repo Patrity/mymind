@@ -22,18 +22,32 @@ function isSentenceEnd(buf: string, i: number): boolean {
   if (ch !== '.' && ch !== '!' && ch !== '?') return false
 
   const next = buf[i + 1]
-  // Must be followed by whitespace or end-of-buffer. This single check is also what
-  // keeps a dotted-numeric token (IPv4, a decimal, a version, "useVoice.ts") from ever
+  // Must be followed by whitespace or end-of-buffer. This single check is what keeps a
+  // COMPLETE dotted-numeric token (IPv4, a decimal, a version, "useVoice.ts") from ever
   // being split: every period INSIDE such a token is immediately followed by another
-  // digit or letter ("192.168...", "3.6", ".ts"), never whitespace. So by the time a
-  // period gets past this check, a digit or letter immediately before it can only mean
-  // the period is that token's own trailing sentence punctuation (e.g. "...192.168.2.25."
-  // or "It costs 5."), not an internal separator — no separate digit-walkback is needed.
+  // digit or letter ("192.168...", "3.6", ".ts"), never whitespace. So once a period is
+  // followed by real whitespace (not end-of-buffer), a digit or letter immediately
+  // before it can only mean the period is that token's own trailing sentence
+  // punctuation (e.g. "...192.168.2.25. Next." or "It costs 5. Done."), not an internal
+  // separator. The remaining ambiguity — end-of-buffer, which whitespace can't rule
+  // out — is handled just below, since more digits may still be streaming in.
   if (next !== undefined && !/\s/.test(next)) return false
 
   if (ch === '.') {
     // Ellipsis: treat the whole run as non-terminal, so "check... it is" stays one segment.
     if (buf[i - 1] === '.' || buf[i + 1] === '.') return false
+
+    // A period at the very end of the buffer, immediately preceded by a digit, is
+    // ambiguous: the buffer may just be a streaming cut before the rest of a
+    // dotted-numeric token arrives (push('192.168.') then push('2.25...'), or
+    // push('Qwen 3.') then push('6 is loaded.')). Hold it in the tail rather than
+    // guessing sentence-end — flush() sanitizes whatever is left at genuine end of
+    // stream, so nothing is lost if this really was the final period. This is
+    // narrower than the old digit walk-back: it only withholds judgement while more
+    // input could still arrive (next === undefined); once a digit-preceded period is
+    // followed by whitespace and more text, it IS the number's trailing sentence
+    // punctuation ("It costs 25. Then we go.") and falls through to `return true` below.
+    if (next === undefined && /\d/.test(buf[i - 1] ?? '')) return false
 
     // Known abbreviation immediately before the period. Walk back over letters, and over
     // a single internal dot that itself sits between two letters (so "e.g." collects as

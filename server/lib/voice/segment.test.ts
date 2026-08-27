@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { segment, SpeechChunker } from './segment'
+import { toSpeakable } from './speakable'
 
 describe('segment', () => {
   it('splits on sentence-final punctuation followed by space', () => {
@@ -63,6 +64,16 @@ describe('segment', () => {
   it('never emits an empty segment', () => {
     expect(segment('...   \n\n  ', 999).segments.every(s => s.trim().length > 0)).toBe(true)
   })
+
+  it('splits after a sentence-final period immediately following a number', () => {
+    expect(segment('It costs 25. Then we go.', 999).segments)
+      .toEqual(['It costs 25.', 'Then we go.'])
+  })
+
+  it('splits after a sentence-final period immediately following an IPv4 address', () => {
+    expect(segment('The rig is at 192.168.2.25. Next thing.', 999).segments)
+      .toEqual(['The rig is at 192.168.2.25.', 'Next thing.'])
+  })
 })
 
 describe('SpeechChunker', () => {
@@ -93,5 +104,22 @@ describe('SpeechChunker', () => {
     c.push('The rig is at 192.168.2.25 and it works. ')
     // one segment, not four
     expect(c.flush()).toEqual([])
+  })
+
+  it('does not split an IPv4 address across a streaming push boundary', () => {
+    const c = new SpeechChunker(999)
+    expect(c.push('The rig is at 192.168.')).toEqual([])
+    const out = c.push('2.25 is now up. Next.')
+    expect(out).toEqual([
+      toSpeakable('The rig is at 192.168.2.25 is now up.'),
+      toSpeakable('Next.')
+    ])
+  })
+
+  it('does not split a decimal across a streaming push boundary', () => {
+    const c = new SpeechChunker(999)
+    expect(c.push('Qwen 3.')).toEqual([])
+    const out = c.push('6 is loaded.')
+    expect(out).toEqual([toSpeakable('Qwen 3.6 is loaded.')])
   })
 })
