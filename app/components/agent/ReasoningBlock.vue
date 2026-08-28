@@ -4,11 +4,24 @@ const props = defineProps<{ reasoning: string; hasAnswer: boolean }>()
 
 // Open while thinking; collapse once the answer begins — unless the user has
 // taken manual control of the disclosure.
+//
+// `userTouched` MUST be driven by a real gesture on the <summary>, NEVER by the
+// `toggle` event. `<details>` fires `toggle` for PROGRAMMATIC open/close too, so
+// binding intent to it meant Vue's own initial `:open="true"` (which is exactly
+// what happens on a live turn, where reasoning arrives before any answer text)
+// latched userTouched at mount — and the auto-collapse below could then never
+// fire. The block stayed expanded for the rest of the conversation. Resumed
+// threads looked fine only because `hasAnswer` is already true there, so `open`
+// starts false, Vue never sets the attribute, and no toggle is emitted.
+// Keyboard activation of a <summary> dispatches a click, so this covers it too.
 const open = ref(!props.hasAnswer)
 let userTouched = false
 watch(() => props.hasAnswer, (has) => { if (has && !userTouched) open.value = false })
-function onToggle(e: Event) {
+function onSummaryClick() {
   userTouched = true
+}
+function onToggle(e: Event) {
+  // Sync only — carries no intent, because programmatic changes land here as well.
   open.value = (e.target as HTMLDetailsElement).open
 }
 </script>
@@ -21,6 +34,7 @@ function onToggle(e: Event) {
   >
     <summary
       class="flex cursor-pointer select-none list-none items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-elevated/40"
+      @click="onSummaryClick"
     >
       <UIcon name="i-lucide-brain" class="size-3" />
       Thinking
