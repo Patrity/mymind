@@ -1,8 +1,9 @@
 // Pure mapping of server WS JSON messages onto client effects. Kept out of
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { VizEvent } from '../viz/types'
+import type { MessageUsage } from '~~/shared/types/conversation'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own
@@ -16,6 +17,10 @@ export interface MsgEffect {
   events: VizEvent[]
   approval?: { requestId: string; tool: string; command: string; proposedPattern: string }
   approvalResolved?: string // requestId that was settled server-side (timeout)
+  /** The server lazily created a thread on this turn — id + its derived title. */
+  conversation?: { id: string; title: string | null }
+  /** Token usage for the turn just completed (see run.ts's 'usage' event). */
+  usage?: MessageUsage
 }
 
 export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
@@ -49,6 +54,13 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   }
   if (m.type === 'approval-resolved' && m.requestId) {
     return { approvalResolved: m.requestId, events }
+  }
+  // Sent once, when the first turn of a new thread creates the conversation row.
+  if (m.type === 'conversation' && m.conversationId) {
+    return { conversation: { id: m.conversationId, title: m.title ?? null }, events }
+  }
+  if (m.type === 'usage') {
+    return { usage: { inputTokens: m.inputTokens, outputTokens: m.outputTokens, totalTokens: m.totalTokens }, events }
   }
   return { events }
 }

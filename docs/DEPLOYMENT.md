@@ -192,6 +192,18 @@ Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboa
 - **sharp** needs its native build at image-build time (slim base is fine; build script pre-approved).
 - **Single app instance** for the scheduled tasks (see §7).
 - Change the **default Postgres password** (`POSTGRES_PASSWORD`) — never ship `mymind/mymind`.
+- **Bridget's head buffer is a committed build artifact, and it only lands at BUILD time (cycle 60).**
+  `app/assets/head-points.bin` is produced by `pnpm bake:head` from `assets/source/bridget-head.glb`
+  and is **deliberately not gitignored** — production builds from source and cannot run MakeHuman, so
+  an uncommitted buffer means `/agent` renders the CSS-fallback circle instead of the avatar, forever.
+  Two consequences:
+  - The renderer resolves the buffer with `import.meta.glob`, which **Vite resolves at build time**.
+    Dropping a new `.bin` next to a running production build changes nothing, silently. The order is
+    **bake → commit → rebuild → redeploy**. (Vite *dev* does pick up a new `.bin` with no restart,
+    which is exactly what makes this easy to miss.)
+  - Until the mesh exists, the fallback is expected, not a broken deploy: it logs exactly **one**
+    console warning naming the missing file and the `pnpm bake:head` command, and voice/chat are
+    unaffected. See [`wiki/voice-agent.md`](wiki/voice-agent.md#bridgets-avatar-cycle-60).
 
 ## 13. SearXNG (bundled web-search backend)
 

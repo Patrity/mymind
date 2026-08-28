@@ -2,7 +2,7 @@
 import { createEmitter } from '../lib/viz/emitter'
 import { mapServerMessage } from '../lib/voice/messages'
 import type { VizEvent } from '../lib/viz/types'
-import type { AttachmentRef } from '~~/shared/types/conversation'
+import type { AttachmentRef, MessageUsage } from '~~/shared/types/conversation'
 
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
 // `id` is a stable per-entry key: it keys v-for AND the MdView/MDC parse cache —
@@ -19,6 +19,13 @@ export interface TranscriptEntry {
   undoToken?: string
   undone?: boolean
   reasoning?: string
+  /** ISO timestamp — display only. Set when a live entry is first created; carried
+   *  over from the DTO on resume. */
+  createdAt?: string
+  /** Token usage for this entry's assistant turn. `undefined`/absent (not a zeroed
+   *  object) for entries written before the usage column existed, or a turn the
+   *  server never reported usage for — the UI must render nothing, not a fake 0. */
+  usage?: MessageUsage | null
 }
 
 export function newEntryId(): string {
@@ -37,6 +44,14 @@ export function useVoice() {
   /** Live Silero speech probability (0..1) — feeds the settings tuning meter. */
   const speechProb = ref(0)
   const pendingApproval = ref<{ requestId: string; tool: string; command: string; proposedPattern: string } | null>(null)
+  /**
+   * The thread this connection is in. Written from three places and nowhere else:
+   * the server's `conversation` frame (first turn of a NEW thread — the only way the
+   * client can learn the id/title the server derived), the page after a successful
+   * resume, and newConversation() which clears both.
+   */
+  const conversationId = ref<string | null>(null)
+  const conversationTitle = ref<string | null>(null)
   const { settings } = useVoiceSettings()
 
   const events = createEmitter<VizEvent>()
@@ -73,7 +88,7 @@ export function useVoice() {
     // resumes in a NEW bubble after each inline tool chip — true stream order.
     if (last && last.role === role) last.text += delta
     else {
-      transcript.value.push({ id: newEntryId(), role, text: delta, attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
+      transcript.value.push({ id: newEntryId(), role, text: delta, createdAt: new Date().toISOString(), attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
       if (role === 'user') pendingUserAttachments = []
     }
   }
@@ -81,11 +96,25 @@ export function useVoice() {
   function pushReasoning(text: string) {
     const last = transcript.value[transcript.value.length - 1]
     if (last && last.role === 'assistant') last.reasoning = (last.reasoning ?? '') + text
-    else transcript.value.push({ id: newEntryId(), role: 'assistant', text: '', reasoning: text })
+    else transcript.value.push({ id: newEntryId(), role: 'assistant', text: '', createdAt: new Date().toISOString(), reasoning: text })
   }
 
   function pushTool(t: { name: string; summary: string; undoToken?: string }) {
     transcript.value.push({ id: newEntryId(), role: 'tool', text: '', ...t })
+  }
+
+  // Usage arrives once per turn (see run.ts/ws.ts), after all of that turn's text/tool
+  // entries have already been pushed. It describes the whole assistant turn, so attach
+  // it to the LAST assistant-role entry — mirroring buildResumeTranscript, which after a
+  // reload attaches the persisted message's usage to its trailing (last) split entry.
+  // Walking back past interleaved tool chips lets it land correctly even when the turn's
+  // final action was a tool call with no trailing assistant text.
+  function setUsage(usage: MessageUsage) {
+    for (let i = transcript.value.length - 1; i >= 0; i--) {
+      const e = transcript.value[i]!
+      if (e.role === 'assistant') { e.usage = usage; return }
+      if (e.role === 'user') return // don't reach back into a previous turn
+    }
   }
 
   function stopPlayback() {
@@ -135,7 +164,7 @@ export function useVoice() {
     } catch { /* skip undecodable */ }
   }
 
-  // Bumped on every stop(): async startup steps (VAD model/wasm fetches can take
+  // Bumped on every disconnect(): async startup steps (VAD model/wasm fetches can take
   // seconds over WAN) bail out when their session is stale instead of constructing
   // audio nodes on a closed AudioContext ("No execution context available").
   let session = 0
@@ -158,11 +187,11 @@ export function useVoice() {
     const mySession = ++session
     connecting = connectInner(mySession)
       .catch((err) => {
-        if (mySession !== session) return // torn down mid-start — stop() already cleaned up
+        if (mySession !== session) return // torn down mid-start — disconnect() already cleaned up
         // WS setup failure would otherwise strand the UI in 'connecting'.
         error.value = err instanceof Error ? err.message : 'Voice startup failed'
         events.emit({ type: 'error' })
-        stop()
+        disconnect()
       })
       .finally(() => { connecting = null })
     await connecting
@@ -191,11 +220,16 @@ export function useVoice() {
         if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
         if (fx.reasoning) pushReasoning(fx.reasoning)
         if (fx.tool) pushTool(fx.tool)
+        if (fx.usage) setUsage(fx.usage)
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
         for (const ev of fx.events) events.emit(ev)
         if (fx.approval) pendingApproval.value = fx.approval
         if (fx.approvalResolved && pendingApproval.value?.requestId === fx.approvalResolved) pendingApproval.value = null
+        if (fx.conversation) {
+          conversationId.value = fx.conversation.id
+          conversationTitle.value = fx.conversation.title
+        }
       }
     }
     // Resolve only once the socket is OPEN. A pre-open error/close rejects → connect()'s
@@ -215,22 +249,28 @@ export function useVoice() {
       socket.addEventListener('close', () => reject(new Error('WebSocket closed before open')), { once: true })
     })
     // connectInner does NOT call startVad — call enableMic() separately for mic input.
-    if (mySession !== session) return // stop() landed while setting up
+    if (mySession !== session) return // disconnect() landed while setting up
   }
 
   /**
    * Enable microphone input: start the VAD + getUserMedia. Requires the WS to be
    * connected first (`connected.value === true`). No-op if VAD is already running.
+   * Returns whether the mic actually started — callers must not flip their own
+   * "mic on" state on a bare await, since a denied permission or missing device
+   * rejects inside startVad() and is swallowed here into `error` rather than thrown.
    */
-  async function enableMic() {
-    if (!connected.value || vad) return
+  async function enableMic(): Promise<boolean> {
+    if (vad) return true
+    if (!connected.value) return false
     const mySession = session
     try {
       await startVad(mySession)
+      return true
     } catch (err) {
-      if (mySession !== session) return
+      if (mySession !== session) return false
       error.value = err instanceof Error ? err.message : 'Mic startup failed'
       events.emit({ type: 'error' })
+      return false
     }
   }
 
@@ -242,7 +282,7 @@ export function useVoice() {
     if (!vad) return
     const current = session
     await vad.destroy()
-    if (current !== session) return // stop() raced us
+    if (current !== session) return // disconnect() raced us
     vad = null
     vizStream?.getTracks().forEach(t => t.stop())
     vizStream = null
@@ -261,7 +301,24 @@ export function useVoice() {
       baseAssetPath: '/vad/',
       onnxWASMBasePath: '/ort/',
       getStream: async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } })
+        const baseAudio = { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+        const deviceId = settings.value.micDeviceId
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            ...baseAudio,
+            // '' means "let the OS choose". An explicit id is `exact` so a stale
+            // selection fails loudly here rather than silently using the wrong mic.
+            ...(deviceId ? { deviceId: { exact: deviceId } } : {})
+          }
+        }).catch(async (err: Error) => {
+          // A device that has been unplugged since it was chosen throws
+          // OverconstrainedError. Fall back to the default rather than leaving the
+          // user with a dead microphone and no explanation.
+          if (err.name !== 'OverconstrainedError') throw err
+          settings.value = { ...settings.value, micDeviceId: '' }
+          error.value = 'That microphone is no longer available — switched to the system default.'
+          return navigator.mediaDevices.getUserMedia({ audio: baseAudio })
+        })
         vizStream = stream
         try {
           audioCtx!.createMediaStreamSource(stream).connect(micAnalyser!)
@@ -301,7 +358,7 @@ export function useVoice() {
     if (!vad || !audioCtx) return
     const mySession = session
     await vad.destroy()
-    if (mySession !== session) return // stop() landed mid-restart
+    if (mySession !== session) return // disconnect() landed mid-restart
     vad = null
     vizStream?.getTracks().forEach(t => t.stop())
     vizStream = null
@@ -309,7 +366,9 @@ export function useVoice() {
     await startVad(mySession)
   }
 
-  function stop() {
+  /** Full teardown: closes the VAD, WS, and AudioContext. Unlike stop() (below,
+   *  exposed to callers), this ends the session rather than just the running turn. */
+  function disconnect() {
     session++ // invalidate any in-flight startup/restart
     vad?.destroy()
     stopPlayback()
@@ -333,7 +392,7 @@ export function useVoice() {
     await connect()
   }
 
-  onUnmounted(stop)
+  onUnmounted(disconnect)
 
   return {
     state,
@@ -348,7 +407,16 @@ export function useVoice() {
     disableMic,
     /** Backwards-compatible alias for connect(). Mic stays OFF. */
     start,
-    stop,
+    /** Full teardown: closes VAD/WS/AudioContext. Called automatically on unmount. */
+    disconnect,
+    /** Abort the running turn. Same frame the VAD barge-in path sends — until now
+     *  a typed turn had no way to reach it and ran to completion. Leaves the WS and
+     *  AudioContext connected (unlike disconnect()). */
+    stop() {
+      ws?.send(JSON.stringify({ type: 'interrupt' }))
+      stopPlayback()
+      state.value = 'idle'
+    },
     setVoice: (provider: string, voice: string) => {
       desiredVoice = { provider, voice }
       settings.value = { ...settings.value, provider, voice } // persist the pick
@@ -396,8 +464,12 @@ export function useVoice() {
      */
     newConversation: () => {
       transcript.value = []
+      conversationId.value = null
+      conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))
     },
+    conversationId,
+    conversationTitle,
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,
     onVizEvent: events.on,

@@ -1,6 +1,5 @@
 // Pure TS (no Three.js): consumes voice state + events + audio levels and
 // produces per-frame Directives. State changes are lerped (one deliberate hard cut: assemble resets to 0 when entering connecting).
-import { BAR_COUNT } from './types'
 import { PALETTE } from './tuning'
 import type { VizState, VizEvent, Directives } from './types'
 
@@ -18,8 +17,6 @@ const ASSEMBLE_SPEED = 0.9 // slow build while connecting
 const SHATTER_DECAY = 2.2
 const IGNITE_DECAY = 2.8
 const ERROR_DECAY = 3.4    // visible ~700ms
-const MIC_ATTACK = 26
-const MIC_RELEASE = 6
 const OUT_ATTACK = 30
 const OUT_RELEASE = 8
 const TOOL_PULSE_RATE = 1.2 // pulses per second while a tool runs
@@ -56,9 +53,7 @@ export function createChoreographer() {
   const d: Directives = {
     vizState: 'connecting',
     coreColor: [...PALETTE.connecting.core],
-    ringColor: [...PALETTE.connecting.ring],
-    energy: 0, swirl: 0, shatter: 0, ignite: 0, assemble: 0,
-    micMix: 0, ringLevels: new Float32Array(BAR_COUNT), outLevel: 0,
+    energy: 0, swirl: 0, shatter: 0, ignite: 0, assemble: 0, outLevel: 0,
     errorFlash: 0, firing: 0, sparks: 0, pulseRate: 0, dim: 0,
   }
   let prev: VizState | null = null
@@ -74,7 +69,7 @@ export function createChoreographer() {
   /**
    * Returns the SAME Directives object every frame, mutated in place (zero
    * per-frame allocation). Consumers must read it immediately — never retain
-   * it (or ringLevels) across frames.
+   * it (or its array field, coreColor) across frames.
    */
   function update(inp: VizInputs, dt: number): Directives {
     dt = Math.min(dt, 0.1) // rAF can hand us seconds after a background tab — don't swallow impulses
@@ -90,7 +85,6 @@ export function createChoreographer() {
     const pal = PALETTE[s]
     for (let i = 0; i < 3; i++) {
       d.coreColor[i] = approach(d.coreColor[i]!, pal.core[i]!, COLOR_SPEED, dt)
-      d.ringColor[i] = approach(d.ringColor[i]!, pal.ring[i]!, COLOR_SPEED, dt)
     }
 
     d.outLevel = approach(d.outLevel, inp.outLevel, inp.outLevel > d.outLevel ? OUT_ATTACK : OUT_RELEASE, dt)
@@ -101,7 +95,6 @@ export function createChoreographer() {
     d.energy = approach(d.energy, energyTarget, KNOB_SPEED, dt)
     d.swirl = approach(d.swirl, SWIRL[s], KNOB_SPEED, dt)
     d.dim = approach(d.dim, DIM[s], KNOB_SPEED, dt)
-    d.micMix = approach(d.micMix, s === 'listening' ? 1 : 0, KNOB_SPEED, dt)
     d.firing = approach(d.firing, FIRING[s], KNOB_SPEED, dt)
     d.assemble = approach(
       d.assemble,
@@ -109,12 +102,6 @@ export function createChoreographer() {
       s === 'connecting' ? ASSEMBLE_SPEED : KNOB_SPEED,
       dt
     )
-
-    for (let i = 0; i < BAR_COUNT; i++) {
-      const raw = inp.micLevels[i] ?? 0
-      const cur = d.ringLevels[i] ?? 0
-      d.ringLevels[i] = approach(cur, raw, raw > cur ? MIC_ATTACK : MIC_RELEASE, dt)
-    }
 
     d.shatter *= Math.exp(-SHATTER_DECAY * dt)
     d.ignite *= Math.exp(-IGNITE_DECAY * dt)

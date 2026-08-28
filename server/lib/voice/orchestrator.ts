@@ -1,5 +1,5 @@
 // server/lib/voice/orchestrator.ts
-import { SentenceChunker } from './chunker'
+import { SpeechChunker } from './segment'
 import { VOICE_TUNING } from './tuning'
 import type { SttProvider, TtsProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
@@ -14,6 +14,7 @@ export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[] }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
   | { type: 'audio'; bytes: Uint8Array }
   | { type: 'state'; state: 'thinking' | 'speaking' | 'typing' | 'tool' | 'idle' }
 
@@ -76,7 +77,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   // context block. Best-effort (returns '' on error/timeout) — never blocks a turn.
   const memoryBlock = deps.buildMemoryContext ? await deps.buildMemoryContext(userText) : ''
   const context = [deps.context, memoryBlock].filter(Boolean).join('\n\n') || undefined
-  const chunker = new SentenceChunker(VOICE_TUNING.tts.sentenceMinChars)
+  const chunker = new SpeechChunker(VOICE_TUNING.tts.sentenceMinChars)
   let assistantText = ''
   const turnImages: DisplayImage[] = []
   const toolRecords: AgentToolRecord[] = []
@@ -99,6 +100,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {
       deps.emit({ type: 'reasoning', text: ev.text })   // display only — never chunked/spoken/persisted here
+    } else if (ev.type === 'usage') {
+      // Metadata only, same as reasoning above: never touches assistantText, the
+      // transcript events, or the TTS chunker — it isn't part of what the user hears/reads.
+      deps.emit({ type: 'usage', inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, totalTokens: ev.totalTokens })
     } else if (ev.type === 'text-delta') {
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })

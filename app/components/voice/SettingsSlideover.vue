@@ -1,6 +1,14 @@
 <!-- app/components/voice/SettingsSlideover.vue -->
 <script setup lang="ts">
+import { DEFAULT_MIC, buildMicOptions, micIdToSelectValue, selectValueToMicId, isMicIdAvailable } from '~/lib/voice/devices'
+
 const props = defineProps<{ voice: ReturnType<typeof useVoice> }>()
+
+// Spoken replies. The model is bound to the page's `agent-speak` cookie ref — the SAME
+// ref the toolbar switch uses — so the two controls cannot drift. The toolbar switch is
+// hidden under sm (the navbar overflows a phone otherwise), and this slideover is
+// reachable at every width, so this is the only way to turn voice replies on there.
+const speak = defineModel<boolean>('speak', { required: true })
 
 const { settings } = useVoiceSettings()
 
@@ -17,6 +25,38 @@ const selectedVoice = computed({
     const [p, v] = val.split('|') as [string, string]
     props.voice.setVoice(p, v) // sends over WS if connected + persists to the cookie
   },
+})
+
+// Microphone picker. Populated on mount + on every 'devicechange' so plugging/
+// unplugging a device is reflected without reopening the slideover.
+const mics = ref<{ label: string; value: string }[]>([{ label: 'System default', value: DEFAULT_MIC }])
+
+async function loadMics() {
+  if (!navigator.mediaDevices?.enumerateDevices) return
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  const inputs = devices.filter(d => d.kind === 'audioinput')
+  mics.value = buildMicOptions(inputs)
+  // The previously-chosen device vanished (unplugged since it was picked) — fall back
+  // to the default proactively rather than waiting for getUserMedia to throw
+  // OverconstrainedError the next time the mic is enabled.
+  if (!isMicIdAvailable(settings.value.micDeviceId, inputs)) {
+    settings.value = { ...settings.value, micDeviceId: '' }
+  }
+}
+
+// reka-ui's USelectMenu rejects an empty-string item value, so '' round-trips
+// through a non-empty sentinel (same pattern as the model picker's DEFAULT_MODEL).
+const selectedMic = computed({
+  get: () => micIdToSelectValue(settings.value.micDeviceId),
+  set: (v: string) => { settings.value = { ...settings.value, micDeviceId: selectValueToMicId(v) } },
+})
+
+onMounted(() => {
+  void loadMics()
+  navigator.mediaDevices?.addEventListener?.('devicechange', loadMics)
+})
+onBeforeUnmount(() => {
+  navigator.mediaDevices?.removeEventListener?.('devicechange', loadMics)
 })
 
 // Live tuning meter: Silero speech probability — the same unit as the threshold
@@ -56,6 +96,16 @@ onUnmounted(() => clearTimeout(timer))
     <template #body>
       <div class="flex flex-col gap-6">
         <UFormField
+          label="Voice replies"
+          help="Speak each reply aloud as well as showing it. Same setting as the toolbar switch on wide screens."
+        >
+          <USwitch
+            v-model="speak"
+            :label="speak ? 'Enabled' : 'Disabled'"
+          />
+        </UFormField>
+
+        <UFormField
           label="Voice"
           help="Applies immediately and persists."
         >
@@ -64,6 +114,19 @@ onUnmounted(() => clearTimeout(timer))
             :items="voiceItems"
             value-key="value"
             icon="i-lucide-mic-vocal"
+            class="w-full"
+          />
+        </UFormField>
+
+        <UFormField
+          label="Microphone"
+          help="Applies the next time the mic is enabled."
+        >
+          <USelectMenu
+            v-model="selectedMic"
+            :items="mics"
+            value-key="value"
+            icon="i-lucide-mic"
             class="w-full"
           />
         </UFormField>

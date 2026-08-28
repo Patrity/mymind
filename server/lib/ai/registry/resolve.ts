@@ -106,15 +106,26 @@ export async function withFailoverOver<T>(
 }
 
 /**
- * Build an AI SDK language model (used by reasoning/bulk/vision LLM roles).
- * All providers are OpenAI-compatible — non-OpenAI vendors (e.g. Anthropic) are
- * fronted by an OpenAI-compatible gateway (LiteLLM), so there's a single transport.
+ * Build an AI SDK language model. All providers are OpenAI-compatible — non-OpenAI
+ * vendors (e.g. Anthropic) are fronted by an OpenAI-compatible gateway (LiteLLM), so
+ * there's a single transport.
+ *
+ * The ONLY caller is reasoningModels() (server/lib/agent/model.ts), consumed exclusively
+ * by run.ts's streamText() calls — bulk/vision go through chat.ts's raw REST fetch, and
+ * embeddings/stt/tts have their own raw-fetch adapters, none of which touch this function.
+ * `includeUsage: true` is therefore scoped to the streaming agent chat path by construction,
+ * not blanket-applied: the AI SDK only turns it into an outbound `stream_options` field on
+ * a streaming call (openai-compatible/dist), and nothing else in the app streams through
+ * this factory. It's what makes the transcript's per-turn token count (conversation_messages
+ * .usage) possible — without it, the provider never reports usage and run.ts's
+ * partToUsageEvent() has nothing to read, no matter what the client does with it.
  */
 export function languageModel(m: ResolvedModel): LanguageModel {
   return createOpenAICompatible({
     name: `mymind-${m.usage}`,
     baseURL: (m.baseURL ?? '').replace(/\/$/, ''),
-    apiKey: m.apiKey || 'none'
+    apiKey: m.apiKey || 'none',
+    includeUsage: true
   })(m.modelId)
 }
 

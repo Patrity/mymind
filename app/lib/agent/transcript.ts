@@ -9,7 +9,7 @@ import type { ConversationMessageDTO } from '~~/shared/types/conversation'
 
 /** Only the fields the transcript rebuild reads — keeps this callable from a test fixture. */
 export type ResumeMessage = Pick<ConversationMessageDTO, 'id' | 'role' | 'content'>
-  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments'>>
+  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments' | 'usage' | 'createdAt'>>
 
 /**
  * Persisted messages → transcript entries, with tool chips at their true inline position.
@@ -29,7 +29,7 @@ export function buildResumeTranscript(messages: ResumeMessage[]): TranscriptEntr
     if (!allOffset) {
       return [
         ...records.map((t, i) => ({ id: `${m.id}-tool-${i}`, role: 'tool' as const, text: '', name: t.name, summary: t.summary, undoToken: t.undoToken })),
-        { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined }
+        { id: m.id, role: m.role, text: m.content, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined, createdAt: m.createdAt, usage: m.usage }
       ]
     }
 
@@ -47,10 +47,10 @@ export function buildResumeTranscript(messages: ResumeMessage[]): TranscriptEntr
     // A chip at the very end of the reply (no trailing commentary) must not leave a
     // floating empty "Bridget" bubble — Transcript.vue renders the role label
     // regardless of text. Only skip the trailing entry when it would carry nothing at
-    // all; reasoning/attachments still need to ride on it even with empty text.
+    // all; reasoning/attachments/usage still need to ride on it even with empty text.
     const trailingText = m.content.slice(cursor)
-    if (trailingText || m.reasoning || m.attachments?.length) {
-      entries.push({ id: m.id, role: m.role, text: trailingText, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined })
+    if (trailingText || m.reasoning || m.attachments?.length || m.usage) {
+      entries.push({ id: m.id, role: m.role, text: trailingText, attachments: m.attachments ?? undefined, reasoning: m.reasoning ?? undefined, createdAt: m.createdAt, usage: m.usage })
     }
     return entries
   })

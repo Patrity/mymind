@@ -7,6 +7,7 @@ import { ttsSynth } from '../../lib/voice/tts-failover'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
+import { buildTurnPersistPayload } from '../../lib/voice/turn-persist'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
 import { buildLiveContext, buildMemoryContext } from '../../lib/agent/context'
 import { publishChange } from '../../utils/live-bus'
@@ -14,14 +15,15 @@ import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
 import { randomUUID } from 'node:crypto'
-import { withoutAttachmentMarkers, type AttachmentRef } from '../../lib/agent/attachments'
+import type { AttachmentRef } from '../../lib/agent/attachments'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'voice',voice} | {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
 //   {type:'text',text,speak?} (typed turn, injected post-STT) |
 //   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset) |
 //   {type:'approve'|'deny',requestId,...} (resolve a pending exec approval)
-// Server→client: binary = audio bytes | text JSON = transcript/reasoning/tool/state/error events.
+// Server→client: binary = audio bytes | text JSON = transcript/reasoning/tool/state/error events |
+//   {type:'conversation',conversationId,title} (emitted once, when the first turn lazily creates the thread).
 interface ConnState {
   history: AgentMessage[]
   ac: AbortController | null
@@ -169,11 +171,17 @@ export default defineWebSocketHandler({
         // never appeared).
         const context = (await buildLiveContext(new Date())) || undefined
         let reasoningText = ''
+        let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null = null
         const prevLen = s.history.length
         const emit = (e: VoiceEvent) => {
           if (e.type === 'audio') peer.send(e.bytes)
           else {
             if (e.type === 'reasoning') reasoningText += e.text
+            // Overwrite, not accumulate: at most one usage event per turn in the common
+            // case, and if the rare forced-final recovery path (run.ts) yields a second
+            // one, it's from the streamText call that actually produced the visible text —
+            // that supersedes the aborted first call's usage rather than adding to it.
+            else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens }
             peer.send(JSON.stringify(e))
           }
         }
@@ -181,18 +189,21 @@ export default defineWebSocketHandler({
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId
-          if (!s.conversationId) s.conversationId = (await createConversation({ title: deriveTitle(messageText(added[0]!.content)) })).id
-          await appendMessages(s.conversationId, added.map(m => ({
-            role: m.role as 'user' | 'assistant',
-            // Attachment markers are a live-turn signal only. Persisting one makes it durable:
-            // it is replayed on every future turn and, once flattened into `content`, is no
-            // longer a separate part the resume-path filter can remove.
-            content: messageText(withoutAttachmentMarkers(m.content)),
-            modality: m.role === 'user' ? inputModality : (speakFlag ? 'voice' : 'text'),
-            toolCalls: m.role === 'assistant' && m.toolRecords?.length ? m.toolRecords : null,
-            reasoning: m.role === 'assistant' ? (reasoningText || null) : null,
-            attachments: m.role === 'user' ? turnAttachments : null
-          })))
+          if (!s.conversationId) {
+            const title = deriveTitle(messageText(added[0]!.content))
+            s.conversationId = (await createConversation({ title })).id
+            // Tell the client which thread it just landed in. Without this frame the page
+            // has no way to learn the id/title the server derived on the first turn — the
+            // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
+            peer.send(JSON.stringify({ type: 'conversation', conversationId: s.conversationId, title }))
+          }
+          await appendMessages(s.conversationId, buildTurnPersistPayload(added, {
+            inputModality,
+            speakFlag,
+            attachments: turnAttachments,
+            reasoning: reasoningText,
+            usage: turnUsage
+          }))
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }
       } catch (err) {

@@ -10,6 +10,10 @@ const props = defineProps<{
   sendText?: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>
   /** When true, typed sends request a spoken reply from the agent. */
   speak?: boolean
+  /** True while a turn is generating — swaps the send button for Stop. */
+  busy?: boolean
+  /** Whether the mic (VAD) is currently listening — drives the mic button's state. */
+  micOn?: boolean
   /**
    * Prefill the composer (e.g. the agent page's `?q=` handoff from Home's
    * "Ask the brain" box).
@@ -22,7 +26,18 @@ const props = defineProps<{
    * refresh, a bookmark, or a back-button navigation cannot re-fire a model call.
    */
   autoSend?: boolean
+  /**
+   * Prefill the composer from an empty-state starter click. Unlike `initialText`, this
+   * never sends — it only ever sets `text`. Deliberately a SEPARATE prop (not folded into
+   * initialText/autoSend): initialText's watcher calls maybeAutoSend, which is guarded to
+   * fire at most once per distinct value for the `?q=` handoff. Routing starter clicks
+   * through that path would either get silently dropped by the once-per-value guard (if a
+   * starter ever matched a prior initialText) or, worse, auto-send the starter text instead
+   * of just filling the box.
+   */
+  prefill?: string
 }>()
+const emit = defineEmits<{ stop: []; toggleMic: [] }>()
 
 const toast = useToast()
 const text = ref(props.initialText ?? '')
@@ -34,6 +49,11 @@ watch(() => props.initialText, (v) => {
   if (!v) return
   text.value = v
   void maybeAutoSend(v)
+})
+// Starter-click prefill: just drop the text in, never send.
+watch(() => props.prefill, (v) => {
+  if (!v) return
+  text.value = v
 })
 const pending = ref<File[]>([])
 const uploading = ref(false)
@@ -130,7 +150,17 @@ function onPaste(e: ClipboardEvent) {
     const files = fileItems.map(i => i.getAsFile()).filter((f): f is File => f !== null)
     addFiles(files)
   }
-  // Text paste falls through to UInput's default handler
+  // Text paste falls through to UTextarea's default handler
+}
+
+function onKeydown(e: KeyboardEvent) {
+  // Enter sends; Shift+Enter is a newline. Without this a multiline composer
+  // cannot be submitted from the keyboard at all. isComposing guards IME input
+  // (e.g. Japanese/Chinese) — the Enter that commits a candidate must not also send.
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault()
+    void send()
+  }
 }
 
 // Drag-drop
@@ -270,14 +300,37 @@ onMounted(() => { void maybeAutoSend(props.initialText) })
         @change="onFileChosen"
       >
 
-      <UInput
+      <UTextarea
         v-model="text"
+        :rows="1"
+        :maxrows="8"
+        autoresize
         placeholder="Type a message…"
         class="flex-1"
         @paste="onPaste"
+        @keydown="onKeydown"
       />
 
       <UButton
+        :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
+        :color="micOn ? 'primary' : 'neutral'"
+        :variant="micOn ? 'soft' : 'ghost'"
+        type="button"
+        :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
+        @click="emit('toggleMic')"
+      />
+
+      <UButton
+        v-if="busy"
+        type="button"
+        icon="i-lucide-square"
+        color="neutral"
+        variant="soft"
+        aria-label="Stop generating"
+        @click="emit('stop')"
+      />
+      <UButton
+        v-else
         type="submit"
         icon="i-lucide-send"
         :disabled="(!text.trim() && !pending.length) || uploading"

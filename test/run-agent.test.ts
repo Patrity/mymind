@@ -148,4 +148,50 @@ describe('runAgent', () => {
     )) events.push(e)
     expect(streamText).toHaveBeenCalledTimes(1) // sawToolCall true → marker is prose, no false-positive re-run
   })
+
+  it('maps a `finish` part carrying totalUsage to a usage event', async () => {
+    const streamText = vi.fn(() => fakeFullStream([
+      { type: 'text-delta', id: 't', delta: 'Hello Tony' },
+      { type: 'finish', finishReason: 'stop', totalUsage: { inputTokens: 120, outputTokens: 45, totalTokens: 165 } }
+    ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'hi' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    const usage = events.find(e => e.type === 'usage')
+    expect(usage).toEqual({ type: 'usage', inputTokens: 120, outputTokens: 45, totalTokens: 165 })
+    expect(events[events.length - 1]).toEqual({ type: 'done' })
+  })
+
+  it('yields no usage event, and does not throw, when `finish` carries no usable usage', async () => {
+    const streamText = vi.fn(() => fakeFullStream([
+      { type: 'text-delta', id: 't', delta: 'Hello Tony' },
+      { type: 'finish', finishReason: 'stop' } // no totalUsage at all — the common shape in existing fixtures above
+    ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'hi' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    expect(events.some(e => e.type === 'usage')).toBe(false)
+    expect(events[events.length - 1]).toEqual({ type: 'done' })
+  })
+
+  it('tolerates a differently-shaped or malformed totalUsage without throwing', async () => {
+    const streamText = vi.fn(() => fakeFullStream([
+      { type: 'text-delta', id: 't', delta: 'Hi' },
+      { type: 'finish', finishReason: 'stop', totalUsage: 'not-an-object' }
+    ]))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'hi' }],
+      { signal: new AbortController().signal },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    expect(events.some(e => e.type === 'usage')).toBe(false)
+    expect(events[events.length - 1]).toEqual({ type: 'done' })
+  })
 })

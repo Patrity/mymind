@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { useMediaQuery } from '@vueuse/core'
 import type { TranscriptEntry } from '~/composables/useVoice'
 import { buildResumeTranscript } from '~/lib/agent/transcript'
+import { truncateForRetry } from '~/lib/agent/retry'
 
 definePageMeta({ title: 'Agent' })
 
@@ -23,23 +25,16 @@ onMounted(() => {
   void router.replace({ path: route.path, query: { ...route.query, q: undefined } })
 })
 
-// Persistent preferences (cookie-backed so they survive page reloads)
-const showCanvas = useCookie<boolean>('agent-canvas', { default: () => true })
+// Persistent preference (cookie-backed so it survives page reloads)
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
 
 // Reasoning-model override (ephemeral, cookie-backed). Empty cookie = default chain order.
 // reka-ui's USelectMenu rejects an empty-string item value, so the "Default" option uses a
 // non-empty sentinel that maps back to "no override" (empty cookie / null to setModel).
+// AgentToolbar builds the item list around the same sentinel.
 const DEFAULT_MODEL = '__default__'
 const { load: loadAiConfig, draft: aiDraft } = useAiConfig()
 const agentModel = useCookie<string>('agent-model', { default: () => '' })
-const modelItems = computed(() => {
-  const models = aiDraft.value.models
-  const chain = (aiDraft.value.assignments.reasoning ?? [])
-    .map(id => models.find(m => m.id === id))
-    .filter((m): m is NonNullable<typeof m> => !!m)
-  return [{ label: 'Default (chain order)', value: DEFAULT_MODEL }, ...chain.map(m => ({ label: m.label, value: m.id }))]
-})
 const selectedModel = computed({
   get: () => agentModel.value || DEFAULT_MODEL,
   set: (val: string) => {
@@ -52,12 +47,44 @@ const selectedModel = computed({
 // Mic-on state is local — it reflects whether the VAD is actually running
 const micOn = ref(false)
 
-// History slideover open state
-const historyOpen = ref(false)
+// Empty-state starter click -> composer prefill. A page-local ref rather than plumbing
+// through useVoice: it's pure UI state, gone the moment the first message lands (the
+// empty state that produced it is v-if'd away by then).
+const starterPrefill = ref<string>()
+function pickStarter(prompt: string) {
+  starterPrefill.value = prompt
+}
 
-// Caption over the canvas: the message currently being spoken/typed. On small
-// screens (transcript hidden) this is the only live text. Tool chips are not
-// captions — show the latest user/assistant text instead.
+// Which thread the conversation column is showing lives in useVoice, because the
+// SERVER is what decides it: a brand-new thread is created lazily on the first turn
+// and its id + derived title come back over the WS. Mirroring that into page-local
+// refs would have meant the toolbar and rail only learned about a new thread on a
+// reload.
+
+// Thread rail as a slideover — the only way to reach threads under lg, where the rail
+// column is hidden.
+const threadsOpen = ref(false)
+
+// Full-bleed voice mode (the overlay itself lands with the avatar work).
+const fullBleed = ref(false)
+
+// The Bridget column is `hidden lg:flex` in CSS, but `hidden` does not unmount — its
+// Avatar/MicBand would otherwise keep a WebGL context + RAF loop running behind a
+// `display:none` panel on every phone, and stay mounted a SECOND time underneath the
+// full-bleed overlay (which mounts its own copy). Gate the Bridget column's Avatar/
+// MicBand with this instead so exactly one of each is ever mounted. The panel itself
+// (and the conversation column) must stay `v-if`-free — that CSS-only hide is what
+// preserves scroll position across the full-bleed round trip.
+const isLgUp = useMediaQuery('(min-width: 1024px)')
+const showBridgetAvatar = computed(() => isLgUp.value && !fullBleed.value)
+
+// True while a turn is generating (LLM output, a tool call, or TTS playback) — drives
+// the composer's Stop button. 'listening'/'connecting' are client-only states, not
+// generation, so they're deliberately excluded.
+const busy = computed(() => ['thinking', 'tool', 'speaking', 'typing'].includes(voice.state.value))
+
+// Caption over the avatar: the message currently being spoken/typed. Tool chips are not
+// captions — show the latest user/assistant text instead. Consumed by full-bleed mode.
 const caption = computed(() => {
   const t = voice.transcript.value
   for (let i = t.length - 1; i >= 0; i--) if (t[i]!.role !== 'tool') return t[i]!
@@ -88,18 +115,49 @@ async function toggleMic() {
     micOn.value = false
   } else {
     await voice.connect() // ensure the WS is up before requesting the mic
-    await voice.enableMic()
-    micOn.value = true
+    // enableMic() swallows a denied/missing mic into voice.error rather than throwing —
+    // only flip to "on" when it actually started, or a phone with a denied mic shows
+    // "Disable microphone" and a lit-up band over a mic that never ran.
+    micOn.value = await voice.enableMic()
   }
 }
 
 // Transcript rebuild (chip placement, legacy fallback, trailing-bubble rule) lives in
 // ~/lib/agent/transcript so it can be unit-tested — it used to be inline here, untested.
 async function resume(id: string) {
-  const { messages } = await useConversations().getConversation(id)
-  voice.transcript.value = buildResumeTranscript(messages)
-  await voice.loadConversation(id)
-  historyOpen.value = false
+  try {
+    const { conversation, messages } = await useConversations().getConversation(id)
+    // Build first, commit last: if loadConversation throws, the old thread must stay
+    // on screen intact rather than showing the new transcript under the old row.
+    const next = buildResumeTranscript(messages)
+    await voice.loadConversation(id)
+    voice.transcript.value = next
+    voice.conversationId.value = conversation.id
+    voice.conversationTitle.value = conversation.title
+  } catch (e) {
+    // The rail is now the primary way into a thread, so a failed load must say so rather
+    // than leaving the previous transcript on screen with a new row highlighted.
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Could not open conversation', description: err?.data?.statusMessage ?? err?.message })
+  } finally {
+    threadsOpen.value = false
+  }
+}
+
+/** Re-send the user turn that preceded this assistant entry, dropping the assistant
+ *  turn and everything after it. This replaces in place — it does NOT fork; parent_id
+ *  branching stays deferred. Pure walk-back-and-truncate logic lives in
+ *  ~/lib/agent/retry so it's unit-testable without a live voice connection. */
+async function retryTurn(entry: TranscriptEntry) {
+  const next = truncateForRetry(voice.transcript.value, entry.id)
+  if (!next) return
+  voice.transcript.value = next.transcript
+  await voice.sendText(next.userTurn.text, speakReply.value, next.userTurn.attachments)
+}
+
+function startNewConversation() {
+  voice.newConversation() // also clears voice.conversationId / conversationTitle
+  threadsOpen.value = false
 }
 
 // Auto-connect the WS on mount so the chat is usable immediately — typing and
@@ -118,179 +176,145 @@ onMounted(async () => {
   const c = route.query.c
   if (typeof c === 'string' && c) await resume(c)
 })
+
+// Full-bleed's Escape must work even when focus never lands inside the overlay (e.g. the
+// user tabbed to the close button, or focus is still on the toolbar trigger that opened
+// it) — a listener scoped to the overlay div alone would miss those. Setting fullBleed to
+// false when it is already false is a no-op, so this never interferes with typing (Escape
+// included) in the composer while full-bleed is closed.
+onMounted(() => {
+  const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') fullBleed.value = false }
+  window.addEventListener('keydown', onEsc)
+  onBeforeUnmount(() => window.removeEventListener('keydown', onEsc))
+})
 </script>
 
 <template>
-  <!-- Resizable panels don't have a single root element — wrap in a flex container.
-       When showCanvas is false the canvas panel is hidden and the transcript takes full
-       width. The canvas is the sized/resizable panel (left), the transcript is fluid
-       (right). Double-clicking the resize handle resets the split. -->
+  <!-- Three columns: threads / conversation / Bridget. Resizable panels don't have a
+       single root element — wrap them in a flex container.
+
+       Sizing constraint: Nuxt UI's resize handle only ever sizes the panel to its LEFT,
+       so `agent-threads` and `agent-conversation` carry the sizes and Bridget is the
+       fluid remainder, clamped in CSS. Double-clicking a handle resets that split.
+
+       Under lg both side columns collapse and the conversation takes the full width —
+       that is the fix for the page having had no usable composer below 1024px. -->
   <div class="flex flex-1 min-w-0 h-full">
-    <UDashboardPanel
-      v-if="showCanvas"
-      id="agent-canvas"
-      resizable
-      :default-size="75"
-      :min-size="50"
-      :max-size="90"
-      :ui="{ body: '!p-0 !gap-0 overflow-hidden' }"
+    <!-- Mic/voice errors (e.g. a denied microphone permission): rendered fixed at the
+         page root so they're visible at every viewport width and in full-bleed mode.
+         This used to live inside the Bridget panel, which is `hidden lg:flex` — on a
+         phone the alert was in the DOM but under `display:none`, so a denied mic failed
+         completely silently. z-[60] sits above full-bleed's z-50 overlay.
+         pointer-events-none: it carries no close/action button, so it must not sit in
+         front of the toolbar buttons underneath it and eat their clicks. -->
+    <UAlert
+      v-if="voice.error.value"
+      color="error"
+      class="pointer-events-none fixed inset-x-3 top-3 z-[60] sm:inset-x-auto sm:right-3 sm:max-w-sm"
+      :title="voice.error.value"
+    />
+
+    <!-- Full-bleed voice mode: her, the band, and the current line, with the three-column
+         chrome kept mounted underneath (just covered) so the conversation's scroll position
+         survives the round trip. The caption goes through MdView, never raw interpolation —
+         the old page printed `{{ caption.text }}` as plain text, so the most prominent text
+         on the screen showed literal `#`/`**`, the visible twin of the TTS-pronounces-
+         asterisks bug. cache-key is per-entry: a shared first delta otherwise collides on
+         MDC's hash-of-value key and renders another entry's content (live-verified on the
+         transcript; see Transcript.vue). -->
+    <div
+      v-if="fullBleed"
+      class="fixed inset-0 z-50 flex flex-col bg-elevated"
+      role="dialog"
+      aria-label="Voice mode"
+      @keydown.esc="fullBleed = false"
     >
-      <template #header>
-        <UDashboardNavbar title="Agent">
-          <template #leading>
-            <UDashboardSidebarCollapse />
-          </template>
-          <template #right>
-            <!-- Visualizer toggle -->
-            <USwitch
-              v-model="showCanvas"
-              label="Visualizer"
-              size="sm"
-            />
-            <!-- Respond-in-voice toggle -->
-            <USwitch
-              v-model="speakReply"
-              label="Voice replies"
-              size="sm"
-            />
-            <!-- History button -->
-            <UButton
-              icon="i-lucide-history"
-              label="History"
-              variant="ghost"
-              color="neutral"
-              @click="historyOpen = true"
-            />
-            <!-- New conversation -->
-            <UButton
-              icon="i-lucide-plus"
-              label="New"
-              variant="ghost"
-              color="neutral"
-              @click="voice.newConversation()"
-            />
-            <!-- Mic toggle (auto-connects if needed) -->
-            <UButton
-              :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
-              :color="micOn ? 'primary' : 'neutral'"
-              :variant="micOn ? 'soft' : 'ghost'"
-              :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
-              @click="toggleMic"
-            />
-            <!-- Reasoning-model override (ephemeral, cookie-persisted) -->
-            <USelectMenu
-              v-model="selectedModel"
-              :items="modelItems"
-              value-key="value"
-              icon="i-lucide-cpu"
-              size="sm"
-              class="w-44"
-              aria-label="Agent model"
-            />
-            <VoiceSettingsSlideover :voice="voice" />
-          </template>
-        </UDashboardNavbar>
-      </template>
+      <UButton
+        icon="i-lucide-minimize-2"
+        variant="ghost"
+        color="neutral"
+        class="absolute right-4 top-4 z-10"
+        aria-label="Back to chat"
+        @click="fullBleed = false"
+      />
+      <AgentAvatar
+        class="flex-1 min-h-0"
+        :state="voice.state.value"
+        :connected="voice.connected.value"
+        :mic-analyser="voice.micAnalyser"
+        :out-analyser="voice.outAnalyser"
+        :on-viz-event="voice.onVizEvent"
+      />
+      <!-- Capped + internally scrollable: the avatar has its own min-height floor
+           (Avatar.client.vue) and the mic band is shrink-0, so an uncapped caption is the
+           only flexible thing left — on a long reply at a short viewport (375x700, the
+           phone case this mode is likeliest to hit) it grew past the fold and pushed the
+           mic band below y=700 with no way to scroll to it. Capping keeps both always
+           on-screen; a long line scrolls internally instead of displacing them. -->
+      <div
+        v-if="caption"
+        class="mx-auto mb-4 max-h-40 max-w-2xl shrink-0 overflow-y-auto px-6 text-center"
+      >
+        <MdView
+          :source="caption.text"
+          :cache-key="`caption-${caption.id}`"
+          class="text-sm text-highlighted"
+        />
+      </div>
+      <AgentMicBand
+        :mic-analyser="voice.micAnalyser()"
+        :speech-prob="voice.speechProb.value"
+        :active="micOn"
+      />
+    </div>
 
-      <template #body>
-        <div class="relative flex-1 min-h-0 bg-elevated/20">
-          <VoiceReactor
-            :state="voice.state.value"
-            :connected="voice.connected.value"
-            :mic-analyser="voice.micAnalyser"
-            :out-analyser="voice.outAnalyser"
-            :on-viz-event="voice.onVizEvent"
-          />
-          <div
-            v-if="caption"
-            class="absolute inset-x-4 bottom-12 z-10 mx-auto w-fit max-w-2xl rounded-lg bg-elevated/50 px-4 py-2.5 shadow-lg"
-          >
-            <span class="text-xs font-semibold uppercase tracking-wider text-muted">
-              {{ caption.role === 'user' ? 'You' : 'Bridget' }}
-            </span>
-            <p class="mt-0.5 line-clamp-3 text-sm text-highlighted">{{ caption.text }}</p>
-          </div>
-          <span class="absolute bottom-4 inset-x-0 text-center text-xs uppercase tracking-widest text-muted">
-            {{ voice.state.value }}
-          </span>
-          <UAlert
-            v-if="voice.error.value"
-            color="error"
-            class="absolute top-4 mx-4"
-            :title="voice.error.value"
-          />
-        </div>
-      </template>
-    </UDashboardPanel>
-
-    <!-- Transcript panel — always visible; takes full width when canvas is hidden -->
     <UDashboardPanel
-      id="agent-transcript"
+      id="agent-threads"
+      resizable
+      :default-size="14"
+      :min-size="10"
+      :max-size="24"
       class="hidden lg:flex"
       :ui="{ body: '!p-0 !gap-0' }"
     >
+      <template #body>
+        <AgentThreadRail
+          :active-id="voice.conversationId.value"
+          @select="resume"
+          @new="startNewConversation"
+        />
+      </template>
+    </UDashboardPanel>
+
+    <!-- `grow` matters: Bridget's column is capped, and a capped flex item freezes and
+         leaves the surplus as dead space at the right edge (196px at 2560, and ~80px at
+         1440 once handle 2 is dragged left). Growing here means the conversation absorbs
+         that surplus instead. Bridget's grow factor is far larger, so she still takes the
+         space first and this only collects what her cap refuses. -->
+    <UDashboardPanel
+      id="agent-conversation"
+      resizable
+      :default-size="58"
+      :min-size="35"
+      :max-size="80"
+      class="grow"
+      :ui="{ body: '!p-0 !gap-0' }"
+    >
       <template #header>
-        <UDashboardNavbar :title="showCanvas ? 'Transcript' : 'Agent'">
-          <!-- Show the control bar in the transcript header when canvas is hidden -->
-          <template
-            v-if="!showCanvas"
-            #leading
-          >
-            <UDashboardSidebarCollapse />
+        <AgentToolbar
+          v-model:speak="speakReply"
+          v-model:model="selectedModel"
+          :title="voice.conversationTitle.value"
+          @threads="threadsOpen = true"
+          @full-bleed="fullBleed = true"
+        >
+          <template #actions>
+            <VoiceSettingsSlideover
+              v-model:speak="speakReply"
+              :voice="voice"
+            />
           </template>
-          <template
-            v-if="!showCanvas"
-            #right
-          >
-            <!-- Visualizer toggle (restore canvas) -->
-            <USwitch
-              v-model="showCanvas"
-              label="Visualizer"
-              size="sm"
-            />
-            <!-- Respond-in-voice toggle -->
-            <USwitch
-              v-model="speakReply"
-              label="Voice replies"
-              size="sm"
-            />
-            <!-- History button -->
-            <UButton
-              icon="i-lucide-history"
-              label="History"
-              variant="ghost"
-              color="neutral"
-              @click="historyOpen = true"
-            />
-            <!-- New conversation -->
-            <UButton
-              icon="i-lucide-plus"
-              label="New"
-              variant="ghost"
-              color="neutral"
-              @click="voice.newConversation()"
-            />
-            <!-- Mic toggle (auto-connects if needed) -->
-            <UButton
-              :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
-              :color="micOn ? 'primary' : 'neutral'"
-              :variant="micOn ? 'soft' : 'ghost'"
-              :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
-              @click="toggleMic"
-            />
-            <!-- Reasoning-model override (ephemeral, cookie-persisted) -->
-            <USelectMenu
-              v-model="selectedModel"
-              :items="modelItems"
-              value-key="value"
-              icon="i-lucide-cpu"
-              size="sm"
-              class="w-44"
-              aria-label="Agent model"
-            />
-            <VoiceSettingsSlideover :voice="voice" />
-          </template>
-        </UDashboardNavbar>
+        </AgentToolbar>
       </template>
 
       <template #body>
@@ -298,8 +322,13 @@ onMounted(async () => {
           class="flex-1 min-h-0"
           :entries="voice.transcript.value"
           @undo="undoTool"
+          @retry="retryTurn"
+          @pick="pickStarter"
         />
-        <div v-if="voice.pendingApproval.value" class="px-4 pb-2">
+        <div
+          v-if="voice.pendingApproval.value"
+          class="px-4 pb-2"
+        >
           <AgentApprovalPrompt
             :approval="voice.pendingApproval.value"
             @approve="(d) => voice.sendApproval(voice.pendingApproval.value!.requestId, true, d)"
@@ -310,16 +339,63 @@ onMounted(async () => {
           :entries="voice.transcript.value"
           :send-text="voice.sendText"
           :speak="speakReply"
+          :busy="busy"
+          :mic-on="micOn"
           :initial-text="initialComposerText"
           :auto-send="!!initialComposerText"
+          :prefill="starterPrefill"
+          @stop="voice.stop"
+          @toggle-mic="toggleMic"
         />
       </template>
     </UDashboardPanel>
 
-    <!-- History slideover -->
-    <AgentHistorySlideover
-      v-model:open="historyOpen"
-      @select="resume"
-    />
+    <!-- Bridget: the fluid remainder. Clamped in CSS because Nuxt UI cannot size a panel
+         to the RIGHT of a handle. -->
+    <UDashboardPanel
+      id="agent-bridget"
+      class="hidden lg:flex grow-[9999] min-w-[240px] max-w-[420px]"
+      :ui="{ body: '!p-0 !gap-0 overflow-hidden' }"
+    >
+      <template #body>
+        <div class="relative flex flex-col flex-1 min-h-0 bg-elevated/20">
+          <!-- v-if, not the panel's CSS `hidden`: see showBridgetAvatar above. -->
+          <AgentAvatar
+            v-if="showBridgetAvatar"
+            class="flex-1 min-h-0"
+            :state="voice.state.value"
+            :connected="voice.connected.value"
+            :mic-analyser="voice.micAnalyser"
+            :out-analyser="voice.outAnalyser"
+            :on-viz-event="voice.onVizEvent"
+          />
+          <!-- "Am I being heard": mounted beneath the avatar column so it survives any
+               future swap of the renderer above it. -->
+          <AgentMicBand
+            v-if="showBridgetAvatar"
+            :mic-analyser="voice.micAnalyser()"
+            :speech-prob="voice.speechProb.value"
+            :active="micOn"
+          />
+        </div>
+      </template>
+    </UDashboardPanel>
+
+    <!-- Threads under lg, where the rail column is hidden. -->
+    <USlideover
+      v-model:open="threadsOpen"
+      side="left"
+      title="Conversations"
+      description="Pick a thread to resume it."
+      :ui="{ body: '!p-0' }"
+    >
+      <template #body>
+        <AgentThreadRail
+          :active-id="voice.conversationId.value"
+          @select="resume"
+          @new="startNewConversation"
+        />
+      </template>
+    </USlideover>
   </div>
 </template>
