@@ -163,6 +163,17 @@ onMounted(async () => {
   const c = route.query.c
   if (typeof c === 'string' && c) await resume(c)
 })
+
+// Full-bleed's Escape must work even when focus never lands inside the overlay (e.g. the
+// user tabbed to the close button, or focus is still on the toolbar trigger that opened
+// it) — a listener scoped to the overlay div alone would miss those. Setting fullBleed to
+// false when it is already false is a no-op, so this never interferes with typing (Escape
+// included) in the composer while full-bleed is closed.
+onMounted(() => {
+  const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') fullBleed.value = false }
+  window.addEventListener('keydown', onEsc)
+  onBeforeUnmount(() => window.removeEventListener('keydown', onEsc))
+})
 </script>
 
 <template>
@@ -176,6 +187,60 @@ onMounted(async () => {
        Under lg both side columns collapse and the conversation takes the full width —
        that is the fix for the page having had no usable composer below 1024px. -->
   <div class="flex flex-1 min-w-0 h-full">
+    <!-- Full-bleed voice mode: her, the band, and the current line, with the three-column
+         chrome kept mounted underneath (just covered) so the conversation's scroll position
+         survives the round trip. The caption goes through MdView, never raw interpolation —
+         the old page printed `{{ caption.text }}` as plain text, so the most prominent text
+         on the screen showed literal `#`/`**`, the visible twin of the TTS-pronounces-
+         asterisks bug. cache-key is per-entry: a shared first delta otherwise collides on
+         MDC's hash-of-value key and renders another entry's content (live-verified on the
+         transcript; see Transcript.vue). -->
+    <div
+      v-if="fullBleed"
+      class="fixed inset-0 z-50 flex flex-col bg-elevated"
+      role="dialog"
+      aria-label="Voice mode"
+      @keydown.esc="fullBleed = false"
+    >
+      <UButton
+        icon="i-lucide-minimize-2"
+        variant="ghost"
+        color="neutral"
+        class="absolute right-4 top-4 z-10"
+        aria-label="Back to chat"
+        @click="fullBleed = false"
+      />
+      <AgentAvatar
+        class="flex-1 min-h-0"
+        :state="voice.state.value"
+        :connected="voice.connected.value"
+        :mic-analyser="voice.micAnalyser"
+        :out-analyser="voice.outAnalyser"
+        :on-viz-event="voice.onVizEvent"
+      />
+      <!-- Capped + internally scrollable: the avatar has its own min-height floor
+           (Avatar.client.vue) and the mic band is shrink-0, so an uncapped caption is the
+           only flexible thing left — on a long reply at a short viewport (375x700, the
+           phone case this mode is likeliest to hit) it grew past the fold and pushed the
+           mic band below y=700 with no way to scroll to it. Capping keeps both always
+           on-screen; a long line scrolls internally instead of displacing them. -->
+      <div
+        v-if="caption"
+        class="mx-auto mb-4 max-h-40 max-w-2xl shrink-0 overflow-y-auto px-6 text-center"
+      >
+        <MdView
+          :source="caption.text"
+          :cache-key="`caption-${caption.id}`"
+          class="text-sm text-highlighted"
+        />
+      </div>
+      <AgentMicBand
+        :mic-analyser="voice.micAnalyser()"
+        :speech-prob="voice.speechProb.value"
+        :active="micOn"
+      />
+    </div>
+
     <UDashboardPanel
       id="agent-threads"
       resizable
