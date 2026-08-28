@@ -143,7 +143,7 @@ export function useVoice() {
     } catch { /* skip undecodable */ }
   }
 
-  // Bumped on every stop(): async startup steps (VAD model/wasm fetches can take
+  // Bumped on every disconnect(): async startup steps (VAD model/wasm fetches can take
   // seconds over WAN) bail out when their session is stale instead of constructing
   // audio nodes on a closed AudioContext ("No execution context available").
   let session = 0
@@ -166,11 +166,11 @@ export function useVoice() {
     const mySession = ++session
     connecting = connectInner(mySession)
       .catch((err) => {
-        if (mySession !== session) return // torn down mid-start — stop() already cleaned up
+        if (mySession !== session) return // torn down mid-start — disconnect() already cleaned up
         // WS setup failure would otherwise strand the UI in 'connecting'.
         error.value = err instanceof Error ? err.message : 'Voice startup failed'
         events.emit({ type: 'error' })
-        stop()
+        disconnect()
       })
       .finally(() => { connecting = null })
     await connecting
@@ -227,7 +227,7 @@ export function useVoice() {
       socket.addEventListener('close', () => reject(new Error('WebSocket closed before open')), { once: true })
     })
     // connectInner does NOT call startVad — call enableMic() separately for mic input.
-    if (mySession !== session) return // stop() landed while setting up
+    if (mySession !== session) return // disconnect() landed while setting up
   }
 
   /**
@@ -254,7 +254,7 @@ export function useVoice() {
     if (!vad) return
     const current = session
     await vad.destroy()
-    if (current !== session) return // stop() raced us
+    if (current !== session) return // disconnect() raced us
     vad = null
     vizStream?.getTracks().forEach(t => t.stop())
     vizStream = null
@@ -313,7 +313,7 @@ export function useVoice() {
     if (!vad || !audioCtx) return
     const mySession = session
     await vad.destroy()
-    if (mySession !== session) return // stop() landed mid-restart
+    if (mySession !== session) return // disconnect() landed mid-restart
     vad = null
     vizStream?.getTracks().forEach(t => t.stop())
     vizStream = null
@@ -321,7 +321,9 @@ export function useVoice() {
     await startVad(mySession)
   }
 
-  function stop() {
+  /** Full teardown: closes the VAD, WS, and AudioContext. Unlike stop() (below,
+   *  exposed to callers), this ends the session rather than just the running turn. */
+  function disconnect() {
     session++ // invalidate any in-flight startup/restart
     vad?.destroy()
     stopPlayback()
@@ -345,7 +347,7 @@ export function useVoice() {
     await connect()
   }
 
-  onUnmounted(stop)
+  onUnmounted(disconnect)
 
   return {
     state,
@@ -360,7 +362,16 @@ export function useVoice() {
     disableMic,
     /** Backwards-compatible alias for connect(). Mic stays OFF. */
     start,
-    stop,
+    /** Full teardown: closes VAD/WS/AudioContext. Called automatically on unmount. */
+    disconnect,
+    /** Abort the running turn. Same frame the VAD barge-in path sends — until now
+     *  a typed turn had no way to reach it and ran to completion. Leaves the WS and
+     *  AudioContext connected (unlike disconnect()). */
+    stop() {
+      ws?.send(JSON.stringify({ type: 'interrupt' }))
+      stopPlayback()
+      state.value = 'idle'
+    },
     setVoice: (provider: string, voice: string) => {
       desiredVoice = { provider, voice }
       settings.value = { ...settings.value, provider, voice } // persist the pick

@@ -1,9 +1,9 @@
 <!-- app/components/agent/Toolbar.vue -->
 <script setup lang="ts">
-defineProps<{ title: string | null; micOn: boolean }>()
+defineProps<{ title: string | null }>()
 const speak = defineModel<boolean>('speak', { required: true })
 const model = defineModel<string>('model', { required: true })
-const emit = defineEmits<{ fullBleed: []; toggleMic: []; threads: [] }>()
+const emit = defineEmits<{ fullBleed: []; threads: [] }>()
 
 // Mirrors the page's sentinel: reka-ui's USelectMenu rejects an empty-string item
 // value, so "no override" travels as a non-empty sentinel that the page maps back
@@ -52,14 +52,6 @@ const modelItems = computed(() => {
           aria-label="Agent model"
         />
       </div>
-      <!-- Mic toggle (auto-connects if needed) -->
-      <UButton
-        :icon="micOn ? 'i-lucide-mic' : 'i-lucide-mic-off'"
-        :color="micOn ? 'primary' : 'neutral'"
-        :variant="micOn ? 'soft' : 'ghost'"
-        :aria-label="micOn ? 'Disable microphone' : 'Enable microphone'"
-        @click="emit('toggleMic')"
-      />
       <UButton
         icon="i-lucide-maximize-2"
         variant="ghost"

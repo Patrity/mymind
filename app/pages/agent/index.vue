@@ -58,6 +58,11 @@ const threadsOpen = ref(false)
 // Full-bleed voice mode (the overlay itself lands with the avatar work).
 const fullBleed = ref(false)
 
+// True while a turn is generating (LLM output, a tool call, or TTS playback) — drives
+// the composer's Stop button. 'listening'/'connecting' are client-only states, not
+// generation, so they're deliberately excluded.
+const busy = computed(() => ['thinking', 'tool', 'speaking', 'typing'].includes(voice.state.value))
+
 // Caption over the avatar: the message currently being spoken/typed. Tool chips are not
 // captions — show the latest user/assistant text instead. Consumed by full-bleed mode.
 const caption = computed(() => {
@@ -188,8 +193,6 @@ onMounted(async () => {
           v-model:speak="speakReply"
           v-model:model="selectedModel"
           :title="voice.conversationTitle.value"
-          :mic-on="micOn"
-          @toggle-mic="toggleMic"
           @threads="threadsOpen = true"
           @full-bleed="fullBleed = true"
         >
@@ -222,8 +225,12 @@ onMounted(async () => {
           :entries="voice.transcript.value"
           :send-text="voice.sendText"
           :speak="speakReply"
+          :busy="busy"
+          :mic-on="micOn"
           :initial-text="initialComposerText"
           :auto-send="!!initialComposerText"
+          @stop="voice.stop"
+          @toggle-mic="toggleMic"
         />
       </template>
     </UDashboardPanel>
