@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { Document, Accessor, Primitive } from '@gltf-transform/core'
 import {
-  jawWeight, regionWeights, mergeSceneGeometry, sampleSurface, computeNormalization, bakeHeadBuffer,
-  FLOATS_PER_POINT, type HeadMetrics
+  jawWeight, regionWeights, mergeSceneGeometry, sampleSurface, sampleEdges, largestShell,
+  computeNormalization, bakeHeadBuffer, FLOATS_PER_POINT, type HeadMetrics
 } from '../scripts/bake-head'
 
 // Small deterministic LCG, same shape as the one `main()` uses, so tests are reproducible.
@@ -355,5 +355,100 @@ describe('bakeHeadBuffer', () => {
       const len = Math.hypot(buf[o + 3]!, buf[o + 4]!, buf[o + 5]!)
       expect(len).toBeCloseTo(1, 2)
     }
+  })
+})
+
+describe('largestShell', () => {
+  // A MakeHuman head export is 66 separate shells: skin, eyeballs, teeth, tongue, mouth
+  // cavity, eyelashes, and clothes-fitting helper ribbons. Sampling all of them put 40%
+  // of every baked point on geometry that must never be seen.
+  function twoShells() {
+    // shell A: 2 triangles (larger). shell B: 1 triangle, disconnected, offset in x.
+    const positions = new Float32Array([
+      0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, // A
+      10, 0, 0, 11, 0, 0, 10, 1, 0        // B
+    ])
+    const indices = new Uint32Array([0, 1, 2, 1, 3, 2, 4, 5, 6])
+    const normals = new Float32Array(7 * 3).fill(0)
+    for (let i = 0; i < 7; i++) normals[i * 3 + 2] = 1
+    return { positions, indices, normals, hasNormal: new Uint8Array(7).fill(1) }
+  }
+
+  it('keeps only the largest shell and reports what it dropped', () => {
+    const g = twoShells()
+    const r = largestShell(g.positions, g.indices, g.normals, g.hasNormal)
+    expect(r.shells).toBe(2)
+    expect(r.keptTris).toBe(2)
+    expect(r.droppedTris).toBe(1)
+    expect(r.indices.length / 3).toBe(2)
+  })
+
+  it('drops the far shell entirely — no vertex survives at its position', () => {
+    const g = twoShells()
+    const r = largestShell(g.positions, g.indices, g.normals, g.hasNormal)
+    for (let i = 0; i < r.positions.length; i += 3) expect(r.positions[i]!).toBeLessThan(5)
+  })
+
+  it('remaps indices so surviving triangles still reference their own vertices', () => {
+    const g = twoShells()
+    const r = largestShell(g.positions, g.indices, g.normals, g.hasNormal)
+    const vertexCount = r.positions.length / 3
+    for (const i of r.indices) expect(i).toBeLessThan(vertexCount)
+  })
+
+  it('is a no-op on a single-shell mesh', () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])
+    const indices = new Uint32Array([0, 1, 2])
+    const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1])
+    const r = largestShell(positions, indices, normals, new Uint8Array(3).fill(1))
+    expect(r.shells).toBe(1)
+    expect(r.droppedTris).toBe(0)
+    expect(r.indices.length).toBe(3)
+  })
+})
+
+describe('sampleEdges', () => {
+  // Random surface sampling dissolves the eye/nose/mouth edge loops into uniform
+  // speckle — the head renders as a smooth egg. Walking edges keeps the topology,
+  // which is where the anatomy actually lives.
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])
+  const indices = new Uint32Array([0, 1, 2])
+  const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1])
+  const hasNormal = new Uint8Array(3).fill(1)
+
+  it('returns points that lie on the triangle plane', () => {
+    const pts = sampleEdges(positions, indices, normals, hasNormal, 50)
+    expect(pts.length).toBeGreaterThan(0)
+    for (const p of pts) expect(Math.abs(p.z)).toBeLessThan(1e-6)
+  })
+
+  it('places points ON edges, never in the face interior', () => {
+    // Every point of a triangle's edges satisfies x==0, y==0, or x+y==1.
+    for (const p of sampleEdges(positions, indices, normals, hasNormal, 60)) {
+      const onEdge = Math.abs(p.x) < 1e-6 || Math.abs(p.y) < 1e-6 || Math.abs(p.x + p.y - 1) < 1e-6
+      expect(onEdge).toBe(true)
+    }
+  })
+
+  it('emits unit-length normals', () => {
+    for (const p of sampleEdges(positions, indices, normals, hasNormal, 30)) {
+      expect(Math.hypot(p.nx, p.ny, p.nz)).toBeCloseTo(1, 5)
+    }
+  })
+
+  it('never exceeds the requested count', () => {
+    expect(sampleEdges(positions, indices, normals, hasNormal, 10).length).toBeLessThanOrEqual(10)
+  })
+
+  it('is deterministic — no RNG involved', () => {
+    const a = sampleEdges(positions, indices, normals, hasNormal, 40)
+    const b = sampleEdges(positions, indices, normals, hasNormal, 40)
+    expect(a.map(p => `${p.x},${p.y}`).join('|')).toBe(b.map(p => `${p.x},${p.y}`).join('|'))
+  })
+
+  it('returns nothing for degenerate geometry rather than throwing', () => {
+    const z = new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0])
+    expect(() => sampleEdges(z, indices, normals, hasNormal, 10)).not.toThrow()
+    expect(sampleEdges(z, indices, normals, hasNormal, 10)).toEqual([])
   })
 })
