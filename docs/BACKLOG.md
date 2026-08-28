@@ -1,6 +1,6 @@
 # MyMind — Backlog & Spec Coverage
 
-> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-07-15 — **cycle 46 (Session↔Project Reassignment + Path-Based Auto-Routing) built** (`feat/session-project-reassignment`, unmerged): closes the cycle-23 gap where a no-git-remote session with no label match was stuck in `uncategorized` with no way out — reassignment (single/bulk, agent-memory cascade), a learned `path_prefixes` routing column (auto-create + manual reassign both write it), `git_root` label matching, hostname surfacing/filter, and a one-time existing-projects-only re-resolve backfill (not yet run on prod). See [`wiki/sessions.md`](wiki/sessions.md) + [`wiki/projects.md`](wiki/projects.md) + the [cycle-46 handover](handovers/2026-07-15-session-project-reassignment.md). Operational steps, re-checked against prod 2026-08-05: **merged** ✅ and the **Terawulf cluster is drained** ✅ (the `terawulf` project holds 34 sessions with 4 registered `path_prefixes`; uncategorized is down to 23). Whether `scripts/reresolve-uncategorized.ts` itself was run on prod is **not determinable from the data** — the drain could equally be the UI bulk-reassign path. Tracked in §5. Previously reconciled 2026-06-16 — **cycle 13 (Bridget Parity) shipped** (broadened from "API key UI"): API-key CRUD + Connect-to-Claude-Code, capture-fidelity ingestion (tool_events/thinking/git/machine), one-time import of 457 claude_code sessions, session summarization + session/message search, and memory intelligence (provenance + a `memory_relations` graph + LLM relationship-judge with auto-supersede + review-gated contradictions). On `feat/bridget-parity` (not yet merged); closes the §3 session-summarization + bridget-migration items and the session/message-search gap. Earlier: **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.) **Reconciled 2026-06-17 — the entire Projects line shipped + deployed to prod (cycles 23–27):** canonical git-keyed projects + session/memory association (23), sessions UX/SSE (24), projects UI + per-project colour (25), the `/projects/[slug]` **dashboard** + editable-slug cascade (25-followup), **document↔project association** via the `/projects/<slug>/` path invariant + `documents.project_id` (migration 0021) (26), and **project merge** (27). See [`wiki/projects.md`](wiki/projects.md) + the cycle-23→27 handovers.
+> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-08-27 — **cycle 60 (Agent surface redesign) built** (`feat/agent-surface-redesign`, unmerged): four of six agent-page complaints closed, two blocked on a human (the MakeHuman head export and Orpheus on the rig) — see §2 below and the [cycle-60 handover](handovers/2026-08-27-agent-surface-redesign.md). Previously reconciled 2026-08-25 (cycle 59, documents folders). Earlier: 2026-07-15 — **cycle 46 (Session↔Project Reassignment + Path-Based Auto-Routing) built** (`feat/session-project-reassignment`, unmerged): closes the cycle-23 gap where a no-git-remote session with no label match was stuck in `uncategorized` with no way out — reassignment (single/bulk, agent-memory cascade), a learned `path_prefixes` routing column (auto-create + manual reassign both write it), `git_root` label matching, hostname surfacing/filter, and a one-time existing-projects-only re-resolve backfill (not yet run on prod). See [`wiki/sessions.md`](wiki/sessions.md) + [`wiki/projects.md`](wiki/projects.md) + the [cycle-46 handover](handovers/2026-07-15-session-project-reassignment.md). Operational steps, re-checked against prod 2026-08-05: **merged** ✅ and the **Terawulf cluster is drained** ✅ (the `terawulf` project holds 34 sessions with 4 registered `path_prefixes`; uncategorized is down to 23). Whether `scripts/reresolve-uncategorized.ts` itself was run on prod is **not determinable from the data** — the drain could equally be the UI bulk-reassign path. Tracked in §5. Previously reconciled 2026-06-16 — **cycle 13 (Bridget Parity) shipped** (broadened from "API key UI"): API-key CRUD + Connect-to-Claude-Code, capture-fidelity ingestion (tool_events/thinking/git/machine), one-time import of 457 claude_code sessions, session summarization + session/message search, and memory intelligence (provenance + a `memory_relations` graph + LLM relationship-judge with auto-supersede + review-gated contradictions). On `feat/bridget-parity` (not yet merged); closes the §3 session-summarization + bridget-migration items and the session/message-search gap. Earlier: **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.) **Reconciled 2026-06-17 — the entire Projects line shipped + deployed to prod (cycles 23–27):** canonical git-keyed projects + session/memory association (23), sessions UX/SSE (24), projects UI + per-project colour (25), the `/projects/[slug]` **dashboard** + editable-slug cascade (25-followup), **document↔project association** via the `/projects/<slug>/` path invariant + `documents.project_id` (migration 0021) (26), and **project merge** (27). See [`wiki/projects.md`](wiki/projects.md) + the cycle-23→27 handovers.
 
 ---
 
@@ -114,6 +114,56 @@ Also closes cycle 58's `USelectMenu` sweep note: MyMind task `7be76abc` ("All pr
 dropdowns should be USelectMenu") was already completed in cycle 58 itself (the last 8 `<USelect>`
 in `tasks.vue` converted) — restated here as complete since cycle 59's own task brief asked this
 doc to confirm it.
+
+### Six agent-page complaints (raised 2026-08-27) — ✅ four closed same-cycle, two blocked on a human (cycle 60)
+
+Tony's own words, addressed by [cycle 60](superpowers/plans/00-roadmap.md)
+(`feat/agent-surface-redesign`, built but not merged — see the
+[handover](handovers/2026-08-27-agent-surface-redesign.md)). Each was **measured in a live browser
+before and after**, not assumed from the diff:
+
+- ~~**The chat UX is bad.**~~ ✅ Three-column shell (threads / conversation / Bridget) replacing the
+  75%-canvas split; autoscroll with a bottom pin and a "↓ N new" release (the transcript previously
+  had **no scroll handling at all** — 2,459 px of reply streamed below the fold and the view never
+  moved); a multiline composer with Shift+Enter and a working Stop; per-message copy/retry/timestamp/
+  token count; a real empty state. **Also fixed in passing:** a single `hidden lg:flex` meant the
+  composer measured `0×0` below 1024 px, so the page had **no chat at all** on a phone or tablet.
+- ~~**No ability to view past conversations.**~~ ✅ The defect was **navigation**, not a missing
+  feature — `/agent/history` was already complete (search, counts, resume, `?c=` deep links) and
+  simply had no sidebar entry. It has one now, plus a permanent thread rail, the current thread's
+  title in the toolbar, and a delete confirmation.
+- ~~**TTS speaks markdown aloud.**~~ ✅ A pure `toSpeakable()` sanitizer at the choke point — the
+  prompt asks, this enforces. The same bug was visible in the UI (the full-bleed caption printed raw
+  `#`/`**`) and is fixed by the same cycle.
+- ~~**TTS cadence is wrong / it fragments.**~~ ✅ A decimal- and abbreviation-aware segmenter replaced
+  `SentenceChunker`, whose regex split on **every** period — `192.168.2.25` became four separate TTS
+  calls with a network round-trip between each. `sentenceMinChars` 60→140, breaking at a clause
+  boundary. ⚠️ **But see the open item below: the `playbackRate` half of this did not take effect.**
+- **Voice quality (the model).** ⏳ **NOT closed — blocked on a human.** Orpheus 3B was never stood
+  up; it needs shell on the rig at `192.168.2.25`. The TTS model is still Kokoro/Chatterbox. The app
+  side is already pure configuration (the registry takes any OpenAI-spec `/v1/audio/speech`), so this
+  is a rig task, not a code task. The serving recipe and its landmines — the `orpheus-speech` PyPI
+  package returning HTTP 200 with an empty body, core vLLM not serving TTS at all, and the rig's
+  installed Chatterbox being the original 0.5B at 4 s TTFB — are in the handover.
+- **The 3D should be a face, not a sphere.** ⏳ **Built, but not visible — blocked on a human.** The
+  `Avatar` seam, the seeded choreographer, the bake script, the `ParticleHead` renderer and full-bleed
+  mode all shipped and are green; but `assets/source/bridget-head.glb` does not exist. It must be
+  generated in an **official, unmodified MakeHuman build**, which is what makes the export **CC0**
+  (FLAME and the Basel Face Model were rejected as research-licence-only). Until then `/agent` renders
+  the CSS fallback. Steps: export → commit the `.glb` → `pnpm bake:head` → **commit
+  `app/assets/head-points.bin`** (deliberately not gitignored; prod cannot run MakeHuman) → **rebuild**
+  (`import.meta.glob` resolves at build time, so a dropped `.bin` is invisible to a running build).
+
+**New open item from cycle 60's own documentation pass:** `VOICE_TUNING.tts.playbackRate` was moved
+1.1 → 1.0 per the spec, but **that constant has no reader** — playback is driven solely by
+`VOICE_SETTINGS_DEFAULTS.playbackRate` in `app/composables/useVoiceSettings.ts`, which is **still
+1.1**. The audible rate did not change for anyone. One-line fix; **settle it before judging Orpheus
+against Kokoro**, or the control in that comparison is not a control.
+
+**Also deferred from cycle 60:** the spec asked for a rename/delete **row context menu on the thread
+rail** and the plan assigned it to no task — not built. Nothing is unreachable (both live on
+`/agent/history`, which the sidebar now surfaces). Sixteen further deferred minors are itemized in the
+handover.
 
 ---
 

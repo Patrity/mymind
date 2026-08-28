@@ -1,13 +1,15 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 45
-updated: 2026-08-06
+cycle: 60
+updated: 2026-08-27
+mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
+mymind_hash: 623e9db0e3a0566de0c06ff68a4dfeb66571877fdb84083ad50dd3fc15c1c54a
 ---
 
 # Agent Surface (`/agent`)
 
-One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page where the Three.js visualizer is a toggle, conversations persist as resumable + searchable threads, and the same shared agent core powers every turn. This is the in-app "agent loop" — tool-scoped on the current 20-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are part of the Cycle B series (B1/B2/B3 shipped).
+One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page laid out as **three columns** — threads / conversation / Bridget — where conversations persist as resumable + searchable threads and the same shared agent core powers every turn. (Before cycle 60 it was a 75%-canvas / 25%-transcript split with the visualizer on a toggle; both the toggle and its `agent-canvas` cookie are gone.) This is the in-app "agent loop" — tool-scoped on the current 20-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are part of the Cycle B series (B1/B2/B3 shipped).
 
 ## The convergence principle (one flow, one branch)
 
@@ -17,7 +19,7 @@ Voice and text run through the **same** path: client WebSocket → `server/lib/v
 |---|---|
 | input: mic / typed | how the turn arrives — VAD→WAV utterance vs. a `{type:'text'}` frame |
 | `speak`: on / off | **the sole voice/text branch** — gates TTS *and* selects prompt mode (spoken-brief/no-markdown vs. text/markdown-ok). Default: on for mic, off for typed unless "Respond in voice" is on |
-| canvas: on / off | cosmetic — show/hide the visualizer; reacts to a `typing` state for text turns |
+| ~~canvas: on / off~~ | **removed in cycle 60.** Bridget is a permanent column, not a toggle; the `agent-canvas` cookie no longer exists. Her face still reacts to `typing` on text turns. |
 
 The SSE `POST /api/agent/chat` still exists but is **headless/programmatic only** (cron, scripts) — the page does not use it.
 
@@ -74,7 +76,7 @@ Design invariants: **not** a generic spawner (fixed types keep a small orchestra
 New tables (`server/db/schema/conversations.ts`, migration 0022), kept separate from the CC/Hermes import `sessions`/`messages`:
 
 - **`conversations`**: `id`, `title` (auto from the first user turn via `deriveTitle`), `summary` (null — reserved), `project_id` (null — optional), `message_count`, `last_message_at`, `summary_embedding halfvec(2560)` (**reserved**, unpopulated — keyword search ships first), `created_at`/`updated_at`. Indexes: `last_message_at`, gin-trigram on `title`.
-- **`conversation_messages`**: `id`, `conversation_id` (FK `ON DELETE CASCADE`), `parent_id` (nullable — **tree-capable edge, populated linearly** = parent is the prior turn; branching UI is deferred), `role`, `content`, `modality` (`voice`|`text`), `tool_calls jsonb` (assistant `AgentToolRecord[]` — see [Tool history](#tool-history-cycle-43)), `reasoning text` (nullable — assistant "thinking"; **display/storage only, never re-sent to the model**; migration 0026, cycle 45), `created_at`. Indexes: `(conversation_id, created_at)`, gin-trigram on `content`.
+- **`conversation_messages`**: `id`, `conversation_id` (FK `ON DELETE CASCADE`), `parent_id` (nullable — **tree-capable edge, populated linearly** = parent is the prior turn; branching UI is deferred), `role`, `content`, `modality` (`voice`|`text`), `tool_calls jsonb` (assistant `AgentToolRecord[]` — see [Tool history](#tool-history-cycle-43)), `reasoning text` (nullable — assistant "thinking"; **display/storage only, never re-sent to the model**; migration 0026, cycle 45), `attachments jsonb` (cycle 39), `usage jsonb` (nullable, additive — **migration 0038**, cycle 60: `{inputTokens?, outputTokens?, totalTokens?}` for the assistant turn; no backfill, so a message without it omits the count rather than showing 0), `created_at`. Indexes: `(conversation_id, created_at)`, gin-trigram on `content`.
 
 Store service: `server/services/conversations.ts` — `createConversation` / `appendMessages` (linear `parent_id` chain; persists `reasoning` on assistant rows) / `getConversation` (DTO includes `reasoning`, for UI hydration) / `getAgentHistory` (**role+content only** — reasoning is deliberately excluded, for WS model-history hydration) / `listConversations({q})` (keyword: title ILIKE OR a message content ILIKE; newest first, limit 50) / `deleteConversation` / `deriveTitle`. The two reads are differentiated on purpose: reasoning is hydrated into the *UI* but never into the *model's* context.
 
@@ -89,9 +91,16 @@ Per-connection `ConnState` adds `conversationId` + `context`. Frames (client→s
 - `{type:'load', conversationId}` — hydrate history from the store (errors surface as an `error` frame)
 - `{type:'new'}` — reset history + conversation + context
 
-Server→client adds a `{type:'reasoning', text}` frame (cycle 45) alongside `transcript`/`tool`/`state`/`error` — reasoning deltas, never audio.
+Server→client adds, alongside `transcript`/`tool`/`state`/`error`:
+- `{type:'reasoning', text}` (cycle 45) — reasoning deltas, never audio.
+- `{type:'usage', inputTokens?, outputTokens?, totalTokens?}` (cycle 60) — per-turn token usage, emitted once. Metadata only: it never touches `assistantText`, the transcript events, or the TTS chunker.
+- `{type:'conversation', conversationId, title}` (cycle 60) — emitted **once**, when the first turn lazily creates the thread, so the client can learn the id and derived title without a reload.
 
-After each completed turn the handler lazily creates the conversation (first turn) and appends the new user+assistant messages (with per-message modality + collected `tool_calls` + accumulated `reasoning`), then `publishChange({resource:'conversation', action})`. Live context is assembled **once per connection** (cached on `ConnState`, rebuilt on `new`).
+After each completed turn the handler lazily creates the conversation (first turn) and appends the new user+assistant messages (with per-message modality + collected `tool_calls` + accumulated `reasoning` + `usage`), then `publishChange({resource:'conversation', action})`. Live context is assembled **once per connection** (cached on `ConnState`, rebuilt on `new`).
+
+**The persist payload is a seam, not a closure (cycle 60).** `defineWebSocketHandler` needs a real crossws upgrade to exercise, so anything built inline in `run()` is untestable. `buildTurnPersistPayload` (`server/lib/voice/turn-persist.ts`) is the pure function that turns a turn's added `AgentMessage[]` into the `appendMessages` payload, and `ws.ts` calls it. **Known residual gap, accepted:** breaking `usage: turnUsage` at the `ws.ts` *call site* still leaves the suite green — closing it needs a crossws harness that exists for no part of `ws.ts` today. Inside the extracted function the wiring is red/green-verified.
+
+**Where usage comes from.** `run.ts` reads the AI SDK's `finish` stream part (`totalUsage ?? usage`, defensively — the SDK has renamed that field before) and yields a `{type:'usage'}` `AgentEvent`; `orchestrator.ts` re-emits it as a `VoiceEvent`; `ws.ts`'s `emit` closure — the same seam that collects `tool_calls` and `reasoning` — **overwrites** (never accumulates) it and persists it on the assistant row. Overwrite is deliberate: the forced-final recovery path runs a second `streamText` call whose usage supersedes rather than adds to the first. **`includeUsage: true` on `createOpenAICompatible` (`server/lib/ai/registry/resolve.ts`) is what makes any of it non-null** — without it the upstream never returns per-turn usage and the whole chain is inert. That resolver is shared, so the flag was verified on **both** reasoning providers (self-hosted vLLM and Claude-via-LiteLLM) with `activity_log` showing `attempt:0` for each — explicitly ruling out the "failover masked a broken primary" pattern this repo has been bitten by. `createOpenAICompatible` appears exactly once; bulk/vision/embeddings/stt/tts/rerank all use raw-fetch adapters and are untouched.
 
 ## Reasoning block + on-the-fly model selector (cycle 45)
 
@@ -123,12 +132,50 @@ Two additions to the `/agent` surface, both riding the WS pipeline only.
 
 > **Skills (cycle 49 Phase 2):** the system prompt now carries only a Tier-1 **index** of skill names + descriptions; the detail lives in skill documents loaded on demand via `use_skill`. The long web-research guidance moved into the `web-research-etiquette` skill, so the base prompt is smaller than before. See [agent-skills.md](./agent-skills.md).
 
-## UI
+## UI — the three-column surface (cycle 60)
 
-`app/pages/agent/index.vue` (and `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send. Controls: **Visualizer** toggle (cookie `agent-canvas`), **Respond in voice** toggle (cookie `agent-speak` → per-message `speak`), the **reasoning-model dropdown** (cookie `agent-model`; cycle 45 — see above), **Enable microphone** (`enableMic()`/`disableMic()` — lazy VAD; the only voice affordance, auto-connects if needed), **New**, **History** slideover (`app/components/agent/HistorySlideover.vue`), and the composer. Assistant replies render **markdown** via the shared `<MdView>` (MDC) renderer; user turns are literal text. Streamed text deltas are appended raw (they already carry their own spacing).
+`app/pages/agent/index.vue` (plus `app/pages/agent/history.vue`). `/voice` redirects to `/agent` (routeRules). The WS **auto-connects on mount** (no mic) so the chat is usable immediately — **there is no Connect button**; just type and send.
 
-**Transcript rendering invariants (cycle 41):**
-- Every `TranscriptEntry` has a stable unique `id` (uuid at stream time; DB message id on resume) which keys BOTH the `v-for` and the MDC parse cache (`<MdView :cache-key>`). **This is load-bearing**: `<MDC>` keys its `useAsyncData` on `hash(value)` frozen at setup — for streamed text that's the hash of the *first delta*, so two replies opening with the same token would otherwise share one asyncData record and render each other's content (live incident: three distinct replies all displayed as the first one).
+Cycle 60 replaced the two-panel canvas/transcript split with three `UDashboardPanel`s:
+
+| Panel | Sizing | Contents |
+|---|---|---|
+| `agent-threads` | `resizable`, default 14 %, min 10 / max 24; `hidden lg:flex` | `AgentThreadRail` — New button, search, threads grouped Today / Yesterday / date |
+| `agent-conversation` | `resizable`, default 58 %, min 35 / max 80; **`grow`** | `AgentToolbar` header, `VoiceTranscript`, the approval prompt, `VoiceComposer` |
+| `agent-bridget` | fluid; `grow-[9999] min-w-[240px] max-w-[420px]`; `hidden lg:flex` | `AgentAvatar` + `AgentMicBand` |
+
+**Why Bridget is the fluid panel.** Nuxt UI's resize handle only supports a sized panel to its *left*, so with three panels the conversation must be the sized one and her column takes the remainder; a CSS `max-width` stops her ballooning on an ultrawide. The conversation panel carries `grow` because a *capped* flex item freezes and leaves the surplus as dead space at the right edge (measured: 196 px at 2560, ~80 px at 1440 once the second handle is dragged left). Her grow factor is far larger, so she still takes the space first and the conversation only collects what her cap refuses.
+
+**Responsive — this is the sub-1024 px fix.** The `hidden lg:flex` that used to sit on the **conversation** panel is gone. That one class was why the composer measured `0×0` with `display:none` below 1024 px — the page had no chat at all on a narrow laptop, tablet or phone. Both *side* panels carry it now instead: under `lg` the rail becomes a `USlideover` opened from a toolbar button and Bridget is reached through full-bleed voice mode, while the conversation takes the full width. Verified at 375 / 768 / 900 / 1440 px (composer 275×32 / 668×32 / 800×32 / 617×32, against `0×0` on the pre-cycle code).
+
+**One toolbar (`app/components/agent/Toolbar.vue`).** The old navbar block was duplicated verbatim across two template branches of the page. The single toolbar carries the **current thread title** (falling back to "Bridget"), the voice-replies switch, the reasoning-model selector, a full-screen button, an `lg:hidden` threads button, and an `#actions` slot the page fills with `VoiceSettingsSlideover`. Gone from it: the `Visualizer` switch (she is a column now), `History` (a rail plus a sidebar entry), `New` (head of the rail), and the tiny `IDLE` debug state readout under the canvas. The switch + model selector are `hidden sm:flex` — verified necessary, not cosmetic: without it the navbar is 430 px wide at 375 px, the `h1` collapses to 0 and the full-screen/settings buttons render **off-screen**, removing the only route to threads on a phone. Voice replies is therefore also **mirrored into `VoiceSettingsSlideover`**, bound to the same `agent-speak` cookie ref (one source of truth, no drift), which is reachable at every width.
+
+**Conversations are reachable (`app/layouts/default.vue`).** The sidebar gained `{ label: 'Conversations', icon: 'i-lucide-messages-square', to: '/agent/history' }`. This — not the history page, which was always complete — is the actual fix for the reported "no ability to view past conversations": the defect was navigation. `/agent/history` survives as the full browse view and now **confirms before deleting** (a `UModal` naming the thread; Escape and overlay dismissal both clear the pending id). The `HistorySlideover.vue` component is **deleted**.
+
+**Knowing which thread you are in.** Nothing client-side used to learn the id/title the server derives on a new thread's first turn, so the toolbar read "Bridget" and no rail row highlighted until a reload. `ws.ts` now sends a one-shot `{type:'conversation', …}` frame when it creates the conversation; `useVoice` exposes `conversationId`/`conversationTitle`, written from exactly three places — that frame, a successful `resume()`, and `newConversation()` (which clears both).
+
+### Transcript
+
+- **Autoscroll.** The transcript is pinned to the bottom; scrolling away releases the pin; a "↓ N new" chip re-pins on click. It reuses `isAtBottom`/`countNewSince` from `app/utils/transcript-scroll.ts` (cycle 24) rather than writing a second implementation. Three details are load-bearing and were each found by measurement, not design:
+  - catch-up is driven by a **`ResizeObserver`** on the content wrapper, **not** a `watch` + `nextTick`. `MdView`/MDC parses and mounts markdown asynchronously beyond a tick, so a tick-based watch measures a stale `scrollHeight`, falls behind mid-stream and **never recovers** (reproduced live: `scrollTop 1717` / `scrollHeight 3102`).
+  - a **100 ms `suppressScrollUntil` window** after every programmatic `scrollTop` write, because the browser dispatches a `scroll` event for our own write about a frame later and it would otherwise read as the user scrolling away.
+  - chip visibility is gated on a **content signature** (`id:textLength` per entry), not on `countNewSince` alone: a reply with no tool calls grows the *last* entry in place and never pushes a new one, so the count would stay 0 for the whole reply.
+- **Message actions (`app/components/agent/MessageActions.vue`).** A hover/focus-revealed row per entry: copy, retry (assistant only), timestamp, token count. Absent usage renders **nothing** — never a misleading `0 tok`.
+- **Retry** re-sends the preceding user turn and replaces the assistant turn in place. It does **not** fork; `parent_id` branching stays deferred, as since cycle 28. The walk-back/truncate logic is the pure, unit-tested `truncateForRetry` (`app/lib/agent/retry.ts`) — it skips interleaved tool chips and drops everything from that user turn onward.
+- **Empty state (`app/components/agent/EmptyState.vue`).** Bridget's name, one line on what she can reach, and four starter prompts drawn from the real tool surface. Mounted as a **sibling** of the ResizeObserver's content div, never inside it, so an empty transcript can't hand the observer a size baseline that includes the starter cards. A starter click fills the composer through a dedicated `prefill` prop and never sends — deliberately separate from `initialText`/`autoSend`, which is the fire-once-per-value `?q=` handoff from Home.
+
+### Composer
+
+`app/components/voice/Composer.vue` keeps all of its attachment handling (paste, drag-drop, file picker, the 4-file/20 MB caps, the allowed-MIME logic). `UInput` → **`UTextarea`** (`:rows="1" :maxrows="8" autoresize`); Enter sends, Shift+Enter inserts a newline, and `e.isComposing` guards an IME commit. A **Stop** button replaces Send while `busy` — `state ∈ {thinking, tool, speaking, typing}`; `listening`/`connecting` are client-only states, not generation — and sends the existing `{type:'interrupt'}` frame, whose only caller before this was the VAD barge-in path. The **mic toggle moved here from the toolbar**.
+
+> **Rename, cycle 60:** `useVoice`'s old `stop()` was a *full teardown* (VAD + WS + AudioContext) and is now `disconnect()`; the new `stop()` aborts only the running turn and leaves the socket up. Audited: `useVoice()` has exactly one consumer and it never called the old `stop()`, so no call site silently changed meaning.
+
+### Full-bleed voice mode
+
+The toolbar's full-screen button (Escape to leave) covers the columns with a fixed overlay: the avatar, the mic band, and the current line as a caption. **The caption renders through `<MdView>`** with a per-entry `cache-key`. The old page interpolated `{{ caption.text }}` as plain text, so the most prominent text on the screen printed literal `#` and `**` — the visible twin of the TTS-pronounces-asterisks bug, and fixed by the same cycle. The caption is capped (`max-h-40 overflow-y-auto shrink-0`): uncapped, a long reply at 375×700 pushed the mic band below the fold with no scroll path to it. The three-column chrome stays mounted underneath, so the conversation's scroll position survives the round trip.
+
+**Transcript rendering invariants (cycle 41 — still load-bearing):**
+- Every `TranscriptEntry` has a stable unique `id` (uuid at stream time; DB message id on resume) which keys BOTH the `v-for` and the MDC parse cache (`<MdView :cache-key>`). **This is load-bearing**: `<MDC>` keys its `useAsyncData` on `hash(value)` frozen at setup — for streamed text that's the hash of the *first delta*, so two replies opening with the same token would otherwise share one asyncData record and render each other's content (live incident: three distinct replies all displayed as the first one). The cycle-60 rewrite preserved this line byte-identically, and the full-bleed caption uses its own per-entry key for the same reason.
 - **Tool chips render inline** at their true stream position, live and on resume alike. Live: the orchestrator's WS `{type:'tool'}` events map to `role:'tool'` transcript entries (with undo), naturally splitting assistant text into before/after-tool bubbles. On resume (cycle 43): `resume()` rebuilds the same order from the persisted `tool_calls`' `textOffset` — see [Tool history](#tool-history-cycle-43). The old bottom-of-transcript chips block (fed by the global `/api/agent/activity` SSE) is gone; that SSE + `useAgentActivity` are currently unconsumed. Resume: `getConversation(id)` → set transcript → `loadConversation(id)`; `/agent?c=<id>` deep-links from the history page. The client transport (`app/composables/useVoice.ts`) decouples the WS from the mic so typing never prompts for a microphone and text chat survives an STT/TTS outage. `connect()` resolves only once the socket is OPEN, and `sendText`/`loadConversation` auto-connect transparently, so a typed send never races the handshake. Reads use `@tanstack/vue-query` (`useConversations`); the `conversation` live-resource refreshes lists across tabs.
 
 > **Nuxt routing note:** the page lives at `pages/agent/index.vue` (not `pages/agent.vue`) so `/agent` and `/agent/history` are **sibling** routes. With `pages/agent.vue` + `pages/agent/history.vue`, Nuxt nests `/agent/history` under `agent.vue`, which has no `<NuxtPage/>` outlet, so the history route renders the agent shell. (Caught by E2E; typecheck/build pass either way.)
@@ -233,6 +280,7 @@ Attach **images and files** to a turn (paste / drag-drop / file-picker in the co
 - **Cycle B3.1/B3.2 (shipped, cycles 34/35)** — native LXC deploy (systemd) + credentialed self-installing native `exec` (root-in-LXC, always-on encrypted credential injection, allowlist-first gate). See [agent-exec.md](agent-exec.md). B3.3/B4 (artifact/report rendering, SSH to other homelab hosts) remain.
 - Conversation **summarization worker** + **semantic search** (the `summary_embedding` column is reserved; keyword ships now).
 - **Branching UI** (edit/regenerate → fork): the `parent_id` edge exists; `active_leaf_id`/path-walking + UI are future.
-- Storing voice **audio** (transcript text only), command-palette integration, token-cost display, multi-profile UI.
+- Storing voice **audio** (transcript text only), command-palette integration, multi-profile UI. (~~token-cost display~~ — a per-turn **token count** ships in the message-action row since cycle 60; a monetary cost figure does not.)
+- **Per-row rename/delete on the thread rail** (cycle 60): the spec asked for a row context menu on the rail and it was **not built** — a genuine gap in that cycle's plan, deferred rather than grown into the largest task. Nothing is unreachable: both live on `/agent/history`, which the sidebar now surfaces.
 
-See also: [voice-agent.md](voice-agent.md) (the self-hosted STT/TTS pipeline + visualizer), [ai-providers.md](ai-providers.md) (model registry), [live-reactivity.md](live-reactivity.md), [web-research.md](web-research.md) (`web_search` + `web_fetch` tools, SSRF guard, SearXNG), [agent-exec.md](agent-exec.md) (approval gate + constrained exec, Cycle B2).
+See also: [voice-agent.md](voice-agent.md) (the self-hosted STT/TTS pipeline, the cycle-60 speech pipeline, and Bridget's avatar), [ai-providers.md](ai-providers.md) (model registry), [live-reactivity.md](live-reactivity.md), [web-research.md](web-research.md) (`web_search` + `web_fetch` tools, SSRF guard, SearXNG), [agent-exec.md](agent-exec.md) (approval gate + constrained exec, Cycle B2).
