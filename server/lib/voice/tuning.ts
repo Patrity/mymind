@@ -6,9 +6,11 @@ export const VOICE_TUNING = {
   bargeIn: { enabled: true, minSpeechMsToInterrupt: 300 },
   // sentenceMinChars: the old 60 cut mid-clause, and each cut is a separate TTS call
   // with a seam and a round-trip. 140 with a clause-aware break (see segment.ts).
-  // playbackRate: 1.0 — 1.1 compressed whatever prosody the model produced and read
-  // as rushed. Users can still change it in the settings slideover.
-  tts:     { provider: 'kokoro' as 'chatterbox' | 'kokoro', sentenceMinChars: 140, playbackRate: 1.0 },
+  // playbackRate lives client-side (app/composables/useVoiceSettings.ts default 1.0,
+  // user-adjustable in the settings slideover) — it's a per-user preference, not a
+  // server tuning knob, so it doesn't belong here. A copy here previously went stale
+  // (changed to 1.0 with no reader) while the real default stayed at 1.1.
+  tts:     { provider: 'kokoro' as 'chatterbox' | 'kokoro', sentenceMinChars: 140 },
   stt:     { language: 'en' },
   // maxSteps: one cap for every main-loop turn — the agent is always fully armed
   // (the old 6-step quick cap forced research turns to stop mid-investigation, and
