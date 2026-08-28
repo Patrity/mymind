@@ -255,16 +255,22 @@ export function useVoice() {
   /**
    * Enable microphone input: start the VAD + getUserMedia. Requires the WS to be
    * connected first (`connected.value === true`). No-op if VAD is already running.
+   * Returns whether the mic actually started — callers must not flip their own
+   * "mic on" state on a bare await, since a denied permission or missing device
+   * rejects inside startVad() and is swallowed here into `error` rather than thrown.
    */
-  async function enableMic() {
-    if (!connected.value || vad) return
+  async function enableMic(): Promise<boolean> {
+    if (vad) return true
+    if (!connected.value) return false
     const mySession = session
     try {
       await startVad(mySession)
+      return true
     } catch (err) {
-      if (mySession !== session) return
+      if (mySession !== session) return false
       error.value = err instanceof Error ? err.message : 'Mic startup failed'
       events.emit({ type: 'error' })
+      return false
     }
   }
 

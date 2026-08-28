@@ -14,18 +14,19 @@ export type VizEvent =
   // derived structurally from VizInputs.connected. Emitted for future consumers only.
   | { type: 'disconnected' }
 
-/** Per-frame render knobs produced by the choreographer, consumed by scene units. */
+/** Per-frame render knobs produced by the choreographer, consumed by scene units.
+ *  NOTE: ringColor/ringLevels/micMix (the old 96-bar ring's knobs) were removed —
+ *  MicBand.vue replaced that ring and reads the mic analyser directly, so nothing
+ *  ever read these three again. Don't re-add fields here without a real reader;
+ *  the choreographer defines this type too, so typecheck alone can't catch that. */
 export interface Directives {
   vizState: VizState
   coreColor: [number, number, number]
-  ringColor: [number, number, number]
   energy: number       // core amplitude 0..~1.5 (breathing/burst)
   swirl: number        // 0..1 thinking vortex
   shatter: number      // barge-in impulse, decays to 0
   ignite: number       // connect "ignition" impulse, decays to 0
   assemble: number     // 0 scattered .. 1 formed sphere
-  micMix: number       // 0..1 how much the ring shows the live mic
-  ringLevels: Float32Array // BAR_COUNT smoothed 0..1 FFT bands
   outLevel: number     // smoothed playback amplitude 0..1
   errorFlash: number   // error impulse, decays to 0
   firing: number       // 0..1 neural-lightning intensity (thinking/tool)

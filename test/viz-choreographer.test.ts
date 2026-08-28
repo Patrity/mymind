@@ -64,14 +64,12 @@ describe('choreographer', () => {
     expect(c.update(inputs(), DT).sparks).toBe(0)
   })
 
-  it('mic levels attack faster than they release', () => {
+  it('loud mic input raises energy while listening (ringColor/ringLevels/micMix have no reader — removed)', () => {
     const c = createChoreographer()
+    const quiet = run(c, inputs({ state: 'listening' }), 60).energy
     const hot = new Float32Array(BAR_COUNT).fill(1)
-    const before = c.update(inputs({ state: 'listening' }), DT).ringLevels[0]!
-    const peak = c.update(inputs({ state: 'listening', micLevels: hot }), DT).ringLevels[0]!
-    const after = c.update(inputs({ state: 'listening' }), DT).ringLevels[0]!
-    expect(peak - before).toBeGreaterThan(peak - after) // rise step > fall step
-    expect(after).toBeGreaterThan(0) // slow release, not a hard cut
+    const loud = run(c, inputs({ state: 'listening', micLevels: hot }), 60).energy
+    expect(loud).toBeGreaterThan(quiet)
   })
 
   it('error flash decays below 0.05 within ~1.2s', () => {

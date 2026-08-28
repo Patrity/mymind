@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useMediaQuery } from '@vueuse/core'
 import type { TranscriptEntry } from '~/composables/useVoice'
 import { buildResumeTranscript } from '~/lib/agent/transcript'
 import { truncateForRetry } from '~/lib/agent/retry'
@@ -67,6 +68,16 @@ const threadsOpen = ref(false)
 // Full-bleed voice mode (the overlay itself lands with the avatar work).
 const fullBleed = ref(false)
 
+// The Bridget column is `hidden lg:flex` in CSS, but `hidden` does not unmount — its
+// Avatar/MicBand would otherwise keep a WebGL context + RAF loop running behind a
+// `display:none` panel on every phone, and stay mounted a SECOND time underneath the
+// full-bleed overlay (which mounts its own copy). Gate the Bridget column's Avatar/
+// MicBand with this instead so exactly one of each is ever mounted. The panel itself
+// (and the conversation column) must stay `v-if`-free — that CSS-only hide is what
+// preserves scroll position across the full-bleed round trip.
+const isLgUp = useMediaQuery('(min-width: 1024px)')
+const showBridgetAvatar = computed(() => isLgUp.value && !fullBleed.value)
+
 // True while a turn is generating (LLM output, a tool call, or TTS playback) — drives
 // the composer's Stop button. 'listening'/'connecting' are client-only states, not
 // generation, so they're deliberately excluded.
@@ -104,8 +115,10 @@ async function toggleMic() {
     micOn.value = false
   } else {
     await voice.connect() // ensure the WS is up before requesting the mic
-    await voice.enableMic()
-    micOn.value = true
+    // enableMic() swallows a denied/missing mic into voice.error rather than throwing —
+    // only flip to "on" when it actually started, or a phone with a denied mic shows
+    // "Disable microphone" and a lit-up band over a mic that never ran.
+    micOn.value = await voice.enableMic()
   }
 }
 
@@ -187,6 +200,20 @@ onMounted(() => {
        Under lg both side columns collapse and the conversation takes the full width —
        that is the fix for the page having had no usable composer below 1024px. -->
   <div class="flex flex-1 min-w-0 h-full">
+    <!-- Mic/voice errors (e.g. a denied microphone permission): rendered fixed at the
+         page root so they're visible at every viewport width and in full-bleed mode.
+         This used to live inside the Bridget panel, which is `hidden lg:flex` — on a
+         phone the alert was in the DOM but under `display:none`, so a denied mic failed
+         completely silently. z-[60] sits above full-bleed's z-50 overlay.
+         pointer-events-none: it carries no close/action button, so it must not sit in
+         front of the toolbar buttons underneath it and eat their clicks. -->
+    <UAlert
+      v-if="voice.error.value"
+      color="error"
+      class="pointer-events-none fixed inset-x-3 top-3 z-[60] sm:inset-x-auto sm:right-3 sm:max-w-sm"
+      :title="voice.error.value"
+    />
+
     <!-- Full-bleed voice mode: her, the band, and the current line, with the three-column
          chrome kept mounted underneath (just covered) so the conversation's scroll position
          survives the round trip. The caption goes through MdView, never raw interpolation —
@@ -332,7 +359,9 @@ onMounted(() => {
     >
       <template #body>
         <div class="relative flex flex-col flex-1 min-h-0 bg-elevated/20">
+          <!-- v-if, not the panel's CSS `hidden`: see showBridgetAvatar above. -->
           <AgentAvatar
+            v-if="showBridgetAvatar"
             class="flex-1 min-h-0"
             :state="voice.state.value"
             :connected="voice.connected.value"
@@ -343,15 +372,10 @@ onMounted(() => {
           <!-- "Am I being heard": mounted beneath the avatar column so it survives any
                future swap of the renderer above it. -->
           <AgentMicBand
+            v-if="showBridgetAvatar"
             :mic-analyser="voice.micAnalyser()"
             :speech-prob="voice.speechProb.value"
             :active="micOn"
-          />
-          <UAlert
-            v-if="voice.error.value"
-            color="error"
-            class="absolute top-3 mx-3"
-            :title="voice.error.value"
           />
         </div>
       </template>
