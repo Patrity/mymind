@@ -575,8 +575,9 @@ toggle and its `agent-canvas` cookie · the `IDLE` debug state readout.
 
 ## What to check before merging
 
-- The branch is 24 commits ahead of `master` (23 build + this documentation commit), **not pushed,
-  not merged, not deployed.** No merge/deploy authorization was requested or granted — that decision
+- The branch is **27 commits ahead of `master`** — 24 from this cycle's own base `94c4cf4` (23 build
+  + this documentation commit), plus the 3 spec/plan commits (`213c601`, `69bc7da`, `94c4cf4`) that opened it —
+  **not pushed, not merged, not deployed.** No merge/deploy authorization was requested or granted — that decision
   is Tony's, as in cycles 58 and 59.
 - **Migration 0038** (`conversation_messages.usage jsonb`) has run only against local dev. It is a
   single additive nullable column with no backfill, so it is about as safe as a migration gets — but
