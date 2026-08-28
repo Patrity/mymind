@@ -78,6 +78,62 @@ describe('choreography', () => {
     expect(Math.max(...scans)).toBeGreaterThan(0.5)
   })
 
+  // 'typing' fires on every text turn and 'disconnected' whenever the socket drops;
+  // both used to fall through to the neutral default, i.e. a face doing nothing.
+  it('typing reads a line: the gaze ratchets one way and snaps back, it does not sweep', () => {
+    const yaws = run('typing', 900).map(p => p.yaw)
+    const deltas = yaws.slice(1).map((y, i) => y - yaws[i]!)
+    const up = deltas.filter(d => d > 1e-4).length
+    const down = deltas.filter(d => d < -1e-4).length
+    // A ratchet spends most of its frames advancing and only a few snapping back.
+    expect(up).toBeGreaterThan(down * 3)
+    expect(down).toBeGreaterThan(5)          // it really does return, repeatedly
+    expect(Math.max(...yaws)).toBeGreaterThan(0.08)
+    expect(Math.min(...yaws)).toBeLessThan(-0.08)
+  })
+
+  it('typing looks down at the page, brightens the eyes, and keeps the mouth shut', () => {
+    const poses = run('typing', 300).slice(150)
+    expect(Math.max(...poses.map(p => p.pitch))).toBeLessThan(-0.05)
+    expect(Math.min(...poses.map(p => p.pitch))).toBeGreaterThan(-0.25)
+    expect(poses[poses.length - 1]!.eyeGain).toBeGreaterThan(1.2)
+    expect(Math.max(...poses.map(p => p.jaw))).toBeLessThan(0.01)
+  })
+
+  it('typing is visibly different from idle, not a fall-through to neutral', () => {
+    const typing = run('typing', 900)
+    const idle = run('idle', 900)
+    const range = (ps: typeof typing) => Math.max(...ps.map(p => p.yaw)) - Math.min(...ps.map(p => p.yaw))
+    expect(range(typing)).toBeGreaterThan(range(idle) * 1.5)
+    expect(Math.min(...typing.map(p => p.pitch))).toBeLessThan(Math.min(...idle.map(p => p.pitch)) - 0.04)
+  })
+
+  it('disconnected dims the eyes and sags the head', () => {
+    const poses = run('disconnected', 600)
+    const settled = poses[poses.length - 1]!
+    expect(settled.eyeGain).toBeLessThan(0.4)
+    expect(settled.pitch).toBeLessThan(-0.08)
+  })
+
+  it('disconnected barely moves — dormant, not animated', () => {
+    const yaws = run('disconnected', 900).map(p => p.yaw)
+    const maxStep = Math.max(...yaws.slice(1).map((y, i) => Math.abs(y - yaws[i]!)))
+    expect(maxStep).toBeLessThan(0.005)
+  })
+
+  it('reconnecting out of disconnected fades the eyes back up instead of popping them', () => {
+    const c = createChoreographer(seeded())
+    let before = { eyeGain: 1 }
+    for (let i = 0; i < 300; i++) before = c.step('disconnected', 1 / 60, 0)
+    expect(before.eyeGain).toBeCloseTo(0.25, 2)
+    const after = c.step('idle', 1 / 60, 0)
+    // one frame's worth of easing, not the whole 0.25 -> 1.0 jump
+    expect(Math.abs(after.eyeGain - before.eyeGain)).toBeLessThan(0.1)
+    let last = after
+    for (let i = 0; i < 300; i++) last = c.step('idle', 1 / 60, 0)
+    expect(last.eyeGain).toBeCloseTo(1, 1)
+  })
+
   // Mid-motion state changes must ease out, never pop. A renderer painting eye
   // brightness or the tool scan directly off these values would show a visible
   // flash/snap on a single-frame discontinuity.

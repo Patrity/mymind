@@ -21,6 +21,10 @@ export function createChoreographer(rng: () => number = Math.random) {
   // speaking: syllables grouped into phrases with pauses
   let sylLeft = 0, sylLen = 0, sylPeak = 0, gapLeft = 0
   let phraseLeft = Math.round(rand(5, 12)), pauseLeft = 0, phraseNudge = 0
+  // typing: the gaze RATCHETS along a line, then snaps back — reading, not sweeping
+  let readYaw = rand(-0.17, -0.12), readTimer = rand(0.10, 0.28)
+  // disconnected: a rare, slow drift so the head is dormant rather than frozen solid
+  let deadYaw = 0, deadTimer = rand(3.0, 7.0)
 
   /** Syllable-and-phrase envelope. Scaled by the live TTS output level so a quiet
    *  passage does not drive a wide-open jaw. */
@@ -91,6 +95,30 @@ export function createChoreographer(rng: () => number = Math.random) {
       tYaw = phraseNudge * 0.05
       tPitch = -jaw * 0.03
       ease = 4.5
+    }
+    else if (state === 'typing') {
+      // Fires on EVERY text turn, so a neutral face here is a visible dead spot.
+      // She's composing: eyes down on the page, gaze ratcheting along a line in small
+      // steps with a snap back at the line end. Event-scheduled like every other motion
+      // here — a sine here would read as a pendulum, not as reading.
+      if ((readTimer -= dt) <= 0) {
+        readYaw += rand(0.03, 0.06)
+        if (readYaw > 0.15) readYaw = rand(-0.17, -0.12)   // line return
+        readTimer = rand(0.10, 0.28)
+      }
+      tYaw = readYaw
+      tPitch = -0.09                       // NEGATIVE = looking slightly DOWN, at the page
+      ease = 9.0                           // steps land, they don't glide
+      tEyeGain = 1.35
+    }
+    else if (state === 'disconnected') {
+      // Dormant, not dead: the lights go down and the head sags, but a rare slow drift
+      // keeps it from looking like a frozen renderer.
+      if ((deadTimer -= dt) <= 0) { deadYaw = rand(-0.05, 0.05); deadTimer = rand(3.5, 8.0) }
+      tYaw = deadYaw
+      tPitch = -0.14                       // chin settles toward the chest
+      ease = 0.7                           // almost nothing moves
+      tEyeGain = 0.25                      // eye highlights go out
     }
     else if (state === 'tool') {
       scan = (scan + dt * 0.55) % 1.35
