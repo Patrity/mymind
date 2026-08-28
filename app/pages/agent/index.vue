@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { TranscriptEntry } from '~/composables/useVoice'
 import { buildResumeTranscript } from '~/lib/agent/transcript'
+import { truncateForRetry } from '~/lib/agent/retry'
 
 definePageMeta({ title: 'Agent' })
 
@@ -122,6 +123,17 @@ async function resume(id: string) {
   }
 }
 
+/** Re-send the user turn that preceded this assistant entry, dropping the assistant
+ *  turn and everything after it. This replaces in place — it does NOT fork; parent_id
+ *  branching stays deferred. Pure walk-back-and-truncate logic lives in
+ *  ~/lib/agent/retry so it's unit-testable without a live voice connection. */
+async function retryTurn(entry: TranscriptEntry) {
+  const next = truncateForRetry(voice.transcript.value, entry.id)
+  if (!next) return
+  voice.transcript.value = next.transcript
+  await voice.sendText(next.userTurn.text, speakReply.value, next.userTurn.attachments)
+}
+
 function startNewConversation() {
   voice.newConversation() // also clears voice.conversationId / conversationTitle
   threadsOpen.value = false
@@ -210,6 +222,7 @@ onMounted(async () => {
           class="flex-1 min-h-0"
           :entries="voice.transcript.value"
           @undo="undoTool"
+          @retry="retryTurn"
         />
         <div
           v-if="voice.pendingApproval.value"

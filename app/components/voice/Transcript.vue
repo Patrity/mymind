@@ -4,7 +4,7 @@ import type { TranscriptEntry } from '~/composables/useVoice'
 import { isAtBottom, countNewSince } from '~/utils/transcript-scroll'
 
 const props = defineProps<{ entries: TranscriptEntry[] }>()
-const emit = defineEmits<{ undo: [entry: TranscriptEntry] }>()
+const emit = defineEmits<{ undo: [entry: TranscriptEntry]; retry: [entry: TranscriptEntry] }>()
 
 // ── Autoscroll pin + "N new" release ────────────────────────────────────────
 // Pinned to the bottom by default. Scrolling away releases the pin; scrolling
@@ -143,55 +143,76 @@ watch(() => props.entries, async () => {
               class="text-xs text-muted"
             >undone</span>
           </UBadge>
-          <template v-else>
-            <span class="text-[10px] uppercase tracking-wide text-muted">{{ e.role === 'user' ? 'You' : 'Bridget' }}</span>
-            <AgentReasoningBlock
-              v-if="e.role === 'assistant' && e.reasoning"
-              :reasoning="e.reasoning"
-              :has-answer="!!e.text"
-            />
-            <!-- Assistant replies may contain markdown — render via the shared MDC renderer.
-                 cache-key MUST be per-entry: streamed entries sharing a first delta otherwise
-                 collide on MDC's hash-of-value key and mirror each other's content.
-                 User turns are literal text (preserve their line breaks). -->
-            <MdView
-              v-if="e.role === 'assistant'"
-              :source="e.text"
-              :cache-key="`transcript-${e.id}`"
-              class="text-highlighted"
-            />
-            <template v-else>
-              <div
-                v-if="e.attachments?.length"
-                class="flex flex-wrap gap-2"
-              >
-                <template
-                  v-for="(a, ai) in e.attachments"
-                  :key="ai"
+          <div
+            v-else
+            class="group flex gap-2.5 items-start"
+          >
+            <!-- Role avatar: the primary vehicle for turn separation — a wall of
+                 consecutive replies used to run together under a 10px label. -->
+            <span
+              class="mt-0.5 size-6 shrink-0 rounded-full grid place-items-center text-[10px] font-semibold"
+              :class="e.role === 'user'
+                ? 'bg-elevated border border-default text-muted'
+                : 'bg-primary/10 border border-primary/40 text-primary'"
+            >{{ e.role === 'user' ? 'Y' : 'B' }}</span>
+
+            <div class="min-w-0 flex-1 flex flex-col gap-1">
+              <AgentReasoningBlock
+                v-if="e.role === 'assistant' && e.reasoning"
+                :reasoning="e.reasoning"
+                :has-answer="!!e.text"
+              />
+              <!-- Assistant replies may contain markdown — render via the shared MDC renderer.
+                   cache-key MUST be per-entry: streamed entries sharing a first delta otherwise
+                   collide on MDC's hash-of-value key and mirror each other's content.
+                   User turns are literal text (preserve their line breaks). -->
+              <MdView
+                v-if="e.role === 'assistant'"
+                :source="e.text"
+                :cache-key="`transcript-${e.id}`"
+                class="text-highlighted"
+              />
+              <template v-else>
+                <div
+                  v-if="e.attachments?.length"
+                  class="flex flex-wrap gap-2"
                 >
-                  <img
-                    v-if="a.kind === 'image'"
-                    :src="`/api/images/${a.id}/raw`"
-                    :alt="a.name || 'attachment'"
-                    class="max-h-32 rounded-md border border-default object-cover"
+                  <template
+                    v-for="(a, ai) in e.attachments"
+                    :key="ai"
                   >
-                  <a
-                    v-else
-                    :href="`/api/agent/files/${a.id}`"
-                    :download="a.name || true"
-                    class="inline-flex items-center gap-1.5 rounded-md border border-default bg-elevated px-2 py-1 text-xs text-default hover:bg-accented"
-                  >
-                    <UIcon
-                      name="i-lucide-file"
-                      class="size-3.5"
-                    />
-                    <span class="truncate max-w-[12rem]">{{ a.name || 'file' }}</span>
-                  </a>
-                </template>
-              </div>
-              <p class="whitespace-pre-wrap text-sm text-default">{{ e.text }}</p>
-            </template>
-          </template>
+                    <img
+                      v-if="a.kind === 'image'"
+                      :src="`/api/images/${a.id}/raw`"
+                      :alt="a.name || 'attachment'"
+                      class="max-h-32 rounded-md border border-default object-cover"
+                    >
+                    <a
+                      v-else
+                      :href="`/api/agent/files/${a.id}`"
+                      :download="a.name || true"
+                      class="inline-flex items-center gap-1.5 rounded-md border border-default bg-elevated px-2 py-1 text-xs text-default hover:bg-accented"
+                    >
+                      <UIcon
+                        name="i-lucide-file"
+                        class="size-3.5"
+                      />
+                      <span class="truncate max-w-[12rem]">{{ a.name || 'file' }}</span>
+                    </a>
+                  </template>
+                </div>
+                <p class="whitespace-pre-wrap text-sm text-default">{{ e.text }}</p>
+              </template>
+
+              <!-- Hover affordance row: copy / retry / timestamp / token count. Always
+                   present in the layout (opacity-driven), so its appearance never shifts
+                   surrounding content. -->
+              <AgentMessageActions
+                :entry="e"
+                @retry="emit('retry', e)"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>

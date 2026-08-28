@@ -2,7 +2,7 @@
 import { createEmitter } from '../lib/viz/emitter'
 import { mapServerMessage } from '../lib/voice/messages'
 import type { VizEvent } from '../lib/viz/types'
-import type { AttachmentRef } from '~~/shared/types/conversation'
+import type { AttachmentRef, MessageUsage } from '~~/shared/types/conversation'
 
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
 // `id` is a stable per-entry key: it keys v-for AND the MdView/MDC parse cache —
@@ -19,6 +19,13 @@ export interface TranscriptEntry {
   undoToken?: string
   undone?: boolean
   reasoning?: string
+  /** ISO timestamp — display only. Set when a live entry is first created; carried
+   *  over from the DTO on resume. */
+  createdAt?: string
+  /** Token usage for this entry's assistant turn. `undefined`/absent (not a zeroed
+   *  object) for entries written before the usage column existed, or a turn the
+   *  server never reported usage for — the UI must render nothing, not a fake 0. */
+  usage?: MessageUsage | null
 }
 
 export function newEntryId(): string {
@@ -81,7 +88,7 @@ export function useVoice() {
     // resumes in a NEW bubble after each inline tool chip — true stream order.
     if (last && last.role === role) last.text += delta
     else {
-      transcript.value.push({ id: newEntryId(), role, text: delta, attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
+      transcript.value.push({ id: newEntryId(), role, text: delta, createdAt: new Date().toISOString(), attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
       if (role === 'user') pendingUserAttachments = []
     }
   }
@@ -89,11 +96,25 @@ export function useVoice() {
   function pushReasoning(text: string) {
     const last = transcript.value[transcript.value.length - 1]
     if (last && last.role === 'assistant') last.reasoning = (last.reasoning ?? '') + text
-    else transcript.value.push({ id: newEntryId(), role: 'assistant', text: '', reasoning: text })
+    else transcript.value.push({ id: newEntryId(), role: 'assistant', text: '', createdAt: new Date().toISOString(), reasoning: text })
   }
 
   function pushTool(t: { name: string; summary: string; undoToken?: string }) {
     transcript.value.push({ id: newEntryId(), role: 'tool', text: '', ...t })
+  }
+
+  // Usage arrives once per turn (see run.ts/ws.ts), after all of that turn's text/tool
+  // entries have already been pushed. It describes the whole assistant turn, so attach
+  // it to the LAST assistant-role entry — mirroring buildResumeTranscript, which after a
+  // reload attaches the persisted message's usage to its trailing (last) split entry.
+  // Walking back past interleaved tool chips lets it land correctly even when the turn's
+  // final action was a tool call with no trailing assistant text.
+  function setUsage(usage: MessageUsage) {
+    for (let i = transcript.value.length - 1; i >= 0; i--) {
+      const e = transcript.value[i]!
+      if (e.role === 'assistant') { e.usage = usage; return }
+      if (e.role === 'user') return // don't reach back into a previous turn
+    }
   }
 
   function stopPlayback() {
@@ -199,6 +220,7 @@ export function useVoice() {
         if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
         if (fx.reasoning) pushReasoning(fx.reasoning)
         if (fx.tool) pushTool(fx.tool)
+        if (fx.usage) setUsage(fx.usage)
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
         for (const ev of fx.events) events.emit(ev)

@@ -88,6 +88,22 @@ describe('buildResumeTranscript', () => {
     ])
     expect(entries.map(e => [e.id, e.role, e.text])).toEqual([['u1', 'user', 'hi'], ['a1', 'assistant', 'hey']])
   })
+
+  it('carries usage and createdAt from the DTO onto the entry', () => {
+    const usage = { inputTokens: 10, outputTokens: 20, totalTokens: 30 }
+    const entries = buildResumeTranscript([
+      { id: 'a1', role: 'assistant', content: 'hey', toolCalls: null, usage, createdAt: '2026-01-01T00:00:00.000Z' }
+    ])
+    expect(entries[0]!.usage).toEqual(usage)
+    expect(entries[0]!.createdAt).toBe('2026-01-01T00:00:00.000Z')
+  })
+
+  it('keeps the trailing bubble when it carries only usage (no text/reasoning/attachments)', () => {
+    const usage = { totalTokens: 5 }
+    const entries = buildResumeTranscript([msg({ content: 'All set.', usage, toolCalls: [tc({ textOffset: 8 })] })])
+    expect(entries.map(e => e.role)).toEqual(['assistant', 'tool', 'assistant'])
+    expect(entries.at(-1)).toMatchObject({ role: 'assistant', text: '', usage })
+  })
 })
 
 // sanitizedOffset is NOT monotonic: it strips image markdown, so a marker completing between
