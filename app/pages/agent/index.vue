@@ -46,6 +46,14 @@ const selectedModel = computed({
 // Mic-on state is local — it reflects whether the VAD is actually running
 const micOn = ref(false)
 
+// Empty-state starter click -> composer prefill. A page-local ref rather than plumbing
+// through useVoice: it's pure UI state, gone the moment the first message lands (the
+// empty state that produced it is v-if'd away by then).
+const starterPrefill = ref<string>()
+function pickStarter(prompt: string) {
+  starterPrefill.value = prompt
+}
+
 // Which thread the conversation column is showing lives in useVoice, because the
 // SERVER is what decides it: a brand-new thread is created lazily on the first turn
 // and its id + derived title come back over the WS. Mirroring that into page-local
@@ -223,6 +231,7 @@ onMounted(async () => {
           :entries="voice.transcript.value"
           @undo="undoTool"
           @retry="retryTurn"
+          @pick="pickStarter"
         />
         <div
           v-if="voice.pendingApproval.value"
@@ -242,6 +251,7 @@ onMounted(async () => {
           :mic-on="micOn"
           :initial-text="initialComposerText"
           :auto-send="!!initialComposerText"
+          :prefill="starterPrefill"
           @stop="voice.stop"
           @toggle-mic="toggleMic"
         />

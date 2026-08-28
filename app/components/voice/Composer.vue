@@ -26,6 +26,16 @@ const props = defineProps<{
    * refresh, a bookmark, or a back-button navigation cannot re-fire a model call.
    */
   autoSend?: boolean
+  /**
+   * Prefill the composer from an empty-state starter click. Unlike `initialText`, this
+   * never sends — it only ever sets `text`. Deliberately a SEPARATE prop (not folded into
+   * initialText/autoSend): initialText's watcher calls maybeAutoSend, which is guarded to
+   * fire at most once per distinct value for the `?q=` handoff. Routing starter clicks
+   * through that path would either get silently dropped by the once-per-value guard (if a
+   * starter ever matched a prior initialText) or, worse, auto-send the starter text instead
+   * of just filling the box.
+   */
+  prefill?: string
 }>()
 const emit = defineEmits<{ stop: []; toggleMic: [] }>()
 
@@ -39,6 +49,11 @@ watch(() => props.initialText, (v) => {
   if (!v) return
   text.value = v
   void maybeAutoSend(v)
+})
+// Starter-click prefill: just drop the text in, never send.
+watch(() => props.prefill, (v) => {
+  if (!v) return
+  text.value = v
 })
 const pending = ref<File[]>([])
 const uploading = ref(false)

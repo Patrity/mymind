@@ -4,7 +4,7 @@ import type { TranscriptEntry } from '~/composables/useVoice'
 import { isAtBottom, countNewSince } from '~/utils/transcript-scroll'
 
 const props = defineProps<{ entries: TranscriptEntry[] }>()
-const emit = defineEmits<{ undo: [entry: TranscriptEntry]; retry: [entry: TranscriptEntry] }>()
+const emit = defineEmits<{ undo: [entry: TranscriptEntry]; retry: [entry: TranscriptEntry]; pick: [prompt: string] }>()
 
 // ── Autoscroll pin + "N new" release ────────────────────────────────────────
 // Pinned to the bottom by default. Scrolling away releases the pin; scrolling
@@ -108,6 +108,13 @@ watch(() => props.entries, async () => {
       class="overflow-y-auto p-3 h-full"
       @scroll.passive="onScroll"
     >
+      <!-- Rendered as a sibling of `content`, never inside it — an empty transcript must
+           not feed the ResizeObserver a size baseline that includes the starter cards,
+           and the first real entry's growth must be the only thing it ever measures. -->
+      <AgentEmptyState
+        v-if="!entries.length"
+        @pick="(p) => emit('pick', p)"
+      />
       <div
         ref="content"
         class="flex flex-col gap-2"
