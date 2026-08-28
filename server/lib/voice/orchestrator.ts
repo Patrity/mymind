@@ -1,5 +1,6 @@
 // server/lib/voice/orchestrator.ts
 import { SpeechChunker } from './segment'
+import { SpeechPipeline } from './pipeline'
 import { VOICE_TUNING } from './tuning'
 import type { SttProvider, TtsProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
@@ -77,23 +78,23 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   // context block. Best-effort (returns '' on error/timeout) — never blocks a turn.
   const memoryBlock = deps.buildMemoryContext ? await deps.buildMemoryContext(userText) : ''
   const context = [deps.context, memoryBlock].filter(Boolean).join('\n\n') || undefined
-  const chunker = new SpeechChunker(VOICE_TUNING.tts.sentenceMinChars)
+  const chunker = new SpeechChunker(VOICE_TUNING.tts.sentenceMinChars, VOICE_TUNING.tts.sentenceMaxChars, VOICE_TUNING.tts.firstSegmentMaxChars)
   let assistantText = ''
   const turnImages: DisplayImage[] = []
   const toolRecords: AgentToolRecord[] = []
 
-  const speak = async (text: string) => {
-    if (deps.signal.aborted) return
-    deps.emit({ type: 'state', state: 'speaking' })
-    try {
-      for await (const bytes of deps.tts.synthesize(text, { voice: deps.voice, provider: deps.ttsProvider, signal: deps.signal })) {
-        if (deps.signal.aborted) return
-        deps.emit({ type: 'audio', bytes })
-      }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') throw err
-    }
-  }
+  // Segments are synthesized with up to `concurrency` requests in flight at once (see
+  // pipeline.ts), but always EMITTED in segment order — pipelining only changes when
+  // synthesis starts, never the order the client hears audio in.
+  const pipeline = new SpeechPipeline({
+    synthesize: (text, opts) => deps.tts.synthesize(text, opts),
+    voice: deps.voice,
+    provider: deps.ttsProvider,
+    signal: deps.signal,
+    concurrency: VOICE_TUNING.tts.pipelineConcurrency,
+    onSpeaking: () => deps.emit({ type: 'state', state: 'speaking' }),
+    onAudio: (bytes) => deps.emit({ type: 'audio', bytes })
+  })
 
   let sawText = false
   for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id) })) {
@@ -108,7 +109,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })
       if (deps.speak) {
-        for (const chunk of chunker.push(ev.text)) await speak(chunk)
+        for (const chunk of chunker.push(ev.text)) await pipeline.push(chunk)
       } else if (!sawText) {
         // Text-only turn: no TTS; signal the client to animate a typing state.
         deps.emit({ type: 'state', state: 'typing' })
@@ -135,7 +136,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     }
   }
   if (deps.signal.aborted) return messages
-  if (deps.speak) for (const chunk of chunker.flush()) await speak(chunk)
+  if (deps.speak) {
+    for (const chunk of chunker.flush()) await pipeline.push(chunk)
+    await pipeline.drain()
+  }
   deps.emit({ type: 'state', state: 'idle' })
 
   // ALWAYS sanitize the assistant text (append real embeds when an image was produced; strip any

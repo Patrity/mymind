@@ -66,23 +66,48 @@ function isSentenceEnd(buf: string, i: number): boolean {
   return true
 }
 
-export function segment(buf: string, minChars = 140): { segments: string[]; tail: string } {
+/**
+ * `minChars`/`maxChars` are two DIFFERENT kinds of cap, both handled per call:
+ *  - `minChars` (soft) fires ONCE per call, at the last clause boundary (else last
+ *    space) once a still-open segment reaches it. One-shot because a streaming caller
+ *    (SpeechChunker) re-invokes segment() on every delta, so a still-growing tail gets
+ *    another chance to cut on the NEXT push — a single large buffer with no natural
+ *    boundary yet is left intact rather than chopped into arbitrary same-size pieces.
+ *  - `maxChars` (hard) is NOT one-shot: it re-fires every time a still-open segment
+ *    reaches it, however many times that takes within this one call. Without it, a
+ *    long sentence whose only terminal punctuation is at the very end could grow
+ *    past `minChars` (already spent its one-shot cut) and keep growing arbitrarily —
+ *    on a slow engine that is many extra seconds of silence before anything plays.
+ *
+ * `firstMax`, when given, REPLACES `minChars` (not `maxChars`) for the first segment
+ * only — the one-shot cut fires at `firstMax` instead of `minChars` for whichever
+ * segment is first to close in this call; every later segment in the same call (and
+ * every later call) uses the normal `minChars`/`maxChars`. Callers that don't care
+ * about a short first segment simply omit it.
+ */
+export function segment(buf: string, minChars = 140, maxChars = 200, firstMax?: number): { segments: string[]; tail: string } {
   const segments: string[] = []
   let start = 0
+  let firstSegmentDone = false
 
   const emit = (end: number) => {
     const raw = buf.slice(start, end)
-    if (raw.trim()) segments.push(raw.trim())
+    if (raw.trim()) { segments.push(raw.trim()); firstSegmentDone = true }
     start = end
   }
 
+  // Cut at the last clause boundary at-or-before `windowEnd`, else the last space;
+  // null when neither exists yet (caller leaves the run intact and keeps scanning).
+  const cutAt = (windowEnd: number): number | null => {
+    const window = buf.slice(start, windowEnd + 1)
+    let cut = -1
+    for (const b of CLAUSE_BREAKS) cut = Math.max(cut, window.lastIndexOf(b))
+    if (cut < 0) cut = window.lastIndexOf(' ') - 1
+    return cut > 0 ? start + cut + 1 : null
+  }
+
   let fenceOpen = false
-  // The length fallback is a one-shot safety valve per call: once it has cut a segment,
-  // the rest of the buffer is left as tail even if it is also long. Streaming callers
-  // (SpeechChunker) re-invoke segment() on every delta, so a still-growing tail gets
-  // another chance to cut on the next push; a single large buffer with no natural
-  // boundary is left intact rather than chopped into arbitrary same-size pieces.
-  let lengthCutDone = false
+  let lengthCutDone = false // one-shot guard for the SOFT cap only — see doc above
 
   for (let i = 0; i < buf.length; i++) {
     // Track fenced code blocks (```). While inside an open fence, suspend all
@@ -108,14 +133,22 @@ export function segment(buf: string, minChars = 140): { segments: string[]; tail
       continue
     }
 
-    // Length fallback: the old 60-char cap cut mid-word. Break at the last clause
-    // boundary before the cap, else the last space.
-    if (!lengthCutDone && i - start >= minChars) {
-      const window = buf.slice(start, i + 1)
-      let cut = -1
-      for (const b of CLAUSE_BREAKS) cut = Math.max(cut, window.lastIndexOf(b))
-      if (cut < 0) cut = window.lastIndexOf(' ') - 1
-      if (cut > 0) { emit(start + cut + 1); i = start - 1; lengthCutDone = true }
+    // Hard cap: always enforced, however many times it takes in this call — see doc
+    // above `segment`.
+    if (i - start >= maxChars) {
+      const cut = cutAt(i)
+      if (cut !== null) { emit(cut); i = start - 1; continue }
+    }
+
+    // Soft cap: one-shot per call. Normally `minChars`; for whichever segment is
+    // first to close in this call, `firstMax` (when given) is used instead — see doc
+    // above `segment`.
+    if (!lengthCutDone) {
+      const cap = !firstSegmentDone && firstMax !== undefined ? firstMax : minChars
+      if (i - start >= cap) {
+        const cut = cutAt(i)
+        if (cut !== null) { emit(cut); i = start - 1; lengthCutDone = true }
+      }
     }
   }
 
@@ -131,12 +164,17 @@ export function segment(buf: string, minChars = 140): { segments: string[]; tail
  */
 export class SpeechChunker {
   private buf = ''
-  constructor(private minChars = 140) {}
+  /** Set once the first segment of the turn has been emitted — after that, every
+   *  later segment (even later ones from the SAME push() call) uses `minChars`. */
+  private firstSegmentEmitted = false
+
+  constructor(private minChars = 140, private maxChars = 200, private firstMaxChars = 60) {}
 
   push(delta: string): string[] {
     this.buf += delta
-    const { segments, tail } = segment(this.buf, this.minChars)
+    const { segments, tail } = segment(this.buf, this.minChars, this.maxChars, this.firstSegmentEmitted ? undefined : this.firstMaxChars)
     this.buf = tail
+    if (segments.length > 0) this.firstSegmentEmitted = true
     return segments.map(toSpeakable).filter(s => s.length > 0)
   }
 
