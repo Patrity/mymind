@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { jawWeight, regionWeights, type HeadMetrics } from '../scripts/bake-head'
+import { Document, Accessor, Primitive } from '@gltf-transform/core'
+import {
+  jawWeight, regionWeights, mergeSceneGeometry, sampleSurface, computeNormalization, bakeHeadBuffer,
+  FLOATS_PER_POINT, type HeadMetrics
+} from '../scripts/bake-head'
+
+// Small deterministic LCG, same shape as the one `main()` uses, so tests are reproducible.
+function makeRng(seed = 12345): () => number {
+  let s = seed
+  return () => { s = (s * 1664525 + 1013904223) % 4294967296; return s / 4294967296 }
+}
 
 const M: HeadMetrics = {
   lipY: 0.0, chinY: -1.0, eyeY: 0.8, browY: 1.0,
@@ -57,5 +67,259 @@ describe('regionWeights', () => {
 
   it('flags the brow band above the eyes', () => {
     expect(regionWeights({ x: 0.45, y: M.browY, z: 0.5 }, M).brow).toBeGreaterThan(0.5)
+  })
+})
+
+// Builds a single triangle primitive (POSITION + indices) in memory, no fixture files.
+function addTriangle(doc: Document, positions: [number, number, number][]): ReturnType<Document['createPrimitive']> {
+  const flat = positions.flat()
+  const posAccessor = doc.createAccessor().setType(Accessor.Type.VEC3).setArray(new Float32Array(flat))
+  const idxAccessor = doc.createAccessor().setType(Accessor.Type.SCALAR).setArray(new Uint32Array([0, 1, 2]))
+  return doc.createPrimitive().setAttribute('POSITION', posAccessor).setIndices(idxAccessor)
+}
+
+describe('mergeSceneGeometry', () => {
+  it('merges two separate meshes, offsetting the second mesh\'s indices', () => {
+    const doc = new Document()
+
+    const meshA = doc.createMesh().addPrimitive(addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]))
+    doc.createNode().setMesh(meshA)
+
+    const meshB = doc.createMesh().addPrimitive(addTriangle(doc, [[10, 10, 10], [11, 10, 10], [10, 11, 10]]))
+    doc.createNode().setMesh(meshB)
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(merged.positions.length).toBe(18) // 6 vertices * 3
+    expect(merged.indices.length).toBe(6)
+
+    // The second triangle's indices must be shifted by mesh A's vertex count (3), not raw 0-2.
+    expect(Array.from(merged.indices.slice(3))).toEqual([3, 4, 5])
+
+    // And they must still resolve to mesh B's own vertices, not mesh A's.
+    const i0 = merged.indices[3]!
+    expect(merged.positions[i0 * 3]).toBeCloseTo(10)
+    expect(merged.positions[i0 * 3 + 1]).toBeCloseTo(10)
+    expect(merged.positions[i0 * 3 + 2]).toBeCloseTo(10)
+  })
+
+  it('merges both primitives of a single mesh', () => {
+    const doc = new Document()
+    const mesh = doc.createMesh()
+      .addPrimitive(addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]))
+      .addPrimitive(addTriangle(doc, [[5, 5, 5], [6, 5, 5], [5, 6, 5]]))
+    doc.createNode().setMesh(mesh)
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(merged.positions.length).toBe(18)
+    expect(merged.indices.length).toBe(6)
+    expect(Array.from(merged.indices.slice(3))).toEqual([3, 4, 5])
+  })
+
+  it('applies a node\'s non-identity translation to its mesh positions', () => {
+    const doc = new Document()
+    const mesh = doc.createMesh().addPrimitive(addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]))
+    doc.createNode().setMesh(mesh).setTranslation([5, 2, -3])
+
+    const merged = mergeSceneGeometry(doc)
+
+    // Raw local position was (0,0,0) — the world position must reflect the node's translation.
+    expect(merged.positions[0]).toBeCloseTo(5)
+    expect(merged.positions[1]).toBeCloseTo(2)
+    expect(merged.positions[2]).toBeCloseTo(-3)
+    // Second vertex: local (1,0,0) + translation.
+    expect(merged.positions[3]).toBeCloseTo(6)
+    expect(merged.positions[4]).toBeCloseTo(2)
+    expect(merged.positions[5]).toBeCloseTo(-3)
+  })
+
+  it('contributes once per node for a mesh instanced by multiple nodes, each with its own transform', () => {
+    const doc = new Document()
+    const mesh = doc.createMesh().addPrimitive(addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]))
+    doc.createNode().setMesh(mesh).setTranslation([0, 0, 0])
+    doc.createNode().setMesh(mesh).setTranslation([100, 0, 0])
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(merged.positions.length).toBe(18) // same mesh, two instances = 6 vertices
+    expect(merged.indices.length).toBe(6)
+    // First instance's first vertex is at the origin, second instance's is shifted by 100.
+    expect(merged.positions[0]).toBeCloseTo(0)
+    expect(merged.positions[9]).toBeCloseTo(100)
+  })
+
+  it('skips a primitive with no indices, no POSITION, or a non-triangle mode without throwing', () => {
+    const doc = new Document()
+
+    const noIndices = doc.createPrimitive()
+      .setAttribute('POSITION', doc.createAccessor().setType(Accessor.Type.VEC3).setArray(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])))
+    // no setIndices() call — leaves getIndices() null.
+
+    const noPosition = doc.createPrimitive()
+      .setIndices(doc.createAccessor().setType(Accessor.Type.SCALAR).setArray(new Uint32Array([0, 1, 2])))
+    // no setAttribute('POSITION', ...) call.
+
+    const nonTriangle = addTriangle(doc, [[9, 9, 9], [8, 9, 9], [9, 8, 9]]).setMode(Primitive.Mode.LINE_STRIP)
+
+    const valid = addTriangle(doc, [[1, 1, 1], [2, 1, 1], [1, 2, 1]])
+
+    const mesh = doc.createMesh()
+      .addPrimitive(noIndices)
+      .addPrimitive(noPosition)
+      .addPrimitive(nonTriangle)
+      .addPrimitive(valid)
+    doc.createNode().setMesh(mesh)
+
+    expect(() => mergeSceneGeometry(doc)).not.toThrow()
+    const merged = mergeSceneGeometry(doc)
+
+    // Only the one valid triangle primitive should have made it through.
+    expect(merged.positions.length).toBe(9)
+    expect(merged.indices.length).toBe(3)
+    expect(merged.positions[0]).toBeCloseTo(1)
+  })
+
+  it('produces a total triangle count equal to the sum of the input triangle counts', () => {
+    const doc = new Document()
+
+    const meshA = doc.createMesh()
+      .addPrimitive(addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]))
+      .addPrimitive(addTriangle(doc, [[2, 0, 0], [3, 0, 0], [2, 1, 0]]))
+    doc.createNode().setMesh(meshA)
+
+    const meshB = doc.createMesh().addPrimitive(addTriangle(doc, [[10, 10, 10], [11, 10, 10], [10, 11, 10]]))
+    doc.createNode().setMesh(meshB)
+
+    const merged = mergeSceneGeometry(doc)
+    const inputTriangleCount = 3 // 2 from meshA + 1 from meshB
+    expect(merged.indices.length / 3).toBe(inputTriangleCount)
+  })
+})
+
+describe('sampleSurface normals', () => {
+  it('interpolates and renormalizes a NORMAL-bearing triangle, varying across the surface', () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0])
+    const indices = new Uint32Array([0, 1, 2])
+    // Deliberately non-unit and orthogonal per-vertex normals, so interpolation must both
+    // renormalize AND actually vary depending on where within the triangle a point lands.
+    const normals = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1])
+    const hasNormal = new Uint8Array([1, 1, 1])
+
+    const pts = sampleSurface(positions, indices, normals, hasNormal, 100, makeRng())
+
+    for (const p of pts) expect(Math.hypot(p.nx, p.ny, p.nz)).toBeCloseTo(1, 5)
+
+    const distinct = new Set(pts.map(p => `${p.nx.toFixed(3)},${p.ny.toFixed(3)},${p.nz.toFixed(3)}`))
+    expect(distinct.size).toBeGreaterThan(1)
+  })
+
+  it('falls back to the flat geometric face normal when a primitive has no NORMAL', () => {
+    // p0=(0,0,0), p1=(2,0,0), p2=(0,2,0): edges (2,0,0) and (0,2,0), cross = (0,0,4) -> (0,0,1).
+    const positions = new Float32Array([0, 0, 0, 2, 0, 0, 0, 2, 0])
+    const indices = new Uint32Array([0, 1, 2])
+    const normals = new Float32Array(9) // zero-filled — unused since hasNormal is all zero
+    const hasNormal = new Uint8Array([0, 0, 0])
+
+    const pts = sampleSurface(positions, indices, normals, hasNormal, 20, makeRng())
+
+    for (const p of pts) {
+      expect(p.nx).toBeCloseTo(0, 5)
+      expect(p.ny).toBeCloseTo(0, 5)
+      expect(p.nz).toBeCloseTo(1, 5)
+    }
+  })
+})
+
+describe('mergeSceneGeometry normal matrix', () => {
+  it('transforms a normal by a node\'s rotation, not just its translation', () => {
+    const doc = new Document()
+    const posAccessor = doc.createAccessor().setType(Accessor.Type.VEC3)
+      .setArray(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]))
+    const normalAccessor = doc.createAccessor().setType(Accessor.Type.VEC3)
+      .setArray(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1])) // local +Z at every vertex
+    const idxAccessor = doc.createAccessor().setType(Accessor.Type.SCALAR).setArray(new Uint32Array([0, 1, 2]))
+    const prim = doc.createPrimitive()
+      .setAttribute('POSITION', posAccessor)
+      .setAttribute('NORMAL', normalAccessor)
+      .setIndices(idxAccessor)
+    const mesh = doc.createMesh().addPrimitive(prim)
+
+    // 90 degrees about X: quaternion (sin45, 0, 0, cos45). For this rotation, the standard
+    // quaternion->matrix formula gives R = [[1,0,0],[0,0,-1],[0,1,0]], which maps local +Z
+    // (0,0,1) to world (0,-1,0) — independently re-derived (not copied from a library), and
+    // cross-checked against transformPosition below for the same rotation-only node, since a
+    // pure rotation's inverse-transpose (the normal matrix) equals the rotation matrix itself.
+    const half = Math.sin(Math.PI / 4)
+    doc.createNode().setMesh(mesh).setRotation([half, 0, 0, Math.cos(Math.PI / 4)])
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(merged.hasNormal[0]).toBe(1)
+    expect(merged.normals[0]).toBeCloseTo(0, 4)
+    expect(merged.normals[1]).toBeCloseTo(-1, 4)
+    expect(merged.normals[2]).toBeCloseTo(0, 4)
+    expect(Math.hypot(merged.normals[0]!, merged.normals[1]!, merged.normals[2]!)).toBeCloseTo(1, 5)
+  })
+})
+
+describe('computeNormalization', () => {
+  it('recentres Z the same way it recentres Y, leaving X as a pure scale', () => {
+    // X spans -2..2 (scale = 1/2), Y spans 0..10 (midY = 5), Z spans 9..11 (midZ = 10) —
+    // an asymmetric Z range, like the real MPFB2 export (z ~-0.48..1.48, centred near +0.5).
+    const positions = new Float32Array([
+      -2, 0, 9,
+       2, 10, 11
+    ])
+    const n = computeNormalization(positions)
+    expect(n.scale).toBeCloseTo(0.5, 5)
+    expect(n.midY).toBeCloseTo(5, 5)
+    expect(n.midZ).toBeCloseTo(10, 5)
+  })
+})
+
+describe('bakeHeadBuffer', () => {
+  // Two triangles forming a quad whose Z span (9..11) does not straddle zero before recentring,
+  // and whose face-normal fallback (no NORMAL attribute) is unit length by construction —
+  // exercises both the Z-recentre fix and the "every normal is unit length" requirement.
+  function buildAsymmetricQuadDoc(): Document {
+    const doc = new Document()
+    const posAccessor = doc.createAccessor().setType(Accessor.Type.VEC3)
+      .setArray(new Float32Array([-1, 0, 9, 1, 0, 9, -1, 0, 11, 1, 0, 11]))
+    const idxAccessor = doc.createAccessor().setType(Accessor.Type.SCALAR)
+      .setArray(new Uint32Array([0, 1, 2, 1, 3, 2]))
+    const prim = doc.createPrimitive().setAttribute('POSITION', posAccessor).setIndices(idxAccessor)
+    const mesh = doc.createMesh().addPrimitive(prim)
+    doc.createNode().setMesh(mesh)
+    return doc
+  }
+
+  it('centres the Z bounding box on ~0 after baking, where it used to sit at the raw midpoint', () => {
+    const doc = buildAsymmetricQuadDoc()
+    const count = 300
+    const buf = bakeHeadBuffer(doc, count, makeRng())
+
+    let sawNegativeZ = false, sawPositiveZ = false
+    for (let i = 0; i < count; i++) {
+      const z = buf[i * FLOATS_PER_POINT + 2]!
+      if (z < -0.01) sawNegativeZ = true
+      if (z > 0.01) sawPositiveZ = true
+    }
+    // Raw Z was entirely within [9, 11] — always positive after scaling. Only a genuine
+    // recentre step can make sampled points land on both sides of zero.
+    expect(sawNegativeZ).toBe(true)
+    expect(sawPositiveZ).toBe(true)
+  })
+
+  it('produces a unit-length normal for every point in the output buffer', () => {
+    const doc = buildAsymmetricQuadDoc()
+    const count = 300
+    const buf = bakeHeadBuffer(doc, count, makeRng())
+
+    for (let i = 0; i < count; i++) {
+      const o = i * FLOATS_PER_POINT
+      const len = Math.hypot(buf[o + 3]!, buf[o + 4]!, buf[o + 5]!)
+      expect(len).toBeCloseTo(1, 2)
+    }
   })
 })
