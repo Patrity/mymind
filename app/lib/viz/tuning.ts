@@ -25,6 +25,25 @@ export const VIZ_TUNING = {
   ring: {
     radius: 2.5, // world units from center to the mic bars
   },
+  // ParticleHead knobs. Distances are in HEAD-LOCAL units, where the bake normalizes
+  // the head's half-width to 1.0 and centres y on the mesh (see scripts/bake-head.ts).
+  head: {
+    scale: 1.7, // object scale; the head's ~1.35 half-height fills most of the frame at camera.z
+    pointSize: 0.07, // a head surface is denser than the sphere shell — smaller points
+    alpha: 0.5,
+    jawTravel: 0.3, // chin drop at jaw = 1 (weighted per point by the baked jawW ramp)
+    browLift: 0.06,
+    // Pitch pivot: BEHIND and BELOW the face, near the base of the skull. Rotating
+    // about the mesh origin slides the face up the screen instead of rotating it.
+    pivotY: -0.6,
+    pivotZ: -0.5,
+    // Additive points on a closed surface read as a blob unless the far side dims;
+    // the floor keeps the head translucent rather than opaque.
+    facingFloor: 0.28,
+    scanMinY: -1.4, // the amber tool scan sweeps between these head-local heights
+    scanMaxY: 1.4,
+    scanWidth: 0.22,
+  },
   lightning: {
     rate: 22, // bolts per second at full thinking intensity
     brightness: 1, // bolt color multiplier (additive — bloom amplifies it)

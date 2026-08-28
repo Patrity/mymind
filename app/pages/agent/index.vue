@@ -267,7 +267,7 @@ onMounted(async () => {
     >
       <template #body>
         <div class="relative flex flex-col flex-1 min-h-0 bg-elevated/20">
-          <VoiceReactor
+          <AgentAvatar
             class="flex-1 min-h-0"
             :state="voice.state.value"
             :connected="voice.connected.value"
@@ -275,9 +275,8 @@ onMounted(async () => {
             :out-analyser="voice.outAnalyser"
             :on-viz-event="voice.onVizEvent"
           />
-          <!-- "Am I being heard": mounted beneath whatever renders the avatar column
-               above (VoiceReactor today; a real avatar in a later task) so it survives
-               that swap. -->
+          <!-- "Am I being heard": mounted beneath the avatar column so it survives any
+               future swap of the renderer above it. -->
           <AgentMicBand
             :mic-analyser="voice.micAnalyser()"
             :speech-prob="voice.speechProb.value"
