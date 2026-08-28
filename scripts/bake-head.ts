@@ -15,6 +15,18 @@ export interface HeadMetrics {
   hingeInner: number
   hingeOuter: number
   faceHalfWidth: number
+  /**
+   * Height at which jaw influence has faded to zero, BELOW the chin. Optional: when
+   * omitted the weight simply saturates past `chinY`, which is the old behaviour.
+   *
+   * This exists because `smoothstep` clamps to 1 past its upper bound, so every point
+   * below `chinY` — the whole neck — was receiving FULL jaw weight. With
+   * `jawTravel: 0.3` against a head spanning ~2.4 units, the neck dropped 12% of head
+   * height on every spoken syllable: the face's whole lower half sliding down, which
+   * is the same artifact class as the binary-region cleave this weighting exists to
+   * prevent. The jaw's underside should move; the neck should not.
+   */
+  neckY?: number
 }
 
 export const FLOATS_PER_POINT = 9
@@ -38,7 +50,11 @@ function smoothstep(a: number, b: number, x: number): number {
 export function jawWeight(y: number, x: number, m: HeadMetrics): number {
   const vert = Math.pow(smoothstep(m.lipY, m.chinY, y), 0.6)
   const hinge = 1 - 0.6 * smoothstep(m.hingeInner, m.hingeOuter, Math.abs(x))
-  return Math.max(0, Math.min(1, vert * hinge))
+  // Fade influence out below the jawline so the neck stays put. Without this the
+  // ramp saturates at 1 forever below `chinY` and the neck travels with the chin.
+  // Omitting `neckY` keeps the old saturating behaviour.
+  const neck = m.neckY === undefined ? 1 : 1 - smoothstep(m.chinY, m.neckY, y)
+  return Math.max(0, Math.min(1, vert * hinge * neck))
 }
 
 export function regionWeights(
@@ -307,11 +323,25 @@ export function bakeHeadBuffer(doc: Document, count: number, rng: () => number):
   const merged = mergeSceneGeometry(doc)
   const { scale, midY, midZ } = computeNormalization(merged.positions)
 
-  // Proportions as fractions of the normalized head. Tune by eye against the render
-  // and re-run — the bake is cheap.
+  // Proportions as fractions of the normalized head, MEASURED from the real export
+  // rather than guessed. Two landmarks are directly observable in the geometry:
+  // the nose tip is the frontmost point (max z, found at y ~= -0.20), and the chin is
+  // where the face stops jutting forward (max z collapses 0.85 -> 0.46 between
+  // y = -0.85 and -0.95, so the chin sits at ~= -0.89). Standard facial proportions
+  // worked back from those two put the eyes at ~0.15 and the brow at ~0.30, which is
+  // where the original estimates already were.
+  //
+  // chinY matters most and was the one that was wrong: it was set BELOW the real chin,
+  // and `smoothstep(lipY, chinY, y)` saturates at 1 past its upper bound — so every
+  // neck point was getting FULL jaw weight and the neck moved as much as the jaw.
+  // Re-measure with `scripts/bake-head.ts` diagnostics if the mesh is ever re-exported;
+  // the bake is cheap, so tune by eye against the render and re-run.
   const m: HeadMetrics = {
-    browY: 0.30, eyeY: 0.16, lipY: -0.42, chinY: -0.95,
-    hingeInner: 0.30, hingeOuter: 0.90, faceHalfWidth: 1.0
+    browY: 0.30, eyeY: 0.15, lipY: -0.47, chinY: -0.89,
+    hingeInner: 0.30, hingeOuter: 0.90, faceHalfWidth: 1.0,
+    // The mesh narrows sharply below y ~= -1.0 (measured width 1.99 -> 1.19), which is
+    // the neck. Fade jaw influence out across the jaw's underside so it stops there.
+    neckY: -1.05
   }
 
   const pts = sampleSurface(merged.positions, merged.indices, merged.normals, merged.hasNormal, count, rng)

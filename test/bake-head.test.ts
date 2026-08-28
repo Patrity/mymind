@@ -16,6 +16,40 @@ const M: HeadMetrics = {
   hingeInner: 0.3, hingeOuter: 0.9, faceHalfWidth: 1.0
 }
 
+describe('jawWeight neck falloff', () => {
+  // With `neckY` set, influence must fade to nothing below the jawline. Without it the
+  // ramp saturates at 1 forever past `chinY`, so the whole neck travelled with the chin
+  // — 12% of head height on every syllable, the same class of artifact as the binary
+  // region this weighting exists to avoid.
+  const N: HeadMetrics = { ...M, neckY: -1.3 }
+
+  it('is still full at the chin', () => {
+    expect(jawWeight(N.chinY, 0, N)).toBeCloseTo(1, 5)
+  })
+
+  it('falls to zero at and below the neck line', () => {
+    expect(jawWeight(N.neckY!, 0, N)).toBeCloseTo(0, 5)
+    expect(jawWeight(-2, 0, N)).toBeCloseTo(0, 5)
+  })
+
+  it('decreases monotonically from the chin down to the neck', () => {
+    const ys = [-1.0, -1.05, -1.1, -1.15, -1.2, -1.25, -1.3]
+    const ws = ys.map(y => jawWeight(y, 0, N))
+    for (let i = 1; i < ws.length; i++) expect(ws[i]!).toBeLessThanOrEqual(ws[i - 1]!)
+  })
+
+  it('leaves the lip-to-chin ramp unchanged', () => {
+    // The falloff must not eat into the region that actually opens the mouth.
+    for (const y of [0.0, -0.2, -0.5, -0.8, -1.0]) {
+      expect(jawWeight(y, 0, N)).toBeCloseTo(jawWeight(y, 0, M), 5)
+    }
+  })
+
+  it('omitting neckY preserves the old saturating behaviour', () => {
+    expect(jawWeight(-2, 0, M)).toBeCloseTo(1, 5)
+  })
+})
+
 describe('jawWeight', () => {
   it('is zero at and above the upper lip', () => {
     expect(jawWeight(M.lipY, 0, M)).toBe(0)
