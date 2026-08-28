@@ -295,7 +295,24 @@ export function useVoice() {
       baseAssetPath: '/vad/',
       onnxWASMBasePath: '/ort/',
       getStream: async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } })
+        const baseAudio = { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+        const deviceId = settings.value.micDeviceId
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            ...baseAudio,
+            // '' means "let the OS choose". An explicit id is `exact` so a stale
+            // selection fails loudly here rather than silently using the wrong mic.
+            ...(deviceId ? { deviceId: { exact: deviceId } } : {})
+          }
+        }).catch(async (err: Error) => {
+          // A device that has been unplugged since it was chosen throws
+          // OverconstrainedError. Fall back to the default rather than leaving the
+          // user with a dead microphone and no explanation.
+          if (err.name !== 'OverconstrainedError') throw err
+          settings.value = { ...settings.value, micDeviceId: '' }
+          error.value = 'That microphone is no longer available — switched to the system default.'
+          return navigator.mediaDevices.getUserMedia({ audio: baseAudio })
+        })
         vizStream = stream
         try {
           audioCtx!.createMediaStreamSource(stream).connect(micAnalyser!)

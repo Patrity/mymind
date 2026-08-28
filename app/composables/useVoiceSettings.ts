@@ -12,6 +12,11 @@ export interface VoiceUserSettings {
   redemptionMs: number
   bargeInEnabled: boolean
   playbackRate: number
+  /** enumerateDevices() deviceId to constrain getUserMedia to. '' = system default
+   *  (no constraint) — the OS/browser picks, which is what shipped before this setting
+   *  existed. See useVoice's getUserMedia call for the `exact` constraint + the
+   *  OverconstrainedError fallback when a chosen device has since vanished. */
+  micDeviceId: string
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceUserSettings = {
@@ -22,6 +27,7 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceUserSettings = {
   redemptionMs: 240,
   bargeInEnabled: true,
   playbackRate: 1.1,
+  micDeviceId: '',
 }
 
 /** The VAD's exit threshold trails the entry threshold (vad-web convention). */
