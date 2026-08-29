@@ -2,9 +2,9 @@
 title: Agent Surface (/agent)
 status: shipped
 cycle: 60
-updated: 2026-08-27
+updated: 2026-08-29
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
-mymind_hash: 623e9db0e3a0566de0c06ff68a4dfeb66571877fdb84083ad50dd3fc15c1c54a
+mymind_hash: 6f456b25c7802e23ab05add8f8ce481876c4f7d516395c47b2da0ae2980d1074
 ---
 
 # Agent Surface (`/agent`)
@@ -111,6 +111,7 @@ Two additions to the `/agent` surface, both riding the WS pipeline only.
 - `orchestrator.ts` emits a `{type:'reasoning', text}` `VoiceEvent` — **never chunked/spoken and never merged into `assistantText`**, so voice turns don't read the thinking aloud and it never enters the model's history.
 - `ws.ts` accumulates the reasoning in its `emit` closure (the same seam that collects `tool_calls`) and persists it on the assistant row (`conversation_messages.reasoning`).
 - The client (`messages.ts` → `useVoice.pushReasoning`) attaches it to the current assistant `TranscriptEntry.reasoning`; `app/components/agent/ReasoningBlock.vue` renders it as a collapsible **Thinking** `<details>` above the answer (muted `whitespace-pre-wrap` text — not MDC). It **auto-opens while thinking and collapses when the answer starts**, but a manual toggle wins after that. On resume, `getConversation` returns `reasoning` and the page hydrates it, so the block persists across reloads.
+  > **Fixed 2026-08-28 (`ce8f990`) — this never actually auto-collapsed on a live turn.** `<details>` fires its `toggle` event for *programmatic* open/close as well as a real click, and the component used to treat any `toggle` as "the user took control." On a live turn, reasoning arrives before any answer text, so the block mounts with `:open="true"` — Vue setting that attribute itself fires `toggle` — which immediately (and wrongly) marked the block as user-touched, permanently defeating the collapse-on-answer watcher. Resumed threads looked correct only by accident: `hasAnswer` is already `true` there, so `open` starts `false`, Vue never sets the attribute, and no `toggle` fires. User intent is now read from a `click` on the `<summary>` (keyboard activation dispatches one too); the `toggle` handler only syncs `open` to the DOM's actual state and carries no intent.
 
 **On-the-fly reasoning-model override.** A navbar `USelectMenu` (`app/pages/agent/index.vue`) lists the models assigned to the `reasoning` usage (from `useAiConfig`) plus a **"Default (chain order)"** entry. Picking one:
 - writes the cookie `agent-model` (`''` = default) and sends `{type:'model', modelDefId}` over the WS; the pick is **resent on every WS (re)open** (like the voice pick), so it survives reconnects;

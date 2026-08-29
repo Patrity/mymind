@@ -2,16 +2,18 @@
 title: Voice Agent
 status: shipped
 cycle: 60
-updated: 2026-08-27
+updated: 2026-08-29
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
-mymind_hash: 0e1317752e4e7dfa49421a555ad0d15ed3151815bc632e439c16cc3e5579c47c
+mymind_hash: 4c137cfd9909ca9ceb0b2350a7dc9807c90d8bdaa5f664fb5ddb564c4c93c0e3
 ---
 
 # Voice Agent
 
 > **Cycle 28 update:** the `/voice` page was merged into the unified **`/agent`** surface (talk + type in one place). `/voice` redirects to `/agent`. This page documents the self-hosted STT/TTS pipeline and Bridget's renderer; see [agent.md](agent.md) for the unified surface, conversation persistence, and the `speak`-driven convergence.
 >
-> **Cycle 60 update (this page's current state):** the TTS chain gained a sanitizer + a real segmenter (`SentenceChunker` and `server/lib/voice/chunker.ts` are **deleted**), the microphone gained a device picker, and the **particle sphere became a particle head**. `app/components/voice/Reactor.client.vue` and the 96-bar mic ring (`app/lib/viz/ring.ts`) are **deleted**; the "Voice Visualizer (cycle 19)" section below has been rewritten as [Bridget's avatar](#bridgets-avatar-cycle-60). The GPU machinery underneath — `scene.ts`, `core.ts`, `effects.ts`, `lightning.ts`, `choreographer.ts`, the quality tiers and the FPS watchdog — is unchanged and re-pointed.
+> **Cycle 60 update:** the TTS chain gained a sanitizer + a real segmenter (`SentenceChunker` and `server/lib/voice/chunker.ts` are **deleted**), the microphone gained a device picker, and the **particle sphere became a particle head**. `app/components/voice/Reactor.client.vue` and the 96-bar mic ring (`app/lib/viz/ring.ts`) are **deleted**; the "Voice Visualizer (cycle 19)" section below has been rewritten as [Bridget's avatar](#bridgets-avatar-cycle-60). The GPU machinery underneath — `scene.ts`, `core.ts`, `effects.ts`, `lightning.ts`, `choreographer.ts`, the quality tiers and the FPS watchdog — is unchanged and re-pointed.
+>
+> **Post-handover update (2026-08-28, this page's current state):** five follow-on commits landed after the cycle-60 handover closed, correcting two claims that handover made. **The head mesh now exists and is committed** — `assets/source/bridget-head.glb` and `app/assets/head-points.bin` are both in the repo, `bake-head.ts` was rewritten to merge every mesh/node instead of just the first primitive, keep only the skin shell (66 shells in the real export; eyeballs/teeth/helper ribbons were 40% of the triangles), sample mesh edges instead of random surface points, and use landmarks measured off the discarded shells. **Orpheus is now live** on the rig and registered in production, at the tail of the TTS failover chain. TTS synthesis is also now pipelined (concurrency ramps 1→3) instead of fully sequential. See [Speech pipeline](#speech-pipeline-cycle-60), [Providers](#providers) and [Bridget's avatar](#bridgets-avatar-cycle-60) below, and the [cycle-60 handover's follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) for the full commit list. **Still open, not solved by any of this:** the avatar's jaw doesn't hinge, the talking motion doesn't read as natural, and the model doesn't read as a woman (Tony's own assessment, deferred by him); exposure/density (`VIZ_TUNING.head`) has never been tuned against the real head; the export is body-only (no hair, no eyes) so those sockets are empty by construction; and which TTS voice to adopt is undecided pending Tony's ears.
 
 A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and tool use. Cycle 18 replaced the Unmute/Kyutai-orchestrated approach (cycle 17) with a fully self-owned TypeScript pipeline: client-side VAD, a Nitro WebSocket orchestrator, and swappable OpenAI-spec local STT/TTS providers.
 
@@ -71,7 +73,8 @@ All providers are OpenAI-spec endpoints — swapping a model means changing `*_B
 |---|---|---|---|
 | STT | `AI_STT_*` | `:8881` Speaches faster-whisper-turbo | model `deepdml/faster-whisper-large-v3-turbo-ct2` |
 | TTS Kokoro | `AI_TTS_KOKORO_*` | `:8880` | voices `af_heart`, `af_sky`, … — see `/v1/voices` |
-| TTS Chatterbox | `AI_TTS_CHATTERBOX_*` | `:8884` | voices `happy-us.wav`, `Emily.wav`, … — **voice param is required** (422 if omitted) |
+| TTS Chatterbox | `AI_TTS_CHATTERBOX_*` | `:8884` | **Chatterbox Turbo** (350M) as of 2026-08-28, not the original 0.5B the cycle-60 handover warned about — voices `happy-us.wav`, `Emily.wav`, … — **voice param is required** (422 if omitted) |
+| TTS Orpheus | — (registered via `ai_config`, not env) | `http://192.168.2.25:5005/v1` | model `orpheus`, 25 voices, default `tara`; llama.cpp backbone running `--parallel 3`. **Live as of 2026-08-28** — see [TTS provider status](#tts-provider-status-2026-08-28) below |
 
 **Which TTS provider actually gets dialed (current behaviour).** STT/TTS models come from the
 AI config registry (`assignments.stt` / `assignments.tts`, see [ai-providers.md](ai-providers.md)),
@@ -88,12 +91,12 @@ chunk in one prod session, invisible to the user because the audio still played.
 
 See [`docs/model-requirements.md`](../model-requirements.md) for rig setup instructions.
 
-## Speech pipeline (cycle 60)
+## Speech pipeline (cycle 60 + pipelined synthesis, 2026-08-28)
 
 The chain used to be `deltas → SentenceChunker → synthesize`. It is now:
 
 ```
-deltas → raw buffer → segment(raw) → toSpeakable(segment) → synthesize
+deltas → raw buffer → segment(raw) → toSpeakable(segment) → SpeechPipeline → synthesize
 ```
 
 **Segment first, sanitize each completed segment.** The reverse ordering does not work: markdown markers span deltas (`**`, `bold`, `**` can arrive as three), so sanitizing per-delta sees half-markers, and sanitizing the accumulated buffer before segmenting means mapping sanitized offsets back to raw to know what to retain. Segment-then-sanitize avoids both — a partial marker just stays in the retained tail until it completes, and `flush()` sanitizes whatever is left at end of stream.
@@ -118,31 +121,55 @@ Pure, unit-tested. Replaces `SentenceChunker`'s `/[^.!?]*[.!?]+(\s|$)/g`, which 
 - Ellipses are non-terminal; known abbreviations (`Dr.`, `e.g.`, `i.e.`, `etc.`, `vs.`, `approx.`, `St.`, months, …) walk back over letters *and* a single internal dot between letters, so `e.g.` is collected as `e.g` and matched with dots stripped.
 - Newlines are hard boundaries; fenced code blocks are tracked so a `.` inside one never splits.
 - The `minChars` fallback rose from **60 → 140** and breaks at the last clause boundary (`,` `;` `:` `—` `–`) before the cap, falling back to the last space — it is one-shot per `segment()` call.
+- **`maxChars` (200), added 2026-08-28, is a HARD cap and is NOT one-shot** — it re-fires every time a still-open segment reaches it, however many times that takes within one `segment()` call. Without it, a sentence whose only clause/terminal punctuation sits at the very end could grow arbitrarily long once the one-shot `minChars` cut had already fired — on a slow autoregressive engine (~0.067s/char measured on Orpheus) a 400-char segment is a ~27s stall before a single sample plays.
+- **`firstMax` (60), added 2026-08-28**, replaces `minChars` — not `maxChars` — for whichever segment is first to close in a `segment()` call, so the turn's opening segment is short and time-to-first-audio isn't gated on a full sentence. Every later segment, in the same call or a later one, uses the normal `minChars`.
 
-`SpeechChunker` keeps `SentenceChunker`'s exact `push(delta): string[]` / `flush(): string[]` signature, which is why the orchestrator's call sites were untouched. It accumulates raw deltas, segments the **raw** buffer, and maps each completed segment through `toSpeakable`.
+`SpeechChunker` keeps `SentenceChunker`'s exact `push(delta): string[]` / `flush(): string[]` signature, which is why the orchestrator's call sites were untouched. It accumulates raw deltas, segments the **raw** buffer, and maps each completed segment through `toSpeakable`. Its constructor is now `(minChars = 140, maxChars = 200, firstMaxChars = 60)`.
 
-### TTS model — unchanged this cycle
+### `server/lib/voice/pipeline.ts` — `SpeechPipeline` (2026-08-28)
 
-**Kokoro and Chatterbox are still what serve `/v1/audio/speech`**, selected through the AI config registry as before. The cycle-60 spec's target — **Orpheus 3B** — was **not** stood up: it needs shell on the rig, which is a human step. Everything app-side is already configuration (the registry accepts any OpenAI-spec `/v1/audio/speech` endpoint; no code, no redeploy), so the swap is a `/settings` change whenever the rig serves it. The serving recipe and its landmines are recorded in the [cycle-60 handover](../handovers/2026-08-27-agent-surface-redesign.md).
+`orchestrator.ts` used to `await speak(chunk)` per segment — strictly sequential, each full network round trip completing before the next began. `SpeechPipeline` instead starts synthesis for up to `concurrency` segments **concurrently**, while still **emitting audio strictly in segment order** (out-of-order emission would scramble the sentence — only the *starting* of synthesis is concurrent, draining is a strict serial queue).
+
+- **Concurrency ramps 1 → 3.** The turn's first segment is always synthesized **alone**, at `FIRST_SEGMENT_CONCURRENCY = 1`, regardless of the configured `concurrency`. Some backends behind this app (Orpheus via llama.cpp `--parallel 3`) share one GPU across "concurrent" slots, so racing chunk 1 against others only slows chunk 1 down — and perceived responsiveness is governed entirely by chunk 1's latency. Depth widens to the full `concurrency` (3) only once the first segment has been dispatched (`firstSegmentDrained` flips true the moment it drains, win or lose).
+- **A throwing segment is dropped, not fatal.** Before this, a synthesis error killed the rest of the turn. Now a non-abort error is logged and the segment is skipped; the drain continues. `AbortError` is swallowed as before.
+- `VOICE_TUNING.tts.pipelineConcurrency` (default 3) is the configured cap; `orchestrator.ts` wires it in alongside the new `sentenceMaxChars` (200) and `firstSegmentMaxChars` (60).
+
+**Measured effect on total wall-clock** (pipelining vs. the old strictly-sequential path): **Chatterbox −43%, Orpheus −18%, Kokoro unchanged** (Kokoro is already far past realtime, so there is nothing to pipeline against). Firing *all* chunks concurrently (no ramp) makes time-to-first-audio *worse*, not better, because the shared GPU slots make the first chunk compete with the rest — which is why the ramp exists rather than a flat concurrency cap.
+
+## TTS provider status (2026-08-28)
+
+**Orpheus is now live**, correcting the cycle-60 handover's "not stood up — needs shell on the rig" note. `http://192.168.2.25:5005/v1`, model `orpheus`, 25 voices, default `tara`, served by a llama.cpp backbone running `--parallel 3`. It is registered in the production `ai_config` as provider "Orpheus rig" / model "Orpheus", **appended to the END of the `tts` chain** — Kokoro stays the head and nothing changes for any existing user until a voice is explicitly picked in the voice picker. Chatterbox at `:8884` is now **Chatterbox Turbo** (see the provider table above).
+
+Both Chatterbox and Orpheus return `{"status":"ok","voices":[...]}` rather than the bare `{"voices":[...]}` Kokoro returns. `server/api/voice/voices.get.ts` reads only the `voices` key off the parsed response (`data?.voices ?? []`), so both shapes work as-is — worth stating explicitly so a future session doesn't "fix" a shape that was never broken.
+
+**Measured throughput** (audio-seconds produced per wall-second; >1.0× keeps up with playback) and time-to-first-audio:
+
+| Provider | Throughput | Time to first audio |
+|---|---|---|
+| Kokoro | ~38× | ~0.9 s |
+| Chatterbox Turbo | ~2.9× | ~1.0–1.5 s |
+| Orpheus, sequential backend | **0.83–0.87×** | — |
+| Orpheus, `--parallel 3` | **1.20–1.27×** | ~2.9 s (floor ~2.2 s) |
+
+**The decisive fact:** sequential Orpheus ran **below 1.0×** — it could not generate audio as fast as it plays, so it was guaranteed to underrun mid-utterance regardless of any client-side fix. `--parallel 3` clears breakeven, but by only 20–27%, against Chatterbox's ~190% margin. **A sub-1.5s time-to-first-audio target is unreachable for Orpheus** as currently served — 2.17s for a 26-character input is a fixed floor of the backend, not an artifact of input length.
+
+Which voice (Kokoro, Chatterbox Turbo, or Orpheus/`tara`) to adopt as default is **undecided** — it needs Tony's ears on the rig, not a benchmark number. All three are selectable today from the voice picker.
 
 ## Tuning (`server/lib/voice/tuning.ts`)
 
-Every runtime knob lives here — no SSH, no rebuild-to-tune:
+Server-side runtime knobs live here — no SSH, no rebuild-to-tune. As of 2026-08-28 this holds only the groups something actually reads; `vad`, `turn`, `bargeIn`, `tts.provider` and `tts.playbackRate` used to live here too but had **zero server-side readers** and were removed rather than left looking authoritative (that VAD/barge-in/playback tuning is genuinely client-side — see below):
 
 ```ts
 export const VOICE_TUNING = {
-  vad:     { positiveSpeechThreshold: 0.5, negativeSpeechThreshold: 0.35, minSpeechFrames: 3, redemptionFrames: 8, preSpeechPadFrames: 4 },
-  turn:    { endpointSilenceMs: 700, minUtteranceMs: 250, maxUtteranceMs: 30000 },
-  bargeIn: { enabled: true, minSpeechMsToInterrupt: 300 },
-  tts:     { provider: 'kokoro', sentenceMinChars: 140, playbackRate: 1.0 },   // see the warning below
+  tts:     { sentenceMinChars: 140, sentenceMaxChars: 200, firstSegmentMaxChars: 60, pipelineConcurrency: 3 },
   stt:     { language: 'en' },
   agent:   { maxSteps: 16, temperature: 0.7 },
 }
 ```
 
-The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettings` (cookie `voice-settings`, via `useCookie`) holds voice choice, `positiveSpeechThreshold` (negative trails it by 0.15), `minSpeechMs`, `redemptionMs`, `bargeInEnabled`, `playbackRate`, and — since cycle 60 — `micDeviceId`. The cog button in the agent toolbar opens `VoiceSettingsSlideover` — the sensitivity slider has a live meter fed by `voice.speechProb` (Silero per-frame probability via `onFrameProcessed`, the same unit as the threshold). Threshold/timing changes hot-apply through `applyVadSettings()` (debounced VAD-only restart; WS untouched); barge-in and playback rate apply live without restart. Segmentation flushes a TTS call on a real sentence end or when `sentenceMinChars` is reached — audio starts before the LLM finishes.
+The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettings` (cookie `voice-settings`, via `useCookie`) holds voice choice, `positiveSpeechThreshold` (negative trails it by 0.15, via `negativeSpeechThreshold()`), `minSpeechMs`, `redemptionMs`, `bargeInEnabled`, `playbackRate`, and — since cycle 60 — `micDeviceId`. The cog button in the agent toolbar opens `VoiceSettingsSlideover` — the sensitivity slider has a live meter fed by `voice.speechProb` (Silero per-frame probability via `onFrameProcessed`, the same unit as the threshold). Threshold/timing changes hot-apply through `applyVadSettings()` (debounced VAD-only restart; WS untouched); barge-in and playback rate apply live without restart. Segmentation flushes a TTS call on a real sentence end, at `sentenceMaxChars`, or when `sentenceMinChars` is reached — audio starts before the LLM finishes, and now starts synthesizing before earlier segments have finished playing too (see [Speech pipeline](#speech-pipeline-cycle-60--pipelined-synthesis-2026-08-28)).
 
-> ⚠️ **`VOICE_TUNING.tts.playbackRate` has no reader.** Cycle 60 moved it 1.1 → 1.0, but playback is driven **solely** by the client cookie — `useVoice` reads `settings.value.playbackRate`, whose default in `VOICE_SETTINGS_DEFAULTS` (`app/composables/useVoiceSettings.ts`) is **still 1.1**. So the audible rate did **not** change for anyone. `VOICE_TUNING.tts.provider` is likewise legacy and unused for routing; only `sentenceMinChars` in that object is actually consumed (by `orchestrator.ts`). Fixing the rate means changing the cookie default, and it is an **open item**, not shipped behaviour.
+**The inert `playbackRate` default is fixed (2026-08-27, `26b7b54`).** The cycle-60 handover flagged `VOICE_SETTINGS_DEFAULTS.playbackRate` as still `1.1` while the (unread) server constant said `1.0` — so the audible rate never actually changed. `VOICE_SETTINGS_DEFAULTS.playbackRate` is now `1.0`, and `migrateVoiceSettings()` (`app/composables/useVoiceSettings.ts`) forward-migrates any existing cookie still carrying the old `1.1` default to `1.0` on load — a value any *other* than `1.1` is treated as a deliberate user choice and left untouched. The dead server-side `VOICE_TUNING.tts.playbackRate`/`tts.provider` constants were deleted in the same change; provider selection is `deps.ttsProvider`, threaded through from the client's cookie-backed `VOICE_SETTINGS_DEFAULTS.provider`.
 
 ### Microphone device picker (cycle 60)
 
@@ -241,7 +268,7 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 | `app/lib/avatar/choreography.ts` | Pure, seeded, event-scheduled pose choreographer: `(state, dt, outLevel) → Pose` |
 | `app/lib/avatar/head-buffer.ts` | Pure parsing/validation of the baked point buffer; `HeadBufferError` |
 | `app/lib/avatar/particle-head.ts` | The `ParticleHead` renderer — owns the RAF loop, FPS watchdog, context-loss rebuild |
-| `scripts/bake-head.ts` | Build-time: MakeHuman export → area-weighted 50k point sample + region weights → `app/assets/head-points.bin` (`pnpm bake:head`) |
+| `scripts/bake-head.ts` | Build-time: MakeHuman export → merge every node/primitive → keep the largest shell → 50k points, edge-sampled with surface topping up → region weights → `app/assets/head-points.bin` (`pnpm bake:head`) |
 | `app/lib/viz/types.ts` | `BAR_COUNT` (96), `VizState` (8), `VizEvent`, `Directives` |
 | `app/lib/viz/tuning.ts` | `VIZ_TUNING` (camera/bloom/point size + the new `head` block: scale, jaw travel, pitch pivot, facing floor, scan band) + `PALETTE` per state |
 | `app/lib/viz/emitter.ts` | Generic typed event emitter used by `useVoice` |
@@ -276,19 +303,27 @@ export interface Avatar {
 
 ### Mesh → point buffer (build-time, not a runtime loader)
 
-1. Tony generates a female head in **MakeHuman (official, unmodified build)** and exports it to `assets/source/bridget-head.glb`. An export from an official build is **CC0** — public domain, commercial use, redistribution, no attribution. (FLAME and the Basel Face Model were rejected: research licence only. Recorded so a future session does not reach for them.)
-2. `pnpm bake:head` (`scripts/bake-head.ts`) reads it, **area-weighted**-samples 50 000 points across the surface (verified against a synthetic 1-huge-vs-100-tiny-triangle mesh: sampling density tracks *area*, 99.996 %, not triangle count), computes per-point region weights, and writes a packed `Float32Array` to `app/assets/head-points.bin`.
+1. Tony generates a female head in **MakeHuman (official, unmodified build)** and exports it to `assets/source/bridget-head.glb`. An export from an official build is **CC0** — public domain, commercial use, redistribution, no attribution. (FLAME and the Basel Face Model were rejected: research licence only. Recorded so a future session does not reach for them.) **Both the source export and its baked buffer are committed** (`assets/source/bridget-head.glb`, `app/assets/head-points.bin`, since 2026-08-28) — deliberately, since prod builds from source and cannot run MakeHuman.
+2. `pnpm bake:head` (`scripts/bake-head.ts`) reads it, merges **every** node's **every** primitive in the scene graph (world-matrix transforms on positions, inverse-transpose normal matrices on normals — the original baker read only `listMeshes()[0].listPrimitives()[0]`, silently dropping every other mesh/primitive an MPFB2 export produces), then **keeps only the largest connected shell** (see below), walks its mesh **edges at even arc spacing** to place points where the topology already encodes the anatomy (`sampleEdges`, with area-weighted surface sampling — `sampleSurface` — only topping up any shortfall), computes per-point region weights, and writes a packed `Float32Array` to `app/assets/head-points.bin`.
 3. At runtime the browser fetches **only that buffer** and uploads it straight into the existing `BufferGeometry`. No mesh, no GLTF loader, no three.js loader chain in the client bundle.
+
+**Why only the largest shell.** A MakeHuman/MPFB2 export is not one surface — the real export has **66 connected shells**: the skin (3203 vertices / 6232 triangles) plus eyeballs, teeth, tongue, mouth cavity, eyelashes, and MakeHuman's clothes-fitting HELPER ribbons (thin 18-vertex strips spanning the full head height, wider than the skin). Together they were **40% of all triangles**, and because sampling is area-weighted, ~40% of every baked point used to land on geometry that must never be seen: eyeballs as dark discs where eyes belong, teeth/tongue/cavity as a bright blob at the mouth, and the helper ribbons as "hair" that swung with the jaw (they span the whole head, so they picked up jaw weight). `largestShell()` (union-find over triangles, ranked by triangle count so a dense-but-tiny island can't outrank the skin) keeps only the biggest island and discards the rest.
+
+**Why edges, not random surface sampling.** Random surface sampling dissolves every edge loop into uniform speckle — a 6232-triangle head renders as a smooth egg no matter how many points you throw at it. A modeller's topology already crowds edge loops around the eyes, nose and mouth, so `sampleEdges()` walks unique undirected mesh edges at constant arc-length spacing instead, reproducing the woven-wireframe look of the reference. A primitive without a `NORMAL` attribute would otherwise leave edge points with zero-length normals (degenerating the shader's facing term and rendering full-bright through the skull); `sampleEdges` now accumulates adjacent face normals per vertex as a fallback.
 
 **Layout — 9 interleaved floats per point** (`FLOATS_PER_POINT = 9`, 36-byte stride): `x, y, z, nx, ny, nz, jawW, eyeW, browW`.
 
 | Attribute | Purpose |
 |---|---|
-| `jawW` | `smoothstep(lipY, chinY, y) ** 0.6 × (1 − 0.6 · smoothstep(hingeInner, hingeOuter, abs(x)))` — zero at the upper lip, full at the chin, falling off toward the hinge |
+| `jawW` | `smoothstep(lipY, chinY, y) ** 0.6 × (1 − 0.6 · smoothstep(hingeInner, hingeOuter, abs(x))) × neck` — zero at the upper lip, full at the chin, falling off toward the hinge, and (since `HeadMetrics.neckY`, 2026-08-28) fading back to zero below the jawline instead of saturating at 1 forever |
 | `eyeW` | eye region — brightens on listening/thinking, dims on blink |
 | `browW` | brow region — lifts on stressed syllables |
 
 **`jawW` is the fix for the cleave.** A *binary* jaw region translated as a block visibly splits the head at the lip line. Measured counterfactual at the jaw trough: 64.2 % row-density idle / 56.7 % with the shipped smooth weight / **3.8 %** with a binary `>0.5` region / **0.0 %** with `>0.15` — the binary version *is* the cleave. The `** 0.6` curve lifts the low end so the lower lip trails the chin at roughly a quarter of the travel, which is what makes the mouth read as opening.
+
+**The `neckY` fade (2026-08-28) fixed a second, separate defect.** `smoothstep` saturates at 1 past its upper bound, so before this every point *below* `chinY` — the entire neck — was getting FULL jaw weight, and the neck travelled with the chin on every syllable. `HeadMetrics.neckY` (optional; omitting it preserves the old saturating behaviour) fades jaw influence out across the jaw's underside instead.
+
+**Landmarks were re-measured against the correct geometry (2026-08-28).** The values baked against the un-filtered 66-shell mesh were wrong — `eyeY 0.15`, `lipY -0.47`, `chinY -0.89` — because they were measured through the 40% of junk shell filtering later discarded, which put the jaw region up around the *nose* (why the talking animation moved the wrong half of the face). The discarded shells are themselves the ground truth: the eyeball shells (2 symmetric, 308 vertices each) mark the eyes at `eyeY = -0.05`; the upper and lower teeth shells meet at the bite line, giving `lipY = -0.72`. Standard facial proportions (eyes at 50% chin→crown, mouth at 25%) cross-check both independently to a chin at ~-1.40 — the skin itself ends at -1.33, i.e. **this export is cropped at the jaw with essentially no neck**, so `neckY` is parked below the mesh (`-1.60`) rather than doing real work on this particular export; it still guards a future export that keeps more neck. Current metrics: `browY: 0.10, eyeY: -0.05, lipY: -0.72, chinY: -1.33, neckY: -1.60`.
 
 `parseHeadBuffer` validates the stride **hard**, on purpose: a missing static asset does not reliably 404 in this app — the SPA catch-all can return a 200 with an HTML body. An HTML page is essentially never a multiple of 36 bytes, and the finite-value check catches it when it is. Every "no usable buffer" condition (not baked, 404, network failure, truncated download, HTML in place of the asset) raises `HeadBufferError` so the mount can drop to its fallback quietly instead of rendering garbage geometry.
 
@@ -364,18 +399,22 @@ out AnalyserNode ──amplitude────────────────
 - 10 consecutive frame faults → teardown + `onFatal`, rather than spamming the console forever.
 - **No mesh, no WebGL, or an unusable buffer → the CSS fallback** (a soft pulsing circle). This is an *expected* deployment state, not a fault: it logs **one warning** naming the missing file and the `pnpm bake:head` command, never an error, and voice/chat are unaffected.
 
-### ⚠️ The head mesh does not exist yet
+### The head mesh now exists and is committed (2026-08-28)
 
-`assets/source/bridget-head.glb` is **not in the repo** — generating it in an official MakeHuman build is a human step, and nothing fabricated was committed in its place (`git ls-files` carries zero `.bin`/`.glb`/`.gltf`/`.obj`/`.fbx`). Until it exists, **`/agent` shows the CSS fallback where Bridget should be.** The renderer was built and validated against a scratch-only placeholder buffer that was never committed; once the real head lands, expect a *tuning* pass on exposure/density and proportions, not a rebuild.
+`assets/source/bridget-head.glb` (4.9 MB) and `app/assets/head-points.bin` (1.8 MB) are **both in the repo** as of `95e4420` — this corrects the cycle-60 handover, which recorded the mesh as a human step not yet done. **`/agent` now renders the particle head, not the CSS fallback**, in any build with this commit.
 
-Two operational notes that follow from this:
+Landing the real mesh surfaced three defects that a scratch placeholder buffer couldn't have caught (see [Mesh → point buffer](#mesh--point-buffer-build-time-not-a-runtime-loader) above for the fixes): the baker only reading the first mesh/primitive, hardcoded flat normals disabling the renderer's back-face dimming, jaw weight saturating past the chin and dragging the neck, 40% of triangles being non-skin shells that must never be seen, and landmarks measured through that junk. All five are fixed as of `0667798`.
+
+**Still open, per Tony's own review of the shipped render — not fixed by any of this:** the jaw doesn't hinge convincingly, the talking motion doesn't read as natural speech, and the model doesn't read as a woman. `VIZ_TUNING.head` (`alpha`, `pointSize`, `facingFloor`) has never been tuned against the real head — the renderer was proven against geometry, not against *her* proportions. The export is also **body-only**: no hair, no eye assets, so those sockets are empty by construction, not a bug.
+
+Two operational notes that still apply:
 
 - **`app/assets/head-points.bin` is deliberately NOT gitignored.** Production builds from source and cannot run MakeHuman, so the baked buffer must be committed or prod renders the fallback forever. It is a committed build artifact, by design.
-- **`pnpm bake:head` only takes effect in a built artifact after a rebuild.** `import.meta.glob` resolves at **build** time, so a `.bin` dropped next to a running production build is invisible. (Vite dev *does* pick up a new `.bin` with no restart — confirmed — which is exactly why this is easy to miss.) See [`DEPLOYMENT.md` §12](../DEPLOYMENT.md).
+- **`pnpm bake:head` only takes effect in a built artifact after a rebuild.** `import.meta.glob` resolves at **build** time, so a `.bin` dropped next to a running production build is invisible. (Vite dev *does* pick up a new `.bin` with no restart — confirmed — which is exactly why this is easy to miss.) See [`DEPLOYMENT.md` §12](../DEPLOYMENT.md). **A rebuild + redeploy is still required to pick up the new committed `.bin`** if a running production build predates `95e4420`.
 
 ## Cross-references
 
 - [`docs/model-requirements.md`](../model-requirements.md) — rig setup for STT + Kokoro + Chatterbox.
-- [`docs/handovers/2026-08-27-agent-surface-redesign.md`](../handovers/2026-08-27-agent-surface-redesign.md) — cycle 60: the Orpheus serving recipe (and its landmines), the MakeHuman/CC0 provenance requirement, and the open items.
+- [`docs/handovers/2026-08-27-agent-surface-redesign.md`](../handovers/2026-08-27-agent-surface-redesign.md) — cycle 60: the Orpheus serving recipe (and its landmines), the MakeHuman/CC0 provenance requirement, and the open items. The [follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) records the five commits that landed after the handover closed — the head mesh, the bake fixes, the pipeline, and Orpheus going live.
 - [`docs/wiki/mcp.md`](mcp.md) — MCP server shares the same `runAgent` tool registry.
 - [`docs/DEPLOYMENT.md`](../DEPLOYMENT.md) — prod env vars on LXC 114.

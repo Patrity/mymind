@@ -587,3 +587,143 @@ toggle and its `agent-canvas` cookie · the `IDLE` debug state readout.
 - Settle the **inert `playbackRate`** before running the TTS comparison.
 - The MyMind task for this cycle (`31494f84`) is **still open**, and no follow-ups task has been
   created — deliberately, per this task's instructions.
+
+---
+
+## Follow-on work landed after this handover (2026-08-28)
+
+Everything above this line is the handover as originally written and is left as-is — it is the
+record of what the cycle-60 build task actually did and knew at the time. This section is
+appended, not a rewrite, to record what happened next: the branch was merged (`becee06`, "Merge
+cycle 60: agent surface redesign"), and five more commits landed directly against `master` the
+following day. Two of them **correct claims this handover made** — "Bridget is not visible yet"
+and "the TTS model did not change" are no longer true. Current behaviour lives in
+[`../wiki/voice-agent.md`](../wiki/voice-agent.md) and [`../wiki/agent.md`](../wiki/agent.md); this
+section only records what shipped and when.
+
+### Commits (oldest first)
+
+```
+ce8f990 fix(agent): reasoning blocks never auto-collapsed on a live turn
+1f02480 fix(bake-head): merge every mesh/primitive, apply node transforms, real normals, recentre Z
+95e4420 feat(avatar): add the head export, and fix jaw weighting past the chin
+0667798 fix(avatar): sample edges, keep only the skin shell, and measure the real landmarks
+f06b6d8 feat(voice): pipeline TTS synthesis with a depth-1-then-3 ramp
+```
+
+**`ce8f990` — the reasoning block never auto-collapsed on a live turn.** `<details>` fires its
+`toggle` event for *programmatic* open/close, not just a real click. Binding "the user took
+control" to that event meant Vue's own initial `:open="true"` render latched it at mount, so the
+watcher that collapses the block once the answer arrives could never fire. Only **live** turns
+were affected — a resumed thread starts with `hasAnswer` already `true`, so `open` starts `false`,
+Vue never sets the attribute, and no `toggle` fires, which is why this looked fine on resume.
+Intent now comes from a `click` on the `<summary>` (keyboard activation dispatches one too);
+`toggle` is used only to sync state and carries no intent. `app/components/agent/ReasoningBlock.vue`.
+
+**`1f02480` — `bake-head.ts` correctness.** Three defects, found baking the real export for the
+first time: (1) the baker read only `listMeshes()[0].listPrimitives()[0]`, silently dropping every
+other mesh and primitive an MPFB2 export produces (body/hair/eyes as separate objects); (2) it
+ignored node transforms entirely; (3) it wrote a **constant** normal `(0,0,1)` for every point,
+which disabled the renderer's facing-based dimming term (`core.ts`) and rendered the back of the
+skull at full brightness through the face. It also never recentred Z, so the render pivot sat off
+the actual head. `mergeSceneGeometry()` now walks every scene-graph node, merges every triangle
+primitive with world-matrix transforms on positions and inverse-transpose normal matrices on
+normals, derives real normals from the `NORMAL` attribute or the face, and `computeNormalization()`
+recentres Z the same way it already recentred Y.
+
+**`95e4420` — the head asset, and jaw weighting past the chin.** `assets/source/bridget-head.glb`
+(MakeHuman/MPFB2 export, CC0) and `app/assets/head-points.bin` are **committed** — deliberately:
+production builds from source and cannot run MakeHuman, so an uncommitted buffer means prod renders
+the fallback forever, permanently. Also: `smoothstep` saturates at 1 past its upper bound, so every
+point below `chinY` — the whole neck — was getting FULL jaw weight, and the neck travelled with the
+chin on every syllable. `HeadMetrics` gained an optional `neckY` that fades jaw influence out across
+the jaw's underside; omitting it preserves the old saturating behaviour.
+
+**`0667798` — the two changes that made the avatar actually read as a face, plus the landmarks.**
+- **Shell filtering.** A MakeHuman head is not one surface — this export has **66 connected
+  shells**: the skin (3203v / 6232t) plus eyeballs, teeth, tongue, mouth cavity, eyelashes, and
+  MakeHuman's clothes-fitting HELPER ribbons (thin 18-vertex strips spanning the full head height,
+  wider than the skin). Together **40% of all triangles**. Sampling is area-weighted, so ~40% of
+  every baked point was landing on geometry that must never be seen: eyeballs as dark discs, teeth/
+  tongue/cavity as a bright blob at the mouth, helper ribbons as "hair" that swung with the jaw.
+  `largestShell()` now keeps only the biggest connected island.
+- **Edge sampling.** Random surface sampling dissolves every edge loop into uniform speckle — a
+  6232-triangle head rendered as a smooth egg regardless of point count. Topology already encodes
+  the anatomy (loops crowd the eyes, nose, mouth), so `sampleEdges()` walks mesh edges at even arc
+  spacing, with surface sampling only topping up any shortfall.
+- **Landmarks re-measured.** The old values (`eyeY 0.15`, `lipY -0.47`, `chinY -0.89`) were derived
+  from a point cloud that was 40% junk, and put the jaw region up around the **nose** — which is why
+  the talking animation moved the wrong half of the face. The discarded shells are the ground truth:
+  the eyeball shells mark the eyes (`eyeY = -0.05`), the upper and lower teeth meet at the bite line
+  (`lipY = -0.72`), and standard facial proportions cross-check both to a chin at ~-1.40 while the
+  skin itself ends at -1.33 — this export is cropped at the jaw, essentially no neck.
+- Also: `sampleEdges` initially ignored `hasNormal` and emitted zero-length normals for a primitive
+  with no `NORMAL` attribute; adjacent face normals are now accumulated per vertex as a fallback.
+
+**`f06b6d8` — pipelined TTS synthesis.** `orchestrator.ts` used `await speak(chunk)` per segment —
+strictly sequential, each full network round trip completing before the next began. The new
+`server/lib/voice/pipeline.ts` (`SpeechPipeline`) starts synthesis for several segments
+**concurrently** but still emits audio **strictly in segment order** (out-of-order emission would
+scramble the sentence). Concurrency **ramps 1 → 3**: the first segment of a turn always synthesizes
+**alone**, because several TTS backends behind this app share one GPU across "concurrent" slots and
+racing chunk 1 against others only slows chunk 1 down; depth widens to 3 only after chunk 1 has
+been dispatched. A segment whose synthesis throws is now dropped rather than killing the rest of
+the turn. `segment.ts` gained a hard, repeatable `maxChars` (200) and a one-shot `firstMax` (60) for
+a turn's first segment only.
+
+### Orpheus is live — this handover's "not stood up" note is now false
+
+The handover above (§"Blocked on a human (2 of 2)") recorded Orpheus as needing shell access that
+had been refused. That access was obtained and Orpheus was stood up on 2026-08-28:
+
+- `http://192.168.2.25:5005/v1`, model `orpheus`, 25 voices, default `tara`. llama.cpp backbone
+  running `--parallel 3`.
+- Registered in the **production** `ai_config`: provider "Orpheus rig", model "Orpheus",
+  **appended to the end of the `tts` chain** — Kokoro stays the head and nothing changes for any
+  existing user until a voice is explicitly picked.
+- Chatterbox at `:8884` is now **Chatterbox Turbo** (350M) — not the original 0.5B this handover's
+  serving recipe warned was a non-starter at 4s TTFB.
+- Both Chatterbox and Orpheus return `{"status":"ok","voices":[...]}` rather than the bare
+  `{"voices":[...]}` Kokoro returns; `server/api/voice/voices.get.ts` reads only the `voices` key,
+  so both shapes work as-is — recorded so nobody "fixes" a non-bug.
+
+**Measured throughput** (audio-seconds produced per wall-second; >1.0× keeps up with playback):
+
+| Provider | Throughput | Time to first audio |
+|---|---|---|
+| Kokoro | ~38× | ~0.9 s |
+| Chatterbox Turbo | ~2.9× | ~1.0–1.5 s |
+| Orpheus, sequential backend | **0.83–0.87×** | — |
+| Orpheus, `--parallel 3` | **1.20–1.27×** | ~2.9 s (floor ~2.2 s) |
+
+The decisive fact: **sequential Orpheus ran below 1.0×** — it could not generate audio as fast as
+it plays, so it was guaranteed to underrun mid-utterance regardless of client-side behaviour.
+`--parallel 3` clears breakeven, but by only 20–27%, against Chatterbox's ~190% margin. **A
+sub-1.5s time-to-first-audio target is unreachable for Orpheus as currently served** — 2.17s for a
+26-character input is a fixed backend floor, not a length effect. Pipelining's effect on total
+wall-clock: **Chatterbox −43%, Orpheus −18%, Kokoro unchanged** (already far past realtime). Firing
+all chunks concurrently (no ramp) makes time-to-first-audio *worse*, not better, because the shared
+GPU slots make the first chunk compete with the rest — which is why the depth-1-then-3 ramp exists.
+
+### What is still open — honestly, not glossed over
+
+None of the five commits above resolve these. Recording them here so this handover's own "what's
+left" reads accurately against the code that actually shipped:
+
+- **Tony's own assessment of the avatar, deferred by him, not fixed:** the jaw doesn't hinge, the
+  talking motion doesn't read as natural speech, and the model doesn't read as a woman.
+- **Exposure/density** (`VIZ_TUNING.head`: `alpha`, `pointSize`, `facingFloor`) has never been tuned
+  against the real head — the renderer was proven against geometry, not against her proportions.
+- **The head export is body-only** — no hair, no eye assets — so those sockets are empty by
+  construction, not by bug.
+- **Which TTS voice to adopt is still undecided.** It needs Tony's ears on the rig, not a benchmark
+  number; Kokoro, Chatterbox Turbo, and Orpheus/`tara` are all selectable today from the voice
+  picker.
+
+### Docs updated for this follow-on (2026-08-29)
+
+[`../wiki/voice-agent.md`](../wiki/voice-agent.md) (speech pipeline, provider status/Orpheus table,
+avatar/bake sections rewritten; also corrected two items that were already stale independent of
+these five commits — the `VOICE_TUNING` tuning block and the inert-`playbackRate` warning, both
+superseded by cycle-60's own `26b7b54`) and [`../wiki/agent.md`](../wiki/agent.md) (reasoning-block
+collapse behaviour) were updated in the same change, and mirrored to MyMind.
