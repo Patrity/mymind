@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { Document, Accessor, Primitive } from '@gltf-transform/core'
 import {
   jawWeight, regionWeights, mergeSceneGeometry, sampleSurface, sampleEdges, largestShell,
-  computeNormalization, bakeHeadBuffer, FLOATS_PER_POINT, type HeadMetrics
+  computeNormalization, bakeHeadBuffer, applyMorphs, FLOATS_PER_POINT, type HeadMetrics
 } from '../scripts/bake-head'
 
 // Small deterministic LCG, same shape as the one `main()` uses, so tests are reproducible.
@@ -450,5 +450,133 @@ describe('sampleEdges', () => {
     const z = new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0])
     expect(() => sampleEdges(z, indices, normals, hasNormal, 10)).not.toThrow()
     expect(sampleEdges(z, indices, normals, hasNormal, 10)).toEqual([])
+  })
+})
+
+// Builds a morph target and attaches it to a primitive. `deltas` are per-vertex
+// POSITION displacements, exactly as glTF stores them.
+function addMorphTarget(
+  doc: Document,
+  prim: ReturnType<Document['createPrimitive']>,
+  deltas: [number, number, number][],
+  normalDeltas?: [number, number, number][]
+) {
+  const target = doc.createPrimitiveTarget().setAttribute(
+    'POSITION',
+    doc.createAccessor().setType(Accessor.Type.VEC3).setArray(new Float32Array(deltas.flat()))
+  )
+  if (normalDeltas) {
+    target.setAttribute(
+      'NORMAL',
+      doc.createAccessor().setType(Accessor.Type.VEC3).setArray(new Float32Array(normalDeltas.flat()))
+    )
+  }
+  prim.addTarget(target)
+  return target
+}
+
+describe('applyMorphs', () => {
+  it('adds each target scaled by its weight', () => {
+    const base = new Float32Array([0, 0, 0, 1, 0, 0])
+    const t1 = new Float32Array([1, 0, 0, 1, 0, 0])
+    const t2 = new Float32Array([0, 2, 0, 0, 2, 0])
+    const out = applyMorphs(base, [t1, t2], [0.5, 0.25])
+    expect(Array.from(out)).toEqual([0.5, 0.5, 0, 1.5, 0.5, 0])
+  })
+
+  it('leaves the base untouched when every weight is zero', () => {
+    const base = new Float32Array([1, 2, 3])
+    const out = applyMorphs(base, [new Float32Array([9, 9, 9])], [0])
+    expect(Array.from(out)).toEqual([1, 2, 3])
+  })
+
+  it('never mutates the base array', () => {
+    const base = new Float32Array([1, 2, 3])
+    applyMorphs(base, [new Float32Array([5, 5, 5])], [1])
+    expect(Array.from(base)).toEqual([1, 2, 3])
+  })
+
+  it('skips targets with no array or no matching weight', () => {
+    const base = new Float32Array([0, 0, 0])
+    const out = applyMorphs(base, [null, new Float32Array([1, 1, 1])], [1])
+    expect(Array.from(out)).toEqual([0, 0, 0]) // weight[1] is undefined -> skipped
+  })
+
+  it('ignores a target whose length does not match the base', () => {
+    const base = new Float32Array([0, 0, 0])
+    const out = applyMorphs(base, [new Float32Array([1, 1, 1, 1, 1, 1])], [1])
+    expect(Array.from(out)).toEqual([0, 0, 0])
+  })
+})
+
+describe('mergeSceneGeometry morph targets', () => {
+  // The real export carries 61 MPFB2 modelling targets at non-zero weights: the base
+  // POSITION is the neutral androgynous MakeHuman basemesh and every choice that makes
+  // the character herself lives in these deltas. Reading POSITION alone renders a
+  // different person.
+  it('applies the mesh-level morph weights to positions', () => {
+    const doc = new Document()
+    const prim = addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    addMorphTarget(doc, prim, [[0, 10, 0], [0, 10, 0], [0, 10, 0]])
+    const mesh = doc.createMesh().addPrimitive(prim).setWeights([0.5])
+    doc.createNode().setMesh(mesh)
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(merged.positions[1]).toBeCloseTo(5)
+    expect(merged.positions[4]).toBeCloseTo(5)
+  })
+
+  it('prefers the node weights over the mesh weights when the node has them', () => {
+    const doc = new Document()
+    const prim = addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    addMorphTarget(doc, prim, [[0, 10, 0], [0, 10, 0], [0, 10, 0]])
+    const mesh = doc.createMesh().addPrimitive(prim).setWeights([0.5])
+    doc.createNode().setMesh(mesh).setWeights([1])
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(merged.positions[1]).toBeCloseTo(10)
+  })
+
+  it('morphs in local space, so the node transform still applies on top', () => {
+    const doc = new Document()
+    const prim = addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    addMorphTarget(doc, prim, [[0, 10, 0], [0, 10, 0], [0, 10, 0]])
+    const mesh = doc.createMesh().addPrimitive(prim).setWeights([1])
+    doc.createNode().setMesh(mesh).setTranslation([0, 100, 0])
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(merged.positions[1]).toBeCloseTo(110)
+  })
+
+  it('applies morph deltas to normals as well, renormalising the result', () => {
+    const doc = new Document()
+    const prim = addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    prim.setAttribute('NORMAL', doc.createAccessor().setType(Accessor.Type.VEC3)
+      .setArray(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1])))
+    addMorphTarget(doc, prim, [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+      [[0, 1, -1], [0, 1, -1], [0, 1, -1]])
+    const mesh = doc.createMesh().addPrimitive(prim).setWeights([1])
+    doc.createNode().setMesh(mesh)
+
+    const merged = mergeSceneGeometry(doc)
+
+    // normal (0,0,1) + delta (0,1,-1) = (0,1,0)
+    expect(merged.normals[0]).toBeCloseTo(0)
+    expect(merged.normals[1]).toBeCloseTo(1)
+    expect(merged.normals[2]).toBeCloseTo(0)
+    expect(merged.hasNormal[0]).toBe(1)
+  })
+
+  it('is a no-op for a primitive with no morph targets', () => {
+    const doc = new Document()
+    const mesh = doc.createMesh().addPrimitive(addTriangle(doc, [[0, 0, 0], [1, 0, 0], [0, 1, 0]]))
+    doc.createNode().setMesh(mesh)
+
+    const merged = mergeSceneGeometry(doc)
+
+    expect(Array.from(merged.positions.slice(0, 3))).toEqual([0, 0, 0])
   })
 })

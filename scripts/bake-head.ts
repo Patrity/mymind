@@ -335,6 +335,29 @@ function transformNormal(x: number, y: number, z: number, m: mat4): [number, num
  * Primitives with no POSITION attribute, no indices, or a non-triangle topology are skipped
  * rather than throwing, since the downstream sampler assumes an indexed triangle list.
  */
+/**
+ * Resolve glTF morph targets against their weights.
+ *
+ * Morph target attributes are per-vertex DELTAS against the base attribute, not
+ * absolute values, and the mesh/node weights say how much of each to add. Targets
+ * with a zero (or absent) weight, no array, or a length that disagrees with the
+ * base are skipped. The base array is never mutated.
+ */
+export function applyMorphs(
+  base: Float32Array,
+  targets: (Float32Array | null | undefined)[],
+  weights: number[]
+): Float32Array {
+  const out = Float32Array.from(base)
+  for (let t = 0; t < targets.length; t++) {
+    const delta = targets[t]
+    const w = weights[t]
+    if (!delta || !w || delta.length !== base.length) continue
+    for (let i = 0; i < out.length; i++) out[i] += w * delta[i]!
+  }
+  return out
+}
+
 export function mergeSceneGeometry(doc: Document): MergedGeometry {
   const positionChunks: Float32Array[] = []
   const indexChunks: Uint32Array[] = []
@@ -354,15 +377,32 @@ export function mergeSceneGeometry(doc: Document): MergedGeometry {
       const indicesAttr = prim.getIndices()
       if (!positionAttr || !indicesAttr) continue
 
-      const localPositions = positionAttr.getArray() as Float32Array | null
+      const basePositions = positionAttr.getArray() as Float32Array | null
       const localIndices = indicesAttr.getArray()
-      if (!localPositions || !localIndices || localPositions.length === 0 || localIndices.length === 0) continue
+      if (!basePositions || !localIndices || basePositions.length === 0 || localIndices.length === 0) continue
+
+      const normalAttr = prim.getAttribute('NORMAL')
+      const baseNormals = normalAttr ? (normalAttr.getArray() as Float32Array | null) : null
+
+      // Resolve the morph state BEFORE the world transform. A node's own weights override
+      // its mesh's (glTF 2.0 s3.7.2.2). This is not an optional refinement: MPFB2 exports
+      // every modelling slider as a weighted morph target, so POSITION alone is the neutral
+      // androgynous basemesh and the character's real shape lives entirely in these deltas.
+      const targets = prim.listTargets()
+      const nodeWeights = node.getWeights()
+      const morphWeights = nodeWeights.length ? nodeWeights : mesh.getWeights()
+      const morphed = targets.length > 0 && morphWeights.length > 0
+
+      const localPositions = morphed
+        ? applyMorphs(basePositions, targets.map(t => t.getAttribute('POSITION')?.getArray() as Float32Array | null), morphWeights)
+        : basePositions
+      const localNormals = morphed && baseNormals
+        ? applyMorphs(baseNormals, targets.map(t => t.getAttribute('NORMAL')?.getArray() as Float32Array | null), morphWeights)
+        : baseNormals
 
       const vertexCount = localPositions.length / 3
       const worldPositions = new Float32Array(localPositions.length)
 
-      const normalAttr = prim.getAttribute('NORMAL')
-      const localNormals = normalAttr ? (normalAttr.getArray() as Float32Array | null) : null
       const primHasNormal = !!(localNormals && localNormals.length === localPositions.length)
       const worldNormals = new Float32Array(localPositions.length) // zero-filled when primHasNormal is false
       const hasNormalChunk = new Uint8Array(vertexCount)
@@ -548,12 +588,16 @@ export function bakeHeadBuffer(doc: Document, count: number, rng: () => number):
   // If the mesh is ever re-exported, re-derive these from the discarded shells rather
   // than guessing; the bake is cheap, so tune against the render and re-run.
   const m: HeadMetrics = {
-    browY: 0.10, eyeY: -0.05, lipY: -0.72, chinY: -1.33,
+    browY: 0.10, eyeY: -0.05, lipY: -0.72, chinY: -1.30,
     hingeInner: 0.30, hingeOuter: 0.90, faceHalfWidth: 1.0,
-    // The export is cropped at the jaw — the skin ends at y -1.33 and the derived chin
+    // The export is cropped at the jaw — the skin ends at y -1.30 and the derived chin
     // sits at ~-1.40, so there is effectively NO neck below the jawline. The falloff is
     // parked below the mesh so the whole lower jaw moves, which is correct here; it
     // still guards a future export that keeps more neck.
+    //
+    // chinY was -1.33 while the bake still read POSITION alone. Resolving the morph
+    // targets moves the skin's low point to -1.297, so the old value sat BELOW the
+    // chin and the jaw ramp never quite reached full travel at the jawline.
     neckY: -1.60
   }
 
