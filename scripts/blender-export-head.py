@@ -14,7 +14,11 @@
 
 import bpy
 
-CUT = 0.84  # keep the top 16% of the BODY — raise toward 0.88 for less shoulder
+# The previous export cropped at the jaw (normalised skin span +/-1.30). This
+# export kept noticeably more neck (+/-1.52), which shrinks the face in frame and
+# invalidates the landmark constants in bake-head.ts. 0.88 puts the cut back at
+# the jawline; lower it only if you want neck and shoulders in shot.
+CUT = 0.88  # keep the top 12% of the BODY — lower toward 0.84 for more neck
 OUT = "/Users/tony/Documents/GitHub/mymind/assets/source/bridget-head.glb"
 
 
@@ -92,6 +96,67 @@ for o in meshes:
     mods = ", ".join(m.type for m in o.modifiers) or "-"
     log(f"    {o.name:<28} verts={len(o.data.vertices):>6}  "
         f"shapekeys={shape_key_count(o):>3}  modifiers={mods}")
+
+# ---------------------------------------------------------------------------
+# 3b. Prefer MPFB2 export copies, and delete the geometry the bake must never see.
+#
+# "Create export copy" leaves the ORIGINAL in the scene next to the copy, so
+# exporting everything ships each piece of geometry twice.
+# ---------------------------------------------------------------------------
+by_name = {o.name: o for o in meshes}
+superseded = [o for o in meshes
+              if not o.name.endswith('_export_copy') and f"{o.name}_export_copy" in by_name]
+for o in superseded:
+    log(f"skipping {o.name}: superseded by {o.name}_export_copy")
+meshes = [o for o in meshes if o not in superseded]
+
+# The export copy WELDS the eyeballs, teeth and tongue into the skin. They used
+# to arrive as separate connected components, which `largestShell()` in
+# bake-head.ts discarded for free; once welded it cannot tell them apart, and
+# the render grows bulging eye orbs and a mouth full of teeth. Delete them here,
+# by vertex group, while they are still identifiable.
+NON_SKIN_GROUPS = {
+    'highpolyeyes', 'eyes', 'eye', 'cornea', 'sclera',
+    'teeth', 'upperteeth', 'lowerteeth', 'tongue', 'gums',
+    'eyelashes', 'eyebrows',
+}
+
+
+def is_non_skin(group_name):
+    n = group_name.lower().replace('_', '').replace('-', '').replace(' ', '')
+    return n in NON_SKIN_GROUPS or n.startswith('helper') or n.startswith('joint')
+
+
+for o in meshes:
+    groups = [g for g in o.vertex_groups if is_non_skin(g.name)]
+    if not groups:
+        continue
+    idx = {g.index for g in groups}
+    doomed = [v.index for v in o.data.vertices
+              if any(ge.group in idx for ge in v.groups)]
+    if not doomed:
+        continue
+
+    bpy.ops.object.select_all(action='DESELECT')
+    o.select_set(True)
+    bpy.context.view_layer.objects.active = o
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='DESELECT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for i in doomed:
+        o.data.vertices[i].select = True
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.delete(type='VERT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    log(f"    {o.name}: deleted {len(doomed)} verts in non-skin groups "
+        f"[{', '.join(g.name for g in groups)}]")
+
+# Print every remaining group so an unrecognised eyeball/teeth group is visible
+# rather than silently rendered.
+for o in meshes:
+    names = sorted(g.name for g in o.vertex_groups)
+    if names:
+        log(f"    {o.name} vertex groups: {', '.join(names)}")
 
 # ---------------------------------------------------------------------------
 # 4. DO NOT JOIN.
