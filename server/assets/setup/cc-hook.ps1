@@ -2,8 +2,10 @@
 # mymind cc-hook (PowerShell) — POSTs Claude Code session events + transcript deltas to MyMind.
 # Install: New-Item -ItemType Directory -Force "$HOME\.mymind" | Out-Null
 #          Invoke-WebRequest "$env:MYMIND_URL/api/setup/cc-hook.ps1" -OutFile "$HOME\.mymind\cc-hook.ps1"
-# Wire into %USERPROFILE%\.claude\settings.json hooks as:
-#   powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.mymind\cc-hook.ps1" <EventName>
+# Wire into %USERPROFILE%\.claude\settings.json hooks as (ABSOLUTE path — Claude Code does
+# NOT expand %USERPROFILE% or ~ inside a hook command on Windows; the literal string reaches
+# powershell and -File fails with "the argument ... does not exist"):
+#   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\YOU\.mymind\cc-hook.ps1" <EventName>
 # Best-effort: never throws, always exits 0. POSTs use short timeouts so a hook can't
 # hang the agent for long (Windows PowerShell 5.1 has no cheap background dispatch).
 param([string]$EventName = 'unknown')

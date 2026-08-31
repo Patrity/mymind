@@ -100,8 +100,16 @@ New-Item -ItemType Directory -Force "$HOME\\.mymind" | Out-Null
 `New-Item -ItemType Directory -Force "$HOME\\.mymind" | Out-Null
 Invoke-WebRequest "${baseUrl.value}/api/setup/cc-hook.ps1" -OutFile "$HOME\\.mymind\\cc-hook.ps1"` },
       { n: '3.1', title: '…then add to %USERPROFILE%\\.claude\\settings.json',
-        note: 'If hooks don’t fire, replace %USERPROFILE% with your full home path (C:\\Users\\you). Running Claude Code under WSL? Use the macOS / Linux tab instead.',
-        code: hooksJson(ev => `powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\\.mymind\\cc-hook.ps1" ${ev}`) }
+        note: 'Claude Code does NOT expand %USERPROFILE% (or ~) inside a hook command on Windows — the literal string reaches powershell and the hook dies with “the argument … does not exist”. Paste your real home path, or use 3.2 to print this block with the path already filled in. Running Claude Code under WSL? Use the macOS / Linux tab instead.',
+        code: hooksJson(ev => `powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\YOU\\.mymind\\cc-hook.ps1" ${ev}`) },
+      { n: '3.2', title: '…or print that block with your real path already filled in', note: undefined, code:
+`$hook = "$HOME\\.mymind\\cc-hook.ps1"
+$h = [ordered]@{}
+foreach ($e in 'SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','Stop','SubagentStop','SessionEnd') {
+  $cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $hook + '" ' + $e
+  $h[$e] = @(@{ matcher = '*'; hooks = @(@{ type = 'command'; command = $cmd }) })
+}
+[ordered]@{ hooks = $h } | ConvertTo-Json -Depth 6` }
     ]
   }
   return [
