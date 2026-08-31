@@ -3,11 +3,14 @@
 # Crops a MakeHuman/MPFB2 figure down to the head and writes the GLB that
 # `scripts/bake-head.ts` consumes. Run from Blender's Scripting workspace.
 #
+# THIS SCRIPT MUTATES THE SCENE. It deletes geometry. Save your .blend first,
+# and use File > Revert to get the full figure back afterwards.
+#
 # The bake reads POSITION, NORMAL, indices and MORPH TARGETS — nothing else.
-# Materials, textures and UVs are dead weight, so they are deliberately not
-# exported. Morph targets are NOT optional: MPFB2 stores every modelling
-# slider as a weighted morph target, so a GLB without them bakes the neutral
-# androgynous basemesh instead of the character.
+# Materials, textures and UVs are dead weight, so they are not exported. Morph
+# targets are NOT optional: MPFB2 stores every modelling slider as a weighted
+# morph target, so a GLB without them bakes the neutral androgynous basemesh
+# instead of the character.
 
 import bpy
 
@@ -19,14 +22,17 @@ def log(msg):
     print(f"[export-head] {msg}")
 
 
+def shape_key_count(o):
+    return len(o.data.shape_keys.key_blocks) if o.data.shape_keys else 0
+
+
 # ---------------------------------------------------------------------------
 # 1. Make everything visible, included and selectable.
 #
 # This is why hair and eyebrows went missing. `select_set(True)` silently
 # no-ops on an object that is hidden, unselectable, or in a view-layer
 # collection that is excluded — no error, no warning, it just doesn't select.
-# The object then isn't part of the join and vanishes from the export. MPFB2
-# files assets into sub-collections, so this bites easily.
+# MPFB2 files assets into sub-collections, so this bites easily.
 # ---------------------------------------------------------------------------
 def include_all(layer_collection, is_root=False):
     # The master (root) layer collection's `exclude` is read-only — setting it
@@ -68,8 +74,6 @@ for o in list(bpy.context.scene.objects):
         bpy.context.view_layer.objects.active = o
         bpy.ops.object.convert(target='MESH')
 
-# Particle-system hair is not real geometry and cannot be joined. Say so loudly
-# rather than exporting a bald head and leaving you to wonder why.
 for o in bpy.context.scene.objects:
     if o.type == 'MESH' and o.particle_systems:
         names = ", ".join(p.name for p in o.particle_systems)
@@ -77,8 +81,7 @@ for o in bpy.context.scene.objects:
         log("         exportable geometry. Convert them first, or use a mesh hair asset.")
 
 # ---------------------------------------------------------------------------
-# 3. Inventory. Print what we found BEFORE touching anything, so a missing
-#    asset is obvious here rather than three steps later.
+# 3. Inventory, before anything is touched.
 # ---------------------------------------------------------------------------
 meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 if not meshes:
@@ -86,84 +89,114 @@ if not meshes:
 
 log(f"found {len(meshes)} mesh object(s):")
 for o in meshes:
-    keys = len(o.data.shape_keys.key_blocks) if o.data.shape_keys else 0
     mods = ", ".join(m.type for m in o.modifiers) or "-"
-    log(f"    {o.name:<28} verts={len(o.data.vertices):>6}  shapekeys={keys:>3}  modifiers={mods}")
+    log(f"    {o.name:<28} verts={len(o.data.vertices):>6}  "
+        f"shapekeys={shape_key_count(o):>3}  modifiers={mods}")
 
 # ---------------------------------------------------------------------------
-# 4. Pick the join target deliberately.
+# 4. DO NOT JOIN.
 #
-# `meshes[0]` was whatever the scene happened to list first. Joining INTO an
-# asset with no shape keys risks the body's modelling targets, which are the
-# whole point of the export. Join into the object carrying the most shape keys
-# (ties broken by vertex count) — that's the body.
+# An earlier version joined every mesh into one object, and that mangled the
+# figure: MPFB2 fits hair/eyes/brows to the body as proxies carrying their OWN
+# shape keys, which mirror the body's modelling targets by name. Blender's join
+# merges shape keys BY NAME, so those same-named keys collapse into one another
+# with unrelated per-vertex deltas — the face tore and stretched toward the
+# midline.
+#
+# The join was never needed anyway: `mergeSceneGeometry` in bake-head.ts already
+# walks every node and primitive in the document and merges them itself, applying
+# each node's world matrix as it goes. Exporting several meshes is fine.
 # ---------------------------------------------------------------------------
-def shape_key_count(o):
-    return len(o.data.shape_keys.key_blocks) if o.data.shape_keys else 0
 
-
+# The body is the object carrying the most shape keys (ties -> most vertices).
 body = max(meshes, key=lambda o: (shape_key_count(o), len(o.data.vertices)))
-log(f"join target: {body.name} ({shape_key_count(body)} shape keys)")
+log(f"body: {body.name} ({shape_key_count(body)} shape keys)")
 
 # ---------------------------------------------------------------------------
-# 5. Compute the cut height from the BODY ALONE, before joining.
+# 5. Cut height from the BODY ALONE.
 #
-# Doing it after the join made the cut depend on the assets: hair sits above
-# the skull, so including it raised the bounding box, and the same CUT fraction
-# then sliced lower down the body. Measuring the body first keeps CUT meaning
-# the same thing no matter which assets are present.
+# Measuring after including assets made the cut depend on them: hair sits above
+# the skull, raising the bounding box, so the same CUT fraction sliced lower
+# down the body. Measuring the body keeps CUT meaning one thing.
+#
+# `v.co` is the BASIS position, not the shape-keyed one. With modelling targets
+# at non-zero weights the visible surface differs, so evaluate the object
+# through the depsgraph and measure what is actually on screen.
 # ---------------------------------------------------------------------------
-zs = [(body.matrix_world @ v.co).z for v in body.data.vertices]
-cut_z = min(zs) + (max(zs) - min(zs)) * CUT
-log(f"body z range {min(zs):.3f} .. {max(zs):.3f}  ->  cut at z={cut_z:.3f}")
+depsgraph = bpy.context.evaluated_depsgraph_get()
+
+
+def evaluated_coords(o):
+    """World-space vertex coords as actually displayed (shape keys + modifiers)."""
+    eval_obj = o.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    coords = [o.matrix_world @ v.co.copy() for v in mesh.vertices]
+    eval_obj.to_mesh_clear()
+    return coords
+
+
+body_zs = [c.z for c in evaluated_coords(body)]
+cut_z = min(body_zs) + (max(body_zs) - min(body_zs)) * CUT
+log(f"body z range {min(body_zs):.3f} .. {max(body_zs):.3f}  ->  cut at z={cut_z:.3f}")
 
 # ---------------------------------------------------------------------------
-# 6. Join everything into the body.
+# 6. Crop every mesh at that height, in place, each on its own.
+#
+# Selection is driven by the EVALUATED position so the cut follows the surface
+# you can see. Vertex order is identical between the evaluated mesh and the
+# original as long as no generative modifier is active, which is the case here.
 # ---------------------------------------------------------------------------
-bpy.ops.object.select_all(action='DESELECT')
-selected = []
 for o in meshes:
+    coords = evaluated_coords(o)
+    if len(coords) != len(o.data.vertices):
+        log(f"    {o.name}: evaluated vert count differs "
+            f"({len(coords)} vs {len(o.data.vertices)}) — a generative modifier is "
+            f"active; cropping on basis positions instead")
+        coords = [o.matrix_world @ v.co for v in o.data.vertices]
+
+    doomed = [i for i, c in enumerate(coords) if c.z < cut_z]
+    if not doomed:
+        log(f"    {o.name}: nothing below the cut, kept whole ({len(o.data.vertices)} verts)")
+        continue
+
+    bpy.ops.object.select_all(action='DESELECT')
     o.select_set(True)
-    if o.select_get():
-        selected.append(o.name)
-    else:
-        log(f"WARNING: {o.name} refused selection and will NOT be exported")
-bpy.context.view_layer.objects.active = body
+    bpy.context.view_layer.objects.active = o
 
-if len(selected) > 1:
-    bpy.ops.object.join()
-obj = bpy.context.active_object
-log(f"joined {len(selected)} object(s) -> {obj.name}: {len(obj.data.vertices)} verts, "
-    f"{shape_key_count(obj)} shape keys")
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='DESELECT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for i in doomed:
+        o.data.vertices[i].select = True
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.delete(type='VERT')
+    bpy.ops.object.mode_set(mode='OBJECT')
 
-# ---------------------------------------------------------------------------
-# 7. Delete everything below the cut.
-# ---------------------------------------------------------------------------
-bpy.ops.object.mode_set(mode='EDIT')
-bpy.ops.mesh.select_all(action='DESELECT')
-bpy.ops.object.mode_set(mode='OBJECT')
-for v in obj.data.vertices:
-    v.select = (obj.matrix_world @ v.co).z < cut_z
-bpy.ops.object.mode_set(mode='EDIT')
-bpy.ops.mesh.delete(type='VERT')
-bpy.ops.object.mode_set(mode='OBJECT')
+    log(f"    {o.name}: cut {len(doomed)} verts, {len(o.data.vertices)} remain, "
+        f"{shape_key_count(o)} shape keys survive")
 
-log(f"kept above z={cut_z:.3f}; {len(obj.data.vertices)} verts remain, "
-    f"{shape_key_count(obj)} shape keys survive")
+# Anything emptied entirely by the cut would export as a degenerate mesh.
+survivors = [o for o in meshes if len(o.data.vertices) > 0]
+for o in meshes:
+    if o not in survivors:
+        log(f"    {o.name}: emptied by the cut, excluded from the export")
 
 # ---------------------------------------------------------------------------
-# 8. Export.
+# 7. Export.
 #
 # The original script defined OUT and never used it, so the export was done by
 # hand through the file dialog — where "Shape Keys" lives inside a collapsed
-# "Data" section and is easy to miss. Scripting it removes that failure mode.
+# "Data" section and is easy to miss.
 #
-# export_apply MUST stay False: applying modifiers destroys shape keys, and
-# the shape keys are the character.
+# export_apply MUST stay False: applying modifiers destroys shape keys, and the
+# shape keys are the character.
 # ---------------------------------------------------------------------------
 bpy.ops.object.select_all(action='DESELECT')
-obj.select_set(True)
-bpy.context.view_layer.objects.active = obj
+for o in survivors:
+    o.select_set(True)
+    if not o.select_get():
+        log(f"WARNING: {o.name} refused selection and will NOT be exported")
+bpy.context.view_layer.objects.active = survivors[0]
 
 wanted = dict(
     filepath=OUT,
@@ -193,5 +226,5 @@ if dropped:
     log(f"WARNING: this Blender ignores these export flags: {dropped}")
 
 bpy.ops.export_scene.gltf(**kwargs)
-log(f"wrote {OUT}")
-log("next: pnpm bake:head")
+log(f"wrote {OUT} ({len(survivors)} mesh object(s))")
+log("next: File > Revert to restore the figure, then `pnpm bake:head`")
