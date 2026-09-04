@@ -129,11 +129,13 @@ export default defineNuxtConfig({
       '*/5 * * * *': ['embed-documents', 'summarize-sessions'],
       '*/10 * * * *': ['triage-input'],
       '*/7 * * * *': ['enrich-images'],
-      '*/15 * * * *': ['enrich-memories'],
+      // sync-model-prices runs often, but self-gates: it only hits the network when a model
+      // appears that it has never attempted to price, or when the last full sync is >20h old.
+      // Daily was ample for price CHANGES, but the real trigger is a NEW model showing up in
+      // usage — claude-fable-5-1 read as unpriced for ~11h on 2026-09-03 awaiting the 04:00 run.
+      '*/15 * * * *': ['enrich-memories', 'sync-model-prices'],
       '0 3 * * *': ['prune-activity-log'],
       '*/4 * * * *': ['embed-messages'],
-      // Prices change rarely; daily is ample.
-      '0 4 * * *': ['sync-model-prices'],
       // Shortly after midnight UTC: summarise yesterday's LiteLLM traffic.
       '20 0 * * *': ['rollup-litellm-daily'],
       // UMAP over ~2000+ vectors is heavy + synchronous (blocks the event loop),

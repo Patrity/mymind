@@ -43,3 +43,44 @@ export function extractRates(map: Record<string, unknown>, models: string[]): Ne
   }
   return out
 }
+
+/** How long a full price refresh stays fresh. Rates change rarely; this is the floor, not the goal. */
+export const PRICE_MAX_AGE_MS = 20 * 60 * 60 * 1000
+
+export type SyncDecision = {
+  sync: boolean
+  reason: 'new-model' | 'stale' | 'none'
+  newModels: string[]
+}
+
+/**
+ * Decide whether a price sync should actually hit the network.
+ *
+ * The scheduled task runs often so a newly-adopted model gets priced within minutes instead of
+ * waiting up to a day (claude-fable-5-1 sat unpriced for ~11h on 2026-09-03 for exactly this
+ * reason). But the full sync scans every row of `messages` and pulls a ~2MB map, so it must NOT
+ * run on every tick.
+ *
+ * Two triggers, both cheap to evaluate:
+ *  - `new-model`: a model showed up in the recent window that we have never *attempted* to price.
+ *    Attempted — not priced — is the important word. `<synthetic>` and anything else missing from
+ *    the upstream map is unpriceable forever, and keying off "has no price row" would re-fetch on
+ *    every single tick for those. Recording what we tried is what makes frequent scheduling safe.
+ *  - `stale`: the last full sync is older than PRICE_MAX_AGE_MS, so rates get refreshed even when
+ *    the model set is unchanged. A null `lastFullSyncAt` (cold start) counts as stale.
+ */
+export function decideSync(opts: {
+  recentModels: string[]
+  attempted: string[]
+  lastFullSyncAt: Date | null
+  now: Date
+  maxAgeMs?: number
+}): SyncDecision {
+  const attempted = new Set(opts.attempted)
+  const newModels = [...new Set(opts.recentModels.filter(m => m && !attempted.has(m)))]
+  if (newModels.length > 0) return { sync: true, reason: 'new-model', newModels }
+
+  const maxAge = opts.maxAgeMs ?? PRICE_MAX_AGE_MS
+  const stale = !opts.lastFullSyncAt || opts.now.getTime() - opts.lastFullSyncAt.getTime() >= maxAge
+  return stale ? { sync: true, reason: 'stale', newModels: [] } : { sync: false, reason: 'none', newModels: [] }
+}
