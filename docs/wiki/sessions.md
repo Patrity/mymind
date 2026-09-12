@@ -2,7 +2,7 @@
 title: Sessions View
 status: shipped
 cycle: 46
-updated: 2026-07-15
+updated: 2026-09-11
 ---
 
 # Sessions View
@@ -16,6 +16,14 @@ The hook (`POST /api/hooks/cc/[event]` for liveness/metadata, `POST /api/hooks/c
 - `content` (text blocks) + `thinking` (thinking blocks, kept separate), `model`, `stop_reason`, `request_id`, `parent_uuid`, `is_sidechain`, and the raw `usage` jsonb. Idempotent on `(session_id, external_uuid)` (synthetic uuid when a line has none).
 - **`tool_events` table** (new): each `tool_use` block → a row (`tool_name`, `args`, `tool_use_id`, `caller_type`, `is_sidechain`, `phase='pre'`, `message_id` linked to the parent assistant message); the matching `tool_result` closes it (`result`, `exit_status` ok/error, `phase` completed/failed). Idempotent on `(session_id, tool_use_id)`. A **pure tool_result** user line produces no message row but still closes its event.
 - **Session columns** (from the `[event]` hook): `machine_id`, `hostname`, `git_branch`, `git_commit`, `git_remote`, **`git_root`** (cycle 46 — `git rev-parse --show-toplevel`, sent by `cc-hook.sh`; used transiently as a label-match candidate, never persisted), `app_version`, plus `ended_at` (set on `SessionEnd`). **`project_id`** is resolved on ingest via `findOrCreateProject({ gitRemote, cwd, gitRoot })` — see the **resolver order** below. The legacy `project` slug is kept in sync. See [projects.md](projects.md).
+### Wire limits (`server/lib/transcript/ingest-limits.ts`)
+
+The inlet accepts a line at **any** length and caps the batch instead: `MAX_LINES` 50_000 and `MAX_BODY_CHARS` 24_000_000 across all lines. Size management happens on the **parsed** fields — `clampStrings` in `transcript-parse.ts` clamps any string to `MAX_FIELD_CHARS` (200_000) with a `… [truncated N chars]` marker, applied at the same choke point as `stripNul`.
+
+This shape is deliberate. The schema used to cap each line at 100_000 chars, but Zod rejects the **whole batch** on one bad element, and `cc-hook` only advances its byte offset on a 2xx — so a single oversized line (one big tool result; observed up to 2.08 MB) became a permanent head-of-line block, re-POSTing the same doomed payload on every terminal event. ~0.4% of lines wedged 26 sessions and ~270 MB, and **prod message ingest stopped dead from 2026-09-07 to 2026-09-12**. Truncating the raw line is not an option: the parser does `JSON.parse(line)` and skips failures, so a truncated line deletes the message silently.
+
+**Recovery:** `server/assets/setup/transcript-backfill.mjs`, served at `GET /api/setup/transcript-backfill.mjs`. Node 18+, no deps, runs on macOS/Windows/WSL. It walks UUID-named transcripts under `~/.claude/projects` and loops 4 MB chunks until each is caught up — `cc-hook` ships only one chunk per terminal event and never fires again for a dead session, so the hook alone cannot drain a backlog. Safe to re-run (ingest is idempotent). It deliberately skips `subagents/agent-*.jsonl` (the filename is an agent id, not a session id) and Workflow `journal.jsonl`.
+
 - Aggregates recomputed from the real tables on each ingest: `message_count`, `tool_count` (from `tool_events`), `input_tokens`/`output_tokens` (SQL sum over the `usage` column), `started_at`/`last_active` (min/max message `created_at`).
 
 Legacy `messages.metadata.{usage,model,tools,type}` is still dual-written so pre-phase-2 rows keep rendering. (Limitation: a `tool_use` and its `tool_result` are correlated within one ingest batch — they always ship together in a Stop-triggered delta, so this is not a practical gap.)

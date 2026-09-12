@@ -77,6 +77,36 @@ export function stripNul<T>(value: T): T {
   return value
 }
 
+/**
+ * Cap on any single string reaching the DB. Transcript lines themselves are
+ * accepted at full size (the parser needs valid JSON — see ingest-limits.ts),
+ * so the size management happens here, on the parsed fields, where a 2 MB tool
+ * result can be clamped without costing us the message that carried it.
+ */
+export const MAX_FIELD_CHARS = 200_000
+
+/**
+ * Recursively clamp every over-long string in a value, mirroring stripNul's
+ * shape. Keeps the head (where the signal is) and says what was dropped, so a
+ * truncated field reads as truncated rather than as the whole story.
+ */
+export function clampStrings<T>(value: T): T {
+  if (typeof value === 'string') {
+    if (value.length <= MAX_FIELD_CHARS) return value
+    // Reserve room for the marker so MAX_FIELD_CHARS is a real cap on what we store.
+    const marker = (n: number) => `… [truncated ${n} chars]`
+    const keep = MAX_FIELD_CHARS - marker(value.length).length
+    return (value.slice(0, keep) + marker(value.length - keep)) as T
+  }
+  if (Array.isArray(value)) return value.map(clampStrings) as T
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) out[k] = clampStrings(v)
+    return out as T
+  }
+  return value
+}
+
 /** Parse CC JSONL lines into rich messages + tool events. Tolerant: never throws. */
 export function parseTranscriptLines(lines: string[]): ParsedTranscript {
   const messages: ParsedMessage[] = []
@@ -182,10 +212,12 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
     }
   }
 
-  // Scrub NUL from every string before it reaches the DB (text + jsonb both reject it).
+  // Scrub NUL from every string before it reaches the DB (text + jsonb both reject it),
+  // then clamp anything over-long — an oversized field must cost us that field, never
+  // the message, and never (as it did until 2026-09) the entire batch behind it.
   return {
-    messages: messages.map(stripNul),
-    toolEvents: toolEvents.map(stripNul),
+    messages: messages.map(m => clampStrings(stripNul(m))),
+    toolEvents: toolEvents.map(e => clampStrings(stripNul(e))),
     inputTokens,
     outputTokens,
     toolCount: toolEvents.length

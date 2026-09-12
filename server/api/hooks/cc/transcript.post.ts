@@ -1,14 +1,8 @@
-import { z } from 'zod'
 import { ingestTranscript } from '../../../services/sessions'
-
-const Body = z.object({
-  source: z.string().default('claude_code'),
-  external_id: z.string(),
-  lines: z.array(z.string().max(100_000)).max(5000)
-})
+import { TranscriptBody } from '../../../lib/transcript/ingest-limits'
 
 export default defineEventHandler(async (event) => {
-  const parsed = Body.safeParse(await readBody(event))
+  const parsed = TranscriptBody.safeParse(await readBody(event))
   if (!parsed.success) {
     throw createError({ statusCode: 400, statusMessage: 'Bad Request', data: parsed.error.issues })
   }
