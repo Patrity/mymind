@@ -3,13 +3,15 @@ title: Transcript ingest poison pill — one oversized line stopped all message 
 cycle: incident
 date: 2026-09-11
 status: >
-  SHIPPED AND VERIFIED IN PROD. Deployed as 8567d1c (CD run 34695584536, test+deploy green,
-  2026-09-12 13:20 UTC). Post-deploy: /api/health 200, the setup endpoint serves real JS, and the
-  previously-wedged session 27ba72e2 flipped 400 -> 200 and ingested 220 messages. Full macOS
-  backfill: **41/41 sessions, 0 failures, 23,275 messages, 267.9 MB**. Every session whose
-  transcript exists on the Mac now has messages. Gates at HEAD: typecheck 0 / test 1513 passed
-  (182 files) / build clean. REMAINING: run the backfill on the Windows and WSL machines — 113
-  prod sessions are still at 0 messages and none of their transcripts are on the Mac.
+  COMPLETE AND VERIFIED IN PROD. Server fix (8567d1c), backfill-script fix (067388d), timestamp fix
+  (068106c) all deployed; docs 8507c48. Backfill run on all three machines (macOS / Windows / WSL),
+  twice each: recovery then --from-zero timestamp repair. Final prod state: **218,671 messages,
+  96,830 tool events, 743 sessions, oldest message 2026-04-04, ZERO duplicate (session, external_uuid)
+  pairs** across ~1.1 GB replayed three times. Empty sessions 119 -> 91 (the 91 are unrecoverable:
+  no messages, no tool events, transcripts pruned from disk before the fix). Timestamp distortion
+  42 -> 3 sessions started_today and 72 -> 8 last_active_today, all 8 genuinely current work.
+  Enrichment fully caught up: 489 sessions, 0 errors, 0 eligible pending. Gates: typecheck 0 /
+  test 1520 passed (183 files) / build clean.
 branch: master
 docs:
   - ../wiki/sessions.md (new "Wire limits" section under Ingestion; frontmatter bumped to 2026-09-11)
@@ -191,6 +193,22 @@ Verified on `a3dba201` before the mass run: `started_at` 2026-09-12 → **2026-0
 macOS repair: **50/50 sessions, 0 failures, 36,152 messages, 347.6 MB**. Afterwards the only Mac
 session still stamped today was the live one. Enrichment unstalled immediately (`last_run` 03:15 →
 14:32, 0 errors) because the repaired `last_active` values cleared the grace window.
+
+## Final state
+
+| metric | before | after |
+|---|---|---|
+| messages | ~165,000 (frozen 09-07) | **218,671** |
+| tool events | — | **96,830** |
+| empty sessions | 119 | **91** (unrecoverable) |
+| sessions `started_at` = today | 47 | **3** |
+| sessions `last_active` = today | 50 | **8** |
+| duplicate (session, external_uuid) | — | **0** |
+| enrichment eligible-pending | stalled 11h | **0** |
+
+Of the 162 sessions with messages but no enrichment row, none is stuck: 71 are `agent-*` rows that
+are 100% sidechain (dropped by design), 86 are below the 4-real-message floor, 2 were inside the
+1-hour grace as live sessions, 1 is a genuine 73-message session below the floor.
 
 ## Follow-ups worth considering
 
