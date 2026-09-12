@@ -143,6 +143,26 @@ Claude Code has already deleted locally is **unrecoverable** — there is no oth
 2. Expect `enrich-memories` to take roughly **8 hours** to catch up (10 sessions per 15-min tick),
    each an LLM call. A slow drain is the design, not a second bug.
 
+## Second poison pill — in the recovery tool itself (fixed)
+
+The Windows run surfaced a variant of the same bug, reintroduced by me in the backfill script.
+`readChunk` grows its window when a line has no newline in it, and the growth **doubled past** the
+ceiling (4 → 8 → 16 → 32 MB), so it reassembled a 23.8 MB single line and the batch was rejected by
+the server's own `MAX_BODY_CHARS` guard. 104 of 105 Windows sessions shipped; `aef771cc` failed.
+
+Fix: clamp growth to `MAX_LINE_BYTES` (20 MB), and when one line still will not fit, **skip it and
+advance the offset past it** rather than failing the session. Skipping costs little — the parser
+clamps any field to 200_000 chars anyway, so a 24 MB line would have stored at most 200 KB — and
+the alternative is the exact head-of-line block this whole incident is about.
+
+Proven with a synthetic transcript (normal line / 25 MB line / normal line): the monster is skipped
+with a loud per-line report, and **both** surrounding messages ship. Self-test artifacts were
+removed from disk and from the prod DB afterward.
+
+The lesson worth keeping: "reject the batch" and "never advance past unshipped data" are each
+defensible alone and catastrophic together. Any component in this path needs a way to give up on
+one poisoned element without giving up on the stream.
+
 ## Follow-ups worth considering
 
 - `cc-hook` has no way to report a permanently-poisoned payload. A 4xx is currently retried forever

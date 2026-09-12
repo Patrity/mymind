@@ -45,6 +45,19 @@ const CHUNK = 4 * 1024 * 1024 // match cc-hook's window
 const OVERSIZED = 100_000 // the old per-line cap — what "wedged" means
 const MAX_RETRIES = 4
 
+/**
+ * Hard ceiling on a single line we are willing to ship, in bytes. The window below
+ * grows past CHUNK when one line is longer than it, but it must not grow past what
+ * the server will accept (MAX_BODY_CHARS = 24_000_000) or the batch is rejected —
+ * which is the poison pill this whole script exists to clear, reintroduced in the
+ * recovery tool. A line bigger than this is SKIPPED (loudly) and the offset advances
+ * past it, so one absurd line costs us that line and nothing else.
+ *
+ * Cost of skipping is small: the parser clamps any field to 200_000 chars anyway, so
+ * a 30 MB line would have contributed at most 200 KB of stored content.
+ */
+const MAX_LINE_BYTES = 20_000_000
+
 const argv = process.argv.slice(2)
 const flag = n => argv.includes(n)
 const opt = (n, d = null) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d }
@@ -115,7 +128,7 @@ function readChunk(file, start, size) {
   try {
     for (;;) {
       const len = Math.min(want, size - start)
-      if (len <= 0) return { consumed: 0, lines: [] }
+      if (len <= 0) return { consumed: 0, lines: [], skippedBytes: 0 }
       const buf = Buffer.allocUnsafe(len)
       readSync(fd, buf, 0, len, start)
       const atEof = start + len >= size
@@ -123,12 +136,36 @@ function readChunk(file, start, size) {
       let consumed
       if (nl >= 0) consumed = nl + 1
       else if (atEof) consumed = len // last line, no trailing newline
-      else { want *= 2; continue } // line longer than the window — grow and retry
+      // Grow to fit one long line, but CLAMP to the ceiling — doubling past it would
+      // reassemble a line the server is guaranteed to reject.
+      else if (want < MAX_LINE_BYTES) { want = Math.min(want * 2, MAX_LINE_BYTES); continue }
+      else {
+        // One line exceeds what the server will accept. Skip past it instead of
+        // retrying it forever — advancing the offset is what keeps the REST of the
+        // session from being held hostage by a single absurd line.
+        const end = findLineEnd(fd, start, size)
+        return { consumed: end - start, lines: [], skippedBytes: end - start }
+      }
       const text = buf.subarray(0, consumed).toString('utf8')
       const lines = text.split('\n').filter(l => l.trim().length > 0)
-      return { consumed, lines }
+      return { consumed, lines, skippedBytes: 0 }
     }
   } finally { closeSync(fd) }
+}
+
+/** Byte offset just past the newline terminating the line that starts at `start`. */
+function findLineEnd(fd, start, size) {
+  const step = 1 << 20
+  const buf = Buffer.allocUnsafe(step)
+  let pos = start
+  while (pos < size) {
+    const len = Math.min(step, size - pos)
+    readSync(fd, buf, 0, len, pos)
+    const nl = buf.subarray(0, len).indexOf(0x0a)
+    if (nl >= 0) return pos + nl + 1
+    pos += len
+  }
+  return size
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +278,9 @@ if (DRY_RUN) {
   process.exit(0)
 }
 
-let done = 0, okSessions = 0, failed = 0, msgs = 0, shipped = 0
+let done = 0, okSessions = 0, failed = 0, msgs = 0, shipped = 0, skippedLines = 0
 const failures = []
+const skipped = []
 
 for (const w of work) {
   if (done >= LIMIT) break
@@ -252,8 +290,13 @@ for (const w of work) {
   const label = `[${done}/${Math.min(work.length, LIMIT)}] ${w.sid.slice(0, 8)}`
 
   while (off < w.size) {
-    const { consumed, lines } = readChunk(w.file, off, w.size)
+    const { consumed, lines, skippedBytes } = readChunk(w.file, off, w.size)
     if (consumed === 0) break
+    if (skippedBytes > 0) {
+      skippedLines++
+      skipped.push(`${w.sid} @byte ${off}: skipped 1 line of ${(skippedBytes / 1024 / 1024).toFixed(1)} MB (over the ${(MAX_LINE_BYTES / 1024 / 1024).toFixed(0)} MB wire limit)`)
+      console.log(`\n${label} SKIPPED a ${(skippedBytes / 1024 / 1024).toFixed(1)} MB line at byte ${off} — continuing`)
+    }
     if (lines.length === 0) { off += consumed; writeOffset(w.sid, off); continue }
 
     const r = await post(cfg, w.sid, lines)
@@ -283,6 +326,12 @@ console.log(`\n\nsessions shipped : ${okSessions}`)
 console.log(`sessions failed  : ${failed}`)
 console.log(`messages ingested: ${msgs}`)
 console.log(`bytes shipped    : ${(shipped / 1024 / 1024).toFixed(1)} MB`)
+if (skippedLines) {
+  // Never silent: a skipped line is real data we chose not to ship, and saying so is
+  // the difference between a known gap and a mystery six weeks from now.
+  console.log(`\nlines skipped    : ${skippedLines} (too large for the wire; the rest of each session still shipped)`)
+  for (const s of skipped.slice(0, 10)) console.log(`  ${s}`)
+}
 if (failures.length) {
   console.log(`\nfailures (first 10):`)
   for (const f of failures.slice(0, 10)) console.log(`  ${f}`)
