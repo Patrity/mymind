@@ -2,6 +2,14 @@ import { createHash } from 'node:crypto'
 
 export interface ParsedMessage {
   role: string | null
+  /**
+   * The line's own `timestamp`, as an ISO string — NOT a Date. stripNul and
+   * clampStrings rebuild objects field by field, and a Date has no own enumerable
+   * properties, so it would come out the far side as `{}`. Converted to a Date at
+   * the insert site instead. Null when the line has none, letting the column
+   * default (now()) stand.
+   */
+  createdAt: string | null
   content: string
   externalUuid: string | null
   parentUuid: string | null
@@ -16,6 +24,8 @@ export interface ParsedMessage {
 
 export interface ParsedToolEvent {
   toolUseId: string | null
+  /** ISO string, same reasoning as ParsedMessage.createdAt. */
+  createdAt: string | null
   parentExternalUuid: string | null
   toolName: string
   args: unknown
@@ -53,6 +63,13 @@ function extractThinking(raw: unknown): string | null {
     .map(p => (p.thinking ?? p.text) as string)
     .filter(t => typeof t === 'string')
   return parts.length ? parts.join('\n') : null
+}
+
+/** CC stamps every line with an ISO `timestamp`; keep it only if it actually parses. */
+function extractTimestamp(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw) return null
+  const t = Date.parse(raw)
+  return Number.isNaN(t) ? null : raw
 }
 
 function syntheticUuid(role: string, content: string): string {
@@ -145,6 +162,7 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
       const text = extractText(rawContent)
       const thinking = extractThinking(rawContent)
       const effectiveUuid = selfUuid ?? syntheticUuid(role, text)
+      const lineTs = extractTimestamp(obj.timestamp)
 
       for (const part of contentArray) {
         if (part === null || typeof part !== 'object') continue
@@ -160,6 +178,7 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
               result: null,
               exitStatus: null,
               phase: 'pre',
+              createdAt: lineTs,
               callerType: (part.caller && typeof part.caller === 'object') ? ((part.caller as Record<string, unknown>).type as string ?? null) : null,
               isSidechain
             }
@@ -196,6 +215,7 @@ export function parseTranscriptLines(lines: string[]): ParsedTranscript {
 
       messages.push({
         role,
+        createdAt: lineTs,
         content: text,
         externalUuid: effectiveUuid,
         parentUuid,

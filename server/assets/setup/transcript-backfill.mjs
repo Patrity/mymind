@@ -15,16 +15,22 @@
  * script is the missing piece: it walks every local transcript and LOOPS until each
  * is fully caught up.
  *
- * SAFE TO RE-RUN. Ingest is idempotent on (session_id, external_uuid) for messages
- * and (session_id, tool_use_id) for tool events, both with onConflictDoNothing.
+ * SAFE TO RE-RUN. Ingest is keyed on (session_id, external_uuid) for messages and
+ * (session_id, tool_use_id) for tool events, so a replay never duplicates. Rows with
+ * a real line timestamp update created_at on conflict; rows without one are left
+ * alone, so a replay can repair history but never invent it.
  *
  * REQUIREMENTS: Node 18+ (uses global fetch). No npm install, no repo checkout.
  * Works on macOS, Windows, and WSL — run it once per machine.
  *
  *   node mymind-transcript-backfill.mjs [flags]
  *
- *   --from-zero      re-ship each transcript from byte 0, ignoring stored offsets
- *                    (slower, but immune to a drifted offset; dedupe makes it safe)
+ *   --from-zero      re-ship each transcript from byte 0, ignoring stored offsets.
+ *                    ALSO THE TIMESTAMP REPAIR PATH: messages carrying a real line
+ *                    timestamp update created_at on conflict, so a from-zero replay
+ *                    rewrites history that was stamped with its ingest time, and the
+ *                    session's started_at / last_active are recomputed from it.
+ *                    Safe and idempotent; just re-sends more bytes.
  *   --wedged-only    only sessions currently blocked by an oversized line
  *   --dry-run        report what would ship; POST nothing
  *   --session <id>   just this session id

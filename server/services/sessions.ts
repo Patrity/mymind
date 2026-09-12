@@ -112,9 +112,16 @@ export async function ingestTranscript(input: IngestTranscriptInput): Promise<In
   const session = await upsertSession({ source: input.source, externalId: input.externalId })
   const parsed = parseTranscriptLines(input.lines)
 
-  // 1. Insert messages (idempotent on (session_id, external_uuid))
+  // 1. Insert messages (idempotent on (session_id, external_uuid)).
+  //
+  // Rows carrying a real line timestamp UPDATE created_at on conflict; rows without
+  // one do nothing, so the column default (now()) is never clobbered by a re-ingest.
+  // The split matters: created_at drives started_at/last_active (min/max below) and
+  // every time-indexed view. A pure onConflictDoNothing meant a replay could never
+  // repair history — which is exactly how the 2026-09-12 backfill stamped a month of
+  // transcripts "today". With this, re-running the backfill --from-zero fixes them.
   if (parsed.messages.length > 0) {
-    await db.insert(messages).values(parsed.messages.map(m => ({
+    const row = (m: typeof parsed.messages[number]) => ({
       sessionId: session.id,
       role: m.role ?? undefined,
       content: m.content,
@@ -126,8 +133,22 @@ export async function ingestTranscript(input: IngestTranscriptInput): Promise<In
       requestId: m.requestId,
       isSidechain: m.isSidechain,
       usage: m.usage as unknown as string,
-      metadata: m.metadata as unknown as string
-    }))).onConflictDoNothing()
+      metadata: m.metadata as unknown as string,
+      ...(m.createdAt ? { createdAt: new Date(m.createdAt) } : {})
+    })
+
+    const timed = parsed.messages.filter(m => m.createdAt)
+    const untimed = parsed.messages.filter(m => !m.createdAt)
+
+    if (timed.length > 0) {
+      await db.insert(messages).values(timed.map(row)).onConflictDoUpdate({
+        target: [messages.sessionId, messages.externalUuid],
+        set: { createdAt: sql`excluded.created_at` }
+      })
+    }
+    if (untimed.length > 0) {
+      await db.insert(messages).values(untimed.map(row)).onConflictDoNothing()
+    }
   }
 
   // 2. Map externalUuid -> message id for tool-event linkage
@@ -148,10 +169,17 @@ export async function ingestTranscript(input: IngestTranscriptInput): Promise<In
       phase: te.phase,
       toolUseId: te.toolUseId,
       isSidechain: te.isSidechain,
-      callerType: te.callerType
+      callerType: te.callerType,
+      ...(te.createdAt ? { createdAt: new Date(te.createdAt) } : {})
     }).onConflictDoUpdate({
       target: [toolEvents.sessionId, toolEvents.toolUseId],
-      set: { result: te.result as unknown as string, exitStatus: te.exitStatus, phase: te.phase }
+      set: {
+        result: te.result as unknown as string,
+        exitStatus: te.exitStatus,
+        phase: te.phase,
+        // Same rule as messages: only a real line timestamp may rewrite created_at.
+        ...(te.createdAt ? { createdAt: new Date(te.createdAt) } : {})
+      }
     })
   }
 
