@@ -163,6 +163,35 @@ The lesson worth keeping: "reject the batch" and "never advance past unshipped d
 defensible alone and catastrophic together. Any component in this path needs a way to give up on
 one poisoned element without giving up on the stream.
 
+## Third issue: the backfill compressed a month of history into one day (fixed)
+
+`messages.created_at` defaulted to insert time, and `started_at`/`last_active` are `min/max(created_at)`.
+Normal hook ingest runs seconds behind the message, so this was invisible for years. Replaying a
+month of transcripts exposed it: **53,047 messages stamped 2026-09-12**, 47 sessions with
+`started_at` = today, 50 genuinely-old sessions sorted to the top of the sessions list by
+`last_active`. It also stalled enrichment, whose candidate query requires
+`last_active < now() - interval '1 hour'` — every recovered session sat inside the grace window.
+
+CC JSONL carries the real time on every line (`"timestamp":"2026-09-01T16:43:26.233Z"`); the parser
+ignored it. Now it doesn't.
+
+Two details worth keeping:
+
+- The timestamp is carried as an **ISO string, not a `Date`**. `stripNul` and `clampStrings` rebuild
+  objects field by field, and a `Date` has no own enumerable properties — it would come out as `{}`.
+  Converted to a `Date` at the insert site instead. There is a test pinning this.
+- Ingest **splits** its insert: rows with a timestamp `onConflictDoUpdate` on `created_at`; rows
+  without keep `onConflictDoNothing`. Without the split, a re-ingest of a timestamp-less line would
+  clobber a good value with `now()`. With it, `--from-zero` became the repair tool — no separate
+  endpoint, no separate script, and the session aggregates recompute for free.
+
+Verified on `a3dba201` before the mass run: `started_at` 2026-09-12 → **2026-08-07**, `last_active`
+→ **2026-08-25T17:22:35.365Z**, matching the transcript's last line exactly.
+
+macOS repair: **50/50 sessions, 0 failures, 36,152 messages, 347.6 MB**. Afterwards the only Mac
+session still stamped today was the live one. Enrichment unstalled immediately (`last_run` 03:15 →
+14:32, 0 errors) because the repaired `last_active` values cleared the grace window.
+
 ## Follow-ups worth considering
 
 - `cc-hook` has no way to report a permanently-poisoned payload. A 4xx is currently retried forever
