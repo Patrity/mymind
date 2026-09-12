@@ -3,12 +3,13 @@ title: Transcript ingest poison pill — one oversized line stopped all message 
 cycle: incident
 date: 2026-09-11
 status: >
-  FIX BUILT + TESTED LOCALLY, NOT YET DEPLOYED. Root cause found and proven at the wire against
-  prod. Server fix, regression tests, and a cross-platform backfill script are complete on
-  `master` (uncommitted at time of writing). Gates measured fresh: **typecheck 0 errors /
-  test 1513 passed (182 files) / build clean**. The backfill CANNOT run until the server fix
-  is deployed — a wedged session still returns `400 too_big maximum:100000` against live prod.
-  Remaining: push (CD to prod), then run the backfill on all three machines (macOS, Windows, WSL).
+  SHIPPED AND VERIFIED IN PROD. Deployed as 8567d1c (CD run 34695584536, test+deploy green,
+  2026-09-12 13:20 UTC). Post-deploy: /api/health 200, the setup endpoint serves real JS, and the
+  previously-wedged session 27ba72e2 flipped 400 -> 200 and ingested 220 messages. Full macOS
+  backfill: **41/41 sessions, 0 failures, 23,275 messages, 267.9 MB**. Every session whose
+  transcript exists on the Mac now has messages. Gates at HEAD: typecheck 0 / test 1513 passed
+  (182 files) / build clean. REMAINING: run the backfill on the Windows and WSL machines — 113
+  prod sessions are still at 0 messages and none of their transcripts are on the Mac.
 branch: master
 docs:
   - ../wiki/sessions.md (new "Wire limits" section under Ingestion; frontmatter bumped to 2026-09-11)
@@ -116,15 +117,30 @@ Corrected figures: **50 session transcripts on disk, 42 with pending bytes, 26 w
 - Wedged session against live prod still returns `400 too_big` — confirming the deploy is the gate,
   and confirming offsets are *not* advanced past a failure.
 
+## Outcome
+
+Deployed as `8567d1c` (CD run 34695584536, 2026-09-12 13:20 UTC; `test` and `deploy` both green).
+
+| check | result |
+|---|---|
+| `/api/health` | 200 `{"ok":true}` |
+| `/api/setup/transcript-backfill.mjs` | serves real JS (11,228 bytes), no longer the SPA fallback |
+| wedged session `27ba72e2` | **400 → 200**, 220 messages |
+| full macOS backfill | **41/41 sessions, 0 failures, 23,275 messages, 267.9 MB** |
+| messages clamped by `clampStrings` | 2 — the clamp is surgical, not a blunt instrument |
+| zero-message sessions | 119 → 113; **none of the 113 has a transcript on the Mac** |
+
+The remaining 113 are on the Windows/WSL machines or were pruned from disk by Claude Code. Anything
+Claude Code has already deleted locally is **unrecoverable** — there is no other copy.
+
 ## Remaining
 
-1. **Deploy** (push to `master` → CD). Nothing else recovers until this lands.
-2. Run on each machine — macOS, Windows, WSL:
+1. Run on the Windows and WSL machines:
    ```
    curl -fsSL https://brain.costanzoclan.com/api/setup/transcript-backfill.mjs -o transcript-backfill.mjs
    node transcript-backfill.mjs --dry-run     # then without the flag
    ```
-3. Expect `enrich-memories` to take roughly **8 hours** to catch up (10 sessions per 15-min tick),
+2. Expect `enrich-memories` to take roughly **8 hours** to catch up (10 sessions per 15-min tick),
    each an LLM call. A slow drain is the design, not a second bug.
 
 ## Follow-ups worth considering
