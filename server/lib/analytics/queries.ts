@@ -83,7 +83,7 @@ export const SNAPSHOT_QUERIES: Record<SnapshotQueryId, string> = {
   engineRunning: 'vllm:num_requests_running',
   engineWaiting: 'vllm:num_requests_waiting',
   // vllm-vision was retired (stopped + disabled 2026-06-19) and its scrape job removed 2026-08-19.
-  up: 'up{job=~"vllm-coder|tei|llama-cpp-autocomplete|litellm|nvidia-gpu|prometheus"}',
+  up: 'up{job=~"tei|llama-cpp-autocomplete|litellm|nvidia-gpu|prometheus"}',
   // Every blackbox probe on the AI rig (reranker, Speaches STT, Kokoro/Chatterbox TTS, ComfyUI,
   // Heretic llama.cpp — added to Prometheus 2026-08-19) plus the public LiteLLM edge.
   probes: 'probe_success{instance=~"https://lite.costanzoclan.com|http://192.168.2.25:.*"}',
@@ -122,6 +122,6 @@ export const PUBLIC_RIG_EXTRA_QUERIES: Record<PublicRigExtraQueryId, string> = {
 // Service ids (from snapshot.ts SERVICES) that are user-facing enough to publish. The
 // LiteLLM exporter/edge probe and Prometheus itself are plumbing and stay private.
 export const PUBLIC_RIG_SERVICE_IDS = [
-  'vllm-coder', 'llama-heretic', 'llama-autocomplete', 'tei', 'reranker',
+  'flashnext', 'llama-heretic', 'llama-autocomplete', 'tei', 'reranker',
   'speaches-stt', 'kokoro-tts', 'chatterbox-tts', 'comfyui'
 ] as const

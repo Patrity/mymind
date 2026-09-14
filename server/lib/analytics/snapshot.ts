@@ -8,11 +8,13 @@ import type { GpuSnapshot, ServiceHealth, SnapshotResponse } from '../../../shar
 // The fixed service list for the health strip. `match` is tested against up{}/probe_success vectors.
 // Probe targets carry a `service` label from prometheus.yml; the port fallback keeps older
 // configs working. vllm-vision was retired 2026-06-19 and its job removed 2026-08-19.
+// vllm-coder followed when flash-next took over the coding workload. Its scrape job still
+// answers up{}=0, so listing it here pinned the public strip to a permanent amber 'N-1 up'.
 const rigProbe = (service: string, port: string) => (l: Record<string, string>) =>
   l.service === service || (l.instance ?? '').includes(`192.168.2.25:${port}`)
 
 const SERVICES: { id: string, label: string, source: 'up' | 'probes', match: (l: Record<string, string>) => boolean }[] = [
-  { id: 'vllm-coder', label: 'vLLM Coder', source: 'up', match: l => l.job === 'vllm-coder' },
+  { id: 'flashnext', label: 'Qwen3.8 Flash Next', source: 'probes', match: rigProbe('flashnext-dev', '8009') },
   { id: 'llama-heretic', label: 'Heretic (llama.cpp)', source: 'probes', match: rigProbe('llama-heretic', '8007') },
   { id: 'tei', label: 'TEI Embeddings', source: 'up', match: l => l.job === 'tei' },
   { id: 'llama-autocomplete', label: 'Autocomplete', source: 'up', match: l => l.job === 'llama-cpp-autocomplete' },

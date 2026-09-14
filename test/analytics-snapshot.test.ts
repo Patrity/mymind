@@ -35,14 +35,15 @@ describe('buildSnapshot', () => {
 
   it('services merge up{} and probe_success into known service list; missing = null', () => {
     const snap = buildSnapshot({
-      up: [v({ job: 'vllm-coder', instance: '192.168.2.25:8004' }, '1'), v({ job: 'litellm', instance: '192.168.2.85:9090' }, '0')],
+      up: [v({ job: 'tei', instance: '192.168.2.25:8882' }, '1'), v({ job: 'litellm', instance: '192.168.2.85:9090' }, '0')],
       probes: [v({ job: 'blackbox-http', instance: 'https://lite.costanzoclan.com' }, '1')],
     }, {})
     const by = Object.fromEntries(snap.services.map(s => [s.id, s.up]))
-    expect(by['vllm-coder']).toBe(true)
+    expect(by['tei']).toBe(true)
     expect(by['litellm-exporter']).toBe(false)
     expect(by['litellm-edge']).toBe(true)
     expect(by['vllm-vision']).toBeUndefined() // retired 2026-06-19, job removed 2026-08-19
+    expect(by['vllm-coder']).toBeUndefined() // retired when flash-next took the coding workload
     expect(by['kokoro-tts']).toBe(null) // probe not present in this fixture -> unknown, not down
   })
 
@@ -51,10 +52,12 @@ describe('buildSnapshot', () => {
       probes: [
         v({ job: 'blackbox-http', service: 'kokoro-tts', instance: 'http://192.168.2.25:8880/health' }, '1'),
         v({ job: 'blackbox-http', instance: 'http://192.168.2.25:8881/health' }, '0'), // no service label: port fallback
-        v({ job: 'blackbox-http', service: 'comfyui', instance: 'http://192.168.2.25:8188/system_stats' }, '1')
+        v({ job: 'blackbox-http', service: 'comfyui', instance: 'http://192.168.2.25:8188/system_stats' }, '1'),
+        v({ job: 'blackbox-http', service: 'flashnext-dev', instance: 'http://192.168.2.25:8009/health' }, '1')
       ]
     }, {})
     const by = Object.fromEntries(snap.services.map(s => [s.id, s.up]))
+    expect(by['flashnext']).toBe(true) // service id differs from the prometheus `flashnext-dev` label
     expect(by['kokoro-tts']).toBe(true)
     expect(by['speaches-stt']).toBe(false)
     expect(by['comfyui']).toBe(true)

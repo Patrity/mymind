@@ -12,7 +12,7 @@ const snapshot: SnapshotResponse = {
     vramTotalBytes: 24_000_000_000, tempC: 61, powerW: 310, powerLimitW: 390
   }],
   services: [
-    { id: 'vllm-coder', label: 'vLLM Coder', up: true },
+    { id: 'flashnext', label: 'Qwen3.8 Flash Next', up: true },
     { id: 'litellm-exporter', label: 'LiteLLM Exporter', up: true },
     { id: 'litellm-edge', label: 'LiteLLM (edge)', up: true },
     { id: 'prometheus', label: 'Prometheus', up: true },
@@ -39,8 +39,9 @@ describe('buildPublicRig', () => {
 
   it('publishes only user-facing services and keeps the tri-state', () => {
     const out = buildPublicRig(snapshot, {}, 1_700_000_000_000)
-    expect(out.services.map(s => s.id)).toEqual(['vllm-coder', 'reranker'])
+    expect(out.services.map(s => s.id)).toEqual(['flashnext', 'reranker'])
     expect(PUBLIC_RIG_SERVICE_IDS).not.toContain('vllm-vision') // retired engine, job removed from Prometheus
+    expect(PUBLIC_RIG_SERVICE_IDS).not.toContain('vllm-coder') // retired engine, flash-next took over
     for (const id of ['speaches-stt', 'kokoro-tts', 'chatterbox-tts', 'comfyui', 'llama-heretic']) expect(PUBLIC_RIG_SERVICE_IDS).toContain(id)
     expect(out.services.find(s => s.id === 'reranker')?.up).toBeNull()
     for (const s of out.services) expect(PUBLIC_RIG_SERVICE_IDS).toContain(s.id)
