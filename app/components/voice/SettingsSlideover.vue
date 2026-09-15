@@ -1,6 +1,7 @@
 <!-- app/components/voice/SettingsSlideover.vue -->
 <script setup lang="ts">
 import { DEFAULT_MIC, buildMicOptions, micIdToSelectValue, selectValueToMicId, isMicIdAvailable } from '~/lib/voice/devices'
+import { resolveSelectedPreset } from '~/lib/voice/presets'
 
 const props = defineProps<{ voice: ReturnType<typeof useVoice> }>()
 
@@ -14,17 +15,16 @@ const { settings } = useVoiceSettings()
 
 // Voice picker — presets authored in /voice, not an enum from a provider.
 const { data: presetList } = await useFetch('/api/voice/presets', {
-  default: () => ({ presets: [] as { id: string, name: string, instruction: string | null }[] })
+  default: () => ({ presets: [] as { id: string, name: string, isDefault: boolean }[] })
 })
 const voiceItems = computed(() =>
   presetList.value.presets.map(p => ({ label: p.name, value: p.id }))
 )
-// The cookie can name a preset this list does not contain: the server's FALLBACK_PRESET
-// is never listed, and a preset can be deleted after it was picked. Show the first real
-// option in that case rather than an empty control — and never `''`, which reka-ui's
-// USelectMenu rejects as an item value (it throws and takes the whole popover down).
+// Resolution (and WHY it is not just `settings.presetId`) lives in resolveSelectedPreset —
+// the short version is that '' and an unlisted id both mean "the server's default preset",
+// and the list is ordered by name, so presets[0] is not it.
 const selectedVoice = computed({
-  get: () => settings.value.presetId || (presetList.value.presets[0]?.id ?? ''),
+  get: () => resolveSelectedPreset(settings.value.presetId, presetList.value.presets),
   set: (val: string) => props.voice.setPreset(val), // sends over WS if connected + persists
 })
 
