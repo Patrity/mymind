@@ -42,7 +42,7 @@ describe('buildPublicRig', () => {
     expect(out.services.map(s => s.id)).toEqual(['flashnext', 'reranker'])
     expect(publicRigServiceIds()).not.toContain('vllm-vision') // retired engine, job removed from Prometheus
     expect(publicRigServiceIds()).not.toContain('vllm-coder') // retired engine, flash-next took over
-    for (const id of ['speaches-stt', 'kokoro-tts', 'chatterbox-tts', 'comfyui', 'llama-heretic']) expect(publicRigServiceIds()).toContain(id)
+    for (const id of ['speaches-stt', 'breeze-tts', 'comfyui', 'llama-heretic']) expect(publicRigServiceIds()).toContain(id)
     expect(out.services.find(s => s.id === 'reranker')?.up).toBeNull()
     for (const s of out.services) expect(publicRigServiceIds()).toContain(s.id)
   })

@@ -64,13 +64,13 @@ describe('buildSnapshot', () => {
     expect(by['litellm-edge']).toBe(true)
     expect(by['vllm-vision']).toBeUndefined() // retired 2026-06-19, job removed 2026-08-19
     expect(by['vllm-coder']).toBeUndefined() // retired when flash-next took the coding workload
-    expect(by['kokoro-tts']).toBe(null) // probe not present in this fixture -> unknown, not down
+    expect(by['breeze-tts']).toBe(null) // probe not present in this fixture -> unknown, not down
   })
 
   it('rig probes match by service label or by port, and carry the tri-state', () => {
     const snap = buildSnapshot({
       probes: [
-        v({ job: 'blackbox-http', service: 'kokoro-tts', instance: 'http://192.168.2.25:8880/health' }, '1'),
+        v({ job: 'blackbox-http', service: 'breeze-tts', instance: 'http://192.168.2.25:8880/health' }, '1'),
         v({ job: 'blackbox-http', instance: 'http://192.168.2.25:8881/health' }, '0'), // no service label: port fallback
         v({ job: 'blackbox-http', service: 'comfyui', instance: 'http://192.168.2.25:8188/system_stats' }, '1'),
         v({ job: 'blackbox-http', service: 'flashnext-dev', instance: 'http://192.168.2.25:8009/health' }, '1')
@@ -78,10 +78,9 @@ describe('buildSnapshot', () => {
     }, {})
     const by = Object.fromEntries(snap.services.map(s => [s.id, s.up]))
     expect(by['flashnext']).toBe(true) // service id differs from the prometheus `flashnext-dev` label
-    expect(by['kokoro-tts']).toBe(true)
+    expect(by['breeze-tts']).toBe(true)
     expect(by['speaches-stt']).toBe(false)
     expect(by['comfyui']).toBe(true)
-    expect(by['chatterbox-tts']).toBe(null)
     expect(by['llama-heretic']).toBe(null)
   })
 

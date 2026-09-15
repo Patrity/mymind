@@ -89,3 +89,22 @@ describe('toSpeakable', () => {
     expect(() => toSpeakable('**unclosed and ```also unclosed')).not.toThrow()
   })
 })
+
+describe('toSpeakable — Breeze vocal events', () => {
+  // toSpeakable rewrites every OTHER bracket form (links, images, emphasis, code), so
+  // events surviving is currently incidental. Verified on the rig: all four change the
+  // rendered audio, so stripping them would silently remove a real feature.
+  it.each(['(laugh)', '(sigh)', '(cough)', '(clears throat)'])('preserves %s', (tag) => {
+    expect(toSpeakable(`Well then. ${tag}`)).toContain(tag)
+  })
+
+  it('preserves an event at the start of a line', () => {
+    expect(toSpeakable('(clears throat) Right.')).toContain('(clears throat)')
+  })
+
+  // A markdown link is [label](target) — the link rule must not eat an event that
+  // happens to follow a bracketed word.
+  it('still strips a real markdown link next to an event', () => {
+    expect(toSpeakable('See [the docs](http://x/y) (sigh)')).toBe('See the docs (sigh)')
+  })
+})
