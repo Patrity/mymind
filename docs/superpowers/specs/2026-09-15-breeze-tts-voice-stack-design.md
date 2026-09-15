@@ -16,6 +16,9 @@ closes:
   - "Retire the interim Gradio tuning UI at 192.168.2.25:7868 (scaffolding, not a systemd service, does not survive reboot)"
 defers:
   - "Multi-speaker dialogue composition (script parsing, speaker→preset mapping, pause tuning, concatenation) — own cycle"
+out-of-scope:
+  - "Bilingual EN/ZH — the model supports it, MyMind builds English only (no language field, no ZH event syntax)"
+  - "TTS fallback — Breeze is the only engine by design; an outage takes spoken replies down"
 ---
 
 # Breeze TTS 2 — single-engine voice stack, streaming PCM, and the /voice studio (cycle 61)
@@ -112,9 +115,11 @@ response.
 | `(laugh)` | 1.92 s | | `(sigh)` | 2.56 s |
 | `(clears throat)` | 3.52 s | | | |
 
-**Bilingual output works.** `這個機架有五張顯示卡。[笑] 你想聽完整的細節嗎？` with a Chinese
-instruction rendered 4.56 s of clean speech. Chinese uses bracket event syntax (`[笑]`, `[咳嗽]`,
-`[清嗓子]`, `[叹气]`); English uses parentheses.
+**Bilingual output works, and is out of scope.** The model is bilingual EN/ZH from one checkpoint —
+a Chinese line with a Chinese instruction rendered 4.56 s of clean speech, using bracket event
+syntax (`[笑]`) rather than parentheses. Recorded so a future session does not re-derive it. MyMind
+builds English only: no `language` field, no syntax switching, no mismatch warning. Chinese text
+sent to Breeze will still work; nothing in MyMind is designed for it.
 
 **Unknown parentheticals are not spoken literally.** `(explodes)` ran 1.2 s longer than baseline,
 which looks like the tag being read aloud. Transcribing the output through our own whisper returns
@@ -122,9 +127,9 @@ which looks like the tag being read aloud. Transcribing the output through our o
 introduces no text. No stripping rule is needed, and one would have been written on the strength of
 the duration alone.
 
-`toSpeakable()` passes both `(laugh)` and `[笑]` through untouched today. That is load-bearing and
-currently incidental — every other bracket form in that file gets rewritten — so it needs a
-regression test, not a change.
+`toSpeakable()` passes `(laugh)` through untouched today. That is load-bearing and currently
+incidental — every other bracket form in that file gets rewritten — so it needs a regression test,
+not a change.
 
 ## Architecture
 
@@ -189,7 +194,6 @@ path images and agent files use.
 | `id`, `name` | |
 | `instruction` | null for plain/clone modes |
 | `cfg_scale`, `seed`, `temperature`, `top_p`, `top_k` | the sampling knobs |
-| `language` | `en` \| `zh` — drives event syntax and the instruction-mismatch warning |
 | `ref_storage_key`, `ref_text`, `ref_duration_ms` | null for design presets |
 | `max_segment_chars` | calibrated; the segmenter reads it per-preset |
 | `is_default` | what a fresh cookie points at |
@@ -262,9 +266,8 @@ upload a file, either path auto-transcribing through the existing whisper STT to
 which stays editable because it must match the audio exactly.
 
 **Speak pane** — textarea plus a picker that pulls in an existing document, memory or conversation.
-An event insert bar (four buttons, cursor-position insert) switching syntax on the preset's
-`language`, with a warning when the instruction language and text language disagree. Playback
-streams through the same PCM path; WAV download wraps server-side.
+An event insert bar: four buttons inserting `(laugh)`, `(sigh)`, `(cough)`, `(clears throat)` at the
+cursor. Playback streams through the same PCM path; WAV download wraps server-side.
 
 Studio playback goes over `/api/voice/speak`, not the agent socket, sharing the queue at lower
 priority.
@@ -278,17 +281,16 @@ priority.
 | Reference > 60 s | upload | rejected; > 20 s warns |
 | 409 from the rig | `breeze-queue.ts` | bounded backoff, then a clear error |
 | Truncated / empty stream | `breeze.ts` byte count | throws; agent drops the segment and continues |
-| Breeze unreachable | `breeze.ts` | error event — **no fallback engine exists** |
+| Breeze unreachable | `breeze.ts` | error event; voice is down until it returns |
 
-That last row is deliberate and worth stating plainly: with one engine, a Breeze outage takes voice
-down completely. There is no design that avoids it short of keeping a second model loaded, which is
-the thing the rig change was made to stop doing.
+Breeze is the only engine and there is no fallback — an accepted trade of the rig consolidation, not
+an open question. Text replies are unaffected: `speak` simply produces no audio.
 
 ## Testing
 
 Unit: form construction per mode, pre-flight validation, truncated-stream detection, queue priority
 ordering, calibration, cookie migration, and a regression test pinning that `toSpeakable()` leaves
-`(laugh)` and `[笑]` intact.
+`(laugh)` intact.
 
 Browser, via `playwright-cli` per CLAUDE.md: create a preset and audition it, speak a document
 through the read-aloud pane, and prove `/agent` actually talks using a Breeze preset. The PCM client
