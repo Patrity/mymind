@@ -43,10 +43,14 @@ describe('voice-presets service', () => {
     // This suite runs against the real dev DB (no seed re-run), and the next test's
     // beforeEach deletes every `test-%` row including whichever one now holds
     // is_default — restore the original default in `finally` so that delete doesn't
-    // leave the table (and the live app) with zero default presets.
+    // leave the table (and the live app) with zero default presets. The createPreset
+    // call itself sits inside the try: clearOtherDefaults() already ran (demoting
+    // `original`) by the time createPreset's insert executes, so if that insert throws,
+    // the finally must still run to restore the default — leaving it outside the try
+    // would skip the restore on exactly the failure path R1 exists to guard against.
     const original = await getDefaultPreset()
-    const p = await createPreset({ name: 'test-default', instruction: 'A calm man.', isDefault: true })
     try {
+      const p = await createPreset({ name: 'test-default', instruction: 'A calm man.', isDefault: true })
       expect((await getDefaultPreset()).id).toBe(p.id)
       const defaults = await useDb().select().from(voicePresets).where(eq(voicePresets.isDefault, true))
       expect(defaults).toHaveLength(1)
@@ -59,6 +63,16 @@ describe('voice-presets service', () => {
     const d = await getDefaultPreset()
     expect((await resolvePreset('00000000-0000-0000-0000-000000000000')).id).toBe(d.id)
     expect((await resolvePreset(null)).id).toBe(d.id)
+  })
+
+  // Review finding (Critical): the id comes from an untrusted browser cookie — a
+  // hand-edited, truncated, or stale-build value can be any string, not just a
+  // well-formed-but-missing UUID. Postgres throws `invalid input syntax for type uuid`
+  // on a non-UUID literal; that must degrade to the default like any other bad id, not
+  // fail the turn.
+  it('resolvePreset falls back to the default for a malformed (non-UUID) id', async () => {
+    const d = await getDefaultPreset()
+    expect((await resolvePreset('not-a-uuid')).id).toBe(d.id)
   })
 
   it('refuses to delete the default', async () => {

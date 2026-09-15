@@ -47,5 +47,10 @@ describe('calibrateMaxSegmentChars', () => {
   it('rethrows a non-truncation error instead of narrowing the cap', async () => {
     const probe = vi.fn(async () => { throw new BreezeError('busy', 'in flight') })
     await expect(calibrateMaxSegmentChars(clone, probe)).rejects.toMatchObject({ code: 'busy' })
+    // Review finding: asserting only the rejection's `code` left a mutation that lets
+    // `busy` slip past the FIRST check invisible — it would burn a second live probe
+    // (a real rig slot) before the still-correct second check caught it, and still
+    // reject with the same `busy` code. Pin the call count too.
+    expect(probe).toHaveBeenCalledTimes(1)
   })
 })

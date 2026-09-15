@@ -61,12 +61,20 @@ export async function getDefaultPreset(): Promise<VoicePresetDTO> {
   return toDTO(row)
 }
 
-/** The agent's resolution point: an unknown or absent id falls back to the default rather
- *  than failing the turn. A preset can be deleted while a cookie still names it. */
+/** The agent's resolution point: an unknown, absent, or malformed id falls back to the
+ *  default rather than failing the turn. The id comes from an untrusted browser cookie —
+ *  a preset can be deleted while a cookie still names it, and the cookie value itself can
+ *  be hand-edited, truncated, or left over from an older build. `getPreset` runs the id
+ *  against a `uuid` column, so a non-UUID string throws at the DB rather than missing;
+ *  that failure must degrade exactly like a miss, not fail the turn. */
 export async function resolvePreset(id: string | null | undefined): Promise<VoicePresetDTO> {
   if (id) {
-    const hit = await getPreset(id)
-    if (hit) return hit
+    try {
+      const hit = await getPreset(id)
+      if (hit) return hit
+    } catch {
+      // Malformed id (e.g. not a valid UUID) — treat the same as "not found".
+    }
   }
   return getDefaultPreset()
 }
