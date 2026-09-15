@@ -4,8 +4,9 @@
 // server/lib/voice/tuning.ts; these are the client capture/playback knobs.
 
 export interface VoiceUserSettings {
-  provider: string
-  voice: string
+  /** voice_presets.id. '' means "use the server's default preset" — which is also what
+   *  an unknown id resolves to (resolvePreset), so a deleted preset degrades gracefully. */
+  presetId: string
   /** Silero speech probability (0..1) above which a frame counts as speech. */
   positiveSpeechThreshold: number
   minSpeechMs: number
@@ -20,8 +21,7 @@ export interface VoiceUserSettings {
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceUserSettings = {
-  provider: 'chatterbox',
-  voice: 'Gianna.wav',
+  presetId: '',
   positiveSpeechThreshold: 0.5,
   minSpeechMs: 100,
   redemptionMs: 240,
@@ -41,7 +41,14 @@ const OLD_DEFAULT_PLAYBACK_RATE = 1.1
  *  without a Nuxt useCookie context. */
 export function migrateVoiceSettings(stored: Partial<VoiceUserSettings> | null | undefined): VoiceUserSettings {
   // Older cookies may predate newly added keys — backfill from defaults.
-  const merged = { ...VOICE_SETTINGS_DEFAULTS, ...stored }
+  const merged = { ...VOICE_SETTINGS_DEFAULTS, ...stored } as VoiceUserSettings & { provider?: string; voice?: string }
+  // Pre-Breeze cookies carry {provider, voice} naming a Kokoro/Chatterbox voice that no
+  // longer exists on any engine. Drop them; '' resolves to the server's default preset.
+  if ('provider' in merged || 'voice' in merged) {
+    delete merged.provider
+    delete merged.voice
+    if (!merged.presetId) merged.presetId = ''
+  }
   if (merged.playbackRate === OLD_DEFAULT_PLAYBACK_RATE) {
     merged.playbackRate = VOICE_SETTINGS_DEFAULTS.playbackRate
   }

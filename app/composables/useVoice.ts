@@ -58,12 +58,12 @@ export function useVoice() {
 
   let pendingUserAttachments: AttachmentRef[] = []
   let ws: WebSocket | null = null
-  // Last voice the user picked. Selecting before connecting (the natural UX) would
+  // Last preset the user picked. Selecting before connecting (the natural UX) would
   // otherwise be lost — ws is null then, so we remember it and (re)send on open.
-  let desiredVoice: { provider: string; voice: string } | null = null
+  let desiredPreset: string | null = null
   // Last reasoning-model override the user picked (navbar dropdown, ephemeral —
   // not persisted server-side). null = default chain order. Resent on (re)open
-  // for the same reason as desiredVoice: picking before/across a reconnect.
+  // for the same reason as desiredPreset: picking before/across a reconnect.
   let desiredModel: string | null = null
   let vad: { start: () => Promise<void>; destroy: () => Promise<void> } | null = null
   let audioCtx: AudioContext | null = null
@@ -72,12 +72,12 @@ export function useVoice() {
   let vizStream: MediaStream | null = null
   let playCursor = 0
   let sources: AudioBufferSourceNode[] = []
-  // decodeAudioData resolves at different speeds per chunk, so decoding chunks
-  // concurrently lets a later chunk schedule ahead of an earlier one (reordered /
-  // skipped words). Serialize decode+schedule through a promise chain so chunks
-  // play in arrival order. `playEpoch` invalidates queued chunks after a barge-in.
-  let decodeChain: Promise<void> = Promise.resolve()
+  // `playEpoch` invalidates chunks belonging to a turn that has since been barged in on.
   let playEpoch = 0
+  // Sample rate of the segment being played, from its `audio-begin` frame, and the odd
+  // trailing byte of the previous chunk (see enqueuePcm).
+  let pcmSampleRate = 24000
+  let carry = new Uint8Array(0)
 
   function pushDelta(role: 'user' | 'assistant', delta: string) {
     const last = transcript.value[transcript.value.length - 1]
@@ -118,8 +118,8 @@ export function useVoice() {
   }
 
   function stopPlayback() {
-    playEpoch++ // invalidate any queued/in-flight decodes from the interrupted turn
-    decodeChain = Promise.resolve()
+    playEpoch++ // invalidate any chunks still in flight from the interrupted turn
+    carry = new Uint8Array(0) // a half-sample from the killed segment must not lead the next one
     for (const s of sources) {
       try { s.stop() } catch { /* already stopped */ }
       try { s.disconnect() } catch { /* already disconnected */ }
@@ -130,38 +130,67 @@ export function useVoice() {
 
   // True while audio is actually playing or scheduled ahead. The server emits
   // state:'idle' as soon as the agent finishes GENERATING, but the client has by
-  // then buffered the sentence WAVs into the future — so barge-in must key off real
+  // then buffered PCM chunks into the future — so barge-in must key off real
   // playback, not the server-driven state.value.
   function isPlaying(): boolean {
     return sources.length > 0 || (!!audioCtx && playCursor > audioCtx.currentTime + 0.02)
   }
 
-  // Enqueue a chunk: decode + schedule run strictly after the previous chunk's,
-  // preserving arrival order. Stale chunks (superseded by a barge-in) are dropped.
-  function enqueueWav(bytes: ArrayBuffer) {
-    const epoch = playEpoch
-    decodeChain = decodeChain.then(() => playWav(bytes, epoch))
+  // Breeze streams headerless PCM (mono / s16le) as it generates, so playback starts on
+  // the first chunk instead of waiting for a whole segment. decodeAudioData cannot be
+  // used — it needs a container — and its old `catch { /* skip undecodable */ }` swallowed
+  // exactly the failure we most need to see.
+  //
+  // Scheduling uses the AudioContext clock, NOT the 'ended' event: 'ended' fires late and
+  // leaves audible gaps between chunks.
+  function onAudioBegin(sampleRate: number) {
+    pcmSampleRate = sampleRate
+    carry = new Uint8Array(0)
   }
 
-  async function playWav(bytes: ArrayBuffer, epoch: number) {
+  /** s16le -> Float32 in [-1, 1] */
+  function decodePcm(bytes: Uint8Array): Float32Array<ArrayBuffer> {
+    const n = bytes.byteLength >> 1
+    const view = new DataView(bytes.buffer, bytes.byteOffset, n * 2)
+    const out = new Float32Array(n)
+    for (let i = 0; i < n; i++) out[i] = view.getInt16(i * 2, true) / 32768
+    return out
+  }
+
+  function enqueuePcm(data: ArrayBuffer, epoch: number) {
     if (!audioCtx || !outAnalyser || epoch !== playEpoch) return
-    try {
-      const buf = await audioCtx.decodeAudioData(bytes.slice(0))
-      if (epoch !== playEpoch) return // barge-in landed while decoding — drop it
-      const node = audioCtx.createBufferSource()
-      node.buffer = buf
-      node.playbackRate.value = settings.value.playbackRate
-      node.connect(outAnalyser)
-      const at = Math.max(audioCtx.currentTime, playCursor)
-      node.start(at)
-      playCursor = at + buf.duration / settings.value.playbackRate
-      sources.push(node)
-      node.onended = () => {
-        sources = sources.filter(s => s !== node)
-        // Playback fully drained → reflect idle (the server already signalled done).
-        if (!isPlaying() && state.value === 'speaking') state.value = 'idle'
-      }
-    } catch { /* skip undecodable */ }
+    // A 16-bit sample must never be split across chunk boundaries: the stream is a byte
+    // stream, so a chunk can end mid-sample. Hold that byte back for the next chunk —
+    // dropping it would shift every following sample by one byte (loud garbage).
+    const incoming = new Uint8Array(data)
+    let bytes: Uint8Array
+    if (carry.length) {
+      bytes = new Uint8Array(carry.length + incoming.length)
+      bytes.set(carry, 0); bytes.set(incoming, carry.length)
+    } else {
+      bytes = incoming
+    }
+    const usable = bytes.byteLength - (bytes.byteLength % 2)
+    carry = usable === bytes.byteLength ? new Uint8Array(0) : bytes.slice(usable)
+    if (usable === 0) return
+
+    const samples = decodePcm(bytes.subarray(0, usable))
+    const buf = audioCtx.createBuffer(1, samples.length, pcmSampleRate)
+    buf.copyToChannel(samples, 0)
+    const node = audioCtx.createBufferSource()
+    node.buffer = buf
+    node.playbackRate.value = settings.value.playbackRate
+    node.connect(outAnalyser)
+    // Never schedule in the past, or chunks overlap and click.
+    const at = Math.max(audioCtx.currentTime + 0.02, playCursor)
+    node.start(at)
+    playCursor = at + buf.duration / settings.value.playbackRate
+    sources.push(node)
+    node.onended = () => {
+      sources = sources.filter(s => s !== node)
+      // Playback fully drained → reflect idle (the server already signalled done).
+      if (!isPlaying() && state.value === 'speaking') state.value = 'idle'
+    }
   }
 
   // Bumped on every disconnect(): async startup steps (VAD model/wasm fetches can take
@@ -214,9 +243,12 @@ export function useVoice() {
     socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         state.value = 'speaking'
-        enqueueWav(e.data)
+        enqueuePcm(e.data, playEpoch)
       } else {
         const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
+        // Carries the sample rate for the binary frames that follow it — WS delivery is
+        // ordered, so this always lands before the segment's first PCM chunk.
+        if (fx.audioBegin) onAudioBegin(fx.audioBegin.sampleRate)
         if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
         if (fx.reasoning) pushReasoning(fx.reasoning)
         if (fx.tool) pushTool(fx.tool)
@@ -239,9 +271,10 @@ export function useVoice() {
       socket.onopen = () => {
         connected.value = true
         state.value = 'idle'
-        // Apply the persisted voice choice (and re-apply on reconnect).
-        const v = desiredVoice ?? { provider: settings.value.provider, voice: settings.value.voice }
-        socket.send(JSON.stringify({ type: 'voice', ...v }))
+        // Apply the persisted voice choice (and re-apply on reconnect). '' is valid and
+        // means "the server's default preset" — so is an id the server no longer has.
+        const p = desiredPreset ?? settings.value.presetId
+        socket.send(JSON.stringify({ type: 'preset', presetId: p }))
         if (desiredModel) socket.send(JSON.stringify({ type: 'model', modelDefId: desiredModel }))
         resolve()
       }
@@ -417,10 +450,10 @@ export function useVoice() {
       stopPlayback()
       state.value = 'idle'
     },
-    setVoice: (provider: string, voice: string) => {
-      desiredVoice = { provider, voice }
-      settings.value = { ...settings.value, provider, voice } // persist the pick
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'voice', provider, voice }))
+    setPreset: (presetId: string) => {
+      desiredPreset = presetId
+      settings.value = { ...settings.value, presetId } // persist the pick
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'preset', presetId }))
     },
     /**
      * Override the reasoning model for this connection (null = default chain

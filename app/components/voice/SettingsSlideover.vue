@@ -12,22 +12,20 @@ const speak = defineModel<boolean>('speak', { required: true })
 
 const { settings } = useVoiceSettings()
 
-// Voice picker. /api/voice/voices is GONE (Breeze-only: a voice is a preset row now,
-// served by /api/voice/presets) — this whole block is rewritten in the client task; the
-// explicit generic only keeps typecheck honest now that the route is no longer in Nitro's
-// generated route map. Until then the fetch 404s and the picker falls back to empty.
-const { data: voiceList } = await useFetch<{ voices: { provider: string, voice: string }[] }>('/api/voice/voices', {
-  default: () => ({ voices: [] as { provider: string, voice: string }[] })
+// Voice picker — presets authored in /voice, not an enum from a provider.
+const { data: presetList } = await useFetch('/api/voice/presets', {
+  default: () => ({ presets: [] as { id: string, name: string, instruction: string | null }[] })
 })
 const voiceItems = computed(() =>
-  voiceList.value.voices.map(v => ({ label: `${v.provider} · ${v.voice}`, value: `${v.provider}|${v.voice}` }))
+  presetList.value.presets.map(p => ({ label: p.name, value: p.id }))
 )
+// The cookie can name a preset this list does not contain: the server's FALLBACK_PRESET
+// is never listed, and a preset can be deleted after it was picked. Show the first real
+// option in that case rather than an empty control — and never `''`, which reka-ui's
+// USelectMenu rejects as an item value (it throws and takes the whole popover down).
 const selectedVoice = computed({
-  get: () => `${settings.value.provider}|${settings.value.voice}`,
-  set: (val: string) => {
-    const [p, v] = val.split('|') as [string, string]
-    props.voice.setVoice(p, v) // sends over WS if connected + persists to the cookie
-  },
+  get: () => settings.value.presetId || (presetList.value.presets[0]?.id ?? ''),
+  set: (val: string) => props.voice.setPreset(val), // sends over WS if connected + persists
 })
 
 // Microphone picker. Populated on mount + on every 'devicechange' so plugging/

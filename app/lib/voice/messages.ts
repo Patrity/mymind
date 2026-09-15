@@ -3,7 +3,7 @@
 import type { VizEvent } from '../viz/types'
 import type { MessageUsage } from '~~/shared/types/conversation'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own
@@ -21,6 +21,12 @@ export interface MsgEffect {
   conversation?: { id: string; title: string | null }
   /** Token usage for the turn just completed (see run.ts's 'usage' event). */
   usage?: MessageUsage
+  /** A spoken segment is starting: the binary frames that follow are headerless PCM
+   *  (mono / s16le) at THIS sample rate — the client cannot decode them without it. */
+  audioBegin?: { segmentId: number; sampleRate: number }
+  /** The segment's last PCM frame has been sent. Paired with audioBegin: a segment the
+   *  pipeline drops emits NEITHER, so never wait on an audioEnd per sentence of text. */
+  audioEnd?: number
 }
 
 export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
@@ -39,6 +45,14 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   }
   if (m.type === 'error') {
     return { error: m.message || 'Voice error', events: [{ type: 'error' }] }
+  }
+  // Audio framing. `segmentId` restarts at 0 each turn, so it identifies a segment
+  // only WITHIN a turn — never key persistent state on it across turns.
+  if (m.type === 'audio-begin') {
+    return { audioBegin: { segmentId: m.segmentId as number, sampleRate: m.sampleRate as number }, events }
+  }
+  if (m.type === 'audio-end') {
+    return { audioEnd: m.segmentId as number, events }
   }
   if (m.type === 'state') {
     if (m.state === 'speaking') return { state: 'speaking', events }
