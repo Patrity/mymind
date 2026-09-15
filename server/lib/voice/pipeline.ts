@@ -1,47 +1,40 @@
 // server/lib/voice/pipeline.ts
-// Pipelines per-segment TTS synthesis: up to `concurrency` segments are IN FLIGHT
-// (network round-trip and all) at once, but their resulting audio is always emitted
-// in the order the segments were pushed — never out of order, since scrambled
-// segment order would scramble the sentence. Only the *starting* of synthesis is
-// concurrent; emission is a strict, serial drain of an ordered queue.
+// Pipelines per-segment TTS synthesis: segments are pushed in reading order and their
+// audio reaches the client in that same order — scrambled segment order would scramble
+// the sentence.
 //
 // Before this existed, orchestrator.ts did `for (const chunk of ...) await speak(chunk)`
 // — fully sequential, so each segment's synthesis (network round trip included) had to
-// finish before the next one even started. With a slow expressive TTS engine, those
-// gaps compound across a whole reply.
+// finish before the next one even started.
 //
-// The FIRST segment is a special case — see FIRST_SEGMENT_CONCURRENCY below.
+// Breeze is single-request (it 409s a second concurrent inference), so segments are
+// strictly SERIAL now: concurrency is pinned to 1 and the constructor rejects anything
+// else. What buys back the latency is that emission happens INSIDE `start()`, chunk by
+// chunk as the engine produces them, rather than collecting a whole segment first. At
+// ~1.9x realtime generation, buffering a segment cost roughly half its own duration in
+// dead air before a single sample played; streaming makes time-to-first-audio ~6ms.
 import type { TtsProvider } from './providers/types'
-
-/**
- * The very first segment of a turn is always synthesized ALONE, with nothing else in
- * flight — NOT the general `concurrency` cap. This looks like an off-by-one bug if you
- * don't know why: some of the TTS backends behind this app (Orpheus, via llama.cpp
- * `--parallel 3`) genuinely serve concurrent requests, but every slot shares ONE GPU,
- * so concurrent requests slow each other down. Measured on the rig: firing 3 chunks at
- * once makes all 3 finish together at ~10s — worse time-to-first-audio than firing
- * chunk 1 alone (~2.9s), because chunk 1 now pays a concurrency tax it doesn't need to.
- * Perceived responsiveness is governed entirely by chunk 1's latency, so chunk 1 must
- * never share a slot; only once it has been dispatched to the client is there anything
- * to gain from overlapping the rest.
- */
-const FIRST_SEGMENT_CONCURRENCY = 1
+import type { SpeakChunk } from './speak'
+import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
 
 export interface SpeechPipelineDeps {
   synthesize: TtsProvider['synthesize']
-  voice: string
-  provider?: string | null
+  preset: VoicePresetDTO
+  /** Reference clip bytes for a clone/direction preset; null for design/plain. */
+  refAudio?: Uint8Array | null
   signal: AbortSignal
-  /** Max simultaneous in-flight syntheses. Default 3. */
+  /** Max simultaneous in-flight syntheses. Must be 1 — see the constructor. */
   concurrency?: number
   /** Fired once per segment, right before its synthesis starts (mirrors the old
    *  per-chunk `state: 'speaking'` emit). Optional so tests can omit it. */
   onSpeaking?: () => void
-  /** Fired once per audio chunk, strictly in segment order. */
-  onAudio: (bytes: Uint8Array) => void
+  /** Fired once per audio chunk, as it arrives, strictly in segment order. */
+  onChunk: (c: SpeakChunk) => void
+  /** Fired once per segment, after its last chunk has been emitted (or it was dropped). */
+  onSegmentEnd?: () => void
 }
 
-type SegmentResult = Uint8Array[] | undefined // undefined = dropped (aborted or errored)
+type SegmentResult = SpeakChunk[] | undefined // undefined = dropped (aborted or errored)
 
 /**
  * Preserves the sequential path's behaviour on top of pipelining:
@@ -49,48 +42,55 @@ type SegmentResult = Uint8Array[] | undefined // undefined = dropped (aborted or
  *    audio chunk, so an aborted turn stops cleanly and emits nothing further.
  *  - AbortError from a segment's synthesis is swallowed, same as before.
  *  - Unlike before, a NON-abort error is now also swallowed (not rethrown): the
- *    segment is dropped and the rest of the turn keeps playing, rather than an
- *    exhausted-failover error on one segment silently killing the whole turn.
+ *    segment is dropped and the rest of the turn keeps playing, rather than one
+ *    failed segment silently killing the whole turn.
  */
 export class SpeechPipeline {
   private readonly concurrency: number
   private queue: Promise<SegmentResult>[] = []
-  // Flips true the moment the first segment has been drained (emitted, dropped, or
-  // aborted — whatever the outcome, the depth-1 phase is over). Until then, `push`
-  // enforces FIRST_SEGMENT_CONCURRENCY instead of `concurrency` — see the module doc.
-  private firstSegmentDrained = false
 
   constructor(private deps: SpeechPipelineDeps) {
-    this.concurrency = deps.concurrency ?? 3
-  }
-
-  private get effectiveConcurrency(): number {
-    return this.firstSegmentDrained ? this.concurrency : FIRST_SEGMENT_CONCURRENCY
+    this.concurrency = deps.concurrency ?? 1
+    // Emission happens inside start() now, so >1 in flight would interleave two segments'
+    // audio. Breeze is single-request anyway; this makes the coupling explicit rather than
+    // leaving a latent reordering bug for whoever raises the tuning constant.
+    if (this.concurrency !== 1) throw new Error('SpeechPipeline: Breeze is single-request; concurrency must be 1')
   }
 
   /**
-   * Start synthesizing `text`. Returns once the segment is enqueued (which may
-   * require first draining — and emitting — the oldest in-flight segment if the
-   * current concurrency cap is already full; see `effectiveConcurrency`).
+   * Start synthesizing `text`. Returns once the segment is enqueued (which, at the
+   * pinned concurrency of 1, means once the previous segment has finished).
    */
   async push(text: string): Promise<void> {
     if (this.deps.signal.aborted) return
-    if (this.queue.length >= this.effectiveConcurrency) await this.drainOne()
+    if (this.queue.length >= this.concurrency) await this.drainOne()
     if (this.deps.signal.aborted) return
     this.queue.push(this.start(text))
   }
 
-  /** Await and emit every still-in-flight segment, in order. Call once at end of turn. */
+  /** Await every still-in-flight segment, in order. Call once at end of turn. */
   async drain(): Promise<void> {
     while (this.queue.length) await this.drainOne()
   }
 
   private start(text: string): Promise<SegmentResult> {
     this.deps.onSpeaking?.()
-    const run = async (): Promise<Uint8Array[]> => {
-      const out: Uint8Array[] = []
-      for await (const bytes of this.deps.synthesize(text, { voice: this.deps.voice, provider: this.deps.provider, signal: this.deps.signal })) {
-        out.push(bytes)
+    const run = async (): Promise<SpeakChunk[]> => {
+      const out: SpeakChunk[] = []
+      try {
+        for await (const c of this.deps.synthesize(text, {
+          preset: this.deps.preset, refAudio: this.deps.refAudio, signal: this.deps.signal
+        })) {
+          // Concurrency is pinned to 1 for Breeze, so the oldest in-flight segment IS the
+          // one being drained — emit immediately rather than collecting. With concurrency
+          // > 1 this would scramble segment order; see the cap in tuning.ts.
+          if (!this.deps.signal.aborted) this.deps.onChunk(c)
+          out.push(c)
+        }
+      } finally {
+        // Fires whether the segment completed, threw, or was aborted — the closing
+        // audio-end frame must bracket a dropped segment too.
+        this.deps.onSegmentEnd?.()
       }
       return out
     }
@@ -108,12 +108,6 @@ export class SpeechPipeline {
   private async drainOne(): Promise<void> {
     const p = this.queue.shift()
     if (!p) return
-    const bytesList = await p
-    this.firstSegmentDrained = true // depth-1 phase ends here, win or lose (see module doc)
-    if (!bytesList || this.deps.signal.aborted) return
-    for (const bytes of bytesList) {
-      if (this.deps.signal.aborted) return
-      this.deps.onAudio(bytes)
-    }
+    await p
   }
 }

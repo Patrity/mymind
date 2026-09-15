@@ -12,8 +12,11 @@ const speak = defineModel<boolean>('speak', { required: true })
 
 const { settings } = useVoiceSettings()
 
-// Voice picker — same-origin proxy aggregating both TTS providers.
-const { data: voiceList } = await useFetch('/api/voice/voices', {
+// Voice picker. /api/voice/voices is GONE (Breeze-only: a voice is a preset row now,
+// served by /api/voice/presets) — this whole block is rewritten in the client task; the
+// explicit generic only keeps typecheck honest now that the route is no longer in Nitro's
+// generated route map. Until then the fetch 404s and the picker falls back to empty.
+const { data: voiceList } = await useFetch<{ voices: { provider: string, voice: string }[] }>('/api/voice/voices', {
   default: () => ({ voices: [] as { provider: string, voice: string }[] })
 })
 const voiceItems = computed(() =>

@@ -26,19 +26,20 @@ export const VOICE_TUNING = {
   // to first audio is dominated by the first segment's length, so keep it small even
   // though later segments are allowed to run longer (short segments are actually LESS
   // efficient for autoregressive engines once already warmed up).
-  // pipelineConcurrency: how many segments' synthesis can be in flight at once
-  // (server/lib/voice/pipeline.ts) — emission is still strictly ordered, only the
-  // starting of synthesis is concurrent.
+  // pipelineConcurrency: PINNED AT 1. Breeze serves one inference at a time (409
+  // otherwise), and pipeline.ts now emits chunks as they arrive rather than buffering a
+  // whole segment — so >1 in flight would both 409 the rig and interleave two segments'
+  // audio. SpeechPipeline throws if this is ever raised.
   // playbackRate lives client-side (app/composables/useVoiceSettings.ts default 1.0,
   // user-adjustable in the settings slideover) — it's a per-user preference, not a
   // server tuning knob, so it doesn't belong here. A copy here previously went stale
   // (changed to 1.0 with no reader) while the real default stayed at 1.1.
   //
-  // NOTE: provider selection is NOT here — it's `deps.ttsProvider`, threaded through
-  // from the client's cookie-backed VOICE_SETTINGS_DEFAULTS.provider (currently
-  // 'chatterbox'; see useVoiceSettings.ts). A `provider: 'kokoro'` copy lived here
-  // with zero readers and had drifted out of sync with the real default — removed.
-  tts:     { sentenceMinChars: 140, sentenceMaxChars: 200, firstSegmentMaxChars: 60, pipelineConcurrency: 3 },
+  // NOTE: voice selection is NOT here either — a voice is a PRESET row now
+  // (shared/types/voice-presets.ts), resolved per turn at the WS boundary from the
+  // client's cookie-backed preset id. sentenceMaxChars is further clamped per preset by
+  // that preset's calibrated maxSegmentChars (see orchestrator.ts).
+  tts:     { sentenceMinChars: 140, sentenceMaxChars: 200, firstSegmentMaxChars: 60, pipelineConcurrency: 1 },
   stt:     { language: 'en' },
   // maxSteps: one cap for every main-loop turn — the agent is always fully armed
   // (the old 6-step quick cap forced research turns to stop mid-investigation, and

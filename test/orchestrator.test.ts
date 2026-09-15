@@ -1,9 +1,19 @@
 // test/orchestrator.test.ts
 import { describe, it, expect, vi } from 'vitest'
 import { handleUtterance, handleTurn } from '../server/lib/voice/orchestrator'
+import type { VoicePresetDTO } from '../shared/types/voice-presets'
+
+const preset: VoicePresetDTO = {
+  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
+  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
+  maxSegmentChars: 200, isDefault: true
+}
 
 const stt = { transcribe: vi.fn(async () => 'what are my tasks') }
-const tts = { synthesize: vi.fn(async function* () { yield new Uint8Array([9]) }) }
+const tts = { synthesize: vi.fn(async function* () {
+  yield { kind: 'begin' as const, sampleRate: 24000 }
+  yield { kind: 'pcm' as const, bytes: new Uint8Array([9]) }
+}) }
 const runAgent = (async function* () {
   yield { type: 'text-delta', text: 'You have ' }
   yield { type: 'tool-result', name: 'search_tasks', summary: 'listed tasks (2)', undoToken: undefined }
@@ -23,7 +33,7 @@ describe('handleUtterance', () => {
   it('STT -> runAgent -> chunked TTS, emitting transcript/tool/audio events', async () => {
     const events: any[] = []
     await handleUtterance(new Uint8Array([1]), [], {
-      stt, tts, voice: 'af_heart', speak: true, runAgent, signal: new AbortController().signal,
+      stt, tts, preset, speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events.find(e => e.type === 'transcript' && e.role === 'user')?.text).toBe('what are my tasks')
@@ -41,7 +51,7 @@ describe('handleUtterance', () => {
     const coldStt = { transcribe: vi.fn(async () => 'should never run') }
     const history = [{ role: 'user' as const, content: 'earlier turn' }]
     const out = await handleUtterance(new Uint8Array([1]), history, {
-      stt: coldStt, tts, voice: 'af_heart', speak: true, runAgent, signal: ac.signal,
+      stt: coldStt, tts, preset, speak: true, runAgent, signal: ac.signal,
       emit: () => {}
     })
     expect(coldStt.transcribe).not.toHaveBeenCalled()
@@ -51,7 +61,7 @@ describe('handleUtterance', () => {
   it('emits state:tool on tool-start and returns to thinking on tool-result', async () => {
     const events: any[] = []
     await handleUtterance(new Uint8Array([1]), [], {
-      stt, tts, voice: 'af_heart', speak: true, runAgent: runAgentWithTool, signal: new AbortController().signal,
+      stt, tts, preset, speak: true, runAgent: runAgentWithTool, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     const states = events.filter(e => e.type === 'state').map(e => e.state)
@@ -69,7 +79,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     const freshStt = { transcribe: vi.fn(async () => 'never') }
     void freshStt // typed turns have no stt dep at all — compile-time guarantee
     const history = await handleTurn('what are my tasks', [], {
-      tts, voice: 'af_heart', speak: true, runAgent, signal: new AbortController().signal,
+      tts, preset, speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events.find(e => e.type === 'transcript' && e.role === 'user')?.text).toBe('what are my tasks')
@@ -81,7 +91,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
   it('empty text is a no-op', async () => {
     const events: any[] = []
     const history = await handleTurn('', [{ role: 'user', content: 'hi' }], {
-      tts, voice: 'af_heart', speak: true, runAgent, signal: new AbortController().signal,
+      tts, preset, speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events).toEqual([])
@@ -90,14 +100,17 @@ describe('handleTurn (typed input, post-STT injection)', () => {
 
   it('emits a reasoning event, keeps it out of TTS and out of the persisted answer', async () => {
     const events: any[] = []
-    const reasoningTts = { synthesize: vi.fn(async function* () { yield new Uint8Array([1]) }) }
+    const reasoningTts = { synthesize: vi.fn(async function* () {
+      yield { kind: 'begin' as const, sampleRate: 24000 }
+      yield { kind: 'pcm' as const, bytes: new Uint8Array([1]) }
+    }) }
     const runReason = (async function* () {
       yield { type: 'reasoning-delta', text: 'thinking… ' }
       yield { type: 'text-delta', text: 'Final answer.' }
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts: reasoningTts, voice: 'af_heart', speak: true, runAgent: runReason,
+      tts: reasoningTts, preset, speak: true, runAgent: runReason,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
     // reasoning surfaced as its own event…
@@ -119,7 +132,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, voice: 'af_heart', speak: false, runAgent: runTools,
+      tts, preset, speak: false, runAgent: runTools,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
@@ -141,7 +154,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, voice: 'af_heart', speak: false, runAgent: runSan,
+      tts, preset, speak: false, runAgent: runSan,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
@@ -159,7 +172,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, voice: 'af_heart', speak: false, runAgent: runPlain,
+      tts, preset, speak: false, runAgent: runPlain,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
     expect((history.at(-1) as { toolRecords?: unknown[] }).toolRecords).toBeUndefined()
@@ -173,7 +186,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, voice: 'af_heart', speak: false, runAgent: runBig,
+      tts, preset, speak: false, runAgent: runBig,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
@@ -192,7 +205,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, voice: 'af_heart', speak: false, runAgent: runWrite,
+      tts, preset, speak: false, runAgent: runWrite,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
