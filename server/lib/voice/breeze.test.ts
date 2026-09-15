@@ -32,6 +32,11 @@ describe('validateBreezeRequest', () => {
       .toMatch(/ref_text/)
   })
 
+  it('treats a whitespace-only ref_text as absent for the ref_audio rule', () => {
+    expect(validateBreezeRequest({ ...base, refAudio: { bytes: new Uint8Array([1]), filename: 'r.wav' }, refText: '  ' }))
+      .toMatch(/ref_text/)
+  })
+
   it('rejects empty text', () => {
     expect(validateBreezeRequest({ ...base, text: '   ' })).toMatch(/text/)
   })
