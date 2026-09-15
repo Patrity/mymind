@@ -25,8 +25,16 @@ export function defaultAnalyticsConfig(): AnalyticsConfig {
   }
 }
 
+// gpuLabels merges per key rather than wholesale. A shallow spread meant a stored row
+// replaced the defaults entirely, so a newly installed card stayed unlabelled in production
+// until someone hand-edited the row. A stored label still wins for any uuid it defines.
 export function mergeAnalyticsConfig(raw: Partial<AnalyticsConfig> | null | undefined): AnalyticsConfig {
-  return { ...defaultAnalyticsConfig(), ...(raw ?? {}) }
+  const defaults = defaultAnalyticsConfig()
+  return {
+    ...defaults,
+    ...(raw ?? {}),
+    gpuLabels: { ...defaults.gpuLabels, ...(raw?.gpuLabels ?? {}) }
+  }
 }
 
 // Empty-string master key -> undefined ("no change"); non-empty is the new plaintext key.

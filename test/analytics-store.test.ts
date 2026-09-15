@@ -15,7 +15,24 @@ describe('analytics config store (pure parts)', () => {
     const m = mergeAnalyticsConfig({ prometheusUrl: 'http://x:1', gpuLabels: { abc: 'My GPU' } })
     expect(m.prometheusUrl).toBe('http://x:1')
     expect(m.litellmUrl).toBe('http://192.168.2.85:4000')
-    expect(m.gpuLabels).toEqual({ abc: 'My GPU' }) // stored map replaces default map wholesale
+    expect(m.gpuLabels.abc).toBe('My GPU')
+  })
+
+  // gpuLabels merges per key. The shallow spread this replaces meant a stored row erased the
+  // defaults, so a newly installed card stayed unlabelled in production until the row was
+  // hand-edited. A default for an absent uuid is inert: resolveGpuLabel is only ever called
+  // for uuids Prometheus is currently reporting.
+  it('a stored gpu label map no longer erases the defaults', () => {
+    const m = mergeAnalyticsConfig({ gpuLabels: { abc: 'My GPU' } })
+    for (const [uuid, label] of Object.entries(defaultAnalyticsConfig().gpuLabels)) {
+      expect(m.gpuLabels[uuid]).toBe(label)
+    }
+  })
+
+  it('a stored label still wins for a uuid the defaults also define', () => {
+    const [uuid] = Object.keys(defaultAnalyticsConfig().gpuLabels)
+    const m = mergeAnalyticsConfig({ gpuLabels: { [uuid]: 'Renamed By Hand' } })
+    expect(m.gpuLabels[uuid]).toBe('Renamed By Hand')
   })
 
   it('merge of null/undefined returns pure defaults', () => {

@@ -21,6 +21,26 @@ describe('buildSnapshot', () => {
     }])
   })
 
+  it('an unconfigured gpu is named from nvidia_smi, not from its uuid', () => {
+    const snap = buildSnapshot({
+      gpuInfo: [v({ uuid: 'b2c1087a-14f3-4f32-7815-d1745391c990', name: 'NVIDIA RTX PRO 6000 Blackwell Workstation Edition' }, '1')],
+    }, {})
+    expect(snap.gpus[0].label).toBe('RTX PRO 6000')
+    expect(snap.gpus[0].label).not.toContain('b2c1087a')
+  })
+
+  it('a configured label still outranks the hardware name', () => {
+    const snap = buildSnapshot({
+      gpuInfo: [v({ uuid: 'zzz', name: 'NVIDIA GeForce RTX 3090' }, '1')],
+    }, { zzz: 'Zotac (voice/util)' })
+    expect(snap.gpus[0].label).toBe('Zotac (voice/util)')
+  })
+
+  it('falls back to the uuid only when nvidia_smi reports no name', () => {
+    const snap = buildSnapshot({ gpuInfo: [v({ uuid: 'deadbeef-1111' }, '1')] }, {})
+    expect(snap.gpus[0].label).toBe('GPU deadbeef')
+  })
+
   it('missing per-gpu metrics become null, not 0', () => {
     const snap = buildSnapshot({ gpuInfo: [v({ uuid: 'bbb', name: 'Quadro P2000' }, '1')] }, {})
     expect(snap.gpus[0]).toMatchObject({ uuid: 'bbb', utilPct: null, tempC: null, powerW: null })

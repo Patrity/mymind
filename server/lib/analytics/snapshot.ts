@@ -54,7 +54,7 @@ export function buildSnapshot(
       const uuid = r.metric.uuid ?? ''
       return {
         uuid,
-        label: resolveGpuLabel(uuid, gpuLabels),
+        label: resolveGpuLabel(uuid, gpuLabels, r.metric.name),
         utilPct: num(util.get(uuid)),
         vramUsedBytes: num(memU.get(uuid)),
         vramTotalBytes: num(memT.get(uuid)),

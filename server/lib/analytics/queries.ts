@@ -9,11 +9,24 @@ export interface RangeQueryDef {
 }
 export interface RangePanelDef { id: string, queries: RangeQueryDef[] }
 
-export function resolveGpuLabel(uuid: string, gpuLabels: Record<string, string>): string {
-  return gpuLabels[uuid] ?? `GPU ${uuid.slice(0, 8)}`
+// nvidia_smi_gpu_info already carries the real model name on every scrape
+// ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition"). Strip the vendor, retail and
+// architecture noise so an unconfigured card reads "RTX PRO 6000" rather than a hex fragment.
+const GPU_NAME_NOISE = /\b(NVIDIA|GeForce|Workstation Edition|Founders Edition|Laptop GPU|Blackwell|Lovelace|Ada|Ampere|Turing|Hopper)\b/gi
+
+export function prettyGpuName(name: string | undefined | null): string | null {
+  if (!name) return null
+  const cleaned = name.replace(GPU_NAME_NOISE, ' ').replace(/\s+/g, ' ').trim()
+  return cleaned || null
 }
 
-const gpuLegend: RangeQueryDef['legend'] = (l, g) => resolveGpuLabel(l.uuid ?? '?', g)
+// Precedence: an explicit configured label, then the hardware's own name, then the uuid.
+// Only the last of those is a dead end, and it should now be unreachable in practice.
+export function resolveGpuLabel(uuid: string, gpuLabels: Record<string, string>, hardwareName?: string | null): string {
+  return gpuLabels[uuid] ?? prettyGpuName(hardwareName) ?? `GPU ${uuid.slice(0, 8)}`
+}
+
+const gpuLegend: RangeQueryDef['legend'] = (l, g) => resolveGpuLabel(l.uuid ?? '?', g, l.name)
 const modelLegend: RangeQueryDef['legend'] = l => l.model_name ?? l.model ?? '?'
 
 export const RANGE_PANELS: Record<string, RangePanelDef> = {
