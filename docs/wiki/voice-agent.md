@@ -1,8 +1,8 @@
 ---
 title: Voice Agent
 status: shipped
-cycle: 60
-updated: 2026-08-29
+cycle: 61
+updated: 2026-09-15
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
 mymind_hash: 4c137cfd9909ca9ceb0b2350a7dc9807c90d8bdaa5f664fb5ddb564c4c93c0e3
 ---
@@ -13,7 +13,9 @@ mymind_hash: 4c137cfd9909ca9ceb0b2350a7dc9807c90d8bdaa5f664fb5ddb564c4c93c0e3
 >
 > **Cycle 60 update:** the TTS chain gained a sanitizer + a real segmenter (`SentenceChunker` and `server/lib/voice/chunker.ts` are **deleted**), the microphone gained a device picker, and the **particle sphere became a particle head**. `app/components/voice/Reactor.client.vue` and the 96-bar mic ring (`app/lib/viz/ring.ts`) are **deleted**; the "Voice Visualizer (cycle 19)" section below has been rewritten as [Bridget's avatar](#bridgets-avatar-cycle-60). The GPU machinery underneath — `scene.ts`, `core.ts`, `effects.ts`, `lightning.ts`, `choreographer.ts`, the quality tiers and the FPS watchdog — is unchanged and re-pointed.
 >
-> **Post-handover update (2026-08-28, this page's current state):** five follow-on commits landed after the cycle-60 handover closed, correcting two claims that handover made. **The head mesh now exists and is committed** — `assets/source/bridget-head.glb` and `app/assets/head-points.bin` are both in the repo, `bake-head.ts` was rewritten to merge every mesh/node instead of just the first primitive, keep only the skin shell (66 shells in the real export; eyeballs/teeth/helper ribbons were 40% of the triangles), sample mesh edges instead of random surface points, and use landmarks measured off the discarded shells. **Orpheus is now live** on the rig and registered in production, at the tail of the TTS failover chain. TTS synthesis is also now pipelined (concurrency ramps 1→3) instead of fully sequential. See [Speech pipeline](#speech-pipeline-cycle-60), [Providers](#providers) and [Bridget's avatar](#bridgets-avatar-cycle-60) below, and the [cycle-60 handover's follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) for the full commit list. **Still open, not solved by any of this:** the avatar's jaw doesn't hinge, the talking motion doesn't read as natural, and the model doesn't read as a woman (Tony's own assessment, deferred by him); exposure/density (`VIZ_TUNING.head`) has never been tuned against the real head; the export is body-only (no hair, no eyes) so those sockets are empty by construction; and which TTS voice to adopt is undecided pending Tony's ears.
+> **Post-handover update (2026-08-28, superseded in part by cycle 61 below):** five follow-on commits landed after the cycle-60 handover closed, correcting two claims that handover made. **The head mesh now exists and is committed** — `assets/source/bridget-head.glb` and `app/assets/head-points.bin` are both in the repo, `bake-head.ts` was rewritten to merge every mesh/node instead of just the first primitive, keep only the skin shell (66 shells in the real export; eyeballs/teeth/helper ribbons were 40% of the triangles), sample mesh edges instead of random surface points, and use landmarks measured off the discarded shells. **Orpheus is now live** on the rig and registered in production, at the tail of the TTS failover chain. TTS synthesis is also now pipelined (concurrency ramps 1→3) instead of fully sequential. See [Speech pipeline](#speech-pipeline-cycle-60), [Providers](#providers) and [Bridget's avatar](#bridgets-avatar-cycle-60) below, and the [cycle-60 handover's follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) for the full commit list. **Still open, not solved by any of this:** the avatar's jaw doesn't hinge, the talking motion doesn't read as natural, and the model doesn't read as a woman (Tony's own assessment, deferred by him); exposure/density (`VIZ_TUNING.head`) has never been tuned against the real head; the export is body-only (no hair, no eyes) so those sockets are empty by construction; and which TTS voice to adopt is undecided pending Tony's ears.
+>
+> **Cycle 61 update — the TTS stack was replaced wholesale.** Kokoro, Chatterbox and Orpheus are **gone**, and so is the idea of a failover chain for TTS: there is now **one engine, Breeze TTS 2**, at `http://192.168.2.25:8880`, and a voice is a **row** (`voice_presets`) rather than a string from a `/v1/voices` enum. `server/lib/voice/tts-failover.ts` and `server/api/voice/voices.get.ts` are **deleted**; `AI_TTS_KOKORO_*` / `AI_TTS_CHATTERBOX_*` no longer exist. Binary frames on the socket are now **raw PCM chunks as the engine produces them**, bracketed by `audio-begin`/`audio-end` — no longer one WAV per sentence. `/voice` is a real page again: the **[Voice Studio](voice-studio.md)**, where presets are authored. The [Providers](#providers), [TTS engine](#tts-engine-breeze-tts-2-cycle-61), [WebSocket protocol](#websocket-protocol-apivoicews) and [Env vars](#env-vars) sections below have been rewritten; the bake-off table they replaced described three engines that are no longer dialed.
 
 A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and tool use. Cycle 18 replaced the Unmute/Kyutai-orchestrated approach (cycle 17) with a fully self-owned TypeScript pipeline: client-side VAD, a Nitro WebSocket orchestrator, and swappable OpenAI-spec local STT/TTS providers.
 
@@ -33,15 +35,15 @@ A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and
 │  (abort on barge-in)                         ▼               │
 │  TTS provider ◄── segment+sanitize ◄── runAgent(history+text)│
 │         │                            (shared: chat + cron)   │
-│         ▼  WAV chunks ──────────────────────────────────────► client
+│         ▼  PCM chunks ──────────────────────────────────────► client
 └──────────────────────────────────────────────────────────────┘
    STT: Speaches faster-whisper  (OpenAI /v1/audio/transcriptions)
-   TTS: Kokoro or Chatterbox     (OpenAI /v1/audio/speech, streamed)
+   TTS: Breeze TTS 2 :8880       (multipart /v1/audio/speech, raw PCM)
 ```
 
 1. **Client voice UI** (`app/composables/useVoice.ts`) — mic capture, Silero VAD, WAV encoding, WebSocket, PCM playback + barge-in. Owns when the user is speaking.
 2. **Voice orchestrator** (`server/lib/voice/orchestrator.ts`) — STT → `runAgent` → segmented, sanitized TTS (see [Speech pipeline](#speech-pipeline-cycle-60)); AbortSignal propagation on barge-in; streams audio + transcript + tool/reasoning/usage messages back. Owns the pipeline.
-3. **Providers** (`server/lib/voice/providers/`) — `SttProvider` / `TtsProvider` interfaces over OpenAI-spec local endpoints. Owns which models. Swap provider = change env var + `VOICE_TUNING.tts.provider`.
+3. **Providers** (`server/lib/voice/providers/`) — the `SttProvider` interface over an OpenAI-spec local endpoint. Owns which STT model. TTS no longer lives here: it is `speakWithPreset` in `server/lib/voice/speak.ts`, resolved from the registry's `tts` assignment. Swapping either is a registry edit, not an env change.
 4. **Agent core** (`server/lib/agent/`) — `runAgent` (AI SDK `streamText`), tool registry, prompt, bus, undo. Shared verbatim by voice, `/api/agent/chat`, and future cron agents. Owns the brain.
 
 ## Agent core — `runAgent`
@@ -67,27 +69,30 @@ The registry (`tools.ts`) is the single source of truth for tool definitions —
 
 ## Providers
 
-All providers are OpenAI-spec endpoints — swapping a model means changing `*_BASE_URL` in env (and optionally the provider constant in `tuning.ts`), never code.
+STT and TTS are both resolved from the AI config registry (`assignments.stt` / `assignments.tts`,
+see [ai-providers.md](ai-providers.md)) — **not** from env, and not from any constant in
+`tuning.ts`. Swapping an engine is a registry edit.
 
-| Role | Env prefix | Default endpoint | Notes |
+| Role | Resolution | Endpoint | Notes |
 |---|---|---|---|
-| STT | `AI_STT_*` | `:8881` Speaches faster-whisper-turbo | model `deepdml/faster-whisper-large-v3-turbo-ct2` |
-| TTS Kokoro | `AI_TTS_KOKORO_*` | `:8880` | voices `af_heart`, `af_sky`, … — see `/v1/voices` |
-| TTS Chatterbox | `AI_TTS_CHATTERBOX_*` | `:8884` | **Chatterbox Turbo** (350M) as of 2026-08-28, not the original 0.5B the cycle-60 handover warned about — voices `happy-us.wav`, `Emily.wav`, … — **voice param is required** (422 if omitted) |
-| TTS Orpheus | — (registered via `ai_config`, not env) | `http://192.168.2.25:5005/v1` | model `orpheus`, 25 voices, default `tara`; llama.cpp backbone running `--parallel 3`. **Live as of 2026-08-28** — see [TTS provider status](#tts-provider-status-2026-08-28) below |
+| STT | `assignments.stt`, with failover | `:8881` Speaches faster-whisper-turbo | model `deepdml/faster-whisper-large-v3-turbo-ct2`. Still a real chain: `withFailover('stt', …)`. |
+| TTS | `assignments.tts`, **head only** | `:8880` Breeze TTS 2 | `speakWithPreset` takes `chain[0]` and stops. There is no TTS failover. |
 
-**Which TTS provider actually gets dialed (current behaviour).** STT/TTS models come from the
-AI config registry (`assignments.stt` / `assignments.tts`, see [ai-providers.md](ai-providers.md)),
-not from env or `VOICE_TUNING.tts.provider` (that constant is legacy and unused for routing).
-`/api/voice/voices` aggregates `/v1/audio/voices` from **every** tts model and tags each voice with
-its model **label**, so a chosen voice exists on exactly one provider. `server/lib/voice/tts-failover.ts`
-(`createTtsSynth` → `pinChainToProvider`) therefore moves the model whose label matches the
-client's `provider` to the head of the chain and only then runs `withFailoverOver('tts', …)`.
-Absent/unknown provider (legacy clients) → registry order. Failover is unchanged: if the pinned
-provider errors, the rest of the chain is tried. *Why:* before 2026-08-16 `ws.ts` dropped the
-`provider` field, so with a Chatterbox voice picked every sentence dialed Kokoro first → instant
-400 `Voice 'X' not found` → failover to Chatterbox — 190 warn rows and ~1s extra latency per
-chunk in one prod session, invisible to the user because the audio still played.
+**TTS has no failover, deliberately.** A Breeze preset (instruction, seed, reference clip,
+calibrated ceiling) is meaningless to any other engine, so "try the next model" would mean
+"answer in a different voice than the one that was asked for". `server/lib/voice/tts-failover.ts`
+— `createTtsSynth` / `pinChainToProvider` — is **deleted**, along with `/api/voice/voices` and the
+`{type:'voice', provider, voice}` frame it fed.
+
+**The consequence to remember:** `chain[0]` wins, silently. `speakWithPreset` only throws
+*"No TTS model configured — set one in Settings → Models"* when there is no entry at all; a stale
+entry ahead of Breeze is dialed instead, with no fallback behind it. This bit during cycle 61's own
+browser validation — the dev registry still listed the retired `chatterbox` at `:8884` first, and
+every render 502'd against a dead host until the assignment was pointed at Breeze. **Deploying this
+cycle requires editing the registry**, which no migration does for you.
+
+The registry stores OpenAI-style base URLs ending in `/v1`; Breeze's own path already includes
+`/v1`, so `speak.ts` strips it to get the service root.
 
 See [`docs/model-requirements.md`](../model-requirements.md) for rig setup instructions.
 
@@ -121,7 +126,7 @@ Pure, unit-tested. Replaces `SentenceChunker`'s `/[^.!?]*[.!?]+(\s|$)/g`, which 
 - Ellipses are non-terminal; known abbreviations (`Dr.`, `e.g.`, `i.e.`, `etc.`, `vs.`, `approx.`, `St.`, months, …) walk back over letters *and* a single internal dot between letters, so `e.g.` is collected as `e.g` and matched with dots stripped.
 - Newlines are hard boundaries; fenced code blocks are tracked so a `.` inside one never splits.
 - The `minChars` fallback rose from **60 → 140** and breaks at the last clause boundary (`,` `;` `:` `—` `–`) before the cap, falling back to the last space — it is one-shot per `segment()` call.
-- **`maxChars` (200), added 2026-08-28, is a HARD cap and is NOT one-shot** — it re-fires every time a still-open segment reaches it, however many times that takes within one `segment()` call. Without it, a sentence whose only clause/terminal punctuation sits at the very end could grow arbitrarily long once the one-shot `minChars` cut had already fired — on a slow autoregressive engine (~0.067s/char measured on Orpheus) a 400-char segment is a ~27s stall before a single sample plays.
+- **`maxChars` (200), added 2026-08-28, is a HARD cap and is NOT one-shot** — it re-fires every time a still-open segment reaches it, however many times that takes within one `segment()` call. Without it, a sentence whose only clause/terminal punctuation sits at the very end could grow arbitrarily long once the one-shot `minChars` cut had already fired — on a slow autoregressive engine a 400-char segment is a long stall before a single sample plays (~27 s at the ~0.067 s/char measured on the engine this cap was introduced against). Since cycle 61 this cap is further clamped per preset by that preset's calibrated `maxSegmentChars`.
 - **`firstMax` (60), added 2026-08-28**, replaces `minChars` — not `maxChars` — for whichever segment is first to close in a `segment()` call, so the turn's opening segment is short and time-to-first-audio isn't gated on a full sentence. Every later segment, in the same call or a later one, uses the normal `minChars`.
 
 `SpeechChunker` keeps `SentenceChunker`'s exact `push(delta): string[]` / `flush(): string[]` signature, which is why the orchestrator's call sites were untouched. It accumulates raw deltas, segments the **raw** buffer, and maps each completed segment through `toSpeakable`. Its constructor is now `(minChars = 140, maxChars = 200, firstMaxChars = 60)`.
@@ -130,30 +135,79 @@ Pure, unit-tested. Replaces `SentenceChunker`'s `/[^.!?]*[.!?]+(\s|$)/g`, which 
 
 `orchestrator.ts` used to `await speak(chunk)` per segment — strictly sequential, each full network round trip completing before the next began. `SpeechPipeline` instead starts synthesis for up to `concurrency` segments **concurrently**, while still **emitting audio strictly in segment order** (out-of-order emission would scramble the sentence — only the *starting* of synthesis is concurrent, draining is a strict serial queue).
 
-- **Concurrency ramps 1 → 3.** The turn's first segment is always synthesized **alone**, at `FIRST_SEGMENT_CONCURRENCY = 1`, regardless of the configured `concurrency`. Some backends behind this app (Orpheus via llama.cpp `--parallel 3`) share one GPU across "concurrent" slots, so racing chunk 1 against others only slows chunk 1 down — and perceived responsiveness is governed entirely by chunk 1's latency. Depth widens to the full `concurrency` (3) only once the first segment has been dispatched (`firstSegmentDrained` flips true the moment it drains, win or lose).
-- **A throwing segment is dropped, not fatal.** Before this, a synthesis error killed the rest of the turn. Now a non-abort error is logged and the segment is skipped; the drain continues. `AbortError` is swallowed as before.
-- `VOICE_TUNING.tts.pipelineConcurrency` (default 3) is the configured cap; `orchestrator.ts` wires it in alongside the new `sentenceMaxChars` (200) and `firstSegmentMaxChars` (60).
+- **Concurrency is PINNED AT 1 (cycle 61).** Breeze serves one inference at a time and 409s anything
+  concurrent, and `pipeline.ts` now emits chunks as they arrive rather than buffering a whole
+  segment — so more than one in flight would both 409 the rig and interleave two segments' audio.
+  `SpeechPipeline`'s constructor **throws** if `concurrency` is ever raised. The old 1 → 3 ramp
+  (`FIRST_SEGMENT_CONCURRENCY`, `effectiveConcurrency`, `firstSegmentDrained`) was **deleted** rather
+  than left implying a tunable that is now rejected; recover it from git history if the engine ever
+  serves concurrent requests.
+- **A throwing segment is dropped, not fatal.** Before this, a synthesis error killed the rest of the turn. Now a non-abort error is logged and the segment is skipped; the drain continues. `AbortError` is swallowed as before. The dropped segment's **text still reaches the client** via the transcript event; there is no wire frame signalling lost audio, and the gap is server-side observability (a dropped segment is a `console.error` with no `recordEvent`).
+- `VOICE_TUNING.tts.pipelineConcurrency` (**1**) is the configured cap; `orchestrator.ts` wires it in alongside `sentenceMaxChars` (200) and `firstSegmentMaxChars` (60).
+- **`onSegmentEnd` fires for every segment the pipeline owns, including a dropped one** — it owns lifetimes, not frame semantics. The orchestrator therefore tracks whether the current segment actually emitted a `begin`, and suppresses the `audio-end` if it did not; otherwise a dropped segment would close a segment that had already ended, under its predecessor's id.
 
-**Measured effect on total wall-clock** (pipelining vs. the old strictly-sequential path): **Chatterbox −43%, Orpheus −18%, Kokoro unchanged** (Kokoro is already far past realtime, so there is nothing to pipeline against). Firing *all* chunks concurrently (no ramp) makes time-to-first-audio *worse*, not better, because the shared GPU slots make the first chunk compete with the rest — which is why the ramp exists rather than a flat concurrency cap.
+The cross-engine wall-clock comparison that used to close this section (Chatterbox −43%, Orpheus
+−18%, Kokoro unchanged) measured pipelining across three engines that are no longer dialed, against
+a concurrency setting that no longer exists. It has been removed rather than left to look current.
 
-## TTS provider status (2026-08-28)
+## TTS engine — Breeze TTS 2 (cycle 61)
 
-**Orpheus is now live**, correcting the cycle-60 handover's "not stood up — needs shell on the rig" note. `http://192.168.2.25:5005/v1`, model `orpheus`, 25 voices, default `tara`, served by a llama.cpp backbone running `--parallel 3`. It is registered in the production `ai_config` as provider "Orpheus rig" / model "Orpheus", **appended to the END of the `tts` chain** — Kokoro stays the head and nothing changes for any existing user until a voice is explicitly picked in the voice picker. Chatterbox at `:8884` is now **Chatterbox Turbo** (see the provider table above).
+One engine, at `http://192.168.2.25:8880`. `GET /health` answers
+`{"status":"ok","sample_rate":24000}` once warm (503 while loading — roughly a 44 s cold start).
+Synthesis is `POST /v1/audio/speech`, **multipart**, with `text` (not `input`), optional
+`instruction`, `cfg_scale`, `seed`, `temperature`, `top_p`, `top_k`, and optional
+`ref_audio` + `ref_text`. The response is **headerless PCM, s16le mono**, streamed, with the rate in
+the `x-sample-rate` header — never assume a constant.
 
-Both Chatterbox and Orpheus return `{"status":"ok","voices":[...]}` rather than the bare `{"voices":[...]}` Kokoro returns. `server/api/voice/voices.get.ts` reads only the `voices` key off the parsed response (`data?.voices ?? []`), so both shapes work as-is — worth stating explicitly so a future session doesn't "fix" a shape that was never broken.
+`server/lib/voice/breeze.ts` is the only module that knows this wire format.
 
-**Measured throughput** (audio-seconds produced per wall-second; >1.0× keeps up with playback) and time-to-first-audio:
+### Facts that are not recoverable from a response
 
-| Provider | Throughput | Time to first audio |
-|---|---|---|
-| Kokoro | ~38× | ~0.9 s |
-| Chatterbox Turbo | ~2.9× | ~1.0–1.5 s |
-| Orpheus, sequential backend | **0.83–0.87×** | — |
-| Orpheus, `--parallel 3` | **1.20–1.27×** | ~2.9 s (floor ~2.2 s) |
+These are enforced before dispatch because the rig cannot tell you about them:
 
-**The decisive fact:** sequential Orpheus ran **below 1.0×** — it could not generate audio as fast as it plays, so it was guaranteed to underrun mid-utterance regardless of any client-side fix. `--parallel 3` clears breakeven, but by only 20–27%, against Chatterbox's ~190% margin. **A sub-1.5s time-to-first-audio target is unreachable for Orpheus** as currently served — 2.17s for a 26-character input is a fixed floor of the backend, not an artifact of input length.
+1. **`cfg_scale > 1` with no instruction → 500**, opaque body. The clone and plain templates define
+   no negative prompt for guidance to push against. `validateBreezeRequest` rejects it with a
+   sentence instead.
+2. **`ref_audio` without `ref_text` → 500**, same opaque body.
+3. **A prompt-ceiling overrun → `200 OK`, then a body that stops early.** Headers are sent *before*
+   generation begins, so the status line can never carry it. It arrives in two shapes, both mapped
+   to `BreezeError('truncated')`:
+   - a clean EOF at **zero bytes**;
+   - past roughly **3400 characters** (measured 2026-09-15), the rig **drops the socket** part-way
+     through, which undici raises as a bare `TypeError: terminated`. Before cycle 61's validation
+     pass this escaped the route unmapped — Nitro logged `[unhandled]` and answered 500
+     "Server Error" with the message reduced to "terminated".
+4. **Output is capped at 120 seconds.** 900 and 1800 characters both returned exactly 5,760,000
+   bytes at 24 kHz (measured 2026-09-15). This cap arrives as a *full* body, so no byte-count
+   heuristic can see it — only the calibrated ceiling warning shown before dispatch, and ears.
 
-Which voice (Kokoro, Chatterbox Turbo, or Orpheus/`tara`) to adopt as default is **undecided** — it needs Tony's ears on the rig, not a benchmark number. All three are selectable today from the voice picker.
+### One request at a time
+
+Breeze serves a single inference and answers **409** to anything concurrent.
+`server/lib/voice/breeze-queue.ts` is the app-wide gate: every caller holds a slot for the whole
+lifetime of its stream, with `agent` priority jumping ahead of `studio` and FIFO within a priority.
+
+This is also why `VOICE_TUNING.tts.pipelineConcurrency` is **pinned at 1** and `SpeechPipeline`
+throws if it is ever raised — >1 in flight would both 409 the rig and interleave two segments'
+audio. The old 1→3 concurrency ramp (`FIRST_SEGMENT_CONCURRENCY`, `firstSegmentDrained`) was
+**deleted** rather than left implying a tunable the constructor now rejects; restore it from git
+history if Breeze ever serves concurrent requests.
+
+### Measured (2026-09-15, through the app on the dev box)
+
+| | |
+|---|---|
+| Time to first audio, `POST /api/voice/speak` | **108 ms** measured at the API; **136 ms** end-to-end through the studio UI on a warm render (454 ms on the first render of a session) |
+| A 32-character sentence | 153,600 bytes over 40 chunks = 3.2 s of audio |
+| A live agent reply | 15 binary frames, 53,760 bytes = 1.12 s, bracketed by one `audio-begin`/`audio-end` pair |
+
+There is no bake-off table any more because there is nothing to bake off against — the previous
+three-engine comparison (Kokoro ~38×, Chatterbox Turbo ~2.9×, Orpheus 1.20–1.27×) described a stack
+that no longer exists.
+
+**Which voice to use is no longer a benchmark question.** It is a preset, authored in the
+[Voice Studio](voice-studio.md), and the eight seeded ones are a starting point rather than a
+shortlist.
 
 ## Tuning (`server/lib/voice/tuning.ts`)
 
@@ -191,7 +245,7 @@ The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettin
 |---|---|---|
 | Binary | `ArrayBuffer` (WAV/PCM, RIFF) | Utterance audio to transcribe |
 | Text | `{type:'interrupt'}` | Barge-in: abort current turn |
-| Text | `{type:'voice', provider, voice}` | Switch TTS voice; `provider` = the tts model **label** that owns `voice` (from `/api/voice/voices`) and pins the failover chain to it (`ConnState.ttsProvider` → `TurnDeps.ttsProvider` → `synthesize(text, {voice, provider})`) |
+| Text | `{type:'preset', presetId}` | Pick the voice **preset** for this connection (cookie-backed on the client); `null`/absent falls back to the default row. Resolved per turn by `resolveTurnVoice`, so a preset edited mid-conversation takes effect on the next turn. Replaced `{type:'voice', provider, voice}` in cycle 61. |
 | Text | `{type:'text', text}` | Typed turn, injected post-STT (`handleTurn`) — same agent loop, TTS reply, and state events as speech |
 
 **Cancellation is a non-event, end to end.** *Every* inbound frame calls `s.ac?.abort()`
@@ -207,7 +261,9 @@ error frame and unacked activity errors on every barge-in (prod, 2026-08-05).
 
 | Message | Shape | Meaning |
 |---|---|---|
-| Binary | `ArrayBuffer` (WAV/PCM) | TTS audio chunk (one per sentence) |
+| Binary | `ArrayBuffer` — **raw PCM, s16le mono** | Audio for the segment currently open. Chunks as the engine produces them, **not** one WAV per sentence (cycle 61). Decode at the rate named by the preceding `audio-begin`. |
+| Text | `{type:'audio-begin', segmentId, sampleRate}` | Opens a spoken segment and carries the rate its PCM must be decoded at. WS delivery is ordered, so this always lands before that segment's first binary frame. |
+| Text | `{type:'audio-end', segmentId}` | Closes it. **Strictly paired** with `audio-begin`: a segment whose synthesis threw or aborted before yielding its `begin` never opened on the wire, and emitting an `end` for it would name an id that really did begin — the orchestrator suppresses that rather than sending a lying frame. |
 | Text | `{type:'transcript', role, text}` | Transcript line (role: `user` or `assistant`) |
 | Text | `{type:'tool', name, summary, undoToken?}` | Tool execution chip |
 | Text | `{type:'state', state}` | Orchestrator state: `idle`/`thinking`/`speaking`/`tool` |
@@ -223,15 +279,13 @@ The full, current frame list — including `{type:'model'}`, `{type:'load'}`, `{
 ```bash
 AI_STT_BASE_URL=http://192.168.2.25:8881/v1
 AI_STT_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
-AI_TTS_KOKORO_BASE_URL=http://192.168.2.25:8880/v1
-AI_TTS_KOKORO_MODEL=kokoro
-AI_TTS_KOKORO_VOICE=af_heart
-AI_TTS_CHATTERBOX_BASE_URL=http://192.168.2.25:8884/v1
-AI_TTS_CHATTERBOX_MODEL=chatterbox
-AI_TTS_CHATTERBOX_VOICE=happy-us.wav
 ```
 
-All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsChatterbox` keys).
+Wired into `runtimeConfig.ai.stt` in `nuxt.config.ts`.
+
+**There are no TTS env vars.** `AI_TTS_KOKORO_*` and `AI_TTS_CHATTERBOX_*` were removed in cycle 61
+along with the engines they named — Breeze's base URL comes from the registry's `tts` assignment and
+nowhere else, and the voice itself is a `voice_presets` row, not a value.
 
 ## Caveats
 
@@ -243,9 +297,12 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 
 | File | Purpose |
 |---|---|
-| `app/pages/agent/index.vue` | The three-column shell: thread rail, conversation, Bridget; full-bleed overlay. (`app/pages/voice.vue` no longer exists — `/voice` is a routeRules redirect.) |
+| `app/pages/agent/index.vue` | The three-column shell: thread rail, conversation, Bridget; full-bleed overlay. |
+| `app/pages/voice.vue` | **The Voice Studio (cycle 61)** — `/voice` is a real route again; the `routeRules` redirect to `/agent` was removed. See [voice-studio.md](voice-studio.md). |
 | `app/pages/agent/history.vue` | Full browse view for threads: search, counts, resume, delete-with-confirm |
 | `app/composables/useVoice.ts` | VAD, WAV encoding, WebSocket, PCM playback, barge-in; `speechProb`; `conversationId`/`conversationTitle`; `stop()` (abort turn) vs `disconnect()` (teardown); exposes `onVizEvent` |
+| `app/composables/useBreezeSpeech.ts` | The studio's playback path — the same PCM-on-the-AudioContext-clock approach over plain `fetch`, so an audition never rides the conversation's socket |
+| `app/lib/voice/playback-epoch.ts` | `createPlaybackEpochs()` — which PCM frames still belong to the turn being listened to; drops a frame that was in flight when the user barged in |
 | `app/composables/useVoiceSettings.ts` | Cookie-persisted user settings (`voice-settings`), incl. `micDeviceId` |
 | `app/composables/useAgentActivity.ts` | SSE → tool chips (currently unconsumed — chips are inline since cycle 41) |
 | `app/composables/useTextChat.ts` | Typed fallback over `/api/agent/chat` |
@@ -259,7 +316,8 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 | `app/components/agent/ApprovalPrompt.vue` | Exec approval gate UI |
 | `app/components/voice/Transcript.vue` | Live transcript, inline tool chips + Undo, autoscroll pin + "↓ N new", empty state |
 | `app/components/voice/Composer.vue` | `UTextarea` (Enter sends / Shift+Enter newline), attachments, mic toggle, Send↔Stop |
-| `app/components/voice/SettingsSlideover.vue` | Cog slideover: voice replies, voice picker, **microphone picker**, live-metered VAD tuning, barge-in, playback speed |
+| `app/components/voice/SettingsSlideover.vue` | Cog slideover: voice replies, **preset picker** (the `voice_presets` rail, not a `/v1/voices` enum), microphone picker, live-metered VAD tuning, barge-in, playback speed |
+| `app/components/voice/PresetRail.vue`, `DesignPane.vue`, `SpeakPane.vue` | The studio's three panels (cycle 61) — see [voice-studio.md](voice-studio.md) |
 | `app/lib/voice/messages.ts` | Pure WS-message → `{state, delta, events, usage, conversation, …}` mapper (tested, no mocks) |
 | `app/lib/voice/devices.ts` | Pure `enumerateDevices()` → mic-picker items; the `DEFAULT_MIC` empty-value sentinel |
 | `app/lib/agent/transcript.ts` | `buildResumeTranscript` — rebuilds inline chip order from persisted `textOffset` |
@@ -278,6 +336,8 @@ All wired into `runtimeConfig.ai` in `nuxt.config.ts` (`stt`, `ttsKokoro`, `ttsC
 | `app/lib/viz/effects.ts` | 3 amber tool-pulse rings + 160-slot pooled transcription sparks |
 | `app/lib/viz/lightning.ts` | Neural "synapse" arcs during thinking / tool — pooled jagged LineSegments, additive + bloom |
 
+> **Deleted in cycle 61:** `server/lib/voice/tts-failover.ts` (`createTtsSynth` / `pinChainToProvider`) and `server/api/voice/voices.get.ts` — there is one TTS engine and a voice is a preset row, so there is no chain to pin and no voice enum to aggregate. `pipeline.ts` also lost `FIRST_SEGMENT_CONCURRENCY` / `effectiveConcurrency` / `firstSegmentDrained` with the concurrency ramp.
+>
 > **Deleted in cycle 60:** `app/components/voice/Reactor.client.vue`, `app/components/agent/HistorySlideover.vue`, `app/lib/viz/ring.ts`, `server/lib/voice/chunker.ts`. `app/components/voice/VoicePicker.vue` was already gone before this cycle (the picker is inline in `SettingsSlideover.vue`). Once `ring.ts` was gone, `Directives.ringColor`/`ringLevels`/`micMix` had zero readers left anywhere in the repo — a later pass (final-fix wave) removed those three fields plus the per-frame smoothing that filled them, confirmed by grep, not typecheck (the choreographer that fills them also declares the type, so typecheck alone can't prove a field dead). `BAR_COUNT` and `VIZ_TUNING.ring.radius` **do** survive, but not for the ring: `BAR_COUNT` sizes the raw mic-level array the head still resamples every frame to feed `energy` during `listening` (via `micAverage`), and `effects.ts` still reads `VIZ_TUNING.ring.radius` (as `RING_RADIUS`) to place the tool-pulse rings. `PALETTE.*.ring` also survives, but through `MicBand.vue` (`PALETTE.listening.ring` / `PALETTE.idle.ring`), not through `Directives`.
 
 ## Bridget's avatar (cycle 60)
@@ -353,7 +413,7 @@ Jaw displacement and head rotation happen in the **vertex shader**, driven by un
 
 Every target is **lerped**, including `eyeGain` and `scan`: snapping them on state exit popped brightness (`listening → idle`) and cut the tool sweep dead mid-stroke.
 
-**Lip-sync is amplitude-driven, not visemes.** Neither Kokoro nor Chatterbox returns phoneme timings, and real visemes need a forced-aligner pass per chunk. This gets the rhythm right, not the shapes.
+**Lip-sync is amplitude-driven, not visemes.** Breeze returns raw PCM and no phoneme timings (nor did any engine before it), and real visemes need a forced-aligner pass per chunk. This gets the rhythm right, not the shapes.
 
 ### The mic band replaces the ring
 
@@ -414,7 +474,8 @@ Two operational notes that still apply:
 
 ## Cross-references
 
-- [`docs/model-requirements.md`](../model-requirements.md) — rig setup for STT + Kokoro + Chatterbox.
+- [`docs/model-requirements.md`](../model-requirements.md) — rig setup for STT + Breeze TTS 2.
+- [`docs/wiki/voice-studio.md`](voice-studio.md) — `/voice`, where presets are authored; the preset schema, calibration and the queue priorities.
 - [`docs/handovers/2026-08-27-agent-surface-redesign.md`](../handovers/2026-08-27-agent-surface-redesign.md) — cycle 60: the Orpheus serving recipe (and its landmines), the MakeHuman/CC0 provenance requirement, and the open items. The [follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) records the five commits that landed after the handover closed — the head mesh, the bake fixes, the pipeline, and Orpheus going live.
 - [`docs/wiki/mcp.md`](mcp.md) — MCP server shares the same `runAgent` tool registry.
 - [`docs/DEPLOYMENT.md`](../DEPLOYMENT.md) — prod env vars on LXC 114.
