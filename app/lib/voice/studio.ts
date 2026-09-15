@@ -127,8 +127,9 @@ export function presetToDraft(p: VoicePresetDTO): PresetDraft {
   }
 }
 
-/** True when the form differs from the row it was loaded from. Drives the Save button
- *  and gates the seed audition, which PATCHes the saved row (see auditionSeeds). */
+/** True when the form differs from the row it was loaded from. Drives the Save button —
+ *  and nothing else. It used to gate the audition too, back when auditioning PATCHed the
+ *  row; overrides removed that, so an audition now previews unsaved edits. */
 export function draftIsDirty(d: PresetDraft, p: VoicePresetDTO | null): boolean {
   if (!p) return true
   const a = draftToBody(d)
@@ -356,6 +357,35 @@ export function diagnoseTruncation(args: {
 }
 
 /**
+ * What to tell the user after a STREAMED render, given everything the composable knows.
+ *
+ * Split out from the pane because the earlier version of this decision was wrong in a way
+ * that reads as fine: it asked only whether the FIRST audio frame ever arrived, so a
+ * stream that delivered one frame and then died — the commoner overrun shape — reported
+ * nothing at all. It is the byte total that matters, not whether the total is zero.
+ *
+ * Returns null when there is nothing to add:
+ *  - `error` is set, so the failure is already on screen with its own message;
+ *  - the user pressed Stop, which produces exactly a truncation's shape (no error, little
+ *    audio) and must never be reported as a prompt-ceiling overrun.
+ */
+export function diagnoseStreamRender(outcome: {
+  chars: number
+  audioBytes: number
+  sampleRate: number
+  error: string | null
+  cancelled: boolean
+}): string | null {
+  if (outcome.error) return null
+  if (outcome.cancelled) return null
+  return diagnoseTruncation({
+    chars: outcome.chars,
+    audioBytes: outcome.audioBytes,
+    sampleRate: outcome.sampleRate
+  })
+}
+
+/**
  * Warn BEFORE spending a rig slot when the text is longer than this preset is calibrated
  * for. /api/voice/speak hands the text to Breeze in one piece — it does not segment the
  * way the agent pipeline does — so `maxSegmentChars` is a hard ceiling here, not a hint.
@@ -381,6 +411,28 @@ export function errorMessage(e: unknown, fallback = 'Unknown error'): string {
     message?: string
   }
   return err?.data?.statusMessage || err?.data?.message || err?.statusMessage || err?.message || fallback
+}
+
+/**
+ * The sentence out of a failed `fetch` response body.
+ *
+ * `fetch` (unlike $fetch/ofetch) hands back an unparsed body, so `await res.text()` on an
+ * h3 error is the whole JSON envelope — `{"statusCode":400,"statusMessage":"cfg_scale
+ * above 1.0 requires an instruction…","stack":[]}` — and showing it verbatim buries the
+ * one sentence that explains the failure inside punctuation. Parse first, then let
+ * errorMessage pick the field.
+ */
+export function errorFromResponseBody(raw: string, fallback = 'Request failed'): string {
+  const text = raw?.trim()
+  if (!text) return fallback
+  if (text.startsWith('{') || text.startsWith('[')) {
+    try {
+      return errorMessage(JSON.parse(text), fallback)
+    } catch {
+      // Truncated or not actually JSON — fall through and show what arrived.
+    }
+  }
+  return text
 }
 
 // ── MyMind content → something to read aloud ──────────────────────────────────

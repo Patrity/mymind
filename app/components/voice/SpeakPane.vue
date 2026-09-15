@@ -4,7 +4,9 @@ import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
 import type { ConversationDTO, ConversationMessageDTO } from '~~/shared/types/conversation'
 import {
   EVENT_TAGS,
+  diagnoseStreamRender,
   diagnoseTruncation,
+  errorFromResponseBody,
   errorMessage,
   insertAtCursor,
   messagesToScript,
@@ -15,7 +17,7 @@ import { readWavInfo } from '~/lib/voice/wav-encode'
 const props = defineProps<{ preset: VoicePresetDTO | null }>()
 
 const text = ref('')
-const { speak, stop, speaking, ttfaMs, error } = useBreezeSpeech()
+const { speak, stop, speaking, ttfaMs, audioBytes, sampleRate, cancelled, error } = useBreezeSpeech()
 
 // Anything the render itself has to say that is not an error: a truncation diagnosis,
 // mostly. Cleared at the start of every attempt.
@@ -115,11 +117,20 @@ async function onSpeak() {
   note.value = null
   await speak(body, p.id)
   // A `truncated` failure NEVER arrives as a message: the rig answers 200 OK and then
-  // dies mid-stream. `ttfaMs` stays null when no audio frame ever landed, which is the
-  // only evidence available on this path — say what it means rather than nothing.
-  if (!error.value && ttfaMs.value === null) {
-    note.value = diagnoseTruncation({ chars: body.length, audioBytes: 0, sampleRate: 24000 })
-  }
+  // dies mid-stream, so the only evidence is how much audio actually showed up. Counting
+  // BYTES, not just "did anything arrive": a stream that delivers one frame and then dies
+  // is the commoner overrun shape, and it sets ttfaMs like a healthy one.
+  //
+  // `cancelled` is checked because stop() produces exactly the same shape as a truncation
+  // — no error, little or no audio — and telling a user their own cancel was a prompt
+  // overrun is worse than saying nothing.
+  note.value = diagnoseStreamRender({
+    chars: body.length,
+    audioBytes: audioBytes.value,
+    sampleRate: sampleRate.value,
+    error: error.value,
+    cancelled: cancelled.value
+  })
 }
 
 const downloading = ref(false)
@@ -137,7 +148,9 @@ async function onDownload() {
       // `format` goes in the BODY on this route — it is not a query parameter.
       body: JSON.stringify({ text: body, presetId: p.id, format: 'wav' })
     })
-    if (!res.ok) throw new Error((await res.text().catch(() => '')) || res.statusText)
+    // Parsed, not raw: `fetch` hands back the whole h3 JSON error envelope, and the
+    // pre-flight's 400 sentence is one field inside it.
+    if (!res.ok) throw new Error(errorFromResponseBody(await res.text().catch(() => ''), res.statusText))
     const blob = await res.blob()
     // Here the whole file is in hand, so the truncation check can use real byte counts
     // rather than the stream path's "did anything arrive at all".

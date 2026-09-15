@@ -11,7 +11,9 @@ import {
   type SpeakRequestBody,
   diagnoseTruncation,
   draftIsDirty,
+  diagnoseStreamRender,
   draftToBody,
+  errorFromResponseBody,
   errorMessage,
   insertAtCursor,
   isCfgLocked,
@@ -349,6 +351,75 @@ describe('diagnoseTruncation', () => {
 
   it('does not divide by a zero sample rate', () => {
     expect(diagnoseTruncation({ chars: 100, audioBytes: 1000, sampleRate: 0 })).toBeNull()
+  })
+})
+
+describe('diagnoseStreamRender', () => {
+  const sampleRate = 24000 // 48000 bytes per second of 16-bit mono audio
+  // 420 chars ≈ 30s of speech at ~14 chars/s.
+  const chars = 420
+  const healthy = { chars, audioBytes: 48000 * 28, sampleRate, error: null, cancelled: false }
+
+  it('REGRESSION: a stream that delivered a few bytes and then died still reports an overrun', () => {
+    // The shape this whole diagnosis exists for, and the one the previous wiring missed:
+    // the rig answers 200, sends one frame, and dies. ttfaMs is set, so "did anything
+    // arrive?" says yes — but 0.02s of audio for 30s of text is an overrun.
+    const msg = diagnoseStreamRender({ ...healthy, audioBytes: 960 })
+    expect(msg).toBe(TRUNCATION_MESSAGE)
+  })
+
+  it('reports an overrun when nothing arrived at all', () => {
+    expect(diagnoseStreamRender({ ...healthy, audioBytes: 0 })).toBe(TRUNCATION_MESSAGE)
+  })
+
+  it('stays quiet on a render that produced roughly the right amount of audio', () => {
+    expect(diagnoseStreamRender(healthy)).toBeNull()
+  })
+
+  it('stays quiet when the user pressed Stop — a cancel is not an overrun', () => {
+    // stop() produces exactly a truncation's shape: no error, and little or no audio.
+    expect(diagnoseStreamRender({ ...healthy, audioBytes: 960, cancelled: true })).toBeNull()
+    expect(diagnoseStreamRender({ ...healthy, audioBytes: 0, cancelled: true })).toBeNull()
+  })
+
+  it('stays quiet when the render already failed with a message of its own', () => {
+    expect(diagnoseStreamRender({ ...healthy, audioBytes: 0, error: 'Breeze unreachable' })).toBeNull()
+  })
+
+  it('does not fire on a short line that legitimately produces little audio', () => {
+    // 20 chars ≈ 1.4s; 1.2s came back.
+    expect(diagnoseStreamRender({ chars: 20, audioBytes: 48000 * 1.2, sampleRate, error: null, cancelled: false })).toBeNull()
+  })
+})
+
+describe('errorFromResponseBody', () => {
+  it('pulls the sentence out of an h3 error envelope instead of showing raw JSON', () => {
+    // What `await res.text()` returns from the new speak pre-flight's 400.
+    const body = JSON.stringify({
+      url: '/api/voice/speak',
+      statusCode: 400,
+      statusMessage: 'cfg_scale above 1.0 requires an instruction (the clone/plain templates define no negative prompt)',
+      message: 'cfg_scale above 1.0 requires an instruction',
+      stack: []
+    })
+    expect(errorFromResponseBody(body)).toBe(
+      'cfg_scale above 1.0 requires an instruction (the clone/plain templates define no negative prompt)'
+    )
+    expect(errorFromResponseBody(body)).not.toContain('{')
+  })
+
+  it('passes a plain-text body straight through', () => {
+    expect(errorFromResponseBody('Bad Gateway')).toBe('Bad Gateway')
+  })
+
+  it('falls back when the body is empty', () => {
+    expect(errorFromResponseBody('', 'Service Unavailable')).toBe('Service Unavailable')
+    expect(errorFromResponseBody('   ', 'Service Unavailable')).toBe('Service Unavailable')
+  })
+
+  it('shows what arrived when the body only LOOKS like JSON', () => {
+    // A body truncated mid-flight must not disappear into a catch.
+    expect(errorFromResponseBody('{"statusMessage":"cut off half')).toBe('{"statusMessage":"cut off half')
   })
 })
 

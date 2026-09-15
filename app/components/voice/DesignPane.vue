@@ -14,9 +14,11 @@ import {
   runAuditionSequentially,
   validatePresetDraft,
   diagnoseTruncation,
+  errorFromResponseBody,
   type PresetDraft,
   type SpeakRequestBody
 } from '~/lib/voice/studio'
+import { createGenerationGuard, isAbortError } from '~/lib/voice/generation'
 import { encodeWav, mixToMono, readWavInfo } from '~/lib/voice/wav-encode'
 
 const props = defineProps<{ preset: VoicePresetDTO | null }>()
@@ -25,6 +27,15 @@ const emit = defineEmits<{ saved: [VoicePresetDTO] }>()
 const draft = reactive<PresetDraft>(blankDraft())
 const saving = ref(false)
 const saveError = ref<string | null>(null)
+
+// This pane is ONE form bound to whichever preset is selected, so every slow operation it
+// starts — an upload, a recording's decode, a four-take audition — was started for one
+// preset and can resolve after the user has picked another. The guard is what stops a
+// result landing on the wrong draft: work captures a token at the start and checks it
+// before applying anything, and cancellable work carries the signal so it stops outright.
+// Without it, a reference clip uploaded under preset A is written into preset B's draft
+// and the next Save persists it — silent corruption, not a cosmetic glitch.
+const guard = createGenerationGuard()
 
 const errors = computed(() => validatePresetDraft(draft))
 const dirty = computed(() => draftIsDirty(draft, props.preset))
@@ -104,14 +115,19 @@ const queued = computed(() => elapsedMs.value > 4000)
  *  Takes the whole request body, `overrides` included — this is the ONLY network call the
  *  audition makes, which is what makes "an audition never writes" a property of the code
  *  rather than a promise. */
-async function renderWav(body: SpeakRequestBody): Promise<{ blob: Blob, note: string | null }> {
+async function renderWav(body: SpeakRequestBody, signal?: AbortSignal): Promise<{ blob: Blob, note: string | null }> {
   const res = await fetch('/api/voice/speak', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     // `format` belongs in the BODY — it is not a query parameter on this route.
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    // Switching preset aborts the render outright: the rig has ONE inference slot, and an
+    // abandoned audition holding it is the newly selected preset waiting on nothing.
+    signal
   })
-  if (!res.ok) throw new Error((await res.text().catch(() => '')) || res.statusText)
+  // Parsed, not raw: `fetch` returns the whole h3 JSON error envelope, and the
+  // pre-flight's 400 sentence is one field inside it.
+  if (!res.ok) throw new Error(errorFromResponseBody(await res.text().catch(() => ''), res.statusText))
   const blob = await res.blob()
   const info = readWavInfo(new Uint8Array(await blob.arrayBuffer()))
   return {
@@ -167,17 +183,22 @@ async function runAudition() {
   }))
   auditioning.value = true
   auditionError.value = null
+  // Captured once, for the whole run: every hook below checks it before touching state
+  // that may since have come to belong to a different preset.
+  const { token, signal } = guard.begin()
   try {
     // Sequential, and nothing but `renderWav` reaches the network: no PATCH before a
     // take, no restore after the run. The rig serves one request at a time (four at once
     // would 409 three of them), and an audition is a preview, never a write.
-    await runAuditionSequentially(requests, renderWav, {
+    await runAuditionSequentially(requests, body => renderWav(body, signal), {
       onStart: (i) => {
+        if (guard.isStale(token)) return
         const take = takes.value[i]
         if (take) take.status = 'rendering'
         startClock()
       },
       onDone: (i, result) => {
+        if (guard.isStale(token)) return
         stopClock()
         const take = takes.value[i]
         if (!take) return
@@ -186,6 +207,9 @@ async function runAudition() {
         take.status = 'ready'
       },
       onError: (i, err) => {
+        // An abandoned take is not a failure to report — and its row belongs to a preset
+        // that is no longer on screen anyway.
+        if (guard.isStale(token) || isAbortError(err)) return
         stopClock()
         const take = takes.value[i]
         if (!take) return
@@ -194,8 +218,12 @@ async function runAudition() {
       }
     })
   } finally {
-    stopClock()
-    auditioning.value = false
+    // Guarded: a run abandoned by a preset switch must not clear the spinner that now
+    // belongs to the newly selected preset's own audition.
+    if (!guard.isStale(token)) {
+      stopClock()
+      auditioning.value = false
+    }
   }
 }
 
@@ -222,6 +250,11 @@ watch(refFile, (file) => {
 })
 
 async function uploadReference(file: Blob, filename: string) {
+  // The clip is on the wire for as long as Whisper takes to transcribe it, which is ample
+  // time to pick a different preset. Everything below the await is therefore guarded: a
+  // result that arrives late belongs to a draft that no longer exists, and writing it
+  // would put preset A's clip and transcript on preset B — where the next Save persists it.
+  const { token, signal } = guard.begin()
   refBusy.value = true
   refError.value = null
   refWarning.value = null
@@ -230,8 +263,9 @@ async function uploadReference(file: Blob, filename: string) {
     form.append('audio', file, filename)
     const res = await $fetch<{ storageKey: string, refText: string, durationMs: number, warning: string | null }>(
       '/api/voice/reference',
-      { method: 'POST', body: form }
+      { method: 'POST', body: form, signal }
     )
+    if (guard.isStale(token)) return
     draft.refStorageKey = res.storageKey
     draft.refText = res.refText
     draft.refDurationMs = res.durationMs
@@ -239,11 +273,13 @@ async function uploadReference(file: Blob, filename: string) {
     // warning that explains a later render stopping early.
     refWarning.value = res.warning
   } catch (e) {
+    if (guard.isStale(token) || isAbortError(e)) return
     // The server's own sentence carries the 60s limit and the measured length — show it
     // rather than a generic failure.
     refError.value = errorMessage(e)
   } finally {
-    refBusy.value = false
+    // Only the CURRENT generation owns this spinner.
+    if (!guard.isStale(token)) refBusy.value = false
   }
 }
 
@@ -259,6 +295,11 @@ function clearReference() {
 let recorder: MediaRecorder | null = null
 let micStream: MediaStream | null = null
 let recordedChunks: Blob[] = []
+/** The generation the recording was STARTED in. Captured at start rather than at stop
+ *  because the preset switch is what stops it: by the time `onstop` fires the guard has
+ *  already been reset, so a token taken in finishRecording would read as current and the
+ *  clip would upload against the preset the user just moved to. */
+let recordingToken: number | null = null
 
 async function toggleRecording() {
   if (recording.value) {
@@ -280,16 +321,23 @@ async function toggleRecording() {
   recorder.onstop = () => {
     void finishRecording()
   }
+  recordingToken = guard.begin().token
   recorder.start()
   recording.value = true
 }
 
 async function finishRecording() {
+  // The token the recording STARTED in (see recordingToken). A recording stopped BY a
+  // preset switch lands here with the guard already reset, and must be discarded rather
+  // than uploaded against whichever preset is now selected.
+  const token = recordingToken
+  recordingToken = null
   recording.value = false
   micStream?.getTracks().forEach(t => t.stop())
   micStream = null
   const recorded = new Blob(recordedChunks, { type: recorder?.mimeType || 'audio/webm' })
   recordedChunks = []
+  if (token === null || guard.isStale(token)) return
   if (!recorded.size) {
     refError.value = 'Nothing was recorded.'
     return
@@ -299,10 +347,13 @@ async function finishRecording() {
   const ctx = new AudioContext()
   try {
     const decoded = await ctx.decodeAudioData(await recorded.arrayBuffer())
+    if (guard.isStale(token)) return
     const channels = Array.from({ length: decoded.numberOfChannels }, (_, i) => decoded.getChannelData(i))
     const wav = encodeWav(mixToMono(channels), decoded.sampleRate)
+    // uploadReference captures its own token; by here we know this generation is current.
     await uploadReference(new Blob([wav], { type: 'audio/wav' }), 'recording.wav')
   } catch (e) {
+    if (guard.isStale(token)) return
     refError.value = `Could not convert the recording to WAV: ${errorMessage(e)}`
   } finally {
     void ctx.close()
@@ -324,11 +375,28 @@ async function finishRecording() {
 // voice is selected".
 watch(() => props.preset?.id ?? null, () => {
   const p = props.preset
+  // FIRST: invalidate everything in flight. An upload, a recording's decode and an
+  // audition can all be mid-await right now, each holding a token issued for the preset
+  // being navigated away from; this makes their results unapplicable and aborts the ones
+  // that can be aborted (the audition's render, which is holding the rig's only slot).
+  guard.reset()
+  // A recording in progress is stopped rather than left running against a preset that is
+  // no longer on screen — its onstop lands in finishRecording, which discards it.
+  if (recording.value) {
+    recorder?.stop()
+    recording.value = false
+  }
   Object.assign(draft, p ? presetToDraft(p) : blankDraft())
   starterKey.value = undefined
   saveError.value = null
   refError.value = null
   refWarning.value = null
+  // Cleared with everything else: the upload widget kept showing the PREVIOUS preset's
+  // filename, which reads as "this preset has that clip" when it does not.
+  refFile.value = null
+  refBusy.value = false
+  auditioning.value = false
+  stopClock()
   clearTakes()
 }, { immediate: true })
 
