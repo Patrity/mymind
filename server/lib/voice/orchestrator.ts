@@ -100,6 +100,13 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   // `audio-begin` (carrying the sample rate the client must decode at) and an
   // `audio-end`; the raw PCM in between rides `audio` frames.
   let segmentId = 0
+  // `audio-begin`/`audio-end` are strictly PAIRED. The pipeline fires onSegmentEnd for
+  // every segment including a dropped one (it owns lifetimes, not frame semantics), but a
+  // segment whose synthesis threw or aborted before yielding its `begin` never opened on
+  // the wire — and `segmentId` still holds its PREDECESSOR's value, so emitting anyway
+  // would close an already-closed segment, naming an id that really did begin. A frame
+  // reporting an end that never happened is a lying frame; suppress it here instead.
+  let segmentOpen = false
   const pipeline = new SpeechPipeline({
     synthesize: (text, opts) => deps.tts.synthesize(text, opts),
     preset: deps.preset,
@@ -110,12 +117,17 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     onChunk: (c) => {
       if (c.kind === 'begin') {
         segmentId++
+        segmentOpen = true
         deps.emit({ type: 'audio-begin', segmentId, sampleRate: c.sampleRate })
       } else {
         deps.emit({ type: 'audio', bytes: c.bytes })
       }
     },
-    onSegmentEnd: () => { if (segmentId > 0) deps.emit({ type: 'audio-end', segmentId }) }
+    onSegmentEnd: () => {
+      if (!segmentOpen) return
+      segmentOpen = false
+      deps.emit({ type: 'audio-end', segmentId })
+    }
   })
 
   let sawText = false

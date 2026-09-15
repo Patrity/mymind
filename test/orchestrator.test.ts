@@ -88,6 +88,54 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
   })
 
+  it('pairs audio-begin/audio-end per segment and stays silent for a segment that was dropped', async () => {
+    // A segment whose synthesis throws before yielding anything must emit NEITHER frame.
+    // SpeechPipeline fires onSegmentEnd unconditionally (it owns segment lifetimes, not
+    // frame semantics), and at that moment `segmentId` still holds the PREVIOUS segment's
+    // value — so without the orchestrator's open-segment guard, a drop closes its
+    // predecessor a SECOND time, naming an id that really did begin. That is a frame
+    // reporting an end that never happened.
+    //
+    // The ordering here is deliberate: drop, speak, drop, speak. A turn whose FIRST
+    // segment drops does NOT discriminate — at that point segmentId is still 0, so a bare
+    // `segmentId > 0` check already suppresses the frame. Only a drop that FOLLOWS a
+    // successful segment exposes the defect, so the run must contain both.
+    const events: { type: string; segmentId?: number }[] = []
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let call = 0
+    const flakyTts = { synthesize: vi.fn(async function* () {
+      call++
+      if (call % 2 === 1) throw new Error('truncated')          // segments 1 and 3: dropped
+      yield { kind: 'begin' as const, sampleRate: 24000 }        // segments 2 and 4: speak
+      yield { kind: 'pcm' as const, bytes: new Uint8Array([7]) }
+    }) }
+    const runFourSegments = (async function* () {
+      yield { type: 'text-delta', text: 'First sentence here. ' }
+      yield { type: 'text-delta', text: 'Second sentence here. ' }
+      yield { type: 'text-delta', text: 'Third sentence here. ' }
+      yield { type: 'text-delta', text: 'Fourth sentence here. ' }
+      yield { type: 'done' }
+    }) as never
+
+    await handleTurn('hi', [], {
+      tts: flakyTts, preset, speak: true, runAgent: runFourSegments,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+
+    expect(flakyTts.synthesize).toHaveBeenCalledTimes(4)   // all four segments were attempted…
+    const begins = events.filter(e => e.type === 'audio-begin')
+    const ends = events.filter(e => e.type === 'audio-end')
+    expect(begins).toHaveLength(2)                         // …only the two that spoke opened…
+    expect(ends).toHaveLength(2)                           // …and exactly those two closed.
+    expect(ends.map(e => e.segmentId)).toEqual(begins.map(e => e.segmentId))
+    // Strictly alternating, so no audio-end ever precedes its audio-begin and no segment
+    // is closed twice. Drop the orchestrator's open-segment guard and segment 3's drop
+    // inserts a spurious second 'audio-end' for segment 1 right here.
+    expect(events.filter(e => e.type.startsWith('audio-')).map(e => e.type))
+      .toEqual(['audio-begin', 'audio-end', 'audio-begin', 'audio-end'])
+    errSpy.mockRestore()
+  })
+
   it('empty text is a no-op', async () => {
     const events: any[] = []
     const history = await handleTurn('', [{ role: 'user', content: 'hi' }], {
