@@ -1,17 +1,37 @@
 // server/api/voice/speak.post.ts
 // Studio synthesis. Separate from the agent socket so an audition never rides the
 // conversation's channel, and queued at STUDIO priority so it yields to a live turn.
-import { speakWithPreset, collectPcm, pcmToWav } from '../../lib/voice/speak'
+import { speakWithPreset, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../lib/voice/speak'
 import { resolvePreset, loadReferenceBytes } from '../../services/voice-presets'
-import { BreezeError } from '../../lib/voice/breeze'
+import { BreezeError, validateBreezeRequest } from '../../lib/voice/breeze'
+import type { SpeakOverrides } from '../../../shared/types/voice-presets'
 
 export default defineEventHandler(async (event) => {
-  const body = await readBody<{ text?: string; presetId?: string; format?: 'pcm' | 'wav' }>(event)
+  const body = await readBody<{
+    text?: string
+    presetId?: string
+    format?: 'pcm' | 'wav'
+    /** Ad-hoc parameters for THIS request only — see applyOverrides. Never persisted. */
+    overrides?: SpeakOverrides
+  }>(event)
   const text = body.text?.trim()
   if (!text) throw createError({ statusCode: 400, statusMessage: 'text is required' })
 
-  const preset = await resolvePreset(body.presetId)
+  const stored = await resolvePreset(body.presetId)
+  // In memory, for this request alone. The studio auditions four seeds and previews
+  // unsaved sliders through this path; none of it touches the row, so a tab closed
+  // mid-audition cannot leave the preset — or the live agent, which resolves the same row
+  // per turn — stuck on an audition value.
+  const preset = applyOverrides(stored, body.overrides)
   const refAudio = await loadReferenceBytes(preset)
+
+  // The rig's own pre-flight, run HERE so an illegal COMBINATION answers 400 with a
+  // sentence instead of the opaque 500 Breeze returns for cfg > 1 without an instruction.
+  // Overrides make that combination reachable without a row ever violating the matching
+  // DB CHECK, so this is the only place it can be caught. Reused, not restated: the rule
+  // lives in validateBreezeRequest and breezeSpeak runs the same function.
+  const invalid = validateBreezeRequest(presetToRequest(text, preset, refAudio))
+  if (invalid) throw createError({ statusCode: 400, statusMessage: invalid })
 
   // h3's bridge from a returned Web ReadableStream to the Node response (sendStream's
   // pipeTo branch) does NOT observe a client disconnect: writing to a torn-down socket

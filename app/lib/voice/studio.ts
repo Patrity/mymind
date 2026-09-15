@@ -3,7 +3,7 @@
 // what the user is ALLOWED to compose and what a result MEANS — kept out of the .vue
 // files so it can be tested without mounting anything (same precedent as devices.ts,
 // messages.ts and presets.ts in this directory).
-import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { VoicePresetDTO, SpeakOverrides } from '~~/shared/types/voice-presets'
 import { presetMode } from '~~/shared/types/voice-presets'
 
 /** The editable shape of a preset while it is being designed. Mirrors PresetInput on the
@@ -194,6 +194,101 @@ export function auditionSeeds(current: number, rng: () => number = Math.random):
     seeds.push(filler)
   }
   return seeds
+}
+
+// ── Auditioning ───────────────────────────────────────────────────────────────
+//
+// An audition is a PREVIEW. It renders the same sentence at four seeds — and, because the
+// same mechanism carries every tunable parameter, at whatever the user has currently got
+// on screen rather than at whatever was last saved.
+//
+// It sends those parameters as `overrides` on POST /api/voice/speak, which merges them in
+// memory for one request. It must NEVER write: the earlier shape PATCHed the row's seed
+// per take and put it back in a `finally`, so a closed tab or a dropped connection left
+// the preset stuck on an audition seed — and the live agent resolves that same row on
+// every turn, so it would then have spoken in it.
+
+/** The body POST /api/voice/speak accepts. */
+export interface SpeakRequestBody {
+  text: string
+  presetId: string
+  /** Omitted for the streaming path; 'wav' returns a complete file. */
+  format?: 'wav'
+  overrides?: SpeakOverrides
+}
+
+/**
+ * The draft's tunable parameters, as overrides. Deliberately carries neither the name nor
+ * anything about the reference clip nor the calibrated ceiling — those are properties of
+ * the SAVED voice, and the server's allow-list refuses them anyway.
+ *
+ * cfgScale goes through the same clamp the Save path uses, so a preview can never ask for
+ * a combination the row itself would be forbidden to hold.
+ */
+export function draftToOverrides(d: PresetDraft, seed?: number): SpeakOverrides {
+  const instruction = d.instruction.trim() || null
+  return {
+    seed: seed ?? d.seed,
+    instruction,
+    cfgScale: clampCfgScale(d.cfgScale, instruction),
+    temperature: d.temperature,
+    topP: d.topP,
+    topK: d.topK
+  }
+}
+
+/** The four requests an audition sends — one per seed, all carrying the current draft. */
+export function auditionRequests(
+  draft: PresetDraft,
+  presetId: string,
+  text: string,
+  rng: () => number = Math.random
+): SpeakRequestBody[] {
+  return auditionSeeds(draft.seed, rng).map(seed => ({
+    text,
+    presetId,
+    // A complete file, so each take can be replayed from its own play button.
+    format: 'wav' as const,
+    overrides: draftToOverrides(draft, seed)
+  }))
+}
+
+export interface AuditionHooks<T> {
+  onStart?: (index: number) => void
+  onDone?: (index: number, result: T) => void
+  onError?: (index: number, err: unknown) => void
+}
+
+/**
+ * Send each request IN TURN, awaiting every one before starting the next.
+ *
+ * The rig serves exactly one inference at a time: four requests in flight together means
+ * one 200 and three 409s. `send` is the ONLY way this function can reach the network, so
+ * there is no path by which an audition writes anything.
+ *
+ * A failing take is reported and the run continues — one bad seed should not cost the
+ * other three.
+ */
+export async function runAuditionSequentially<T>(
+  requests: SpeakRequestBody[],
+  send: (body: SpeakRequestBody) => Promise<T>,
+  hooks: AuditionHooks<T> = {}
+): Promise<void> {
+  for (let i = 0; i < requests.length; i++) {
+    const req = requests[i]
+    if (!req) continue
+    hooks.onStart?.(i)
+    try {
+      // `send` is awaited on its own line ON PURPOSE. Written as
+      // `hooks.onDone?.(i, await send(req))`, optional chaining short-circuits the WHOLE
+      // call expression when onDone is absent — arguments included — so the request would
+      // silently never be sent for any caller that did not pass that hook.
+      const result = await send(req)
+      hooks.onDone?.(i, result)
+    } catch (err) {
+      hooks.onError?.(i, err)
+    }
+  }
 }
 
 // ── Event tags ────────────────────────────────────────────────────────────────

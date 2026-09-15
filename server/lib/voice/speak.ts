@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer'
 import { breezeSpeak, type BreezeRequest } from './breeze'
 import { breezeQueue, type BreezeQueue, type QueuePriority } from './breeze-queue'
 import { resolveChain } from '../ai/registry/resolve'
-import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
+import type { VoicePresetDTO, SpeakOverrides } from '../../../shared/types/voice-presets'
 
 export type SpeakChunk =
   | { kind: 'begin'; sampleRate: number }
@@ -14,6 +14,44 @@ export interface SpeakDeps {
   baseURL: () => Promise<string>
   queue?: BreezeQueue
   speakFn?: typeof breezeSpeak
+}
+
+/**
+ * Merge ad-hoc parameters over a preset for a SINGLE synthesis. Returns a new object;
+ * the input is never mutated and nothing is ever written to the database.
+ *
+ * This exists so that auditioning four seeds — or previewing an unsaved instruction — is
+ * a preview rather than four writes to a live row. The previous shape PATCHed the row per
+ * take and restored it in a `finally`, which meant a closed tab, a dropped connection or a
+ * dead process left the preset stuck on an audition seed. The live agent resolves that
+ * same row per turn, so it would then have spoken in it.
+ *
+ * An ALLOW-LIST, not a deny-list: anything not named here (maxSegmentChars, every
+ * reference field, name, isDefault) is structurally unreachable from an override, so a
+ * later addition to VoicePresetDTO cannot accidentally become overridable.
+ *
+ * Non-finite numbers are ignored rather than applied: a NaN seed reaches the rig as
+ * `seed=NaN` and comes back as an opaque 500, whereas falling back to the preset's own
+ * calibrated value is always safe.
+ */
+export function applyOverrides(preset: VoicePresetDTO, overrides?: SpeakOverrides | null): VoicePresetDTO {
+  if (!overrides) return preset
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const merged: VoicePresetDTO = { ...preset }
+
+  // '' and a blank string mean "no instruction", exactly as the column stores it — the
+  // cfg pre-flight below tests `instruction?.trim()`, so normalising here keeps the
+  // in-memory preset indistinguishable from a row that never had one.
+  if (typeof overrides.instruction === 'string') merged.instruction = overrides.instruction.trim() || null
+  else if (overrides.instruction === null) merged.instruction = null
+
+  merged.seed = num(overrides.seed) ?? merged.seed
+  merged.cfgScale = num(overrides.cfgScale) ?? merged.cfgScale
+  merged.temperature = num(overrides.temperature) ?? merged.temperature
+  merged.topP = num(overrides.topP) ?? merged.topP
+  merged.topK = num(overrides.topK) ?? merged.topK
+
+  return merged
 }
 
 export function presetToRequest(text: string, p: VoicePresetDTO, refAudio: Uint8Array | null): BreezeRequest {

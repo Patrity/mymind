@@ -3,7 +3,7 @@
 import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
 import {
   CFG_LOCK_REASON,
-  auditionSeeds,
+  auditionRequests,
   blankDraft,
   draftIsDirty,
   draftToBody,
@@ -11,9 +11,11 @@ import {
   isCfgLocked,
   presetToDraft,
   randomSeed,
+  runAuditionSequentially,
   validatePresetDraft,
   diagnoseTruncation,
-  type PresetDraft
+  type PresetDraft,
+  type SpeakRequestBody
 } from '~/lib/voice/studio'
 import { encodeWav, mixToMono, readWavInfo } from '~/lib/voice/wav-encode'
 
@@ -98,13 +100,16 @@ function stopClock() {
 
 const queued = computed(() => elapsedMs.value > 4000)
 
-/** One complete WAV from /api/voice/speak, plus whatever its size says about it. */
-async function renderWav(text: string, presetId: string): Promise<{ blob: Blob, note: string | null }> {
+/** One complete WAV from /api/voice/speak, plus whatever its size says about it.
+ *  Takes the whole request body, `overrides` included — this is the ONLY network call the
+ *  audition makes, which is what makes "an audition never writes" a property of the code
+ *  rather than a promise. */
+async function renderWav(body: SpeakRequestBody): Promise<{ blob: Blob, note: string | null }> {
   const res = await fetch('/api/voice/speak', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     // `format` belongs in the BODY — it is not a query parameter on this route.
-    body: JSON.stringify({ text, presetId, format: 'wav' })
+    body: JSON.stringify(body)
   })
   if (!res.ok) throw new Error((await res.text().catch(() => '')) || res.statusText)
   const blob = await res.blob()
@@ -112,7 +117,7 @@ async function renderWav(text: string, presetId: string): Promise<{ blob: Blob, 
   return {
     blob,
     note: diagnoseTruncation({
-      chars: text.length,
+      chars: body.text.length,
       audioBytes: info?.dataBytes ?? 0,
       sampleRate: info?.sampleRate ?? 24000
     })
@@ -142,52 +147,54 @@ function clearTakes() {
   auditionError.value = null
 }
 
-/** The audition needs a SAVED row: /api/voice/speak resolves the preset from the
- *  database and takes no inline overrides, so the only way to hear a different seed is
- *  to PATCH the row, render, and put the seed back. */
-const auditionBlockedReason = computed(() => {
-  // While the audition runs it is PATCHing the seed itself, so the row legitimately
-  // differs from the draft — don't tell the user to save because of our own writes.
-  if (auditioning.value) return null
-  if (!props.preset) return 'Select a voice first.'
-  if (dirty.value) return 'Save your changes first — an audition renders the saved voice.'
-  return null
-})
+/** The audition needs a preset row only for its ID and its reference clip — every
+ *  tunable parameter rides along as an override, so UNSAVED edits are previewed as they
+ *  stand. There is deliberately no "save first" gate any more. */
+const auditionBlockedReason = computed(() => props.preset ? null : 'Select a voice first.')
 
 async function runAudition() {
   const p = props.preset
   if (!p || auditioning.value || auditionBlockedReason.value) return
   clearTakes()
-  takes.value = auditionSeeds(draft.seed).map(seed => ({ seed, status: 'pending', url: null, note: null }))
+  // Built up front so the four seeds are visible before the first render returns, and so
+  // the requests and the rows cannot drift apart.
+  const requests = auditionRequests(draft, p.id, AUDITION_TEXT)
+  takes.value = requests.map(r => ({
+    seed: r.overrides?.seed ?? draft.seed,
+    status: 'pending',
+    url: null,
+    note: null
+  }))
   auditioning.value = true
   auditionError.value = null
-  const restoreTo = draft.seed
   try {
-    // STRICTLY sequential. The rig serves one request at a time — firing four at once
-    // 409s three of them. Awaiting each take in turn is the whole design here.
-    for (const take of takes.value) {
-      take.status = 'rendering'
-      startClock()
-      try {
-        await $fetch(`/api/voice/presets/${p.id}`, { method: 'PATCH', body: { seed: take.seed } })
-        const { blob, note } = await renderWav(AUDITION_TEXT, p.id)
-        take.url = URL.createObjectURL(blob)
-        take.note = note
-        take.status = 'ready'
-      } catch (e) {
-        take.status = 'failed'
-        take.note = errorMessage(e)
-      } finally {
+    // Sequential, and nothing but `renderWav` reaches the network: no PATCH before a
+    // take, no restore after the run. The rig serves one request at a time (four at once
+    // would 409 three of them), and an audition is a preview, never a write.
+    await runAuditionSequentially(requests, renderWav, {
+      onStart: (i) => {
+        const take = takes.value[i]
+        if (take) take.status = 'rendering'
+        startClock()
+      },
+      onDone: (i, result) => {
         stopClock()
+        const take = takes.value[i]
+        if (!take) return
+        take.url = URL.createObjectURL(result.blob)
+        take.note = result.note
+        take.status = 'ready'
+      },
+      onError: (i, err) => {
+        stopClock()
+        const take = takes.value[i]
+        if (!take) return
+        take.status = 'failed'
+        take.note = errorMessage(err)
       }
-    }
+    })
   } finally {
-    // Put the row back the way the user left it — an audition is a listening exercise,
-    // not an edit.
-    await $fetch(`/api/voice/presets/${p.id}`, { method: 'PATCH', body: { seed: restoreTo } })
-      .catch((e) => {
-        auditionError.value = `The seed could not be restored: ${errorMessage(e)}`
-      })
+    stopClock()
     auditioning.value = false
   }
 }
@@ -309,11 +316,12 @@ async function finishRecording() {
 // gate would catch.
 //
 // Keyed on the preset's ID, deliberately NOT on the object. `voicePreset` is a live
-// resource: every PATCH publishes a change, the SSE dispatch invalidates
+// resource: every write publishes a change, the SSE dispatch invalidates
 // ['voicePreset','list'], and the refetch hands down a NEW object for the SAME row. A
-// watcher on the object would therefore fire mid-audition (which PATCHes the seed four
-// times) and mid-edit (any other tab touching the row), wiping the form and the takes.
-// A different ID is the only thing that actually means "a different voice is selected".
+// watcher on the object would therefore fire whenever anything touches this preset —
+// this pane's own Save, another tab, a background writer — wiping an in-progress edit and
+// the audition takes. A different ID is the only thing that actually means "a different
+// voice is selected".
 watch(() => props.preset?.id ?? null, () => {
   const p = props.preset
   Object.assign(draft, p ? presetToDraft(p) : blankDraft())
@@ -497,7 +505,7 @@ onBeforeUnmount(() => {
       <div class="flex items-center justify-between gap-2">
         <div class="flex flex-col">
           <span class="text-sm font-medium text-highlighted">Seed audition</span>
-          <span class="text-xs text-muted">Four draws of the same voice, rendered one at a time.</span>
+          <span class="text-xs text-muted">Four draws of the settings above, rendered one at a time. Nothing is saved.</span>
         </div>
         <UButton
           icon="i-lucide-shuffle"

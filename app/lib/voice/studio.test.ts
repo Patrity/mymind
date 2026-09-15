@@ -3,8 +3,12 @@ import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
 import {
   CFG_LOCK_REASON,
   TRUNCATION_MESSAGE,
+  auditionRequests,
   auditionSeeds,
   clampCfgScale,
+  draftToOverrides,
+  runAuditionSequentially,
+  type SpeakRequestBody,
   diagnoseTruncation,
   draftIsDirty,
   draftToBody,
@@ -166,6 +170,128 @@ describe('seeds', () => {
     const seeds = auditionSeeds(1, () => 0) // randomSeed(() => 0) === 1, which is already taken
     expect(seeds).toHaveLength(4)
     expect(new Set(seeds).size).toBe(4)
+  })
+})
+
+describe('the audition never writes, and never parallelises', () => {
+  // A transport that records every request it is handed and tracks how many are in flight
+  // at once. `send` is the driver's ONLY way to reach the network, so anything it does not
+  // record did not happen.
+  function recorder(behaviour: (body: SpeakRequestBody, i: number) => Promise<string> = async () => 'ok') {
+    const sent: SpeakRequestBody[] = []
+    let inFlight = 0
+    let maxInFlight = 0
+    const send = async (body: SpeakRequestBody) => {
+      const i = sent.length
+      sent.push(body)
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      try {
+        // Yield to the microtask queue so overlapping calls would actually overlap.
+        await Promise.resolve()
+        return await behaviour(body, i)
+      } finally {
+        inFlight--
+      }
+    }
+    return { sent, send, maxInFlight: () => maxInFlight }
+  }
+
+  it('sends exactly one request per seed — and nothing else', async () => {
+    const requests = auditionRequests(draft(), 'preset-1', 'read this')
+    const r = recorder()
+    await runAuditionSequentially(requests, r.send)
+
+    expect(r.sent).toHaveLength(4)
+    // Every request is a synthesis. There is no PATCH before a take and no restore after
+    // the run — the shape that used to leave a preset stranded on an audition seed when a
+    // tab closed mid-run.
+    for (const body of r.sent) {
+      expect(body.text).toBe('read this')
+      expect(body.presetId).toBe('preset-1')
+      expect(body.format).toBe('wav')
+      expect(body.overrides).toBeTruthy()
+    }
+  })
+
+  it('never has more than one request in flight — the rig serves one at a time', async () => {
+    const requests = auditionRequests(draft(), 'preset-1', 'read this')
+    const r = recorder(async () => {
+      await new Promise(resolve => setTimeout(resolve, 1))
+      return 'ok'
+    })
+    await runAuditionSequentially(requests, r.send)
+    expect(r.maxInFlight()).toBe(1)
+  })
+
+  it('carries four DISTINCT seeds, the first being the one on screen', async () => {
+    const requests = auditionRequests(draft({ seed: 11 }), 'preset-1', 'read this')
+    const seeds = requests.map(b => b.overrides?.seed)
+    expect(seeds[0]).toBe(11)
+    expect(seeds).toHaveLength(4)
+    expect(new Set(seeds).size).toBe(4)
+    expect(seeds.every(s => typeof s === 'number')).toBe(true)
+  })
+
+  it('previews UNSAVED edits — the overrides carry the draft, not the saved row', () => {
+    const edited = draft({
+      instruction: 'A bright, energetic young man.',
+      cfgScale: 6,
+      temperature: 1.25,
+      topP: 0.6,
+      topK: 15
+    })
+    const [first] = auditionRequests(edited, 'preset-1', 'read this')
+    expect(first?.overrides).toMatchObject({
+      instruction: 'A bright, energetic young man.',
+      cfgScale: 6,
+      temperature: 1.25,
+      topP: 0.6,
+      topK: 15
+    })
+  })
+
+  it('reports each take in order, and one failure does not cost the other three', async () => {
+    const requests = auditionRequests(draft(), 'preset-1', 'read this')
+    const started: number[] = []
+    const done: number[] = []
+    const failed: number[] = []
+    const r = recorder(async (_body, i) => {
+      if (i === 1) throw new Error('the rig is busy')
+      return 'ok'
+    })
+    await runAuditionSequentially(requests, r.send, {
+      onStart: i => started.push(i),
+      onDone: i => done.push(i),
+      onError: i => failed.push(i)
+    })
+    expect(started).toEqual([0, 1, 2, 3])
+    expect(done).toEqual([0, 2, 3])
+    expect(failed).toEqual([1])
+    expect(r.sent).toHaveLength(4)
+  })
+
+  it('does nothing at all when handed no requests', async () => {
+    const r = recorder()
+    await runAuditionSequentially([], r.send)
+    expect(r.sent).toHaveLength(0)
+  })
+})
+
+describe('draftToOverrides', () => {
+  it('carries only the tunable parameters — never the name, the clip or the ceiling', () => {
+    const o = draftToOverrides(draft({ refStorageKey: 'blob/k', refText: 'transcript' }))
+    expect(Object.keys(o).sort()).toEqual(['cfgScale', 'instruction', 'seed', 'temperature', 'topK', 'topP'])
+  })
+
+  it('clamps cfg exactly as the save path does, so a preview cannot ask for an illegal pair', () => {
+    expect(draftToOverrides(draft({ instruction: '', cfgScale: 7 })).cfgScale).toBe(1)
+    expect(draftToOverrides(draft({ instruction: '', cfgScale: 7 })).instruction).toBeNull()
+  })
+
+  it('overrides the seed when one is supplied, and uses the draft\'s otherwise', () => {
+    expect(draftToOverrides(draft({ seed: 11 })).seed).toBe(11)
+    expect(draftToOverrides(draft({ seed: 11 }), 4821).seed).toBe(4821)
   })
 })
 
