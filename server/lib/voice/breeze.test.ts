@@ -110,6 +110,48 @@ describe('breezeSpeak', () => {
     expect(seen).toEqual([[1, 2], [3, 4]])
   })
 
+  // Distinguishes true streaming from buffer-then-replay: a `[[1,2],[3,4]]` result
+  // alone (the test above) can't tell the two apart — an implementation that fully
+  // drains the reader into an array and then `yield*`s it would produce the same
+  // final result while destroying time-to-first-audio, which is the entire point
+  // of this migration. This test proves the first chunk is observable BEFORE the
+  // second chunk has even been enqueued.
+  it('yields the first chunk before the second has arrived (no buffer-then-replay)', async () => {
+    let openGate = () => {}
+    const gate = new Promise<void>((resolve) => { openGate = resolve })
+    let secondEnqueued = false
+
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]))
+        await gate
+        controller.enqueue(new Uint8Array([3, 4]))
+        secondEnqueued = true
+        controller.close()
+      }
+    })
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(body, { status: 200, headers: { 'x-sample-rate': '24000' } })))
+
+    const s = await breezeSpeak('http://rig:8880', req)
+    const iterator = s.chunks[Symbol.asyncIterator]()
+
+    const first = await iterator.next()
+    expect(first.done).toBe(false)
+    expect([...first.value!]).toEqual([1, 2])
+    // If we got here, the generator yielded without waiting for the gate — i.e.
+    // without waiting for the second chunk to exist at all.
+    expect(secondEnqueued).toBe(false)
+
+    openGate()
+    const second = await iterator.next()
+    expect(second.done).toBe(false)
+    expect([...second.value!]).toEqual([3, 4])
+
+    const final = await iterator.next()
+    expect(final.done).toBe(true)
+  }, 5000)
+
   it('omits ref fields entirely when there is no reference', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => pcmResponse([[1]]))
     vi.stubGlobal('fetch', fetchMock)
