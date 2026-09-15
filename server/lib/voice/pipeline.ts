@@ -34,7 +34,9 @@ export interface SpeechPipelineDeps {
   onSegmentEnd?: () => void
 }
 
-type SegmentResult = SpeakChunk[] | undefined // undefined = dropped (aborted or errored)
+// Nothing is returned per segment any more: chunks are emitted as they arrive, so
+// collecting them would hold a whole segment's PCM (~1 MB) alive for no reader.
+type SegmentResult = void
 
 /**
  * Preserves the sequential path's behaviour on top of pipelining:
@@ -75,8 +77,7 @@ export class SpeechPipeline {
 
   private start(text: string): Promise<SegmentResult> {
     this.deps.onSpeaking?.()
-    const run = async (): Promise<SpeakChunk[]> => {
-      const out: SpeakChunk[] = []
+    const run = async (): Promise<void> => {
       try {
         for await (const c of this.deps.synthesize(text, {
           preset: this.deps.preset, refAudio: this.deps.refAudio, signal: this.deps.signal
@@ -85,23 +86,21 @@ export class SpeechPipeline {
           // one being drained — emit immediately rather than collecting. With concurrency
           // > 1 this would scramble segment order; see the cap in tuning.ts.
           if (!this.deps.signal.aborted) this.deps.onChunk(c)
-          out.push(c)
         }
       } finally {
         // Fires whether the segment completed, threw, or was aborted — the closing
         // audio-end frame must bracket a dropped segment too.
         this.deps.onSegmentEnd?.()
       }
-      return out
     }
     // Attach the handler synchronously (not inside drainOne, which may run much
     // later) so a segment that rejects before its turn to drain is never reported as
     // an unhandled promise rejection.
     return run().catch((err: unknown) => {
+      // Swallowed, not rethrown: the segment is dropped and the rest of the turn plays on.
       if ((err as Error)?.name !== 'AbortError') {
         console.error('[voice] segment synthesis failed, dropping segment:', err)
       }
-      return undefined
     })
   }
 

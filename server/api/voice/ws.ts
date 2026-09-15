@@ -4,7 +4,7 @@ import { classifyFrame } from '../../lib/voice/frames'
 import { sttFromModel } from '../../lib/voice/providers'
 import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
 import { speakWithPreset } from '../../lib/voice/speak'
-import { resolvePreset, loadReferenceBytes } from '../../services/voice-presets'
+import { resolveTurnVoice } from '../../services/voice-presets'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
@@ -153,11 +153,10 @@ export default defineWebSocketHandler({
         inputModality = 'text'
         speakFlag = speak
         turn = async (signal, emit, context) => {
-          const preset = await resolvePreset(s.presetId)
-          // The preset itself is always needed (it caps the chunker), but the clip bytes
-          // are only needed to synthesize — a typed, silent turn would otherwise pay a
-          // full blob read, in the turn's critical path, for audio it never produces.
-          const refAudio = speak ? await loadReferenceBytes(preset) : null
+          // Total by construction — a silent turn touches no voice state, and neither a
+          // DB nor a storage failure can propagate out of here. Voice degrades to "no
+          // audio"; it must never degrade to "no turn". See resolveTurnVoice.
+          const { preset, refAudio } = await resolveTurnVoice(s.presetId, speak)
           return handleTurn(text, s.history, { tts, preset, refAudio, speak, context, modelDefId: s.model, buildMemoryContext, requestApproval, attachments, signal, emit })
         }
       } else {
@@ -168,8 +167,7 @@ export default defineWebSocketHandler({
       inputModality = 'voice'
       speakFlag = true
       turn = async (signal, emit, context) => {
-        const preset = await resolvePreset(s.presetId)
-        const refAudio = await loadReferenceBytes(preset)
+        const { preset, refAudio } = await resolveTurnVoice(s.presetId, true)
         return handleUtterance(audio, s.history, { stt, tts, preset, refAudio, speak: true, context, modelDefId: s.model, buildMemoryContext, requestApproval, signal, emit })
       }
     }

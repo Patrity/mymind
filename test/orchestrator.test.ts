@@ -1,6 +1,7 @@
 // test/orchestrator.test.ts
 import { describe, it, expect, vi } from 'vitest'
 import { handleUtterance, handleTurn } from '../server/lib/voice/orchestrator'
+import { resolveTurnVoice, FALLBACK_PRESET } from '../server/services/voice-presets'
 import type { VoicePresetDTO } from '../shared/types/voice-presets'
 
 const preset: VoicePresetDTO = {
@@ -260,5 +261,76 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     const rec = (history.at(-1) as { toolRecords: { args: Record<string, unknown> }[] }).toolRecords[0]!
     expect(JSON.stringify(rec.args)).not.toContain(body)
     expect(JSON.stringify(rec.args).length).toBeLessThan(6000)
+  })
+})
+
+// Voice state must never cost the user their answer. ws.ts resolves the preset and its
+// reference clip INSIDE the turn closure, so anything that throws there propagates to the
+// closure's catch and the user gets {type:'error'} + idle — losing the TEXT answer over a
+// voice lookup. Before this cycle a typed turn with replies off touched no voice state at
+// all; it now can, so every path has to degrade to "no audio", never to "no turn".
+//
+// These drive `resolveTurnVoice` — the exact seam ws.ts imports and calls — and then feed
+// its output to the real handleTurn, mirroring the shipped call site rather than
+// reimplementing it locally. (ws.ts's defineWebSocketHandler needs a real crossws upgrade
+// to exercise directly; same constraint as test/conversation-usage-persist.test.ts.)
+describe('turn voice resolution degrades, never fails the turn', () => {
+  it('survives a dead database: still answers, in the hardcoded fallback voice', async () => {
+    // Plain vitest boots no Nuxt, so `useRuntimeConfig` is undefined and `useDb()` throws.
+    // This test therefore runs against a genuinely unreachable database — the real failure
+    // mode — with no mocking of the service at all. getDefaultPreset() throws on a missing
+    // seed row and on any transient DB error, and resolvePreset runs on EVERY spoken turn.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { preset: got, refAudio } = await resolveTurnVoice('a-stale-cookie-id', true)
+    expect(got).toEqual(FALLBACK_PRESET)
+    expect(refAudio).toBeNull()   // the fallback carries no clip, so no blob read to fail
+
+    const events: any[] = []
+    const history = await handleTurn('hi', [], {
+      tts, preset: got, refAudio, speak: true, runAgent,
+      signal: new AbortController().signal, emit: e => events.push(e)
+    })
+    expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
+    expect(events.some(e => e.type === 'audio')).toBe(true)
+    errSpy.mockRestore()
+  })
+
+  it('survives an unreadable reference clip: speaks without it rather than losing the turn', async () => {
+    // loadReferenceBytes does a bare storage().get() — a deleted or unreadable blob throws.
+    // A clone preset that loses its reference speaks as a design preset: it sounds wrong,
+    // which is strictly better than the user getting nothing.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const clonePreset = { ...preset, refStorageKey: 'deleted-clip.wav', refText: 'hello' }
+    const loadRef = vi.fn(async () => { throw new Error('NoSuchKey') })
+    const { preset: got, refAudio } = await resolveTurnVoice('p1', true, {
+      resolve: async () => clonePreset, loadRef
+    })
+    expect(loadRef).toHaveBeenCalledOnce()
+    expect(got).toBe(clonePreset)   // still the voice the user picked…
+    expect(refAudio).toBeNull()     // …just without the reference it could not read
+
+    const history = await handleTurn('hi', [], {
+      tts, preset: got, refAudio, speak: true, runAgent,
+      signal: new AbortController().signal, emit: () => {}
+    })
+    expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
+    errSpy.mockRestore()
+  })
+
+  it('a silent turn touches no voice state at all — no preset lookup, no blob read', async () => {
+    const resolve = vi.fn(async () => preset)
+    const loadRef = vi.fn(async () => null)
+    const { preset: got, refAudio } = await resolveTurnVoice('p1', false, { resolve, loadRef })
+
+    expect(resolve).not.toHaveBeenCalled()   // no DB round trip…
+    expect(loadRef).not.toHaveBeenCalled()   // …and no storage round trip
+    expect(got).toBe(FALLBACK_PRESET)        // only ever read for its maxSegmentChars
+    expect(refAudio).toBeNull()
+
+    const history = await handleTurn('hi', [], {
+      tts, preset: got, refAudio, speak: false, runAgent,
+      signal: new AbortController().signal, emit: () => {}
+    })
+    expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
   })
 })
