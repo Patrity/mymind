@@ -94,6 +94,25 @@ describe('createSpeaker', () => {
     expect(typeof r).toBe('function')
     r()
   })
+
+  // Pins the behaviour the studio route's disconnect handling depends on: a consumer
+  // that walks away mid-stream (a client disconnect, in the HTTP route) must free the
+  // rig via the generator's `finally`, not just via natural completion or a thrown
+  // error. A future h3/runtime change could silently stop calling this without this test.
+  it('releases the slot when the consumer abandons the iterator via return()', async () => {
+    const queue = createBreezeQueue()
+    const speaker = createSpeaker({
+      baseURL: async () => 'http://rig:8880', queue,
+      speakFn: fakeSpeak([[1], [2], [3]]) as never
+    })
+    const it = speaker('hi', design, 'agent')[Symbol.asyncIterator]()
+    await it.next()                       // begin — slot held, generator now parked at a yield
+    await it.return?.()
+    // A fresh acquire only resolves if the earlier slot was actually released.
+    const r = await queue.acquire('agent')
+    expect(typeof r).toBe('function')
+    r()
+  })
 })
 
 describe('pcmToWav', () => {
