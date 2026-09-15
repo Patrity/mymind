@@ -2,12 +2,15 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import type { RangeKey, SeriesResponse, SnapshotResponse, RequestLogResponse } from '~~/shared/types/analytics'
 import type { UsageRangeKey, UsageResponse, DispatchResponse } from '~~/shared/types/usage'
+import type { RigServiceDef } from '~~/server/lib/analytics/types'
 
 export interface AnalyticsSettings {
   prometheusUrl: string
   litellmUrl: string
   hasLitellmKey: boolean
   gpuLabels: Record<string, string>
+  rigHost: string
+  services: RigServiceDef[]
 }
 
 export function useAnalytics() {

@@ -1,6 +1,6 @@
 import { loadAnalyticsConfig } from '../../lib/analytics/store'
 import { promInstant } from '../../lib/analytics/prom'
-import { SNAPSHOT_QUERIES, PUBLIC_RIG_SNAPSHOT_IDS, PUBLIC_RIG_EXTRA_QUERIES } from '../../lib/analytics/queries'
+import { buildSnapshotQueries, PUBLIC_RIG_SNAPSHOT_IDS, PUBLIC_RIG_EXTRA_QUERIES } from '../../lib/analytics/queries'
 import type { SnapshotQueryId } from '../../lib/analytics/queries'
 import { buildSnapshot } from '../../lib/analytics/snapshot'
 import { buildPublicRig } from '../../lib/analytics/public-rig'
@@ -42,13 +42,14 @@ export default defineEventHandler(async (event) => {
 
   const cfg = await loadAnalyticsConfig()
   const q = (expr: string) => promInstant(cfg.prometheusUrl, expr)
+  const queries = buildSnapshotQueries(cfg.services, cfg.rigHost)
   const X = PUBLIC_RIG_EXTRA_QUERIES
   let entries: [SnapshotQueryId, PromVectorResult[]][]
   let extras: PublicRigExtras
   try {
     const [snap, tokens24h, modelTokens, modelRequests, vllmPrompt, vllmGen, llamaPrompt, llamaGen] = await Promise.all([
       Promise.all(PUBLIC_RIG_SNAPSHOT_IDS.map(async id =>
-        [id, await q(SNAPSHOT_QUERIES[id])] as [SnapshotQueryId, PromVectorResult[]]
+        [id, await q(queries[id])] as [SnapshotQueryId, PromVectorResult[]]
       )),
       q(X.tokens24h), q(X.modelTokens24h), q(X.modelRequests24h),
       q(X.vllmPrompt24h), q(X.vllmGen24h), q(X.llamaPrompt24h), q(X.llamaGen24h),
@@ -69,7 +70,10 @@ export default defineEventHandler(async (event) => {
     extras.claudeCodeTokens = null
   }
 
-  const body = buildPublicRig(buildSnapshot(Object.fromEntries(entries), cfg.gpuLabels), extras)
+  const body = buildPublicRig(
+    buildSnapshot(Object.fromEntries(entries), cfg.gpuLabels, cfg.services, cfg.rigHost),
+    extras, Date.now(), cfg.services
+  )
   cache = { at: Date.now(), body }
   setResponseHeader(event, 'Cache-Control', 'public, max-age=30, s-maxage=30')
   return body

@@ -1,32 +1,31 @@
 // server/lib/analytics/snapshot.ts
 // Pure assembler: raw instant-query vectors -> SnapshotResponse. No I/O.
 import type { PromVectorResult } from './prom'
+import type { RigServiceDef } from './types'
+import { defaultRigServices } from './catalog'
 import type { SnapshotQueryId } from './queries'
 import { resolveGpuLabel } from './queries'
 import type { GpuSnapshot, ServiceHealth, SnapshotResponse } from '../../../shared/types/analytics'
 
-// The fixed service list for the health strip. `match` is tested against up{}/probe_success vectors.
+// The health-strip catalog is configuration now (see lib/analytics/catalog.ts for the seed).
+// `match` is derived from the declarative def so a service can be added, renamed or retired
+// from the settings UI without a deploy, and so the PromQL that fetches it is built from the
+// same data rather than a hand-maintained regex that drifts.
+//
 // Probe targets carry a `service` label from prometheus.yml; the port fallback keeps older
 // configs working. vllm-vision was retired 2026-06-19 and its job removed 2026-08-19.
-// vllm-coder followed when flash-next took over the coding workload. Its scrape job still
-// answers up{}=0, so listing it here pinned the public strip to a permanent amber 'N-1 up'.
-const rigProbe = (service: string, port: string) => (l: Record<string, string>) =>
-  l.service === service || (l.instance ?? '').includes(`192.168.2.25:${port}`)
-
-const SERVICES: { id: string, label: string, source: 'up' | 'probes', match: (l: Record<string, string>) => boolean }[] = [
-  { id: 'flashnext', label: 'Qwen3.8 Flash Next', source: 'probes', match: rigProbe('flashnext-dev', '8009') },
-  { id: 'llama-heretic', label: 'Heretic (llama.cpp)', source: 'probes', match: rigProbe('llama-heretic', '8007') },
-  { id: 'tei', label: 'TEI Embeddings', source: 'up', match: l => l.job === 'tei' },
-  { id: 'llama-autocomplete', label: 'Autocomplete', source: 'up', match: l => l.job === 'llama-cpp-autocomplete' },
-  { id: 'reranker', label: 'Reranker', source: 'probes', match: rigProbe('reranker', '8883') },
-  { id: 'speaches-stt', label: 'Speaches STT', source: 'probes', match: rigProbe('speaches-stt', '8881') },
-  { id: 'kokoro-tts', label: 'Kokoro TTS', source: 'probes', match: rigProbe('kokoro-tts', '8880') },
-  { id: 'chatterbox-tts', label: 'Chatterbox TTS', source: 'probes', match: rigProbe('chatterbox-tts', '8884') },
-  { id: 'comfyui', label: 'ComfyUI', source: 'probes', match: rigProbe('comfyui', '8188') },
-  { id: 'litellm-exporter', label: 'LiteLLM Exporter', source: 'up', match: l => l.job === 'litellm' },
-  { id: 'litellm-edge', label: 'LiteLLM (edge)', source: 'probes', match: l => (l.instance ?? '').includes('lite.costanzoclan.com') },
-  { id: 'prometheus', label: 'Prometheus', source: 'up', match: l => l.job === 'prometheus' },
-]
+// vllm-coder followed when flash-next took over the coding workload.
+function serviceMatcher(s: RigServiceDef, rigHost: string): (l: Record<string, string>) => boolean {
+  if (s.source === 'up') return l => !!s.job && l.job === s.job
+  return (l) => {
+    const instance = l.instance ?? ''
+    if (s.probeService && l.service === s.probeService) return true
+    if (s.instanceContains && instance.includes(s.instanceContains)) return true
+    // Host-qualified so a port cannot collide with the same port on another target.
+    if (s.port && instance.includes(`${rigHost}:${s.port}`)) return true
+    return false
+  }
+}
 
 const num = (r: PromVectorResult | undefined): number | null => {
   if (!r) return null
@@ -37,6 +36,8 @@ const num = (r: PromVectorResult | undefined): number | null => {
 export function buildSnapshot(
   results: Partial<Record<SnapshotQueryId, PromVectorResult[]>>,
   gpuLabels: Record<string, string>,
+  catalog: RigServiceDef[] = defaultRigServices(),
+  rigHost = '192.168.2.25',
 ): SnapshotResponse {
   const byUuid = (rs: PromVectorResult[] | undefined) =>
     new Map((rs ?? []).map(r => [r.metric.uuid ?? '', r]))
@@ -67,9 +68,9 @@ export function buildSnapshot(
 
   const upVec = results.up ?? []
   const probeVec = results.probes ?? []
-  const services: ServiceHealth[] = SERVICES.map((s) => {
+  const services: ServiceHealth[] = catalog.map((s) => {
     const vec = s.source === 'up' ? upVec : probeVec
-    const hit = vec.find(r => s.match(r.metric))
+    const hit = vec.find(r => serviceMatcher(s, rigHost)(r.metric))
     return { id: s.id, label: s.label, up: hit ? num(hit) === 1 : null }
   })
 

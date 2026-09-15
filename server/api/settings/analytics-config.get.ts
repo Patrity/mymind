@@ -7,5 +7,7 @@ export default defineEventHandler(async () => {
     litellmUrl: c.litellmUrl,
     hasLitellmKey: !!c.litellmMasterKeyEnc,
     gpuLabels: c.gpuLabels,
+    rigHost: c.rigHost,
+    services: c.services,
   }
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildPublicRig } from '../server/lib/analytics/public-rig'
-import { PUBLIC_RIG_SNAPSHOT_IDS, PUBLIC_RIG_EXTRA_QUERIES, PUBLIC_RIG_SERVICE_IDS, SNAPSHOT_QUERIES } from '../server/lib/analytics/queries'
+import { PUBLIC_RIG_SNAPSHOT_IDS, PUBLIC_RIG_EXTRA_QUERIES, publicRigServiceIds, SNAPSHOT_QUERIES } from '../server/lib/analytics/queries'
 import type { PromVectorResult } from '../server/lib/analytics/prom'
 import type { SnapshotResponse } from '../shared/types/analytics'
 
@@ -40,11 +40,11 @@ describe('buildPublicRig', () => {
   it('publishes only user-facing services and keeps the tri-state', () => {
     const out = buildPublicRig(snapshot, {}, 1_700_000_000_000)
     expect(out.services.map(s => s.id)).toEqual(['flashnext', 'reranker'])
-    expect(PUBLIC_RIG_SERVICE_IDS).not.toContain('vllm-vision') // retired engine, job removed from Prometheus
-    expect(PUBLIC_RIG_SERVICE_IDS).not.toContain('vllm-coder') // retired engine, flash-next took over
-    for (const id of ['speaches-stt', 'kokoro-tts', 'chatterbox-tts', 'comfyui', 'llama-heretic']) expect(PUBLIC_RIG_SERVICE_IDS).toContain(id)
+    expect(publicRigServiceIds()).not.toContain('vllm-vision') // retired engine, job removed from Prometheus
+    expect(publicRigServiceIds()).not.toContain('vllm-coder') // retired engine, flash-next took over
+    for (const id of ['speaches-stt', 'kokoro-tts', 'chatterbox-tts', 'comfyui', 'llama-heretic']) expect(publicRigServiceIds()).toContain(id)
     expect(out.services.find(s => s.id === 'reranker')?.up).toBeNull()
-    for (const s of out.services) expect(PUBLIC_RIG_SERVICE_IDS).toContain(s.id)
+    for (const s of out.services) expect(publicRigServiceIds()).toContain(s.id)
   })
 
   it('tokens24h sums Claude Code + engine counters and never the LiteLLM gateway figure', () => {

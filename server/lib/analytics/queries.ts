@@ -1,3 +1,5 @@
+import type { RigServiceDef } from './types'
+import { defaultRigServices } from './catalog'
 // server/lib/analytics/queries.ts
 // THE named query catalog — the security boundary. Endpoints only ever execute
 // PromQL defined here; the client can only name a panel id.
@@ -85,6 +87,37 @@ export type SnapshotQueryId =
   | 'gpuInfo' | 'gpuUtil' | 'gpuMemUsed' | 'gpuMemTotal' | 'gpuTemp' | 'gpuPower' | 'gpuPowerLimit'
   | 'engineRunning' | 'engineWaiting' | 'up' | 'probes' | 'spend'
 
+// nvidia-gpu is scraped for the GPU panels rather than for a health-strip entry, so it is
+// not in the catalog and has to be unioned in explicitly.
+const EXTRA_UP_JOBS = ['nvidia-gpu']
+
+const rePart = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export function buildUpQuery(services: RigServiceDef[] = defaultRigServices()): string {
+  const jobs = [...new Set([...services.filter(s => s.source === 'up' && s.job).map(s => s.job!), ...EXTRA_UP_JOBS])]
+  return `up{job=~"${jobs.map(rePart).join('|')}"}`
+}
+
+export function buildProbesQuery(
+  services: RigServiceDef[] = defaultRigServices(),
+  rigHost = '192.168.2.25'
+): string {
+  // Off-rig probes are matched by their own substring; everything else is a target on the
+  // rig host, covered by one wildcard rather than a term per port.
+  const offRig = services.filter(s => s.source === 'probes' && s.instanceContains).map(s => s.instanceContains!)
+  const onRig = services.some(s => s.source === 'probes' && !s.instanceContains)
+  const terms = [
+    ...new Set(offRig.map(h => `https://${rePart(h)}`)),
+    ...(onRig ? [`http://${rePart(rigHost)}:.*`] : [])
+  ]
+  return `probe_success{instance=~"${terms.join('|')}"}`
+}
+
+/** The snapshot catalog with the service-derived expressions filled in from live config. */
+export function buildSnapshotQueries(services: RigServiceDef[], rigHost: string): Record<SnapshotQueryId, string> {
+  return { ...SNAPSHOT_QUERIES, up: buildUpQuery(services), probes: buildProbesQuery(services, rigHost) }
+}
+
 export const SNAPSHOT_QUERIES: Record<SnapshotQueryId, string> = {
   gpuInfo: 'nvidia_smi_gpu_info',
   gpuUtil: 'nvidia_smi_utilization_gpu_ratio * 100',
@@ -96,10 +129,13 @@ export const SNAPSHOT_QUERIES: Record<SnapshotQueryId, string> = {
   engineRunning: 'vllm:num_requests_running',
   engineWaiting: 'vllm:num_requests_waiting',
   // vllm-vision was retired (stopped + disabled 2026-06-19) and its scrape job removed 2026-08-19.
-  up: 'up{job=~"tei|llama-cpp-autocomplete|litellm|nvidia-gpu|prometheus"}',
+  // Placeholders. The service-derived expressions are built per request by
+  // buildSnapshotQueries() from the configured catalog, so job names live in exactly
+  // one place instead of being duplicated into a regex that silently drifts.
+  up: buildUpQuery(),
   // Every blackbox probe on the AI rig (reranker, Speaches STT, Kokoro/Chatterbox TTS, ComfyUI,
   // Heretic llama.cpp — added to Prometheus 2026-08-19) plus the public LiteLLM edge.
-  probes: 'probe_success{instance=~"https://lite.costanzoclan.com|http://192.168.2.25:.*"}',
+  probes: buildProbesQuery(),
   spend: 'topk(10, litellm_total_spend > 0)',
 }
 
@@ -134,7 +170,6 @@ export const PUBLIC_RIG_EXTRA_QUERIES: Record<PublicRigExtraQueryId, string> = {
 
 // Service ids (from snapshot.ts SERVICES) that are user-facing enough to publish. The
 // LiteLLM exporter/edge probe and Prometheus itself are plumbing and stay private.
-export const PUBLIC_RIG_SERVICE_IDS = [
-  'flashnext', 'llama-heretic', 'llama-autocomplete', 'tei', 'reranker',
-  'speaches-stt', 'kokoro-tts', 'chatterbox-tts', 'comfyui'
-] as const
+export function publicRigServiceIds(services: RigServiceDef[] = defaultRigServices()): string[] {
+  return services.filter(s => s.public).map(s => s.id)
+}

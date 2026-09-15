@@ -3,7 +3,9 @@
 // This is the ONLY place that decides what leaves the house unauthenticated — keep it boring
 // and keep the allow-list explicit (fields are copied by name, never spread).
 import type { PromVectorResult } from './prom'
-import { PUBLIC_RIG_SERVICE_IDS } from './queries'
+import { publicRigServiceIds } from './queries'
+import type { RigServiceDef } from './types'
+import { defaultRigServices } from './catalog'
 import type { PublicRigResponse, SnapshotResponse } from '../../../shared/types/analytics'
 
 const num = (r: PromVectorResult | undefined): number | null => {
@@ -44,7 +46,8 @@ const sumNullable = (...parts: (number | null | undefined)[]): number | null => 
 export function buildPublicRig(
   snapshot: SnapshotResponse,
   extras: PublicRigExtras = {},
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  catalog: RigServiceDef[] = defaultRigServices()
 ): PublicRigResponse {
   const roster = new Map<string, { tokens: number, requests: number }>()
   const bump = (vec: PromVectorResult[] | undefined, key: 'tokens' | 'requests') => {
@@ -69,7 +72,7 @@ export function buildPublicRig(
     litellm: round(scalar(extras.tokens24h))
   }
 
-  const allowed = new Set<string>(PUBLIC_RIG_SERVICE_IDS)
+  const allowed = new Set<string>(publicRigServiceIds(catalog))
   return {
     generatedAt: new Date(nowMs).toISOString(),
     gpus: snapshot.gpus.map(g => ({
