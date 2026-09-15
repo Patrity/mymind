@@ -83,7 +83,13 @@ export default defineEventHandler(async (event) => {
           if (done) { controller.close(); return }
           if (value.kind === 'pcm') controller.enqueue(value.bytes)
         } catch (err) {
-          controller.error(err)
+          // Mapped, not raw. An error raised here is outside the handler's try/catch, so
+          // without this it reached Nitro as an unknown throw and was logged "[unhandled]"
+          // and answered as a bare 500 "Server Error" — with the message reduced to
+          // undici's "terminated". That is precisely the prompt-ceiling overrun this cycle
+          // exists to make legible, arriving as the least legible thing in the app.
+          // toHttpError gives it the right status and keeps the sentence.
+          controller.error(toHttpError(err))
         }
       },
       // Spec-correct and harmless to keep, but redundant with the res.on('close', ...)

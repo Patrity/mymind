@@ -141,6 +141,10 @@ async function onDownload() {
   if (!p || !body || downloading.value) return
   downloading.value = true
   note.value = null
+  // `error` belongs to useBreezeSpeech's speak lifecycle, which clears it at the start of
+  // every speak(). Clearing it here too keeps the two entry points symmetrical, so a stale
+  // failure from one button cannot hang over the other.
+  error.value = null
   try {
     const res = await fetch('/api/voice/speak', {
       method: 'POST',
@@ -167,7 +171,13 @@ async function onDownload() {
     a.click()
     URL.revokeObjectURL(url)
   } catch (e) {
-    note.value = errorMessage(e)
+    // A thrown download is a HARD failure — a 400 from the pre-flight, a 502 from an
+    // unreachable rig, a dropped connection. It is NOT a truncation, and it must not be
+    // dressed as one: `note` renders under "Nothing came back", which in this cycle means
+    // specifically "the rig accepted the text and then died on a prompt-ceiling overrun".
+    // Labelling a rejected request that way destroys the one diagnostic distinction the
+    // whole truncation path exists to draw. Errors belong in the error channel.
+    error.value = errorMessage(e)
   } finally {
     downloading.value = false
   }

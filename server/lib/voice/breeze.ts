@@ -5,8 +5,16 @@
 //   1. cfg_scale > 1 with no instruction => 500 "Internal Server Error" (no negative
 //      prompt exists on the non-instruction templates).
 //   2. ref_audio without ref_text => 500, same opaque body.
-//   3. A prompt-ceiling overrun => 200 OK with a body that dies at zero bytes. The
-//      status code can never carry it, because headers are sent before generation.
+//   3. A prompt-ceiling overrun => 200 OK, then a body that stops early. The status code
+//      can never carry it, because headers are sent before generation. It arrives in two
+//      shapes and both are `truncated`: a clean EOF at zero bytes, or — past roughly 3400
+//      characters, measured 2026-09-15 — a dropped socket that undici raises as a bare
+//      `TypeError: terminated`.
+//
+// Separately measured the same day: the rig caps output at 120 seconds. 900 and 1800
+// characters both return exactly 5,760,000 bytes at 24kHz. That cap arrives as a FULL
+// body, so no byte-count heuristic can see it — only the ceiling warning shown before
+// dispatch, and ears, can.
 
 export type BreezeErrorCode = 'preflight' | 'busy' | 'truncated' | 'http' | 'network'
 
@@ -95,7 +103,25 @@ export async function breezeSpeak(baseURL: string, req: BreezeRequest, signal?: 
     const reader = body.getReader()
     try {
       for (;;) {
-        const { done, value } = await reader.read()
+        let done: boolean
+        let value: Uint8Array | undefined
+        try {
+          ({ done, value } = await reader.read())
+        } catch (err) {
+          // A caller walking away (barge-in, a closed socket, a newer utterance) is NOT a
+          // rig failure — it must stay an AbortError so the route and the registry can
+          // keep telling the two apart.
+          if ((err as Error).name === 'AbortError' || signal?.aborted) throw err
+          // Otherwise the rig KILLED the connection part-way through the body. undici
+          // surfaces that as a bare `TypeError: terminated`, which carries no diagnosis at
+          // all — it escaped the route as an unhandled 500 "Server Error" and the user was
+          // told nothing. It is the SAME condition as the zero-byte case below (an overrun
+          // the rig cannot report, because it answered 200 before generation began); the
+          // only difference is whether it managed a clean EOF or dropped the socket.
+          throw new BreezeError('truncated',
+            `Breeze stopped sending after ${total} bytes and dropped the connection — that is what a `
+            + 'prompt-ceiling overrun looks like from here. Shorten the text, or trim the reference clip.')
+        }
         if (done) break
         if (!value?.length) continue
         total += value.length

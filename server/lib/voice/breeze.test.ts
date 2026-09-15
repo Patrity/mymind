@@ -206,3 +206,61 @@ describe('breezeSpeak', () => {
     await expect(drain(s.chunks)).resolves.toEqual([7])
   })
 })
+
+// The rig does not always manage a clean EOF. Past roughly 3400 characters it drops the
+// socket part-way through the body, which undici raises as a bare `TypeError: terminated`.
+// Measured against the live rig 2026-09-15: 3600 chars terminated after ~70ms, and the
+// throw escaped the route unmapped — Nitro logged "[unhandled]" and answered 500 "Server
+// Error". Same condition as the zero-byte case, so it must carry the same diagnosis.
+describe('breezeSpeak — a body that dies mid-stream', () => {
+  const req = {
+    text: 'Hello.', instruction: 'A calm man.', cfgScale: 4, seed: 11,
+    temperature: 0.9, topP: 1.0, topK: 50, refAudio: null, refText: null
+  }
+
+  function dyingResponse(before: number[][], err: Error) {
+    const body = new ReadableStream<Uint8Array>({
+      start(c) { for (const ch of before) c.enqueue(new Uint8Array(ch)) },
+      pull(c) { c.error(err) }
+    })
+    return new Response(body, { status: 200, headers: { 'x-sample-rate': '24000' } })
+  }
+
+  it('reports a dropped connection as `truncated`, not as an opaque failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => dyingResponse([[1, 2]], new TypeError('terminated'))))
+    const s = await breezeSpeak('http://rig:8880', req)
+    await expect(drain(s.chunks)).rejects.toMatchObject({ code: 'truncated' })
+  })
+
+  it('names the overrun in the message rather than leaking undici wording', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => dyingResponse([[1, 2]], new TypeError('terminated'))))
+    const s = await breezeSpeak('http://rig:8880', req)
+    await expect(drain(s.chunks)).rejects.toThrow(/prompt-ceiling overrun/)
+  })
+
+  it('still yields everything that DID arrive before the drop', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => dyingResponse([[7, 8], [9]], new TypeError('terminated'))))
+    const s = await breezeSpeak('http://rig:8880', req)
+    const got: number[] = []
+    await expect((async () => { for await (const c of s.chunks) got.push(...c) })())
+      .rejects.toMatchObject({ code: 'truncated' })
+    expect(got).toEqual([7, 8, 9])
+  })
+
+  // A caller walking away must never be dressed as a rig failure: the registry and the
+  // route both branch on AbortError to keep a barge-in out of the error counts.
+  it('lets an AbortError through untouched instead of calling it a truncation', async () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError')
+    vi.stubGlobal('fetch', vi.fn(async () => dyingResponse([[1]], abort)))
+    const s = await breezeSpeak('http://rig:8880', req)
+    await expect(drain(s.chunks)).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('does not call an aborted read a truncation even when the error is not named AbortError', async () => {
+    const ac = new AbortController()
+    ac.abort()
+    vi.stubGlobal('fetch', vi.fn(async () => dyingResponse([[1]], new TypeError('terminated'))))
+    const s = await breezeSpeak('http://rig:8880', req, ac.signal)
+    await expect(drain(s.chunks)).rejects.not.toMatchObject({ code: 'truncated' })
+  })
+})

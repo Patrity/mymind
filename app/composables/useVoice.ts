@@ -1,6 +1,7 @@
 // app/composables/useVoice.ts
 import { createEmitter } from '../lib/viz/emitter'
 import { mapServerMessage } from '../lib/voice/messages'
+import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
 import type { VizEvent } from '../lib/viz/types'
 import type { AttachmentRef, MessageUsage } from '~~/shared/types/conversation'
 
@@ -72,8 +73,10 @@ export function useVoice() {
   let vizStream: MediaStream | null = null
   let playCursor = 0
   let sources: AudioBufferSourceNode[] = []
-  // `playEpoch` invalidates chunks belonging to a turn that has since been barged in on.
-  let playEpoch = 0
+  // Invalidates chunks belonging to a turn that has since been barged in on. The rule and
+  // the race it defends against live in lib/voice/playback-epoch.ts, where they are tested
+  // — this guard was dead for a whole cycle because it was not.
+  const epochs = createPlaybackEpochs()
   // Sample rate of the segment being played, from its `audio-begin` frame, and the odd
   // trailing byte of the previous chunk (see enqueuePcm).
   let pcmSampleRate = 24000
@@ -118,7 +121,7 @@ export function useVoice() {
   }
 
   function stopPlayback() {
-    playEpoch++ // invalidate any chunks still in flight from the interrupted turn
+    epochs.interrupt() // invalidate any chunks still in flight from the interrupted turn
     carry = new Uint8Array(0) // a half-sample from the killed segment must not lead the next one
     for (const s of sources) {
       try { s.stop() } catch { /* already stopped */ }
@@ -146,6 +149,21 @@ export function useVoice() {
   function onAudioBegin(sampleRate: number) {
     pcmSampleRate = sampleRate
     carry = new Uint8Array(0)
+    // Stamp the segment with the epoch it was OPENED in. Every PCM frame that follows is
+    // checked against this, not against the live `playEpoch` — reading `playEpoch` at the
+    // socket handler made the guard in enqueuePcm unfireable, because the value it read
+    // and the value it compared to were the same variable read in the same tick.
+    //
+    // This is what actually drops the barge-in tail. stopPlayback() stops the sources it
+    // has ALREADY scheduled, but a frame still in flight when the user interrupts arrives
+    // afterwards and would schedule itself onto a cleared playCursor. It belongs to the
+    // interrupted segment, so it now carries that segment's stale epoch and is discarded.
+    //
+    // Safe because the frame contract is ordered and strictly bracketed (orchestrator.ts:
+    // audio-begin, then that segment's PCM, then audio-end). A stale frame can only arrive
+    // BEFORE the next segment's audio-begin, so re-stamping here can never retroactively
+    // admit one.
+    epochs.beginSegment()
   }
 
   /** s16le -> Float32 in [-1, 1] */
@@ -158,7 +176,7 @@ export function useVoice() {
   }
 
   function enqueuePcm(data: ArrayBuffer, epoch: number) {
-    if (!audioCtx || !outAnalyser || epoch !== playEpoch) return
+    if (!audioCtx || !outAnalyser || !epochs.accepts(epoch)) return
     // A 16-bit sample must never be split across chunk boundaries: the stream is a byte
     // stream, so a chunk can end mid-sample. Hold that byte back for the next chunk —
     // dropping it would shift every following sample by one byte (loud garbage).
@@ -243,7 +261,7 @@ export function useVoice() {
     socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         state.value = 'speaking'
-        enqueuePcm(e.data, playEpoch)
+        enqueuePcm(e.data, epochs.segment())
       } else {
         const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
         // Carries the sample rate for the binary frames that follow it — WS delivery is
