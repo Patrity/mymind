@@ -91,7 +91,10 @@ export type SnapshotQueryId =
 // not in the catalog and has to be unioned in explicitly.
 const EXTRA_UP_JOBS = ['nvidia-gpu']
 
-const rePart = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// PromQL string literals use Go escaping, so a lone "\." is a parse error
+// (unknown escape sequence U+002E). The backslash has to survive the string literal to
+// reach the regex engine, which means emitting two of them.
+const rePart = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\\\$&')
 
 export function buildUpQuery(services: RigServiceDef[] = defaultRigServices()): string {
   const jobs = [...new Set([...services.filter(s => s.source === 'up' && s.job).map(s => s.job!), ...EXTRA_UP_JOBS])]

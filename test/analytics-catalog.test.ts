@@ -19,13 +19,28 @@ describe('the health-strip catalog drives its own queries', () => {
     expect(buildUpQuery(withCoder.slice(1))).not.toContain('vllm-coder')
   })
 
+  // A backslash in the emitted text, expressed without hand-counting escapes.
+  const BS = String.fromCharCode(92)
+
   it('probes match off-rig hosts by name and on-rig targets by one host wildcard', () => {
     const q = buildProbesQuery([
       { id: 'edge', label: 'Edge', source: 'probes', instanceContains: 'lite.example.com', public: false },
       { id: 'comfy', label: 'ComfyUI', source: 'probes', probeService: 'comfyui', port: '8188', public: true },
     ], '10.0.0.5')
-    expect(q).toContain('https://lite\\.example\\.com')
-    expect(q).toContain('http://10\\.0\\.0\\.5:.*')
+    expect(q).toContain(`https://lite${BS}${BS}.example${BS}${BS}.com`)
+    expect(q).toContain(`http://10${BS}${BS}.0${BS}${BS}.0${BS}${BS}.5:.*`)
+  })
+
+  // Regression: a lone backslash is a PromQL parse error ("unknown escape sequence U+002E"),
+  // because string literals use Go escaping and the backslash must survive the literal to
+  // reach the regex engine. This shipped once and 502'd the public rig endpoint.
+  it('escapes for the PromQL string literal, so no lone backslash reaches Prometheus', () => {
+    const q = buildProbesQuery(
+      [{ id: 'edge', label: 'Edge', source: 'probes', instanceContains: 'lite.example.com', public: false }],
+      '10.0.0.5'
+    )
+    // every backslash in the output is part of a doubled pair
+    expect(q.split(BS + BS).join('')).not.toContain(BS)
   })
 
   it('a service is published only when the catalog says public', () => {
