@@ -8,15 +8,14 @@ import { encryptSecret } from '../../lib/ai/registry/crypto'
 import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ProviderDef, type ModelDef } from '../../lib/ai/registry/types'
 
 interface Src { env: string; usage: keyof AiConfigDoc['assignments']; dim?: number | null }
-// Maps the old env roles → registry usages. ttsKokoro/ttsChatterbox both map to tts.
+// Maps the old env roles → registry usages.
 const SOURCES: Src[] = [
   { env: 'AI_REASONING', usage: 'reasoning' },
   { env: 'AI_BULK', usage: 'bulk' },
   { env: 'AI_EMBEDDINGS', usage: 'embeddings', dim: EMBEDDING_DIM },
   { env: 'AI_VISION', usage: 'vision' },
   { env: 'AI_STT', usage: 'stt' },
-  { env: 'AI_TTS_KOKORO', usage: 'tts' },
-  { env: 'AI_TTS_CHATTERBOX', usage: 'tts' },
+  { env: 'AI_TTS_BREEZE', usage: 'tts' },
   { env: 'AI_RERANK', usage: 'rerank' }
 ]
 

@@ -3,7 +3,8 @@ import { handleUtterance, handleTurn, type VoiceEvent } from '../../lib/voice/or
 import { classifyFrame } from '../../lib/voice/frames'
 import { sttFromModel } from '../../lib/voice/providers'
 import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
-import { ttsSynth } from '../../lib/voice/tts-failover'
+import { speakWithPreset } from '../../lib/voice/speak'
+import { resolveTurnVoice } from '../../services/voice-presets'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
@@ -18,18 +19,21 @@ import { randomUUID } from 'node:crypto'
 import type { AttachmentRef } from '../../lib/agent/attachments'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
-//   {type:'voice',voice} | {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
+//   {type:'preset',presetId} (voice pick; null/absent = the default preset) |
+//   {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
 //   {type:'text',text,speak?} (typed turn, injected post-STT) |
 //   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset) |
 //   {type:'approve'|'deny',requestId,...} (resolve a pending exec approval)
-// Server→client: binary = audio bytes | text JSON = transcript/reasoning/tool/state/error events |
+// Server→client: binary = raw PCM (s16le mono) for the segment currently open |
+//   text JSON = transcript/reasoning/tool/state/error events, plus the two frames that
+//   bracket each spoken segment: {type:'audio-begin',segmentId,sampleRate} and
+//   {type:'audio-end',segmentId} |
 //   {type:'conversation',conversationId,title} (emitted once, when the first turn lazily creates the thread).
 interface ConnState {
   history: AgentMessage[]
   ac: AbortController | null
-  voice: string
-  /** Label of the TTS model that owns `voice` (client sends it with the pick); null = registry order. */
-  ttsProvider: string | null
+  /** Voice preset the client picked (cookie-backed); null = fall back to the default row. */
+  presetId: string | null
   model: string | null
   lock: Promise<void>
   conversationId: string | null
@@ -42,10 +46,11 @@ const stt: SttProvider = {
   transcribe: (audio, opts) =>
     withFailover('stt', m => sttFromModel(m).transcribe(audio, opts))
 }
-// TTS: registry chain pinned to the provider that owns the chosen voice, then failover
-// (see lib/voice/tts-failover.ts — the picker mixes every provider's voices, so dialing
-// the chain head with another provider's voice name is a guaranteed 400 → failover).
-const tts: TtsProvider = { synthesize: ttsSynth }
+// TTS: Breeze only. No failover chain — one engine, resolved from the registry's tts
+// assignment inside speakWithPreset.
+const tts: TtsProvider = {
+  synthesize: (text, opts) => speakWithPreset(text, opts.preset, 'agent', opts.signal, opts.refAudio ?? null)
+}
 
 export default defineWebSocketHandler({
   // Server middleware does NOT run for WS upgrades (crossws handles them directly),
@@ -56,7 +61,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, voice: '', ttsProvider: null, model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
+    conns.set(peer, { history: [], ac: null, presetId: null, model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -96,9 +101,8 @@ export default defineWebSocketHandler({
     if (frame.kind === 'control') {
       const msg = frame.msg
       if (msg.type === 'interrupt') { s.ac?.abort(); return }
-      if (msg.type === 'voice') {
-        s.voice = msg.voice as string
-        s.ttsProvider = typeof msg.provider === 'string' && msg.provider ? msg.provider : null
+      if (msg.type === 'preset') {
+        s.presetId = typeof msg.presetId === 'string' && msg.presetId ? msg.presetId : null
         return
       }
       if (msg.type === 'model') { s.model = typeof msg.modelDefId === 'string' ? msg.modelDefId : null; return }
@@ -148,7 +152,13 @@ export default defineWebSocketHandler({
         turnAttachments = attachments
         inputModality = 'text'
         speakFlag = speak
-        turn = (signal, emit, context) => handleTurn(text, s.history, { tts, voice: s.voice, ttsProvider: s.ttsProvider, speak, context, modelDefId: s.model, buildMemoryContext, requestApproval, attachments, signal, emit })
+        turn = async (signal, emit, context) => {
+          // Total by construction — a silent turn touches no voice state, and neither a
+          // DB nor a storage failure can propagate out of here. Voice degrades to "no
+          // audio"; it must never degrade to "no turn". See resolveTurnVoice.
+          const { preset, refAudio } = await resolveTurnVoice(s.presetId, speak)
+          return handleTurn(text, s.history, { tts, preset, refAudio, speak, context, modelDefId: s.model, buildMemoryContext, requestApproval, attachments, signal, emit })
+        }
       } else {
         return
       }
@@ -156,7 +166,10 @@ export default defineWebSocketHandler({
       const audio = frame.bytes
       inputModality = 'voice'
       speakFlag = true
-      turn = (signal, emit, context) => handleUtterance(audio, s.history, { stt, tts, voice: s.voice, ttsProvider: s.ttsProvider, speak: true, context, modelDefId: s.model, buildMemoryContext, requestApproval, signal, emit })
+      turn = async (signal, emit, context) => {
+        const { preset, refAudio } = await resolveTurnVoice(s.presetId, true)
+        return handleUtterance(audio, s.history, { stt, tts, preset, refAudio, speak: true, context, modelDefId: s.model, buildMemoryContext, requestApproval, signal, emit })
+      }
     }
     s.ac?.abort()
     for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }

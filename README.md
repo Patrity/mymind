@@ -34,7 +34,7 @@ One **⌘K command palette** searches across *everything* — documents, memorie
 Claude Code / Hermes hooks stream session transcripts in; a background job extracts **atomic, deduplicated memories** ("the user prefers pnpm", "this project uses Drizzle + pgvector") with confidence scores. High-confidence memories auto-file; the rest land in a review queue. Browse the raw transcripts too — token usage, tool calls, the works.
 
 ### 🎙️ Voice — talk to your second brain
-A full hands-free agent, **100% self-hosted**: Silero VAD in the browser, faster-whisper STT and Kokoro/Chatterbox TTS on my rig, and the same agent core (with all its tools) in between. Barge-in works — interrupt it mid-sentence and it stops and listens. Typed messages run through the same loop and get spoken replies. The whole thing is fronted by a **GPU-particle reactor** (Three.js, 50k particles in a custom vertex shader) that breathes when idle, dances with your mic, collapses into a lightning-laced vortex while thinking, and erupts with the reply — plus a settings panel with a *live mic-probability meter* for tuning VAD sensitivity to your room.
+A full hands-free agent, **100% self-hosted**: Silero VAD in the browser, faster-whisper STT and Breeze TTS 2 on my rig, and the same agent core (with all its tools) in between. Barge-in works — interrupt it mid-sentence and it stops and listens. Typed messages run through the same loop and get spoken replies. The whole thing is fronted by a **GPU-particle reactor** (Three.js, 50k particles in a custom vertex shader) that breathes when idle, dances with your mic, collapses into a lightning-laced vortex while thinking, and erupts with the reply — plus a settings panel with a *live mic-probability meter* for tuning VAD sensitivity to your room.
 
 ![Voice agent — GPU particle reactor](docs/screenshots/voice-agent.webp)
 
@@ -89,7 +89,7 @@ It was built deliberately, one system at a time — there's a full paper trail i
 
 ## Tech stack
 
-**Nuxt 4** · **Nuxt UI v4** · **Nitro** · **Drizzle ORM** · **PostgreSQL 16 + pgvector** · **better-auth** · **CodeMirror 6** · **Nuxt MDC** · **sharp** · **@modelcontextprotocol/sdk** · **Vercel AI SDK** · **Three.js** (custom GLSL) · **Silero VAD** (`vad-web`) · local **Qwen3** models (embeddings / vision / reasoning) + **faster-whisper** STT + **Kokoro/Chatterbox** TTS via OpenAI-spec endpoints.
+**Nuxt 4** · **Nuxt UI v4** · **Nitro** · **Drizzle ORM** · **PostgreSQL 16 + pgvector** · **better-auth** · **CodeMirror 6** · **Nuxt MDC** · **sharp** · **@modelcontextprotocol/sdk** · **Vercel AI SDK** · **Three.js** (custom GLSL) · **Silero VAD** (`vad-web`) · local **Qwen3** models (embeddings / vision / reasoning) + **faster-whisper** STT + **Breeze TTS 2** via a multipart HTTP contract.
 
 ## Running it yourself
 

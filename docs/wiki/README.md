@@ -29,4 +29,5 @@ The **living** reference for how each shipped system works **today** — one pag
 | CI/CD deploy pipeline (GitHub Actions → Proxmox homelab) | [ci-deploy-pipeline.md](ci-deploy-pipeline.md) | shipped |
 | Projects (canonical git-keyed entities, dashboard, doc-assoc, merge) | [projects.md](projects.md) | shipped |
 | Voice agent (VAD, WebSocket orchestrator, STT/TTS, Three.js visualizer) | [voice-agent.md](voice-agent.md) | shipped |
+| Voice studio (`/voice` — authoring Breeze presets, reading MyMind aloud) | [voice-studio.md](voice-studio.md) | shipped |
 | Voice agent integration guide (legacy Kyutai/Unmute reference) | [voice-agent-integration.md](voice-agent-integration.md) | shipped |

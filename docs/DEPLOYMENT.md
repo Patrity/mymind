@@ -72,7 +72,7 @@ Extensions are created automatically on **first** DB boot via `db/init/01-extens
 | `STORAGE_DRIVER` / `STORAGE_LOCAL_DIR` | ✅ | `local` + `/app/.data/uploads` (a mounted volume in compose). `s3` + `STORAGE_S3_*` to use S3. |
 | `MAX_UPLOAD_BYTES` | optional | default 50 MB. |
 | `NITRO_PORT` / `NITRO_HOST` | optional | default `3000` / `0.0.0.0`. |
-| `AI_<ROLE>_BASE_URL / _API_KEY / _MODEL` | optional (seed) | **NOT runtime config** — see §4a. Leftover roles (`REASONING`, `BULK`, `EMBEDDINGS`, `VISION`, `STT`, `TTS_KOKORO`, `TTS_CHATTERBOX`, `RERANK`) are a **one-time onboarding seed** consumed only by the `/onboarding` "Import from environment" button. Safe to leave set (pre-fills the registry on first run) or to omit (configure in `/settings` by hand). |
+| `AI_<ROLE>_BASE_URL / _API_KEY / _MODEL` | optional (seed) | **NOT runtime config** — see §4a. Leftover roles (`REASONING`, `BULK`, `EMBEDDINGS`, `VISION`, `STT`, `TTS_BREEZE`, `RERANK`) are a **one-time onboarding seed** consumed only by the `/onboarding` "Import from environment" button. Safe to leave set (pre-fills the registry on first run) or to omit (configure in `/settings` by hand). |
 
 ### 4a. AI models are configured in-app, not by env
 
@@ -81,6 +81,69 @@ Model/provider config moved out of env into the **AI config registry** (a DB-bac
 On first sign-in the app **redirects to `/onboarding`** until at least `reasoning` and `embeddings` each have an assigned model. The onboarding wizard reuses the settings tabs and offers an **"Import from environment"** button: if you left the old `AI_*` vars in `.env`, it seeds the registry from them in one click (one-time; it overwrites an empty config), then encrypts the keys. Otherwise add providers/models by hand. After onboarding, the `AI_*` env vars do nothing at runtime.
 
 Embeddings stay fixed at **2560-dim** (`qwen3-embedding-4b`, TEI `:8882`, keyless). On save the registry runs a **dim-probe** against the primary embedding model's `/embed` and rejects the config (422) unless it returns exactly 2560 dims — so the deploy host **must reach a working 2560-dim embedding endpoint** before you can finish onboarding.
+
+### 4b. REQUIRED before voice works — repoint `assignments.tts` at Breeze (cycle 61)
+
+**This is a hard prerequisite, not a note. Skip it and voice is dead on arrival — both surfaces.**
+
+Cycle 61 replaced the whole TTS stack with a single engine, **Breeze TTS 2** at `:8880`, and
+**deleted the TTS failover chain**. `speakWithPreset` (`server/lib/voice/speak.ts`) resolves
+`chain[0]` of the registry's `tts` assignment and **stops** — there is nothing behind it to fall
+back to. Both callers go through it:
+
+- `server/api/voice/ws.ts:52` — **the live agent**, so every spoken reply in a conversation;
+- `server/api/voice/speak.post.ts` — the `/voice` studio, so every render and every audition.
+
+Prod's `ai_config` registry row still lists the **decommissioned** engines (Kokoro `:8880` under its
+old label, Chatterbox `:8884`, Orpheus `:5005`) and will almost certainly have one of them **first**.
+Nothing migrates it: the registry is a `settings` JSONB row edited in the app, and no migration in
+this branch touches it. Until it is repointed by hand, **every spoken agent reply and every studio
+render fails with `502 "Breeze unreachable at http://<dead host>: fetch failed"`**, with no fallback
+and no degraded mode. The text side of the agent keeps working, which is exactly what makes this easy
+to miss.
+
+This was confirmed on the dev box during cycle 61's browser validation: the assignment read
+`[chatterbox@:8884, kokoro@:8880]`, `:8884` had been dead since the rig was repurposed, and every
+render 502'd until the assignment was fixed.
+
+**Check it (read-only):**
+
+```bash
+ssh root@192.168.2.50 "pct exec 114 -- docker exec mymind-db psql -U mymind -d mymind -t -c \
+  \"select jsonb_pretty(value->'assignments'->'tts') from settings where key='ai_config'\""
+```
+
+Then confirm the first id in that array is a model whose provider `baseURL` is the Breeze rig:
+
+```bash
+ssh root@192.168.2.50 "pct exec 114 -- docker exec mymind-db psql -U mymind -d mymind -t -c \
+  \"select m->>'label', p->>'baseURL' from settings s,
+       jsonb_array_elements(s.value->'models') m,
+       jsonb_array_elements(s.value->'providers') p
+     where s.key='ai_config' and p->>'id' = m->>'providerId'
+       and m->>'id' = (s.value->'assignments'->'tts'->>0)\""
+```
+
+Expected: one row naming the Breeze provider, `http://192.168.2.25:8880/v1`.
+Anything else — `chatterbox`, `:8884`, `:5005`, or an empty result — means voice is broken.
+
+**Fix it — preferred: in the app.** `/settings` → **Model Configuration** → **tts**: remove every
+retired entry and leave exactly **one** model, pointed at the Breeze provider. Doing it here also
+invalidates the registry's in-process cache, so it takes effect immediately.
+
+**Fix it — direct SQL** (if the UI is unreachable). The registry cache is **process-local with
+explicit invalidation**, so a direct row edit is not seen until the service restarts:
+
+```bash
+# … after updating settings.value->'assignments'->'tts' to a single Breeze model id …
+ssh root@192.168.2.50 "pct exec 114 -- systemctl restart mymind"
+```
+
+**Verify:** the rig answers `curl -s http://192.168.2.25:8880/health` →
+`{"status":"ok","sample_rate":24000}` (a 503 means it is still warming — roughly 44 s cold). Then
+open `/voice`, select a preset and press **Speak**: a working path renders a first-audio time in
+well under a second. If it 502s, the message names the host actually being dialed — read it, because
+it is the fastest way to see a stale assignment.
 
 ## 5. Bootstrap the account + machine tokens
 
@@ -178,7 +241,19 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'accept: application/json, text/eve
   -H 'content-type: application/json' -X POST $ORIGIN/api/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -c 300   # lists ~10 tools
 ```
-Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboard, and confirm the ⌘K palette searches.
+```bash
+# voice: the ONE check that catches a stale `assignments.tts` (see 4b) — a text-only
+# smoke test passes while every spoken reply is 502ing.
+curl -s http://192.168.2.25:8880/health                            # {"status":"ok","sample_rate":24000}
+curl -s -b /tmp/cj "$ORIGIN/api/voice/presets" | jq '.presets | length'   # 8 after migration 0039
+PID=$(curl -s -b /tmp/cj "$ORIGIN/api/voice/presets" | jq -r '.presets[0].id')
+curl -s -b /tmp/cj -D- -o /dev/null -X POST $ORIGIN/api/voice/speak -H 'content-type: application/json' \
+  -d "{\"text\":\"deploy check\",\"presetId\":\"$PID\"}" | grep -i 'HTTP/\|x-sample-rate'
+# expect: 200 + `x-sample-rate: 24000`.
+# a 502 naming a host that is NOT :8880 means `assignments.tts` was never repointed — see 4b.
+```
+
+Then in a browser: sign in, open Documents/Gallery/Tasks/Memory/Sessions/Clipboard, and confirm the ⌘K palette searches. Open `/voice`, pick a preset and press **Speak** — and send one turn on `/agent` with voice replies on, because the live agent and the studio share `speakWithPreset` and a stale `tts` assignment silences both.
 
 ## 11. Connecting clients
 - **ShareX/CleanShot**: custom uploader → `POST {ORIGIN}/api/upload?public=1`, multipart field `file`, header `Authorization: Bearer <token>`, response URL = `$json:url$`.

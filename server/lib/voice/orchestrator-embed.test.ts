@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { handleTurn } from './orchestrator'
 import type { AgentEvent } from '../agent/run'
+import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
 
 const tts = { synthesize: async function* () {} }
+
+const preset: VoicePresetDTO = {
+  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
+  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
+  maxSegmentChars: 200, calibratedRefKey: null, isDefault: true
+}
 
 async function* fakeRun(): AsyncGenerator<AgentEvent> {
   yield { type: 'text-delta', text: 'Done.' }
@@ -14,7 +21,7 @@ describe('handleTurn server-authored image embed', () => {
     const events: { type: string; text?: string }[] = []
     const ac = new AbortController()
     const out = await handleTurn('draw a cat', [], {
-      tts: tts as never, voice: '', signal: ac.signal, speak: false,
+      tts: tts as never, preset, signal: ac.signal, speak: false,
       emit: (e) => events.push(e as { type: string; text?: string }),
       runAgent: fakeRun as never
     })

@@ -14,9 +14,9 @@ describe('classifyFrame', () => {
   })
 
   it('classifies JSON delivered as bytes as control (crossws@0.3.5 node adapter drops isBinary)', () => {
-    expect(classifyFrame(enc('{"type":"voice","provider":"kokoro","voice":"af_heart"}'))).toEqual({
+    expect(classifyFrame(enc('{"type":"preset","presetId":"a3f1c2d4-0000-4000-8000-000000000001"}'))).toEqual({
       kind: 'control',
-      msg: { type: 'voice', provider: 'kokoro', voice: 'af_heart' },
+      msg: { type: 'preset', presetId: 'a3f1c2d4-0000-4000-8000-000000000001' },
     })
   })
 

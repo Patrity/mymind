@@ -161,10 +161,7 @@ Expected: PASS — 5 tests
 
 ```bash
 git add shared/types/voice-presets.ts shared/types/voice-presets.test.ts
-git commit -m "feat(voice): shared voice-preset types with derived mode
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+git commit -m "feat(voice): shared voice-preset types with derived mode"
 ```
 
 ---
@@ -295,10 +292,7 @@ git add server/lib/voice/breeze.ts server/lib/voice/breeze.test.ts
 git commit -m "feat(voice): Breeze pre-flight validation
 
 Both rules are 500s with opaque bodies at the rig, so they have to be
-caught before dispatch rather than diagnosed from the response.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+caught before dispatch rather than diagnosed from the response."
 ```
 
 ---
@@ -542,10 +536,7 @@ keeps time-to-first-audio at the measured ~6ms rather than half the
 segment's duration.
 
 A 200 with zero bytes is the prompt-ceiling overrun and throws; the
-status code cannot carry it because headers precede generation.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+status code cannot carry it because headers precede generation."
 ```
 
 ---
@@ -771,10 +762,7 @@ git commit -m "feat(voice): single-slot priority queue for Breeze
 
 Agent utterances preempt studio auditions so a long narration render
 cannot stall a live conversation. A 409 reaching a caller now means an
-external client took the rig's slot, not a bug in here.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+external client took the rig's slot, not a bug in here."
 ```
 
 ---
@@ -1044,10 +1032,7 @@ git commit -m "feat(voice): speaker composing queue slot, Breeze call and preset
 
 The queue slot wraps the whole stream lifetime, not just the headers —
 releasing at headers would let a second caller start generating while
-the first is still receiving, which the rig answers with 409.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+the first is still receiving, which the rig answers with 409."
 ```
 
 ---
@@ -1170,10 +1155,7 @@ git commit -m "feat(voice): voice_presets table seeded with the eight starters
 
 Mode is derived, not stored. The cfg/instruction and ref/ref_text pairs
 are DB checks rather than app validation: a bad row is not a mis-render,
-it is every utterance from that preset returning an opaque 500.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+it is every utterance from that preset returning an opaque 500."
 ```
 
 ---
@@ -1528,10 +1510,7 @@ git commit -m "feat(voice): preset service with prompt-budget calibration
 Clone-backed presets are measured against the agent's segment cap rather
 than assumed safe: the overrun is a 200 with an empty body, so it cannot
 be caught at call time. Only a truncation narrows the cap — a busy rig is
-not evidence about the prompt budget.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+not evidence about the prompt budget."
 ```
 
 ---
@@ -1886,10 +1865,7 @@ go rather than sit inert.
 Deleting failover is what lets per-segment buffering go: createTtsSynth
 collected a whole segment so a failing provider could be retried, and
 that buffer is precisely what would have thrown away the streaming win.
-Concurrency is pinned to 1 and SpeechPipeline throws if it is raised.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+Concurrency is pinned to 1 and SpeechPipeline throws if it is raised."
 ```
 
 ---
@@ -2168,10 +2144,7 @@ scheduled on the AudioContext clock, so audio starts on the first chunk
 rather than at the end of a segment.
 
 Pre-Breeze cookies naming a Kokoro/Chatterbox voice migrate to '' which
-resolves to the server's default preset.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+resolves to the server's default preset."
 ```
 
 ---
@@ -2437,10 +2410,7 @@ git commit -m "feat(voice): studio synthesis, reference upload and preset routes
 Reference clips auto-transcribe through the whisper already in the
 registry — Breeze needs ref_text to match the audio exactly, and typing
 it by hand is error-prone. Over-length clips are rejected at upload
-because the clip shares the prompt budget with the text.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+because the clip shares the prompt budget with the text."
 ```
 
 ---
@@ -2614,10 +2584,7 @@ interim Gradio UI on the rig, which was never a systemd service and did
 not survive a reboot.
 
 Seed auditions run sequentially: the rig is single-request, so firing
-four at once would 409 three of them.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+four at once would 409 three of them."
 ```
 
 ---
@@ -2713,10 +2680,7 @@ git commit -m "chore(voice): retire the two-engine world from probes, env and do
 
 Pins the vocal events with a regression test: toSpeakable rewrites every
 other bracket form, so events surviving is incidental today and one
-tidying pass away from silently removing a working feature.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+tidying pass away from silently removing a working feature."
 ```
 
 ---
@@ -2794,10 +2758,7 @@ Expected: PASS
 
 ```bash
 git add -A
-git commit -m "docs(voice): cycle 61 wiki, handover and roadmap
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01VeEobExZCrKbMNg2cmyx1G"
+git commit -m "docs(voice): cycle 61 wiki, handover and roadmap"
 ```
 
 ---

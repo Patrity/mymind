@@ -14,6 +14,7 @@ export type ResourceName =
   | 'apiToken'
   | 'conversation'
   | 'graph'
+  | 'voicePreset'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 

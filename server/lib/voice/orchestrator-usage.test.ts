@@ -3,11 +3,18 @@ import { describe, it, expect } from 'vitest'
 import { handleTurn } from './orchestrator'
 import type { VoiceEvent } from './orchestrator'
 import type { AgentEvent } from '../agent/run'
+import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
+
+const preset: VoicePresetDTO = {
+  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
+  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
+  maxSegmentChars: 200, calibratedRefKey: null, isDefault: true
+}
 
 function fakeDeps(events: VoiceEvent[], agentEvents: AgentEvent[]) {
   return {
     tts: { async *synthesize() { /* not exercised: speak: false */ } } as never,
-    voice: 'af_heart',
+    preset,
     signal: new AbortController().signal,
     speak: false,
     emit: (e: VoiceEvent) => { events.push(e) },

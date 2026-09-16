@@ -136,7 +136,7 @@ export const SNAPSHOT_QUERIES: Record<SnapshotQueryId, string> = {
   // buildSnapshotQueries() from the configured catalog, so job names live in exactly
   // one place instead of being duplicated into a regex that silently drifts.
   up: buildUpQuery(),
-  // Every blackbox probe on the AI rig (reranker, Speaches STT, Kokoro/Chatterbox TTS, ComfyUI,
+  // Every blackbox probe on the AI rig (reranker, Speaches STT, Breeze TTS, ComfyUI,
   // Heretic llama.cpp — added to Prometheus 2026-08-19) plus the public LiteLLM edge.
   probes: buildProbesQuery(),
   spend: 'topk(10, litellm_total_spend > 0)',

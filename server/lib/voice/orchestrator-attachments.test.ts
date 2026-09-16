@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { handleTurn } from './orchestrator'
 import type { AgentEvent } from '../agent/run'
+import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
 
 const tts = { synthesize: async function* () {} }
+
+const preset: VoicePresetDTO = {
+  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
+  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
+  maxSegmentChars: 200, calibratedRefKey: null, isDefault: true
+}
 
 describe('handleTurn — multimodal attachments', () => {
   it('builds an image part for an image attachment and threads attachmentImageIds into the run ctx', async () => {
@@ -13,7 +20,7 @@ describe('handleTurn — multimodal attachments', () => {
     }
     const ac = new AbortController()
     await handleTurn('look at this', [], {
-      tts: tts as never, voice: '', signal: ac.signal, speak: false,
+      tts: tts as never, preset, signal: ac.signal, speak: false,
       emit: () => {},
       attachments: [{ id: 'img1', kind: 'image', mime: 'image/webp' }],
       readAttachmentBytes: async () => ({ bytes: Buffer.from([1, 2, 3]), mime: 'image/webp' }),
@@ -32,7 +39,7 @@ describe('handleTurn — multimodal attachments', () => {
       return (async function* () { yield { type: 'text-delta', text: 'ok' } as AgentEvent })()
     }
     const ac = new AbortController()
-    await handleTurn('hi', [], { tts: tts as never, voice: '', signal: ac.signal, speak: false, emit: () => {}, runAgent: fakeRun as never })
+    await handleTurn('hi', [], { tts: tts as never, preset, signal: ac.signal, speak: false, emit: () => {}, runAgent: fakeRun as never })
     const userMsg = captured!.messages[captured!.messages.length - 1]
     expect(userMsg.content).toBe('hi')
     expect(captured!.ctx.attachmentImageIds).toEqual([])

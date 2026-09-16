@@ -1,6 +1,7 @@
 <!-- app/components/voice/SettingsSlideover.vue -->
 <script setup lang="ts">
 import { DEFAULT_MIC, buildMicOptions, micIdToSelectValue, selectValueToMicId, isMicIdAvailable } from '~/lib/voice/devices'
+import { resolveSelectedPreset } from '~/lib/voice/presets'
 
 const props = defineProps<{ voice: ReturnType<typeof useVoice> }>()
 
@@ -12,19 +13,19 @@ const speak = defineModel<boolean>('speak', { required: true })
 
 const { settings } = useVoiceSettings()
 
-// Voice picker — same-origin proxy aggregating both TTS providers.
-const { data: voiceList } = await useFetch('/api/voice/voices', {
-  default: () => ({ voices: [] as { provider: string, voice: string }[] })
+// Voice picker — presets authored in /voice, not an enum from a provider.
+const { data: presetList } = await useFetch('/api/voice/presets', {
+  default: () => ({ presets: [] as { id: string, name: string, isDefault: boolean }[] })
 })
 const voiceItems = computed(() =>
-  voiceList.value.voices.map(v => ({ label: `${v.provider} · ${v.voice}`, value: `${v.provider}|${v.voice}` }))
+  presetList.value.presets.map(p => ({ label: p.name, value: p.id }))
 )
+// Resolution (and WHY it is not just `settings.presetId`) lives in resolveSelectedPreset —
+// the short version is that '' and an unlisted id both mean "the server's default preset",
+// and the list is ordered by name, so presets[0] is not it.
 const selectedVoice = computed({
-  get: () => `${settings.value.provider}|${settings.value.voice}`,
-  set: (val: string) => {
-    const [p, v] = val.split('|') as [string, string]
-    props.voice.setVoice(p, v) // sends over WS if connected + persists to the cookie
-  },
+  get: () => resolveSelectedPreset(settings.value.presetId, presetList.value.presets),
+  set: (val: string) => props.voice.setPreset(val), // sends over WS if connected + persists
 })
 
 // Microphone picker. Populated on mount + on every 'devicechange' so plugging/

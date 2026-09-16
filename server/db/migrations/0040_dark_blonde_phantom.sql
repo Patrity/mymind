@@ -1,0 +1,1 @@
+ALTER TABLE "voice_presets" ADD COLUMN "calibrated_ref_key" text;

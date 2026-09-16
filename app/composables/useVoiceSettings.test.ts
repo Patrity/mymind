@@ -19,10 +19,10 @@ describe('useVoiceSettings defaults + migration', () => {
   })
 
   it('does not clobber other settings while migrating playbackRate', () => {
-    const stored = { ...VOICE_SETTINGS_DEFAULTS, playbackRate: 1.1, voice: 'Custom.wav', minSpeechMs: 250 }
+    const stored = { ...VOICE_SETTINGS_DEFAULTS, playbackRate: 1.1, presetId: 'warm-narrator', minSpeechMs: 250 }
     const settings = migrateVoiceSettings(stored)
     expect(settings.playbackRate).toBe(1.0)
-    expect(settings.voice).toBe('Custom.wav')
+    expect(settings.presetId).toBe('warm-narrator')
     expect(settings.minSpeechMs).toBe(250)
   })
 
@@ -35,7 +35,28 @@ describe('useVoiceSettings defaults + migration', () => {
   it('backfills missing keys from defaults for a cookie predating them', () => {
     const stored = { playbackRate: 1.25 } as Partial<typeof VOICE_SETTINGS_DEFAULTS>
     const settings = migrateVoiceSettings(stored)
-    expect(settings.provider).toBe(VOICE_SETTINGS_DEFAULTS.provider)
+    expect(settings.presetId).toBe(VOICE_SETTINGS_DEFAULTS.presetId)
+    expect(settings.micDeviceId).toBe(VOICE_SETTINGS_DEFAULTS.micDeviceId)
     expect(settings.playbackRate).toBe(1.25)
+  })
+})
+
+describe('migrateVoiceSettings — Breeze preset migration', () => {
+  it('drops a pre-Breeze provider/voice pair and falls back to the default preset', () => {
+    const out = migrateVoiceSettings({ provider: 'chatterbox', voice: 'Gianna.wav' } as never)
+    expect(out.presetId).toBe('')
+    expect('provider' in out).toBe(false)
+    expect('voice' in out).toBe(false)
+  })
+
+  it('keeps an already-migrated presetId', () => {
+    const out = migrateVoiceSettings({ presetId: 'abc-123' } as never)
+    expect(out.presetId).toBe('abc-123')
+  })
+
+  it('backfills newly added keys from defaults', () => {
+    const out = migrateVoiceSettings({ presetId: 'x' } as never)
+    expect(out.playbackRate).toBe(VOICE_SETTINGS_DEFAULTS.playbackRate)
+    expect(out.bargeInEnabled).toBe(VOICE_SETTINGS_DEFAULTS.bargeInEnabled)
   })
 })

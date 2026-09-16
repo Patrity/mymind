@@ -3,6 +3,13 @@ import { describe, it, expect, vi } from 'vitest'
 import { buildMemoryContext } from '../server/lib/agent/context'
 import { handleTurn } from '../server/lib/voice/orchestrator'
 import type { MemoryDTO } from '../shared/types/memory'
+import type { VoicePresetDTO } from '../shared/types/voice-presets'
+
+const preset: VoicePresetDTO = {
+  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
+  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
+  maxSegmentChars: 200, isDefault: true
+}
 
 const mem = (content: string, relevance: number) => ({ content, relevance }) as MemoryDTO
 
@@ -46,7 +53,7 @@ describe('handleTurn memory injection', () => {
       yield { type: 'done' }
     }) as never
     await handleTurn('what do you know about my RAM', [], {
-      tts: { synthesize: async function* () {} }, voice: '', speak: false,
+      tts: { synthesize: async function* () {} }, preset, speak: false,
       context: 'Current context: open tasks…',
       buildMemoryContext: async () => 'Possibly relevant memories:\n- Tony has 656GB of DDR4',
       runAgent, signal: new AbortController().signal, emit: () => {}
@@ -62,7 +69,7 @@ describe('handleTurn memory injection', () => {
       yield { type: 'done' }
     }) as never
     await handleTurn('hello', [], {
-      tts: { synthesize: async function* () {} }, voice: '', speak: false,
+      tts: { synthesize: async function* () {} }, preset, speak: false,
       context: 'Current context: X',
       buildMemoryContext: async () => '',
       runAgent, signal: new AbortController().signal, emit: () => {}

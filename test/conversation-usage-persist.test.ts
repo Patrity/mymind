@@ -14,11 +14,18 @@ import { handleTurn } from '../server/lib/voice/orchestrator'
 import type { VoiceEvent } from '../server/lib/voice/orchestrator'
 import type { AgentEvent } from '../server/lib/agent/run'
 import { buildTurnPersistPayload, type TurnPersistContext } from '../server/lib/voice/turn-persist'
+import type { VoicePresetDTO } from '../shared/types/voice-presets'
+
+const preset: VoicePresetDTO = {
+  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
+  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
+  maxSegmentChars: 200, isDefault: true
+}
 
 function fakeDeps(agentEvents: AgentEvent[], emit: (e: VoiceEvent) => void) {
   return {
     tts: { async *synthesize() { /* not exercised: speak: false */ } } as never,
-    voice: 'af_heart',
+    preset,
     signal: new AbortController().signal,
     speak: false,
     emit,
