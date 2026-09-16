@@ -12,7 +12,7 @@ import type { VoicePresetDTO } from '../../shared/types/voice-presets'
 const clone: VoicePresetDTO = {
   id: 'p', name: 'tony', instruction: 'Warmly.', cfgScale: 4, seed: 11, temperature: 0.9,
   topP: 1, topK: 50, refStorageKey: 'k', refText: 'transcript', refDurationMs: 8000,
-  maxSegmentChars: 200, calibratedRefKey: null, isDefault: false
+  maxSegmentChars: 200, calibratedRefKey: null, starredSeeds: [], isDefault: false
 }
 const design: VoicePresetDTO = { ...clone, refStorageKey: null, refText: null, refDurationMs: null }
 

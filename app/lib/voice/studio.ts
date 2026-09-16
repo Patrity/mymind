@@ -4,7 +4,11 @@
 // files so it can be tested without mounting anything (same precedent as devices.ts,
 // messages.ts and presets.ts in this directory).
 import type { VoicePresetDTO, SpeakOverrides } from '~~/shared/types/voice-presets'
-import { presetMode } from '~~/shared/types/voice-presets'
+import { presetMode, maxCallChars } from '~~/shared/types/voice-presets'
+
+/** The live agent's conversational segment cap, mirrored from server/lib/voice/tuning.ts.
+ *  Used only to DESCRIBE what realtime mode will do; the server remains the authority. */
+export const AGENT_SEGMENT_CHARS = 200
 
 /** The editable shape of a preset while it is being designed. Mirrors PresetInput on the
  *  server, except that the two nullable text fields are plain strings here — a textarea
@@ -20,6 +24,8 @@ export interface PresetDraft {
   refStorageKey: string | null
   refText: string
   refDurationMs: number | null
+  /** Seeds kept for this voice. Edited in the form and saved with it. */
+  starredSeeds: number[]
 }
 
 /** What POST/PATCH /api/voice/presets accepts. */
@@ -34,6 +40,7 @@ export interface PresetBody {
   refStorageKey: string | null
   refText: string | null
   refDurationMs: number | null
+  starredSeeds: number[]
 }
 
 // ── Guidance (cfg_scale) ──────────────────────────────────────────────────────
@@ -91,7 +98,8 @@ export function draftToBody(d: PresetDraft): PresetBody {
     topK: d.topK,
     refStorageKey: d.refStorageKey,
     refText: d.refText.trim() || null,
-    refDurationMs: d.refDurationMs
+    refDurationMs: d.refDurationMs,
+    starredSeeds: d.starredSeeds
   }
 }
 
@@ -107,7 +115,8 @@ export function blankDraft(): PresetDraft {
     topK: 50,
     refStorageKey: null,
     refText: '',
-    refDurationMs: null
+    refDurationMs: null,
+    starredSeeds: []
   }
 }
 
@@ -123,18 +132,29 @@ export function presetToDraft(p: VoicePresetDTO): PresetDraft {
     topK: p.topK,
     refStorageKey: p.refStorageKey,
     refText: p.refText ?? '',
-    refDurationMs: p.refDurationMs
+    refDurationMs: p.refDurationMs,
+    starredSeeds: [...(p.starredSeeds ?? [])]
   }
 }
 
 /** True when the form differs from the row it was loaded from. Drives the Save button —
  *  and nothing else. It used to gate the audition too, back when auditioning PATCHed the
  *  row; overrides removed that, so an audition now previews unsaved edits. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => v === b[i])
+  }
+  return a === b
+}
+
 export function draftIsDirty(d: PresetDraft, p: VoicePresetDTO | null): boolean {
   if (!p) return true
   const a = draftToBody(d)
   const b = draftToBody(presetToDraft(p))
-  return (Object.keys(b) as (keyof PresetBody)[]).some(k => a[k] !== b[k])
+  // Value comparison, not reference: starredSeeds is an ARRAY, and two equal-but-distinct
+  // arrays are always !==, which would mark every freshly loaded preset permanently dirty
+  // and leave Save enabled forever.
+  return (Object.keys(b) as (keyof PresetBody)[]).some(k => !sameValue(a[k], b[k]))
 }
 
 /**
@@ -396,23 +416,22 @@ export function diagnoseStreamRender(outcome: {
  * seeded presets carry 200, so warning on the number alone fired on every ordinary
  * read-aloud — which is how you teach someone to ignore the one warning that is real.
  */
-export function overCapWarning(
+export function describeRenderPlan(
   chars: number,
-  preset: Pick<VoicePresetDTO, 'maxSegmentChars' | 'refStorageKey'>
+  preset: Pick<VoicePresetDTO, 'instruction' | 'refStorageKey' | 'maxSegmentChars'>,
+  mode: 'quality' | 'realtime'
 ): string | null {
-  if (!preset.refStorageKey) return null
-  if (chars <= preset.maxSegmentChars) return null
-  return `${chars} characters is past this voice's calibrated ceiling of ${preset.maxSegmentChars}. `
-    + 'Studio synthesis sends the text in one piece, so the render will very likely stop early.'
+  const ceiling = maxCallChars(preset)
+  const cap = mode === 'realtime' ? Math.min(AGENT_SEGMENT_CHARS, ceiling) : ceiling
+  const calls = Math.ceil(chars / cap)
+  if (calls <= 1) return null
+  if (mode === 'realtime') {
+    return `Realtime mode segments like the live agent does: about ${calls} calls of up to `
+      + `${cap} characters. Each seam restarts the delivery, which is what you are listening for.`
+  }
+  return `${chars} characters is past what this voice can speak in one piece (${ceiling}), so `
+    + `it will be sent as about ${calls} calls. Expect a small change in delivery at each join.`
 }
-
-/**
- * The message out of a failed request, wherever it is hiding. h3's createError puts
- * `statusMessage` on the FetchError's `data`, not on the error itself, so the obvious
- * `e.message` yields "[POST] /api/…: 400 Bad Request" and throws away the sentence the
- * server wrote — which, for the reference route, is the only place the 60s limit is
- * explained.
- */
 export function errorMessage(e: unknown, fallback = 'Unknown error'): string {
   if (typeof e === 'string') return e || fallback
   const err = e as {
@@ -456,4 +475,49 @@ export function messagesToScript(messages: ScriptMessage[]): string {
   const assistant = messages.filter(m => m.role === 'assistant' && m.content.trim())
   const source = assistant.length ? assistant : messages.filter(m => m.content.trim())
   return source.map(m => m.content.trim()).join('\n\n')
+}
+
+// ── Instruction specificity ──────────────────────────────────────────────────────────
+// Measured on the rig: the SEED RANGE is irrelevant to how strange a designed voice comes
+// out. Sweeping seeds from 3 to 999,999 against one instruction produced durations scattered
+// between 4.80s and 5.92s with no trend — seed 3 was the longest, seed 500,000 the shortest.
+// A seed is a categorical RNG init, not a scalar dial, so narrowing the dice to 1-100 would
+// only mean a hundred lottery tickets instead of a million.
+//
+// What DOES control the variance is how much latitude the instruction leaves. Same text,
+// four seeds, measuring the spread of output duration:
+//
+//     vague instruction,    cfg 4   spread 2.64s   stdev 1.11
+//     specific instruction, cfg 4   spread 0.56s   stdev 0.24   <- 4.6x tighter
+//     specific instruction, cfg 1   spread 1.36s   stdev 0.63
+//
+// So a wandering voice is a vague instruction held loosely, not an unlucky seed — and the
+// remedy is to say more about the person, at cfg 4.
+
+/** Roughly where the measured "specific" instructions sat. Below it, seeds diverge enough
+ *  that casting feels random rather than like choosing between takes. */
+export const SPECIFIC_INSTRUCTION_CHARS = 60
+
+export function instructionHint(
+  instruction: string | null | undefined,
+  cfgScale: number
+): string | null {
+  const text = instruction?.trim() ?? ''
+  if (!text) return null   // the cfg lock already explains this case
+  if (text.length < SPECIFIC_INSTRUCTION_CHARS) {
+    return 'Short descriptions leave the model a lot of latitude, so different seeds come out '
+      + 'as very different people. Measured, a specific description was about 4.6x more '
+      + 'consistent across seeds. Name an age, a timbre, a delivery and a pace.'
+  }
+  if (cfgScale <= 1) {
+    return 'At cfg 1 the description is barely applied, so seeds wander even when it is '
+      + 'detailed. Raise cfg toward 4 to hold the voice to it.'
+  }
+  return null
+}
+
+/** Seeds the user chose to keep for this preset. Casting is a lottery; without somewhere to
+ *  put a good result, the next roll loses it. */
+export function toggleStarredSeed(starred: number[], seed: number): number[] {
+  return starred.includes(seed) ? starred.filter(s => s !== seed) : [...starred, seed].sort((a, b) => a - b)
 }

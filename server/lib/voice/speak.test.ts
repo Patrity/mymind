@@ -7,7 +7,7 @@ import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
 const design: VoicePresetDTO = {
   id: 'p1', name: 'neutral', instruction: 'A neutral, low-key man.', cfgScale: 4, seed: 11,
   temperature: 0.9, topP: 1.0, topK: 50, refStorageKey: null, refText: null,
-  refDurationMs: null, maxSegmentChars: 200, calibratedRefKey: null, isDefault: true
+  refDurationMs: null, maxSegmentChars: 200, calibratedRefKey: null, starredSeeds: [], isDefault: true
 }
 
 function fakeSpeak(chunks: number[][], sampleRate = 24000) {
@@ -16,6 +16,9 @@ function fakeSpeak(chunks: number[][], sampleRate = 24000) {
   // to read the request argument back out in the "maps the preset" assertion below.
   return vi.fn(async (..._args: unknown[]) => ({
     sampleRate,
+    // Every real BreezeStream carries this — the queue slot is held until it settles, so a
+    // fixture without one hangs (or, before it existed, threw).
+    drained: Promise.resolve(),
     chunks: (async function* () { for (const c of chunks) yield new Uint8Array(c) })()
   }))
 }
@@ -74,6 +77,7 @@ describe('createSpeaker', () => {
       baseURL: async () => 'http://rig:8880', queue,
       speakFn: vi.fn(async () => ({
         sampleRate: 24000,
+        drained: Promise.resolve(),
         chunks: (async function* () { throw new BreezeError('truncated', 'no audio') })()
       })) as never
     })
@@ -139,5 +143,133 @@ describe('collectPcm', () => {
     const { pcm, sampleRate } = await collectPcm(src())
     expect([...pcm]).toEqual([1, 2, 3])
     expect(sampleRate).toBe(24000)
+  })
+})
+
+describe('createSpeaker — cancellation drains, never aborts', () => {
+  const preset: VoicePresetDTO = design
+
+  /** A stream whose body is still "generating" until the test lets it finish — the shape a
+   *  real render has when a barge-in lands mid-way. */
+  function gatedStream() {
+    let finish!: () => void
+    const bodyDone = new Promise<void>(r => { finish = r })
+    let drainedResolve!: () => void
+    const drained = new Promise<void>(r => { drainedResolve = r })
+    let fullyRead = false
+    const stream = {
+      sampleRate: 24000,
+      drained,
+      chunks: (async function* () {
+        yield new Uint8Array([1])
+        await bodyDone          // still generating on the rig
+        yield new Uint8Array([2])
+        fullyRead = true
+      })(),
+    }
+    return { stream, finish: () => { finish(); queueMicrotask(drainedResolve) }, readFully: () => fullyRead }
+  }
+
+  // The whole point: the rig keeps working after a consumer walks away, so releasing the
+  // slot at that moment starts the next request into a busy server — a 409 storm.
+  it('holds the queue slot until the body has drained, not until the consumer leaves', async () => {
+    const queue = createBreezeQueue()
+    const { stream, finish } = gatedStream()
+    const speaker = createSpeaker({
+      baseURL: async () => 'http://rig:8880',
+      queue,
+      speakFn: (async () => stream) as never,
+    })
+
+    const ac = new AbortController()
+    const it = speaker('hi', preset, 'agent', ac.signal)[Symbol.asyncIterator]()
+    await it.next()            // begin
+    await it.next()            // first pcm chunk
+    ac.abort()                 // barge-in
+    void it.return?.()
+
+    let granted = false
+    void queue.acquire('agent').then(r => { granted = true; r() })
+    await new Promise(r => setTimeout(r, 10))
+    expect(granted).toBe(false)   // still held — the rig is still generating
+
+    finish()
+    await new Promise(r => setTimeout(r, 10))
+    expect(granted).toBe(true)
+  })
+
+  it('stops DELIVERING immediately on abort even though the body drains on', async () => {
+    const queue = createBreezeQueue()
+    const speaker = createSpeaker({
+      baseURL: async () => 'http://rig:8880',
+      queue,
+      speakFn: (async () => ({
+        sampleRate: 24000,
+        drained: Promise.resolve(),
+        chunks: (async function* () {
+          yield new Uint8Array([1])
+          yield new Uint8Array([2])
+          yield new Uint8Array([3])
+        })(),
+      })) as never,
+    })
+
+    const ac = new AbortController()
+    const delivered: number[] = []
+    for await (const c of speaker('hi', preset, 'agent', ac.signal)) {
+      if (c.kind === 'pcm') { delivered.push(c.bytes[0]!); ac.abort() }
+    }
+    // One chunk reached the listener; the rest were drained and discarded.
+    expect(delivered).toEqual([1])
+  })
+
+  it('retries a busy rig instead of failing on the first 409', async () => {
+    let calls = 0
+    const waits: number[] = []
+    const speaker = createSpeaker({
+      baseURL: async () => 'http://rig:8880',
+      queue: createBreezeQueue(),
+      sleep: async (ms) => { waits.push(ms) },
+      speakFn: (async () => {
+        calls++
+        if (calls < 3) throw new BreezeError('busy', 'already running')
+        return {
+          sampleRate: 24000,
+          drained: Promise.resolve(),
+          chunks: (async function* () { yield new Uint8Array([9]) })(),
+        }
+      }) as never,
+    })
+    const out: number[] = []
+    for await (const c of speaker('hi', preset, 'studio')) {
+      if (c.kind === 'pcm') out.push(c.bytes[0]!)
+    }
+    expect(calls).toBe(3)
+    expect(waits).toEqual([1500, 3000])   // linear backoff, not exponential
+    expect(out).toEqual([9])
+  })
+
+  it('gives up after the attempt cap rather than retrying forever', async () => {
+    let calls = 0
+    const speaker = createSpeaker({
+      baseURL: async () => 'http://rig:8880',
+      queue: createBreezeQueue(),
+      sleep: async () => {},
+      speakFn: (async () => { calls++; throw new BreezeError('busy', 'always busy') }) as never,
+    })
+    await expect(drain(speaker('hi', preset, 'studio'))).rejects.toMatchObject({ code: 'busy' })
+    expect(calls).toBe(5)
+  })
+
+  it('does not retry a non-busy failure', async () => {
+    let calls = 0
+    const speaker = createSpeaker({
+      baseURL: async () => 'http://rig:8880',
+      queue: createBreezeQueue(),
+      sleep: async () => {},
+      speakFn: (async () => { calls++; throw new BreezeError('http', 'boom') }) as never,
+    })
+    await expect(drain(speaker('hi', preset, 'studio'))).rejects.toMatchObject({ code: 'http' })
+    expect(calls).toBe(1)
   })
 })

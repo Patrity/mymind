@@ -13,6 +13,8 @@ import {
   isCfgLocked,
   presetToDraft,
   randomSeed,
+  instructionHint,
+  toggleStarredSeed,
   runAuditionSequentially,
   validatePresetDraft,
   diagnoseTruncation,
@@ -23,10 +25,14 @@ import {
 import { createGenerationGuard, isAbortError } from '~/lib/voice/generation'
 import { encodeWav, mixToMono, readWavInfo } from '~/lib/voice/wav-encode'
 
-const props = defineProps<{ preset: VoicePresetDTO | null }>()
+// The draft is owned by the page, not by this pane: SpeakPane (a different panel) renders
+// what is in this form, so the form cannot be private to the component that edits it. This
+// pane still owns EDITING it — nothing else writes these fields.
+const props = defineProps<{ preset: VoicePresetDTO | null, draft: PresetDraft }>()
 const emit = defineEmits<{ saved: [VoicePresetDTO] }>()
 
-const draft = reactive<PresetDraft>(blankDraft())
+// Same object the page holds; only ever mutated field-by-field, never reassigned.
+const draft = props.draft
 const saving = ref(false)
 const saveError = ref<string | null>(null)
 // Calibration runs on the server AFTER the row is written, and it can fail on its own
@@ -44,9 +50,27 @@ const saveWarning = ref<string | null>(null)
 // and the next Save persists it — silent corruption, not a cosmetic glitch.
 const guard = createGenerationGuard()
 
+// Two panels, always both present. The Reference tab carries a badge once a clip is
+// attached so the pane says at a glance which of the four modes this preset is in without
+// the user having to open it.
+const tab = ref('voice')
+const tabItems = computed(() => [
+  { label: 'Voice', icon: 'i-lucide-mic-vocal', value: 'voice', slot: 'voice' },
+  {
+    label: 'Reference',
+    icon: 'i-lucide-audio-lines',
+    value: 'reference',
+    slot: 'reference',
+    badge: draft.refStorageKey ? '1' : undefined,
+  },
+])
+
 const errors = computed(() => validatePresetDraft(draft))
 const dirty = computed(() => draftIsDirty(draft, props.preset))
 const cfgLocked = computed(() => isCfgLocked(draft.instruction))
+// Seeds are a lottery with no ordering — measured, sweeping 3 to 999,999 showed no trend at
+// all. What tightens a voice across seeds is a specific description held at cfg 4.
+const hint = computed(() => instructionHint(draft.instruction, draft.cfgScale))
 
 // A blank instruction means cfg MUST sit at 1: it is a DB CHECK
 // (voice_presets_cfg_needs_instruction) and an opaque 500 at the rig. Clamping here as
@@ -158,6 +182,21 @@ interface SeedTake {
   status: 'pending' | 'rendering' | 'ready' | 'failed'
   url: string | null
   note: string | null
+}
+
+// Keeping a seed is the memory that casting has always lacked: the same description at a
+// different seed is a different person, so without this a good take is lost to the next roll.
+function isStarred(seed: number): boolean {
+  return draft.starredSeeds.includes(seed)
+}
+
+function toggleStar(seed: number) {
+  draft.starredSeeds = toggleStarredSeed(draft.starredSeeds, seed)
+}
+
+/** Load a kept seed back into the form so it can be heard, tweaked, or saved as the voice. */
+function useStarredSeed(seed: number) {
+  draft.seed = seed
 }
 
 const takes = ref<SeedTake[]>([])
@@ -433,363 +472,434 @@ onBeforeUnmount(() => {
     v-else
     class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-6"
   >
-    <UFormField
-      label="Name"
-      required
+    <UTabs
+      v-model="tab"
+      :items="tabItems"
+      variant="link"
+      class="w-full"
     >
-      <UInput
-        v-model="draft.name"
-        placeholder="warm-narrator"
-        class="w-full"
-      />
-    </UFormField>
+      <!-- Both tabs always exist. A pane that appears only once a preset already has a
+           reference has nowhere to put the control that ADDS the first one, and a layout
+           that changes shape underneath the user is worse than one empty panel. -->
+      <template #voice>
+        <div class="flex flex-col gap-6 pt-4">
+        <UFormField
+          label="Name"
+          required
+        >
+          <UInput
+            v-model="draft.name"
+            placeholder="warm-narrator"
+            class="w-full"
+          />
+        </UFormField>
 
-    <UFormField
-      label="Start from"
-      help="Fills the instruction below with one of the eight voices the rig shipped with. Edit it freely afterwards."
-    >
-      <USelectMenu
-        v-model="starterKey"
-        :items="STARTERS"
-        value-key="value"
-        placeholder="Pick a starting description…"
-        icon="i-lucide-sparkles"
-        class="w-full"
-      />
-    </UFormField>
+        <UFormField
+          label="Start from"
+          help="Fills the instruction below with one of the eight voices the rig shipped with. Edit it freely afterwards."
+        >
+          <USelectMenu
+            v-model="starterKey"
+            :items="STARTERS"
+            value-key="value"
+            placeholder="Pick a starting description…"
+            icon="i-lucide-sparkles"
+            class="w-full"
+          />
+        </UFormField>
 
-    <UFormField
-      label="Instruction"
-      help="How the voice should sound. Leave it empty for a plain or cloned voice."
-    >
-      <UTextarea
-        v-model="draft.instruction"
-        :rows="3"
-        autoresize
-        placeholder="A warm, thoughtful young woman with a calm, reflective delivery."
-        class="w-full"
-      />
-    </UFormField>
+        <UFormField
+          label="Instruction"
+          help="How the voice should sound. Leave it empty for a plain or cloned voice."
+        >
+          <!-- The specificity nudge is an ICON, not a banner: it is guidance, and a block of
+               warning-coloured text every time a description is short reads as an error the
+               user has to clear. Hover mode because it is optional reading. -->
+          <template #hint>
+            <UPopover
+              v-if="hint"
+              mode="hover"
+              enable-touch
+            >
+              <UIcon
+                name="i-lucide-lightbulb"
+                class="size-4 text-muted hover:text-primary cursor-help"
+                aria-label="Tip about writing this description"
+              />
+              <template #content>
+                <p class="max-w-xs p-3 text-xs text-muted">{{ hint }}</p>
+              </template>
+            </UPopover>
+          </template>
 
-    <UFormField
-      label="Guidance (cfg)"
-      :help="cfgLocked ? CFG_LOCK_REASON : `${draft.cfgScale.toFixed(1)} — how hard the model is pushed toward the instruction.`"
-    >
-      <!-- The bounds come from studio.ts, which is also what clampCfgScale() enforces on
-           the way out. Restating 1/8 here let the slider and the clamp drift apart. -->
-      <USlider
-        v-model="draft.cfgScale"
-        :min="CFG_MIN"
-        :max="CFG_MAX"
-        :step="0.5"
-        :disabled="cfgLocked"
-      />
-    </UFormField>
+          <UTextarea
+            v-model="draft.instruction"
+            :rows="3"
+            autoresize
+            placeholder="A warm, thoughtful young woman with a calm, reflective delivery."
+            class="w-full"
+          />
+        </UFormField>
 
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-      <UFormField
-        label="Temperature"
-        :help="draft.temperature.toFixed(2)"
-      >
-        <USlider
-          v-model="draft.temperature"
-          :min="0.1"
-          :max="1.5"
-          :step="0.05"
-        />
-      </UFormField>
+        <UFormField
+          label="Guidance (cfg)"
+          :help="cfgLocked ? CFG_LOCK_REASON : `${draft.cfgScale.toFixed(1)} — how hard the model is pushed toward the instruction.`"
+        >
+          <!-- The bounds come from studio.ts, which is also what clampCfgScale() enforces on
+               the way out. Restating 1/8 here let the slider and the clamp drift apart. -->
+          <USlider
+            v-model="draft.cfgScale"
+            :min="CFG_MIN"
+            :max="CFG_MAX"
+            :step="0.5"
+            :disabled="cfgLocked"
+          />
+        </UFormField>
 
-      <UFormField
-        label="Top-p"
-        :help="draft.topP.toFixed(2)"
-      >
-        <USlider
-          v-model="draft.topP"
-          :min="0.1"
-          :max="1"
-          :step="0.05"
-        />
-      </UFormField>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <UFormField
+            label="Temperature"
+            :help="draft.temperature.toFixed(2)"
+          >
+            <USlider
+              v-model="draft.temperature"
+              :min="0.1"
+              :max="1.5"
+              :step="0.05"
+            />
+          </UFormField>
 
-      <UFormField
-        label="Top-k"
-        :help="String(draft.topK)"
-      >
-        <USlider
-          v-model="draft.topK"
-          :min="0"
-          :max="100"
-          :step="5"
-        />
-      </UFormField>
-    </div>
+          <UFormField
+            label="Top-p"
+            :help="draft.topP.toFixed(2)"
+          >
+            <USlider
+              v-model="draft.topP"
+              :min="0.1"
+              :max="1"
+              :step="0.05"
+            />
+          </UFormField>
 
-    <UFormField
-      label="Seed"
-      help="The same seed plus the same instruction gives the same voice every time."
-    >
-      <div class="flex gap-2">
-        <UInput
-          v-model.number="draft.seed"
-          type="number"
-          :min="1"
-          :max="999999"
-          class="grow"
-        />
-        <UButton
-          icon="i-lucide-dices"
-          color="neutral"
-          variant="subtle"
-          aria-label="Random seed"
-          @click="draft.seed = randomSeed()"
-        />
-      </div>
-    </UFormField>
-
-    <UAlert
-      v-for="e in errors"
-      :key="e"
-      color="warning"
-      variant="subtle"
-      icon="i-lucide-triangle-alert"
-      :description="e"
-    />
-
-    <UAlert
-      v-if="saveError"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-circle-alert"
-      title="Could not save"
-      :description="saveError"
-    />
-
-    <UAlert
-      v-if="saveWarning"
-      color="warning"
-      variant="subtle"
-      icon="i-lucide-ruler"
-      title="Saved, but not calibrated"
-      :description="saveWarning"
-    />
-
-    <div class="flex items-center gap-2">
-      <UButton
-        icon="i-lucide-save"
-        label="Save voice"
-        :loading="saving"
-        :disabled="!!errors.length || !dirty"
-        @click="save"
-      />
-      <span
-        v-if="!dirty && !errors.length"
-        class="text-xs text-muted"
-      >No unsaved changes.</span>
-    </div>
-
-    <USeparator />
-
-    <!-- ── Seed audition ──────────────────────────────────────────────────── -->
-    <div class="flex flex-col gap-3">
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex flex-col">
-          <span class="text-sm font-medium text-highlighted">Seed audition</span>
-          <span class="text-xs text-muted">Four draws of the settings above, rendered one at a time. Nothing is saved.</span>
+          <UFormField
+            label="Top-k"
+            :help="String(draft.topK)"
+          >
+            <USlider
+              v-model="draft.topK"
+              :min="0"
+              :max="100"
+              :step="5"
+            />
+          </UFormField>
         </div>
-        <UButton
-          icon="i-lucide-shuffle"
-          label="Try 4 seeds"
-          color="neutral"
+
+        <UFormField
+          label="Seed"
+          help="The same seed plus the same instruction gives the same voice every time."
+        >
+          <div class="flex gap-2">
+            <UInput
+              v-model.number="draft.seed"
+              type="number"
+              :min="1"
+              :max="999999"
+              class="grow"
+            />
+            <UButton
+              icon="i-lucide-dices"
+              color="neutral"
+              variant="subtle"
+              aria-label="Random seed"
+              @click="draft.seed = randomSeed()"
+            />
+          </div>
+        </UFormField>
+
+        <UAlert
+          v-for="e in errors"
+          :key="e"
+          color="warning"
           variant="subtle"
-          :loading="auditioning"
-          :disabled="!!auditionBlockedReason || auditioning"
-          @click="runAudition"
+          icon="i-lucide-triangle-alert"
+          :description="e"
         />
-      </div>
 
-      <p
-        v-if="auditionBlockedReason"
-        class="text-xs text-dimmed"
-      >
-        {{ auditionBlockedReason }}
-      </p>
-
-      <!-- The rig takes one request at a time and studio work queues behind the live
-           agent, so a wait here is normal — say so instead of looking hung. -->
-      <p
-        v-if="auditioning && queued"
-        class="text-xs text-muted"
-      >
-        <UIcon
-          name="i-lucide-loader-2"
-          class="inline size-3 animate-spin"
-        />
-        Waiting on the rig ({{ Math.round(elapsedMs / 1000) }}s) — it renders one request at a time,
-        and studio work queues behind live conversation.
-      </p>
-
-      <UAlert
-        v-if="auditionError"
-        color="warning"
-        variant="subtle"
-        icon="i-lucide-triangle-alert"
-        :description="auditionError"
-      />
-
-      <div
-        v-for="take in takes"
-        :key="take.seed"
-        class="flex items-center gap-2 rounded-md border border-default px-3 py-2"
-      >
-        <span class="text-xs tabular-nums text-muted w-20 shrink-0">seed {{ take.seed }}</span>
-
-        <UBadge
-          v-if="take.status === 'rendering'"
-          size="sm"
-          color="neutral"
-          variant="subtle"
-          label="rendering…"
-        />
-        <UBadge
-          v-else-if="take.status === 'pending'"
-          size="sm"
-          color="neutral"
-          variant="subtle"
-          label="queued"
-        />
-        <UBadge
-          v-else-if="take.status === 'failed'"
-          size="sm"
+        <UAlert
+          v-if="saveError"
           color="error"
           variant="subtle"
-          label="failed"
+          icon="i-lucide-circle-alert"
+          title="Could not save"
+          :description="saveError"
         />
 
-        <span
-          v-if="take.note"
-          class="text-xs text-muted grow min-w-0 truncate"
-          :title="take.note"
-        >{{ take.note }}</span>
-        <span
-          v-else
-          class="grow"
-        />
-
-        <UButton
-          size="xs"
-          color="neutral"
-          variant="ghost"
-          icon="i-lucide-play"
-          aria-label="Play this seed"
-          :disabled="take.status !== 'ready'"
-          @click="playTake(take)"
-        />
-        <UButton
-          size="xs"
-          color="neutral"
-          variant="ghost"
-          label="Use"
-          :disabled="take.status !== 'ready' || auditioning"
-          @click="useSeed(take.seed)"
-        />
-      </div>
-    </div>
-
-    <USeparator />
-
-    <!-- ── Reference clip ─────────────────────────────────────────────────── -->
-    <div class="flex flex-col gap-3">
-      <div class="flex flex-col">
-        <span class="text-sm font-medium text-highlighted">Reference clip</span>
-        <span class="text-xs text-muted">
-          About ten seconds of clean speech clones the voice. Longer clips eat the prompt budget the
-          text needs — over 20s is warned, over 60s is refused.
-        </span>
-      </div>
-
-      <UFileUpload
-        v-model="refFile"
-        accept="audio/wav,.wav"
-        icon="i-lucide-file-audio"
-        label="Drop a WAV here"
-        description="Mono or stereo WAV, about 10 seconds."
-        :disabled="refBusy"
-        class="min-h-32"
-      />
-
-      <div class="flex items-center gap-2">
-        <UButton
-          :icon="recording ? 'i-lucide-square' : 'i-lucide-mic'"
-          :label="recording ? 'Stop recording' : 'Record from mic'"
-          :color="recording ? 'error' : 'neutral'"
+        <UAlert
+          v-if="saveWarning"
+          color="warning"
           variant="subtle"
-          size="sm"
-          :disabled="refBusy"
-          @click="toggleRecording"
+          icon="i-lucide-ruler"
+          title="Saved, but not calibrated"
+          :description="saveWarning"
         />
+
+        <div class="flex items-center gap-2">
+          <UButton
+            icon="i-lucide-save"
+            label="Save voice"
+            :loading="saving"
+            :disabled="!!errors.length || !dirty"
+            @click="save"
+          />
+          <span
+            v-if="!dirty && !errors.length"
+            class="text-xs text-muted"
+          >No unsaved changes.</span>
+        </div>
+
+        <USeparator />
+
+        <!-- ── Kept seeds ─────────────────────────────────────────────────────── -->
+    <div
+      v-if="draft.starredSeeds.length"
+      class="flex flex-col gap-2"
+    >
+      <span class="text-sm font-medium text-highlighted">Kept seeds</span>
+      <div class="flex flex-wrap gap-2">
         <UButton
-          v-if="draft.refStorageKey"
-          icon="i-lucide-x"
-          label="Remove reference"
-          color="neutral"
-          variant="ghost"
-          size="sm"
-          :disabled="refBusy"
-          @click="clearReference"
+          v-for="seed in draft.starredSeeds"
+          :key="seed"
+          size="xs"
+          :color="draft.seed === seed ? 'primary' : 'neutral'"
+          :variant="draft.seed === seed ? 'solid' : 'outline'"
+          :label="`seed ${seed}`"
+          trailing-icon="i-lucide-x"
+          @click="draft.seed === seed ? toggleStar(seed) : useStarredSeed(seed)"
         />
-        <span
-          v-if="refBusy"
-          class="text-xs text-muted"
-        >
-          <UIcon
-            name="i-lucide-loader-2"
-            class="inline size-3 animate-spin"
-          /> Transcribing…
-        </span>
-        <span
-          v-else-if="refSeconds"
-          class="text-xs text-muted tabular-nums"
-        >{{ refSeconds }}s clip attached</span>
       </div>
-
-      <UAlert
-        v-if="refWarning"
-        color="warning"
-        variant="subtle"
-        icon="i-lucide-triangle-alert"
-        title="Long reference"
-        :description="refWarning"
-      />
-
-      <UAlert
-        v-if="refError"
-        color="error"
-        variant="subtle"
-        icon="i-lucide-circle-alert"
-        title="Reference rejected"
-        :description="refError"
-      />
-
-      <UFormField
-        v-if="draft.refStorageKey"
-        label="Transcript"
-        help="Transcribed automatically. It must match the audio exactly — correct it if Whisper misheard."
-      >
-        <UTextarea
-          v-model="draft.refText"
-          :rows="2"
-          autoresize
-          class="w-full"
-        />
-      </UFormField>
-
-      <p
-        v-if="draft.refStorageKey"
-        class="text-xs text-dimmed"
-      >
-        Saving a new reference re-calibrates this voice's character ceiling against the rig, so the
-        save can take a moment.
-      </p>
+      <span class="text-xs text-muted">
+        Click to load one back into the form; click the one already in use to stop keeping it.
+      </span>
     </div>
+
+    <!-- ── Seed audition ──────────────────────────────────────────────────── -->
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex flex-col">
+              <span class="text-sm font-medium text-highlighted">Seed audition</span>
+              <span class="text-xs text-muted">Four draws of the settings above, rendered one at a time. Nothing is saved.</span>
+            </div>
+            <UButton
+              icon="i-lucide-shuffle"
+              label="Try 4 seeds"
+              color="neutral"
+              variant="subtle"
+              :loading="auditioning"
+              :disabled="!!auditionBlockedReason || auditioning"
+              @click="runAudition"
+            />
+          </div>
+
+          <p
+            v-if="auditionBlockedReason"
+            class="text-xs text-dimmed"
+          >
+            {{ auditionBlockedReason }}
+          </p>
+
+          <!-- The rig takes one request at a time and studio work queues behind the live
+               agent, so a wait here is normal — say so instead of looking hung. -->
+          <p
+            v-if="auditioning && queued"
+            class="text-xs text-muted"
+          >
+            <UIcon
+              name="i-lucide-loader-2"
+              class="inline size-3 animate-spin"
+            />
+            Waiting on the rig ({{ Math.round(elapsedMs / 1000) }}s) — it renders one request at a time,
+            and studio work queues behind live conversation.
+          </p>
+
+          <UAlert
+            v-if="auditionError"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            :description="auditionError"
+          />
+
+          <div
+            v-for="take in takes"
+            :key="take.seed"
+            class="flex items-center gap-2 rounded-md border border-default px-3 py-2"
+          >
+            <span class="text-xs tabular-nums text-muted w-20 shrink-0">seed {{ take.seed }}</span>
+
+            <UBadge
+              v-if="take.status === 'rendering'"
+              size="sm"
+              color="neutral"
+              variant="subtle"
+              label="rendering…"
+            />
+            <UBadge
+              v-else-if="take.status === 'pending'"
+              size="sm"
+              color="neutral"
+              variant="subtle"
+              label="queued"
+            />
+            <UBadge
+              v-else-if="take.status === 'failed'"
+              size="sm"
+              color="error"
+              variant="subtle"
+              label="failed"
+            />
+
+            <span
+              v-if="take.note"
+              class="text-xs text-muted grow min-w-0 truncate"
+              :title="take.note"
+            >{{ take.note }}</span>
+            <span
+              v-else
+              class="grow"
+            />
+
+            <UButton
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              icon="i-lucide-play"
+              aria-label="Play this seed"
+              :disabled="take.status !== 'ready'"
+              @click="playTake(take)"
+            />
+            <UButton
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              label="Use"
+              :disabled="take.status !== 'ready' || auditioning"
+              @click="useSeed(take.seed)"
+            />
+            <!-- The memory casting never had: the same description at another seed is
+                 another person, so a take worth keeping must survive the next roll. -->
+            <UButton
+              size="xs"
+              :color="isStarred(take.seed) ? 'primary' : 'neutral'"
+              variant="ghost"
+              :icon="isStarred(take.seed) ? 'i-lucide-star' : 'i-lucide-star-off'"
+              :aria-label="isStarred(take.seed) ? `Stop keeping seed ${take.seed}` : `Keep seed ${take.seed}`"
+              @click="toggleStar(take.seed)"
+            />
+          </div>
+        </div>
+
+        </div>
+      </template>
+
+      <template #reference>
+        <div class="flex flex-col gap-6 pt-4">
+
+        <!-- ── Reference clip ─────────────────────────────────────────────────── -->
+        <div class="flex flex-col gap-3">
+          <div class="flex flex-col">
+            <span class="text-sm font-medium text-highlighted">Reference clip</span>
+            <span class="text-xs text-muted">
+              About ten seconds of clean speech clones the voice. Longer clips eat the prompt budget the
+              text needs — over 20s is warned, over 60s is refused.
+            </span>
+          </div>
+
+          <UFileUpload
+            v-model="refFile"
+            accept="audio/wav,.wav"
+            icon="i-lucide-file-audio"
+            label="Drop a WAV here"
+            description="Mono or stereo WAV, about 10 seconds."
+            :disabled="refBusy"
+            class="min-h-32"
+          />
+
+          <div class="flex items-center gap-2">
+            <UButton
+              :icon="recording ? 'i-lucide-square' : 'i-lucide-mic'"
+              :label="recording ? 'Stop recording' : 'Record from mic'"
+              :color="recording ? 'error' : 'neutral'"
+              variant="subtle"
+              size="sm"
+              :disabled="refBusy"
+              @click="toggleRecording"
+            />
+            <UButton
+              v-if="draft.refStorageKey"
+              icon="i-lucide-x"
+              label="Remove reference"
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              :disabled="refBusy"
+              @click="clearReference"
+            />
+            <span
+              v-if="refBusy"
+              class="text-xs text-muted"
+            >
+              <UIcon
+                name="i-lucide-loader-2"
+                class="inline size-3 animate-spin"
+              /> Transcribing…
+            </span>
+            <span
+              v-else-if="refSeconds"
+              class="text-xs text-muted tabular-nums"
+            >{{ refSeconds }}s clip attached</span>
+          </div>
+
+          <UAlert
+            v-if="refWarning"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            title="Long reference"
+            :description="refWarning"
+          />
+
+          <UAlert
+            v-if="refError"
+            color="error"
+            variant="subtle"
+            icon="i-lucide-circle-alert"
+            title="Reference rejected"
+            :description="refError"
+          />
+
+          <UFormField
+            v-if="draft.refStorageKey"
+            label="Transcript"
+            help="Transcribed automatically. It must match the audio exactly — correct it if Whisper misheard."
+          >
+            <UTextarea
+              v-model="draft.refText"
+              :rows="2"
+              autoresize
+              class="w-full"
+            />
+          </UFormField>
+
+          <p
+            v-if="draft.refStorageKey"
+            class="text-xs text-dimmed"
+          >
+            Saving a new reference re-calibrates this voice's character ceiling against the rig, so the
+            save can take a moment.
+          </p>
+        </div>
+        </div>
+      </template>
+    </UTabs>
   </div>
 </template>

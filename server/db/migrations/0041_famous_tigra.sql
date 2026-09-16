@@ -1,0 +1,1 @@
+ALTER TABLE "voice_presets" ADD COLUMN "starred_seeds" integer[] DEFAULT '{}'::integer[] NOT NULL;

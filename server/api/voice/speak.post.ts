@@ -1,9 +1,11 @@
 // server/api/voice/speak.post.ts
 // Studio synthesis. Separate from the agent socket so an audition never rides the
 // conversation's channel, and queued at STUDIO priority so it yields to a live turn.
-import { speakWithPreset, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../lib/voice/speak'
+import { speakSegments, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../lib/voice/speak'
 import { resolvePreset, loadReferenceBytes } from '../../services/voice-presets'
 import { BreezeError, validateBreezeRequest } from '../../lib/voice/breeze'
+import { planSegments, type SpeakMode } from '../../lib/voice/plan-segments'
+import { VOICE_TUNING } from '../../lib/voice/tuning'
 import type { SpeakOverrides } from '../../../shared/types/voice-presets'
 
 export default defineEventHandler(async (event) => {
@@ -13,9 +15,13 @@ export default defineEventHandler(async (event) => {
     format?: 'pcm' | 'wav'
     /** Ad-hoc parameters for THIS request only — see applyOverrides. Never persisted. */
     overrides?: SpeakOverrides
+    /** 'quality' (default) sends the text in one call where it fits; 'realtime' reproduces
+     *  the live agent's segmentation. See plan-segments.ts for the measurements. */
+    mode?: SpeakMode
   }>(event)
   const text = body.text?.trim()
   if (!text) throw createError({ statusCode: 400, statusMessage: 'text is required' })
+  const mode: SpeakMode = body.mode === 'realtime' ? 'realtime' : 'quality'
 
   const stored = await resolvePreset(body.presetId)
   // In memory, for this request alone. The studio auditions four seeds and previews
@@ -33,13 +39,30 @@ export default defineEventHandler(async (event) => {
   const invalid = validateBreezeRequest(presetToRequest(text, preset, refAudio))
   if (invalid) throw createError({ statusCode: 400, statusMessage: invalid })
 
-  // h3's bridge from a returned Web ReadableStream to the Node response (sendStream's
-  // pipeTo branch) does NOT observe a client disconnect: writing to a torn-down socket
-  // fails silently rather than rejecting, so the stream's own cancel() is never invoked
-  // by the framework (verified empirically against this repo's h3 version — a real
-  // client abort left `cancel()` uncalled and `pull()` still looping). The response's
-  // 'close' event is the signal that reliably fires on disconnect, so it drives the
-  // AbortSignal that unwinds speak()'s `finally` and frees the queue slot.
+  // How the text reaches the rig. Before this, the studio sent EVERY render as a single call
+  // whatever its length, which is right up to the ceiling and silently wrong past it: at
+  // 1000+ characters the model stops tracking the text and rambles to the rig's 120s output
+  // cap, returning a complete body full of words nobody wrote. The planner keeps the
+  // one-call behaviour wherever it is safe — segmenting costs 10.3% more audio and audible
+  // seams to buy 22ms, measured — and splits at the ceiling only when it has to.
+  const plan = planSegments(text, preset, mode, VOICE_TUNING.tts.sentenceMaxChars)
+  if (!plan.segments.length) throw createError({ statusCode: 400, statusMessage: 'text is required' })
+  setHeader(event, 'x-segments', String(plan.segments.length))
+  setHeader(event, 'x-segment-reason', plan.reason)
+  setHeader(event, 'x-segment-ceiling', String(plan.ceiling))
+
+  // A browser that goes away mid-render stops the DELIVERY, never the rig call.
+  //
+  // Cycle 61 wired res.on('close') to an AbortController so our queue slot was freed the
+  // instant the client left. That was the wrong side of the boundary to optimise: the rig
+  // streams PCM from a synchronous Python generator that Starlette cannot interrupt
+  // mid-yield, so aborting the HTTP response strands that generator, its cleanup never
+  // runs, and the rig's own request lock leaks — 409ing every later caller while the GPU
+  // sits idle. /health's `watchdog_releases` counter is how we found we were doing it.
+  //
+  // So the signal now only stops us FORWARDING bytes. speak.ts drains the rest of the body
+  // in the background and holds the queue slot until it finishes, which is both correct and
+  // cheap: a render is a few seconds of audio.
   const ac = new AbortController()
 
   try {
@@ -48,22 +71,25 @@ export default defineEventHandler(async (event) => {
       // enough to unwind the generator's `finally`; there is no separate iterator here
       // to explicitly return().
       event.node.res.on('close', () => ac.abort())
-      const { pcm, sampleRate } = await collectPcm(speakWithPreset(text, preset, 'studio', ac.signal, refAudio))
+      const { pcm, sampleRate } = await collectPcm(
+        speakSegments(plan.segments, preset, 'studio', ac.signal, refAudio))
       setHeader(event, 'Content-Type', 'audio/wav')
       setHeader(event, 'Content-Disposition', `attachment; filename="${preset.name}.wav"`)
       return pcmToWav(pcm, sampleRate)
     }
 
-    const chunks = speakWithPreset(text, preset, 'studio', ac.signal, refAudio)
+    const chunks = speakSegments(plan.segments, preset, 'studio', ac.signal, refAudio)
     const iterator = chunks[Symbol.asyncIterator]()
     // Registered only once the iterator exists, and calls BOTH abort() and return():
     // abort() alone only unwinds a generator that is mid-await, but between our manual
     // iterator.next() calls the generator is parked at a `yield` with nothing pending to
-    // abort. h3 can also return without ever calling pull()/cancel() on the stream we
-    // hand back (e.g. `!event.node.res.socket` in h3@1.15.11's sendStream), so cancel()
-    // is not guaranteed to run either. Calling iterator.return() directly makes release
-    // independent of another pull() ever happening — the one failure mode here whose
-    // blast radius is every TTS request in the app, not just this one.
+    // abort. h3 can also return without ever calling pull()/cancel() on the stream we hand
+    // back (e.g. `!event.node.res.socket` in h3@1.15.11's sendStream), so cancel() is not
+    // guaranteed to run either. iterator.return() makes release independent of another
+    // pull() ever happening.
+    //
+    // Neither touches the RIG's connection any more — return() unwinds our generator, whose
+    // `finally` waits on the background drain before freeing the slot.
     event.node.res.on('close', () => {
       ac.abort()
       void iterator.return?.()
