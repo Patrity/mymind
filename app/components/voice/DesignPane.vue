@@ -512,6 +512,26 @@ onBeforeUnmount(() => {
           label="Instruction"
           help="How the voice should sound. Leave it empty for a plain or cloned voice."
         >
+          <!-- The specificity nudge is an ICON, not a banner: it is guidance, and a block of
+               warning-coloured text every time a description is short reads as an error the
+               user has to clear. Hover mode because it is optional reading. -->
+          <template #hint>
+            <UPopover
+              v-if="hint"
+              mode="hover"
+              enable-touch
+            >
+              <UIcon
+                name="i-lucide-lightbulb"
+                class="size-4 text-muted hover:text-primary cursor-help"
+                aria-label="Tip about writing this description"
+              />
+              <template #content>
+                <p class="max-w-xs p-3 text-xs text-muted">{{ hint }}</p>
+              </template>
+            </UPopover>
+          </template>
+
           <UTextarea
             v-model="draft.instruction"
             :rows="3"
@@ -639,18 +659,7 @@ onBeforeUnmount(() => {
 
         <USeparator />
 
-        <!-- Measured: the seed RANGE is irrelevant (3 to 999,999 showed no trend at all).
-         What tightens a voice across seeds is a specific description held at cfg 4. -->
-    <UAlert
-      v-if="hint"
-      color="neutral"
-      variant="subtle"
-      icon="i-lucide-lightbulb"
-      title="This description leaves a lot open"
-      :description="hint"
-    />
-
-    <!-- ── Kept seeds ─────────────────────────────────────────────────────── -->
+        <!-- ── Kept seeds ─────────────────────────────────────────────────────── -->
     <div
       v-if="draft.starredSeeds.length"
       class="flex flex-col gap-2"

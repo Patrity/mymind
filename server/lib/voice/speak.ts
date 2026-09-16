@@ -1,7 +1,7 @@
 // Composes: queue slot -> Breeze call -> preset field mapping. The ONLY place that may
 // call breezeSpeak, because the queue slot must wrap the whole stream lifetime.
 import { Buffer } from 'node:buffer'
-import { breezeSpeak, type BreezeRequest } from './breeze'
+import { breezeSpeak, BreezeError, busyBackoffMs, BUSY_RETRY_ATTEMPTS, type BreezeRequest, type BreezeStream } from './breeze'
 import { breezeQueue, type BreezeQueue, type QueuePriority } from './breeze-queue'
 import { resolveChain } from '../ai/registry/resolve'
 import type { VoicePresetDTO, SpeakOverrides } from '../../../shared/types/voice-presets'
@@ -14,6 +14,10 @@ export interface SpeakDeps {
   baseURL: () => Promise<string>
   queue?: BreezeQueue
   speakFn?: typeof breezeSpeak
+  /** Injected so the busy-retry backoff is testable without real timers. */
+  sleep?: (ms: number) => Promise<void>
+  /** Fired before each busy wait, so a surface can say "the rig is busy" instead of failing. */
+  onBusy?: (attempt: number) => void
 }
 
 /**
@@ -68,6 +72,37 @@ export function presetToRequest(text: string, p: VoicePresetDTO, refAudio: Uint8
   }
 }
 
+/**
+ * Dial the rig, treating 409 as "wait", not "fail".
+ *
+ * Our breezeQueue already serialises this process, so a 409 means something OUTSIDE it holds
+ * the rig's slot: the interim Gradio UI, another client, or the rig still finishing a render
+ * whose client walked away. All of those clear on their own — surfacing an error on the first
+ * one would tell the user their voice is broken when it is merely occupied.
+ */
+async function dialWithBusyRetry(
+  base: string,
+  req: BreezeRequest,
+  speakFn: typeof breezeSpeak,
+  deps: SpeakDeps,
+  signal?: AbortSignal
+): Promise<BreezeStream> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+  let lastBusy: BreezeError | null = null
+  for (let attempt = 0; attempt < BUSY_RETRY_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
+    try {
+      return await speakFn(base, req)
+    } catch (err) {
+      if (!(err instanceof BreezeError) || err.code !== 'busy') throw err
+      lastBusy = err
+      deps.onBusy?.(attempt)
+      await sleep(busyBackoffMs(attempt))
+    }
+  }
+  throw lastBusy ?? new BreezeError('busy', 'Breeze stayed busy')
+}
+
 export function createSpeaker(deps: SpeakDeps) {
   const queue = deps.queue ?? breezeQueue
   const speakFn = deps.speakFn ?? breezeSpeak
@@ -79,15 +114,30 @@ export function createSpeaker(deps: SpeakDeps) {
     signal?: AbortSignal,
     refAudio: Uint8Array | null = null
   ): AsyncIterable<SpeakChunk> {
+    // The signal guards the WAIT only. Aborting here is safe — no request exists yet, so
+    // there is no rig generator to strand. It is deliberately not passed any further.
     const release = await queue.acquire(priority, signal)
+    let stream: BreezeStream | null = null
     try {
       const base = await deps.baseURL()
-      const stream = await speakFn(base, presetToRequest(text, preset, refAudio), signal)
+      stream = await dialWithBusyRetry(base, presetToRequest(text, preset, refAudio), speakFn, deps, signal)
       yield { kind: 'begin', sampleRate: stream.sampleRate }
-      for await (const bytes of stream.chunks) yield { kind: 'pcm', bytes }
+      for await (const bytes of stream.chunks) {
+        // Checked here rather than by aborting the fetch: a cancelled render stops being
+        // DELIVERED immediately, while its body keeps draining in the background so the rig
+        // can finish and release its own lock.
+        if (signal?.aborted) break
+        yield { kind: 'pcm', bytes }
+      }
     } finally {
       // Runs on normal completion, on throw, AND when the consumer breaks out of the
-      // for-await early (generator .return()) — all three must free the rig.
+      // for-await early (generator .return()).
+      //
+      // Waiting on `drained` is the load-bearing part: the RIG is still generating until its
+      // body ends, whether or not anyone is still listening. Releasing the slot at the moment
+      // the consumer walks away would start the next request into a busy server and turn one
+      // abandoned render into a 409 storm.
+      if (stream) await stream.drained.catch(() => {})
       release()
     }
   }

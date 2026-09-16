@@ -47,7 +47,7 @@ describe('validateBreezeRequest', () => {
 })
 
 import { vi, afterEach } from 'vitest'
-import { breezeSpeak, BreezeError } from './breeze'
+import { breezeSpeak, BreezeError, busyBackoffMs, waitForBreeze, breezeHealth } from './breeze'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -273,11 +273,95 @@ describe('breezeSpeak — a body that dies mid-stream', () => {
       .rejects.toMatchObject({ code: 'network', cause: underlying })
   })
 
-  it('does not call an aborted read a truncation even when the error is not named AbortError', async () => {
-    const ac = new AbortController()
-    ac.abort()
+  // The signal is deliberately NOT passed to the rig fetch any more: aborting the HTTP
+  // response mid-stream strands the rig's synchronous generator and leaks its request lock,
+  // wedging the server for every later caller. Cancellation drains instead.
+  it('never passes an AbortSignal to the rig', async () => {
+    // Rest param so `.mock.calls[n]` is indexable under noUncheckedIndexedAccess.
+    const fetchMock = vi.fn(async (..._args: unknown[]) => pcmResponse([[1, 2]]))
+    vi.stubGlobal('fetch', fetchMock)
+    await breezeSpeak('http://rig:8880', req)
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined
+    expect(init?.signal).toBeUndefined()
+  })
+
+  it('drains the rest of the body when the consumer stops early', async () => {
+    let pulls = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulls++
+        if (pulls <= 4) c.enqueue(new Uint8Array([pulls]))
+        else c.close()
+      }
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200, headers: { 'x-sample-rate': '24000' } })))
+    const s = await breezeSpeak('http://rig:8880', req)
+
+    // Take one chunk, then walk away — a barge-in.
+    for await (const _ of s.chunks) break
+
+    await s.drained
+    // Every pull happened: the body reached EOF instead of being cancelled, which is what
+    // lets the rig finish and release its own lock.
+    expect(pulls).toBeGreaterThanOrEqual(5)
+  })
+
+  it('resolves `drained` on a normally consumed body too', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => pcmResponse([[1], [2]])))
+    const s = await breezeSpeak('http://rig:8880', req)
+    await drain(s.chunks)
+    await expect(s.drained).resolves.toBeUndefined()
+  })
+
+  it('resolves `drained` even when the rig kills the connection mid-body', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => dyingResponse([[1]], new TypeError('terminated'))))
-    const s = await breezeSpeak('http://rig:8880', req, ac.signal)
-    await expect(drain(s.chunks)).rejects.not.toMatchObject({ code: 'truncated' })
+    const s = await breezeSpeak('http://rig:8880', req)
+    await expect(drain(s.chunks)).rejects.toMatchObject({ code: 'truncated' })
+    // Must still settle, or the queue slot is held for the lifetime of the process.
+    await expect(s.drained).resolves.toBeUndefined()
+  })
+})
+
+describe('busyBackoffMs', () => {
+  it('grows linearly — the wait is one render finishing, not network congestion', () => {
+    expect(busyBackoffMs(0)).toBe(1500)
+    expect(busyBackoffMs(1)).toBe(3000)
+    expect(busyBackoffMs(2)).toBe(4500)
+  })
+})
+
+describe('waitForBreeze', () => {
+  it('returns true as soon as the rig reports ok', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'ok' }), { status: 200 })))
+    await expect(waitForBreeze('http://rig:8880', { sleep: async () => {} })).resolves.toBe(true)
+  })
+
+  // ~44s of 503 {"status":"loading"} after a restart while CUDA graphs are captured.
+  it('polls through a warmup and then succeeds', async () => {
+    let n = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      n++
+      return n < 3
+        ? new Response(JSON.stringify({ status: 'loading' }), { status: 503 })
+        : new Response(JSON.stringify({ status: 'ok' }), { status: 200 })
+    }))
+    await expect(waitForBreeze('http://rig:8880', { sleep: async () => {} })).resolves.toBe(true)
+    expect(n).toBe(3)
+  })
+
+  it('gives up at the deadline rather than polling forever', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status: 'loading' }), { status: 503 })))
+    await expect(waitForBreeze('http://rig:8880', { timeoutMs: 0, sleep: async () => {} })).resolves.toBe(false)
+  })
+
+  it('treats an unreachable rig as not-ready rather than throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    await expect(waitForBreeze('http://rig:8880', { timeoutMs: 0, sleep: async () => {} })).resolves.toBe(false)
+  })
+
+  it('surfaces watchdog_releases — the rig-side proof we stranded a generator', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ status: 'ok', busy: false, watchdog_releases: 3 }), { status: 200 })))
+    await expect(breezeHealth('http://rig:8880')).resolves.toMatchObject({ watchdogReleases: 3, busy: false })
   })
 })
