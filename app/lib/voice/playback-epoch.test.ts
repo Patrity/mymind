@@ -64,6 +64,27 @@ describe('createPlaybackEpochs', () => {
     expect(deliverFrame(e)).toBe(true)
   })
 
+  // KNOWN LIMITATION, pinned deliberately so nobody reads the guard as airtight.
+  //
+  // The interrupt takes one RTT to reach the server. If the server opens the next segment of
+  // the INTERRUPTED turn inside that window, its audio-begin re-stamps at the current epoch
+  // and that turn's audio is admitted again — the client cannot tell whose begin it is,
+  // because no frame carries a turn id.
+  //
+  // If this test ever fails because the behaviour changed, the fix is real: update the
+  // comments in playback-epoch.ts and useVoice.ts, which currently describe this window.
+  it('KNOWN GAP: an audio-begin from the interrupted turn re-opens the gate', () => {
+    const e = createPlaybackEpochs()
+    e.beginSegment()
+    e.interrupt()
+    expect(deliverFrame(e)).toBe(false)     // the open segment's tail is refused — the fix
+
+    e.beginSegment()                        // ...but this may be the SAME turn's next segment
+    expect(deliverFrame(e)).toBe(true)      // and nothing here can tell
+
+    // Closing it needs a turn id on the wire, not a client-side change.
+  })
+
   it('a stamp captured before the interrupt is refused when checked after it', () => {
     // The real asynchrony: the stamp travels with the frame, the check happens later.
     const e = createPlaybackEpochs()

@@ -4,7 +4,7 @@ status: shipped
 cycle: 61
 updated: 2026-09-15
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
-mymind_hash: 4c137cfd9909ca9ceb0b2350a7dc9807c90d8bdaa5f664fb5ddb564c4c93c0e3
+mymind_hash: 08816de0cc3c8d062a560f1599ced66511df8c78afcf777299156a3970869969
 ---
 
 # Voice Agent
@@ -86,10 +86,13 @@ calibrated ceiling) is meaningless to any other engine, so "try the next model" 
 
 **The consequence to remember:** `chain[0]` wins, silently. `speakWithPreset` only throws
 *"No TTS model configured — set one in Settings → Models"* when there is no entry at all; a stale
-entry ahead of Breeze is dialed instead, with no fallback behind it. This bit during cycle 61's own
-browser validation — the dev registry still listed the retired `chatterbox` at `:8884` first, and
-every render 502'd against a dead host until the assignment was pointed at Breeze. **Deploying this
-cycle requires editing the registry**, which no migration does for you.
+entry ahead of Breeze is dialed instead, with no fallback behind it. **Both the live agent
+(`server/api/voice/ws.ts:52`) and the studio (`server/api/voice/speak.post.ts`) go through it**, so a
+stale assignment silences every spoken reply in a conversation as well as every studio render. This
+bit during cycle 61's own browser validation — the dev registry still listed the retired
+`chatterbox` at `:8884` first, and every render 502'd against a dead host until the assignment was
+pointed at Breeze. **Deploying this cycle requires editing the registry**, which no migration does
+for you — see [`DEPLOYMENT.md` §4b](../DEPLOYMENT.md).
 
 The registry stores OpenAI-style base URLs ending in `/v1`; Breeze's own path already includes
 `/v1`, so `speak.ts` strips it to get the service root.
@@ -176,7 +179,9 @@ These are enforced before dispatch because the rig cannot tell you about them:
    - past roughly **3400 characters** (measured 2026-09-15), the rig **drops the socket** part-way
      through, which undici raises as a bare `TypeError: terminated`. Before cycle 61's validation
      pass this escaped the route unmapped — Nitro logged `[unhandled]` and answered 500
-     "Server Error" with the message reduced to "terminated".
+     "Server Error" with the message reduced to "terminated". Note that `truncated` is a
+     *classification*: a genuine app↔rig network fault rejects the read identically, so the original
+     error rides along as `BreezeError.cause`.
 4. **Output is capped at 120 seconds.** 900 and 1800 characters both returned exactly 5,760,000
    bytes at 24 kHz (measured 2026-09-15). This cap arrives as a *full* body, so no byte-count
    heuristic can see it — only the calibrated ceiling warning shown before dispatch, and ears.

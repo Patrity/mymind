@@ -15,10 +15,28 @@
 // had not been scheduled yet. It has to be refused on arrival, and the only thing that
 // distinguishes it is which turn it was born in.
 //
-// Correctness rests on the frame contract in server/lib/voice/orchestrator.ts: frames are
-// ordered and strictly bracketed — `audio-begin`, that segment's PCM, `audio-end`. A stale
-// frame can therefore only arrive BEFORE the next segment's `audio-begin`, so re-stamping
-// on each begin can never retroactively re-admit one.
+// What this DOES guarantee, and what it does not.
+//
+// The frame contract in server/lib/voice/orchestrator.ts is ordered and strictly bracketed —
+// `audio-begin`, that segment's PCM, `audio-end`. So every remaining frame of the segment
+// that was OPEN when the user interrupted carries the pre-interrupt stamp and is refused.
+// That is the tail, and that is what this fixes.
+//
+// It is NOT airtight, and the honest boundary matters more than the tidy claim. `beginSegment()`
+// re-opens the gate unconditionally, because the client cannot tell which turn an `audio-begin`
+// belongs to — no frame carries a turn id. The interrupt travels client->server as
+// `{type:'interrupt'}` and takes one RTT to land; if the server opens the NEXT segment of the
+// SAME (interrupted) turn inside that window, its `audio-begin` re-stamps at the current epoch
+// and that turn's audio is admitted again.
+//
+// In practice the window is narrow: the pipeline is serial (concurrency 1), a segment costs
+// hundreds of milliseconds to synthesize, and ws.ts aborts the turn on the interrupt frame. It
+// is strictly better than the dead guard it replaces. But it is a window, not zero, and closing
+// it properly needs a turn id on the wire so the client can refuse a begin from a turn it has
+// already walked away from — a protocol change, not a client-side one.
+//
+// Do not restate this as "can never re-admit a stale frame". A comment claiming more protection
+// than exists is how the original dead guard survived three reviews.
 export interface PlaybackEpochs {
   /** Invalidate everything from the turn in progress. Called on barge-in and on stop. */
   interrupt: () => void

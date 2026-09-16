@@ -256,6 +256,23 @@ describe('breezeSpeak — a body that dies mid-stream', () => {
     await expect(drain(s.chunks)).rejects.toMatchObject({ name: 'AbortError' })
   })
 
+  // `truncated` is a classification, not an observation — a real app<->rig network fault
+  // rejects the read identically. Discarding the original error would send whoever debugs
+  // that fault off to shorten text that was never too long.
+  it('keeps the original error as `cause` instead of discarding it', async () => {
+    const underlying = new TypeError('terminated')
+    vi.stubGlobal('fetch', vi.fn(async () => dyingResponse([[1, 2]], underlying)))
+    const s = await breezeSpeak('http://rig:8880', req)
+    await expect(drain(s.chunks)).rejects.toMatchObject({ code: 'truncated', cause: underlying })
+  })
+
+  it('carries a cause on an unreachable rig too, not just a dead body', async () => {
+    const underlying = new TypeError('fetch failed')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw underlying }))
+    await expect(breezeSpeak('http://rig:8880', req))
+      .rejects.toMatchObject({ code: 'network', cause: underlying })
+  })
+
   it('does not call an aborted read a truncation even when the error is not named AbortError', async () => {
     const ac = new AbortController()
     ac.abort()

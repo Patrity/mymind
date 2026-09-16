@@ -159,10 +159,13 @@ export function useVoice() {
     // afterwards and would schedule itself onto a cleared playCursor. It belongs to the
     // interrupted segment, so it now carries that segment's stale epoch and is discarded.
     //
-    // Safe because the frame contract is ordered and strictly bracketed (orchestrator.ts:
-    // audio-begin, then that segment's PCM, then audio-end). A stale frame can only arrive
-    // BEFORE the next segment's audio-begin, so re-stamping here can never retroactively
-    // admit one.
+    // NOT airtight, and worth stating precisely. Re-stamping here is unconditional, because
+    // no frame carries a turn id — the client cannot tell whose `audio-begin` this is. The
+    // interrupt takes one RTT to reach the server, so a segment the server opens for the
+    // INTERRUPTED turn inside that window re-opens the gate for that turn's audio. Narrow
+    // (serial pipeline, hundreds of ms per segment, ws.ts aborts on the interrupt frame) and
+    // strictly better than the dead guard it replaces — but a window, not zero. See
+    // lib/voice/playback-epoch.ts.
     epochs.beginSegment()
   }
 

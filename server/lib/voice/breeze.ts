@@ -19,8 +19,17 @@
 export type BreezeErrorCode = 'preflight' | 'busy' | 'truncated' | 'http' | 'network'
 
 export class BreezeError extends Error {
-  constructor(public readonly code: BreezeErrorCode, message: string) {
-    super(message)
+  /**
+   * The error this one was classified FROM, where there was one.
+   *
+   * `truncated` is a judgement call, not an observation: a read that rejects mid-body is
+   * *usually* the rig dropping the socket on a prompt-ceiling overrun (measured), but a
+   * genuine app↔rig network fault produces the identical rejection. Classifying it as an
+   * overrun and discarding the original would send whoever debugs the network fault off to
+   * shorten text that was never too long. Keep the classification, keep the evidence.
+   */
+  constructor(public readonly code: BreezeErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options)
     this.name = 'BreezeError'
   }
 }
@@ -86,7 +95,7 @@ export async function breezeSpeak(baseURL: string, req: BreezeRequest, signal?: 
     res = await fetch(`${base}/v1/audio/speech`, { method: 'POST', body: form, signal })
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw err
-    throw new BreezeError('network', `Breeze unreachable at ${base}: ${(err as Error).message}`)
+    throw new BreezeError('network', `Breeze unreachable at ${base}: ${(err as Error).message}`, { cause: err })
   }
 
   if (res.status === 409) throw new BreezeError('busy', 'Breeze is already running an inference request')
@@ -118,9 +127,15 @@ export async function breezeSpeak(baseURL: string, req: BreezeRequest, signal?: 
           // told nothing. It is the SAME condition as the zero-byte case below (an overrun
           // the rig cannot report, because it answered 200 before generation began); the
           // only difference is whether it managed a clean EOF or dropped the socket.
+          //
+          // `truncated` is the common case (measured), but it is a CLASSIFICATION, not an
+          // observation — a real network fault between app and rig rejects identically.
+          // The original rides along as `cause` so a future session debugging one is not
+          // sent off to shorten text that was never too long.
           throw new BreezeError('truncated',
             `Breeze stopped sending after ${total} bytes and dropped the connection — that is what a `
-            + 'prompt-ceiling overrun looks like from here. Shorten the text, or trim the reference clip.')
+            + 'prompt-ceiling overrun looks like from here. Shorten the text, or trim the reference clip.',
+            { cause: err })
         }
         if (done) break
         if (!value?.length) continue
