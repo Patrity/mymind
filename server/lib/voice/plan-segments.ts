@@ -32,7 +32,6 @@
 // complete body. The break is between 900 and 1000 characters of TEXT, on top of an 80-char
 // instruction, so what actually matters is the combined prompt.
 
-import { segment } from './segment'
 import { maxCallChars, MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET } from '../../../shared/types/voice-presets'
 
 export { maxCallChars, MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET }
@@ -82,17 +81,38 @@ export function planSegments(
   return { segments: splitToCap(trimmed, ceiling), reason: 'exceeds-ceiling', ceiling }
 }
 
-/** Split on real sentence and clause boundaries, reusing the segmenter the agent uses, then
- *  hard-cap anything still over — `segment` respects boundaries but cannot invent one inside
- *  a single enormous sentence. */
+/**
+ * Split into as FEW segments as the cap allows, breaking only on sentence boundaries.
+ *
+ * The agent's `segment()` is deliberately not used for the packing step: it flushes at every
+ * real sentence end so the agent can start speaking as early as possible. That is exactly
+ * wrong here — it turned 1,480 characters under an 875 ceiling into 20 calls instead of 2,
+ * which is 20 rig slots and a seam at every sentence, the opposite of what quality mode is
+ * for. (Caught in the browser; the unit test only asserted "more than one segment, each
+ * under the cap", which 20 satisfies.)
+ *
+ * So: greedily pack whole sentences up to the cap, and only hard-slice a single sentence
+ * that is itself longer than the cap.
+ */
 function splitToCap(text: string, cap: number): string[] {
   if (!text) return []
-  const { segments, tail } = segment(text, Math.min(cap, Math.floor(cap * 0.7)), cap)
-  const all = [...segments, tail].map(s => s.trim()).filter(Boolean)
+  // Keep the delimiter with its sentence; fall back to the whole text if it has none.
+  const sentences = text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g)?.map(s => s.trim()).filter(Boolean) ?? [text]
+
   const out: string[] = []
-  for (const s of all) {
-    if (s.length <= cap) { out.push(s); continue }
-    for (let i = 0; i < s.length; i += cap) out.push(s.slice(i, i + cap))
+  let current = ''
+  const flush = () => { if (current) { out.push(current); current = '' } }
+
+  for (const raw of sentences) {
+    if (raw.length > cap) {
+      // One sentence longer than the whole budget — nothing to break on but length.
+      flush()
+      for (let i = 0; i < raw.length; i += cap) out.push(raw.slice(i, i + cap))
+      continue
+    }
+    const candidate = current ? `${current} ${raw}` : raw
+    if (candidate.length > cap) { flush(); current = raw } else { current = candidate }
   }
+  flush()
   return out
 }

@@ -116,3 +116,33 @@ describe('planSegments — realtime', () => {
     expect(r.segments.length).toBeGreaterThan(q.segments.length)
   })
 })
+
+describe('planSegments — packing density', () => {
+  // Browser-caught regression: reusing the agent's segment() flushed at EVERY sentence end,
+  // turning 1480 chars under an 875 ceiling into 20 calls instead of 2 — 20 rig slots and a
+  // seam per sentence, the exact opposite of what quality mode is for. The earlier tests
+  // passed because "more than one segment, each under the cap" is true of 20 as well as 2.
+  it('uses as few segments as the ceiling allows, not one per sentence', () => {
+    const text = 'The rig has five graphics cards and plenty of memory for the voice stack. '.repeat(20)
+    const plan = planSegments(text, design, 'quality', AGENT_CAP)
+    const minimum = Math.ceil(text.trim().length / plan.ceiling)
+    expect(plan.segments.length).toBe(minimum)
+    expect(plan.segments.length).toBeLessThanOrEqual(3)
+  })
+
+  it('packs whole sentences rather than slicing mid-sentence', () => {
+    const text = 'One sentence here. Another sentence here. A third one here. '.repeat(30)
+    const plan = planSegments(text, design, 'quality', AGENT_CAP)
+    for (const s of plan.segments) {
+      expect(s.length).toBeLessThanOrEqual(plan.ceiling)
+      expect(s.trim()).toMatch(/[.!?]$/)   // never cut mid-sentence
+    }
+  })
+
+  it('still fills each realtime segment rather than emitting one per sentence', () => {
+    const text = 'Short one. Short two. Short three. Short four. Short five. Short six. '.repeat(6)
+    const plan = planSegments(text, design, 'realtime', AGENT_CAP)
+    const minimum = Math.ceil(text.trim().length / AGENT_CAP)
+    expect(plan.segments.length).toBeLessThanOrEqual(minimum + 1)
+  })
+})
