@@ -24,6 +24,10 @@ export const voicePresets = pgTable('voice_presets', {
   // Holding the KEY rather than a flag also makes the marker self-invalidating: swap the
   // clip and the cap is, correctly, no longer measured for it.
   calibratedRefKey: text('calibrated_ref_key'),
+  // Seeds the user chose to keep. Casting a designed voice is a lottery — the same
+  // description at a different seed is a different person — so without somewhere to put a
+  // good result, the next roll of the dice loses it.
+  starredSeeds: integer('starred_seeds').array().notNull().default(sql`'{}'::integer[]`),
   isDefault: boolean('is_default').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()

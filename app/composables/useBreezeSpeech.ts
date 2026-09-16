@@ -4,6 +4,7 @@
 // conversation's channel.
 import { errorFromResponseBody } from '~/lib/voice/studio'
 import { createAudioGate, isRunawayRender, type AudioContextFactory } from '~/lib/voice/audio-context'
+import type { SpeakOverrides } from '~~/shared/types/voice-presets'
 
 /** The rig is 24 kHz and says so on /health. We build the context at that rate BEFORE the
  *  request so the user gesture is still live; a response that disagrees rebuilds (rare). */
@@ -12,7 +13,7 @@ const EXPECTED_SAMPLE_RATE = 24000
 export interface SpeakOptions {
   /** Ad-hoc parameter overrides — lets the studio render exactly what is in the form,
    *  without saving first. Merged server-side; never persisted. */
-  overrides?: Record<string, unknown>
+  overrides?: SpeakOverrides
   /** 'quality' sends the text in one call (continuous prosody); 'realtime' segments it. */
   mode?: 'quality' | 'realtime'
 }

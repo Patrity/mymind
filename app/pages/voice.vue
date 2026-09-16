@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { SavedPresetDTO, VoicePresetDTO } from '~~/shared/types/voice-presets'
 import { resolveSelectedPreset } from '~/lib/voice/presets'
-import { modeBadge, uniqueName } from '~/lib/voice/studio'
+import { modeBadge, uniqueName, blankDraft, type PresetDraft } from '~/lib/voice/studio'
 
 // NOTE: the plan asked for `definePageMeta({ middleware: 'auth' })`. There is no NAMED
 // `auth` middleware in this app — auth is `app/middleware/auth.global.ts`, which already
@@ -54,6 +54,12 @@ const selectedId = ref('')
 watch(presets, (list) => {
   selectedId.value = resolveSelectedPreset(selectedId.value, list)
 }, { immediate: true })
+
+// The design form lives HERE rather than inside DesignPane, because Speak — in the other
+// panel entirely — has to render what the user is currently looking at, not the saved row.
+// DesignPane owns editing it; SpeakPane only reads it. Both receive the same reactive
+// object, so there is no syncing to get wrong.
+const draft = reactive<PresetDraft>(blankDraft())
 
 const selected = computed(() => presets.value.find(p => p.id === selectedId.value) ?? null)
 const selectedBadge = computed(() => selected.value ? modeBadge(selected.value) : null)
@@ -209,6 +215,7 @@ async function onSaved(saved: VoicePresetDTO) {
       <template #body>
         <VoiceDesignPane
           :preset="selected"
+          :draft="draft"
           @saved="onSaved"
         />
       </template>
@@ -223,7 +230,10 @@ async function onSaved(saved: VoicePresetDTO) {
       </template>
 
       <template #body>
-        <VoiceSpeakPane :preset="selected" />
+        <VoiceSpeakPane
+          :preset="selected"
+          :draft="draft"
+        />
       </template>
     </UDashboardPanel>
   </div>

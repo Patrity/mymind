@@ -1,10 +1,12 @@
 // server/lib/voice/plan-segments.ts
 // Decides how a studio render's text is split before it reaches the rig.
 //
-// The live agent has no choice but to segment: its text arrives token by token from the LLM,
-// so it must start speaking before the sentence is finished. The studio has the whole text
-// in hand before the user presses Speak, and was needlessly paying the same tax. Measured,
-// one paragraph, same instruction and seed:
+// Before this, the studio sent EVERY render as one Breeze call whatever its length. That is
+// right up to the ceiling and silently wrong past it — see the measurements below. The job
+// here is to keep the one-call behaviour wherever it is safe and split only when it is not.
+//
+// Keeping it matters, because segmenting is not free. Measured, one paragraph, same
+// instruction and seed, one call versus three:
 //
 //     one call          13.92 s audio    29 ms TTFA    6.81 s wall
 //     three segments    15.36 s audio     7 ms TTFA    7.53 s wall
@@ -14,7 +16,9 @@
 // shared state. It bought 22 ms of time-to-first-audio, which is invisible, because Breeze
 // streams *within* a call too.
 //
-// So 'quality' is the studio's default and 'realtime' exists to hear the difference.
+// The live agent has no choice: its text arrives token by token from the LLM, so it must
+// start speaking before the sentence is finished. The studio always has the whole text.
+// So 'quality' is the studio's default and 'realtime' exists to hear the agent's seams.
 //
 // ── The ceiling is not a style preference; past it the model breaks. ──
 // Measured in design mode at cfg 4.0 (the 512-token bucket), one instruction, one seed:
@@ -29,38 +33,11 @@
 // instruction, so what actually matters is the combined prompt.
 
 import { segment } from './segment'
+import { maxCallChars, MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET } from '../../../shared/types/voice-presets'
+
+export { maxCallChars, MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET }
 
 export type SpeakMode = 'quality' | 'realtime'
-
-/** Total prompt characters (instruction + text) that design mode tolerates. 900 text + 80
- *  instruction was healthy and 1000 + 80 ran away, so the observed break sits near 1080;
- *  950 keeps a deliberate margin, because the break was located to ±100 and a different
- *  instruction changes the token mix. */
-export const DESIGN_PROMPT_BUDGET = 950
-
-/** Never plan a segment shorter than this, however long the instruction. Below it the text
- *  is chopped so finely that the seams cost more than the ceiling ever would. */
-export const MIN_SEGMENT_CHARS = 120
-
-/**
- * The longest single call this preset can take, in characters of TEXT.
- *
- * A reference-backed preset uses its calibrated cap: the clip rides in every prompt and was
- * measured against that exact budget, so it is authoritative and is NOT extended here.
- *
- * A reference-free preset has no calibration (probing one would burn a rig slot to confirm
- * the obvious), so its ceiling is derived from the budget above, minus the instruction it
- * will carry — the two share the prompt.
- */
-export function maxCallChars(preset: {
-  instruction: string | null
-  refStorageKey: string | null
-  maxSegmentChars: number
-}): number {
-  if (preset.refStorageKey) return preset.maxSegmentChars
-  const instructionCost = preset.instruction?.trim().length ?? 0
-  return Math.max(MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET - instructionCost)
-}
 
 export interface SegmentPlan {
   segments: string[]

@@ -19,7 +19,9 @@ import {
   isCfgLocked,
   messagesToScript,
   modeBadge,
-  overCapWarning,
+  describeRenderPlan,
+  instructionHint,
+  toggleStarredSeed,
   presetToDraft,
   randomSeed,
   uniqueName,
@@ -40,7 +42,7 @@ const PRESET: VoicePresetDTO = {
   refText: null,
   refDurationMs: null,
   maxSegmentChars: 200,
-  calibratedRefKey: null,
+  calibratedRefKey: null, starredSeeds: [],
   isDefault: true
 }
 
@@ -424,32 +426,45 @@ describe('errorFromResponseBody', () => {
   })
 })
 
-describe('overCapWarning', () => {
-  const clone = { maxSegmentChars: 200, refStorageKey: 'ref-key' }
-  const cloneAt100 = { maxSegmentChars: 100, refStorageKey: 'ref-key' }
+describe('describeRenderPlan', () => {
+  const clone100 = { instruction: 'Warmly.', refStorageKey: 'ref-key', maxSegmentChars: 100 }
+  const design = { instruction: 'A neutral, low-key man.', refStorageKey: null, maxSegmentChars: 200 }
 
-  it('warns past the calibrated ceiling and quotes both numbers', () => {
-    const msg = overCapWarning(320, clone)
-    expect(msg).toContain('320')
+  // The warning this replaced fired on every ordinary read-aloud: all eight seeded design
+  // presets carry maxSegmentChars 200, which for a reference-FREE preset is an unmeasured
+  // default (585 characters rendered fine on the rig), so it cried wolf constantly.
+  it('says nothing for a reference-free preset at a length it can actually speak', () => {
+    expect(describeRenderPlan(600, design, 'quality')).toBeNull()
+    expect(describeRenderPlan(800, design, 'quality')).toBeNull()
+  })
+
+  it('describes the split once a design preset genuinely exceeds its ceiling', () => {
+    const msg = describeRenderPlan(3000, design, 'quality')
+    expect(msg).toContain('3000')
+    expect(msg).toMatch(/\b2 calls|\b3 calls|\b4 calls/)
+  })
+
+  // A long instruction eats the same prompt budget as the text, so it lowers the ceiling.
+  it('accounts for the instruction sharing the budget', () => {
+    const wordy = { ...design, instruction: 'x'.repeat(700) }
+    expect(describeRenderPlan(400, design, 'quality')).toBeNull()
+    expect(describeRenderPlan(400, wordy, 'quality')).not.toBeNull()
+  })
+
+  it('uses a clone preset\'s calibrated cap verbatim', () => {
+    expect(describeRenderPlan(90, clone100, 'quality')).toBeNull()
+    expect(describeRenderPlan(350, clone100, 'quality')).toContain('100')
+  })
+
+  it('explains realtime mode as the agent comparison it is', () => {
+    const msg = describeRenderPlan(600, design, 'realtime')
+    expect(msg).toContain('Realtime')
     expect(msg).toContain('200')
   })
 
-  it('is silent at or below the ceiling', () => {
-    expect(overCapWarning(200, clone)).toBeNull()
-    expect(overCapWarning(10, clone)).toBeNull()
-  })
-
-  it('warns at a narrowed ceiling — the case the warning exists for', () => {
-    expect(overCapWarning(150, cloneAt100)).toContain('100')
-  })
-
-  // Review finding: 200 on a reference-free preset is a DEFAULT the spec deliberately
-  // does not measure (585 characters rendered fine on the rig), and all eight seeded
-  // presets carry it. Warning on the number alone fired on every ordinary read-aloud,
-  // which trains the user to ignore the one warning that means something.
-  it('says nothing for a preset with no reference clip, however long the text', () => {
-    expect(overCapWarning(5000, { maxSegmentChars: 200, refStorageKey: null })).toBeNull()
-    expect(overCapWarning(5000, PRESET)).toBeNull()
+  it('is silent for empty or tiny text in either mode', () => {
+    expect(describeRenderPlan(0, design, 'quality')).toBeNull()
+    expect(describeRenderPlan(10, design, 'realtime')).toBeNull()
   })
 })
 
@@ -496,5 +511,75 @@ describe('messagesToScript', () => {
       { role: 'assistant', content: '   ' },
       { role: 'assistant', content: 'kept' }
     ])).toBe('kept')
+  })
+})
+
+describe('instructionHint', () => {
+  const SPECIFIC = 'A warm, thoughtful young woman with a clear voice, calm reflective delivery, unhurried pace.'
+
+  // The measured finding: a vague instruction at cfg 4 scattered 2.64s across four seeds,
+  // a specific one 0.56s. The hint exists to say so at the moment it is actionable.
+  it('nudges when the instruction is too short to constrain the model', () => {
+    expect(instructionHint('A person speaking.', 4)).toContain('4.6x')
+  })
+
+  it('says nothing once the instruction is specific', () => {
+    expect(instructionHint(SPECIFIC, 4)).toBeNull()
+  })
+
+  // cfg 1 loosens a detailed instruction back up (measured: spread widened to 1.36s).
+  it('nudges a detailed instruction that is being held at cfg 1', () => {
+    expect(instructionHint(SPECIFIC, 1)).toContain('cfg')
+  })
+
+  // An empty instruction is already explained by the cfg lock; two messages about the same
+  // field at once is noise.
+  it('defers to the cfg lock for an empty instruction', () => {
+    expect(instructionHint('', 1)).toBeNull()
+    expect(instructionHint('   ', 1)).toBeNull()
+    expect(instructionHint(null, 1)).toBeNull()
+  })
+})
+
+describe('toggleStarredSeed', () => {
+  it('adds a seed that was not kept', () => {
+    expect(toggleStarredSeed([], 11)).toEqual([11])
+  })
+
+  it('removes one that was', () => {
+    expect(toggleStarredSeed([11, 42], 11)).toEqual([42])
+  })
+
+  it('keeps the list sorted and free of duplicates', () => {
+    let s = toggleStarredSeed([], 900)
+    s = toggleStarredSeed(s, 11)
+    s = toggleStarredSeed(s, 42)
+    expect(s).toEqual([11, 42, 900])
+    expect(toggleStarredSeed(s, 42)).toEqual([11, 900])
+  })
+
+  it('does not mutate the array it was given', () => {
+    const before = [11]
+    toggleStarredSeed(before, 42)
+    expect(before).toEqual([11])
+  })
+})
+
+describe('draftIsDirty — array fields', () => {
+  // starredSeeds is an array, so a reference comparison marks every freshly loaded preset
+  // dirty and leaves Save enabled forever. Value comparison is load-bearing here.
+  it('is clean when the kept seeds match by value but not by reference', () => {
+    const p = { ...PRESET, starredSeeds: [11, 42] }
+    expect(draftIsDirty(presetToDraft(p), p)).toBe(false)
+  })
+
+  it('is dirty when a seed is kept', () => {
+    const p = { ...PRESET, starredSeeds: [11] }
+    expect(draftIsDirty(draft({ starredSeeds: [11, 42] }), p)).toBe(true)
+  })
+
+  it('is dirty when a kept seed is dropped', () => {
+    const p = { ...PRESET, starredSeeds: [11, 42] }
+    expect(draftIsDirty(draft({ starredSeeds: [11] }), p)).toBe(true)
   })
 })

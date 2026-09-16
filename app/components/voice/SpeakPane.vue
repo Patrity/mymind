@@ -5,16 +5,30 @@ import type { ConversationDTO, ConversationMessageDTO } from '~~/shared/types/co
 import {
   EVENT_TAGS,
   diagnoseStreamRender,
+  describeRenderPlan,
   diagnoseTruncation,
+  draftToOverrides,
   errorFromResponseBody,
   errorMessage,
   insertAtCursor,
   messagesToScript,
-  overCapWarning
+  type PresetDraft
 } from '~/lib/voice/studio'
 import { readWavInfo } from '~/lib/voice/wav-encode'
 
-const props = defineProps<{ preset: VoicePresetDTO | null }>()
+// `draft` is the LIVE form state from the Voice tab, not the saved row. Speak has to render
+// what the user is currently looking at — making them save before they can hear a change is
+// what turns designing a voice into a chore, and it also means a bad experiment is persisted
+// just to audition it. The server merges these as in-memory overrides and never writes them.
+const props = defineProps<{ preset: VoicePresetDTO | null, draft: PresetDraft | null }>()
+
+/** Realtime reproduces the live agent's segmentation so the two can be compared by ear;
+ *  quality (the default) keeps the text in one call wherever it fits. */
+const mode = ref<'quality' | 'realtime'>('quality')
+const modeItems = [
+  { label: 'Quality', value: 'quality' as const },
+  { label: 'Realtime', value: 'realtime' as const },
+]
 
 const text = ref('')
 const { speak, stop, speaking, ttfaMs, audioBytes, sampleRate, cancelled, error } = useBreezeSpeech()
@@ -23,9 +37,22 @@ const { speak, stop, speaking, ttfaMs, audioBytes, sampleRate, cancelled, error 
 // mostly. Cleared at the start of every attempt.
 const note = ref<string | null>(null)
 
-const capWarning = computed(() =>
-  props.preset ? overCapWarning(text.value.trim().length, props.preset) : null
-)
+// What will actually happen to this text, stated before the user presses Speak.
+// This replaces a warning that said the render "will very likely stop early" — which was
+// true when the route always sent one call, and fired on every ordinary read-aloud because
+// all eight seeded design presets carry the unmeasured default of 200. The route now splits
+// at the real ceiling instead of overrunning it, so the honest thing to report is the split.
+const renderPlan = computed(() => {
+  const p = props.preset
+  const chars = text.value.trim().length
+  if (!p || !chars) return null
+  const draft = props.draft
+  return describeRenderPlan(chars, {
+    instruction: draft ? draft.instruction : p.instruction,
+    refStorageKey: p.refStorageKey,
+    maxSegmentChars: p.maxSegmentChars,
+  }, mode.value)
+})
 
 // ── Pull something in from MyMind ─────────────────────────────────────────────
 // The three lists come from the existing composables so they stay live (vue-query keys
@@ -115,7 +142,12 @@ async function onSpeak() {
   const body = text.value.trim()
   if (!p || !body || speaking.value) return
   note.value = null
-  await speak(body, p.id)
+  // draftToOverrides sends whatever is in the form right now. Falls back to the saved row
+  // when there is no draft (nothing selected yet), which is the pre-existing behaviour.
+  await speak(body, p.id, {
+    overrides: props.draft ? draftToOverrides(props.draft) : undefined,
+    mode: mode.value,
+  })
   // A `truncated` failure NEVER arrives as a message: the rig answers 200 OK and then
   // dies mid-stream, so the only evidence is how much audio actually showed up. Counting
   // BYTES, not just "did anything arrive": a stream that delivers one frame and then dies
@@ -150,7 +182,15 @@ async function onDownload() {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // `format` goes in the BODY on this route — it is not a query parameter.
-      body: JSON.stringify({ text: body, presetId: p.id, format: 'wav' })
+      body: JSON.stringify({
+        text: body,
+        presetId: p.id,
+        format: 'wav',
+        // Same live form state and mode as Speak — downloading something that differs from
+        // what you just heard would be its own small betrayal.
+        overrides: props.draft ? draftToOverrides(props.draft) : undefined,
+        mode: mode.value,
+      })
     })
     // Parsed, not raw: `fetch` hands back the whole h3 JSON error envelope, and the
     // pre-flight's 400 sentence is one field inside it.
@@ -235,18 +275,32 @@ async function onDownload() {
       <span class="text-xs tabular-nums text-dimmed">{{ text.trim().length }} chars</span>
     </div>
 
-    <!-- /api/voice/speak hands the text to Breeze in ONE piece — it does not segment the
-         way the agent pipeline does — so the calibrated ceiling is a hard limit here. -->
+    <!-- Not a warning: a statement of what the route will do with this text. Only the
+         multi-call case is worth surfacing, because that is the one with audible seams. -->
     <UAlert
-      v-if="capWarning"
-      color="warning"
+      v-if="renderPlan"
+      color="info"
       variant="subtle"
-      icon="i-lucide-triangle-alert"
-      title="Longer than this voice is calibrated for"
-      :description="capWarning"
+      icon="i-lucide-scissors"
+      title="This will be split"
+      :description="renderPlan"
     />
 
     <div class="flex flex-wrap items-center gap-2">
+      <!-- Quality keeps the text in one call wherever it fits; Realtime reproduces the live
+           agent's segmentation. Measured, the split costs 10.3% more audio and audible seams
+           to buy 22ms — so Quality is the default and Realtime is for comparing by ear. -->
+      <UFieldGroup size="xs">
+        <UButton
+          v-for="m in modeItems"
+          :key="m.value"
+          :label="m.label"
+          :color="mode === m.value ? 'primary' : 'neutral'"
+          :variant="mode === m.value ? 'solid' : 'outline'"
+          @click="mode = m.value"
+        />
+      </UFieldGroup>
+
       <UButton
         icon="i-lucide-volume-2"
         label="Speak"
