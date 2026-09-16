@@ -1,9 +1,11 @@
 // server/api/voice/speak.post.ts
 // Studio synthesis. Separate from the agent socket so an audition never rides the
 // conversation's channel, and queued at STUDIO priority so it yields to a live turn.
-import { speakWithPreset, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../lib/voice/speak'
+import { speakSegments, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../lib/voice/speak'
 import { resolvePreset, loadReferenceBytes } from '../../services/voice-presets'
 import { BreezeError, validateBreezeRequest } from '../../lib/voice/breeze'
+import { planSegments, type SpeakMode } from '../../lib/voice/plan-segments'
+import { VOICE_TUNING } from '../../lib/voice/tuning'
 import type { SpeakOverrides } from '../../../shared/types/voice-presets'
 
 export default defineEventHandler(async (event) => {
@@ -13,9 +15,13 @@ export default defineEventHandler(async (event) => {
     format?: 'pcm' | 'wav'
     /** Ad-hoc parameters for THIS request only — see applyOverrides. Never persisted. */
     overrides?: SpeakOverrides
+    /** 'quality' (default) sends the text in one call where it fits; 'realtime' reproduces
+     *  the live agent's segmentation. See plan-segments.ts for the measurements. */
+    mode?: SpeakMode
   }>(event)
   const text = body.text?.trim()
   if (!text) throw createError({ statusCode: 400, statusMessage: 'text is required' })
+  const mode: SpeakMode = body.mode === 'realtime' ? 'realtime' : 'quality'
 
   const stored = await resolvePreset(body.presetId)
   // In memory, for this request alone. The studio auditions four seeds and previews
@@ -33,6 +39,18 @@ export default defineEventHandler(async (event) => {
   const invalid = validateBreezeRequest(presetToRequest(text, preset, refAudio))
   if (invalid) throw createError({ statusCode: 400, statusMessage: invalid })
 
+  // How the text reaches the rig. Before this, the studio sent EVERY render as a single call
+  // whatever its length, which is right up to the ceiling and silently wrong past it: at
+  // 1000+ characters the model stops tracking the text and rambles to the rig's 120s output
+  // cap, returning a complete body full of words nobody wrote. The planner keeps the
+  // one-call behaviour wherever it is safe — segmenting costs 10.3% more audio and audible
+  // seams to buy 22ms, measured — and splits at the ceiling only when it has to.
+  const plan = planSegments(text, preset, mode, VOICE_TUNING.tts.sentenceMaxChars)
+  if (!plan.segments.length) throw createError({ statusCode: 400, statusMessage: 'text is required' })
+  setHeader(event, 'x-segments', String(plan.segments.length))
+  setHeader(event, 'x-segment-reason', plan.reason)
+  setHeader(event, 'x-segment-ceiling', String(plan.ceiling))
+
   // h3's bridge from a returned Web ReadableStream to the Node response (sendStream's
   // pipeTo branch) does NOT observe a client disconnect: writing to a torn-down socket
   // fails silently rather than rejecting, so the stream's own cancel() is never invoked
@@ -48,13 +66,14 @@ export default defineEventHandler(async (event) => {
       // enough to unwind the generator's `finally`; there is no separate iterator here
       // to explicitly return().
       event.node.res.on('close', () => ac.abort())
-      const { pcm, sampleRate } = await collectPcm(speakWithPreset(text, preset, 'studio', ac.signal, refAudio))
+      const { pcm, sampleRate } = await collectPcm(
+        speakSegments(plan.segments, preset, 'studio', ac.signal, refAudio))
       setHeader(event, 'Content-Type', 'audio/wav')
       setHeader(event, 'Content-Disposition', `attachment; filename="${preset.name}.wav"`)
       return pcmToWav(pcm, sampleRate)
     }
 
-    const chunks = speakWithPreset(text, preset, 'studio', ac.signal, refAudio)
+    const chunks = speakSegments(plan.segments, preset, 'studio', ac.signal, refAudio)
     const iterator = chunks[Symbol.asyncIterator]()
     // Registered only once the iterator exists, and calls BOTH abort() and return():
     // abort() alone only unwinds a generator that is mid-await, but between our manual

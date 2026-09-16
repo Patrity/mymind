@@ -105,6 +105,36 @@ export const speakWithPreset = createSpeaker({
   }
 })
 
+/**
+ * Speak several planned segments as ONE continuous chunk stream.
+ *
+ * Emits a single `begin` (from the first segment) and then every segment's PCM in order, so
+ * a consumer cannot tell a split render from a whole one except by the header the route sets.
+ * Each segment is a separate Breeze call taking its own queue slot, which is why the planner
+ * works hard to produce one segment whenever the text fits.
+ */
+export async function* speakSegments(
+  segments: string[],
+  preset: VoicePresetDTO,
+  priority: QueuePriority,
+  signal?: AbortSignal,
+  refAudio: Uint8Array | null = null,
+  speak: ReturnType<typeof createSpeaker> = speakWithPreset
+): AsyncIterable<SpeakChunk> {
+  let announced = false
+  for (const seg of segments) {
+    for await (const c of speak(seg, preset, priority, signal, refAudio)) {
+      if (c.kind === 'begin') {
+        // One `begin` for the whole render: the rate cannot change between segments (same
+        // preset, same engine), and a second one would reopen a segment downstream.
+        if (announced) continue
+        announced = true
+      }
+      yield c
+    }
+  }
+}
+
 export async function collectPcm(chunks: AsyncIterable<SpeakChunk>): Promise<{ pcm: Buffer; sampleRate: number }> {
   let sampleRate = 24000
   const parts: Uint8Array[] = []
