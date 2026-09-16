@@ -17,7 +17,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 import { useDb } from '../db'
 import { voicePresets } from '../db/schema'
 import { eq, like } from 'drizzle-orm'
-import { createPreset, updatePreset, deletePreset, getDefaultPreset, resolvePreset, listPresets } from './voice-presets'
+import { createPreset, updatePreset, deletePreset, getDefaultPreset, getPreset, resolvePreset, listPresets, ensureCalibrated } from './voice-presets'
+import { isCalibrated } from '../../shared/types/voice-presets'
 
 describe('voice-presets service', () => {
   beforeEach(async () => {
@@ -92,5 +93,26 @@ describe('voice-presets service', () => {
     const p = await createPreset({ name: 'test-upd', instruction: 'A calm man.' })
     const u = await updatePreset(p.id, { seed: 999 })
     expect(u.seed).toBe(999)
+  })
+
+  // The column behind the "was this cap ever actually measured?" distinction. A new row
+  // must start uncalibrated no matter what its cap column happens to default to.
+  it('creates reference-backed rows UNCALIBRATED, and round-trips the marker', async () => {
+    const p = await createPreset({
+      name: 'test-clone', cfgScale: 1, refStorageKey: 'blob/clip', refText: 'the transcript'
+    })
+    expect(p.calibratedRefKey).toBeNull()
+    expect(p.maxSegmentChars).toBe(200)
+    expect(isCalibrated(p)).toBe(false)
+
+    const measured = await updatePreset(p.id, { maxSegmentChars: 100, calibratedRefKey: 'blob/clip' })
+    expect(isCalibrated(measured)).toBe(true)
+    expect((await getPreset(p.id))?.calibratedRefKey).toBe('blob/clip')
+
+    // Demote it to a design preset: the cap its clip justified goes with the clip.
+    const demoted = await updatePreset(p.id, { refStorageKey: null, refText: null })
+    const { preset: reset } = await ensureCalibrated(demoted)
+    expect(reset.maxSegmentChars).toBe(200)
+    expect(reset.calibratedRefKey).toBeNull()
   })
 })

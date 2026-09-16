@@ -24,7 +24,7 @@ const { speak, stop, speaking, ttfaMs, audioBytes, sampleRate, cancelled, error 
 const note = ref<string | null>(null)
 
 const capWarning = computed(() =>
-  props.preset ? overCapWarning(text.value.trim().length, props.preset.maxSegmentChars) : null
+  props.preset ? overCapWarning(text.value.trim().length, props.preset) : null
 )
 
 // ── Pull something in from MyMind ─────────────────────────────────────────────

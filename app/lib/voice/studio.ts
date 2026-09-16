@@ -389,10 +389,20 @@ export function diagnoseStreamRender(outcome: {
  * Warn BEFORE spending a rig slot when the text is longer than this preset is calibrated
  * for. /api/voice/speak hands the text to Breeze in one piece — it does not segment the
  * way the agent pipeline does — so `maxSegmentChars` is a hard ceiling here, not a hint.
+ *
+ * ONLY for a preset that carries a reference clip. For everything else 200 is a default
+ * the spec deliberately does not measure: a reference-free preset runs a ~40-token prompt
+ * and cannot approach the ceiling (585 characters rendered fine on the rig). All eight
+ * seeded presets carry 200, so warning on the number alone fired on every ordinary
+ * read-aloud — which is how you teach someone to ignore the one warning that is real.
  */
-export function overCapWarning(chars: number, maxSegmentChars: number): string | null {
-  if (chars <= maxSegmentChars) return null
-  return `${chars} characters is past this voice's calibrated ceiling of ${maxSegmentChars}. `
+export function overCapWarning(
+  chars: number,
+  preset: Pick<VoicePresetDTO, 'maxSegmentChars' | 'refStorageKey'>
+): string | null {
+  if (!preset.refStorageKey) return null
+  if (chars <= preset.maxSegmentChars) return null
+  return `${chars} characters is past this voice's calibrated ceiling of ${preset.maxSegmentChars}. `
     + 'Studio synthesis sends the text in one piece, so the render will very likely stop early.'
 }
 

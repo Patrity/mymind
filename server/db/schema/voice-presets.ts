@@ -17,6 +17,13 @@ export const voicePresets = pgTable('voice_presets', {
   refText: text('ref_text'),
   refDurationMs: integer('ref_duration_ms'),
   maxSegmentChars: integer('max_segment_chars').notNull().default(200),
+  // WHICH reference clip `max_segment_chars` was actually measured against, or NULL for
+  // "never measured". The cap column cannot answer that on its own: it is NOT NULL
+  // DEFAULT 200, so a row that was never probed is indistinguishable from one measured at
+  // 200 — and a calibration that failed (rig down, 409) would then be assumed done forever.
+  // Holding the KEY rather than a flag also makes the marker self-invalidating: swap the
+  // clip and the cap is, correctly, no longer measured for it.
+  calibratedRefKey: text('calibrated_ref_key'),
   isDefault: boolean('is_default').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()

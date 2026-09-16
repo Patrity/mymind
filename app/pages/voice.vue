@@ -1,7 +1,7 @@
 <!-- app/pages/voice.vue -->
 <script setup lang="ts">
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { SavedPresetDTO, VoicePresetDTO } from '~~/shared/types/voice-presets'
 import { resolveSelectedPreset } from '~/lib/voice/presets'
 import { modeBadge, uniqueName } from '~/lib/voice/studio'
 
@@ -34,6 +34,14 @@ function fail(title: string, e: unknown) {
   toast.add({ color: 'error', title, description: describeError(e) })
 }
 
+/** A save can succeed while its CALIBRATION does not — the probe is a live call to a rig
+ *  that may be down. The row exists and works; it just runs on a conservative, unmeasured
+ *  cap until it is saved again. Say so rather than letting it pass as a clean save. */
+function warnIfUncalibrated(saved: SavedPresetDTO) {
+  if (!saved.calibrationWarning) return
+  toast.add({ color: 'warning', title: 'Saved, but not calibrated', description: saved.calibrationWarning })
+}
+
 watch(error, (err) => {
   if (!err) return
   fail('Failed to load voices', err)
@@ -56,7 +64,7 @@ const refresh = () => qc.invalidateQueries({ queryKey: ['voicePreset', 'list'] }
 async function onCreate() {
   busy.value = true
   try {
-    const created = await $fetch<VoicePresetDTO>('/api/voice/presets', {
+    const created = await $fetch<SavedPresetDTO>('/api/voice/presets', {
       method: 'POST',
       // cfgScale 1 deliberately: a brand-new preset has no instruction yet, and
       // cfg > 1 without one violates voice_presets_cfg_needs_instruction.
@@ -64,6 +72,7 @@ async function onCreate() {
     })
     await refresh()
     selectedId.value = created.id
+    warnIfUncalibrated(created)
   } catch (e) {
     fail('Could not create the voice', e)
   } finally {
@@ -76,7 +85,7 @@ async function onDuplicate(id: string) {
   if (!p) return
   busy.value = true
   try {
-    const copy = await $fetch<VoicePresetDTO>('/api/voice/presets', {
+    const copy = await $fetch<SavedPresetDTO>('/api/voice/presets', {
       method: 'POST',
       body: {
         name: uniqueName(`${p.name} (copy)`, presets.value.map(x => x.name)),
@@ -93,6 +102,7 @@ async function onDuplicate(id: string) {
     })
     await refresh()
     selectedId.value = copy.id
+    warnIfUncalibrated(copy)
   } catch (e) {
     fail('Could not duplicate the voice', e)
   } finally {

@@ -3,8 +3,9 @@
 // 409 escaping to a caller means something OUTSIDE MyMind took the slot (the interim
 // Gradio studio on the rig), not that this queue failed.
 //
-// Two priorities, because a 30-second narration audition must never stall a live
-// conversation behind it.
+// Two priorities, and they only ever reorder WAITERS. There is no preemption: once a
+// studio render holds the slot, a live turn arriving behind it waits for that render to
+// finish in full. Priority buys a live turn the front of the queue, not the slot.
 
 export type QueuePriority = 'agent' | 'studio'
 

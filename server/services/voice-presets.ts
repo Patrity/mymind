@@ -7,8 +7,8 @@ import { BreezeError } from '../lib/voice/breeze'
 import { speakWithPreset, collectPcm } from '../lib/voice/speak'
 import type { VoicePresetDTO } from '../../shared/types/voice-presets'
 
-const DEFAULT_MAX_SEGMENT_CHARS = 200
-const FALLBACK_MAX_SEGMENT_CHARS = 100
+export const DEFAULT_MAX_SEGMENT_CHARS = 200
+export const FALLBACK_MAX_SEGMENT_CHARS = 100
 
 /**
  * The voice of last resort. NOT a database row — it exists so that a database problem
@@ -33,6 +33,7 @@ export const FALLBACK_PRESET: VoicePresetDTO = {
   refText: null,
   refDurationMs: null,
   maxSegmentChars: DEFAULT_MAX_SEGMENT_CHARS,
+  calibratedRefKey: null,
   isDefault: true
 }
 
@@ -50,6 +51,7 @@ export function toDTO(r: VoicePresetRow): VoicePresetDTO {
     refText: r.refText,
     refDurationMs: r.refDurationMs,
     maxSegmentChars: r.maxSegmentChars,
+    calibratedRefKey: r.calibratedRefKey,
     isDefault: r.isDefault
   }
 }
@@ -66,8 +68,11 @@ export interface PresetInput {
   refText?: string | null
   refDurationMs?: number | null
   /** Derived by calibration, not chosen by the user — settable so the calibration pass
-   *  can write it back through the same update path. */
+   *  can write it back through the same update path. Strip it (and `calibratedRefKey`)
+   *  off anything that came from a request body: see `withoutCalibrationFields`. */
   maxSegmentChars?: number
+  /** Written by the calibration pass only. */
+  calibratedRefKey?: string | null
   isDefault?: boolean
 }
 
@@ -237,6 +242,96 @@ export async function calibrateMaxSegmentChars(
 export function makeLiveProbe(preset: VoicePresetDTO, refAudio: Uint8Array | null): CalibrationProbe {
   return async (text: string) => {
     await collectPcm(speakWithPreset(text, preset, 'studio', undefined, refAudio))
+  }
+}
+
+/**
+ * Strip the fields calibration OWNS off anything that arrived in a request body.
+ *
+ * `max_segment_chars` and `calibrated_ref_key` are measurements, not preferences. Without
+ * this a client could PATCH `{calibratedRefKey: <its own key>}` and the save path would
+ * believe the preset had been probed — which is precisely the state this whole mechanism
+ * exists to make impossible.
+ */
+export function withoutCalibrationFields<T extends Partial<PresetInput>>(
+  input: T
+): Omit<T, 'maxSegmentChars' | 'calibratedRefKey'> {
+  const { maxSegmentChars: _cap, calibratedRefKey: _key, ...rest } = input
+  return rest
+}
+
+/** Injectable seams for `ensureCalibrated` — the app passes nothing and gets the real ones. */
+export interface CalibrationDeps {
+  /** Builds the probe for a preset, loading its reference clip. */
+  makeProbe?: (preset: VoicePresetDTO) => Promise<CalibrationProbe>
+  /** Persists the calibration result. */
+  save?: (id: string, input: Partial<PresetInput>) => Promise<VoicePresetDTO>
+}
+
+const liveProbeFactory = async (preset: VoicePresetDTO): Promise<CalibrationProbe> =>
+  makeLiveProbe(preset, await loadReferenceBytes(preset))
+
+/**
+ * Bring a just-saved preset's cap into agreement with its reference clip, and say so when
+ * it could not be done.
+ *
+ * This replaces the old "recalibrate when the key CHANGED" test, which had a hole with
+ * teeth: the row was written first, so a probe that threw (rig down, 409 — prod's exact
+ * state until the DEPLOYMENT §4b registry repoint) 500ed the request with the new
+ * reference already persisted. On the retry the keys matched, calibration was skipped, and
+ * the preset kept an unmeasured 200 cap forever — a clone-backed voice on the live agent
+ * whose invisible-truncation ceiling was never measured. The gate is therefore "is this
+ * cap a MEASUREMENT of the clip the row currently carries", which a failed probe never
+ * satisfies, so the next save tries again.
+ *
+ * Three outcomes, and nothing here can fail the save:
+ *  - no reference: nothing to measure. Any cap/marker left behind by a clone→design
+ *    demotion is reset, so a demoted preset does not keep a 100 cap it no longer earns.
+ *  - already measured against THIS clip: no rig slot spent.
+ *  - otherwise: probe. On success the cap and the key it was measured against are stored
+ *    together. On failure the cap drops to the conservative floor and the marker stays
+ *    NULL — the preset works, cannot overrun invisibly, and is still due a measurement.
+ */
+export async function ensureCalibrated(
+  preset: VoicePresetDTO,
+  deps: CalibrationDeps = {}
+): Promise<{ preset: VoicePresetDTO; calibrationWarning: string | null }> {
+  const save = deps.save ?? updatePreset
+
+  if (!preset.refStorageKey) {
+    const stale = preset.calibratedRefKey !== null || preset.maxSegmentChars !== DEFAULT_MAX_SEGMENT_CHARS
+    if (!stale) return { preset, calibrationWarning: null }
+    // A reference was REMOVED. The cap it justified goes with it.
+    const reset = await save(preset.id, {
+      maxSegmentChars: DEFAULT_MAX_SEGMENT_CHARS,
+      calibratedRefKey: null
+    })
+    return { preset: reset, calibrationWarning: null }
+  }
+
+  if (preset.calibratedRefKey === preset.refStorageKey) return { preset, calibrationWarning: null }
+
+  try {
+    const probe = await (deps.makeProbe ?? liveProbeFactory)(preset)
+    const max = await calibrateMaxSegmentChars(preset, probe)
+    const measured = await save(preset.id, {
+      maxSegmentChars: max,
+      calibratedRefKey: preset.refStorageKey
+    })
+    return { preset: measured, calibrationWarning: null }
+  } catch (err) {
+    console.error('[voice] calibration failed; preset saved uncalibrated:', err)
+    const uncalibrated = preset.maxSegmentChars === FALLBACK_MAX_SEGMENT_CHARS && preset.calibratedRefKey === null
+      ? preset
+      : await save(preset.id, { maxSegmentChars: FALLBACK_MAX_SEGMENT_CHARS, calibratedRefKey: null })
+    return {
+      preset: uncalibrated,
+      calibrationWarning:
+        'Saved, but this voice could not be calibrated — the rig did not answer the probe '
+        + `(${err instanceof Error ? err.message : String(err)}). Until it does, the voice is `
+        + `capped at the conservative ${FALLBACK_MAX_SEGMENT_CHARS} characters per segment. `
+        + 'Save it again once the rig is back and it will be measured properly.'
+    }
   }
 }
 

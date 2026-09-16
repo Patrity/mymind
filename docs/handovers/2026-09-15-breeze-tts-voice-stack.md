@@ -13,10 +13,12 @@ status: >
   and fixed **three real defects** that all three gates had passed: a prompt-ceiling overrun past
   ~3400 characters escaped the route as an unhandled 500 "Server Error"; a hard download failure was
   labelled as a truncation; and the barge-in `epoch` guard was dead code. Gates measured fresh at
-  HEAD: **typecheck 0 errors / test 1713 passed (193 files) / build clean**. **TWO ITEMS REMAIN
+  HEAD: **typecheck 0 errors / test 1726 passed (193 files) / build clean**. **TWO ITEMS REMAIN
   OPEN AND NEED TONY'S EARS — neither is verified and neither can be** (chunk-boundary artefacts;
   whether the barge-in tail was ever audible). Not pushed, not merged, not deployed; migration 0039
   has run only against local dev, and **deploying requires a manual registry edit** (see Deploying).
+  A final whole-branch review then landed one more wave of fixes (migration **0040**, the
+  `calibrated_ref_key` column) — see "Final review fix wave".
 branch: feat/breeze-tts
 spec: ../superpowers/specs/2026-09-15-breeze-tts-voice-stack-design.md
 plan: ../superpowers/plans/2026-09-15-breeze-tts-voice-stack.md
@@ -24,6 +26,7 @@ docs:
   - ../wiki/voice-studio.md (NEW — the studio, the four modes, the preset schema, calibration, queue priorities, reference limits; mirrored to MyMind)
   - ../wiki/voice-agent.md (Providers, TTS engine, Speech pipeline concurrency, WebSocket frame contract, Env vars and the frontend-files table rewritten; the three-engine bake-off removed; frontmatter bumped to cycle 61)
   - ../wiki/README.md (voice-studio.md added to the page index)
+  - ../wiki/voice-studio.md (UPDATED by the final review fix wave — calibrated_ref_key, ensureCalibrated's three outcomes, the warning's reference gate, queue priority ≠ preemption)
   - ../superpowers/plans/00-roadmap.md (cycle 61 row added)
 tasks:
   - 5e4a7c6f-01fb-4596-9e61-06692d4f5772 (MyMind) — "Cycle 61 — Breeze TTS voice stack" — this task.
@@ -34,7 +37,7 @@ shipped:
   - /voice — the Voice Studio: author presets, audition seeds, attach reference clips, read MyMind aloud
   - A single-slot priority queue (agent > studio) because Breeze 409s anything concurrent
   - Streaming raw PCM end to end, bracketed by audio-begin/audio-end, replacing one-WAV-per-sentence
-  - Calibrated per-preset prompt ceilings — measured, never estimated
+  - Calibrated per-preset prompt ceilings — measured, never estimated, and provably distinguishable from unmeasured (migration 0040, `calibrated_ref_key`)
   - In-memory SpeakOverrides so an audition is a preview, not four writes to a live row
 outstanding:
   - Chunk-boundary artefacts — NEEDS EARS, unverifiable by any gate
@@ -288,6 +291,51 @@ Deferred minors from the per-task reviews, none of which validation contradicted
   they all vanish at once. Nothing is broken today, and the codebase is consistent — but this is the
   single change most likely to silently undo this cycle's diagnostics.
 
+## Final review fix wave
+
+A whole-branch review after the cycle was otherwise complete found two Important defects and three
+Minors. All five are fixed; the two audio-quality items below still need ears, and the registry
+repoint is still manual.
+
+**1. A failed calibration was never retried (Important).** `[id].patch.ts` persisted the new
+`refStorageKey` *before* comparing it to the previous row's, so a probe that threw anything but
+`truncated` — a down or busy rig, i.e. prod's exact state until the §4b registry repoint — 500ed
+the request with the new reference already stored. On the retry the keys matched, calibration was
+skipped, and the preset kept a **200 cap nobody had ever measured**: a clone-backed voice on the
+live agent, running on precisely the invisible-truncation assumption calibration exists to
+eliminate. `presets.post.ts` had the same shape on Duplicate (row created, caller saw only a 500).
+
+Fixed by **gating on "is this cap a measurement of the clip the row carries" rather than on "did the
+key change"**. `max_segment_chars` is `NOT NULL DEFAULT 200` and cannot carry that distinction, so
+migration **0040** adds a nullable `calibrated_ref_key`, holding the clip the cap was measured
+against. Both routes now call one `ensureCalibrated()`: no reference → reset the cap (which also
+fixes the Minor where a clone→design demotion kept a 100 cap); marker matches the clip → no rig
+slot spent; anything else → probe. **A probe failure no longer fails the save and no longer counts
+as a measurement** — the row is saved at the conservative 100 floor with the marker still `NULL`,
+the response carries a `calibrationWarning` the studio shows, and the next save probes again.
+`max_segment_chars` and `calibrated_ref_key` are stripped from request bodies, because a client that
+could assert them could assert a calibration that never ran.
+
+**2. The studio's cap warning cried wolf (Important).** `overCapWarning` compared against
+`maxSegmentChars` alone, but for a reference-free preset 200 is a default the spec deliberately does
+*not* measure — 585 characters render fine on the rig — and all eight seeded presets carry it. So
+pulling any document into the speak pane fired "the render will very likely stop early", which
+devalues the one warning that means something. It now takes the preset and returns `null` unless
+there is a `refStorageKey`.
+
+**Minors:** `CFG_MIN`/`CFG_MAX` had no readers outside `studio.ts` while `DesignPane.vue` hardcoded
+`1`/`8` — the slider now reads the constants that `clampCfgScale()` enforces. `breeze-queue.ts`'s
+header claimed a live turn is never stalled behind a studio render; there is no preemption, so it
+now says that priority reorders **waiters** only. `test/voice-frames.test.ts` still classified a
+`{type:'voice',provider:'kokoro'}` payload — a frame this branch deleted — and now uses
+`{type:'preset',presetId}`.
+
+Tests: **+10 in the gate** (8 × `ensureCalibrated` against a fake row store, including the retry
+proof, plus `withoutCalibrationFields`; 2 × the warning's reference gate) and +1 DB round-trip in
+`voice-presets.db.test.ts`, which CI excludes by convention. Both
+Important fixes were mutation-checked — recording a failed probe as calibrated, and dropping the
+reference gate, each turn the new tests red.
+
 ## Gates
 
 Measured fresh at HEAD for this handover, with the dev server stopped (running `pnpm build` beside
@@ -295,17 +343,18 @@ Measured fresh at HEAD for this handover, with the dev server stopped (running `
 
 ```
 pnpm typecheck   → 0 errors
-pnpm test        → 193 files, 1713 tests passed
+pnpm test        → 193 files, 1726 tests passed
 pnpm build       → clean, Σ 65.1 MB (19.5 MB gzip)
 ```
 
 1695 → 1713 across this task: +7 `playback-epoch`, +5 `breeze` mid-stream, plus the tests that
-landed in the two commits after Task 11's report.
+landed in the two commits after Task 11's report. Those commits carried it to **1716** (the 1713
+above was measured one commit early); the final review fix wave below takes it 1716 → **1726**.
 
 `server/api/voice/speak-overrides.db.test.ts` (4 tests, real Postgres) is excluded from the CI gate
 by convention and passes via `pnpm test:db`.
 
 ## Status
 
-**Built on `feat/breeze-tts` — not pushed, not merged into `master`, not deployed.** Migration 0039
-has run only against local dev. No merge or deploy authorization was requested or granted.
+**Built on `feat/breeze-tts` — not pushed, not merged into `master`, not deployed.** Migrations 0039
+and 0040 have run only against local dev. No merge or deploy authorization was requested or granted.

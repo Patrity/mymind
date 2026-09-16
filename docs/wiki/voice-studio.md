@@ -4,7 +4,7 @@ status: shipped
 cycle: 61
 updated: 2026-09-15
 mymind_id: b7dc4979-0fa0-41b0-8774-c6c2c470748c
-mymind_hash: 4ab89d2411a20075968d3d8d007d3f1c3341d12e930fb719165c4b4832af7c67
+mymind_hash: 1827c6b1e0072516493d50fa538edd7fde80f6e1cba5608524249020427ef665
 ---
 
 # Voice Studio
@@ -47,7 +47,7 @@ a stored mode can contradict its fields, a derived one cannot.
 The rail's badge is `modeBadge()` from `app/lib/voice/studio.ts`, which is unit-tested to return one
 of the four semantic colour aliases so a raw palette value cannot creep in.
 
-## Preset schema (`voice_presets`, migration 0039)
+## Preset schema (`voice_presets`, migrations 0039 + 0040)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -61,6 +61,7 @@ of the four semantic colour aliases so a raw palette value cannot creep in.
 | `ref_text` | text null | Its exact transcript (Whisper, editable). |
 | `ref_duration_ms` | integer null | Measured from the WAV header. |
 | `max_segment_chars` | integer, default 200 | **Calibrated, not chosen** — see below. |
+| `calibrated_ref_key` | text null | WHICH clip that cap was measured against; `NULL` = never measured. |
 | `is_default` | boolean | `voice_presets_one_default` partial unique index — exactly one. |
 
 Three CHECK constraints encode rig facts that are otherwise opaque 500s:
@@ -143,10 +144,40 @@ assumed safe at the agent's 200-character segment cap. And an overrun is invisib
 The probe is a real synthesis through the queue at **studio** priority (`makeLiveProbe`), so saving
 a clone can wait behind a live conversation. That is intended.
 
+### `calibrated_ref_key` — the difference between measured and assumed
+
+`max_segment_chars` is `NOT NULL DEFAULT 200`, so it cannot say whether 200 was *measured* or merely
+*never touched*. `calibrated_ref_key` answers that: it holds the `ref_storage_key` the cap was
+measured against, or `NULL` for "never measured". `isCalibrated()`
+(`shared/types/voice-presets.ts`) is just `!refStorageKey || calibratedRefKey === refStorageKey`.
+
+`ensureCalibrated()` is the single save-path entry point, used by both `POST` and `PATCH`:
+
+| Row state | What happens |
+|---|---|
+| No reference | Nothing to measure. Any cap/marker left behind by a clone→design demotion is reset to 200/`NULL`. |
+| `calibrated_ref_key === ref_storage_key` | Already measured against this clip. **No rig slot spent.** |
+| Anything else (new clip, swapped clip, or a probe that never completed) | Probe. Success stores the cap *and* the key together. |
+
+**A failed probe never fails the save, and never counts as a measurement.** If the rig is down,
+busy, or not yet repointed, the row is saved, the cap drops to the conservative 100 floor, the
+marker stays `NULL`, and the response carries a `calibrationWarning` the studio surfaces (a
+"Saved, but not calibrated" alert in the design pane, a toast on create/duplicate). The next save
+of that preset probes again. This is deliberate: the earlier shape wrote the new reference first
+and recalibrated only when the key *changed*, so a 500 from a down rig left a clone-backed preset
+permanently "calibrated" at an unmeasured 200 — exactly the invisible failure calibration exists to
+prevent.
+
+`max_segment_chars` and `calibrated_ref_key` are stripped off every request body
+(`withoutCalibrationFields`): they are measurements, and a client that could assert them could
+assert a calibration that never ran.
+
 The calibrated ceiling then does two jobs: the orchestrator clamps `sentenceMaxChars` to it per
 preset, and the studio warns *before* spending a rig slot when the text exceeds it
 (`overCapWarning`) — `/api/voice/speak` sends the text in one piece, so here it is a hard ceiling
-rather than a hint.
+rather than a hint. That warning fires **only for presets that carry a reference**: for everything
+else 200 is an unmeasured default (585 characters render fine on the rig), and warning on the
+number alone fired on every ordinary read-aloud, which teaches the user to ignore it.
 
 ## Queue priorities
 
@@ -157,6 +188,10 @@ holds a slot for the whole lifetime of its stream (`server/lib/voice/breeze-queu
 |---|---|---|
 | `agent` | A live conversation turn | Jumps ahead of any waiting studio work. |
 | `studio` | `/api/voice/speak`, and the calibration probe | FIFO behind the agent. |
+
+Priority reorders **waiters only — there is no preemption.** A live turn that arrives while a
+studio render holds the slot waits for that render to finish in full; what `agent` priority buys is
+the front of the queue, not the slot.
 
 Within a priority the queue is strictly FIFO by arrival. The studio shows the wait rather than
 hiding it: after 4 s the pane reads *"Waiting on the rig (Ns) — it renders one request at a time,
@@ -225,8 +260,8 @@ a body only *looks* like JSON, so a truncated body cannot vanish into a catch.
 | Route | Purpose |
 |---|---|
 | `GET /api/voice/presets` | `{ presets: VoicePresetDTO[] }` — the rail. Live via vue-query key `['voicePreset','list']`. |
-| `POST /api/voice/presets` | Create; calibrates before returning. |
-| `PATCH /api/voice/presets/[id]` | Update; recalibrates when the reference or instruction changed. |
+| `POST /api/voice/presets` | Create, then `ensureCalibrated`. Returns `SavedPresetDTO` (the row + `calibrationWarning`). |
+| `PATCH /api/voice/presets/[id]` | Update, then `ensureCalibrated` — which probes whenever the cap is not a measurement of the clip the row now carries. Same return shape. |
 | `DELETE /api/voice/presets/[id]` | Delete. The default cannot be deleted. |
 | `POST /api/voice/speak` | `{ text, presetId?, format?: 'pcm'\|'wav', overrides? }`. Streams PCM with an `x-sample-rate` header, or returns a whole WAV. Studio priority. |
 | `POST /api/voice/reference` | multipart `audio` → `{ storageKey, refText, durationMs, warning }`. |

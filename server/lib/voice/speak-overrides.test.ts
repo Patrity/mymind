@@ -16,6 +16,7 @@ const DESIGN: VoicePresetDTO = {
   refText: null,
   refDurationMs: null,
   maxSegmentChars: 200,
+  calibratedRefKey: null,
   isDefault: true
 }
 

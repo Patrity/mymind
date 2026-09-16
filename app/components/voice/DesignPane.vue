@@ -1,8 +1,10 @@
 <!-- app/components/voice/DesignPane.vue -->
 <script setup lang="ts">
-import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { SavedPresetDTO, VoicePresetDTO } from '~~/shared/types/voice-presets'
 import {
   CFG_LOCK_REASON,
+  CFG_MAX,
+  CFG_MIN,
   auditionRequests,
   blankDraft,
   draftIsDirty,
@@ -27,6 +29,11 @@ const emit = defineEmits<{ saved: [VoicePresetDTO] }>()
 const draft = reactive<PresetDraft>(blankDraft())
 const saving = ref(false)
 const saveError = ref<string | null>(null)
+// Calibration runs on the server AFTER the row is written, and it can fail on its own
+// (the rig serves one request at a time and can be down entirely) without failing the
+// save. That is not an error — the voice saved — but it must not be silent either: the
+// preset is live on the agent with an unmeasured ceiling until it is saved again.
+const saveWarning = ref<string | null>(null)
 
 // This pane is ONE form bound to whichever preset is selected, so every slow operation it
 // starts — an upload, a recording's decode, a four-take audition — was started for one
@@ -76,11 +83,13 @@ async function save() {
   if (!p || errors.value.length) return
   saving.value = true
   saveError.value = null
+  saveWarning.value = null
   try {
-    const saved = await $fetch<VoicePresetDTO>(`/api/voice/presets/${p.id}`, {
+    const saved = await $fetch<SavedPresetDTO>(`/api/voice/presets/${p.id}`, {
       method: 'PATCH',
       body: draftToBody(draft)
     })
+    saveWarning.value = saved.calibrationWarning
     emit('saved', saved)
   } catch (e) {
     saveError.value = errorMessage(e)
@@ -465,10 +474,12 @@ onBeforeUnmount(() => {
       label="Guidance (cfg)"
       :help="cfgLocked ? CFG_LOCK_REASON : `${draft.cfgScale.toFixed(1)} — how hard the model is pushed toward the instruction.`"
     >
+      <!-- The bounds come from studio.ts, which is also what clampCfgScale() enforces on
+           the way out. Restating 1/8 here let the slider and the clamp drift apart. -->
       <USlider
         v-model="draft.cfgScale"
-        :min="1"
-        :max="8"
+        :min="CFG_MIN"
+        :max="CFG_MAX"
         :step="0.5"
         :disabled="cfgLocked"
       />
@@ -550,6 +561,15 @@ onBeforeUnmount(() => {
       icon="i-lucide-circle-alert"
       title="Could not save"
       :description="saveError"
+    />
+
+    <UAlert
+      v-if="saveWarning"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-ruler"
+      title="Saved, but not calibrated"
+      :description="saveWarning"
     />
 
     <div class="flex items-center gap-2">

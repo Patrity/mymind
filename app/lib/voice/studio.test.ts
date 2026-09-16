@@ -40,6 +40,7 @@ const PRESET: VoicePresetDTO = {
   refText: null,
   refDurationMs: null,
   maxSegmentChars: 200,
+  calibratedRefKey: null,
   isDefault: true
 }
 
@@ -424,15 +425,31 @@ describe('errorFromResponseBody', () => {
 })
 
 describe('overCapWarning', () => {
+  const clone = { maxSegmentChars: 200, refStorageKey: 'ref-key' }
+  const cloneAt100 = { maxSegmentChars: 100, refStorageKey: 'ref-key' }
+
   it('warns past the calibrated ceiling and quotes both numbers', () => {
-    const msg = overCapWarning(320, 200)
+    const msg = overCapWarning(320, clone)
     expect(msg).toContain('320')
     expect(msg).toContain('200')
   })
 
   it('is silent at or below the ceiling', () => {
-    expect(overCapWarning(200, 200)).toBeNull()
-    expect(overCapWarning(10, 200)).toBeNull()
+    expect(overCapWarning(200, clone)).toBeNull()
+    expect(overCapWarning(10, clone)).toBeNull()
+  })
+
+  it('warns at a narrowed ceiling — the case the warning exists for', () => {
+    expect(overCapWarning(150, cloneAt100)).toContain('100')
+  })
+
+  // Review finding: 200 on a reference-free preset is a DEFAULT the spec deliberately
+  // does not measure (585 characters rendered fine on the rig), and all eight seeded
+  // presets carry it. Warning on the number alone fired on every ordinary read-aloud,
+  // which trains the user to ignore the one warning that means something.
+  it('says nothing for a preset with no reference clip, however long the text', () => {
+    expect(overCapWarning(5000, { maxSegmentChars: 200, refStorageKey: null })).toBeNull()
+    expect(overCapWarning(5000, PRESET)).toBeNull()
   })
 })
 
