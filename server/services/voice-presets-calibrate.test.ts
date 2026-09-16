@@ -4,7 +4,7 @@
 // a probe function), so this runs under plain `pnpm test`, unlike the CRUD test in
 // voice-presets.db.test.ts.
 import { describe, it, expect, vi } from 'vitest'
-import { calibrateMaxSegmentChars, ensureCalibrated, withoutCalibrationFields } from './voice-presets'
+import { calibrateMaxSegmentChars, ensureCalibrated, withoutCalibrationFields, type PresetInput } from './voice-presets'
 import { BreezeError } from '../lib/voice/breeze'
 import { isCalibrated } from '../../shared/types/voice-presets'
 import type { VoicePresetDTO } from '../../shared/types/voice-presets'
@@ -183,5 +183,12 @@ describe('withoutCalibrationFields', () => {
     expect(cleaned).toEqual({ name: 'test', seed: 3 })
     expect('maxSegmentChars' in cleaned).toBe(false)
     expect('calibratedRefKey' in cleaned).toBe(false)
+  })
+
+  // `readBody` returns `undefined` for an empty PATCH body, and the route passes that
+  // straight through. Destructuring `undefined` used to throw a 500 for what used to be
+  // (and must again be) a harmless no-op update.
+  it('does not throw on an undefined body, and returns an empty object', () => {
+    expect(withoutCalibrationFields(undefined as unknown as Partial<PresetInput>)).toEqual({})
   })
 })

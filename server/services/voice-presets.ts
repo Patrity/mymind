@@ -256,7 +256,7 @@ export function makeLiveProbe(preset: VoicePresetDTO, refAudio: Uint8Array | nul
 export function withoutCalibrationFields<T extends Partial<PresetInput>>(
   input: T
 ): Omit<T, 'maxSegmentChars' | 'calibratedRefKey'> {
-  const { maxSegmentChars: _cap, calibratedRefKey: _key, ...rest } = input
+  const { maxSegmentChars: _cap, calibratedRefKey: _key, ...rest } = input ?? {}
   return rest
 }
 

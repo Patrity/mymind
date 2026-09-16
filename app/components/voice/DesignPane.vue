@@ -398,6 +398,7 @@ watch(() => props.preset?.id ?? null, () => {
   Object.assign(draft, p ? presetToDraft(p) : blankDraft())
   starterKey.value = undefined
   saveError.value = null
+  saveWarning.value = null
   refError.value = null
   refWarning.value = null
   // Cleared with everything else: the upload widget kept showing the PREVIOUS preset's
