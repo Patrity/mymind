@@ -1,6 +1,7 @@
 // server/lib/voice/orchestrator.ts
 import { SpeechChunker } from './segment'
 import { SpeechPipeline } from './pipeline'
+import { createVoiceChain, chainedPreset, shouldChain } from './voice-chain'
 import { VOICE_TUNING } from './tuning'
 import type { SttProvider, TtsProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
@@ -107,23 +108,41 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   // would close an already-closed segment, naming an id that really did begin. A frame
   // reporting an end that never happened is a lying frame; suppress it here instead.
   let segmentOpen = false
+  // ONE speaker for the whole turn. Breeze holds no speaker state between calls, so without
+  // this each segment casts a fresh person — measured at a 142 Hz spread across four
+  // segments of one reply, a man's voice and a woman's inside the same answer. Segment one
+  // is a recording of the voice we want and we know its exact text, so it anchors the rest
+  // (spread falls to 19.2 Hz). A preset with its own reference clip is left alone: a chosen
+  // clip anchors better than a synthetic first segment.
+  const chain = createVoiceChain(24000, shouldChain(deps.preset))
+
   const pipeline = new SpeechPipeline({
     synthesize: (text, opts) => deps.tts.synthesize(text, opts),
     preset: deps.preset,
     refAudio: deps.refAudio,
     signal: deps.signal,
     concurrency: VOICE_TUNING.tts.pipelineConcurrency,
+    resolveVoice: () => {
+      const ref = chain.reference()
+      // Null until segment one has finished, so segment one renders exactly as before and
+      // goes out as soon as the first words arrive — streaming behaviour is untouched.
+      return ref
+        ? { preset: chainedPreset(deps.preset, ref), refAudio: ref.audio }
+        : { preset: deps.preset, refAudio: deps.refAudio ?? null }
+    },
     onSpeaking: () => deps.emit({ type: 'state', state: 'speaking' }),
-    onChunk: (c) => {
+    onChunk: (c, segmentText) => {
       if (c.kind === 'begin') {
         segmentId++
         segmentOpen = true
         deps.emit({ type: 'audio-begin', segmentId, sampleRate: c.sampleRate })
       } else {
+        chain.capture(segmentText, c.bytes)
         deps.emit({ type: 'audio', bytes: c.bytes })
       }
     },
     onSegmentEnd: () => {
+      chain.endSegment()
       if (!segmentOpen) return
       segmentOpen = false
       deps.emit({ type: 'audio-end', segmentId })
