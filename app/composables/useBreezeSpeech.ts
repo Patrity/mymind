@@ -3,8 +3,21 @@
 // plain fetch rather than the agent socket — an audition must not ride the
 // conversation's channel.
 import { errorFromResponseBody } from '~/lib/voice/studio'
+import { createAudioGate, isRunawayRender, type AudioContextFactory } from '~/lib/voice/audio-context'
 
-export function useBreezeSpeech() {
+/** The rig is 24 kHz and says so on /health. We build the context at that rate BEFORE the
+ *  request so the user gesture is still live; a response that disagrees rebuilds (rare). */
+const EXPECTED_SAMPLE_RATE = 24000
+
+export interface SpeakOptions {
+  /** Ad-hoc parameter overrides — lets the studio render exactly what is in the form,
+   *  without saving first. Merged server-side; never persisted. */
+  overrides?: Record<string, unknown>
+  /** 'quality' sends the text in one call (continuous prosody); 'realtime' segments it. */
+  mode?: 'quality' | 'realtime'
+}
+
+export function useBreezeSpeech(factory?: AudioContextFactory) {
   const speaking = ref(false)
   const ttfaMs = ref<number | null>(null)
   const error = ref<string | null>(null)
@@ -21,9 +34,16 @@ export function useBreezeSpeech() {
   /** True when the last render ended because `stop()` was called, rather than because it
    *  failed or finished. A user cancel must not be reported as a truncation. */
   const cancelled = ref(false)
-  const ctx = shallowRef<AudioContext | null>(null)
+  /** True when the render produced far more audio than its text accounts for — the model
+   *  ran away to the rig's output cap. Unlike a truncation this returns a COMPLETE body,
+   *  so no byte count can see it; only the chars-per-second rate gives it away. */
+  const runaway = ref(false)
+  const gate = createAudioGate(factory)
   let playhead = 0
   let abort: AbortController | null = null
+  /** Buffers already handed to the context. Closing the context used to stop these for
+   *  free; now that the context is reused across renders, stop() has to stop them itself. */
+  let sources: AudioBufferSourceNode[] = []
 
   // The `<ArrayBuffer>` annotation is not decoration: `Float32Array` alone widens to
   // `Float32Array<ArrayBufferLike>`, which copyToChannel rejects (it will not accept a
@@ -38,7 +58,8 @@ export function useBreezeSpeech() {
   }
 
   function schedule(samples: Float32Array<ArrayBuffer>, sampleRate: number) {
-    const audio = ctx.value!
+    const audio = gate.current()
+    if (!audio) return
     const buf = audio.createBuffer(1, samples.length, sampleRate)
     buf.copyToChannel(samples, 0)
     const src = audio.createBufferSource()
@@ -47,23 +68,38 @@ export function useBreezeSpeech() {
     playhead = Math.max(playhead, audio.currentTime + 0.02)
     src.start(playhead)
     playhead += buf.duration
+    sources.push(src)
+    src.onended = () => { sources = sources.filter(s => s !== src) }
   }
 
-  async function speak(text: string, presetId: string) {
+  async function speak(text: string, presetId: string, opts: SpeakOptions = {}) {
     stop()
+    // ── Everything before the first `await` runs inside the click's user activation. ──
+    // The AudioContext MUST be created here. Creating it after the fetch (which is what
+    // this composable used to do) spends the gesture first, so Chrome hands back a
+    // suspended context that never starts: silent playback, no error, no console output,
+    // and it "works sometimes" only because an origin accrues sticky activation.
+    const audio = gate.ensure(EXPECTED_SAMPLE_RATE)
     speaking.value = true
     error.value = null
     ttfaMs.value = null
     audioBytes.value = 0
+    runaway.value = false
     // Reset AFTER stop(), which aborts any previous render and would otherwise set this.
     cancelled.value = false
     abort = new AbortController()
     const started = performance.now()
     try {
+      // Settles the resume kicked off synchronously above; the activation is already spent
+      // on it, so awaiting here is safe.
+      await gate.resume()
+      if (audio && audio.state !== 'running') {
+        throw new Error('The browser is blocking audio playback. Click the page, then press Speak again.')
+      }
       const res = await fetch('/api/voice/speak', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, presetId }),
+        body: JSON.stringify({ text, presetId, overrides: opts.overrides, mode: opts.mode }),
         signal: abort.signal
       })
       // Parsed, not raw: an h3 error body is a JSON envelope, and the pre-flight's 400
@@ -71,10 +107,13 @@ export function useBreezeSpeech() {
       if (!res.ok || !res.body) {
         throw new Error(errorFromResponseBody(await res.text().catch(() => ''), res.statusText))
       }
-      const rate = Number(res.headers.get('x-sample-rate')) || 24000
+      const rate = Number(res.headers.get('x-sample-rate')) || EXPECTED_SAMPLE_RATE
       sampleRate.value = rate
-      ctx.value = new AudioContext({ sampleRate: rate })
-      playhead = ctx.value.currentTime
+      // Normally a no-op: the context was already built at this rate above. Only a rig that
+      // changed sample rate rebuilds here, and by then the origin has activation to spare.
+      const playCtx = rate === EXPECTED_SAMPLE_RATE ? audio : gate.ensure(rate)
+      if (!playCtx) throw new Error('Audio playback is not available in this browser.')
+      playhead = playCtx.currentTime
 
       const reader = res.body.getReader()
       let carry = new Uint8Array(0)
@@ -102,17 +141,35 @@ export function useBreezeSpeech() {
     } finally {
       speaking.value = false
       abort = null
+      // A complete body can still be a failure: past ~1000 characters the model rambles to
+      // the rig's output cap and returns every byte it promised. Rate is the only tell.
+      if (!cancelled.value && !error.value) {
+        runaway.value = isRunawayRender(text.length, audioBytes.value / 2 / sampleRate.value)
+      }
     }
   }
 
+  /** Stop playback. Deliberately does NOT close the AudioContext: closing it would force the
+   *  next render to build one outside a user gesture, which is the bug this file was fixed
+   *  for. The context is released only on unmount. */
   function stop() {
     abort?.abort()
-    ctx.value?.close()
-    ctx.value = null
+    for (const s of sources) {
+      try { s.stop() } catch { /* already ended */ }
+      try { s.disconnect() } catch { /* already disconnected */ }
+    }
+    sources = []
     playhead = 0
     speaking.value = false
   }
 
-  onBeforeUnmount(stop)
-  return { speak, stop, speaking, ttfaMs, audioBytes, sampleRate, cancelled, error }
+  /** True while audio is still audible — buffers are scheduled ahead on the context clock,
+   *  so the body finishing does not mean playback has. Lets the UI keep Stop reachable. */
+  function isPlaying(): boolean {
+    const audio = gate.current()
+    return sources.length > 0 || (!!audio && playhead > audio.currentTime + 0.02)
+  }
+
+  onBeforeUnmount(() => { stop(); gate.release() })
+  return { speak, stop, isPlaying, speaking, ttfaMs, audioBytes, sampleRate, cancelled, runaway, error }
 }
