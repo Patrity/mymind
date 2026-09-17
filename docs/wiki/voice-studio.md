@@ -4,7 +4,7 @@ status: shipped
 cycle: 62
 updated: 2026-09-16
 mymind_id: b7dc4979-0fa0-41b0-8774-c6c2c470748c
-mymind_hash: 1827c6b1e0072516493d50fa538edd7fde80f6e1cba5608524249020427ef665
+mymind_hash: 539763e6d9d17924f0045cf980c7ace9cf857b300c6734d770a43898d8bb764a
 ---
 
 # Voice Studio
@@ -177,11 +177,16 @@ prevent.
 assert a calibration that never ran.
 
 The calibrated ceiling then does two jobs: the orchestrator clamps `sentenceMaxChars` to it per
-preset, and the studio warns *before* spending a rig slot when the text exceeds it
-(`overCapWarning`) — `/api/voice/speak` sends the text in one piece, so here it is a hard ceiling
-rather than a hint. That warning fires **only for presets that carry a reference**: for everything
-else 200 is an unmeasured default (585 characters render fine on the rig), and warning on the
-number alone fired on every ordinary read-aloud, which teaches the user to ignore it.
+preset, and the studio says *before* spending a rig slot how the text will be split
+(`describeRenderPlan`, which replaced cycle 61's `overCapWarning`). Cycle 61 phrased this as a
+warning that the text was over the cap, because the studio then sent every render as one call
+whatever its length. Since `planSegments`, over-cap text is *planned* rather than refused, so the
+sentence describes the plan — how many calls, and that delivery will change at each join — and
+returns `null` when the text fits in one call. It is derived from `maxCallChars(preset)`, which is
+the calibrated ceiling for a reference-backed preset and the design prompt budget otherwise; for a
+reference-free preset 200 is an unmeasured default (585 characters render fine on the rig), and
+warning on that number alone fired on every ordinary read-aloud, which teaches the user to ignore
+it.
 
 ## Queue priorities
 
