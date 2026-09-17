@@ -97,6 +97,13 @@ const lock = computed(() => lockState({
 async function lockVoice() {
   const p = props.preset
   if (!p || locking.value || lock.value !== 'unlockable') return
+  // Lock is a write to the ROW, but this pane offers it against the DRAFT — so a reference
+  // the user has removed on screen but not yet saved would make the server refuse with
+  // "This voice already has a reference clip. Clear it first", which is precisely what they
+  // just did. Saving first turns that dead end into the step it was always standing in for.
+  // Lock already commits the draft's voice settings, so this is the same write, not a new
+  // kind of one.
+  if (dirty.value && !await save()) return
   locking.value = true
   lockError.value = null
   startClock()
@@ -173,9 +180,11 @@ watch(starterKey, (key) => {
   if (starter) draft.instruction = starter.description
 })
 
-async function save() {
+/** Returns whether the row was actually written, so callers that need the saved state to
+ *  exist before they act — lockVoice — can stop rather than proceed on a failed save. */
+async function save(): Promise<boolean> {
   const p = props.preset
-  if (!p || errors.value.length) return
+  if (!p || errors.value.length) return false
   saving.value = true
   saveError.value = null
   saveWarning.value = null
@@ -186,8 +195,10 @@ async function save() {
     })
     saveWarning.value = saved.calibrationWarning
     emit('saved', saved)
+    return true
   } catch (e) {
     saveError.value = errorMessage(e)
+    return false
   } finally {
     saving.value = false
   }
@@ -360,6 +371,35 @@ async function useSeed(seed: number) {
 
 const refFile = ref<File | null>(null)
 const refBusy = ref(false)
+
+// ── Hearing the clip ──────────────────────────────────────────────────────────
+// Until this, an attached clip could only be READ about ("11.9s clip attached"). That gap
+// mattered most for a locked voice, where the clip is the only record of the person the
+// preset now speaks as.
+const clip = useClipPlayer()
+/** Which storage key the player currently holds. Stops a Save — which turns a draft-only key
+ *  into a row key — from re-downloading audio that is already decoded, and stops a stale
+ *  waveform sitting under a preset it does not belong to. */
+const loadedClipKey = ref<string | null>(null)
+
+watch(
+  () => [props.preset?.id ?? null, draft.refStorageKey, props.preset?.refStorageKey ?? null] as const,
+  ([id, draftKey, savedKey]) => {
+    if (!draftKey) {
+      clip.clear()
+      loadedClipKey.value = null
+      return
+    }
+    if (draftKey === loadedClipKey.value) return
+    // Only a clip that is actually ON THE ROW can be fetched. One that exists only in the
+    // draft was just uploaded, and uploadReference already decoded it from the local file.
+    if (id && draftKey === savedKey) {
+      loadedClipKey.value = draftKey
+      void clip.load(`/api/voice/presets/${id}/reference`)
+    }
+  },
+  { immediate: true }
+)
 const refError = ref<string | null>(null)
 const refWarning = ref<string | null>(null)
 const recording = ref(false)
@@ -387,6 +427,10 @@ async function uploadReference(file: Blob, filename: string) {
     if (guard.isStale(token)) return
     // The whole tuple at once, so the clip can never arrive without its provenance.
     Object.assign(draft, attachedReference(res))
+    // Decoded from the bytes already in the browser — the clip is audible before Save, for
+    // the same reason Speak renders the live form rather than the last saved row.
+    loadedClipKey.value = res.storageKey
+    void clip.load(file)
     // Non-null past 20s. The clip shares the prompt budget with the text, so this is the
     // warning that explains a later render stopping early.
     refWarning.value = res.warning
@@ -403,6 +447,8 @@ async function uploadReference(file: Blob, filename: string) {
 
 function clearReference() {
   Object.assign(draft, noReference())
+  clip.clear()
+  loadedClipKey.value = null
   refFile.value = null
   refWarning.value = null
   refError.value = null
@@ -517,7 +563,6 @@ watch(() => props.preset?.id ?? null, () => {
   clearTakes()
 }, { immediate: true })
 
-const refSeconds = computed(() => draft.refDurationMs ? (draft.refDurationMs / 1000).toFixed(1) : null)
 
 onBeforeUnmount(() => {
   stopClock()
@@ -717,7 +762,7 @@ onBeforeUnmount(() => {
             label="Save voice"
             :loading="saving"
             :disabled="!!errors.length || !dirty"
-            @click="save"
+            @click="() => { void save() }"
           />
           <span
             v-if="!dirty && !errors.length"
@@ -979,11 +1024,36 @@ onBeforeUnmount(() => {
                 class="inline size-3 animate-spin"
               /> Transcribing…
             </span>
-            <span
-              v-else-if="refSeconds"
-              class="text-xs text-muted tabular-nums"
-            >{{ refSeconds }}s clip attached</span>
           </div>
+
+          <!-- The clip itself: levels over time, its length, and a way to actually hear it. -->
+          <div
+            v-if="draft.refStorageKey"
+            class="flex items-center gap-2"
+          >
+            <UButton
+              :icon="clip.playing.value ? 'i-lucide-square' : 'i-lucide-play'"
+              :aria-label="clip.playing.value ? 'Stop the reference clip' : 'Play the reference clip'"
+              color="neutral"
+              variant="subtle"
+              size="sm"
+              :loading="clip.loading.value"
+              :disabled="!clip.durationMs.value"
+              @click="clip.toggle"
+            />
+            <VoiceWaveformTrack
+              class="min-w-0 flex-1"
+              :peaks="clip.peaks.value"
+              :duration-ms="clip.durationMs.value"
+              :progress="clip.progress.value"
+              :pending="clip.loading.value"
+            />
+          </div>
+
+          <p
+            v-if="clip.error.value"
+            class="text-xs text-error"
+          >{{ clip.error.value }}</p>
 
           <UAlert
             v-if="refWarning"

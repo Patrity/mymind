@@ -31,7 +31,19 @@ const modeItems = [
 ]
 
 const text = ref('')
-const { speak, stop, speaking, ttfaMs, audioBytes, sampleRate, cancelled, error } = useBreezeSpeech()
+const {
+  speak, stop, replay, speaking, ttfaMs, audioBytes, sampleRate, cancelled, error,
+  peaks, progress, replayable
+} = useBreezeSpeech()
+
+/** Length of the audio that actually arrived, from the byte count — the same number the
+ *  truncation diagnosis is derived from, so the track and the warning always agree. */
+const renderedMs = computed(() =>
+  audioBytes.value ? Math.round((audioBytes.value / 2 / sampleRate.value) * 1000) : null)
+
+/** The track appears as soon as audio starts arriving and stays afterwards, so a render can
+ *  be looked at as well as listened to — a truncated one is visibly short. */
+const showTrack = computed(() => peaks.value.length > 0 || speaking.value)
 
 // Anything the render itself has to say that is not an error: a truncation diagnosis,
 // mostly. Cleared at the start of every attempt.
@@ -316,6 +328,17 @@ async function onDownload() {
         :disabled="!speaking"
         @click="stop"
       />
+      <!-- The rig serves one request at a time and a read-aloud can take ten seconds, so
+           re-rendering to hear the same words again is the most expensive way to answer the
+           cheapest question. The samples are already decoded. -->
+      <UButton
+        icon="i-lucide-rotate-ccw"
+        label="Play again"
+        color="neutral"
+        variant="subtle"
+        :disabled="!replayable || speaking"
+        @click="replay"
+      />
       <UButton
         icon="i-lucide-download"
         label="Download WAV"
@@ -330,6 +353,14 @@ async function onDownload() {
         class="text-xs text-muted tabular-nums"
       >first audio in {{ ttfaMs }} ms</span>
     </div>
+
+    <VoiceWaveformTrack
+      v-if="showTrack"
+      :peaks="peaks"
+      :duration-ms="renderedMs"
+      :progress="progress"
+      :pending="speaking && !peaks.length"
+    />
 
     <!-- Studio renders queue behind the live agent on a rig that serves one request at a
          time, so "nothing yet" is a queue, not a hang. -->
