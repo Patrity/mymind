@@ -19,7 +19,7 @@
 import { Readable } from 'node:stream'
 import { Buffer } from 'node:buffer'
 import { speakSegments, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../../../lib/voice/speak'
-import { getPreset, updatePreset, calibrateMaxSegmentChars, makeLiveProbe, loadReferenceBytes } from '../../../../services/voice-presets'
+import { getPreset, updatePreset, ensureCalibrated } from '../../../../services/voice-presets'
 import { BreezeError, validateBreezeRequest } from '../../../../lib/voice/breeze'
 import { storage } from '../../../../utils/storage'
 import type { SpeakOverrides } from '../../../../../shared/types/voice-presets'
@@ -97,15 +97,30 @@ export default defineEventHandler(async (event) => {
     })
 
     // The clip now shares the prompt budget with every utterance, so the ceiling this preset
-    // was measured at no longer applies. Same calibration the upload path runs.
-    const refAudio = await loadReferenceBytes(locked)
-    const max = await calibrateMaxSegmentChars(locked, makeLiveProbe(locked, refAudio))
-    const final = max === locked.maxSegmentChars ? locked : await updatePreset(id, { maxSegmentChars: max })
-    return { ...final, lockDurationMs: durationMs }
+    // was measured at no longer applies.
+    //
+    // Via ensureCalibrated, NOT by calling calibrateMaxSegmentChars directly: it is what
+    // records `calibratedRefKey`, and hand-rolling this skipped the marker whenever the
+    // measured cap happened to equal the existing one — leaving the row reading "never
+    // measured" and re-probing on every later save. That is the same defect the upload path
+    // was fixed for; there is no reason for a second copy of the logic to get it wrong again.
+    const { preset: final, calibrationWarning } = await ensureCalibrated(locked)
+    return { ...final, lockDurationMs: durationMs, calibrationWarning }
   } catch (err) {
     if (err instanceof BreezeError) {
+      // `busy` here means the rig stayed occupied through every retry — roughly twenty
+      // seconds. Said plainly, because the bare 503 this used to raise told the user
+      // nothing at all about what to do: the rig serves one request at a time, so a live
+      // conversation or another render simply has to finish first.
+      if (err.code === 'busy') {
+        throw createError({
+          statusCode: 503,
+          statusMessage: 'The voice rig is busy with another request — it handles one at a time. '
+            + 'Wait a few seconds and lock again; nothing was changed.'
+        })
+      }
       throw createError({
-        statusCode: err.code === 'busy' ? 503 : err.code === 'preflight' ? 400 : 502,
+        statusCode: err.code === 'preflight' ? 400 : 502,
         statusMessage: err.message
       })
     }
