@@ -22,22 +22,14 @@ export interface SpeechPipelineDeps {
   preset: VoicePresetDTO
   /** Reference clip bytes for a clone/direction preset; null for design/plain. */
   refAudio?: Uint8Array | null
-  /** Resolves what a given segment should be spoken with. Returning a different preset and
-   *  reference per segment is how the voice chain keeps ONE speaker for the turn: segment
-   *  one renders normally and later segments are anchored to its own audio. Omitted in
-   *  tests and for unchained turns, where every segment uses `preset`/`refAudio` as-is. */
-  resolveVoice?: (segmentIndex: number) => { preset: VoicePresetDTO; refAudio: Uint8Array | null }
   signal: AbortSignal
   /** Max simultaneous in-flight syntheses. Must be 1 — see the constructor. */
   concurrency?: number
   /** Fired once per segment, right before its synthesis starts (mirrors the old
    *  per-chunk `state: 'speaking'` emit). Optional so tests can omit it. */
   onSpeaking?: () => void
-  /** Fired once per audio chunk, as it arrives, strictly in segment order. `segmentText` is
-   *  the text THIS chunk is audio for — passed through rather than tracked by the caller,
-   *  because synthesis is async: a shared "current segment" variable has already moved on to
-   *  the next segment by the time these chunks arrive. */
-  onChunk: (c: SpeakChunk, segmentText: string) => void
+  /** Fired once per audio chunk, as it arrives, strictly in segment order. */
+  onChunk: (c: SpeakChunk) => void
   /** Fired once per segment, after its last chunk has been emitted (or it was dropped). */
   onSegmentEnd?: () => void
 }
@@ -58,8 +50,6 @@ type SegmentResult = void
 export class SpeechPipeline {
   private readonly concurrency: number
   private queue: Promise<SegmentResult>[] = []
-  /** How many segments have been STARTED — the index handed to resolveVoice. */
-  private started = 0
 
   constructor(private deps: SpeechPipelineDeps) {
     this.concurrency = deps.concurrency ?? 1
@@ -87,20 +77,15 @@ export class SpeechPipeline {
 
   private start(text: string): Promise<SegmentResult> {
     this.deps.onSpeaking?.()
-    const index = this.started++
-    // Resolved per segment, not once per turn: after segment one has been spoken, the chain
-    // has a recording of the voice, and every later segment is anchored to it.
-    const voice = this.deps.resolveVoice?.(index)
-      ?? { preset: this.deps.preset, refAudio: this.deps.refAudio ?? null }
     const run = async (): Promise<void> => {
       try {
         for await (const c of this.deps.synthesize(text, {
-          preset: voice.preset, refAudio: voice.refAudio, signal: this.deps.signal
+          preset: this.deps.preset, refAudio: this.deps.refAudio, signal: this.deps.signal
         })) {
           // Concurrency is pinned to 1 for Breeze, so the oldest in-flight segment IS the
           // one being drained — emit immediately rather than collecting. With concurrency
           // > 1 this would scramble segment order; see the cap in tuning.ts.
-          if (!this.deps.signal.aborted) this.deps.onChunk(c, text)
+          if (!this.deps.signal.aborted) this.deps.onChunk(c)
         }
       } finally {
         // Fires whether the segment completed, threw, or was aborted — the closing
