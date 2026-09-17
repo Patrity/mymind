@@ -1,8 +1,8 @@
 ---
 title: Voice Studio
 status: shipped
-cycle: 62
-updated: 2026-09-16
+cycle: 63
+updated: 2026-09-17
 mymind_id: b7dc4979-0fa0-41b0-8774-c6c2c470748c
 mymind_hash: 539763e6d9d17924f0045cf980c7ace9cf857b300c6734d770a43898d8bb764a
 ---
@@ -49,7 +49,7 @@ of the four semantic colour aliases so a raw palette value cannot creep in — w
 **locked** preset derives as `direction` (it has both fields) but is never *spoken* in that mode, so
 its badge reads `locked`. See [Locking a designed voice](#locking-a-designed-voice).
 
-## Preset schema (`voice_presets`, migrations 0039–0042)
+## Preset schema (`voice_presets`, migrations 0039–0043)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -74,6 +74,29 @@ Three CHECK constraints encode rig facts that are otherwise opaque 500s:
 - `voice_presets_cfg_needs_instruction` — `cfg_scale <= 1 OR instruction is a non-blank string`.
   The clone and plain templates define no negative prompt, so guidance has nothing to push against.
 - `voice_presets_ref_needs_text` — a reference clip requires its transcript.
+- `voice_presets_ref_source_pairs_with_clip` — `(ref_source IS NULL) = (ref_storage_key IS NULL)`
+  (0043). Not a rig fact but an app invariant, and it earned its place: see below.
+- `voice_presets_ref_source_known` — `'upload'` or `'locked'` only. An unrecognised value would
+  fall through `presetToRequest`'s `=== 'locked'` test into direction mode rather than erroring.
+
+### The reference tuple has one owner
+
+`ref_storage_key`, `ref_text`, `ref_duration_ms` and `ref_source` are **always written together**
+(`ReferenceFields` in `app/lib/voice/studio.ts`, with three constructors and no member assigned on
+its own). They were not, and the split shipped two bugs plus a third that corrupted a row:
+
+| Flow | Row afterwards | What the user saw |
+|---|---|---|
+| Upload a clip, Save | clip, `ref_source` NULL | badge read `direction`; the voice was spoken with its instruction re-applied over a reference that already contains it. **Nothing in the app ever wrote `'upload'`** — 0042 backfilled it once and that was all. |
+| Clear a clip on a locked preset, Save | no clip, `ref_source` `'locked'` | `lockState()` tested the source first, so the pane reported a locked voice with nothing frozen and never offered Lock again |
+| Unlock, then Save | the cleared clip written back, no source | the draft only resyncs on an **id change**, and lock/unlock keep the same id — so the form still held the clip the server had just cleared |
+
+Lock and unlock now resync the tuple from the row they wrote, `lockState()` requires the clip
+rather than the label, and the CHECK above makes the broken pair unconstructable. Two more
+instances of the same omission surfaced once it was in: Duplicate copied the clip without its
+source, and `createPreset`'s explicit allow-list dropped both `ref_source` and `starred_seeds` —
+it was never updated when 0041 and 0042 added them, so duplicating a voice also quietly lost its
+kept seeds.
 
 ### The cfg lock, in three layers
 
@@ -255,6 +278,12 @@ there is no undo here, so `unlock.post.ts` refuses anything but `ref_source = 'l
 `max_segment_chars` and `calibrated_ref_key` together — a cap left behind with its marker cleared
 would read as "never calibrated" while carrying a calibrated number.
 
+Locking **saves a dirty draft first**. It is a write to the row but the pane offers it against the
+draft, so a clip removed on screen and not yet saved made the server refuse with *"already has a
+reference clip — clear it first"*, which is exactly what the user had just done. Lock already
+committed the draft's voice settings, so saving the rest is the same write rather than a new kind
+of one.
+
 > Locking is a live ~12 s render on a rig that serves **one request at a time**. On a busy rig the
 > five-attempt backoff adds ~22 s on top, and the combined ~35 s can outlast the edge proxy — which
 > surfaces as a 503 the endpoint never sent. The 503 it *does* send says so in words: the rig is
@@ -281,6 +310,16 @@ Two ways in: drag a WAV onto the `UFileUpload`, or record from the mic.
 failure that would sail past the 60 s gate and die invisibly at the rig.
 
 A reference clip cannot be saved without a transcript (`voice_presets_ref_needs_text`).
+
+The clip can be **played** from the pane, with its waveform and length
+(`GET /api/voice/presets/[id]/reference`). Until cycle 63 there was no way to hear an attached clip
+at all — the pane said "11.9s clip attached" and that was the whole story, which matters most for a
+locked voice, where the clip is the only record of the person the preset now speaks as. A clip that
+has not been saved yet is decoded from the local file instead, for the same reason Speak renders the
+live form rather than the last saved row.
+
+> The route is addressed by **preset**, not by storage key. Keys are content hashes, so a
+> key-addressed route would serve any blob in the bucket to anyone who could name one.
 
 ## Reading MyMind aloud
 
@@ -342,6 +381,35 @@ matters is the **combined prompt**. That is why the split is planned server-side
 chars-per-second rather than a ratio to an expected duration: a ratio test put 1200 chars at 2.92×
 expected, under a 3× threshold, and called a runaway healthy.
 
+## The waveform, and playing a render again
+
+Both panes draw the same track — `VoiceWaveformTrack`, fed by `app/lib/voice/peaks.ts`. The
+component owns pixels only; every decision about what a bar *means* is pure and tested.
+
+- **Max, never mean.** `computePeaks` takes the loudest sample per 1024-sample window (~43 ms at
+  24 kHz), and `resamplePeaks` reduces to the bar count by max as well. Averaging removes exactly
+  the transients a waveform exists to show.
+- **Built while the audio streams**, from arbitrarily-sized chunks, so the track fills in rather
+  than appearing at the end. `createPeakAccumulator` is asserted to produce the same envelope
+  however the body was split — otherwise the picture would depend on the network.
+- **Near-silence stays silent.** `normalizePeaks` scales the loudest bar to full height, because
+  speech rarely approaches full scale and drawn raw it reads as a flat line — but below a floor it
+  returns zeros. This pane's other job is to show that *nothing came back*, and a truncated render
+  drawn at full scale would hide the failure it exists to reveal.
+
+**Play again** replays the last render with no rig call. The rig serves one request at a time and a
+read-aloud can take ten seconds, so re-rendering to hear the same words again is the most expensive
+way to answer the cheapest question. The decoded samples are kept, capped at three minutes
+(~17 MB); past that the envelope still draws and only the button is withdrawn, because a partial
+render replayed as if it were the whole one is worse than no button. A **cancelled** render is never
+replayable, for the same reason. The samples are concatenated into one buffer rather than
+re-scheduled per chunk: those boundaries were an artefact of the response, and every join is a
+potential discontinuity.
+
+Progress is driven by the **AudioContext clock**, not a timer — the clock is what the audio is
+actually scheduled against. During a live render the window grows as chunks are scheduled, so the
+playhead tracks what is audible rather than what has been requested.
+
 ## Telling a truncation from a failure
 
 This distinction is the reason the cycle exists, so the two alerts mean different things and must
@@ -373,6 +441,7 @@ a body only *looks* like JSON, so a truncated body cannot vanish into a catch.
 | `POST /api/voice/reference` | multipart `audio` → `{ storageKey, refText, durationMs, warning }`. |
 | `POST /api/voice/presets/[id]/lock` | Renders `LOCK_PASSAGE`, stores the WAV, sets `ref_source='locked'`, commits the on-screen overrides, then `ensureCalibrated`. Returns the row + `lockDurationMs` + `calibrationWarning`. 400 if there is already a clip or no description; 503 (in words) if the rig stayed busy. |
 | `POST /api/voice/presets/[id]/unlock` | Clears a `'locked'` clip only, resetting the cap and its marker together. 400 on an uploaded clip. |
+| `GET /api/voice/presets/[id]/reference` | The preset's clip as `audio/wav`, for the Reference tab's player. Preset-addressed, not key-addressed. 404 with distinct sentences for "no clip" and "clip missing from storage". |
 
 Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` invalidates
 `['voicePreset','list']` — so a preset created in one tab appears in another without a refresh.
@@ -390,6 +459,10 @@ Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` in
 | `app/lib/voice/studio.ts` | Pure studio logic: validation, cfg lock, modes, audition driver, truncation diagnosis, error extraction. |
 | `app/lib/voice/generation.ts` | The preset-switch guard (token + AbortSignal) — see below. |
 | `app/lib/voice/wav-encode.ts` | Mic recording → WAV; WAV header reader for sizing a render. |
+| `app/lib/voice/peaks.ts` | The amplitude envelope: windowed max, resampling, normalisation, duration formatting. Pure and tested. |
+| `app/components/voice/WaveformTrack.vue` | Draws the track. Pixels only. |
+| `app/composables/useClipPlayer.ts` | Plays a finished WAV (a saved clip or a local file) and builds its envelope. |
+| `server/api/voice/presets/[id]/reference.get.ts` | Serves a preset's clip for playback. |
 | `server/api/voice/speak.post.ts` | Studio synthesis, PCM or WAV. |
 | `server/api/voice/reference.post.ts` | Reference upload, measurement, transcription. |
 | `server/api/voice/presets/[id]/lock.post.ts` | Freeze a designed voice into a render of itself; holds `LOCK_PASSAGE`. |
