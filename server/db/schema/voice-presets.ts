@@ -28,6 +28,14 @@ export const voicePresets = pgTable('voice_presets', {
   // description at a different seed is a different person — so without somewhere to put a
   // good result, the next roll of the dice loses it.
   starredSeeds: integer('starred_seeds').array().notNull().default(sql`'{}'::integer[]`),
+  // Where the reference clip came from, and therefore how the voice should be spoken.
+  //   'upload' — a clip the user supplied. The instruction still steers delivery
+  //              (direction mode), because steering is why they wrote one.
+  //   'locked' — a render of THIS preset's own description, frozen deliberately. The
+  //              instruction is already expressed in the clip, so re-applying it only
+  //              fights the reference; these speak as a pure clone.
+  // Null whenever there is no reference at all.
+  refSource: text('ref_source'),
   isDefault: boolean('is_default').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()

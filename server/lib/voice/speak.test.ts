@@ -7,7 +7,7 @@ import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
 const design: VoicePresetDTO = {
   id: 'p1', name: 'neutral', instruction: 'A neutral, low-key man.', cfgScale: 4, seed: 11,
   temperature: 0.9, topP: 1.0, topK: 50, refStorageKey: null, refText: null,
-  refDurationMs: null, maxSegmentChars: 200, calibratedRefKey: null, starredSeeds: [], isDefault: true
+  refDurationMs: null, maxSegmentChars: 200, calibratedRefKey: null, refSource: null, starredSeeds: [], isDefault: true
 }
 
 function fakeSpeak(chunks: number[][], sampleRate = 24000) {

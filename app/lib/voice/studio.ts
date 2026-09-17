@@ -187,7 +187,14 @@ const MODE_BADGES: Record<ReturnType<typeof presetMode>, ModeBadge> = {
   direction: { label: 'direction', color: 'success', hint: 'Cloned from the reference clip, then directed by the instruction.' }
 }
 
-export function modeBadge(p: Pick<VoicePresetDTO, 'instruction' | 'refStorageKey'>): ModeBadge {
+export function modeBadge(p: Pick<VoicePresetDTO, 'instruction' | 'refStorageKey' | 'refSource'>): ModeBadge {
+  // A locked preset derives as 'direction' — it has both an instruction and a clip — but it
+  // is SPOKEN as a pure clone (see presetToRequest), and "direction" would describe a mode
+  // it never uses. Locked is its own state and says the thing that matters: this one holds
+  // a single voice.
+  if (p.refSource === 'locked') {
+    return { label: 'locked', color: 'success', hint: 'Cloned from a recording of itself — the same voice every time.' }
+  }
   return MODE_BADGES[presetMode(p)]
 }
 
@@ -520,4 +527,37 @@ export function instructionHint(
  *  put a good result, the next roll loses it. */
 export function toggleStarredSeed(starred: number[], seed: number): number[] {
   return starred.includes(seed) ? starred.filter(s => s !== seed) : [...starred, seed].sort((a, b) => a - b)
+}
+
+// ── Locking a designed voice ─────────────────────────────────────────────────────────
+// A design preset stores a RECIPE, not a person: the seed reproduces an identical input,
+// but the agent sends different text every segment, so each call casts someone new from the
+// same description. Locking renders one canonical passage and keeps the audio, after which
+// every utterance clones that exact render. Measured over four segments of one reply —
+// design 23.9 Hz spread / 0.636 timbre, locked 22.6 / 0.526, a real recording 4.5 / 0.418.
+
+export type LockState = 'unlockable' | 'locked' | 'uploaded' | 'no-description'
+
+export function lockState(p: Pick<VoicePresetDTO, 'refSource' | 'refStorageKey' | 'instruction'>): LockState {
+  if (p.refSource === 'locked') return 'locked'
+  if (p.refStorageKey) return 'uploaded'
+  if (!p.instruction?.trim()) return 'no-description'
+  return 'unlockable'
+}
+
+/** What the Lock control should say, and why it is unavailable when it is. */
+export function lockHint(state: LockState): string {
+  switch (state) {
+    case 'locked':
+      return 'This voice is locked to a recording of itself, so every reply uses the same person. '
+        + 'Unlock to change the description and re-cast it.'
+    case 'uploaded':
+      return 'This voice already clones a clip you provided — it is already consistent. '
+        + 'Remove that clip from the Reference tab if you want to design one instead.'
+    case 'no-description':
+      return 'Write a description first. Locking freezes the voice that description produces.'
+    case 'unlockable':
+      return 'Audition until one sounds right, then lock it. Without this, the description is '
+        + 're-cast on every segment and a long reply can sound like several different people.'
+  }
 }

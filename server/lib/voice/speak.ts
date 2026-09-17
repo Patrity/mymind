@@ -59,10 +59,23 @@ export function applyOverrides(preset: VoicePresetDTO, overrides?: SpeakOverride
 }
 
 export function presetToRequest(text: string, p: VoicePresetDTO, refAudio: Uint8Array | null): BreezeRequest {
+  // A LOCKED preset is spoken as a pure clone: its description is already expressed in the
+  // frozen clip, and re-applying it on top only pulls against the reference. Measured on
+  // four segments of one reply, lower spread is more consistent:
+  //
+  //   design, no reference                    23.9 Hz   timbre 0.636
+  //   locked clip, instruction re-applied     39.8 Hz   timbre 0.612
+  //   locked clip, spoken as a pure clone     22.6 Hz   timbre 0.526
+  //   a real recorded clip, pure clone         4.5 Hz   timbre 0.418
+  //
+  // An UPLOADED clip keeps its instruction: steering delivery is the reason someone writes
+  // one against a voice they already chose.
+  const pureClone = p.refSource === 'locked'
   return {
     text,
-    instruction: p.instruction,
-    cfgScale: p.cfgScale,
+    instruction: pureClone ? null : p.instruction,
+    // cfg above 1 needs an instruction, at the rig and in the DB CHECK alike.
+    cfgScale: pureClone ? 1 : p.cfgScale,
     seed: p.seed,
     temperature: p.temperature,
     topP: p.topP,

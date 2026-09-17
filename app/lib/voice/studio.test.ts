@@ -21,6 +21,8 @@ import {
   modeBadge,
   describeRenderPlan,
   instructionHint,
+  lockState,
+  lockHint,
   toggleStarredSeed,
   presetToDraft,
   randomSeed,
@@ -42,7 +44,7 @@ const PRESET: VoicePresetDTO = {
   refText: null,
   refDurationMs: null,
   maxSegmentChars: 200,
-  calibratedRefKey: null, starredSeeds: [],
+  calibratedRefKey: null, refSource: null, starredSeeds: [],
   isDefault: true
 }
 
@@ -139,18 +141,18 @@ describe('uniqueName', () => {
 
 describe('modeBadge', () => {
   it('derives all four modes from which fields are populated', () => {
-    expect(modeBadge({ instruction: null, refStorageKey: null }).label).toBe('plain')
-    expect(modeBadge({ instruction: 'warm', refStorageKey: null }).label).toBe('design')
-    expect(modeBadge({ instruction: null, refStorageKey: 'k' }).label).toBe('clone')
-    expect(modeBadge({ instruction: 'warm', refStorageKey: 'k' }).label).toBe('direction')
+    expect(modeBadge({ instruction: null, refStorageKey: null, refSource: null }).label).toBe('plain')
+    expect(modeBadge({ instruction: 'warm', refStorageKey: null, refSource: null }).label).toBe('design')
+    expect(modeBadge({ instruction: null, refStorageKey: 'k', refSource: null }).label).toBe('clone')
+    expect(modeBadge({ instruction: 'warm', refStorageKey: 'k', refSource: null }).label).toBe('direction')
   })
 
   it('uses semantic colour tokens only', () => {
     for (const p of [
-      { instruction: null, refStorageKey: null },
-      { instruction: 'x', refStorageKey: null },
-      { instruction: null, refStorageKey: 'k' },
-      { instruction: 'x', refStorageKey: 'k' }
+      { instruction: null, refStorageKey: null, refSource: null },
+      { instruction: 'x', refStorageKey: null, refSource: null },
+      { instruction: null, refStorageKey: 'k', refSource: 'upload' as const },
+      { instruction: 'x', refStorageKey: 'k', refSource: 'upload' as const }
     ]) {
       expect(['neutral', 'primary', 'info', 'success']).toContain(modeBadge(p).color)
     }
@@ -581,5 +583,70 @@ describe('draftIsDirty — array fields', () => {
   it('is dirty when a kept seed is dropped', () => {
     const p = { ...PRESET, starredSeeds: [11, 42] }
     expect(draftIsDirty(draft({ starredSeeds: [11] }), p)).toBe(true)
+  })
+})
+
+describe('lockState', () => {
+  const base = { refSource: null as 'upload' | 'locked' | null, refStorageKey: null as string | null, instruction: 'A calm man.' }
+
+  it('offers locking once a description exists', () => {
+    expect(lockState(base)).toBe('unlockable')
+  })
+
+  it('reports a locked voice', () => {
+    expect(lockState({ ...base, refSource: 'locked', refStorageKey: 'k' })).toBe('locked')
+  })
+
+  // An uploaded clip is already consistent and anchors better than a render (4.5 Hz against
+  // 22.6 measured) — offering to "lock" over it would be a downgrade dressed as an upgrade.
+  it('leaves a preset that clones a supplied clip alone', () => {
+    expect(lockState({ ...base, refSource: 'upload', refStorageKey: 'k' })).toBe('uploaded')
+  })
+
+  it('cannot lock a voice with nothing to freeze', () => {
+    expect(lockState({ ...base, instruction: '' })).toBe('no-description')
+    expect(lockState({ ...base, instruction: '   ' })).toBe('no-description')
+    expect(lockState({ ...base, instruction: null })).toBe('no-description')
+  })
+
+  // A stored key with no source is a row from before locking existed; it was an upload.
+  it('treats a legacy clip with no recorded source as an upload', () => {
+    expect(lockState({ ...base, refStorageKey: 'legacy' })).toBe('uploaded')
+  })
+})
+
+describe('lockHint', () => {
+  it('explains the consequence of NOT locking, not just the mechanic', () => {
+    expect(lockHint('unlockable')).toMatch(/several different people|re-cast/i)
+  })
+
+  it('says why an uploaded clip cannot be locked over', () => {
+    expect(lockHint('uploaded')).toMatch(/already consistent/i)
+  })
+
+  it('has a distinct hint for every state', () => {
+    const all = (['unlockable', 'locked', 'uploaded', 'no-description'] as const).map(lockHint)
+    expect(new Set(all).size).toBe(4)
+  })
+})
+
+describe('modeBadge — locked', () => {
+  // A locked preset has both an instruction and a clip, so it DERIVES as 'direction' — but
+  // presetToRequest speaks it as a pure clone, so that label would name a mode it never uses.
+  it('labels a locked preset as locked, not direction', () => {
+    const badge = modeBadge({ instruction: 'A calm man.', refStorageKey: 'k', refSource: 'locked' })
+    expect(badge.label).toBe('locked')
+  })
+
+  it('still labels an uploaded clip by its derived mode', () => {
+    expect(modeBadge({ instruction: 'A calm man.', refStorageKey: 'k', refSource: 'upload' }).label)
+      .toBe('direction')
+    expect(modeBadge({ instruction: null, refStorageKey: 'k', refSource: 'upload' }).label)
+      .toBe('clone')
+  })
+
+  it('is unchanged for a preset with no reference', () => {
+    expect(modeBadge({ instruction: 'A calm man.', refStorageKey: null, refSource: null }).label)
+      .toBe('design')
   })
 })

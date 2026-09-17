@@ -33,7 +33,7 @@ export const FALLBACK_PRESET: VoicePresetDTO = {
   refText: null,
   refDurationMs: null,
   maxSegmentChars: DEFAULT_MAX_SEGMENT_CHARS,
-  calibratedRefKey: null, starredSeeds: [],
+  calibratedRefKey: null, refSource: null, starredSeeds: [],
   isDefault: true
 }
 
@@ -52,6 +52,7 @@ export function toDTO(r: VoicePresetRow): VoicePresetDTO {
     refDurationMs: r.refDurationMs,
     maxSegmentChars: r.maxSegmentChars,
     starredSeeds: r.starredSeeds ?? [],
+    refSource: (r.refSource as VoicePresetDTO['refSource']) ?? null,
     calibratedRefKey: r.calibratedRefKey,
     isDefault: r.isDefault
   }
@@ -73,6 +74,7 @@ export interface PresetInput {
    *  off anything that came from a request body: see `withoutCalibrationFields`. */
   maxSegmentChars?: number
   starredSeeds?: number[]
+  refSource?: 'upload' | 'locked' | null
   /** Written by the calibration pass only. */
   calibratedRefKey?: string | null
   isDefault?: boolean

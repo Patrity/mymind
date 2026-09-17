@@ -3,6 +3,10 @@
 // fields, a derived one cannot.
 export type VoiceMode = 'plain' | 'design' | 'clone' | 'direction'
 
+/** 'upload' = a clip the user supplied; 'locked' = a frozen render of this preset's own
+ *  description. Null when the preset has no reference. */
+export type RefSource = 'upload' | 'locked' | null
+
 export interface VoicePresetDTO {
   id: string
   name: string
@@ -23,6 +27,9 @@ export interface VoicePresetDTO {
   maxSegmentChars: number
   /** Seeds kept for this voice, ascending. See toggleStarredSeed. */
   starredSeeds: number[]
+  /** How this preset got its reference clip, and so how it is spoken. See the column
+   *  comment in server/db/schema/voice-presets.ts. */
+  refSource: RefSource
   /** The reference clip `maxSegmentChars` was measured against, or null for "never
    *  measured". A reference-free preset is never calibrated and never needs to be: it
    *  runs a ~40-token prompt and cannot approach the ceiling. */

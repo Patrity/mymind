@@ -9,11 +9,14 @@ import {
   blankDraft,
   draftIsDirty,
   draftToBody,
+  draftToOverrides,
   errorMessage,
   isCfgLocked,
   presetToDraft,
   randomSeed,
   instructionHint,
+  lockState,
+  lockHint,
   toggleStarredSeed,
   runAuditionSequentially,
   validatePresetDraft,
@@ -71,6 +74,57 @@ const cfgLocked = computed(() => isCfgLocked(draft.instruction))
 // Seeds are a lottery with no ordering — measured, sweeping 3 to 999,999 showed no trend at
 // all. What tightens a voice across seeds is a specific description held at cfg 4.
 const hint = computed(() => instructionHint(draft.instruction, draft.cfgScale))
+
+// ── Locking ───────────────────────────────────────────────────────────────────
+// A design preset stores a recipe, not a person: the agent sends different text every
+// segment, so the description is re-cast each time and a long reply can sound like several
+// people. Locking renders one canonical passage and keeps the audio; from then on every
+// utterance clones that render.
+const locking = ref(false)
+const lockError = ref<string | null>(null)
+const lock = computed(() => lockState({
+  refSource: props.preset?.refSource ?? null,
+  refStorageKey: draft.refStorageKey,
+  instruction: draft.instruction,
+}))
+
+async function lockVoice() {
+  const p = props.preset
+  if (!p || locking.value || lock.value !== 'unlockable') return
+  locking.value = true
+  lockError.value = null
+  startClock()
+  const { token } = guard.begin()
+  try {
+    // Sends the LIVE form, so what gets frozen is the voice just auditioned — not whatever
+    // was last saved.
+    const saved = await $fetch<SavedPresetDTO>(`/api/voice/presets/${p.id}/lock`, {
+      method: 'POST',
+      body: { overrides: draftToOverrides(draft) },
+    })
+    if (guard.isStale(token)) return
+    emit('saved', saved)
+  } catch (e) {
+    if (!guard.isStale(token)) lockError.value = errorMessage(e)
+  } finally {
+    stopClock()
+    if (!guard.isStale(token)) locking.value = false
+  }
+}
+
+async function unlockVoice() {
+  const p = props.preset
+  if (!p || locking.value) return
+  locking.value = true
+  lockError.value = null
+  try {
+    emit('saved', await $fetch<SavedPresetDTO>(`/api/voice/presets/${p.id}/unlock`, { method: 'POST' }))
+  } catch (e) {
+    lockError.value = errorMessage(e)
+  } finally {
+    locking.value = false
+  }
+}
 
 // A blank instruction means cfg MUST sit at 1: it is a DB CHECK
 // (voice_presets_cfg_needs_instruction) and an opaque 500 at the rig. Clamping here as
@@ -659,7 +713,65 @@ onBeforeUnmount(() => {
 
         <USeparator />
 
-        <!-- ── Kept seeds ─────────────────────────────────────────────────────── -->
+        <!-- ── Lock this voice ────────────────────────────────────────────────── -->
+    <div class="flex flex-col gap-2 rounded-lg border border-default p-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <UIcon
+            :name="lock === 'locked' ? 'i-lucide-lock' : 'i-lucide-lock-open'"
+            :class="lock === 'locked' ? 'size-4 text-primary' : 'size-4 text-muted'"
+          />
+          <span class="text-sm font-medium text-highlighted">
+            {{ lock === 'locked' ? 'Locked to a recording' : 'Not locked' }}
+          </span>
+        </div>
+
+        <UButton
+          v-if="lock !== 'locked'"
+          size="xs"
+          icon="i-lucide-lock"
+          label="Lock this voice"
+          :loading="locking"
+          :disabled="lock !== 'unlockable' || locking || auditioning"
+          @click="lockVoice"
+        />
+        <UButton
+          v-else
+          size="xs"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-lock-open"
+          label="Unlock"
+          :loading="locking"
+          :disabled="locking"
+          @click="unlockVoice"
+        />
+      </div>
+
+      <p class="text-xs text-muted">{{ lockHint(lock) }}</p>
+
+      <p
+        v-if="locking"
+        class="text-xs text-dimmed"
+      >
+        <UIcon
+          name="i-lucide-loader-2"
+          class="inline size-3 animate-spin"
+        />
+        {{ queued ? 'Waiting for the rig — studio work queues behind live conversation.' : 'Recording this voice…' }}
+      </p>
+
+      <UAlert
+        v-if="lockError"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        title="Could not lock this voice"
+        :description="lockError"
+      />
+    </div>
+
+    <!-- ── Kept seeds ─────────────────────────────────────────────────────── -->
     <div
       v-if="draft.starredSeeds.length"
       class="flex flex-col gap-2"
