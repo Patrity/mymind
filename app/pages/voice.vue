@@ -103,7 +103,13 @@ async function onDuplicate(id: string) {
         topK: p.topK,
         refStorageKey: p.refStorageKey,
         refText: p.refText,
-        refDurationMs: p.refDurationMs
+        refDurationMs: p.refDurationMs,
+        // Copied WITH the clip, never separately: the pair is a CHECK constraint
+        // (voice_presets_ref_source_pairs_with_clip), so a copy that took the clip and left
+        // the source behind would fail the insert outright. A copy of a locked voice is
+        // still locked — it carries the same frozen render, and speaking it as anything
+        // else would re-apply the instruction over a reference that already contains it.
+        refSource: p.refSource
       }
     })
     await refresh()

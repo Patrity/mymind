@@ -180,6 +180,14 @@ export async function createPreset(input: PresetInput): Promise<VoicePresetDTO> 
     refStorageKey: input.refStorageKey ?? null,
     refText: input.refText ?? null,
     refDurationMs: input.refDurationMs ?? null,
+    // Both of these are copied by Duplicate and were dropped here, because this is an
+    // explicit allow-list that was never updated when migrations 0041 and 0042 added the
+    // columns. Losing `refSource` is not cosmetic: the row then violates
+    // voice_presets_ref_source_pairs_with_clip, so duplicating any reference-backed preset
+    // fails outright — and before that constraint existed it produced exactly the
+    // clip-with-no-source rows this cycle is repairing.
+    refSource: input.refSource ?? null,
+    starredSeeds: input.starredSeeds ?? [],
     isDefault: input.isDefault ?? false
   }).returning()
   if (!row) throw new Error('voice preset insert returned no row')

@@ -28,6 +28,9 @@ import {
   randomSeed,
   uniqueName,
   validatePresetDraft,
+  attachedReference,
+  noReference,
+  referenceFieldsOf,
   type PresetDraft
 } from './studio'
 
@@ -648,5 +651,75 @@ describe('modeBadge — locked', () => {
   it('is unchanged for a preset with no reference', () => {
     expect(modeBadge({ instruction: 'A calm man.', refStorageKey: null, refSource: null }).label)
       .toBe('design')
+  })
+})
+
+// ── The reference tuple has ONE owner ────────────────────────────────────────
+//
+// `ref_source` used to be written only by the lock/unlock routes while the clip fields were
+// written only by Save, so a save could change WHETHER there is a clip without changing WHAT
+// KIND it is. Every illegal combination was reachable, and two of them shipped:
+//
+//   clip + no source     → derives `direction`, spoken with the instruction re-applied
+//   source + no clip     → lockState said 'locked' forever, so Lock never came back
+//
+// These tests pin the tuple together. They are about the pair, not the fields.
+describe('the reference tuple is written as one unit', () => {
+  it('carries refSource through the draft round trip', () => {
+    const uploaded: VoicePresetDTO = { ...PRESET, refStorageKey: 'k', refText: 'hello', refSource: 'upload' }
+    expect(presetToDraft(uploaded).refSource).toBe('upload')
+    expect(draftToBody(presetToDraft(uploaded)).refSource).toBe('upload')
+  })
+
+  it('records an attached clip as an upload — nothing else ever sets it', () => {
+    const f = attachedReference({ storageKey: 'k', refText: 'hello', durationMs: 9000 })
+    expect(f).toEqual({ refStorageKey: 'k', refText: 'hello', refDurationMs: 9000, refSource: 'upload' })
+  })
+
+  it('clears all four fields together, never three of them', () => {
+    expect(noReference()).toEqual({
+      refStorageKey: null, refText: '', refDurationMs: null, refSource: null
+    })
+  })
+
+  it('reads the reference tuple off a saved row so lock/unlock can resync the form', () => {
+    const locked: VoicePresetDTO = {
+      ...PRESET, refStorageKey: 'k', refText: 'passage', refDurationMs: 11920, refSource: 'locked'
+    }
+    expect(referenceFieldsOf(locked)).toEqual({
+      refStorageKey: 'k', refText: 'passage', refDurationMs: 11920, refSource: 'locked'
+    })
+    expect(referenceFieldsOf(PRESET)).toEqual(noReference())
+  })
+
+  // The exact shape that broke bright-woman: unlock cleared the row, the draft kept the old
+  // clip, and the next Save wrote it back with no source.
+  it('a save after unlocking cannot resurrect the cleared clip', () => {
+    const d = draft({ ...referenceFieldsOf({ ...PRESET, refStorageKey: 'k', refText: 'p', refSource: 'locked' }) })
+    Object.assign(d, noReference())
+    const body = draftToBody(d)
+    expect(body.refStorageKey).toBeNull()
+    expect(body.refSource).toBeNull()
+  })
+
+  it('notices a source-only change, so Save is not silently a no-op', () => {
+    const p: VoicePresetDTO = { ...PRESET, refStorageKey: 'k', refText: 'hello', refSource: 'upload' }
+    expect(draftIsDirty(presetToDraft(p), p)).toBe(false)
+    expect(draftIsDirty({ ...presetToDraft(p), refSource: 'locked' }, p)).toBe(true)
+  })
+})
+
+describe('lockState — a source with no clip is not a locked voice', () => {
+  // Clearing the clip on a locked preset used to leave ref_source = 'locked' behind, and
+  // lockState tested the source FIRST — so the pane reported a locked voice with nothing
+  // frozen and never offered Lock again. The clip is what makes it locked.
+  it('offers locking again once the frozen clip is gone', () => {
+    expect(lockState({ refSource: 'locked', refStorageKey: null, instruction: 'A calm man.' }))
+      .toBe('unlockable')
+  })
+
+  it('still needs a description when a stale source outlives the clip', () => {
+    expect(lockState({ refSource: 'locked', refStorageKey: null, instruction: '' }))
+      .toBe('no-description')
   })
 })

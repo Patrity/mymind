@@ -54,7 +54,22 @@ export const voicePresets = pgTable('voice_presets', {
   check('voice_presets_cfg_positive', sql`${t.cfgScale} > 0`),
   // A reference without its transcript is the same class of guaranteed-500.
   check('voice_presets_ref_needs_text',
-    sql`${t.refStorageKey} IS NULL OR (${t.refText} IS NOT NULL AND btrim(${t.refText}) <> '')`)
+    sql`${t.refStorageKey} IS NULL OR (${t.refText} IS NOT NULL AND btrim(${t.refText}) <> '')`),
+  // A clip and its provenance exist together or not at all. Both halves of this shipped as
+  // real bugs while `ref_source` was written only by the lock/unlock routes and the clip
+  // fields only by Save:
+  //   clip, no source  — derives as `direction`, so the voice is spoken with its instruction
+  //                      re-applied over a reference that already contains it
+  //   source, no clip  — the studio reported a locked voice with nothing frozen and never
+  //                      offered Lock again
+  // The client now writes all four fields as one tuple (studio.ts ReferenceFields); this is
+  // the backstop that makes the broken pair unconstructable rather than merely unwritten.
+  check('voice_presets_ref_source_pairs_with_clip',
+    sql`(${t.refSource} IS NULL) = (${t.refStorageKey} IS NULL)`),
+  // Only the two values the synthesis path knows how to speak. A typo here would silently
+  // fall through presetToRequest's `refSource === 'locked'` test into direction mode.
+  check('voice_presets_ref_source_known',
+    sql`${t.refSource} IS NULL OR ${t.refSource} IN ('upload', 'locked')`)
 ])
 
 export type VoicePresetRow = typeof voicePresets.$inferSelect

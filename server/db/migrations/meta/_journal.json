@@ -302,6 +302,13 @@
       "when": 1789611409474,
       "tag": "0042_spooky_talisman",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789651274766,
+      "tag": "0043_high_obadiah_stane",
+      "breakpoints": true
     }
   ]
 }

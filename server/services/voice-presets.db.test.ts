@@ -99,7 +99,9 @@ describe('voice-presets service', () => {
   // must start uncalibrated no matter what its cap column happens to default to.
   it('creates reference-backed rows UNCALIBRATED, and round-trips the marker', async () => {
     const p = await createPreset({
-      name: 'test-clone', cfgScale: 1, refStorageKey: 'blob/clip', refText: 'the transcript'
+      name: 'test-clone', cfgScale: 1, refStorageKey: 'blob/clip', refText: 'the transcript',
+      // The clip's provenance travels with it — voice_presets_ref_source_pairs_with_clip.
+      refSource: 'upload'
     })
     expect(p.calibratedRefKey).toBeNull()
     expect(p.maxSegmentChars).toBe(200)
@@ -109,10 +111,100 @@ describe('voice-presets service', () => {
     expect(isCalibrated(measured)).toBe(true)
     expect((await getPreset(p.id))?.calibratedRefKey).toBe('blob/clip')
 
-    // Demote it to a design preset: the cap its clip justified goes with the clip.
-    const demoted = await updatePreset(p.id, { refStorageKey: null, refText: null })
+    // Demote it to a design preset: the cap its clip justified goes with the clip, and so
+    // does its source.
+    const demoted = await updatePreset(p.id, { refStorageKey: null, refText: null, refSource: null })
     const { preset: reset } = await ensureCalibrated(demoted)
     expect(reset.maxSegmentChars).toBe(200)
     expect(reset.calibratedRefKey).toBeNull()
+  })
+})
+
+// ── The clip/source pair is enforced by the database ──────────────────────────
+//
+// `ref_source` was written only by the lock/unlock routes while the clip fields were written
+// only by Save, so both illegal halves were reachable and both shipped. The client now writes
+// the tuple as one unit (studio.ts ReferenceFields); these tests pin the BACKSTOP, so a future
+// writer that forgets cannot quietly reintroduce either shape.
+describe('voice_presets_ref_source_pairs_with_clip', () => {
+  beforeEach(async () => {
+    await useDb().delete(voicePresets).where(like(voicePresets.name, 'test-%'))
+  })
+
+  /** The constraint NAME, not the message. Drizzle's thrown Error is the whole failed query
+   *  with its parameters interpolated; the useful identifier is on the pg error underneath,
+   *  and asserting it is what makes these tests name the specific rule that fired rather
+   *  than merely "the write was rejected". */
+  async function violates(fn: () => Promise<unknown>): Promise<string> {
+    try {
+      await fn()
+    } catch (e) {
+      const cause = (e as { cause?: { constraint?: string } }).cause
+      return cause?.constraint ?? `no constraint on: ${(e as Error).message.slice(0, 80)}`
+    }
+    throw new Error('expected a constraint violation, but the write succeeded')
+  }
+
+  it('refuses a clip with no recorded source', async () => {
+    expect(await violates(() => createPreset({
+      name: 'test-clip-no-source', instruction: 'A calm man.', cfgScale: 4,
+      refStorageKey: 'k', refText: 'a transcript'
+    }))).toBe('voice_presets_ref_source_pairs_with_clip')
+  })
+
+  it('refuses a source with no clip', async () => {
+    expect(await violates(() => createPreset({
+      name: 'test-source-no-clip', instruction: 'A calm man.', cfgScale: 4,
+      refSource: 'locked'
+    }))).toBe('voice_presets_ref_source_pairs_with_clip')
+  })
+
+  it('refuses a source the synthesis path does not know how to speak', async () => {
+    expect(await violates(() => createPreset({
+      name: 'test-bogus-source', instruction: 'A calm man.', cfgScale: 4,
+      refStorageKey: 'k', refText: 'a transcript',
+      refSource: 'imported' as 'upload'
+    }))).toBe('voice_presets_ref_source_known')
+  })
+
+  it('accepts the two legal pairs', async () => {
+    const up = await createPreset({
+      name: 'test-pair-upload', instruction: 'A calm man.', cfgScale: 4,
+      refStorageKey: 'k1', refText: 'a transcript', refSource: 'upload'
+    })
+    expect(up.refSource).toBe('upload')
+    const lk = await createPreset({
+      name: 'test-pair-locked', instruction: 'A calm man.', cfgScale: 4,
+      refStorageKey: 'k2', refText: 'a transcript', refSource: 'locked'
+    })
+    expect(lk.refSource).toBe('locked')
+  })
+
+  // Duplicate copies the clip; before this, createPreset's explicit allow-list dropped the
+  // source and the copy became a clip with no provenance.
+  it('carries the source through a duplicate-shaped create', async () => {
+    const copy = await createPreset({
+      name: 'test-dup-locked', instruction: 'A calm man.', cfgScale: 4,
+      refStorageKey: 'k4', refText: 'a transcript', refSource: 'locked',
+      starredSeeds: [7, 11]
+    })
+    expect(copy.refSource).toBe('locked')
+    // Same allow-list, same omission: a duplicated voice used to lose its kept seeds.
+    expect(copy.starredSeeds).toEqual([7, 11])
+  })
+
+  // Clearing a clip has to clear its source in the same statement — the shape that left the
+  // studio reporting a locked voice with nothing frozen.
+  it('refuses to clear the clip while leaving the source behind', async () => {
+    const p = await createPreset({
+      name: 'test-clear-half', instruction: 'A calm man.', cfgScale: 4,
+      refStorageKey: 'k3', refText: 'a transcript', refSource: 'locked'
+    })
+    expect(await violates(() => updatePreset(p.id, { refStorageKey: null, refText: null })))
+      .toBe('voice_presets_ref_source_pairs_with_clip')
+    const cleared = await updatePreset(p.id, {
+      refStorageKey: null, refText: null, refDurationMs: null, refSource: null
+    })
+    expect(cleared.refSource).toBeNull()
   })
 })

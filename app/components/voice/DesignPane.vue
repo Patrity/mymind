@@ -8,6 +8,9 @@ import {
   auditionRequests,
   blankDraft,
   draftIsDirty,
+  attachedReference,
+  noReference,
+  referenceFieldsOf,
   draftToBody,
   draftToOverrides,
   errorMessage,
@@ -82,8 +85,11 @@ const hint = computed(() => instructionHint(draft.instruction, draft.cfgScale))
 // utterance clones that render.
 const locking = ref(false)
 const lockError = ref<string | null>(null)
+// Read entirely from the DRAFT. Mixing the two — the source off the saved row, the clip off
+// the form — meant an unsaved upload read as "unlockable" while its clip was already sitting
+// in the form, and offered to lock over it.
 const lock = computed(() => lockState({
-  refSource: props.preset?.refSource ?? null,
+  refSource: draft.refSource,
   refStorageKey: draft.refStorageKey,
   instruction: draft.instruction,
 }))
@@ -103,6 +109,12 @@ async function lockVoice() {
       body: { overrides: draftToOverrides(draft) },
     })
     if (guard.isStale(token)) return
+    // Lock writes the clip SERVER-side, and the draft-resync watcher only fires on an id
+    // change — so without this the form keeps its pre-lock reference fields and the next
+    // Save writes them back over the row. Only the reference tuple is resynced: the voice
+    // fields were just committed from this draft, and wiping in-progress edits would be a
+    // surprise.
+    Object.assign(draft, referenceFieldsOf(saved))
     emit('saved', saved)
   } catch (e) {
     if (!guard.isStale(token)) lockError.value = errorMessage(e)
@@ -118,7 +130,12 @@ async function unlockVoice() {
   locking.value = true
   lockError.value = null
   try {
-    emit('saved', await $fetch<SavedPresetDTO>(`/api/voice/presets/${p.id}/unlock`, { method: 'POST' }))
+    const saved = await $fetch<SavedPresetDTO>(`/api/voice/presets/${p.id}/unlock`, { method: 'POST' })
+    // Same reason as lockVoice: unlock clears the clip on the row, and a stale draft would
+    // resurrect it on the next Save — with no source, which is exactly how a preset ended
+    // up deriving as 'direction' after being unlocked.
+    Object.assign(draft, referenceFieldsOf(saved))
+    emit('saved', saved)
   } catch (e) {
     lockError.value = errorMessage(e)
   } finally {
@@ -368,9 +385,8 @@ async function uploadReference(file: Blob, filename: string) {
       { method: 'POST', body: form, signal }
     )
     if (guard.isStale(token)) return
-    draft.refStorageKey = res.storageKey
-    draft.refText = res.refText
-    draft.refDurationMs = res.durationMs
+    // The whole tuple at once, so the clip can never arrive without its provenance.
+    Object.assign(draft, attachedReference(res))
     // Non-null past 20s. The clip shares the prompt budget with the text, so this is the
     // warning that explains a later render stopping early.
     refWarning.value = res.warning
@@ -386,9 +402,7 @@ async function uploadReference(file: Blob, filename: string) {
 }
 
 function clearReference() {
-  draft.refStorageKey = null
-  draft.refText = ''
-  draft.refDurationMs = null
+  Object.assign(draft, noReference())
   refFile.value = null
   refWarning.value = null
   refError.value = null

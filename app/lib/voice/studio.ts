@@ -3,7 +3,7 @@
 // what the user is ALLOWED to compose and what a result MEANS — kept out of the .vue
 // files so it can be tested without mounting anything (same precedent as devices.ts,
 // messages.ts and presets.ts in this directory).
-import type { VoicePresetDTO, SpeakOverrides } from '~~/shared/types/voice-presets'
+import type { VoicePresetDTO, SpeakOverrides, RefSource } from '~~/shared/types/voice-presets'
 import { presetMode, maxCallChars } from '~~/shared/types/voice-presets'
 
 /** The live agent's conversational segment cap, mirrored from server/lib/voice/tuning.ts.
@@ -24,8 +24,59 @@ export interface PresetDraft {
   refStorageKey: string | null
   refText: string
   refDurationMs: number | null
+  /** How this preset got its clip. Part of the DRAFT, not just the row: the clip fields and
+   *  their provenance have to move together or a save can change whether a clip exists
+   *  without changing what kind it is. See ReferenceFields. */
+  refSource: RefSource
   /** Seeds kept for this voice. Edited in the form and saved with it. */
   starredSeeds: number[]
+}
+
+/**
+ * The four fields that describe a preset's reference clip. They are ALWAYS written together.
+ *
+ * Splitting them is what produced two shipped bugs: `ref_source` was owned by the lock/unlock
+ * routes while the clip fields were owned by Save, so a save could attach a clip without a
+ * source (the preset then derived as `direction` and was spoken with its instruction
+ * re-applied) or clear a clip and leave the source behind (`lockState` reported a locked
+ * voice with nothing frozen, and never offered Lock again). Nothing assigns a member of this
+ * tuple on its own — the three constructors below are the only way to produce one.
+ */
+export interface ReferenceFields {
+  refStorageKey: string | null
+  refText: string
+  refDurationMs: number | null
+  refSource: RefSource
+}
+
+/** A clip the user supplied. The ONLY place `'upload'` is written — before this existed,
+ *  nothing in the app ever set it and every uploaded clip landed with a null source. */
+export function attachedReference(
+  r: { storageKey: string, refText: string, durationMs: number | null }
+): ReferenceFields {
+  return {
+    refStorageKey: r.storageKey,
+    refText: r.refText,
+    refDurationMs: r.durationMs,
+    refSource: 'upload'
+  }
+}
+
+/** No clip. A fresh object each call — a shared constant would be aliased into every draft. */
+export function noReference(): ReferenceFields {
+  return { refStorageKey: null, refText: '', refDurationMs: null, refSource: null }
+}
+
+/** The tuple as a saved row holds it. Lock and unlock write the clip server-side, so the
+ *  form has to read it back from what they return; without this the draft keeps its
+ *  pre-operation values and the next Save writes them over the row. */
+export function referenceFieldsOf(p: VoicePresetDTO): ReferenceFields {
+  return {
+    refStorageKey: p.refStorageKey,
+    refText: p.refText ?? '',
+    refDurationMs: p.refDurationMs,
+    refSource: p.refSource
+  }
 }
 
 /** What POST/PATCH /api/voice/presets accepts. */
@@ -40,6 +91,7 @@ export interface PresetBody {
   refStorageKey: string | null
   refText: string | null
   refDurationMs: number | null
+  refSource: RefSource
   starredSeeds: number[]
 }
 
@@ -99,6 +151,8 @@ export function draftToBody(d: PresetDraft): PresetBody {
     refStorageKey: d.refStorageKey,
     refText: d.refText.trim() || null,
     refDurationMs: d.refDurationMs,
+    // Sent with the clip, never separately — see ReferenceFields.
+    refSource: d.refSource,
     starredSeeds: d.starredSeeds
   }
 }
@@ -113,9 +167,7 @@ export function blankDraft(): PresetDraft {
     temperature: 0.9,
     topP: 1,
     topK: 50,
-    refStorageKey: null,
-    refText: '',
-    refDurationMs: null,
+    ...noReference(),
     starredSeeds: []
   }
 }
@@ -130,9 +182,7 @@ export function presetToDraft(p: VoicePresetDTO): PresetDraft {
     temperature: p.temperature,
     topP: p.topP,
     topK: p.topK,
-    refStorageKey: p.refStorageKey,
-    refText: p.refText ?? '',
-    refDurationMs: p.refDurationMs,
+    ...referenceFieldsOf(p),
     starredSeeds: [...(p.starredSeeds ?? [])]
   }
 }
@@ -539,7 +589,10 @@ export function toggleStarredSeed(starred: number[], seed: number): number[] {
 export type LockState = 'unlockable' | 'locked' | 'uploaded' | 'no-description'
 
 export function lockState(p: Pick<VoicePresetDTO, 'refSource' | 'refStorageKey' | 'instruction'>): LockState {
-  if (p.refSource === 'locked') return 'locked'
+  // The CLIP is what makes a voice locked, not the label. A source that outlived its clip
+  // used to report 'locked' here, which hid the Lock button behind an Unlock that had
+  // nothing left to clear.
+  if (p.refSource === 'locked' && p.refStorageKey) return 'locked'
   if (p.refStorageKey) return 'uploaded'
   if (!p.instruction?.trim()) return 'no-description'
   return 'unlockable'
