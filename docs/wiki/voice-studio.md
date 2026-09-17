@@ -1,8 +1,8 @@
 ---
 title: Voice Studio
 status: shipped
-cycle: 61
-updated: 2026-09-15
+cycle: 62
+updated: 2026-09-16
 mymind_id: b7dc4979-0fa0-41b0-8774-c6c2c470748c
 mymind_hash: 1827c6b1e0072516493d50fa538edd7fde80f6e1cba5608524249020427ef665
 ---
@@ -25,7 +25,7 @@ Three resizable `UDashboardPanel`s inside one flex wrapper:
 | Panel | Width | Contents |
 |---|---|---|
 | `voice-presets` | 18%, `hidden lg:flex` | The rail — every preset, its mode badge, a star on the default. New / Duplicate / Make default / Delete. |
-| `voice-design` | 41% | Name, starter picker, instruction, cfg/temperature/top-p/top-k, seed, seed audition, reference clip. |
+| `voice-design` | 41% | Two tabs. **Voice** — name, starter picker, instruction, cfg/temperature/top-p/top-k, seed, seed audition, lock. **Reference** — the clip a preset clones. Always two tabs, on every preset: a pane that grew a tab only once a clip existed made the clip feel like an advanced feature rather than the other half of the editor. |
 | `voice-speak` | remainder | Read-from-MyMind picker, text box, event tags, Speak / Stop / Download WAV. |
 
 Below `lg` the rail hides and the page stays usable. Auth is the app-wide
@@ -45,9 +45,11 @@ a stored mode can contradict its fields, a derived one cannot.
 | `direction` | ✓ | ✓ | A cloned voice, then *directed* — "the same person, but wearier". |
 
 The rail's badge is `modeBadge()` from `app/lib/voice/studio.ts`, which is unit-tested to return one
-of the four semantic colour aliases so a raw palette value cannot creep in.
+of the four semantic colour aliases so a raw palette value cannot creep in — with one exception. A
+**locked** preset derives as `direction` (it has both fields) but is never *spoken* in that mode, so
+its badge reads `locked`. See [Locking a designed voice](#locking-a-designed-voice).
 
-## Preset schema (`voice_presets`, migrations 0039 + 0040)
+## Preset schema (`voice_presets`, migrations 0039–0042)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -60,6 +62,8 @@ of the four semantic colour aliases so a raw palette value cannot creep in.
 | `ref_storage_key` | text null | The reference clip in blob storage. |
 | `ref_text` | text null | Its exact transcript (Whisper, editable). |
 | `ref_duration_ms` | integer null | Measured from the WAV header. |
+| `starred_seeds` | integer[], default `{}` | Seeds kept from an audition, ascending (0041). A seed is a name for a voice you liked; without somewhere to put it, finding one again meant re-rolling. |
+| `ref_source` | text null | `'upload'` (a clip the user supplied) or `'locked'` (a frozen render of this preset's own description), 0042. Null when there is no clip. **This is what decides how the preset is spoken** — see below. |
 | `max_segment_chars` | integer, default 200 | **Calibrated, not chosen** — see below. |
 | `calibrated_ref_key` | text null | WHICH clip that cap was measured against; `NULL` = never measured. |
 | `is_default` | boolean | `voice_presets_one_default` partial unique index — exactly one. |
@@ -197,6 +201,60 @@ Within a priority the queue is strictly FIFO by arrival. The studio shows the wa
 hiding it: after 4 s the pane reads *"Waiting on the rig (Ns) — it renders one request at a time,
 and studio work queues behind live conversation."*
 
+## Locking a designed voice
+
+A design preset stores a **recipe**, not a person. The seed reproduces an identical input exactly —
+same seed, same text, same voice, every time — but the agent sends *different text* every segment,
+so each call casts someone new from the same description. That is what voice design is, and it is
+why a saved `bright-woman` could still sound like ten different women across one reply. No amount of
+pinning seed, cfg or prompt changes it.
+
+**Locking** renders one canonical ~11 s passage (`LOCK_PASSAGE`, in `lock.post.ts`) and keeps the
+**audio**. From then on the preset is reference-backed, and every later utterance clones that exact
+render instead of casting again. Measured across four segments of one reply:
+
+| Setup | Pitch spread | Timbre distance |
+|---|---|---|
+| Design preset, unlocked | 23.9 Hz | 0.636 |
+| Locked render, pure clone | 22.6 Hz | 0.526 |
+| A real recorded clip | **4.5 Hz** | **0.418** |
+
+A real recording still anchors best by a wide margin, which is why uploading one stays available and
+is the better answer when a *specific* person's voice is the goal. Locking is the answer when the
+voice only ever existed as a description.
+
+**A locked preset is spoken as a PURE clone** — instruction dropped, `cfg_scale` forced to 1
+(`presetToRequest` keys on `refSource === 'locked'`). Its description is already expressed in the
+clip, and re-applying it pulls against the reference: the same clip with the instruction re-applied
+measured **39.8 Hz**, worse than not locking at all. An *uploaded* clip keeps its instruction,
+because steering delivery is the reason someone writes one against a voice they already chose.
+
+The instruction itself stays on the row. It is how the voice was cast, it is what you edit to
+re-cast it, and it is the only readable record of what the clip is.
+
+`lockState()` / `lockHint()` in `app/lib/voice/studio.ts` drive the panel's four states:
+
+| State | When | What the panel says |
+|---|---|---|
+| `unlockable` | a description, no clip | Audition until one sounds right, then lock it. |
+| `locked` | `ref_source = 'locked'` | Locked to a recording of itself; unlock to re-cast. |
+| `uploaded` | `ref_source = 'upload'` | Already clones a clip you provided — already consistent. |
+| `no-description` | neither | Write a description first. |
+
+Locking commits the **on-screen** overrides to the row, not the last-saved values: the studio
+previews unsaved edits through the same override path, so freezing anything other than what was just
+auditioned and approved would be a different voice than the one the user accepted.
+
+Unlock only ever clears a clip **this app rendered**. A recording the user supplied is theirs and
+there is no undo here, so `unlock.post.ts` refuses anything but `ref_source = 'locked'`. It resets
+`max_segment_chars` and `calibrated_ref_key` together — a cap left behind with its marker cleared
+would read as "never calibrated" while carrying a calibrated number.
+
+> Locking is a live ~12 s render on a rig that serves **one request at a time**. On a busy rig the
+> five-attempt backoff adds ~22 s on top, and the combined ~35 s can outlast the edge proxy — which
+> surfaces as a 503 the endpoint never sent. The 503 it *does* send says so in words: the rig is
+> busy, wait a few seconds, nothing was changed.
+
 ## Reference clips
 
 `POST /api/voice/reference` takes a multipart `audio` field, measures it off the RIFF header
@@ -236,6 +294,49 @@ Event tags — `(laugh)`, `(sigh)`, `(cough)`, `(clears throat)` — insert at t
 > gate. Neither `USelectMenu` here can produce one: the starters model is `undefined` when unset, and
 > every source item's value is `doc:<uuid>` / `mem:<uuid>` / `conv:<uuid>`.
 
+## Quality vs realtime — one call or the agent's seams
+
+Segmenting is not free. One paragraph, same instruction and seed, one call versus three:
+
+|  | Audio | TTFA | Wall |
+|---|---|---|---|
+| One call | 13.92 s | 29 ms | 6.81 s |
+| Three segments | 15.36 s | 7 ms | 7.53 s |
+
+Three segments produced **10.3% more audio for the same words** — roughly half a second of padding
+at each seam, where prosody restarts because every segment is an independent call with no shared
+state. It bought 22 ms of time-to-first-audio, which is invisible: Breeze streams *within* a call
+too.
+
+The live agent has no choice — its text arrives token by token, so it must start speaking before the
+sentence is finished. The studio always has the whole text. So `planSegments()`
+(`server/lib/voice/plan-segments.ts`) offers two modes, and **quality is the default**:
+
+- **quality** — one call whenever the text fits, splitting only when it genuinely exceeds the
+  preset's ceiling, and then splitting *at the ceiling* rather than at the agent's much smaller
+  conversational cap.
+- **realtime** — reproduces the agent's segmentation so the two can be compared by ear.
+
+The plan returns a `reason` (`single-call` / `exceeds-ceiling` / `realtime`), surfaced in the UI so a
+seam is explicable rather than a mystery and so quality mode is visibly doing something.
+
+**The ceiling is not a style preference — past it the model breaks.** Measured in design mode at
+cfg 4.0, one instruction, one seed:
+
+| Text | Audio | Rate | |
+|---|---|---|---|
+| 600 chars | 19.0 s | 31.6 c/s | healthy |
+| 900 chars | 21.5 s | 41.9 c/s | healthy |
+| 1000 chars | 105.6 s | 9.5 c/s | **runaway** |
+| 1100 chars | 120.0 s | 9.2 c/s | **runaway** (hit the rig's 120 s output cap) |
+
+It does not truncate — it stops tracking the text and rambles until the cap, returning a *complete*
+body. The break is between 900 and 1000 characters of text on top of an 80-char instruction, so what
+matters is the **combined prompt**. That is why the split is planned server-side against
+`maxCallChars`, and why `isRunawayRender` (`app/lib/voice/audio-context.ts`) measures
+chars-per-second rather than a ratio to an expected duration: a ratio test put 1200 chars at 2.92×
+expected, under a 3× threshold, and called a runaway healthy.
+
 ## Telling a truncation from a failure
 
 This distinction is the reason the cycle exists, so the two alerts mean different things and must
@@ -265,6 +366,8 @@ a body only *looks* like JSON, so a truncated body cannot vanish into a catch.
 | `DELETE /api/voice/presets/[id]` | Delete. The default cannot be deleted. |
 | `POST /api/voice/speak` | `{ text, presetId?, format?: 'pcm'\|'wav', overrides? }`. Streams PCM with an `x-sample-rate` header, or returns a whole WAV. Studio priority. |
 | `POST /api/voice/reference` | multipart `audio` → `{ storageKey, refText, durationMs, warning }`. |
+| `POST /api/voice/presets/[id]/lock` | Renders `LOCK_PASSAGE`, stores the WAV, sets `ref_source='locked'`, commits the on-screen overrides, then `ensureCalibrated`. Returns the row + `lockDurationMs` + `calibrationWarning`. 400 if there is already a clip or no description; 503 (in words) if the rig stayed busy. |
+| `POST /api/voice/presets/[id]/unlock` | Clears a `'locked'` clip only, resetting the cap and its marker together. 400 on an uploaded clip. |
 
 Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` invalidates
 `['voicePreset','list']` — so a preset created in one tab appears in another without a refresh.
@@ -276,7 +379,7 @@ Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` in
 |---|---|
 | `app/pages/voice.vue` | The three-panel page, preset CRUD, selection. |
 | `app/components/voice/PresetRail.vue` | The rail and its action bar. |
-| `app/components/voice/DesignPane.vue` | Instruction, sliders, seed, audition, reference clip. |
+| `app/components/voice/DesignPane.vue` | The Voice / Reference tabs: instruction, sliders, seed, audition, lock, reference clip. |
 | `app/components/voice/SpeakPane.vue` | Text, source picker, event tags, Speak / Stop / Download. |
 | `app/composables/useBreezeSpeech.ts` | Studio playback — PCM on the AudioContext clock over plain `fetch`, not the agent socket. |
 | `app/lib/voice/studio.ts` | Pure studio logic: validation, cfg lock, modes, audition driver, truncation diagnosis, error extraction. |
@@ -284,6 +387,9 @@ Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` in
 | `app/lib/voice/wav-encode.ts` | Mic recording → WAV; WAV header reader for sizing a render. |
 | `server/api/voice/speak.post.ts` | Studio synthesis, PCM or WAV. |
 | `server/api/voice/reference.post.ts` | Reference upload, measurement, transcription. |
+| `server/api/voice/presets/[id]/lock.post.ts` | Freeze a designed voice into a render of itself; holds `LOCK_PASSAGE`. |
+| `server/api/voice/presets/[id]/unlock.post.ts` | Return a locked voice to being a description. |
+| `server/lib/voice/plan-segments.ts` | Quality vs realtime segmentation and the prompt ceiling. |
 | `server/services/voice-presets.ts` | CRUD, defaults, calibration, reference loading. |
 
 ### The preset-switch guard

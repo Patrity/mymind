@@ -1,8 +1,8 @@
 ---
 title: Voice Agent
 status: shipped
-cycle: 61
-updated: 2026-09-15
+cycle: 62
+updated: 2026-09-16
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
 mymind_hash: 08816de0cc3c8d062a560f1599ced66511df8c78afcf777299156a3970869969
 ---
@@ -213,6 +213,29 @@ that no longer exists.
 **Which voice to use is no longer a benchmark question.** It is a preset, authored in the
 [Voice Studio](voice-studio.md), and the eight seeded ones are a starting point rather than a
 shortlist.
+
+### Use a LOCKED preset for conversation
+
+Breeze holds **no speaker state between calls**. A seed reproduces an identical input exactly, but
+it does not pin an identity across *different* text — and a spoken turn is many segments of
+different text, each its own call. So a plain design preset re-casts the voice on every segment, and
+a long reply genuinely does sound like several different people. Measured across four segments of
+one reply: **23.9 Hz** pitch spread, timbre distance **0.636**.
+
+Three attempts to anchor it with the model's own output within a turn (chaining each segment's
+render forward as the next segment's reference) failed or barely helped, and were reverted. What
+works is giving the preset a reference clip that exists *before* the turn starts:
+
+| Preset | Pitch spread | Timbre distance |
+|---|---|---|
+| Design, unlocked | 23.9 Hz | 0.636 |
+| **Locked** (a frozen render of its own description) | 22.6 Hz | 0.526 |
+| Uploaded human recording | **4.5 Hz** | **0.418** |
+
+`resolveTurnVoice` reads the row as-is, so this is purely a property of the preset: lock it (or give
+it a real clip) in the studio and the agent inherits the consistency. A locked preset is spoken as a
+**pure clone** — instruction dropped, cfg 1 — which is decided in `presetToRequest` by
+`ref_source`, not by the agent. See [Locking a designed voice](voice-studio.md#locking-a-designed-voice).
 
 ## Tuning (`server/lib/voice/tuning.ts`)
 
