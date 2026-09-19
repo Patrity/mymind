@@ -73,3 +73,29 @@ describe('makeSubagentTool', () => {
     expect(brainSubagent.name).toBe('search_brain')
   })
 })
+
+describe('makeSubagentTool nested event forwarding', () => {
+  it('forwards each nested tool-start and tool-result, in order, and nothing else', async () => {
+    const forwarded: unknown[] = []
+    const tool = makeSubagentTool(SPEC, {
+      run: fakeRun([
+        { type: 'tool-start', name: 'web_search', args: { q: 'a' }, callId: 'n1' },
+        { type: 'tool-result', name: 'web_search', summary: 'searched (3)', callId: 'n1', result: { hits: 3 } },
+        { type: 'text-delta', text: 'Report.' },
+        { type: 'done' }
+      ])
+    })
+    const out = await tool.handler({ task: 'find X' }, { signal: new AbortController().signal, onNestedEvent: e => forwarded.push(e) })
+    expect(forwarded).toEqual([
+      { type: 'tool-start', name: 'web_search', args: { q: 'a' }, callId: 'n1' },
+      { type: 'tool-result', name: 'web_search', summary: 'searched (3)', callId: 'n1', result: { hits: 3 } }
+    ])
+    expect(out.result).toEqual({ report: 'Report.' })
+    expect(out.summary).toBe('tested: find X (1 tool calls)')
+  })
+
+  it('still works without a nested hook', async () => {
+    const tool = makeSubagentTool(SPEC, { run: fakeRun([{ type: 'tool-start', name: 'web_search', args: {} }, { type: 'text-delta', text: 'ok' }]) })
+    await expect(tool.handler({ task: 'x' }, { signal: new AbortController().signal })).resolves.toMatchObject({ result: { report: 'ok' } })
+  })
+})

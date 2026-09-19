@@ -56,7 +56,8 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
         { tools, buildSystemPrompt: async () => system }
       )) {
         if (ev.type === 'text-delta') report += ev.text
-        else if (ev.type === 'tool-result') toolCalls++
+        else if (ev.type === 'tool-start') ctx.onNestedEvent?.(ev)
+        else if (ev.type === 'tool-result') { toolCalls++; ctx.onNestedEvent?.(ev) }
       }
       report = report.trim()
       if (!report) return { result: { error: 'subagent produced no report' }, summary: `${spec.label}: no report (${toolCalls} tool calls)` }
