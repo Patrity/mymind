@@ -79,6 +79,9 @@ importers:
       '@ricky0123/vad-web':
         specifier: ^0.0.30
         version: 0.0.30
+      '@rive-app/webgl2':
+        specifier: ^2.42.2
+        version: 2.42.2
       '@tanstack/vue-query':
         specifier: ^5.101.0
         version: 5.101.0(vue@3.5.34(typescript@6.0.3))
@@ -2664,6 +2667,9 @@ packages:
 
   '@ricky0123/vad-web@0.0.30':
     resolution: {integrity: sha512-cJyYrh4YeeUBJcbR9Bic/bFDyB9qBkAepvpuWM3vLxnAi7bC3VHzf51UeNdT+OtY4D7MLAgV8iJMc4z41ZnaWg==}
+
+  '@rive-app/webgl2@2.42.2':
+    resolution: {integrity: sha512-UjESaGjAlacYsZBszNG9mv6omhz6rciozNAWflVtXVk4WlpIRDPxb9ULZxQXa+sCBMGUiH2ZFtqsd0FwLXiNWg==}
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
@@ -10860,6 +10866,8 @@ snapshots:
   '@ricky0123/vad-web@0.0.30':
     dependencies:
       onnxruntime-web: 1.26.0
+
+  '@rive-app/webgl2@2.42.2': {}
 
   '@rolldown/pluginutils@1.0.1': {}
 

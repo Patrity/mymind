@@ -9,6 +9,10 @@ import { dirname } from 'node:path'
 const require_ = createRequire(import.meta.url)
 const vadAssetDir = dirname(require_.resolve('@ricky0123/vad-web/package.json')) + '/dist'
 const ortAssetDir = dirname(createRequire(require_.resolve('@ricky0123/vad-web/package.json')).resolve('onnxruntime-web'))
+// Rive's runtime (Persona) loads its WASM binary at first use; the same "resolve the
+// package dir, serve it as a static asset" pattern as VAD/ORT above. rive.wasm +
+// rive_fallback.wasm both live at the package root.
+const riveAssetDir = dirname(require_.resolve('@rive-app/webgl2/package.json'))
 
 export default defineNuxtConfig({
   modules: [
@@ -136,7 +140,8 @@ export default defineNuxtConfig({
     // from the app origin so the client VAD can fetch them (see useVoice.ts asset paths).
     publicAssets: [
       { baseURL: 'vad', dir: vadAssetDir, maxAge: 60 * 60 * 24 * 30 },
-      { baseURL: 'ort', dir: ortAssetDir, maxAge: 60 * 60 * 24 * 30 }
+      { baseURL: 'ort', dir: ortAssetDir, maxAge: 60 * 60 * 24 * 30 },
+      { baseURL: 'rive', dir: riveAssetDir, maxAge: 60 * 60 * 24 * 30 }
     ],
     serverAssets: [{ baseName: 'setup', dir: 'server/assets/setup' }],
     scheduledTasks: {
