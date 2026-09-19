@@ -1,10 +1,8 @@
 <!-- app/components/voice/Composer.vue -->
 <script setup lang="ts">
-import type { TranscriptEntry } from '~/composables/useVoice'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 
 const props = defineProps<{
-  entries: TranscriptEntry[]
   // Typed turns go over the voice WS only. sendText auto-connects the WS
   // transparently, so the composer is always usable — no explicit Connect step.
   sendText?: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>

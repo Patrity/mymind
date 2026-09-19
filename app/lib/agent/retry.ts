@@ -1,39 +1,24 @@
 // app/lib/agent/retry.ts
 //
-// Pure "walk back to the preceding user turn and truncate" logic behind retryTurn.
-// Extracted out of app/pages/agent/index.vue for the same reason buildResumeTranscript
-// was (see transcript.ts): an SFC method gives the test gates zero signal.
-import type { TranscriptEntry } from '~/composables/useVoice'
+// Pure "walk back to the preceding user turn and truncate" logic behind retryTurn. Replaces
+// in place — it does NOT fork. The user turn is re-sent through sendText, whose server echo
+// (a user-message frame) re-creates it, so it is removed here too.
+import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AttachmentRef } from '~~/shared/types/conversation'
 
 export interface RetryPlan {
-  /** The transcript with the target assistant turn AND everything from the preceding
-   *  user turn onward removed — voice.sendText() re-creates the user bubble fresh. */
-  transcript: TranscriptEntry[]
-  /** The user turn to re-send. */
-  userTurn: TranscriptEntry
+  messages: AgentUIMessage[]
+  text: string
+  attachments: AttachmentRef[]
 }
 
-/**
- * Given the full transcript and the id of an assistant entry to retry, walk
- * backwards from it (skipping any interleaved tool chips) to find the user turn
- * that produced it, then truncate the transcript to just before that user turn.
- *
- * This REPLACES in place — it does not fork. If `entryId` sits earlier than the
- * last turn, everything after the preceding user turn is dropped too (including
- * whatever came after the retried entry), matching "retry regenerates the reply
- * from here forward," not "insert a branch."
- *
- * Returns null when `entryId` isn't found, or when no user turn precedes it
- * (nothing to re-send).
- */
-export function truncateForRetry(transcript: TranscriptEntry[], entryId: string): RetryPlan | null {
-  const i = transcript.findIndex(e => e.id === entryId)
+export function truncateForRetry(messages: AgentUIMessage[], messageId: string): RetryPlan | null {
+  const i = messages.findIndex(m => m.id === messageId)
   if (i < 0) return null
-
   let j = i - 1
-  while (j >= 0 && transcript[j]!.role !== 'user') j--
-  const userTurn = j >= 0 ? transcript[j] : undefined
-  if (!userTurn) return null
-
-  return { transcript: transcript.slice(0, j), userTurn }
+  while (j >= 0 && messages[j]!.role !== 'user') j--
+  if (j < 0) return null
+  const user = messages[j]!
+  const text = user.parts.filter(p => p.type === 'text').map(p => (p as { text: string }).text).join('')
+  return { messages: messages.slice(0, j), text, attachments: user.metadata?.attachments ?? [] }
 }

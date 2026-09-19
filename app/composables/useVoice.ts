@@ -2,36 +2,12 @@
 import { createEmitter } from '../lib/viz/emitter'
 import { mapServerMessage } from '../lib/voice/messages'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
+import { createClientTurns } from '../lib/agent/turn-stream'
 import type { VizEvent } from '../lib/viz/types'
-import type { AttachmentRef, MessageUsage } from '~~/shared/types/conversation'
+import type { AttachmentRef } from '~~/shared/types/conversation'
+import type { AgentUIMessage } from '~~/shared/types/agent-ui'
 
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
-// `id` is a stable per-entry key: it keys v-for AND the MdView/MDC parse cache —
-// without a unique cache key, streaming entries that start with the same first
-// delta collide on MDC's hash(value) asyncData key and mirror each other's text.
-// role 'tool' entries are inline tool-call chips (name/summary/undoToken set, text unused).
-export interface TranscriptEntry {
-  id: string
-  role: 'user' | 'assistant' | 'tool'
-  text: string
-  attachments?: AttachmentRef[]
-  name?: string
-  summary?: string
-  undoToken?: string
-  undone?: boolean
-  reasoning?: string
-  /** ISO timestamp — display only. Set when a live entry is first created; carried
-   *  over from the DTO on resume. */
-  createdAt?: string
-  /** Token usage for this entry's assistant turn. `undefined`/absent (not a zeroed
-   *  object) for entries written before the usage column existed, or a turn the
-   *  server never reported usage for — the UI must render nothing, not a fake 0. */
-  usage?: MessageUsage | null
-}
-
-export function newEntryId(): string {
-  return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)
-}
 
 // Capture/barge-in/playback knobs are user-tunable and cookie-persisted —
 // see useVoiceSettings. NOTE: vad-web 0.0.30 uses time-based options
@@ -40,7 +16,17 @@ export function newEntryId(): string {
 export function useVoice() {
   const state = ref<VoiceState>('idle')
   const connected = ref(false)
-  const transcript = ref<TranscriptEntry[]>([])
+  const messages = ref<AgentUIMessage[]>([])
+  // One readUIMessageStream per turn (lib/agent/turn-stream.ts). upsert replaces a message by
+  // id (a streamed snapshot) or appends it (a new user/assistant message).
+  const turns = createClientTurns({
+    upsert: (m) => {
+      const list = messages.value
+      const i = list.findIndex(x => x.id === m.id)
+      if (i >= 0) list.splice(i, 1, m)
+      else list.push(m)
+    }
+  })
   const error = ref<string | null>(null)
   /** Live Silero speech probability (0..1) — feeds the settings tuning meter. */
   const speechProb = ref(0)
@@ -57,7 +43,6 @@ export function useVoice() {
 
   const events = createEmitter<VizEvent>()
 
-  let pendingUserAttachments: AttachmentRef[] = []
   let ws: WebSocket | null = null
   // Last preset the user picked. Selecting before connecting (the natural UX) would
   // otherwise be lost — ws is null then, so we remember it and (re)send on open.
@@ -81,44 +66,6 @@ export function useVoice() {
   // trailing byte of the previous chunk (see enqueuePcm).
   let pcmSampleRate = 24000
   let carry = new Uint8Array(0)
-
-  function pushDelta(role: 'user' | 'assistant', delta: string) {
-    const last = transcript.value[transcript.value.length - 1]
-    // Append raw — LLM/STT text deltas already carry their own spacing and
-    // concatenate to the exact string. (An earlier word-boundary space heuristic
-    // mangled sub-word token streaming, e.g. "Brid"+"get" → "Brid get".)
-    // A tool entry between deltas breaks the same-role run, so assistant text
-    // resumes in a NEW bubble after each inline tool chip — true stream order.
-    if (last && last.role === role) last.text += delta
-    else {
-      transcript.value.push({ id: newEntryId(), role, text: delta, createdAt: new Date().toISOString(), attachments: role === 'user' && pendingUserAttachments.length ? pendingUserAttachments : undefined })
-      if (role === 'user') pendingUserAttachments = []
-    }
-  }
-
-  function pushReasoning(text: string) {
-    const last = transcript.value[transcript.value.length - 1]
-    if (last && last.role === 'assistant') last.reasoning = (last.reasoning ?? '') + text
-    else transcript.value.push({ id: newEntryId(), role: 'assistant', text: '', createdAt: new Date().toISOString(), reasoning: text })
-  }
-
-  function pushTool(t: { name: string; summary: string; undoToken?: string }) {
-    transcript.value.push({ id: newEntryId(), role: 'tool', text: '', ...t })
-  }
-
-  // Usage arrives once per turn (see run.ts/ws.ts), after all of that turn's text/tool
-  // entries have already been pushed. It describes the whole assistant turn, so attach
-  // it to the LAST assistant-role entry — mirroring buildResumeTranscript, which after a
-  // reload attaches the persisted message's usage to its trailing (last) split entry.
-  // Walking back past interleaved tool chips lets it land correctly even when the turn's
-  // final action was a tool call with no trailing assistant text.
-  function setUsage(usage: MessageUsage) {
-    for (let i = transcript.value.length - 1; i >= 0; i--) {
-      const e = transcript.value[i]!
-      if (e.role === 'assistant') { e.usage = usage; return }
-      if (e.role === 'user') return // don't reach back into a previous turn
-    }
-  }
 
   function stopPlayback() {
     epochs.interrupt() // invalidate any chunks still in flight from the interrupted turn
@@ -159,13 +106,16 @@ export function useVoice() {
     // afterwards and would schedule itself onto a cleared playCursor. It belongs to the
     // interrupted segment, so it now carries that segment's stale epoch and is discarded.
     //
-    // NOT airtight, and worth stating precisely. Re-stamping here is unconditional, because
-    // no frame carries a turn id — the client cannot tell whose `audio-begin` this is. The
-    // interrupt takes one RTT to reach the server, so a segment the server opens for the
-    // INTERRUPTED turn inside that window re-opens the gate for that turn's audio. Narrow
-    // (serial pipeline, hundreds of ms per segment, ws.ts aborts on the interrupt frame) and
-    // strictly better than the dead guard it replaces — but a window, not zero. See
-    // lib/voice/playback-epoch.ts.
+    // `audio-begin` now carries the turn id that opened it (see socket.onmessage below),
+    // and a segment from a turn the client has already walked away from is rejected
+    // outright via epochs.rejectSegment() instead of ever reaching here — the residual
+    // window described below is gone for tagged frames. Re-stamping here is still
+    // unconditional for whatever frame DOES reach onAudioBegin (i.e. one whose turn is
+    // current), for the same reason as before: the interrupt takes one RTT to reach the
+    // server, so a segment the server opens for the INTERRUPTED turn inside that window
+    // re-opens the gate for that turn's audio. Narrow (serial pipeline, hundreds of ms
+    // per segment, ws.ts aborts on the interrupt frame) and strictly better than the dead
+    // guard it replaces — but a window, not zero. See lib/voice/playback-epoch.ts.
     epochs.beginSegment()
   }
 
@@ -259,7 +209,7 @@ export function useVoice() {
     const socket = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
     socket.binaryType = 'arraybuffer'
     ws = socket
-    socket.onclose = () => { connected.value = false; state.value = 'idle'; events.emit({ type: 'disconnected' }) }
+    socket.onclose = () => { connected.value = false; state.value = 'idle'; turns.disconnect(); events.emit({ type: 'disconnected' }) }
     socket.onerror = () => { error.value = 'WebSocket error'; events.emit({ type: 'error' }) }
     socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
@@ -267,13 +217,13 @@ export function useVoice() {
         enqueuePcm(e.data, epochs.segment())
       } else {
         const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
-        // Carries the sample rate for the binary frames that follow it — WS delivery is
-        // ordered, so this always lands before the segment's first PCM chunk.
-        if (fx.audioBegin) onAudioBegin(fx.audioBegin.sampleRate)
-        if (fx.delta) pushDelta(fx.delta.role, fx.delta.text)
-        if (fx.reasoning) pushReasoning(fx.reasoning)
-        if (fx.tool) pushTool(fx.tool)
-        if (fx.usage) setUsage(fx.usage)
+        // audio-begin now names its turn: a segment from a superseded turn is rejected
+        // outright (closes the barge-in window documented on onAudioBegin).
+        if (fx.audioBegin) {
+          if (fx.audioBegin.turnId !== undefined && turns.isStale(fx.audioBegin.turnId)) epochs.rejectSegment()
+          else onAudioBegin(fx.audioBegin.sampleRate)
+        }
+        if (fx.messageFrame) turns.handle(fx.messageFrame)
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
         for (const ev of fx.events) events.emit(ev)
@@ -297,6 +247,7 @@ export function useVoice() {
         const p = desiredPreset ?? settings.value.presetId
         socket.send(JSON.stringify({ type: 'preset', presetId: p }))
         if (desiredModel) socket.send(JSON.stringify({ type: 'model', modelDefId: desiredModel }))
+        turns.reset()
         resolve()
       }
       socket.addEventListener('error', () => reject(new Error('WebSocket error')), { once: true })
@@ -388,6 +339,7 @@ export function useVoice() {
       onSpeechStart: () => {
         if (settings.value.bargeInEnabled && isPlaying()) {
           stopPlayback()
+          turns.interrupt()
           ws?.send(JSON.stringify({ type: 'interrupt' }))
           events.emit({ type: 'bargein' })
         }
@@ -451,7 +403,7 @@ export function useVoice() {
   return {
     state,
     connected,
-    transcript,
+    messages,
     error,
     /** Connect the WS + AudioContext (no mic). Text-first entry point. */
     connect,
@@ -469,6 +421,7 @@ export function useVoice() {
     stop() {
       ws?.send(JSON.stringify({ type: 'interrupt' }))
       stopPlayback()
+      turns.interrupt()
       state.value = 'idle'
     },
     setPreset: (presetId: string) => {
@@ -499,7 +452,6 @@ export function useVoice() {
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return false
       if (isPlaying()) { stopPlayback(); events.emit({ type: 'bargein' }) } // typed barge-in
-      pendingUserAttachments = attachments
       ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments }))
       return true
     },
@@ -517,7 +469,8 @@ export function useVoice() {
      * clears the local transcript.
      */
     newConversation: () => {
-      transcript.value = []
+      messages.value = []
+      turns.interrupt()
       conversationId.value = null
       conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))

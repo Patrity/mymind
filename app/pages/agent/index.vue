@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useMediaQuery } from '@vueuse/core'
-import type { TranscriptEntry } from '~/composables/useVoice'
-import { buildResumeTranscript } from '~/lib/agent/transcript'
+import { toUIMessages } from '~/lib/agent/to-ui-messages'
+import { uiMessageText } from '~/lib/agent/render'
 import { truncateForRetry } from '~/lib/agent/retry'
 
 definePageMeta({ title: 'Agent' })
@@ -83,26 +83,26 @@ const showBridgetAvatar = computed(() => isLgUp.value && !fullBleed.value)
 // generation, so they're deliberately excluded.
 const busy = computed(() => ['thinking', 'tool', 'speaking', 'typing'].includes(voice.state.value))
 
-// Caption over the avatar: the message currently being spoken/typed. Tool chips are not
-// captions — show the latest user/assistant text instead. Consumed by full-bleed mode.
+// Caption over the avatar: the message currently being spoken/typed. Consumed by
+// full-bleed mode.
 const caption = computed(() => {
-  const t = voice.transcript.value
-  for (let i = t.length - 1; i >= 0; i--) if (t[i]!.role !== 'tool') return t[i]!
+  const list = voice.messages.value
+  for (let i = list.length - 1; i >= 0; i--) {
+    const text = uiMessageText(list[i]!)
+    if (text) return { id: list[i]!.id, text }
+  }
   return null
 })
 
-// Undo a tool call from its inline transcript chip.
+// Tool calls undone this session (by toolCallId). Resumed tool parts start not-undone,
+// exactly as the old chips did.
 const toast = useToast()
 const redeem = useUndo()
-async function undoTool(entry: TranscriptEntry) {
-  if (!entry.undoToken) return
+const undone = reactive(new Set<string>())
+async function undoTool(toolCallId: string, undoToken: string) {
   try {
-    // A refusal comes back as { ok: false, reason } with a 200 and useUndo() has already
-    // toasted it. Only a genuine transport/server error lands here — without this catch it
-    // became an unhandled rejection and the chip just did nothing, which is the silent no-op
-    // this whole flow exists to remove. Same handling as galaxy.vue's onUndo.
-    const { ok } = await redeem(entry.undoToken)
-    if (ok) entry.undone = true
+    const { ok } = await redeem(undoToken)
+    if (ok) undone.add(toolCallId)
   } catch (e) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Undo failed', description: err?.data?.statusMessage ?? err?.message })
@@ -122,16 +122,16 @@ async function toggleMic() {
   }
 }
 
-// Transcript rebuild (chip placement, legacy fallback, trailing-bubble rule) lives in
-// ~/lib/agent/transcript so it can be unit-tested — it used to be inline here, untested.
+// Persisted messages -> AgentUIMessage[] (chip placement, legacy fallback, trailing-bubble
+// rule) lives in ~/lib/agent/to-ui-messages so it can be unit-tested.
 async function resume(id: string) {
   try {
     const { conversation, messages } = await useConversations().getConversation(id)
     // Build first, commit last: if loadConversation throws, the old thread must stay
     // on screen intact rather than showing the new transcript under the old row.
-    const next = buildResumeTranscript(messages)
+    const next = toUIMessages(messages)
     await voice.loadConversation(id)
-    voice.transcript.value = next
+    voice.messages.value = next
     voice.conversationId.value = conversation.id
     voice.conversationTitle.value = conversation.title
   } catch (e) {
@@ -144,15 +144,15 @@ async function resume(id: string) {
   }
 }
 
-/** Re-send the user turn that preceded this assistant entry, dropping the assistant
+/** Re-send the user turn that preceded this assistant message, dropping the assistant
  *  turn and everything after it. This replaces in place — it does NOT fork; parent_id
  *  branching stays deferred. Pure walk-back-and-truncate logic lives in
  *  ~/lib/agent/retry so it's unit-testable without a live voice connection. */
-async function retryTurn(entry: TranscriptEntry) {
-  const next = truncateForRetry(voice.transcript.value, entry.id)
-  if (!next) return
-  voice.transcript.value = next.transcript
-  await voice.sendText(next.userTurn.text, speakReply.value, next.userTurn.attachments)
+async function retryTurn(messageId: string) {
+  const plan = truncateForRetry(voice.messages.value, messageId)
+  if (!plan) return
+  voice.messages.value = plan.messages
+  await voice.sendText(plan.text, speakReply.value, plan.attachments)
 }
 
 function startNewConversation() {
@@ -219,9 +219,8 @@ onMounted(() => {
          survives the round trip. The caption goes through MdView, never raw interpolation —
          the old page printed `{{ caption.text }}` as plain text, so the most prominent text
          on the screen showed literal `#`/`**`, the visible twin of the TTS-pronounces-
-         asterisks bug. cache-key is per-entry: a shared first delta otherwise collides on
-         MDC's hash-of-value key and renders another entry's content (live-verified on the
-         transcript; see Transcript.vue). -->
+         asterisks bug. cache-key is per-message: a shared first delta otherwise collides on
+         MDC's hash-of-value key and renders another message's content. -->
     <div
       v-if="fullBleed"
       class="fixed inset-0 z-50 flex flex-col bg-elevated"
@@ -318,9 +317,10 @@ onMounted(() => {
       </template>
 
       <template #body>
-        <VoiceTranscript
+        <AgentConversation
           class="flex-1 min-h-0"
-          :entries="voice.transcript.value"
+          :messages="voice.messages.value"
+          :undone="undone"
           @undo="undoTool"
           @retry="retryTurn"
           @pick="pickStarter"
@@ -336,7 +336,6 @@ onMounted(() => {
           />
         </div>
         <VoiceComposer
-          :entries="voice.transcript.value"
           :send-text="voice.sendText"
           :speak="speakReply"
           :busy="busy"

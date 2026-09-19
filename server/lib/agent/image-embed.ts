@@ -44,9 +44,10 @@ function collapse(text: string): string {
  * markdown, so a marker that is half-typed at the boundary and complete by the end of the reply
  * shrinks by its whole length rather than by a space. `sanitizedOffset('a ![imag')` is 8 while
  * `sanitizedOffset('a ![image]b')` is 3 — so offsets are NOT monotonic across a turn, and the
- * split can land mid-word. `buildResumeTranscript` guards the consequence with
- * `cursor = Math.max(cursor, at)`, which prevents re-emitting text but cannot recover the exact
- * position. Rare: it needs a tool call to fire while the model is part-way through a marker.
+ * split can land mid-word. `toUIMessages` (app/lib/agent/to-ui-messages.ts) guards the
+ * consequence with `cursor = Math.max(cursor, at)`, which prevents re-emitting text but cannot
+ * recover the exact position. Rare: it needs a tool call to fire while the model is part-way
+ * through a marker.
  */
 export function sanitizedOffset(text: string): number {
   return collapse(text).trimStart().length

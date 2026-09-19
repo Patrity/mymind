@@ -2,18 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { mapServerMessage } from '../app/lib/voice/messages'
 
 describe('mapServerMessage', () => {
-  it('user transcript → delta + sttFinal event with char count', () => {
-    const fx = mapServerMessage({ type: 'transcript', role: 'user', text: 'hello world' }, false)
-    expect(fx.delta).toEqual({ role: 'user', text: 'hello world' })
-    expect(fx.events).toEqual([{ type: 'sttFinal', chars: 11 }])
-  })
-
-  it('assistant transcript → delta, no events', () => {
-    const fx = mapServerMessage({ type: 'transcript', role: 'assistant', text: 'hi' }, false)
-    expect(fx.delta).toEqual({ role: 'assistant', text: 'hi' })
-    expect(fx.events).toEqual([])
-  })
-
   it('maps state messages, including tool', () => {
     expect(mapServerMessage({ type: 'state', state: 'speaking' }, false).state).toBe('speaking')
     expect(mapServerMessage({ type: 'state', state: 'thinking' }, false).state).toBe('thinking')
@@ -34,20 +22,8 @@ describe('mapServerMessage', () => {
   it('unknown messages are inert', () => {
     const fx = mapServerMessage({ type: 'nonsense', text: 'x' }, false)
     expect(fx.state).toBeUndefined()
-    expect(fx.delta).toBeUndefined()
-    expect(fx.tool).toBeUndefined()
+    expect(fx.messageFrame).toBeUndefined()
     expect(fx.events).toEqual([])
-  })
-
-  it('tool result event → inline tool effect', () => {
-    const fx = mapServerMessage({ type: 'tool', name: 'web_search', summary: 'searched "x" (5)', undoToken: 'u1' }, false)
-    expect(fx.tool).toEqual({ name: 'web_search', summary: 'searched "x" (5)', undoToken: 'u1' })
-    expect(fx.delta).toBeUndefined()
-    expect(fx.events).toEqual([])
-  })
-
-  it('tool event without name/summary stays inert', () => {
-    expect(mapServerMessage({ type: 'tool', text: 'x' }, false).tool).toBeUndefined()
   })
 
   it('typing state message → state:typing, no events', () => {
@@ -56,11 +32,19 @@ describe('mapServerMessage', () => {
     expect(fx.events).toEqual([])
   })
 
-  it('reasoning message → reasoning effect, no delta', () => {
-    const fx = mapServerMessage({ type: 'reasoning', text: 'thinking…' }, false)
-    expect(fx.reasoning).toBe('thinking…')
-    expect(fx.delta).toBeUndefined()
-    expect(fx.events).toEqual([])
+  it('passes chunk frames through as messageFrame', () => {
+    const frame = { type: 'chunk', turnId: 3, chunk: { type: 'text-delta', id: 't', delta: 'hi' } }
+    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame, events: [] })
+  })
+
+  it('a user-message frame is a messageFrame plus the sttFinal viz event', () => {
+    const frame = { type: 'user-message', turnId: 3, message: { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hello world' }] } }
+    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame, events: [{ type: 'sttFinal', chars: 11 }] })
+  })
+
+  it('audio-begin carries its turnId', () => {
+    expect(mapServerMessage({ type: 'audio-begin', segmentId: 1, sampleRate: 24000, turnId: 3 } as never, false).audioBegin)
+      .toEqual({ segmentId: 1, sampleRate: 24000, turnId: 3 })
   })
 })
 
@@ -68,7 +52,7 @@ describe('mapServerMessage conversation frame', () => {
   it('maps the lazily-created thread id + derived title', () => {
     const fx = mapServerMessage({ type: 'conversation', conversationId: 'c1', title: 'Where is my cat' }, false)
     expect(fx.conversation).toEqual({ id: 'c1', title: 'Where is my cat' })
-    expect(fx.delta).toBeUndefined()
+    expect(fx.messageFrame).toBeUndefined()
     expect(fx.events).toEqual([])
   })
   it('a null/absent title maps to null, not undefined', () => {
