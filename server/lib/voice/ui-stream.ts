@@ -61,8 +61,16 @@ export function createUIChunkEncoder(messageId: string): UIChunkEncoder {
         }
         case 'subagent':
           return [{ type: 'data-subagent', id: e.parentCallId, data: { steps: e.steps } }]
-        case 'usage':
-          return [{ type: 'message-metadata', messageMetadata: { usage: { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens } } }]
+        case 'usage': {
+          const usage = {
+            ...(e.inputTokens !== undefined ? { inputTokens: e.inputTokens } : {}),
+            ...(e.outputTokens !== undefined ? { outputTokens: e.outputTokens } : {}),
+            ...(e.totalTokens !== undefined ? { totalTokens: e.totalTokens } : {}),
+            ...(e.contextTokens !== undefined ? { contextTokens: e.contextTokens } : {}),
+            ...(e.modelDefId !== undefined ? { modelDefId: e.modelDefId } : {})
+          }
+          return [{ type: 'message-metadata', messageMetadata: { usage } }]
+        }
         default:
           return []
       }

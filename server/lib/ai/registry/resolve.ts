@@ -110,7 +110,7 @@ export async function withFailoverOver<T>(
  * vendors (e.g. Anthropic) are fronted by an OpenAI-compatible gateway (LiteLLM), so
  * there's a single transport.
  *
- * The ONLY caller is reasoningModels() (server/lib/agent/model.ts), consumed exclusively
+ * The ONLY caller is reasoningChain() (server/lib/agent/model.ts), consumed exclusively
  * by run.ts's streamText() calls — bulk/vision go through chat.ts's raw REST fetch, and
  * embeddings/stt/tts have their own raw-fetch adapters, none of which touch this function.
  * `includeUsage: true` is therefore scoped to the streaming agent chat path by construction,

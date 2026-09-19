@@ -25,6 +25,10 @@ export interface MessageUsage {
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
+  /** The context in use after this call: the LAST model step's input + output tokens. */
+  contextTokens?: number
+  /** The registry model that actually produced the stream (failover-aware). */
+  modelDefId?: string
 }
 
 export interface ConversationMessageDTO {

@@ -194,7 +194,7 @@ export default defineWebSocketHandler({
         // never appeared).
         const context = (await buildLiveContext(new Date())) || undefined
         let reasoningText = ''
-        let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null = null
+        let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string } | null = null
         const prevLen = s.history.length
         const ts = createTurnStream({ turnId, attachments: attachmentsForTurn, send: d => peer.send(d) })
         turnStream = ts
@@ -204,7 +204,7 @@ export default defineWebSocketHandler({
           // case, and if the rare forced-final recovery path (run.ts) yields a second
           // one, it's from the streamText call that actually produced the visible text —
           // that supersedes the aborted first call's usage rather than adding to it.
-          else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens }
+          else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens, contextTokens: e.contextTokens, modelDefId: e.modelDefId }
           ts.emit(e)
         }
         s.history = await exec!(ac.signal, emit, context)

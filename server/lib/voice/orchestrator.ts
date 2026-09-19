@@ -22,7 +22,7 @@ export type VoiceEvent =
   // exactly what a resumed thread will show.
   | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind }
   | { type: 'subagent'; parentCallId: string; steps: SubagentStep[] }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string }
   | { type: 'audio-begin'; segmentId: number; sampleRate: number }
   | { type: 'audio'; bytes: Uint8Array }
   | { type: 'audio-end'; segmentId: number }
@@ -148,7 +148,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     } else if (ev.type === 'usage') {
       // Metadata only, same as reasoning above: never touches assistantText, the
       // transcript events, or the TTS chunker — it isn't part of what the user hears/reads.
-      deps.emit({ type: 'usage', inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, totalTokens: ev.totalTokens })
+      deps.emit({ type: 'usage', inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, totalTokens: ev.totalTokens, contextTokens: ev.contextTokens, modelDefId: ev.modelDefId })
     } else if (ev.type === 'text-delta') {
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })

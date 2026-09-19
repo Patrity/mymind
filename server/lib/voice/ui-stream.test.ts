@@ -105,6 +105,12 @@ describe('createUIChunkEncoder', () => {
     expect(message.parts.some(p => p.type.startsWith('data-'))).toBe(false)
   })
 
+  it('usage metadata carries contextTokens + modelDefId and never undefined keys', async () => {
+    const { message } = await assemble(encodeTurn([text('x'), { type: 'usage', inputTokens: 5, totalTokens: 9, contextTokens: 7, modelDefId: 'm1' }]))
+    expect(message.metadata?.usage).toEqual({ inputTokens: 5, totalTokens: 9, contextTokens: 7, modelDefId: 'm1' })
+    expect(Object.keys(message.metadata!.usage!)).not.toContain('outputTokens')
+  })
+
   it('appends image-embed text that arrives after state:idle into the same message', async () => {
     const { message } = await assemble(encodeTurn([text('Here.'), { type: 'state', state: 'idle' }, text('\n\n![a cat](/api/images/i1/raw)')]))
     expect(visible(message)).toEqual([{ type: 'text', text: 'Here.\n\n![a cat](/api/images/i1/raw)', state: 'done' }])

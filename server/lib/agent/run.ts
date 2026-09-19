@@ -1,6 +1,6 @@
 // server/lib/agent/run.ts
 import { streamText as realStreamText, stepCountIs } from 'ai'
-import { reasoningModels } from './model'
+import { reasoningChain } from './model'
 import { buildAiTools } from './ai-tools'
 import { buildSystemPrompt as realBuildSystemPrompt } from './prompt'
 import { bridgetProfile, type AgentProfile } from './profile'
@@ -53,7 +53,7 @@ export type AgentEvent =
   | ToolStartEvent
   | ToolResultEvent
   | SubagentEvent
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string }
   | { type: 'done' }
 
 // Map one AI SDK v6 fullStream part to a text/reasoning event (or null for
@@ -82,7 +82,25 @@ function partToUsageEvent(part: unknown): { type: 'usage'; inputTokens?: number;
   const outputTokens = typeof u.outputTokens === 'number' ? u.outputTokens : undefined
   const totalTokens = typeof u.totalTokens === 'number' ? u.totalTokens : undefined
   if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return null
-  return { type: 'usage', inputTokens, outputTokens, totalTokens }
+  // Built from defined fields only — an omitted key (not a key set to `undefined`) is what
+  // lets downstream `toEqual` assertions (and the JSON the wire actually carries) hold.
+  return {
+    type: 'usage',
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {})
+  }
+}
+
+/** The context in use after this call = the LAST step's prompt + completion (the multi-step
+ *  totals double-count history across steps). Undefined parts are omitted, not zeroed. */
+function withContext(ev: Extract<AgentEvent, { type: 'usage' }>, lastStep: { inputTokens?: unknown; outputTokens?: unknown } | null, modelDefId: string | undefined) {
+  const out: Extract<AgentEvent, { type: 'usage' }> = { ...ev }
+  const i = typeof lastStep?.inputTokens === 'number' ? lastStep.inputTokens : undefined
+  const o = typeof lastStep?.outputTokens === 'number' ? lastStep.outputTokens : undefined
+  if (i !== undefined || o !== undefined) out.contextTokens = (i ?? 0) + (o ?? 0)
+  if (modelDefId) out.modelDefId = modelDefId
+  return out
 }
 
 // One ordered channel that BOTH the model stream and tool callbacks push into. The old design
@@ -137,6 +155,9 @@ export interface RunDeps {
   streamText?: StreamTextFn
   tools?: AgentTool[]
   buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string }) => Promise<string>
+  /** Test-only override for the reasoning chain (model + registry modelDefId pairs), used
+   *  in place of reasoningChain() when present. */
+  chain?: { model: unknown; modelDefId: string }[]
 }
 
 // The agent is ALWAYS fully armed: the whole profile toolset (incl. exec) is
@@ -178,16 +199,17 @@ export async function* runAgent(
   // Build the stream, trying each reasoning model in priority order. If stream
   // creation throws (bad baseURL, adapter construction), fall over to the next.
   // Mid-stream failures are NOT retried.
-  const models = deps.streamText ? [undefined as never] : await reasoningModels(ctx.modelDefId)
+  const chain = deps.chain ?? (deps.streamText ? [{ model: undefined as never, modelDefId: undefined as string | undefined }] : await reasoningChain(ctx.modelDefId))
   let result: ReturnType<typeof realStreamText> | undefined
-  let chosen: (typeof models)[number] | undefined
+  let chosen: (typeof chain)[number]['model'] | undefined
+  let chosenId: string | undefined
   let lastErr: unknown
-  for (let i = 0; i < models.length; i++) {
-    const model = models[i]!
+  for (let i = 0; i < chain.length; i++) {
+    const model = chain[i]!.model
     const started = Date.now()
     try {
       result = (streamTextFn as unknown as typeof realStreamText)({
-        model,
+        model: model as never,
         system,
         messages: modelMessages as never,
         tools,
@@ -202,6 +224,7 @@ export async function* runAgent(
       })
       recordEvent({ kind: 'attempt', name: 'reasoning:agent', status: 'ok', severity: 'info', usage: 'reasoning', provider: (model as { label?: string } | undefined)?.label ?? null, modelId: (model as { modelId?: string } | undefined)?.modelId ?? null, attempt: i, durationMs: Date.now() - started })
       chosen = model
+      chosenId = chain[i]!.modelDefId
       break
     } catch (err) {
       lastErr = err
@@ -216,16 +239,21 @@ export async function* runAgent(
   let sawText = false
   let sawToolCall = false
   let emittedText = ''
+  // The LAST finish-step's usage — the context in use after the call. Multi-step totals
+  // (`finish.totalUsage`) double-count history repeated into every step's prompt.
+  let lastStep: { inputTokens?: number; outputTokens?: number } | null = null
   const mainPump = pump(result.fullStream, channel)
   for await (const item of channel.drain()) {
     if (item.kind === 'event') { yield item.ev; continue }
     if (item.kind === 'error') throw item.err
     const part = item.part
-    if ((part as { type?: unknown }).type === 'tool-call') sawToolCall = true
+    const partType = (part as { type?: unknown }).type
+    if (partType === 'tool-call') sawToolCall = true
+    if (partType === 'finish-step') lastStep = (part as { usage?: { inputTokens?: number; outputTokens?: number } }).usage ?? null
     const ev = partToEvent(part)
     if (ev) { if (ev.type === 'text-delta') { sawText = true; emittedText += ev.text } ; yield ev }
     const usageEv = partToUsageEvent(part)
-    if (usageEv) yield usageEv
+    if (usageEv) yield withContext(usageEv, lastStep, chosenId)
   }
   await mainPump
 
@@ -257,16 +285,20 @@ export async function* runAgent(
       })
       channel = createChannel()
       const followupPump = pump(followup.fullStream, channel)
+      // Own lastStep, separate from the main loop's: this is a SEPARATE streamText call, so
+      // its context accounting must not inherit the aborted main call's last step.
+      let followupLastStep: { inputTokens?: number; outputTokens?: number } | null = null
       for await (const item of channel.drain()) {
         if (item.kind === 'event') { yield item.ev; continue }
         if (item.kind === 'error') throw item.err
+        if ((item.part as { type?: unknown }).type === 'finish-step') followupLastStep = (item.part as { usage?: { inputTokens?: number; outputTokens?: number } }).usage ?? null
         const ev = partToEvent(item.part)
         if (ev) { if (ev.type === 'text-delta') followupText = true; yield ev }
         // This is a SEPARATE streamText call, so its usage does not include the aborted
         // main call's tokens — it supersedes (not adds to) any usage already yielded above,
         // since it's what actually produced the text the user sees.
         const usageEv = partToUsageEvent(item.part)
-        if (usageEv) yield usageEv
+        if (usageEv) yield withContext(usageEv, followupLastStep, chosenId)
       }
       await followupPump
       recordEvent({ kind: 'attempt', name: `reasoning:agent-${mode}`, status: followupText ? 'ok' : 'warn', severity: followupText ? 'info' : 'warn', usage: 'reasoning', modelId: (chosen as { modelId?: string } | undefined)?.modelId ?? null, durationMs: Date.now() - started })
