@@ -12,8 +12,16 @@ describe('personaState', () => {
   })
 })
 describe('personaVariant', () => {
-  it('passes known variants, defaults everything else to obsidian', () => {
-    expect(personaVariant('halo')).toBe('halo')
+  it('passes known (offered) variants through', () => {
+    expect(personaVariant('mana')).toBe('mana')
+    expect(personaVariant('opal')).toBe('opal')
+    expect(personaVariant('glint')).toBe('glint')
+  })
+  it('normalizes halo and command to obsidian — both render blank (white-on-white) in light mode', () => {
+    expect(personaVariant('halo')).toBe('obsidian')
+    expect(personaVariant('command')).toBe('obsidian')
+  })
+  it('defaults anything else unknown to obsidian', () => {
     expect(personaVariant('nope')).toBe('obsidian')
     expect(personaVariant(undefined)).toBe('obsidian')
   })

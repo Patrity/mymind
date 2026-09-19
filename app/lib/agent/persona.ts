@@ -1,6 +1,14 @@
 import type { VoiceState } from '~/composables/useVoice'
 
-export const PERSONA_VARIANTS = ['obsidian', 'mana', 'opal', 'halo', 'glint', 'command'] as const
+// 'halo' and 'command' are deliberately excluded: both artboards render only WHITE artwork —
+// no dynamicColor theme adaptation, unlike obsidian's — so they're invisible (white-on-white)
+// in light mode and only show up in dark mode (verified via the /dev/elements fixture: halo
+// = a bright ring, command = a white slash, both cycled through every state; obsidian/mana/
+// opal/glint all render in both themes). Offering a picker option that goes blank depending on
+// the viewer's OS theme is worse than not offering it. The vendored `ai-elements/persona`
+// wrapper's own `sources` map (Persona.vue) still lists all six — this only trims what OUR
+// picker/normalizer treat as valid.
+export const PERSONA_VARIANTS = ['obsidian', 'mana', 'opal', 'glint'] as const
 export type PersonaVariant = typeof PERSONA_VARIANTS[number]
 
 export type PersonaState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'asleep'
@@ -31,7 +39,9 @@ export function personaState(state: VoiceState, connected: boolean): PersonaStat
 
 /**
  * Normalize unknown values to the default persona variant.
- * Known variants pass through; anything else defaults to 'obsidian'.
+ * Known (offered) variants pass through; anything else — including a cookie that still
+ * carries 'halo' or 'command' from before they were dropped from PERSONA_VARIANTS above —
+ * defaults to 'obsidian'.
  */
 export function personaVariant(v: unknown): PersonaVariant {
   if (typeof v === 'string' && PERSONA_VARIANTS.includes(v as PersonaVariant)) {
