@@ -7,6 +7,9 @@ import 'vue-stream-markdown/index.css'
 
 interface Props {
   content?: string
+  /** vue-stream-markdown's default "streaming" mode keeps the last block loading forever for
+   * one-shot static content (images never render) — pass true only while the turn is in flight. */
+  streaming?: boolean
   class?: HTMLAttributes['class']
 }
 
@@ -32,7 +35,7 @@ const md = computed(() => (slotContent.value ?? props.content ?? '') as string)
 <template>
   <Markdown
     :content="md"
-    mode="static"
+    :mode="props.streaming ? 'streaming' : 'static'"
     :class="
       cn(
         'size-full [&>*:first-child]:mt-0! [&>*:last-child]:mb-0!',

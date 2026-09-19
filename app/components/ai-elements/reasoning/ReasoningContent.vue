@@ -9,6 +9,9 @@ import 'vue-stream-markdown/index.css'
 interface Props {
   class?: HTMLAttributes['class']
   content: string
+  /** vue-stream-markdown's default "streaming" mode keeps the last block loading forever for
+   * one-shot static content — pass true only while the turn is in flight. */
+  streaming?: boolean
 }
 
 const props = defineProps<Props>()
@@ -40,6 +43,6 @@ const md = computed(() => (slotContent.value ?? props.content ?? '') as string)
       props.class,
     )"
   >
-    <Markdown :content="md" />
+    <Markdown :content="md" :mode="props.streaming ? 'streaming' : 'static'" />
   </CollapsibleContent>
 </template>
