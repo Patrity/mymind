@@ -112,7 +112,18 @@ function createChannel() {
 type Channel = ReturnType<typeof createChannel>
 
 /** Copy a model stream into the channel, then close it. A stream error becomes an item so it
- *  is rethrown IN ORDER by the consumer, exactly where the old for-await would have thrown. */
+ *  is rethrown IN ORDER by the consumer, exactly where the old for-await would have thrown.
+ *
+ *  The pump does not notice a consumer that stops early: it keeps draining `stream` into a
+ *  channel nobody reads. That is safe TODAY only because every early exit in practice is an
+ *  abort — the orchestrator's `if (deps.signal.aborted) break` and chat.post.ts's
+ *  client-disconnect abort both fire `ctx.signal`, which streamText also holds as its
+ *  `abortSignal`, so the model stream ends by itself. A consumer that `break`s, returns or
+ *  throws WITHOUT aborting would leave the model generating (and billing) to the end; cancel
+ *  the iterator in a `finally` here if that ever changes.
+ *  Speak-mode implication: the pump also reads ahead of a slow consumer. In speak mode the
+ *  orchestrator awaits the TTS pipeline per text delta, but that wait no longer throttles the
+ *  model stream — the whole reply is pulled at model speed and buffered in the channel. */
 function pump(stream: AsyncIterable<unknown>, ch: Channel): Promise<void> {
   return (async () => {
     try { for await (const part of stream) ch.push({ kind: 'part', part }) } catch (err) { ch.push({ kind: 'error', err }) } finally { ch.close() }
