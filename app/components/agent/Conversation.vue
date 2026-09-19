@@ -19,6 +19,10 @@ defineProps<{
   /** Forwarded to AgentEmptyState for the hero Persona. */
   state: VoiceState
   connected: boolean
+  /** Forwarded to AgentEmptyState: false while full-bleed voice mode is open, so its hero
+   *  Persona doesn't mount a SECOND live Rive/WebGL2 canvas alongside the overlay's — see
+   *  AgentEmptyState's `hero` prop. */
+  hero: boolean
 }>()
 const emit = defineEmits<{
   undo: [toolCallId: string, undoToken: string]
@@ -39,6 +43,7 @@ const emit = defineEmits<{
         v-if="!messages.length"
         :state="state"
         :connected="connected"
+        :hero="hero"
         @pick="(p: string) => emit('pick', p)"
       />
       <div

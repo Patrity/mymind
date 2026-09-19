@@ -233,6 +233,7 @@ function simulatePrefill() {
       :undone="undone"
       state="idle"
       :connected="true"
+      :hero="true"
       @undo="(id: string) => undone.add(id)"
     />
     <!-- Task 0 spike block (unchanged) follows -->
@@ -551,6 +552,7 @@ function simulatePrefill() {
           :approval="approvalDetails"
           state="tool"
           :connected="true"
+          :hero="true"
           @approve="onApprovalApprove"
           @deny="onApprovalDeny"
         />
@@ -580,6 +582,7 @@ function simulatePrefill() {
           <AgentEmptyState
             :state="emptyStateState"
             :connected="emptyStateConnected"
+            :hero="true"
             @pick="(p: string) => (emptyStatePicked = p)"
           />
         </div>

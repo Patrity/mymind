@@ -3,7 +3,15 @@
 import type { VoiceState } from '~/composables/useVoice'
 import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion'
 
-defineProps<{ state: VoiceState; connected: boolean }>()
+defineProps<{
+  state: VoiceState
+  connected: boolean
+  /** False while full-bleed voice mode is open (the overlay mounts its own full-size
+   *  Persona) — "exactly one Rive/WebGL2 canvas at a time" (AgentPersona) means this hero
+   *  must NOT mount a second one underneath it. A same-size placeholder div stands in so
+   *  the empty state doesn't jump when voice mode opens/closes on an empty thread. */
+  hero: boolean
+}>()
 const emit = defineEmits<{ pick: [prompt: string] }>()
 
 // Drawn from the real tool surface — the page previously gave no indication that
@@ -19,9 +27,16 @@ const starters = [
 <template>
   <div class="flex flex-col items-center justify-center gap-5 px-6 py-16 text-center">
     <AgentPersona
+      v-if="hero"
       size="hero"
       :state="state"
       :connected="connected"
+    />
+    <div
+      v-else
+      class="size-40 shrink-0"
+      role="img"
+      aria-label="Bridget"
     />
     <div class="flex flex-col gap-1.5">
       <h2 class="text-lg font-semibold text-highlighted">Bridget</h2>

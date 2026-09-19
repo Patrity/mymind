@@ -31,7 +31,7 @@ const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
 // Reasoning-model override (ephemeral, cookie-backed). Empty cookie = default chain order.
 // reka-ui's USelectMenu rejects an empty-string item value, so the "Default" option uses a
 // non-empty sentinel that maps back to "no override" (empty cookie / null to setModel).
-// AgentToolbar builds the item list around the same sentinel.
+// AgentPromptInput builds the item list around the same sentinel.
 const DEFAULT_MODEL = '__default__'
 const { load: loadAiConfig, draft: aiDraft } = useAiConfig()
 const agentModel = useCookie<string>('agent-model', { default: () => '' })
@@ -234,19 +234,25 @@ onMounted(() => {
         aria-label="Back to chat"
         @click="fullBleed = false"
       />
-      <div class="flex flex-1 min-h-0 items-center justify-center">
+      <!-- overflow-hidden: the clipping wrapper for the full Persona. It's sized by `flex-1
+           min-h-0` (whatever the toolbar-less overlay leaves after the caption + mic band),
+           and the Persona itself is capped to fit THAT (size-full.client.vue), so on a short
+           viewport (a landscape phone, a small window) it shrinks instead of pushing the mic
+           band off-screen the way a fixed size-72/sm:size-96 did. -->
+      <div class="flex flex-1 min-h-0 items-center justify-center overflow-hidden">
         <AgentPersona
           size="full"
           :state="voice.state.value"
           :connected="voice.connected.value"
         />
       </div>
-      <!-- Capped + internally scrollable: the persona has its own min-height floor
-           (Persona.client.vue) and the mic band is shrink-0, so an uncapped caption is the
-           only flexible thing left — on a long reply at a short viewport (375x700, the
-           phone case this mode is likeliest to hit) it grew past the fold and pushed the
-           mic band below y=700 with no way to scroll to it. Capping keeps both always
-           on-screen; a long line scrolls internally instead of displacing them. -->
+      <!-- Capped + internally scrollable: the persona now shrinks to fit its wrapper
+           (max-h-72/sm:max-h-96, aspect-square — Persona.client.vue) rather than holding a
+           fixed size, and the mic band is shrink-0, so an uncapped caption is the only
+           flexible thing left — on a long reply at a short viewport (375x700, the phone case
+           this mode is likeliest to hit) it grew past the fold and pushed the mic band below
+           y=700 with no way to scroll to it. Capping keeps both always on-screen; a long line
+           scrolls internally instead of displacing them. -->
       <div
         v-if="caption"
         class="mx-auto mb-4 max-h-40 max-w-2xl shrink-0 overflow-y-auto px-6 text-center"
@@ -316,14 +322,18 @@ onMounted(() => {
           :approval="voice.pendingApproval.value"
           :state="voice.state.value"
           :connected="voice.connected.value"
+          :hero="!fullBleed"
           @undo="undoTool"
           @retry="retryTurn"
           @pick="pickStarter"
           @approve="(id, o) => voice.sendApproval(id, true, o)"
           @deny="id => voice.sendApproval(id, false)"
         />
+        <!-- !fullBleed: the overlay above mounts its OWN AgentMicBand (~line 260) — without
+             this guard, turning the mic on while voice mode is open ran two bands (and two
+             analyser-driven RAF loops) at once, one hidden behind the other. -->
         <AgentMicBand
-          v-if="micOn"
+          v-if="micOn && !fullBleed"
           :mic-analyser="voice.micAnalyser()"
           :speech-prob="voice.speechProb.value"
           :active="micOn"

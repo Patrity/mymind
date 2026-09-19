@@ -26,7 +26,11 @@ const sizeClass = computed(() => {
     case 'hero':
       return 'size-40'
     case 'full':
-      return 'size-72 sm:size-96'
+      // h-full (not a fixed size): the voice-mode overlay's wrapper is the one that shrinks
+      // on a short viewport (index.vue), so the Persona must follow it there instead of
+      // holding size-72/sm:size-96 and overflowing. max-h-* keeps the old ceiling on a tall
+      // viewport; aspect-square + max-w-full keep it from going wide instead of tall.
+      return 'h-full max-h-72 sm:max-h-96 w-auto max-w-full aspect-square'
     default:
       return 'size-7'
   }
