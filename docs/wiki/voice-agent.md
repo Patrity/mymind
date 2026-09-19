@@ -333,7 +333,7 @@ nowhere else, and the voice itself is a `voice_presets` row, not a value.
 | `app/pages/agent/index.vue` | **(cycle 65)** The two-panel shell: thread rail + conversation; full-bleed voice mode on `AgentPersona size="full"`. The `agent-bridget` column is gone. |
 | `app/pages/voice.vue` | **The Voice Studio (cycle 61)** — `/voice` is a real route again; the `routeRules` redirect to `/agent` was removed. See [voice-studio.md](voice-studio.md). |
 | `app/pages/agent/history.vue` | Full browse view for threads: search, counts, resume, delete-with-confirm |
-| `app/composables/useVoice.ts` | VAD, WAV encoding, WebSocket, PCM playback, barge-in; `speechProb`; `micAnalyser`/`outAnalyser` (MicBand only); `conversationId`/`conversationTitle`; `stop()` (abort turn) vs `disconnect()` (teardown). **(cycle 65)** The viz event channel (`events`, `onVizEvent`, `VizEvent`) is **deleted**; `restAfterAbort()` returns the client to idle for `stop`/`newConversation`/`loadConversation`, because an aborted turn sends no `state:'idle'` frame |
+| `app/composables/useVoice.ts` | VAD, WAV encoding, WebSocket, PCM playback, barge-in; `speechProb`; `micAnalyser()` (MicBand only — the TTS-playback analyser stays in the signal chain but is no longer exposed, cycle 65); `conversationId`/`conversationTitle`; `stop()` (abort turn) vs `disconnect()` (teardown). **(cycle 65)** The viz event channel (`events`, `onVizEvent`, `VizEvent`) is **deleted**; `restAfterAbort()` returns the client to idle for `stop`/`newConversation`/`loadConversation`, because an aborted turn sends no `state:'idle'` frame |
 | `app/composables/useBreezeSpeech.ts` | The studio's playback path — the same PCM-on-the-AudioContext-clock approach over plain `fetch`, so an audition never rides the conversation's socket |
 | `app/lib/voice/playback-epoch.ts` | `createPlaybackEpochs()` — which PCM frames still belong to the turn being listened to; drops a frame that was in flight when the user barged in |
 | `app/composables/useVoiceSettings.ts` | Cookie-persisted user settings (`voice-settings`), incl. `micDeviceId` |
@@ -387,8 +387,9 @@ and the Persona never touches the WebSocket.** It takes two props (`state`, `con
   not connected or `connecting` → `asleep`; `idle` → `idle`; `listening` → `listening`;
   `thinking | tool | typing` → `thinking`; `speaking` → `speaking`. Those are pushed into the
   artboard through `stateMachineInputs`, which every variant honours. An audio-reactive Persona was
-  explicitly deferred — `micAnalyser`/`outAnalyser` survive on `useVoice`, but only `MicBand.vue`
-  reads them now.
+  explicitly deferred — `useVoice` still exposes `micAnalyser()`, which only `MicBand.vue` reads.
+  The TTS-playback analyser node remains wired into the audio chain (playback routes through it)
+  but has no accessor any more: its only consumer was the retired avatar's jaw envelope.
 - **Three placements, one canvas.** `.client.vue` plus a `size` prop (`hero` / `inline` / `full`)
   guarantees exactly one Rive canvas is mounted at a time — hero in the empty thread, inline in the
   composer once the thread has messages, full in voice mode (the empty state's hero is suppressed

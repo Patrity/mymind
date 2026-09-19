@@ -505,8 +505,10 @@ export function useVoice() {
     },
     conversationId,
     conversationTitle,
+    // Only the MIC analyser is exposed. `outAnalyser` (the TTS playback node) stays in the
+    // signal chain below — playback routes through it — but its only reader was the retired
+    // avatar's jaw envelope, so there is no accessor for it any more. MicBand reads mic only.
     micAnalyser: () => micAnalyser,
-    outAnalyser: () => outAnalyser,
     pendingApproval,
     sendApproval: (requestId: string, approved: boolean, opts?: { remember?: boolean; pattern?: string }) => {
       if (ws?.readyState === WebSocket.OPEN) {

@@ -14,8 +14,3 @@ export async function reasoningChain(modelDefId?: string | null): Promise<{ mode
   const chain = reorderChain(await resolveChain('reasoning'), modelDefId)
   return chain.map(m => ({ model: languageModel(m), modelDefId: m.modelDefId }))
 }
-
-/** Back-compat: just the models, in order. Prefer reasoningChain when the modelDefId matters. */
-export async function reasoningModels(modelDefId?: string | null): Promise<LanguageModel[]> {
-  return (await reasoningChain(modelDefId)).map(c => c.model)
-}
