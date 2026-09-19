@@ -64,8 +64,11 @@ export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): C
     turn.done = (async () => {
       let last: AgentUIMessage | undefined
       try {
-        // onError: an `error` chunk is reported here, not thrown; the meta already has its text.
-        for await (const m of readUIMessageStream<AgentUIMessage>({ stream, onError: () => {} })) {
+        // onError: an `error` chunk is reported here, not thrown (the meta already has its
+        // text), and so is a chunk the assembler rejects. Log either; what was assembled so far
+        // is kept and finalized below. It never closes the socket.
+        const onError = (err: unknown) => console.warn(`[agent] turn ${turnId}: message stream error`, err)
+        for await (const m of readUIMessageStream<AgentUIMessage>({ stream, onError })) {
           // Keep draining rather than `break`: cancelling readUIMessageStream's output makes
           // the SDK's own later close() throw (an unhandled "already closed" rejection).
           if (turn.discarded) continue
@@ -105,12 +108,22 @@ export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): C
       if (frame.type === 'user-message') { o.upsert(frame.message); return }
       const turn = active?.turnId === frame.turnId ? active : open(frame.turnId)
       const c = frame.chunk
-      turn.controller.enqueue(c)
+      // A chunk the assembler rejected cancelled this turn's stream; enqueue would then throw
+      // inside the socket's onmessage. The failure is already logged — drop the chunk.
+      try { turn.controller.enqueue(c) } catch { /* stream cancelled by an assembler error */ }
       if (c.type === 'finish') close({})
       else if (c.type === 'abort') close({ interrupted: true })
       else if (c.type === 'error') close({ errorText: c.errorText })
     },
     isStale: turnId => turnId < current || closed.has(turnId),
+    // Known window: turn ids are assigned by the SERVER, so with no active turn this closes the
+    // newest turn the client has SEEN — not one it has sent but heard nothing from yet. A Stop
+    // pressed before turn N's first frame (e.g. while N-1's audio is still playing) therefore
+    // lets N's user-message, its already-generated chunks and an audio-begin through
+    // (isStale(N) is false). The server still aborts N on the same `interrupt` frame (it aborts
+    // whatever turn is current there), so N ends with an `abort` chunk if it produced any — at
+    // worst a short "stopped" reply, never a turn that runs on. Closing N here would need its id
+    // before any of N's frames arrive, and ids are only ever learned from those frames.
     interrupt() {
       if (active) close({ interrupted: true })
       else if (current) closed.add(current)

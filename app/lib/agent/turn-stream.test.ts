@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createClientTurns, finalizeMessage } from './turn-stream'
 import type { AgentMessageFrame, AgentUIChunk, AgentUIMessage } from '~~/shared/types/agent-ui'
 
@@ -170,6 +170,34 @@ describe('createClientTurns', () => {
       h.user(1, 'u1', 'first'); h.begin(1, 'a1'); h.say(1, 'a1', 'ok'); h.end(1, 'a1')
       await h.turns.settled()
       expect(h.messages.map(m => m.id)).toEqual(['u1', 'a1'])
+    })
+  })
+
+  describe('assembler errors', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+
+    // A chunk the SDK's assembler rejects (here: a text-delta for a text part that was never
+    // started) errors its TransformStream, which cancels this turn's source stream.
+    const poison = (h: ReturnType<typeof harness>, turnId: number) =>
+      h.chunk(turnId, { type: 'text-delta', id: 'never-started', delta: 'x' })
+
+    it('logs the error with the turn id instead of swallowing it', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const h = harness()
+      h.begin(4, 'a4'); h.say(4, 'a4', 'ok so far'); poison(h, 4)
+      await h.turns.settled()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('turn 4'), expect.anything())
+      expect(h.textOf('a4')).toBe('ok so far')
+    })
+
+    it('a later chunk for that turn cannot throw out of handle() (the socket onmessage)', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const h = harness()
+      h.begin(5, 'a5'); poison(h, 5)
+      await h.turns.settled()
+      await new Promise(r => setTimeout(r, 0))
+      expect(() => h.say(5, 'a5', 'more')).not.toThrow()
+      expect(() => h.end(5, 'a5')).not.toThrow()
     })
   })
 
