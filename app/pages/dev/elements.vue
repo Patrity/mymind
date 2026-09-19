@@ -204,7 +204,11 @@ const promptInputInitialText = ref('')
 const promptInputAutoSend = ref(false)
 const promptInputPrefill = ref('')
 const promptInputLog = ref('')
+// Counts sendText calls (not just the latest payload) — lets the double-submit re-entrancy
+// check assert "exactly one send" rather than just eyeballing the last log line.
+const promptInputSendCount = ref(0)
 async function onPromptInputSend(text: string, speak?: boolean, attachments?: AttachmentRef[]) {
+  promptInputSendCount.value++
   promptInputLog.value = JSON.stringify({ text, speak, attachments })
   return true
 }
@@ -618,7 +622,7 @@ function simulatePrefill() {
           />
         </div>
         <p class="text-xs text-muted-foreground">
-          speak: {{ promptInputSpeak }} · model: {{ promptInputModel }}
+          speak: {{ promptInputSpeak }} · model: {{ promptInputModel }} · sends: {{ promptInputSendCount }}
         </p>
         <p v-if="promptInputLog" class="text-xs text-muted-foreground font-mono">
           {{ promptInputLog }}

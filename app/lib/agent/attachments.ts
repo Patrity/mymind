@@ -38,6 +38,31 @@ export function attachmentErrorToast(code: string): { title: string; description
 }
 
 /**
+ * Resolve the File objects for what was actually submitted, in submitted order.
+ *
+ * `submitted` is the snapshot PromptInput's submitForm() captured BEFORE its async
+ * blob->dataURL conversion (context.ts) — the ids that were in the tray at Send time.
+ * `current` is the live `files.value` ref at the moment onSubmit runs, which — because
+ * addFiles() is never gated on isLoading — can already contain MORE items than were
+ * submitted (a drop/paste/attach that landed during the conversion's await window).
+ * Matching by id and walking `submitted`'s order (not `current`'s) is what keeps a
+ * mid-flight addition out of THIS turn's upload set, and skips an id that's since been
+ * removed or has no File (still converting) rather than throwing.
+ */
+export function filesForSubmit(
+  submitted: { id: string }[],
+  current: { id: string; file?: File }[]
+): File[] {
+  const byId = new Map(current.map(f => [f.id, f]))
+  const files: File[] = []
+  for (const item of submitted) {
+    const match = byId.get(item.id)
+    if (match?.file) files.push(match.file)
+  }
+  return files
+}
+
+/**
  * Upload a single file to the server.
  * Images go to /api/upload; other files go to /api/agent/files.
  * The post function is injected to allow mocking in tests.
