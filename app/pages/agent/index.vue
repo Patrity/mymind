@@ -31,14 +31,14 @@ const initialComposerText = typeof handoffQuery === 'string' && handoffQuery.tri
 // ordinary post-mount transition like every manual send.
 const handoffText = ref<string>()
 
-// Strip `q` from the URL as soon as we've captured it. The question is auto-submitted, so
-// leaving it in the address bar would mean a refresh, a bookmark, or a back-button
-// navigation silently fires the same model call again.
+// `q` is stripped from the URL only once the handoff has actually reached the composer
+// (see onMounted below) — NOT eagerly at mount. The question is auto-submitted, so leaving
+// it in the address bar permanently would mean a refresh, a bookmark or a back-button
+// navigation silently fires the same model call again; but stripping it BEFORE the handoff
+// means anything that throws in between loses the question from the composer and the URL
+// at once, with nothing left to recover it from. Late-stripping keeps the URL as the
+// fallback carrier: if the handoff never happens, a reload still re-fires it.
 const router = useRouter()
-onMounted(() => {
-  if (!initialComposerText) return
-  void router.replace({ path: route.path, query: { ...route.query, q: undefined } })
-})
 
 // Persistent preference (cookie-backed so it survives page reloads)
 const speakReply = useCookie<boolean>('agent-speak', { default: () => false })
@@ -183,19 +183,31 @@ function startNewConversation() {
 // sending "just work" without an explicit Connect step. Resume a thread if ?c= is set.
 onMounted(async () => {
   await voice.connect()
-  await loadAiConfig()
-  // Drop a stale override: if the cookie names a model no longer assigned to
-  // reasoning, clear it so the dropdown doesn't show a blank label and no dead
-  // id is sent. (Server reorderChain already no-ops an unknown id, so this is
-  // cosmetic — but keeps the picker honest.)
-  if (agentModel.value && !(aiDraft.value.assignments.reasoning ?? []).includes(agentModel.value)) {
-    agentModel.value = ''
+  // The registry load must NOT be able to cost the user their question. `useAiConfig().load()`
+  // is a bare `$fetch` with no catch of its own, so an unreachable/500 `/api/settings/ai-config`
+  // rejects here — and an async onMounted that unwinds never reaches the `?q=` handoff below.
+  // The model override is a nice-to-have (the server no-ops an unknown id anyway); the handoff
+  // is the whole reason the user is on this page.
+  try {
+    await loadAiConfig()
+    // Drop a stale override: if the cookie names a model no longer assigned to
+    // reasoning, clear it so the dropdown doesn't show a blank label and no dead
+    // id is sent. (Server reorderChain already no-ops an unknown id, so this is
+    // cosmetic — but keeps the picker honest.) Only meaningful when the registry
+    // really loaded: an empty draft from a FAILED load would clear a good cookie.
+    if (agentModel.value && !(aiDraft.value.assignments.reasoning ?? []).includes(agentModel.value)) {
+      agentModel.value = ''
+    }
+  } catch (e) {
+    console.warn('[agent] could not load the model registry; keeping the stored model override', e)
   }
   if (agentModel.value) voice.setModel(agentModel.value)
   const c = route.query.c
-  if (typeof c === 'string' && c) await resume(c)
+  if (typeof c === 'string' && c) await resume(c) // never throws — it has its own try/catch
   // Only now hand `?q=` to the composer — see the comment on handoffText.
   handoffText.value = initialComposerText
+  // ...and only now drop `q` from the address bar, once the composer actually has it.
+  if (initialComposerText) void router.replace({ path: route.path, query: { ...route.query, q: undefined } })
 })
 
 // Full-bleed's Escape must work even when focus never lands inside the overlay (e.g. the
