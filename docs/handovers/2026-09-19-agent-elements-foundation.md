@@ -87,23 +87,29 @@ deferred:
   - "`/sessions/[id]` transcript on the same Elements components — cycle 66. MyMind task
     `14d0074b`."
   - "Voice studio shared pieces + Home `PromptInput` — cycle 67. MyMind task `d321c732`."
-  - "Deferred minors (from the SDD ledger, none blocking): ReasoningContent.vue's
-    `vue-stream-markdown` default `mode=\"streaming\"` (same class of bug the image-embed fix
-    solved for `MessageResponse` — not yet made state-driven for reasoning specifically); shiki
-    4.1.0 (`@nuxtjs/mdc`) and 4.4.3 (Elements) coexist unresolved; `/dev/elements`' `IMAGE_ID` is a
-    worktree-local upload (documented in the fixture, not fixed); `orchestrator.ts:169/172`
-    duplicate fallback-id expression; `orchestrator.ts:196` terminal subagent steps shared by
-    reference between the live map and the persisted record (not exploitable; copy defensively if
-    ever touched); `ui-stream.ts`'s usage `message-metadata` carries undefined-valued keys for a
-    partial usage object (harmless over JSON); no test for a tool result arriving with no
-    `tool-start` while a text block is open (same `close()` path as the tested cases); two
-    structurally identical `AttachmentRef` types (`server/lib/agent/attachments.ts` vs
-    `shared/types/conversation.ts`); `finalizeMessage` rebuilds a dynamic-tool part field-by-field
-    instead of spreading `...p` (would drop `title`/`toolMetadata`/`providerExecuted` if any tool
-    ever sets them — none do today); the staleness predicate is duplicated between
-    `advance()`/`isStale` in `app/lib/agent/turn-stream.ts`; `recordParts` takes the whole
-    `ResumeMessage` just for `m.id` (brief-level nit); `ToolPart.vue` hardcodes the label 'Denied'
-    and ignores any approval reason the server might one day attach."
+  - "Deferred minors (from the SDD ledger, none blocking): the brief's Task 2 test had a TS2698
+    spread defect — the implementer typed the inner param as `Parameters<typeof streamText>[0]`
+    instead (no runtime change); ReasoningContent.vue's `vue-stream-markdown` default
+    `mode=\"streaming\"` (same class of bug the image-embed fix solved for `MessageResponse` — not
+    yet made state-driven for reasoning specifically); shiki 4.1.0 (`@nuxtjs/mdc`) and 4.4.3
+    (Elements) coexist unresolved; `/dev/elements`' `IMAGE_ID` is a worktree-local upload
+    (documented in the fixture, not fixed); `orchestrator.ts:169/172` duplicate fallback-id
+    expression; `orchestrator.ts:196` terminal subagent steps shared by reference between the live
+    map and the persisted record (not exploitable; copy defensively if ever touched);
+    `ui-stream.ts`'s usage `message-metadata` carries undefined-valued keys for a partial usage
+    object (harmless over JSON); no test for a tool result arriving with no `tool-start` while a
+    text block is open (same `close()` path as the tested cases); two structurally identical
+    `AttachmentRef` types (`server/lib/agent/attachments.ts` vs `shared/types/conversation.ts`);
+    `finalizeMessage` rebuilds a dynamic-tool part field-by-field instead of spreading `...p`
+    (would drop `title`/`toolMetadata`/`providerExecuted` if any tool ever sets them — none do
+    today); the staleness predicate is duplicated between `advance()`/`isStale` in
+    `app/lib/agent/turn-stream.ts`; `recordParts` takes the whole `ResumeMessage` just for `m.id`
+    (brief-level nit); `ToolPart.vue` hardcodes the label 'Denied' and ignores any approval reason
+    the server might one day attach; Task 11's own two: the exec-approval banner (`ApprovalPrompt`)
+    stays visible/clickable after Stop, because `{type:'interrupt'}` aborts the turn's `AbortSignal`
+    but not the server's separate pending-approval `Promise` (pre-existing, not cycle-64); and a
+    one-off dark-mode repaint glitch right after toggling color mode mid-session (computed CSS was
+    already correct at the time; never reproduced on reload or fresh navigation)."
 next_seam: >
   Cycle 65 (/agent rebuild — Persona, a new layout, PromptInput composer, Confirmation replacing
   ApprovalPrompt, a Context meter, avatar/three.js removal). MyMind task 3ddae408. The message
@@ -214,6 +220,12 @@ bundle bloat. 3 token edits (`bg-secondary` → `bg-elevated`): `message/Message
 - **Task 11 split**: a subagent did Step 1 (live validation + any fixes, test-first, each committed
   separately) and Steps 2-3 (wiki, handover, roadmap, backlog) WITHOUT MyMind writes; the controller
   does the MyMind mirroring (prod token) and task updates. *Cost if wrong:* none.
+- **Validate item 2 by TEMPORARILY reordering the LOCAL DEV `ai_config` reasoning chain** to
+  `[Haiku, qwen]`, running the research turn, then restoring the exact original order — the
+  subagent path ignores the model picker (the pre-existing cycle-45 scope boundary above) and the
+  qwen head is down, so this was the only way to exercise a real, live-growing step list; the dev
+  DB is local and the change is reverted immediately after. *Cost if wrong:* the dev chain is left
+  reordered (mitigated: restored + verified by re-reading the row afterward).
 
 ## Live validation (playwright-cli, dev on :3217, Haiku 4.5 selected via the model picker)
 

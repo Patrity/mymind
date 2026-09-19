@@ -335,23 +335,22 @@ nowhere else, and the voice itself is a `voice_presets` row, not a value.
 | `app/composables/useBreezeSpeech.ts` | The studio's playback path — the same PCM-on-the-AudioContext-clock approach over plain `fetch`, so an audition never rides the conversation's socket |
 | `app/lib/voice/playback-epoch.ts` | `createPlaybackEpochs()` — which PCM frames still belong to the turn being listened to; drops a frame that was in flight when the user barged in |
 | `app/composables/useVoiceSettings.ts` | Cookie-persisted user settings (`voice-settings`), incl. `micDeviceId` |
-| `app/composables/useAgentActivity.ts` | SSE → tool chips (currently unconsumed — chips are inline since cycle 41) |
-| `app/composables/useTextChat.ts` | Typed fallback over `/api/agent/chat` |
 | `app/components/agent/Toolbar.vue` | The single navbar: thread title, voice-replies switch, model selector, full-screen, threads (under `lg`), settings slot |
 | `app/components/agent/ThreadRail.vue` | Permanent left rail: New, search, threads grouped Today / Yesterday / date |
 | `app/components/agent/Avatar.client.vue` | Thin mount for `ParticleHead`: boots it, polls the analysers (250 ms), resizes, and renders the CSS fallback when there is no mesh or no WebGL |
 | `app/components/agent/MicBand.vue` | "Am I being heard": FFT bars + a separate speech-probability track with the VAD threshold marked |
 | `app/components/agent/EmptyState.vue` | Bridget's name, what she can reach, four real starter prompts |
-| `app/components/agent/MessageActions.vue` | Per-message copy / retry / timestamp / token count |
-| `app/components/agent/ReasoningBlock.vue` | Collapsible "Thinking" block (cycle 45) |
 | `app/components/agent/ApprovalPrompt.vue` | Exec approval gate UI |
-| `app/components/voice/Transcript.vue` | Live transcript, inline tool chips + Undo, autoscroll pin + "↓ N new", empty state |
+| `app/components/agent/Conversation.vue` | **(cycle 64)** The AI-Elements-rendered conversation — replaces `voice/Transcript.vue` (deleted). Full per-part render table + the design-token bridge: [agent.md § Conversation](agent.md#conversation-cycle-64--ai-elements-vue-replaces-the-hand-rolled-transcript) |
+| `app/components/agent/ToolPart.vue`, `SubagentSteps.vue`, `Attachment.vue`, `ReplyActions.vue` | **(cycle 64)** Tool status badge + input/output, a subagent's nested `ChainOfThought` steps, user file/image chips, and copy/retry/timestamp/token-count — replace `agent/MessageActions.vue` and `agent/ReasoningBlock.vue` (both deleted; reasoning is now just a `reasoning`-type part, rendered by Elements' `Reasoning` inside `Conversation.vue` itself) |
 | `app/components/voice/Composer.vue` | `UTextarea` (Enter sends / Shift+Enter newline), attachments, mic toggle, Send↔Stop |
 | `app/components/voice/SettingsSlideover.vue` | Cog slideover: voice replies, **preset picker** (the `voice_presets` rail, not a `/v1/voices` enum), microphone picker, live-metered VAD tuning, barge-in, playback speed |
 | `app/components/voice/PresetRail.vue`, `DesignPane.vue`, `SpeakPane.vue` | The studio's three panels (cycle 61) — see [voice-studio.md](voice-studio.md) |
-| `app/lib/voice/messages.ts` | Pure WS-message → `{state, delta, events, usage, conversation, …}` mapper (tested, no mocks) |
+| `app/lib/voice/messages.ts` | Pure WS-message → `{state, messageFrame, events, approval, conversation, audioBegin, audioEnd, …}` mapper (tested, no mocks). **(cycle 64)** `delta`/`usage` are gone — a `chunk`/`user-message` frame now rides through as `messageFrame`, handed to `app/lib/agent/turn-stream.ts` as-is |
 | `app/lib/voice/devices.ts` | Pure `enumerateDevices()` → mic-picker items; the `DEFAULT_MIC` empty-value sentinel |
-| `app/lib/agent/transcript.ts` | `buildResumeTranscript` — rebuilds inline chip order from persisted `textOffset` |
+| `app/lib/agent/turn-stream.ts` | **(cycle 64)** `createClientTurns` — one `ReadableStream<UIMessageChunk>` per turn assembled with the SDK's `readUIMessageStream`; drops stale-`turnId` frames; `finalizeMessage` closes out a dangling tool/text/reasoning part on interrupt/error/disconnect |
+| `app/lib/agent/to-ui-messages.ts` | **(cycle 64)** `toUIMessages` — persisted messages → `AgentUIMessage[]` on resume; replaces `agent/transcript.ts`'s `buildResumeTranscript` (deleted, test ported) |
+| `app/lib/agent/render.ts` | **(cycle 64)** Pure render helpers kept out of the SFCs: `uiMessageText`, `subagentSteps` (looks up a tool's `data-subagent` part by `toolCallId`), `tokenLabel`, `toolTitle`, `isRunning` |
 | `app/lib/agent/retry.ts` | Pure `truncateForRetry` — walk back to the preceding user turn and truncate |
 | `app/lib/avatar/types.ts` | The `Avatar` interface + the `Pose` contract |
 | `app/lib/avatar/choreography.ts` | Pure, seeded, event-scheduled pose choreographer: `(state, dt, outLevel) → Pose` |
@@ -367,6 +366,8 @@ nowhere else, and the voice itself is a `voice_presets` row, not a value.
 | `app/lib/viz/effects.ts` | 3 amber tool-pulse rings + 160-slot pooled transcription sparks |
 | `app/lib/viz/lightning.ts` | Neural "synapse" arcs during thinking / tool — pooled jagged LineSegments, additive + bloom |
 
+> **Deleted in cycle 64:** `app/components/voice/Transcript.vue`, `app/components/agent/ReasoningBlock.vue`, `app/components/agent/MessageActions.vue`, `app/lib/agent/transcript.ts` (+ its test, ported into `to-ui-messages.test.ts`), `app/composables/useTextChat.ts` and `app/composables/useAgentActivity.ts` (both callerless before this cycle — the SSE-fed chips block they served was already gone since cycle 41). See the Frontend files table above for the cycle-64 replacements, and [agent.md § Conversation](agent.md#conversation-cycle-64--ai-elements-vue-replaces-the-hand-rolled-transcript) for the full per-part render table.
+>
 > **Deleted in cycle 61:** `server/lib/voice/tts-failover.ts` (`createTtsSynth` / `pinChainToProvider`) and `server/api/voice/voices.get.ts` — there is one TTS engine and a voice is a preset row, so there is no chain to pin and no voice enum to aggregate. `pipeline.ts` also lost `FIRST_SEGMENT_CONCURRENCY` / `effectiveConcurrency` / `firstSegmentDrained` with the concurrency ramp.
 >
 > **Deleted in cycle 60:** `app/components/voice/Reactor.client.vue`, `app/components/agent/HistorySlideover.vue`, `app/lib/viz/ring.ts`, `server/lib/voice/chunker.ts`. `app/components/voice/VoicePicker.vue` was already gone before this cycle (the picker is inline in `SettingsSlideover.vue`). Once `ring.ts` was gone, `Directives.ringColor`/`ringLevels`/`micMix` had zero readers left anywhere in the repo — a later pass (final-fix wave) removed those three fields plus the per-frame smoothing that filled them, confirmed by grep, not typecheck (the choreographer that fills them also declares the type, so typecheck alone can't prove a field dead). `BAR_COUNT` and `VIZ_TUNING.ring.radius` **do** survive, but not for the ring: `BAR_COUNT` sizes the raw mic-level array the head still resamples every frame to feed `energy` during `listening` (via `micAverage`), and `effects.ts` still reads `VIZ_TUNING.ring.radius` (as `RING_RADIUS`) to place the tool-pulse rings. `PALETTE.*.ring` also survives, but through `MicBand.vue` (`PALETTE.listening.ring` / `PALETTE.idle.ring`), not through `Directives`.
