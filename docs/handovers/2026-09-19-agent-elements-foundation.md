@@ -5,7 +5,8 @@ title: Agent Elements foundation — AI SDK message protocol over the voice sock
 cycle: 64
 date: 2026-09-19
 status: >
-  BUILT, NOT MERGED. All 11 tasks complete; live-validated in a real browser against the real app
+  MERGED to local master 2026-09-19 (fast-forward a206109..d34f733; merged-tree gates: pnpm test
+  205 files / 1882 tests, typecheck 0) — NOT pushed, NOT deployed. All 11 tasks complete; live-validated in a real browser against the real app
   with a live model (Haiku 4.5, picked via the toolbar model selector — the dev default reasoning
   chain's head, qwen @ 192.168.2.25:8004, is down). 10 of 10 validation items now PASS. Item 2
   (subagent nested steps growing live) was originally a PARTIAL in this session (the outer tool's
