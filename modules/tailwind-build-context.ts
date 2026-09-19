@@ -11,7 +11,9 @@
 // `pnpm build` at deploy.yml's 4096 MB heap.
 //
 // The fix hands Tailwind's handler a call-scoped Proxy standing in for `this`
-// (`createCallScopedThis`): it serves `environment` (captured once, at wrap time) and its own
+// (`createCallScopedThis`): it serves `environment` (read off the live context when the stand-in
+// is built, which is once per CALL — the stand-in is created inside the wrapped handler, not when
+// the handler is wrapped) and its own
 // `addWatchFile` (forwarding to the live context) itself, and forwards any OTHER key the
 // transform reads straight to the live context too — bound, and ONLY while that one call is in
 // flight. `release()` runs in the wrapped call's `finally`, so the live reference never outlives
