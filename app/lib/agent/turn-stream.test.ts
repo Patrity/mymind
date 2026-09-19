@@ -229,4 +229,8 @@ describe('finalizeMessage', () => {
       .toEqual(['done', 'done', 'output-error', 'output-available', 'error'])
     expect(f.parts[2]).toMatchObject({ errorText: 'Stopped' })
   })
+  it('a pending approval ends as Stopped', () => {
+    const m: AgentUIMessage = { id: 'a', role: 'assistant', parts: [{ type: 'dynamic-tool', toolName: 'exec', toolCallId: 'c', state: 'approval-requested', input: {}, approval: { id: 'r1' } }] }
+    expect(finalizeMessage(m, { interrupted: true }).parts[0]).toMatchObject({ state: 'output-error', errorText: 'Stopped' })
+  })
 })

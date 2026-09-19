@@ -3,6 +3,9 @@
 // across all components reading the same key). Server-side knobs stay in
 // server/lib/voice/tuning.ts; these are the client capture/playback knobs.
 
+import { personaVariant } from '~/lib/agent/persona'
+import type { PersonaVariant } from '~/lib/agent/persona'
+
 export interface VoiceUserSettings {
   /** voice_presets.id. '' means "use the server's default preset" — which is also what
    *  an unknown id resolves to (resolvePreset), so a deleted preset degrades gracefully. */
@@ -18,6 +21,8 @@ export interface VoiceUserSettings {
    *  existed. See useVoice's getUserMedia call for the `exact` constraint + the
    *  OverconstrainedError fallback when a chosen device has since vanished. */
   micDeviceId: string
+  /** Persona character variant. */
+  personaVariant: PersonaVariant
 }
 
 export const VOICE_SETTINGS_DEFAULTS: VoiceUserSettings = {
@@ -28,6 +33,7 @@ export const VOICE_SETTINGS_DEFAULTS: VoiceUserSettings = {
   bargeInEnabled: true,
   playbackRate: 1.0,
   micDeviceId: '',
+  personaVariant: 'obsidian',
 }
 
 /** playbackRate defaulted to 1.1 before it was found to compress the model's prosody and
@@ -52,6 +58,8 @@ export function migrateVoiceSettings(stored: Partial<VoiceUserSettings> | null |
   if (merged.playbackRate === OLD_DEFAULT_PLAYBACK_RATE) {
     merged.playbackRate = VOICE_SETTINGS_DEFAULTS.playbackRate
   }
+  // Normalize personaVariant: unknown values default to 'obsidian'
+  merged.personaVariant = personaVariant(merged.personaVariant)
   return merged
 }
 

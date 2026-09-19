@@ -60,3 +60,11 @@ describe('migrateVoiceSettings — Breeze preset migration', () => {
     expect(out.bargeInEnabled).toBe(VOICE_SETTINGS_DEFAULTS.bargeInEnabled)
   })
 })
+
+describe('migrateVoiceSettings — personaVariant', () => {
+  it('personaVariant defaults to obsidian and unknown values are normalized', () => {
+    expect(migrateVoiceSettings({}).personaVariant).toBe('obsidian')
+    expect(migrateVoiceSettings({ personaVariant: 'glint' } as never).personaVariant).toBe('glint')
+    expect(migrateVoiceSettings({ personaVariant: 'bogus' } as never).personaVariant).toBe('obsidian')
+  })
+})

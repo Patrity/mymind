@@ -13,7 +13,7 @@ export function finalizeMessage(m: AgentUIMessage, meta: CloseMeta): AgentUIMess
     ...m,
     metadata: { ...m.metadata, ...meta },
     parts: m.parts.map((p): AgentUIPart => {
-      if (p.type === 'dynamic-tool' && (p.state === 'input-streaming' || p.state === 'input-available')) {
+      if (p.type === 'dynamic-tool' && (p.state === 'input-streaming' || p.state === 'input-available' || p.state === 'approval-requested')) {
         return { type: 'dynamic-tool', toolName: p.toolName, toolCallId: p.toolCallId, state: 'output-error', input: p.input, errorText: 'Stopped' }
       }
       if ((p.type === 'text' || p.type === 'reasoning') && p.state === 'streaming') return { ...p, state: 'done' }
