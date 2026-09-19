@@ -44,6 +44,14 @@ export default defineNuxtConfig({
     { path: '~/components', ignore: ['ui/**', 'ai-elements/**'] }
   ],
 
+  // Dev-only fixture pages (`app/pages/dev/**`, e.g. /dev/elements) are left out of production
+  // builds entirely rather than only runtime-gated, so they never ship in the prod bundle.
+  // `nuxt build` sets NODE_ENV=production before loading this file, which selects $production;
+  // `nuxt dev` keeps them. Patterns are relative to rootDir.
+  $production: {
+    ignore: ['app/pages/dev/**']
+  },
+
   routeRules: {
     // Catch-all: every route is SPA by default so new pages never forget.
     '/**': { ssr: false },

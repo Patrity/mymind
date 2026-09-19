@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// Dev-only fixture for the AI Elements spike and for Task 9's component work. 404s in prod.
+// Dev-only fixture for the AI Elements spike and for Task 9's component work. Not in production
+// builds at all (nuxt.config `$production.ignore`); the guard below is belt and braces.
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
