@@ -93,6 +93,18 @@ describe('createTurnStream', () => {
     expect(JSON.stringify(h.json())).not.toContain('late')
   })
 
+  // ws.ts closes the message (finish) BEFORE persisting, so a persistence failure reaches
+  // error() on an already-closed stream. The page's alert must still fire.
+  it('error after finish still sends the error + idle frames (and no chunk)', () => {
+    const h = harness()
+    h.ts.emit({ type: 'transcript', role: 'assistant', text: 'done' })
+    h.ts.finish()
+    const chunksBefore = h.chunks().length
+    h.ts.error('db down')
+    expect(h.chunks().length).toBe(chunksBefore)
+    expect(h.json().slice(-2)).toEqual([{ type: 'error', message: 'db down' }, { type: 'state', state: 'idle' }])
+  })
+
   it('abort: an abort chunk, then silence', () => {
     const h = harness()
     h.ts.emit({ type: 'transcript', role: 'assistant', text: 'part' })

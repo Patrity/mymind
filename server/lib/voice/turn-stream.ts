@@ -3,7 +3,8 @@
 //   - every message frame carries the turn's id (the client drops a superseded turn's frames);
 //   - `finish` is sent only after handleTurn returns — the orchestrator appends image embeds
 //     AFTER the speech pipeline drains, and those must land inside the message;
-//   - nothing is sent after finish/error/abort.
+//   - no chunk is sent after finish/error/abort — except that error() always sends the
+//     legacy error + idle frames (a persistence failure lands after finish()).
 import { randomUUID } from 'node:crypto'
 import type { VoiceEvent } from './orchestrator'
 import { createUIChunkEncoder } from './ui-stream'
@@ -71,9 +72,12 @@ export function createTurnStream(o: TurnStreamOptions): TurnStream {
       if (started) sendChunks(encoder.finish())
     },
     error(message) {
-      if (closed) return
+      // Only the error CHUNK is gated on the message still being open. The legacy error +
+      // idle frames ALWAYS go out: ws.ts finishes the message BEFORE persisting, so a
+      // createConversation/appendMessages failure arrives here after finish() — and the
+      // page's alert (and its return to idle) must still fire.
+      if (!closed && started) sendChunks(encoder.error(message))
       closed = true
-      if (started) sendChunks(encoder.error(message))
       json({ type: 'error', message })
       json({ type: 'state', state: 'idle' })
     },
