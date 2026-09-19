@@ -3,6 +3,9 @@
 // builds at all (nuxt.config `$production.ignore`); the guard below is belt and braces.
 import type { LanguageModelUsage } from 'ai'
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { VoiceState } from '~/composables/useVoice'
+import type { PendingApprovalDetails } from '@/components/agent/ApprovalConfirmation.vue'
+import type { ContextMeterData } from '~/lib/agent/context-meter'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
@@ -138,6 +141,55 @@ const attachmentsDemo = [
   { id: 'att-img', type: 'file' as const, mediaType: 'image/png', url: `/api/images/${IMAGE_ID}/raw`, filename: 'screenshot.png' },
   { id: 'att-doc', type: 'file' as const, mediaType: 'application/pdf', url: '#', filename: 'notes.pdf' }
 ]
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Task 5 fixture state (cycle 65): AgentPersona, AgentContextMeter, inline
+// AgentApprovalConfirmation (exercised through AgentConversation -> AgentToolPart, the
+// real wiring), the rewritten AgentEmptyState.
+// ══════════════════════════════════════════════════════════════════════════════
+const agentVoiceStates: VoiceState[] = ['connecting', 'idle', 'listening', 'thinking', 'speaking', 'tool', 'typing']
+
+const agentPersonaState = ref<VoiceState>('idle')
+const agentPersonaConnected = ref(true)
+
+const contextKnownWindow: ContextMeterData = { usedTokens: 42000, maxTokens: 200000, modelDefId: 'demo' }
+const contextUnknownWindow: ContextMeterData = { usedTokens: 1800, maxTokens: null, modelDefId: 'demo' }
+
+// Only 'r1' has details (voice.pendingApproval); 'r2' proves the minimal (no details) path —
+// AgentToolPart only forwards `details` to the part whose approval.id matches.
+const approvalDetails = ref<PendingApprovalDetails | null>({
+  requestId: 'r1',
+  tool: 'exec',
+  command: 'rm -rf /tmp/scratch',
+  proposedPattern: 'rm -rf /tmp/*'
+})
+const approvalFixtureMessages: AgentUIMessage[] = [
+  {
+    id: 'approval-1', role: 'assistant',
+    parts: [{
+      type: 'dynamic-tool', toolName: 'exec', toolCallId: 't-approve', state: 'approval-requested',
+      input: { command: 'rm -rf /tmp/scratch' }, approval: { id: 'r1' }
+    }]
+  },
+  {
+    id: 'approval-2', role: 'assistant',
+    parts: [{
+      type: 'dynamic-tool', toolName: 'read_file', toolCallId: 't-approve-minimal', state: 'approval-requested',
+      input: { path: '/etc/hosts' }, approval: { id: 'r2' }
+    }]
+  }
+]
+const approvalLog = ref('')
+function onApprovalApprove(requestId: string, opts: { remember: boolean, pattern: string }) {
+  approvalLog.value = `approve(${JSON.stringify(requestId)}, ${JSON.stringify(opts)})`
+}
+function onApprovalDeny(requestId: string) {
+  approvalLog.value = `deny(${JSON.stringify(requestId)})`
+}
+
+const emptyStateState = ref<VoiceState>('idle')
+const emptyStateConnected = ref(true)
+const emptyStatePicked = ref('')
 </script>
 
 <template>
@@ -150,6 +202,8 @@ const attachmentsDemo = [
       class="h-[70vh]"
       :messages="fixture"
       :undone="undone"
+      state="idle"
+      :connected="true"
       @undo="(id: string) => undone.add(id)"
     />
     <!-- Task 0 spike block (unchanged) follows -->
@@ -351,6 +405,147 @@ const attachmentsDemo = [
             <AttachmentRemove />
           </Attachment>
         </Attachments>
+      </section>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════════════════════
+         Task 5 (cycle 65): AgentPersona, AgentContextMeter, inline AgentApprovalConfirmation
+         (via the real AgentConversation -> AgentToolPart wiring), the rewritten AgentEmptyState.
+         ══════════════════════════════════════════════════════════════════════════════ -->
+    <div class="space-y-8 border-t border-default pt-8">
+      <section class="space-y-3">
+        <h2 class="text-sm font-medium text-muted-foreground">
+          AgentPersona (hero / inline / full, CSS fallback)
+        </h2>
+        <div class="flex flex-wrap items-center gap-4">
+          <Select v-model="agentPersonaState">
+            <SelectTrigger class="w-36">
+              <SelectValue placeholder="state" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="s in agentVoiceStates" :key="s" :value="s">
+                {{ s }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <USwitch v-model="agentPersonaConnected" label="connected" />
+        </div>
+        <ClientOnly>
+          <div class="flex flex-wrap items-end gap-10">
+            <div>
+              <p class="mb-2 text-xs text-muted-foreground">
+                hero
+              </p>
+              <AgentPersona size="hero" :state="agentPersonaState" :connected="agentPersonaConnected" />
+            </div>
+            <div>
+              <p class="mb-2 text-xs text-muted-foreground">
+                inline
+              </p>
+              <AgentPersona size="inline" :state="agentPersonaState" :connected="agentPersonaConnected" />
+            </div>
+            <div>
+              <p class="mb-2 text-xs text-muted-foreground">
+                full
+              </p>
+              <AgentPersona size="full" :state="agentPersonaState" :connected="agentPersonaConnected" />
+            </div>
+            <div>
+              <p class="mb-2 text-xs text-muted-foreground">
+                forced fallback (bogus src — follows the state select; pulses for
+                listening/thinking/speaking, static for idle/asleep)
+              </p>
+              <AgentPersona
+                size="hero"
+                :state="agentPersonaState"
+                :connected="agentPersonaConnected"
+                src-override="https://example.invalid/does-not-exist.riv"
+              />
+            </div>
+          </div>
+          <template #fallback>
+            <p class="text-xs text-muted-foreground">
+              Persona is client-only…
+            </p>
+          </template>
+        </ClientOnly>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-sm font-medium text-muted-foreground">
+          AgentContextMeter
+        </h2>
+        <div class="flex flex-wrap items-start gap-8">
+          <div>
+            <p class="mb-1 text-xs text-muted-foreground">
+              known window (ring + %)
+            </p>
+            <AgentContextMeter :data="contextKnownWindow" />
+          </div>
+          <div>
+            <p class="mb-1 text-xs text-muted-foreground">
+              unknown window (count + tooltip, no ring)
+            </p>
+            <AgentContextMeter :data="contextUnknownWindow" />
+          </div>
+          <div>
+            <p class="mb-1 text-xs text-muted-foreground">
+              null (no usage yet — renders nothing)
+            </p>
+            <AgentContextMeter :data="null" />
+          </div>
+        </div>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-sm font-medium text-muted-foreground">
+          Inline approval — AgentConversation → AgentToolPart → AgentApprovalConfirmation
+        </h2>
+        <p class="text-xs text-muted-foreground">
+          't-approve' (approval.id 'r1') has matching details from "voice.pendingApproval";
+          't-approve-minimal' (approval.id 'r2') has none — the minimal (input-JSON) variant.
+        </p>
+        <AgentConversation
+          class="h-96"
+          :messages="approvalFixtureMessages"
+          :approval="approvalDetails"
+          state="tool"
+          :connected="true"
+          @approve="onApprovalApprove"
+          @deny="onApprovalDeny"
+        />
+        <p v-if="approvalLog" class="text-xs text-muted-foreground">
+          {{ approvalLog }}
+        </p>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-sm font-medium text-muted-foreground">
+          AgentEmptyState (hero Persona + Suggestions)
+        </h2>
+        <div class="flex flex-wrap items-center gap-4">
+          <Select v-model="emptyStateState">
+            <SelectTrigger class="w-36">
+              <SelectValue placeholder="state" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="s in agentVoiceStates" :key="s" :value="s">
+                {{ s }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <USwitch v-model="emptyStateConnected" label="connected" />
+        </div>
+        <div class="rounded-md border border-default">
+          <AgentEmptyState
+            :state="emptyStateState"
+            :connected="emptyStateConnected"
+            @pick="(p: string) => (emptyStatePicked = p)"
+          />
+        </div>
+        <p v-if="emptyStatePicked" class="text-xs text-muted-foreground">
+          picked: {{ emptyStatePicked }}
+        </p>
       </section>
     </div>
   </div>

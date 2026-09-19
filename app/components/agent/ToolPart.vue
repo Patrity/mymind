@@ -1,13 +1,27 @@
 <script setup lang="ts">
 import type { AgentUIPart, SubagentStep, ToolEnvelope } from '~~/shared/types/agent-ui'
+import type { PendingApprovalDetails } from './ApprovalConfirmation.vue'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { toolTitle, isRunning } from '~/lib/agent/render'
 
-const props = defineProps<{ part: Extract<AgentUIPart, { type: 'dynamic-tool' }>; steps: SubagentStep[] | null; undone?: boolean }>()
-const emit = defineEmits<{ undo: [undoToken: string] }>()
+const props = defineProps<{
+  part: Extract<AgentUIPart, { type: 'dynamic-tool' }>
+  steps: SubagentStep[] | null
+  undone?: boolean
+  approval?: PendingApprovalDetails | null
+}>()
+const emit = defineEmits<{
+  undo: [undoToken: string]
+  approve: [requestId: string, opts: { remember: boolean; pattern: string }]
+  deny: [requestId: string]
+}>()
 
 const envelope = computed(() => (props.part.state === 'output-available' ? props.part.output as ToolEnvelope : null))
 const running = computed(() => isRunning(props.part))
+const pendingPart = computed(() => (props.part.state === 'approval-requested' ? props.part : null))
+const approvalDetails = computed(() => (
+  pendingPart.value && props.approval?.requestId === pendingPart.value.approval.id ? props.approval : null
+))
 </script>
 
 <template>
@@ -17,6 +31,13 @@ const running = computed(() => isRunning(props.part))
       :tool-name="part.toolName"
       :state="part.state"
       :title="envelope?.summary ?? toolTitle(part.toolName)"
+    />
+    <AgentApprovalConfirmation
+      v-if="pendingPart"
+      :part="pendingPart"
+      :details="approvalDetails"
+      @approve="(id: string, opts) => emit('approve', id, opts)"
+      @deny="(id: string) => emit('deny', id)"
     />
     <ToolContent>
       <ToolInput :input="part.input" />

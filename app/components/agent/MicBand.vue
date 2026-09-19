@@ -7,8 +7,6 @@
           speech PROBABILITY, a different unit from amplitude. The VAD threshold
           only makes sense drawn against this track, never against the bars. -->
 <script setup lang="ts">
-import { PALETTE } from '~/lib/viz/tuning'
-
 const props = defineProps<{
   micAnalyser: AnalyserNode | null
   speechProb: number
@@ -21,17 +19,19 @@ let raf = 0
 
 const BARS = 56
 
-// Reuse the existing viz palette rather than inventing new hex values: cyan is
-// already what the ring used for live mic pickup during 'listening', the idle
-// ring blue is already its resting tone, and amber is already the viz's
-// attention/accent color (used for tool pulses) — reused here for the VAD
-// threshold marker.
+// Local copies of the same three colors lib/viz/tuning.ts used (that module is being
+// retired this cycle — see spec "Deleted"): cyan is what the ring used for live mic pickup
+// during 'listening', the idle ring blue is its resting tone, and amber is the viz's
+// attention/accent color (used for tool pulses) — reused here for the VAD threshold marker.
+function hex(h: number): [number, number, number] {
+  return [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255]
+}
 function rgba(c: readonly [number, number, number], a: number): string {
   return `rgba(${Math.round(c[0] * 255)}, ${Math.round(c[1] * 255)}, ${Math.round(c[2] * 255)}, ${a})`
 }
-const ACTIVE = PALETTE.listening.ring
-const IDLE = PALETTE.idle.ring
-const THRESHOLD = PALETTE.tool.core
+const ACTIVE = hex(0x22d3ee)
+const IDLE = hex(0x1e3a5f)
+const THRESHOLD = hex(0xf59e0b)
 
 function draw() {
   const cv = canvas.value

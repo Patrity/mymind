@@ -1,5 +1,9 @@
 <!-- app/components/agent/EmptyState.vue -->
 <script setup lang="ts">
+import type { VoiceState } from '~/composables/useVoice'
+import { Suggestion, Suggestions } from '@/components/ai-elements/suggestion'
+
+defineProps<{ state: VoiceState; connected: boolean }>()
 const emit = defineEmits<{ pick: [prompt: string] }>()
 
 // Drawn from the real tool surface — the page previously gave no indication that
@@ -14,6 +18,11 @@ const starters = [
 
 <template>
   <div class="flex flex-col items-center justify-center gap-5 px-6 py-16 text-center">
+    <AgentPersona
+      size="hero"
+      :state="state"
+      :connected="connected"
+    />
     <div class="flex flex-col gap-1.5">
       <h2 class="text-lg font-semibold text-highlighted">Bridget</h2>
       <p class="max-w-md text-sm text-muted">
@@ -21,18 +30,16 @@ const starters = [
         generate images, and run commands on the box — and she'll ask before anything destructive.
       </p>
     </div>
-    <div class="grid gap-2 sm:grid-cols-2 w-full max-w-lg">
-      <UButton
+    <Suggestions class="max-w-lg" data-ai-elements>
+      <Suggestion
         v-for="s in starters"
         :key="s.label"
-        :icon="s.icon"
-        :label="s.label"
-        color="neutral"
-        variant="outline"
-        size="sm"
-        class="justify-start text-left"
-        @click="emit('pick', s.label)"
-      />
-    </div>
+        :suggestion="s.label"
+        @click="(v: string) => emit('pick', v)"
+      >
+        <UIcon :name="s.icon" class="size-3.5" />
+        {{ s.label }}
+      </Suggestion>
+    </Suggestions>
   </div>
 </template>
