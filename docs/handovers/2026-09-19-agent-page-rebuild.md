@@ -14,7 +14,7 @@ status: >
   correct, but validation found two real bugs on that path). Two defects were found and fixed,
   one commit each (`a4c5738`, `7674f45`); both proven in the browser against the pre-fix
   behaviour measured in the same session. Gates at the end of this cycle: `pnpm typecheck`
-  exit 0 / `pnpm test` 208 files, 1830 tests / production build at 4096 MB passes
+  exit 0 / `pnpm test` 209 files, 1837 tests / production build at 4096 MB passes
   (264 client JS files, 2,159,791 B gzip). **Carries a build fix master does not have** — see
   "The Tailwind build fix" below; without it a 4096 MB deploy build OOMs, and cycle 64 on
   local master is already at zero headroom.
@@ -116,6 +116,25 @@ deferred:
     cycle 60, so this is not a regression, and reopening the frame contract at the end of the cycle
     was judged the larger risk. `server/lib/voice/orchestrator-abort-exit.test.ts` pins the current
     server behaviour, so it goes red the moment someone does it properly."
+  - "**An approval with no `toolCallId` would block invisibly for 120 s — unproven, not fixed.**
+    `server/api/voice/ws.ts:110` only emits the `approval-request` event (and therefore the inline
+    Confirmation) when `req.callId` is truthy, while `server/lib/agent/ai-tools.ts:30` coerces a
+    missing `opts.toolCallId` to `''`. Cycle 65 deleted `ApprovalPrompt.vue`, so there is no longer
+    a detached banner to catch that case: such an approval would render NO UI at all and sit until
+    the server's 120 s timeout denies it, with the composer stuck on Stop meanwhile. The final
+    reviewer could not demonstrate a path where the AI SDK omits `toolCallId` — in every observed
+    call it is present — so this is a latent hazard, not a known break. Deliberately not touched:
+    re-opening approval gating at the end of the cycle on an unproven path is the worse trade. Next
+    session: either prove it unreachable and delete the `callId` guard's else-branch worry, or make
+    `requestApproval` synthesise a callId so the UI always renders."
+  - "**A send with the socket down loses the typed text — PRE-EXISTING, not a regression.**
+    `app/components/agent/PromptInput.vue:108` awaits `props.sendText(...)` and discards its
+    boolean; `useVoice.sendText` returns `false` (it does not throw) when the WS will not open, so
+    the vendored `submitForm` treats it as success and clears the composer. Verified by the final
+    reviewer against `bc7c57b:app/components/voice/Composer.vue:210`, which discarded the same
+    boolean — cycle 65 carried the behaviour across verbatim rather than introducing it. Fix when
+    touched: have `onSubmit` throw when `sendText` resolves false, which the provider's existing
+    catch already turns into text-restored + files-kept + an error toast."
   - "**Not fixed, found in live validation (item 10 follow-on):** subagents still never inherit the
     composer's model override — `research_web`/`search_brain` always resolve the default reasoning
     chain. Pre-existing cycle-45 scope boundary, MyMind task `6c72627d`, explicitly out-of-scope in
@@ -444,7 +463,7 @@ reply with usage — 2 marker hits (user + assistant) where the pre-fix runs had
 
 ```
 pnpm typecheck                                    → exit 0, 0 errors
-pnpm test                                          → 208 files, 1830 tests passed
+pnpm test                                          → 209 files, 1837 tests passed
 NODE_OPTIONS=--max-old-space-size=4096 pnpm build  → exit 0, "Build complete!",
                                                      .output/server/index.mjs present (939 B)
                                                      264 client JS files / 2,159,791 B gzip
