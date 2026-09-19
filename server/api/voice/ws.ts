@@ -145,8 +145,14 @@ export default defineWebSocketHandler({
         }
         return
       }
-      // load: restore a previous conversation under the lock so history is consistent
+      // load: restore a previous conversation under the lock so history is consistent.
+      // Abort any running turn and deny its pending approvals BEFORE queuing the load —
+      // same as 'new' — or a turn awaiting approval blocks the load behind the lock for up
+      // to 120s, and the approval prompt (now for a thread the client has already swapped
+      // away from) sits invisible the whole time.
       if (msg.type === 'load' && typeof msg.conversationId === 'string') {
+        s.ac?.abort()
+        denyAll()
         s.lock = s.lock.then(async () => {
           try {
             s.history = await getAgentHistory(msg.conversationId as string)
