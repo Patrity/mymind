@@ -1,9 +1,7 @@
 // app/composables/useVoice.ts
-import { createEmitter } from '../lib/viz/emitter'
 import { mapServerMessage } from '../lib/voice/messages'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
 import { createClientTurns } from '../lib/agent/turn-stream'
-import type { VizEvent } from '../lib/viz/types'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
 
@@ -40,8 +38,6 @@ export function useVoice() {
   const conversationId = ref<string | null>(null)
   const conversationTitle = ref<string | null>(null)
   const { settings } = useVoiceSettings()
-
-  const events = createEmitter<VizEvent>()
 
   let ws: WebSocket | null = null
   // Last preset the user picked. Selecting before connecting (the natural UX) would
@@ -190,7 +186,6 @@ export function useVoice() {
         if (mySession !== session) return // torn down mid-start — disconnect() already cleaned up
         // WS setup failure would otherwise strand the UI in 'connecting'.
         error.value = err instanceof Error ? err.message : 'Voice startup failed'
-        events.emit({ type: 'error' })
         disconnect()
       })
       .finally(() => { connecting = null })
@@ -209,8 +204,8 @@ export function useVoice() {
     const socket = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
     socket.binaryType = 'arraybuffer'
     ws = socket
-    socket.onclose = () => { connected.value = false; state.value = 'idle'; turns.disconnect(); events.emit({ type: 'disconnected' }) }
-    socket.onerror = () => { error.value = 'WebSocket error'; events.emit({ type: 'error' }) }
+    socket.onclose = () => { connected.value = false; state.value = 'idle'; turns.disconnect() }
+    socket.onerror = () => { error.value = 'WebSocket error' }
     socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         state.value = 'speaking'
@@ -226,7 +221,6 @@ export function useVoice() {
         if (fx.messageFrame) turns.handle(fx.messageFrame)
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
-        for (const ev of fx.events) events.emit(ev)
         if (fx.approval) pendingApproval.value = fx.approval
         if (fx.approvalResolved && pendingApproval.value?.requestId === fx.approvalResolved) pendingApproval.value = null
         if (fx.conversation) {
@@ -274,7 +268,6 @@ export function useVoice() {
     } catch (err) {
       if (mySession !== session) return false
       error.value = err instanceof Error ? err.message : 'Mic startup failed'
-      events.emit({ type: 'error' })
       return false
     }
   }
@@ -341,7 +334,6 @@ export function useVoice() {
           stopPlayback()
           turns.interrupt()
           ws?.send(JSON.stringify({ type: 'interrupt' }))
-          events.emit({ type: 'bargein' })
         }
         state.value = 'listening'
       },
@@ -451,7 +443,7 @@ export function useVoice() {
       if (!t && !attachments.length) return false
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return false
-      if (isPlaying()) { stopPlayback(); events.emit({ type: 'bargein' }) } // typed barge-in
+      if (isPlaying()) stopPlayback() // typed barge-in
       ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments }))
       return true
     },
@@ -486,7 +478,6 @@ export function useVoice() {
     conversationTitle,
     micAnalyser: () => micAnalyser,
     outAnalyser: () => outAnalyser,
-    onVizEvent: events.on,
     pendingApproval,
     sendApproval: (requestId: string, approved: boolean, opts?: { remember?: boolean; pattern?: string }) => {
       if (ws?.readyState === WebSocket.OPEN) {

@@ -14,8 +14,7 @@
     "test:db": "vitest run --config vitest.db.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "seed:skills": "node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts",
-    "bake:head": "tsx scripts/bake-head.ts"
+    "seed:skills": "node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.48",

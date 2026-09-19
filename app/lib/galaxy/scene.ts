@@ -11,7 +11,7 @@
 // projected galaxy radius equals the arcball radius R — that keeps the
 // grab-the-point-under-the-cursor feel identical to the prototype.
 //
-// Composer / bloom wiring mirrors app/lib/viz/scene.ts.
+// Composer / bloom wiring: standard EffectComposer + RenderPass + UnrealBloomPass stack.
 import * as THREE from 'three'
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
@@ -625,7 +625,7 @@ export function createGalaxyScene(canvas: HTMLCanvasElement): GalaxyScene {
   window.addEventListener('pointerup', onPointerUp)
   canvas.addEventListener('wheel', onWheel, { passive: false })
 
-  // WebGL context loss (mirror app/lib/viz) ---------------------------------
+  // WebGL context loss --------------------------------------------------------
   const onContextLost = (e: Event) => { e.preventDefault(); running = false }
   const onContextRestored = () => { if (!disposed) { running = true; loop() } }
   canvas.addEventListener('webglcontextlost', onContextLost)

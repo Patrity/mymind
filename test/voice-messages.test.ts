@@ -13,33 +13,30 @@ describe('mapServerMessage', () => {
     expect(mapServerMessage({ type: 'state', state: 'idle' }, false).state).toBe('idle')
   })
 
-  it('server error message → error text + error viz event + idle state', () => {
+  it('server error message → error text', () => {
     const fx = mapServerMessage({ type: 'error', message: 'STT failed: 415' }, false)
     expect(fx.error).toBe('STT failed: 415')
-    expect(fx.events).toEqual([{ type: 'error' }])
   })
 
   it('unknown messages are inert', () => {
     const fx = mapServerMessage({ type: 'nonsense', text: 'x' }, false)
     expect(fx.state).toBeUndefined()
     expect(fx.messageFrame).toBeUndefined()
-    expect(fx.events).toEqual([])
   })
 
-  it('typing state message → state:typing, no events', () => {
+  it('typing state message → state:typing', () => {
     const fx = mapServerMessage({ type: 'state', state: 'typing' }, false)
     expect(fx.state).toBe('typing')
-    expect(fx.events).toEqual([])
   })
 
   it('passes chunk frames through as messageFrame', () => {
     const frame = { type: 'chunk', turnId: 3, chunk: { type: 'text-delta', id: 't', delta: 'hi' } }
-    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame, events: [] })
+    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame })
   })
 
-  it('a user-message frame is a messageFrame plus the sttFinal viz event', () => {
+  it('a user-message frame maps to a messageFrame', () => {
     const frame = { type: 'user-message', turnId: 3, message: { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hello world' }] } }
-    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame, events: [{ type: 'sttFinal', chars: 11 }] })
+    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame })
   })
 
   it('audio-begin carries its turnId', () => {
@@ -53,7 +50,6 @@ describe('mapServerMessage conversation frame', () => {
     const fx = mapServerMessage({ type: 'conversation', conversationId: 'c1', title: 'Where is my cat' }, false)
     expect(fx.conversation).toEqual({ id: 'c1', title: 'Where is my cat' })
     expect(fx.messageFrame).toBeUndefined()
-    expect(fx.events).toEqual([])
   })
   it('a null/absent title maps to null, not undefined', () => {
     expect(mapServerMessage({ type: 'conversation', conversationId: 'c1' }, false).conversation).toEqual({ id: 'c1', title: null })

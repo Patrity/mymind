@@ -19,11 +19,11 @@ describe('mapServerMessage — audio framing', () => {
 describe('mapServerMessage — message frames', () => {
   it('passes chunk frames through as messageFrame', () => {
     const frame = { type: 'chunk', turnId: 3, chunk: { type: 'text-delta', id: 't', delta: 'hi' } }
-    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame, events: [] })
+    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame })
   })
 
-  it('a user-message frame is a messageFrame plus the sttFinal viz event', () => {
+  it('a user-message frame maps to a messageFrame', () => {
     const frame = { type: 'user-message', turnId: 3, message: { id: 'u', role: 'user', parts: [{ type: 'text', text: 'hello world' }] } }
-    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame, events: [{ type: 'sttFinal', chars: 11 }] })
+    expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame })
   })
 })

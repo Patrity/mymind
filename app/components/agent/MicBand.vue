@@ -19,10 +19,9 @@ let raf = 0
 
 const BARS = 56
 
-// Local copies of the same three colors lib/viz/tuning.ts used (that module is being
-// retired this cycle — see spec "Deleted"): cyan is what the ring used for live mic pickup
-// during 'listening', the idle ring blue is its resting tone, and amber is the viz's
-// attention/accent color (used for tool pulses) — reused here for the VAD threshold marker.
+// Three hand-picked colors for the mic band: cyan for live mic pickup during
+// 'listening', a resting blue for the idle ring, and amber as the attention/accent
+// color, reused here for the VAD threshold marker.
 function hex(h: number): [number, number, number] {
   return [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255]
 }
