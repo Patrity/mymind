@@ -46,6 +46,9 @@ export interface PlaybackEpochs {
   segment: () => number
   /** Does a frame carrying this stamp still belong to the turn being listened to? */
   accepts: (epoch: number) => boolean
+  /** The opening segment belongs to a superseded turn (its `audio-begin` carried a stale
+   *  turnId): stamp it so none of its frames are ever accepted. */
+  rejectSegment: () => void
 }
 
 export function createPlaybackEpochs(): PlaybackEpochs {
@@ -57,6 +60,7 @@ export function createPlaybackEpochs(): PlaybackEpochs {
     interrupt() { playEpoch++ },
     beginSegment() { segmentEpoch = playEpoch },
     segment() { return segmentEpoch },
-    accepts(epoch: number) { return epoch === playEpoch }
+    accepts(epoch: number) { return epoch === playEpoch },
+    rejectSegment() { segmentEpoch = -1 }
   }
 }

@@ -109,3 +109,13 @@ describe('createPlaybackEpochs', () => {
     expect(e.accepts(first)).toBe(false)
   })
 })
+
+describe('rejectSegment', () => {
+  it('makes the segment being opened unacceptable until the next beginSegment', () => {
+    const e = createPlaybackEpochs()
+    e.rejectSegment()
+    expect(e.accepts(e.segment())).toBe(false)
+    e.beginSegment()
+    expect(e.accepts(e.segment())).toBe(true)
+  })
+})
