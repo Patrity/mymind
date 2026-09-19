@@ -3,6 +3,8 @@ title: /agent rebuild on AI Elements — Persona, PromptInput, inline approvals,
 cycle: 65
 date: 2026-09-19
 status: spec — approved in brainstorm, not yet planned
+mymind_id: 10739fe8-527c-4c86-9c7a-21c28fe59847
+mymind_hash: 06d848d046d153422a0cf69bd2a974be7c1f647a2f01323259955769b220372d
 program: >
   Cycle 2 of 4 in the "agent surfaces on AI Elements" program. Cycle 64 (foundation) moved the
   conversation onto AI SDK UIMessages rendered with AI Elements Vue; this cycle rebuilds the page
