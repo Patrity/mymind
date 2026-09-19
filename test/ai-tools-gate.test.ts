@@ -21,7 +21,7 @@ describe('buildAiTools dangerous-tool gate', () => {
     const requestApproval = vi.fn().mockResolvedValue({ approved: true })
     const set = buildAiTools([dangerTool()], { signal: new AbortController().signal, onEvent: () => {}, requestApproval })
     const res = await exec(set, { command: 'echo hi' })
-    expect(requestApproval).toHaveBeenCalledWith({ tool: 'exec', command: 'echo hi', proposedPattern: 'echo *' })
+    expect(requestApproval).toHaveBeenCalledWith({ tool: 'exec', command: 'echo hi', proposedPattern: 'echo *', callId: '' })
     expect(res).toEqual({ ran: 'echo hi' })
   })
   it('skips the handler and returns a denied result when denied', async () => {

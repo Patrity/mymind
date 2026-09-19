@@ -49,6 +49,12 @@ export function createUIChunkEncoder(messageId: string): UIChunkEncoder {
           return e.text ? delta('reasoning', e.text) : []
         case 'tool-start':
           return [...close(), ...input(e.callId, e.name, e.args)]
+        case 'approval-request': {
+          const out = close()
+          if (!started.has(e.callId)) out.push(...input(e.callId, e.name, {}))
+          out.push({ type: 'tool-approval-request', approvalId: e.approvalId, toolCallId: e.callId })
+          return out
+        }
         case 'tool': {
           if (!e.callId) return [] // legacy event without an id: cannot be paired, skip it
           const out = close()

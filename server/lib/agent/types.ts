@@ -13,6 +13,7 @@ export interface ApprovalRequest {
   tool: string        // e.g. 'exec'
   command: string     // the exact thing that will run / change
   proposedPattern: string // an "always allow" suggestion (editable in the UI)
+  callId?: string // the SDK toolCallId — lets the UI render the approval on that tool part
 }
 
 /** Per-call context handed to every tool handler. */

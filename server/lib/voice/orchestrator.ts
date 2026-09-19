@@ -18,6 +18,7 @@ export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'tool-start'; callId: string; name: string; args: Record<string, unknown> }
+  | { type: 'approval-request'; approvalId: string; callId: string; name: string }
   // args/result are the CAPPED copies also written to the tool record, so the live UI shows
   // exactly what a resumed thread will show.
   | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind }

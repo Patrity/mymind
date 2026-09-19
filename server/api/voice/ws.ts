@@ -4,7 +4,7 @@ import { classifyFrame } from '../../lib/voice/frames'
 import { sttFromModel } from '../../lib/voice/providers'
 import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
 import { speakWithPreset } from '../../lib/voice/speak'
-import { createTurnStream } from '../../lib/voice/turn-stream'
+import { createTurnStream, type TurnStream } from '../../lib/voice/turn-stream'
 import { resolveTurnVoice } from '../../services/voice-presets'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
@@ -18,6 +18,7 @@ import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOut
 import { recordEvent } from '../../lib/observability/record'
 import { randomUUID } from 'node:crypto'
 import type { AttachmentRef } from '../../lib/agent/attachments'
+import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'preset',presetId} (voice pick; null/absent = the default preset) |
@@ -45,6 +46,9 @@ interface ConnState {
   /** Monotonic per-connection turn counter; stamped onto every frame of a turn so the client
    *  can drop a superseded turn's stragglers. */
   turnSeq: number
+  /** The turn stream currently running, if any — lets requestApproval emit the
+   *  approval-request chunk straight into the active turn's message stream. */
+  activeTurn: TurnStream | null
 }
 const conns = new WeakMap<object, ConnState>()
 
@@ -68,7 +72,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, presetId: null, model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map(), turnSeq: 0 })
+    conns.set(peer, { history: [], ac: null, presetId: null, model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map(), turnSeq: 0, activeTurn: null })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -103,11 +107,16 @@ export default defineWebSocketHandler({
         }, Number(process.env.APPROVAL_TIMEOUT_MS ?? 120_000))
         s.pendingApprovals.set(requestId, { resolve, timer, req })
         peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern }))
+        if (req.callId) s.activeTurn?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool })
       })
     }
+    // Deny every pending approval and tell the client each request is resolved — used
+    // whenever the turn that asked for them is abandoned (interrupt / new / a fresh turn /
+    // socket close) so a tool never waits out its 120s timeout on a question nobody can see.
+    const denyAll = () => { for (const id of denyPendingApprovals(s.pendingApprovals)) peer.send(JSON.stringify({ type: 'approval-resolved', requestId: id })) }
     if (frame.kind === 'control') {
       const msg = frame.msg
-      if (msg.type === 'interrupt') { s.ac?.abort(); return }
+      if (msg.type === 'interrupt') { s.ac?.abort(); denyAll(); return }
       if (msg.type === 'preset') {
         s.presetId = typeof msg.presetId === 'string' && msg.presetId ? msg.presetId : null
         return
@@ -149,8 +158,9 @@ export default defineWebSocketHandler({
         })
         return
       }
-      // new: reset to a fresh conversation
-      if (msg.type === 'new') { s.history = []; s.conversationId = null; return }
+      // new: reset to a fresh conversation — also abandons any turn in flight, so its
+      // pending approvals (and the turn itself) don't linger into the new conversation.
+      if (msg.type === 'new') { s.ac?.abort(); denyAll(); s.history = []; s.conversationId = null; return }
       if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
         // Typed turn: inject post-STT — same agent loop, same TTS, same events.
         const text = msg.text.trim()
@@ -181,13 +191,12 @@ export default defineWebSocketHandler({
     const turnId = ++s.turnSeq
     const attachmentsForTurn = turnAttachments
     s.ac?.abort()
-    for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }
-    s.pendingApprovals.clear()
+    denyAll()
     s.ac = new AbortController()
     const ac = s.ac
     const exec = turn
     const run = async () => {
-      let turnStream: ReturnType<typeof createTurnStream> | null = null
+      let ts: ReturnType<typeof createTurnStream> | null = null
       try {
         // Live context is rebuilt EVERY turn (two cheap indexed queries) — the old
         // once-per-connection cache went stale (a task created mid-conversation
@@ -196,8 +205,11 @@ export default defineWebSocketHandler({
         let reasoningText = ''
         let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string } | null = null
         const prevLen = s.history.length
-        const ts = createTurnStream({ turnId, attachments: attachmentsForTurn, send: d => peer.send(d) })
-        turnStream = ts
+        ts = createTurnStream({ turnId, attachments: attachmentsForTurn, send: d => peer.send(d) })
+        // Active while this turn runs, so requestApproval (fired from inside exec!) can emit
+        // the approval-request chunk into THIS turn's stream — turns are serialized by
+        // s.lock, so the turn calling requestApproval is always the active one.
+        s.activeTurn = ts
         const emit = (e: VoiceEvent) => {
           if (e.type === 'reasoning') reasoningText += e.text
           // Overwrite, not accumulate: at most one usage event per turn in the common
@@ -205,7 +217,7 @@ export default defineWebSocketHandler({
           // one, it's from the streamText call that actually produced the visible text —
           // that supersedes the aborted first call's usage rather than adding to it.
           else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens, contextTokens: e.contextTokens, modelDefId: e.modelDefId }
-          ts.emit(e)
+          ts!.emit(e)
         }
         s.history = await exec!(ac.signal, emit, context)
         // Close the message BEFORE persisting: the UI should finish promptly; persistence
@@ -233,13 +245,15 @@ export default defineWebSocketHandler({
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }
       } catch (err) {
-        if ((err as Error).name === 'AbortError') { turnStream?.abort(); return }
+        if ((err as Error).name === 'AbortError') { ts?.abort(); return }
         console.error('[agent] turn failed:', err)
-        if (turnStream) turnStream.error((err as Error).message || 'agent pipeline error')
+        if (ts) ts.error((err as Error).message || 'agent pipeline error')
         else {
           peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'agent pipeline error' }))
           peer.send(JSON.stringify({ type: 'state', state: 'idle' }))
         }
+      } finally {
+        if (s.activeTurn === ts) s.activeTurn = null
       }
     }
     s.lock = s.lock.then(run, run)
@@ -247,7 +261,12 @@ export default defineWebSocketHandler({
   close(peer) {
     const s = conns.get(peer)
     s?.ac?.abort()
-    if (s) { for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) } }
+    if (s) {
+      for (const id of denyPendingApprovals(s.pendingApprovals)) {
+        // The socket is closing (or already closed) — sending is best-effort.
+        try { peer.send(JSON.stringify({ type: 'approval-resolved', requestId: id })) } catch { /* ignore */ }
+      }
+    }
     conns.delete(peer)
   }
 })

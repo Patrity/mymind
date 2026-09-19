@@ -135,4 +135,20 @@ describe('createUIChunkEncoder', () => {
     const { message } = await assemble(encodeTurn([text('partial')], 'abort'))
     expect(visible(message)).toEqual([{ type: 'text', text: 'partial', state: 'done' }])
   })
+
+  it('an approval request puts the tool in approval-requested; approve → output, deny → denied', async () => {
+    const start: VoiceEvent = { type: 'tool-start', callId: 'c1', name: 'exec', args: { command: 'df -h' } }
+    const ask: VoiceEvent = { type: 'approval-request', approvalId: 'r1', callId: 'c1', name: 'exec' }
+    const pending = await assemble(encodeTurn([start, ask]).slice(0, -2)) // no finish: still pending
+    expect(pending.message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ state: 'approval-requested', approval: { id: 'r1' } })
+    const ok = await assemble(encodeTurn([start, ask, { type: 'tool', callId: 'c1', name: 'exec', summary: 'ran', args: {}, result: { stdout: 'ok' } }]))
+    expect(ok.message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ state: 'output-available', approval: { id: 'r1' } })
+    const no = await assemble(encodeTurn([start, ask, { type: 'tool', callId: 'c1', name: 'exec', summary: 'denied: exec', args: {}, result: { denied: true } }]))
+    expect(no.message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ state: 'output-denied' })
+  })
+
+  it('an approval request for a call never opened opens it first', async () => {
+    const { message } = await assemble(encodeTurn([{ type: 'approval-request', approvalId: 'r9', callId: 'c9', name: 'exec' }]).slice(0, -2))
+    expect(message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ toolCallId: 'c9', toolName: 'exec', state: 'approval-requested' })
+  })
 })
