@@ -153,3 +153,11 @@ describe('toolBlocksFor', () => {
     expect(toolBlocksFor([legacy])).toEqual([])
   })
 })
+
+describe('toolBlocksFor ignores subagent steps', () => {
+  it('produces identical model blocks with and without steps', () => {
+    const base = { callId: 'c1', name: 'research_web', kind: 'read' as const, args: { task: 't' }, result: { report: 'r' }, summary: 's', textOffset: 0 }
+    const withSteps = { ...base, steps: [{ callId: 'n1', name: 'web_search', summary: 'searched', state: 'done' as const }] }
+    expect(toolBlocksFor([withSteps])).toEqual(toolBlocksFor([base]))
+  })
+})

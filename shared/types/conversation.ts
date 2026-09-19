@@ -1,3 +1,5 @@
+import type { SubagentStep } from './agent-ui'
+
 export interface AttachmentRef {
   id: string
   kind: 'image' | 'file'
@@ -15,6 +17,8 @@ export interface ToolCallRecordDTO {
   args?: Record<string, unknown>
   result?: unknown
   textOffset?: number
+  /** A subagent's nested calls (terminal states only). Display-only — never sent to the model. */
+  steps?: SubagentStep[]
 }
 
 export interface MessageUsage {

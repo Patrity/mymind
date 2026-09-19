@@ -4,6 +4,7 @@
 // run.ts (that would be circular) and nothing from the DB or the AI SDK, so
 // every rule below is unit-testable with plain objects.
 import type { ToolKind } from './types'
+import type { SubagentStep } from '../../../shared/types/agent-ui'
 
 /** One tool invocation, normalized. Persisted additively onto conversation_messages.tool_calls. */
 export interface AgentToolRecord {
@@ -15,6 +16,8 @@ export interface AgentToolRecord {
   summary: string                     // existing chip text
   undoToken?: string
   textOffset: number                  // assistantText.length when the call fired
+  /** A subagent's nested calls (terminal states only). toolBlocksFor ignores it: display-only. */
+  steps?: SubagentStep[]
 }
 
 /** Tool-bearing assistant turns whose results survive into model history. */
