@@ -29,6 +29,13 @@ async function runWithGatedTool() {
   const tool: AgentTool = {
     name: 'slow', description: 'slow', kind: 'read', schema: {},
     handler: async (_input, ctx) => {
+      // A real subagent emits its nested events OVER TIME, after awaits, while the parent
+      // tool is still running — not synchronously before its first await. Model that here:
+      // this delay puts the emit on the far side of a tick boundary from tool-start, so the
+      // only way it can reach the consumer before the gate releases is a channel that a tool
+      // callback can push into directly — a queue drained only when the next fullStream part
+      // arrives would leave it stuck (fullStream is silent for the whole gated window).
+      await new Promise(r => setTimeout(r, 20))
       ctx.onNestedEvent?.({ type: 'tool-start', name: 'web_search', args: { q: 'x' }, callId: 'n1' })
       await gate
       return { result: { ok: true }, summary: 'slow done' }
