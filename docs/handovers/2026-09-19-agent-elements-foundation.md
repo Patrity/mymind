@@ -1,4 +1,6 @@
 ---
+mymind_id: 3e31ae19-64fe-4769-9019-0c8b266dd177
+mymind_hash: 18c42964923b0c24b1594254fd0428656547e1b9590ea87b481843be92ead429
 title: Agent Elements foundation — AI SDK message protocol over the voice socket, rendered with AI Elements Vue (cycle 64)
 cycle: 64
 date: 2026-09-19
