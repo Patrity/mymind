@@ -15,10 +15,10 @@ function build(): AiConfigDoc {
       { id: 'p2', name: 'B', kind: 'openai-compatible', baseURL: 'http://gateway/v1', apiKeyEnc: encryptSecret('k2') }
     ],
     models: [
-      { id: 'm1', providerId: 'p1', modelId: 'qwen', label: 'Qwen', dim: null },
-      { id: 'm2', providerId: 'p2', modelId: 'claude', label: 'Claude', dim: null },
-      { id: 'e1', providerId: 'p1', modelId: 'embed', label: 'Embed', dim: EMBEDDING_DIM },
-      { id: 'e2', providerId: 'p1', modelId: 'embed-bad', label: 'EmbedBad', dim: 1024 }
+      { id: 'm1', providerId: 'p1', modelId: 'qwen', label: 'Qwen', dim: null, contextWindow: null },
+      { id: 'm2', providerId: 'p2', modelId: 'claude', label: 'Claude', dim: null, contextWindow: null },
+      { id: 'e1', providerId: 'p1', modelId: 'embed', label: 'Embed', dim: EMBEDDING_DIM, contextWindow: null },
+      { id: 'e2', providerId: 'p1', modelId: 'embed-bad', label: 'EmbedBad', dim: 1024, contextWindow: null }
     ],
     assignments: { ...emptyDoc().assignments, reasoning: ['m1', 'm2'], embeddings: ['e2', 'e1'] }
   }
@@ -52,7 +52,7 @@ describe('resolveChainFrom', () => {
 
 describe('languageModel', () => {
   it('builds an OpenAI-compatible model without throwing', () => {
-    const oai = languageModel({ usage: 'reasoning', modelDefId: 'm', providerKind: 'openai-compatible', baseURL: 'http://a/v1', apiKey: 'k', modelId: 'qwen', label: 'Q', dim: null })
+    const oai = languageModel({ usage: 'reasoning', modelDefId: 'm', providerKind: 'openai-compatible', baseURL: 'http://a/v1', apiKey: 'k', modelId: 'qwen', label: 'Q', dim: null, contextWindow: null })
     expect(oai).toBeTruthy()
   })
 })
@@ -77,8 +77,8 @@ describe('reorderChain', () => {
 
 describe('withFailoverOver', () => {
   const chain: ResolvedModel[] = [
-    { usage: 'bulk', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL: 'http://a', apiKey: 'k', modelId: 'a', label: 'A', dim: null },
-    { usage: 'bulk', modelDefId: 'm2', providerKind: 'openai-compatible', baseURL: 'http://b', apiKey: 'k', modelId: 'b', label: 'B', dim: null }
+    { usage: 'bulk', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL: 'http://a', apiKey: 'k', modelId: 'a', label: 'A', dim: null, contextWindow: null },
+    { usage: 'bulk', modelDefId: 'm2', providerKind: 'openai-compatible', baseURL: 'http://b', apiKey: 'k', modelId: 'b', label: 'B', dim: null, contextWindow: null }
   ]
 
   it('uses the first model that succeeds', async () => {

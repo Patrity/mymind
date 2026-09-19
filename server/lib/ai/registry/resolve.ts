@@ -40,7 +40,7 @@ export function resolveChainFrom(doc: AiConfigDoc, usage: Usage): ResolvedModel[
     if (p.apiKeyEnc) { try { apiKey = decryptSecret(p.apiKeyEnc) } catch { apiKey = null } }
     chain.push({
       usage, modelDefId: m.id, providerKind: p.kind, baseURL: p.baseURL,
-      apiKey, modelId: m.modelId, label: m.label, dim: m.dim
+      apiKey, modelId: m.modelId, label: m.label, dim: m.dim, contextWindow: m.contextWindow ?? null
     })
   }
   // Embeddings can't fail over to a different dimension — keep only 2560.

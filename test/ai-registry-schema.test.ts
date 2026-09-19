@@ -51,3 +51,21 @@ describe('config schema', () => {
     expect(r.providers.find(p => p.id === 'p2')!.hasKey).toBe(false)
   })
 })
+
+describe('ModelDef.contextWindow', () => {
+  it('defaults to null for docs written before the field existed', () => {
+    expect(parseConfig(doc()).models[0]!.contextWindow).toBeNull()
+  })
+
+  it('accepts a positive integer', () => {
+    const d = doc(); d.models[0] = { ...d.models[0]!, contextWindow: 131072 } as typeof d.models[0]
+    expect(parseConfig(d).models[0]!.contextWindow).toBe(131072)
+  })
+
+  it('rejects zero, negatives and fractions', () => {
+    for (const bad of [0, -1, 1.5]) {
+      const d = doc(); d.models[0] = { ...d.models[0]!, contextWindow: bad } as typeof d.models[0]
+      expect(() => parseConfig(d)).toThrow()
+    }
+  })
+})

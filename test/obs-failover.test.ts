@@ -4,8 +4,8 @@ import type { ResolvedModel } from '../server/lib/ai/registry/types'
 import type { SpanInput } from '../server/lib/observability/types'
 
 const chain: ResolvedModel[] = [
-  { usage: 'reasoning', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL: 'http://a', apiKey: 'k', modelId: 'broken', label: 'Broken', dim: null },
-  { usage: 'reasoning', modelDefId: 'm2', providerKind: 'openai-compatible', baseURL: 'http://b', apiKey: 'k', modelId: 'good', label: 'Good', dim: null }
+  { usage: 'reasoning', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL: 'http://a', apiKey: 'k', modelId: 'broken', label: 'Broken', dim: null, contextWindow: null },
+  { usage: 'reasoning', modelDefId: 'm2', providerKind: 'openai-compatible', baseURL: 'http://b', apiKey: 'k', modelId: 'good', label: 'Good', dim: null, contextWindow: null }
 ]
 
 /** Exactly what node/undici `fetch` throws when its AbortSignal fires. */

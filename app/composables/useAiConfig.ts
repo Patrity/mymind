@@ -8,7 +8,7 @@ export type ProviderKind = 'openai-compatible'
 export type KeyField = { apiKey: string } | { keep: true } | null
 
 export interface DraftProvider { id: string; name: string; kind: ProviderKind; baseURL: string | null; hasKey: boolean; key: KeyField }
-export interface DraftModel { id: string; providerId: string; modelId: string; label: string; dim: number | null }
+export interface DraftModel { id: string; providerId: string; modelId: string; label: string; dim: number | null; contextWindow: number | null }
 export interface DraftDoc { version: 1; providers: DraftProvider[]; models: DraftModel[]; assignments: Record<string, string[]> }
 
 const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank'] as const
@@ -32,7 +32,7 @@ export function useAiConfig() {
     draft.value = {
       version: 1,
       providers: doc.providers.map(p => ({ ...p, key: p.hasKey ? { keep: true } : null })),
-      models: doc.models,
+      models: doc.models.map(m => ({ ...m, contextWindow: m.contextWindow ?? null })),
       assignments: { ...emptyAssignments(), ...doc.assignments }
     }
     loaded.value = true
@@ -47,7 +47,7 @@ export function useAiConfig() {
     draft.value.providers = draft.value.providers.filter(p => p.id !== id)
   }
   function addModel(): DraftModel {
-    const m: DraftModel = { id: uid(), providerId: draft.value.providers[0]?.id ?? '', modelId: '', label: 'New model', dim: null }
+    const m: DraftModel = { id: uid(), providerId: draft.value.providers[0]?.id ?? '', modelId: '', label: 'New model', dim: null, contextWindow: null }
     draft.value.models.push(m)
     return m
   }

@@ -28,6 +28,16 @@ const isEmbedding = computed({
   get: () => props.model.dim !== null,
   set: (on: boolean) => { props.model.dim = on ? EMBEDDING_DIM : null },
 })
+
+// UInput type=number round-trips '' when cleared. Map ''/0/non-finite → null
+// (unknown context window), a positive value → its truncated integer.
+const contextWindowInput = computed<number | string>({
+  get: () => props.model.contextWindow ?? '',
+  set: (v: number | string) => {
+    const n = Number(v)
+    props.model.contextWindow = v === '' || !Number.isFinite(n) || n <= 0 ? null : Math.trunc(n)
+  },
+})
 </script>
 
 <template>
@@ -59,6 +69,16 @@ const isEmbedding = computed({
         <UFormField label="Label">
           <UInput
             v-model="model.label"
+            class="w-full"
+          />
+        </UFormField>
+
+        <UFormField label="Context window (tokens)">
+          <UInput
+            v-model.number="contextWindowInput"
+            type="number"
+            :min="1"
+            placeholder="unknown"
             class="w-full"
           />
         </UFormField>

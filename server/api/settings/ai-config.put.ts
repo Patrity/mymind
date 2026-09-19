@@ -12,7 +12,11 @@ const Body = z.object({
     id: z.string(), name: z.string(), kind: z.enum(['openai-compatible']),
     baseURL: z.string().url().nullable(), key: KeyField
   })),
-  models: z.array(z.object({ id: z.string(), providerId: z.string(), modelId: z.string(), label: z.string(), dim: z.number().int().positive().nullable() })),
+  models: z.array(z.object({
+    id: z.string(), providerId: z.string(), modelId: z.string(), label: z.string(),
+    dim: z.number().int().positive().nullable(),
+    contextWindow: z.number().int().positive().nullable().default(null)
+  })),
   assignments: z.object(Object.fromEntries(USAGES.map(u => [u, z.array(z.string())])))
 })
 

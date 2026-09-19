@@ -17,7 +17,8 @@ const modelSchema = z.object({
   providerId: z.string().min(1),
   modelId: z.string().min(1),
   label: z.string().min(1),
-  dim: z.number().int().positive().nullable()
+  dim: z.number().int().positive().nullable(),
+  contextWindow: z.number().int().positive().nullable().default(null)
 })
 
 const assignmentsSchema = z.object(

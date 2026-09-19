@@ -24,8 +24,8 @@ describe('extractContent', () => {
 
 describe('extractContent + withFailover', () => {
   const chain: ResolvedModel[] = [
-    { usage: 'reasoning', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL: 'http://a', apiKey: 'k', modelId: 'broken', label: 'Broken', dim: null },
-    { usage: 'reasoning', modelDefId: 'm2', providerKind: 'openai-compatible', baseURL: 'http://b', apiKey: 'k', modelId: 'good', label: 'Good', dim: null }
+    { usage: 'reasoning', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL: 'http://a', apiKey: 'k', modelId: 'broken', label: 'Broken', dim: null, contextWindow: null },
+    { usage: 'reasoning', modelDefId: 'm2', providerKind: 'openai-compatible', baseURL: 'http://b', apiKey: 'k', modelId: 'good', label: 'Good', dim: null, contextWindow: null }
   ]
 
   it('fails over past a model that returns no usable content (the bug: a 200 + empty body must not look like success)', async () => {

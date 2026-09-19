@@ -41,7 +41,7 @@ export default defineEventHandler(async () => {
       provider = { id: crypto.randomUUID(), name: src.env.replace(/^AI_/, '').toLowerCase(), kind: 'openai-compatible', baseURL, apiKeyEnc: apiKey ? encryptSecret(apiKey) : null } satisfies ProviderDef
       doc.providers.push(provider)
     }
-    const model: ModelDef = { id: crypto.randomUUID(), providerId: provider.id, modelId, label: `${src.usage}: ${modelId}`, dim: src.dim ?? null }
+    const model: ModelDef = { id: crypto.randomUUID(), providerId: provider.id, modelId, label: `${src.usage}: ${modelId}`, dim: src.dim ?? null, contextWindow: null }
     doc.models.push(model)
     doc.assignments[src.usage].push(model.id)
   }

@@ -26,6 +26,7 @@ export interface ModelDef {
   modelId: string             // literal string sent to the API
   label: string
   dim: number | null          // EMBEDDING_DIM for embedding models, else null
+  contextWindow: number | null // max input tokens; null = unknown (the /agent context meter then shows a count only)
 }
 
 export type Assignments = Record<Usage, string[]>  // usage -> ordered model ids (failover priority)
@@ -47,6 +48,7 @@ export interface ResolvedModel {
   modelId: string
   label: string
   dim: number | null
+  contextWindow: number | null // max input tokens; null = unknown (the /agent context meter then shows a count only)
 }
 
 export function emptyAssignments(): Assignments {
