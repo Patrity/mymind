@@ -1,8 +1,8 @@
 ---
 title: Voice Agent
 status: shipped
-cycle: 62
-updated: 2026-09-16
+cycle: 64
+updated: 2026-09-19
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
 mymind_hash: 7c6b81626a1f3d87f2c7c6e18acb4530e7733f38c0b0bad531749410bb7839ae
 ---
@@ -14,6 +14,8 @@ mymind_hash: 7c6b81626a1f3d87f2c7c6e18acb4530e7733f38c0b0bad531749410bb7839ae
 > **Cycle 60 update:** the TTS chain gained a sanitizer + a real segmenter (`SentenceChunker` and `server/lib/voice/chunker.ts` are **deleted**), the microphone gained a device picker, and the **particle sphere became a particle head**. `app/components/voice/Reactor.client.vue` and the 96-bar mic ring (`app/lib/viz/ring.ts`) are **deleted**; the "Voice Visualizer (cycle 19)" section below has been rewritten as [Bridget's avatar](#bridgets-avatar-cycle-60). The GPU machinery underneath — `scene.ts`, `core.ts`, `effects.ts`, `lightning.ts`, `choreographer.ts`, the quality tiers and the FPS watchdog — is unchanged and re-pointed.
 >
 > **Post-handover update (2026-08-28, superseded in part by cycle 61 below):** five follow-on commits landed after the cycle-60 handover closed, correcting two claims that handover made. **The head mesh now exists and is committed** — `assets/source/bridget-head.glb` and `app/assets/head-points.bin` are both in the repo, `bake-head.ts` was rewritten to merge every mesh/node instead of just the first primitive, keep only the skin shell (66 shells in the real export; eyeballs/teeth/helper ribbons were 40% of the triangles), sample mesh edges instead of random surface points, and use landmarks measured off the discarded shells. **Orpheus is now live** on the rig and registered in production, at the tail of the TTS failover chain. TTS synthesis is also now pipelined (concurrency ramps 1→3) instead of fully sequential. See [Speech pipeline](#speech-pipeline-cycle-60), [Providers](#providers) and [Bridget's avatar](#bridgets-avatar-cycle-60) below, and the [cycle-60 handover's follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) for the full commit list. **Still open, not solved by any of this:** the avatar's jaw doesn't hinge, the talking motion doesn't read as natural, and the model doesn't read as a woman (Tony's own assessment, deferred by him); exposure/density (`VIZ_TUNING.head`) has never been tuned against the real head; the export is body-only (no hair, no eyes) so those sockets are empty by construction; and which TTS voice to adopt is undecided pending Tony's ears.
+>
+> **Cycle 64 update — the assistant-message frames became the AI SDK's own message protocol.** `transcript` (assistant half)/`reasoning`/`tool`/`usage` are **removed** from the server→client frame list below, replaced by `{type:'chunk', turnId, chunk: UIMessageChunk}` (one AI SDK chunk per encoder event) and `{type:'user-message', turnId, message}`; `audio-begin` **gains `turnId`**. The audio/state/approval/preset frames this page documents in depth are otherwise unchanged — see the updated [WebSocket protocol](#websocket-protocol-apivoicews) section below for the full table, and [agent.md](agent.md#websocket-protocol-serverapivoicewsts) for how the client assembles `chunk`s into `UIMessage`s and renders them.
 >
 > **Cycle 61 update — the TTS stack was replaced wholesale.** Kokoro, Chatterbox and Orpheus are **gone**, and so is the idea of a failover chain for TTS: there is now **one engine, Breeze TTS 2**, at `http://192.168.2.25:8880`, and a voice is a **row** (`voice_presets`) rather than a string from a `/v1/voices` enum. `server/lib/voice/tts-failover.ts` and `server/api/voice/voices.get.ts` are **deleted**; `AI_TTS_KOKORO_*` / `AI_TTS_CHATTERBOX_*` no longer exist. Binary frames on the socket are now **raw PCM chunks as the engine produces them**, bracketed by `audio-begin`/`audio-end` — no longer one WAV per sentence. `/voice` is a real page again: the **[Voice Studio](voice-studio.md)**, where presets are authored. The [Providers](#providers), [TTS engine](#tts-engine-breeze-tts-2-cycle-61), [WebSocket protocol](#websocket-protocol-apivoicews) and [Env vars](#env-vars) sections below have been rewritten; the bake-off table they replaced described three engines that are no longer dialed.
 
@@ -290,17 +292,18 @@ error frame and unacked activity errors on every barge-in (prod, 2026-08-05).
 | Message | Shape | Meaning |
 |---|---|---|
 | Binary | `ArrayBuffer` — **raw PCM, s16le mono** | Audio for the segment currently open. Chunks as the engine produces them, **not** one WAV per sentence (cycle 61). Decode at the rate named by the preceding `audio-begin`. |
-| Text | `{type:'audio-begin', segmentId, sampleRate}` | Opens a spoken segment and carries the rate its PCM must be decoded at. WS delivery is ordered, so this always lands before that segment's first binary frame. |
+| Text | `{type:'audio-begin', turnId, segmentId, sampleRate}` | Opens a spoken segment and carries the rate its PCM must be decoded at, plus (cycle 64) the **turn id** that opened it. WS delivery is ordered, so this always lands before that segment's first binary frame. |
 | Text | `{type:'audio-end', segmentId}` | Closes it. **Strictly paired** with `audio-begin`: a segment whose synthesis threw or aborted before yielding its `begin` never opened on the wire, and emitting an `end` for it would name an id that really did begin — the orchestrator suppresses that rather than sending a lying frame. |
-| Text | `{type:'transcript', role, text}` | Transcript line (role: `user` or `assistant`) |
-| Text | `{type:'tool', name, summary, undoToken?}` | Tool execution chip |
+| Text | `{type:'chunk', turnId, chunk: UIMessageChunk}` | **(cycle 64, replaces `transcript`/`reasoning`/`tool`/`usage`)** One AI SDK `UIMessageChunk` of the turn's assistant message — see [agent.md](agent.md#websocket-protocol-serverapivoicewsts) for the full chunk table and how the client assembles it with `readUIMessageStream`. |
+| Text | `{type:'user-message', turnId, message: UIMessage}` | **(cycle 64)** The turn's user message (STT text for a voice turn, or the typed text + attachment parts), sent once before that turn's `chunk`s |
 | Text | `{type:'state', state}` | Orchestrator state: `idle`/`thinking`/`speaking`/`tool` |
 | Text | `{type:'error', message}` | Pipeline failure (STT/TTS/agent) — client shows alert + viz error flash, then idle |
-| Text | `{type:'reasoning', text}` | Reasoning deltas (cycle 45) — display/storage only, never spoken |
-| Text | `{type:'usage', inputTokens?, outputTokens?, totalTokens?}` | Per-turn token usage (cycle 60), emitted once — metadata only, never chunked or spoken |
 | Text | `{type:'conversation', conversationId, title}` | Emitted once when the first turn lazily creates the thread (cycle 60) |
+| ~~`{type:'transcript', role, text}`~~ / ~~`{type:'tool', ...}`~~ / ~~`{type:'reasoning', text}`~~ / ~~`{type:'usage', ...}`~~ | — | **Removed in cycle 64.** Folded into `chunk`'s `text-delta`/`tool-*`/`reasoning-delta`/`message-metadata.usage` |
 
 The full, current frame list — including `{type:'model'}`, `{type:'load'}`, `{type:'new'}` and the exec approve/deny frames — is in [agent.md](agent.md#websocket-protocol-serverapivoicewsts).
+
+**Stale-segment rejection (`turnId` on `audio-begin`, cycle 64).** Before this, no frame named which turn an `audio-begin` belonged to — `useVoice` documented this as an open barge-in gap ("the client cannot tell whose `audio-begin` this is"). A superseded turn's already-in-flight synthesis could still open a segment and start streaming PCM after the client had moved on to the next turn. Now every `audio-begin` carries the `turnId` the server stamped on the turn (`ConnState.turnSeq`, monotonic per connection), and the client (`app/lib/voice/playback-epoch.ts`'s `createPlaybackEpochs`, wired from `createClientTurns`'s staleness check in `app/lib/agent/turn-stream.ts`) rejects a segment whose `turnId` is not the current turn's outright, instead of relying solely on the epoch-at-flight-time check that existed before. The two checks are complementary: `turnId` rejects a whole stale segment before it starts; the epoch guard (cycle 61) still drops an individual in-flight PCM frame that was queued when the user barged in mid-segment.
 
 ## Env vars
 
