@@ -2,16 +2,20 @@
 <script setup lang="ts">
 import { DEFAULT_MIC, buildMicOptions, micIdToSelectValue, selectValueToMicId, isMicIdAvailable } from '~/lib/voice/devices'
 import { resolveSelectedPreset } from '~/lib/voice/presets'
+import { PERSONA_VARIANTS } from '~/lib/agent/persona'
 
 const props = defineProps<{ voice: ReturnType<typeof useVoice> }>()
 
 // Spoken replies. The model is bound to the page's `agent-speak` cookie ref — the SAME
-// ref the toolbar switch uses — so the two controls cannot drift. The toolbar switch is
-// hidden under sm (the navbar overflows a phone otherwise), and this slideover is
-// reachable at every width, so this is the only way to turn voice replies on there.
+// ref the composer's speaker toggle uses — so the two controls cannot drift. Both stay
+// reachable at every width; this slideover is just a second way in, alongside the rest
+// of the voice tuning.
 const speak = defineModel<boolean>('speak', { required: true })
 
 const { settings } = useVoiceSettings()
+
+// Persona character variant — labels capitalized from the lowercase variant names.
+const personaVariantItems = PERSONA_VARIANTS.map(v => ({ label: v[0]!.toUpperCase() + v.slice(1), value: v }))
 
 // Voice picker — presets authored in /voice, not an enum from a provider.
 const { data: presetList } = await useFetch('/api/voice/presets', {
@@ -98,11 +102,24 @@ onUnmounted(() => clearTimeout(timer))
       <div class="flex flex-col gap-6">
         <UFormField
           label="Voice replies"
-          help="Speak each reply aloud as well as showing it. Same setting as the toolbar switch on wide screens."
+          help="Speak each reply aloud as well as showing it. Same setting as the composer's speaker toggle."
         >
           <USwitch
             v-model="speak"
             :label="speak ? 'Enabled' : 'Disabled'"
+          />
+        </UFormField>
+
+        <UFormField
+          label="Persona"
+          help="The character shown while she's listening, thinking, or speaking."
+        >
+          <USelect
+            v-model="settings.personaVariant"
+            :items="personaVariantItems"
+            value-key="value"
+            icon="i-lucide-sparkles"
+            class="w-full"
           />
         </UFormField>
 

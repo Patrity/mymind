@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useMediaQuery } from '@vueuse/core'
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { uiMessageText } from '~/lib/agent/render'
 import { truncateForRetry } from '~/lib/agent/retry'
+import { contextMeterData } from '~/lib/agent/context-meter'
 
 definePageMeta({ title: 'Agent' })
 
@@ -68,15 +68,14 @@ const threadsOpen = ref(false)
 // Full-bleed voice mode (the overlay itself lands with the avatar work).
 const fullBleed = ref(false)
 
-// The Bridget column is `hidden lg:flex` in CSS, but `hidden` does not unmount — its
-// Avatar/MicBand would otherwise keep a WebGL context + RAF loop running behind a
-// `display:none` panel on every phone, and stay mounted a SECOND time underneath the
-// full-bleed overlay (which mounts its own copy). Gate the Bridget column's Avatar/
-// MicBand with this instead so exactly one of each is ever mounted. The panel itself
-// (and the conversation column) must stay `v-if`-free — that CSS-only hide is what
-// preserves scroll position across the full-bleed round trip.
-const isLgUp = useMediaQuery('(min-width: 1024px)')
-const showBridgetAvatar = computed(() => isLgUp.value && !fullBleed.value)
+// The context meter's data: the latest assistant message's usage against the
+// answering model's context window, falling back to the selected override / the
+// reasoning chain head when the message's own usage didn't carry a modelDefId.
+const contextMeter = computed(() => contextMeterData(
+  voice.messages.value,
+  aiDraft.value.models,
+  [agentModel.value || null, aiDraft.value.assignments.reasoning?.[0]]
+))
 
 // True while a turn is generating (LLM output, a tool call, or TTS playback) — drives
 // the composer's Stop button. 'listening'/'connecting' are client-only states, not
@@ -195,21 +194,15 @@ onMounted(() => {
 </script>
 
 <template>
-  <!-- Three columns: threads / conversation / Bridget. Resizable panels don't have a
-       single root element — wrap them in a flex container.
+  <!-- Two columns: threads / conversation. Resizable panels don't have a single root
+       element — wrap them in a flex container.
 
-       Sizing constraint: Nuxt UI's resize handle only ever sizes the panel to its LEFT,
-       so `agent-threads` and `agent-conversation` carry the sizes and Bridget is the
-       fluid remainder, clamped in CSS. Double-clicking a handle resets that split.
-
-       Under lg both side columns collapse and the conversation takes the full width —
+       Under lg the threads column collapses and the conversation takes the full width —
        that is the fix for the page having had no usable composer below 1024px. -->
   <div class="flex flex-1 min-w-0 h-full">
     <!-- Mic/voice errors (e.g. a denied microphone permission): rendered fixed at the
          page root so they're visible at every viewport width and in full-bleed mode.
-         This used to live inside the Bridget panel, which is `hidden lg:flex` — on a
-         phone the alert was in the DOM but under `display:none`, so a denied mic failed
-         completely silently. z-[60] sits above full-bleed's z-50 overlay.
+         z-[60] sits above full-bleed's z-50 overlay.
          pointer-events-none: it carries no close/action button, so it must not sit in
          front of the toolbar buttons underneath it and eat their clicks. -->
     <UAlert
@@ -219,7 +212,7 @@ onMounted(() => {
       :title="voice.error.value"
     />
 
-    <!-- Full-bleed voice mode: her, the band, and the current line, with the three-column
+    <!-- Full-bleed voice mode: her, the band, and the current line, with the two-column
          chrome kept mounted underneath (just covered) so the conversation's scroll position
          survives the round trip. The caption goes through MdView, never raw interpolation —
          the old page printed `{{ caption.text }}` as plain text, so the most prominent text
@@ -241,16 +234,15 @@ onMounted(() => {
         aria-label="Back to chat"
         @click="fullBleed = false"
       />
-      <AgentAvatar
-        class="flex-1 min-h-0"
-        :state="voice.state.value"
-        :connected="voice.connected.value"
-        :mic-analyser="voice.micAnalyser"
-        :out-analyser="voice.outAnalyser"
-        :on-viz-event="voice.onVizEvent"
-      />
-      <!-- Capped + internally scrollable: the avatar has its own min-height floor
-           (Avatar.client.vue) and the mic band is shrink-0, so an uncapped caption is the
+      <div class="flex flex-1 min-h-0 items-center justify-center">
+        <AgentPersona
+          size="full"
+          :state="voice.state.value"
+          :connected="voice.connected.value"
+        />
+      </div>
+      <!-- Capped + internally scrollable: the persona has its own min-height floor
+           (Persona.client.vue) and the mic band is shrink-0, so an uncapped caption is the
            only flexible thing left — on a long reply at a short viewport (375x700, the
            phone case this mode is likeliest to hit) it grew past the fold and pushed the
            mic band below y=700 with no way to scroll to it. Capping keeps both always
@@ -290,11 +282,8 @@ onMounted(() => {
       </template>
     </UDashboardPanel>
 
-    <!-- `grow` matters: Bridget's column is capped, and a capped flex item freezes and
-         leaves the surplus as dead space at the right edge (196px at 2560, and ~80px at
-         1440 once handle 2 is dragged left). Growing here means the conversation absorbs
-         that surplus instead. Bridget's grow factor is far larger, so she still takes the
-         space first and this only collects what her cap refuses. -->
+    <!-- `grow`: the conversation column is the fluid remainder to the right of the
+         (fixed-width) threads rail. -->
     <UDashboardPanel
       id="agent-conversation"
       resizable
@@ -306,8 +295,6 @@ onMounted(() => {
     >
       <template #header>
         <AgentToolbar
-          v-model:speak="speakReply"
-          v-model:model="selectedModel"
           :title="voice.conversationTitle.value"
           @threads="threadsOpen = true"
           @full-bleed="fullBleed = true"
@@ -326,64 +313,37 @@ onMounted(() => {
           class="flex-1 min-h-0"
           :messages="voice.messages.value"
           :undone="undone"
+          :approval="voice.pendingApproval.value"
           :state="voice.state.value"
           :connected="voice.connected.value"
           @undo="undoTool"
           @retry="retryTurn"
           @pick="pickStarter"
+          @approve="(id, o) => voice.sendApproval(id, true, o)"
+          @deny="id => voice.sendApproval(id, false)"
         />
-        <div
-          v-if="voice.pendingApproval.value"
-          class="px-4 pb-2"
-        >
-          <AgentApprovalPrompt
-            :approval="voice.pendingApproval.value"
-            @approve="(d) => voice.sendApproval(voice.pendingApproval.value!.requestId, true, d)"
-            @deny="() => voice.sendApproval(voice.pendingApproval.value!.requestId, false)"
-          />
-        </div>
-        <VoiceComposer
+        <AgentMicBand
+          v-if="micOn"
+          :mic-analyser="voice.micAnalyser()"
+          :speech-prob="voice.speechProb.value"
+          :active="micOn"
+        />
+        <AgentPromptInput
+          v-model:speak="speakReply"
+          v-model:model="selectedModel"
           :send-text="voice.sendText"
-          :speak="speakReply"
           :busy="busy"
           :mic-on="micOn"
+          :state="voice.state.value"
+          :connected="voice.connected.value"
+          :show-persona="voice.messages.value.length > 0 && !fullBleed"
+          :context-meter="contextMeter"
           :initial-text="initialComposerText"
           :auto-send="!!initialComposerText"
           :prefill="starterPrefill"
           @stop="voice.stop"
           @toggle-mic="toggleMic"
         />
-      </template>
-    </UDashboardPanel>
-
-    <!-- Bridget: the fluid remainder. Clamped in CSS because Nuxt UI cannot size a panel
-         to the RIGHT of a handle. -->
-    <UDashboardPanel
-      id="agent-bridget"
-      class="hidden lg:flex grow-[9999] min-w-[240px] max-w-[420px]"
-      :ui="{ body: '!p-0 !gap-0 overflow-hidden' }"
-    >
-      <template #body>
-        <div class="relative flex flex-col flex-1 min-h-0 bg-elevated/20">
-          <!-- v-if, not the panel's CSS `hidden`: see showBridgetAvatar above. -->
-          <AgentAvatar
-            v-if="showBridgetAvatar"
-            class="flex-1 min-h-0"
-            :state="voice.state.value"
-            :connected="voice.connected.value"
-            :mic-analyser="voice.micAnalyser"
-            :out-analyser="voice.outAnalyser"
-            :on-viz-event="voice.onVizEvent"
-          />
-          <!-- "Am I being heard": mounted beneath the avatar column so it survives any
-               future swap of the renderer above it. -->
-          <AgentMicBand
-            v-if="showBridgetAvatar"
-            :mic-analyser="voice.micAnalyser()"
-            :speech-prob="voice.speechProb.value"
-            :active="micOn"
-          />
-        </div>
       </template>
     </UDashboardPanel>
 
