@@ -397,13 +397,19 @@ and the Persona never touches the WebSocket.** It takes two props (`state`, `con
   cookie-persisted via `useVoiceSettings().settings.personaVariant` (unknown/retired values
   normalize to `obsidian`). Upstream's `halo` and `command` were **removed from the picker** — they
   render pure white regardless of theme, i.e. invisible in light mode.
-- **Assets are ours.** Rive's wasm is served from our own origin via a Nitro `publicAssets` entry
-  (`baseURL: 'rive'` → the `@rive-app/webgl2` package dir); the component calls
+- **Assets: everything reachable is ours.** Rive's wasm is served from our own origin via a Nitro
+  `publicAssets` entry (`baseURL: 'rive'` → the `@rive-app/webgl2` package dir); the component calls
   `RuntimeLoader.setWasmUrl('/rive/rive.wasm')` + `setWasmFallbackUrl(...)` before the first
-  `new Rive`, so nothing is fetched from a CDN at runtime. The four `.riv` files are committed under
-  `public/persona-riv/` with the vendored sources map patched to those paths. **The directory cannot
-  be named `rive-*`:** the wasm entry's `rive` baseURL prefix-matches, and `public/rive-personas/*.riv`
-  404s because Nitro routes it into the wasm asset dir.
+  `new Rive`. The **four variants the picker offers** (`obsidian`, `mana`, `opal`, `glint`) are
+  committed under `public/persona-riv/` with the vendored sources map patched to those local paths,
+  so a normal page load fetches nothing from a third-party host. **The two retired variants are the
+  exception:** `halo` and `command` still carry their upstream
+  `ejiidnob33g9ap1r.public.blob.vercel-storage.com` URLs in the vendored `Persona.vue` sources map.
+  Nothing can select them (they were removed from `PERSONA_VARIANTS`, and a stored value normalizes
+  to `obsidian`), so those URLs are unreachable in practice — but they are still in the file, and
+  anything that reintroduced those names would start fetching from that bucket again. **The
+  directory cannot be named `rive-*`:** the wasm entry's `rive` baseURL prefix-matches, and
+  `public/rive-personas/*.riv` 404s because Nitro routes it into the wasm asset dir.
 - **Fallback.** On `loadError` — unreachable `.riv`, no WebGL2 — the wrapper renders a CSS disc
   (`rounded-full bg-primary/20`, pulsing for `thinking`/`speaking`/`listening`) and warns **once per
   page load**, via a module-scoped latch in `persona.ts` rather than a per-instance flag. Nothing
