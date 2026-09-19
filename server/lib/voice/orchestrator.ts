@@ -11,11 +11,17 @@ import { getFileBytes } from '../../services/files'
 import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
 import { capResult, capArgs, WRITE_RESULT_CAP, ARGS_WRITE_CAP, type AgentToolRecord } from '../agent/tool-history'
 import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
+import type { SubagentStep, AgentToolKind } from '../../../shared/types/agent-ui'
+import { toolOutcome } from '../../../shared/utils/agent-ui'
 
 export type VoiceEvent =
   | { type: 'transcript'; role: 'user' | 'assistant'; text: string }
   | { type: 'reasoning'; text: string }
-  | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[] }
+  | { type: 'tool-start'; callId: string; name: string; args: Record<string, unknown> }
+  // args/result are the CAPPED copies also written to the tool record, so the live UI shows
+  // exactly what a resumed thread will show.
+  | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind }
+  | { type: 'subagent'; parentCallId: string; steps: SubagentStep[] }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
   | { type: 'audio-begin'; segmentId: number; sampleRate: number }
   | { type: 'audio'; bytes: Uint8Array }
@@ -130,6 +136,10 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     }
   })
 
+  // A subagent's nested calls, keyed by the PARENT call — emitted live as the full list and
+  // persisted (terminal states only) on the parent's tool record.
+  const subagentSteps = new Map<string, SubagentStep[]>()
+
   let sawText = false
   for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id) })) {
     if (deps.signal.aborted) break
@@ -151,21 +161,40 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
       sawText = true
     } else if (ev.type === 'tool-start') {
       deps.emit({ type: 'state', state: 'tool' })
+      if (ev.callId) deps.emit({ type: 'tool-start', callId: ev.callId, name: ev.name, args: capArgs(ev.args, ARGS_WRITE_CAP) })
+    } else if (ev.type === 'subagent-event') {
+      const steps = subagentSteps.get(ev.parentCallId) ?? []
+      const n = ev.event
+      if (n.type === 'tool-start') {
+        steps.push({ callId: n.callId ?? `${ev.parentCallId}-n${steps.length}`, name: n.name, state: 'running' })
+      } else {
+        const i = n.callId ? steps.findIndex(s => s.callId === n.callId) : steps.findIndex(s => s.name === n.name && s.state === 'running')
+        const done: SubagentStep = { callId: n.callId ?? `${ev.parentCallId}-n${steps.length}`, name: n.name, summary: n.summary, state: toolOutcome(n.result).state === 'ok' ? 'done' : 'error' }
+        if (i >= 0) steps[i] = done
+        else steps.push(done)
+      }
+      subagentSteps.set(ev.parentCallId, steps)
+      deps.emit({ type: 'subagent', parentCallId: ev.parentCallId, steps: steps.map(s => ({ ...s })) })
     } else if (ev.type === 'tool-result') {
       if (ev.images?.length) turnImages.push(...ev.images)
+      // Capped ONCE: the same objects are persisted and sent live (UI parity with resume).
+      const args = capArgs(ev.args, ARGS_WRITE_CAP)
+      const result = capResult(ev.result, WRITE_RESULT_CAP)
       if (ev.callId) {
+        const steps = subagentSteps.get(ev.callId)
         toolRecords.push({
           // BOTH payloads are capped at capture: a write tool's args carry the whole document
           // body, and an uncapped one would be persisted and re-sent on every later turn.
           callId: ev.callId, name: ev.name, kind: ev.kind ?? 'read',
-          args: capArgs(ev.args, ARGS_WRITE_CAP), result: capResult(ev.result, WRITE_RESULT_CAP), summary: ev.summary,
+          args, result, summary: ev.summary,
           // Offset into the SANITIZED text, not the raw stream: what gets persisted below is
           // applyImageEmbeds(assistantText).content, which trims and collapses whitespace, so
           // a raw length would index a string that no longer exists (see sanitizedOffset).
-          undoToken: ev.undoToken, textOffset: sanitizedOffset(assistantText)
+          undoToken: ev.undoToken, textOffset: sanitizedOffset(assistantText),
+          ...(steps?.length ? { steps: steps.map(s => s.state === 'running' ? { ...s, state: 'error' as const } : s) } : {})
         })
       }
-      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images })
+      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images, callId: ev.callId, args, result, kind: ev.kind })
       deps.emit({ type: 'state', state: 'thinking' })
     }
   }
