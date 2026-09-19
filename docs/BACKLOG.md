@@ -1,6 +1,6 @@
 # MyMind — Backlog & Spec Coverage
 
-> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-09-19 — **cycle 64 (Agent Elements foundation) built** (`feat/agent-elements-foundation`, unmerged): the `/agent` conversation moved onto AI SDK `UIMessage`s streamed over the voice WebSocket and rendered with AI Elements Vue — tool calls now show live Running/Completed/Error/Denied states with expandable input/output, and a subagent's nested calls render inline instead of collapsing to a count. Cycle 1 of a 4-cycle program; cycles 65–67 (Persona/layout rebuild, `/sessions/[id]`, voice studio + Home) are deferred with MyMind task pointers — see §2 below and the [cycle-64 handover](handovers/2026-09-19-agent-elements-foundation.md). Previously reconciled 2026-08-27 — **cycle 60 (Agent surface redesign) built** (`feat/agent-surface-redesign`, unmerged): four of six agent-page complaints closed, two blocked on a human (the MakeHuman head export and Orpheus on the rig) — see §2 below and the [cycle-60 handover](handovers/2026-08-27-agent-surface-redesign.md). Previously reconciled 2026-08-25 (cycle 59, documents folders). Earlier: 2026-07-15 — **cycle 46 (Session↔Project Reassignment + Path-Based Auto-Routing) built** (`feat/session-project-reassignment`, unmerged): closes the cycle-23 gap where a no-git-remote session with no label match was stuck in `uncategorized` with no way out — reassignment (single/bulk, agent-memory cascade), a learned `path_prefixes` routing column (auto-create + manual reassign both write it), `git_root` label matching, hostname surfacing/filter, and a one-time existing-projects-only re-resolve backfill (not yet run on prod). See [`wiki/sessions.md`](wiki/sessions.md) + [`wiki/projects.md`](wiki/projects.md) + the [cycle-46 handover](handovers/2026-07-15-session-project-reassignment.md). Operational steps, re-checked against prod 2026-08-05: **merged** ✅ and the **Terawulf cluster is drained** ✅ (the `terawulf` project holds 34 sessions with 4 registered `path_prefixes`; uncategorized is down to 23). Whether `scripts/reresolve-uncategorized.ts` itself was run on prod is **not determinable from the data** — the drain could equally be the UI bulk-reassign path. Tracked in §5. Previously reconciled 2026-06-16 — **cycle 13 (Bridget Parity) shipped** (broadened from "API key UI"): API-key CRUD + Connect-to-Claude-Code, capture-fidelity ingestion (tool_events/thinking/git/machine), one-time import of 457 claude_code sessions, session summarization + session/message search, and memory intelligence (provenance + a `memory_relations` graph + LLM relationship-judge with auto-supersede + review-gated contradictions). On `feat/bridget-parity` (not yet merged); closes the §3 session-summarization + bridget-migration items and the session/message-search gap. Earlier: **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.) **Reconciled 2026-06-17 — the entire Projects line shipped + deployed to prod (cycles 23–27):** canonical git-keyed projects + session/memory association (23), sessions UX/SSE (24), projects UI + per-project colour (25), the `/projects/[slug]` **dashboard** + editable-slug cascade (25-followup), **document↔project association** via the `/projects/<slug>/` path invariant + `documents.project_id` (migration 0021) (26), and **project merge** (27). See [`wiki/projects.md`](wiki/projects.md) + the cycle-23→27 handovers.
+> The single source of truth for **what's left**. The [roadmap](superpowers/plans/00-roadmap.md) tracks shipped cycles; per-cycle handovers in [`handovers/`](handovers/) record what each delivered (their `deferred:` lists are point-in-time and partly superseded — this doc is the reconciled view). Last reconciled: 2026-09-19 — **cycle 65 (`/agent` rebuilt on AI Elements) built** (`feat/agent-page-rebuild`, unmerged and unpushed): `/agent` is now two panels with a Rive **Persona** instead of the three.js particle head (the whole avatar/`lib/viz`/bake stack is **deleted** — which closes the cycle-60 "the 3D should be a face" complaint by removal, see §2), an Elements **PromptInput** composer, exec approvals rendered **inline on the tool card** (closing MyMind task `26fc248c` — Stop/new/load now abort the turn *and* deny its pending approvals), and a **context meter** over new `MessageUsage.contextTokens`/`modelDefId` + `ModelDef.contextWindow`. **The branch also carries `modules/tailwind-build-context.ts`, the fix for a production-build OOM that master does NOT have** — the branch's own base OOM'd at deploy.yml's 4096 MB heap, so cycle 64 on local master is a deploy risk until this ships. Live validation found and fixed two real defects (a stuck composer after New-conversation-mid-turn; `?q=` auto-sending before the model override and leaving the question in the box). Previously reconciled 2026-09-19 — **cycle 64 (Agent Elements foundation) built** (`feat/agent-elements-foundation`, unmerged): the `/agent` conversation moved onto AI SDK `UIMessage`s streamed over the voice WebSocket and rendered with AI Elements Vue — tool calls now show live Running/Completed/Error/Denied states with expandable input/output, and a subagent's nested calls render inline instead of collapsing to a count. Cycle 1 of a 4-cycle program; cycles 65–67 (Persona/layout rebuild, `/sessions/[id]`, voice studio + Home) are deferred with MyMind task pointers — see §2 below and the [cycle-64 handover](handovers/2026-09-19-agent-elements-foundation.md). Previously reconciled 2026-08-27 — **cycle 60 (Agent surface redesign) built** (`feat/agent-surface-redesign`, unmerged): four of six agent-page complaints closed, two blocked on a human (the MakeHuman head export and Orpheus on the rig) — see §2 below and the [cycle-60 handover](handovers/2026-08-27-agent-surface-redesign.md). Previously reconciled 2026-08-25 (cycle 59, documents folders). Earlier: 2026-07-15 — **cycle 46 (Session↔Project Reassignment + Path-Based Auto-Routing) built** (`feat/session-project-reassignment`, unmerged): closes the cycle-23 gap where a no-git-remote session with no label match was stuck in `uncategorized` with no way out — reassignment (single/bulk, agent-memory cascade), a learned `path_prefixes` routing column (auto-create + manual reassign both write it), `git_root` label matching, hostname surfacing/filter, and a one-time existing-projects-only re-resolve backfill (not yet run on prod). See [`wiki/sessions.md`](wiki/sessions.md) + [`wiki/projects.md`](wiki/projects.md) + the [cycle-46 handover](handovers/2026-07-15-session-project-reassignment.md). Operational steps, re-checked against prod 2026-08-05: **merged** ✅ and the **Terawulf cluster is drained** ✅ (the `terawulf` project holds 34 sessions with 4 registered `path_prefixes`; uncategorized is down to 23). Whether `scripts/reresolve-uncategorized.ts` itself was run on prod is **not determinable from the data** — the drain could equally be the UI bulk-reassign path. Tracked in §5. Previously reconciled 2026-06-16 — **cycle 13 (Bridget Parity) shipped** (broadened from "API key UI"): API-key CRUD + Connect-to-Claude-Code, capture-fidelity ingestion (tool_events/thinking/git/machine), one-time import of 457 claude_code sessions, session summarization + session/message search, and memory intelligence (provenance + a `memory_relations` graph + LLM relationship-judge with auto-supersede + review-gated contradictions). On `feat/bridget-parity` (not yet merged); closes the §3 session-summarization + bridget-migration items and the session/message-search gap. Earlier: **cycle 22 (Activity Log / Observability) shipped**: a centralized live `activity_log` ledger (inbound + jobs + model-per-attempt + agent tool/reasoning), `/activity` UI with trace-tree detail + ack, severity-tiered prune, and badge/toast/**Resend email** alerts configurable in `/settings`. Stands up Resend (closes the Email item below). See [`wiki/activity-log.md`](wiki/activity-log.md). Remaining: live E2E with the rigs (pending acceptance) + the deferred model request/response body capture. (Cycle 21 Live Reactivity shipped 2026-06-12; its full multi-resource cross-tab E2E sweep is still open.) **Reconciled 2026-06-17 — the entire Projects line shipped + deployed to prod (cycles 23–27):** canonical git-keyed projects + session/memory association (23), sessions UX/SSE (24), projects UI + per-project colour (25), the `/projects/[slug]` **dashboard** + editable-slug cascade (25-followup), **document↔project association** via the `/projects/<slug>/` path invariant + `documents.project_id` (migration 0021) (26), and **project merge** (27). See [`wiki/projects.md`](wiki/projects.md) + the cycle-23→27 handovers.
 
 ---
 
@@ -145,14 +145,17 @@ before and after**, not assumed from the diff:
   is a rig task, not a code task. The serving recipe and its landmines — the `orpheus-speech` PyPI
   package returning HTTP 200 with an empty body, core vLLM not serving TTS at all, and the rig's
   installed Chatterbox being the original 0.5B at 4 s TTFB — are in the handover.
-- **The 3D should be a face, not a sphere.** ⏳ **Built, but not visible — blocked on a human.** The
-  `Avatar` seam, the seeded choreographer, the bake script, the `ParticleHead` renderer and full-bleed
-  mode all shipped and are green; but `assets/source/bridget-head.glb` does not exist. It must be
-  generated in an **official, unmodified MakeHuman build**, which is what makes the export **CC0**
-  (FLAME and the Basel Face Model were rejected as research-licence-only). Until then `/agent` renders
-  the CSS fallback. Steps: export → commit the `.glb` → `pnpm bake:head` → **commit
-  `app/assets/head-points.bin`** (deliberately not gitignored; prod cannot run MakeHuman) → **rebuild**
-  (`import.meta.glob` resolves at build time, so a dropped `.bin` is invisible to a running build).
+- ~~**The 3D should be a face, not a sphere.**~~ ✅ **CLOSED in cycle 65 — by deleting the feature,
+  not by shipping the head.** The whole particle-head stack (`Avatar.client.vue`, `app/lib/avatar/**`,
+  `app/lib/viz/**`, `scripts/bake-head.ts`, `scripts/blender-export-head.py`,
+  `app/assets/head-points.bin`, the `bake:head` script) is **deleted**, and `/agent`'s face is now a
+  Rive **Persona** from AI Elements — state-driven, four variants, a CSS-disc fallback. The old plan
+  never completed: it needed a CC0 export from an official, unmodified MakeHuman build (FLAME and the
+  Basel Face Model were rejected as research-licence-only), that export was blocked on a human and
+  never happened, and Tony had already said he never liked the result — so cycle 65's brainstorm chose
+  Persona instead. **The MakeHuman/`bake:head`/`head-points.bin` steps this entry used to prescribe no
+  longer exist**; `three` stays in the repo only because Galaxy uses it. See the
+  [cycle-65 handover](handovers/2026-09-19-agent-page-rebuild.md).
 
 **New open item from cycle 60's own documentation pass:** `VOICE_TUNING.tts.playbackRate` was moved
 1.1 → 1.0 per the spec, but **that constant has no reader** — playback is driven solely by
@@ -184,9 +187,12 @@ brainstorm (none were previously tracked in this backlog):
 
 **Deferred to the program's next three cycles** (each gets its own spec; this cycle only reserved the
 seam):
-- **Cycle 65 — `/agent` rebuild**: Persona, a new layout, the `PromptInput` composer, `Confirmation`
-  (replaces `ApprovalPrompt`), a Context meter, retiring the particle-head avatar/three.js stack.
-  MyMind task `3ddae408`.
+- ~~**Cycle 65 — `/agent` rebuild**~~ ✅ **BUILT** (`feat/agent-page-rebuild`, **NOT MERGED, NOT
+  PUSHED**) — Persona, the two-panel layout, the `PromptInput` composer, inline `Confirmation`
+  approvals (`ApprovalPrompt` deleted), a Context meter, and the avatar/three.js stack retired. MyMind
+  task `3ddae408`. See the [cycle-65 handover](handovers/2026-09-19-agent-page-rebuild.md) — and note
+  it carries `modules/tailwind-build-context.ts`, **the fix for a prod-build OOM that master does not
+  have**.
 - **Cycle 66 — `/sessions/[id]`** transcript rendered on the same Elements components. MyMind task
   `14d0074b`.
 - **Cycle 67 — voice studio + Home** on shared voice pieces and `PromptInput`. MyMind task `d321c732`.
@@ -199,6 +205,39 @@ always run the default chain and do **not** inherit the picker's connection-leve
 subagent's nested tool calls cannot be exercised live while the chain head is down — this is a
 pre-existing model-availability gap, not a cycle-64 rendering defect (see the handover's live-validation
 item 2).
+
+### `/agent` rebuild (cycle 65) — ✅ built; the face complaint closed by deletion
+
+Cycle 2 of the "agent surfaces on AI Elements" program. Built on `feat/agent-page-rebuild` —
+**BUILT, NOT MERGED, NOT PUSHED**; see the
+[handover](handovers/2026-09-19-agent-page-rebuild.md). What it closes:
+- ~~**The 3D should be a face, not a sphere** (cycle-60 complaint, above).~~ ✅ closed **by removing
+  the particle head**, not by shipping it — replaced with a Rive Persona. Details in §2's cycle-60
+  block.
+- ~~**Exec approvals render as a detached banner; the tool just says Running**~~ (raised in cycle 64's
+  live validation). ✅ closed — the approval rides the message stream as the SDK's own
+  `tool-approval-request` chunk and renders as an Elements `Confirmation` inside the tool card.
+- ~~**The approval banner outlives Stop; the server's `new` doesn't abort the running turn**~~ —
+  MyMind task `26fc248c`. ✅ closed — `interrupt`, `new` and `load` all abort the turn **and** deny
+  every pending approval (`denyPendingApprovals()`); the next message now starts in ~4 s instead of
+  waiting out the 120 s approval timeout.
+- ~~**No visibility into how full the model's context is.**~~ ✅ closed — a context meter in the
+  composer, over new `MessageUsage.contextTokens`/`modelDefId` and `ModelDef.contextWindow`.
+
+**Open, carried out of cycle 65:**
+- **`modules/tailwind-build-context.ts` is on this branch only, and master needs it.** The branch's
+  own base commit OOM'd the 4096 MB production build, so cycle 64 on local master is a live deploy
+  risk. Merge/push order matters: this fix should land with or before cycle 64.
+- **Nuxt Icon's server bundle ships `simple-icons`' 4.6 MB JSON unused** — limiting the bundle to
+  `lucide` was measured at −105 MB of build memory and not applied. Its own follow-up.
+- **`obsidian`, the default Persona variant, is very pale in light mode** (measured mean luminance
+  0.911 against an off-white page — visible, but the weakest of the four). `mana`/`opal` read better.
+  A one-line default change, worth a look with Tony.
+- **Subagents still don't inherit the composer's model override** (MyMind task `6c72627d`) — a
+  deliberate cycle-45 boundary, explicitly out of scope in cycle 65's spec, and still the reason a
+  subagent can't be exercised live while the dev chain head is down.
+- Assorted deferred minors (duplicated model zod shape, untested `ws.ts` approval wiring, an empty
+  context-hovercard body, and ~10 more) are itemized in the handover's `deferred:` block.
 
 ---
 

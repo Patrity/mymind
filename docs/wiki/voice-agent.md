@@ -1,7 +1,7 @@
 ---
 title: Voice Agent
 status: shipped
-cycle: 64
+cycle: 65
 updated: 2026-09-19
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
 mymind_hash: 37234048cd7533d0ccfd61fd6dad2b175baef6636e2f54534b72d4dcabd7389f
@@ -11,11 +11,13 @@ mymind_hash: 37234048cd7533d0ccfd61fd6dad2b175baef6636e2f54534b72d4dcabd7389f
 
 > **Cycle 28 update:** the `/voice` page was merged into the unified **`/agent`** surface (talk + type in one place). `/voice` redirects to `/agent`. This page documents the self-hosted STT/TTS pipeline and Bridget's renderer; see [agent.md](agent.md) for the unified surface, conversation persistence, and the `speak`-driven convergence.
 >
-> **Cycle 60 update:** the TTS chain gained a sanitizer + a real segmenter (`SentenceChunker` and `server/lib/voice/chunker.ts` are **deleted**), the microphone gained a device picker, and the **particle sphere became a particle head**. `app/components/voice/Reactor.client.vue` and the 96-bar mic ring (`app/lib/viz/ring.ts`) are **deleted**; the "Voice Visualizer (cycle 19)" section below has been rewritten as [Bridget's avatar](#bridgets-avatar-cycle-60). The GPU machinery underneath — `scene.ts`, `core.ts`, `effects.ts`, `lightning.ts`, `choreographer.ts`, the quality tiers and the FPS watchdog — is unchanged and re-pointed.
+> **Cycle 60 update:** the TTS chain gained a sanitizer + a real segmenter (`SentenceChunker` and `server/lib/voice/chunker.ts` are **deleted**), the microphone gained a device picker, and the **particle sphere became a particle head**. `app/components/voice/Reactor.client.vue` and the 96-bar mic ring (`app/lib/viz/ring.ts`) are **deleted**; the "Voice Visualizer (cycle 19)" section below was rewritten as "Bridget's avatar" — **all of which cycle 65 then deleted; see [Bridget's face](#bridgets-face--the-rive-persona-cycle-65)**. The GPU machinery underneath — `scene.ts`, `core.ts`, `effects.ts`, `lightning.ts`, `choreographer.ts`, the quality tiers and the FPS watchdog — is unchanged and re-pointed.
 >
-> **Post-handover update (2026-08-28, superseded in part by cycle 61 below):** five follow-on commits landed after the cycle-60 handover closed, correcting two claims that handover made. **The head mesh now exists and is committed** — `assets/source/bridget-head.glb` and `app/assets/head-points.bin` are both in the repo, `bake-head.ts` was rewritten to merge every mesh/node instead of just the first primitive, keep only the skin shell (66 shells in the real export; eyeballs/teeth/helper ribbons were 40% of the triangles), sample mesh edges instead of random surface points, and use landmarks measured off the discarded shells. **Orpheus is now live** on the rig and registered in production, at the tail of the TTS failover chain. TTS synthesis is also now pipelined (concurrency ramps 1→3) instead of fully sequential. See [Speech pipeline](#speech-pipeline-cycle-60), [Providers](#providers) and [Bridget's avatar](#bridgets-avatar-cycle-60) below, and the [cycle-60 handover's follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) for the full commit list. **Still open, not solved by any of this:** the avatar's jaw doesn't hinge, the talking motion doesn't read as natural, and the model doesn't read as a woman (Tony's own assessment, deferred by him); exposure/density (`VIZ_TUNING.head`) has never been tuned against the real head; the export is body-only (no hair, no eyes) so those sockets are empty by construction; and which TTS voice to adopt is undecided pending Tony's ears.
+> **Post-handover update (2026-08-28, superseded in part by cycle 61 below):** five follow-on commits landed after the cycle-60 handover closed, correcting two claims that handover made. **The head mesh now exists and is committed** — `assets/source/bridget-head.glb` and `app/assets/head-points.bin` are both in the repo, `bake-head.ts` was rewritten to merge every mesh/node instead of just the first primitive, keep only the skin shell (66 shells in the real export; eyeballs/teeth/helper ribbons were 40% of the triangles), sample mesh edges instead of random surface points, and use landmarks measured off the discarded shells. **Orpheus is now live** on the rig and registered in production, at the tail of the TTS failover chain. TTS synthesis is also now pipelined (concurrency ramps 1→3) instead of fully sequential. See [Speech pipeline](#speech-pipeline-cycle-60) and [Providers](#providers) below, and the [cycle-60 handover's follow-on section](../handovers/2026-08-27-agent-surface-redesign.md#follow-on-work-landed-after-this-handover-2026-08-28) for the full commit list. **The head half of this is now history:** the jaw never hinged convincingly, the motion never read as speech, the model never read as a woman, and `VIZ_TUNING.head` was never tuned against the real export — **cycle 65 deleted the head, the bake pipeline and the committed `.bin` rather than continuing to tune them**. Which TTS voice to adopt is still undecided pending Tony's ears.
 >
 > **Cycle 64 update — the assistant-message frames became the AI SDK's own message protocol.** `transcript` (assistant half)/`reasoning`/`tool`/`usage` are **removed** from the server→client frame list below, replaced by `{type:'chunk', turnId, chunk: UIMessageChunk}` (one AI SDK chunk per encoder event) and `{type:'user-message', turnId, message}`; `audio-begin` **gains `turnId`**. The audio/state/approval/preset frames this page documents in depth are otherwise unchanged — see the updated [WebSocket protocol](#websocket-protocol-apivoicews) section below for the full table, and [agent.md](agent.md#websocket-protocol-serverapivoicewsts) for how the client assembles `chunk`s into `UIMessage`s and renders them.
+>
+> **Cycle 65 update — the particle head is gone; Bridget's face is a Rive Persona.** The whole three.js avatar/visualizer stack (`app/components/agent/Avatar.client.vue`, `app/lib/avatar/**`, `app/lib/viz/**`, `scripts/bake-head.ts`, `scripts/blender-export-head.py`, `app/assets/head-points.bin`, the `bake:head` script) is **deleted**, along with the viz event channel in `useVoice`/`lib/voice/messages.ts` (`events`, `onVizEvent`, `VizEvent`). It is replaced by **AI Elements' Rive `Persona`** — state-driven only, wrapped as `app/components/agent/Persona.client.vue`. The **cycle-60 notes below about the head mesh, the bake pipeline and `head-points.bin` describe code that no longer exists**; they are left in place as history. `three` stays in `package.json` (Galaxy). See [Bridget's face](#bridgets-face--the-rive-persona-cycle-65) and, for the rest of the `/agent` rebuild, [agent.md § UI](agent.md#ui--the-two-panel-surface-cycle-65). Handover: [`2026-09-19-agent-page-rebuild.md`](../handovers/2026-09-19-agent-page-rebuild.md).
 >
 > **Cycle 61 update — the TTS stack was replaced wholesale.** Kokoro, Chatterbox and Orpheus are **gone**, and so is the idea of a failover chain for TTS: there is now **one engine, Breeze TTS 2**, at `http://192.168.2.25:8880`, and a voice is a **row** (`voice_presets`) rather than a string from a `/v1/voices` enum. `server/lib/voice/tts-failover.ts` and `server/api/voice/voices.get.ts` are **deleted**; `AI_TTS_KOKORO_*` / `AI_TTS_CHATTERBOX_*` no longer exist. Binary frames on the socket are now **raw PCM chunks as the engine produces them**, bracketed by `audio-begin`/`audio-end` — no longer one WAV per sentence. `/voice` is a real page again: the **[Voice Studio](voice-studio.md)**, where presets are authored. The [Providers](#providers), [TTS engine](#tts-engine-breeze-tts-2-cycle-61), [WebSocket protocol](#websocket-protocol-apivoicews) and [Env vars](#env-vars) sections below have been rewritten; the bake-off table they replaced described three engines that are no longer dialed.
 
@@ -328,181 +330,87 @@ nowhere else, and the voice itself is a `voice_presets` row, not a value.
 
 | File | Purpose |
 |---|---|
-| `app/pages/agent/index.vue` | The three-column shell: thread rail, conversation, Bridget; full-bleed overlay. |
+| `app/pages/agent/index.vue` | **(cycle 65)** The two-panel shell: thread rail + conversation; full-bleed voice mode on `AgentPersona size="full"`. The `agent-bridget` column is gone. |
 | `app/pages/voice.vue` | **The Voice Studio (cycle 61)** — `/voice` is a real route again; the `routeRules` redirect to `/agent` was removed. See [voice-studio.md](voice-studio.md). |
 | `app/pages/agent/history.vue` | Full browse view for threads: search, counts, resume, delete-with-confirm |
-| `app/composables/useVoice.ts` | VAD, WAV encoding, WebSocket, PCM playback, barge-in; `speechProb`; `conversationId`/`conversationTitle`; `stop()` (abort turn) vs `disconnect()` (teardown); exposes `onVizEvent` |
+| `app/composables/useVoice.ts` | VAD, WAV encoding, WebSocket, PCM playback, barge-in; `speechProb`; `micAnalyser`/`outAnalyser` (MicBand only); `conversationId`/`conversationTitle`; `stop()` (abort turn) vs `disconnect()` (teardown). **(cycle 65)** The viz event channel (`events`, `onVizEvent`, `VizEvent`) is **deleted**; `restAfterAbort()` returns the client to idle for `stop`/`newConversation`/`loadConversation`, because an aborted turn sends no `state:'idle'` frame |
 | `app/composables/useBreezeSpeech.ts` | The studio's playback path — the same PCM-on-the-AudioContext-clock approach over plain `fetch`, so an audition never rides the conversation's socket |
 | `app/lib/voice/playback-epoch.ts` | `createPlaybackEpochs()` — which PCM frames still belong to the turn being listened to; drops a frame that was in flight when the user barged in |
 | `app/composables/useVoiceSettings.ts` | Cookie-persisted user settings (`voice-settings`), incl. `micDeviceId` |
-| `app/components/agent/Toolbar.vue` | The single navbar: thread title, voice-replies switch, model selector, full-screen, threads (under `lg`), settings slot |
+| `app/components/agent/Toolbar.vue` | The single navbar: thread title, full-screen (voice mode), threads (under `lg`), settings slot. **(cycle 65)** The voice-replies switch and the model selector moved into the composer |
 | `app/components/agent/ThreadRail.vue` | Permanent left rail: New, search, threads grouped Today / Yesterday / date |
-| `app/components/agent/Avatar.client.vue` | Thin mount for `ParticleHead`: boots it, polls the analysers (250 ms), resizes, and renders the CSS fallback when there is no mesh or no WebGL |
-| `app/components/agent/MicBand.vue` | "Am I being heard": FFT bars + a separate speech-probability track with the VAD threshold marked |
-| `app/components/agent/EmptyState.vue` | Bridget's name, what she can reach, four real starter prompts |
-| `app/components/agent/ApprovalPrompt.vue` | Exec approval gate UI |
+| `app/components/agent/Persona.client.vue` | **(cycle 65)** `AgentPersona` — wraps Elements' Rive `Persona`; `hero`/`inline`/`full` sizes, mapped state, variant from settings, CSS-disc fallback warned once per page. Replaces `Avatar.client.vue` (deleted) |
+| `app/components/agent/MicBand.vue` | "Am I being heard": FFT bars + a separate speech-probability track with the VAD threshold marked. **(cycle 65)** Its three colours are now local constants — `lib/viz/tuning.ts` is deleted |
+| `app/components/agent/EmptyState.vue` | **(cycle 65)** Hero Persona + Bridget's name, what she can reach, and four real starter prompts on Elements' `Suggestions` |
+| `app/components/agent/ApprovalConfirmation.vue` | **(cycle 65)** Elements `Confirmation` rendered **inside** the tool card — command, remember checkbox, editable allow-pattern, Deny/Approve. Replaces the detached `ApprovalPrompt.vue` (deleted) |
+| `app/components/agent/ContextMeter.vue` | **(cycle 65)** Elements `Context` (cost rows patched out, no `tokenlens`) over `contextMeterData(...)` — hidden with no usage, count-only for an unknown window |
+| `app/components/agent/PromptInput.vue` | **(cycle 65)** `AgentPromptInput` — the Elements composer: attachments (picker/paste/drop), model select, speak toggle, context meter, mic, send/stop, `?q=` auto-send and starter prefill. Replaces `voice/Composer.vue` (deleted) |
 | `app/components/agent/Conversation.vue` | **(cycle 64)** The AI-Elements-rendered conversation — replaces `voice/Transcript.vue` (deleted). Full per-part render table + the design-token bridge: [agent.md § Conversation](agent.md#conversation-cycle-64--ai-elements-vue-replaces-the-hand-rolled-transcript) |
 | `app/components/agent/ToolPart.vue`, `SubagentSteps.vue`, `Attachment.vue`, `ReplyActions.vue` | **(cycle 64)** Tool status badge + input/output, a subagent's nested `ChainOfThought` steps, user file/image chips, and copy/retry/timestamp/token-count — replace `agent/MessageActions.vue` and `agent/ReasoningBlock.vue` (both deleted; reasoning is now just a `reasoning`-type part, rendered by Elements' `Reasoning` inside `Conversation.vue` itself) |
-| `app/components/voice/Composer.vue` | `UTextarea` (Enter sends / Shift+Enter newline), attachments, mic toggle, Send↔Stop |
-| `app/components/voice/SettingsSlideover.vue` | Cog slideover: voice replies, **preset picker** (the `voice_presets` rail, not a `/v1/voices` enum), microphone picker, live-metered VAD tuning, barge-in, playback speed |
+| `app/components/voice/SettingsSlideover.vue` | Cog slideover: voice replies, **Persona variant** (cycle 65), **preset picker** (the `voice_presets` rail, not a `/v1/voices` enum), microphone picker, live-metered VAD tuning, barge-in, playback speed |
 | `app/components/voice/PresetRail.vue`, `DesignPane.vue`, `SpeakPane.vue` | The studio's three panels (cycle 61) — see [voice-studio.md](voice-studio.md) |
-| `app/lib/voice/messages.ts` | Pure WS-message → `{state, messageFrame, events, approval, conversation, audioBegin, audioEnd, …}` mapper (tested, no mocks). **(cycle 64)** `delta`/`usage` are gone — a `chunk`/`user-message` frame now rides through as `messageFrame`, handed to `app/lib/agent/turn-stream.ts` as-is |
+| `app/lib/voice/messages.ts` | Pure WS-message → `{state, messageFrame, approval, conversation, audioBegin, audioEnd, …}` mapper (tested, no mocks). **(cycle 64)** `delta`/`usage` are gone — a `chunk`/`user-message` frame now rides through as `messageFrame`, handed to `app/lib/agent/turn-stream.ts` as-is. **(cycle 65)** `events` is gone too, with the viz channel |
 | `app/lib/voice/devices.ts` | Pure `enumerateDevices()` → mic-picker items; the `DEFAULT_MIC` empty-value sentinel |
 | `app/lib/agent/turn-stream.ts` | **(cycle 64)** `createClientTurns` — one `ReadableStream<UIMessageChunk>` per turn assembled with the SDK's `readUIMessageStream`; drops stale-`turnId` frames; `finalizeMessage` closes out a dangling tool/text/reasoning part on interrupt/error/disconnect; `discard()` (fix wave) silences a turn entirely when the page replaces the message list (new thread / resume / retry) — see [agent.md](agent.md#websocket-protocol-serverapivoicewsts) |
 | `app/lib/agent/to-ui-messages.ts` | **(cycle 64)** `toUIMessages` — persisted messages → `AgentUIMessage[]` on resume; replaces `agent/transcript.ts`'s `buildResumeTranscript` (deleted, test ported) |
 | `app/lib/agent/render.ts` | **(cycle 64)** Pure render helpers kept out of the SFCs: `uiMessageText`, `subagentSteps` (looks up a tool's `data-subagent` part by `toolCallId`), `tokenLabel`, `toolTitle`, `isRunning` |
 | `app/lib/agent/retry.ts` | Pure `truncateForRetry` — walk back to the preceding user turn and truncate |
-| `app/lib/avatar/types.ts` | The `Avatar` interface + the `Pose` contract |
-| `app/lib/avatar/choreography.ts` | Pure, seeded, event-scheduled pose choreographer: `(state, dt, outLevel) → Pose` |
-| `app/lib/avatar/head-buffer.ts` | Pure parsing/validation of the baked point buffer; `HeadBufferError` |
-| `app/lib/avatar/particle-head.ts` | The `ParticleHead` renderer — owns the RAF loop, FPS watchdog, context-loss rebuild |
-| `scripts/bake-head.ts` | Build-time: MakeHuman export → merge every node/primitive → keep the largest shell → 50k points, edge-sampled with surface topping up → region weights → `app/assets/head-points.bin` (`pnpm bake:head`) |
-| `app/lib/viz/types.ts` | `BAR_COUNT` (96), `VizState` (8), `VizEvent`, `Directives` |
-| `app/lib/viz/tuning.ts` | `VIZ_TUNING` (camera/bloom/point size + the new `head` block: scale, jaw travel, pitch pivot, facing floor, scan band) + `PALETTE` per state |
-| `app/lib/viz/emitter.ts` | Generic typed event emitter used by `useVoice` |
-| `app/lib/viz/choreographer.ts` | Pure-TS per-frame state machine: state + events + audio levels → `Directives` (colour, energy, effects) |
-| `app/lib/viz/scene.ts` | WebGLRenderer + EffectComposer + UnrealBloomPass; quality tiers; `degrade()` |
-| `app/lib/viz/core.ts` | GPU point cloud — all motion in the GLSL vertex shader; head path adds jaw/brow displacement, yaw + pivoted pitch, assemble, eye gain, tool scan |
-| `app/lib/viz/effects.ts` | 3 amber tool-pulse rings + 160-slot pooled transcription sparks |
-| `app/lib/viz/lightning.ts` | Neural "synapse" arcs during thinking / tool — pooled jagged LineSegments, additive + bloom |
 
+> **Deleted in cycle 65:** `app/components/agent/Avatar.client.vue`, `app/components/agent/ApprovalPrompt.vue`, `app/components/voice/Composer.vue`, `app/lib/avatar/**` (types, choreography, head-buffer, particle-head + 2 tests), `app/lib/viz/**` (types, tuning, emitter, choreographer, scene, core, effects, lightning), `scripts/bake-head.ts`, `scripts/blender-export-head.py`, `app/assets/head-points.bin`, `test/viz-emitter.test.ts`, `test/viz-choreographer.test.ts`, `test/bake-head.test.ts`, the `bake:head` package script, and `DEPLOYMENT.md` §12's head-bake gotcha. `useVoice.ts` and `app/lib/voice/messages.ts` lost the viz event channel (`events`/`onVizEvent`/`VizEvent`) with them. `three` is **kept** — `app/lib/galaxy/scene.ts` still imports it. Note for readers of older notes below: the cycle-60 statement that `head-points.bin` is a deliberately-committed build artifact no longer applies, because neither the file nor the pipeline exists.
+>
 > **Deleted in cycle 64:** `app/components/voice/Transcript.vue`, `app/components/agent/ReasoningBlock.vue`, `app/components/agent/MessageActions.vue`, `app/lib/agent/transcript.ts` (+ its test, ported into `to-ui-messages.test.ts`), `app/composables/useTextChat.ts` and `app/composables/useAgentActivity.ts` (both callerless before this cycle — the SSE-fed chips block they served was already gone since cycle 41). See the Frontend files table above for the cycle-64 replacements, and [agent.md § Conversation](agent.md#conversation-cycle-64--ai-elements-vue-replaces-the-hand-rolled-transcript) for the full per-part render table.
 >
 > **Deleted in cycle 61:** `server/lib/voice/tts-failover.ts` (`createTtsSynth` / `pinChainToProvider`) and `server/api/voice/voices.get.ts` — there is one TTS engine and a voice is a preset row, so there is no chain to pin and no voice enum to aggregate. `pipeline.ts` also lost `FIRST_SEGMENT_CONCURRENCY` / `effectiveConcurrency` / `firstSegmentDrained` with the concurrency ramp.
 >
 > **Deleted in cycle 60:** `app/components/voice/Reactor.client.vue`, `app/components/agent/HistorySlideover.vue`, `app/lib/viz/ring.ts`, `server/lib/voice/chunker.ts`. `app/components/voice/VoicePicker.vue` was already gone before this cycle (the picker is inline in `SettingsSlideover.vue`). Once `ring.ts` was gone, `Directives.ringColor`/`ringLevels`/`micMix` had zero readers left anywhere in the repo — a later pass (final-fix wave) removed those three fields plus the per-frame smoothing that filled them, confirmed by grep, not typecheck (the choreographer that fills them also declares the type, so typecheck alone can't prove a field dead). `BAR_COUNT` and `VIZ_TUNING.ring.radius` **do** survive, but not for the ring: `BAR_COUNT` sizes the raw mic-level array the head still resamples every frame to feed `energy` during `listening` (via `micAverage`), and `effects.ts` still reads `VIZ_TUNING.ring.radius` (as `RING_RADIUS`) to place the tool-pulse rings. `PALETTE.*.ring` also survives, but through `MicBand.vue` (`PALETTE.listening.ring` / `PALETTE.idle.ring`), not through `Directives`.
 
-## Bridget's avatar (cycle 60)
+## Bridget's face — the Rive Persona (cycle 65)
 
-The particle **sphere** became a particle **head**. The GPU pipeline cycle 19 built is unchanged and re-pointed: same `scene.ts` renderer + `EffectComposer` + `UnrealBloomPass`, same quality tiers and `degrade()`, same `effects.ts` tool pulses and transcription sparks, same `lightning.ts` synapse bolts, same pure `choreographer.ts`. What changed is the point distribution, a second (pose) choreographer, and a shader that can move a face.
+Cycle 60 built a three.js particle **head** on the cycle-19 GPU pipeline (a baked 50k-point buffer
+from a MakeHuman export, a seeded pose choreographer, a jaw/brow/yaw shader, quality tiers, bloom,
+tool-pulse rings, transcription sparks and synapse lightning). **Cycle 65 deleted all of it.** It
+was never finished — the CC0 MakeHuman export it depended on was blocked on a human and never
+happened, so `/agent` rendered the CSS fallback for its whole life — and Tony had already rejected
+the look. The whole subsystem is gone: `app/components/agent/Avatar.client.vue`, `app/lib/avatar/**`,
+`app/lib/viz/**`, `scripts/bake-head.ts`, `scripts/blender-export-head.py`,
+`app/assets/head-points.bin`, the `bake:head` package script, and `DEPLOYMENT.md` §12's head-bake
+gotcha. `three` itself **stays** in `package.json` — Galaxy (`app/lib/galaxy/scene.ts`) still uses it.
 
-The hard boundary still holds: **`useVoice` never imports Three.js, and nothing under `lib/avatar` touches the WebSocket.**
+In its place, **AI Elements' `Persona`** — a [Rive](https://rive.app) animation rendered through
+`@rive-app/webgl2`, wrapped as `app/components/agent/Persona.client.vue` (`AgentPersona`). The
+architecture boundary that mattered still holds, in a simpler form: **`useVoice` imports no renderer,
+and the Persona never touches the WebSocket.** It takes two props (`state`, `connected`) and a
+`size`.
 
-### The `Avatar` seam
+- **It is state-driven, not audio-reactive.** `personaState(state, connected)`
+  (`app/lib/agent/persona.ts`, pure + unit-tested) maps our `VoiceState` onto Rive's five states:
+  not connected or `connecting` → `asleep`; `idle` → `idle`; `listening` → `listening`;
+  `thinking | tool | typing` → `thinking`; `speaking` → `speaking`. Those are pushed into the
+  artboard through `stateMachineInputs`, which every variant honours. An audio-reactive Persona was
+  explicitly deferred — `micAnalyser`/`outAnalyser` survive on `useVoice`, but only `MicBand.vue`
+  reads them now.
+- **Three placements, one canvas.** `.client.vue` plus a `size` prop (`hero` / `inline` / `full`)
+  guarantees exactly one Rive canvas is mounted at a time — hero in the empty thread, inline in the
+  composer once the thread has messages, full in voice mode (the empty state's hero is suppressed
+  while full-bleed is open). `MicBand`'s own 2D canvas is separate and unaffected.
+- **Variants: `obsidian` (default), `mana`, `opal`, `glint`**, picked in `SettingsSlideover.vue` and
+  cookie-persisted via `useVoiceSettings().settings.personaVariant` (unknown/retired values
+  normalize to `obsidian`). Upstream's `halo` and `command` were **removed from the picker** — they
+  render pure white regardless of theme, i.e. invisible in light mode.
+- **Assets are ours.** Rive's wasm is served from our own origin via a Nitro `publicAssets` entry
+  (`baseURL: 'rive'` → the `@rive-app/webgl2` package dir); the component calls
+  `RuntimeLoader.setWasmUrl('/rive/rive.wasm')` + `setWasmFallbackUrl(...)` before the first
+  `new Rive`, so nothing is fetched from a CDN at runtime. The four `.riv` files are committed under
+  `public/persona-riv/` with the vendored sources map patched to those paths. **The directory cannot
+  be named `rive-*`:** the wasm entry's `rive` baseURL prefix-matches, and `public/rive-personas/*.riv`
+  404s because Nitro routes it into the wasm asset dir.
+- **Fallback.** On `loadError` — unreachable `.riv`, no WebGL2 — the wrapper renders a CSS disc
+  (`rounded-full bg-primary/20`, pulsing for `thinking`/`speaking`/`listening`) and warns **once per
+  page load**, via a module-scoped latch in `persona.ts` rather than a per-instance flag. Nothing
+  else on the page is affected.
 
-```ts
-// app/lib/avatar/types.ts
-export interface Avatar {
-  setState(s: VizState): void
-  pushEvent(e: VizEvent): void
-  setAnalysers(mic: AnalyserNode | null, out: AnalyserNode | null): void
-  resize(w: number, h: number): void
-  dispose(): void
-}
-```
-
-`ParticleHead` (`app/lib/avatar/particle-head.ts`) is the only implementation. The seam exists so a rigged-mesh renderer can replace it later without touching the orchestrator or `useVoice` — and it is what made the avatar workstream the cycle's designated cut line. `createParticleHead(host, opts)` takes the **container**, not a canvas: `scene.ts` creates and owns the canvas and must, so the context-loss rebuild can replace it.
-
-### Mesh → point buffer (build-time, not a runtime loader)
-
-1. Tony generates a female head in **MakeHuman (official, unmodified build)** and exports it to `assets/source/bridget-head.glb`. An export from an official build is **CC0** — public domain, commercial use, redistribution, no attribution. (FLAME and the Basel Face Model were rejected: research licence only. Recorded so a future session does not reach for them.) **Both the source export and its baked buffer are committed** (`assets/source/bridget-head.glb`, `app/assets/head-points.bin`, since 2026-08-28) — deliberately, since prod builds from source and cannot run MakeHuman.
-2. `pnpm bake:head` (`scripts/bake-head.ts`) reads it, merges **every** node's **every** primitive in the scene graph (world-matrix transforms on positions, inverse-transpose normal matrices on normals — the original baker read only `listMeshes()[0].listPrimitives()[0]`, silently dropping every other mesh/primitive an MPFB2 export produces), then **keeps only the largest connected shell** (see below), walks its mesh **edges at even arc spacing** to place points where the topology already encodes the anatomy (`sampleEdges`, with area-weighted surface sampling — `sampleSurface` — only topping up any shortfall), computes per-point region weights, and writes a packed `Float32Array` to `app/assets/head-points.bin`.
-3. At runtime the browser fetches **only that buffer** and uploads it straight into the existing `BufferGeometry`. No mesh, no GLTF loader, no three.js loader chain in the client bundle.
-
-**Why only the largest shell.** A MakeHuman/MPFB2 export is not one surface — the real export has **66 connected shells**: the skin (3203 vertices / 6232 triangles) plus eyeballs, teeth, tongue, mouth cavity, eyelashes, and MakeHuman's clothes-fitting HELPER ribbons (thin 18-vertex strips spanning the full head height, wider than the skin). Together they were **40% of all triangles**, and because sampling is area-weighted, ~40% of every baked point used to land on geometry that must never be seen: eyeballs as dark discs where eyes belong, teeth/tongue/cavity as a bright blob at the mouth, and the helper ribbons as "hair" that swung with the jaw (they span the whole head, so they picked up jaw weight). `largestShell()` (union-find over triangles, ranked by triangle count so a dense-but-tiny island can't outrank the skin) keeps only the biggest island and discards the rest.
-
-**Why edges, not random surface sampling.** Random surface sampling dissolves every edge loop into uniform speckle — a 6232-triangle head renders as a smooth egg no matter how many points you throw at it. A modeller's topology already crowds edge loops around the eyes, nose and mouth, so `sampleEdges()` walks unique undirected mesh edges at constant arc-length spacing instead, reproducing the woven-wireframe look of the reference. A primitive without a `NORMAL` attribute would otherwise leave edge points with zero-length normals (degenerating the shader's facing term and rendering full-bright through the skull); `sampleEdges` now accumulates adjacent face normals per vertex as a fallback.
-
-**Layout — 9 interleaved floats per point** (`FLOATS_PER_POINT = 9`, 36-byte stride): `x, y, z, nx, ny, nz, jawW, eyeW, browW`.
-
-| Attribute | Purpose |
-|---|---|
-| `jawW` | `smoothstep(lipY, chinY, y) ** 0.6 × (1 − 0.6 · smoothstep(hingeInner, hingeOuter, abs(x))) × neck` — zero at the upper lip, full at the chin, falling off toward the hinge, and (since `HeadMetrics.neckY`, 2026-08-28) fading back to zero below the jawline instead of saturating at 1 forever |
-| `eyeW` | eye region — brightens on listening/thinking, dims on blink |
-| `browW` | brow region — lifts on stressed syllables |
-
-**`jawW` is the fix for the cleave.** A *binary* jaw region translated as a block visibly splits the head at the lip line. Measured counterfactual at the jaw trough: 64.2 % row-density idle / 56.7 % with the shipped smooth weight / **3.8 %** with a binary `>0.5` region / **0.0 %** with `>0.15` — the binary version *is* the cleave. The `** 0.6` curve lifts the low end so the lower lip trails the chin at roughly a quarter of the travel, which is what makes the mouth read as opening.
-
-**The `neckY` fade (2026-08-28) fixed a second, separate defect.** `smoothstep` saturates at 1 past its upper bound, so before this every point *below* `chinY` — the entire neck — was getting FULL jaw weight, and the neck travelled with the chin on every syllable. `HeadMetrics.neckY` (optional; omitting it preserves the old saturating behaviour) fades jaw influence out across the jaw's underside instead.
-
-**Landmarks were re-measured against the correct geometry (2026-08-28).** The values baked against the un-filtered 66-shell mesh were wrong — `eyeY 0.15`, `lipY -0.47`, `chinY -0.89` — because they were measured through the 40% of junk shell filtering later discarded, which put the jaw region up around the *nose* (why the talking animation moved the wrong half of the face). The discarded shells are themselves the ground truth: the eyeball shells (2 symmetric, 308 vertices each) mark the eyes at `eyeY = -0.05`; the upper and lower teeth shells meet at the bite line, giving `lipY = -0.72`. Standard facial proportions (eyes at 50% chin→crown, mouth at 25%) cross-check both independently to a chin at ~-1.40 — the skin itself ends at -1.33, i.e. **this export is cropped at the jaw with essentially no neck**, so `neckY` is parked below the mesh (`-1.60`) rather than doing real work on this particular export; it still guards a future export that keeps more neck. Current metrics: `browY: 0.10, eyeY: -0.05, lipY: -0.72, chinY: -1.33, neckY: -1.60`.
-
-`parseHeadBuffer` validates the stride **hard**, on purpose: a missing static asset does not reliably 404 in this app — the SPA catch-all can return a 200 with an HTML body. An HTML page is essentially never a multiple of 36 bytes, and the finite-value check catches it when it is. Every "no usable buffer" condition (not baked, 404, network failure, truncated download, HTML in place of the asset) raises `HeadBufferError` so the mount can drop to its fallback quietly instead of rendering garbage geometry.
-
-### Pose and the shader
-
-Jaw displacement and head rotation happen in the **vertex shader**, driven by uniforms from the pose choreographer — consistent with cycle 19, where all core motion is already GLSL. `VIZ_TUNING.head` holds the knobs (`scale`, `pointSize`, `alpha`, `jawTravel`, `browLift`, `pivotY`, `pivotZ`, `facingFloor`, the scan band).
-
-- **Pitch rotates about a pivot behind and below the face** (`pivotY -0.6`, `pivotZ -0.5`, head-local), near the base of the skull. Rotating about the mesh origin translates the face up the screen instead of rotating it.
-- **Positive pitch means looking UP.** This convention has been inverted three separate times in this project's history, so it is pinned by a unit test and was settled *structurally*: glTF 2.0 defines **+Z as front** and `bake-head.ts` never reorients the mesh (it only normalizes by `maxX` and recentres Y), so the face is on +Z **by construction**, not by luck of one export. The shipped rotation gives `d(screen centroid height)/d(pitch) = +0.70`; the textbook `q.y*cp − q.z*sp` gives −0.70 and drops the nose. The lightning bolts follow with `rotation.set(-pose.pitch, pose.yaw, 0)` because Three's rotation about +X is the textbook one the head shader deliberately inverts.
-- A **facing-based alpha** term (`facingFloor 0.28`) dims the far side of the surface. Additive points on a closed surface otherwise read as a blob; this is what makes the cloud read as a head.
-
-### Choreography — event-scheduled, seeded, pure
-
-`app/lib/avatar/choreography.ts`, in the style of the tested `viz/choreographer.ts`. `createChoreographer(rng = Math.random).step(state, dt, outLevel) → Pose`. **The RNG is injected**, so tests seed it and assert deterministic sequences while production gets real randomness. Nothing is a periodic function — the first sketch used summed sines throughout and read as an obvious loop.
-
-| State | Behaviour |
-|---|---|
-| `connecting` | Points arrive scattered and converge (`assemble` ramps at 0.55/s; every other state snaps in at 1.2/s). One ignition per session. |
-| `idle` | Breathing drift — a fresh random yaw target every 1.2–3.6 s, level pitch. |
-| `listening` | Turns ~0.24 rad toward the viewer and holds; nods at random intervals with random depth, ~34 % of them doubles; eye points brighten (`eyeGain 2.0`). |
-| `thinking` | Chin **lifts** (pitch +0.18…+0.34 — positive is up); gaze **saccades**, jumping to a random target and holding 0.5–2.0 s, with a snappy ease. Not a smooth sweep — that is how eyes actually behave. |
-| `speaking` | Faces the viewer. Jaw driven by a syllable-and-phrase envelope from the **TTS output analyser** (randomised peak and duration per syllable, grouped into phrases with pauses); brows lift on stressed syllables; a small head shift at phrase boundaries. |
-| `typing` | Fires on **every** text turn, so a neutral face here is a visible dead spot: eyes down at the page (pitch −0.09), gaze ratcheting along a line in 0.10–0.28 s steps with a snap back at the line end. |
-| `tool` | Amber scan sweeps down the face (`uScan` past 1.0 into a gap, so there is a pause between sweeps); the existing pulse rings, repositioned. |
-| `disconnected` | Dormant, not dead: chin settles toward the chest, `eyeGain` drops to 0.25, and a rare slow drift every 3.5–8 s keeps it from reading as a frozen renderer. Derived structurally from `connected === false`, as in cycle 19. |
-| `error` | The face fractures outward and re-forms — the existing shatter impulse, now with something to shatter. |
-
-Every target is **lerped**, including `eyeGain` and `scan`: snapping them on state exit popped brightness (`listening → idle`) and cut the tool sweep dead mid-stroke.
-
-**Lip-sync is amplitude-driven, not visemes.** Breeze returns raw PCM and no phoneme timings (nor did any engine before it), and real visemes need a forced-aligner pass per chunk. This gets the rhythm right, not the shapes.
-
-### The mic band replaces the ring
-
-`app/components/agent/MicBand.vue` sits at the foot of her column and along the bottom edge in full-bleed. The 96-bar `ring.ts` InstancedMesh is **deleted** — it was decorative and could not answer the one question that matters. The band carries **two** signals in different units, which is why a single "VAD threshold" line drawn across spectrum bars would have been dishonest:
-
-- **FFT bars** (56, log-spaced, from the existing `micAnalyser` at `fftSize: 256` → 128 bins) — amplitude: what is actually arriving at the microphone.
-- **A speech-probability track** along the bottom edge with `positiveSpeechThreshold` marked — Silero's per-frame probability from `onFrameProcessed`, the same unit the settings slideover's sensitivity meter uses, and the thing that actually decides whether a turn fires.
-
-Bars and track go accent-coloured when the VAD reports speech. Colours are reused from the existing `PALETTE` (listening cyan / idle blue / tool amber), not invented. Verified live: the threshold marker lands at exactly `width × threshold` for 0.5 and 0.8, and the canvas is bit-identical when the mic is off — "quiet", not "frozen".
-
-> `micAnalyser` is created **once** per `connect()` and never reassigned by `enableMic`/`disableMic`/`applyVadSettings`/a device change — new streams are routed into the same node. Checked deliberately, because a device switch that swapped the node would silently freeze the band while the avatar beside it kept animating.
-
-### Signal flow
-
-```
-useVoice  ──(state + connected)──►  Avatar.client.vue ──► ParticleHead ──┬─► viz choreographer ─► core / effects / lightning
-          ──(onVizEvent)─────────►                                       └─► pose choreographer ─► Pose ─► shader uniforms
-mic AnalyserNode ──FFT──────────────────────────────────────────────────────┘        │
-out AnalyserNode ──amplitude────────────────────────────────────────────────────────┘
-```
-
-`Avatar.client.vue` **polls** `micAnalyser()`/`outAnalyser()` every 250 ms for an identity change rather than widening the push-only `Avatar` interface with a getter — `useVoice` creates those nodes lazily. Cost: a mic enabled right at a turn boundary can miss up to a quarter-second of drive.
-
-### Two presentations
-
-- **Column** (default): her `agent-bridget` panel, clamped 240–420 px, with the mic band at her feet.
-- **Full-bleed**: the toolbar's full-screen button (Escape returns) drops the chat furniture — her, the band, and the current line as a caption rendered through `<MdView>`. See [agent.md](agent.md#full-bleed-voice-mode).
-
-### Quality tiers, watchdog, resilience
-
-`detectTier()` (in `scene.ts`) still selects at mount from UA + `hardwareConcurrency`:
-
-| Tier | Particles | Pixel-ratio cap | Bloom scale |
-|---|---|---|---|
-| Mobile | 10 k | 1.5 | 0.5 |
-| ≤ 4 cores | 25 k | 2 | 0.75 |
-| Desktop | 50 k | 2 | 1.0 |
-
-**One 50 k bake serves every tier** — the renderer draws a prefix (`setDrawRange(tier.particles / points.count)`) rather than baking three files. The **FPS watchdog** lives in `particle-head.ts` now: an EWMA of frame `dt`; sustained sub-27 fps for 3 s steps quality down once via `scene.degrade()` (−25 % pixel ratio) and once more by halving the draw range. Both one-way per session.
-
-- Tab hidden → RAF paused; resumes on `visibilitychange`. Scroll-wheel over her dollies the camera.
-- WebGL context loss → full teardown + rebuild. The parsed point buffer is kept in memory, so the rebuild costs no second download.
-- 10 consecutive frame faults → teardown + `onFatal`, rather than spamming the console forever.
-- **No mesh, no WebGL, or an unusable buffer → the CSS fallback** (a soft pulsing circle). This is an *expected* deployment state, not a fault: it logs **one warning** naming the missing file and the `pnpm bake:head` command, never an error, and voice/chat are unaffected.
-
-### The head mesh now exists and is committed (2026-08-28)
-
-`assets/source/bridget-head.glb` (4.9 MB) and `app/assets/head-points.bin` (1.8 MB) are **both in the repo** as of `95e4420` — this corrects the cycle-60 handover, which recorded the mesh as a human step not yet done. **`/agent` now renders the particle head, not the CSS fallback**, in any build with this commit.
-
-Landing the real mesh surfaced three defects that a scratch placeholder buffer couldn't have caught (see [Mesh → point buffer](#mesh--point-buffer-build-time-not-a-runtime-loader) above for the fixes): the baker only reading the first mesh/primitive, hardcoded flat normals disabling the renderer's back-face dimming, jaw weight saturating past the chin and dragging the neck, 40% of triangles being non-skin shells that must never be seen, and landmarks measured through that junk. All five are fixed as of `0667798`.
-
-**Still open, per Tony's own review of the shipped render — not fixed by any of this:** the jaw doesn't hinge convincingly, the talking motion doesn't read as natural speech, and the model doesn't read as a woman. `VIZ_TUNING.head` (`alpha`, `pointSize`, `facingFloor`) has never been tuned against the real head — the renderer was proven against geometry, not against *her* proportions. The export is also **body-only**: no hair, no eye assets, so those sockets are empty by construction, not a bug.
-
-Two operational notes that still apply:
-
-- **`app/assets/head-points.bin` is deliberately NOT gitignored.** Production builds from source and cannot run MakeHuman, so the baked buffer must be committed or prod renders the fallback forever. It is a committed build artifact, by design.
-- **`pnpm bake:head` only takes effect in a built artifact after a rebuild.** `import.meta.glob` resolves at **build** time, so a `.bin` dropped next to a running production build is invisible. (Vite dev *does* pick up a new `.bin` with no restart — confirmed — which is exactly why this is easy to miss.) See [`DEPLOYMENT.md` §12](../DEPLOYMENT.md). **A rebuild + redeploy is still required to pick up the new committed `.bin`** if a running production build predates `95e4420`.
+Full UI detail (placements, the composer, inline approvals, the context meter) lives in
+[agent.md § UI](agent.md#ui--the-two-panel-surface-cycle-65).
 
 ## Cross-references
 
