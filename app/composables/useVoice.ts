@@ -93,6 +93,17 @@ export function useVoice() {
    * both call `s.ac?.abort()` in ws.ts) and did not — which left the composer showing
    * "Stop generating" forever (no way to send in the new/resumed thread short of pressing
    * Stop), and left the old thread's TTS playing into it.
+   *
+   * This is UI COMPENSATION FOR A PROTOCOL GAP, and deliberately so. The race-free fix is
+   * server-side: emit a terminal state at the abort exit itself (`orchestrator.ts:202`), so
+   * the client is told it is done instead of assuming it. Setting state locally races a
+   * late frame from the turn being torn down, which is why this is a compensation and not a
+   * cure. It was kept because `stop()` has carried the identical race since cycle 60 — this
+   * is not a new hazard — and reopening the voice protocol at the end of cycle 65 was judged
+   * the larger risk. `server/lib/voice/orchestrator-abort-exit.test.ts` pins the server
+   * behaviour this compensates for: when that test goes red because the abort path started
+   * emitting a terminal state, delete this function and let the frame do the work.
+   * Tracked as MyMind task `9e5b44da-1003-4d58-9c1c-2af4a2250cb8`.
    */
   function restAfterAbort() {
     stopPlayback()

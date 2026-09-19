@@ -107,6 +107,15 @@ shipped:
     are served from `public/persona-riv/` instead of Vercel's blob host. See \"The .riv files moved
     to our origin\" below, including the directory-naming trap."
 deferred:
+  - "**The protocol fix behind `restAfterAbort()` — MyMind task `9e5b44da-1003-4d58-9c1c-2af4a2250cb8`.**
+    An aborted turn emits no terminal state (`server/lib/voice/orchestrator.ts:202` returns before
+    the idle emit), so every client path that aborts has to put the UI back to rest itself. That is
+    UI compensation over a protocol gap, and it races a late frame from the turn being torn down.
+    The race-free fix is to emit a terminal state at the abort exit and delete `restAfterAbort()`.
+    Deferred deliberately (see the ruling below): `stop()` has carried the identical race since
+    cycle 60, so this is not a regression, and reopening the frame contract at the end of the cycle
+    was judged the larger risk. `server/lib/voice/orchestrator-abort-exit.test.ts` pins the current
+    server behaviour, so it goes red the moment someone does it properly."
   - "**Not fixed, found in live validation (item 10 follow-on):** subagents still never inherit the
     composer's model override — `research_web`/`search_brain` always resolve the default reasoning
     chain. Pre-existing cycle-45 scope boundary, MyMind task `6c72627d`, explicitly out-of-scope in
@@ -287,6 +296,16 @@ nothing can reach them.
   comments (`app/lib/galaxy/scene.ts:14,628`, `app/components/agent/MicBand.vue:22`) and were
   reworded, not deleted. `three` is imported only by `app/lib/galaxy/scene.ts` outside the deleted
   tree, so the dependency stays. *Cost if wrong:* three test files to restore from git.
+- **Keep `restAfterAbort()`'s UI compensation; do not reopen the voice protocol this late in the
+  cycle** (Task 9 review, I2). The race-free fix is server-side — emit a terminal state at the abort
+  exit (`server/lib/voice/orchestrator.ts:202`) so the client is *told* it is done instead of
+  assuming it; setting state locally races a late frame from the turn being torn down. It was kept
+  because `stop()` has carried the identical race since cycle 60, so this is not a new hazard, and
+  because changing the frame contract at the end of the cycle is the larger risk. *Cost if wrong:*
+  the composer can still wedge in a much narrower window — bounded by behaviour that already shipped
+  for `stop()`. Mitigated by `server/lib/voice/orchestrator-abort-exit.test.ts`, which pins the
+  server half so the compensation can be deleted the moment that test goes red. Deferred as MyMind
+  task `9e5b44da-1003-4d58-9c1c-2af4a2250cb8`.
 - **Self-host the four shipped `.riv` files and point the vendored sources map at local paths**,
   against the spec's D6. *Cost if wrong:* ~31 KB committed and one more vendored file to re-patch on
   upgrade — weighed against an unowned runtime dependency for the main agent surface's core visual.
