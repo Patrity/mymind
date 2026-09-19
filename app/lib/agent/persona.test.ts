@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { personaState, personaVariant } from './persona'
+import { describe, it, expect, vi } from 'vitest'
+import { personaState, personaVariant, resetPersonaFallbackWarning, warnPersonaFallbackOnce } from './persona'
 
 describe('personaState', () => {
   it('maps voice states onto the five Persona states', () => {
@@ -16,5 +16,17 @@ describe('personaVariant', () => {
     expect(personaVariant('halo')).toBe('halo')
     expect(personaVariant('nope')).toBe('obsidian')
     expect(personaVariant(undefined)).toBe('obsidian')
+  })
+})
+describe('warnPersonaFallbackOnce', () => {
+  it('warns once per page load, not once per call/instance', () => {
+    resetPersonaFallbackWarning()
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    warnPersonaFallbackOnce(new Error('a'))
+    warnPersonaFallbackOnce(new Error('b'))
+    warnPersonaFallbackOnce(new Error('c'))
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledWith('[persona] falling back:', expect.any(Error))
+    spy.mockRestore()
   })
 })

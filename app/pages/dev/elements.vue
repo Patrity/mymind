@@ -452,15 +452,26 @@ const emptyStatePicked = ref('')
             </div>
             <div>
               <p class="mb-2 text-xs text-muted-foreground">
-                forced fallback (bogus src — follows the state select; pulses for
-                listening/thinking/speaking, static for idle/asleep)
+                forced fallback ×2 (bogus src — follows the state select; pulses for
+                listening/thinking/speaking, static for idle/asleep). Two SEPARATE component
+                instances, both erroring — proves the console.warn latch is once per page
+                load, not once per instance (check devtools console: exactly one
+                "[persona] falling back" entry).
               </p>
-              <AgentPersona
-                size="hero"
-                :state="agentPersonaState"
-                :connected="agentPersonaConnected"
-                src-override="https://example.invalid/does-not-exist.riv"
-              />
+              <div class="flex items-end gap-4">
+                <AgentPersona
+                  size="hero"
+                  :state="agentPersonaState"
+                  :connected="agentPersonaConnected"
+                  src-override="https://example.invalid/does-not-exist.riv"
+                />
+                <AgentPersona
+                  size="inline"
+                  :state="agentPersonaState"
+                  :connected="agentPersonaConnected"
+                  src-override="https://example.invalid/also-does-not-exist.riv"
+                />
+              </div>
             </div>
           </div>
           <template #fallback>

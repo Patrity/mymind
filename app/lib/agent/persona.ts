@@ -39,3 +39,21 @@ export function personaVariant(v: unknown): PersonaVariant {
   }
   return 'obsidian'
 }
+
+// Module-scope (not per-component-instance) so a down Rive host warns exactly once per page
+// load, no matter how many AgentPersona instances mount (hero/inline/full transitions, the
+// dev fixture's several rows, …) — a `let` inside a component's <script setup> resets per
+// instance and would warn once per mount instead.
+let personaFallbackWarned = false
+
+/** Reset for tests only — production never needs to un-latch this within a page load. */
+export function resetPersonaFallbackWarning(): void {
+  personaFallbackWarned = false
+}
+
+export function warnPersonaFallbackOnce(err: unknown): void {
+  if (personaFallbackWarned) return
+  personaFallbackWarned = true
+  // eslint-disable-next-line no-console
+  console.warn('[persona] falling back:', err)
+}

@@ -41,7 +41,19 @@ const UNKNOWN_WINDOW_HINT = 'Context window unknown — set it in Settings → M
     </ContextTrigger>
     <ContextTrigger v-else />
     <ContextContent>
-      <ContextContentHeader />
+      <!-- Unknown window: ContextContentHeader's own no-slot fallback divides by maxTokens=0
+           (a fake "0%" / "X / 0" ring) — supply our own slot content instead: the used-token
+           count and the same hint as the trigger, no ring/percentage. -->
+      <ContextContentHeader v-if="unknownWindow">
+        <div class="flex items-center justify-between gap-3 text-xs">
+          <span class="text-muted-foreground">Tokens used</span>
+          <span class="font-mono text-muted-foreground">{{ label }}</span>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          {{ UNKNOWN_WINDOW_HINT }}
+        </p>
+      </ContextContentHeader>
+      <ContextContentHeader v-else />
       <ContextContentBody>
         <ContextInputUsage />
         <ContextOutputUsage />

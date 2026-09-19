@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import type { VoiceState } from '~/composables/useVoice'
 import { Persona } from '@/components/ai-elements/persona'
-import { personaState, personaVariant } from '~/lib/agent/persona'
+import { personaState, personaVariant, warnPersonaFallbackOnce } from '~/lib/agent/persona'
 
 const props = defineProps<{
   state: VoiceState
@@ -37,14 +37,11 @@ const sizeClass = computed(() => {
 const pulsing = computed(() => mappedState.value === 'thinking' || mappedState.value === 'speaking' || mappedState.value === 'listening')
 
 const failed = ref(false)
-let warned = false
 function onLoadError(err: unknown) {
   failed.value = true
-  if (!warned) {
-    warned = true
-    // eslint-disable-next-line no-console
-    console.warn('[persona] falling back:', err)
-  }
+  // Module-scoped latch (app/lib/agent/persona.ts) — warns once per PAGE LOAD, not once
+  // per mounted instance (hero/inline/full all mount their own Persona.client.vue).
+  warnPersonaFallbackOnce(err)
 }
 </script>
 
