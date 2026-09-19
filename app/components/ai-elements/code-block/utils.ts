@@ -1,5 +1,14 @@
-import type { BundledLanguage, BundledTheme, HighlighterGeneric, ThemedToken } from 'shiki'
-import { createHighlighter } from 'shiki'
+import type { BundledLanguage, ThemedToken } from 'shiki'
+import type { HighlighterCore } from 'shiki/core'
+
+// Fine-grained shiki, NOT `createHighlighter` from 'shiki': the full bundle registers every
+// grammar and theme as a lazy chunk (~330 chunks, ~2.2 MB gzip of client JS), which pushed the
+// production build past its 4 GB heap (cycle 64 final review, C1). Only the grammars the agent
+// UI renders are loaded; any other language falls back to plain text (see highlightCode).
+// The JS regex engine (not oniguruma) avoids a 230 KB-gzip WASM and is what @nuxtjs/mdc uses.
+const LANGS = {
+  json: () => import('shiki/langs/json.mjs')
+}
 
 // Shiki uses bitflags for font styles: 1=italic, 2=bold, 4=underline
 export const isItalic = (fontStyle: number | undefined) => fontStyle && fontStyle & 1
@@ -14,11 +23,8 @@ export interface TokenizedCode {
   bg: string
 }
 
-// Highlighter cache (singleton per language)
-const highlighterCache = new Map<
-  string,
-  Promise<HighlighterGeneric<BundledLanguage, BundledTheme>>
->()
+// One highlighter for every supported language, created on first use.
+let highlighterPromise: Promise<HighlighterCore> | null = null
 
 // Token cache
 const tokensCache = new Map<string, TokenizedCode>()
@@ -32,18 +38,18 @@ function getTokensCacheKey(code: string, language: BundledLanguage) {
   return `${language}:${code.length}:${start}:${end}`
 }
 
-function getHighlighter(language: BundledLanguage): Promise<HighlighterGeneric<BundledLanguage, BundledTheme>> {
-  const cached = highlighterCache.get(language)
-  if (cached) {
-    return cached
-  }
-
-  const highlighterPromise = createHighlighter({
-    themes: ['github-light', 'github-dark'],
-    langs: [language],
-  })
-
-  highlighterCache.set(language, highlighterPromise)
+function getHighlighter(): Promise<HighlighterCore> {
+  highlighterPromise ??= (async () => {
+    const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
+      import('shiki/core'),
+      import('shiki/engine/javascript'),
+    ])
+    return createHighlighterCore({
+      themes: [import('shiki/themes/github-light.mjs'), import('shiki/themes/github-dark.mjs')],
+      langs: Object.values(LANGS).map(load => load()),
+      engine: createJavaScriptRegexEngine(),
+    })
+  })()
   return highlighterPromise
 }
 
@@ -88,7 +94,7 @@ export function highlightCode(
   }
 
   // Start highlighting in background
-  getHighlighter(language)
+  getHighlighter()
     .then((highlighter) => {
       const availableLangs = highlighter.getLoadedLanguages()
       const langToUse = availableLangs.includes(language) ? language : 'text'

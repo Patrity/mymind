@@ -7,3 +7,17 @@ allowBuilds:
   sharp: true
   unrs-resolver: false
   vue-demi: false
+
+# One shiki for the whole app. @nuxtjs/mdc asks for ^4.0.2 (locked at 4.1.0) while the AI
+# Elements CodeBlock uses shiki/core ^4.4.3; without this the client bundles two copies of
+# @shikijs/core + the JS regex engine. Ranges, not pins, so a shiki bump stays one edit.
+overrides:
+  shiki: ^4.4.3
+  '@shikijs/core': ^4.4.3
+  '@shikijs/engine-javascript': ^4.4.3
+  '@shikijs/engine-oniguruma': ^4.4.3
+  '@shikijs/langs': ^4.4.3
+  '@shikijs/primitive': ^4.4.3
+  '@shikijs/themes': ^4.4.3
+  '@shikijs/transformers': ^4.4.3
+  '@shikijs/types': ^4.4.3
