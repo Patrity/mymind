@@ -81,9 +81,9 @@ export interface PersonaProps {
   variant?: keyof typeof sources
   // MyMind patch (cycle 65 Task 0 spike): override the variant's `.riv` URL. Used by
   // the dev fixture (`/dev/elements`) to prove the `loadError` fallback path is real
-  // (an unreachable URL) without touching the real `sources` map. Also the seam a
-  // future cycle would use to point at a self-hosted `.riv` if Vercel's ever
-  // disappears (spec risk #2).
+  // (an unreachable URL) without touching the real `sources` map. (Spec risk #2 — a
+  // third-party `.riv` host going away — is closed a different way: the variants we
+  // actually offer are self-hosted, see the `sources` note below.)
   srcOverride?: string
 }
 
@@ -96,6 +96,17 @@ export interface PersonaEmits {
   (e: 'stop', event: Parameters<EventCallback>[0]): void
 }
 
+// MyMind patch (cycle 65): the four variants our picker offers are served from OUR origin
+// (`public/persona-riv/`, ~31 KB total) instead of the upstream Vercel blob bucket. Upstream
+// ships these URLs pointing at a bucket we don't own; /agent's whole visual would degrade to the
+// CSS fallback disc for every user if it went away, and this app runs on a homelab box where a
+// third-party CDN is one more thing to be down. `halo` and `command` are unreachable from our
+// picker (see PERSONA_VARIANTS in app/lib/agent/persona.ts — both render white-on-white) so they
+// keep the upstream URLs; if either is ever re-enabled, vendor its .riv the same way.
+// The directory is `persona-riv`, NOT `rive-…`: Nitro's `publicAssets` entry for baseURL
+// `rive` (the wasm, above) prefix-matches, so anything under a `/rive*` path is routed to
+// the @rive-app package dir and 404s out of `public/` — verified in dev.
+// Re-apply this patch when re-copying the component from ai-elements-vue.
 const sources = {
   command: {
     dynamicColor: true,
@@ -106,8 +117,7 @@ const sources = {
   glint: {
     dynamicColor: true,
     hasModel: true,
-    source:
-      'https://ejiidnob33g9ap1r.public.blob.vercel-storage.com/glint-2.0.riv',
+    source: '/persona-riv/glint-2.0.riv',
   },
   halo: {
     dynamicColor: true,
@@ -118,20 +128,17 @@ const sources = {
   mana: {
     dynamicColor: false,
     hasModel: true,
-    source:
-      'https://ejiidnob33g9ap1r.public.blob.vercel-storage.com/mana-2.0.riv',
+    source: '/persona-riv/mana-2.0.riv',
   },
   obsidian: {
     dynamicColor: true,
     hasModel: true,
-    source:
-      'https://ejiidnob33g9ap1r.public.blob.vercel-storage.com/obsidian-2.0.riv',
+    source: '/persona-riv/obsidian-2.0.riv',
   },
   opal: {
     dynamicColor: false,
     hasModel: false,
-    source:
-      'https://ejiidnob33g9ap1r.public.blob.vercel-storage.com/orb-1.2.riv',
+    source: '/persona-riv/orb-1.2.riv',
   },
 }
 
