@@ -4,6 +4,7 @@ import { classifyFrame } from '../../lib/voice/frames'
 import { sttFromModel } from '../../lib/voice/providers'
 import type { SttProvider, TtsProvider } from '../../lib/voice/providers/types'
 import { speakWithPreset } from '../../lib/voice/speak'
+import { createTurnStream } from '../../lib/voice/turn-stream'
 import { resolveTurnVoice } from '../../services/voice-presets'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
@@ -25,10 +26,13 @@ import type { AttachmentRef } from '../../lib/agent/attachments'
 //   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset) |
 //   {type:'approve'|'deny',requestId,...} (resolve a pending exec approval)
 // Server→client: binary = raw PCM (s16le mono) for the segment currently open |
-//   text JSON = transcript/reasoning/tool/state/error events, plus the two frames that
-//   bracket each spoken segment: {type:'audio-begin',segmentId,sampleRate} and
-//   {type:'audio-end',segmentId} |
-//   {type:'conversation',conversationId,title} (emitted once, when the first turn lazily creates the thread).
+//   text JSON = {type:'audio-begin',turnId,segmentId,sampleRate} / {type:'audio-end',segmentId}
+//   (bracket each spoken segment) | {type:'state',state} |
+//   {type:'chunk',turnId,chunk} (an AI SDK UIMessageChunk for the turn's assistant message) |
+//   {type:'user-message',turnId,message} (the turn's user message, once, before its chunks) |
+//   {type:'approval'|'approval-resolved',...} (exec approval lifecycle) |
+//   {type:'conversation',conversationId,title} (emitted once, when the first turn lazily creates the thread) |
+//   {type:'error',message} (turn failure; always followed by {type:'state',state:'idle'}).
 interface ConnState {
   history: AgentMessage[]
   ac: AbortController | null
@@ -38,6 +42,9 @@ interface ConnState {
   lock: Promise<void>
   conversationId: string | null
   pendingApprovals: Map<string, { resolve: (d: { approved: boolean }) => void; timer: ReturnType<typeof setTimeout>; req: ApprovalRequest }>
+  /** Monotonic per-connection turn counter; stamped onto every frame of a turn so the client
+   *  can drop a superseded turn's stragglers. */
+  turnSeq: number
 }
 const conns = new WeakMap<object, ConnState>()
 
@@ -61,7 +68,7 @@ export default defineWebSocketHandler({
     if (!session?.user) return new Response('Unauthorized', { status: 401 })
   },
   open(peer) {
-    conns.set(peer, { history: [], ac: null, presetId: null, model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map() })
+    conns.set(peer, { history: [], ac: null, presetId: null, model: null, lock: Promise.resolve(), conversationId: null, pendingApprovals: new Map(), turnSeq: 0 })
   },
   message(peer, message) {
     const s = conns.get(peer); if (!s) return
@@ -171,6 +178,8 @@ export default defineWebSocketHandler({
         return handleUtterance(audio, s.history, { stt, tts, preset, refAudio, speak: true, context, modelDefId: s.model, buildMemoryContext, requestApproval, signal, emit })
       }
     }
+    const turnId = ++s.turnSeq
+    const attachmentsForTurn = turnAttachments
     s.ac?.abort()
     for (const [, p] of s.pendingApprovals) { clearTimeout(p.timer); p.resolve({ approved: false }) }
     s.pendingApprovals.clear()
@@ -178,6 +187,7 @@ export default defineWebSocketHandler({
     const ac = s.ac
     const exec = turn
     const run = async () => {
+      let turnStream: ReturnType<typeof createTurnStream> | null = null
       try {
         // Live context is rebuilt EVERY turn (two cheap indexed queries) — the old
         // once-per-connection cache went stale (a task created mid-conversation
@@ -186,19 +196,22 @@ export default defineWebSocketHandler({
         let reasoningText = ''
         let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null = null
         const prevLen = s.history.length
+        const ts = createTurnStream({ turnId, attachments: attachmentsForTurn, send: d => peer.send(d) })
+        turnStream = ts
         const emit = (e: VoiceEvent) => {
-          if (e.type === 'audio') peer.send(e.bytes)
-          else {
-            if (e.type === 'reasoning') reasoningText += e.text
-            // Overwrite, not accumulate: at most one usage event per turn in the common
-            // case, and if the rare forced-final recovery path (run.ts) yields a second
-            // one, it's from the streamText call that actually produced the visible text —
-            // that supersedes the aborted first call's usage rather than adding to it.
-            else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens }
-            peer.send(JSON.stringify(e))
-          }
+          if (e.type === 'reasoning') reasoningText += e.text
+          // Overwrite, not accumulate: at most one usage event per turn in the common
+          // case, and if the rare forced-final recovery path (run.ts) yields a second
+          // one, it's from the streamText call that actually produced the visible text —
+          // that supersedes the aborted first call's usage rather than adding to it.
+          else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens }
+          ts.emit(e)
         }
         s.history = await exec!(ac.signal, emit, context)
+        // Close the message BEFORE persisting: the UI should finish promptly; persistence
+        // (and the `conversation` frame for a new thread) follows.
+        if (ac.signal.aborted) ts.abort()
+        else ts.finish()
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId
@@ -220,10 +233,13 @@ export default defineWebSocketHandler({
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }
       } catch (err) {
-        if ((err as Error).name === 'AbortError') return
+        if ((err as Error).name === 'AbortError') { turnStream?.abort(); return }
         console.error('[agent] turn failed:', err)
-        peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'agent pipeline error' }))
-        peer.send(JSON.stringify({ type: 'state', state: 'idle' }))
+        if (turnStream) turnStream.error((err as Error).message || 'agent pipeline error')
+        else {
+          peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'agent pipeline error' }))
+          peer.send(JSON.stringify({ type: 'state', state: 'idle' }))
+        }
       }
     }
     s.lock = s.lock.then(run, run)
