@@ -14,7 +14,7 @@ status: >
   correct, but validation found two real bugs on that path). Two defects were found and fixed,
   one commit each (`a4c5738`, `7674f45`); both proven in the browser against the pre-fix
   behaviour measured in the same session. Gates at the end of this cycle: `pnpm typecheck`
-  exit 0 / `pnpm test` 207 files, 1826 tests / production build at 4096 MB passes
+  exit 0 / `pnpm test` 208 files, 1830 tests / production build at 4096 MB passes
   (264 client JS files, 2,159,791 B gzip). **Carries a build fix master does not have** — see
   "The Tailwind build fix" below; without it a 4096 MB deploy build OOMs, and cycle 64 on
   local master is already at zero headroom.
@@ -444,7 +444,7 @@ reply with usage — 2 marker hits (user + assistant) where the pre-fix runs had
 
 ```
 pnpm typecheck                                    → exit 0, 0 errors
-pnpm test                                          → 207 files, 1826 tests passed
+pnpm test                                          → 208 files, 1830 tests passed
 NODE_OPTIONS=--max-old-space-size=4096 pnpm build  → exit 0, "Build complete!",
                                                      .output/server/index.mjs present (939 B)
                                                      264 client JS files / 2,159,791 B gzip
@@ -452,12 +452,15 @@ NODE_OPTIONS=--max-old-space-size=4096 pnpm build  → exit 0, "Build complete!"
 ```
 
 (Success is `.output/server/index.mjs` existing plus "Build complete!", not an exit code —
-`/usr/bin/time` has reported 0 on an OOM here before.)
+`/usr/bin/time` has reported 0 on an OOM here before. The build figures are from the Task 9 gate run;
+Task 9's review fix round changed only `.vue`/`.ts` source and one new test file, so the build was not
+re-run for it.)
 
 Baseline at cycle start: 205 files / 1882 tests. The suite is **smaller** than it started, by design:
 Task 8 deleted five test files (95 tests) belonging to the deleted viz/avatar/bake modules, against
 new tests added across Tasks 1-7. The reviewer independently counted the 95 deleted tests against the
-1921 → 1826 delta rather than taking the number on trust.
+1921 → 1826 delta rather than taking the number on trust. The final 208/1830 adds the review fix
+round's `server/lib/voice/orchestrator-abort-exit.test.ts` (4 cases) on top of that 207/1826.
 
 ## Deleted this cycle
 
