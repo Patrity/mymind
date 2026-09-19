@@ -82,6 +82,23 @@ export function useVoice() {
     return sources.length > 0 || (!!audioCtx && playCursor > audioCtx.currentTime + 0.02)
   }
 
+  /**
+   * Return the client to rest after telling the SERVER to abort the running turn.
+   * The orchestrator returns early the moment its signal is aborted (`if
+   * (deps.signal.aborted) return messages`, server/lib/voice/orchestrator.ts) and so
+   * never reaches its closing `{state:'idle'}` emit — an aborted turn produces NO idle
+   * frame. Nothing else takes the UI out of 'thinking'/'speaking', so every caller that
+   * aborts a turn has to do it here. `stop()` always did this inline; `newConversation()`
+   * and `loadConversation()` abort exactly the same way (`{type:'new'}` / `{type:'load'}`
+   * both call `s.ac?.abort()` in ws.ts) and did not — which left the composer showing
+   * "Stop generating" forever (no way to send in the new/resumed thread short of pressing
+   * Stop), and left the old thread's TTS playing into it.
+   */
+  function restAfterAbort() {
+    stopPlayback()
+    state.value = 'idle'
+  }
+
   // Breeze streams headerless PCM (mono / s16le) as it generates, so playback starts on
   // the first chunk instead of waiting for a whole segment. decodeAudioData cannot be
   // used — it needs a container — and its old `catch { /* skip undecodable */ }` swallowed
@@ -412,9 +429,8 @@ export function useVoice() {
      *  AudioContext connected (unlike disconnect()). */
     stop() {
       ws?.send(JSON.stringify({ type: 'interrupt' }))
-      stopPlayback()
       turns.interrupt()
-      state.value = 'idle'
+      restAfterAbort()
     },
     setPreset: (presetId: string) => {
       desiredPreset = presetId
@@ -455,6 +471,7 @@ export function useVoice() {
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return
       ws.send(JSON.stringify({ type: 'load', conversationId: id }))
+      restAfterAbort() // the server aborts the running turn for us; nothing sends idle back
     },
     /**
      * Call right before replacing `messages` wholesale (resume, retry): the running turn —
@@ -473,6 +490,7 @@ export function useVoice() {
       conversationId.value = null
       conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))
+      restAfterAbort() // the server aborts the running turn for us; nothing sends idle back
     },
     conversationId,
     conversationTitle,
