@@ -21,7 +21,15 @@ export interface ToolContext {
   // Present only on the interactive (WS) path; a dangerous tool with no channel auto-denies.
   requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
   attachmentImageIds?: string[]  // image attachments of the current turn (edit_image source)
+  /** A tool that runs its own agent loop (a subagent) reports each nested call here; ai-tools
+   *  re-emits it as a `subagent-event` keyed to THIS call's toolCallId. */
+  onNestedEvent?: (e: NestedToolEvent) => void
 }
+
+export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }
+export type ToolResultEvent = { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: ToolKind }
+export type NestedToolEvent = ToolStartEvent | ToolResultEvent
+export type SubagentEvent = { type: 'subagent-event'; parentCallId: string; event: NestedToolEvent }
 
 /** What a tool handler returns. `undo` (when present) reverses the side-effect. */
 export interface ToolExecution {

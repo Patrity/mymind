@@ -6,7 +6,7 @@ import { buildSystemPrompt as realBuildSystemPrompt } from './prompt'
 import { bridgetProfile, type AgentProfile } from './profile'
 import { publishActivity } from './bus'
 import { VOICE_TUNING } from '../voice/tuning'
-import type { AgentTool } from './types'
+import type { AgentTool, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
 import { recordEvent } from '../observability/record'
 import { redactImageUrlsForModel } from './image-embed'
 import { applyHistoryPolicy, toolBlocksFor } from './tool-history'
@@ -50,8 +50,9 @@ export function buildModelMessages(messages: AgentMessage[]): unknown[] {
 export type AgentEvent =
   | { type: 'text-delta'; text: string }
   | { type: 'reasoning-delta'; text: string }
-  | { type: 'tool-start'; name: string; args: Record<string, unknown> }
-  | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: import('./types').ToolKind }
+  | ToolStartEvent
+  | ToolResultEvent
+  | SubagentEvent
   | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
   | { type: 'done' }
 
@@ -84,6 +85,40 @@ function partToUsageEvent(part: unknown): { type: 'usage'; inputTokens?: number;
   return { type: 'usage', inputTokens, outputTokens, totalTokens }
 }
 
+// One ordered channel that BOTH the model stream and tool callbacks push into. The old design
+// (an array drained only when the next fullStream part arrived) could not deliver an event a
+// tool emits while it is still executing: the SDK emits no parts during a pending execute(),
+// so a subagent's nested calls reached the UI in one burst when it finished (verified against
+// the real SDK, 2026-09-19 — see run-live-events.test.ts).
+type ChannelItem = { kind: 'event'; ev: AgentEvent } | { kind: 'part'; part: unknown } | { kind: 'error'; err: unknown }
+
+function createChannel() {
+  const items: ChannelItem[] = []
+  let wake: (() => void) | null = null
+  let closed = false
+  const notify = () => { const w = wake; wake = null; w?.() }
+  return {
+    push(item: ChannelItem) { items.push(item); notify() },
+    close() { closed = true; notify() },
+    async *drain(): AsyncGenerator<ChannelItem> {
+      while (true) {
+        while (items.length) yield items.shift()!
+        if (closed) return
+        await new Promise<void>((resolve) => { wake = resolve })
+      }
+    }
+  }
+}
+type Channel = ReturnType<typeof createChannel>
+
+/** Copy a model stream into the channel, then close it. A stream error becomes an item so it
+ *  is rethrown IN ORDER by the consumer, exactly where the old for-await would have thrown. */
+function pump(stream: AsyncIterable<unknown>, ch: Channel): Promise<void> {
+  return (async () => {
+    try { for await (const part of stream) ch.push({ kind: 'part', part }) } catch (err) { ch.push({ kind: 'error', err }) } finally { ch.close() }
+  })()
+}
+
 // Structural type for the streamText dep: only what runAgent actually uses.
 type StreamTextFn = (args: never) => { fullStream: AsyncIterable<unknown> }
 
@@ -106,8 +141,8 @@ export async function* runAgent(
   const profile = ctx.profile ?? bridgetProfile
   const registry = deps.tools ?? profile.tools
   const buildPrompt = deps.buildSystemPrompt ?? realBuildSystemPrompt
-  const queue: AgentEvent[] = []
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, onEvent: e => queue.push(e) })
+  let channel = createChannel()
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, onEvent: e => channel.push({ kind: 'event', ev: e }) })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
@@ -170,16 +205,18 @@ export async function* runAgent(
   let sawText = false
   let sawToolCall = false
   let emittedText = ''
-  for await (const part of result.fullStream) {
-    while (queue.length) yield queue.shift()!
+  const mainPump = pump(result.fullStream, channel)
+  for await (const item of channel.drain()) {
+    if (item.kind === 'event') { yield item.ev; continue }
+    if (item.kind === 'error') throw item.err
+    const part = item.part
     if ((part as { type?: unknown }).type === 'tool-call') sawToolCall = true
-    // tool-start / tool-result surface via the queue (buildAiTools.onEvent)
     const ev = partToEvent(part)
     if (ev) { if (ev.type === 'text-delta') { sawText = true; emittedText += ev.text } ; yield ev }
     const usageEv = partToUsageEvent(part)
     if (usageEv) yield usageEv
   }
-  while (queue.length) yield queue.shift()!
+  await mainPump
 
   // A tool-call emitted as PLAIN TEXT (Qwen/vLLM streaming hermes-parser bug,
   // vllm#31871) counts as text and fires no structured tool-call, so the
@@ -207,17 +244,20 @@ export async function* runAgent(
         temperature: VOICE_TUNING.agent.temperature,
         abortSignal: ctx.signal
       })
-      for await (const part of followup.fullStream) {
-        while (queue.length) yield queue.shift()!
-        const ev = partToEvent(part)
+      channel = createChannel()
+      const followupPump = pump(followup.fullStream, channel)
+      for await (const item of channel.drain()) {
+        if (item.kind === 'event') { yield item.ev; continue }
+        if (item.kind === 'error') throw item.err
+        const ev = partToEvent(item.part)
         if (ev) { if (ev.type === 'text-delta') followupText = true; yield ev }
         // This is a SEPARATE streamText call, so its usage does not include the aborted
         // main call's tokens — it supersedes (not adds to) any usage already yielded above,
         // since it's what actually produced the text the user sees.
-        const usageEv = partToUsageEvent(part)
+        const usageEv = partToUsageEvent(item.part)
         if (usageEv) yield usageEv
       }
-      while (queue.length) yield queue.shift()!
+      await followupPump
       recordEvent({ kind: 'attempt', name: `reasoning:agent-${mode}`, status: followupText ? 'ok' : 'warn', severity: followupText ? 'info' : 'warn', usage: 'reasoning', modelId: (chosen as { modelId?: string } | undefined)?.modelId ?? null, durationMs: Date.now() - started })
     } catch (err) {
       recordEvent({ kind: 'model', name: `reasoning:agent-${mode}`, status: 'error', severity: 'warn', usage: 'reasoning', durationMs: Date.now() - started, error: { message: (err as Error).message } })

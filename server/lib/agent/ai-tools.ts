@@ -1,7 +1,7 @@
 // server/lib/agent/ai-tools.ts
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
-import type { AgentTool, ToolContext, ApprovalRequest, ToolKind } from './types'
+import type { AgentTool, ToolContext, ApprovalRequest, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
 import { publishActivity } from './bus'
 import { registerUndo } from './undo'
 import { withSpan } from '../observability/record'
@@ -10,9 +10,7 @@ export interface RunHooks {
   signal: AbortSignal
   requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
   attachmentImageIds?: string[]
-  onEvent: (e:
-    | { type: 'tool-start'; name: string; args: Record<string, unknown> }
-    | { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: import('./image-embed').DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: ToolKind }) => void
+  onEvent: (e: ToolStartEvent | ToolResultEvent | SubagentEvent) => void
 }
 
 function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
@@ -30,6 +28,12 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
       inputSchema: z.object(t.schema),
       execute: async (input: Record<string, unknown>, opts?: { toolCallId?: string }) => {
         const callId = opts?.toolCallId ?? ''
+        // Per-call context: a subagent's nested calls are keyed to THIS call's id, which
+        // only exists here — the shared `ctx` above is built once for the whole toolset.
+        const callCtx: ToolContext = {
+          ...ctx,
+          onNestedEvent: e => hooks.onEvent({ type: 'subagent-event', parentCallId: callId, event: e })
+        }
         // Mask ONCE, up front, and use the masked copy for every RECORDED/EMITTED args field
         // below. Those args are persisted to conversation_messages.tool_calls and shipped to
         // the browser via msgToDTO, so a tool whose input can carry literal secret values
@@ -42,11 +46,11 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           try { safeArgs = await t.redactForLog(input) as Record<string, unknown> }
           catch { safeArgs = { redacted: true, reason: 'redaction failed' } }
         }
-        hooks.onEvent({ type: 'tool-start', name: t.name, args: safeArgs })
+        hooks.onEvent({ type: 'tool-start', name: t.name, args: safeArgs, callId })
         // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
         // autoApprove fast-path clears it (allowlist-first).
         if (t.dangerous) {
-          const auto = t.autoApprove ? await t.autoApprove(input, ctx) : false
+          const auto = t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
             const decision = ctx.requestApproval
               ? await ctx.requestApproval(approvalRequestFor(t, input))
@@ -63,7 +67,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         try {
           const exec = await withSpan(
             { kind: 'tool', name: t.name, request: safeArgs },
-            () => t.handler(input, ctx)
+            () => t.handler(input, callCtx)
           )
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
