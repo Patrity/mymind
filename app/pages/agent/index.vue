@@ -131,6 +131,8 @@ async function resume(id: string) {
     // on screen intact rather than showing the new transcript under the old row.
     const next = toUIMessages(messages)
     await voice.loadConversation(id)
+    // A turn still streaming in the old thread must not write into the resumed one.
+    voice.discardTurn()
     voice.messages.value = next
     voice.conversationId.value = conversation.id
     voice.conversationTitle.value = conversation.title
@@ -151,6 +153,9 @@ async function resume(id: string) {
 async function retryTurn(messageId: string) {
   const plan = truncateForRetry(voice.messages.value, messageId)
   if (!plan) return
+  // Retrying a reply that is still streaming: its turn would otherwise re-push the message
+  // this truncation just removed.
+  voice.discardTurn()
   voice.messages.value = plan.messages
   await voice.sendText(plan.text, speakReply.value, plan.attachments)
 }

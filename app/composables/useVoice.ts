@@ -465,12 +465,19 @@ export function useVoice() {
       ws.send(JSON.stringify({ type: 'load', conversationId: id }))
     },
     /**
+     * Call right before replacing `messages` wholesale (resume, retry): the running turn —
+     * if any — is closed and nothing from it is ever upserted into the new list.
+     */
+    discardTurn: () => turns.discard(),
+    /**
      * Start a fresh conversation: signals the server to reset context and
      * clears the local transcript.
      */
     newConversation: () => {
+      // discard, not interrupt: interrupt still upserts the running turn's closing snapshot,
+      // which would land in the NEW empty list as a "stopped" reply from the old thread.
+      turns.discard()
       messages.value = []
-      turns.interrupt()
       conversationId.value = null
       conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))

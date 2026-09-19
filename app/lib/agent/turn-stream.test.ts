@@ -105,6 +105,74 @@ describe('createClientTurns', () => {
     expect(h.messages.map(m => m.id)).toEqual(['u3', 'u1b'])
   })
 
+  // discard(): the page replaced the message list (new thread, resume, retry). The running
+  // turn must never write into the NEW list — not even its closing "stopped" snapshot.
+  describe('discard()', () => {
+    it('suppresses every further upsert of the turn, including the finalize, with chunks already queued', async () => {
+      const h = harness()
+      h.user(1, 'u1', 'go'); h.begin(1, 'a1'); h.say(1, 'a1', 'queued')
+      // Replace the list the way newConversation/resume/retry do, then discard.
+      h.messages.splice(0)
+      h.turns.discard()
+      await h.turns.settled()
+      expect(h.messages).toEqual([])
+    })
+
+    it('drops later frames of the discarded turn', async () => {
+      const h = harness()
+      h.user(1, 'u1', 'go'); h.begin(1, 'a1'); h.say(1, 'a1', 'par')
+      await new Promise(r => setTimeout(r, 0))
+      h.messages.splice(0)
+      h.turns.discard()
+      h.say(1, 'a1', 'tial'); h.end(1, 'a1')
+      h.user(1, 'u1-again', 'late echo')
+      await h.turns.settled()
+      expect(h.messages).toEqual([])
+      expect(h.turns.isStale(1)).toBe(true)
+    })
+
+    it('also silences a turn that already finished but is still draining its queued chunks', async () => {
+      const h = harness()
+      h.user(1, 'u1', 'go'); h.begin(1, 'a1'); h.say(1, 'a1', 'whole reply'); h.end(1, 'a1')
+      // `finish` arrived (the turn is closed, no longer active) but the assembler has not
+      // yet drained the queue when the page swaps threads.
+      h.messages.splice(0)
+      h.turns.discard()
+      await h.turns.settled()
+      expect(h.messages).toEqual([])
+    })
+
+    it('drops the turn even before its first chunk', async () => {
+      const h = harness()
+      h.user(1, 'u1', 'go')
+      h.messages.splice(0)
+      h.turns.discard()
+      h.begin(1, 'a1'); h.say(1, 'a1', 'late'); h.end(1, 'a1')
+      await h.turns.settled()
+      expect(h.messages).toEqual([])
+    })
+
+    it('a newer turn still streams normally after a discard', async () => {
+      const h = harness()
+      h.user(1, 'u1', 'go'); h.begin(1, 'a1'); h.say(1, 'a1', 'old')
+      h.messages.splice(0)
+      h.turns.discard()
+      h.user(2, 'u2', 'fresh'); h.begin(2, 'a2'); h.say(2, 'a2', 'new'); h.end(2, 'a2')
+      await h.turns.settled()
+      expect(h.messages.map(m => m.id)).toEqual(['u2', 'a2'])
+      expect(h.textOf('a2')).toBe('new')
+      expect(h.messages[1]!.metadata?.interrupted).toBeUndefined()
+    })
+
+    it('is a no-op on a fresh socket', async () => {
+      const h = harness()
+      h.turns.discard()
+      h.user(1, 'u1', 'first'); h.begin(1, 'a1'); h.say(1, 'a1', 'ok'); h.end(1, 'a1')
+      await h.turns.settled()
+      expect(h.messages.map(m => m.id)).toEqual(['u1', 'a1'])
+    })
+  })
+
   it('isStale reports older and closed turns', () => {
     const h = harness()
     h.user(2, 'u2', 'x')
