@@ -11,10 +11,25 @@ const route = useRoute()
 
 // Home's "Ask the brain" box hands the question over via ?q=, and the composer submits it
 // automatically on arrival — you land in a running answer, not a filled-in box.
-// Read ONCE at setup, deliberately not a computed: the composer must receive it on its
-// first mount, and it must NOT go undefined when the URL is stripped below.
+// Read ONCE at setup, deliberately not a computed: it must NOT go undefined when the URL
+// is stripped below.
 const handoffQuery = route.query.q
 const initialComposerText = typeof handoffQuery === 'string' && handoffQuery.trim() ? handoffQuery : undefined
+
+// ...but the composer is only HANDED the question once onMounted below has connected the
+// WS and applied the reasoning-model override. AgentPromptInput auto-submits the instant
+// it sees `initialText`, and its `{immediate: true}` watcher fires during SETUP, which is
+// two problems at once:
+//   1. the turn goes out before `voice.setModel()`, so `?q=` silently ran on the DEFAULT
+//      chain instead of the model the picker shows (invisible in prod, fatal in dev where
+//      the default chain head is down — the turn persisted the user message and no reply);
+//   2. submitForm() clears `textInput`, and a clear that lands before the textarea subtree
+//      has mounted never reaches the DOM (ui/textarea's useVModel(passive) proxy is seeded
+//      from the pre-clear value), so the question stayed visible in the composer after
+//      being sent — one stray Enter away from sending it twice.
+// Handing it over after mount fixes both: the model is applied first, and the clear is an
+// ordinary post-mount transition like every manual send.
+const handoffText = ref<string>()
 
 // Strip `q` from the URL as soon as we've captured it. The question is auto-submitted, so
 // leaving it in the address bar would mean a refresh, a bookmark, or a back-button
@@ -179,6 +194,8 @@ onMounted(async () => {
   if (agentModel.value) voice.setModel(agentModel.value)
   const c = route.query.c
   if (typeof c === 'string' && c) await resume(c)
+  // Only now hand `?q=` to the composer — see the comment on handoffText.
+  handoffText.value = initialComposerText
 })
 
 // Full-bleed's Escape must work even when focus never lands inside the overlay (e.g. the
@@ -348,7 +365,7 @@ onMounted(() => {
           :connected="voice.connected.value"
           :show-persona="voice.messages.value.length > 0 && !fullBleed"
           :context-meter="contextMeter"
-          :initial-text="initialComposerText"
+          :initial-text="handoffText"
           :auto-send="!!initialComposerText"
           :prefill="starterPrefill"
           @stop="voice.stop"

@@ -126,6 +126,12 @@ const canSubmit = computed(() => !isLoading.value && (textInput.value.trim().len
 // voice/Composer.vue maybeAutoSend). Vue Router reuses this component instance across a
 // query-only navigation on the same route, so both the first mount AND later prop changes
 // need to run through the same watcher — hence `immediate`.
+//
+// Callers must hand `initialText` over AFTER this component is mounted (the /agent page
+// does it at the end of its own onMounted). A value present during SETUP auto-submits
+// before the textarea subtree exists, and submitForm()'s clear then never reaches the DOM
+// — ui/textarea's useVModel(passive) proxy is seeded from the pre-clear value, so the
+// provider's textInput reads '' while the box still shows the sent question.
 let autoSentText: string | undefined
 async function maybeAutoSend(value: string | undefined) {
   if (!props.autoSend || !value || autoSentText === value) return
