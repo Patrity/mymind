@@ -16,3 +16,41 @@
   --color-green-900: #0A5331;
   --color-green-950: #052E16;
 }
+
+@import "tw-animate-css";
+
+/* ── shadcn-vue / AI Elements bridge ──────────────────────────────────────────────
+   Nuxt UI OWNS --color-primary, --color-secondary and the bg-/text-muted utilities; shadcn's
+   stock theme redefines the same names with different meanings and would repaint every
+   Nuxt UI component. So: never import shadcn's theme. Define only the shadcn tokens Nuxt UI
+   does not own, each pointing at Nuxt UI's own variable, so both themes switch together. */
+@theme inline {
+  --color-background: var(--ui-bg);
+  --color-foreground: var(--ui-text);
+  --color-card: var(--ui-bg);
+  --color-card-foreground: var(--ui-text);
+  --color-popover: var(--ui-bg);
+  --color-popover-foreground: var(--ui-text);
+  --color-primary-foreground: var(--ui-text-inverted);
+  --color-secondary-foreground: var(--ui-text-highlighted);
+  --color-muted-foreground: var(--ui-text-muted);
+  --color-accent: var(--ui-bg-elevated);
+  --color-accent-foreground: var(--ui-text-highlighted);
+  --color-destructive: var(--ui-error);
+  --color-border: var(--ui-border);
+  --color-input: var(--ui-border-accented);
+  --color-ring: var(--ui-border-accented);
+  --radius-sm: var(--ui-radius);
+  --radius-md: calc(var(--ui-radius) * 1.5);
+  --radius-lg: calc(var(--ui-radius) * 2);
+  --radius-xl: calc(var(--ui-radius) * 3);
+}
+
+/* shadcn components use bare `border` and rely on a global `* { border-color }` base rule.
+   Applying that globally would recolor every bare `border` in the app, so scope it to
+   Elements roots (zero specificity — any explicit border-* utility still wins). */
+@layer base {
+  :where([data-ai-elements]), :where([data-ai-elements]) :where(*) {
+    border-color: var(--ui-border);
+  }
+}

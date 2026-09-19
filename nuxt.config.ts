@@ -37,6 +37,13 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  // shadcn-vue primitives and AI Elements are vendored with barrel index.ts files and are
+  // imported EXPLICITLY (`@/components/ai-elements/...`). Auto-registering them would put a
+  // second `Button`/`Collapsible` family into the global component namespace beside Nuxt UI's.
+  components: [
+    { path: '~/components', ignore: ['ui/**', 'ai-elements/**'] }
+  ],
+
   routeRules: {
     // Catch-all: every route is SPA by default so new pages never forget.
     '/**': { ssr: false },
