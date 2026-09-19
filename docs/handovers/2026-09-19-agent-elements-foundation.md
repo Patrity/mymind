@@ -13,8 +13,12 @@ status: >
   reordered the LOCAL DEV reasoning chain (Haiku 4.5 moved ahead of the down qwen head, DB-only,
   restored exactly afterward) so the subagent itself had a reachable model — see item 2 below for
   the live-growth evidence. No code defects were found during live validation; zero fix commits
-  were needed. Gates: typecheck 0 / test 204 files, 1871 tests / build clean (6 GB heap). Not
-  merged, not pushed, not deployed — no migration to run.
+  were needed. Gates at that point: typecheck 0 / test 204 files, 1871 tests / build clean only at
+  a 6 GB heap. The final whole-branch review then found the build OOMs at deploy.yml's 4096 MB heap
+  (shiki's full bundle) plus two Important and several Minor issues; the fix wave landed all of them
+  on the branch (see "Final-review fix wave"). Gates after it: typecheck 0 / test 205 files, 1882
+  tests / build passes at 4096 MB and at the V8 default (no NODE_OPTIONS). Not merged, not pushed,
+  not deployed — no migration to run.
 branch: feat/agent-elements-foundation
 spec: ../superpowers/specs/2026-09-19-agent-elements-foundation-design.md
 plan: ../superpowers/plans/2026-09-19-agent-elements-foundation.md
@@ -34,14 +38,21 @@ docs:
     subsection closing the three brainstorm-raised complaints and pointing cycles 65-67 at their
     MyMind tasks; the down-chain/no-subagent-failover operational note recorded)
   - ../superpowers/plans/00-roadmap.md (UPDATED — cycle 64 row added)
+  - ../wiki/agent.md + ../wiki/voice-agent.md (UPDATED again by the final-review fix wave — live
+    context rebuilt every turn, `discard()`/`discardTurn()`, error-after-finish frames, corrected
+    bundle weight + the fine-grained shiki rule)
+  - ../../.claude/rules/web-nuxt.md (UPDATED by the fix wave — production builds at a 4096 MB heap;
+    never import the full `shiki` bundle in client code)
 tasks:
   - 3a32a2ca (MyMind, cycle 64) — update to reflect BUILT/NOT MERGED (controller does this after
     mirroring)
 shipped:
   - "Design-system coexistence spike (Task 0, gate)`` — shadcn-vue + AI Elements Vue installed
     beside Nuxt UI behind a CSS token bridge (`app/assets/css/main.css`), not a port of either
-    system onto the other. No repaint on `/`, `/tasks`, `/documents`, `/settings`; bundle delta
-    +5,328 B gzip total, entry chunk actually SHRANK 4,517 B gzip; image embeds fixed
+    system onto the other. No repaint on `/`, `/tasks`, `/documents`, `/settings`; the spike measured
+    a +5,328 B gzip bundle delta, which is WRONG for the final branch (the finished CodeBlock pulled
+    in shiki's full bundle: 3.70 MB gzip / 572 chunks and a heap-limit crash at 4096 MB) — see
+    \"Final-review fix wave\" for the corrected numbers; image embeds fixed
     (`mode=\"static\"` on `MessageResponse`'s `<Markdown>`, later made state-driven in Task 9); no
     MDC-only syntax found in the agent prompt or persisted replies."
   - "`server/lib/voice/ui-stream.ts` — `createUIChunkEncoder`, a pure `VoiceEvent`/`AgentEvent` →
@@ -89,10 +100,7 @@ deferred:
   - "Voice studio shared pieces + Home `PromptInput` — cycle 67. MyMind task `d321c732`."
   - "Deferred minors (from the SDD ledger, none blocking): the brief's Task 2 test had a TS2698
     spread defect — the implementer typed the inner param as `Parameters<typeof streamText>[0]`
-    instead (no runtime change); ReasoningContent.vue's `vue-stream-markdown` default
-    `mode=\"streaming\"` (same class of bug the image-embed fix solved for `MessageResponse` — not
-    yet made state-driven for reasoning specifically); shiki 4.1.0 (`@nuxtjs/mdc`) and 4.4.3
-    (Elements) coexist unresolved; `/dev/elements`' `IMAGE_ID` is a worktree-local upload
+    instead (no runtime change); `/dev/elements`' `IMAGE_ID` is a worktree-local upload
     (documented in the fixture, not fixed); `orchestrator.ts:169/172` duplicate fallback-id
     expression; `orchestrator.ts:196` terminal subagent steps shared by reference between the live
     map and the persisted record (not exploitable; copy defensively if ever touched);
@@ -109,7 +117,11 @@ deferred:
     stays visible/clickable after Stop, because `{type:'interrupt'}` aborts the turn's `AbortSignal`
     but not the server's separate pending-approval `Promise` (pre-existing, not cycle-64); and a
     one-off dark-mode repaint glitch right after toggling color mode mid-session (computed CSS was
-    already correct at the time; never reproduced on reload or fresh navigation)."
+    already correct at the time; never reproduced on reload or fresh navigation); from the final
+    review, documented at `interrupt()` but not fixed: with no active turn, Stop closes the newest
+    turn the client has SEEN, so a Stop before turn N's first frame lets N's first frames through
+    until the server's abort closes it (closing N client-side needs its id before any of its frames
+    arrive)."
 next_seam: >
   Cycle 65 (/agent rebuild — Persona, a new layout, PromptInput composer, Confirmation replacing
   ApprovalPrompt, a Context meter, avatar/three.js removal). MyMind task 3ddae408. The message
@@ -147,9 +159,9 @@ frontmatter `deferred` + `next_seam`).
 |---|---|
 | Fixture renders correctly, light + dark | ✅ borders subtle in both themes, user bubble grey (not brand green), all 5 tool-state badges distinct, `ChainOfThought` expands, table/code-block/links render, syntax highlighting works |
 | No repaint on `/`, `/tasks`, `/documents`, `/settings` | ✅ `magick compare -metric AE` (light+dark) found 103-5646 non-zero px per page, but every diff was read and is the Nuxt DevTools "load time" badge (varies per dev-server run) — zero app-UI pixels changed |
-| Bundle delta | ✅ total `_nuxt/*.js` gzip: 1,808,606 B → 1,813,934 B (**+5,328 B**, well under the ~500 KB budget). Entry chunk (booted `.output/server/index.mjs`, read the served module script): 159,712 B gz → 155,195 B gz — **shrank** 4,517 B |
+| Bundle delta | ✅ *at the spike*: total `_nuxt/*.js` gzip: 1,808,606 B → 1,813,934 B (**+5,328 B**, well under the ~500 KB budget). Entry chunk (booted `.output/server/index.mjs`, read the served module script): 159,712 B gz → 155,195 B gz — **shrank** 4,517 B. **Wrong for the final branch** — once the finished `CodeBlock` highlighted with `createHighlighter` from `shiki`, the full grammar/theme bundle was registered (3,704,928 B gz, 572 chunks) and the build OOM'd at deploy.yml's 4096 MB heap. Corrected in the fix wave below. |
 | Image embeds render | ✅ root cause was not the URL allow-list (default already permits relative URLs) — `vue-stream-markdown`'s `<Markdown>` defaults `mode="streaming"`, which keeps the trailing block `loading=true` forever for one-shot static content. Fixed with `mode="static"` on `MessageResponse.vue` (Task 9 later made this state-driven: `streaming` while a turn is in flight, `static` once done) |
-| `pnpm typecheck`/`pnpm build` green | ✅ typecheck 0; first `pnpm build` OOM'd locally, retried clean with `NODE_OPTIONS=--max-old-space-size=6144` (carried as a standing gate requirement into every later run, including this handover's) |
+| `pnpm typecheck`/`pnpm build` green | ✅ typecheck 0; first `pnpm build` OOM'd locally, retried clean with `NODE_OPTIONS=--max-old-space-size=6144` (carried as a standing gate requirement into every later run). That OOM was a real signal, not noise — prod builds at 4096 MB. The fix wave cut the weight and re-gated at 4096 MB and at the V8 default (see below). |
 | MDC audit (nothing lost by switching to plain streaming markdown) | ✅ `grep '::|\{[a-z]+='` over `server/lib/agent/prompt.ts` — no matches; two real persisted conversations read in full — no MDC-only syntax found |
 
 Dependencies added (CLI): `@lucide/vue`, `motion-v`, `reka-ui`, `shiki`, `vue-stick-to-bottom`,
@@ -271,10 +283,21 @@ needs a design decision, report it as a concern instead of improvising") rather 
 
 ## Measured gates
 
+At the original handover (superseded — see the fix wave below):
+
 ```
 pnpm typecheck                                    → exit 0, 0 errors
 pnpm test                                          → 204 files, 1871 tests passed
 NODE_OPTIONS=--max-old-space-size=6144 pnpm build  → exit 0, "✨ Build complete!" (81.2 MB / 22.6 MB gzip total)
+```
+
+After the final-review fix wave (HEAD `fa4013d` + this docs commit):
+
+```
+pnpm typecheck                                                              → exit 0, 0 errors
+pnpm test                                                                   → 205 files, 1882 tests passed
+NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build → exit 0 (deploy.yml's exact command), peak RSS 4.64 GB
+NUXT_PUBLIC_UNMUTE_URL="" pnpm build   (no NODE_OPTIONS, V8 default 4144 MB) → exit 0 (CI's command), peak RSS 4.54 GB
 ```
 
 Baseline at cycle start (Task 0 dispatch): `pnpm test` → 196 files / 1826 tests. The +8 files / +45
@@ -282,6 +305,73 @@ tests reflects every task's new/ported test files (encoder, turn-stream ×2, to-
 subagent-forwarding, live-event channel, the Task 10 fix round's 3 new voice-message-frame cases,
 Elements component smoke coverage) plus the ported `transcript.test.ts` cases now living in
 `to-ui-messages.test.ts`.
+
+## Final-review fix wave
+
+The final whole-branch review (base `a206109` → `538b50a`) returned *ready to merge with fixes*.
+Everything below landed on the branch, one commit per finding; each behavioural fix was test-first
+(RED captured, then GREEN).
+
+**C1 (Critical) — the branch OOM'd the production build.** `code-block/utils.ts` called
+`createHighlighter` from `shiki`, which registers shiki's full bundle (every grammar + theme as a
+lazy chunk, plus the oniguruma WASM). Fix (`48c6e69`): one highlighter from `shiki/core` + the JS
+regex engine (what `@nuxtjs/mdc` already uses) with only the `json` grammar the agent UI renders
+(any other language renders as plain text) and the same `github-light`/`github-dark` themes; a
+`pnpm-workspace.yaml` `overrides` block collapses `@nuxtjs/mdc`'s shiki 4.1.0 onto 4.4.3 so both
+share one `@shikijs/core`, engine and grammar/theme chunks. vue-stream-markdown's
+mermaid/katex turned out to cost nothing: neither library is installed, and the package only
+loads them through `extensions` we never pass. `/dev/**` is also dropped from production
+builds (`fa4013d`, M9). Measured with deploy.yml's command (`.output/public/_nuxt/*.js`, per-file
+gzip; peak RSS from `/usr/bin/time -l`):
+
+| Build | Client JS chunks | gzip total | 4096 MB | 3584 MB | V8 default | Peak RSS @4096 |
+|---|---|---|---|---|---|---|
+| base `a206109` (clean export) | 203 | 1,805,848 B | pass | **fail** | — | 4.46 GB |
+| cycle HEAD `538b50a` | 572 | 3,704,928 B | **FAIL** (heap limit, Nitro phase) | — | — | 4.63 GB at crash |
+| C1 only (`48c6e69`) | 267 | 2,091,631 B | pass | — | — | 4.53 GB |
+| final (`fa4013d`) | 264 | 2,099,125 B | pass | **fail** | pass (4.54 GB) | 4.64 GB |
+
+Net cost of the cycle is now +61 chunks / +293 KB gzip over base (the Elements + vue-stream-markdown
+vendor chunk), not +5 KB. **Headroom caveat:** base *and* final both fail at 3584 MB — the app sat
+within 512 MB of deploy.yml's cap before this cycle, and still does. deploy.yml/CI were not changed.
+
+**I2 — a persistence failure was silent** (`3464f09`). `ws.ts` finishes the message before
+persisting, so a `createConversation`/`appendMessages` throw hit `turnStream.error()` on a closed
+stream, which returned early — no `error` frame, no `idle`. `error()` now always sends the legacy
+error + idle frames and gates only the error chunk. Test: *error after finish still sends the error
++ idle frames (and no chunk)*.
+
+**I3 — a superseded turn leaked into a replaced list** (`c2bee7d`). `ClientTurns.discard()` closes
+the active turn, drops its later frames, and suppresses every further upsert from any turn whose
+assembler is still draining (finalize included). `useVoice().discardTurn()` exposes it;
+`newConversation()` uses it instead of `interrupt()`, and the page calls it in `resume()` and
+`retryTurn()` before replacing the list. Six tests: four went red against an `interrupt`-alike
+stub (queued chunks + finalize, later frames, a finished-but-still-draining turn, a newer turn
+after discard); two are guards (before the first chunk, fresh socket).
+
+**M4 / M5** (`9c3ec44`). `onError` now `console.warn`s with the turn id (it swallowed assembler
+errors), and `controller.enqueue` is guarded — after an assembler rejection the turn's stream is
+cancelled and every later chunk threw inside the socket's `onmessage` (both RED first). The
+remaining `interrupt()` window (Stop before turn N's first frame) is documented at `interrupt()`.
+
+**M6** (`d5ca7c3`). Comment at `pump()` in `server/lib/agent/run.ts`: it ignores an early consumer
+exit, safe today because every exit in practice is an abort that also ends the stream; in speak
+mode the pump reads ahead of the TTS-throttled consumer.
+
+**M8** — this docs commit: the ReasoningContent-streaming and shiki-coexistence "deferred minors"
+removed (both fixed), wiki `agent.md`'s "live context once per connection" corrected (rebuilt
+every turn since cycle 42), bundle claims corrected here and in the wiki, and a bundle-weight
+constraint added to `.claude/rules/web-nuxt.md`.
+
+**Browser re-check** (playwright-cli, dev :3217; screenshots in
+`.superpowers/sdd/2026-09-19-agent-elements-foundation/fix-wave/`, gitignored): `/dev/elements` in
+light and dark — tool input/output JSON highlighted (3 token colours; `github-light` values in
+light, `--shiki-dark` values in dark), markdown heading/bold/inline code/table/link render, fixture
+image loads (naturalWidth 200); the markdown ` ```ts ` block is unhighlighted exactly as before
+(vue-stream-markdown only highlights with a `code` extension, never passed). `/agent`: loads with
+0 console errors / 0 warnings; resuming a thread from the rail and expanding its tool shows the
+highlighted JSON; New conversation returns to the empty state with 0 errors. No live-model turn was
+run in the fix wave. I3's streaming race is covered by the unit tests only.
 
 ## Commits (this task, Step 1/2/3/4)
 
