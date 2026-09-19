@@ -3,6 +3,7 @@
 // builds at all (nuxt.config `$production.ignore`); the guard below is belt and braces.
 import type { LanguageModelUsage } from 'ai'
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AttachmentRef } from '~~/shared/types/conversation'
 import type { VoiceState } from '~/composables/useVoice'
 import type { PendingApprovalDetails } from '@/components/agent/ApprovalConfirmation.vue'
 import type { ContextMeterData } from '~/lib/agent/context-meter'
@@ -190,6 +191,30 @@ function onApprovalDeny(requestId: string) {
 const emptyStateState = ref<VoiceState>('idle')
 const emptyStateConnected = ref(true)
 const emptyStatePicked = ref('')
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Task 6 fixture state (cycle 65): AgentPromptInput — the Elements composer.
+// ══════════════════════════════════════════════════════════════════════════════
+const promptInputSpeak = ref(false)
+const promptInputModel = ref('__default__')
+const promptInputBusy = ref(false)
+const promptInputMicOn = ref(false)
+const promptInputShowPersona = ref(true)
+const promptInputInitialText = ref('')
+const promptInputAutoSend = ref(false)
+const promptInputPrefill = ref('')
+const promptInputLog = ref('')
+async function onPromptInputSend(text: string, speak?: boolean, attachments?: AttachmentRef[]) {
+  promptInputLog.value = JSON.stringify({ text, speak, attachments })
+  return true
+}
+function simulateQuery() {
+  promptInputAutoSend.value = true
+  promptInputInitialText.value = `hand-off question ${Date.now()}`
+}
+function simulatePrefill() {
+  promptInputPrefill.value = `starter click ${Date.now()}`
+}
 </script>
 
 <template>
@@ -556,6 +581,47 @@ const emptyStatePicked = ref('')
         </div>
         <p v-if="emptyStatePicked" class="text-xs text-muted-foreground">
           picked: {{ emptyStatePicked }}
+        </p>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-sm font-medium text-muted-foreground">
+          AgentPromptInput (the Elements composer)
+        </h2>
+        <div class="flex flex-wrap items-center gap-4">
+          <USwitch v-model="promptInputBusy" label="busy" />
+          <USwitch v-model="promptInputMicOn" label="mic on" />
+          <USwitch v-model="promptInputShowPersona" label="show persona" />
+          <UButton size="xs" variant="soft" @click="simulateQuery">
+            simulate ?q= auto-send
+          </UButton>
+          <UButton size="xs" variant="soft" @click="simulatePrefill">
+            simulate starter prefill
+          </UButton>
+        </div>
+        <div class="max-w-2xl rounded-md border border-default">
+          <AgentPromptInput
+            v-model:speak="promptInputSpeak"
+            v-model:model="promptInputModel"
+            :send-text="onPromptInputSend"
+            :busy="promptInputBusy"
+            :mic-on="promptInputMicOn"
+            state="idle"
+            :connected="true"
+            :show-persona="promptInputShowPersona"
+            :context-meter="contextKnownWindow"
+            :initial-text="promptInputInitialText"
+            :auto-send="promptInputAutoSend"
+            :prefill="promptInputPrefill"
+            @stop="promptInputLog = 'stop emitted'"
+            @toggle-mic="promptInputMicOn = !promptInputMicOn"
+          />
+        </div>
+        <p class="text-xs text-muted-foreground">
+          speak: {{ promptInputSpeak }} · model: {{ promptInputModel }}
+        </p>
+        <p v-if="promptInputLog" class="text-xs text-muted-foreground font-mono">
+          {{ promptInputLog }}
         </p>
       </section>
     </div>
