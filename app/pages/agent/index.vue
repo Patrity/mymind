@@ -236,7 +236,7 @@ onMounted(() => {
       />
       <!-- overflow-hidden: the clipping wrapper for the full Persona. It's sized by `flex-1
            min-h-0` (whatever the toolbar-less overlay leaves after the caption + mic band),
-           and the Persona itself is capped to fit THAT (size-full.client.vue), so on a short
+           and the Persona itself is capped to fit THAT (size="full" in Persona.client.vue), so on a short
            viewport (a landscape phone, a small window) it shrinks instead of pushing the mic
            band off-screen the way a fixed size-72/sm:size-96 did. -->
       <div class="flex flex-1 min-h-0 items-center justify-center overflow-hidden">
