@@ -79,43 +79,33 @@ const modelItems = computed(() => {
   return [{ label: 'Default (chain order)', value: DEFAULT_MODEL }, ...chain.map(m => ({ label: m.label, value: m.id }))]
 })
 
-// submitForm() (context.ts) has NO re-entrancy guard of its own — it just sets isLoading
-// and awaits. A second submitForm() call (e.g. a click racing the disabled-attribute's
-// render flush, or any programmatic re-trigger) would run this onSubmit a second time with
-// the SAME tray, duplicating the upload + send. `sending` is a plain synchronous flag — it
-// doesn't depend on Vue having flushed `isLoading` to the DOM yet, so it closes that window
-// even when the reactive disabled state hasn't re-rendered.
-let sending = false
+// Re-entrancy (a second submitForm() call racing in while this one is still uploading) is
+// guarded at the source — usePromptInputProvider's submitForm() (context.ts, MyMind patch)
+// returns immediately while isLoading is true, so onSubmit itself never runs twice for an
+// overlapping submit. Guarding it again here would be a second, redundant mechanism.
 async function onSubmit(msg: PromptInputMessage) {
-  if (sending) return
-  sending = true
-  try {
-    const text = msg.text.trim()
-    // msg.files is typed FileUIPart[] (no `id`), but submitForm's processedFiles mapping
-    // (context.ts) spreads the original AttachmentFile, so `.id` survives on the actual
-    // runtime objects — this IS the submitted snapshot's ids. Resolve those ids back
-    // against files.value (the live tray) rather than reading files.value directly: addFiles
-    // is never gated on isLoading, so a drop/paste/attach landing during submitForm's async
-    // blob->dataURL conversion would otherwise get swept into THIS turn's upload — and then
-    // sit in the tray looking unsent (clearSubmittedFiles only clears the pre-conversion ids).
-    const submittedIds = msg.files as unknown as { id: string }[]
-    const pendingFiles = filesForSubmit(submittedIds, files.value)
-    if (!text && pendingFiles.length === 0) return
+  const text = msg.text.trim()
+  // msg.files is typed FileUIPart[] (no `id`), but submitForm's processedFiles mapping
+  // (context.ts) spreads the original AttachmentFile, so `.id` survives on the actual
+  // runtime objects — this IS the submitted snapshot's ids. Resolve those ids back
+  // against files.value (the live tray) rather than reading files.value directly: addFiles
+  // is never gated on isLoading, so a drop/paste/attach landing during submitForm's async
+  // blob->dataURL conversion would otherwise get swept into THIS turn's upload — and then
+  // sit in the tray looking unsent (clearSubmittedFiles only clears the pre-conversion ids).
+  const submittedIds = msg.files as unknown as { id: string }[]
+  const pendingFiles = filesForSubmit(submittedIds, files.value)
+  if (!text && pendingFiles.length === 0) return
 
-    let refs: AttachmentRef[] = []
-    if (pendingFiles.length) {
-      // A rejection here propagates out of onSubmit — submitForm's catch restores the text,
-      // keeps the files, and reports onError({ code: 'submit_error' }).
-      refs = await Promise.all(
-        pendingFiles.map(file => uploadAttachment(file, (url, body) => $fetch(url, { method: 'POST', body })))
-      )
-    }
+  let refs: AttachmentRef[] = []
+  if (pendingFiles.length) {
+    // A rejection here propagates out of onSubmit — submitForm's catch restores the text,
+    // keeps the files, and reports onError({ code: 'submit_error' }).
+    refs = await Promise.all(
+      pendingFiles.map(file => uploadAttachment(file, (url, body) => $fetch(url, { method: 'POST', body })))
+    )
+  }
 
-    await props.sendText(text, speak.value, refs)
-  }
-  finally {
-    sending = false
-  }
+  await props.sendText(text, speak.value, refs)
 }
 
 function onError(err: { code: string, message: string }) {

@@ -156,6 +156,15 @@ export function usePromptInputProvider(props: {
   }
 
   const submitForm = async () => {
+    // MyMind patch (cycle 65): upstream has no re-entrancy guard, so a second synchronous
+    // submitForm() call (e.g. a click racing the disabled-attribute's render flush, or any
+    // programmatic re-trigger) would run onSubmit a second time with the SAME tray, then —
+    // whichever call settles first — clear files/flip isLoading that the OTHER call still
+    // owns. isLoading is set to true synchronously below, before this function's first
+    // `await`, so a second synchronous call sees it already true and returns immediately.
+    if (isLoading.value)
+      return
+
     if (!props.onSubmit)
       return
 
