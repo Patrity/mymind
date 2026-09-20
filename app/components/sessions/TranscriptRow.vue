@@ -3,6 +3,8 @@ import type { SessionMessageDTO, SessionToolEventDTO } from '~~/shared/types/ses
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
+import { CodeBlock } from '@/components/ai-elements/code-block'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { sessionToolState } from '~/lib/sessions/tool-state'
 
 const props = defineProps<{
@@ -35,6 +37,18 @@ const truncated = computed(() => expanded.value && props.message.content.length 
 const clampable = computed(() => props.message.content.length > 400)
 const role = computed(() => (props.message.role === 'user' ? 'user' : 'assistant'))
 
+// The DTO still carries `metadata` — whatever the parser stored for this message (`type`,
+// `tool_name`, …) — and this disclosure is the only place it is visible, as it was before the
+// rewrite. Behind a collapsible, so a row nobody opens pays nothing for it.
+const hasMetadata = computed(() => Object.keys(props.message.metadata ?? {}).length > 0)
+const metadataJson = computed(() => {
+  try {
+    return JSON.stringify(props.message.metadata, null, 2)
+  } catch {
+    return String(props.message.metadata)
+  }
+})
+
 // sessionToolState is pure but the naive template would call it three times per tool event
 // (once for state, once for input, once for output). Compute it once per event instead, keyed
 // by event id, so re-renders don't triple the work.
@@ -47,6 +61,22 @@ const toolViews = computed(() => {
 
 <template>
   <div class="py-1" :class="message.isSidechain ? 'opacity-70' : ''">
+    <!-- Which model produced this turn. `messages.model` became a first-class column so a
+         transcript could be audited model by model, so the label belongs on the turn. -->
+    <div
+      v-if="message.model"
+      class="mb-1 flex items-center gap-1.5"
+      :class="role === 'user' ? 'justify-end' : ''"
+    >
+      <UBadge
+        :label="message.model"
+        color="neutral"
+        variant="subtle"
+        size="xs"
+        class="font-mono"
+      />
+    </div>
+
     <Reasoning v-if="message.thinking" class="mb-1">
       <ReasoningTrigger />
       <ReasoningContent :content="message.thinking" />
@@ -87,5 +117,28 @@ const toolViews = computed(() => {
         />
       </ToolContent>
     </Tool>
+
+    <Collapsible
+      v-if="hasMetadata"
+      class="group mt-1 w-fit max-w-full"
+    >
+      <CollapsibleTrigger
+        class="flex items-center gap-1.5 text-xs text-dimmed transition-colors hover:text-muted"
+        data-transcript-meta-trigger
+      >
+        <UIcon name="i-lucide-braces" class="size-3.5" />
+        <span>Metadata</span>
+        <UIcon
+          name="i-lucide-chevron-down"
+          class="size-3.5 transition-transform group-data-[state=open]:rotate-180"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        class="mt-1 max-h-48 overflow-auto rounded-md border border-muted"
+        data-transcript-meta-content
+      >
+        <CodeBlock :code="metadataJson" language="json" />
+      </CollapsibleContent>
+    </Collapsible>
   </div>
 </template>
