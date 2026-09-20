@@ -23,10 +23,12 @@ const filters = ref<SessionMessageFilters>({})
 const {
   data: pageData,
   isPending: messagesPending,
+  isFetching: messagesFetching,
   error: messagesError,
   hasNextPage,
   isFetchingNextPage,
-  fetchNextPage
+  fetchNextPage,
+  refetch: refetchMessages
 } = useSessionMessagePages(() => route.params.id as string, filters)
 
 // Pages walk newest → oldest and each page is newest-first internally; the transcript reads
@@ -35,6 +37,12 @@ const messages = computed(() =>
   [...(pageData.value?.pages ?? [])].reverse().flatMap(p => [...p.messages].reverse()))
 const toolEvents = computed(() => (pageData.value?.pages ?? []).flatMap(p => p.toolEvents))
 const metaNotFound = computed(() => !metaPending.value && (error.value != null))
+
+// `isPending` is false once a query has ERRORED, and a retry of an errored query leaves the
+// status at 'error' while it refetches — so neither flag alone covers "the transcript is on its
+// way". Without the second clause a retry would sit on the error state with no sign of life.
+const transcriptLoading = computed(() =>
+  messagesPending.value || (messagesFetching.value && !messages.value.length))
 
 // A filter change is a different query key, so the transcript starts from a clean first page —
 // remount it so the scroll state (tail pin, "requested at length") starts clean too.
@@ -335,11 +343,12 @@ const reassignOpen = ref(false)
               :key="transcriptKey"
               :messages="messages"
               :tool-events="toolEvents"
-              :loading="messagesPending"
+              :loading="transcriptLoading"
               :has-more="hasNextPage"
               :fetching-more="isFetchingNextPage"
               :error="!!messagesError"
               @load-more="fetchNextPage()"
+              @reload="refetchMessages()"
             />
           </div>
         </div>

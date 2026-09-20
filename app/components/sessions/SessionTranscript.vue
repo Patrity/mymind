@@ -13,11 +13,18 @@ const props = defineProps<{
   /** An older page exists. Drives the top sentinel. */
   hasMore?: boolean
   fetchingMore?: boolean
-  /** The last older-page fetch failed. The sentinel becomes a retry row; rows STAY on screen. */
+  /** A page fetch failed. With rows on screen the sentinel becomes a retry row and the rows
+   *  STAY; with NO rows it is the FIRST page that failed, and the whole pane becomes an error
+   *  state — never the empty state, which a reader cannot tell apart from a broken fetch. */
   error?: boolean
 }>()
 
-const emit = defineEmits<{ 'load-more': [] }>()
+const emit = defineEmits<{
+  'load-more': []
+  /** The first page failed and the reader asked for the transcript again. Distinct from
+   *  `load-more`: there is no page to continue from, so the parent refetches from the start. */
+  'reload': []
+}>()
 
 // ── Tool events ───────────────────────────────────────────────────────────────
 const toolEventsByMsg = computed(() => {
@@ -333,6 +340,32 @@ onMounted(() => {
         v-for="i in 5"
         :key="i"
         class="h-24 w-full rounded-lg"
+      />
+    </div>
+
+    <!-- A failed FIRST page. Deliberately NOT the empty state below: with no rows and no error
+         affordance, a broken fetch reads as "this session has no messages" — a wrong answer for
+         a session with thousands of them, and one a reload is the only way out of. The retry
+         row in the virtual list can't serve here: it lives in the branch that needs rows. -->
+    <div
+      v-else-if="error && !messages.length"
+      class="flex flex-col items-center justify-center py-16 gap-3 text-center h-full overflow-y-auto pr-1"
+      data-transcript-error
+    >
+      <UIcon
+        name="i-lucide-triangle-alert"
+        class="size-10 text-error"
+      />
+      <p class="text-sm text-muted">
+        Couldn't load this transcript
+      </p>
+      <UButton
+        label="Retry"
+        color="neutral"
+        variant="subtle"
+        size="sm"
+        data-transcript-reload
+        @click="emit('reload')"
       />
     </div>
 
