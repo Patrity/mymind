@@ -9,6 +9,7 @@
 import type { ComponentPublicInstance } from 'vue'
 import { computed, nextTick, ref } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import type { SessionMessageDTO, SessionToolEventDTO } from '~~/shared/types/session'
 
 if (!import.meta.dev) throw createError({ statusCode: 404, statusMessage: 'Not found', fatal: true })
 definePageMeta({ title: 'Virtual list spike' })
@@ -152,6 +153,160 @@ async function prependOneHundred() {
     heightDelta
   }
 }
+
+// ── Task 7 fixture: every SessionsTranscriptRow shape ────────────────────────────────────
+// One of each shape called out in the brief: short user message, long (clampable) assistant
+// message, a message with `thinking`, a successful tool event, a failed one (exitStatus:
+// 'error'), one whose result is an object, an isSidechain message, and a 300,000-char body
+// (prod's largest message is 279,751 chars) to prove the expand-cap doesn't blow out the page.
+const LONG_ASSISTANT_BODY = [
+  'Checked your notes and the web for Orpheus. It looks like the project is a self-hosted,',
+  'permissively-licensed TTS engine with multilingual support and a small footprint compared to',
+  'other open models. A few things worth flagging before you commit to it: first, the inference',
+  'server expects a GPU with at least 6GB of VRAM for the larger checkpoints, though the small',
+  'checkpoint runs acceptably on CPU for short utterances. Second, voice cloning support is',
+  'still marked experimental upstream, so expect rough edges if that is the primary use case.',
+  'Third, the packaged Docker image pulls in a fairly large CUDA base image, so budget disk',
+  'space accordingly on the homelab box. I can draft a task to track a trial install if you want.'
+].join(' ')
+
+const rowMessages: SessionMessageDTO[] = [
+  {
+    id: 'row-user-short',
+    role: 'user',
+    content: 'Where did I leave the Orpheus notes?',
+    thinking: null,
+    model: null,
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:00.000Z'
+  },
+  {
+    id: 'row-assistant-long',
+    role: 'assistant',
+    content: LONG_ASSISTANT_BODY,
+    thinking: null,
+    model: 'claude-sonnet-5',
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:05.000Z'
+  },
+  {
+    id: 'row-thinking',
+    role: 'assistant',
+    content: 'Checked the docs first, then confirmed with a search — the notes are under the TTS project.',
+    thinking: 'The user wants to know where the Orpheus notes live. I should search documents before answering rather than guessing from memory.',
+    model: 'claude-sonnet-5',
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:10.000Z'
+  },
+  {
+    id: 'row-tool-ok',
+    role: 'assistant',
+    content: 'Found it — the Orpheus notes are filed under the TTS project.',
+    thinking: null,
+    model: 'claude-sonnet-5',
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:15.000Z'
+  },
+  {
+    id: 'row-tool-error',
+    role: 'assistant',
+    content: 'That fetch failed — let me try a different source.',
+    thinking: null,
+    model: 'claude-sonnet-5',
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:20.000Z'
+  },
+  {
+    id: 'row-tool-object-result',
+    role: 'assistant',
+    content: 'Filed a task so you don’t lose track of this.',
+    thinking: null,
+    model: 'claude-sonnet-5',
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:25.000Z'
+  },
+  {
+    id: 'row-sidechain',
+    role: 'assistant',
+    content: 'Sidechain: cross-checked the research subagent’s summary before folding it back in.',
+    thinking: null,
+    model: 'claude-sonnet-5',
+    isSidechain: true,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:30.000Z'
+  },
+  {
+    id: 'row-huge',
+    role: 'assistant',
+    // 300,000 chars, deliberately past prod's largest recorded message (279,751).
+    content: 'orpheus tts notes. '.repeat(15_790),
+    thinking: null,
+    model: 'claude-sonnet-5',
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:35.000Z'
+  }
+]
+
+const rowToolEvents: SessionToolEventDTO[] = [
+  {
+    id: 'te-ok',
+    messageId: 'row-tool-ok',
+    toolName: 'search_docs',
+    args: { query: 'orpheus', limit: 5 },
+    result: 'Found 3 matches under project "tts".',
+    exitStatus: 'ok',
+    phase: 'result',
+    toolUseId: 'tu-ok',
+    isSidechain: false,
+    createdAt: '2026-09-19T10:00:16.000Z'
+  },
+  {
+    id: 'te-error',
+    messageId: 'row-tool-error',
+    toolName: 'web_fetch',
+    args: { url: 'https://example.com/notes' },
+    result: '403 Forbidden',
+    exitStatus: 'error',
+    phase: 'result',
+    toolUseId: 'tu-error',
+    isSidechain: false,
+    createdAt: '2026-09-19T10:00:21.000Z'
+  },
+  {
+    id: 'te-object-result',
+    messageId: 'row-tool-object-result',
+    toolName: 'create_task',
+    args: { title: 'Try Orpheus TTS' },
+    result: { id: 'task-1', title: 'Try Orpheus TTS', status: 'open' },
+    exitStatus: 'ok',
+    phase: 'result',
+    toolUseId: 'tu-object',
+    isSidechain: false,
+    createdAt: '2026-09-19T10:00:26.000Z'
+  }
+]
+
+const rowToolEventsByMessage = computed(() => {
+  const m = new Map<string, SessionToolEventDTO[]>()
+  for (const te of rowToolEvents) {
+    if (!te.messageId) continue
+    const arr = m.get(te.messageId) ?? []
+    arr.push(te)
+    m.set(te.messageId, arr)
+  }
+  return m
+})
+
+function toolEventsFor(id: string): SessionToolEventDTO[] {
+  return rowToolEventsByMessage.value.get(id) ?? []
+}
 </script>
 
 <template>
@@ -202,6 +357,24 @@ async function prependOneHundred() {
           :style="{ transform: `translateY(${row.start}px)` }"
         >
           #{{ row.index }} ({{ row.key }}) {{ rows[row.index]?.text }}
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════════════════════
+         Task 7 (cycle 66): SessionsTranscriptRow — one of each row shape from the brief.
+         ══════════════════════════════════════════════════════════════════════════════ -->
+    <div class="space-y-2 border-t border-default pt-8" data-transcript-rows>
+      <h2 class="text-lg font-semibold text-highlighted">
+        SessionsTranscriptRow shapes
+      </h2>
+      <p class="text-sm text-muted">
+        short user &middot; long (clampable) assistant &middot; thinking &middot; tool ok &middot;
+        tool error &middot; tool with object result &middot; sidechain &middot; 300,000-char body
+      </p>
+      <div class="divide-y divide-default rounded-md border border-default bg-default px-3">
+        <div v-for="m in rowMessages" :key="m.id" :data-row-id="m.id">
+          <SessionsTranscriptRow :message="m" :tool-events="toolEventsFor(m.id)" />
         </div>
       </div>
     </div>
