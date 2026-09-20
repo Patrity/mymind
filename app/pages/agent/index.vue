@@ -335,7 +335,7 @@ onMounted(() => {
           @full-bleed="fullBleed = true"
         >
           <template #actions>
-            <VoiceSettingsSlideover
+            <AgentSettingsSlideover
               v-model:speak="speakReply"
               :voice="voice"
             />
