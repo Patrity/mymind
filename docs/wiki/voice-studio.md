@@ -73,7 +73,7 @@ already fixed:**
   abandoned audition would sit on the rig's only inference slot while the newly-selected preset
   waited.
 
-### `useRigRender` — why the clock is shared and the render is not
+### `useRigRender` — one composable, two clocks
 
 `renderWav` is the only network call the audition makes, and the clock is the reason the composable
 exists at all: **the rig serves one request at a time, queued behind the live agent**, so after 4
@@ -560,7 +560,7 @@ Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` in
 | `app/components/voice/DesignDescription.vue` | The instruction field, its hint, and the starter descriptions. |
 | `app/components/voice/DesignSeedAudition.vue` | Seed audition, the four takes, the kept-seeds strip. |
 | `app/components/voice/DesignReferenceClip.vue` | Record / upload / play / clear the reference clip and its transcript. |
-| `app/composables/useRigRender.ts` | `renderWav` plus the queue clock shared by the lock flow and the audition. |
+| `app/composables/useRigRender.ts` | `renderWav` plus the queue clock. The lock flow and the audition each call `useRigRender()`, so they hold **two independent clocks** — see "one composable, two clocks". |
 | `app/lib/voice/mic.ts` | Mic constraints and the stale-device test for the clip recorder. Pure and tested. |
 | `app/components/voice/SpeakPane.vue` | Text in composer chrome, source picker, event tags, Speak / Stop / Download. |
 | `app/composables/useBreezeSpeech.ts` | Studio playback — PCM on the AudioContext clock over plain `fetch`, not the agent socket. |
