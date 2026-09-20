@@ -1,124 +1,23 @@
 <script setup lang="ts">
-import { useVirtualList } from '@vueuse/core'
+import type { ComponentPublicInstance } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
+import { useIntersectionObserver, useResizeObserver } from '@vueuse/core'
 import type { SessionMessageDTO, SessionToolEventDTO } from '~~/shared/types/session'
+import { anchorAfterPrepend } from './anchor'
 
 const props = defineProps<{
+  /** OLDEST-FIRST, ready to render. The parent owns paging and un-reverses the API's pages. */
   messages: SessionMessageDTO[]
   toolEvents: SessionToolEventDTO[]
   loading?: boolean
+  /** An older page exists. Drives the top sentinel. */
+  hasMore?: boolean
+  fetchingMore?: boolean
+  /** The last older-page fetch failed. The sentinel becomes a retry row; rows STAY on screen. */
+  error?: boolean
 }>()
 
-// ── Virtualization ────────────────────────────────────────────────────────────
-// Only the visible window of message rows is mounted in the DOM, so multi-thousand
-// message imported sessions scroll smoothly. Individual rows are height-bounded
-// (internal max-h scrolls on big content) so a constant item-height estimate works.
-const { list, containerProps, wrapperProps, scrollTo } = useVirtualList(
-  computed(() => props.messages),
-  { itemHeight: 140, overscan: 10 },
-)
-
-// ── Autoscroll + live-tail ──────────────────────────────────────────────────────
-// Track whether the viewport is pinned to the bottom, and the id of the last
-// message the user has "seen" (i.e. last message at the moment we were at bottom).
-const atBottom = ref(true)
-const lastSeenId = ref<string | null>(null)
-
-function scrollToBottom() {
-  if (!props.messages.length) return
-  // useVirtualList owns scrollTop and clamps it against an ESTIMATED total height
-  // (itemHeight × count). scrollTo(last) reliably pins the tail into view but settles
-  // up to ~one viewport short of the literal pixel bottom; we treat that as "at bottom"
-  // via BOTTOM_THRESHOLD below. Recompute after the window re-renders.
-  scrollTo(props.messages.length - 1)
-  nextTick(onLocalScroll)
-}
-
-// Recompute atBottom from the live scroll node on every scroll event. We bind both
-// the virtual list's own onScroll (via v-bind="containerProps") and this handler.
-// useVirtualList clamps scrollTop against an estimated total height, so scrolling to
-// the last row settles up to ~one viewport short of the literal bottom. Use a
-// viewport-sized threshold (+ one item) so that pinned-to-tail counts as "at bottom".
-const ITEM_HEIGHT = 140
-function onLocalScroll() {
-  const el = containerProps.ref.value
-  if (!el) return
-  atBottom.value = isAtBottom({
-    scrollTop: el.scrollTop,
-    scrollHeight: el.scrollHeight,
-    clientHeight: el.clientHeight,
-  }, el.clientHeight + ITEM_HEIGHT)
-}
-
-// Autoscroll on first load and auto-follow growth while pinned to bottom.
-watch(
-  () => props.messages.length,
-  async (n, prev) => {
-    const firstArrival = (prev === 0 || prev == null) && n > 0
-    if (firstArrival) {
-      await nextTick()
-      scrollToBottom()
-      lastSeenId.value = props.messages.at(-1)?.id ?? null
-      return
-    }
-    // Growth
-    if (n > (prev ?? 0) && atBottom.value) {
-      await nextTick()
-      scrollToBottom()
-      lastSeenId.value = props.messages.at(-1)?.id ?? null
-    }
-    // Growth while not at bottom: leave lastSeenId — the "N new" button shows the count.
-  },
-  { flush: 'post' },
-)
-
-function jumpToLatest() {
-  scrollToBottom()
-  lastSeenId.value = props.messages.at(-1)?.id ?? null
-}
-
-const newCount = computed(() => countNewSince(props.messages, lastSeenId.value))
-
-// ── Message classification ────────────────────────────────────────────────────
-type MsgKind = 'user' | 'assistant' | 'tool'
-
-function msgKind(msg: SessionMessageDTO): MsgKind {
-  if (msg.metadata?.type === 'tool_result') return 'tool'
-  if (Array.isArray(msg.metadata?.tools) && (msg.metadata.tools as unknown[]).length > 0) return 'tool'
-  if (msg.role === 'assistant') return 'assistant'
-  return 'user'
-}
-
-function toolNames(msg: SessionMessageDTO): string[] {
-  const tools = (msg.metadata as { tools?: unknown }).tools
-  if (Array.isArray(tools)) {
-    return tools
-      .map(t => typeof t === 'string' ? t : (t && typeof t === 'object' ? ((t as { name?: string }).name ?? 'tool') : 'tool'))
-      .filter(Boolean)
-  }
-  if (msg.metadata?.type === 'tool_result') {
-    const name = (msg.metadata?.tool_name as string | undefined)
-    return name ? [name] : ['tool_result']
-  }
-  return []
-}
-
-function hasMetaDetails(msg: SessionMessageDTO): boolean {
-  return Object.keys(msg.metadata ?? {}).length > 0
-}
-
-function metaJson(msg: SessionMessageDTO): string {
-  try {
-    return JSON.stringify(msg.metadata, null, 2)
-  } catch {
-    return String(msg.metadata)
-  }
-}
-
-// Open state tracking for metadata collapsibles
-const openMeta = ref<Record<string, boolean>>({})
-function toggleMeta(id: string) {
-  openMeta.value[id] = !openMeta.value[id]
-}
+const emit = defineEmits<{ 'load-more': [] }>()
 
 // ── Tool events ───────────────────────────────────────────────────────────────
 const toolEventsByMsg = computed(() => {
@@ -132,9 +31,280 @@ const toolEventsByMsg = computed(() => {
   return m
 })
 
-function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
-  return s === 'ok' ? 'success' : s ? 'error' : 'neutral'
+function toolEventsFor(id: string | undefined): SessionToolEventDTO[] {
+  return (id && toolEventsByMsg.value.get(id)) || []
 }
+
+// ── Virtualization ────────────────────────────────────────────────────────────
+// Only the visible window of rows is mounted, and each row is MEASURED (rows vary wildly:
+// a one-line user turn vs. an expanded tool call). Pattern proven in the Task 0 spike
+// (`app/pages/dev/virtual.vue`).
+const scrollRoot = ref<HTMLElement | null>(null)
+const topSentinel = ref<HTMLElement | null>(null)
+const spacer = ref<HTMLElement | null>(null)
+
+const ROW_ESTIMATE = 140
+const BOTTOM_THRESHOLD = 80
+/** Start the next page before the reader hits the literal top. */
+const SENTINEL_MARGIN = 300
+
+// The options must be a computed for the virtualizer to react to `messages` changing — a
+// plain object would never re-run on a prepend.
+const virtualizerOptions = computed(() => ({
+  count: props.messages.length,
+  getScrollElement: () => scrollRoot.value,
+  estimateSize: () => ROW_ESTIMATE,
+  overscan: 10,
+  // Stable, id-based keys (NOT index) so the measurement cache survives a prepend: the row
+  // that was at index 0 keeps its measured height even though its index shifts by a page.
+  getItemKey: (index: number) => props.messages[index]?.id ?? index,
+  onChange: onVirtualizerChange
+}))
+
+const virtualizer = useVirtualizer(virtualizerOptions)
+const virtualRows = computed(() => virtualizer.value.getVirtualItems())
+const totalSize = computed(() => virtualizer.value.getTotalSize())
+
+function measureRow(el: Element | ComponentPublicInstance | null) {
+  if (!el || !(el instanceof HTMLElement)) return
+  virtualizer.value.measureElement(el)
+}
+
+// ── The virtualizer's own completion signal ───────────────────────────────────
+// Setting `el.scrollTop` does NOT update the virtualizer synchronously: it reacts to the
+// native, asynchronous `scroll` event, not to Vue's render tick. Reading state one tick after
+// the assignment reports the PRE-correction layout (this is what made the Task 0 spike's first
+// attempt look broken despite correct arithmetic). `onChange` is the library telling us it has
+// processed the change — so wait for that, with a two-frame fallback for the case where the
+// write was a no-op (delta 0 fires no scroll event, so no onChange ever comes).
+let changeWaiters: Array<() => void> = []
+function onVirtualizerChange() {
+  if (!changeWaiters.length) return
+  const waiters = changeWaiters
+  changeWaiters = []
+  for (const w of waiters) w()
+}
+
+function waitForVirtualizerChange(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    changeWaiters.push(finish)
+    if (import.meta.client) requestAnimationFrame(() => requestAnimationFrame(finish))
+    else finish()
+  })
+}
+
+// ── Scroll anchoring on prepend ───────────────────────────────────────────────
+interface Anchor { scrollTop: number, prevScrollHeight: number }
+
+async function restoreAfterPrepend(cap: Anchor) {
+  const el = scrollRoot.value
+  if (!el) return
+  // One tick for the virtualizer's options watcher + the re-render it triggers (new rows mount
+  // and measure themselves), a second for the re-render those measurements queue (corrected
+  // total size / transforms) to land — only then is `scrollHeight` the post-prepend height.
+  await nextTick()
+  await nextTick()
+  const target = anchorAfterPrepend({
+    scrollTop: cap.scrollTop,
+    prevScrollHeight: cap.prevScrollHeight,
+    nextScrollHeight: el.scrollHeight
+  })
+  el.scrollTop = target
+  await waitForVirtualizerChange()
+  // Re-derives atBottom and, if the reader is still near the top, asks for the next page.
+  // Rows above the fold that were still estimated get measured as they render; virtual-core
+  // compensates scrollTop for those itself (first-measure adjustment), so nothing more to do.
+  onLocalScroll()
+}
+
+// ── Autoscroll + live-tail ────────────────────────────────────────────────────
+const atBottom = ref(true)
+const followTail = ref(true)
+const lastSeenId = ref<string | null>(null)
+const initialScrollDone = ref(false)
+
+// Rows are measured lazily, so one write to the bottom lands on an ESTIMATED total height and
+// the corrections that follow leave the viewport short of the real bottom (measured: 117px
+// short, which is enough to read as "not at bottom" and disable live-tail follow). So re-pin
+// until the gap has stayed closed across a few of the virtualizer's own change signals.
+//
+// `virtualizer.scrollToIndex` has its own reconcile loop for this, but it keeps re-targeting
+// the end for up to 5s and yanks a reader who scrolled away in the meantime. Instead: a short
+// deadline, and an abort on the unambiguous signals that the reader has taken over.
+const PIN_WINDOW_MS = 1200
+/** How long after a pin a late-growing row still counts as "content we were following". */
+const FOLLOW_WINDOW_MS = 2500
+let scrollGen = 0
+let pinAborted = false
+let pinUntil = 0
+function abortPin() {
+  pinAborted = true
+}
+
+// The rows render their bodies asynchronously (markdown, code blocks), so the list can keep
+// growing AFTER the pin loop has seen a closed gap — measured: the total grew 117px 140ms
+// later, leaving the transcript just far enough off the bottom to disable live-tail follow.
+// The spacer IS the virtualizer's total size, so watching it catches exactly that growth.
+// Time-boxed, so expanding a row minutes later never drags the viewport.
+useResizeObserver(spacer, () => {
+  const el = scrollRoot.value
+  if (!el || pinAborted || !followTail.value || Date.now() > pinUntil) return
+  if (el.scrollHeight - el.scrollTop - el.clientHeight <= 1) return
+  el.scrollTop = el.scrollHeight
+})
+
+async function scrollToBottom() {
+  const gen = ++scrollGen
+  const el = scrollRoot.value
+  if (!el || !props.messages.length) return
+  pinAborted = false
+  pinUntil = Date.now() + FOLLOW_WINDOW_MS
+  const listen = { passive: true, capture: true } as const
+  el.addEventListener('wheel', abortPin, listen)
+  el.addEventListener('touchstart', abortPin, listen)
+  try {
+    const deadline = Date.now() + PIN_WINDOW_MS
+    let quiet = 0
+    while (Date.now() < deadline && !pinAborted && gen === scrollGen) {
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
+        el.scrollTop = el.scrollHeight
+        quiet = 0
+      } else if (++quiet >= 3) {
+        break
+      }
+      await waitForVirtualizerChange()
+      await nextTick()
+    }
+  } finally {
+    el.removeEventListener('wheel', abortPin, listen)
+    el.removeEventListener('touchstart', abortPin, listen)
+  }
+  if (gen !== scrollGen) return
+  // onLocalScroll re-derives atBottom/followTail from where we actually ended up — including
+  // the aborted case, where the reader is now somewhere up the transcript and owns it.
+  onLocalScroll()
+}
+
+function onLocalScroll() {
+  const el = scrollRoot.value
+  if (!el) return
+  atBottom.value = isAtBottom({
+    scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight
+  }, BOTTOM_THRESHOLD)
+  // A reader who scrolls up owns the viewport until they come back.
+  followTail.value = atBottom.value
+  maybeRequestOlder()
+}
+
+function markSeen() {
+  lastSeenId.value = props.messages.at(-1)?.id ?? null
+}
+
+function jumpToLatest() {
+  scrollToBottom()
+  markSeen()
+}
+
+const newCount = computed(() => countNewSince(props.messages, lastSeenId.value))
+
+// Classify each change to `messages` BEFORE the DOM updates (flush: 'pre'), so the pre-prepend
+// scrollTop/scrollHeight are the real ones — capturing them at emit time instead would fold in
+// anything that happened during the fetch.
+watch(
+  () => props.messages,
+  (next, prev) => {
+    const el = scrollRoot.value
+    const grew = next.length > (prev?.length ?? 0)
+    const firstChanged = next[0]?.id !== prev?.[0]?.id
+    const lastChanged = next.at(-1)?.id !== prev?.at(-1)?.id
+
+    if (!prev?.length && next.length) {
+      void afterRender(() => {
+        scrollToBottom()
+        markSeen()
+        initialScrollDone.value = true
+      })
+      return
+    }
+    if (el && grew && firstChanged) {
+      const cap: Anchor = { scrollTop: el.scrollTop, prevScrollHeight: el.scrollHeight }
+      void restoreAfterPrepend(cap)
+      return
+    }
+    if (grew && lastChanged && followTail.value) {
+      void afterRender(() => {
+        scrollToBottom()
+        markSeen()
+      })
+    }
+  },
+  { flush: 'pre' }
+)
+
+async function afterRender(fn: () => void) {
+  await nextTick()
+  await nextTick()
+  fn()
+}
+
+// ── Older-page paging ─────────────────────────────────────────────────────────
+// One request per distinct list length: the emit is idempotent until a page actually lands
+// (which changes the length), so overlapping scroll/observer triggers can't stack up fetches.
+let requestedAtLength = -1
+
+function maybeRequestOlder() {
+  if (!props.hasMore || props.fetchingMore || props.error) return
+  // Don't page while the first render is still scrolling to the bottom — the sentinel is
+  // trivially "visible" at that moment.
+  if (!initialScrollDone.value) return
+  if (props.messages.length === requestedAtLength) return
+  const el = scrollRoot.value
+  const s = topSentinel.value
+  if (!el || !s) return
+  if (s.getBoundingClientRect().bottom < el.getBoundingClientRect().top - SENTINEL_MARGIN) return
+  requestedAtLength = props.messages.length
+  emit('load-more')
+}
+
+// Two triggers, deliberately. The observer catches a reader arriving at the top; the scroll
+// handler catches the cases it structurally cannot: IntersectionObserver only fires on
+// CHANGES and delivers asynchronously, so a sentinel that never leaves the viewport, or one
+// that leaves again before delivery (virtual-core corrects scrollTop after measuring rows
+// following a jump — measured: a 250px jump landed at 599px, past the trigger zone), stalls
+// paging with no way to recover but more scrolling.
+useIntersectionObserver(
+  topSentinel,
+  ([entry]) => {
+    if (!entry?.isIntersecting) return
+    maybeRequestOlder()
+  },
+  { root: scrollRoot, rootMargin: `${SENTINEL_MARGIN}px 0px 0px 0px` }
+)
+
+function retry() {
+  if (props.fetchingMore) return
+  requestedAtLength = -1
+  emit('load-more')
+}
+
+// Messages can be there on the very first render (a warm query cache), in which case the
+// watcher above never sees an "arrival" — without this, paging would never unlock.
+onMounted(() => {
+  if (!props.messages.length || initialScrollDone.value) return
+  void afterRender(() => {
+    scrollToBottom()
+    markSeen()
+    initialScrollDone.value = true
+  })
+})
 </script>
 
 <template>
@@ -172,174 +342,75 @@ function exitColor(s: string | null): 'success' | 'error' | 'neutral' {
     <!-- Virtualized scroll area fills the pane: only the visible window is mounted -->
     <div
       v-else
-      v-bind="containerProps"
+      ref="scrollRoot"
       class="h-full overflow-y-auto pr-1"
+      data-transcript-scroll
+      style="overflow-anchor: none"
       @scroll="onLocalScroll"
     >
+      <!-- Older-page sentinel, ABOVE the rows: reaching the top loads the previous page, and a
+           failed page turns it into a retry row without touching the rows already loaded.
+           `min-h-12` holds both states at the same height so swapping the spinner for the retry
+           row doesn't push the rows below it down (measured: 8px of drift before it was pinned). -->
       <div
-        v-bind="wrapperProps"
-        class="space-y-2"
+        v-if="hasMore || error"
+        ref="topSentinel"
+        data-transcript-sentinel
+        class="flex items-center justify-center gap-2 py-3 min-h-12"
       >
-        <template
-          v-for="{ data: msg } in list"
-          :key="msg.id"
-        >
-        <!-- Tool turn -->
-        <div
-          v-if="msgKind(msg) === 'tool'"
-          data-msg
-          class="flex items-start gap-2"
-          :class="msg.isSidechain ? 'opacity-70' : ''"
-        >
-          <div class="w-full">
-            <UCard :ui="{ root: 'bg-elevated/40 border-muted', body: 'py-2 px-3' }">
-              <div class="flex items-start justify-between gap-2">
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  <UIcon name="i-lucide-wrench" class="size-3.5 text-warning shrink-0 mt-0.5" />
-                  <template v-if="!toolEventsByMsg.get(msg.id)?.length">
-                    <UBadge
-                      v-for="name in toolNames(msg)"
-                      :key="name"
-                      :label="name"
-                      color="warning"
-                      variant="subtle"
-                      size="xs"
-                    />
-                    <UBadge
-                      v-if="msg.metadata?.type === 'tool_result'"
-                      label="result"
-                      color="neutral"
-                      variant="outline"
-                      size="xs"
-                    />
-                  </template>
-                </div>
-                <!-- Meta toggle -->
-                <UButton
-                  v-if="hasMetaDetails(msg)"
-                  icon="i-lucide-chevron-down"
-                  :class="openMeta[msg.id] ? 'rotate-180' : ''"
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  class="shrink-0 transition-transform"
-                  @click="toggleMeta(msg.id)"
-                />
-              </div>
-              <div
-                v-if="msg.content"
-                class="mt-1.5 text-xs text-muted font-mono line-clamp-3"
-              >
-                {{ msg.content.slice(0, 300) }}{{ msg.content.length > 300 ? '…' : '' }}
-              </div>
-              <!-- Tool event detail (new rows with tool_events populated) -->
-              <template v-if="toolEventsByMsg.get(msg.id)?.length">
-                <div
-                  v-for="te in toolEventsByMsg.get(msg.id)"
-                  :key="te.id"
-                  class="mt-1.5"
-                >
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    <UBadge :label="te.toolName" color="warning" variant="subtle" size="xs" />
-                    <UBadge v-if="te.exitStatus" :label="te.exitStatus" :color="exitColor(te.exitStatus)" variant="subtle" size="xs" />
-                  </div>
-                  <pre v-if="te.args" class="mt-1 text-xs text-dimmed font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{{ JSON.stringify(te.args, null, 2).slice(0, 500) }}</pre>
-                  <pre v-if="te.result" class="mt-1 text-xs text-muted font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{{ typeof te.result === 'string' ? te.result.slice(0, 500) : JSON.stringify(te.result, null, 2).slice(0, 500) }}</pre>
-                </div>
-              </template>
-              <div
-                v-if="openMeta[msg.id]"
-                class="mt-2 pt-2 border-t border-muted"
-              >
-                <pre class="text-xs text-dimmed font-mono overflow-x-auto whitespace-pre-wrap break-words max-h-48">{{ metaJson(msg) }}</pre>
-              </div>
-            </UCard>
-          </div>
-        </div>
-
-        <!-- User turn -->
-        <div
-          v-else-if="msgKind(msg) === 'user'"
-          data-msg
-          class="flex justify-end"
-          :class="msg.isSidechain ? 'opacity-70' : ''"
-        >
-          <div class="max-w-[85%]">
-            <UCard :ui="{ root: 'bg-primary/10 border-primary/20', body: 'py-2.5 px-3.5' }">
-              <div class="flex items-start justify-between gap-2 mb-1.5">
-                <UBadge
-                  label="user"
-                  color="primary"
-                  variant="subtle"
-                  size="xs"
-                />
-                <UButton
-                  v-if="hasMetaDetails(msg)"
-                  icon="i-lucide-chevron-down"
-                  :class="openMeta[msg.id] ? 'rotate-180' : ''"
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  class="shrink-0 transition-transform"
-                  @click="toggleMeta(msg.id)"
-                />
-              </div>
-              <MdView :source="msg.content" />
-              <div
-                v-if="openMeta[msg.id]"
-                class="mt-2 pt-2 border-t border-muted"
-              >
-                <pre class="text-xs text-dimmed font-mono overflow-x-auto whitespace-pre-wrap break-words max-h-48">{{ metaJson(msg) }}</pre>
-              </div>
-            </UCard>
-          </div>
-        </div>
-
-        <!-- Assistant turn -->
-        <div
-          v-else
-          data-msg
-          class="flex justify-start"
-          :class="msg.isSidechain ? 'opacity-70' : ''"
-        >
-          <div class="max-w-[85%]">
-            <UCard :ui="{ body: 'py-2.5 px-3.5' }">
-              <div class="flex items-start justify-between gap-2 mb-1.5">
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  <UBadge
-                    label="assistant"
-                    color="neutral"
-                    variant="subtle"
-                    size="xs"
-                  />
-                  <span v-if="msg.model" class="text-xs text-dimmed font-mono">{{ msg.model }}</span>
-                </div>
-                <UButton
-                  v-if="hasMetaDetails(msg)"
-                  icon="i-lucide-chevron-down"
-                  :class="openMeta[msg.id] ? 'rotate-180' : ''"
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  class="shrink-0 transition-transform"
-                  @click="toggleMeta(msg.id)"
-                />
-              </div>
-              <details v-if="msg.thinking" class="mb-1.5">
-                <summary class="text-xs text-dimmed cursor-pointer select-none">thinking…</summary>
-                <pre class="mt-1 text-xs text-dimmed font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{{ msg.thinking }}</pre>
-              </details>
-              <MdView :source="msg.content" />
-              <div
-                v-if="openMeta[msg.id]"
-                class="mt-2 pt-2 border-t border-muted"
-              >
-                <pre class="text-xs text-dimmed font-mono overflow-x-auto whitespace-pre-wrap break-words max-h-48">{{ metaJson(msg) }}</pre>
-              </div>
-            </UCard>
-          </div>
-        </div>
+        <template v-if="error">
+          <UIcon
+            name="i-lucide-triangle-alert"
+            class="size-4 text-error shrink-0"
+          />
+          <span class="text-xs text-muted">Couldn't load older messages</span>
+          <UButton
+            label="Retry"
+            color="neutral"
+            variant="subtle"
+            size="xs"
+            :loading="fetchingMore"
+            data-transcript-retry
+            @click="retry"
+          />
         </template>
+        <template v-else-if="fetchingMore">
+          <UIcon
+            name="i-lucide-loader-circle"
+            class="size-4 text-muted animate-spin"
+          />
+          <span class="text-xs text-muted">Loading older messages…</span>
+        </template>
+        <template v-else>
+          <UIcon
+            name="i-lucide-chevron-up"
+            class="size-4 text-dimmed"
+          />
+          <span class="text-xs text-dimmed">Older messages</span>
+        </template>
+      </div>
+
+      <div
+        ref="spacer"
+        :style="{ height: `${totalSize}px`, position: 'relative', width: '100%' }"
+      >
+        <div
+          v-for="row in virtualRows"
+          :key="String(row.key)"
+          :ref="measureRow"
+          :data-index="row.index"
+          :data-vrow="row.key"
+          :data-start="row.start"
+          data-msg
+          class="absolute left-0 top-0 w-full"
+          :style="{ transform: `translateY(${row.start}px)` }"
+        >
+          <SessionsTranscriptRow
+            v-if="messages[row.index]"
+            :message="messages[row.index]!"
+            :tool-events="toolEventsFor(messages[row.index]?.id)"
+          />
+        </div>
       </div>
     </div>
 
