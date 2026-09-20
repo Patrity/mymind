@@ -2,6 +2,8 @@
 <script setup lang="ts">
 import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
 import type { ConversationDTO, ConversationMessageDTO } from '~~/shared/types/conversation'
+import { InputGroup, InputGroupTextarea } from '@/components/ui/input-group'
+import { PromptInputFooter, PromptInputTools } from '@/components/ai-elements/prompt-input'
 import {
   EVENT_TAGS,
   diagnoseStreamRender,
@@ -132,11 +134,15 @@ async function loadSource(key: string) {
 }
 
 // ── Event tags ────────────────────────────────────────────────────────────────
-// UTextarea exposes its inner <textarea> as `textareaRef`, which is where the caret is.
-const textareaRef = useTemplateRef<{ textareaRef?: HTMLTextAreaElement | null }>('speakBox')
+// InputGroupTextarea exposes nothing of its own (no defineExpose in InputGroupTextarea.vue
+// or the Textarea.vue it wraps) — but `$el` is part of every component's public instance
+// and resolves through the InputGroupTextarea -> Textarea -> <textarea> chain to the real
+// DOM node, which is where the caret actually is. Falling back silently here
+// (selectionStart undefined -> text.length) is exactly the bug this ref exists to avoid.
+const textareaRef = useTemplateRef<{ $el?: HTMLTextAreaElement | null }>('speakBox')
 
 function insertTag(tag: string) {
-  const el = textareaRef.value?.textareaRef
+  const el = textareaRef.value?.$el
   const start = el?.selectionStart ?? text.value.length
   const end = el?.selectionEnd ?? start
   const next = insertAtCursor(text.value, tag, start, end)
@@ -262,30 +268,60 @@ async function onDownload() {
       :description="sourceError"
     />
 
-    <UFormField label="Text">
-      <UTextarea
+    <InputGroup>
+      <InputGroupTextarea
         ref="speakBox"
         v-model="text"
         :rows="10"
         placeholder="Type or paste what the voice should read."
-        class="w-full"
       />
-    </UFormField>
-
-    <div class="flex flex-wrap items-center gap-1">
-      <span class="text-xs text-muted mr-1">Insert:</span>
-      <UButton
-        v-for="tag in EVENT_TAGS"
-        :key="tag"
-        size="xs"
-        color="neutral"
-        variant="subtle"
-        :label="tag"
-        @click="insertTag(tag)"
-      />
-      <span class="grow" />
-      <span class="text-xs tabular-nums text-dimmed">{{ text.trim().length }} chars</span>
-    </div>
+      <PromptInputFooter class="flex-wrap gap-y-2">
+        <PromptInputTools class="flex-wrap gap-y-1">
+          <!-- Quality keeps the text in one call wherever it fits; Realtime reproduces the
+               live agent's segmentation. Measured, the split costs 10.3% more audio and
+               audible seams to buy 22ms — so Quality is the default and Realtime is for
+               comparing by ear. -->
+          <UFieldGroup size="xs">
+            <UButton
+              v-for="m in modeItems"
+              :key="m.value"
+              :label="m.label"
+              :color="mode === m.value ? 'primary' : 'neutral'"
+              :variant="mode === m.value ? 'solid' : 'outline'"
+              @click="mode = m.value"
+            />
+          </UFieldGroup>
+          <span class="text-xs text-muted">Insert:</span>
+          <UButton
+            v-for="tag in EVENT_TAGS"
+            :key="tag"
+            size="xs"
+            color="neutral"
+            variant="subtle"
+            :label="tag"
+            @click="insertTag(tag)"
+          />
+        </PromptInputTools>
+        <PromptInputTools class="flex-wrap gap-y-1">
+          <span class="text-xs tabular-nums text-dimmed">{{ text.trim().length }} chars</span>
+          <UButton
+            icon="i-lucide-volume-2"
+            label="Speak"
+            :loading="speaking"
+            :disabled="!props.preset || !text.trim() || speaking"
+            @click="onSpeak"
+          />
+          <UButton
+            icon="i-lucide-square"
+            label="Stop"
+            color="neutral"
+            variant="subtle"
+            :disabled="!speaking"
+            @click="stop"
+          />
+        </PromptInputTools>
+      </PromptInputFooter>
+    </InputGroup>
 
     <!-- Not a warning: a statement of what the route will do with this text. Only the
          multi-call case is worth surfacing, because that is the one with audible seams. -->
@@ -299,35 +335,6 @@ async function onDownload() {
     />
 
     <div class="flex flex-wrap items-center gap-2">
-      <!-- Quality keeps the text in one call wherever it fits; Realtime reproduces the live
-           agent's segmentation. Measured, the split costs 10.3% more audio and audible seams
-           to buy 22ms — so Quality is the default and Realtime is for comparing by ear. -->
-      <UFieldGroup size="xs">
-        <UButton
-          v-for="m in modeItems"
-          :key="m.value"
-          :label="m.label"
-          :color="mode === m.value ? 'primary' : 'neutral'"
-          :variant="mode === m.value ? 'solid' : 'outline'"
-          @click="mode = m.value"
-        />
-      </UFieldGroup>
-
-      <UButton
-        icon="i-lucide-volume-2"
-        label="Speak"
-        :loading="speaking"
-        :disabled="!props.preset || !text.trim() || speaking"
-        @click="onSpeak"
-      />
-      <UButton
-        icon="i-lucide-square"
-        label="Stop"
-        color="neutral"
-        variant="subtle"
-        :disabled="!speaking"
-        @click="stop"
-      />
       <!-- The rig serves one request at a time and a read-aloud can take ten seconds, so
            re-rendering to hear the same words again is the most expensive way to answer the
            cheapest question. The samples are already decoded. -->
