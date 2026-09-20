@@ -46,9 +46,29 @@ export interface SessionMeta extends SessionListItem {
   appVersion: string | null
   endedAt: string | null
   metadata: Record<string, unknown>
+  /** Distinct tool_name values in THIS session — the filter dropdown's options.
+   *  163 distinct names exist across all sessions; a session has a handful. */
+  toolNames: string[]
 }
 
 export interface SessionMessages {
   messages: SessionMessageDTO[]
   toolEvents: SessionToolEventDTO[]
+}
+
+/** Filters applied server-side. Client-side filtering would make a page of `limit` rows
+ *  yield an arbitrary number of visible rows. */
+export interface SessionMessageFilters {
+  hideSidechain?: boolean
+  tool?: string
+  q?: string
+}
+
+/** One page of a transcript, walking backwards from newest. */
+export interface SessionMessagesPage {
+  /** NEWEST-FIRST. The transcript displays oldest-at-top, so the client reverses before prepending. */
+  messages: SessionMessageDTO[]
+  /** Only the events whose messageId appears in `messages` — not the whole session's. */
+  toolEvents: SessionToolEventDTO[]
+  nextCursor: string | null
 }
