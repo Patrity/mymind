@@ -1,44 +1,83 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { useQueryClient } from '@tanstack/vue-query'
+import { useQueryClient, type InfiniteData } from '@tanstack/vue-query'
 import SessionTranscript from '~/components/sessions/SessionTranscript.vue'
 import ReassignProjectModal from '~/components/sessions/ReassignProjectModal.vue'
-import type { SessionMessages } from '~~/shared/types/session'
+import type { SessionMessageFilters, SessionMessagesPage } from '~~/shared/types/session'
 
 definePageMeta({ title: 'Session' })
 
 const route = useRoute()
-const { useSessionMeta, useSessionMessages, getMessages } = useSessions()
+const { useSessionMeta, useSessionMessagePages, getMessages } = useSessions()
 const toast = useToast()
 const qc = useQueryClient()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 const { data: meta, isPending: metaPending, error } = useSessionMeta(() => route.params.id as string)
-const { data: msgData, isPending: messagesPending, error: messagesError } = useSessionMessages(() => route.params.id as string)
-const messages = computed(() => msgData.value?.messages ?? [])
-const toolEvents = computed(() => msgData.value?.toolEvents ?? [])
+
+// A ref, NOT a `reactive()`: the composable reads these through `toValue`, which doesn't
+// unwrap a reactive object — its computed would register no dependency and a filter change
+// would silently never refetch. The filter bar replaces the object wholesale for the same reason.
+const filters = ref<SessionMessageFilters>({})
+
+const {
+  data: pageData,
+  isPending: messagesPending,
+  error: messagesError,
+  hasNextPage,
+  isFetchingNextPage,
+  fetchNextPage
+} = useSessionMessagePages(() => route.params.id as string, filters)
+
+// Pages walk newest → oldest and each page is newest-first internally; the transcript reads
+// top-down oldest-first. Reverse both levels.
+const messages = computed(() =>
+  [...(pageData.value?.pages ?? [])].reverse().flatMap(p => [...p.messages].reverse()))
+const toolEvents = computed(() => (pageData.value?.pages ?? []).flatMap(p => p.toolEvents))
 const metaNotFound = computed(() => !metaPending.value && (error.value != null))
 
+// A filter change is a different query key, so the transcript starts from a clean first page —
+// remount it so the scroll state (tail pin, "requested at length") starts clean too.
+const transcriptKey = computed(() => JSON.stringify(filters.value))
+
 // ── Live append ─────────────────────────────────────────────────────────────────
-// The meta query refetches on SSE `session` events, so its messageCount rises when
-// new turns are ingested. When it grows, fetch only the delta (messages newer than
-// the last one we hold) and merge into the messages cache — no full transcript refetch.
+// The meta query refetches on SSE `session` events, so its messageCount rises when new turns
+// are ingested. When it grows, fetch only the delta (messages newer than the last one we hold)
+// and append it to the NEWEST page of the paged cache — no full transcript refetch.
 watch(() => meta.value?.messageCount, async (count, prev) => {
   if (count == null || prev == null || count <= prev) return
-  const cur = messages.value
-  const since = cur.length ? cur[cur.length - 1]!.createdAt : undefined
   const id = route.params.id as string
-  const delta = await getMessages(id, since)
+  const active = { ...filters.value }
+  const cur = messages.value
+  if (!cur.length) {
+    // Nothing to anchor a `since` on (an empty or fully-filtered-out transcript): a delta
+    // request would return the whole filtered session, so let the query refetch page one.
+    await qc.invalidateQueries({ queryKey: ['session', id, 'messages', 'paged'] })
+    return
+  }
+  const delta = await getMessages(id, cur[cur.length - 1]!.createdAt, active)
   if (!delta.messages.length && !delta.toolEvents.length) return
-  qc.setQueryData(['session', id, 'messages'], (old: SessionMessages | undefined) => {
-    // tool events aren't `since`-filtered server-side, so de-dup by id to avoid repeats.
-    const seenTev = new Set((old?.toolEvents ?? []).map(t => t.id))
-    const newTev = delta.toolEvents.filter(t => !seenTev.has(t.id))
-    return {
-      messages: [...(old?.messages ?? []), ...delta.messages],
-      toolEvents: [...(old?.toolEvents ?? []), ...newTev]
+  qc.setQueryData(
+    messagePagesKey(id, active),
+    (old: InfiniteData<SessionMessagesPage, string | undefined> | undefined) => {
+      const newest = old?.pages[0]
+      if (!old || !newest) return old
+      // `since` is exclusive, but a concurrent refetch can already hold these rows — de-dup by id.
+      const seen = new Set(newest.messages.map(m => m.id))
+      const fresh = delta.messages.filter(m => !seen.has(m.id))
+      const seenTev = new Set(newest.toolEvents.map(t => t.id))
+      const freshTev = delta.toolEvents.filter(t => !seenTev.has(t.id))
+      if (!fresh.length && !freshTev.length) return old
+      return {
+        ...old,
+        // The delta arrives oldest-first; a page is newest-first, and page 0 is the newest page.
+        pages: [
+          { ...newest, messages: [...fresh].reverse().concat(newest.messages), toolEvents: [...newest.toolEvents, ...freshTev] },
+          ...old.pages.slice(1)
+        ]
+      }
     }
-  })
+  )
 }, { flush: 'post' })
 
 watch(error, (err) => {
@@ -284,12 +323,23 @@ const reassignOpen = ref(false)
           </template>
         </UDashboardPanel>
 
-        <div class="flex-1 min-w-0 h-full p-4">
-          <SessionTranscript
-            :messages="messages"
-            :tool-events="toolEvents"
-            :loading="messagesPending"
+        <div class="flex-1 min-w-0 h-full p-4 flex flex-col min-h-0">
+          <SessionsTranscriptFilters
+            v-model="filters"
+            :tool-names="meta.toolNames ?? []"
           />
+          <div class="flex-1 min-h-0">
+            <SessionTranscript
+              :key="transcriptKey"
+              :messages="messages"
+              :tool-events="toolEvents"
+              :loading="messagesPending"
+              :has-more="hasNextPage"
+              :fetching-more="isFetchingNextPage"
+              :error="!!messagesError"
+              @load-more="fetchNextPage()"
+            />
+          </div>
         </div>
       </div>
 

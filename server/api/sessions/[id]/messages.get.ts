@@ -12,7 +12,17 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'Pass either `since` or `before`, not both' })
   }
 
-  if (since) return getSessionMessages(id, { since })
+  // The live-tail delta carries the ACTIVE filters too — filtering it client-side would let a
+  // row the filter excludes appear in a list the filter has narrowed. Absent params are left
+  // off entirely so an unfiltered delta is still a plain `{ since }` read.
+  if (since) {
+    return getSessionMessages(id, {
+      since,
+      ...(q.hideSidechain === 'true' ? { hideSidechain: true } : {}),
+      ...(q.tool ? { tool: q.tool as string } : {}),
+      ...(q.q ? { q: q.q as string } : {})
+    })
+  }
 
   const rawLimit = Number(q.limit)
   return getSessionMessagesPage(id, {

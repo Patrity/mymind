@@ -1,4 +1,4 @@
-import { asc, desc, eq, and, sql } from 'drizzle-orm'
+import { asc, desc, eq, and, sql, type SQL } from 'drizzle-orm'
 import { useDb } from '../db'
 import { sessions, messages, toolEvents, projects, memories } from '../db/schema'
 import { parseTranscriptLines } from './transcript-parse'
@@ -361,23 +361,50 @@ export async function getSessionMeta(id: string): Promise<SessionMeta | null> {
   }
 }
 
-export async function getSessionMessages(id: string, opts: { since?: string } = {}): Promise<SessionMessages> {
+/** The whole transcript, or — with `since` — the live-tail delta newer than a message.
+ *  Takes the same filters as a page: a delta filtered in the CLIENT would let rows the
+ *  active filter excludes appear in a list the filter is supposed to have narrowed. */
+export async function getSessionMessages(
+  id: string,
+  opts: { since?: string } & SessionMessageFilters = {}
+): Promise<SessionMessages> {
   const db = useDb()
+  const conds = [sql`${messages.sessionId} = ${id}`]
+  if (opts.since) conds.push(sql`${messages.createdAt} > ${opts.since}`)
+  applyMessageFilters(conds, opts)
+
   const msgs = await db.select().from(messages)
-    .where(opts.since
-      ? sql`${messages.sessionId} = ${id} and ${messages.createdAt} > ${opts.since}`
-      : eq(messages.sessionId, id))
+    .where(sql.join(conds, sql` and `))
     .orderBy(asc(messages.createdAt))
   const messageDTOs: SessionMessageDTO[] = msgs.map(m => ({
     id: m.id, role: m.role, content: m.content, thinking: m.thinking, model: m.model,
     isSidechain: m.isSidechain, metadata: (m.metadata as Record<string, unknown>) ?? {}, createdAt: m.createdAt.toISOString()
   }))
-  const tevs = await db.select().from(toolEvents).where(eq(toolEvents.sessionId, id)).orderBy(asc(toolEvents.createdAt))
+  // Only the events belonging to the rows we return: with a filter on, the whole session's
+  // events would carry rows the filter excluded, and on a delta they'd be a re-send of
+  // everything the client already holds.
+  const ids = msgs.map(m => m.id)
+  const tevs = ids.length
+    ? await db.select().from(toolEvents)
+        .where(sql`${toolEvents.messageId} in ${ids}`)
+        .orderBy(asc(toolEvents.createdAt))
+    : []
   const toolEventDTOs: SessionToolEventDTO[] = tevs.map(t => ({
     id: t.id, messageId: t.messageId, toolName: t.toolName, args: t.args, result: t.result,
     exitStatus: t.exitStatus, phase: t.phase, toolUseId: t.toolUseId, isSidechain: t.isSidechain, createdAt: t.createdAt.toISOString()
   }))
   return { messages: messageDTOs, toolEvents: toolEventDTOs }
+}
+
+/** The filter half of the WHERE clause, shared by the paged read and the live-tail delta so
+ *  the two can never drift into filtering differently. */
+function applyMessageFilters(conds: SQL[], f: SessionMessageFilters) {
+  if (f.hideSidechain) conds.push(sql`${messages.isSidechain} = false`)
+  if (f.q) conds.push(sql`${messages.content} ilike ${'%' + f.q + '%'}`)
+  if (f.tool) {
+    conds.push(sql`exists (select 1 from ${toolEvents}
+      where ${toolEvents.messageId} = ${messages.id} and ${toolEvents.toolName} = ${f.tool})`)
+  }
 }
 
 const DEFAULT_LIMIT = 100
@@ -407,12 +434,7 @@ export async function getSessionMessagesPage(
     conds.push(sql`(${messages.createdAt}, ${messages.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`)
   }
 
-  if (opts.hideSidechain) conds.push(sql`${messages.isSidechain} = false`)
-  if (opts.q) conds.push(sql`${messages.content} ilike ${'%' + opts.q + '%'}`)
-  if (opts.tool) {
-    conds.push(sql`exists (select 1 from ${toolEvents}
-      where ${toolEvents.messageId} = ${messages.id} and ${toolEvents.toolName} = ${opts.tool})`)
-  }
+  applyMessageFilters(conds, opts)
 
   const rows = await db.select().from(messages)
     .where(sql.join(conds, sql` and `))
