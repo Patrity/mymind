@@ -269,10 +269,18 @@ async function onDownload() {
     />
 
     <InputGroup>
+      <!-- aria-label, not a visible one: the box this replaced was a `UFormField label="Text"`,
+           and dropping that field left the textarea with nothing but a placeholder for an
+           accessible name — which disappears the moment anything is typed. A composer does
+           not carry a field label above it (that is the chrome this pane moved to), so the
+           name is supplied invisibly instead. It falls through InputGroupTextarea ->
+           Textarea -> <textarea>: neither declares it as a prop and both have a single root,
+           the same path `rows` already takes. -->
       <InputGroupTextarea
         ref="speakBox"
         v-model="text"
         :rows="10"
+        aria-label="Text to read aloud"
         placeholder="Type or paste what the voice should read."
       />
       <PromptInputFooter class="flex-wrap gap-y-2">
