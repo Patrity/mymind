@@ -3,6 +3,7 @@ import { computed, toValue, type MaybeRefOrGetter } from 'vue'
 import type {
   SessionListItem,
   SessionMeta,
+  SessionMessageDTO,
   SessionMessages,
   SessionMessageFilters,
   SessionMessagesPage
@@ -29,15 +30,22 @@ export function useSessions() {
     $fetch<SessionListItem[]>('/api/sessions', { query: params })
 
   const getMeta = (id: string) => $fetch<SessionMeta>(`/api/sessions/${id}`)
-  /** The live-tail delta: every message newer than `since`. The active filters ride along so
-   *  the server decides what belongs — a delta filtered in the client would put rows the filter
-   *  excludes back into a narrowed list. Call it WITH `since`: without one the endpoint answers
-   *  with a keyset PAGE (newest-first, capped at 100), not the whole transcript — for that use
-   *  `useSessionMessagePages`. */
-  const getMessages = (id: string, since?: string, filters: SessionMessageFilters = {}) =>
+  /** The live-tail delta: every message after `since` — the newest row the caller already holds,
+   *  passed WHOLE (timestamp *and* id). The server compares `(created_at, id)`, the same
+   *  composite the paged read walks; a timestamp alone would silently drop every row sharing
+   *  that created_at, permanently, and 26% of messages share one with a sibling.
+   *  The active filters ride along so the server decides what belongs — a delta filtered in the
+   *  client would put rows the filter excludes back into a narrowed list. Call it WITH `since`:
+   *  without one the endpoint answers with a keyset PAGE (newest-first, capped at 100), not the
+   *  whole transcript — for that use `useSessionMessagePages`. */
+  const getMessages = (
+    id: string,
+    since?: Pick<SessionMessageDTO, 'id' | 'createdAt'>,
+    filters: SessionMessageFilters = {}
+  ) =>
     $fetch<SessionMessages>(`/api/sessions/${id}/messages`, {
       query: {
-        ...(since ? { since } : {}),
+        ...(since ? { since: since.createdAt, sinceId: since.id } : {}),
         ...filterQuery(filters)
       }
     })

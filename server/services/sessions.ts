@@ -366,16 +366,29 @@ export async function getSessionMeta(id: string): Promise<SessionMeta | null> {
  *  active filter excludes appear in a list the filter is supposed to have narrowed. */
 export async function getSessionMessages(
   id: string,
-  opts: { since?: string } & SessionMessageFilters = {}
+  opts: { since?: string; sinceId?: string } & SessionMessageFilters = {}
 ): Promise<SessionMessages> {
   const db = useDb()
   const conds = [sql`${messages.sessionId} = ${id}`]
-  if (opts.since) conds.push(sql`${messages.createdAt} > ${opts.since}`)
+  if (opts.since) {
+    // The SAME row comparison the paged read uses. `created_at > $since` on a timestamp alone
+    // drops every row sharing the boundary timestamp with the client's newest held row — and
+    // since the cursor then advances past them, they are skipped for the rest of the session,
+    // not merely delayed. 58,417 of 228,692 prod messages share a created_at with a sibling in
+    // the same session (largest tie group: 615), so a boundary landing inside a tie group is
+    // the expected case. Callers that can't name the held row (no id) keep the timestamp-only
+    // comparison, which is the old, lossy behaviour.
+    conds.push(opts.sinceId
+      ? sql`(${messages.createdAt}, ${messages.id}) > (${opts.since}::timestamptz, ${opts.sinceId}::uuid)`
+      : sql`${messages.createdAt} > ${opts.since}`)
+  }
   applyMessageFilters(conds, opts)
 
   const msgs = await db.select().from(messages)
     .where(sql.join(conds, sql` and `))
-    .orderBy(asc(messages.createdAt))
+    // (created_at, id) — every query in this feature orders by the composite, so a tie group
+    // renders in the same order live-tailing as it does after a reload.
+    .orderBy(asc(messages.createdAt), asc(messages.id))
   const messageDTOs: SessionMessageDTO[] = msgs.map(m => ({
     id: m.id, role: m.role, content: m.content, thinking: m.thinking, model: m.model,
     isSidechain: m.isSidechain, metadata: (m.metadata as Record<string, unknown>) ?? {}, createdAt: m.createdAt.toISOString()

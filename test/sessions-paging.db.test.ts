@@ -33,6 +33,12 @@ const SINCE = at(150)
 const DELTA_MATCH_ID = '00000000-0000-4000-9001-' + TAG.padEnd(12, '0').slice(0, 12)
 const DELTA_PLAIN_ID = '00000000-0000-4000-9002-' + TAG.padEnd(12, '0').slice(0, 12)
 const DELTA_SIDE_ID = '00000000-0000-4000-9003-' + TAG.padEnd(12, '0').slice(0, 12)
+// Three rows sharing the cursor's EXACT timestamp, ids ascending. `_A` is the row the client
+// holds (the cursor); `_B` and `_C` are ingested after it at the same created_at — the tie
+// group a boundary lands inside for 58,417 of the 228,692 prod messages.
+const DELTA_TIE_A_ID = '00000000-0000-4000-9004-' + TAG.padEnd(12, '0').slice(0, 12)
+const DELTA_TIE_B_ID = '00000000-0000-4000-9005-' + TAG.padEnd(12, '0').slice(0, 12)
+const DELTA_TIE_C_ID = '00000000-0000-4000-9006-' + TAG.padEnd(12, '0').slice(0, 12)
 
 beforeAll(async () => {
   const db = useDb()
@@ -66,6 +72,11 @@ beforeAll(async () => {
     (${DELTA_MATCH_ID}::uuid, ${DELTA_SESSION_ID}::uuid, 'assistant', 'delta needle alpha',   false, ${at(200)}::timestamptz),
     (${DELTA_PLAIN_ID}::uuid, ${DELTA_SESSION_ID}::uuid, 'assistant', 'delta plain bravo',    false, ${at(201)}::timestamptz),
     (${DELTA_SIDE_ID}::uuid,  ${DELTA_SESSION_ID}::uuid, 'assistant', 'delta needle charlie', true,  ${at(202)}::timestamptz)`)
+  // The tie group sitting exactly ON the cursor timestamp.
+  await db.execute(sql`insert into messages (id, session_id, role, content, is_sidechain, created_at) values
+    (${DELTA_TIE_A_ID}::uuid, ${DELTA_SESSION_ID}::uuid, 'user', 'tie-boundary-a', false, ${SINCE}::timestamptz),
+    (${DELTA_TIE_B_ID}::uuid, ${DELTA_SESSION_ID}::uuid, 'user', 'tie-boundary-b', false, ${SINCE}::timestamptz),
+    (${DELTA_TIE_C_ID}::uuid, ${DELTA_SESSION_ID}::uuid, 'user', 'tie-boundary-c', false, ${SINCE}::timestamptz)`)
   // Only the first delta row carries a tool event, so `tool` has something to discriminate on.
   await db.execute(sql`insert into tool_events (session_id, message_id, tool_name, phase, created_at)
     values (${DELTA_SESSION_ID}::uuid, ${DELTA_MATCH_ID}::uuid, 'DeltaTool', 'completed', ${at(200)}::timestamptz)`)
@@ -185,5 +196,25 @@ describe('getSessionMessages — the live-tail delta', () => {
   it('combines filters — text AND no subagent', async () => {
     const delta = await getSessionMessages(DELTA_SESSION_ID, { since: SINCE, q: 'needle', hideSidechain: true })
     expect(contents(delta)).toEqual(['delta needle alpha'])
+  })
+
+  // The delta is a keyset read like the page, not a timestamp scan: `created_at > $since` alone
+  // drops every row that shares the boundary timestamp with the client's newest held row, and
+  // because the live-tail cursor advances past them they are skipped FOREVER, not just once.
+  // `tie-boundary-a` is the row the client holds; `-b` and `-c` were ingested after it at the
+  // same created_at, which is the expected case for 26% of prod messages.
+  it('with `since` + the held row id returns tied rows that sort after the cursor', async () => {
+    const delta = await getSessionMessages(DELTA_SESSION_ID, { since: SINCE, sinceId: DELTA_TIE_A_ID })
+    // Ordered, not sorted: this is also the (created_at, id) ordering assertion — ties resolve
+    // by ascending id, which is what makes the live-tail order match the paged read's.
+    expect(delta.messages.map(m => m.content)).toEqual([
+      'tie-boundary-b',
+      'tie-boundary-c',
+      'delta needle alpha',
+      'delta plain bravo',
+      'delta needle charlie'
+    ])
+    // The cursor row itself stays out — the comparison is strict.
+    expect(contents(delta)).not.toContain('tie-boundary-a')
   })
 })

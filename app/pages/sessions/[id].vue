@@ -55,7 +55,9 @@ watch(() => meta.value?.messageCount, async (count, prev) => {
     await qc.invalidateQueries({ queryKey: ['session', id, 'messages', 'paged'] })
     return
   }
-  const delta = await getMessages(id, cur[cur.length - 1]!.createdAt, active)
+  // The newest held row goes over WHOLE: the delta's boundary is the (created_at, id) composite,
+  // so a row ingested later at the same timestamp still lands on the right side of it.
+  const delta = await getMessages(id, cur[cur.length - 1]!, active)
   if (!delta.messages.length && !delta.toolEvents.length) return
   qc.setQueryData(
     messagePagesKey(id, active),
