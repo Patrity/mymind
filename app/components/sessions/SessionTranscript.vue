@@ -141,11 +141,7 @@ const PIN_WINDOW_MS = 1200
 /** How long after a pin a late-growing row still counts as "content we were following". */
 const FOLLOW_WINDOW_MS = 2500
 let scrollGen = 0
-let pinAborted = false
 let pinUntil = 0
-function abortPin() {
-  pinAborted = true
-}
 
 // The rows render their bodies asynchronously (markdown, code blocks), so the list can keep
 // growing AFTER the pin loop has seen a closed gap — measured: the total grew 117px 140ms
@@ -154,7 +150,7 @@ function abortPin() {
 // Time-boxed, so expanding a row minutes later never drags the viewport.
 useResizeObserver(spacer, () => {
   const el = scrollRoot.value
-  if (!el || pinAborted || !followTail.value || Date.now() > pinUntil) return
+  if (!el || !followTail.value || Date.now() > pinUntil) return
   if (el.scrollHeight - el.scrollTop - el.clientHeight <= 1) return
   el.scrollTop = el.scrollHeight
 })
@@ -163,15 +159,31 @@ async function scrollToBottom() {
   const gen = ++scrollGen
   const el = scrollRoot.value
   if (!el || !props.messages.length) return
-  pinAborted = false
+  // Every caller of this is a request to follow the tail: the first render, a new message
+  // arriving while already pinned, or the reader pressing "N new".
+  followTail.value = true
   pinUntil = Date.now() + FOLLOW_WINDOW_MS
-  const listen = { passive: true, capture: true } as const
-  el.addEventListener('wheel', abortPin, listen)
-  el.addEventListener('touchstart', abortPin, listen)
+  // Per-invocation controller and handler identity. A shared handler reference would be
+  // deduplicated by addEventListener, so an overlapping second pin would silently inherit the
+  // first registration — and then whichever call finished first would strip the LIVE pin's
+  // abort, leaving it unstoppable for its whole window. The signal also removes both
+  // listeners on abort, so there is one teardown path instead of two.
+  const ac = new AbortController()
+  const readerTookOver = () => {
+    // Reader intent, recorded where every other part of this component already reads it.
+    followTail.value = false
+    ac.abort()
+  }
+  const listen = { passive: true, capture: true, signal: ac.signal } as const
+  el.addEventListener('wheel', readerTookOver, listen)
+  el.addEventListener('touchstart', readerTookOver, listen)
   try {
     const deadline = Date.now() + PIN_WINDOW_MS
     let quiet = 0
-    while (Date.now() < deadline && !pinAborted && gen === scrollGen) {
+    // `followTail` in the condition is what stops the pin for the ways of scrolling away that
+    // fire no wheel and no touch event at all: the keyboard (Page Up, arrows) and dragging the
+    // scrollbar. Both still fire `scroll`, and onLocalScroll turns that into followTail=false.
+    while (Date.now() < deadline && !ac.signal.aborted && followTail.value && gen === scrollGen) {
       if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) {
         el.scrollTop = el.scrollHeight
         quiet = 0
@@ -182,8 +194,7 @@ async function scrollToBottom() {
       await nextTick()
     }
   } finally {
-    el.removeEventListener('wheel', abortPin, listen)
-    el.removeEventListener('touchstart', abortPin, listen)
+    ac.abort()
   }
   if (gen !== scrollGen) return
   // onLocalScroll re-derives atBottom/followTail from where we actually ended up — including
