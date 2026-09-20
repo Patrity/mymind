@@ -80,4 +80,22 @@ describe('getSessionMessagesPage', () => {
     const page = await getSessionMessagesPage(SESSION_ID, { limit: 9999 })
     expect(page.messages.length).toBeLessThanOrEqual(200)
   })
+
+  // Math.min/Math.max propagate NaN, so a non-finite or non-positive limit must fall back to
+  // DEFAULT_LIMIT (100) rather than reaching db .limit() with a bad value. The fixture has
+  // exactly 32 rows, well under DEFAULT_LIMIT, so a correct fallback returns all 32 in one page.
+  it('falls back to the default limit for a NaN limit', async () => {
+    const page = await getSessionMessagesPage(SESSION_ID, { limit: NaN })
+    expect(page.messages).toHaveLength(32)
+  })
+
+  it('falls back to the default limit for a zero limit', async () => {
+    const page = await getSessionMessagesPage(SESSION_ID, { limit: 0 })
+    expect(page.messages).toHaveLength(32)
+  })
+
+  it('falls back to the default limit for a negative limit', async () => {
+    const page = await getSessionMessagesPage(SESSION_ID, { limit: -5 })
+    expect(page.messages).toHaveLength(32)
+  })
 })

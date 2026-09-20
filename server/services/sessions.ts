@@ -388,7 +388,14 @@ export async function getSessionMessagesPage(
   opts: { before?: string; limit?: number } & SessionMessageFilters = {}
 ): Promise<SessionMessagesPage> {
   const db = useDb()
-  const limit = Math.min(Math.max(opts.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT)
+  // Math.min/Math.max propagate NaN, and drizzle silently OMITS the limit clause entirely
+  // for a non-finite/negative limit (pg-core/dialect.js: `typeof limit === 'number' && limit
+  // >= 0`) rather than erroring — so an unclamped NaN doesn't throw, it removes the cap. Coerce
+  // explicitly and fall back to DEFAULT_LIMIT for anything non-finite or non-positive.
+  const requested = Number(opts.limit)
+  const limit = Number.isFinite(requested) && requested > 0
+    ? Math.min(requested, MAX_LIMIT)
+    : DEFAULT_LIMIT
 
   const conds = [sql`${messages.sessionId} = ${id}`]
 
