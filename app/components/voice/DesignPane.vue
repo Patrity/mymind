@@ -178,10 +178,13 @@ const { queued, startClock, stopClock } = useRigRender()
 const auditioning = ref(false)
 
 // ── Load / reset on selection ─────────────────────────────────────────────────
-// Declared HERE, not next to the draft: `immediate: true` runs the callback during setup,
-// and every ref it clears (refError, refWarning, takes) is a `const` defined below — so
-// hoisting this to the top of the script throws a TDZ ReferenceError on mount, which no
-// gate would catch.
+// Declared HERE, after the state it touches: `immediate: true` runs the callback during
+// setup, so anything it reaches must already be initialised — hoisting this to the top of
+// the script throws a TDZ ReferenceError on mount, which no gate would catch. Everything
+// it still touches (guard, draft, saveError, saveWarning, stopClock) is declared above.
+// The refs that made this sharp — refError, refWarning, takes — moved into
+// DesignReferenceClip and DesignSeedAudition, and each child now runs its own equivalent
+// reset off the same preset id.
 //
 // Keyed on the preset's ID, deliberately NOT on the object. `voicePreset` is a live
 // resource: every write publishes a change, the SSE dispatch invalidates

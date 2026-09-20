@@ -1,8 +1,8 @@
 ---
 title: Voice Studio
 status: shipped
-cycle: 63
-updated: 2026-09-17
+cycle: 67
+updated: 2026-09-20
 mymind_id: b7dc4979-0fa0-41b0-8774-c6c2c470748c
 mymind_hash: e813df75cf334062cb357d763e9c71f765cbae6bb07a8993bba61014e18effba
 ---
@@ -30,6 +30,109 @@ Three resizable `UDashboardPanel`s inside one flex wrapper:
 
 Below `lg` the rail hides and the page stays usable. Auth is the app-wide
 `app/middleware/auth.global.ts` — there is no named `auth` middleware to opt into.
+
+> **At 375px the speak panel is unreachable.** The three `UDashboardPanel`s resolve the
+> `voice-speak` panel to ~2px at `x=391`, off the right edge — the page itself does not scroll
+> horizontally, but "Read aloud" cannot be reached on a phone. This is the resizable split-pane's
+> behaviour, not anything the panes do; it was measured identically on cycle 67's base commit, and
+> `/sessions/[id]` has the same shape at the same `x` (MyMind task `9745f72d`). The design pane at
+> 375px is fully usable.
+
+## Component layout (cycle 67)
+
+`DesignPane.vue` reached **1,101 lines** — 572 of script, 527 of template — carrying five unrelated
+jobs behind one pair of props. Cycle 67 split it into **children, not composables**: every section
+owned both UI and logic, so extracting only the logic would have split by technical layer and left a
+527-line template behind. It is now **454 lines** and the tab shell, preset lifecycle, save and lock
+flow are all it does.
+
+| File | Lines | Owns |
+|---|---|---|
+| `app/components/voice/DesignPane.vue` | 454 | The tab shell, name/cfg/temperature/top-p/top-k/seed, load-and-reset on selection, `save()`, and the lock/unlock flow. |
+| `app/components/voice/DesignDescription.vue` | 88 | The Instruction field, its hint popover, and the eight starter descriptions. |
+| `app/components/voice/DesignSeedAudition.vue` | 301 | "Try 4 seeds", the four takes, the star toggle and the kept-seeds strip. |
+| `app/components/voice/DesignReferenceClip.vue` | 332 | Recording, uploading, playing and clearing the clip, plus its transcript. |
+| `app/composables/useRigRender.ts` | 59 | `renderWav(body, signal)` + the elapsed clock (`elapsedMs`, `queued`, `startClock`, `stopClock`). |
+
+**Three rules hold the split together, and breaking any of them reintroduces a bug the studio
+already fixed:**
+
+- **The draft is still owned by `voice.vue`.** `SpeakPane` renders what the design form holds, so
+  the form cannot be private to the component that edits it. Children receive the same `reactive()`
+  object and mutate it field-by-field; they never reassign it and never persist it.
+- **`draft` mutations need no emit.** Because every pane shares one reactive object, the parent's
+  `dirty`, `tabItems` badge and `lock` computeds already react to a child's write. The star toggle
+  and every clip operation work with zero plumbing — verified in the browser: starring a seed inside
+  `DesignSeedAudition` enables the parent's **Save voice** button with no event crossing the
+  boundary. The one emit that exists, `@kept`, is for the **Use** button, which is the only child
+  action that must cross into `save()`.
+- **There is exactly one `createGenerationGuard()`**, created in `DesignPane.vue` and passed down as
+  a prop. `begin()` does not mint a per-call token — it returns the current generation — so one
+  `reset()` in the preset-switch watcher invalidates the lock, the upload, the recording *and* the
+  audition together. A child with its own instance would be invisible to that reset, and an
+  abandoned audition would sit on the rig's only inference slot while the newly-selected preset
+  waited.
+
+### `useRigRender` — why the clock is shared and the render is not
+
+`renderWav` is the only network call the audition makes, and the clock is the reason the composable
+exists at all: **the rig serves one request at a time, queued behind the live agent**, so after 4
+seconds the pane says *"Waiting on the rig (Ns)"* rather than looking hung. That behaviour must not
+be duplicated into two components that both wait on the same slot.
+
+The lock flow (in `DesignPane`) and the seed audition (in `DesignSeedAudition`) each call
+`useRigRender()` themselves, so **two independent clocks exist**. That is correct, not an oversight:
+both need the rig's single slot, so they can never run at once, and sharing one instance would couple
+two progress displays for no benefit. Only the clock is genuinely shared machinery — `lockVoice()`
+never used `renderWav`, so the audition is its only caller.
+
+### The speak box is a composer
+
+`SpeakPane.vue`'s `UFormField` + `UTextarea` + a loose row of tag buttons is now an **`InputGroup` +
+`InputGroupTextarea` + `PromptInputFooter`/`PromptInputTools`** — the same primitives `/agent`'s
+composer is built from, so the mode toggle, the tag buttons, the character count and Speak/Stop all
+sit inside one bordered group.
+
+It is assembled from those primitives rather than from the Elements `PromptInput` wrapper on
+purpose: **`PromptInputTextarea` hardcodes Enter-to-submit** (`preventDefault` then
+`requestSubmit`, with no prop to disable it), and this box holds pasted multi-line scripts. Adopting
+the wrapper would have meant a ninth patch to the vendored AI Elements tree, and those patches are
+lost silently on a component re-copy. So:
+
+- **Enter inserts a newline and never speaks.** Speak is an explicit button press. (Browser-verified:
+  typing, Enter, typing again leaves `"Hello world\nsecond line"` in the box with nothing rendering.)
+- **Tag buttons insert at the caret.** `insertTag` reaches the real `<textarea>` through the
+  template ref's `$el` — `InputGroupTextarea` and the `Textarea` it wraps both call `defineProps`
+  only, never `defineExpose`, so the old `UTextarea`-era `.textareaRef` path resolves to nothing.
+  Losing this degrades *quietly*: tags still insert, just at the end.
+- **The footer must wrap.** `PromptInputFooter`/`PromptInputTools` do not wrap by default, and at a
+  realistic panel width (~460px) the footer's 652px of content pushed Speak/Stop outside the group's
+  border — present in the DOM and the a11y tree, just clipped. `SpeakPane` passes `flex-wrap` to all
+  three; no vendored file was touched.
+
+### The studio honours the chosen microphone (the cycle's one user-visible fix)
+
+Recording a reference clip used to call bare `getUserMedia({ audio: true })`, so **picking a
+microphone in settings did nothing for the studio** — it silently recorded on the system default
+while the live agent used the chosen device. `app/lib/voice/mic.ts` now supplies the same
+exact-then-fallback sequence `useVoice.ts:330-346` uses:
+
+| Step | Behaviour |
+|---|---|
+| A device is chosen | `deviceId: { exact: <id> }` on top of `BASE_AUDIO` (`echoCancellation`, `noiseSuppression`, `autoGainControl: false`). |
+| No device chosen | `deviceId` is **omitted entirely**, not sent as `''`. |
+| `OverconstrainedError` | The device is gone: clear `micDeviceId` from the cookie (so the live agent stops retrying it too), tell the user it switched to the default, and retry with base constraints. |
+| Anything else | **Rethrown.** A `NotAllowedError` is a permission denial, and silently retrying on the default device would hide it. |
+
+`micConstraints` and `isStaleDeviceError` are pure and unit-tested; only the `getUserMedia` call
+itself lives in the component. The logic is **deliberately duplicated** rather than shared with
+`useVoice` — unifying the two was offered and declined, because streaming speech through a VAD and
+recording a ten-second clip are different jobs — so `mic.ts` carries a comment pointing at the
+original. A future change to mic handling must be made in both places.
+
+Browser-verified end to end: with "MacBook Pro Microphone (Built-in)" chosen while the system default
+was "Mic Pass Through (Virtual)", the recorder requested `deviceId: { exact: a79b5b45… }` and the
+granted track's label read back as **MacBook Pro Microphone (Built-in)**.
 
 ## The four modes are derived, never stored
 
@@ -124,8 +227,8 @@ seed 11 / cfg 4: `neutral-lowkey` (the default), `warm-woman`, `bright-man`, `de
 shipped as read-only built-ins so they can be retuned in place — and because prod must deploy into a
 state where the agent already has a voice, and the cookie migration needs a valid target.
 
-> The starter descriptions are duplicated between migration 0039 and `DesignPane.vue`'s `STARTERS`.
-> Retuning a seeded row in the DB will not update the studio's starter list.
+> The starter descriptions are duplicated between migration 0039 and `DesignDescription.vue`'s
+> `STARTERS`. Retuning a seeded row in the DB will not update the studio's starter list.
 
 ## Seed audition — a preview, never a write
 
@@ -453,8 +556,13 @@ Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` in
 |---|---|
 | `app/pages/voice.vue` | The three-panel page, preset CRUD, selection. |
 | `app/components/voice/PresetRail.vue` | The rail and its action bar. |
-| `app/components/voice/DesignPane.vue` | The Voice / Reference tabs: instruction, sliders, seed, audition, lock, reference clip. |
-| `app/components/voice/SpeakPane.vue` | Text, source picker, event tags, Speak / Stop / Download. |
+| `app/components/voice/DesignPane.vue` | The Voice / Reference tab shell, the sliders and seed, load/reset on selection, save, lock and unlock. |
+| `app/components/voice/DesignDescription.vue` | The instruction field, its hint, and the starter descriptions. |
+| `app/components/voice/DesignSeedAudition.vue` | Seed audition, the four takes, the kept-seeds strip. |
+| `app/components/voice/DesignReferenceClip.vue` | Record / upload / play / clear the reference clip and its transcript. |
+| `app/composables/useRigRender.ts` | `renderWav` plus the queue clock shared by the lock flow and the audition. |
+| `app/lib/voice/mic.ts` | Mic constraints and the stale-device test for the clip recorder. Pure and tested. |
+| `app/components/voice/SpeakPane.vue` | Text in composer chrome, source picker, event tags, Speak / Stop / Download. |
 | `app/composables/useBreezeSpeech.ts` | Studio playback — PCM on the AudioContext clock over plain `fetch`, not the agent socket. |
 | `app/lib/voice/studio.ts` | Pure studio logic: validation, cfg lock, modes, audition driver, truncation diagnosis, error extraction. |
 | `app/lib/voice/generation.ts` | The preset-switch guard (token + AbortSignal) — see below. |
