@@ -12,7 +12,7 @@ status: >
   actually there"). **The one user-visible change in the entire cycle is the microphone fix**:
   before it, choosing a microphone in settings did nothing for reference-clip recording and the
   studio silently used the system default. Everything else is refactor or chrome, and its success
-  criterion is that nothing changed. `DesignPane.vue` went **1,101 → 454 lines**. Live-validated in
+  criterion is that nothing changed. `DesignPane.vue` went **1,101 → 470 lines**. Live-validated in
   a real browser against a **reachable rig** — all **9 items PASS**, none NOT VERIFIED, zero console
   errors; the 375px speak-panel gap found alongside them was proven **pre-existing** by a controlled
   probe against the branch base. Gates at the end of this cycle: `pnpm typecheck` exit 0 /
@@ -248,11 +248,11 @@ on disk** before composing the dispatch. Task 5's ledger entry records that conf
 
 ## The split, and the three rules that hold it together
 
-`DesignPane.vue` was 1,101 lines carrying five unrelated jobs. It is now **454**.
+`DesignPane.vue` was 1,101 lines carrying five unrelated jobs. It is now **470**.
 
 | File | Lines | Owns |
 |---|---|---|
-| `DesignPane.vue` | **454** (was 1,101) | Tab shell, sliders and seed, load/reset on selection, `save()`, lock and unlock. |
+| `DesignPane.vue` | **470** (was 1,101) | Tab shell, sliders and seed, load/reset on selection, `save()`, lock and unlock. |
 | `DesignDescription.vue` | 88 | Instruction field, its hint popover, the eight starters. |
 | `DesignSeedAudition.vue` | 301 | Audition, the four takes, star toggle, kept-seeds strip. |
 | `DesignReferenceClip.vue` | 332 | Record / upload / play / clear the clip, and its transcript. |

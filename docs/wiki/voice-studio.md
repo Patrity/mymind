@@ -43,12 +43,12 @@ Below `lg` the rail hides and the page stays usable. Auth is the app-wide
 `DesignPane.vue` reached **1,101 lines** — 572 of script, 527 of template — carrying five unrelated
 jobs behind one pair of props. Cycle 67 split it into **children, not composables**: every section
 owned both UI and logic, so extracting only the logic would have split by technical layer and left a
-527-line template behind. It is now **454 lines** and the tab shell, preset lifecycle, save and lock
+527-line template behind. It is now **470 lines** and the tab shell, preset lifecycle, save and lock
 flow are all it does.
 
 | File | Lines | Owns |
 |---|---|---|
-| `app/components/voice/DesignPane.vue` | 454 | The tab shell, name/cfg/temperature/top-p/top-k/seed, load-and-reset on selection, `save()`, and the lock/unlock flow. |
+| `app/components/voice/DesignPane.vue` | 470 | The tab shell, name/cfg/temperature/top-p/top-k/seed, load-and-reset on selection, `save()`, and the lock/unlock flow. |
 | `app/components/voice/DesignDescription.vue` | 88 | The Instruction field, its hint popover, and the eight starter descriptions. |
 | `app/components/voice/DesignSeedAudition.vue` | 301 | "Try 4 seeds", the four takes, the star toggle and the kept-seeds strip. |
 | `app/components/voice/DesignReferenceClip.vue` | 332 | Recording, uploading, playing and clearing the clip, plus its transcript. |
