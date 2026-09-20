@@ -17,9 +17,18 @@ const expanded = ref(false)
 // The largest message in prod is 279,751 chars. Even expanded, a row must not be able to blow
 // the list out — past this we show the head and say so.
 const MAX_EXPANDED = 20_000
+// Collapsed rows only ever show 6 clamped lines, but an uncapped string still flows into
+// MessageResponse -> vue-stream-markdown, which fully parses and lays it out before CSS
+// line-clamp hides the rest. Under a virtualizer that mounts/unmounts rows on every scroll
+// tick, parsing a quarter-million characters to show six lines defeats the point of the
+// cycle — so the collapsed preview gets its own, much smaller cap. 2,000 chars is far more
+// than six lines can show at any viewport width. A cut mid-markdown (an unclosed code fence,
+// a half-written link) is acceptable here: it's a preview, and "Show more" gives the properly
+// capped, uncut content.
+const PREVIEW_CHARS = 2_000
 const body = computed(() => {
   const c = props.message.content
-  if (!expanded.value) return c
+  if (!expanded.value) return c.length > PREVIEW_CHARS ? c.slice(0, PREVIEW_CHARS) : c
   return c.length > MAX_EXPANDED ? c.slice(0, MAX_EXPANDED) : c
 })
 const truncated = computed(() => expanded.value && props.message.content.length > MAX_EXPANDED)

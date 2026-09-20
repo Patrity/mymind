@@ -170,6 +170,31 @@ const LONG_ASSISTANT_BODY = [
   'space accordingly on the homelab box. I can draft a task to track a trial install if you want.'
 ].join(' ')
 
+// Fix round 1: the collapsed preview slices at 2,000 chars, which can land mid-markdown (an
+// unclosed code fence, a half-written link). Build a row whose fence opens around char 1,900 —
+// well before the 2,000-char preview cut — and stays open past it, so the collapsed slice
+// genuinely lands inside an unclosed fence. Proves the renderer doesn't throw or swallow the
+// rest of the row.
+function padTo(base: string, target: number): string {
+  let s = ''
+  while (s.length < target) s += base
+  return s.slice(0, target)
+}
+const FENCE_FILLER = padTo('Investigating the export path before touching the writer. ', 1_900)
+const CODE_FENCE_BODY = [
+  FENCE_FILLER,
+  '',
+  '```js',
+  'function exportNotes(notes) {',
+  '  // This fence opens before char 1,900 and the code continues well past the 2,000-char',
+  '  // preview boundary, so the collapsed slice lands inside an open, unclosed fence.',
+  '  return notes.map(n => n.trim());',
+  '}',
+  '```',
+  '',
+  'Text after the fence, past the 2,000-char preview cap and well under the 20,000-char expand cap.'
+].join('\n')
+
 const rowMessages: SessionMessageDTO[] = [
   {
     id: 'row-user-short',
@@ -251,6 +276,18 @@ const rowMessages: SessionMessageDTO[] = [
     isSidechain: false,
     metadata: {},
     createdAt: '2026-09-19T10:00:35.000Z'
+  },
+  {
+    id: 'row-mid-fence',
+    role: 'assistant',
+    // Fix round 1: proves the 2,000-char collapsed preview surviving a slice that lands
+    // inside an open code fence (fence opens ~char 1,900, closes well past 2,000).
+    content: CODE_FENCE_BODY,
+    thinking: null,
+    model: 'claude-sonnet-5',
+    isSidechain: false,
+    metadata: {},
+    createdAt: '2026-09-19T10:00:40.000Z'
   }
 ]
 
@@ -371,6 +408,7 @@ function toolEventsFor(id: string): SessionToolEventDTO[] {
       <p class="text-sm text-muted">
         short user &middot; long (clampable) assistant &middot; thinking &middot; tool ok &middot;
         tool error &middot; tool with object result &middot; sidechain &middot; 300,000-char body
+        &middot; mid-fence collapsed slice
       </p>
       <div class="divide-y divide-default rounded-md border border-default bg-default px-3">
         <div v-for="m in rowMessages" :key="m.id" :data-row-id="m.id">
