@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { instructionHint } from '~/lib/voice/studio'
 
-const props = defineProps<{ cfgScale: number, disabled: boolean }>()
+const props = defineProps<{ cfgScale: number, presetId: string | null }>()
 const description = defineModel<string>('description', { required: true })
 
 // Seeds are a lottery with no ordering — measured, sweeping 3 to 999,999 showed no trend at
@@ -30,6 +30,12 @@ watch(starterKey, (key) => {
   const starter = STARTERS.find(s => s.value === key)
   if (starter) description.value = starter.description
 })
+
+// A different preset means a different (or no) starter pick — without this the dropdown
+// keeps showing the last preset's selection after switching.
+watch(() => props.presetId, () => {
+  starterKey.value = undefined
+})
 </script>
 
 <template>
@@ -43,7 +49,6 @@ watch(starterKey, (key) => {
       value-key="value"
       placeholder="Pick a starting description…"
       icon="i-lucide-sparkles"
-      :disabled="disabled"
       class="w-full"
     />
   </UFormField>
@@ -77,7 +82,6 @@ watch(starterKey, (key) => {
       :rows="3"
       autoresize
       placeholder="A warm, thoughtful young woman with a calm, reflective delivery."
-      :disabled="disabled"
       class="w-full"
     />
   </UFormField>

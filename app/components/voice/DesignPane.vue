@@ -530,10 +530,9 @@ onBeforeUnmount(() => {
         </UFormField>
 
         <VoiceDesignDescription
-          :key="props.preset?.id"
           v-model:description="draft.instruction"
           :cfg-scale="draft.cfgScale"
-          :disabled="lock === 'locked' || locking || auditioning"
+          :preset-id="props.preset?.id ?? null"
         />
 
         <UFormField
