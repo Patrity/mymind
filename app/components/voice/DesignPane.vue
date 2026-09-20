@@ -226,11 +226,24 @@ onBeforeUnmount(() => {
     v-else
     class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-6"
   >
+    <!-- unmount-on-hide=false is LOAD-BEARING, not a tidy-up. Nuxt UI defaults it to true,
+         which reaches reka-ui's TabsContent as a `v-if` on the SLOT — the inactive tab's
+         children are destroyed, not hidden. Before this pane was split, every piece of this
+         state lived in this component's always-mounted <script setup>; after the split it
+         lives in children inside these slots, so the default turned a tab click into a
+         teardown: a running audition was orphaned (its takes revoked, its render still
+         holding the rig's one slot) while `auditioning` — a defineModel owned HERE — stayed
+         true, and a following preset switch staled the orphan's token so its `finally`
+         skipped the reset, leaving Lock and Try 4 seeds permanently disabled with nothing on
+         screen to explain it. Keeping both panes mounted restores the pre-split lifetime
+         exactly. Must be BOUND (`:unmount-on-hide="false"`): the prop is typed Boolean, so a
+         static `unmount-on-hide="false"` passes the truthy STRING "false". -->
     <UTabs
       v-model="tab"
       :items="tabItems"
       variant="link"
       class="w-full"
+      :unmount-on-hide="false"
     >
       <!-- Both tabs always exist. A pane that appears only once a preset already has a
            reference has nowhere to put the control that ADDS the first one, and a layout
