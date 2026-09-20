@@ -23,6 +23,9 @@ export const messages = pgTable('messages', {
   // Home (cycle 56) and the Usage tab (cycle 55) both filter `created_at >= start`.
   // Without this it is a seq scan over ~147k prod rows on the landing page.
   index('messages_created_at_idx').on(t.createdAt.desc()),
+  // Keyset pagination for the transcript (cycle 66) walks (session_id, created_at desc, id desc).
+  // `messages_session_idx` alone leaves a 5,622-row session sorting on every page fetch.
+  index('messages_session_created_idx').on(t.sessionId, t.createdAt.desc(), t.id.desc()),
   uniqueIndex('messages_session_extuuid_uidx').on(t.sessionId, t.externalUuid)
 ])
 
