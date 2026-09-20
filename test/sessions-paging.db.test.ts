@@ -33,6 +33,15 @@ beforeAll(async () => {
     await db.execute(sql`insert into messages (session_id, role, content, created_at)
       values (${SESSION_ID}::uuid, 'user', ${'tie-' + i}, ${TIE_AT}::timestamptz)`)
   }
+  // 100 more rows, all NEWER than the tie group, so the session exceeds DEFAULT_LIMIT (100).
+  // This is what makes the NaN/0/negative fallback tests discriminate: against the buggy
+  // Math.min(Math.max(...)) clamp, drizzle silently omits the LIMIT clause for a non-finite
+  // limit and returns every one of these 132 rows with nextCursor null — a fixture capped at
+  // 32 rows (under the default) cannot tell that apart from a correct 100-row fallback page.
+  await db.execute(sql`insert into messages (session_id, role, content, created_at)
+    select ${SESSION_ID}::uuid, 'user', 'bulk-' || g,
+           ${TIE_AT}::timestamptz + (g || ' seconds')::interval
+    from generate_series(1, 100) g`)
 })
 
 afterAll(async () => {
@@ -55,20 +64,24 @@ async function walkAll(limit: number, filters = {}) {
   throw new Error('pagination did not terminate')
 }
 
+// Total fixture rows: 20 distinct + 12 tie + 100 bulk = 132.
+const TOTAL_ROWS = 132
+
 describe('getSessionMessagesPage', () => {
   it('walks a tie group with no gaps and no repeats', async () => {
-    const seen = await walkAll(5)          // 32 rows / 5 per page straddles the tie group
-    expect(seen).toHaveLength(32)
-    expect(new Set(seen).size).toBe(32)     // no repeats
+    const seen = await walkAll(5)          // 5 per page straddles the tie group mid-walk
+    expect(seen).toHaveLength(TOTAL_ROWS)
+    expect(new Set(seen).size).toBe(TOTAL_ROWS)     // no repeats
     for (let i = 0; i < 12; i++) expect(seen).toContain(`tie-${i}`)   // no gaps
   })
 
   it('returns pages newest-first and terminates with a null cursor', async () => {
     const first = await getSessionMessagesPage(SESSION_ID, { limit: 5 })
     expect(first.messages).toHaveLength(5)
-    expect(first.messages.every(m => m.content.startsWith('tie-'))).toBe(true)
+    // The 100 bulk-* rows are all newer than the tie group, so they lead the walk.
+    expect(first.messages.every(m => m.content.startsWith('bulk-'))).toBe(true)
     const all = await walkAll(100)
-    expect(all).toHaveLength(32)
+    expect(all).toHaveLength(TOTAL_ROWS)
     expect(all.at(-1)).toBe('distinct-0')   // oldest row comes last in the walk
   })
 
@@ -82,20 +95,26 @@ describe('getSessionMessagesPage', () => {
   })
 
   // Math.min/Math.max propagate NaN, so a non-finite or non-positive limit must fall back to
-  // DEFAULT_LIMIT (100) rather than reaching db .limit() with a bad value. The fixture has
-  // exactly 32 rows, well under DEFAULT_LIMIT, so a correct fallback returns all 32 in one page.
+  // DEFAULT_LIMIT (100) rather than reaching db .limit() with a bad value. The fixture holds
+  // 132 rows — MORE than DEFAULT_LIMIT — so a correct fallback returns exactly 100 with a
+  // non-null cursor, while the old buggy clamp (drizzle silently omits LIMIT for a non-finite
+  // value) returns all 132 with a null cursor. A fixture at or under 100 rows can't tell these
+  // apart, which is why this file was previously too small to catch the NaN case.
   it('falls back to the default limit for a NaN limit', async () => {
     const page = await getSessionMessagesPage(SESSION_ID, { limit: NaN })
-    expect(page.messages).toHaveLength(32)
+    expect(page.messages).toHaveLength(100)
+    expect(page.nextCursor).not.toBeNull()
   })
 
   it('falls back to the default limit for a zero limit', async () => {
     const page = await getSessionMessagesPage(SESSION_ID, { limit: 0 })
-    expect(page.messages).toHaveLength(32)
+    expect(page.messages).toHaveLength(100)
+    expect(page.nextCursor).not.toBeNull()
   })
 
   it('falls back to the default limit for a negative limit', async () => {
     const page = await getSessionMessagesPage(SESSION_ID, { limit: -5 })
-    expect(page.messages).toHaveLength(32)
+    expect(page.messages).toHaveLength(100)
+    expect(page.nextCursor).not.toBeNull()
   })
 })
