@@ -9,6 +9,7 @@ import {
 } from '~/lib/voice/studio'
 import { isAbortError, type GenerationGuard } from '~/lib/voice/generation'
 import { encodeWav, mixToMono } from '~/lib/voice/wav-encode'
+import { BASE_AUDIO, micConstraints, isStaleDeviceError } from '~/lib/voice/mic'
 
 // draft: the SAME reactive object DesignPane holds (itself the same object voice.vue
 // holds) — mutated field-by-field here exactly as DesignPane mutates it elsewhere, never
@@ -18,6 +19,7 @@ const props = defineProps<{ preset: VoicePresetDTO | null, draft: PresetDraft, g
 
 const draft = props.draft
 const guard = props.guard
+const settings = useVoiceSettings().settings
 
 // ── Reference clip ────────────────────────────────────────────────────────────
 
@@ -122,7 +124,14 @@ async function toggleRecording() {
   }
   refError.value = null
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(settings.value.micDeviceId) })
+      .catch(async (err: unknown) => {
+        if (!isStaleDeviceError(err)) throw err
+        // Clear the dead selection so the next recording — and the live agent — stop retrying it.
+        settings.value = { ...settings.value, micDeviceId: '' }
+        refError.value = 'That microphone is no longer available — switched to the system default.'
+        return navigator.mediaDevices.getUserMedia({ audio: { ...BASE_AUDIO } })
+      })
   } catch (e) {
     refError.value = `Microphone unavailable: ${errorMessage(e)}`
     return
