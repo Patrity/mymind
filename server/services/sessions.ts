@@ -5,7 +5,8 @@ import { parseTranscriptLines } from './transcript-parse'
 import { publishChange } from '../utils/live-bus'
 import { findOrCreateProject } from './projects'
 import { normalizePrefix } from '../lib/projects/path-routing'
-import type { SessionListItem, SessionMeta, SessionMessages, SessionMessageDTO, SessionToolEventDTO } from '../../shared/types/session'
+import { encodeCursor, decodeCursor } from '../../shared/utils/session-cursor'
+import type { SessionListItem, SessionMeta, SessionMessages, SessionMessageDTO, SessionToolEventDTO, SessionMessagesPage, SessionMessageFilters } from '../../shared/types/session'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -331,6 +332,10 @@ export async function getSessionMeta(id: string): Promise<SessionMeta | null> {
 
   if (!session) return null
 
+  // Distinct tool names used in this session — the filter dropdown's options.
+  const names = await db.selectDistinct({ name: toolEvents.toolName })
+    .from(toolEvents).where(eq(toolEvents.sessionId, id)).orderBy(asc(toolEvents.toolName))
+
   return {
     id: session.id,
     source: session.source,
@@ -351,7 +356,8 @@ export async function getSessionMeta(id: string): Promise<SessionMeta | null> {
     gitRemote: session.gitRemote,
     appVersion: session.appVersion,
     endedAt: session.endedAt?.toISOString() ?? null,
-    metadata: (session.metadata as Record<string, unknown>) ?? {}
+    metadata: (session.metadata as Record<string, unknown>) ?? {},
+    toolNames: names.map(n => n.name)
   }
 }
 
@@ -372,4 +378,65 @@ export async function getSessionMessages(id: string, opts: { since?: string } = 
     exitStatus: t.exitStatus, phase: t.phase, toolUseId: t.toolUseId, isSidechain: t.isSidechain, createdAt: t.createdAt.toISOString()
   }))
   return { messages: messageDTOs, toolEvents: toolEventDTOs }
+}
+
+const DEFAULT_LIMIT = 100
+const MAX_LIMIT = 200
+
+export async function getSessionMessagesPage(
+  id: string,
+  opts: { before?: string; limit?: number } & SessionMessageFilters = {}
+): Promise<SessionMessagesPage> {
+  const db = useDb()
+  const limit = Math.min(Math.max(opts.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT)
+
+  const conds = [sql`${messages.sessionId} = ${id}`]
+
+  // Keyset, not OFFSET: (created_at, id) < (cursor.created_at, cursor.id) as a row comparison,
+  // which Postgres can drive straight off messages_session_created_idx.
+  const cursor = opts.before ? decodeCursor(opts.before) : null
+  if (opts.before && !cursor) throw createError({ statusCode: 400, statusMessage: 'Malformed cursor' })
+  if (cursor) {
+    conds.push(sql`(${messages.createdAt}, ${messages.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`)
+  }
+
+  if (opts.hideSidechain) conds.push(sql`${messages.isSidechain} = false`)
+  if (opts.q) conds.push(sql`${messages.content} ilike ${'%' + opts.q + '%'}`)
+  if (opts.tool) {
+    conds.push(sql`exists (select 1 from ${toolEvents}
+      where ${toolEvents.messageId} = ${messages.id} and ${toolEvents.toolName} = ${opts.tool})`)
+  }
+
+  const rows = await db.select().from(messages)
+    .where(sql.join(conds, sql` and `))
+    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .limit(limit + 1)   // one extra row tells us whether an older page exists
+
+  const hasMore = rows.length > limit
+  const page = hasMore ? rows.slice(0, limit) : rows
+  const last = page.at(-1)
+
+  const messageDTOs: SessionMessageDTO[] = page.map(m => ({
+    id: m.id, role: m.role, content: m.content, thinking: m.thinking, model: m.model,
+    isSidechain: m.isSidechain, metadata: (m.metadata as Record<string, unknown>) ?? {},
+    createdAt: m.createdAt.toISOString()
+  }))
+
+  // Only THIS page's tool events. The old whole-session fetch shipped up to 3,122 rows per request.
+  const ids = page.map(m => m.id)
+  const tevs = ids.length
+    ? await db.select().from(toolEvents)
+        .where(sql`${toolEvents.messageId} in ${ids}`)
+        .orderBy(asc(toolEvents.createdAt))
+    : []
+
+  return {
+    messages: messageDTOs,
+    toolEvents: tevs.map(t => ({
+      id: t.id, messageId: t.messageId, toolName: t.toolName, args: t.args, result: t.result,
+      exitStatus: t.exitStatus, phase: t.phase, toolUseId: t.toolUseId,
+      isSidechain: t.isSidechain, createdAt: t.createdAt.toISOString()
+    })),
+    nextCursor: hasMore && last ? encodeCursor({ createdAt: last.createdAt.toISOString(), id: last.id }) : null
+  }
 }
