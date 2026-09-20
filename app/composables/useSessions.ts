@@ -29,9 +29,11 @@ export function useSessions() {
     $fetch<SessionListItem[]>('/api/sessions', { query: params })
 
   const getMeta = (id: string) => $fetch<SessionMeta>(`/api/sessions/${id}`)
-  /** The whole transcript, or — with `since` — the live-tail delta. The active filters ride
-   *  along so the server decides what belongs: a delta filtered in the client would put rows
-   *  the filter excludes back into a narrowed list. */
+  /** The live-tail delta: every message newer than `since`. The active filters ride along so
+   *  the server decides what belongs — a delta filtered in the client would put rows the filter
+   *  excludes back into a narrowed list. Call it WITH `since`: without one the endpoint answers
+   *  with a keyset PAGE (newest-first, capped at 100), not the whole transcript — for that use
+   *  `useSessionMessagePages`. */
   const getMessages = (id: string, since?: string, filters: SessionMessageFilters = {}) =>
     $fetch<SessionMessages>(`/api/sessions/${id}/messages`, {
       query: {
@@ -53,15 +55,6 @@ export function useSessions() {
     return useQuery({
       queryKey: computed(() => ['session', key.value] as const),
       queryFn: () => getMeta(key.value as string),
-      enabled: computed(() => !!key.value)
-    })
-  }
-
-  const useSessionMessages = (id: MaybeRefOrGetter<string | undefined>) => {
-    const key = computed(() => toValue(id))
-    return useQuery({
-      queryKey: computed(() => ['session', key.value, 'messages'] as const),
-      queryFn: () => getMessages(key.value as string),
       enabled: computed(() => !!key.value)
     })
   }
@@ -103,7 +96,6 @@ export function useSessions() {
     list,
     useSessionList,
     useSessionMeta,
-    useSessionMessages,
     getMessages,
     getMessagePage,
     useSessionMessagePages,

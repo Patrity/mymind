@@ -1,8 +1,8 @@
 ---
 title: Sessions View
 status: shipped
-cycle: 46
-updated: 2026-09-11
+cycle: 66
+updated: 2026-09-20
 ---
 
 # Sessions View
@@ -38,14 +38,17 @@ Legacy `messages.metadata.{usage,model,tools,type}` is still dual-written so pre
 
 ## API (`server/api/sessions/*`, types in `shared/types/session.ts`)
 - `GET /api/sessions?source=&project=` → `SessionListItem[]` (incl. `hostname`), newest first.
-- `GET /api/sessions/[id]` → meta only (`getSessionMeta`): session header (`cwd`, `machineId`, `hostname`, `gitBranch`/`gitCommit`/`gitRemote`, `appVersion`, `endedAt`, metadata, counts). No messages. Auth-gated.
-- `GET /api/sessions/[id]/messages?since=<iso>` → `messages[]` (incl. `thinking`, `model`, `isSidechain`) + **`toolEvents[]`** (`SessionToolEventDTO`); `?since=` returns only messages after that timestamp for incremental append.
+- `GET /api/sessions/[id]` → meta only (`getSessionMeta`): session header (`cwd`, `machineId`, `hostname`, `gitBranch`/`gitCommit`/`gitRemote`, `appVersion`, `endedAt`, metadata, counts) plus **`toolNames: string[]`** (cycle 66 — `select distinct tool_name` for this session, which feeds the transcript's tool dropdown). No messages. Auth-gated.
+- `GET /api/sessions/[id]/messages` → **two mutually exclusive modes**, see [Cycle 66](#cycle-66--the-transcript-on-ai-elements-keyset-paging-filters-measured-virtualization):
+  - **paged** (default): `?before=<cursor>&limit=&hideSidechain=&tool=&q=` → `{ messages (newest-first), toolEvents (this page's only), nextCursor }`.
+  - **live-tail**: `?since=<iso>` → every message after that timestamp, oldest-first, plus its tool events. Carries the same three filter params.
+  - `since` **and** `before` together → **400** (guessing which the caller meant would hand it a page it did not ask for). A malformed `before` cursor → **400**.
 - `PATCH /api/sessions/[id]` `{ project, pathPrefix? }` — single-session reassignment. See **Reassignment** below.
 - `POST /api/sessions/reassign` `{ ids, project, pathPrefix? }` — bulk reassignment.
 
 ## UI (`app/pages/sessions/{index,[id]}.vue`)
 - **List**: cards with source badge, project, **hostname** (machine that recorded the session), title/summary, message/tool/token stats, relative last-active; source/project/**hostname** filters + search. Per-row checkbox multi-select (`@click.stop` — selecting doesn't navigate) drives a **"Move to project"** bulk-action bar.
-- **Detail**: header now shows git `branch @ commit`, hostname (machine ID demoted to a tooltip), and app version (from the first-class columns). A **Move** button opens the reassignment modal for this one session. Transcript turns: user/assistant via sanitized `MdView`; assistant turns show a `model` label and a collapsible **thinking…** block; sidechain (subagent) turns are dimmed (`opacity-70`). Tool turns render real **tool events** — name + exit-status badge + args/result JSON — falling back to the legacy `metadata.tools` badges for old rows. Per-message metadata collapsible retained.
+- **Detail**: header shows git `branch @ commit`, hostname (machine ID demoted to a tooltip), and app version (from the first-class columns). A **Move** button opens the reassignment modal for this one session. The transcript itself was rebuilt in **cycle 66** — see [that section](#cycle-66--the-transcript-on-ai-elements-keyset-paging-filters-measured-virtualization) for what it renders today (Elements rows, a filter bar, keyset paging). Sidechain (subagent) turns are still dimmed (`opacity-70`). The per-message metadata collapsible, the per-turn **`model` label** and the `MdView`/`<pre>`-JSON row rendering are **gone** (the first two were not on the spec's deletion list — they fell out of the row rewrite; see the cycle-66 handover).
 
 ## Validated (2026-06-15)
 A crafted transcript (thinking + Bash tool_use + tool_result + SessionEnd w/ git/machine) ingested via the hooks → detail shows `thinking`, model, the Bash event (completed/ok, args+result, message-linked), git branch/commit, machine, and `endedAt`; re-ingest is idempotent (counts steady). Gates: typecheck 0 / test 267 / build.
@@ -62,8 +65,10 @@ A crafted transcript (thinking + Bash tool_use + tool_result + SessionEnd w/ git
 ### Resizable split-pane detail layout
 The detail page uses `UDashboardPanel resizable` to render a two-column split: metadata (left panel) and transcript (right panel). Panel widths are adjustable by the user.
 
-### Virtualized + live-tailing transcript
-`app/components/sessions/SessionTranscript.vue` virtualizes the message list using `@vueuse/core` `useVirtualList` (only visible rows are mounted). It **autoscrolls / live-tails**: a watcher on `meta.messageCount` fetches `?since=` deltas and appends them to the local list. When the viewport is scrolled up, a **"↓ N new"** button appears (count from `countNewSince`); clicking it jumps to bottom and resumes tailing. Pure scroll helpers live in `app/utils/transcript-scroll.ts` (`isAtBottom`, `countNewSince`).
+### Virtualized + live-tailing transcript — **superseded by cycle 66**
+The transcript was virtualized with `@vueuse/core` `useVirtualList` at a fixed 140px row estimate. That wiring is **deleted**; see [Cycle 66](#cycle-66--the-transcript-on-ai-elements-keyset-paging-filters-measured-virtualization) for what replaced it.
+
+What survives from cycle 24: the page **live-tails** — a watcher on `meta.messageCount` fetches a `?since=` delta when the count grows and appends it — and when the viewport is scrolled up a **"↓ N new"** button appears (count from `countNewSince`), which jumps to the bottom and resumes tailing. The pure scroll helpers still live in `app/utils/transcript-scroll.ts` (`isAtBottom`, `countNewSince`). What changed: the delta now carries the active filters and is written into the **paged** query cache (newest page) rather than a flat local list.
 
 ### List live-activity pulse (cycle 24 final)
 The sessions list now shows a small **pinging dot** (`bg-primary animate-ping`) next to the title of any row whose `lastActive` timestamp just increased. The dot disappears after 2 seconds. This is purely client-side: a `watch` on the `sessions` computed compares each row's `lastActive` against a `Map` of previously-seen values; on advance it sets `pulse[id] = Date.now()` and schedules a delete via `setTimeout`. The underlying list already refetches automatically on SSE `session` events (live-dispatch invalidates `['session','list']`), so counts and timestamps stay current without any additional polling.
@@ -102,5 +107,96 @@ UI: `app/components/sessions/ReassignProjectModal.vue` — a shared modal (singl
 ### Re-resolve backfill (existing projects only)
 `scripts/reresolve-uncategorized.ts` re-resolves sessions currently `uncategorized`/`NULL` against **existing** projects only — resolver order `git_remote key → longest path-prefix → cwd leaf-basename label` — and cascades agent memories the same way `reassignSession` does. **Never auto-creates.** Idempotent; `--dry-run` supported. Not yet run on prod (dev dry-run: would move 14/399 sessions).
 
+## Cycle 66 — the transcript on AI Elements: keyset paging, filters, measured virtualization
+
+Cycle 3 of the "agent surfaces on AI Elements" program. `/sessions/[id]`'s transcript was built before the Elements components existed and hand-rolled everything; it now pages, filters and virtualizes properly. Spec: [`2026-09-19-sessions-elements-design.md`](../superpowers/specs/2026-09-19-sessions-elements-design.md). Handover: [`2026-09-20-sessions-elements.md`](../handovers/2026-09-20-sessions-elements.md).
+
+### Ordering now includes `id` — and that changes how existing transcripts render
+
+Every **paged** query orders by **`(created_at DESC, id DESC)`**. Measured on prod (2026-09-19): **58,417 of 228,692 messages — 26% — share a `created_at` with another message in the same session**, and the largest single tie group holds **615 rows at one identical timestamp**. Ordering by `created_at` alone left those groups unspecified (Postgres could return them differently between requests), so a timestamp-only pagination cursor would silently skip or repeat whole blocks.
+
+Adding `id` (a UUID: arbitrary but **stable**) makes it deterministic. It is a correctness fix, but it is also a **visible change**: rows inside a tie group can now render in a different order than they used to. Nothing is lost or duplicated — the sequence within a tie group is simply now fixed, and fixed by UUID rather than by insertion luck.
+
+**One path was not converted:** the live-tail delta (`getSessionMessages`) still orders `created_at ASC` only, with no `id` tiebreak. It appends a handful of newly-ingested rows at the tail, so tie order there is still unspecified. Deliberate scope, recorded in the handover.
+
+### The cursor and the index
+
+```
+cursor := base64("<createdAt ISO>|<id>")
+```
+
+Pure `encodeCursor`/`decodeCursor` in `shared/utils/session-cursor.ts` (unit-tested, including six malformed inputs that must be **rejected**, never coerced). The cursor is opaque so nothing client-side starts parsing it. A malformed `before` → **400**, which the client treats as "start over" rather than "empty session".
+
+Migration **`0044_low_pride.sql`** adds:
+
+```sql
+CREATE INDEX "messages_session_created_idx" ON "messages"
+  USING btree ("session_id","created_at" DESC NULLS LAST,"id" DESC NULLS LAST);
+```
+
+Additive, non-blocking, and column order matches the query's `ORDER BY` so the keyset predicate drives straight off it. Applied on dev; **not yet applied on prod** as of this writing.
+
+### The paged read (`getSessionMessagesPage`, `server/services/sessions.ts`)
+
+| Param | Meaning |
+|---|---|
+| `before` | cursor; return the page immediately **older** than it |
+| `limit` | default **100**, hard cap **200** |
+| `hideSidechain` | `is_sidechain = false` |
+| `tool` | `exists (select 1 from tool_events where message_id = messages.id and tool_name = $)` |
+| `q` | `content ilike %q%` (covered by `messages_content_trgm`) |
+
+- Selects `limit + 1` rows; the extra row is what sets `nextCursor` (encoded from the page's **last** row), so `nextCursor === null` genuinely means exhausted.
+- **Limit coercion is explicit**, not `Math.min`/`Math.max`: `Number.isFinite(requested) && requested > 0 ? Math.min(requested, MAX_LIMIT) : DEFAULT_LIMIT`. `Math.min`/`Math.max` propagate `NaN`, and drizzle gates its `LIMIT` clause on `typeof limit === 'number' && limit >= 0` — false for `NaN` — so an unclamped `NaN` **omits `LIMIT` entirely and returns the whole session unbounded**, while `rows.length > NaN` is always false so `hasMore`/`nextCursor` silently go dead. See the handover; this is the cycle's most instructive bug.
+- **Tool events are per-page.** The old `getSessionMessages` fetched *every* tool event for the session on *every* request (up to 3,122 rows) and the client de-duplicated by id to cope. Each page now carries only its own messages' events (`where message_id in (page ids)`, fully parameterised by drizzle), and the client-side de-dup is deleted.
+- **Filters are server-side, always.** `applyMessageFilters()` builds the WHERE clause and is shared **verbatim** by the paged read and the live-tail delta, so the two cannot drift into filtering differently. Filtering in the client would make "load 100" yield an arbitrary number of visible rows.
+
+`SessionMeta.toolNames` (`select distinct tool_name … where session_id = $1`, covered by `tool_events_session_idx`) gives the dropdown this session's tools rather than all 163 in the database.
+
+### The transcript component (`app/components/sessions/SessionTranscript.vue`)
+
+**`@tanstack/vue-virtual`** (same family as the `@tanstack/vue-query` already in the app) replaces `useVirtualList`. Rows are genuinely variable now — rendered markdown, tool cards, expand-in-place — so they are **measured** via `measureElement` instead of guessed at 140px. `getItemKey` is the **message id, not the index**, so the measurement cache survives a prepend that shifts every index by 100.
+
+- **Pages load upward.** The view opens at the **newest** end; scrolling up loads the page of older messages. Each page arrives newest-first and the page component reverses **both levels** (`[...pages].reverse().flatMap(p => [...p.messages].reverse())`) so the transcript reads oldest-at-top. `.slice()`/spread before `.reverse()` is load-bearing — query data is read-only.
+- **Scroll anchoring on prepend** is the load-bearing detail: `anchorAfterPrepend()` (`app/components/sessions/anchor.ts`, unit-tested without a DOM) computes the restore, and the component waits for the virtualizer's own **`onChange`** completion signal with a **double-`requestAnimationFrame` fallback racing it** — a restore whose delta is 0 fires no scroll event at all, so a pure-signal wait would hang. Measured on a real 4,760-message session: 10 consecutive pages, **0px drift every time**, ~410ms per page, 26-29 DOM rows across 129,017px of content.
+- **`overflow-anchor: none`** on the scroll root so the browser's own scroll anchoring can never race the restore.
+- **A failed older page never clears the transcript.** The top sentinel becomes a retry row; loaded rows stay put. Both sentinel states are pinned to `min-h-12` because the spinner (40px) → retry row (48px) swap was measured pushing every row down 8px.
+- **Paging is triggered from both an IntersectionObserver and the scroll handler.** The observer alone could stall: it fires only on *changes* and delivers asynchronously, and virtual-core can correct `scrollTop` past the trigger zone before the callback lands. `requestedAtLength` makes the request idempotent so the two triggers cannot stack.
+- **Bottom pinning is hand-rolled**, not `virtualizer.scrollToIndex` (which re-targets the end for up to 5s and yanks a reader who scrolled away). Each pin gets its **own `AbortController`** and its own listener closure registered with `{ signal }`, and the loop is gated on `followTail` — so scrolling away by keyboard or scrollbar (neither fires `wheel`/`touchstart`) stops the pin too. A `useResizeObserver` re-pins for 2.5s after a pin, because rows grow asynchronously as markdown renders (measured: the initial autoscroll settled 117px short otherwise, which silently disabled live-tail follow).
+
+### The row (`app/components/sessions/TranscriptRow.vue`)
+
+Elements **row primitives**, not the Elements `Conversation` — `Conversation` owns its own scroll container and stick-to-bottom behaviour, which fights a virtualizer.
+
+| Row part | Renders with |
+|---|---|
+| user / assistant body | `Message`, `MessageContent`, `MessageResponse` (markdown) |
+| `thinking` | `Reasoning`, `ReasoningTrigger`, `ReasoningContent` |
+| tool event | `Tool`, `ToolHeader` (`type="dynamic-tool"`), `ToolContent`, `ToolInput`, `ToolOutput` |
+
+A pure adapter, `sessionToolState()` (`app/lib/sessions/tool-state.ts`, unit-tested), bridges a session tool event (`args`/`result`/`exitStatus`/`phase`) onto the AI SDK state machine the Elements components expect (`output-available` | `output-error`, case-insensitively on `error`/`failure`/`failed`). It is computed **once per event** into a map keyed by event id, not three times per event in the template.
+
+**Two character caps, for two different reasons:**
+- `PREVIEW_CHARS = 2_000` on the **collapsed** body. CSS `line-clamp-6` only *hides* overflow — the full string still flows into `vue-stream-markdown` and is fully parsed and laid out. Measured: the 279,751-char prod message rendered a collapsed `<p>` holding 300,010 chars at 3,243px tall; with the cap, 2,000 chars at 171px. Under a virtualizer that mounts and unmounts rows on every scroll tick, that parse would have undone the whole cycle.
+- `MAX_EXPANDED = 20_000` on the **expanded** body, with a "Showing the first 20,000 of N characters" notice.
+
+`clampable` (the "Show more" affordance, at >400 chars) and `truncated` both key off the **original** length, so the preview cap does not change which rows offer to expand. A preview can cut mid-markdown; that is accepted (a fixture with an unclosed ` ```js ` fence straddling the 2,000-char boundary renders without throwing).
+
+### The filter bar (`app/components/sessions/TranscriptFilters.vue`)
+
+Three filters, all server-side: **find-in-session** (`UInput`, debounced 300ms — every keystroke is a new query key and a round trip), **by tool** (`USelectMenu` over `meta.toolNames`), and **hide subagent** (`USwitch`). A fourth — "only tools / only errors" — was considered and rejected in brainstorming.
+
+Two traps the implementation works around, both worth knowing before touching this file:
+- **The model object is replaced wholesale on every change**, never mutated in place. `useSessions` reads the filters through `toValue`, which does **not** unwrap a plain `reactive()` object: a bare reactive registers no dependency, the query key never changes, and a filter change silently returns the old pages. The page passes a `ref`.
+- **`USelectMenu` throws on an empty-string item value** (it takes the whole popover down), so "All tools" carries an `__all__` sentinel.
+
+Filters live **inside the query key** (`messagePagesKey(id, filters)`), so changing one is a new query and a clean first page with no manual reset and no stale pages bleeding across filters. The transcript is remounted on a filter change (`:key`) so its scroll/tail state starts clean too.
+
+### Deleted this cycle
+
+The fixed-height `useVirtualList` wiring and its 140px estimate; the 300-character line clamp on message bodies; the raw `<pre>` JSON dumps of tool `args`/`result`; the client-side tool-event de-dup and the whole-session tool-event fetch that required it; the `useSessionMessages` composable (the unfiltered whole-transcript read it stood for no longer exists — the endpoint answers with a page).
+
 ## Follow-ups
 Token-cost ($) display; deeper Hermes/imsg shape support; `sess_summary_state.model` per-row attribution (column exists, unwritten). Session-list `selectedIds` isn't pruned when a filter hides a selected row (deferred minor).
+
+From cycle 66: **migration `0044_low_pride.sql` has not been applied to prod**; **at 375px the resizable metadata panel squeezes the transcript pane to 0px**, so the filter bar is unreachable on mobile (pre-existing split-pane behaviour, measured identically before the cycle — MyMind task `9745f72d`); **read-around-a-search-hit** (landing on a message from global search and loading N before/after it) is deferred — it is a different cursor mode, and `q` narrows the list to matches instead; the per-turn **`model` label** and the per-message **metadata collapsible** were lost in the row rewrite and are not yet restored.

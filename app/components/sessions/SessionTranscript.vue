@@ -37,8 +37,8 @@ function toolEventsFor(id: string | undefined): SessionToolEventDTO[] {
 
 // ── Virtualization ────────────────────────────────────────────────────────────
 // Only the visible window of rows is mounted, and each row is MEASURED (rows vary wildly:
-// a one-line user turn vs. an expanded tool call). Pattern proven in the Task 0 spike
-// (`app/pages/dev/virtual.vue`).
+// a one-line user turn vs. an expanded tool call). Pattern proven in the cycle-66 Task 0 spike
+// (a throwaway `/dev/virtual` fixture, deleted in Task 10).
 const scrollRoot = ref<HTMLElement | null>(null)
 const topSentinel = ref<HTMLElement | null>(null)
 const spacer = ref<HTMLElement | null>(null)
