@@ -14,8 +14,11 @@ status: >
   (the filter bar is unreachable at 375px) was **measured identically on the pre-cycle commit**,
   so it is pre-existing, not a regression — MyMind task `9745f72d`. Three defects were found by
   browser validation that no gate could have caught, and three review fix rounds landed (Tasks 4
-  ×2, 7, 8, 9). Gates at the end of this cycle: `pnpm typecheck` exit 0 / `pnpm test` 213 files,
-  1,855 tests / `pnpm test:db` 22 files, 215 tests / production build at 4096 MB passes
+  ×2, 7, 8, 9). The **final whole-branch review returned four Importants and two Minors, all now
+  fixed** (see "The final whole-branch review's fix wave"), including a pre-existing live-tail
+  delta defect that could skip messages permanently. Gates at the end of this cycle:
+  `pnpm typecheck` exit 0 / `pnpm test` 213 files,
+  1,855 tests / `pnpm test:db` 22 files, 216 tests / production build at 4096 MB passes
   (266 client JS files, 2,108,163 B gzip — **+3,277 B, +0.16%** over the Task-0 baseline).
   **The single most important behaviour change to know about: transcript ordering now breaks
   `created_at` ties by `id`, which changes the rendered order of 26% of all messages.**
@@ -28,18 +31,19 @@ docs:
     "Virtualized + live-tailing transcript" section marked SUPERSEDED with only the parts that
     survive kept; a new "Cycle 66" section carrying the real ordering/cursor/index/limit/paging/
     anchoring/caps/filter behaviour; the deletions list; the follow-ups extended with the unrun
-    migration, the 375px gap, the deferred read-around flow and the two row features lost in the
-    rewrite)
+    migration, the 375px gap, the deferred read-around flow and the malformed-cursor 400 having no
+    client-side "start over"; the final fix wave then corrected the cursor claim, documented the
+    failed-first-page error state, the composite-keyed delta and the restored row features)
   - ../BACKLOG.md (UPDATED — reconciliation preamble bumped to cycle 66; the cycle-66 line in the
     "agent surfaces on AI Elements" block flipped from deferred to BUILT; a cycle-66 block added
     with what it closes and what it leaves open)
   - ../superpowers/plans/00-roadmap.md (UPDATED — cycle 66 row added)
 tasks:
-  - 14d0074b (MyMind, cycle 66) — update to reflect BUILT / NOT MERGED (controller does this after
-    mirroring)
-  - 9745f72d (MyMind) — "at 375px the metadata panel squeezes the transcript to 0px": filed DURING
-    this cycle, still OPEN. Pre-existing split-pane behaviour, measured identically on the branch
-    base; it now also hides the new filter bar, which is why it was filed rather than noted.
+  - "14d0074b (MyMind, cycle 66) — update to reflect BUILT / NOT MERGED (controller does this after
+    mirroring)"
+  - "9745f72d (MyMind) — \"at 375px the metadata panel squeezes the transcript to 0px\": filed
+    DURING this cycle, still OPEN. Pre-existing split-pane behaviour, measured identically on the
+    branch base; it now also hides the new filter bar, which is why it was filed rather than noted."
 shipped:
   - "Task 0 gate (the cycle's go/no-go) — `@tanstack/vue-virtual` added and proven on a throwaway
     `/dev/virtual` fixture before any production code depended on it. Scroll anchoring measured on
@@ -130,25 +134,41 @@ deferred:
     behaved this way since cycle 24; the cycle-66 filter bar simply gives it something new to hide.
     Fixing it means a responsive stack for `UDashboardPanel resizable`, which is a layout change
     beyond this cycle's scope. MyMind task `9745f72d`."
-  - "**The live-tail delta still orders `created_at ASC` with no `id` tiebreak.** The spec says
-    \"every query orders by `(created_at, id)`\"; the paged read does, `getSessionMessages` does
-    not. It appends a handful of newly-ingested rows at the tail, so the exposure is tie order
-    within one delta — far smaller than the paging exposure the tiebreak exists to fix, and the
-    delta is not paginated so it cannot skip or repeat. Recorded because the spec's sentence reads
-    as universal and is not."
-  - "**The per-turn `model` label and the per-message metadata collapsible were lost in the row
-    rewrite.** The old detail page showed a `model` label on assistant turns (cycle 13) and a
-    per-message metadata collapsible (cycle 24). `TranscriptRow.vue` renders neither, and neither
-    was on the spec's deletion list — they fell out of the rewrite rather than being removed on
-    purpose. `SessionMessageDTO` still carries `model` and `metadata`, so restoring them is
-    template-only work. Found while checking the wiki against the code in Task 10, not by a
-    reviewer."
+  - "**CORRECTED AND FIXED (`82d7b3b`) — the live-tail delta could SKIP messages permanently.**
+    This entry used to say the delta \"is not paginated so it cannot skip or repeat\". That is
+    true of the ORDER BY deviation it was describing and FALSE as a statement about the delta:
+    `getSessionMessages` filtered on `created_at > $since` — a timestamp-only strict inequality —
+    while `$since` was the `createdAt` of the client's newest held row. Any message ingested
+    afterwards carrying that same `created_at` fell outside the `>`, and because the cursor then
+    advanced past it, it was skipped for the REST of the session, not merely delayed. With 26% of
+    messages sharing a timestamp with a sibling, a boundary inside a tie group is the expected
+    case. PRE-EXISTING (identical at `09a400e:362`), found by the final whole-branch reviewer while
+    adjudicating the lesser ORDER BY deviation, and fixed here because this cycle built the
+    composite-cursor machinery that closes it: the delta now compares `(created_at, id) > ($ts,
+    $id)` and orders `asc(created_at), asc(id)`, the client sends the held row whole (`?since=` +
+    `?sinceId=`), and a DB test inserts a row at exactly the cursor timestamp with a higher id
+    (RED before the fix: the two tied rows were missing). **The lesson is the sentence, not the
+    bug** — a reassurance written about one defect was read as covering a neighbouring one, and it
+    is exactly what would have stopped the next session from looking."
+  - "**FIXED (`5f0e534`) — the per-turn `model` label and the per-message metadata collapsible were
+    lost in the row rewrite, and are restored.** The old detail page showed a `model` label on
+    assistant turns (cycle 13) and a per-message metadata collapsible (cycle 24); `TranscriptRow`
+    shipped with neither, and neither was on the spec's deletion list — they fell out of the
+    rewrite rather than being cut on purpose. `SessionMessageDTO` never stopped carrying either
+    field, so the restore was template-only: a neutral `UBadge` above the turn, and a `Collapsible`
+    (the primitive `Reasoning`/`Tool` already use in that row) holding a json `CodeBlock` whose
+    content unmounts while closed. Found while checking the wiki against the code in Task 10, not
+    by a reviewer — a feature lost by accident surfaces to nobody."
   - "**A malformed cursor returns 400, but the client does not \"start over\" as the spec
     describes.** `getSessionMessagesPage` throws a 400 for an undecodable `before`, and the
     transcript surfaces any page error as the retry row — it does not detect this case and reset to
     page one. In practice the cursor only ever lives inside the vue-query cache (it is never in the
     URL and never bookmarked), so there is no known path that produces one, which is why this was
-    left. If cursors are ever put in the URL, this becomes real."
+    left. If cursors are ever put in the URL, this becomes real. **What the spec was actually
+    protecting against — an error rendering as an empty session — is now closed from the other
+    end** (`b48ee73`): a failed FIRST page shows its own error state with a working Retry instead
+    of \"No messages in this session\". `docs/wiki/sessions.md` used to assert the start-over
+    behaviour as shipped; it now states the truth (`9ab5641`)."
   - "**No browser validation was run for Task 10 itself.** This task deleted a dev-only fixture and
     an export with zero call sites (grep-verified) and changed no runtime path; typecheck, 1,855
     unit tests, 215 DB tests and a full production build all pass. The last browser validation of
@@ -472,6 +492,45 @@ Thirteen, in the order they were made.
   case. *Cost if wrong:* that fix round gets one review pass instead of two; mitigated by naming
   `f3d4468` explicitly in the final reviewer's brief. (Cycle 65 made the same ruling for its last
   fix round.)
+- **Ruling 14 — Task 10's task review is FOLDED INTO the final whole-branch review** rather than
+  run separately. Task 10's own diff is docs-only, and the three discrepancies it raised (the
+  delta's missing `id` tiebreak, the dropped model label and metadata collapsible, the half-built
+  malformed-cursor behaviour) are cross-task by nature: they belong to the reviewer who reads the
+  whole branch, not to the reviewer of one docs commit. *Cost if wrong:* a docs-only diff gets one
+  review pass instead of two; mitigated by naming `7488c2a` and all three discrepancies explicitly
+  in the final brief. It paid: the final reviewer adjudicated all three, and adjudicating the
+  weakest of them (tie ORDER BY) is how the `since`-boundary skip was found.
+- **Ruling 15 — fix all four Importants and both Minors in one wave** rather than parking any for
+  cycle 67, including F1, which is strictly PRE-EXISTING and so strictly out of scope. Fixed
+  anyway because this cycle built the composite-cursor machinery that closes it in two lines, the
+  delta is this cycle's own function, and the handover's "cannot skip or repeat" sentence would
+  have stopped the next session from ever finding it. *Cost if wrong:* a pre-existing bug fixed in
+  a cycle that did not plan for it, widening the diff by one query predicate and one client field.
+
+## The final whole-branch review's fix wave
+
+The final review passed the engineering — wiring, the two-level reversal, the cursor's monotonicity,
+the scroll machinery, the deleted code — and returned four Importants and two Minors, all fixed in
+one commit each (Ruling 15).
+
+| # | What | Commit |
+|---|---|---|
+| F1 | The live-tail delta skipped messages sharing the boundary timestamp, forever. Now `(created_at, id) > ($ts, $id)` + `asc(created_at), asc(id)`, with the client sending the held row whole. Closes the Minor tie-ORDER-BY deviation too. **Pre-existing**, see the corrected deferred entry. | `82d7b3b` |
+| F2 | Restored the per-turn `model` label and the per-message metadata disclosure — a silent regression, on no deletion list. | `5f0e534` |
+| F3 | A failed FIRST page rendered as "No messages in this session" with the retry row in an unreachable branch. Now its own error state with a working Retry. | `b48ee73` |
+| F4 | `docs/wiki/sessions.md` asserted a client-side malformed-cursor "start over" that does not exist. | `9ab5641` |
+| F5 | This handover: Rulings 14-15, and the corrected delta entry. | (this commit) |
+
+**F1's RED, quoted**, because a delta test that never sees a tie group proves nothing: with a row
+inserted at exactly the cursor timestamp and a higher id, the pre-fix code returned
+`['delta needle alpha', 'delta plain bravo', 'delta needle charlie']` where
+`['tie-boundary-b', 'tie-boundary-c', …]` was expected — the two tied rows simply absent.
+
+**F3's fix was proved causally, not just observed.** Every `/messages` request was forced to fail
+in the browser (a patched `window.fetch`, then a filter toggle to force a fresh first page). On the
+fix: the error state with a Retry that recovers the transcript when the failure is lifted. On the
+pre-fix files, checked out into the same running dev server and the identical probe re-run:
+`saysEmpty: true`, no error state, no retry — the reported bug, reproduced.
 
 ## Planning notes the plan got wrong
 
@@ -604,6 +663,6 @@ only remaining reference was a comment in `SessionTranscript.vue`, now reworded)
 `useSessionMessages` composable; the fixed-height `useVirtualList` wiring and its 140px estimate;
 the 300-character line clamp on message bodies; the raw `<pre>` JSON dumps of tool `args`/`result`;
 and the client-side tool-event de-dup along with the whole-session tool-event fetch that required
-it. Two things went with the row rewrite that were **not** on the deletion list and probably should
-come back — the per-turn `model` label and the per-message metadata collapsible; see the deferred
-list.
+it. Two things went with the row rewrite that were **not** on the deletion list — the per-turn
+`model` label and the per-message metadata collapsible — and both came back in the final fix wave
+(`5f0e534`); see the deferred list.
