@@ -10,6 +10,7 @@ import { withFailover } from '../../lib/ai/registry/resolve'
 import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
 import { buildTurnPersistPayload } from '../../lib/voice/turn-persist'
+import { partialTurnMessages } from '../../lib/voice/turn-partial'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
 import { buildLiveContext, buildMemoryContext } from '../../lib/agent/context'
 import { publishChange } from '../../utils/live-bus'
@@ -203,13 +204,18 @@ export default defineWebSocketHandler({
     const exec = turn
     const run = async () => {
       let ts: ReturnType<typeof createTurnStream> | null = null
+      // Declared out here so the `finally` rescue can still see them when the turn throws.
+      let reasoningText = ''
+      let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string } | null = null
+      let liveUserText = ''
+      let liveAssistantText = ''
+      let turnConversationIdForRescue: string | null = s.conversationId
+      let persisted = false
       try {
         // Live context is rebuilt EVERY turn (two cheap indexed queries) — the old
         // once-per-connection cache went stale (a task created mid-conversation
         // never appeared).
         const context = (await buildLiveContext(new Date())) || undefined
-        let reasoningText = ''
-        let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string } | null = null
         const prevLen = s.history.length
         ts = createTurnStream({ turnId, attachments: attachmentsForTurn, send: d => peer.send(d) })
         // Active while this turn runs, so requestApproval (fired from inside exec!) can emit
@@ -217,6 +223,10 @@ export default defineWebSocketHandler({
         // s.lock, so the turn calling requestApproval is always the active one.
         s.activeTurn = ts
         const emit = (e: VoiceEvent) => {
+          if (e.type === 'transcript') {
+            if (e.role === 'user') liveUserText = e.text
+            else liveAssistantText += e.text
+          }
           if (e.type === 'reasoning') reasoningText += e.text
           // Overwrite, not accumulate: at most one usage event per turn in the common
           // case, and if the rare forced-final recovery path (run.ts) yields a second
@@ -225,6 +235,10 @@ export default defineWebSocketHandler({
           else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens, contextTokens: e.contextTokens, modelDefId: e.modelDefId }
           ts!.emit(e)
         }
+        // The thread this turn was SENT to. Captured before the await so a mid-turn `new`
+        // (which nulls s.conversationId) cannot redirect a rescued turn into a different
+        // thread than the one the user was typing in.
+        turnConversationIdForRescue = s.conversationId
         s.history = await exec!(ac.signal, emit, context)
         // Close the message BEFORE persisting: the UI should finish promptly; persistence
         // (and the `conversation` frame for a new thread) follows.
@@ -249,6 +263,7 @@ export default defineWebSocketHandler({
             usage: turnUsage
           }))
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
+          persisted = true
         }
       } catch (err) {
         if ((err as Error).name === 'AbortError') { ts?.abort(); return }
@@ -259,6 +274,37 @@ export default defineWebSocketHandler({
           peer.send(JSON.stringify({ type: 'state', state: 'idle' }))
         }
       } finally {
+        // A turn that aborted, threw, or hung persisted NOTHING before this — including the
+        // user's own message, because `added` comes from s.history, which the agent call only
+        // reassigns on return. The user saw their question on screen (client-side state) and
+        // lost it on reload. A question someone actually asked has to survive the model
+        // failing to answer it, so rescue whatever the turn managed to emit.
+        if (!persisted) {
+          const rescued = partialTurnMessages(liveUserText, liveAssistantText)
+          if (rescued.length) {
+            try {
+              let convId = turnConversationIdForRescue
+              const created = !convId
+              if (!convId) {
+                const title = deriveTitle(messageText(rescued[0]!.content))
+                convId = (await createConversation({ title })).id
+                // Only adopt it as the live thread if the connection has not moved on.
+                if (!s.conversationId) s.conversationId = convId
+              }
+              await appendMessages(convId, buildTurnPersistPayload(rescued, {
+                inputModality,
+                speakFlag,
+                attachments: turnAttachments,
+                reasoning: reasoningText,
+                usage: turnUsage
+              }))
+              publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: convId })
+            } catch (persistErr) {
+              // Last resort only — nothing above this can recover the turn now.
+              console.error('[agent] rescuing an unfinished turn failed:', persistErr)
+            }
+          }
+        }
         if (s.activeTurn === ts) s.activeTurn = null
       }
     }
