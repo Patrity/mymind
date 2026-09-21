@@ -39,10 +39,51 @@ export function validatePattern(pattern: string): { valid: boolean; error?: stri
   return { valid: true }
 }
 
-/** Compile a glob (`*` = any run of non-chaining chars) to an anchored RegExp. */
+// A metacharacter only chains commands when the SHELL sees it as syntax. Inside a quoted
+// argument it is inert text — `psql -c "select now(); select 1;"` runs one command, not three.
+// The original rule banned metacharacters anywhere in the string, which made the allowlist
+// inoperative rather than strict: `docker *` was stored on 2026-07-23 and had never matched
+// once by 2026-09-21 (`last_used_at` NULL, as on 15 of the 16 stored rules), because every
+// real docker command carries a `;` or `()` inside a quoted SQL string. The user re-approved
+// the same commands indefinitely, and an unanswered approval stalls the turn.
+//
+// So: replace metacharacters that sit INSIDE a quoted span with a placeholder the wildcard
+// accepts, and leave unquoted ones exactly as they were, so chaining is still refused.
+const MASK = '\x01'
+
+/** Replace in-quote metacharacters with MASK. Returns the input unchanged if a quote is
+ *  left open — a dangling quote must never make the rest of the line look inert. */
+function maskQuoted(s: string): string {
+  const out: string[] = []
+  let quote: '"' | '\'' | null = null
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!
+    // Backslash escapes the next character, but NOT inside single quotes, where POSIX
+    // treats it literally. Copy both through so the span accounting stays honest.
+    if (c === '\\' && quote !== '\'' && i + 1 < s.length) {
+      out.push(c, s[i + 1]!)
+      i++
+      continue
+    }
+    if (quote) {
+      if (c === quote) { quote = null; out.push(c); continue }
+      // Inert: inside quotes this character is an argument, not shell syntax.
+      out.push(META.includes(c) ? MASK : c)
+      continue
+    }
+    if (c === '"' || c === '\'') { quote = c; out.push(c); continue }
+    out.push(c)
+  }
+  // Unterminated quote: refuse to mask anything rather than guess where the span ended.
+  return quote ? s : out.join('')
+}
+
+/** Compile a glob (`*` = any run of non-chaining chars) to an anchored RegExp.
+ *  The pattern is masked the same way the command is, so a pattern may itself carry a
+ *  quoted metacharacter and still match. */
 function compile(pattern: string): RegExp | null {
   if (!validatePattern(pattern).valid) return null
-  const body = pattern.trim()
+  const body = maskQuoted(pattern.trim())
     .split('*')
     .map(seg => seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join(METACLASS)
@@ -50,7 +91,7 @@ function compile(pattern: string): RegExp | null {
 }
 
 export function matchesApproval(command: string, patterns: string[]): boolean {
-  const cmd = command.trim()
+  const cmd = maskQuoted(command.trim())
   if (!cmd) return false
   for (const p of patterns) {
     const re = compile(p)
