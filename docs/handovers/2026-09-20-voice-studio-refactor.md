@@ -17,7 +17,7 @@ status: >
   errors; the 375px speak-panel gap found alongside them was proven **pre-existing** by a controlled
   probe against the branch base. Gates at the end of this cycle: `pnpm typecheck` exit 0 /
   `pnpm test` 215 files, 1,863 tests / production build at 4096 MB passes (267 client JS files,
-  2,110,315 B gzip — **+1 file, +2,152 B, +0.10%** over cycle 66). **The most useful thing in this
+  2,112,164 B gzip — **+1 file, +4,001 B, +0.19%** over cycle 66). **The most useful thing in this
   document is not the code: it is that two of my own briefs invented interfaces the original never
   had, and both were caught only because implementers flagged instead of building.** In a refactor
   whose premise is "nothing changes", a plausible invented interface is the likeliest way to break
@@ -91,7 +91,7 @@ shipped:
     `<VoiceSettingsSlideover>` became `<AgentSettingsSlideover>` — a missed reference here is a
     runtime blank, not a type error, which is why this task's gates included a full production
     build."
-  - "The speak box in composer chrome (Task 7, `2578e40`) — `SpeakPane.vue` (411 lines):
+  - "The speak box in composer chrome (Task 7, `2578e40`) — `SpeakPane.vue` (419 lines):
     `InputGroup` + `InputGroupTextarea` + `PromptInputFooter`/`PromptInputTools` replace the
     `UFormField` + `UTextarea` and the loose tag row. Enter inserts a newline, tags insert at the
     caret, no attach button / model select / action menu. Found and fixed a real layout bug no gate
@@ -257,7 +257,7 @@ on disk** before composing the dispatch. Task 5's ledger entry records that conf
 | `DesignSeedAudition.vue` | 301 | Audition, the four takes, star toggle, kept-seeds strip. |
 | `DesignReferenceClip.vue` | 332 | Record / upload / play / clear the clip, and its transcript. |
 | `useRigRender.ts` | 59 | `renderWav` + the queue clock. |
-| `SpeakPane.vue` | 411 | The composer (Task 7). |
+| `SpeakPane.vue` | 419 | The composer (Task 7). |
 | `mic.ts` | 23 | Mic constraints + the stale-device test (Task 5). |
 
 **Children, not composables** — deliberately. Every section carried both UI and logic; extracting
@@ -411,7 +411,7 @@ pnpm typecheck                                    → exit 0, 0 errors
 pnpm test                                          → 215 files, 1,863 tests passed
 NODE_OPTIONS=--max-old-space-size=4096 pnpm build  → "Build complete!",
                                                      .output/server/index.mjs present (939 B)
-                                                     267 client JS files / 2,110,315 B gzip
+                                                     267 client JS files / 2,112,164 B gzip
                                                      total output 70.9 MB (21 MB gzip)
 ```
 
@@ -429,7 +429,7 @@ tests counted in the 1,859 baseline this branch inherited. No test files were de
 | Point | Client JS files | gzip total |
 |---|---|---|
 | Cycle 66 (the branch's inherited baseline) | 266 | 2,108,163 B |
-| Cycle 67 (this handover) | **267** | **2,110,315 B** |
+| Cycle 67 (this handover) | **267** | **2,112,164 B** |
 | **Delta** | **+1** | **+2,152 B (+0.10%)** |
 
 Measured with deploy.yml's exact command and `.output/` removed first. **+2 KB gzip for a refactor is

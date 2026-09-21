@@ -4,7 +4,7 @@ status: shipped
 cycle: 67
 updated: 2026-09-20
 mymind_id: b7dc4979-0fa0-41b0-8774-c6c2c470748c
-mymind_hash: 8e1ea5c21147aa6da42926e0b8937dd4c8153df39d2e22cf76aa193d82956a00
+mymind_hash: 18834ce7821633bd8927a95c1dd15abeeca58b000d508da9a50f1a819a849d10
 ---
 
 # Voice Studio
@@ -54,8 +54,19 @@ flow are all it does.
 | `app/components/voice/DesignReferenceClip.vue` | 332 | Recording, uploading, playing and clearing the clip, plus its transcript. |
 | `app/composables/useRigRender.ts` | 59 | `renderWav(body, signal)` + the elapsed clock (`elapsedMs`, `queued`, `startClock`, `stopClock`). |
 
-**Three rules hold the split together, and breaking any of them reintroduces a bug the studio
+**Four rules hold the split together, and breaking any of them reintroduces a bug the studio
 already fixed:**
+
+- **The tabs must not unmount their content.** `UTabs` defaults to `unmountOnHide: true`, which
+  destroys a tab panel's *slot content* when you switch away — the wrapper stays, the components
+  inside do not. Before the cycle-67 split this did not matter, because all of this state lived in
+  the always-mounted `DesignPane` script. It matters now: an audition orphaned by a tab switch
+  leaves `auditioning` stuck true and **Lock permanently dead until a reload**, because the child's
+  own reset cannot run while it is unmounted. `DesignPane.vue` therefore passes
+  **`:unmount-on-hide="false"`** — and it must be **bound**. The static form
+  `unmount-on-hide="false"` passes the truthy *string* `"false"` to a `type: Boolean` prop, so the
+  tabs keep unmounting and the bug survives while looking fixed. Both behaviours were measured in a
+  browser, not reasoned about.
 
 - **The draft is still owned by `voice.vue`.** `SpeakPane` renders what the design form holds, so
   the form cannot be private to the component that edits it. Children receive the same `reactive()`
