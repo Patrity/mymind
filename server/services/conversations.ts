@@ -1,4 +1,4 @@
-import { and, desc, eq, or, sql } from 'drizzle-orm'
+import { and, eq, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { conversations, conversationMessages } from '../db/schema'
 import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO, MessageUsage } from '../../shared/types/conversation'
@@ -92,23 +92,35 @@ export async function createConversation(
   return convToDTO(row!)
 }
 
+/**
+ * Append messages as children of `parentId` and move the conversation's active leaf to the last
+ * one inserted.
+ *
+ * `parentId` omitted → chain from the active leaf. `null` → start a NEW root (an explicit null
+ * is not the same as no argument, which is why the check below is `!== undefined`).
+ */
 export async function appendMessages(
   conversationId: string,
-  msgs: NewConvMessage[]
+  msgs: NewConvMessage[],
+  parentId?: string | null
 ): Promise<void> {
   if (!msgs.length) return
 
   const db = useDb()
 
-  // Find the current last message id to chain from
-  const [lastMsg] = await db
-    .select({ id: conversationMessages.id })
-    .from(conversationMessages)
-    .where(eq(conversationMessages.conversationId, conversationId))
-    .orderBy(desc(conversationMessages.createdAt))
-    .limit(1)
-
-  let prevId: string | null = lastMsg?.id ?? null
+  // The parent is the ACTIVE LEAF, not the newest row. Once a branch exists those differ, and
+  // chaining from the newest row would graft this turn onto whichever branch was written last
+  // rather than the one the user is reading. The newest-row query this replaces also had no
+  // tie-break, so among rows sharing a created_at (26% of this corpus) it picked arbitrarily
+  // and unstably — see loadActivePath's `(created_at, id)` note.
+  let prevId: string | null
+  if (parentId !== undefined) {
+    prevId = parentId
+  } else {
+    const [conv] = await db.select({ leaf: conversations.activeLeafId }).from(conversations)
+      .where(eq(conversations.id, conversationId)).limit(1)
+    prevId = conv?.leaf ?? null
+  }
 
   // Insert each message in order, chaining parentId linearly
   for (const msg of msgs) {
@@ -129,16 +141,43 @@ export async function appendMessages(
     prevId = inserted!.id
   }
 
-  // Bump conversation stats
+  // Bump conversation stats, and move the leaf onto what was just written — `prevId` is the
+  // last inserted id after the loop. Without this the branch just appended to would be
+  // unreachable by either read path, and the next append would chain from the old leaf.
   const now = new Date()
   await db
     .update(conversations)
     .set({
       messageCount: sql`${conversations.messageCount} + ${msgs.length}`,
       lastMessageAt: now,
-      updatedAt: now
+      updatedAt: now,
+      activeLeafId: prevId
     })
     .where(eq(conversations.id, conversationId))
+}
+
+/**
+ * Which message a new branch hangs from.
+ *
+ * fork      → the message itself: the new branch continues FROM there.
+ * edit      → the message's parent: the edited version is a SIBLING of the original, so the
+ *             original question and everything it produced stay reachable.
+ * regenerate→ the reply's parent: same reasoning, applied to an assistant message.
+ *
+ * Returns null for a message that isn't in this conversation — the caller treats that as "no
+ * branch to make" rather than a crash. Note null is also the legitimate answer for an edit or
+ * regenerate of a ROOT message, which correctly makes the new version a second root.
+ */
+export async function branchParent(
+  conversationId: string, messageId: string, op: 'fork' | 'edit' | 'regenerate'
+): Promise<string | null> {
+  const [row] = await useDb()
+    .select({ id: conversationMessages.id, parentId: conversationMessages.parentId })
+    .from(conversationMessages)
+    .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.id, messageId)))
+    .limit(1)
+  if (!row) return null
+  return op === 'fork' ? row.id : row.parentId
 }
 
 export async function getConversation(
