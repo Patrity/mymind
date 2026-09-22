@@ -219,6 +219,14 @@ function simulateQuery() {
 function simulatePrefill() {
   promptInputPrefill.value = `starter click ${Date.now()}`
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Task 7 fixture state (cycle 68): AgentBranchPager.
+// ══════════════════════════════════════════════════════════════════════════════
+const branchPagerLog = ref('')
+function onBranchPagerGo(which: string, dir: -1 | 1) {
+  branchPagerLog.value = `${which}: go(${dir})`
+}
 </script>
 
 <template>
@@ -629,6 +637,35 @@ function simulatePrefill() {
         </p>
         <p v-if="promptInputLog" class="text-xs text-muted-foreground font-mono">
           {{ promptInputLog }}
+        </p>
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-sm font-medium text-muted-foreground">
+          AgentBranchPager
+        </h2>
+        <div class="flex flex-wrap items-center gap-8">
+          <div data-testid="branch-pager-total1">
+            <p class="mb-1 text-xs text-muted-foreground">
+              total: 1 (renders nothing)
+            </p>
+            <AgentBranchPager :index="1" :total="1" @go="(dir) => onBranchPagerGo('total1', dir)" />
+          </div>
+          <div data-testid="branch-pager-1of2">
+            <p class="mb-1 text-xs text-muted-foreground">
+              index: 1, total: 2 (previous disabled)
+            </p>
+            <AgentBranchPager :index="1" :total="2" @go="(dir) => onBranchPagerGo('1of2', dir)" />
+          </div>
+          <div data-testid="branch-pager-3of3">
+            <p class="mb-1 text-xs text-muted-foreground">
+              index: 3, total: 3 (next disabled)
+            </p>
+            <AgentBranchPager :index="3" :total="3" @go="(dir) => onBranchPagerGo('3of3', dir)" />
+          </div>
+        </div>
+        <p v-if="branchPagerLog" class="text-xs text-muted-foreground font-mono">
+          {{ branchPagerLog }}
         </p>
       </section>
     </div>
