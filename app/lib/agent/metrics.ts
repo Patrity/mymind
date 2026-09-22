@@ -13,9 +13,14 @@ import type { MessageUsage } from '~~/shared/types/conversation'
 export function rateLabel(usage?: MessageUsage | null): string {
   const out = usage?.outputTokens
   const total = usage?.durationMs
-  if (typeof out !== 'number' || out <= 0) return ''
-  if (typeof total !== 'number' || total <= 0) return ''
-  const windowMs = total - (usage?.ttftMs ?? 0)
+  const ttft = usage?.ttftMs ?? 0
+  // Number.isFinite rather than a bare `<= 0` check: `NaN <= 0` is false, so a corrupt usage
+  // jsonb row (a stray NaN surviving a JSON round-trip as a string, or similar) would otherwise
+  // slip past the guard and render 'NaN tok/s' instead of being treated as "no timing".
+  if (typeof out !== 'number' || !Number.isFinite(out) || out <= 0) return ''
+  if (typeof total !== 'number' || !Number.isFinite(total) || total <= 0) return ''
+  if (!Number.isFinite(ttft)) return ''
+  const windowMs = total - ttft
   if (windowMs <= 0) return ''
   return `${(out / (windowMs / 1000)).toFixed(1)} tok/s`
 }
@@ -23,6 +28,6 @@ export function rateLabel(usage?: MessageUsage | null): string {
 /** "4.2s" / "820ms" — '' when no duration was recorded. */
 export function durationLabel(usage?: MessageUsage | null): string {
   const ms = usage?.durationMs
-  if (typeof ms !== 'number' || ms <= 0) return ''
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return ''
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`
 }

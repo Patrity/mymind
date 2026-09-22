@@ -5,6 +5,11 @@
 // conversation — a message id from elsewhere must be refused, writing nothing — and (2) it must
 // resolve the chosen message to its branch TIP before writing, not the message itself. Both are
 // proven against the real DB, the same harness as test/conversation-branch.db.test.ts.
+//
+// Also covers captureTurnLeaf (server/api/voice/ws.ts's turn-start leaf capture, factored out
+// for exactly this): a real crossws WS upgrade can't be driven here, but the race it exists to
+// prevent — active_leaf_id moving between "turn starts" and "turn persists" — is otherwise
+// ordinary DB state, and setActiveLeaf is the real function that moves it mid-turn.
 process.loadEnvFile('.env')
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { sql } from 'drizzle-orm'
@@ -12,7 +17,7 @@ import { sql } from 'drizzle-orm'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 const { useDb } = await import('../server/db')
-const { appendMessages, setActiveLeaf, getConversation } = await import('../server/services/conversations')
+const { appendMessages, setActiveLeaf, getConversation, captureTurnLeaf } = await import('../server/services/conversations')
 
 // drizzle-orm/node-postgres's db.execute() returns a pg `Result`, not a plain array — unwrap
 // `.rows` (same correction as test/conversation-path.db.test.ts).
@@ -120,5 +125,56 @@ describe('setActiveLeaf scoping', () => {
     const resolved = await setActiveLeaf(convId, '00000000-0000-4000-8000-000000000000')
     expect(resolved).toBeNull()
     expect(await activeLeafOf(convId)).toBe(before)
+  })
+})
+
+describe('captureTurnLeaf', () => {
+  it('returns the active leaf when one is set', async () => {
+    const conv = await newConversation('-capture-set')
+    await appendMessages(conv, [msg('user', 'Q'), msg('assistant', 'A')])
+    const leaf = await activeLeafOf(conv)
+    expect(leaf).not.toBeNull()
+    expect(await captureTurnLeaf(conv)).toBe(leaf)
+  })
+
+  it('returns undefined, NOT null, for a conversation with no leaf yet — appendMessages(id, msgs, null) would start a new root and orphan it', async () => {
+    const conv = await newConversation('-capture-empty')
+    expect(await activeLeafOf(conv)).toBeNull()
+    expect(await captureTurnLeaf(conv)).toBeUndefined()
+  })
+
+  it('freezes the branch a turn writes into: appendMessages(conv, msgs, captured) lands under the CAPTURED parent even after setActiveLeaf moves the live leaf elsewhere', async () => {
+    const conv = await newConversation('-capture-race')
+    // Q1 -> A1, then a sibling reply A1-alt (both branches reachable; leaf now on A1-alt).
+    await appendMessages(conv, [msg('user', 'Q1'), msg('assistant', 'A1')])
+    const q1 = (await getConversation(conv))!.messages.find(m => m.content === 'Q1')!
+    await appendMessages(conv, [msg('assistant', 'A1-alt')], q1.id)
+
+    const branchRows = rows<{ id: string, content: string }>(await useDb().execute(
+      sql`select id, content from conversation_messages where conversation_id = ${conv}::uuid`
+    ))
+    const a1 = branchRows.find(r => r.content === 'A1')!
+    const a1alt = branchRows.find(r => r.content === 'A1-alt')!
+
+    // A tab reading the A1 branch is about to send a turn into it — switch the live leaf
+    // there first (A1 has no children of its own, so it resolves to itself).
+    await setActiveLeaf(conv, a1.id)
+    const captured = await captureTurnLeaf(conv)
+    expect(captured).toBe(a1.id)
+
+    // Meanwhile — another tab, or the same one switching branches mid-reply — moves the LIVE
+    // leaf back onto the other branch while the captured turn is still "in flight".
+    await setActiveLeaf(conv, a1alt.id)
+    expect(await activeLeafOf(conv)).toBe(a1alt.id)
+    expect(await activeLeafOf(conv)).not.toBe(captured)
+
+    // The turn persists using the id captured at ITS start, not wherever the leaf drifted to.
+    await appendMessages(conv, [msg('user', 'Q2'), msg('assistant', 'A2')], captured)
+
+    const q2 = (rows<{ id: string, parent_id: string | null, content: string }>(await useDb().execute(
+      sql`select id, parent_id, content from conversation_messages where conversation_id = ${conv}::uuid order by created_at`
+    ))).find(r => r.content === 'Q2')!
+    expect(q2.parent_id).toBe(captured)
+    expect(q2.parent_id).not.toBe(a1alt.id)
   })
 })

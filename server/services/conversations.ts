@@ -94,6 +94,28 @@ export async function createConversation(
 }
 
 /**
+ * The active leaf for a conversation, read NOW rather than at persist time.
+ *
+ * A caller with a long-running operation between "the turn started" and "the turn persists"
+ * (server/api/voice/ws.ts's WS turn is the motivating case) needs to freeze which branch it's
+ * writing into before `active_leaf_id` can move out from under it — PATCH
+ * `/api/conversations/:id/leaf` lets another tab, or the same user switching branches mid-reply,
+ * change that column while the turn is still running. Call this once, up front, and pass the
+ * result straight through as `appendMessages`' `parentId`.
+ *
+ * Returns `undefined`, NOT `null`, when the column is null (a conversation the leaf backfill
+ * never reached, or a brand-new thread with no messages yet) — `appendMessages(id, msgs, null)`
+ * means "start a NEW root", which would orphan every message the conversation already has.
+ * `undefined` instead tells `appendMessages` to fall back to its own default (chain from
+ * whatever leaf is active at persist time).
+ */
+export async function captureTurnLeaf(conversationId: string): Promise<string | undefined> {
+  const [conv] = await useDb().select({ leaf: conversations.activeLeafId }).from(conversations)
+    .where(eq(conversations.id, conversationId)).limit(1)
+  return conv?.leaf ?? undefined
+}
+
+/**
  * Append messages as children of `parentId` and move the conversation's active leaf to the last
  * one inserted.
  *

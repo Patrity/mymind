@@ -1,14 +1,17 @@
 // test/conversation-usage-persist.test.ts
 //
-// Proves usage reaches the record that gets persisted, end to end from the agent event
-// stream through to the appendMessages payload — without a live DB (server/api/voice/ws.ts's
-// `defineWebSocketHandler` needs a real crossws upgrade to exercise directly, and there's no
-// existing harness for that here). Drives handleTurn with a fake runAgent (same scaffolding
-// as server/lib/voice/orchestrator-speakable.test.ts), accumulates the VoiceEvents the same
-// trivial way ws.ts's emit closure does, then calls the REAL buildTurnPersistPayload — the
-// exported seam server/api/voice/ws.ts itself imports and calls — rather than reimplementing
-// the payload shape locally. If ws.ts's shipped call ever stops passing the real usage value
-// into that function, or the function itself regresses, this goes red.
+// Proves the SEAM, not ws.ts's own wiring: that a 'usage' AgentEvent yielded during a turn
+// (handleTurn drives a fake runAgent) survives into the REAL buildTurnPersistPayload's output —
+// landing on the assistant row and never the user row — without a live DB
+// (server/api/voice/ws.ts's `defineWebSocketHandler` needs a real crossws upgrade to exercise
+// directly, and there's no existing harness for that here). It reimplements ws.ts's
+// emit-accumulation by hand, the same trivial pattern ws.ts's own `emit` closure uses, then
+// calls buildTurnPersistPayload directly with the result — the exported function
+// server/api/voice/ws.ts itself imports and calls, so a regression in THAT function is caught
+// here. It does NOT execute server/api/voice/ws.ts's own code, so it CANNOT catch a regression
+// in ws.ts's own call site — e.g. it would not notice ws.ts reverting to `usage: turnUsage`
+// instead of the timing-merged value cycle 68 added, or dropping the call to
+// buildTurnPersistPayload altogether.
 import { describe, it, expect } from 'vitest'
 import { handleTurn } from '../server/lib/voice/orchestrator'
 import type { VoiceEvent } from '../server/lib/voice/orchestrator'
@@ -56,7 +59,13 @@ describe('usage reaches the persisted-message payload (via the real ws.ts seam)'
     expect(assistantMsg.usage).toEqual({ inputTokens: 120, outputTokens: 45, totalTokens: 165 })
   })
 
-  it('completes and yields null usage, not a throw, for a turn with no usage event', async () => {
+  it('passes a null usage straight through onto the assistant row without throwing', async () => {
+    // This is buildTurnPersistPayload's OWN contract (its `usage` param accepts null) — not a
+    // reproduction of today's ws.ts. Since cycle 68's turn-timing change, ws.ts always builds
+    // at least `{ startedAt, durationMs }` before calling this (see buildUsageWithTiming in
+    // server/api/voice/ws.ts), so a live turn no longer reaches this function with a null
+    // usage even when the agent yielded no 'usage' event. Kept as a direct test of the
+    // function's own null handling, which other callers may still rely on.
     const payload = await runTurn([
       { type: 'text-delta', text: 'Hello Tony.' }
     ])

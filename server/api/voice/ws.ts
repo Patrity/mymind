@@ -11,12 +11,9 @@ import { messageText } from '../../lib/agent/run'
 import type { AgentMessage } from '../../lib/agent/run'
 import { buildTurnPersistPayload } from '../../lib/voice/turn-persist'
 import { partialTurnMessages } from '../../lib/voice/turn-partial'
-import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
+import { createConversation, appendMessages, getAgentHistory, deriveTitle, captureTurnLeaf } from '../../services/conversations'
 import { buildLiveContext, buildMemoryContext } from '../../lib/agent/context'
 import { publishChange } from '../../utils/live-bus'
-import { useDb } from '../../db'
-import { conversations } from '../../db/schema'
-import { eq } from 'drizzle-orm'
 import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
@@ -224,6 +221,18 @@ export default defineWebSocketHandler({
       // persists. This only fixes CHAINING — the leaf still moves to the new reply
       // afterwards regardless (a ruled UX tradeoff, not a bug: both branches stay reachable).
       let turnLeafId: string | undefined
+      // Built once, called at each of the two persist sites below — a single definition so
+      // the rescue path can never again drift from the success path's construction (that was
+      // this file's one production bug already, just in a different field). Each call takes
+      // its own `Date.now()` snapshot, which is correct: the rescue path's call (if it runs)
+      // happens later than the success path's, and should report how long the turn actually
+      // ran up to THAT persist, not a timestamp copied in from the other branch.
+      const buildUsageWithTiming = () => ({
+        ...(turnUsage ?? {}),
+        startedAt: new Date(turnStart).toISOString(),
+        ttftMs,
+        durationMs: Date.now() - turnStart
+      })
       let persisted = false
       try {
         // Live context is rebuilt EVERY turn (two cheap indexed queries) — the old
@@ -258,14 +267,8 @@ export default defineWebSocketHandler({
         // thread than the one the user was typing in.
         turnConversationIdForRescue = s.conversationId
         // The branch this turn was sent into, same reasoning — read now, before the turn's
-        // own await, not at persist time. A null column (backfill never reached this thread,
-        // or it's brand new) becomes `undefined` so appendMessages keeps chaining from
-        // whatever leaf is active at persist time instead of trying to start a new root.
-        if (turnConversationIdForRescue) {
-          const [conv] = await useDb().select({ leaf: conversations.activeLeafId }).from(conversations)
-            .where(eq(conversations.id, turnConversationIdForRescue)).limit(1)
-          turnLeafId = conv?.leaf ?? undefined
-        }
+        // own await, not at persist time.
+        if (turnConversationIdForRescue) turnLeafId = await captureTurnLeaf(turnConversationIdForRescue)
         s.history = await exec!(ac.signal, emit, context)
         // Close the message BEFORE persisting: the UI should finish promptly; persistence
         // (and the `conversation` frame for a new thread) follows.
@@ -282,18 +285,12 @@ export default defineWebSocketHandler({
             // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
             peer.send(JSON.stringify({ type: 'conversation', conversationId: s.conversationId, title }))
           }
-          const usageWithTiming = {
-            ...(turnUsage ?? {}),
-            startedAt: new Date(turnStart).toISOString(),
-            ttftMs,
-            durationMs: Date.now() - turnStart
-          }
           await appendMessages(s.conversationId, buildTurnPersistPayload(added, {
             inputModality,
             speakFlag,
             attachments: turnAttachments,
             reasoning: reasoningText,
-            usage: usageWithTiming
+            usage: buildUsageWithTiming()
           }), turnLeafId)
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
           persisted = true
@@ -324,18 +321,12 @@ export default defineWebSocketHandler({
                 // Only adopt it as the live thread if the connection has not moved on.
                 if (!s.conversationId) s.conversationId = convId
               }
-              const usageWithTiming = {
-                ...(turnUsage ?? {}),
-                startedAt: new Date(turnStart).toISOString(),
-                ttftMs,
-                durationMs: Date.now() - turnStart
-              }
               await appendMessages(convId, buildTurnPersistPayload(rescued, {
                 inputModality,
                 speakFlag,
                 attachments: turnAttachments,
                 reasoning: reasoningText,
-                usage: usageWithTiming
+                usage: buildUsageWithTiming()
               }), turnLeafId)
               publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: convId })
             } catch (persistErr) {

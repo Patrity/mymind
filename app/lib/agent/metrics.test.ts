@@ -28,6 +28,18 @@ describe('rateLabel', () => {
   it('treats a missing ttft as zero wait rather than discarding the measurement', () => {
     expect(rateLabel({ outputTokens: 100, durationMs: 2000 })).toBe('50.0 tok/s')
   })
+
+  it('is empty rather than "NaN tok/s" for a corrupt outputTokens', () => {
+    expect(rateLabel({ outputTokens: NaN, durationMs: 5000, ttftMs: 1000 })).toBe('')
+  })
+
+  it('is empty rather than "NaN tok/s" for a corrupt durationMs', () => {
+    expect(rateLabel({ outputTokens: 300, durationMs: NaN, ttftMs: 1000 })).toBe('')
+  })
+
+  it('is empty rather than "NaN tok/s" for a corrupt ttftMs', () => {
+    expect(rateLabel({ outputTokens: 300, durationMs: 5000, ttftMs: NaN })).toBe('')
+  })
 })
 
 describe('durationLabel', () => {
@@ -39,8 +51,16 @@ describe('durationLabel', () => {
     expect(durationLabel({ durationMs: 820 })).toBe('820ms')
   })
 
+  it('treats exactly 1000ms as the seconds boundary, not the milliseconds branch', () => {
+    expect(durationLabel({ durationMs: 1000 })).toBe('1.0s')
+  })
+
   it('is empty when nothing was recorded', () => {
     expect(durationLabel({})).toBe('')
     expect(durationLabel(null)).toBe('')
+  })
+
+  it('is empty rather than "NaNms" for a corrupt durationMs', () => {
+    expect(durationLabel({ durationMs: NaN })).toBe('')
   })
 })
