@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useQueryClient } from '@tanstack/vue-query'
+import type { AttachmentRef } from '~~/shared/types/conversation'
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { uiMessageText } from '~/lib/agent/render'
 import { contextMeterData } from '~/lib/agent/context-meter'
@@ -141,6 +142,8 @@ async function toggleMic() {
 // Persisted messages -> AgentUIMessage[] (chip placement, legacy fallback, trailing-bubble
 // rule) lives in ~/lib/agent/to-ui-messages so it can be unit-tested.
 async function resume(id: string): Promise<boolean> {
+  // A fork armed against the transcript being replaced does not apply to the new one.
+  pendingFork.value = null
   try {
     const { conversation, messages } = await conversations.getConversation(id)
     // Build first, commit last: if loadConversation throws, the old thread must stay
@@ -187,16 +190,36 @@ async function resume(id: string): Promise<boolean> {
  * Skipped when the tail message carries a client-only marker (stopped, connection lost): those
  * exist nowhere but in this list, so re-reading would silently drop them.
  */
-watch(busy, async (now, was) => {
-  if (!was || now) return
+/** A fork armed by the branch button, applied by `sendTurn` when the next turn goes out. */
+const pendingFork = ref<{ id: string, preview: string } | null>(null)
+
+const syncPending = ref(false)
+watch(busy, (now, was) => { if (was && !now) syncPending.value = true })
+
+// Keyed on the conversation id as well as the flag, because on the FIRST turn of a new thread
+// the id does not exist yet when the turn goes idle: the orchestrator emits `idle` before
+// ws.ts has created the conversation. Waiting only on `busy` therefore skipped the re-read
+// exactly once per thread — on its first turn, which is the likeliest moment for someone to
+// try fork or regenerate, and it failed with "That message is not in this conversation".
+// The id's arrival is the cue, and ws.ts now sends that frame AFTER the append so the arrival
+// also means the rows are committed.
+watch([syncPending, () => voice.conversationId.value], async () => {
+  if (!syncPending.value || busy.value) return
   const id = voice.conversationId.value
-  if (!id) return
-  const tail = voice.messages.value.at(-1)
-  if (tail?.metadata?.interrupted || tail?.metadata?.errorText) return
+  if (!id) return   // a new thread's id has not landed yet; this re-runs when it does
+  const before = voice.messages.value
+  const tail = before.at(-1)
+  // Client-only markers (stopped, connection lost) exist nowhere but in this list.
+  if (tail?.metadata?.interrupted || tail?.metadata?.errorText) { syncPending.value = false; return }
+  syncPending.value = false
   try {
     const { messages } = await conversations.getConversation(id)
     // A new turn may have started while that was in flight — it owns the list now.
     if (busy.value || voice.conversationId.value !== id) return
+    // A turn only ever APPENDS to the active path, so a shorter result means this read raced
+    // the persist. Refusing it keeps the one guarantee that matters: a re-read can never hide
+    // messages that are on screen. The next turn re-syncs.
+    if (messages.length < before.length) return
     voice.messages.value = toUIMessages(messages)
   } catch {
     // The transcript on screen is right apart from the ids and the pager — a failed refetch
@@ -239,6 +262,51 @@ function precedingUserMessage(messageId: string) {
 }
 
 /**
+ * Put the leaf back after a branch move whose turn never went out.
+ *
+ * Without this the thread's active path ends at the branch parent, and everything below it is
+ * hidden from BOTH read paths with no way back: the pager cannot offer it, because every
+ * message left on the truncated path is a lone child. That is silent content hiding — the exact
+ * failure this cycle exists to prevent — reached from the UI instead of from the database.
+ */
+async function restoreLeaf(leafId: string | undefined, what: string) {
+  const id = voice.conversationId.value
+  if (!leafId || !id) return
+  try {
+    await conversations.setLeaf(id, leafId)   // no op: descend, a no-op for a message that IS the leaf
+    await resume(id)
+    toast.add({ color: 'warning', title: `${what} not sent`, description: 'The thread is back where it was.' })
+  } catch (e) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: `${what} not sent, and the thread could not be restored`, description: err?.data?.statusMessage ?? err?.message })
+  }
+}
+
+/**
+ * Move the leaf, send the turn, and put the leaf back if the turn never goes out. Shared by
+ * edit and fork because the hazard is theirs jointly: between the move and the send, the thread
+ * is truncated, and a send that returns false (or throws) would leave it that way.
+ */
+async function branchAndSend(messageId: string, op: 'fork' | 'edit', text: string, speak: boolean, attachments: AttachmentRef[], what: string): Promise<boolean> {
+  // The active path ends AT the leaf, so its last message IS the leaf — captured before the
+  // move, because `moveLeaf` re-reads the thread and replaces this list.
+  const previousLeaf = voice.messages.value.at(-1)?.id
+  // Discard first: a reply still streaming must not re-push itself into the transcript that
+  // the re-sync is about to replace.
+  voice.discardTurn()
+  if (!await moveLeaf(messageId, op)) return false
+  let sent = false
+  try {
+    sent = await voice.sendText(text, speak, attachments)
+  } catch {
+    sent = false
+  }
+  // The pager appears when the watcher above re-reads the thread as this turn finishes.
+  if (!sent) await restoreLeaf(previousLeaf, what)
+  return sent
+}
+
+/**
  * An edit is a NEW BRANCH, never a rewrite: the original question and everything it produced
  * stay reachable through the pager. The leaf goes to the edited message's PARENT, so the
  * resend lands as its sibling.
@@ -247,12 +315,7 @@ async function editTurn(messageId: string, nextText: string) {
   const text = nextText.trim()
   if (!text) return
   const attachments = voice.messages.value.find(m => m.id === messageId)?.metadata?.attachments ?? []
-  // Discard first: a reply still streaming must not re-push itself into the transcript that
-  // the re-sync below is about to replace.
-  voice.discardTurn()
-  if (!await moveLeaf(messageId, 'edit')) return
-  // The pager appears when the watcher above re-reads the thread as this turn finishes.
-  await voice.sendText(text, speakReply.value, attachments)
+  await branchAndSend(messageId, 'edit', text, speakReply.value, attachments, 'Edit')
 }
 
 /**
@@ -272,15 +335,31 @@ async function retryTurn(messageId: string) {
 }
 
 /**
- * Fork: point the leaf at this message EXACTLY. The server does not descend for an op — which
- * is the whole point, since descending would land back on the end of the thread and make a
- * fork indistinguishable from carrying on. No turn is sent; the next one the user types
- * continues from here.
+ * Fork ARMS the next turn; it does not move the leaf yet.
+ *
+ * Moving it on the click was wrong in two ways. It silently rewound the visible transcript the
+ * moment you pressed the button, and — because a fork that is armed and then abandoned has no
+ * failure event to react to, the user simply navigates away — it left the thread truncated for
+ * good, with everything past the fork point hidden from both read paths. Deferring to send time
+ * means abandoning a fork persists nothing at all.
  */
-async function forkFrom(messageId: string) {
-  voice.discardTurn()
-  if (!await moveLeaf(messageId, 'fork')) return
-  toast.add({ color: 'success', title: 'Forked from here', description: 'Your next message continues from this point.' })
+function forkFrom(messageId: string) {
+  const m = voice.messages.value.find(x => x.id === messageId)
+  if (!m) return
+  const text = uiMessageText(m).replace(/\s+/g, ' ').trim()
+  pendingFork.value = { id: messageId, preview: text.length > 60 ? text.slice(0, 59) + '…' : (text || 'this message') }
+}
+
+/**
+ * The composer's send path — passed to AgentPromptInput in place of `voice.sendText`, same
+ * signature. A pending fork moves the leaf HERE, immediately before the turn goes out, so the
+ * fork and the message that justifies it are one action.
+ */
+async function sendTurn(text: string, speak = false, attachments: AttachmentRef[] = []): Promise<boolean> {
+  const fork = pendingFork.value
+  if (!fork) return voice.sendText(text, speak, attachments)
+  pendingFork.value = null
+  return branchAndSend(fork.id, 'fork', text, speak, attachments, 'Fork')
 }
 
 /**
@@ -298,6 +377,7 @@ async function switchBranch(messageId: string, dir: -1 | 1) {
 
 function startNewConversation() {
   voice.newConversation() // also clears voice.conversationId / conversationTitle
+  pendingFork.value = null
   threadsOpen.value = false
 }
 
@@ -492,10 +572,32 @@ onMounted(() => {
           :speech-prob="voice.speechProb.value"
           :active="micOn"
         />
+        <!-- A fork is ARMED, not applied, until the next turn is sent: abandoning it must
+             persist nothing and must not rewind the transcript. So the pending state needs to
+             be visible, and cancellable. -->
+        <UAlert
+          v-if="pendingFork"
+          icon="i-lucide-git-branch"
+          color="primary"
+          variant="subtle"
+          class="rounded-none"
+          :title="`Your next message branches from “${pendingFork.preview}”`"
+        >
+          <template #actions>
+            <UButton
+              size="xs"
+              variant="ghost"
+              color="neutral"
+              label="Cancel"
+              aria-label="Cancel fork"
+              @click="pendingFork = null"
+            />
+          </template>
+        </UAlert>
         <AgentPromptInput
           v-model:speak="speakReply"
           v-model:model="selectedModel"
-          :send-text="voice.sendText"
+          :send-text="sendTurn"
           :busy="busy"
           :mic-on="micOn"
           :state="voice.state.value"

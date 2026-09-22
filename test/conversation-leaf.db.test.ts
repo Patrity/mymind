@@ -17,7 +17,7 @@ import { sql } from 'drizzle-orm'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 const { useDb } = await import('../server/db')
-const { appendMessages, setActiveLeaf, setBranchLeaf, getConversation, captureTurnLeaf } = await import('../server/services/conversations')
+const { appendMessages, setActiveLeaf, setBranchLeaf, getConversation, captureTurnLeaf, conversationHasMessage } = await import('../server/services/conversations')
 
 // drizzle-orm/node-postgres's db.execute() returns a pg `Result`, not a plain array — unwrap
 // `.rows` (same correction as test/conversation-path.db.test.ts).
@@ -220,6 +220,31 @@ describe('setBranchLeaf sets branchParent\'s answer exactly, with no descent', (
     const beforeForeign = await activeLeafOf(conv)
     expect(await setBranchLeaf(conv, theirs.id, 'fork')).toBeNull()
     expect(await activeLeafOf(conv)).toBe(beforeForeign)
+  })
+})
+
+/**
+ * The route uses this to tell apart the two cases `setBranchLeaf` collapses into null, so the
+ * error can say "the first message of a thread cannot be branched yet" instead of falsely
+ * claiming the message is not in the thread. It is only worth anything if it really is scoped.
+ */
+describe('conversationHasMessage distinguishes a root from a foreign id', () => {
+  it('is true for a root (which setBranchLeaf still refuses to edit) and false across conversations', async () => {
+    const conv = await newConversation('-has-message')
+    await appendMessages(conv, [msg('user', 'Q1'), msg('assistant', 'A1')])
+    const root = (await getConversation(conv))!.messages.find(m => m.content === 'Q1')!
+
+    // The root IS in the conversation — and editing it still resolves to null, which is exactly
+    // the pair of facts the route needs to word the error honestly.
+    expect(await conversationHasMessage(conv, root.id)).toBe(true)
+    expect(await setBranchLeaf(conv, root.id, 'edit')).toBeNull()
+
+    const other = await newConversation('-has-message-other')
+    await appendMessages(other, [msg('user', 'elsewhere')])
+    const theirs = (await getConversation(other))!.messages[0]!
+    expect(await conversationHasMessage(other, theirs.id)).toBe(true)
+    expect(await conversationHasMessage(conv, theirs.id)).toBe(false)
+    expect(await conversationHasMessage(conv, '00000000-0000-4000-8000-000000000000')).toBe(false)
   })
 })
 

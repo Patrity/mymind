@@ -1,4 +1,4 @@
-import { setActiveLeaf, setBranchLeaf } from '../../../services/conversations'
+import { setActiveLeaf, setBranchLeaf, conversationHasMessage } from '../../../services/conversations'
 import { publishChange } from '../../../utils/live-bus'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -37,7 +37,18 @@ export default defineEventHandler(async (event) => {
     ? await setBranchLeaf(id, leafId, op as BranchOp)
     : await setActiveLeaf(id, leafId)
   if (!resolved) {
-    throw createError({ statusCode: 404, statusMessage: 'That message is not in this conversation' })
+    // `branchParent` answers null for two different reasons, and the UI must not conflate them.
+    // Either the message is not in this conversation, or it IS but it is the thread's ROOT —
+    // whose parent `active_leaf_id` cannot express, since null there already means "fall back to
+    // a flat read". Reporting a root as "not in this conversation" is a lie about the user's own
+    // thread, and it already sent one round of this work chasing the wrong bug.
+    const isRoot = !!op && await conversationHasMessage(id, leafId)
+    throw createError({
+      statusCode: 404,
+      statusMessage: isRoot
+        ? 'The first message of a thread cannot be branched yet'
+        : 'That message is not in this conversation'
+    })
   }
 
   publishChange({ resource: 'conversation', action: 'updated', id })

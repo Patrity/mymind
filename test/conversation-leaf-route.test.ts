@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const setActiveLeaf = vi.fn()
 const setBranchLeaf = vi.fn()
-vi.mock('../server/services/conversations', () => ({ setActiveLeaf, setBranchLeaf }))
+const conversationHasMessage = vi.fn()
+vi.mock('../server/services/conversations', () => ({ setActiveLeaf, setBranchLeaf, conversationHasMessage }))
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 vi.stubGlobal('getRouterParam', (e: { ctx: Record<string, string> }, k: string) => e.ctx[k])
@@ -15,7 +16,7 @@ const CONV_ID = '6f1e7b4a-0000-4000-8000-0000000000c1'
 const evt = (body: unknown, convId: string = CONV_ID) => ({ ctx: { id: convId }, body })
 const MSG_ID = '6f1e7b4a-0000-4000-8000-000000000001'
 
-beforeEach(() => { setActiveLeaf.mockReset(); setBranchLeaf.mockReset() })
+beforeEach(() => { setActiveLeaf.mockReset(); setBranchLeaf.mockReset(); conversationHasMessage.mockReset() })
 
 describe('PATCH /api/conversations/:id/leaf', () => {
   it('moves the leaf to the RESOLVED descendant, not necessarily the requested id', async () => {
@@ -74,7 +75,38 @@ describe('PATCH /api/conversations/:id/leaf — branch ops', () => {
 
   it('404s when the op resolves to null (foreign id, or a root with no parent to hang off)', async () => {
     setBranchLeaf.mockResolvedValue(null)
+    conversationHasMessage.mockResolvedValue(false)
     await expect(handler(evt({ leafId: MSG_ID, op: 'edit' }))).rejects.toMatchObject({ statusCode: 404 })
+  })
+
+  // `branchParent` returns null for two unrelated reasons and the message must not conflate
+  // them: telling someone their own thread's first message "is not in this conversation" sent a
+  // previous round of this work chasing an id bug that wasn't there.
+  it('says the FIRST MESSAGE cannot be branched when the target is a root, not that it is missing', async () => {
+    setBranchLeaf.mockResolvedValue(null)
+    conversationHasMessage.mockResolvedValue(true)   // it IS in the thread — so it's the root
+    await expect(handler(evt({ leafId: MSG_ID, op: 'edit' }))).rejects.toMatchObject({
+      statusCode: 404,
+      statusMessage: 'The first message of a thread cannot be branched yet'
+    })
+  })
+
+  it('still says "not in this conversation" for an id that really is foreign', async () => {
+    setBranchLeaf.mockResolvedValue(null)
+    conversationHasMessage.mockResolvedValue(false)
+    await expect(handler(evt({ leafId: MSG_ID, op: 'edit' }))).rejects.toMatchObject({
+      statusMessage: 'That message is not in this conversation'
+    })
+  })
+
+  // The no-op path has no branchParent to be ambiguous about — null there means exactly one
+  // thing, so it must not pay for an extra query or borrow the root wording.
+  it('does not consult conversationHasMessage on the no-op path', async () => {
+    setActiveLeaf.mockResolvedValue(null)
+    await expect(handler(evt({ leafId: MSG_ID }))).rejects.toMatchObject({
+      statusMessage: 'That message is not in this conversation'
+    })
+    expect(conversationHasMessage).not.toHaveBeenCalled()
   })
 
   // A bad op must not degrade to the no-op path: that would silently turn a typo'd fork into

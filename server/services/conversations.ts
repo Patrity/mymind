@@ -243,6 +243,22 @@ export async function setActiveLeaf(conversationId: string, leafId: string): Pro
 }
 
 /**
+ * Is this message in this conversation?
+ *
+ * Exists only to tell two different `null`s apart on the branch error path (see
+ * leaf.patch.ts): `branchParent` answers null both for "not in this conversation" and for
+ * "this IS the conversation's root", and the second must not be reported as the first.
+ */
+export async function conversationHasMessage(conversationId: string, messageId: string): Promise<boolean> {
+  const [row] = await useDb()
+    .select({ id: conversationMessages.id })
+    .from(conversationMessages)
+    .where(and(eq(conversationMessages.conversationId, conversationId), eq(conversationMessages.id, messageId)))
+    .limit(1)
+  return !!row
+}
+
+/**
  * Point the thread where a NEW branch should hang from — `branchParent`'s answer, set EXACTLY,
  * with no `branchTip` descent.
  *

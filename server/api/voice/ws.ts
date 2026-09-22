@@ -293,13 +293,21 @@ export default defineWebSocketHandler({
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId
+          let newThreadFrame: string | null = null
           if (!s.conversationId) {
             const title = deriveTitle(messageText(added[0]!.content))
             s.conversationId = (await createConversation({ title })).id
             // Tell the client which thread it just landed in. Without this frame the page
             // has no way to learn the id/title the server derived on the first turn — the
             // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
-            peer.send(JSON.stringify({ type: 'conversation', conversationId: s.conversationId, title }))
+            //
+            // Built here but SENT AFTER the append below. The page treats the arrival of a
+            // conversation id as its cue to re-read the thread (it has to: a live message's id
+            // is a stream uuid, not the row id — see app/pages/agent/index.vue), and sending
+            // this first meant that read could land before the rows existed and wipe the
+            // transcript. Ordering it after the append makes "the client knows the id" imply
+            // "the rows are committed".
+            newThreadFrame = JSON.stringify({ type: 'conversation', conversationId: s.conversationId, title })
           }
           await appendMessages(s.conversationId, buildTurnPersistPayload(added, {
             inputModality,
@@ -309,6 +317,7 @@ export default defineWebSocketHandler({
             // The same object the live chunk above carried — see the note there.
             usage: finalUsage
           }), turnLeafId)
+          if (newThreadFrame) peer.send(newThreadFrame)
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
           persisted = true
         }

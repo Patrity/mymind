@@ -11,7 +11,7 @@ import { Message, MessageContent, MessageResponse } from '@/components/ai-elemen
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { subagentSteps } from '~/lib/agent/render'
 
-defineProps<{
+const props = defineProps<{
   messages: AgentUIMessage[]
   undone?: ReadonlySet<string>
   /** The pending approval's details, or null — forwarded to whichever tool part it belongs to. */
@@ -52,10 +52,20 @@ function startEdit(m: AgentUIMessage) {
 function saveEdit() {
   const id = editingId.value
   const text = draft.value.trim()
+  // An edit is a new branch, so an empty one would be a branch with no question in it. Saving
+  // blank is therefore a CANCEL, not a silent discard that looks like it worked — and the Save
+  // button is disabled while blank so it reads that way too.
+  if (!id || !text) { editingId.value = null; return }
   editingId.value = null
-  // An edit is a new branch, so an empty one would be a branch with no question in it.
-  if (id && text) emit('edit', id, text)
+  emit('edit', id, text)
 }
+
+// An open editor belongs to ONE message. When the list is replaced — another conversation, a
+// branch switch, the post-turn re-read that swaps stream ids for row ids — a surviving
+// `editingId` would re-attach the editor to whatever now sits at that id, or to nothing.
+watch(() => props.messages, (list) => {
+  if (editingId.value && !list.some(m => m.id === editingId.value)) editingId.value = null
+})
 </script>
 
 <template>
@@ -98,6 +108,7 @@ function saveEdit() {
                   size="xs"
                   color="primary"
                   label="Save"
+                  :disabled="!draft.trim()"
                   @click="saveEdit"
                 />
                 <UButton
