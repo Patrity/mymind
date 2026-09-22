@@ -1,6 +1,6 @@
 export interface PathRow { id: string; parentId: string | null }
 
-/** A row plus its creation time — what `deepestDescendant` needs to pick the newest child. */
+/** A row plus its creation time — what `branchTip` needs to pick the newest child. */
 export interface DescendantRow extends PathRow { createdAt: string | number | Date }
 
 /**
@@ -29,9 +29,14 @@ export function activePath<T extends PathRow>(rows: T[], leafId: string | null):
 }
 
 /**
- * From `fromId`, descend to the tip of the branch — following the NEWEST child at each step,
- * ordered by `(created_at, id)` (same tie-break as `loadActivePath`) — so a branch-within-a-
- * branch resolves deterministically to the tip most recently extended.
+ * From `fromId`, walk down to the tip of the branch. THE RULE, stated outright because the
+ * obvious name for this ("deepest descendant") would be a lie: at each step it follows the
+ * NEWEST child, not the child that leads to the deepest subtree — those disagree whenever a
+ * shallower child has itself been extended more recently than a deeper one. "Newest child at
+ * each step" is deliberate: resuming a branch should land where the user last left off writing
+ * it, not down its longest arm. Ordered by `(created_at, id)` (same tie-break as
+ * `loadActivePath`), so a branch-within-a-branch resolves deterministically to the tip most
+ * recently extended.
  *
  * Switching branches re-points the thread at a SIBLING, not at the sibling's continuation: the
  * client only ever fetches the active path, so it has no way to know an inactive sibling has
@@ -40,9 +45,9 @@ export function activePath<T extends PathRow>(rows: T[], leafId: string | null):
  * the failure this cycle exists to prevent. Returns `fromId` itself when it has no children, and
  * null when `fromId` is not in `rows` — no guessing, same contract as `activePath`.
  */
-export function deepestDescendant<T extends DescendantRow>(rows: T[], fromId: string): string | null {
-  const byId = new Map(rows.map(r => [r.id, r]))
-  if (!byId.has(fromId)) return null
+export function branchTip<T extends DescendantRow>(rows: T[], fromId: string): string | null {
+  const ids = new Set(rows.map(r => r.id))
+  if (!ids.has(fromId)) return null
 
   const byParent = new Map<string, T[]>()
   for (const r of rows) {

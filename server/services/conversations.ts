@@ -9,7 +9,7 @@ import { buildUserMessageParts, withoutAttachmentMarkers } from '../lib/agent/at
 import { getImageBytes } from './images'
 import { getFileBytes } from './files'
 import { loadActivePath, type BranchInfo } from './conversation-path'
-import { deepestDescendant } from '../../shared/utils/conversation-path'
+import { branchTip } from '../../shared/utils/conversation-path'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -189,26 +189,30 @@ export async function branchParent(
 }
 
 /**
- * Point the thread at a different branch — the CHOSEN sibling's deepest descendant, not the
- * sibling itself. The client only ever fetches the active path, so it has no way to know an
- * inactive sibling has its own continuation; landing the leaf on the sibling itself would make
- * everything below the switch point invisible to both read paths (see
- * shared/utils/conversation-path's deepestDescendant).
+ * Point the thread at a different branch — the CHOSEN sibling's branch tip, not the sibling
+ * itself. The client only ever fetches the active path, so it has no way to know an inactive
+ * sibling has its own continuation; landing the leaf on the sibling itself would make everything
+ * below the switch point invisible to both read paths (see shared/utils/conversation-path's
+ * branchTip).
  *
  * Returns the resolved leaf id, or null when `leafId` is not a message in THIS conversation —
  * the caller 404s rather than silently pointing a thread at someone else's message. The rows
  * query is scoped to `conversationId`, which is what makes that scoping guard real: an id from
- * another conversation is simply absent from `rows`, so `deepestDescendant` can't find it.
+ * another conversation is simply absent from `rows`, so `branchTip` can't find it.
  */
 export async function setActiveLeaf(conversationId: string, leafId: string): Promise<string | null> {
   const db = useDb()
+  // Same tie-break as loadActivePath's query — branchTip's own sort is the actual authority on
+  // sibling order, but ordering this query too keeps the two functions from differing for no
+  // reason, and `id` breaks a created_at tie deterministically either way.
   const rows = await db.select({
     id: conversationMessages.id,
     parentId: conversationMessages.parentId,
     createdAt: conversationMessages.createdAt
   }).from(conversationMessages).where(eq(conversationMessages.conversationId, conversationId))
+    .orderBy(conversationMessages.createdAt, conversationMessages.id)
 
-  const resolved = deepestDescendant(rows, leafId)
+  const resolved = branchTip(rows, leafId)
   if (!resolved) return null
 
   await db.update(conversations).set({ activeLeafId: resolved, updatedAt: new Date() })

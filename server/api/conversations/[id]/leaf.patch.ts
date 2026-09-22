@@ -5,9 +5,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
+  // Both ids are validated here, not just leafId — a malformed one of either is a 400, not a
+  // Postgres type error surfacing as a 500.
+  if (!UUID.test(id)) throw createError({ statusCode: 400, statusMessage: 'id must be a uuid' })
   const body = await readBody(event) as { leafId?: unknown }
   const leafId = typeof body?.leafId === 'string' ? body.leafId : ''
-  // Validated here so a malformed id is a 400, not a Postgres type error surfacing as a 500.
   if (!UUID.test(leafId)) throw createError({ statusCode: 400, statusMessage: 'leafId must be a uuid' })
 
   // setActiveLeaf resolves to the CHOSEN message's deepest descendant, not `leafId` itself —
