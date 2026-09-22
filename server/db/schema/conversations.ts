@@ -11,6 +11,9 @@ export const conversations = pgTable('conversations', {
   lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
   // Reserved for a future summarization worker (keyword search ships first).
   summaryEmbedding: halfvec(2560, 'summary_embedding'),
+  /** Leaf of the branch currently displayed. A thread is a tree (see parent_id); this names
+   *  which path through it is active. Nullable only as a fallback: null → flat read. */
+  activeLeafId: uuid('active_leaf_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
@@ -22,8 +25,8 @@ export const conversations = pgTable('conversations', {
 export const conversationMessages = pgTable('conversation_messages', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   conversationId: uuid('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
-  // Tree-capable edge; populated LINEARLY this cycle (parent = prior turn). Branching
-  // (active-leaf/path-walking + fork UI) is deferred — see the spec.
+  // Tree edge. Branching is LIVE as of cycle 68: fork/edit/regenerate append a child to a
+  // chosen parent, and conversations.active_leaf_id names the path being read.
   parentId: uuid('parent_id'),
   role: text('role').notNull(),                 // 'user' | 'assistant'
   content: text('content').notNull().default(''),

@@ -29,6 +29,13 @@ export interface MessageUsage {
   contextTokens?: number
   /** The registry model that actually produced the stream (failover-aware). */
   modelDefId?: string
+  /** When the turn started, ISO. Timing is stored here rather than in its own column
+   *  because usage is already the per-message jsonb for model/token facts. */
+  startedAt?: string
+  /** Start → first assistant token. */
+  ttftMs?: number
+  /** Start → turn finish. */
+  durationMs?: number
 }
 
 export interface ConversationMessageDTO {
@@ -41,6 +48,14 @@ export interface ConversationMessageDTO {
   attachments: AttachmentRef[] | null
   usage: MessageUsage | null
   createdAt: string
+  parentId: string | null
+  /** 1-based position among siblings and the sibling count; total 1 means no pager. */
+  branch: { index: number; total: number }
+  /** Every sibling of this message (messages sharing its parent), in creation order, INCLUDING
+   *  this one — so `siblingIds[branch.index - 1] === id`. The client needs these to switch
+   *  branches: only the active path is fetched, so it cannot discover a sibling any other way.
+   *  Its only consumer arrives in a later task; it is populated here so one task owns the DTO. */
+  siblingIds: string[]
 }
 export interface ConversationDTO {
   id: string
