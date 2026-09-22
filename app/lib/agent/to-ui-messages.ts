@@ -6,8 +6,13 @@ import type { ConversationMessageDTO, ToolCallRecordDTO } from '~~/shared/types/
 import type { AgentUIMessage, AgentUIPart, AgentMessageMetadata } from '~~/shared/types/agent-ui'
 import { toolOutcome, toolEnvelope, attachmentToFilePart } from '~~/shared/utils/agent-ui'
 
+// `branch`/`siblingIds` are carried through deliberately: the server has populated them on
+// ConversationMessageDTO since Task 3, but this Pick used to drop them, so the branch pager
+// could never render anything however correct the server was. They are Partial like the rest —
+// a caller constructing a ResumeMessage by hand (the tests, mostly) need not supply them, and
+// an absent `branch` reads as "lone trunk message", the same default msgToDTO applies.
 export type ResumeMessage = Pick<ConversationMessageDTO, 'id' | 'role' | 'content'>
-  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments' | 'usage' | 'createdAt'>>
+  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments' | 'usage' | 'createdAt' | 'branch' | 'siblingIds'>>
 
 const textPart = (text: string): AgentUIPart => ({ type: 'text', text, state: 'done' })
 
@@ -29,7 +34,9 @@ export function toUIMessages(messages: ResumeMessage[]): AgentUIMessage[] {
   return messages.map((m): AgentUIMessage => {
     const metadata: AgentMessageMetadata = {
       ...(m.createdAt ? { createdAt: m.createdAt } : {}),
-      ...(m.usage ? { usage: m.usage } : {})
+      ...(m.usage ? { usage: m.usage } : {}),
+      ...(m.branch ? { branch: m.branch } : {}),
+      ...(m.siblingIds ? { siblingIds: m.siblingIds } : {})
     }
     if (m.role === 'user') {
       const attachments = m.attachments ?? []

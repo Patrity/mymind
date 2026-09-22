@@ -3,6 +3,9 @@
 import { describe, it, expect } from 'vitest'
 import { readUIMessageStream } from 'ai'
 import { createUIChunkEncoder } from './ui-stream'
+// The real label helpers, so "the timing reaches the UI" is asserted as the strings the row
+// renders rather than as fields that merely survived the encoder.
+import { rateLabel, durationLabel } from '../../../app/lib/agent/metrics'
 import type { VoiceEvent } from './orchestrator'
 import type { AgentUIChunk, AgentUIMessage } from '../../../shared/types/agent-ui'
 
@@ -109,6 +112,29 @@ describe('createUIChunkEncoder', () => {
     const { message } = await assemble(encodeTurn([text('x'), { type: 'usage', inputTokens: 5, totalTokens: 9, contextTokens: 7, modelDefId: 'm1' }]))
     expect(message.metadata?.usage).toEqual({ inputTokens: 5, totalTokens: 9, contextTokens: 7, modelDefId: 'm1' })
     expect(Object.keys(message.metadata!.usage!)).not.toContain('outputTokens')
+  })
+
+  // Timing rides the SAME chunk as the tokens. Without it the live readout could only ever show
+  // a token count — duration and tok/s waited for a reload to be read back off the persisted
+  // row, which is the half-delivered state this closes. ws.ts re-emits usage with the finalized
+  // clock just before finish(); this proves the encoder passes those fields through.
+  it('usage metadata carries the turn timing, so duration and tok/s are live', async () => {
+    const { message } = await assemble(encodeTurn([
+      text('x'),
+      { type: 'usage', outputTokens: 40, totalTokens: 50, startedAt: '2026-09-22T00:00:00.000Z', ttftMs: 200, durationMs: 2200 }
+    ]))
+    expect(message.metadata?.usage).toEqual({
+      outputTokens: 40, totalTokens: 50, startedAt: '2026-09-22T00:00:00.000Z', ttftMs: 200, durationMs: 2200
+    })
+    // ...and those are exactly the fields the labels read (app/lib/agent/metrics.ts): 40 tokens
+    // over a 2.0s generating window.
+    expect(rateLabel(message.metadata!.usage!)).toBe('20.0 tok/s')
+    expect(durationLabel(message.metadata!.usage!)).toBe('2.2s')
+  })
+
+  it('omits timing keys entirely when the turn recorded none', async () => {
+    const { message } = await assemble(encodeTurn([text('x'), { type: 'usage', totalTokens: 9 }]))
+    expect(Object.keys(message.metadata!.usage!)).toEqual(['totalTokens'])
   })
 
   it('appends image-embed text that arrives after state:idle into the same message', async () => {

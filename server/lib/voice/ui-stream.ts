@@ -73,7 +73,13 @@ export function createUIChunkEncoder(messageId: string): UIChunkEncoder {
             ...(e.outputTokens !== undefined ? { outputTokens: e.outputTokens } : {}),
             ...(e.totalTokens !== undefined ? { totalTokens: e.totalTokens } : {}),
             ...(e.contextTokens !== undefined ? { contextTokens: e.contextTokens } : {}),
-            ...(e.modelDefId !== undefined ? { modelDefId: e.modelDefId } : {})
+            ...(e.modelDefId !== undefined ? { modelDefId: e.modelDefId } : {}),
+            // Timing, when ws.ts has it. Without these the live readout could only ever show
+            // tokens: duration and tok/s (app/lib/agent/metrics.ts reads durationMs/ttftMs off
+            // exactly this usage object) appeared only after a reload, from the persisted row.
+            ...(e.startedAt !== undefined ? { startedAt: e.startedAt } : {}),
+            ...(e.ttftMs !== undefined ? { ttftMs: e.ttftMs } : {}),
+            ...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {})
           }
           return [{ type: 'message-metadata', messageMetadata: { usage } }]
         }

@@ -27,13 +27,35 @@ defineProps<{
 const emit = defineEmits<{
   undo: [toolCallId: string, undoToken: string]
   retry: [messageId: string]
-  edit: [messageId: string]
+  /** Emitted on SAVE, not on the pencil: the in-place editor below is this component's, so the
+   *  page is handed the finished text rather than being asked to prompt for it. */
+  edit: [messageId: string, text: string]
   fork: [messageId: string]
   branch: [messageId: string, dir: -1 | 1]
   pick: [prompt: string]
   approve: [requestId: string, opts: { remember: boolean; pattern: string }]
   deny: [requestId: string]
 }>()
+
+// Editing a user message happens IN PLACE — the message's own text becomes a textarea with
+// Save/Cancel. Page-level state would be wrong here: the editor belongs to one message in the
+// v-for, and only this component knows which.
+const editingId = ref<string | null>(null)
+const draft = ref('')
+
+function startEdit(m: AgentUIMessage) {
+  editingId.value = m.id
+  // Text parts only: an attachment travels as metadata and is re-sent with the edited turn, so
+  // it must not be flattened into the editable text.
+  draft.value = m.parts.filter(p => p.type === 'text').map(p => p.text).join('')
+}
+function saveEdit() {
+  const id = editingId.value
+  const text = draft.value.trim()
+  editingId.value = null
+  // An edit is a new branch, so an empty one would be a branch with no question in it.
+  if (id && text) emit('edit', id, text)
+}
 </script>
 
 <template>
@@ -56,8 +78,39 @@ const emit = defineEmits<{
       >
         <Message :from="m.role">
           <MessageContent>
+            <!-- In-place edit. Saving does NOT rewrite this message: the page points the leaf
+                 at its parent and re-sends, so the original stays reachable through the pager. -->
+            <div
+              v-if="editingId === m.id"
+              class="flex w-full flex-col gap-2"
+            >
+              <UTextarea
+                v-model="draft"
+                autoresize
+                :rows="2"
+                class="w-full"
+                aria-label="Edit message"
+                autofocus
+                @keydown.esc="editingId = null"
+              />
+              <div class="flex items-center gap-2">
+                <UButton
+                  size="xs"
+                  color="primary"
+                  label="Save"
+                  @click="saveEdit"
+                />
+                <UButton
+                  size="xs"
+                  variant="ghost"
+                  color="neutral"
+                  label="Cancel"
+                  @click="editingId = null"
+                />
+              </div>
+            </div>
             <template
-              v-for="(p, i) in m.parts"
+              v-for="(p, i) in (editingId === m.id ? [] : m.parts)"
               :key="`${m.id}-${i}`"
             >
               <template v-if="p.type === 'text'">
@@ -109,20 +162,18 @@ const emit = defineEmits<{
             >stopped</span>
           </MessageContent>
         </Message>
-        <!-- :branch is hardcoded to a single-branch default here: `branch`/`siblingIds` are
-             populated server-side on ConversationMessageDTO (server/services/conversations.ts)
-             but are NOT threaded onto AgentUIMessage's metadata on the client — neither
-             shared/types/agent-ui.ts's AgentMessageMetadata nor app/lib/agent/to-ui-messages.ts's
-             toUIMessages() carries them across. Wiring real per-message branch data through would
-             need both of those files, which are outside this task's two-file scope
-             (ReplyActions.vue, Conversation.vue) — see task-8-report.md. AgentBranchPager already
-             renders nothing for total <= 1, so this degrades to "no pager shown", matching every
-             thread's actual current behaviour. -->
+        <!-- Real server-computed branch data now that AgentMessageMetadata carries it
+             (shared/types/agent-ui.ts + app/lib/agent/to-ui-messages.ts, widened in Task 9 —
+             the Pick there used to drop `branch`/`siblingIds`, so the pager could never render
+             however correct the server was). A LIVE-streamed message is assembled client-side
+             and has no branch metadata to carry, so it falls back to 1/1 — no pager — until the
+             page refetches the thread, which it does after any turn that created a branch. -->
         <AgentReplyActions
+          v-if="editingId !== m.id"
           :message="m"
-          :branch="{ index: 1, total: 1 }"
+          :branch="m.metadata?.branch ?? { index: 1, total: 1 }"
           @retry="emit('retry', m.id)"
-          @edit="emit('edit', m.id)"
+          @edit="startEdit(m)"
           @fork="emit('fork', m.id)"
           @branch="(d: -1 | 1) => emit('branch', m.id, d)"
         />

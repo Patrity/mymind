@@ -1,13 +1,15 @@
 <script setup lang="ts">
+import { useQueryClient } from '@tanstack/vue-query'
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { uiMessageText } from '~/lib/agent/render'
-import { truncateForRetry } from '~/lib/agent/retry'
 import { contextMeterData } from '~/lib/agent/context-meter'
 
 definePageMeta({ title: 'Agent' })
 
 const voice = useVoice()
 const route = useRoute()
+const conversations = useConversations()
+const queryClient = useQueryClient()
 
 // Home's "Ask the brain" box hands the question over via ?q=, and the composer submits it
 // automatically on arrival — you land in a running answer, not a filled-in box.
@@ -138,9 +140,9 @@ async function toggleMic() {
 
 // Persisted messages -> AgentUIMessage[] (chip placement, legacy fallback, trailing-bubble
 // rule) lives in ~/lib/agent/to-ui-messages so it can be unit-tested.
-async function resume(id: string) {
+async function resume(id: string): Promise<boolean> {
   try {
-    const { conversation, messages } = await useConversations().getConversation(id)
+    const { conversation, messages } = await conversations.getConversation(id)
     // Build first, commit last: if loadConversation throws, the old thread must stay
     // on screen intact rather than showing the new transcript under the old row.
     const next = toUIMessages(messages)
@@ -150,28 +152,148 @@ async function resume(id: string) {
     voice.messages.value = next
     voice.conversationId.value = conversation.id
     voice.conversationTitle.value = conversation.title
+    return true
   } catch (e) {
     // The rail is now the primary way into a thread, so a failed load must say so rather
     // than leaving the previous transcript on screen with a new row highlighted.
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: 'Could not open conversation', description: err?.data?.statusMessage ?? err?.message })
+    return false
   } finally {
     threadsOpen.value = false
   }
 }
 
-/** Re-send the user turn that preceded this assistant message, dropping the assistant
- *  turn and everything after it. This replaces in place — it does NOT fork; parent_id
- *  branching stays deferred. Pure walk-back-and-truncate logic lives in
- *  ~/lib/agent/retry so it's unit-testable without a live voice connection. */
-async function retryTurn(messageId: string) {
-  const plan = truncateForRetry(voice.messages.value, messageId)
-  if (!plan) return
-  // Retrying a reply that is still streaming: its turn would otherwise re-push the message
-  // this truncation just removed.
+// ---------------------------------------------------------------------------
+// Branching: fork, edit, regenerate, and the ‹ n/N › pager
+//
+// Every tree decision is the server's. The client only ever fetches the ACTIVE path, so it
+// cannot resolve a branch parent, a branch tip, or even see that a sibling exists — it moves
+// the leaf through PATCH /api/conversations/:id/leaf and then re-reads.
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-read the thread from the server once a turn stops generating. Two things make this
+ * necessary rather than merely tidy:
+ *
+ * 1. IDS. A live message's id is a `randomUUID` minted for the STREAM
+ *    (server/lib/voice/turn-stream.ts); the row `appendMessages` writes gets its own id, and
+ *    nothing reconciles the two. So every message action addresses an id the server cannot
+ *    find and PATCH /leaf 404s — verified in the browser, where a regenerate on a
+ *    freshly-streamed turn 404s and the identical click after a refetch succeeds.
+ * 2. BRANCH DATA. Only the server can count siblings, so a client-assembled message carries no
+ *    `branch`/`siblingIds` and the ‹ n/N › pager cannot render until the refetch.
+ *
+ * Skipped when the tail message carries a client-only marker (stopped, connection lost): those
+ * exist nowhere but in this list, so re-reading would silently drop them.
+ */
+watch(busy, async (now, was) => {
+  if (!was || now) return
+  const id = voice.conversationId.value
+  if (!id) return
+  const tail = voice.messages.value.at(-1)
+  if (tail?.metadata?.interrupted || tail?.metadata?.errorText) return
+  try {
+    const { messages } = await conversations.getConversation(id)
+    // A new turn may have started while that was in flight — it owns the list now.
+    if (busy.value || voice.conversationId.value !== id) return
+    voice.messages.value = toUIMessages(messages)
+  } catch {
+    // The transcript on screen is right apart from the ids and the pager — a failed refetch
+    // must not replace a correct transcript with nothing.
+  }
+})
+
+/**
+ * Move the thread's active leaf, then re-sync both sides from the server.
+ *
+ * Re-syncing is not cosmetic. The client's transcript is append-only AND the WS session holds
+ * its own copy of the history, so after a leaf move both are still reading the branch that was
+ * active before — the next turn would be answered against the wrong messages. `resume` refetches
+ * the new active path and sends the WS a `load` frame, which the server runs under the same lock
+ * a turn queues onto, so a `sendText` issued straight after is guaranteed to see the new history.
+ */
+async function moveLeaf(messageId: string, op?: 'fork' | 'edit'): Promise<boolean> {
+  const id = voice.conversationId.value
+  if (!id) return false
+  try {
+    await conversations.setLeaf(id, messageId, op)
+  } catch (e) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: op ? 'Could not branch from here' : 'Could not switch branch', description: err?.data?.statusMessage ?? err?.message })
+    return false
+  }
+  // The rail and the thread list read this conversation through vue-query; the leaf move
+  // changed what that query returns.
+  await queryClient.invalidateQueries({ queryKey: ['conversation', id] })
+  return await resume(id)
+}
+
+/** The user message a reply hangs off, walking back along the ACTIVE path. */
+function precedingUserMessage(messageId: string) {
+  const list = voice.messages.value
+  const i = list.findIndex(m => m.id === messageId)
+  if (i < 0) return null
+  for (let j = i - 1; j >= 0; j--) if (list[j]!.role === 'user') return list[j]!
+  return null
+}
+
+/**
+ * An edit is a NEW BRANCH, never a rewrite: the original question and everything it produced
+ * stay reachable through the pager. The leaf goes to the edited message's PARENT, so the
+ * resend lands as its sibling.
+ */
+async function editTurn(messageId: string, nextText: string) {
+  const text = nextText.trim()
+  if (!text) return
+  const attachments = voice.messages.value.find(m => m.id === messageId)?.metadata?.attachments ?? []
+  // Discard first: a reply still streaming must not re-push itself into the transcript that
+  // the re-sync below is about to replace.
   voice.discardTurn()
-  voice.messages.value = plan.messages
-  await voice.sendText(plan.text, speakReply.value, plan.attachments)
+  if (!await moveLeaf(messageId, 'edit')) return
+  // The pager appears when the watcher above re-reads the thread as this turn finishes.
+  await voice.sendText(text, speakReply.value, attachments)
+}
+
+/**
+ * Regenerate a reply — as an EDIT of the question above it, with the text unchanged.
+ *
+ * The spec's literal rule ("hang the new reply off the reply's parent") cannot be honoured:
+ * the WS turn always persists a [user, assistant] PAIR — there is no path that appends an
+ * assistant message alone — so re-sending under the user message would write U → U2 → R2 and
+ * duplicate the question inside the regenerated branch. Going one step further up keeps the
+ * promise the spec actually made (the previous reply stays reachable) and puts the pager on
+ * the question rather than on the reply, which is where chat UIs put it anyway.
+ */
+async function retryTurn(messageId: string) {
+  const user = precedingUserMessage(messageId)
+  if (!user) return
+  await editTurn(user.id, uiMessageText(user))
+}
+
+/**
+ * Fork: point the leaf at this message EXACTLY. The server does not descend for an op — which
+ * is the whole point, since descending would land back on the end of the thread and make a
+ * fork indistinguishable from carrying on. No turn is sent; the next one the user types
+ * continues from here.
+ */
+async function forkFrom(messageId: string) {
+  voice.discardTurn()
+  if (!await moveLeaf(messageId, 'fork')) return
+  toast.add({ color: 'success', title: 'Forked from here', description: 'Your next message continues from this point.' })
+}
+
+/**
+ * ‹ / › on the pager. The sibling to switch to can only come from the server-supplied
+ * `siblingIds` — nothing else on the client knows an off-path branch exists. No `op`, so the
+ * server descends to that sibling's branch TIP and the branch resumes where it was left.
+ */
+async function switchBranch(messageId: string, dir: -1 | 1) {
+  const m = voice.messages.value.find(x => x.id === messageId)
+  const target = (m?.metadata?.siblingIds ?? [])[(m?.metadata?.branch?.index ?? 1) - 1 + dir]
+  if (!target) return
+  voice.discardTurn()
+  await moveLeaf(target)
 }
 
 function startNewConversation() {
@@ -354,6 +476,9 @@ onMounted(() => {
           :hero="!fullBleed"
           @undo="undoTool"
           @retry="retryTurn"
+          @edit="editTurn"
+          @fork="forkFrom"
+          @branch="switchBranch"
           @pick="pickStarter"
           @approve="(id, o) => voice.sendApproval(id, true, o)"
           @deny="id => voice.sendApproval(id, false)"

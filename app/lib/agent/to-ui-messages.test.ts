@@ -89,4 +89,28 @@ describe('toUIMessages', () => {
     const [m] = toUIMessages([msg({ content: 'ok', toolCalls: [null as never] })])
     expect(shape(m!)).toEqual([['text', 'ok']])
   })
+
+  // The pager is driven entirely by these two fields, and this transform used to drop them:
+  // its ResumeMessage Pick listed neither, so however correct the server's branch counting was,
+  // the client received `{ index: 1, total: 1 }` for every message and no pager ever rendered.
+  // Both roles carry them — an edit branches a USER message, a regenerate an assistant one.
+  it('carries branch + siblingIds through to metadata, for both roles', () => {
+    const branch = { index: 2, total: 3 }
+    const siblingIds = ['s1', 'u1', 's3']
+    const [u, a] = toUIMessages([
+      { id: 'u1', role: 'user', content: 'q', branch, siblingIds },
+      { id: 'a1', role: 'assistant', content: 'a', branch: { index: 1, total: 2 }, siblingIds: ['a1', 'a2'] }
+    ])
+    expect(u!.metadata).toEqual({ branch, siblingIds })
+    expect(a!.metadata).toEqual({ branch: { index: 1, total: 2 }, siblingIds: ['a1', 'a2'] })
+    // siblingIds[index - 1] is the message itself — the invariant the pager's
+    // `siblingIds[index - 1 + dir]` pick depends on.
+    expect(u!.metadata!.siblingIds![u!.metadata!.branch!.index - 1]).toBe('u1')
+  })
+
+  it('leaves branch metadata absent when the row carries none, rather than inventing 1/1', () => {
+    const [m] = toUIMessages([msg({ content: 'ok' })])
+    expect(m!.metadata).toEqual({})
+    expect(m!.metadata).not.toHaveProperty('branch')
+  })
 })

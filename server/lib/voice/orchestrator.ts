@@ -23,7 +23,10 @@ export type VoiceEvent =
   // exactly what a resumed thread will show.
   | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind }
   | { type: 'subagent'; parentCallId: string; steps: SubagentStep[] }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string }
+  // The timing fields are NOT produced by the model stream (the run loop emits tokens only) —
+  // ws.ts owns the turn clock and re-emits usage with them filled in once the turn ends, so the
+  // live message-metadata chunk carries the same duration/tok-s the persisted row will.
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string; startedAt?: string; ttftMs?: number; durationMs?: number }
   | { type: 'audio-begin'; segmentId: number; sampleRate: number }
   | { type: 'audio'; bytes: Uint8Array }
   | { type: 'audio-end'; segmentId: number }

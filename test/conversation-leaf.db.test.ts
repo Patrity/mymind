@@ -17,7 +17,7 @@ import { sql } from 'drizzle-orm'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 const { useDb } = await import('../server/db')
-const { appendMessages, setActiveLeaf, getConversation, captureTurnLeaf } = await import('../server/services/conversations')
+const { appendMessages, setActiveLeaf, setBranchLeaf, getConversation, captureTurnLeaf } = await import('../server/services/conversations')
 
 // drizzle-orm/node-postgres's db.execute() returns a pg `Result`, not a plain array — unwrap
 // `.rows` (same correction as test/conversation-path.db.test.ts).
@@ -125,6 +125,101 @@ describe('setActiveLeaf scoping', () => {
     const resolved = await setActiveLeaf(convId, '00000000-0000-4000-8000-000000000000')
     expect(resolved).toBeNull()
     expect(await activeLeafOf(convId)).toBe(before)
+  })
+})
+
+/**
+ * setBranchLeaf is setActiveLeaf's opposite number: it must NOT descend.
+ *
+ * The bug it fixes is invisible to every test above, because setActiveLeaf's descent is
+ * *correct* for switching branches and only wrong for creating one. Routing a fork through it
+ * lands the leaf back on the tip of the branch being forked — so "fork from message M" and "just
+ * carry on typing" become the same operation, and the fork silently does nothing.
+ */
+describe('setBranchLeaf sets branchParent\'s answer exactly, with no descent', () => {
+  // Q1 -> A1 -> Q2 -> A2, all on one trunk. Forking from A1 is the interesting case: it has
+  // descendants, so a descending resolver would walk past it to A2.
+  async function trunk() {
+    const conv = await newConversation('-branchleaf-' + Math.random().toString(16).slice(2, 8))
+    await appendMessages(conv, [msg('user', 'Q1'), msg('assistant', 'A1')])
+    await appendMessages(conv, [msg('user', 'Q2'), msg('assistant', 'A2')])
+    const all = rows<{ id: string, content: string, parent_id: string | null }>(await useDb().execute(
+      sql`select id, content, parent_id from conversation_messages where conversation_id = ${conv}::uuid order by created_at, id`
+    ))
+    return { conv, byContent: (c: string) => all.find(r => r.content === c)! }
+  }
+
+  it('fork lands on the message ITSELF, where setActiveLeaf would have descended to the branch tip', async () => {
+    const { conv, byContent } = await trunk()
+    const a1 = byContent('A1')
+    const a2 = byContent('A2')
+
+    // The defect, demonstrated first: the descending resolver walks A1 -> Q2 -> A2.
+    expect(await setActiveLeaf(conv, a1.id)).toBe(a2.id)
+
+    // setBranchLeaf does not. The leaf is A1 exactly, so the next turn continues FROM A1.
+    expect(await setBranchLeaf(conv, a1.id, 'fork')).toBe(a1.id)
+    expect(await activeLeafOf(conv)).toBe(a1.id)
+
+    // And a turn appended from there really does hang off A1 — a sibling of Q2, not its child.
+    await appendMessages(conv, [msg('user', 'Q2-fork'), msg('assistant', 'A2-fork')])
+    const forked = rows<{ parent_id: string | null, content: string }>(await useDb().execute(
+      sql`select parent_id, content from conversation_messages where conversation_id = ${conv}::uuid`
+    )).find(r => r.content === 'Q2-fork')!
+    expect(forked.parent_id).toBe(a1.id)
+    // The original continuation is untouched and still reachable.
+    expect(byContent('Q2').parent_id).toBe(a1.id)
+  })
+
+  it('edit lands on the target\'s PARENT, so the rewritten turn is a sibling of the original', async () => {
+    const { conv, byContent } = await trunk()
+    const q2 = byContent('Q2')
+    const a1 = byContent('A1')
+
+    expect(await setBranchLeaf(conv, q2.id, 'edit')).toBe(a1.id)
+    expect(await activeLeafOf(conv)).toBe(a1.id)
+
+    await appendMessages(conv, [msg('user', 'Q2-edited'), msg('assistant', 'A2-edited')])
+    const edited = rows<{ parent_id: string | null, content: string }>(await useDb().execute(
+      sql`select parent_id, content from conversation_messages where conversation_id = ${conv}::uuid`
+    )).find(r => r.content === 'Q2-edited')!
+    expect(edited.parent_id).toBe(a1.id)
+    expect(edited.parent_id).toBe(byContent('Q2').parent_id)   // siblings, not a rewrite
+
+    // Both versions of the question are now reachable, and the pager can see two of them.
+    const path = (await getConversation(conv))!.messages
+    expect(path.map(m => m.content)).toEqual(['Q1', 'A1', 'Q2-edited', 'A2-edited'])
+    const onPath = path.find(m => m.content === 'Q2-edited')!
+    expect(onPath.branch).toEqual({ index: 2, total: 2 })
+    expect(onPath.siblingIds).toEqual([byContent('Q2').id, onPath.id])
+  })
+
+  it('regenerate lands on the reply\'s parent — kept tested even though the UI reaches it via edit', async () => {
+    const { conv, byContent } = await trunk()
+    expect(await setBranchLeaf(conv, byContent('A2').id, 'regenerate')).toBe(byContent('Q2').id)
+    expect(await activeLeafOf(conv)).toBe(byContent('Q2').id)
+  })
+
+  it('returns null and writes NOTHING for a root (no parent a leaf column can express) and for a foreign id', async () => {
+    const { conv, byContent } = await trunk()
+    await setBranchLeaf(conv, byContent('A1').id, 'fork')
+    const before = await activeLeafOf(conv)
+
+    // Q1 is the root: an edit of it would have to become a SECOND root, which active_leaf_id
+    // cannot say. null, and the route turns that into a 404.
+    expect(await setBranchLeaf(conv, byContent('Q1').id, 'edit')).toBeNull()
+    expect(await activeLeafOf(conv)).toBe(before)
+
+    // ...but a FORK of that same root is fine — it hangs off the root itself.
+    expect(await setBranchLeaf(conv, byContent('Q1').id, 'fork')).toBe(byContent('Q1').id)
+
+    // Scoping: a real message id from another conversation must be refused, writing nothing.
+    const other = await newConversation('-branchleaf-other')
+    await appendMessages(other, [msg('user', 'elsewhere-Q'), msg('assistant', 'elsewhere-A')])
+    const theirs = (await getConversation(other))!.messages.find(m => m.content === 'elsewhere-A')!
+    const beforeForeign = await activeLeafOf(conv)
+    expect(await setBranchLeaf(conv, theirs.id, 'fork')).toBeNull()
+    expect(await activeLeafOf(conv)).toBe(beforeForeign)
   })
 })
 

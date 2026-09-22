@@ -28,6 +28,16 @@ export interface AgentMessageMetadata {
   usage?: MessageUsage
   /** User messages only — the refs sent with the turn (retry re-sends them). */
   attachments?: AttachmentRef[]
+  /** Resume only — the server-computed position among this message's siblings, which is the
+   *  ONLY thing the ‹ n/N › pager renders. A live-streamed message is assembled client-side
+   *  and carries none, so it degrades to `total: 1` (no pager) until the transcript is
+   *  refetched; the page refetches after any turn that created a branch. */
+  branch?: { index: number; total: number }
+  /** Resume only — every sibling of this message in read order, including it, so
+   *  `siblingIds[branch.index - 1] === id`. Only the ACTIVE path is ever fetched, so these
+   *  ids are the client's only handle on the branches it is not reading: the pager switches
+   *  by picking `siblingIds[index - 1 + dir]`. */
+  siblingIds?: string[]
   /** Client-side: stopped, barged in on, or superseded by a newer turn. */
   interrupted?: true
   /** Client-side: the turn ended with an error chunk or the socket dropped. */

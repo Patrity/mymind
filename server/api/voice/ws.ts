@@ -270,10 +270,26 @@ export default defineWebSocketHandler({
         // own await, not at persist time.
         if (turnConversationIdForRescue) turnLeafId = await captureTurnLeaf(turnConversationIdForRescue)
         s.history = await exec!(ac.signal, emit, context)
+        // Finalize the timing ONCE, here, and use the same object for the live chunk below and
+        // for the persist further down — so the duration and tok/s the user watches appear are
+        // the ones a reload shows, instead of two independently-sampled clocks disagreeing.
+        const finalUsage = buildUsageWithTiming()
         // Close the message BEFORE persisting: the UI should finish promptly; persistence
         // (and the `conversation` frame for a new thread) follows.
         if (ac.signal.aborted) ts.abort()
-        else ts.finish()
+        else {
+          // The live `usage` chunk carried tokens and the model id but no timing (see
+          // server/lib/voice/ui-stream.ts), so duration and tok/s — a goal of this cycle —
+          // only ever showed up after a reload, read back off the persisted row. Re-emitting
+          // usage with the timing filled in reuses the message-metadata chunk that was already
+          // flowing: no new frame type and no protocol change.
+          //
+          // Guarded so this can never OPEN a message that never started: both conditions imply
+          // a chunk already went out (a usage event, or an assistant token that set ttftMs), and
+          // turn-stream starts the message on the first chunk.
+          if (turnUsage || ttftMs !== undefined) ts.emit({ type: 'usage', ...finalUsage })
+          ts.finish()
+        }
         const added = s.history.slice(prevLen)                // [user] or [user, assistant]
         if (added.length && !ac.signal.aborted) {
           const created = prevLen === 0 && !s.conversationId
@@ -290,7 +306,8 @@ export default defineWebSocketHandler({
             speakFlag,
             attachments: turnAttachments,
             reasoning: reasoningText,
-            usage: buildUsageWithTiming()
+            // The same object the live chunk above carried — see the note there.
+            usage: finalUsage
           }), turnLeafId)
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
           persisted = true

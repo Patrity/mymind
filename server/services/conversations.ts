@@ -242,6 +242,33 @@ export async function setActiveLeaf(conversationId: string, leafId: string): Pro
   return resolved
 }
 
+/**
+ * Point the thread where a NEW branch should hang from — `branchParent`'s answer, set EXACTLY,
+ * with no `branchTip` descent.
+ *
+ * The descent in `setActiveLeaf` above is right for switching to an existing sibling ("resume
+ * that branch where I left it") and wrong for every branch-creating op. A fork is the clearest
+ * case: `setActiveLeaf(conv, M)` descends straight back to the branch's tip, so the next turn
+ * chains onto the end of the thread — "carry on as normal", which is the exact opposite of a
+ * fork. Edit and regenerate would descend off their target's parent in the same way.
+ *
+ * Returns the id actually written, or null when `messageId` is not in this conversation — or
+ * when `branchParent` answers null because the target is a ROOT (an edit/regenerate of the very
+ * first message would have to hang off "no parent", and `conversations.active_leaf_id` has no
+ * way to say "start a second root"; the caller 404s). Scoping is `branchParent`'s: it selects
+ * the row under `conversationId`, and a parent of a row in this conversation is in it too.
+ */
+export async function setBranchLeaf(
+  conversationId: string, messageId: string, op: 'fork' | 'edit' | 'regenerate'
+): Promise<string | null> {
+  const parent = await branchParent(conversationId, messageId, op)
+  if (!parent) return null
+
+  await useDb().update(conversations).set({ activeLeafId: parent, updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId))
+  return parent
+}
+
 export async function getConversation(
   id: string
 ): Promise<{ conversation: ConversationDTO; messages: ConversationMessageDTO[] } | null> {
