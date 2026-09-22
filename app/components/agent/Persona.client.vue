@@ -24,7 +24,7 @@ const variant = computed(() => personaVariant(settings.value.personaVariant))
 const sizeClass = computed(() => {
   switch (props.size ?? 'inline') {
     case 'hero':
-      return 'size-40'
+      return 'size-56 sm:size-72'
     case 'full':
       // h-full (not a fixed size): the voice-mode overlay's wrapper is the one that shrinks
       // on a short viewport (index.vue), so the Persona must follow it there instead of
