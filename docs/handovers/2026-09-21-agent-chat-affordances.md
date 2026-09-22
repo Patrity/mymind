@@ -21,9 +21,9 @@ status: >
   and now BRANCHES** — the previous reply is kept and reachable through a ‹ n/N › pager, and
   `app/lib/agent/retry.ts` (`truncateForRetry`) is deleted. Live-validated in a real browser against
   a real model (Haiku 4.5): **all 10 items PASS**, including a pre-cycle thread resuming untouched
-  and the cycle-65 one-WebGL2-canvas invariant. Gates: `pnpm typecheck` exit 0 / `pnpm test` 219
-  files, 1,933 tests / `pnpm test:db` 25 files, 246 tests / production build at 4096 MB passes
-  (**267 client JS files, 2,112,258 B gzip — no new chunk, +94 B, +0.004%** over cycle 67).
+  and the cycle-65 one-WebGL2-canvas invariant. Gates: `pnpm typecheck` exit 0 / `pnpm test` 220
+  files, 1,953 tests / `pnpm test:db` 25 files, 246 tests / production build at 4096 MB passes
+  (**267 client JS files, 2,112,791 B gzip — no new chunk, +627 B, +0.03%** over cycle 67).
   **The most useful thing in this document is not the feature: it is that five of this cycle's
   findings were tests that could not fail, and every one was caught by deliberately breaking the
   code and watching the test stay green.**
@@ -466,11 +466,11 @@ child**. No pre-existing conversation was modified or deleted.
 
 ```
 pnpm typecheck                                    → exit 0, 0 errors
-pnpm test                                          → 219 files, 1,933 tests passed
+pnpm test                                          → 220 files, 1,953 tests passed
 pnpm test:db                                       → 25 files, 246 tests passed
 NODE_OPTIONS=--max-old-space-size=4096 pnpm build  → "Build complete!",
                                                      .output/server/index.mjs present (939 B)
-                                                     267 client JS files / 2,112,258 B gzip
+                                                     267 client JS files / 2,112,791 B gzip
                                                      total output 70.9 MB (21 MB gzip)
 ```
 
@@ -482,12 +482,12 @@ code — `/usr/bin/time` has reported 0 on an OOM in this repo before.)
 | Point | Client JS files | gzip total |
 |---|---|---|
 | Cycle 67 (the branch's inherited baseline, as recorded) | 267 | 2,112,164 B |
-| Cycle 68 (this handover) | **267** | **2,112,258 B** |
-| **Delta** | **0** | **+94 B (+0.004%)** |
+| Cycle 68 (this handover) | **267** | **2,112,791 B** |
+| **Delta** | **0** | **+627 B (+0.03%)** |
 
 Measured with deploy.yml's exact build command, `.output/` removed first, as
 `cat .output/public/_nuxt/*.js | gzip -c | wc -c` over 7,385,142 raw bytes. **Two caveats worth
-stating rather than burying**, because +94 B for a cycle that adds a component, a module and ~250
+stating rather than burying**, because +627 B for a cycle that adds a component, a module and ~250
 lines of page wiring reads as suspiciously small:
 
 1. **No new chunk was created.** `BranchPager.vue` and `metrics.ts` are small and were bundled into
@@ -513,3 +513,79 @@ task. The work itself did land — `d32977c` is on the branch and its result was
 independently during this cycle's validation (77.2% visible at 800×480, above the 74% bar Ruling 24
 set) — but the ledger's own record of that task is incomplete, and it is better to say so here than
 to let a future reader infer a closure that was never written down.
+
+(That ledger gap was a timing artefact: the Task 10 completion line was appended by the controller
+after this document's author had already read the file. It is present now.)
+
+## What the whole-branch review found, and the fix wave that closed it
+
+This section was written after the document above, because the whole-branch review runs after the
+last task. **It is the most important part of the handover for anyone touching this code next.**
+
+Every one of the eleven tasks passed its own review. The whole-branch pass then looked for what a
+per-task review structurally cannot see — how the pieces behave together — and it passed the branch
+with two Important findings and one structural observation. **All three lived in the same file, on
+the same side of one seam.**
+
+Both headline failure modes came back clear. `loadActivePath` has exactly two callers and the entire
+tree touches `conversationMessages` in only three non-test files, so no new query, client-side
+reorder or cache can serve a second version of a transcript. All five writers of `active_leaf_id`
+were traced and none can leave the column pointing mid-chain.
+
+**Important 1 — a half-failed leaf move stranded the thread.** `moveLeaf` returned `false` both when
+the `PATCH` failed (leaf untouched, nothing to undo) and when the `PATCH` succeeded but `resume()`
+then failed (leaf moved, must be put back). The caller read that single `false` as "nothing
+happened" and skipped the restore. A forced probe showed the cost precisely: the server-side active
+path went **4 messages → 2**, silently, with no toast, while the old untruncated transcript stayed on
+screen — UI and database disagreeing. `moveLeaf` now returns `'moved' | 'blocked' | 'stranded'` and
+only `'stranded'` triggers a restore; `switchBranch` deliberately does not restore, because there the
+leaf is legitimately on the other branch's tip.
+
+**Important 2 — the post-turn re-read raced the persist on every turn but the first.** `busy` flips
+on `state: 'idle'`, which is emitted *inside* `exec`, before `appendMessages`. Task 9's fix (sending
+the `conversation` frame after the append) protected only the first turn of a thread, where the id's
+arrival is the trigger; every later turn fired on `busy` alone. When the read won, the
+`messages.length < before.length` guard correctly refused the short read — and then returned with
+`syncPending` already `false`, so **there was no retry**. That turn kept its stream UUIDs, which are
+not row ids, so fork, edit and regenerate all 404'd and no pager rendered until another turn or a
+reload. It is probabilistic — the append usually wins — which is exactly why ten passing browser
+checks did not catch it.
+
+**The fix is a new post-commit WebSocket frame, and the reasoning matters more than the code.** The
+controller proposed triggering the re-read off the existing `publishChange` SSE, on the principle
+that a correct signal beats a retry on a wrong one. The implementer checked and pushed back: the SSE
+path terminates in `dispatchLiveEvent` → `invalidateQueries` with no raw-event subscription, and
+`useConversation` (`['conversation', id]`) has **zero callers**, so that invalidation is inert.
+Mounting it to obtain the signal would have put **a cached transcript into the page's read path** —
+precisely the property the whole-branch review had just cleared. The proposed fix would have
+reopened failure mode 1 in order to close failure mode 2. Instead `ws.ts` now sends
+`{ type: 'persisted', conversationId }` immediately after `appendMessages`, on the success path and
+the rescue path both, which arms `syncPending` and therefore doubles as the retry, bounded to one
+extra read per turn. `persisted = true` is hoisted above the sends so a dead peer cannot cause a
+double-append, and the re-review confirmed nothing between the flag and its old position persists
+anything — the unfinished-turn rescue is not narrowed.
+
+**The structural finding: the client half of branching had no automated coverage at all.** Breaking
+`switchBranch`'s sibling pick by one index reddened **nothing** — typecheck clean, 1,933 unit tests
+green, 246 DB tests green. By contrast three server-side breaks reddened tests at three different
+layers (dropping `siblingIds` server-side → 3 DB tests; dropping it in the client transform → 1 unit
+test; `branchParent` resolving fork to the parent → 4 DB tests), which is what a real seam looks
+like. The pure selection logic was extracted as `siblingTarget` and tested; the same off-by-one now
+reddens 9 tests. The re-review confirmed `switchBranch` genuinely calls it — a pure function the
+component does not call is worse than no test, because it looks like coverage.
+
+Both probes were forced-ordering A/B tests rather than lucky passes, which is the only honest way to
+verify a probabilistic bug: a 2.5 s delay before `appendMessages` (fix off → *"That message is not in
+this conversation"*; fix on → pager `2/2`), and a one-shot forced re-read failure (fix off → active
+path 4 → 2 with no toast; fix on → stays 4, with *"Fork not sent / The thread is back where it
+was."*).
+
+**One cosmetic nit left unfixed:** the rescue path's `peer.send` sits inside the `try`, so sending to
+a closed socket logs *"rescuing an unfinished turn failed"* after the rows have actually committed.
+A misleading log line only — no data loss and no re-append — but worth knowing before it sends
+someone chasing a phantom.
+
+**The honest summary of whether the eleven tasks compose:** on the server, yes. The one place they
+did not was the WS-turn/page boundary, where Tasks 6 and 9 both had to answer "when are the rows
+committed?" and it was patched for the first turn rather than fixed for all turns. That is the seam
+to be suspicious of if something here misbehaves later.
