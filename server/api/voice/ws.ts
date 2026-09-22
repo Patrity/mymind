@@ -317,9 +317,19 @@ export default defineWebSocketHandler({
             // The same object the live chunk above carried — see the note there.
             usage: finalUsage
           }), turnLeafId)
-          if (newThreadFrame) peer.send(newThreadFrame)
-          publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
+          // Set BEFORE anything that can throw below: the rows are committed at this point, and
+          // the `finally` rescue below keys off this flag. A `peer.send` to a socket that closed
+          // mid-turn would otherwise unwind into the catch with `persisted` still false and make
+          // the rescue append the same turn a second time.
           persisted = true
+          if (newThreadFrame) peer.send(newThreadFrame)
+          // The page's post-turn re-read is armed by THIS, not by `state:'idle'` — the
+          // orchestrator emits idle from inside exec, before the append, so a read armed by idle
+          // races the persist and can come back without the rows it went looking for. This is
+          // sent once the transaction has returned, on every turn, which is what the first-turn
+          // `conversation` frame above only achieved for the first turn of a thread.
+          peer.send(JSON.stringify({ type: 'persisted', conversationId: s.conversationId }))
+          publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
         }
       } catch (err) {
         if ((err as Error).name === 'AbortError') { ts?.abort(); return }
@@ -355,6 +365,10 @@ export default defineWebSocketHandler({
                 usage: buildUsageWithTiming()
               }), turnLeafId)
               publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: convId })
+              // The rescued rows are real rows, so the page's re-read must be armed for them
+              // too — otherwise a turn that errored keeps its stream uuids for good. Last,
+              // because a send to a socket that has since closed must not skip publishChange.
+              peer.send(JSON.stringify({ type: 'persisted', conversationId: convId }))
             } catch (persistErr) {
               // Last resort only — nothing above this can recover the turn now.
               console.error('[agent] rescuing an unfinished turn failed:', persistErr)

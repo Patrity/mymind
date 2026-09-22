@@ -1,16 +1,15 @@
 <script setup lang="ts">
-import { useQueryClient } from '@tanstack/vue-query'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { uiMessageText } from '~/lib/agent/render'
 import { contextMeterData } from '~/lib/agent/context-meter'
+import { siblingTarget, precedingUserMessage, restorableLeafId } from '~/lib/agent/branching'
 
 definePageMeta({ title: 'Agent' })
 
 const voice = useVoice()
 const route = useRoute()
 const conversations = useConversations()
-const queryClient = useQueryClient()
 
 // Home's "Ask the brain" box hands the question over via ?q=, and the composer submits it
 // automatically on arrival — you land in a running answer, not a filled-in box.
@@ -141,7 +140,11 @@ async function toggleMic() {
 
 // Persisted messages -> AgentUIMessage[] (chip placement, legacy fallback, trailing-bubble
 // rule) lives in ~/lib/agent/to-ui-messages so it can be unit-tested.
-async function resume(id: string): Promise<boolean> {
+// `quiet` suppresses the generic "Could not open conversation" toast for callers that know
+// something more specific about what just failed — a branch move's re-read failing is not the
+// user asking to open a thread, and the honest message there is about the THREAD's state (the
+// leaf has already moved), not about a fetch. Those callers must say something themselves.
+async function resume(id: string, opts?: { quiet?: boolean }): Promise<boolean> {
   // A fork armed against the transcript being replaced does not apply to the new one.
   pendingFork.value = null
   try {
@@ -159,8 +162,10 @@ async function resume(id: string): Promise<boolean> {
   } catch (e) {
     // The rail is now the primary way into a thread, so a failed load must say so rather
     // than leaving the previous transcript on screen with a new row highlighted.
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Could not open conversation', description: err?.data?.statusMessage ?? err?.message })
+    if (!opts?.quiet) {
+      const err = e as { data?: { statusMessage?: string }, message?: string }
+      toast.add({ color: 'error', title: 'Could not open conversation', description: err?.data?.statusMessage ?? err?.message })
+    }
     return false
   } finally {
     threadsOpen.value = false
@@ -196,14 +201,28 @@ const pendingFork = ref<{ id: string, preview: string } | null>(null)
 const syncPending = ref(false)
 watch(busy, (now, was) => { if (was && !now) syncPending.value = true })
 
-// Keyed on the conversation id as well as the flag, because on the FIRST turn of a new thread
-// the id does not exist yet when the turn goes idle: the orchestrator emits `idle` before
-// ws.ts has created the conversation. Waiting only on `busy` therefore skipped the re-read
-// exactly once per thread — on its first turn, which is the likeliest moment for someone to
-// try fork or regenerate, and it failed with "That message is not in this conversation".
-// The id's arrival is the cue, and ws.ts now sends that frame AFTER the append so the arrival
-// also means the rows are committed.
-watch([syncPending, () => voice.conversationId.value], async () => {
+// The only POST-COMMIT signal this page has. `state:'idle'` is emitted inside the orchestrator's
+// exec (server/lib/voice/orchestrator.ts), which is before `ts.finish()` and well before
+// `appendMessages` returns — so a re-read armed by `busy` alone races the persist and, when it
+// wins, comes back without this turn's rows. The length guard below then (correctly) refuses it,
+// and the turn is left holding stream uuids: fork/edit/regenerate 404 and no pager renders until
+// another turn or a reload. ws.ts sends this frame immediately after the append commits, on every
+// turn, so arming on it cannot lose that race — and because a lost race clears `syncPending`, the
+// frame re-arming it IS the retry, bounded to exactly one extra read per turn.
+watch(() => voice.turnPersisted.value, () => { syncPending.value = true })
+
+// `busy` is a watch SOURCE, not just a guard: with TTS on, the client stays 'speaking' until
+// playback drains, so the persisted frame can land while `busy` is still true. Without `busy`
+// here the handler would bail and never re-run — `syncPending` is already `true`, so the busy
+// watcher above re-setting it is not a change and would not re-trigger anything.
+//
+// Keyed on the conversation id too, because on the FIRST turn of a new thread the id does not
+// exist yet when the turn goes idle: the orchestrator emits `idle` before ws.ts has created the
+// conversation. Waiting only on `busy` therefore skipped the re-read exactly once per thread —
+// on its first turn, which is the likeliest moment for someone to try fork or regenerate, and it
+// failed with "That message is not in this conversation". The id's arrival is the cue, and ws.ts
+// sends that frame AFTER the append so the arrival also means the rows are committed.
+watch([syncPending, () => voice.conversationId.value, busy], async () => {
   if (!syncPending.value || busy.value) return
   const id = voice.conversationId.value
   if (!id) return   // a new thread's id has not landed yet; this re-runs when it does
@@ -218,7 +237,8 @@ watch([syncPending, () => voice.conversationId.value], async () => {
     if (busy.value || voice.conversationId.value !== id) return
     // A turn only ever APPENDS to the active path, so a shorter result means this read raced
     // the persist. Refusing it keeps the one guarantee that matters: a re-read can never hide
-    // messages that are on screen. The next turn re-syncs.
+    // messages that are on screen. The `persisted` frame re-arms the watcher after the commit,
+    // so a refused read is retried on THIS turn rather than being dropped until the next one.
     if (messages.length < before.length) return
     voice.messages.value = toUIMessages(messages)
   } catch {
@@ -235,30 +255,30 @@ watch([syncPending, () => voice.conversationId.value], async () => {
  * active before — the next turn would be answered against the wrong messages. `resume` refetches
  * the new active path and sends the WS a `load` frame, which the server runs under the same lock
  * a turn queues onto, so a `sendText` issued straight after is guaranteed to see the new history.
+ *
+ * The two failures are NOT the same failure, and collapsing them is how a thread gets silently
+ * truncated. `blocked` means the PATCH never landed — the leaf is untouched and there is nothing
+ * to undo. `stranded` means the PATCH DID land and the re-read then failed: the leaf has already
+ * moved, the screen still shows the old (longer) transcript because `resume` commits last, and
+ * whoever asked for the move now owns putting it back.
  */
-async function moveLeaf(messageId: string, op?: 'fork' | 'edit'): Promise<boolean> {
+type LeafMove = 'moved' | 'blocked' | 'stranded'
+
+async function moveLeaf(messageId: string, op?: 'fork' | 'edit'): Promise<LeafMove> {
   const id = voice.conversationId.value
-  if (!id) return false
+  if (!id) return 'blocked'
   try {
     await conversations.setLeaf(id, messageId, op)
   } catch (e) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: op ? 'Could not branch from here' : 'Could not switch branch', description: err?.data?.statusMessage ?? err?.message })
-    return false
+    return 'blocked'
   }
-  // The rail and the thread list read this conversation through vue-query; the leaf move
-  // changed what that query returns.
-  await queryClient.invalidateQueries({ queryKey: ['conversation', id] })
-  return await resume(id)
-}
-
-/** The user message a reply hangs off, walking back along the ACTIVE path. */
-function precedingUserMessage(messageId: string) {
-  const list = voice.messages.value
-  const i = list.findIndex(m => m.id === messageId)
-  if (i < 0) return null
-  for (let j = i - 1; j >= 0; j--) if (list[j]!.role === 'user') return list[j]!
-  return null
+  // The leaf HAS moved from here on. `resume` is asked to stay quiet about its own failure: the
+  // truthful message is about where the thread now is, and only the caller knows that.
+  // (No vue-query invalidation here: the key `['conversation', id]` has no subscriber, and the
+  // PATCH's own publishChange already invalidates it and the rail's list over SSE.)
+  return await resume(id, { quiet: true }) ? 'moved' : 'stranded'
 }
 
 /**
@@ -271,11 +291,25 @@ function precedingUserMessage(messageId: string) {
  */
 async function restoreLeaf(leafId: string | undefined, what: string) {
   const id = voice.conversationId.value
-  if (!leafId || !id) return
+  if (!id) return
+  // `restorableLeafId` returns undefined when the tail of the transcript is still the live
+  // stream's message, whose id is a stream uuid rather than a row id. There is no safe PATCH to
+  // make then — the id 404s, and the last id we DO recognise belongs to the turn before the leaf,
+  // so "restoring" to it would truncate the thread rather than repair it. Say so instead.
+  if (!leafId) {
+    toast.add({ color: 'error', title: `${what} not sent, and the thread could not be restored`, description: 'Reload the page to get the full thread back.' })
+    return
+  }
   try {
     await conversations.setLeaf(id, leafId)   // no op: descend, a no-op for a message that IS the leaf
-    await resume(id)
-    toast.add({ color: 'warning', title: `${what} not sent`, description: 'The thread is back where it was.' })
+    // The leaf is back either way; whether the screen could be refreshed is a separate fact, and
+    // the description says which of the two happened rather than promising both.
+    const shown = await resume(id, { quiet: true })
+    toast.add({
+      color: 'warning',
+      title: `${what} not sent`,
+      description: shown ? 'The thread is back where it was.' : 'The thread is back where it was — reload to see it.'
+    })
   } catch (e) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
     toast.add({ color: 'error', title: `${what} not sent, and the thread could not be restored`, description: err?.data?.statusMessage ?? err?.message })
@@ -286,15 +320,27 @@ async function restoreLeaf(leafId: string | undefined, what: string) {
  * Move the leaf, send the turn, and put the leaf back if the turn never goes out. Shared by
  * edit and fork because the hazard is theirs jointly: between the move and the send, the thread
  * is truncated, and a send that returns false (or throws) would leave it that way.
+ *
+ * There are TWO exits where the leaf has moved and no turn went out, not one. The obvious one is
+ * `sendText` failing. The other is a `moveLeaf` that PATCHed successfully and then failed to
+ * re-read — `stranded` — which used to read as "nothing happened" and skip the restore entirely,
+ * leaving the thread truncated in the database while the screen still showed it whole.
  */
 async function branchAndSend(messageId: string, op: 'fork' | 'edit', text: string, speak: boolean, attachments: AttachmentRef[], what: string): Promise<boolean> {
   // The active path ends AT the leaf, so its last message IS the leaf — captured before the
-  // move, because `moveLeaf` re-reads the thread and replaces this list.
-  const previousLeaf = voice.messages.value.at(-1)?.id
+  // move, because `moveLeaf` re-reads the thread and replaces this list. Undefined when that
+  // tail is a live-stream message rather than a persisted row; restoreLeaf handles that.
+  const previousLeaf = restorableLeafId(voice.messages.value)
   // Discard first: a reply still streaming must not re-push itself into the transcript that
   // the re-sync is about to replace.
   voice.discardTurn()
-  if (!await moveLeaf(messageId, op)) return false
+  const move = await moveLeaf(messageId, op)
+  if (move !== 'moved') {
+    // Only `stranded` left the leaf somewhere it should not be; `blocked` already toasted and
+    // touched nothing.
+    if (move === 'stranded') await restoreLeaf(previousLeaf, what)
+    return false
+  }
   let sent = false
   try {
     sent = await voice.sendText(text, speak, attachments)
@@ -329,8 +375,13 @@ async function editTurn(messageId: string, nextText: string) {
  * the question rather than on the reply, which is where chat UIs put it anyway.
  */
 async function retryTurn(messageId: string) {
-  const user = precedingUserMessage(messageId)
-  if (!user) return
+  const user = precedingUserMessage(voice.messages.value, messageId)
+  // Narrow (a rescued turn always writes the user row first), but every other failure on this
+  // surface toasts — a button that can do nothing and say nothing reads as a broken button.
+  if (!user) {
+    toast.add({ color: 'warning', title: 'Nothing to regenerate', description: 'There is no question above this reply to re-send.' })
+    return
+  }
   await editTurn(user.id, uiMessageText(user))
 }
 
@@ -369,10 +420,15 @@ async function sendTurn(text: string, speak = false, attachments: AttachmentRef[
  */
 async function switchBranch(messageId: string, dir: -1 | 1) {
   const m = voice.messages.value.find(x => x.id === messageId)
-  const target = (m?.metadata?.siblingIds ?? [])[(m?.metadata?.branch?.index ?? 1) - 1 + dir]
+  const target = siblingTarget(m?.metadata?.siblingIds, m?.metadata?.branch?.index, dir)
   if (!target) return
   voice.discardTurn()
-  await moveLeaf(target)
+  // No restore on `stranded` here, unlike branchAndSend: the leaf landed on the OTHER branch's
+  // tip, which is a valid leaf hiding nothing — the branch just switched is reachable from it
+  // through the same pager. Only the screen is behind, so say that and leave the leaf alone.
+  if (await moveLeaf(target) === 'stranded') {
+    toast.add({ color: 'warning', title: 'Switched branch, but could not show it', description: 'Reload the page to see the branch you switched to.' })
+  }
 }
 
 function startNewConversation() {

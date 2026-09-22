@@ -4,11 +4,19 @@ import type { MessageUsage } from '~~/shared/types/conversation'
  * Output tokens per second over the GENERATING window — duration minus the wait for the
  * first token, so a slow model start does not read as slow generation.
  *
- * Known inaccuracy, stated rather than hidden: a turn that calls tools spends much of its
- * wall-clock waiting on them, and that time is still inside this window, so such a turn reads
- * slower than the model actually generated. `durationLabel` is displayed beside this so a low
- * figure is attributable. Measuring only the streaming intervals would be more accurate and
- * more machinery than a monitoring readout justifies.
+ * Known inaccuracies, stated rather than hidden — both are time inside the window that the model
+ * did not spend generating, so both read as a LOW tok/s rather than a high one:
+ *
+ * 1. Tools. A turn that calls tools spends much of its wall-clock waiting on them, and that wait
+ *    is inside this window.
+ * 2. Speech. `durationMs` is sampled when `exec` returns (server/api/voice/ws.ts), which for a
+ *    spoken turn (`speak: true`) is after TTS synthesis — and synthesis happens after the first
+ *    token, so it falls inside the window too. A spoken turn therefore under-reads by roughly
+ *    its synthesis time, for the same reason and with the same consequence as a tool call.
+ *
+ * `durationLabel` is displayed beside this so a low figure is attributable. Measuring only the
+ * streaming intervals would be more accurate and more machinery than a monitoring readout
+ * justifies.
  */
 export function rateLabel(usage?: MessageUsage | null): string {
   const out = usage?.outputTokens

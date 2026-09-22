@@ -37,6 +37,16 @@ export function useVoice() {
    */
   const conversationId = ref<string | null>(null)
   const conversationTitle = ref<string | null>(null)
+  /**
+   * Turns the server has confirmed COMMITTED on this connection. Bumped by the `persisted`
+   * frame, which ws.ts sends the moment `appendMessages` returns.
+   *
+   * A counter rather than an id or a flag because its only job is to be a change the page can
+   * watch: `state:'idle'` arrives before the rows exist, so the post-turn re-read has to be
+   * armed by something that happens after the commit, and consecutive turns in the same thread
+   * would not change an id.
+   */
+  const turnPersisted = ref(0)
   const { settings } = useVoiceSettings()
 
   let ws: WebSocket | null = null
@@ -255,6 +265,7 @@ export function useVoice() {
           conversationId.value = fx.conversation.id
           conversationTitle.value = fx.conversation.title
         }
+        if (fx.persisted) turnPersisted.value++
       }
     }
     // Resolve only once the socket is OPEN. A pre-open error/close rejects → connect()'s
@@ -505,6 +516,7 @@ export function useVoice() {
     },
     conversationId,
     conversationTitle,
+    turnPersisted,
     // Only the MIC analyser is exposed. `outAnalyser` (the TTS playback node) stays in the
     // signal chain below — playback routes through it — but its only reader was the retired
     // avatar's jaw envelope, so there is no accessor for it any more. MicBand reads mic only.

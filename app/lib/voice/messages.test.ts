@@ -27,3 +27,20 @@ describe('mapServerMessage — message frames', () => {
     expect(mapServerMessage(frame as never, false)).toEqual({ messageFrame: frame })
   })
 })
+
+describe('mapServerMessage — the post-commit signal', () => {
+  it('surfaces a persisted frame as the thread its rows landed in', () => {
+    expect(mapServerMessage({ type: 'persisted', conversationId: 'c-1' } as never, false))
+      .toEqual({ persisted: 'c-1' })
+  })
+
+  it('ignores a persisted frame with no conversation id — it would arm a re-read of nothing', () => {
+    expect(mapServerMessage({ type: 'persisted' } as never, false)).toEqual({})
+  })
+
+  it('is distinct from the conversation frame, which only the first turn of a thread sends', () => {
+    const fx = mapServerMessage({ type: 'conversation', conversationId: 'c-1', title: 'Hi' } as never, false)
+    expect(fx.persisted).toBeUndefined()
+    expect(fx.conversation).toEqual({ id: 'c-1', title: 'Hi' })
+  })
+})

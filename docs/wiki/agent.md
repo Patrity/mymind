@@ -4,7 +4,7 @@ status: shipped
 cycle: 68
 updated: 2026-09-22
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
-mymind_hash: df4e7638559a1172206320ecb547f3fc79b44dc626feb8e1ea478927485867b5
+mymind_hash: 707cd36163b8ad3bfd524e5e9d80fa9788e9625d3e43ac51975e5a99df4c918a
 ---
 
 # Agent Surface (`/agent`)
@@ -174,16 +174,38 @@ branch it is not reading.
 **Two client-side guards** (`app/pages/agent/index.vue`), both for the same hazard — between the leaf
 move and the send, the thread is truncated:
 
-- **Edit** captures the previous leaf and **restores it** if `sendText` returns false or throws.
+- **Edit** captures the previous leaf and **restores it** whenever the leaf moved and no turn went
+  out. There are **two** such exits, not one, and `moveLeaf` reports them apart as `blocked` (the
+  PATCH never landed — nothing to undo) vs `stranded` (the PATCH landed and the re-read then failed —
+  the leaf HAS moved, and because `resume` commits last the screen still shows the old, longer
+  transcript). `sendText` returning false or throwing is the third. Collapsing `stranded` into "the
+  move did not happen" was a real defect: it skipped the restore, left the thread truncated in the
+  database, and reported it as *"Could not open conversation"*.
 - **Fork defers the move entirely**: clicking it arms the composer ("Your next message branches from
   …", with a Cancel) and `sendTurn` moves the leaf immediately before sending. Abandoning a fork has
   no failure event to hang a restore off — the user just navigates away — so nothing is persisted at
   all. It also stops the transcript rewinding the instant you press the button.
 
-After any turn the page **re-reads the thread** (keyed on `[syncPending, conversationId]`, because
-on a thread's first turn the orchestrator emits `idle` before `ws.ts` has created the conversation).
-Live message ids are stream UUIDs, not row ids, so without that re-read every branch action 404s on
-a fresh turn. The re-read refuses any result shorter than what is on screen.
+A **branch switch** (`switchBranch`) that strands says so and leaves the leaf alone: the leaf landed
+on the other branch's **tip**, which hides nothing, so restoring would be wrong — only the screen is
+behind, and the toast says to reload. The leaf it restores to comes from `restorableLeafId`
+(`app/lib/agent/branching.ts`), which returns the tail's id **only when that tail is a persisted
+row** (recognised by the server-supplied `siblingIds` containing its own id). A tail that is still
+the live stream's carries a stream UUID; PATCHing it 404s, and falling back to the last id the client
+*does* recognise would point the leaf one turn too far back and truncate the thread itself.
+
+After any turn the page **re-reads the thread**. Its trigger is the `{type:'persisted',
+conversationId}` frame `ws.ts` sends the instant `appendMessages` returns — **the only post-commit
+signal the page has**. `state:'idle'` is emitted inside the orchestrator's `exec`, before
+`ts.finish()` and well before the append, so a re-read armed by `idle` alone races the persist; when
+it won that race the read came back without the turn's rows, the "never shorter" guard (correctly)
+refused it, and the turn was left holding stream UUIDs — every branch action on it 404ing and no
+pager rendering until another turn or a reload. Arming on the commit cannot lose that race, and
+because a refused read clears the pending flag, the frame re-arming it **is** the retry, bounded to
+one extra read per turn. `busy` and `conversationId` remain watch sources (a spoken turn stays
+`speaking` until playback drains, so the frame can land while `busy` is still true; and on a thread's
+first turn the id does not exist yet when the turn goes idle). The re-read still refuses any result
+shorter than what is on screen.
 
 ### Known limits, stated rather than discovered later
 
@@ -244,11 +266,17 @@ output tokens over the **generating** window (`durationMs - ttftMs`, so a slow m
 read as slow generation). Both guard with `Number.isFinite`, because `NaN <= 0` is false and a
 corrupt jsonb row would otherwise render `NaN tok/s`.
 
-**`rateLabel` is knowingly inaccurate for a tool-calling turn**, and that is documented rather than
-fixed: a turn that calls tools spends much of its wall-clock waiting on them and that time is inside
-the measured window, so such a turn reads slower than the model actually generated. `durationLabel`
-is displayed beside it so a low figure is attributable. Measuring only the streaming intervals would
-be more machinery than a monitoring readout justifies.
+**`rateLabel` knowingly under-reads two kinds of turn**, and that is documented rather than fixed.
+Both put time inside the measured window that the model did not spend generating, so both read
+*slower* than it actually generated:
+
+- **a tool-calling turn** spends much of its wall-clock waiting on the tools, and that wait is
+  inside the window;
+- **a spoken turn** (`speak: true`) has `durationMs` sampled when `exec` returns, which is *after*
+  TTS synthesis — and synthesis happens after the first token, so it lands inside the window too.
+
+`durationLabel` is displayed beside it so a low figure is attributable. Measuring only the streaming
+intervals would be more machinery than a monitoring readout justifies.
 
 ## WebSocket protocol (`server/api/voice/ws.ts`)
 
@@ -273,6 +301,7 @@ Per-connection `ConnState` adds `conversationId` + `context` + a monotonic `turn
 | `chunk` | `{type:'chunk', turnId, chunk: UIMessageChunk}` | One AI SDK chunk of the turn's assistant message (`text-delta`, `reasoning-delta`, `tool-input-available`, **`tool-approval-request`** (cycle 65), `tool-output-available`\|`-error`\|`-denied`, `data-subagent`, `message-metadata` for usage, `start`/`finish`/`error`/`abort`, …) |
 | `user-message` | `{type:'user-message', turnId, message: UIMessage}` | The turn's user message (STT text for voice, or the typed text + attachment file parts), sent **once**, before that turn's `chunk`s |
 | `audio-begin` | `{type:'audio-begin', turnId, segmentId, sampleRate}` | **Gains `turnId`** (cycle 64) — closes the barge-in ambiguity where no frame named whose turn a segment belonged to; a segment from a superseded turn is now discarded outright by `turnId`, not just by `playback-epoch.ts`'s stale-segment check |
+| `persisted` | `{type:'persisted', conversationId}` | **Cycle 68 fix wave.** This turn's rows are committed — sent right after `appendMessages` returns, on **every** turn (success and rescue paths both), and the page's post-turn re-read is armed by it. `ws.ts` sets its `persisted` flag *before* sending, so a send to a socket that closed mid-turn cannot unwind into the rescue and append the same turn twice |
 | `audio-end` / binary PCM / `state` / `approval` / `approval-resolved` / `conversation` / `error` | unchanged | See [voice-agent.md](voice-agent.md) for the full audio/state/approval frame list |
 | ~~`transcript`~~ / ~~`reasoning`~~ / ~~`tool`~~ / ~~`usage`~~ | — | **Removed.** Superseded by `chunk`'s `text-delta`/`reasoning-delta`/`tool-*`/`message-metadata.usage` |
 

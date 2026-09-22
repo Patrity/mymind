@@ -14,6 +14,11 @@ export interface MsgEffect {
   approvalResolved?: string // requestId that was settled server-side (timeout)
   /** The server lazily created a thread on this turn — id + its derived title. */
   conversation?: { id: string; title: string | null }
+  /** This turn's rows are COMMITTED, and this is the thread they landed in. Sent immediately
+   *  after `appendMessages` returns (server/api/voice/ws.ts), on every turn — the only
+   *  post-commit signal the page has. `state:'idle'` is emitted inside the orchestrator's exec,
+   *  before the append, so a re-read armed by idle alone races the persist. */
+  persisted?: string
   /** A spoken segment is starting: the binary frames that follow are headerless PCM
    *  (mono / s16le) at THIS sample rate — the client cannot decode them without it.
    *  `turnId` names which turn opened it, so a segment from a superseded turn can be
@@ -59,6 +64,10 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   // Sent once, when the first turn of a new thread creates the conversation row.
   if (m.type === 'conversation' && m.conversationId) {
     return { conversation: { id: m.conversationId, title: m.title ?? null } }
+  }
+  // Sent after EVERY turn's rows are committed — see MsgEffect.persisted.
+  if (m.type === 'persisted' && m.conversationId) {
+    return { persisted: m.conversationId }
   }
   return {}
 }
