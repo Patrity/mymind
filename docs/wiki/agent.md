@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 65
-updated: 2026-09-19
+cycle: 68
+updated: 2026-09-22
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
 mymind_hash: df4e7638559a1172206320ecb547f3fc79b44dc626feb8e1ea478927485867b5
 ---
@@ -10,6 +10,8 @@ mymind_hash: df4e7638559a1172206320ecb547f3fc79b44dc626feb8e1ea478927485867b5
 # Agent Surface (`/agent`)
 
 One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page laid out as **two panels** — threads / conversation — where conversations persist as resumable + searchable threads and the same shared agent core powers every turn. (Cycle 60 had a third "Bridget" column holding a three.js particle head; cycle 65 removed it and replaced the face with a Rive **Persona** that lives inside the conversation column. Before cycle 60 it was a 75%-canvas / 25%-transcript split with the visualizer on a toggle; both the toggle and its `agent-canvas` cookie are long gone.) This is the in-app "agent loop" — tool-scoped on the current 20-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are part of the Cycle B series (B1/B2/B3 shipped).
+
+> **Cycle 68 update — a conversation is a tree, and the message action row is visible without hovering.** `conversations.active_leaf_id` (migration `0045_busy_solo.sql`) names the one path through the tree that is being read, and **both** read paths — `getConversation` (the UI) and `getAgentHistory` (the model) — walk it through the single `loadActivePath`. Copy / regenerate / edit / fork sit in an always-visible row with a live **duration** and **tok/s** figure. **Retry changed behaviour: it used to truncate the thread, and now branches** — the previous reply stays reachable through a ‹ n/N › pager. See [The conversation tree](#the-conversation-tree-cycle-68) and [The message action row](#the-message-action-row-cycle-68). Spec: [`2026-09-21-agent-chat-affordances-design.md`](../superpowers/specs/2026-09-21-agent-chat-affordances-design.md); handover: [`2026-09-21-agent-chat-affordances.md`](../handovers/2026-09-21-agent-chat-affordances.md).
 
 > **Cycle 65 update — the page itself is now AI Elements.** Cycle 64 moved the *conversation* onto AI SDK `UIMessage`s; cycle 65 rebuilt everything around it. The third column and the whole particle-head/`lib/viz` stack are **deleted**; a Rive **Persona** (`app/components/agent/Persona.client.vue`) renders as a hero in the empty thread, inline in the composer during a conversation, and full-size in voice mode. `app/components/voice/Composer.vue` is replaced by `app/components/agent/PromptInput.vue` on Elements `PromptInput` (attachments, model select, speak toggle, context meter, mic, send/stop). Exec approvals are no longer a detached banner: they ride the message stream as the SDK's own `tool-approval-request` chunk and render as an Elements `Confirmation` **inside the tool card**, so they die with the turn they belong to. A **context meter** shows how full the answering model's context window is. See [UI](#ui--the-two-panel-surface-cycle-65), [Inline exec approvals](#inline-exec-approvals-cycle-65) and [Context meter](#context-meter-cycle-65). Spec: [`2026-09-19-agent-page-rebuild-design.md`](../superpowers/specs/2026-09-19-agent-page-rebuild-design.md); handover: [`2026-09-19-agent-page-rebuild.md`](../handovers/2026-09-19-agent-page-rebuild.md).
 
@@ -85,10 +87,168 @@ Design invariants: **not** a generic spawner (fixed types keep a small orchestra
 
 New tables (`server/db/schema/conversations.ts`, migration 0022), kept separate from the CC/Hermes import `sessions`/`messages`:
 
-- **`conversations`**: `id`, `title` (auto from the first user turn via `deriveTitle`), `summary` (null — reserved), `project_id` (null — optional), `message_count`, `last_message_at`, `summary_embedding halfvec(2560)` (**reserved**, unpopulated — keyword search ships first), `created_at`/`updated_at`. Indexes: `last_message_at`, gin-trigram on `title`.
-- **`conversation_messages`**: `id`, `conversation_id` (FK `ON DELETE CASCADE`), `parent_id` (nullable — **tree-capable edge, populated linearly** = parent is the prior turn; branching UI is deferred), `role`, `content`, `modality` (`voice`|`text`), `tool_calls jsonb` (assistant `AgentToolRecord[]` — see [Tool history](#tool-history-cycle-43)), `reasoning text` (nullable — assistant "thinking"; **display/storage only, never re-sent to the model**; migration 0026, cycle 45), `attachments jsonb` (cycle 39), `usage jsonb` (nullable, additive — **migration 0038**, cycle 60: `{inputTokens?, outputTokens?, totalTokens?}` for the assistant turn; no backfill, so a message without it omits the count rather than showing 0), `created_at`. Indexes: `(conversation_id, created_at)`, gin-trigram on `content`.
+- **`conversations`**: `id`, `title` (auto from the first user turn via `deriveTitle`), `summary` (null — reserved), `project_id` (null — optional), `message_count` (**every row in the tree, inactive branches included** — see [The conversation tree](#the-conversation-tree-cycle-68)), `last_message_at`, `active_leaf_id uuid` (nullable — **migration 0045**, cycle 68: the message that ends the path currently being read; null means "fall back to a flat read"), `summary_embedding halfvec(2560)` (**reserved**, unpopulated — keyword search ships first), `created_at`/`updated_at`. Indexes: `last_message_at`, gin-trigram on `title`.
+- **`conversation_messages`**: `id`, `conversation_id` (FK `ON DELETE CASCADE`), `parent_id` (nullable — the tree edge. Reserved by cycle 28 and written linearly until cycle 68; **it is now read**, and a message can have more than one child), `role`, `content`, `modality` (`voice`|`text`), `tool_calls jsonb` (assistant `AgentToolRecord[]` — see [Tool history](#tool-history-cycle-43)), `reasoning text` (nullable — assistant "thinking"; **display/storage only, never re-sent to the model**; migration 0026, cycle 45), `attachments jsonb` (cycle 39), `usage jsonb` (nullable, additive — **migration 0038**, cycle 60: `{inputTokens?, outputTokens?, totalTokens?}` for the assistant turn, plus `contextTokens?`/`modelDefId?` from cycle 65 and `startedAt?`/`ttftMs?`/`durationMs?` from cycle 68; no backfill, so a message without it omits the figure rather than showing 0), `created_at`. Indexes: `(conversation_id, created_at)`, gin-trigram on `content`.
 
-Store service: `server/services/conversations.ts` — `createConversation` / `appendMessages` (linear `parent_id` chain; persists `reasoning` on assistant rows) / `getConversation` (DTO includes `reasoning`, for UI hydration) / `getAgentHistory` (**role+content only** — reasoning is deliberately excluded, for WS model-history hydration) / `listConversations({q})` (keyword: title ILIKE OR a message content ILIKE; newest first, limit 50) / `deleteConversation` / `deriveTitle`. The two reads are differentiated on purpose: reasoning is hydrated into the *UI* but never into the *model's* context.
+Store service: `server/services/conversations.ts` — `createConversation` / `appendMessages` (chains from `active_leaf_id`, not from the newest row, and moves the leaf onto what it wrote — **both inside one transaction**) / `captureTurnLeaf` / `branchParent` / `setActiveLeaf` / `setBranchLeaf` / `conversationHasMessage` / `getConversation` (DTO includes `reasoning`, for UI hydration) / `getAgentHistory` (reasoning deliberately excluded, for WS model-history hydration) / `listConversations({q})` (keyword: title ILIKE OR a message content ILIKE; newest first, limit 50) / `deleteConversation` / `deriveTitle`. The two reads are differentiated on purpose: reasoning is hydrated into the *UI* but never into the *model's* context — but **both resolve which messages exist through the same `loadActivePath`** (cycle 68), which is the property the next section exists to protect.
+
+## The conversation tree (cycle 68)
+
+A thread is a **tree**, and what you are reading is one **path** through it. `parent_id` has carried
+that edge since cycle 28 but nothing read it; cycle 68 added the other half.
+
+**`conversations.active_leaf_id`** names the last message on the active path. Everything else is
+derived from it by walking `parent_id` upward.
+
+### One walk, two readers — and why they must agree
+
+`loadActivePath(conversationId)` (`server/services/conversation-path.ts`) is the **only** place a
+transcript is resolved. It runs one query, orders it `(created_at, id)`, and hands the rows to the
+pure `activePath(rows, leafId)` (`shared/utils/conversation-path.ts`, unit-tested without a
+database). It returns the path plus a `Map` of `BranchInfo` — `{ index, total, siblingIds }` — for
+every message in the thread.
+
+Its two callers are `getConversation` (what the **user** reads) and `getAgentHistory` (what the
+**model** is given). **If those two ever resolved different rows, the model would answer a
+conversation nobody is reading and nothing in the UI would say so** — which is why the null-leaf
+fallback lives *inside* the shared function rather than in either caller, and why
+`test/conversation-path.db.test.ts` asserts `expect(model).toEqual(ui)` over full message objects.
+Breaking `getAgentHistory` reddens exactly those equality assertions and nothing else in the suite,
+which is itself the finding: no other test in the repo would notice the divergence.
+
+Deliberately **not** a recursive CTE, though the spec asked for one: an in-memory walk keeps both
+paths on one unit-tested function instead of duplicating the walk in SQL. It fetches no more rows
+than `getConversation` already fetched. Revisit if a conversation ever approaches session scale
+(prod's largest is 14 messages).
+
+**`(created_at, id)` is not decoration.** Cycle 66 measured a **26%** `created_at` collision rate on
+the sessions `messages` table (58,417 of 228,692 rows share a timestamp with a sibling, largest tie
+group 615) — the same insert pattern writes a turn's user and assistant rows microseconds apart
+here — and each read path runs its own copy of the query, so on `created_at` alone Postgres may
+order tied rows differently per query, which would let the two paths disagree on the fallback and
+swap a sibling between `1/2` and `2/2` between requests, surfacing as a pager that jumps.
+
+### One primitive, three operations
+
+Every branch-creating action is "point the leaf somewhere, then send a turn". `branchParent` decides
+where:
+
+| Operation | Leaf goes to | Result |
+|---|---|---|
+| **Fork** from a message | that message itself | the next turn continues **from there** |
+| **Edit** a user message | that message's **parent** | the edited question is a **sibling** of the original |
+| **Regenerate** a reply | the **preceding user message's parent** | a second attempt at the same question, as a sibling |
+
+**Regenerate deviates from the spec's literal wording**, deliberately. The spec says "regenerate →
+that reply's parent", which would make the new reply a second child of the user message. The WS turn
+**always persists a `[user, assistant]` pair** — there is no path that appends an assistant message
+alone — so resending under the user message would write `U → U2 → R2` and duplicate the question
+inside the regenerated branch. So regenerate shares the edit mechanism (`app/pages/agent/index.vue`'s
+`retryTurn` calls `editTurn` with the text unchanged) and the **pager sits on the user message rather
+than on the reply**. The promise the spec actually made — the previous reply stays reachable — is
+kept exactly.
+
+**Nothing is ever deleted.** An edit does not rewrite its message; a regenerate does not replace its
+reply. Both are additional rows, and the old ones stay reachable through the pager.
+
+### Switching branches is a server round-trip
+
+`PATCH /api/conversations/:id/leaf` (`server/api/conversations/[id]/leaf.patch.ts`), body
+`{ leafId, op? }`:
+
+- **No `op` — "switch to this branch."** `setActiveLeaf` resolves `leafId` to that branch's **tip**
+  via the pure `branchTip`, which follows the **newest child at each step** (not the deepest — the
+  name would be a lie; resuming a branch should land where you last left off writing it). Without the
+  descent, switching to a sibling that has its own continuation would set the leaf to the sibling and
+  make everything below it invisible to **both** read paths — the exact silent-hiding this cycle
+  exists to prevent.
+- **With an `op`** (`fork`/`edit`/`regenerate`) — "start a new branch here." `setBranchLeaf` writes
+  `branchParent`'s answer **exactly**, no descent, because the descent above would walk a fork
+  straight back to the end of the thread and quietly undo it. An **unknown** `op` is a 400, never a
+  silent fall-back to the descending path.
+
+The response returns the **resolved** leaf, never the requested one. The client cannot compute any of
+this itself: it only ever fetches the active path, so `siblingIds` on the DTO is its only handle on a
+branch it is not reading.
+
+**Two client-side guards** (`app/pages/agent/index.vue`), both for the same hazard — between the leaf
+move and the send, the thread is truncated:
+
+- **Edit** captures the previous leaf and **restores it** if `sendText` returns false or throws.
+- **Fork defers the move entirely**: clicking it arms the composer ("Your next message branches from
+  …", with a Cancel) and `sendTurn` moves the leaf immediately before sending. Abandoning a fork has
+  no failure event to hang a restore off — the user just navigates away — so nothing is persisted at
+  all. It also stops the transcript rewinding the instant you press the button.
+
+After any turn the page **re-reads the thread** (keyed on `[syncPending, conversationId]`, because
+on a thread's first turn the orchestrator emits `idle` before `ws.ts` has created the conversation).
+Live message ids are stream UUIDs, not row ids, so without that re-read every branch action 404s on
+a fresh turn. The re-read refuses any result shorter than what is on screen.
+
+### Known limits, stated rather than discovered later
+
+- **The first turn of a thread cannot be edited or regenerated.** `branchParent` returns `null` for a
+  root, and `active_leaf_id = null` already means "fall back to a flat read", so there is no way to
+  express "start a second root" without changing what null means to both read paths. The endpoint
+  says so honestly — *"The first message of a thread cannot be branched yet"* — instead of claiming
+  the message is not in the conversation. Rephrasing an opening question needs a new thread, which is
+  what it needed before this cycle too.
+- **`message_count` counts every row in the tree**, inactive branches included, so a branched thread's
+  rail count legitimately exceeds what is on screen (10 rows, 4 displayed, is normal). Spec-stated and
+  accepted rather than re-derived per branch.
+- **A mid-turn branch switch is overridden when the reply lands.** The turn's leaf is captured at turn
+  start (`captureTurnLeaf`) and passed to both persist calls, so the messages attach to the branch the
+  turn was sent from — the data-integrity half. The leaf then moves to the new reply unconditionally,
+  so the user is pulled to the arriving answer. A UX surprise, not data loss: both branches stay
+  reachable.
+- **The concurrent-writer race on the leaf is parked, not fixed.** Read-leaf → insert → write-leaf is
+  not serialized (the transaction is for atomicity only; there is no `SELECT … FOR UPDATE` and no
+  advisory lock, deliberately). The race **predates** this cycle — newest-row chaining had it too —
+  and branching makes its consequence *less* harmful: two concurrent turns now produce a surprise
+  branch you can page to, instead of an unreadable orphan.
+
+## The message action row (cycle 68)
+
+`app/components/agent/ReplyActions.vue`. **A third of the complaint that started this cycle was a
+discoverability defect, not a missing feature**: copy, regenerate, the timestamp and the token count
+already existed here, behind `opacity-0 group-hover:opacity-100` — invisible until hover and
+completely unreachable on a touch device, where there is no hover at all. The class is gone; the row
+is always visible and wraps rather than overflowing (measured inside 375px).
+
+Left to right: **copy** (flips to a tick for 1.5s), **regenerate** (assistant messages), **edit**
+(user messages), **fork**, the **‹ n/N › pager** (`AgentBranchPager`, rendered only when
+`total > 1` — a `v-if`, so an unbranched thread has no pager in the DOM at all, and each arrow is
+disabled at its own end), the **timestamp**, the **duration**, the **tok/s** figure, and an **info**
+button carrying the token count and the answering model id.
+
+That info button is a **controlled** `UTooltip` toggled on click. A plain one does not work on touch:
+reka ignores `pointermove` when `pointerType` is `touch` and its `focus` handler bails while a
+pointer is down, so a tap opens nothing — which would have reintroduced the very defect this row
+exists to fix, for secondary metadata.
+
+`AgentBranchPager` is three plain `UButton`s, **not** the vendored Elements
+`MessageBranchPrevious`/`Next`: those `inject` a `MessageBranch` context and **throw** without an
+ancestor provider, count branches from slotted VNodes (client-side variants, which is not what a
+server-side pager has), wrap around, and share one `totalBranches <= 1` disabled state between both
+arrows rather than clamping each end.
+
+### Timing: `startedAt` / `ttftMs` / `durationMs`
+
+`ws.ts` stamps the turn clock into `usage` (the jsonb that already holds this message's model and
+token facts) and **finalizes it once** per turn, using the same value for the live
+`message-metadata` chunk and the persisted row — so the figure on screen and the figure in the
+database cannot disagree. Both the success and the rescue persist paths take it.
+
+`app/lib/agent/metrics.ts` formats it: `durationLabel` → `"4.2s"` / `"820ms"`, `rateLabel` →
+output tokens over the **generating** window (`durationMs - ttftMs`, so a slow model start is not
+read as slow generation). Both guard with `Number.isFinite`, because `NaN <= 0` is false and a
+corrupt jsonb row would otherwise render `NaN tok/s`.
+
+**`rateLabel` is knowingly inaccurate for a tool-calling turn**, and that is documented rather than
+fixed: a turn that calls tools spends much of its wall-clock waiting on them and that time is inside
+the measured window, so such a turn reads slower than the model actually generated. `durationLabel`
+is displayed beside it so a low figure is attributable. Measuring only the streaming intervals would
+be more machinery than a monitoring readout justifies.
 
 ## WebSocket protocol (`server/api/voice/ws.ts`)
 
@@ -245,7 +405,7 @@ The detached `agent/ApprovalPrompt.vue` banner is **deleted**. An approval is no
 | `data-subagent` | `app/components/agent/SubagentSteps.vue` → Elements `ChainOfThought`, nested **inside** the parent tool's card (looked up by `toolCallId` via `subagentSteps()` in `app/lib/agent/render.ts`) — one step per nested call, open while any step is `running` |
 | `file` (user) | `app/components/agent/Attachment.vue` — image thumbnail / file chip, as before |
 
-Retry/copy/timestamp/token-count moved onto `app/components/agent/ReplyActions.vue` (ported from the old `MessageActions.vue`, now deleted, keyed off `AgentUIMessage` instead of `TranscriptEntry`). `app/lib/agent/retry.ts`'s `truncateForRetry` and the undo flow were adapted from entry ids to message ids / tool call ids; their walk-back/skip-tool-chips behaviour is unchanged. Scrolling (stick-to-bottom + a scroll-to-bottom button) and markdown streaming now come from Elements' `Conversation`/`ConversationContent`/`ConversationScrollButton` (`vue-stick-to-bottom` under the hood) — the cycle-41 `ResizeObserver`/`suppressScrollUntil`/content-signature plumbing this replaced is documented in the cycle-60 handover for history but no longer exists in the tree.
+Retry/copy/timestamp/token-count moved onto `app/components/agent/ReplyActions.vue` (ported from the old `MessageActions.vue`, now deleted, keyed off `AgentUIMessage` instead of `TranscriptEntry`) — see [The message action row](#the-message-action-row-cycle-68) for what it holds today. **`app/lib/agent/retry.ts` and its test are deleted (cycle 68)**: `truncateForRetry` existed to cut the thread back to the retried turn, and retry no longer truncates anything — it branches. The undo flow is unaffected. Scrolling (stick-to-bottom + a scroll-to-bottom button) and markdown streaming now come from Elements' `Conversation`/`ConversationContent`/`ConversationScrollButton` (`vue-stick-to-bottom` under the hood) — the cycle-41 `ResizeObserver`/`suppressScrollUntil`/content-signature plumbing this replaced is documented in the cycle-60 handover for history but no longer exists in the tree.
 
 - **Empty state (`app/components/agent/EmptyState.vue`).** A **hero Persona**, Bridget's name, one line on what she can reach, and four starter prompts on Elements' `Suggestions` (cycle 65; the prompts themselves are unchanged and still drawn from the real tool surface). A starter click fills the composer through a dedicated `prefill` prop and never sends — deliberately separate from `initialText`/`autoSend`, the fire-once-per-value `?q=` handoff from Home. The hero is suppressed while full-bleed voice mode is open, so only one Rive canvas is ever mounted.
 - **The token bridge for Elements' own state.** `app/components/agent/ToolPart.vue` reads `part.state` (`input-streaming`\|`input-available`\|**`approval-requested`**\|`output-available`\|`output-error`\|`output-denied`) directly off the AI SDK part — there is no separate client-side "is this tool still running" flag to drift from the stream; `isRunning()` (`app/lib/agent/render.ts`) is a one-line predicate over that same state, unit-tested.
@@ -359,7 +519,7 @@ Attach **images and files** to a turn (paste / drag-drop / file-picker in the co
 - **Cycle B2 (shipped, cycle 30)** — approval-gate harness + constrained `exec` tool (`powerful` profile opt-in, per-command Approve/Deny prompt, persisted allowlist, `setpriv` privilege drop, `/workspace` jail, stripped env). See [agent-exec.md](agent-exec.md).
 - **Cycle B3.1/B3.2 (shipped, cycles 34/35)** — native LXC deploy (systemd) + credentialed self-installing native `exec` (root-in-LXC, always-on encrypted credential injection, allowlist-first gate). See [agent-exec.md](agent-exec.md). B3.3/B4 (artifact/report rendering, SSH to other homelab hosts) remain.
 - Conversation **summarization worker** + **semantic search** (the `summary_embedding` column is reserved; keyword ships now).
-- **Branching UI** (edit/regenerate → fork): the `parent_id` edge exists; `active_leaf_id`/path-walking + UI are future.
+- ~~**Branching UI** (edit/regenerate → fork): the `parent_id` edge exists; `active_leaf_id`/path-walking + UI are future.~~ ✅ **shipped in cycle 68** — see [The conversation tree](#the-conversation-tree-cycle-68). Still out of scope there: branches on the thread rail, delete/merge/rename a branch, per-branch message counts, and branching the **first** turn of a thread.
 - Storing voice **audio** (transcript text only), command-palette integration, multi-profile UI. (~~token-cost display~~ — a per-turn **token count** ships in the message-action row since cycle 60; a monetary cost figure does not.)
 - **Per-row rename/delete on the thread rail** (cycle 60): the spec asked for a row context menu on the rail and it was **not built** — a genuine gap in that cycle's plan, deferred rather than grown into the largest task. Nothing is unreachable: both live on `/agent/history`, which the sidebar now surfaces.
 - **Cost in the context meter** (cycle 65): deliberately not built. It would need `tokenlens`' catalog, and LiteLLM prices are already in analytics — the meter shows tokens against the window, never money.

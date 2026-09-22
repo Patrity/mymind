@@ -1,8 +1,8 @@
 ---
 title: Voice Agent
 status: shipped
-cycle: 65
-updated: 2026-09-19
+cycle: 68
+updated: 2026-09-22
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
 mymind_hash: 91e586b2f7fe97510f94dc4c5d2080d5d6d1ca695501a820ba7e0c135b4e84cb
 ---
@@ -354,7 +354,9 @@ nowhere else, and the voice itself is a `voice_presets` row, not a value.
 | `app/lib/agent/turn-stream.ts` | **(cycle 64)** `createClientTurns` — one `ReadableStream<UIMessageChunk>` per turn assembled with the SDK's `readUIMessageStream`; drops stale-`turnId` frames; `finalizeMessage` closes out a dangling tool/text/reasoning part on interrupt/error/disconnect; `discard()` (fix wave) silences a turn entirely when the page replaces the message list (new thread / resume / retry) — see [agent.md](agent.md#websocket-protocol-serverapivoicewsts) |
 | `app/lib/agent/to-ui-messages.ts` | **(cycle 64)** `toUIMessages` — persisted messages → `AgentUIMessage[]` on resume; replaces `agent/transcript.ts`'s `buildResumeTranscript` (deleted, test ported) |
 | `app/lib/agent/render.ts` | **(cycle 64)** Pure render helpers kept out of the SFCs: `uiMessageText`, `subagentSteps` (looks up a tool's `data-subagent` part by `toolCallId`), `tokenLabel`, `toolTitle`, `isRunning` |
-| `app/lib/agent/retry.ts` | Pure `truncateForRetry` — walk back to the preceding user turn and truncate |
+| `app/lib/agent/metrics.ts` | **(cycle 68)** Pure `durationLabel` / `rateLabel` over `MessageUsage`'s `startedAt`/`ttftMs`/`durationMs` — the per-message timing readout. `rateLabel`'s tool-wait inaccuracy is stated in [agent.md](agent.md#timing-startedat--ttftms--durationms) |
+| `app/components/agent/BranchPager.vue` | **(cycle 68)** The ‹ n/N › branch pager — three `UButton`s, rendered only when `total > 1`; presentation only, the page owns the switch |
+| ~~`app/lib/agent/retry.ts`~~ | **Deleted in cycle 68.** `truncateForRetry` cut the thread back to the retried turn; retry now branches instead of truncating, so nothing called it |
 
 > **Deleted in cycle 65:** `app/components/agent/Avatar.client.vue`, `app/components/agent/ApprovalPrompt.vue`, `app/components/voice/Composer.vue`, `app/lib/avatar/**` (types, choreography, head-buffer, particle-head + 2 tests), `app/lib/viz/**` (types, tuning, emitter, choreographer, scene, core, effects, lightning), `scripts/bake-head.ts`, `scripts/blender-export-head.py`, `app/assets/head-points.bin`, `test/viz-emitter.test.ts`, `test/viz-choreographer.test.ts`, `test/bake-head.test.ts`, the `bake:head` package script, and `DEPLOYMENT.md` §12's head-bake gotcha. `useVoice.ts` and `app/lib/voice/messages.ts` lost the viz event channel (`events`/`onVizEvent`/`VizEvent`) with them. `three` is **kept** — `app/lib/galaxy/scene.ts` still imports it. Note for readers of older notes below: the cycle-60 statement that `head-points.bin` is a deliberately-committed build artifact no longer applies, because neither the file nor the pipeline exists.
 >
