@@ -53,7 +53,15 @@ describe('appendMessages chains from the active leaf', () => {
     expect(msgs[1]!.parentId).toBe(msgs[0]!.id)
   })
 
-  it('appends to the LEAF, not the newest row, once a branch exists', async () => {
+  // NAMED FOR WHAT IT PINS, deliberately. It is tempting to call this "appends to the leaf, not
+  // the newest row" — but it cannot prove that, and a name claiming otherwise is how a
+  // non-discriminating fixture gets copied into the next task. Every branch this fixture makes
+  // is ALSO the newest row, so leaf-chaining and newest-row chaining agree on all of it
+  // (measured: reverting the parent selection leaves this green). What it does pin is the leaf
+  // MOVE — an explicit parent redirects the active path, and the next append continues from
+  // there. The leaf READ is pinned by the pager suite at the bottom of this file, which is the
+  // only arrangement where the two rules disagree.
+  it('moves the leaf onto an explicitly-parented append, and keeps chaining from it', async () => {
     const before = (await getConversation(convId))!.messages
     const q1 = before.find(m => m.content === 'Q1')!
     // Branch a second answer off Q1. It is newer than A1 but A1 is NOT its parent.
@@ -62,8 +70,6 @@ describe('appendMessages chains from the active leaf', () => {
     expect(after.map(m => m.content)).toEqual(['Q1', 'A1-alt'])   // the active path moved
     const alt = after.find(m => m.content === 'A1-alt')!
     expect(alt.parentId).toBe(q1.id)
-    // Appending again must chain from A1-alt (the leaf), not from A1 (still the newest by time
-    // only if inserted later — the point is the parent comes from the leaf).
     await appendMessages(convId, [msg('user', 'Q2')])
     const third = (await getConversation(convId))!.messages
     expect(third.map(m => m.content)).toEqual(['Q1', 'A1-alt', 'Q2'])
@@ -97,8 +103,48 @@ describe('branchParent picks the right parent per operation', () => {
     expect(await branchParent(convId, a.id, 'regenerate')).toBe(a.parentId)
   })
 
+  // Both ops that read `parentId` must answer null on a root, and that is not an error case:
+  // null is the correct parent, making the edited question (or the regenerated first reply) a
+  // SECOND ROOT — a sibling of the original, which is the same non-destructive shape as
+  // everywhere else. Task 9 branches on this return value, so it is pinned here.
+  it('edit of a ROOT message returns null — the edit becomes a second root', async () => {
+    const msgs = (await getConversation(convId))!.messages
+    const root = msgs.find(m => m.content === 'Q1')!
+    expect(root.parentId).toBeNull()                       // guard: Q1 really is a root
+    expect(await branchParent(convId, root.id, 'edit')).toBeNull()
+  })
+
+  it('regenerate of a ROOT message returns null for the same reason', async () => {
+    const msgs = (await getConversation(convId))!.messages
+    const root = msgs.find(m => m.content === 'Q1')!
+    expect(await branchParent(convId, root.id, 'regenerate')).toBeNull()
+  })
+
   it('returns null for an unknown message rather than throwing', async () => {
     expect(await branchParent(convId, '00000000-0000-4000-8000-000000000000', 'fork')).toBeNull()
+  })
+
+  // The only negative case above is an id that exists nowhere, which resolves to null whether or
+  // not `branchParent` scopes on the conversation — so it cannot catch a missing conversation_id
+  // predicate (measured: dropping it leaves the whole suite green). Task 5 exposes this over
+  // HTTP with a USER-SUPPLIED message id, where an unscoped lookup would hand back a parent from
+  // someone else's thread and graft a branch across conversations. Hence a real row in a real
+  // OTHER conversation, plus the positive control that proves the id itself resolves fine.
+  it('refuses a message id that belongs to a DIFFERENT conversation', async () => {
+    const other = await newConversation('-other')
+    // Two messages, so the one under test has a NON-NULL parent: on a root, edit and regenerate
+    // would answer null whether scoped or not, and only the fork assertion would discriminate.
+    await appendMessages(other, [msg('user', 'elsewhere-Q'), msg('assistant', 'elsewhere-A')])
+    const theirs = (await getConversation(other))!.messages
+    const target = theirs.find(m => m.content === 'elsewhere-A')!
+    expect(target.parentId).not.toBeNull()                            // guard on the guard
+
+    expect(await branchParent(other, target.id, 'fork')).toBe(target.id)          // control:
+    expect(await branchParent(other, target.id, 'edit')).toBe(target.parentId)    // the id is fine
+    // ...but not from convId, which does not own it. Unscoped, all three leak a foreign id.
+    expect(await branchParent(convId, target.id, 'fork')).toBeNull()
+    expect(await branchParent(convId, target.id, 'edit')).toBeNull()
+    expect(await branchParent(convId, target.id, 'regenerate')).toBeNull()
   })
 })
 

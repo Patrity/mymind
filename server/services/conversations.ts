@@ -122,38 +122,45 @@ export async function appendMessages(
     prevId = conv?.leaf ?? null
   }
 
-  // Insert each message in order, chaining parentId linearly
-  for (const msg of msgs) {
-    const [inserted] = await db
-      .insert(conversationMessages)
-      .values({
-        conversationId,
-        parentId: prevId,
-        role: msg.role,
-        content: msg.content,
-        modality: msg.modality,
-        toolCalls: msg.toolCalls ?? null,
-        reasoning: msg.reasoning ?? null,
-        attachments: msg.attachments ?? null,
-        usage: msg.usage ?? null
-      })
-      .returning({ id: conversationMessages.id })
-    prevId = inserted!.id
-  }
+  // The inserts and the leaf move are ONE unit of work. Rows written without the matching
+  // active_leaf_id are invisible to BOTH read paths — `loadActivePath` walks from the leaf and
+  // never reaches them — so a crash between the two would silently lose the turn. That is a
+  // failure mode this cycle introduces: before the leaf existed, the flat read still showed
+  // them. Atomicity only — nothing here takes a lock or serializes concurrent appends.
+  await db.transaction(async (tx) => {
+    // Insert each message in order, chaining parentId linearly
+    for (const msg of msgs) {
+      const [inserted] = await tx
+        .insert(conversationMessages)
+        .values({
+          conversationId,
+          parentId: prevId,
+          role: msg.role,
+          content: msg.content,
+          modality: msg.modality,
+          toolCalls: msg.toolCalls ?? null,
+          reasoning: msg.reasoning ?? null,
+          attachments: msg.attachments ?? null,
+          usage: msg.usage ?? null
+        })
+        .returning({ id: conversationMessages.id })
+      prevId = inserted!.id
+    }
 
-  // Bump conversation stats, and move the leaf onto what was just written — `prevId` is the
-  // last inserted id after the loop. Without this the branch just appended to would be
-  // unreachable by either read path, and the next append would chain from the old leaf.
-  const now = new Date()
-  await db
-    .update(conversations)
-    .set({
-      messageCount: sql`${conversations.messageCount} + ${msgs.length}`,
-      lastMessageAt: now,
-      updatedAt: now,
-      activeLeafId: prevId
-    })
-    .where(eq(conversations.id, conversationId))
+    // Bump conversation stats, and move the leaf onto what was just written — `prevId` is the
+    // last inserted id after the loop. Without this the branch just appended to would be
+    // unreachable by either read path, and the next append would chain from the old leaf.
+    const now = new Date()
+    await tx
+      .update(conversations)
+      .set({
+        messageCount: sql`${conversations.messageCount} + ${msgs.length}`,
+        lastMessageAt: now,
+        updatedAt: now,
+        activeLeafId: prevId
+      })
+      .where(eq(conversations.id, conversationId))
+  })
 }
 
 /**
