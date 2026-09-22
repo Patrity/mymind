@@ -3,11 +3,11 @@ title: "Agent chat affordances — a conversation becomes a tree, and the action
 cycle: 68
 date: 2026-09-21
 status: >
-  BUILT, NOT MERGED, NOT DEPLOYED. All 11 tasks complete on `feat/chat-affordances`, branched from
+  MERGED AND DEPLOYED (2026-09-22). Merged to master as a fast-forward, pushed, and deployed via GitHub Actions run 35755623788 (both jobs green). Prod verified: health 200 internal and external, all six cycle-68 symbols present in the running bundle, truncateForRetry correctly absent, migration 0045 applied (active_leaf_id uuid nullable) with null_leaf = 0 and leaf_with_child = 0 across 64 conversations / 267 messages, 0 errors since cutover, and an authed MCP round-trip confirming auth + DB end to end. All 11 tasks complete on `feat/chat-affordances`, branched from
   LOCAL master `3a65f2b` — and **this is the first branch in this program cut from a DEPLOYED
   baseline**: master is pushed and live as of 2026-09-21 (cycles 64-67 plus the turn-persistence and
   exec-allowlist hotfixes are in prod). **There is a migration — `0045_busy_solo.sql` — and it has
-  NOT been run on prod.** One additive `ALTER TABLE conversations ADD COLUMN active_leaf_id uuid`
+  now BEEN RUN on prod (applied by CD on 2026-09-22; verified live).** One additive `ALTER TABLE conversations ADD COLUMN active_leaf_id uuid`
   plus a backfill that points every existing thread's leaf at its structural tail; it is
   self-healing and safe to re-run, but until it runs, every prod conversation has a null leaf and
   every read falls back to the flat path — correct, but with no branching.
