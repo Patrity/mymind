@@ -14,6 +14,9 @@ import { partialTurnMessages } from '../../lib/voice/turn-partial'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle } from '../../services/conversations'
 import { buildLiveContext, buildMemoryContext } from '../../lib/agent/context'
 import { publishChange } from '../../utils/live-bus'
+import { useDb } from '../../db'
+import { conversations } from '../../db/schema'
+import { eq } from 'drizzle-orm'
 import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
@@ -209,7 +212,18 @@ export default defineWebSocketHandler({
       let turnUsage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string } | null = null
       let liveUserText = ''
       let liveAssistantText = ''
+      const turnStart = Date.now()
+      let ttftMs: number | undefined
       let turnConversationIdForRescue: string | null = s.conversationId
+      // The branch this turn was actually typed into. `appendMessages` reads
+      // conversations.active_leaf_id at PERSIST time, but PATCH /api/conversations/:id/leaf
+      // (cycle 68) can move that column mid-turn — from another tab, or the user switching
+      // branches while a reply is still streaming. Captured once, beside
+      // turnConversationIdForRescue, so both the success and rescue appends chain from the
+      // branch the user was reading, not wherever the leaf drifted to by the time this
+      // persists. This only fixes CHAINING — the leaf still moves to the new reply
+      // afterwards regardless (a ruled UX tradeoff, not a bug: both branches stay reachable).
+      let turnLeafId: string | undefined
       let persisted = false
       try {
         // Live context is rebuilt EVERY turn (two cheap indexed queries) — the old
@@ -225,7 +239,11 @@ export default defineWebSocketHandler({
         const emit = (e: VoiceEvent) => {
           if (e.type === 'transcript') {
             if (e.role === 'user') liveUserText = e.text
-            else liveAssistantText += e.text
+            else {
+              // First assistant token: the wait before this is model latency, not generation.
+              if (ttftMs === undefined) ttftMs = Date.now() - turnStart
+              liveAssistantText += e.text
+            }
           }
           if (e.type === 'reasoning') reasoningText += e.text
           // Overwrite, not accumulate: at most one usage event per turn in the common
@@ -239,6 +257,15 @@ export default defineWebSocketHandler({
         // (which nulls s.conversationId) cannot redirect a rescued turn into a different
         // thread than the one the user was typing in.
         turnConversationIdForRescue = s.conversationId
+        // The branch this turn was sent into, same reasoning — read now, before the turn's
+        // own await, not at persist time. A null column (backfill never reached this thread,
+        // or it's brand new) becomes `undefined` so appendMessages keeps chaining from
+        // whatever leaf is active at persist time instead of trying to start a new root.
+        if (turnConversationIdForRescue) {
+          const [conv] = await useDb().select({ leaf: conversations.activeLeafId }).from(conversations)
+            .where(eq(conversations.id, turnConversationIdForRescue)).limit(1)
+          turnLeafId = conv?.leaf ?? undefined
+        }
         s.history = await exec!(ac.signal, emit, context)
         // Close the message BEFORE persisting: the UI should finish promptly; persistence
         // (and the `conversation` frame for a new thread) follows.
@@ -255,13 +282,19 @@ export default defineWebSocketHandler({
             // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
             peer.send(JSON.stringify({ type: 'conversation', conversationId: s.conversationId, title }))
           }
+          const usageWithTiming = {
+            ...(turnUsage ?? {}),
+            startedAt: new Date(turnStart).toISOString(),
+            ttftMs,
+            durationMs: Date.now() - turnStart
+          }
           await appendMessages(s.conversationId, buildTurnPersistPayload(added, {
             inputModality,
             speakFlag,
             attachments: turnAttachments,
             reasoning: reasoningText,
-            usage: turnUsage
-          }))
+            usage: usageWithTiming
+          }), turnLeafId)
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: s.conversationId })
           persisted = true
         }
@@ -291,13 +324,19 @@ export default defineWebSocketHandler({
                 // Only adopt it as the live thread if the connection has not moved on.
                 if (!s.conversationId) s.conversationId = convId
               }
+              const usageWithTiming = {
+                ...(turnUsage ?? {}),
+                startedAt: new Date(turnStart).toISOString(),
+                ttftMs,
+                durationMs: Date.now() - turnStart
+              }
               await appendMessages(convId, buildTurnPersistPayload(rescued, {
                 inputModality,
                 speakFlag,
                 attachments: turnAttachments,
                 reasoning: reasoningText,
-                usage: turnUsage
-              }))
+                usage: usageWithTiming
+              }), turnLeafId)
               publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: convId })
             } catch (persistErr) {
               // Last resort only — nothing above this can recover the turn now.
