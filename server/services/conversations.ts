@@ -8,6 +8,7 @@ import { TOOL_HISTORY_WINDOW } from '../lib/agent/tool-history'
 import { buildUserMessageParts, withoutAttachmentMarkers } from '../lib/agent/attachments'
 import { getImageBytes } from './images'
 import { getFileBytes } from './files'
+import { loadActivePath, type BranchInfo } from './conversation-path'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -49,7 +50,15 @@ function convToDTO(r: typeof conversations.$inferSelect): ConversationDTO {
   }
 }
 
-export function msgToDTO(r: typeof conversationMessages.$inferSelect): ConversationMessageDTO {
+/**
+ * `branch` comes from `loadActivePath`; it is absent only for a row that was never in the
+ * thread's grouping, which defaults to a lone trunk message — total 1 renders no pager, and
+ * `[r.id]` keeps `siblingIds[branch.index - 1] === r.id` true for it too.
+ */
+export function msgToDTO(
+  r: typeof conversationMessages.$inferSelect,
+  branch?: BranchInfo
+): ConversationMessageDTO {
   return {
     id: r.id,
     role: r.role as 'user' | 'assistant',
@@ -59,7 +68,10 @@ export function msgToDTO(r: typeof conversationMessages.$inferSelect): Conversat
     reasoning: r.reasoning ?? null,
     attachments: (r.attachments as AttachmentRef[] | null) ?? null,
     usage: (r.usage as MessageUsage | null) ?? null,
-    createdAt: r.createdAt.toISOString()
+    createdAt: r.createdAt.toISOString(),
+    parentId: r.parentId,
+    branch: { index: branch?.index ?? 1, total: branch?.total ?? 1 },
+    siblingIds: branch?.siblingIds ?? [r.id]
   }
 }
 
@@ -142,15 +154,13 @@ export async function getConversation(
 
   if (!conv) return null
 
-  const msgs = await db
-    .select()
-    .from(conversationMessages)
-    .where(eq(conversationMessages.conversationId, id))
-    .orderBy(conversationMessages.createdAt)
+  // The active branch only — the same walk `getAgentHistory` uses, so the transcript the user
+  // reads and the context the model gets can never be two different conversations.
+  const { rows: msgs, branches } = await loadActivePath(id)
 
   return {
     conversation: convToDTO(conv),
-    messages: msgs.map(msgToDTO)
+    messages: msgs.map(m => msgToDTO(m, branches.get(m.id)))
   }
 }
 
@@ -211,16 +221,10 @@ export async function hydrateAttachments(
 }
 
 export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
-  const rows = await useDb()
-    .select({
-      role: conversationMessages.role,
-      content: conversationMessages.content,
-      toolCalls: conversationMessages.toolCalls,
-      attachments: conversationMessages.attachments
-    })
-    .from(conversationMessages)
-    .where(eq(conversationMessages.conversationId, id))
-    .orderBy(conversationMessages.createdAt)
+  // Same walk as `getConversation` — see test/conversation-path.db.test.ts. If these two ever
+  // select rows independently, the model answers a branch nobody is looking at and the UI
+  // shows nothing wrong.
+  const { rows } = await loadActivePath(id)
 
   const msgs = rows.map(rowToAgentMessage)
 
