@@ -27,6 +27,9 @@ defineProps<{
 const emit = defineEmits<{
   undo: [toolCallId: string, undoToken: string]
   retry: [messageId: string]
+  edit: [messageId: string]
+  fork: [messageId: string]
+  branch: [messageId: string, dir: -1 | 1]
   pick: [prompt: string]
   approve: [requestId: string, opts: { remember: boolean; pattern: string }]
   deny: [requestId: string]
@@ -106,9 +109,22 @@ const emit = defineEmits<{
             >stopped</span>
           </MessageContent>
         </Message>
+        <!-- :branch is hardcoded to a single-branch default here: `branch`/`siblingIds` are
+             populated server-side on ConversationMessageDTO (server/services/conversations.ts)
+             but are NOT threaded onto AgentUIMessage's metadata on the client — neither
+             shared/types/agent-ui.ts's AgentMessageMetadata nor app/lib/agent/to-ui-messages.ts's
+             toUIMessages() carries them across. Wiring real per-message branch data through would
+             need both of those files, which are outside this task's two-file scope
+             (ReplyActions.vue, Conversation.vue) — see task-8-report.md. AgentBranchPager already
+             renders nothing for total <= 1, so this degrades to "no pager shown", matching every
+             thread's actual current behaviour. -->
         <AgentReplyActions
           :message="m"
+          :branch="{ index: 1, total: 1 }"
           @retry="emit('retry', m.id)"
+          @edit="emit('edit', m.id)"
+          @fork="emit('fork', m.id)"
+          @branch="(d: -1 | 1) => emit('branch', m.id, d)"
         />
       </div>
     </ConversationContent>
