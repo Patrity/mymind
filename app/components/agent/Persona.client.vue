@@ -24,7 +24,13 @@ const variant = computed(() => personaVariant(settings.value.personaVariant))
 const sizeClass = computed(() => {
   switch (props.size ?? 'inline') {
     case 'hero':
-      return 'size-56 sm:size-72'
+      // h-56/sm:h-72 (224/288px) are the normal-viewport sizes; max-h-[32vh] only
+      // engages below a ~900px-tall viewport (32vh == 288px there) and caps it before
+      // a short viewport (e.g. 800x480) scrolls most of it off above the fold — at
+      // 480px tall that's a 153.6px ceiling, comfortably under the old size-40 (160px)
+      // baseline so visibility there can't regress below what shipped pre-cycle-68.
+      // w-auto + aspect-square keep it square as the height-driven cap shrinks it.
+      return 'h-56 sm:h-72 max-h-[32vh] w-auto aspect-square'
     case 'full':
       // h-full (not a fixed size): the voice-mode overlay's wrapper is the one that shrinks
       // on a short viewport (index.vue), so the Persona must follow it there instead of
