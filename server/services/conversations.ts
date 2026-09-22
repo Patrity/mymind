@@ -9,6 +9,7 @@ import { buildUserMessageParts, withoutAttachmentMarkers } from '../lib/agent/at
 import { getImageBytes } from './images'
 import { getFileBytes } from './files'
 import { loadActivePath, type BranchInfo } from './conversation-path'
+import { deepestDescendant } from '../../shared/utils/conversation-path'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -185,6 +186,34 @@ export async function branchParent(
     .limit(1)
   if (!row) return null
   return op === 'fork' ? row.id : row.parentId
+}
+
+/**
+ * Point the thread at a different branch — the CHOSEN sibling's deepest descendant, not the
+ * sibling itself. The client only ever fetches the active path, so it has no way to know an
+ * inactive sibling has its own continuation; landing the leaf on the sibling itself would make
+ * everything below the switch point invisible to both read paths (see
+ * shared/utils/conversation-path's deepestDescendant).
+ *
+ * Returns the resolved leaf id, or null when `leafId` is not a message in THIS conversation —
+ * the caller 404s rather than silently pointing a thread at someone else's message. The rows
+ * query is scoped to `conversationId`, which is what makes that scoping guard real: an id from
+ * another conversation is simply absent from `rows`, so `deepestDescendant` can't find it.
+ */
+export async function setActiveLeaf(conversationId: string, leafId: string): Promise<string | null> {
+  const db = useDb()
+  const rows = await db.select({
+    id: conversationMessages.id,
+    parentId: conversationMessages.parentId,
+    createdAt: conversationMessages.createdAt
+  }).from(conversationMessages).where(eq(conversationMessages.conversationId, conversationId))
+
+  const resolved = deepestDescendant(rows, leafId)
+  if (!resolved) return null
+
+  await db.update(conversations).set({ activeLeafId: resolved, updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId))
+  return resolved
 }
 
 export async function getConversation(
