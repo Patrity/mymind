@@ -68,10 +68,16 @@ describe('both read paths walk the SAME active path', () => {
     expect(ui).not.toContain('follow-up C')
   })
 
-  it('falls back to the flat read when no leaf is set rather than showing nothing', async () => {
+  // The null-leaf fallback is the path taken by any thread the 0045 backfill missed, so it is
+  // the case where the two read paths MOST need to agree — and asserting only the UI's length
+  // here was vacuous: a `getAgentHistory` that returned nothing at all on a null leaf, while
+  // the transcript showed every row, passed this file green.
+  it('falls back to the flat read when no leaf is set, and BOTH paths fall back together', async () => {
     await useDb().execute(sql`update conversations set active_leaf_id = null where id = ${convId}::uuid`)
-    const ui = (await getConversation(convId))!.messages
+    const ui = (await getConversation(convId))!.messages.map(m => m.content)
+    const model = (await getAgentHistory(convId)).map(m => m.content)
     expect(ui.length).toBe(4)          // all rows, today's behaviour
+    expect(model).toEqual(ui)
   })
 })
 
@@ -90,7 +96,7 @@ describe('branch metadata reaches the DTO', () => {
   // read paths fetch the active path alone, so D never appears in C's transcript. Its consumer
   // lands in a later task, which is precisely why the invariant is pinned now — a silently
   // mis-ordered list would surface there as a pager that switches to the wrong branch.
-  it('carries every sibling, in creation order, indexed by branch.index', async () => {
+  it('carries every sibling, in read order, indexed by branch.index', async () => {
     await setLeaf(ids.c!)
     const msgs = (await getConversation(convId))!.messages
     for (const m of msgs) expect(m.siblingIds[m.branch.index - 1]).toBe(m.id)
@@ -98,5 +104,30 @@ describe('branch metadata reaches the DTO', () => {
     expect(c.siblingIds).toEqual([ids.c, ids.d])   // D is unreachable from the path itself
     const a = msgs.find(m => m.content === 'question A')!
     expect(a.siblingIds).toEqual([ids.a])          // a root with no sibling still lists itself
+  })
+})
+
+// Cycle 68's predecessor measured a 26% created_at collision rate in this corpus, and the two
+// read paths each run their own copy of the query — so ordering on created_at alone leaves tied
+// rows free to come back in a different order per request. This forces the tie the fixture is
+// too slow to produce on its own; it runs last because it rewrites the fixture's timestamps.
+describe('rows with a tied created_at still come back in ONE stable order', () => {
+  beforeAll(async () => {
+    await useDb().execute(sql`
+      update conversation_messages set created_at = '2020-01-01T00:00:00Z'::timestamptz
+      where id in (${ids.c}::uuid, ${ids.d}::uuid)`)
+  })
+
+  it('orders tied siblings by id, identically for both read paths and across reads', async () => {
+    await setLeaf(ids.c!)
+    const ui = (await getConversation(convId))!.messages
+    const model = (await getAgentHistory(convId)).map(m => m.content)
+    expect(model).toEqual(ui.map(m => m.content))
+
+    // A uuid's byte order is its canonical-text order, so this is Postgres's own tie-break.
+    const expected = [ids.c!, ids.d!].sort()
+    expect(ui.find(m => m.id === ids.c)!.siblingIds).toEqual(expected)
+    const reread = (await getConversation(convId))!.messages
+    expect(reread.find(m => m.id === ids.c)!.siblingIds).toEqual(expected)
   })
 })

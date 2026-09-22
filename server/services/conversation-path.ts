@@ -7,7 +7,8 @@ import { activePath, branchIndex } from '../../shared/utils/conversation-path'
 export interface BranchInfo {
   index: number
   total: number
-  /** Siblings in creation order, including this message — so `siblingIds[index - 1]` is it. */
+  /** Siblings in read order (`created_at, id`), including this message — so
+   *  `siblingIds[index - 1]` is it. */
   siblingIds: string[]
 }
 
@@ -19,17 +20,26 @@ export interface BranchInfo {
  * larger than any here, and this keeps the walk identical for BOTH read paths — which is the
  * property that matters most (see test/conversation-path.db.test.ts).
  *
- * A null leaf returns every row in created_at order: the pre-cycle-68 behaviour, so a thread
- * whose leaf is somehow unset renders in full instead of appearing empty.
+ * A null leaf returns every row in `(created_at, id)` order: the pre-cycle-68 behaviour, so a
+ * thread whose leaf is somehow unset renders in full instead of appearing empty. Both read
+ * paths fall back TOGETHER — asserted, because a fallback only one path takes is this cycle's
+ * failure mode in its worst form (see the null-leaf test).
  */
 export async function loadActivePath(conversationId: string): Promise<{
   rows: Array<typeof conversationMessages.$inferSelect>
   branches: Map<string, BranchInfo>
 }> {
   const db = useDb()
+  // `id` is the tie-break, not decoration: cycle 68's predecessor measured a 26% created_at
+  // collision rate in this corpus, and each read path runs its own copy of this query. On
+  // `created_at` alone Postgres may order tied rows differently per query — which would let the
+  // two read paths disagree on the null-leaf fallback, and would swap a sibling between 1/2 and
+  // 2/2 (reordering `siblingIds` with it) from one request to the next, surfacing as a branch
+  // pager that jumps for no reason. Deterministic beats arbitrary-and-unstable; the 0045
+  // backfill carries the same ruling.
   const rows = await db.select().from(conversationMessages)
     .where(sql`${conversationMessages.conversationId} = ${conversationId}`)
-    .orderBy(conversationMessages.createdAt)
+    .orderBy(conversationMessages.createdAt, conversationMessages.id)
 
   const [conv] = await db.select({ leaf: conversations.activeLeafId }).from(conversations)
     .where(sql`${conversations.id} = ${conversationId}`).limit(1)
@@ -63,10 +73,17 @@ function withSiblings(
 
   const out = new Map<string, BranchInfo>()
   for (const group of byParent.values()) {
-    const siblingIds = [...group].sort((a, b) => indexes.get(a)!.index - indexes.get(b)!.index)
-    for (const id of siblingIds) {
-      const { index, total } = indexes.get(id)!
-      out.set(id, { index, total, siblingIds })
+    // Resolve each position ONCE, and drop an id `indexes` doesn't cover rather than asserting
+    // it must: `branchIndex` is fed the same rows so the lookup cannot miss today, but a caller
+    // that ever passes a narrower index map gets a message with no pager instead of a throw.
+    const positioned = group.flatMap(id => {
+      const pos = indexes.get(id)
+      return pos ? [{ id, pos }] : []
+    })
+    positioned.sort((a, b) => a.pos.index - b.pos.index)
+    const siblingIds = positioned.map(p => p.id)
+    for (const { id, pos } of positioned) {
+      out.set(id, { index: pos.index, total: pos.total, siblingIds })
     }
   }
   return out
