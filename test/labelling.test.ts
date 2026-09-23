@@ -5,6 +5,7 @@ import {
   parseLabels,
   formatLabelLine,
   remaining,
+  applyQueue,
   type SampleRow,
   type Label
 } from '../scripts/lib/labelling'
@@ -122,5 +123,31 @@ describe('remaining', () => {
   it('does not double-skip when a row was labelled twice', () => {
     const dupes = [label({ id: 'a' }), label({ id: 'a' })]
     expect(remaining(sample, dupes).map(r => r.id)).toEqual(['b', 'c'])
+  })
+})
+
+describe('applyQueue', () => {
+  const sample = [row({ id: 'a' }), row({ id: 'b' }), row({ id: 'c' }), row({ id: 'd' })]
+
+  it('serves queued rows first, in queue order', () => {
+    expect(applyQueue(sample, ['c', 'a']).map(r => r.id)).toEqual(['c', 'a', 'b', 'd'])
+  })
+
+  it('keeps unqueued rows after, in sample order', () => {
+    expect(applyQueue(sample, ['d']).map(r => r.id)).toEqual(['d', 'a', 'b', 'c'])
+  })
+
+  it('returns sample order when the queue is empty', () => {
+    expect(applyQueue(sample, []).map(r => r.id)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('ignores queued ids that are not in the sample', () => {
+    expect(applyQueue(sample, ['zzz', 'b']).map(r => r.id)).toEqual(['b', 'a', 'c', 'd'])
+  })
+
+  it('never drops or duplicates a row', () => {
+    const out = applyQueue(sample, ['c', 'c', 'a'])
+    expect(out).toHaveLength(sample.length)
+    expect(new Set(out.map(r => r.id)).size).toBe(sample.length)
   })
 })

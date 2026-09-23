@@ -15,6 +15,7 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { emitKeypressEvents } from 'node:readline'
 import {
+  applyQueue,
   blindRow,
   deriveVerdict,
   formatLabelLine,
@@ -28,6 +29,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SAMPLE = resolve(HERE, 'data/memory-sample-2026-09-22.jsonl')
 const LABELS = resolve(HERE, 'data/memory-labels-2026-09-22.jsonl')
+const QUEUE = resolve(HERE, 'data/label-queue-2026-09-22.json')
 
 const B = '\x1B[1m', D = '\x1B[2m', R = '\x1B[0m'
 const CY = '\x1B[36m', YE = '\x1B[33m', GR = '\x1B[32m', RD = '\x1B[31m'
@@ -100,7 +102,9 @@ async function main() {
     console.error(`No sample at ${SAMPLE}`)
     process.exit(1)
   }
-  const sample: SampleRow[] = parseLabels(readFileSync(SAMPLE, 'utf8')) as unknown as SampleRow[]
+  const raw: SampleRow[] = parseLabels(readFileSync(SAMPLE, 'utf8')) as unknown as SampleRow[]
+  const queue: string[] = existsSync(QUEUE) ? JSON.parse(readFileSync(QUEUE, 'utf8')) : []
+  const sample = applyQueue(raw, queue)
   let done = existsSync(LABELS) ? parseLabels(readFileSync(LABELS, 'utf8')) : []
   const skipped = new Set<string>()
 
@@ -115,6 +119,10 @@ async function main() {
   console.log(`\n${B}Memory labelling${R} ${D}— ${sample.length} sampled, ${done.length} already done${R}`)
   console.log(`${D}value 0-3 · durable y/n · self-contained y/n · [u]ndo last · [s]kip · [q]uit${R}`)
   console.log(`${D}Blinded on purpose: stored confidence and review flags are hidden.${R}`)
+  if (queue.length) {
+    console.log(`${D}Priority queue of ${queue.length} active — half flagged, half controls, shuffled.`)
+    console.log(`You cannot tell which is which, and that is the point. Judge the memory.${R}`)
+  }
 
   for (;;) {
     const queue = remaining(sample, done).filter(r => !skipped.has(r.id))

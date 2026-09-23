@@ -95,3 +95,27 @@ export function remaining(sample: SampleRow[], labels: Label[]): SampleRow[] {
   const done = new Set(labels.map(l => l.id))
   return sample.filter(r => !done.has(r.id))
 }
+
+/**
+ * Re-order so the ids in `queue` come first, in queue order, and everything
+ * else follows in sample order. Nothing is dropped — a queue narrows what you
+ * see *first*, never what you can see.
+ *
+ * The queue is built elsewhere by uncertainty sampling, and is deliberately
+ * salted with controls: if the labeller could tell a flagged row from a control
+ * they would label the prediction rather than the memory, and the measurement
+ * the queue exists to sharpen would be the thing it destroyed.
+ */
+export function applyQueue(sample: SampleRow[], queue: string[]): SampleRow[] {
+  const byId = new Map(sample.map(r => [r.id, r]))
+  const seen = new Set<string>()
+  const first: SampleRow[] = []
+  for (const id of queue) {
+    const row = byId.get(id)
+    if (row && !seen.has(id)) {
+      seen.add(id)
+      first.push(row)
+    }
+  }
+  return [...first, ...sample.filter(r => !seen.has(r.id))]
+}
