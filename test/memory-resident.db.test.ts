@@ -4,7 +4,7 @@
 // follows (`.env` load + `useRuntimeConfig` stub so `useDb()` works outside Nuxt).
 process.loadEnvFile('.env')
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 // createMemory -> embedOne -> withFailover reaches the Nitro-global $fetch, which only
@@ -21,19 +21,45 @@ import { sql, inArray } from 'drizzle-orm'
 const mk = (content: string, project = 'alpha') =>
   createMemory({ scope: 'user', content, project })
 
+/**
+ * Direct insert, bypassing createMemory's dedup entirely.
+ *
+ * This whole db-test harness stubs $fetch to a CONSTANT embedding vector (see below), so
+ * createMemory can never produce two distinct rows in one (scope, project) partition — any
+ * second call sees cosine similarity 1.0 against the first and dedupDecision merges it. Any
+ * test that needs a row DISTINCT from another must not go through createMemory for it.
+ */
+const insertDistinct = async (content: string) => {
+  const [row] = await useDb().insert(memories).values({
+    scope: 'user',
+    content,
+    contentHash: createHash('sha256').update(content).digest('hex')
+  }).returning()
+  return row!
+}
+
 describe('resident tier', () => {
   beforeEach(async () => {
     await useDb().execute(sql`delete from memories where content like 'RES-TEST%'`)
   })
 
+  // beforeEach alone only cleans before each of THIS file's own tests — it doesn't stop this
+  // file's rows leaking into the next file in the shared dev Postgres (no per-file isolation).
+  afterAll(async () => {
+    await useDb().execute(sql`delete from memories where content like 'RES-TEST%'`)
+  })
+
   it('defaults to non-resident', async () => {
-    const m = await mk('RES-TEST plain')
+    // This test IS about createMemory, so keep it — but give it a project no other test in
+    // this suite touches, so it lands in an empty dedup partition and cannot merge with
+    // anything left over from another test or another file.
+    const m = await mk('RES-TEST plain', 'res-test-defaults')
     expect(m.resident).toBe(false)
   })
 
   it('listResidentMemories returns only resident rows', async () => {
-    const a = await mk('RES-TEST pinned')
-    await mk('RES-TEST unpinned')
+    const a = await insertDistinct('RES-TEST pinned')
+    await insertDistinct('RES-TEST unpinned')
     await useDb().update(memories)
       .set({ resident: true, applicability: 'global', reviewedAt: new Date() })
       .where(sql`${memories.id} = ${a.id}`)
@@ -44,35 +70,22 @@ describe('resident tier', () => {
   })
 
   it('refuses a resident memory that is not global', async () => {
-    const m = await mk('RES-TEST bad')
+    const m = await insertDistinct('RES-TEST bad')
     await expect(
       useDb().update(memories).set({ resident: true }).where(sql`${memories.id} = ${m.id}`)
     ).rejects.toThrow()
   })
 
   it('recordRetrievals increments every id in ONE statement', async () => {
-    // Direct insert, not mk()/createMemory: createMemory runs real dedup over (scope,
-    // project) by contentHash + embedding similarity, and this suite stubs embeddings to a
-    // single fixed vector, so two short similar RES-TEST strings in the same project collide
-    // and merge into one row. Bypassing dedup here is correct — this test is about
-    // recordRetrievals, not about createMemory's dedup behavior.
-    const [a] = await useDb().insert(memories).values({
-      scope: 'user',
-      content: 'RES-TEST count-a',
-      contentHash: createHash('sha256').update('RES-TEST count-a').digest('hex')
-    }).returning()
-    const [b] = await useDb().insert(memories).values({
-      scope: 'user',
-      content: 'RES-TEST count-b',
-      contentHash: createHash('sha256').update('RES-TEST count-b').digest('hex')
-    }).returning()
-    await recordRetrievals([a!.id, b!.id])
-    await recordRetrievals([a!.id])
-    const rows = await useDb().select().from(memories).where(inArray(memories.id, [a!.id, b!.id]))
+    const a = await insertDistinct('RES-TEST count-a')
+    const b = await insertDistinct('RES-TEST count-b')
+    await recordRetrievals([a.id, b.id])
+    await recordRetrievals([a.id])
+    const rows = await useDb().select().from(memories).where(inArray(memories.id, [a.id, b.id]))
     const byId = new Map(rows.map(r => [r.id, r]))
-    expect(byId.get(a!.id)!.retrievalCount).toBe(2)
-    expect(byId.get(b!.id)!.retrievalCount).toBe(1)
-    expect(byId.get(a!.id)!.lastRetrievedAt).not.toBeNull()
+    expect(byId.get(a.id)!.retrievalCount).toBe(2)
+    expect(byId.get(b.id)!.retrievalCount).toBe(1)
+    expect(byId.get(a.id)!.lastRetrievedAt).not.toBeNull()
   })
 
   it('recordRetrievals([]) is a no-op and does not throw', async () => {

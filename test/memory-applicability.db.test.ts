@@ -3,7 +3,7 @@
 // DB-backed test — see test/documents-cas.db.test.ts for the harness pattern this file
 // follows (`.env` load + `useRuntimeConfig` stub so `useDb()` works outside Nuxt).
 process.loadEnvFile('.env')
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 // createMemory -> embedOne -> withFailover reaches the Nitro-global $fetch, which only
@@ -18,6 +18,14 @@ import { sql } from 'drizzle-orm'
 
 describe('memory applicability', () => {
   beforeEach(async () => {
+    await useDb().execute(sql`delete from memories where content like 'APPLIC-TEST%'`)
+  })
+
+  // beforeEach alone only cleans before each of THIS file's own tests — it doesn't stop this
+  // file's rows leaking into the next file, and this suite shares one dev Postgres across
+  // worktrees/sessions with no per-file isolation. Under the fixed-embedding $fetch stub, a
+  // leftover row here is a dedup-merge magnet for any later test in the same (scope, project).
+  afterAll(async () => {
     await useDb().execute(sql`delete from memories where content like 'APPLIC-TEST%'`)
   })
 
