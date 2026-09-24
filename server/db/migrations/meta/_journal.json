@@ -344,6 +344,13 @@
       "when": 1790229618882,
       "tag": "0048_little_darkstar",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790231174010,
+      "tag": "0049_illegal_squadron_sinister",
+      "breakpoints": true
     }
   ]
 }

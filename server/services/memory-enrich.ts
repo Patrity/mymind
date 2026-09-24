@@ -1,10 +1,12 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { sessions, messages, memEnrichmentState, toolEvents, projects } from '../db/schema'
+import { sessions, messages, memEnrichmentState, toolEvents, projects, conversations, conversationMessages } from '../db/schema'
 import { chat } from '../lib/ai/chat'
-import { parseMemories } from '../lib/ai/memory-extract'
+import { parseMemories, type MemoryCandidate } from '../lib/ai/memory-extract'
 import { resolveEnrichedMemory } from './memory-resolve'
+import { createMemory } from './memory'
 import { projectIdForScope } from '../lib/projects/memory-project'
+import { publishChange } from '../utils/live-bus'
 
 export interface EnrichMemoryResult {
   enriched: number
@@ -75,6 +77,28 @@ export function buildEnrichTranscript(
 }
 
 /**
+ * Call the model to extract durable memory candidates from a transcript. Shared by both
+ * enrichment sources (session + conversation) so the extraction prompt never diverges
+ * between them — a divergent prompt is how the two sources start producing incompatible
+ * memories.
+ */
+export async function extractMemoriesFromTranscript(transcript: string): Promise<MemoryCandidate[]> {
+  // Call the LLM. 'bulk' = no-think model: a capped, single-shot structured
+  // extraction. The reasoning alias emits <think>/reasoning_content and returns
+  // null content under the token cap, which chat() throws on (failover-rescued).
+  const raw = await chat(
+    'bulk',
+    [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: transcript }
+    ],
+    { temperature: 0.2, maxTokens: 1200 }
+  )
+
+  return parseMemories(raw)
+}
+
+/**
  * Run memory enrichment over sessions that have new messages since last enrichment.
  * Per-session failures are isolated — errors are logged and recorded in state.
  */
@@ -106,8 +130,8 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
               and m.is_sidechain is not true) >= 4`,
         sql`${sessions.lastActive} < now() - interval '1 hour'`,
         sql`not exists (select 1 from ${projects} p where p.id = ${sessions.projectId} and p.active = false)`,
-        sql`(not exists (select 1 from ${memEnrichmentState} e where e.session_id = ${sessions.id})
-          or exists (select 1 from ${memEnrichmentState} e where e.session_id = ${sessions.id} and (
+        sql`(not exists (select 1 from ${memEnrichmentState} e where e.source_kind = 'session' and e.source_id = ${sessions.id})
+          or exists (select 1 from ${memEnrichmentState} e where e.source_kind = 'session' and e.source_id = ${sessions.id} and (
             (${sessions.messageCount} - coalesce(e.last_enriched_message_count, 0)) >= 5
             or (e.status = 'error' and e.last_run < now() - interval '24 hours')
           )))`
@@ -157,19 +181,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
 
       const transcript = buildEnrichTranscript(msgs, tools)
 
-      // Call the LLM. 'bulk' = no-think model: a capped, single-shot structured
-      // extraction. The reasoning alias emits <think>/reasoning_content and returns
-      // null content under the token cap, which chat() throws on (failover-rescued).
-      const raw = await chat(
-        'bulk',
-        [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: transcript }
-        ],
-        { temperature: 0.2, maxTokens: 1200 }
-      )
-
-      const extracted = parseMemories(raw)
+      const extracted = await extractMemoriesFromTranscript(transcript)
       candidates += extracted.length
 
       // Store each candidate with rich provenance via resolution orchestrator
@@ -210,14 +222,15 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
       await db
         .insert(memEnrichmentState)
         .values({
-          sessionId: session.id,
+          sourceKind: 'session',
+          sourceId: session.id,
           lastEnrichedMessageCount: session.messageCount,
           lastRun: new Date(),
           status: 'ok',
           error: null
         })
         .onConflictDoUpdate({
-          target: memEnrichmentState.sessionId,
+          target: [memEnrichmentState.sourceKind, memEnrichmentState.sourceId],
           set: {
             lastEnrichedMessageCount: session.messageCount,
             lastRun: new Date(),
@@ -238,14 +251,15 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
         await db
           .insert(memEnrichmentState)
           .values({
-            sessionId: session.id,
+            sourceKind: 'session',
+            sourceId: session.id,
             lastEnrichedMessageCount: session.messageCount,
             lastRun: new Date(),
             status: 'error',
             error: String(err)
           })
           .onConflictDoUpdate({
-            target: memEnrichmentState.sessionId,
+            target: [memEnrichmentState.sourceKind, memEnrichmentState.sourceId],
             set: {
               lastRun: new Date(),
               status: 'error',
@@ -261,4 +275,74 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
   }
 
   return { enriched, candidates, sessionsProcessed, skipped, actions }
+}
+
+export interface EnrichConversationsOptions {
+  limit?: number
+  deps?: { extract?: (transcript: string) => Promise<MemoryCandidate[]> }
+}
+
+/**
+ * Enrich Bridget conversations, not just Claude Code sessions.
+ *
+ * Before this, every memory in the store came from a session transcript and talking to Bridget
+ * produced nothing — which makes a persistent session accumulate forever and graduate nothing.
+ *
+ * Output is review-gated exactly like session enrichment: Bridget talks more loosely than a work
+ * transcript and the extraction prompt is tuned for the latter, so yield should be measured
+ * before this is trusted.
+ */
+export async function enrichConversations(
+  opts: EnrichConversationsOptions = {}
+): Promise<{ conversationsProcessed: number, memoriesCreated: number }> {
+  const db = useDb()
+  const limit = opts.limit ?? 10
+  const extract = opts.deps?.extract ?? extractMemoriesFromTranscript
+
+  const candidates = await db.select({ id: conversations.id, messageCount: conversations.messageCount })
+    .from(conversations)
+    .leftJoin(memEnrichmentState, and(
+      eq(memEnrichmentState.sourceKind, 'conversation'),
+      eq(memEnrichmentState.sourceId, conversations.id)
+    ))
+    .where(sql`${conversations.messageCount} > coalesce(${memEnrichmentState.lastEnrichedMessageCount}, 0)`)
+    .orderBy(desc(conversations.lastMessageAt))
+    .limit(limit)
+
+  let memoriesCreated = 0
+  for (const c of candidates) {
+    const rows = await db.select().from(conversationMessages)
+      .where(eq(conversationMessages.conversationId, c.id))
+      .orderBy(conversationMessages.createdAt, conversationMessages.id)
+    const transcript = rows.map(r => `${r.role}: ${r.content}`).join('\n')
+
+    try {
+      const extracted = await extract(transcript)
+      for (const e of extracted) {
+        const memory = await createMemory({
+          scope: e.scope,
+          content: e.content,
+          confidence: e.confidence,
+          source: `conversation:${c.id}`
+        })
+        publishChange({ resource: 'memory', action: 'created', id: memory.id })
+        memoriesCreated++
+      }
+      await db.insert(memEnrichmentState)
+        .values({ sourceKind: 'conversation', sourceId: c.id, lastEnrichedMessageCount: rows.length, lastRun: new Date(), status: 'ok' })
+        .onConflictDoUpdate({
+          target: [memEnrichmentState.sourceKind, memEnrichmentState.sourceId],
+          set: { lastEnrichedMessageCount: rows.length, lastRun: new Date(), status: 'ok', error: null }
+        })
+    } catch (err) {
+      await db.insert(memEnrichmentState)
+        .values({ sourceKind: 'conversation', sourceId: c.id, lastRun: new Date(), status: 'error', error: String(err) })
+        .onConflictDoUpdate({
+          target: [memEnrichmentState.sourceKind, memEnrichmentState.sourceId],
+          set: { lastRun: new Date(), status: 'error', error: String(err) }
+        })
+    }
+  }
+
+  return { conversationsProcessed: candidates.length, memoriesCreated }
 }
