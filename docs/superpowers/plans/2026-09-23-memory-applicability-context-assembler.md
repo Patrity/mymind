@@ -1355,7 +1355,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { useDb } from '../server/db'
 import { conversations, conversationMessages, memEnrichmentState } from '../server/db/schema'
 import { enrichConversations } from '../server/services/memory-enrich'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 
 async function seedConversation(content: string) {
   const db = useDb()
@@ -1532,7 +1532,7 @@ In `server/tasks/enrich-memories.ts`, call `enrichConversations()` after the exi
 - [ ] **Step 8: Run the tests**
 
 Run: `pnpm test:db -- enrich-conversations`
-Expected: PASS (4 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 9: Verify the tests can fail**
 
@@ -1556,7 +1556,23 @@ via a hand-written ALTER rather than drizzle's proposed drop-and-recreate."
 
 ### Task 7: Polymorphic review queue
 
-`review_queue` is keyed on `doc_id` and cannot hold a memory item. Two queues with two UIs is what makes people stop reading either one.
+**Read this before anything else — the framing in the spec's first draft was wrong, and the truth changes the migration.**
+
+`review_queue.doc_id` is **already polymorphic, dishonestly**. `server/services/memory-resolve.ts:198,202,206` insert `docId: plan.targetId` — a `memories.id` — under kinds `memory-supersede` and `memory-contradict`, into a column named and documented as a document reference. Verified against prod on 2026-09-23:
+
+| kind | rows | `doc_id` matches a document | matches a memory |
+|---|---|---|---|
+| `memory-contradict` | 41 | 0 | **41** |
+| `memory-supersede` | 20 | 0 | **20** |
+| `enrichment` | 6 | 6 | 0 |
+| `triage` | 2 | 2 | 0 |
+
+So this task is a **correctness fix to an existing latent defect**, not a new capability. Two consequences follow, and both are requirements here:
+
+1. **The backfill must branch on `kind`.** A blanket `target_kind = 'document'` would mislabel all 61 existing memory rows.
+2. **`memory-resolve.ts` must be updated in this task.** If it keeps writing `docId` while the column default is `'document'`, every new memory conflict row is mislabelled from the moment this ships.
+
+Note in passing: `listReviewFeed`'s `leftJoin(documents, eq(documents.id, reviewQueue.docId))` has never matched for memory rows — harmless because it is a left join, but it is a join that cannot succeed.
 
 **Files:**
 - Modify: `server/db/schema/review-queue.ts`
@@ -1581,7 +1597,7 @@ import { describe, it, expect } from 'vitest'
 import { useDb } from '../server/db'
 import { reviewQueue } from '../server/db/schema'
 import { enqueueReview } from '../server/services/review'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 
 describe('polymorphic review queue', () => {
   it('accepts a memory target', async () => {
@@ -1616,6 +1632,24 @@ describe('polymorphic review queue', () => {
     await enqueueReview({ targetKind: 'document', targetId: shared, kind: 'enrichment', proposed: {} })
     const rows = await useDb().select().from(reviewQueue).where(eq(reviewQueue.targetId, shared))
     expect(rows).toHaveLength(2)
+  })
+
+  it('backfilled every pre-existing memory conflict row as a memory, not a document', async () => {
+    // Guards the kind-dependent backfill. doc_id has always held a memories.id for these two
+    // kinds; a blanket target_kind='document' would flatten two id namespaces into one label.
+    const rows = await useDb().select({ kind: reviewQueue.kind, targetKind: reviewQueue.targetKind })
+      .from(reviewQueue)
+      .where(inArray(reviewQueue.kind, ['memory-supersede', 'memory-contradict']))
+    for (const r of rows) expect(r.targetKind).toBe('memory')
+  })
+
+  it('memory-resolve writes memory conflicts as targetKind memory', async () => {
+    // The column default is 'document'; a writer that still passes docId would land there
+    // silently. Assert the writer, not just the schema.
+    const src = await import('node:fs').then(fs =>
+      fs.readFileSync(new URL('../server/services/memory-resolve.ts', import.meta.url), 'utf8'))
+    expect(src).not.toMatch(/insert\(reviewQueue\)\.values\(\{\s*docId:/)
+    expect(src).toMatch(/targetKind:\s*'memory'/)
   })
 })
 ```
@@ -1657,7 +1691,16 @@ Generate, then replace the body of `0050_*.sql` so the backfill runs before `NOT
 ```sql
 ALTER TABLE "review_queue" ADD COLUMN "target_kind" text DEFAULT 'document' NOT NULL;
 ALTER TABLE "review_queue" ADD COLUMN "target_id" uuid;
-UPDATE "review_queue" SET "target_id" = "doc_id" WHERE "target_id" IS NULL;
+
+-- KIND-DEPENDENT, not a blanket 'document'. memory-supersede / memory-contradict rows have
+-- always held a memories.id in doc_id (41 + 20 of them in prod); labelling those 'document'
+-- would make the id namespace wrong in a column that finally claims to be honest about it.
+UPDATE "review_queue" SET
+  "target_id"   = "doc_id",
+  "target_kind" = CASE WHEN "kind" IN ('memory-supersede','memory-contradict')
+                       THEN 'memory' ELSE 'document' END
+WHERE "target_id" IS NULL;
+
 ALTER TABLE "review_queue" ALTER COLUMN "target_id" SET NOT NULL;
 ALTER TABLE "review_queue" ALTER COLUMN "doc_id" DROP NOT NULL;
 DROP INDEX IF EXISTS "review_queue_one_pending_per_doc";
@@ -1665,11 +1708,14 @@ CREATE UNIQUE INDEX "review_queue_one_pending_per_target"
   ON "review_queue" ("target_kind", "target_id") WHERE status = 'pending';
 ```
 
-Run `pnpm db:migrate`, then confirm nothing was stranded:
+Run `pnpm db:migrate`, then confirm nothing was stranded **and that the split landed on the right side** — a `0` in the `memory` row means the backfill silently flattened the namespace:
 
 ```bash
+psql "$DATABASE_URL" -c "select target_kind, kind, count(*) from review_queue group by 1,2 order by 3 desc;"
 psql "$DATABASE_URL" -c "select count(*) from review_queue where target_id is null;"   -- expect 0
 ```
+
+Expect `memory` for every `memory-supersede` / `memory-contradict` row and `document` for `enrichment` / `triage`.
 
 - [ ] **Step 5: Implement `enqueueReview` and update callers**
 
@@ -1694,10 +1740,26 @@ export async function enqueueReview(input: {
 
 Update every existing read in `server/services/review.ts` that selects or filters on `docId` to use `targetId` (plus `targetKind: 'document'` where it means documents specifically). Stop writing `docId` on insert.
 
+**Then fix the three writers in `server/services/memory-resolve.ts` (lines ~198, ~202, ~206).** Each currently reads:
+
+```ts
+await db.insert(reviewQueue).values({ docId: plan.targetId!, kind: 'memory-supersede', proposed: proposed as unknown as string }).onConflictDoNothing()
+```
+
+Replace the `docId:` key with the honest pair, in all three (the `kind` differs per site — keep each one's existing `kind`):
+
+```ts
+await db.insert(reviewQueue).values({ targetKind: 'memory', targetId: plan.targetId!, kind: 'memory-supersede', proposed: proposed as unknown as string }).onConflictDoNothing()
+```
+
+Leaving these writing `docId` would silently label every new memory conflict `'document'` via the column default — the exact defect this task exists to end.
+
+Also fix `listReviewFeed`'s `leftJoin(documents, eq(documents.id, reviewQueue.docId))` to join on `reviewQueue.targetId` **and** `reviewQueue.targetKind = 'document'`, so it stops attempting a match that cannot succeed for memory rows.
+
 - [ ] **Step 6: Run the tests**
 
 Run: `pnpm test:db -- review-queue-targets`
-Expected: PASS (4 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 7: Verify the tests can fail**
 
