@@ -364,13 +364,18 @@ async function claim(docId: string): Promise<boolean> {
 }
 
 /**
- * review_queue_one_pending_per_doc (migration 0005) is a partial unique index on doc_id
- * WHERE status='pending' — across ALL kinds, not just 'triage'. If a document already has
- * a pending review row from ANOTHER flow (e.g. a leftover `enrichment` row from the retired
- * enrich-input cron), a triage proposal that needs to queue would silently lose the INSERT
- * race via onConflictDoNothing. Checked BEFORE claim() so a document in this state is never
- * stamped triaged_at — it stays eligible and gets triaged properly on a later sweep, once
- * the blocking row is resolved. See the cycle-57 final review, Finding A.
+ * review_queue_one_pending_per_target (originally review_queue_one_pending_per_doc, migration
+ * 0005) is a partial unique index WHERE status='pending' — on doc_id alone across ALL kinds
+ * when this guard was first written. Migration 0051 ("give each concern kind its own pending
+ * slot") added `kind` to it: it is now (target_kind, target_id, kind), so a pending row of one
+ * kind no longer blocks a DIFFERENT kind's insert at the database level. This function's own
+ * check stays in place on top of that: if a document already has a pending review row from
+ * ANOTHER flow (e.g. a leftover `enrichment` row from the retired enrich-input cron), a triage
+ * proposal is skipped BEFORE the model call is paid for, rather than generating a proposal
+ * that has nowhere useful to land. Checked BEFORE claim() so a document in this state is never
+ * stamped triaged_at — it stays eligible and gets triaged properly on a later sweep, once the
+ * blocking row is resolved. See the cycle-57 final review, Finding A, for the original
+ * incident this guarded against under the old two-column index.
  *
  * Deliberately excludes kind='triage': a pending triage row can ONLY exist on a document
  * this same function already claimed (the insert further down only ever runs after claim()
@@ -443,11 +448,12 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
   }
 
   if (queued.length > 0) {
-    // ONE row per document — review_queue_one_pending_per_doc is a partial unique index
-    // across ALL kinds. hasPendingReview above is the primary defense against colliding with
-    // an existing pending row; this is belt-and-braces for a race between that check and this
-    // insert — .returning() lets us tell a real insert apart from a silent onConflictDoNothing
-    // no-op instead of assuming success.
+    // ONE row per (document, kind) — review_queue_one_pending_per_target is a partial unique
+    // index on (target_kind, target_id, kind) as of migration 0051. hasPendingReview above is
+    // the primary defense against colliding with an existing pending row of a DIFFERENT kind;
+    // this is belt-and-braces for a race between that check and this insert — .returning() lets
+    // us tell a real insert apart from a silent onConflictDoNothing no-op instead of assuming
+    // success.
     const [inserted] = await useDb().insert(reviewQueue).values({
       targetKind: 'document',
       targetId: docId,

@@ -59,15 +59,23 @@ so it returns `{ skipped: 'review-pending' }` **without claiming**, leaving `tri
 the document stays eligible for a later sweep.
 
 This is not hypothetical tidiness. `review_queue_one_pending_per_target` (renamed from
-`review_queue_one_pending_per_doc` in cycle-70 task-7) is a partial unique index on
-`(target_kind, target_id) WHERE status = 'pending'` spanning **all kinds**, so a document still holding a
-pending `enrichment` row from the retired `enrich-input` cron would have had its triage row
-silently swallowed by `onConflictDoNothing()` — after the claim was stamped and the model call
-paid for. The document would have gone terminal with no proposal to show. Both of production's
-live `/input` documents were in exactly that state when this shipped, so the first sweep after
-deploy would have consumed the entire backlog this cycle exists to drain while appearing inert.
-The `ne(kind, 'triage')` exclusion is load-bearing: without it, a proposal's own queued row would
-trip the guard on every later call for that document.
+`review_queue_one_pending_per_doc` in cycle-70 task-7) was, at the time this guard was written,
+a partial unique index on just `(target_kind, target_id) WHERE status = 'pending'` — spanning
+**all kinds** — so a document still holding a pending `enrichment` row from the retired
+`enrich-input` cron would have had its triage row silently swallowed by `onConflictDoNothing()`
+— after the claim was stamped and the model call paid for. The document would have gone
+terminal with no proposal to show. Both of production's live `/input` documents were in exactly
+that state when this shipped, so the first sweep after deploy would have consumed the entire
+backlog this cycle exists to drain while appearing inert. Migration 0051 (cycle-70, "give each
+concern kind its own pending slot") later added `kind` to the index — it is now
+`(target_kind, target_id, kind) WHERE status = 'pending'` — so today a pending row of one kind
+no longer blocks a DIFFERENT kind's insert at the database level either; two concern kinds on
+the same memory each get their own slot (see the review-queue section below). `hasPendingReview`
+in `triageCapture` still runs its own check on top of that, deliberately skipping capture
+whenever a document has ANY other kind pending, rather than relying on the index alone. The
+`ne(kind, 'triage')` exclusion in that check is load-bearing regardless of the index shape:
+without it, a document's own already-inserted pending triage row would trip the guard on every
+later call for that same document.
 
 **Sweeper candidates** are simply live `/input` documents with `triaged_at IS NULL` —
 deliberately **not** the retired `enrich-input`'s filter (`project IS NULL AND tags = '{}' AND
@@ -243,9 +251,11 @@ if/else chain in `approve.post.ts`/`reject.post.ts`:
   re-stamping here keeps the "don't immediately re-propose" guarantee explicit even if that
   invariant changes upstream) and marks the row `rejected`.
 
-One `review_queue` row per document (`review_queue_one_pending_per_target`, a partial unique index
-on `(target_kind, target_id) WHERE status = 'pending'`) — a mixed-confidence proposal is one row containing every
-queued action, never one row per action.
+One `review_queue` row per (document, kind) (`review_queue_one_pending_per_target`, a partial
+unique index on `(target_kind, target_id, kind) WHERE status = 'pending'` as of migration 0051)
+— a mixed-confidence triage proposal is still one row containing every queued action, never one
+row per action; the `kind` axis is what lets a document hold a pending `triage` row alongside a
+pending row of some other kind at the same time (see "The pending-review guard" above).
 
 **The "recently applied" strip** — `GET /api/triage/recent`, rendered at the bottom of
 `/review` as a flat feed (not a card stack, no Approve/Reject) — lists the 20 most recent

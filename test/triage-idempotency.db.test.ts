@@ -127,7 +127,7 @@ describe('triageCapture queueing', () => {
       expect(out.queued).toBe(true)
       const rows = await useDb().select().from(reviewQueue)
         .where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, doc.id)))
-      expect(rows).toHaveLength(1)                 // one pending row per doc — enforced by a unique index
+      expect(rows).toHaveLength(1)                 // one pending row per (doc, kind) — enforced by a unique index
       expect(rows[0]!.kind).toBe('triage')
     } finally {
       await cleanupTriaged(doc.id)
