@@ -63,15 +63,16 @@ table; that is why freshness keys off the `document` resource (§3).
 ### 2.1 Collisions
 
 A skill named `clear` would shadow or be shadowed by the built-in. Precedence is **code > prompt >
-skill**. The endpoint marks a shadowed entry (`shadowedBy`) rather than dropping it, so `/settings`
-can surface the conflict.
+skill**. Only the winner is returned, and it carries **`shadows`** — the list of sources it
+displaced — so a skill that silently stopped being reachable is explainable from the UI instead of
+just missing. (`shadowedBy` on the winner would read as "I am shadowed by myself".)
 
 `validateSkill` (already in `server/services/skills.ts`) gains a reserved-name check, so a collision
 surfaces when you name the skill — not when the command silently stops working.
 
 ## 3. The endpoint
 
-`GET /api/agent/commands` → `{ name, description, hint, kind, shadowedBy? }[]`
+`GET /api/agent/commands` → `{ name, description, hint, kind, template?, shadows? }[]`
 
 Its job is the **merge and precedence**, not per-keystroke filtering. `Command` already filters
 locally via reka's `useFilter`, and a round-trip per character would make the menu laggy for no gain.
@@ -161,7 +162,7 @@ timestamps). No change to `skills`, `conversations` or `memories`.
 | 1 | A large skill body plus resident facts plus live state exceeds the budget and `fitBudget` throws | Cap the skill body (§5.3). The throw is the correct behaviour, not the risk — the risk is an uncapped body reaching it. |
 | 2 | A stale command list makes a new skill invisible to `/` | vue-query invalidated by `publishChange` on `document` (§3) |
 | 3 | An accidental `/clear` loses a working context | Selecting never submits (§4); the epoch is reversible — rows are not deleted, only hidden from the model |
-| 4 | Precedence silently hides a skill behind a built-in | `shadowedBy` is returned, and `validateSkill` rejects reserved names at creation (§2.1) |
+| 4 | Precedence silently hides a skill behind a built-in | the winner carries `shadows`, and `validateSkill` rejects reserved names at creation (§2.1) |
 
 ## Out of scope
 
