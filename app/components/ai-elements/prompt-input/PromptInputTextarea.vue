@@ -13,11 +13,25 @@ interface Props extends /* @vue-ignore */ PromptInputTextareaProps {
 
 const props = defineProps<Props>()
 
+// `keydown` is a declared emit (not a plain fallthrough attr) so a caller-supplied
+// listener runs INSIDE this handler, before the submit logic below, rather than as a
+// second native DOM listener racing it (Vue merges fallthrough `@keydown` AFTER this
+// component's own template-bound listener, which would lose that race every time).
+// A caller that calls preventDefault() — the composer's `/` command menu, task-5
+// fix round 1 — is signalling "I already handled this key"; Enter then skips the
+// submit branch entirely instead of racing it.
+const emit = defineEmits<{ keydown: [KeyboardEvent] }>()
+
 const { textInput, setTextInput, addFiles, files, removeFile } = usePromptInput()
 const isComposing = ref(false)
 
 function handleKeyDown(e: KeyboardEvent) {
+  emit('keydown', e)
+
   if (e.key === 'Enter') {
+    if (e.defaultPrevented)
+      return
+
     if (isComposing.value || e.isComposing || e.shiftKey)
       return
 

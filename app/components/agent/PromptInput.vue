@@ -48,7 +48,7 @@ import {
 } from '@/components/ai-elements/prompt-input'
 import { useFilter } from 'reka-ui'
 import { ATTACHMENT_ACCEPT, attachmentErrorToast, filesForSubmit, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, uploadAttachment } from '~/lib/agent/attachments'
-import { applySelection, menuQuery, shouldOpenMenu } from '~/lib/agent/slash'
+import { applySelection, menuQuery, nextHighlight, shouldOpenMenu } from '~/lib/agent/slash'
 
 const props = defineProps<{
   sendText: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>
@@ -136,14 +136,70 @@ const { commands } = useCommands()
 // vendored CommandInput, because ListboxFilter hardcodes auto-focus and would steal
 // keyboard focus from the composer textarea, where the user is actually typing.
 const { contains } = useFilter({ sensitivity: 'base' })
-const menuOpen = computed(() => shouldOpenMenu(textInput.value))
+
+// Escape closes the menu without touching the input text — but menuOpen is derived
+// from that text, so a plain "closed" flag would reopen on the very next keystroke.
+// menuDismissed survives until the text no longer starts a command (spec §4 also
+// says "so does deleting the /", which shouldOpenMenu already gives us for free —
+// once the leading `/` is gone, menuOpen is false regardless of this flag). Typing
+// further into the SAME command (still `/something`) intentionally does not
+// resurrect a menu the user just escaped from; only starting over does.
+const menuDismissed = ref(false)
+const menuOpen = computed(() => shouldOpenMenu(textInput.value) && !menuDismissed.value)
+watch(() => textInput.value, (v) => {
+  if (!v.startsWith('/')) menuDismissed.value = false
+})
+
 const filteredCommands = computed(() => {
   const q = menuQuery(textInput.value)
   return q ? commands.value.filter(c => contains(c.name, q)) : commands.value
 })
 
+// Keyboard highlight is ours to track (not reka's) since we never focus the listbox
+// subtree — see the useFilter comment above. Reset whenever the candidate list
+// changes shape or the menu (re)opens, so a stale index never points past the end.
+const highlightedIndex = ref(0)
+watch(filteredCommands, () => {
+  highlightedIndex.value = 0
+})
+watch(menuOpen, (open) => {
+  if (open) highlightedIndex.value = 0
+})
+
 function onPickCommand(name: string) {
   setTextInput(applySelection(name))
+}
+
+// Bridges keyboard control into the menu. PromptInputTextarea emits `keydown`
+// (rather than exposing it as a plain fallthrough attr) specifically so this runs
+// BEFORE its own Enter-submits-the-form logic — see that component's comment.
+function onComposerKeydown(e: KeyboardEvent) {
+  if (!menuOpen.value) return
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    highlightedIndex.value = nextHighlight(highlightedIndex.value, filteredCommands.value.length, 1)
+    return
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    highlightedIndex.value = nextHighlight(highlightedIndex.value, filteredCommands.value.length, -1)
+    return
+  }
+  if (e.key === 'Enter') {
+    // Nothing matched — let "/foo" submit as plain text instead of eating Enter.
+    if (filteredCommands.value.length === 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    const chosen = filteredCommands.value[highlightedIndex.value]
+    if (chosen) onPickCommand(chosen.name)
+    return
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    menuDismissed.value = true
+  }
+  // Tab: intentionally left alone — no focus trap.
 }
 
 // `?q=` hand-off: fires at most once per distinct value (same guard as the old
@@ -197,10 +253,12 @@ watch(() => props.prefill, (v) => {
     <PromptInputCommand v-if="menuOpen" class="mb-2 rounded-md border border-default bg-elevated">
       <PromptInputCommandList>
         <PromptInputCommandItem
-          v-for="c in filteredCommands"
+          v-for="(c, i) in filteredCommands"
           :key="c.name"
           :value="c.name"
+          :class="i === highlightedIndex ? 'bg-accented text-highlighted' : ''"
           @select="onPickCommand(c.name)"
+          @mouseenter="highlightedIndex = i"
         >
           <span class="font-mono">/{{ c.name }}</span>
           <span class="ml-2 text-xs text-muted">{{ c.description }}</span>
@@ -210,7 +268,7 @@ watch(() => props.prefill, (v) => {
     </PromptInputCommand>
 
     <PromptInputBody>
-      <PromptInputTextarea placeholder="Ask Bridget…" />
+      <PromptInputTextarea placeholder="Ask Bridget…" @keydown="onComposerKeydown" />
     </PromptInputBody>
 
     <PromptInputFooter>

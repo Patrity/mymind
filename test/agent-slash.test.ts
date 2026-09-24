@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldOpenMenu, menuQuery, parseCommand, applySelection } from '../app/lib/agent/slash'
+import { shouldOpenMenu, menuQuery, parseCommand, applySelection, nextHighlight } from '../app/lib/agent/slash'
 
 describe('shouldOpenMenu', () => {
   it('opens on a leading slash', () => {
@@ -65,5 +65,29 @@ describe('parseCommand', () => {
 describe('applySelection', () => {
   it('produces the name plus a trailing space, ready for arguments', () => {
     expect(applySelection('browser-testing')).toBe('/browser-testing ')
+  })
+})
+
+describe('nextHighlight', () => {
+  it('moves forward by one', () => {
+    expect(nextHighlight(0, 3, 1)).toBe(1)
+    expect(nextHighlight(1, 3, 1)).toBe(2)
+  })
+
+  it('wraps forward past the end back to the start', () => {
+    expect(nextHighlight(2, 3, 1)).toBe(0)
+  })
+
+  it('moves backward by one', () => {
+    expect(nextHighlight(2, 3, -1)).toBe(1)
+  })
+
+  it('wraps backward past the start back to the end', () => {
+    expect(nextHighlight(0, 3, -1)).toBe(2)
+  })
+
+  it('stays at 0 for an empty list', () => {
+    expect(nextHighlight(0, 0, 1)).toBe(0)
+    expect(nextHighlight(0, 0, -1)).toBe(0)
   })
 })

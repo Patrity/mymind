@@ -27,3 +27,12 @@ export function parseCommand(text: string): { name: string, args: string } | nul
 export function applySelection(name: string): string {
   return `/${name} `
 }
+
+/** Move a highlighted menu index by `delta`, wrapping around a list of `length`
+ *  entries. A `length` of 0 (nothing filtered in) always yields 0 — there is
+ *  nothing to highlight, and the caller is expected to let Enter fall through
+ *  to a normal submit in that case rather than call this at all. */
+export function nextHighlight(current: number, length: number, delta: number): number {
+  if (length <= 0) return 0
+  return ((current + delta) % length + length) % length
+}
