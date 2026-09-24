@@ -65,6 +65,15 @@ export async function loadActivePath(
   // count of siblings that are off it, which is the only thing the pager has to render.
   const branches = withSiblings(allRows, branchIndex(allRows.map(r => ({ id: r.id, parentId: r.parentId }))))
   const path = activePath(rows, conv?.leaf ?? null)
+  // The `path.length ? path : rows` fallback conflates two different situations: "leaf was
+  // never set" (the null-leaf case this fallback exists for) and "leaf points at a row outside
+  // the epoch window" (activePath can't find it in the filtered `rows` it was given, so it also
+  // returns []). Both land here and both return `rows` as-is. That's safe only because
+  // `appendMessages` is the single writer of `conversation_messages` and re-points
+  // `active_leaf_id` in the SAME transaction as the insert — so a live leaf can't end up
+  // pointing before the epoch. A future writer that breaks that invariant (moves the leaf and
+  // the epoch in separate transactions, or adds a second writer) would make this fallback
+  // silently surface off-branch content instead of falling back to the flat read.
   return { rows: path.length ? path : rows, branches }
 }
 

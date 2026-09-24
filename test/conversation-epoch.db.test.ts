@@ -12,6 +12,7 @@ import { useDb } from '../server/db'
 import { conversations, conversationMessages } from '../server/db/schema'
 import { loadActivePath } from '../server/services/conversation-path'
 import { clearConversationContext } from '../server/services/conversation-clear'
+import { getAgentHistory, getConversation } from '../server/services/conversations'
 import { eq } from 'drizzle-orm'
 
 const seededConversationIds: string[] = []
@@ -74,5 +75,22 @@ describe('conversation epoch', () => {
     const id = await seed()
     const { rows } = await loadActivePath(id, { sinceEpoch: true })
     expect(rows.map(r => r.content)).toContain('before clear')
+  })
+
+  // This is the assertion cycle 68's invariant actually hangs on: the two production read
+  // paths (getAgentHistory for the model, getConversation for the UI) must diverge on a
+  // cleared conversation DELIBERATELY, not by accident. Asserting both in one test is what
+  // makes that divergence readable — a change that quietly makes them agree again fails here.
+  it('getAgentHistory forgets pre-clear content that getConversation still shows', async () => {
+    const id = await seed()
+    await clearConversationContext(id)
+    await useDb().insert(conversationMessages)
+      .values({ conversationId: id, role: 'user', content: 'after clear', modality: 'text' })
+
+    const modelMsgs = await getAgentHistory(id)
+    const ui = await getConversation(id)
+
+    expect(modelMsgs.map(m => m.content)).not.toContain('before clear')
+    expect(ui!.messages.map(m => m.content)).toContain('before clear')
   })
 })

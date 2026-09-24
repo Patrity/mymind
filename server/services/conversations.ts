@@ -365,10 +365,13 @@ export async function hydrateAttachments(
 }
 
 export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
-  // Same walk as `getConversation` — see test/conversation-path.db.test.ts. If these two ever
-  // select rows independently, the model answers a branch nobody is looking at and the UI
-  // shows nothing wrong.
-  const { rows } = await loadActivePath(id)
+  // Same active-path walk as `getConversation` — see test/conversation-path.db.test.ts — but
+  // WITH `sinceEpoch: true`. This is the one deliberate divergence between the two read paths:
+  // `/clear` (server/services/conversation-clear.ts) sets `conversations.context_epoch_at`, and
+  // only the MODEL forgets what came before it — the UI keeps showing the full transcript. Do
+  // not "fix" this back to matching `getConversation`; see test/conversation-epoch.db.test.ts
+  // for the test that pins the asymmetry.
+  const { rows } = await loadActivePath(id, { sinceEpoch: true })
 
   const msgs = rows.map(rowToAgentMessage)
 
