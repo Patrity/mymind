@@ -12,7 +12,6 @@ import type { AgentMessage } from '../../lib/agent/run'
 import { buildTurnPersistPayload } from '../../lib/voice/turn-persist'
 import { partialTurnMessages } from '../../lib/voice/turn-partial'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle, captureTurnLeaf } from '../../services/conversations'
-import { buildLiveContext } from '../../lib/agent/context'
 import { assembleContext } from '../../lib/agent/assemble'
 import { publishChange } from '../../utils/live-bus'
 import type { ApprovalRequest } from '../../lib/agent/types'
@@ -92,8 +91,19 @@ export default defineWebSocketHandler({
     // import (removed above) — both turn closures below reference this name unchanged, so
     // this one definition is the entire wiring change. `s.conversationId` is `string | null`;
     // AssembleInput.conversationId is `string | undefined`, hence the `?? undefined`.
-    const buildMemoryContext = async (userText: string) =>
-      (await assembleContext({ userText, conversationId: s.conversationId ?? undefined })).context
+    const buildMemoryContext = async (userText: string) => {
+      const assembled = await assembleContext({ userText, conversationId: s.conversationId ?? undefined })
+      // Budget telemetry — same recordEvent/activity-log channel exec:approval below already
+      // uses, not a new one. `used`/`droppedTurns` previously went nowhere, so there was no
+      // production signal comparing estimated vs actual token cost (the turn's own `usage`
+      // event/persisted row carries the ACTUAL contextTokens, for the same conversationId, to
+      // compare against). Kept cheap: recordEvent only buffers in memory here.
+      recordEvent({
+        kind: 'tool', name: 'memory:assemble', severity: 'info',
+        meta: { used: assembled.used, droppedTurns: assembled.droppedTurns, retrievedCount: assembled.usedMemoryIds.length, conversationId: s.conversationId ?? null }
+      })
+      return assembled.context
+    }
     // Approval channel for dangerous tools: allowlist check → run; else emit an
     // approval request to the peer and await Tony's decision (120s auto-deny).
     // Computed unconditionally so both text + audio turn branches can reference them.
@@ -242,10 +252,13 @@ export default defineWebSocketHandler({
       })
       let persisted = false
       try {
-        // Live context is rebuilt EVERY turn (two cheap indexed queries) — the old
-        // once-per-connection cache went stale (a task created mid-conversation
-        // never appeared).
-        const context = (await buildLiveContext(new Date())) || undefined
+        // Live state is now assembled exactly once per turn, inside assembleContext
+        // (buildMemoryContext below) — that is the single fixed 'live' tier, budgeted
+        // alongside resident memories and retrieval. Building it again here would inject
+        // a second, unbudgeted copy of the same "Current context / Active projects / Open
+        // tasks" block into every prompt (and pay its two indexed queries twice); see
+        // orchestrator.ts's `context` construction, which concatenates this value with
+        // buildMemoryContext's output.
         const prevLen = s.history.length
         ts = createTurnStream({ turnId, attachments: attachmentsForTurn, send: d => peer.send(d) })
         // Active while this turn runs, so requestApproval (fired from inside exec!) can emit
@@ -276,7 +289,7 @@ export default defineWebSocketHandler({
         // The branch this turn was sent into, same reasoning — read now, before the turn's
         // own await, not at persist time.
         if (turnConversationIdForRescue) turnLeafId = await captureTurnLeaf(turnConversationIdForRescue)
-        s.history = await exec!(ac.signal, emit, context)
+        s.history = await exec!(ac.signal, emit, undefined)
         // Finalize the timing ONCE, here, and use the same object for the live chunk below and
         // for the persist further down — so the duration and tok/s the user watches appear are
         // the ones a reload shows, instead of two independently-sampled clocks disagreeing.
