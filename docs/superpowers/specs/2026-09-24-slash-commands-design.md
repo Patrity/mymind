@@ -34,9 +34,12 @@ Checked in the worktree, not assumed:
   is where every typed turn leaves the composer. That is the interception point.
 - **A documented WS protocol.** `server/api/voice/ws.ts:25-40` lists the client→server messages
   (`text`, `load`, `new`, `preset`, `model`, `approve`/`deny`). This cycle adds one.
-- **A skills registry.** `listSkills({ activeOnly: true })` returns `name`, `description`,
-  `whenToUse`; `renderSkillsIndex` puts that index in the system prompt and the model calls
-  `use_skill` at its own discretion.
+- **A skills registry — stored as documents, not a table.** `listSkills({ activeOnly: true })` reads
+  `documents` rows under `/projects/mymind/skills/<name>.md` (`skillPath`, `SKILL_PROJECT`) and maps
+  them through `docToSkill`, returning `name`, `description`, `whenToUse`, `active`.
+  `renderSkillsIndex` puts that index in the system prompt and the model calls `use_skill` at its own
+  discretion. Skill names are already kebab-case (`SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/`),
+  which maps directly onto `/browser-testing` with no transformation.
 - **From cycle 70 (unmerged):** `clearConversationContext(conversationId)`, `conversations.context_epoch_at`,
   `loadActivePath(id, { sinceEpoch })`, and `assembleContext()` with its tiered token budget.
 
@@ -48,13 +51,14 @@ One flat `/` namespace merged from three sources.
 |---|---|---|---|
 | Code constant | `client` | `/clear`, `/new` | no |
 | New `prompt_commands` table | `prompt` | `/standup` | yes |
-| Existing `skills` table | `skill` | `/browser-testing` | yes (already) |
+| Existing skills (documents under `/projects/mymind/skills/`) | `skill` | `/browser-testing` | yes (already) |
 
 Client-kind commands stay in code deliberately: each maps to client behaviour that must exist in the
 bundle anyway, and a DB row naming a WS message the client cannot send is a silent no-op.
 
 Skills need no new storage — `listSkills` already returns exactly what a menu entry needs, and
-`whenToUse` becomes the entry's secondary line.
+`whenToUse` becomes the entry's secondary line. Note they are `documents` rows, not a dedicated
+table; that is why freshness keys off the `document` resource (§3).
 
 ### 2.1 Collisions
 
@@ -75,8 +79,13 @@ locally via reka's `useFilter`, and a round-trip per character would make the me
 use it today.
 
 **Freshness** uses the project's existing live mechanism: fetched with `@tanstack/vue-query`,
-invalidated by `publishChange` on the `skill` resource (`.claude/rules/live-data.md`). Creating a
-skill makes it appear in the menu without a reload.
+invalidated by `publishChange` on the **`document`** resource (`.claude/rules/live-data.md`).
+
+Not `skill` — there is no such member of `ResourceName`, because skills *are* documents. That means
+the command list invalidates on any document change, not just a skill one. Accepted deliberately:
+the query is cheap, and inventing a `skill` resource to get a narrower signal would add a
+`ResourceName` member that nothing else publishes. Creating a skill still makes it appear in the
+menu without a reload, which is the property that matters.
 
 **Degradation:** if the endpoint fails the menu still opens with the code-defined commands, because
 those live in the bundle. A server error never costs you `/clear`.
@@ -150,7 +159,7 @@ timestamps). No change to `skills`, `conversations` or `memories`.
 | # | Risk | Mitigation |
 |---|---|---|
 | 1 | A large skill body plus resident facts plus live state exceeds the budget and `fitBudget` throws | Cap the skill body (§5.3). The throw is the correct behaviour, not the risk — the risk is an uncapped body reaching it. |
-| 2 | A stale command list makes a new skill invisible to `/` | vue-query invalidated by `publishChange` on `skill` (§3) |
+| 2 | A stale command list makes a new skill invisible to `/` | vue-query invalidated by `publishChange` on `document` (§3) |
 | 3 | An accidental `/clear` loses a working context | Selecting never submits (§4); the epoch is reversible — rows are not deleted, only hidden from the model |
 | 4 | Precedence silently hides a skill behind a built-in | `shadowedBy` is returned, and `validateSkill` rejects reserved names at creation (§2.1) |
 
