@@ -12,7 +12,8 @@ import type { AgentMessage } from '../../lib/agent/run'
 import { buildTurnPersistPayload } from '../../lib/voice/turn-persist'
 import { partialTurnMessages } from '../../lib/voice/turn-partial'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle, captureTurnLeaf } from '../../services/conversations'
-import { buildLiveContext, buildMemoryContext } from '../../lib/agent/context'
+import { buildLiveContext } from '../../lib/agent/context'
+import { assembleContext } from '../../lib/agent/assemble'
 import { publishChange } from '../../utils/live-bus'
 import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
@@ -87,6 +88,12 @@ export default defineWebSocketHandler({
     let inputModality: 'text' | 'voice' = 'text'
     let speakFlag = false
     let turnAttachments: AttachmentRef[] = []
+    // Assembler-backed proactive memory injection, shadowing the plain buildMemoryContext
+    // import (removed above) — both turn closures below reference this name unchanged, so
+    // this one definition is the entire wiring change. `s.conversationId` is `string | null`;
+    // AssembleInput.conversationId is `string | undefined`, hence the `?? undefined`.
+    const buildMemoryContext = async (userText: string) =>
+      (await assembleContext({ userText, conversationId: s.conversationId ?? undefined })).context
     // Approval channel for dangerous tools: allowlist check → run; else emit an
     // approval request to the peer and await Tony's decision (120s auto-deny).
     // Computed unconditionally so both text + audio turn branches can reference them.
