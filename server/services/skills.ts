@@ -6,6 +6,7 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { useDb } from '../db'
 import { documents } from '../db/schema'
 import { createDoc, updateDoc, deleteDoc } from './documents'
+import { RESERVED_COMMAND_NAMES } from '../../shared/types/commands'
 
 export interface Skill {
   id: string
@@ -44,6 +45,9 @@ export function validateSkill(input: Partial<SkillInput>): { ok: true } | { ok: 
   const name = (input.name ?? '').trim()
   if (!name) return { ok: false, error: 'name is required' }
   if (!SKILL_NAME_RE.test(name)) return { ok: false, error: `name must be kebab-case (got "${name}")` }
+  if (input.name && RESERVED_COMMAND_NAMES.includes(input.name)) {
+    return { ok: false, error: `"${input.name}" is a reserved command name` }
+  }
   for (const k of ['description', 'whenToUse', 'body'] as const) {
     if (!(input[k] ?? '').trim()) return { ok: false, error: `${k} is required` }
   }
