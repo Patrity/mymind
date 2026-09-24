@@ -1,4 +1,5 @@
 export type MemoryScope = 'user' | 'agent' | 'world'
+export type MemoryApplicability = 'global' | 'project'
 
 export interface MemoryRelationDTO {
   /** Relation type: 'supersedes' | 'contradicts' | 'duplicate-of' */
@@ -26,6 +27,8 @@ export interface MemoryDTO {
   source: string | null
   confidence: number | null
   project: string | null
+  /** 'global' = this fact travels across projects; 'project' = it is bound to `project`. */
+  applicability: MemoryApplicability
   sessionId: string | null
   enrichedAt: string | null
   reviewedAt: string | null

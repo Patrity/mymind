@@ -1,0 +1,1 @@
+ALTER TABLE "memories" ADD COLUMN "applicability" text DEFAULT 'project' NOT NULL;

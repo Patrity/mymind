@@ -11,6 +11,9 @@ export const memories = pgTable('memories', {
   embedding: halfvec(2560),
   contentHash: text('content_hash').notNull(),
   confidence: real('confidence'),
+  /** Does this fact travel across projects? `project` above records where it was LEARNED
+   *  (provenance); this records where it APPLIES. Retrieval ORs them together. */
+  applicability: text('applicability').notNull().default('project'),
   evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
   project: text('project'),
   projectId: uuid('project_id'),

@@ -2,7 +2,7 @@ import { and, eq, isNull, isNotNull, ne, ilike, or, sql, inArray, arrayContains,
 import { createHash } from 'node:crypto'
 import { useDb } from '../db'
 import { memories, memoryRelations } from '../db/schema'
-import type { MemoryDTO, MemoryEvidenceEntry, MemoryRelationDTO, MemoryScope } from '../../shared/types/memory'
+import type { MemoryApplicability, MemoryDTO, MemoryEvidenceEntry, MemoryRelationDTO, MemoryScope } from '../../shared/types/memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
@@ -72,6 +72,7 @@ function toDTO(r: typeof memories.$inferSelect, relations?: MemoryRelationDTO[])
     source: r.source,
     confidence: r.confidence,
     project: r.project,
+    applicability: (r.applicability === 'global' ? 'global' : 'project') as MemoryApplicability,
     sessionId: r.sessionId,
     enrichedAt: r.enrichedAt?.toISOString() ?? null,
     reviewedAt: r.reviewedAt?.toISOString() ?? null,
@@ -419,7 +420,9 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
   if (opts.scope) baseConditions.push(eq(memories.scope, opts.scope))
   if (opts.project !== undefined) {
     if (opts.project === null) baseConditions.push(isNull(memories.project))
-    else baseConditions.push(eq(memories.project, opts.project))
+    // A global memory travels: it is in scope for EVERY project, not just the one it was
+    // learned in. Only project-bound memories are filtered by provenance.
+    else baseConditions.push(or(eq(memories.applicability, 'global'), eq(memories.project, opts.project))!)
   }
   if (opts.tags?.length) baseConditions.push(arrayContains(memories.tags, opts.tags))
   const reviewedCond = reviewedCondition(opts.reviewed)
@@ -517,7 +520,9 @@ export async function listMemories(opts: ListMemoriesOptions = {}): Promise<Memo
   if (reviewedCond) conditions.push(reviewedCond)
   if (opts.project !== undefined) {
     if (opts.project === null) conditions.push(isNull(memories.project))
-    else conditions.push(eq(memories.project, opts.project))
+    // A global memory travels: it is in scope for EVERY project, not just the one it was
+    // learned in. Only project-bound memories are filtered by provenance.
+    else conditions.push(or(eq(memories.applicability, 'global'), eq(memories.project, opts.project))!)
   }
 
   const rows = await db.select().from(memories)
