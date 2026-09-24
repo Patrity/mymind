@@ -1,10 +1,10 @@
 ---
 title: Memory System
 status: shipped
-cycle: 51
-updated: 2026-08-16
+cycle: 70
+updated: 2026-09-24
 mymind_id: c17a75f7-52f5-4024-8e2d-c0e173245096
-mymind_hash: bc0dac8f04891cd0e81d296528899805fd85e0ee98499d65400f7cb2a81860b2
+mymind_hash: stale-cycle-70
 ---
 
 # Memory System
@@ -12,9 +12,9 @@ mymind_hash: bc0dac8f04891cd0e81d296528899805fd85e0ee98499d65400f7cb2a81860b2
 Reimplements the bridget memory service in TS: ingest AI-session transcripts, enrich into durable memories, search semantically. Nothing auto-trusted — enrichment memories are `unreviewed` until the human marks them reviewed.
 
 ## Data model
-- `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 23), `source_date` (last-observed, = source session `started_at`, cycle 23), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`. Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
+- `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 23), `source_date` (last-observed, = source session `started_at`, cycle 23), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`, plus **cycle 70**: `applicability` (`global`|`project`, default `project`), `resident` (boolean, DB CHECK `resident => applicability='global'`), `retrieval_count`, `last_retrieved_at`. Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
 - `memory_relations` (cycle 13, `memory-relations.ts`): `from_id`→`to_id`, `type` (supersedes|contradicts|duplicate-of), `confidence`, `status` (active|resolved), `reason`. The lineage/conflict graph; unique edge `(from,to,type)`.
-- `sessions` (source, external_id unique, project, cwd, title, summary, message_count, started_at, last_active, metadata) + `messages` (session_id, role, content, external_uuid unique-per-session) + `mem_enrichment_state` (per-session enrichment progress).
+- `sessions` (source, external_id unique, project, cwd, title, summary, message_count, started_at, last_active, metadata) + `messages` (session_id, role, content, external_uuid unique-per-session) + `mem_enrichment_state` (enrichment progress; **cycle 70** re-keyed `(source_kind, source_id)` where `source_kind` is `session`|`conversation`).
 
 ## Service — `server/services/memory.ts` (+ `memory-dedup.ts`)
 - `createMemory` embeds content, then **two-stage dedup** (`dedupDecision`): exact `content_hash` → skip; semantic cosine ≥ 0.85 in same scope/project → merge evidence; else insert.
@@ -28,6 +28,40 @@ Memories enter via exactly two paths, both going through `createMemory` (shared 
 1. **Enrichment loop** (`enrich-memories` cron → `server/services/memory-enrich.ts`): distills concise, **confidence-scored**, **session-linked** (`sessionId` + evidence) memories from session transcripts. Auto-reviews when `confidence >= memoryAutoReviewThreshold` (~0.75). This is the primary source of agent-scoped memories.
 
 2. **Direct `save_memory`** (MCP tool / `POST /api/memories`): saves raw content. Accepts an optional **`confidence`** (0–1) — a value ≥ 0.75 auto-reviews the memory; `null` (omitted) leaves it for manual review. `shouldAutoReview(confidence, threshold)` returns `false` for `null` — no-confidence saves always require human review. The tool description nudges callers toward ONE concise durable sentence; architecture detail belongs in handovers/wiki, not memory. Manual saves created via `POST /api/memories` (cycle 10) set `source: 'manual', reviewed: true` and skip the unreviewed state entirely.
+
+## Applicability vs provenance (cycle 70)
+
+`project` records where a fact was **learned**, not where it applies — enrichment runs per session, a
+session has a project, and the memory inherits it. Before cycle 70 that meant 69 of 74 user-scope
+memories sat filed under whichever project happened to reveal them.
+
+- **`applicability`** — `global` means the fact travels across every project; `project` binds it to
+  its provenance. Retrieval is `applicability = 'global' OR project = X` in both `searchMemories` and
+  `listMemories`. `project: null` still means "memories with no project at all" — a different
+  question, deliberately not folded in.
+- **`resident`** — a much smaller set: facts injected into **every** agent turn, not merely
+  retrievable. `resident` implies `global` (enforced by a DB CHECK). `listResidentMemories()` also
+  requires `reviewed_at` — an unreviewed memory reaching every prompt is the cycle-51 hole, and the
+  resident tier has no query gating it.
+- **`retrieval_count` / `last_retrieved_at`** — written batched by the assembler (one grouped UPDATE
+  per turn), intended to let the resident tier nominate itself from measured cross-project usage
+  rather than a model's judgment of importance.
+
+**Current reality:** the applicability backfill (`scripts/backfill-applicability.ts`) classified 93%
+of the store as uncertain and set only **6** memories to `global`. Nothing writes `resident` yet, so
+`listResidentMemories()` returns `[]` in production — the promotion path needs `/review` approve
+handlers that do not exist. The columns are live; the tiers are effectively empty.
+
+## Enrichment sources (cycle 70)
+
+Enrichment reads **both** Claude Code sessions and Bridget conversations. Before cycle 70 it read
+sessions only, so talking to Bridget produced no memories at all. `enrichConversations` mirrors the
+session path's thresholds (≥5 new messages, ~1h idle, 24h error backoff) and reuses
+`extractMemoriesFromTranscript` — one prompt, not two.
+
+**Known gap:** conversation enrichment calls `createMemory` directly rather than
+`resolveEnrichedMemory`, so Bridget-derived memories get no dedup/supersede/contradict detection and
+land `project: null`.
 
 ## Ingestion — hooks (`server/api/hooks/cc/*`, `server/services/sessions.ts`)
 - `POST /api/hooks/cc/[event]` upserts a session (liveness/metadata). `POST /api/hooks/cc/transcript` parses CC JSONL lines (tolerant: user/assistant text parts) → idempotent `messages`. Bearer-token auth.
