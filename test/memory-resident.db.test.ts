@@ -12,6 +12,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // note). Stub it to a fixed vector so this suite never depends on a homelab embeddings rig.
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
+import { createHash } from 'node:crypto'
 import { useDb } from '../server/db'
 import { memories } from '../server/db/schema'
 import { createMemory, listResidentMemories, recordRetrievals } from '../server/services/memory'
@@ -34,7 +35,7 @@ describe('resident tier', () => {
     const a = await mk('RES-TEST pinned')
     await mk('RES-TEST unpinned')
     await useDb().update(memories)
-      .set({ resident: true, applicability: 'global' })
+      .set({ resident: true, applicability: 'global', reviewedAt: new Date() })
       .where(sql`${memories.id} = ${a.id}`)
     const res = await listResidentMemories()
     const contents = res.map(m => m.content)
@@ -50,15 +51,28 @@ describe('resident tier', () => {
   })
 
   it('recordRetrievals increments every id in ONE statement', async () => {
-    const a = await mk('RES-TEST count-a')
-    const b = await mk('RES-TEST count-b')
-    await recordRetrievals([a.id, b.id])
-    await recordRetrievals([a.id])
-    const rows = await useDb().select().from(memories).where(inArray(memories.id, [a.id, b.id]))
+    // Direct insert, not mk()/createMemory: createMemory runs real dedup over (scope,
+    // project) by contentHash + embedding similarity, and this suite stubs embeddings to a
+    // single fixed vector, so two short similar RES-TEST strings in the same project collide
+    // and merge into one row. Bypassing dedup here is correct — this test is about
+    // recordRetrievals, not about createMemory's dedup behavior.
+    const [a] = await useDb().insert(memories).values({
+      scope: 'user',
+      content: 'RES-TEST count-a',
+      contentHash: createHash('sha256').update('RES-TEST count-a').digest('hex')
+    }).returning()
+    const [b] = await useDb().insert(memories).values({
+      scope: 'user',
+      content: 'RES-TEST count-b',
+      contentHash: createHash('sha256').update('RES-TEST count-b').digest('hex')
+    }).returning()
+    await recordRetrievals([a!.id, b!.id])
+    await recordRetrievals([a!.id])
+    const rows = await useDb().select().from(memories).where(inArray(memories.id, [a!.id, b!.id]))
     const byId = new Map(rows.map(r => [r.id, r]))
-    expect(byId.get(a.id)!.retrievalCount).toBe(2)
-    expect(byId.get(b.id)!.retrievalCount).toBe(1)
-    expect(byId.get(a.id)!.lastRetrievedAt).not.toBeNull()
+    expect(byId.get(a!.id)!.retrievalCount).toBe(2)
+    expect(byId.get(b!.id)!.retrievalCount).toBe(1)
+    expect(byId.get(a!.id)!.lastRetrievedAt).not.toBeNull()
   })
 
   it('recordRetrievals([]) is a no-op and does not throw', async () => {
