@@ -62,11 +62,13 @@ export async function sweepMemoryConcerns(
     .from(memoryRelations)
     .where(and(...contradictionConditions))
 
+  let contradictionsFiled = 0
   for (const c of contradictions) {
-    await enqueueReview({
+    const filed = await enqueueReview({
       targetKind: 'memory', targetId: c.fromId, kind: 'contradiction',
       proposed: { contradicts: c.toId }
     })
+    if (filed) contradictionsFiled++
   }
 
   // 2. Resident promotions. Rather than asking a model whether a fact deserves to live in every
@@ -86,11 +88,13 @@ export async function sweepMemoryConcerns(
     .from(memories)
     .where(and(...promotableConditions))
 
+  let residentPromotionsFiled = 0
   for (const m of promotable) {
-    await enqueueReview({
+    const filed = await enqueueReview({
       targetKind: 'memory', targetId: m.id, kind: 'resident-promotion',
       proposed: { resident: true, retrievalCount: m.retrievalCount }
     })
+    if (filed) residentPromotionsFiled++
   }
 
   // 3. Stale candidates (spec §5.2). `durable` is the ONE facet that survived its confidence
@@ -113,10 +117,14 @@ export async function sweepMemoryConcerns(
     const scores = await opts.scoreDurable(rows)
     for (const [id, durable] of scores) {
       if (durable >= (opts.staleBelow ?? 0.4)) continue
-      await enqueueReview({ targetKind: 'memory', targetId: id, kind: 'stale', proposed: { durable } })
-      staleCandidates++
+      const filed = await enqueueReview({ targetKind: 'memory', targetId: id, kind: 'stale', proposed: { durable } })
+      if (filed) staleCandidates++
     }
   }
 
-  return { contradictions: contradictions.length, residentPromotions: promotable.length, staleCandidates }
+  // Counts reflect actual inserts, not SELECT matches — a memory can match more than one
+  // query above (e.g. both contradicted and promotable) and, separately, may already have a
+  // pending row of the SAME kind from a previous sweep; either way `enqueueReview`'s
+  // onConflictDoNothing means the candidate didn't necessarily turn into a new row.
+  return { contradictions: contradictionsFiled, residentPromotions: residentPromotionsFiled, staleCandidates }
 }

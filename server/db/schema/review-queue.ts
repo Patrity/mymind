@@ -16,8 +16,11 @@ export const reviewQueue = pgTable('review_queue', {
   resolvedAt: timestamp('resolved_at', { withTimezone: true })
 }, (t) => ({
   statusIdx: index('review_queue_status_idx').on(t.status),
+  // One pending row per (target, KIND) — not just per target. A memory can be simultaneously
+  // contradicted and resident-promotable; each concern needs its own slot, or the second
+  // enqueueReview silently no-ops against the first's row (see migration 0051).
   onePendingPerTarget: uniqueIndex('review_queue_one_pending_per_target')
-    .on(t.targetKind, t.targetId).where(sql`status = 'pending'`)
+    .on(t.targetKind, t.targetId, t.kind).where(sql`status = 'pending'`)
 }))
 
 export type ReviewItem = typeof reviewQueue.$inferSelect

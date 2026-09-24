@@ -120,9 +120,41 @@ describe('sweepMemoryConcerns', () => {
   })
 
   it('never archives or deletes anything', async () => {
-    const before = await useDb().select({ n: sql<number>`count(*)` }).from(memories)
-    await sweepMemoryConcerns({ only: [] })
-    const after = await useDb().select({ n: sql<number>`count(*)` }).from(memories)
-    expect(after[0]!.n).toBe(before[0]!.n)
+    // `only: []` (as this test originally used) forces the sql`false` scope guard onto every
+    // query, so no loop body ever runs and the assertion would be true whether or not the loops
+    // are safe. Seed a memory that genuinely MATCHES the resident-promotion candidate query
+    // (global, reviewed, non-resident, above the retrieval threshold) and scope to it, so the
+    // loop that could archive/delete actually executes — then assert the row survives untouched.
+    const m = await createMemory({ scope: 'user', content: 'CONCERN-TEST never touched', project: 'p' })
+    await useDb().update(memories)
+      .set({ applicability: 'global', retrievalCount: 25, reviewedAt: new Date() }).where(eq(memories.id, m.id))
+    const res = await sweepMemoryConcerns({ residentMinRetrievals: 10, only: [m.id] })
+    expect(res.residentPromotions).toBeGreaterThan(0) // prove the loop actually ran
+    const [row] = await useDb().select().from(memories).where(eq(memories.id, m.id))
+    expect(row).toBeTruthy()
+    expect(row!.archivedAt).toBeNull()
+  })
+
+  it('files both a contradiction and a resident-promotion for the same memory', async () => {
+    // review_queue_one_pending_per_target used to be unique on (targetKind, targetId) alone, so
+    // a memory that is BOTH contradicted and promotable would silently lose the second concern:
+    // the first enqueueReview claims the only slot and the second's onConflictDoNothing fires.
+    // Migration 0051 added `kind` to that index so each concern gets its own row.
+    const a = await createMemory({ scope: 'agent', content: 'CONCERN-TEST double concern', project: 'p' })
+    const b = await createMemory({ scope: 'agent', content: 'CONCERN-TEST double concern other side', project: 'p' })
+    await useDb().insert(memoryRelations)
+      .values({ fromId: a.id, toId: b.id, type: 'contradicts', confidence: 0.9, status: 'active' })
+    await useDb().update(memories)
+      .set({ applicability: 'global', retrievalCount: 25, reviewedAt: new Date() }).where(eq(memories.id, a.id))
+
+    const res = await sweepMemoryConcerns({ residentMinRetrievals: 10, only: [a.id, b.id] })
+    expect(res.contradictions).toBe(1)
+    expect(res.residentPromotions).toBe(1)
+    expect(await pending(a.id, 'contradiction')).toBe(1)
+    expect(await pending(a.id, 'resident-promotion')).toBe(1)
+
+    const rows = await useDb().select().from(reviewQueue)
+      .where(and(eq(reviewQueue.targetId, a.id), eq(reviewQueue.status, 'pending')))
+    expect(rows).toHaveLength(2)
   })
 })

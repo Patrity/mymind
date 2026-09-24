@@ -152,20 +152,26 @@ export async function countReviewPending(): Promise<number> {
   return (queueResult?.n ?? 0) + (memoryResult?.n ?? 0)
 }
 
-/** Idempotent per (targetKind, targetId): the partial unique index makes a second pending
- *  item for the same target a no-op rather than a duplicate the human has to dismiss twice. */
+/** Idempotent per (targetKind, targetId, kind): the partial unique index makes a second pending
+ *  item for the same (target, kind) a no-op rather than a duplicate the human has to dismiss
+ *  twice — but a DIFFERENT kind against the same target gets its own slot (migration 0051), so a
+ *  memory that is e.g. both contradicted and resident-promotable files both concerns.
+ *
+ *  Returns whether a row was actually inserted, so callers that file several concerns in a loop
+ *  (e.g. sweepMemoryConcerns) can report a true count instead of assuming every candidate landed. */
 export async function enqueueReview(input: {
   targetKind: ReviewTargetKind
   targetId: string
   kind: string
   proposed: unknown
-}): Promise<void> {
+}): Promise<boolean> {
   const [inserted] = await useDb().insert(reviewQueue)
     .values({ targetKind: input.targetKind, targetId: input.targetId, kind: input.kind, proposed: input.proposed as never })
     .onConflictDoNothing()
     .returning({ id: reviewQueue.id })
 
-  // onConflictDoNothing means a pre-existing pending row for this target — nothing new to
-  // tell live clients about.
+  // onConflictDoNothing means a pre-existing pending row for this (target, kind) — nothing new
+  // to tell live clients about.
   if (inserted) publishChange({ resource: 'review', action: 'created', id: inserted.id })
+  return Boolean(inserted)
 }

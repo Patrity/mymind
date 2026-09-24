@@ -1,0 +1,2 @@
+DROP INDEX "review_queue_one_pending_per_target";--> statement-breakpoint
+CREATE UNIQUE INDEX "review_queue_one_pending_per_target" ON "review_queue" USING btree ("target_kind","target_id","kind") WHERE status = 'pending';
