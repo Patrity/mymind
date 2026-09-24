@@ -1,8 +1,6 @@
 // test/agent-memory-context.test.ts
-import { describe, it, expect, vi } from 'vitest'
-import { buildMemoryContext } from '../server/lib/agent/context'
+import { describe, it, expect } from 'vitest'
 import { handleTurn } from '../server/lib/voice/orchestrator'
-import type { MemoryDTO } from '../shared/types/memory'
 import type { VoicePresetDTO } from '../shared/types/voice-presets'
 
 const preset: VoicePresetDTO = {
@@ -10,39 +8,6 @@ const preset: VoicePresetDTO = {
   topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
   maxSegmentChars: 200, isDefault: true
 }
-
-const mem = (content: string, relevance: number) => ({ content, relevance }) as MemoryDTO
-
-describe('buildMemoryContext', () => {
-  it('formats top relevant memories as a labeled background block', async () => {
-    const search = vi.fn(async () => [mem('Tony prefers pnpm', 1), mem('Prod is LXC 114', 0.5)])
-    const out = await buildMemoryContext('how do I deploy', { search })
-    expect(out).toMatch(/^Possibly relevant memories/)
-    expect(out).toContain('- Tony prefers pnpm')
-    expect(out).toContain('- Prod is LXC 114')
-    expect(search).toHaveBeenCalledWith('how do I deploy', { limit: 5, reviewed: true })
-  })
-
-  it('excludes unreviewed memories — this path fires on every turn with no agent decision', async () => {
-    // Regression pin for cycle 51: `search_memories`/`get_recent_memories` default to
-    // reviewed-only, but this automatic injection bypasses those tools entirely, so it
-    // must carry the same filter or unreviewed enrichment output reaches the prompt anyway.
-    const search = vi.fn(async () => [mem('Tony prefers pnpm', 1)])
-    await buildMemoryContext('q', { search })
-    expect(search).toHaveBeenCalledWith('q', expect.objectContaining({ reviewed: true }))
-  })
-
-  it('drops low-relevance results and returns "" when nothing clears the floor', async () => {
-    const search = vi.fn(async () => [mem('noise', 0.1)])
-    expect(await buildMemoryContext('q', { search })).toBe('')
-  })
-
-  it('returns "" on empty input, empty results, and search errors (never throws)', async () => {
-    expect(await buildMemoryContext('  ', { search: vi.fn() })).toBe('')
-    expect(await buildMemoryContext('q', { search: vi.fn(async () => []) })).toBe('')
-    expect(await buildMemoryContext('q', { search: vi.fn(async () => { throw new Error('db down') }) })).toBe('')
-  })
-})
 
 describe('handleTurn memory injection', () => {
   it('appends the memory block to the context passed to runAgent', async () => {

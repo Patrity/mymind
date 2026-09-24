@@ -87,6 +87,17 @@ describe('assembleContext', () => {
     expect(r.context).toContain('resident survives')
   })
 
+  it('never throws — a failing listResidentMemories degrades to whatever else assembled', async () => {
+    const r = await assembleContext({
+      userText: 'q', budget: 4000,
+      deps: deps({
+        listResident: async () => { throw new Error('db down') },
+        liveContext: async () => 'Active projects: mymind.'
+      })
+    })
+    expect(r.context).toContain('Active projects: mymind.')
+  })
+
   it('does not duplicate a resident memory that search also returns', async () => {
     const r = await assembleContext({
       userText: 'q', budget: 4000,
