@@ -19,8 +19,8 @@ describe('fitBudget', () => {
     const r = fitBudget({
       fixed: [t('resident', 38)],                       // 10
       turns: [t('turn1', 38), t('turn2', 38)],          // 10 + 10
-      retrieved: [t('m1', 38), t('m2', 38)],            // 10 + 10
-      budget: 40
+      retrieved: [t('m1', 380), t('m2', 380)],          // 100 + 100 (much larger)
+      budget: 150
     })
     expect(r.kept.turns).toHaveLength(2)
     expect(r.droppedRetrieved).toBeGreaterThan(0)
@@ -33,16 +33,31 @@ describe('fitBudget', () => {
     expect(r.kept.retrieved).toHaveLength(0)
   })
 
-  it('reserves a floor for turns that retrieval cannot eat', () => {
-    // budget 100 -> turn floor is 40 tokens. Retrieval must not push turns below it.
+  it('shares budget when retrieval and turns both want space', () => {
+    // Probe scenario: fixed 100, 40 turns of 100 each (4000 total), 10 retrieved of 100 each (1000 total), budget 1000.
+    // With turnFloor = 400, turnCeiling = max(400, 900-1000) = 400, so turns get 400 (4 kept), retrieval gets 500 (5 kept).
     const r = fitBudget({
-      fixed: [],
-      turns: [t('turn1', 76), t('turn2', 76)],   // 20 + 20 = 40, exactly the floor
-      retrieved: Array.from({ length: 20 }, (_, i) => t(`m${i}`, 380)),
-      budget: 100
+      fixed: [t('resident', 380)],                                               // 100 tokens
+      turns: Array.from({ length: 40 }, (_, i) => t(`turn${i}`, 380)),         // 40 × 100 = 4000 tokens
+      retrieved: Array.from({ length: 10 }, (_, i) => t(`m${i}`, 380)),        // 10 × 100 = 1000 tokens
+      budget: 1000
     })
     const turnTokens = r.kept.turns.reduce((a, x) => a + x.tokens, 0)
-    expect(turnTokens).toBeGreaterThanOrEqual(Math.floor(100 * TURN_FLOOR_RATIO))
+    expect(r.kept.retrieved.length).toBeGreaterThan(0)
+    expect(turnTokens).toBeGreaterThanOrEqual(Math.floor(1000 * TURN_FLOOR_RATIO))
+  })
+
+  it('turns exceed the floor when retrieval has little to say', () => {
+    // Few retrieved items, many turns, enough budget: turns should grow above the floor.
+    const r = fitBudget({
+      fixed: [],
+      turns: Array.from({ length: 40 }, (_, i) => t(`turn${i}`, 380)),         // 40 × 100
+      retrieved: [t('m1', 380)],                                                // 1 × 100
+      budget: 2000
+    })
+    const turnTokens = r.kept.turns.reduce((a, x) => a + x.tokens, 0)
+    const turnFloor = Math.floor(2000 * TURN_FLOOR_RATIO)
+    expect(turnTokens).toBeGreaterThan(turnFloor * 1.5)
   })
 
   it('keeps the MOST RECENT turns when turns must be trimmed', () => {

@@ -47,23 +47,24 @@ export function fitBudget(input: FitInput): FitResult {
   const fixedTokens = fixed.reduce((a, t) => a + t.tokens, 0)
   if (fixedTokens > budget) throw new ResidentOverflowError(fixedTokens, budget)
 
+  const available = budget - fixedTokens
   const turnFloor = Math.floor(budget * floorRatio)
-  let remaining = budget - fixedTokens
+  const retrievalWant = retrieved.reduce((a, t) => a + t.tokens, 0)
+  const turnCeiling = Math.max(turnFloor, available - retrievalWant)
 
-  // Turns first, newest-first, up to whatever is left. Keeping the tail is the point.
+  // Pack turns newest-first (iterate backwards) up to turnCeiling, then reverse
   const keptTurnsReversed: Tier[] = []
   let turnTokens = 0
   for (let i = turns.length - 1; i >= 0; i--) {
     const t = turns[i]!
-    if (turnTokens + t.tokens > remaining) break
+    if (turnTokens + t.tokens > turnCeiling) break
     keptTurnsReversed.push(t)
     turnTokens += t.tokens
   }
   const keptTurns = keptTurnsReversed.reverse()
-  remaining -= turnTokens
 
-  // Retrieval gets what is left, but may never push turns below their floor.
-  const retrievalCeiling = Math.max(0, Math.min(remaining, budget - fixedTokens - Math.min(turnFloor, turnTokens)))
+  // Retrieval ceiling is what is left after turns.
+  const retrievalCeiling = available - turnTokens
   const keptRetrieved: Tier[] = []
   let retrievedTokens = 0
   for (const t of retrieved) {

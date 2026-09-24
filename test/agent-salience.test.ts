@@ -36,6 +36,13 @@ describe('extractFeatures', () => {
   it('marks a contradicted memory', () => {
     expect(extractFeatures(mem('a'), ctx({ contradictedIds: new Set(['a']) })).contradicted).toBe(true)
   })
+
+  it('marks a global applicability memory', () => {
+    const globalF = extractFeatures(mem('a', { applicability: 'global' }), ctx())
+    expect(globalF.global).toBe(true)
+    const projectF = extractFeatures(mem('a', { applicability: 'project' }), ctx())
+    expect(projectF.global).toBe(false)
+  })
 })
 
 describe('relevanceScore — each weight in isolation', () => {
@@ -60,6 +67,10 @@ describe('relevanceScore — each weight in isolation', () => {
 
   it('rewards a project match', () => {
     expect(relevanceScore({ ...base, projectMatch: true })).toBeGreaterThan(relevanceScore(base))
+  })
+
+  it('rewards a global applicability', () => {
+    expect(relevanceScore({ ...base, global: true })).toBeGreaterThan(relevanceScore(base))
   })
 })
 
