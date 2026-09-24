@@ -58,4 +58,23 @@ describe('mergeCommands', () => {
     const out = mergeCommands({ client: [], prompt: [e('standup', 'prompt', { template: 'What did I ship?' })], skill: [] })
     expect(out[0]!.template).toBe('What did I ship?')
   })
+
+  it('keeps the first entry when one source has the same name twice', () => {
+    const out = mergeCommands({
+      client: [],
+      prompt: [],
+      skill: [e('dupe', 'skill', { description: 'first' }), e('dupe', 'skill', { description: 'second' })]
+    })
+    expect(out).toHaveLength(1)
+    expect(out[0]!.description).toBe('first')
+  })
+
+  it('never lists a source as shadowing itself', () => {
+    const out = mergeCommands({
+      client: [],
+      prompt: [],
+      skill: [e('dupe', 'skill'), e('dupe', 'skill')]
+    })
+    expect(out[0]!.shadows).toBeUndefined()
+  })
 })

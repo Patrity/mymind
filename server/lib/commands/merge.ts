@@ -25,7 +25,10 @@ export function mergeCommands(sources: {
       }
       // A lower-precedence source lost. Record the LOSER's kind on the winner —
       // losers are never returned, so this is the only trace the UI gets.
-      byName.set(entry.name, { ...existing, shadows: [...(existing.shadows ?? []), kind] })
+      // Only record if it's a different source; within the same source, first wins silently.
+      if (existing.kind !== kind) {
+        byName.set(entry.name, { ...existing, shadows: [...(existing.shadows ?? []), kind] })
+      }
     }
   }
 
