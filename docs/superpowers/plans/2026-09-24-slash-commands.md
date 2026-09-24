@@ -196,7 +196,7 @@ export function mergeCommands(sources: {
 - [ ] **Step 5: Run the tests**
 
 Run: `pnpm vitest run test/command-merge.test.ts`
-Expected: PASS (9 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 6: Verify the tests can fail**
 
