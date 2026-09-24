@@ -62,13 +62,21 @@ describe('conversation epoch', () => {
     expect(c!.summaryEmbedding).toBeNull()
   })
 
-  it('shows messages written AFTER the clear', async () => {
+  // A single clear-then-insert only catches the app-clock-vs-Postgres-clock race about 10% of
+  // the time (it presented as an intermittent flake, not a reliable failure) — the epoch and
+  // the row it's raced against must come from the SAME clock (`now()` in Postgres), or a
+  // message written immediately after `/clear` can land BEFORE the epoch and vanish from the
+  // model's history. Looping the race 10x with no delay between clear and insert makes this
+  // fail essentially always under the old (app-clock) code and pass every time under the fix.
+  it('shows messages written AFTER the clear, repeatedly, with no delay', async () => {
     const id = await seed()
-    await clearConversationContext(id)
-    await useDb().insert(conversationMessages)
-      .values({ conversationId: id, role: 'user', content: 'after clear', modality: 'text' })
-    const { rows } = await loadActivePath(id, { sinceEpoch: true })
-    expect(rows.map(r => r.content)).toEqual(['after clear'])
+    for (let i = 0; i < 10; i++) {
+      await clearConversationContext(id)
+      await useDb().insert(conversationMessages)
+        .values({ conversationId: id, role: 'user', content: `after clear ${i}`, modality: 'text' })
+      const { rows } = await loadActivePath(id, { sinceEpoch: true })
+      expect(rows.map(r => r.content)).toEqual([`after clear ${i}`])
+    }
   })
 
   it('is a no-op on a conversation that was never cleared', async () => {

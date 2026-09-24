@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { conversations } from '../db/schema'
 import { publishChange } from '../utils/live-bus'
@@ -10,6 +10,15 @@ import { publishChange } from '../utils/live-bus'
  * removed (retry branches rather than truncates). An epoch keeps the transcript searchable via
  * cycle-13 session/message search and makes an accidental clear recoverable.
  *
+ * `contextEpochAt` MUST come from Postgres's own clock (`now()`), not the app server's
+ * (`new Date()`). `loadActivePath` compares it directly against `conversation_messages.
+ * created_at`, which Postgres stamps via `defaultNow()` — so this is a same-clock comparison
+ * only if both sides are read from the database. Measured impact of getting this wrong: with
+ * app-clock skew of roughly 1ms, 18 of 20 messages written immediately after a clear landed
+ * BEFORE the epoch and were silently dropped from the model's history. Any nonzero skew between
+ * the two clocks makes the `>=` comparison unsafe, so this isn't a "use NTP" problem — it needs
+ * one clock, not a synchronized pair of them.
+ *
  * The summary reset is not optional. The summary is DERIVED from the transcript, so wiping the
  * turns while leaving it means Bridget still remembers everything just cleared, compressed. A
  * /clear that does not reset the summary is a lie.
@@ -19,7 +28,7 @@ import { publishChange } from '../utils/live-bus'
  */
 export async function clearConversationContext(conversationId: string): Promise<void> {
   await useDb().update(conversations)
-    .set({ contextEpochAt: new Date(), summary: null, summaryEmbedding: null, updatedAt: new Date() })
+    .set({ contextEpochAt: sql`now()`, summary: null, summaryEmbedding: null, updatedAt: new Date() })
     .where(eq(conversations.id, conversationId))
   publishChange({ resource: 'conversation', action: 'updated', id: conversationId })
 }
