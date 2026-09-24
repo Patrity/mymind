@@ -19,9 +19,14 @@ import { and, eq, inArray } from 'drizzle-orm'
 const seededConversationIds: string[] = []
 const seededSessionIds: string[] = []
 
+// enrichConversations now gates on an idle guard (lastMessageAt older than 1 hour, mirroring
+// runMemoryEnrichment's session gate — see that file for the FIX 4 rationale), so every seeded
+// conversation needs a lastMessageAt safely in the past or it is never a candidate at all.
+const OLD_ENOUGH = new Date(Date.now() - 2 * 60 * 60 * 1000)
+
 async function seedConversation(content: string) {
   const db = useDb()
-  const [c] = await db.insert(conversations).values({ title: 'ENRICH-TEST', messageCount: 2 }).returning()
+  const [c] = await db.insert(conversations).values({ title: 'ENRICH-TEST', messageCount: 2, lastMessageAt: OLD_ENOUGH }).returning()
   await db.insert(conversationMessages).values([
     { conversationId: c!.id, role: 'user', content, modality: 'text' },
     { conversationId: c!.id, role: 'assistant', content: 'noted', modality: 'text' }
@@ -95,5 +100,22 @@ describe('enrichConversations', () => {
     const [row] = await db.select().from(memEnrichmentState)
       .where(and(eq(memEnrichmentState.sourceKind, 'session'), eq(memEnrichmentState.sourceId, sessionId))).limit(1)
     expect(row!.lastEnrichedMessageCount).toBe(7)
+  })
+
+  // FIX 4a: a conversation must accumulate >= 5 new messages since its last successful
+  // enrichment before it is reconsidered — otherwise a single new message re-fires the
+  // extraction prompt on every 15-minute cron tick forever.
+  it('does not pick up a conversation with only 1 new message', async () => {
+    const id = await seedConversation('needs one more message before this re-enriches')
+    // Simulate a prior successful enrichment one message short of the current count
+    // (seedConversation's conversation has messageCount: 2) — a delta of exactly 1, below
+    // the >= 5 threshold.
+    await useDb().insert(memEnrichmentState).values({
+      sourceKind: 'conversation', sourceId: id, lastEnrichedMessageCount: 1, lastRun: new Date(), status: 'ok'
+    })
+    const extract = vi.fn(async () => [])
+    const res = await enrichConversations({ limit: 5, only: [id], deps: { extract } })
+    expect(res.conversationsProcessed).toBe(0)
+    expect(extract).not.toHaveBeenCalled()
   })
 })

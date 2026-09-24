@@ -315,7 +315,17 @@ export async function enrichConversations(
       eq(memEnrichmentState.sourceId, conversations.id)
     ))
     .where(and(
-      sql`${conversations.messageCount} > coalesce(${memEnrichmentState.lastEnrichedMessageCount}, 0)`,
+      // Idle guard — same 1-hour quiet period runMemoryEnrichment requires of a session
+      // (sessions.lastActive) above, applied to lastMessageAt: a conversation still being
+      // actively typed into shouldn't be snapshotted mid-thought.
+      sql`${conversations.lastMessageAt} < now() - interval '1 hour'`,
+      // Delta + error-backoff gate — mirrors the session selector's OR above (never-enriched
+      // OR grown-by->=5 OR errored->=24h-ago). Without this a conversation with exactly one new
+      // message fires every 15-minute cron tick forever, and a source that errors retries on
+      // every tick too since nothing here previously read `status`/`last_run` at all.
+      sql`(${memEnrichmentState.sourceId} is null
+        or (${conversations.messageCount} - coalesce(${memEnrichmentState.lastEnrichedMessageCount}, 0)) >= 5
+        or (${memEnrichmentState.status} = 'error' and ${memEnrichmentState.lastRun} < now() - interval '24 hours'))`,
       ...(opts.only ? [inArray(conversations.id, opts.only)] : [])
     ))
     .orderBy(desc(conversations.lastMessageAt))
@@ -326,7 +336,13 @@ export async function enrichConversations(
     const rows = await db.select().from(conversationMessages)
       .where(eq(conversationMessages.conversationId, c.id))
       .orderBy(conversationMessages.createdAt, conversationMessages.id)
-    const transcript = rows.map(r => `${r.role}: ${r.content}`).join('\n')
+    // Same head/tail trim runMemoryEnrichment uses for a session transcript (see
+    // buildEnrichTranscript above) — previously unused here, so an unbounded Bridget thread
+    // rode straight into the extraction prompt with no cap at all.
+    const transcript = buildEnrichTranscript(
+      rows.map(r => ({ id: r.id, role: r.role, content: r.content, thinking: r.reasoning, isSidechain: false, metadata: null })),
+      []
+    )
 
     try {
       const extracted = await extract(transcript)
