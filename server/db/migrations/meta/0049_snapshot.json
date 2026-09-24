@@ -2488,8 +2488,8 @@
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
-        "mem_enrichment_state_source_kind_source_id_pk": {
-          "name": "mem_enrichment_state_source_kind_source_id_pk",
+        "mem_enrichment_state_pkey": {
+          "name": "mem_enrichment_state_pkey",
           "columns": [
             "source_kind",
             "source_id"

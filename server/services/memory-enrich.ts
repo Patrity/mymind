@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { sessions, messages, memEnrichmentState, toolEvents, projects, conversations, conversationMessages } from '../db/schema'
 import { chat } from '../lib/ai/chat'
@@ -279,6 +279,15 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
 
 export interface EnrichConversationsOptions {
   limit?: number
+  /**
+   * Restrict the candidate query to these conversation ids. Test-only scoping seam — the
+   * production sweep (server/tasks/enrich-memories.ts) never sets this, so the real query keeps
+   * scanning every conversation. Exists so tests never touch real Bridget conversation history:
+   * without it, the candidate query has no way to distinguish a test's own seeded rows from
+   * real ones, and a mocked `extract` run against this shared dev DB would durably mark real
+   * conversations "checked, zero memories" under a fake result.
+   */
+  only?: string[]
   deps?: { extract?: (transcript: string) => Promise<MemoryCandidate[]> }
 }
 
@@ -305,7 +314,10 @@ export async function enrichConversations(
       eq(memEnrichmentState.sourceKind, 'conversation'),
       eq(memEnrichmentState.sourceId, conversations.id)
     ))
-    .where(sql`${conversations.messageCount} > coalesce(${memEnrichmentState.lastEnrichedMessageCount}, 0)`)
+    .where(and(
+      sql`${conversations.messageCount} > coalesce(${memEnrichmentState.lastEnrichedMessageCount}, 0)`,
+      ...(opts.only ? [inArray(conversations.id, opts.only)] : [])
+    ))
     .orderBy(desc(conversations.lastMessageAt))
     .limit(limit)
 

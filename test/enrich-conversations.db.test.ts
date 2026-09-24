@@ -3,7 +3,7 @@
 // DB-backed test — see test/conversation-epoch.db.test.ts for the harness pattern this file
 // follows (`.env` load + `useRuntimeConfig` stub so `useDb()` works outside Nuxt).
 process.loadEnvFile('.env')
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, vi, afterAll } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 // createMemory -> embedOne -> withFailover reaches the Nitro-global $fetch, which only
@@ -14,7 +14,7 @@ vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 import { useDb } from '../server/db'
 import { conversations, conversationMessages, memEnrichmentState, memories } from '../server/db/schema'
 import { enrichConversations } from '../server/services/memory-enrich'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 
 const seededConversationIds: string[] = []
 const seededSessionIds: string[] = []
@@ -30,77 +30,16 @@ async function seedConversation(content: string) {
   return c!.id
 }
 
-// enrichConversations' candidate query is the real production query — it has no test-scoping
-// hook, and this dev DB carries real Bridget conversation history (Tony's own agent-chat
-// sessions). Left unshielded, this suite's MOCKED extractor (which usually returns []) would
-// get called against those real conversations too and permanently mark them "checked, zero
-// memories" under a fake result — corrupting real enrichment state, not just leaking test rows.
-// Snapshot every real conversation that currently qualifies as a candidate, mark it enriched
-// for the duration of this suite, and restore its exact prior state in afterAll.
-interface ShieldedRow {
-  id: string
-  hadRow: boolean
-  priorCount: number
-  priorStatus: string | null
-  priorError: string | null
-  priorLastRun: Date | null
-}
-const shielded: ShieldedRow[] = []
-
-beforeAll(async () => {
-  const db = useDb()
-  const real = await db.select({
-    id: conversations.id,
-    messageCount: conversations.messageCount,
-    existingSourceId: memEnrichmentState.sourceId,
-    priorCount: memEnrichmentState.lastEnrichedMessageCount,
-    priorStatus: memEnrichmentState.status,
-    priorError: memEnrichmentState.error,
-    priorLastRun: memEnrichmentState.lastRun
-  })
-    .from(conversations)
-    .leftJoin(memEnrichmentState, and(
-      eq(memEnrichmentState.sourceKind, 'conversation'),
-      eq(memEnrichmentState.sourceId, conversations.id)
-    ))
-    .where(sql`${conversations.title} is distinct from 'ENRICH-TEST'`)
-
-  for (const r of real) {
-    const priorCount = r.priorCount ?? 0
-    if (r.messageCount <= priorCount) continue // not a candidate — nothing to shield
-    shielded.push({
-      id: r.id,
-      hadRow: r.existingSourceId != null,
-      priorCount,
-      priorStatus: r.priorStatus,
-      priorError: r.priorError,
-      priorLastRun: r.priorLastRun
-    })
-    await db.insert(memEnrichmentState)
-      .values({ sourceKind: 'conversation', sourceId: r.id, lastEnrichedMessageCount: r.messageCount, status: 'ok', lastRun: new Date() })
-      .onConflictDoUpdate({
-        target: [memEnrichmentState.sourceKind, memEnrichmentState.sourceId],
-        set: { lastEnrichedMessageCount: r.messageCount, status: 'ok', lastRun: new Date() }
-      })
-  }
-})
-
 // beforeEach/it-local seeding alone doesn't stop this file's rows leaking into the next file —
 // this suite shares one dev Postgres across worktrees/sessions with no per-file isolation. This
-// test creates conversations, messages AND memories — all three are cleaned up here, plus the
-// real conversations shielded in beforeAll are restored to their exact prior enrichment state.
+// test creates conversations, messages AND memories — all three are cleaned up here.
+//
+// Every call below passes `only: [id]` (enrichConversations' test-only scoping seam) so the
+// candidate query can never reach real Bridget conversation history in this shared dev DB —
+// there is nothing else to shield or restore, and nothing here can mark a real conversation
+// "checked" under a mocked result.
 afterAll(async () => {
   const db = useDb()
-  for (const s of shielded) {
-    if (s.hadRow) {
-      await db.update(memEnrichmentState)
-        .set({ lastEnrichedMessageCount: s.priorCount, status: s.priorStatus, error: s.priorError, lastRun: s.priorLastRun })
-        .where(and(eq(memEnrichmentState.sourceKind, 'conversation'), eq(memEnrichmentState.sourceId, s.id)))
-    } else {
-      await db.delete(memEnrichmentState)
-        .where(and(eq(memEnrichmentState.sourceKind, 'conversation'), eq(memEnrichmentState.sourceId, s.id)))
-    }
-  }
   if (seededConversationIds.length > 0) {
     await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, seededConversationIds))
     await db.delete(memEnrichmentState).where(and(
@@ -122,28 +61,27 @@ describe('enrichConversations', () => {
   it('extracts a memory from a conversation', async () => {
     const id = await seedConversation('Remember I always deploy on Fridays')
     const extract = vi.fn(async () => [{ scope: 'user' as const, content: 'Tony deploys on Fridays', confidence: 0.9 }])
-    const res = await enrichConversations({ limit: 5, deps: { extract } })
-    expect(res.conversationsProcessed).toBeGreaterThan(0)
-    expect(res.memoriesCreated).toBeGreaterThan(0)
-    expect(extract).toHaveBeenCalled()
-    void id
+    const res = await enrichConversations({ limit: 5, only: [id], deps: { extract } })
+    expect(res.conversationsProcessed).toBe(1)
+    expect(res.memoriesCreated).toBe(1)
+    expect(extract).toHaveBeenCalledTimes(1)
   })
 
   it('records state under source_kind=conversation', async () => {
     const id = await seedConversation('another thing worth remembering')
-    await enrichConversations({ limit: 5, deps: { extract: async () => [] } })
+    await enrichConversations({ limit: 5, only: [id], deps: { extract: async () => [] } })
     const [row] = await useDb().select().from(memEnrichmentState)
       .where(and(eq(memEnrichmentState.sourceKind, 'conversation'), eq(memEnrichmentState.sourceId, id))).limit(1)
     expect(row).toBeTruthy()
   })
 
   it('does not reprocess a conversation with no new messages', async () => {
-    await seedConversation('processed once')
+    const id = await seedConversation('processed once')
     const extract = vi.fn(async () => [])
-    await enrichConversations({ limit: 5, deps: { extract } })
-    const firstCalls = extract.mock.calls.length
-    await enrichConversations({ limit: 5, deps: { extract } })
-    expect(extract.mock.calls.length).toBe(firstCalls)
+    await enrichConversations({ limit: 5, only: [id], deps: { extract } })
+    expect(extract.mock.calls.length).toBe(1)
+    await enrichConversations({ limit: 5, only: [id], deps: { extract } })
+    expect(extract.mock.calls.length).toBe(1)
   })
 
   it('leaves session enrichment state untouched', async () => {
@@ -152,8 +90,8 @@ describe('enrichConversations', () => {
     seededSessionIds.push(sessionId)
     await db.insert(memEnrichmentState)
       .values({ sourceKind: 'session', sourceId: sessionId, lastEnrichedMessageCount: 7 })
-    await seedConversation('unrelated')
-    await enrichConversations({ limit: 5, deps: { extract: async () => [] } })
+    const id = await seedConversation('unrelated')
+    await enrichConversations({ limit: 5, only: [id], deps: { extract: async () => [] } })
     const [row] = await db.select().from(memEnrichmentState)
       .where(and(eq(memEnrichmentState.sourceKind, 'session'), eq(memEnrichmentState.sourceId, sessionId))).limit(1)
     expect(row!.lastEnrichedMessageCount).toBe(7)
