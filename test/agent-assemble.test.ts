@@ -1,13 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
-import { assembleContext, synthesiseQuery } from '../server/lib/agent/assemble'
+import { assembleContext, synthesiseQuery, RETRIEVAL_RELEVANCE_FLOOR } from '../server/lib/agent/assemble'
 import { tier } from '../server/lib/agent/budget'
 import type { MemoryDTO } from '../shared/types/memory'
 
+// relevance defaults comfortably above RETRIEVAL_RELEVANCE_FLOOR (0.2, see below) — most tests
+// here aren't about relevance at all, and a search-returned memory the assembler is going to
+// filter out for low relevance would silently break every one of them.
 const mem = (id: string, content: string, over: Partial<MemoryDTO> = {}): MemoryDTO => ({
   id, scope: 'user', content, tags: [], source: null, confidence: null, project: null,
   applicability: 'global', resident: false, sessionId: null, enrichedAt: null,
   reviewedAt: '2026-09-01T00:00:00.000Z', sourceDate: null,
-  createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', ...over
+  createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', relevance: 0.9, ...over
 })
 
 const deps = (over: Partial<Parameters<typeof assembleContext>[0]['deps']> = {}) => ({
@@ -108,6 +111,40 @@ describe('assembleContext', () => {
     })
     const occurrences = r.context.split('the resident fact').length - 1
     expect(occurrences).toBe(1)
+  })
+
+  // FIX 5b: the deleted buildMemoryContext filtered `relevance >= 0.2`; assembleContext lost
+  // that floor, letting near-zero-relevance hits both ride into the prompt and earn a
+  // retrieval credit (resident self-nomination reads that counter).
+  it('drops a retrieved memory below the relevance floor, and does not credit it a retrieval', async () => {
+    const recordRetrievals = vi.fn(async () => {})
+    expect(RETRIEVAL_RELEVANCE_FLOOR).toBe(0.2)
+    const r = await assembleContext({
+      userText: 'q', budget: 4000,
+      deps: deps({
+        search: async () => [
+          mem('below', 'a barely-relevant hit', { relevance: RETRIEVAL_RELEVANCE_FLOOR - 0.01 }),
+          mem('above', 'a genuinely relevant hit', { relevance: RETRIEVAL_RELEVANCE_FLOOR })
+        ],
+        recordRetrievals
+      })
+    })
+    expect(r.context).not.toContain('a barely-relevant hit')
+    expect(r.context).toContain('a genuinely relevant hit')
+    expect(r.usedMemoryIds).toEqual(['above'])
+    expect(recordRetrievals.mock.calls[0]![0]).toEqual(['above'])
+  })
+
+  // FIX 5a: `safe()` only catches a THROW — a dependency that never resolves used to hang the
+  // whole turn. `timeoutMs` is the test-only seam so this doesn't need to wait out the real
+  // ASSEMBLE_TIMEOUT_MS (1.5s) to prove it.
+  it('degrades to a context instead of hanging when a dependency never resolves', async () => {
+    const hang = () => new Promise<MemoryDTO[]>(() => {})
+    const r = await assembleContext({
+      userText: 'anything', budget: 4000, timeoutMs: 50,
+      deps: deps({ search: hang })
+    })
+    expect(r).toEqual({ context: '', usedMemoryIds: [], used: 0, droppedTurns: 0 })
   })
 })
 
