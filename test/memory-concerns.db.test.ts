@@ -115,8 +115,18 @@ describe('sweepMemoryConcerns', () => {
   })
 
   it('skips stale scoring entirely when no scorer is configured', async () => {
-    const res = await sweepMemoryConcerns({ only: [] })
+    // FIX 7b (whole-branch review): the original version passed `only: []`, which forces the
+    // `sql\`false\`` scope guard onto EVERY query in the sweep — so staleCandidates comes back
+    // 0 whether or not the `if (opts.scoreDurable)` gate exists (an always-on default scorer
+    // would ALSO find zero rows to score, since the row query itself is scoped to nothing).
+    // Scoping to a REAL, seeded memory instead means the stale-row query (if it ran) would
+    // actually find it — so a 0 here is genuine proof the scoreDurable branch never executed,
+    // not an artifact of scope-emptiness.
+    const m = await createMemory({ scope: 'agent', content: 'CONCERN-TEST would be stale if anything scored it', project: 'p' })
+    await useDb().update(memories).set({ reviewedAt: new Date() }).where(eq(memories.id, m.id))
+    const res = await sweepMemoryConcerns({ only: [m.id] })
     expect(res.staleCandidates).toBe(0)
+    expect(await pending(m.id, 'stale')).toBe(0)
   })
 
   it('never archives or deletes anything', async () => {

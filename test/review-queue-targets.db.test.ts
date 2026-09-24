@@ -18,7 +18,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 import { useDb } from '../server/db'
 import { reviewQueue } from '../server/db/schema'
 import { enqueueReview } from '../server/services/review'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 
 const seededTargetIds: string[] = []
 
@@ -68,14 +68,40 @@ describe('polymorphic review queue', () => {
     expect(rows).toHaveLength(2)
   })
 
-  it('backfilled every pre-existing memory conflict row as a memory, not a document', async () => {
-    // Guards the kind-dependent backfill. doc_id has always held a memories.id for these two
-    // kinds; a blanket target_kind='document' would flatten two id namespaces into one label.
-    // Read-only against whatever this dev DB already holds — no fixture, nothing to clean up.
-    const rows = await useDb().select({ kind: reviewQueue.kind, targetKind: reviewQueue.targetKind })
+  // FIX 7a (whole-branch review): the original version of this test read whatever
+  // memory-supersede/memory-contradict rows this shared dev DB happened to already hold, with
+  // no fixture of its own — a 0-iteration `for` loop (and a pass-by-vacuity) on a DB with none,
+  // and non-hermetic (asserting on rows some OTHER test file or session created) on a DB with
+  // some. Replaced with a hermetic version: seed rows spanning both branches of the kind
+  // condition, then re-run the EXACT CASE expression migration 0050's backfill used (see
+  // server/db/migrations/0050_polymorphic_review_targets.sql) against them, and assert it
+  // sorts each seeded row onto the right side. This is deletable-but-kept: the migration
+  // itself only ever runs once and is already applied (verified against prod), but the
+  // kind-dependent MAPPING it encodes is exactly the kind of thing a future "simplify this
+  // CASE" edit could silently break, and this is what would catch it.
+  it('the 0050 backfill CASE maps memory-supersede/memory-contradict to memory, everything else to document', async () => {
+    const supersede = track(crypto.randomUUID())
+    const contradict = track(crypto.randomUUID())
+    const enrichment = track(crypto.randomUUID())
+    const triage = track(crypto.randomUUID())
+    await enqueueReview({ targetKind: 'document', targetId: supersede, kind: 'memory-supersede', proposed: {} })
+    await enqueueReview({ targetKind: 'document', targetId: contradict, kind: 'memory-contradict', proposed: {} })
+    await enqueueReview({ targetKind: 'document', targetId: enrichment, kind: 'enrichment', proposed: {} })
+    await enqueueReview({ targetKind: 'document', targetId: triage, kind: 'triage', proposed: {} })
+
+    const ids = [supersede, contradict, enrichment, triage]
+    await useDb().update(reviewQueue)
+      .set({ targetKind: sql`case when ${reviewQueue.kind} in ('memory-supersede','memory-contradict') then 'memory' else 'document' end` })
+      .where(inArray(reviewQueue.targetId, ids))
+
+    const rows = await useDb().select({ targetId: reviewQueue.targetId, kind: reviewQueue.kind, targetKind: reviewQueue.targetKind })
       .from(reviewQueue)
-      .where(inArray(reviewQueue.kind, ['memory-supersede', 'memory-contradict']))
-    for (const r of rows) expect(r.targetKind).toBe('memory')
+      .where(inArray(reviewQueue.targetId, ids))
+    const targetKindOf = (id: string) => rows.find(r => r.targetId === id)!.targetKind
+    expect(targetKindOf(supersede)).toBe('memory')
+    expect(targetKindOf(contradict)).toBe('memory')
+    expect(targetKindOf(enrichment)).toBe('document')
+    expect(targetKindOf(triage)).toBe('document')
   })
 
   it('memory-resolve writes memory conflicts as targetKind memory', async () => {

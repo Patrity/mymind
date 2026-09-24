@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decideApplicability, shouldEnqueueReview } from '../scripts/lib/applicability'
+import { decideApplicability } from '../scripts/lib/applicability'
 
 describe('decideApplicability', () => {
   it('writes global only above the high gate', () => {
@@ -24,11 +24,5 @@ describe('decideApplicability', () => {
     expect(decideApplicability(Number.NaN)).toBe('review')
     expect(decideApplicability(1.5)).toBe('review')
     expect(decideApplicability(-1)).toBe('review')
-  })
-})
-
-describe('shouldEnqueueReview', () => {
-  it('never files a review-queue row for a review verdict (RULING 18)', () => {
-    expect(shouldEnqueueReview('review')).toBe(false)
   })
 })

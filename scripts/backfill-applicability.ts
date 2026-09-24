@@ -14,13 +14,12 @@
  * median 0.75, p75 0.84 on a 0-1 scale) — only 7.8% of scores fell outside the 0.9/0.1 gate
  * at all. Queueing the other 92.2% put 1,475 low-value `applicability` rows into
  * `review_queue`, burying the surface's other kinds (4 memory-contradict, 17 triage, 10
- * enrichment) under noise. A `review` verdict now just leaves the memory at its
- * pre-existing `applicability = 'project'` default — a no-op, not a regression — and
- * `global` promotion is expected to happen from the resident-promotion / retrieval-count
- * path instead: a memory that's actually reused across projects, a measured signal, rather
- * than a single model opinion on a distribution too flat to gate confidently. See
- * `shouldEnqueueReview` in scripts/lib/applicability.ts for the (currently always-false,
- * unit-tested) policy this enforces.
+ * enrichment) under noise. A `review` verdict just leaves the memory at its pre-existing
+ * `applicability = 'project'` default — a no-op, not a regression — and `global` promotion
+ * is expected to happen from the resident-promotion / retrieval-count path instead: a memory
+ * that's actually reused across projects, a measured signal, rather than a single model
+ * opinion on a distribution too flat to gate confidently. See `decideApplicability`'s own
+ * doc comment in scripts/lib/applicability.ts for the full rationale.
  *
  *   set -a; . /Users/tony/Documents/GitHub/homelab/.env; set +a
  *   node_modules/.bin/tsx scripts/backfill-applicability.ts --dry-run   # run this FIRST
@@ -44,8 +43,7 @@ import { fileURLToPath } from 'node:url'
 import { and, eq, isNull } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { memories } from '../server/db/schema'
-import { enqueueReview } from '../server/services/review'
-import { decideApplicability, shouldEnqueueReview } from './lib/applicability'
+import { decideApplicability } from './lib/applicability'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const OUT = resolve(HERE, 'data/applicability-backfill-2026-09-24.jsonl')
@@ -166,31 +164,18 @@ async function main() {
   }
 
   let updated = 0
-  let queued = 0
   for (const o of outcomes) {
     if (o.decision === 'global') {
       await db.update(memories)
         .set({ applicability: 'global', updatedAt: new Date() })
         .where(eq(memories.id, o.id))
       updated++
-    } else if (o.decision === 'review' && shouldEnqueueReview(o.decision)) {
-      // Currently unreachable — shouldEnqueueReview() is false per RULING 18. Left wired
-      // (rather than deleted) so resurrecting the review-queue path later, if the classifier
-      // or its calibration improves, needs only a flip of shouldEnqueueReview, not a rewrite
-      // of this loop.
-      const inserted = await enqueueReview({
-        targetKind: 'memory',
-        targetId: o.id,
-        kind: 'applicability',
-        proposed: { applicability: 'global', noul: o.noul }
-      })
-      if (inserted) queued++
     }
-    // decision === 'project', and decision === 'review' while shouldEnqueueReview is false:
-    // no-op — stays at the pre-existing 'project' default.
+    // decision === 'project', and decision === 'review': no-op — stays at the pre-existing
+    // 'project' default (RULING 18 — see the doc comment above and decideApplicability's own).
   }
 
-  console.log(`\n  wrote: ${updated} memories set to global, ${queued} sent to review (expect 0 — RULING 18)`)
+  console.log(`\n  wrote: ${updated} memories set to global`)
 
   writeFileSync(OUT, outcomes.map(o => JSON.stringify(o)).join('\n') + '\n')
   console.log(`  audit trail: ${OUT}`)
