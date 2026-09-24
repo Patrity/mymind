@@ -24,12 +24,28 @@ export interface BranchInfo {
  * thread whose leaf is somehow unset renders in full instead of appearing empty. Both read
  * paths fall back TOGETHER — asserted, because a fallback only one path takes is this cycle's
  * failure mode in its worst form (see the null-leaf test).
+ *
+ * `opts.sinceEpoch` is the `/clear` boundary (cycle 70): when true, rows created before
+ * `conversations.context_epoch_at` are dropped from what's RETURNED. It is opt-in and defaults
+ * to off so the UI's `getConversation` — which must still show everything — needs no change to
+ * keep today's behaviour; only the model's `getAgentHistory` passes it. The branch index below
+ * is built from the WHOLE thread regardless, because a message on the active path needs the
+ * count of siblings that are off it, including siblings that predate the epoch.
  */
-export async function loadActivePath(conversationId: string): Promise<{
+export async function loadActivePath(
+  conversationId: string,
+  opts: { sinceEpoch?: boolean } = {}
+): Promise<{
   rows: Array<typeof conversationMessages.$inferSelect>
   branches: Map<string, BranchInfo>
 }> {
   const db = useDb()
+
+  const [conv] = await db.select({ leaf: conversations.activeLeafId, epoch: conversations.contextEpochAt })
+    .from(conversations).where(sql`${conversations.id} = ${conversationId}`).limit(1)
+
+  const epoch = opts.sinceEpoch ? conv?.epoch ?? null : null
+
   // `id` is the tie-break, not decoration: cycle 68's predecessor measured a 26% created_at
   // collision rate in this corpus, and each read path runs its own copy of this query. On
   // `created_at` alone Postgres may order tied rows differently per query — which would let the
@@ -37,16 +53,17 @@ export async function loadActivePath(conversationId: string): Promise<{
   // 2/2 (reordering `siblingIds` with it) from one request to the next, surfacing as a branch
   // pager that jumps for no reason. Deterministic beats arbitrary-and-unstable; the 0045
   // backfill carries the same ruling.
-  const rows = await db.select().from(conversationMessages)
+  const allRows = await db.select().from(conversationMessages)
     .where(sql`${conversationMessages.conversationId} = ${conversationId}`)
     .orderBy(conversationMessages.createdAt, conversationMessages.id)
 
-  const [conv] = await db.select({ leaf: conversations.activeLeafId }).from(conversations)
-    .where(sql`${conversations.id} = ${conversationId}`).limit(1)
+  // Only what's returned is epoch-filtered — the branch index (and the input to activePath's
+  // parent-chain walk) still sees every row in the thread. See the doc comment above.
+  const rows = epoch ? allRows.filter(r => r.createdAt.getTime() >= epoch.getTime()) : allRows
 
   // Indexes cover the whole THREAD, not just the path: a message on the active path needs the
   // count of siblings that are off it, which is the only thing the pager has to render.
-  const branches = withSiblings(rows, branchIndex(rows.map(r => ({ id: r.id, parentId: r.parentId }))))
+  const branches = withSiblings(allRows, branchIndex(allRows.map(r => ({ id: r.id, parentId: r.parentId }))))
   const path = activePath(rows, conv?.leaf ?? null)
   return { rows: path.length ? path : rows, branches }
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "context_epoch_at" timestamp with time zone;

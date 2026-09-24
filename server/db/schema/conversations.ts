@@ -14,6 +14,10 @@ export const conversations = pgTable('conversations', {
   /** Leaf of the branch currently displayed. A thread is a tree (see parent_id); this names
    *  which path through it is active. Nullable only as a fallback: null → flat read. */
   activeLeafId: uuid('active_leaf_id'),
+  /** `/clear` boundary. The MODEL reads only messages at or after this; the UI still shows
+   *  everything and renders a divider here, so the two readers differ VISIBLY rather than
+   *  silently (cycle 68's invariant is that they must never disagree unnoticed). */
+  contextEpochAt: timestamp('context_epoch_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
