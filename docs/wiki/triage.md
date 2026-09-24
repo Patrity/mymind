@@ -58,8 +58,9 @@ already has a `review_queue` row with `status = 'pending'` of a kind *other than
 so it returns `{ skipped: 'review-pending' }` **without claiming**, leaving `triaged_at` NULL so
 the document stays eligible for a later sweep.
 
-This is not hypothetical tidiness. `review_queue_one_pending_per_doc` is a partial unique index
-on `doc_id WHERE status = 'pending'` spanning **all kinds**, so a document still holding a
+This is not hypothetical tidiness. `review_queue_one_pending_per_target` (renamed from
+`review_queue_one_pending_per_doc` in cycle-70 task-7) is a partial unique index on
+`(target_kind, target_id) WHERE status = 'pending'` spanning **all kinds**, so a document still holding a
 pending `enrichment` row from the retired `enrich-input` cron would have had its triage row
 silently swallowed by `onConflictDoNothing()` — after the claim was stamped and the model call
 paid for. The document would have gone terminal with no proposal to show. Both of production's
@@ -242,8 +243,8 @@ if/else chain in `approve.post.ts`/`reject.post.ts`:
   re-stamping here keeps the "don't immediately re-propose" guarantee explicit even if that
   invariant changes upstream) and marks the row `rejected`.
 
-One `review_queue` row per document (`review_queue_one_pending_per_doc`, a partial unique index
-on `doc_id WHERE status = 'pending'`) — a mixed-confidence proposal is one row containing every
+One `review_queue` row per document (`review_queue_one_pending_per_target`, a partial unique index
+on `(target_kind, target_id) WHERE status = 'pending'`) — a mixed-confidence proposal is one row containing every
 queued action, never one row per action.
 
 **The "recently applied" strip** — `GET /api/triage/recent`, rendered at the bottom of
@@ -277,7 +278,7 @@ bodies) shipped and was fixed earlier the same day (`4a3792f`) in the sibling `r
 |---|---|
 | `documents.triaged_at` | `timestamptz null`, indexed (`documents_triaged_at_idx`). Idempotency claim + sweeper candidate filter. |
 | `triage_actions` | New table. `id, doc_id, kind, entity_type ('task'\|'memory'\|'document'), entity_id, confidence, auto_applied, payload jsonb, reverted_at, created_at`. One row per action **actually executed** (auto-applied or human-approved) — this is what makes reversal work past the undo TTL and is the audit trail for "why is this task on my board." Indexed on `created_at` and `doc_id`. |
-| `review_queue` | No schema change. New `kind = 'triage'`; `proposed` holds `{ primary, secondary, reasoning, queued, applied }`. |
+| `review_queue` | No schema change at the time this cycle shipped. New `kind = 'triage'`; `proposed` holds `{ primary, secondary, reasoning, queued, applied }`. (`doc_id`→`target_kind`/`target_id` landed later, cycle-70 task-7 — see enrichment.md.) |
 
 ## Rollout
 

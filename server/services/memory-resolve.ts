@@ -195,15 +195,15 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
     publishChange({ resource: 'memory', action: 'updated', id: plan.targetId! })
   } else if (plan.action === 'review-supersede') {
     await db.insert(memoryRelations).values({ fromId: newId, toId: plan.targetId!, type: 'supersedes', confidence: plan.confidence ?? null, status: 'active', reason: plan.reasoning ?? null }).onConflictDoNothing()
-    await db.insert(reviewQueue).values({ docId: plan.targetId!, kind: 'memory-supersede', proposed: proposed as unknown as string }).onConflictDoNothing()
+    await db.insert(reviewQueue).values({ targetKind: 'memory', targetId: plan.targetId!, kind: 'memory-supersede', proposed: proposed as unknown as string }).onConflictDoNothing()
     publishChange({ resource: 'review', action: 'created', id: plan.targetId! })
   } else if (plan.action === 'contradict') {
     await db.insert(memoryRelations).values({ fromId: newId, toId: plan.targetId!, type: 'contradicts', confidence: plan.confidence ?? null, status: 'active', reason: plan.reasoning ?? null }).onConflictDoNothing()
-    await db.insert(reviewQueue).values({ docId: plan.targetId!, kind: 'memory-contradict', proposed: proposed as unknown as string }).onConflictDoNothing()
+    await db.insert(reviewQueue).values({ targetKind: 'memory', targetId: plan.targetId!, kind: 'memory-contradict', proposed: proposed as unknown as string }).onConflictDoNothing()
     publishChange({ resource: 'review', action: 'created', id: plan.targetId! })
   } else if (plan.action === 'review-contradict') {
     await db.insert(memoryRelations).values({ fromId: newId, toId: plan.targetId!, type: 'contradicts', confidence: plan.confidence ?? null, status: 'active', reason: plan.reasoning ?? null }).onConflictDoNothing()
-    await db.insert(reviewQueue).values({ docId: plan.targetId!, kind: 'memory-contradict', proposed: proposed as unknown as string }).onConflictDoNothing()
+    await db.insert(reviewQueue).values({ targetKind: 'memory', targetId: plan.targetId!, kind: 'memory-contradict', proposed: proposed as unknown as string }).onConflictDoNothing()
     // Deliberately NO archivedAt/supersededBy update: both memories stay live until a human
     // decides. An unresolved contradiction is preferable to a silently wrong resolution.
     publishChange({ resource: 'review', action: 'created', id: plan.targetId! })

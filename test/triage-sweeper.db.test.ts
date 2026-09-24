@@ -56,14 +56,15 @@ async function docRow(id: string) {
 }
 
 async function reviewRowOf(id: string) {
-  const [row] = await useDb().select().from(reviewQueue).where(eq(reviewQueue.docId, id))
+  const [row] = await useDb().select().from(reviewQueue)
+    .where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, id)))
   return row
 }
 
 // review_queue is the only side table sweepUntriaged's stubbed path can populate (threshold
 // 1.1 means nothing auto-applies, so no task/memory/triage_actions row is ever created here).
 async function cleanupFixture(id: string) {
-  await useDb().delete(reviewQueue).where(eq(reviewQueue.docId, id))
+  await useDb().delete(reviewQueue).where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, id)))
   await deleteDoc(id)
 }
 
@@ -165,16 +166,16 @@ describe('sweepUntriaged candidate query', () => {
 describe('sweepUntriaged pending-review guard', () => {
   it('counts a doc with an existing pending review row as skipped, not triaged', async () => {
     const doc = await jot()
-    await useDb().insert(reviewQueue).values({ docId: doc.id, kind: 'enrichment', proposed: { stub: true } })
+    await useDb().insert(reviewQueue).values({ targetKind: 'document', targetId: doc.id, kind: 'enrichment', proposed: { stub: true } })
     try {
       const result = await sweepUntriaged({ limit: 50 })
       expect(result.skipped).toBeGreaterThanOrEqual(1)
       expect((await docRow(doc.id))!.triagedAt).toBeNull()          // never claimed
       const triageRows = await useDb().select().from(reviewQueue)
-        .where(and(eq(reviewQueue.docId, doc.id), eq(reviewQueue.kind, 'triage')))
+        .where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, doc.id), eq(reviewQueue.kind, 'triage')))
       expect(triageRows).toHaveLength(0)
     } finally {
-      await useDb().delete(reviewQueue).where(eq(reviewQueue.docId, doc.id))
+      await useDb().delete(reviewQueue).where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, doc.id)))
       await deleteDoc(doc.id)
     }
   })

@@ -381,7 +381,10 @@ async function claim(docId: string): Promise<boolean> {
  */
 async function hasPendingReview(docId: string): Promise<boolean> {
   const [row] = await useDb().select({ id: reviewQueue.id }).from(reviewQueue)
-    .where(and(eq(reviewQueue.docId, docId), eq(reviewQueue.status, 'pending'), ne(reviewQueue.kind, 'triage')))
+    .where(and(
+      eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, docId),
+      eq(reviewQueue.status, 'pending'), ne(reviewQueue.kind, 'triage')
+    ))
     .limit(1)
   return !!row
 }
@@ -446,7 +449,8 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
     // insert — .returning() lets us tell a real insert apart from a silent onConflictDoNothing
     // no-op instead of assuming success.
     const [inserted] = await useDb().insert(reviewQueue).values({
-      docId,
+      targetKind: 'document',
+      targetId: docId,
       kind: 'triage',
       proposed: { primary: proposal.primary, secondary: proposal.secondary,
                   reasoning: proposal.reasoning, queued, applied } as unknown as Record<string, unknown>

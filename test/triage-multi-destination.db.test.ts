@@ -44,7 +44,7 @@ import { deleteTask } from '../server/services/tasks'
 import { useDb } from '../server/db'
 import { reviewQueue, triageActions, memories, tasks } from '../server/db/schema'
 import type { ReviewItem } from '../server/db/schema'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { approveHandlers } from '../server/api/review/kinds'
 import type { TriageAction } from '../shared/types/triage'
 
@@ -63,7 +63,7 @@ async function cleanup(docId: string) {
       await useDb().delete(memories).where(eq(memories.id, row.entityId))
     }
   }
-  await useDb().delete(reviewQueue).where(eq(reviewQueue.docId, docId))
+  await useDb().delete(reviewQueue).where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, docId)))
   await deleteDoc(docId)
 }
 
@@ -95,7 +95,8 @@ describe('triageCapture: multi-destination auto-apply', () => {
       expect(m).toBeDefined()
 
       // No review row — nothing was left behind for a human to (wrongly) rubber-stamp.
-      const reviewRows = await useDb().select().from(reviewQueue).where(eq(reviewQueue.docId, doc.id))
+      const reviewRows = await useDb().select().from(reviewQueue)
+        .where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, doc.id)))
       expect(reviewRows).toHaveLength(0)
     } finally {
       await cleanup(doc.id)
@@ -115,7 +116,8 @@ describe('approveTriage: multi-destination approve path', () => {
       { kind: 'memory', confidence: 0.4, content: 'Queued memory from review.' }
     ]
     const [row] = await useDb().insert(reviewQueue).values({
-      docId: doc.id,
+      targetKind: 'document',
+      targetId: doc.id,
       kind: 'triage',
       proposed: {
         primary: queuedActions[0], secondary: [queuedActions[1]],

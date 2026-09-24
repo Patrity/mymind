@@ -93,9 +93,10 @@ async function approveEnrichment(item: ReviewItem): Promise<void> {
     reasoning?: string | null
   }
 
-  const doc = await getDoc(item.docId)
+  // kind='enrichment' rows are always targetKind='document' — targetId IS the document id.
+  const doc = await getDoc(item.targetId)
   if (doc) {
-    await updateDoc(item.docId, {
+    await updateDoc(item.targetId, {
       title: p.title ?? doc.title,
       project: p.project ?? doc.project,
       domain: p.domain ?? doc.domain,
@@ -104,7 +105,7 @@ async function approveEnrichment(item: ReviewItem): Promise<void> {
     })
     if (p.path && p.path !== doc.path) {
       try {
-        await moveDoc(item.docId, p.path)
+        await moveDoc(item.targetId, p.path)
       } catch {
         // path taken — leave in place
       }
@@ -116,7 +117,7 @@ async function approveEnrichment(item: ReviewItem): Promise<void> {
     .where(eq(reviewQueue.id, item.id))
 
   publishChange({ resource: 'review', action: 'updated', id: item.id })
-  publishChange({ resource: 'document', action: 'updated', id: item.docId })
+  publishChange({ resource: 'document', action: 'updated', id: item.targetId })
 }
 
 async function rejectEnrichment(item: ReviewItem): Promise<void> {
@@ -144,7 +145,8 @@ async function approveTriage(item: ReviewItem): Promise<HandlerResult> {
 
   for (const action of p.queued ?? []) {
     try {
-      await APPLY[action.kind](item.docId, action, false)
+      // kind='triage' rows are always targetKind='document' — targetId IS the document id.
+      await APPLY[action.kind](item.targetId, action, false)
       applied.push(action)
     } catch (err) {
       // Since task-11b, task/memory/append all read the courier via getDocIncludingDeleted,
@@ -154,7 +156,7 @@ async function approveTriage(item: ReviewItem): Promise<HandlerResult> {
       // failing must not roll back the ones that succeeded or leave the row stuck pending
       // forever, but it also must NOT be counted as applied — that's exactly the silent
       // "approved but did nothing" failure task-11b exists to close.
-      console.warn(`[review] triage actuator ${action.kind} failed for ${item.docId}:`, err)
+      console.warn(`[review] triage actuator ${action.kind} failed for ${item.targetId}:`, err)
     }
   }
 
@@ -170,9 +172,10 @@ async function approveTriage(item: ReviewItem): Promise<HandlerResult> {
 async function rejectTriage(item: ReviewItem): Promise<void> {
   const db = useDb()
 
+  // kind='triage' rows are always targetKind='document' — targetId IS the document id.
   await db.update(documents)
     .set({ triagedAt: new Date() })
-    .where(eq(documents.id, item.docId))
+    .where(eq(documents.id, item.targetId))
 
   await db.update(reviewQueue)
     .set({ status: 'rejected', resolvedAt: new Date() })

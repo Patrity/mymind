@@ -55,7 +55,7 @@ async function cleanupTriaged(docId: string) {
   for (const row of rows) {
     if (row.entityType === 'task' && row.entityId) await deleteTask(row.entityId)
   }
-  await useDb().delete(reviewQueue).where(eq(reviewQueue.docId, docId))
+  await useDb().delete(reviewQueue).where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, docId)))
   await deleteDoc(docId)
 }
 
@@ -125,7 +125,8 @@ describe('triageCapture queueing', () => {
     try {
       const out = await triageCapture(doc.id)
       expect(out.queued).toBe(true)
-      const rows = await useDb().select().from(reviewQueue).where(eq(reviewQueue.docId, doc.id))
+      const rows = await useDb().select().from(reviewQueue)
+        .where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, doc.id)))
       expect(rows).toHaveLength(1)                 // one pending row per doc — enforced by a unique index
       expect(rows[0]!.kind).toBe('triage')
     } finally {
@@ -158,7 +159,7 @@ describe('triageCapture queueing', () => {
 describe('triageCapture pending-review guard', () => {
   it('does not claim or classify a doc that already has a pending review row of another kind', async () => {
     const doc = await jot()
-    await useDb().insert(reviewQueue).values({ docId: doc.id, kind: 'enrichment', proposed: { stub: true } })
+    await useDb().insert(reviewQueue).values({ targetKind: 'document', targetId: doc.id, kind: 'enrichment', proposed: { stub: true } })
     try {
       const out = await triageCapture(doc.id)
 
@@ -173,7 +174,7 @@ describe('triageCapture pending-review guard', () => {
       expect(row!.triagedAt).toBeNull()                 // NOT claimed — stays eligible for a later sweep
 
       const triageRows = await useDb().select().from(reviewQueue)
-        .where(and(eq(reviewQueue.docId, doc.id), eq(reviewQueue.kind, 'triage')))
+        .where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, doc.id), eq(reviewQueue.kind, 'triage')))
       expect(triageRows).toHaveLength(0)                // no triage row was created (and none silently dropped)
     } finally {
       await cleanupTriaged(doc.id)

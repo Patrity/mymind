@@ -34,11 +34,12 @@ const { reviewMemory } = await import('../server/services/memory')
 
 const MARK = 'review-feed.probe'
 
-/** Insert a minimal pending review_queue row (docId has no FK — any uuid is fine here). */
+/** Insert a minimal pending review_queue row (targetId has no FK — any uuid is fine here). */
 async function insertQueueRow() {
   const db = useDb()
   const [row] = await db.insert(reviewQueue).values({
-    docId: sql`gen_random_uuid()` as unknown as string,
+    targetKind: 'document',
+    targetId: randomUUID(),
     kind: 'enrichment',
     proposed: { title: MARK, reasoning: 'probe' },
     status: 'pending'
@@ -65,7 +66,8 @@ async function insertUnreviewedMemory(content: string) {
 async function insertConflictQueueRow(kind: 'memory-supersede' | 'memory-contradict', newId: string) {
   const db = useDb()
   const [row] = await db.insert(reviewQueue).values({
-    docId: sql`gen_random_uuid()` as unknown as string,
+    targetKind: 'memory',
+    targetId: randomUUID(),
     kind,
     proposed: { newId, existingId: randomUUID(), confidence: 0.9, reasoning: 'probe', newContent: 'new', existingContent: 'existing' },
     status: 'pending'

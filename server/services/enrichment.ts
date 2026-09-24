@@ -41,7 +41,7 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
           db
             .select({ id: reviewQueue.id })
             .from(reviewQueue)
-            .where(eq(reviewQueue.docId, documents.id))
+            .where(and(eq(reviewQueue.targetKind, 'document'), eq(reviewQueue.targetId, documents.id)))
         )
       )
     )
@@ -84,7 +84,8 @@ export async function runEnrichInput({ limit = 20 }: { limit?: number } = {}): P
       }
 
       const [inserted] = await db.insert(reviewQueue).values({
-        docId: doc.id,
+        targetKind: 'document',
+        targetId: doc.id,
         kind: 'enrichment',
         proposed: proposal as unknown as string,
         status: 'pending'

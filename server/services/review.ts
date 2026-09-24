@@ -1,7 +1,10 @@
 import { eq, and, isNull, count, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { reviewQueue, documents, memories } from '../db/schema'
+import { publishChange } from '../utils/live-bus'
 import type { MemoryScope } from '../../shared/types/memory'
+
+export type ReviewTargetKind = 'document' | 'memory'
 
 // ---------------------------------------------------------------------------
 // `/review` is the single approval surface (task-13). It merges two sources:
@@ -21,7 +24,9 @@ import type { MemoryScope } from '../../shared/types/memory'
 
 export interface ReviewQueueFeedItem {
   id: string
-  docId: string
+  // null for a memory-kind row (memory-supersede/memory-contradict) — targetId there is a
+  // memories.id, never a document.
+  docId: string | null
   kind: string
   proposed: unknown
   createdAt: Date
@@ -78,16 +83,30 @@ const unreviewedLive = () => and(
 export async function listReviewFeed(): Promise<ReviewFeedItem[]> {
   const db = useDb()
 
-  const queueItems = await db.select({
+  // `docId` on the returned shape is a display convenience for document-kind rows only
+  // (the triage/enrichment cards in app/pages/review.vue fall back to it when docPath is
+  // unset). It is derived from targetId, never read off the deprecated doc_id column — a
+  // memory-kind row's targetId is a memories.id and must never be mislabelled as a doc.
+  const queueRows = await db.select({
     id: reviewQueue.id,
-    docId: reviewQueue.docId,
+    targetKind: reviewQueue.targetKind,
+    targetId: reviewQueue.targetId,
     kind: reviewQueue.kind,
     proposed: reviewQueue.proposed,
     createdAt: reviewQueue.createdAt,
     docPath: documents.path
   }).from(reviewQueue)
-    .leftJoin(documents, eq(documents.id, reviewQueue.docId))
+    .leftJoin(documents, and(eq(documents.id, reviewQueue.targetId), eq(reviewQueue.targetKind, 'document')))
     .where(eq(reviewQueue.status, 'pending'))
+
+  const queueItems: ReviewQueueFeedItem[] = queueRows.map(r => ({
+    id: r.id,
+    docId: r.targetKind === 'document' ? r.targetId : null,
+    kind: r.kind,
+    proposed: r.proposed,
+    createdAt: r.createdAt,
+    docPath: r.docPath
+  }))
 
   const unreviewedMemories = await db.select({
     id: memories.id,
@@ -131,4 +150,22 @@ export async function countReviewPending(): Promise<number> {
     .where(unreviewedLive())
 
   return (queueResult?.n ?? 0) + (memoryResult?.n ?? 0)
+}
+
+/** Idempotent per (targetKind, targetId): the partial unique index makes a second pending
+ *  item for the same target a no-op rather than a duplicate the human has to dismiss twice. */
+export async function enqueueReview(input: {
+  targetKind: ReviewTargetKind
+  targetId: string
+  kind: string
+  proposed: unknown
+}): Promise<void> {
+  const [inserted] = await useDb().insert(reviewQueue)
+    .values({ targetKind: input.targetKind, targetId: input.targetId, kind: input.kind, proposed: input.proposed as never })
+    .onConflictDoNothing()
+    .returning({ id: reviewQueue.id })
+
+  // onConflictDoNothing means a pre-existing pending row for this target — nothing new to
+  // tell live clients about.
+  if (inserted) publishChange({ resource: 'review', action: 'created', id: inserted.id })
 }
