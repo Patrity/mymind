@@ -48,7 +48,7 @@ import {
 } from '@/components/ai-elements/prompt-input'
 import { useFilter } from 'reka-ui'
 import { ATTACHMENT_ACCEPT, attachmentErrorToast, filesForSubmit, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, uploadAttachment } from '~/lib/agent/attachments'
-import { applySelection, menuQuery, nextHighlight, shouldOpenMenu } from '~/lib/agent/slash'
+import { applySelection, menuQuery, nextHighlight, shouldInterceptEnter, shouldOpenMenu } from '~/lib/agent/slash'
 
 const props = defineProps<{
   sendText: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>
@@ -187,8 +187,11 @@ function onComposerKeydown(e: KeyboardEvent) {
     return
   }
   if (e.key === 'Enter') {
-    // Nothing matched — let "/foo" submit as plain text instead of eating Enter.
-    if (filteredCommands.value.length === 0) return
+    // Shift+Enter is always a newline (PromptInputTextarea's own path), and with
+    // nothing matched there is nothing to select — let "/foo" submit as plain
+    // text instead of eating Enter. shouldInterceptEnter is the single source of
+    // truth for this decision; do not re-derive it inline here.
+    if (!shouldInterceptEnter(e, filteredCommands.value.length)) return
     e.preventDefault()
     e.stopPropagation()
     const chosen = filteredCommands.value[highlightedIndex.value]

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldOpenMenu, menuQuery, parseCommand, applySelection, nextHighlight } from '../app/lib/agent/slash'
+import { shouldOpenMenu, menuQuery, parseCommand, applySelection, nextHighlight, shouldInterceptEnter } from '../app/lib/agent/slash'
 
 describe('shouldOpenMenu', () => {
   it('opens on a leading slash', () => {
@@ -89,5 +89,27 @@ describe('nextHighlight', () => {
   it('stays at 0 for an empty list', () => {
     expect(nextHighlight(0, 0, 1)).toBe(0)
     expect(nextHighlight(0, 0, -1)).toBe(0)
+  })
+})
+
+describe('shouldInterceptEnter', () => {
+  it('intercepts a plain Enter when there are matches', () => {
+    expect(shouldInterceptEnter({ key: 'Enter', shiftKey: false }, 3)).toBe(true)
+  })
+
+  it('does NOT intercept Shift+Enter even with matches — that is a newline', () => {
+    expect(shouldInterceptEnter({ key: 'Enter', shiftKey: true }, 3)).toBe(false)
+  })
+
+  it('does not intercept Enter when nothing matched — "/xyz" must still submit', () => {
+    expect(shouldInterceptEnter({ key: 'Enter', shiftKey: false }, 0)).toBe(false)
+  })
+
+  it('does not intercept Shift+Enter with no matches either', () => {
+    expect(shouldInterceptEnter({ key: 'Enter', shiftKey: true }, 0)).toBe(false)
+  })
+
+  it('does not intercept a non-Enter key', () => {
+    expect(shouldInterceptEnter({ key: 'ArrowDown', shiftKey: false }, 3)).toBe(false)
   })
 })

@@ -36,3 +36,13 @@ export function nextHighlight(current: number, length: number, delta: number): n
   if (length <= 0) return 0
   return ((current + delta) % length + length) % length
 }
+
+/** Should the composer's command menu intercept this Enter instead of submitting?
+ *  Shift+Enter always belongs to the textarea (newline), and with nothing to pick
+ *  there is nothing to intercept — `/xyz` matching no command must still send as text. */
+export function shouldInterceptEnter(
+  e: { key: string, shiftKey: boolean },
+  filteredLength: number
+): boolean {
+  return e.key === 'Enter' && !e.shiftKey && filteredLength > 0
+}
