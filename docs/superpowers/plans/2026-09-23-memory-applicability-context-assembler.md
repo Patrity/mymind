@@ -1532,7 +1532,7 @@ In `server/tasks/enrich-memories.ts`, call `enrichConversations()` after the exi
 - [ ] **Step 8: Run the tests**
 
 Run: `pnpm test:db -- enrich-conversations`
-Expected: PASS (6 tests).
+Expected: PASS (4 tests).
 
 - [ ] **Step 9: Verify the tests can fail**
 
