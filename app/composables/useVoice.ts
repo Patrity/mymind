@@ -38,6 +38,19 @@ export function useVoice() {
   const conversationId = ref<string | null>(null)
   const conversationTitle = ref<string | null>(null)
   /**
+   * `/clear` boundaries reached on THIS connection, in the order they happened. Each names the
+   * message the boundary falls after (`null` = before any message) so the transcript component
+   * can render a divider at that exact spot without needing every message to carry a
+   * `createdAt` (a live-streamed one does not yet have one).
+   *
+   * This is session-local state, not server truth: it is rebuilt from `{type:'cleared'}` frames
+   * only, so it does NOT survive a reload or a thread switch (both replace `messages` wholesale
+   * — see `newConversation`/`loadConversation` clearing it below). That is a known gap, not an
+   * oversight: `conversations.context_epoch_at` is the real, persisted boundary the model
+   * honours regardless; only the UI's visible marker for it is ephemeral.
+   */
+  const dividers = ref<{ afterMessageId: string | null; epochAt: string }[]>([])
+  /**
    * Turns the server has confirmed COMMITTED on this connection. Bumped by the `persisted`
    * frame, which ws.ts sends the moment `appendMessages` returns.
    *
@@ -48,6 +61,8 @@ export function useVoice() {
    */
   const turnPersisted = ref(0)
   const { settings } = useVoiceSettings()
+  // Only for the /clear no-op case (no conversation yet) — see the `cleared` handling below.
+  const toast = useToast()
 
   let ws: WebSocket | null = null
   // Last preset the user picked. Selecting before connecting (the natural UX) would
@@ -266,6 +281,19 @@ export function useVoice() {
           conversationTitle.value = fx.conversation.title
         }
         if (fx.persisted) turnPersisted.value++
+        if (fx.cleared) {
+          if (fx.cleared.epochAt) {
+            // The boundary falls right after whatever is currently on screen — the server
+            // reset ITS history to empty, but this transcript is deliberately untouched (see
+            // dividers' doc comment), so "the last message now" IS the clear point.
+            const last = messages.value.at(-1)
+            dividers.value.push({ afterMessageId: last ? last.id : null, epochAt: fx.cleared.epochAt })
+          } else {
+            // conversationId was null server-side — nothing to clear. A toast, not the error
+            // alert: this is not a failure, just nothing having happened.
+            toast.add({ title: 'Nothing to clear yet', description: 'This conversation has no messages.' })
+          }
+        }
       }
     }
     // Resolve only once the socket is OPEN. A pre-open error/close rejects → connect()'s
@@ -490,6 +518,11 @@ export function useVoice() {
      * hydrates the transcript from the HTTP fetch (see T8).
      */
     loadConversation: async (id: string) => {
+      // Session-local markers for the OLD thread — the new one's transcript (fetched by the
+      // page after this) is a different id space, so a leftover divider would either dangle
+      // unattached or, for a top-of-list one (afterMessageId null), wrongly reappear at the
+      // start of an unrelated conversation.
+      dividers.value = []
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return
       ws.send(JSON.stringify({ type: 'load', conversationId: id }))
@@ -509,11 +542,26 @@ export function useVoice() {
       // which would land in the NEW empty list as a "stopped" reply from the old thread.
       turns.discard()
       messages.value = []
+      dividers.value = [] // same reasoning as loadConversation's reset
       conversationId.value = null
       conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))
       restAfterAbort() // the server aborts the running turn for us; nothing sends idle back
     },
+    /**
+     * `/clear` — ask the server to forget this thread's context (writes an epoch, deletes
+     * nothing). The transcript on screen is deliberately left alone; the `cleared` handler
+     * above appends a divider instead, so the model/UI divergence this creates stays visible
+     * rather than silent. Mirrors stop()'s interrupt (not discard: the list isn't being
+     * replaced, so whatever was mid-stream just closes as 'interrupted' in place).
+     */
+    sendClear: () => {
+      if (ws?.readyState !== WebSocket.OPEN) return
+      turns.interrupt()
+      ws.send(JSON.stringify({ type: 'clear' }))
+      restAfterAbort()
+    },
+    dividers,
     conversationId,
     conversationTitle,
     turnPersisted,

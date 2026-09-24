@@ -2,7 +2,7 @@
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { AgentMessageFrame } from '~~/shared/types/agent-ui'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own them).
@@ -19,6 +19,10 @@ export interface MsgEffect {
    *  post-commit signal the page has. `state:'idle'` is emitted inside the orchestrator's exec,
    *  before the append, so a re-read armed by idle alone races the persist. */
   persisted?: string
+  /** `/clear`'s boundary (server/services/conversation-clear.ts). `epochAt` is the ISO
+   *  timestamp the model now reads history FROM — null means there was nothing to clear
+   *  (no conversation yet), which is a no-op, not a failure. */
+  cleared?: { epochAt: string | null }
   /** A spoken segment is starting: the binary frames that follow are headerless PCM
    *  (mono / s16le) at THIS sample rate — the client cannot decode them without it.
    *  `turnId` names which turn opened it, so a segment from a superseded turn can be
@@ -68,6 +72,10 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   // Sent after EVERY turn's rows are committed — see MsgEffect.persisted.
   if (m.type === 'persisted' && m.conversationId) {
     return { persisted: m.conversationId }
+  }
+  // `/clear`'s boundary — see MsgEffect.cleared.
+  if (m.type === 'cleared') {
+    return { cleared: { epochAt: m.epochAt ?? null } }
   }
   return {}
 }

@@ -48,7 +48,7 @@ import {
 } from '@/components/ai-elements/prompt-input'
 import { useFilter } from 'reka-ui'
 import { ATTACHMENT_ACCEPT, attachmentErrorToast, filesForSubmit, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, uploadAttachment } from '~/lib/agent/attachments'
-import { applySelection, menuQuery, nextHighlight, shouldInterceptEnter, shouldOpenMenu } from '~/lib/agent/slash'
+import { applySelection, menuQuery, nextHighlight, parseCommand, shouldInterceptEnter, shouldOpenMenu } from '~/lib/agent/slash'
 
 const props = defineProps<{
   sendText: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>
@@ -67,7 +67,14 @@ const props = defineProps<{
 }>()
 const speak = defineModel<boolean>('speak', { required: true })
 const model = defineModel<string>('model', { required: true })
-const emit = defineEmits<{ stop: []; toggleMic: [] }>()
+const emit = defineEmits<{
+  stop: []
+  toggleMic: []
+  /** A submitted `client`-kind command (currently `/clear` / `/new`) — the page owns the WS
+   *  and maps `name` to the right control frame. Never fired for `prompt`/`skill` kinds, which
+   *  become an ordinary turn instead (see onSubmit). */
+  command: [cmd: { name: string; args: string }]
+}>()
 
 const toast = useToast()
 
@@ -90,6 +97,23 @@ const modelItems = computed(() => {
 // overlapping submit. Guarding it again here would be a second, redundant mechanism.
 async function onSubmit(msg: PromptInputMessage) {
   const text = msg.text.trim()
+
+  // `client`-kind commands (/clear, /new) never become a turn — they dispatch a WS control
+  // frame instead, straight from here rather than through sendText. Checked against the LIVE
+  // command list (commands.value), not the hardcoded CLIENT_COMMANDS fallback, so kind is what
+  // decides dispatch even if a future server-defined entry ever shadows one of these names.
+  // Any attachments already in the tray are deliberately left untouched — a stray file dropped
+  // alongside a command is not part of it.
+  const cmd = parseCommand(text)
+  if (cmd) {
+    const entry = commands.value.find(c => c.name === cmd.name)
+    if (entry?.kind === 'client') {
+      emit('command', { name: entry.name, args: cmd.args })
+      setTextInput('')
+      return
+    }
+  }
+
   // msg.files is typed FileUIPart[] (no `id`), but submitForm's processedFiles mapping
   // (context.ts) spreads the original AttachmentFile, so `.id` survives on the actual
   // runtime objects — this IS the submitted snapshot's ids. Resolve those ids back

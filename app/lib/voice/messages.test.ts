@@ -44,3 +44,20 @@ describe('mapServerMessage — the post-commit signal', () => {
     expect(fx.conversation).toEqual({ id: 'c-1', title: 'Hi' })
   })
 })
+
+describe('mapServerMessage — /clear', () => {
+  it('surfaces a cleared frame with its epoch timestamp', () => {
+    expect(mapServerMessage({ type: 'cleared', epochAt: '2026-01-01T00:00:00.000Z' } as never, false))
+      .toEqual({ cleared: { epochAt: '2026-01-01T00:00:00.000Z' } })
+  })
+
+  it('a null epochAt still surfaces as cleared — the no-op case, not a dropped frame', () => {
+    expect(mapServerMessage({ type: 'cleared', epochAt: null } as never, false))
+      .toEqual({ cleared: { epochAt: null } })
+  })
+
+  it('a missing epochAt field defaults to null the same way', () => {
+    expect(mapServerMessage({ type: 'cleared' } as never, false))
+      .toEqual({ cleared: { epochAt: null } })
+  })
+})

@@ -13,6 +13,7 @@ import { buildTurnPersistPayload } from '../../lib/voice/turn-persist'
 import { partialTurnMessages } from '../../lib/voice/turn-partial'
 import { createConversation, appendMessages, getAgentHistory, deriveTitle, captureTurnLeaf } from '../../services/conversations'
 import { assembleContext } from '../../lib/agent/assemble'
+import { clearConversationContext } from '../../services/conversation-clear'
 import { publishChange } from '../../utils/live-bus'
 import type { ApprovalRequest } from '../../lib/agent/types'
 import { loadApprovals, addApproval, touchApproval, matchesApproval, approvalOutcome } from '../../lib/exec/approvals'
@@ -20,12 +21,17 @@ import { recordEvent } from '../../lib/observability/record'
 import { randomUUID } from 'node:crypto'
 import type { AttachmentRef } from '../../lib/agent/attachments'
 import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
+import { useDb } from '../../db'
+import { conversations } from '../../db/schema'
+import { eq } from 'drizzle-orm'
 
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'preset',presetId} (voice pick; null/absent = the default preset) |
 //   {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
 //   {type:'text',text,speak?} (typed turn, injected post-STT) |
 //   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset) |
+//   {type:'clear'} (forget this conversation's transcript — writes an epoch, deletes
+//   nothing; a no-op if there is no conversation yet) |
 //   {type:'approve'|'deny',requestId,...} (resolve a pending exec approval)
 // Server→client: binary = raw PCM (s16le mono) for the segment currently open |
 //   text JSON = {type:'audio-begin',turnId,segmentId,sampleRate} / {type:'audio-end',segmentId}
@@ -34,6 +40,8 @@ import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
 //   {type:'user-message',turnId,message} (the turn's user message, once, before its chunks) |
 //   {type:'approval'|'approval-resolved',...} (exec approval lifecycle) |
 //   {type:'conversation',conversationId,title} (emitted once, when the first turn lazily creates the thread) |
+//   {type:'cleared',epochAt} (the /clear boundary; the UI anchors a divider here — epochAt is
+//   null when there was nothing to clear, which the UI reads as "no-op", not a failure) |
 //   {type:'error',message} (turn failure; always followed by {type:'state',state:'idle'}).
 interface ConnState {
   history: AgentMessage[]
@@ -185,6 +193,42 @@ export default defineWebSocketHandler({
       // new: reset to a fresh conversation — also abandons any turn in flight, so its
       // pending approvals (and the turn itself) don't linger into the new conversation.
       if (msg.type === 'new') { s.ac?.abort(); denyAll(); s.history = []; s.conversationId = null; return }
+      // clear: `/clear` — forgets the transcript for the MODEL only (clearConversationContext
+      // deletes nothing; getConversation still returns everything). A brand-new thread with no
+      // conversation yet has nothing to clear — that is a no-op, not an error, so it gets its
+      // own `{type:'cleared',epochAt:null}` rather than the `{type:'error'}` channel; the client
+      // reads a null epochAt as "nothing happened" and says so with a toast, not an alert.
+      //
+      // Aborts + denies BEFORE queuing onto s.lock, same reasoning as `load` above: a turn
+      // awaiting approval would otherwise block the clear behind the lock for up to 120s.
+      // Queued (not run inline) so a clear can never interleave with the turn it just aborted
+      // still unwinding through its own `finally` — both touch `s.history`.
+      if (msg.type === 'clear') {
+        const conversationId = s.conversationId
+        if (!conversationId) {
+          peer.send(JSON.stringify({ type: 'cleared', epochAt: null }))
+          return
+        }
+        s.ac?.abort()
+        denyAll()
+        s.lock = s.lock.then(async () => {
+          try {
+            await clearConversationContext(conversationId)
+            s.history = []
+            const [row] = await useDb().select({ at: conversations.contextEpochAt }).from(conversations)
+              .where(eq(conversations.id, conversationId)).limit(1)
+            peer.send(JSON.stringify({ type: 'cleared', epochAt: row?.at ? row.at.toISOString() : null }))
+          } catch (err) {
+            // Same rescue as `load`'s catch: without it a thrown error here would leave s.lock
+            // REJECTED with nothing sent back — the client hangs with no 'cleared' and no
+            // 'error', and `s.lock.then(run, run)` on the next turn is the only thing that
+            // would ever have surfaced it.
+            console.error('[agent] clear failed:', err)
+            peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'failed to clear conversation' }))
+          }
+        })
+        return
+      }
       if (msg.type === 'text' && typeof msg.text === 'string' && msg.text.trim()) {
         // Typed turn: inject post-STT — same agent loop, same TTS, same events.
         const text = msg.text.trim()

@@ -437,6 +437,18 @@ function startNewConversation() {
   threadsOpen.value = false
 }
 
+/**
+ * A `client`-kind command from the composer's `/` menu (AgentPromptInput's `command` emit —
+ * `prompt`/`skill` kinds never reach here, they become an ordinary turn instead). Only two
+ * exist today and neither takes `args`; this is the one place that knows how each maps onto
+ * the WS/page-local action, same as `startNewConversation` already owning `/new`'s toolbar
+ * button.
+ */
+function onComposerCommand({ name }: { name: string, args: string }) {
+  if (name === 'clear') voice.sendClear()
+  else if (name === 'new') startNewConversation()
+}
+
 // Auto-connect the WS on mount so the chat is usable immediately — typing and
 // sending "just work" without an explicit Connect step. Resume a thread if ?c= is set.
 onMounted(async () => {
@@ -605,6 +617,7 @@ onMounted(() => {
         <AgentConversation
           class="flex-1 min-h-0"
           :messages="voice.messages.value"
+          :dividers="voice.dividers.value"
           :undone="undone"
           :approval="voice.pendingApproval.value"
           :state="voice.state.value"
@@ -665,6 +678,7 @@ onMounted(() => {
           :prefill="starterPrefill"
           @stop="voice.stop"
           @toggle-mic="toggleMic"
+          @command="onComposerCommand"
         />
       </template>
     </UDashboardPanel>
