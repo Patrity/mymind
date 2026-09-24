@@ -58,8 +58,11 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   review: (c) => { c.invalidateQueries({ queryKey: ['review', 'count'] }); invalidateHome(c) },
   activity: (c) => { c.invalidateQueries({ queryKey: ['activity', 'count'] }); invalidateHome(c) },
   // A skill is a document (type='skill') — a background agent write needs the
-  // /settings/skills list to refresh too, not just the document graph/detail.
-  document: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); invalidateGraph(c); invalidateHome(c) },
+  // /settings/skills list to refresh too, not just the document graph/detail. The
+  // `/` command menu (useCommands, ['agent','commands']) rides the same signal —
+  // skills ARE prompt-commands' other source and there is no `skill` ResourceName
+  // member (see shared/types/commands.ts / server/services/prompt-commands.ts).
+  document: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); c.invalidateQueries({ queryKey: ['agent', 'commands'] }); invalidateGraph(c); invalidateHome(c) },
   // A folder mutation rewrites document paths, and the tree the user is looking at is keyed
   // ['document','list'] — invalidating only ['folder',*] (the default below) would leave the
   // tree stale, which is the whole point of wiring folders into live reactivity.

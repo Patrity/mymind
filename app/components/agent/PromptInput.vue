@@ -31,6 +31,9 @@ import {
   PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputButton,
+  PromptInputCommand,
+  PromptInputCommandItem,
+  PromptInputCommandList,
   PromptInputFooter,
   PromptInputHeader,
   PromptInputSelect,
@@ -43,7 +46,9 @@ import {
   PromptInputTools,
   usePromptInputProvider
 } from '@/components/ai-elements/prompt-input'
+import { useFilter } from 'reka-ui'
 import { ATTACHMENT_ACCEPT, attachmentErrorToast, filesForSubmit, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, uploadAttachment } from '~/lib/agent/attachments'
+import { applySelection, menuQuery, shouldOpenMenu } from '~/lib/agent/slash'
 
 const props = defineProps<{
   sendText: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>
@@ -122,6 +127,25 @@ const { textInput, files, isLoading, removeFile, openFileDialog, setTextInput, s
 
 const canSubmit = computed(() => !isLoading.value && (textInput.value.trim().length > 0 || files.value.length > 0))
 
+// The `/` command menu. Selection FILLS the input via setTextInput and never calls
+// submitForm() — /clear is destructive enough that a menu click must never fire it;
+// the user still has to press Enter.
+const { commands } = useCommands()
+// Filtering is local (reka-ui's own useFilter, the same primitive Command.vue itself
+// uses internally) — no per-keystroke fetch. We filter here rather than mounting the
+// vendored CommandInput, because ListboxFilter hardcodes auto-focus and would steal
+// keyboard focus from the composer textarea, where the user is actually typing.
+const { contains } = useFilter({ sensitivity: 'base' })
+const menuOpen = computed(() => shouldOpenMenu(textInput.value))
+const filteredCommands = computed(() => {
+  const q = menuQuery(textInput.value)
+  return q ? commands.value.filter(c => contains(c.name, q)) : commands.value
+})
+
+function onPickCommand(name: string) {
+  setTextInput(applySelection(name))
+}
+
 // `?q=` hand-off: fires at most once per distinct value (same guard as the old
 // voice/Composer.vue maybeAutoSend). Vue Router reuses this component instance across a
 // query-only navigation on the same route, so both the first mount AND later prop changes
@@ -169,6 +193,21 @@ watch(() => props.prefill, (v) => {
         </Attachment>
       </Attachments>
     </PromptInputHeader>
+
+    <PromptInputCommand v-if="menuOpen" class="mb-2 rounded-md border border-default bg-elevated">
+      <PromptInputCommandList>
+        <PromptInputCommandItem
+          v-for="c in filteredCommands"
+          :key="c.name"
+          :value="c.name"
+          @select="onPickCommand(c.name)"
+        >
+          <span class="font-mono">/{{ c.name }}</span>
+          <span class="ml-2 text-xs text-muted">{{ c.description }}</span>
+          <span v-if="c.hint" class="ml-2 text-xs text-dimmed">{{ c.hint }}</span>
+        </PromptInputCommandItem>
+      </PromptInputCommandList>
+    </PromptInputCommand>
 
     <PromptInputBody>
       <PromptInputTextarea placeholder="Ask Bridget…" />

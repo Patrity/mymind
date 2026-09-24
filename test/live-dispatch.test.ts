@@ -49,6 +49,15 @@ describe('dispatchLiveEvent', () => {
     dispatchLiveEvent(c as never, ev({ resource: 'review', id: 'r-1' }))
     expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
   })
+
+  // Skills are documents (task-5, slash-commands cycle): the composer's `/` menu
+  // (useCommands, ['agent','commands']) must refresh when a skill is created or
+  // edited, not just the /settings/skills list.
+  it('document events also invalidate the command menu', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'document', id: 'd-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['agent', 'commands'] }])
+  })
 })
 
 describe('dispatchLiveEvent — activity', () => {
