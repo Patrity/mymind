@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, real, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, real, jsonb, timestamp, index, uniqueIndex, boolean, integer, check } from 'drizzle-orm/pg-core'
 import { halfvec } from '../types/halfvec'
 
 export const memories = pgTable('memories', {
@@ -14,6 +14,13 @@ export const memories = pgTable('memories', {
   /** Does this fact travel across projects? `project` above records where it was LEARNED
    *  (provenance); this records where it APPLIES. Retrieval ORs them together. */
   applicability: text('applicability').notNull().default('project'),
+  /** In EVERY prompt. A much smaller set than `applicability='global'` — collapsing the two
+   *  either starves the global tier or blows the context budget. */
+  resident: boolean('resident').notNull().default(false),
+  /** How often this memory has entered an assembled context, and when it last did.
+   *  Written batched by the assembler; feeds resident self-nomination. */
+  retrievalCount: integer('retrieval_count').notNull().default(0),
+  lastRetrievedAt: timestamp('last_retrieved_at', { withTimezone: true }),
   evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
   project: text('project'),
   projectId: uuid('project_id'),
@@ -29,7 +36,9 @@ export const memories = pgTable('memories', {
   index('memories_scope_idx').on(t.scope),
   index('memories_tags_gin').using('gin', t.tags),
   uniqueIndex('memories_content_hash_live_uidx').on(t.contentHash).where(sql`${t.archivedAt} is null`),
-  index('memories_project_id_idx').on(t.projectId)
+  index('memories_project_id_idx').on(t.projectId),
+  check('memories_resident_implies_global', sql`not ${t.resident} or ${t.applicability} = 'global'`),
+  index('memories_resident_idx').on(t.resident).where(sql`${t.resident}`)
 ])
 
 export type Memory = typeof memories.$inferSelect

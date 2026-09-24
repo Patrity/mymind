@@ -73,6 +73,7 @@ function toDTO(r: typeof memories.$inferSelect, relations?: MemoryRelationDTO[])
     confidence: r.confidence,
     project: r.project,
     applicability: (r.applicability === 'global' ? 'global' : 'project') as MemoryApplicability,
+    resident: r.resident,
     sessionId: r.sessionId,
     enrichedAt: r.enrichedAt?.toISOString() ?? null,
     reviewedAt: r.reviewedAt?.toISOString() ?? null,
@@ -623,4 +624,37 @@ export async function countUnreviewedMemories(): Promise<number> {
     .from(memories)
     .where(and(live(), isNull(memories.reviewedAt)))
   return result?.n ?? 0
+}
+
+// ---------------------------------------------------------------------------
+// Resident tier + retrieval counters
+// ---------------------------------------------------------------------------
+
+/**
+ * The resident tier: facts injected into EVERY agent turn.
+ *
+ * Deliberately unfiltered by project — resident implies global (DB check constraint).
+ * `reviewed` is not optional here: this lands in every prompt with no agent decision behind
+ * it, so unreviewed enrichment output must never reach it.
+ */
+export async function listResidentMemories(): Promise<MemoryDTO[]> {
+  const db = useDb()
+  const rows = await db.select().from(memories)
+    .where(and(live(), eq(memories.resident, true), isNotNull(memories.reviewedAt)))
+    .orderBy(sql`${memories.retrievalCount} desc`, memories.createdAt)
+  return rows.map(r => toDTO(r))
+}
+
+/**
+ * Bump retrieval counters for every memory that entered a context.
+ *
+ * ONE grouped statement, never N — this fires on every agent turn, and a per-memory update
+ * would put a write amplification of `limit` on the hot path.
+ */
+export async function recordRetrievals(ids: string[]): Promise<void> {
+  if (!ids.length) return
+  const db = useDb()
+  await db.update(memories)
+    .set({ retrievalCount: sql`${memories.retrievalCount} + 1`, lastRetrievedAt: new Date() })
+    .where(inArray(memories.id, ids))
 }

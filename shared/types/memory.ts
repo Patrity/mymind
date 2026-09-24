@@ -29,6 +29,8 @@ export interface MemoryDTO {
   project: string | null
   /** 'global' = this fact travels across projects; 'project' = it is bound to `project`. */
   applicability: MemoryApplicability
+  /** Always injected into the agent's context, not merely retrievable. Implies applicability 'global'. */
+  resident: boolean
   sessionId: string | null
   enrichedAt: string | null
   reviewedAt: string | null
