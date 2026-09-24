@@ -466,10 +466,15 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
     .where(and(live(), inArray(memories.id, fusedIds)))
   const byId = new Map(fetched.map(r => [r.id, r]))
 
+  // Relations must be attached here (same helper listMemories/getMemory use) — the assembler's
+  // `contradicts` boost reads MemoryDTO.relations, and without this every search result comes
+  // back with relations undefined, so the boost silently never fires.
+  const relationsMap = await fetchRelationsForIds(fusedIds)
+
   // Build DTOs in fused order (baseline: rank-based relevance)
   const dtos = fusedIds.flatMap(id => {
     const r = byId.get(id)
-    return r ? [toDTO(r)] : []
+    return r ? [toDTO(r, relationsMap.get(id))] : []
   })
 
   // Attach rank-based relevance scores: relevance = 1/(1+rank), rounded to 3dp
