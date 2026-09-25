@@ -1,15 +1,17 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 68
-updated: 2026-09-22
+cycle: 71
+updated: 2026-09-24
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
-mymind_hash: 707cd36163b8ad3bfd524e5e9d80fa9788e9625d3e43ac51975e5a99df4c918a
+mymind_hash: 8dfb0547f7e2cc8ce201900150e7d7116b620bb42fa60aa022750ee5fac02551
 ---
 
 # Agent Surface (`/agent`)
 
 One surface for talking **and** typing to Bridget. `/agent` (formerly `/voice`) is a single page laid out as **two panels** — threads / conversation — where conversations persist as resumable + searchable threads and the same shared agent core powers every turn. (Cycle 60 had a third "Bridget" column holding a three.js particle head; cycle 65 removed it and replaced the face with a Rive **Persona** that lives inside the conversation column. Before cycle 60 it was a 75%-canvas / 25%-transcript split with the visualizer on a toggle; both the toggle and its `agent-canvas` cookie are long gone.) This is the in-app "agent loop" — tool-scoped on the current 20-tool registry. Powerful capability tools (web research / shell / SSH / `gh` / file-edit) are part of the Cycle B series (B1/B2/B3 shipped).
+
+> **Cycle 71 update — slash commands.** A `/` at the start of the composer opens a command menu over three merged sources with precedence **code > prompt > skill**: client behaviours (`/clear`, `/new`), `prompt_commands` rows whose template expands client-side, and skills — invoked as **`/browser-testing`, not `/skill browser-testing`** — whose body is loaded **server-side** into the assembled context as a fixed tier. See [Slash commands](#slash-commands-cycle-71). Spec: [`2026-09-24-slash-commands-design.md`](../superpowers/specs/2026-09-24-slash-commands-design.md); handover: [`2026-09-24-slash-commands.md`](../handovers/2026-09-24-slash-commands.md).
 
 > **Cycle 68 update — a conversation is a tree, and the message action row is visible without hovering.** `conversations.active_leaf_id` (migration `0045_busy_solo.sql`) names the one path through the tree that is being read, and **both** read paths — `getConversation` (the UI) and `getAgentHistory` (the model) — walk it through the single `loadActivePath`. Copy / regenerate / edit / fork sit in an always-visible row with a live **duration** and **tok/s** figure. **Retry changed behaviour: it used to truncate the thread, and now branches** — the previous reply stays reachable through a ‹ n/N › pager. See [The conversation tree](#the-conversation-tree-cycle-68) and [The message action row](#the-message-action-row-cycle-68). Spec: [`2026-09-21-agent-chat-affordances-design.md`](../superpowers/specs/2026-09-21-agent-chat-affordances-design.md); handover: [`2026-09-21-agent-chat-affordances.md`](../handovers/2026-09-21-agent-chat-affordances.md).
 
@@ -390,6 +392,30 @@ Cycle 60 made this three `UDashboardPanel`s (threads / conversation / Bridget). 
   1. `filesForSubmit(submittedIds, currentFiles)` (`app/lib/agent/attachments.ts`) resolves the *submitted snapshot's* ids against the live tray, so a file dropped during `submitForm`'s async blob→dataURL conversion is not swept into the in-flight turn and left looking unsent.
   2. The vendored `prompt-input/context.ts` `submitForm` starts with `if (isLoading.value) return` — a **MyMind patch, recorded in-file**. `isLoading` is set synchronously before the first `await`, so a second synchronous submit bails before `onSubmit`/`clearSubmittedFiles`/`isLoading`. The guard has to live in the vendored provider, not in `AgentPromptInput.onSubmit`: a caller-side guard still let the raced `submitForm` clear in-flight files and flip `isLoading` for the call that still owned them.
 - **`?q=` hand-off:** `initialText` + `autoSend` auto-submit once per distinct value (the old `autoSentText` guard), and `prefill` (starter clicks) only ever fills the box. **The page must hand `initialText` over AFTER the composer has mounted** — `app/pages/agent/index.vue` holds it in `handoffText` and assigns it at the end of its own `onMounted`, after `connect()` + `loadAiConfig()` + `setModel()`. A value present during *setup* submits before the model override is applied (so `?q=` runs on the default chain, not the picked model) and before the textarea subtree exists, and `submitForm`'s clear then never reaches the DOM — `ui/textarea`'s `useVModel(..., {passive:true})` proxy is seeded from the pre-clear value, so the provider reads `''` while the box still shows the sent question.
+
+### Slash commands (cycle 71)
+
+A `/` typed at the **start** of an empty composer opens a command menu, the way Claude Code and claude.ai behave. One flat namespace, three sources, precedence **code > prompt > skill**:
+
+| Kind | Where it comes from | How it runs |
+|---|---|---|
+| `client` | `CLIENT_COMMANDS` in `shared/types/commands.ts` | client-side behaviour — `/clear`, `/new` |
+| `prompt` | `prompt_commands` table (migration `0052_exotic_wendigo.sql`) | the template expands **client-side** into the message text |
+| `skill` | MyMind skill documents | the name rides the WS frame; the **body loads server-side** into the assembled context |
+
+It is **`/browser-testing`, not `/skill browser-testing`** — a skill is a first-class command name, so there is no second trigger to learn.
+
+**Why the two halves run in different places.** A prompt command is *text the user is sending*, so expanding it client-side keeps the composer, the persisted transcript and the model in agreement, and a fork/edit of that turn replays correctly. A skill body is *instruction the agent needs* and can run to thousands of characters; putting it in the message would pollute the transcript, the conversation title and every later summary. So `PromptInput.vue` passes the skill **name** as the 4th argument of `sendText` → `useVoice.sendText` → the WS frame `{type:'text', …, skill}` → `ws.ts` closes over it in `buildMemoryContext` → `assembleContext({…, skill})` pushes the body as a **fixed tier, first**, ahead of resident/live/summary. Audio turns never set it — there is no way to speak a `/`-command, by design.
+
+**Pieces.** `server/lib/commands/merge.ts` is the pure precedence merge (a surviving entry carries `shadows?: CommandKind[]` naming the kinds it beat; a same-kind guard stops an entry shadowing itself). `server/services/commands.ts` merges the three sources and `GET /api/agent/commands` is a 5-line handler over it. `app/lib/agent/slash.ts` holds the trigger rules as pure functions — `shouldOpenMenu` (`/^\/[^\s]*$/`, so a `/` mid-text is just text), `applySelection`, `nextHighlight` (wrap-around), `shouldInterceptEnter`. `useCommands` caches on `['agent','commands']`, which `app/utils/live-dispatch.ts` refreshes on any `document` change — so creating or renaming a skill updates the menu live.
+
+**The menu is a plain `<ul role="listbox">`, deliberately.** shadcn-vue's vendored `Command`/`CommandItem` gate item visibility on a `filterState` that only `CommandInput` populates, and the composer's own textarea *is* the input — so mounting `CommandInput` was never an option and the menu rendered nothing without it. That cost three fix rounds before the wrapper was dropped. Don't reach for it again here.
+
+**Keyboard.** `PromptInputTextarea.vue` declares a `keydown` emit and its Enter branch checks `e.defaultPrevented`, so the menu can claim Enter without the composer also sending. With the menu open: Enter selects, ↑/↓ wrap, Escape dismisses **and keeps the typed text**. Shift+Enter always inserts a newline and never selects.
+
+**Skill bodies are capped.** `SKILL_TIER_MAX_CHARS = 8000` in `server/lib/agent/assemble.ts`; `capSkillBody` keeps head and tail with a `"\n\n…\n\n"` joiner **counted against the cap** (halving and then adding the joiner back returned 8005 for an 8000 cap — fixed). This matters because `fitBudget`'s fixed tiers are **all-or-nothing**: if they overflow the budget together, `assembleContext` drops *every* one of them, including the skill the user explicitly named. `listResidentMemories` is capped the same way (`RESIDENT_MEMORY_LIMIT = 40`, most-retrieved first) for the same reason.
+
+**No UI for `prompt_commands` yet** — rows are insert-only via SQL. The table, service and merge are built and tested.
 
 ### Inline exec approvals (cycle 65)
 
