@@ -31,9 +31,6 @@ import {
   PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputButton,
-  PromptInputCommand,
-  PromptInputCommandItem,
-  PromptInputCommandList,
   PromptInputFooter,
   PromptInputHeader,
   PromptInputSelect,
@@ -155,10 +152,15 @@ const canSubmit = computed(() => !isLoading.value && (textInput.value.trim().len
 // submitForm() — /clear is destructive enough that a menu click must never fire it;
 // the user still has to press Enter.
 const { commands } = useCommands()
-// Filtering is local (reka-ui's own useFilter, the same primitive Command.vue itself
-// uses internally) — no per-keystroke fetch. We filter here rather than mounting the
-// vendored CommandInput, because ListboxFilter hardcodes auto-focus and would steal
-// keyboard focus from the composer textarea, where the user is actually typing.
+// Filtering is local (reka-ui's own useFilter primitive) — no per-keystroke fetch.
+// We render a plain list rather than the vendored Command/CommandItem wrapper: that
+// wrapper gates every row's visibility on an internal filterState that only
+// CommandInput ever populates, and CommandInput hardcodes auto-focus, which would
+// steal keyboard focus from the composer textarea where the user is actually
+// typing — so with CommandInput deliberately unmounted, the wrapper rendered zero
+// rows regardless of how many commands matched (fix round 3). We already own every
+// piece the wrapper was providing: filtering (this useFilter call), highlighting
+// (highlightedIndex/nextHighlight) and keyboard handling (onComposerKeydown) below.
 const { contains } = useFilter({ sensitivity: 'base' })
 
 // Escape closes the menu without touching the input text — but menuOpen is derived
@@ -277,22 +279,30 @@ watch(() => props.prefill, (v) => {
       </Attachments>
     </PromptInputHeader>
 
-    <PromptInputCommand v-if="menuOpen" class="mb-2 rounded-md border border-default bg-elevated">
-      <PromptInputCommandList>
-        <PromptInputCommandItem
-          v-for="(c, i) in filteredCommands"
-          :key="c.name"
-          :value="c.name"
-          :class="i === highlightedIndex ? 'bg-accented text-highlighted' : ''"
-          @select="onPickCommand(c.name)"
-          @mouseenter="highlightedIndex = i"
-        >
-          <span class="font-mono">/{{ c.name }}</span>
-          <span class="ml-2 text-xs text-muted">{{ c.description }}</span>
-          <span v-if="c.hint" class="ml-2 text-xs text-dimmed">{{ c.hint }}</span>
-        </PromptInputCommandItem>
-      </PromptInputCommandList>
-    </PromptInputCommand>
+    <!-- Hand-rolled, not the vendored Command/CommandItem wrapper — see the useFilter
+         comment above (fix round 3): that wrapper's own filterState gated every row on
+         CommandInput, which we cannot mount without stealing the textarea's focus, so it
+         rendered nothing. Filtering/highlighting/keyboard are all ours already; this is
+         just the row markup. -->
+    <ul
+      v-if="menuOpen && filteredCommands.length"
+      role="listbox"
+      class="mb-2 max-h-[300px] overflow-y-auto rounded-md border border-default bg-elevated p-1"
+    >
+      <li
+        v-for="(c, i) in filteredCommands"
+        :key="c.name"
+        role="option"
+        :aria-selected="i === highlightedIndex"
+        :class="['flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm', i === highlightedIndex ? 'bg-accented text-highlighted' : '']"
+        @mouseenter="highlightedIndex = i"
+        @click="onPickCommand(c.name)"
+      >
+        <span class="font-mono">/{{ c.name }}</span>
+        <span class="ml-2 text-xs text-muted">{{ c.description }}</span>
+        <span v-if="c.hint" class="ml-2 text-xs text-dimmed">{{ c.hint }}</span>
+      </li>
+    </ul>
 
     <PromptInputBody>
       <PromptInputTextarea placeholder="Ask Bridget…" @keydown="onComposerKeydown" />
