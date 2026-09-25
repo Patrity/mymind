@@ -44,13 +44,21 @@ function capSkillBody(body: string): string {
   return `${body.slice(0, half)}${SKILL_TIER_JOINER}${body.slice(-half)}`
 }
 
+/** The one place the skill tier's text is built — used both inside the assembly and by the
+ *  timeout fallback, so a degraded turn carries exactly the block a healthy one would. */
+function skillTier(name: string, body: string): Tier {
+  return tier('skill', `You were explicitly asked to use the "${name}" skill:\n${capSkillBody(body)}`)
+}
+
 export interface AssembleDeps {
   listResident?: () => Promise<MemoryDTO[]>
   search?: (q: string) => Promise<MemoryDTO[]>
   liveContext?: (now: Date) => Promise<string>
   summary?: (conversationId: string) => Promise<string | null>
   recordRetrievals?: (ids: string[]) => Promise<void>
-  /** Test-only seam so skill resolution needs no database — defaults to `getSkill(name)`'s body. */
+  /** Test-only seam so skill resolution needs no database — defaults to the body of
+   *  `getSkill(name, { activeOnly: true })`, so a deactivated skill the `/` menu hides
+   *  cannot still be force-loaded into a turn. */
   getSkillBody?: (name: string) => Promise<string | null>
 }
 
@@ -111,21 +119,43 @@ async function safe<T>(fn: () => Promise<T>, fallback: T, label: string): Promis
  *  of hanging it indefinitely. See ASSEMBLE_TIMEOUT_MS for why `safe()` alone isn't enough. */
 export async function assembleContext(input: AssembleInput): Promise<AssembledContext> {
   const timeoutMs = input.timeoutMs ?? ASSEMBLE_TIMEOUT_MS
+
+  // Resolved BEFORE the race, deliberately. The 1500ms bound is the right policy for
+  // proactive retrieval — nobody asked for those memories — but the wrong one for a skill:
+  // the composer has already stripped `/browser-testing` out of the message text, so a slow
+  // embeddings rig (a recurring condition here) would send the turn as the bare argument with
+  // no skill loaded and no trace one was ever named. This is one indexed `documents` lookup by
+  // path, not an embeddings call. `safe()` still wraps it, so a missing or broken skill
+  // degrades rather than throwing.
+  const getSkillBody = input.deps?.getSkillBody
+    ?? (async (name: string) => (await getSkill(name, { activeOnly: true }))?.body ?? null)
+  const skillBody = input.skill
+    ? await safe(() => getSkillBody(input.skill!), null as string | null, 'skill')
+    : null
+
+  // What a timeout degrades to. With a skill resolved, that is NOT an empty context — the
+  // whole point of resolving it outside the race is that the tier survives the timeout.
+  let degraded = EMPTY_CONTEXT
+  if (skillBody) {
+    const t = skillTier(input.skill!, skillBody)
+    degraded = { context: t.text, usedMemoryIds: [], used: t.tokens, droppedTurns: 0 }
+  }
+
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<AssembledContext>((resolve) => {
     timer = setTimeout(() => {
       console.warn(`[assembleContext] assembly exceeded ${timeoutMs}ms — degrading to no memory context for this turn`)
-      resolve(EMPTY_CONTEXT)
+      resolve(degraded)
     }, timeoutMs)
   })
   try {
-    return await Promise.race([assembleContextInner(input), timeout])
+    return await Promise.race([assembleContextInner(input, skillBody), timeout])
   } finally {
     clearTimeout(timer)
   }
 }
 
-async function assembleContextInner(input: AssembleInput): Promise<AssembledContext> {
+async function assembleContextInner(input: AssembleInput, skillBody: string | null): Promise<AssembledContext> {
   const d = input.deps ?? {}
   const now = input.now ?? new Date()
   const budget = input.budget ?? DEFAULT_CONTEXT_BUDGET
@@ -135,16 +165,12 @@ async function assembleContextInner(input: AssembleInput): Promise<AssembledCont
   const liveContext = d.liveContext ?? buildLiveContext
   const summaryOf = d.summary ?? loadSummary
   const record = d.recordRetrievals ?? realRecordRetrievals
-  const getSkillBody = d.getSkillBody ?? (async (name: string) => (await getSkill(name))?.body ?? null)
 
-  const [resident, liveState, summary, skillBody] = await Promise.all([
+  const [resident, liveState, summary] = await Promise.all([
     safe(() => listResident(), [] as MemoryDTO[], 'resident'),
     safe(() => liveContext(now), '', 'liveState'),
     input.conversationId
       ? safe(() => summaryOf(input.conversationId!), null as string | null, 'summary')
-      : Promise.resolve(null),
-    input.skill
-      ? safe(() => getSkillBody(input.skill!), null as string | null, 'skill')
       : Promise.resolve(null)
   ])
 
@@ -167,12 +193,16 @@ async function assembleContextInner(input: AssembleInput): Promise<AssembledCont
   const retrieved = rankForContext(deduped, { projectSlug: input.projectSlug, now, contradictedIds })
 
   const fixed: Tier[] = []
-  // First among the fixed tiers: the user asked for this skill by name, so it outranks
-  // resident facts if anything has to give (fitBudget never evicts a fixed tier — it either
-  // all fits, or the caller's ResidentOverflowError catch below drops every fixed tier at
-  // once — so "first" here is about precedence in that all-or-nothing case, not eviction order).
+  // First among the fixed tiers purely for BLOCK ORDER in the final prompt — the skill the
+  // user named reads before the ambient facts. It buys no precedence: fitBudget sums ALL
+  // fixed tiers (budget.ts) and the ResidentOverflowError catch below re-fits with
+  // `fixed: []`, dropping every one of them regardless of order. Note that this is the
+  // divergence from spec §5.3, which says fitBudget "throws … so a silently truncated prompt
+  // cannot happen": the shipped catch turns that throw into a BLANKED fixed section, the
+  // named skill included. Measured headroom today is 476 of 6000 tokens with the largest real
+  // skill, so it is not a live overflow — but do not read this ordering as a safeguard.
   if (skillBody) {
-    fixed.push(tier('skill', `You were explicitly asked to use the "${input.skill}" skill:\n${capSkillBody(skillBody)}`))
+    fixed.push(skillTier(input.skill!, skillBody))
   }
   if (resident.length) {
     fixed.push(tier('resident', ['What you know about Tony:', ...resident.map(m => `- ${m.content}`)].join('\n')))
