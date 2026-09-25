@@ -111,6 +111,34 @@ removed.
   args, not `/v71-recap`
 - `/clear` writes `context_epoch_at`, empties the transcript pane, and persists **no** turn —
   the conversation list keeps its rows, which is the approved "Bridget forgets, DB keeps" shape
+- The `shadows` marker renders: a prompt row shadowing a skill shows `shadows skill` in its row
+- With `/zzz` typed (menu "open" by the regex, zero matches, nothing on screen) the arrow keys
+  move the caret again; with `/cl` typed (one match, menu visible) the menu still owns them
+- A **bare** `/incident-triage` with no arguments now sends `Use the incident-triage skill.` and
+  carries the skill tier (`used: 509`), instead of silently emptying the composer
+
+### What could NOT be validated, and a correction
+
+**The dev model rig is down.** Host `192.168.2.25` is up, but **port 8004 — the reasoning and
+bulk chat server — refuses connections** (`status=000` in 2ms; 8880/8881/8882 answer, which is why
+embeddings and therefore `memory:assemble` kept working). Five of the six configured providers
+live on that host. So **no turn on dev currently produces a reply**, and that is environmental,
+not anything cycle 70 or 71 changed — turns on 2026-09-24 14:23–14:24, on this same branch, did
+get replies.
+
+Correcting an error in this session's own notes: earlier runs reported "reply received" for the
+`/incident-triage`, `/v71-recap` and plain probes. Those were **false positives** — the check
+grepped the page for a word (`READY`, `PROMPTOK`, `PLAINPROBE`) that also appears in the prompt
+that was just echoed into the transcript. A screenshot shows the user message alone with no
+assistant bubble. When asserting that a model replied, match something only a reply can contain,
+or count occurrences.
+
+What this does **not** undermine: every assertion above is server-side or client-side and sits
+*before* the model call. In particular, the skill-body evidence stands on its own — `assembleContext`
+runs and emits its `memory:assemble` telemetry before any token is generated, so `used: 471`/`509`
+for skill turns against 226/269 for ordinary ones still proves the body reached the assembled
+context. What remains genuinely unproven is end-to-end behaviour *of the reply itself*, which
+needs the rig back up.
 
 ## Deferred
 

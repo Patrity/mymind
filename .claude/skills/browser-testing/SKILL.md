@@ -189,6 +189,32 @@ includes the sidebar, the nav and every other panel. A `/clear` regression was "
 that did not exist: the matched text was in the conversation list, which is supposed to survive.
 The screenshot settled it in one look.
 
+### Never assert a model reply with a word your own prompt contains
+
+The inverse mistake, and the more dangerous one — it reports success that never happened:
+
+```bash
+# ✗ FALSE POSITIVE — "Reply with exactly the word READY" contains READY, so this fires on the
+#   echoed USER message the instant it renders, whether or not Bridget ever answers.
+playwright-cli type "Reply with exactly the word READY and nothing else."; playwright-cli press Enter
+case "$(playwright-cli eval '() => document.body.innerText')" in *READY*) echo "reply!" ;; esac
+
+# ✓ count occurrences (prompt = 1, prompt + reply = 2), or assert on the assistant bubble itself,
+#   or read the persisted assistant row
+playwright-cli eval "() => (document.body.innerText.match(/READY/g) || []).length"   # expect 2
+```
+
+This burned a full validation pass in cycle 71: three separate turns were reported as
+"reply received" while the agent produced **nothing**. The tell was in the sidebar the whole
+time — the affected threads read `1 messages` where healthy ones read `2` or `4`.
+
+**When turns produce no reply, check the rig before the code.** Five of the six dev providers
+live on `192.168.2.25`. Probe each port (`curl --max-time 5 http://192.168.2.25:<port>/v1/models`):
+`8004` is the reasoning/bulk chat server, `8881` embeddings. A `status=000` in ~2ms is connection
+refused. **8004 can be dead while 8880/8881/8882 answer** — so embeddings, `memory:assemble` and
+every retrieval keep working and hide the outage, and `activity_log` still logs
+`reasoning:agent | ok` because the chain head was selected, not because tokens arrived.
+
 ## Checklist for a UI change
 1. Dev server up; logged in.
 2. Exercise the new UI with real clicks (reka components: click by ref).
