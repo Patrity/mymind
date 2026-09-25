@@ -360,6 +360,26 @@ baseline; see the [handover](handovers/2026-09-21-agent-chat-affordances.md). Wh
   cause is structural: the harness instructs those lines and the global CLAUDE.md overrides it, so
   every dispatch re-wins the same conflict.
 
+### Memory applicability + context assembler (cycle 70) and slash commands (cycle 71) — 🔨 built, NOT merged
+
+Both shipped on `worktree-cycle-70-memory-assembler`; migrations 0046–0052 are applied to **DEV only**. Tracked as one MyMind task ("Cycles 70+71 follow-ups"). Handovers: [`2026-09-24-memory-applicability-context-assembler.md`](handovers/2026-09-24-memory-applicability-context-assembler.md), [`2026-09-24-slash-commands.md`](handovers/2026-09-24-slash-commands.md).
+
+Deferred, in rough order of how much they cost to leave open:
+
+- **`turns` is never passed to `assembleContext`**, so the budget's turn-eviction path is built, tested and unreachable. The assembler works; the half that makes it *budgeted* under load does not run.
+- **`/review` has no handler for the three new concern kinds** (contradiction, resident nomination, applicability) — they enqueue fine and then 400 on approve.
+- **`conversations.summary` has no writer.** The summary tier reads a column nothing populates, so that tier is always empty.
+- **`contextEpochAt` never reaches `ConversationDTO`**, so `/clear`'s epoch divider does not survive a reload: the user sees pre-clear messages the model cannot, with nothing marking the boundary.
+- Conversation enrichment should route through `resolveEnrichedMemory` rather than its own path.
+- **No UI for `prompt_commands`** — rows are insert-only via SQL. The table, service and precedence merge are built and tested; a settings screen is the next slice.
+- `capSkillBody` trims head+tail, so a long skill that puts its steps in the middle loses them. Nothing is near the 8000-char cap today.
+- **`.db.test.ts` constant-embedding hazard:** the suites stub `$fetch` to one fixed vector, so `createMemory` silently merges any two rows sharing `(scope, project)`. Tests needing distinct rows must insert directly — worth a harness fix rather than a per-test workaround, since the failure looks like a missing row, not a merge.
+
+Two process lessons worth keeping, both paid for in fix rounds:
+
+- **Browser-validate at the task that builds the UI, not at end-of-cycle wrap-up.** Cycle 71's `/` menu passed two code reviews and two fix rounds while rendering *nothing* — every review reasoned about the diff, and the suite was green throughout. It was caught only because the next task's implementer happened to look at the page.
+- **"Already vendored" is not "fits".** Three of those rounds went to shadcn's `Command` wrapper, which gates item visibility on a `filterState` only `CommandInput` populates — and the composer's own textarea *is* the input, so mounting it was never an option. A plain `<ul>` worked first try.
+
 ---
 
 ## 3. Open items from build reviews (quality · security · scale)
