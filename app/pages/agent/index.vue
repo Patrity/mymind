@@ -326,7 +326,7 @@ async function restoreLeaf(leafId: string | undefined, what: string) {
  * re-read — `stranded` — which used to read as "nothing happened" and skip the restore entirely,
  * leaving the thread truncated in the database while the screen still showed it whole.
  */
-async function branchAndSend(messageId: string, op: 'fork' | 'edit', text: string, speak: boolean, attachments: AttachmentRef[], what: string): Promise<boolean> {
+async function branchAndSend(messageId: string, op: 'fork' | 'edit', text: string, speak: boolean, attachments: AttachmentRef[], what: string, skill?: string): Promise<boolean> {
   // The active path ends AT the leaf, so its last message IS the leaf — captured before the
   // move, because `moveLeaf` re-reads the thread and replaces this list. Undefined when that
   // tail is a live-stream message rather than a persisted row; restoreLeaf handles that.
@@ -343,7 +343,7 @@ async function branchAndSend(messageId: string, op: 'fork' | 'edit', text: strin
   }
   let sent = false
   try {
-    sent = await voice.sendText(text, speak, attachments)
+    sent = await voice.sendText(text, speak, attachments, skill)
   } catch {
     sent = false
   }
@@ -406,11 +406,11 @@ function forkFrom(messageId: string) {
  * signature. A pending fork moves the leaf HERE, immediately before the turn goes out, so the
  * fork and the message that justifies it are one action.
  */
-async function sendTurn(text: string, speak = false, attachments: AttachmentRef[] = []): Promise<boolean> {
+async function sendTurn(text: string, speak = false, attachments: AttachmentRef[] = [], skill?: string): Promise<boolean> {
   const fork = pendingFork.value
-  if (!fork) return voice.sendText(text, speak, attachments)
+  if (!fork) return voice.sendText(text, speak, attachments, skill)
   pendingFork.value = null
-  return branchAndSend(fork.id, 'fork', text, speak, attachments, 'Fork')
+  return branchAndSend(fork.id, 'fork', text, speak, attachments, 'Fork', skill)
 }
 
 /**

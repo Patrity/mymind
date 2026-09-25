@@ -28,7 +28,8 @@ import { eq } from 'drizzle-orm'
 // Client→server: binary frame = one WAV utterance | text JSON {type:'interrupt'} |
 //   {type:'preset',presetId} (voice pick; null/absent = the default preset) |
 //   {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
-//   {type:'text',text,speak?} (typed turn, injected post-STT) |
+//   {type:'text',text,speak?,skill?} (typed turn, injected post-STT; `skill` names a
+//   `skill`-kind `/`-command the composer resolved to — see assembleContext's `skill` input) |
 //   {type:'load',conversationId} (load existing conversation) | {type:'new'} (reset) |
 //   {type:'clear'} (forget this conversation's transcript — writes an epoch, deletes
 //   nothing; a no-op if there is no conversation yet) |
@@ -95,12 +96,15 @@ export default defineWebSocketHandler({
     let inputModality: 'text' | 'voice' = 'text'
     let speakFlag = false
     let turnAttachments: AttachmentRef[] = []
+    // Set only on the `text` branch below, when the composer named a `skill`-kind command.
+    // Audio turns never carry one — there is no way to type a `/` command by voice.
+    let skill: string | undefined
     // Assembler-backed proactive memory injection, shadowing the plain buildMemoryContext
     // import (removed above) — both turn closures below reference this name unchanged, so
     // this one definition is the entire wiring change. `s.conversationId` is `string | null`;
     // AssembleInput.conversationId is `string | undefined`, hence the `?? undefined`.
     const buildMemoryContext = async (userText: string) => {
-      const assembled = await assembleContext({ userText, conversationId: s.conversationId ?? undefined })
+      const assembled = await assembleContext({ userText, conversationId: s.conversationId ?? undefined, skill })
       // Budget telemetry — same recordEvent/activity-log channel exec:approval below already
       // uses, not a new one. `used`/`droppedTurns` previously went nowhere, so there was no
       // production signal comparing estimated vs actual token cost (the turn's own `usage`
@@ -237,6 +241,7 @@ export default defineWebSocketHandler({
         turnAttachments = attachments
         inputModality = 'text'
         speakFlag = speak
+        skill = typeof msg.skill === 'string' && msg.skill ? msg.skill : undefined
         turn = async (signal, emit, context) => {
           // Total by construction — a silent turn touches no voice state, and neither a
           // DB nor a storage failure can propagate out of here. Voice degrades to "no

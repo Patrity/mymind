@@ -48,7 +48,8 @@ import { ATTACHMENT_ACCEPT, attachmentErrorToast, filesForSubmit, MAX_ATTACHMENT
 import { applySelection, menuQuery, nextHighlight, parseCommand, shouldInterceptEnter, shouldOpenMenu } from '~/lib/agent/slash'
 
 const props = defineProps<{
-  sendText: (t: string, speak?: boolean, attachments?: AttachmentRef[]) => boolean | Promise<boolean>
+  /** `skill` is set only for a `skill`-kind command dispatch — see onSubmit. */
+  sendText: (t: string, speak?: boolean, attachments?: AttachmentRef[], skill?: string) => boolean | Promise<boolean>
   busy: boolean
   micOn: boolean
   state: VoiceState
@@ -93,7 +94,11 @@ const modelItems = computed(() => {
 // returns immediately while isLoading is true, so onSubmit itself never runs twice for an
 // overlapping submit. Guarding it again here would be a second, redundant mechanism.
 async function onSubmit(msg: PromptInputMessage) {
-  const text = msg.text.trim()
+  let text = msg.text.trim()
+  // Set only for a `skill`-kind dispatch below, and carried through to sendText so the WS
+  // message can add `skill` — see sendText's doc comment. Every other path leaves it
+  // undefined, so the payload is byte-for-byte what it was before this kind existed.
+  let skillName: string | undefined
 
   // `client`-kind commands (/clear, /new) never become a turn — they dispatch a WS control
   // frame instead, straight from here rather than through sendText. Checked against the LIVE
@@ -108,6 +113,18 @@ async function onSubmit(msg: PromptInputMessage) {
       emit('command', { name: entry.name, args: cmd.args })
       setTextInput('')
       return
+    }
+    if (entry?.kind === 'prompt' && entry.template) {
+      // Substitute before submitting so the transcript shows what the model actually
+      // received (the expanded template), rather than an opaque "/standup". Zero new
+      // protocol — this becomes an ordinary turn.
+      text = cmd.args ? `${entry.template}\n\n${cmd.args}` : entry.template
+    } else if (entry?.kind === 'skill') {
+      // Resolved server-side (assembleContext) — the composer only names it. The rest of
+      // the line, if any, becomes the turn's text; the skill body rides alongside it as a
+      // fixed context tier rather than being spliced into the visible message.
+      skillName = entry.name
+      text = cmd.args
     }
   }
 
@@ -131,7 +148,7 @@ async function onSubmit(msg: PromptInputMessage) {
     )
   }
 
-  await props.sendText(text, speak.value, refs)
+  await props.sendText(text, speak.value, refs, skillName)
 }
 
 function onError(err: { code: string, message: string }) {

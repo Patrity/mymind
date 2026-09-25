@@ -2,6 +2,7 @@ import { fitBudget, tier, ResidentOverflowError, type Tier } from './budget'
 import { rankForContext } from './salience'
 import { buildLiveContext } from './context'
 import { listResidentMemories, recordRetrievals as realRecordRetrievals, searchMemories } from '../../services/memory'
+import { getSkill } from '../../services/skills'
 import { useDb } from '../../db'
 import { conversations } from '../../db/schema'
 import { eq } from 'drizzle-orm'
@@ -27,12 +28,26 @@ const EMPTY_CONTEXT: AssembledContext = { context: '', usedMemoryIds: [], used: 
  *  reads that counter, so letting ~0.077-relevance hits through pollutes it). */
 export const RETRIEVAL_RELEVANCE_FLOOR = 0.2
 
+/** A skill body larger than this is head/tail trimmed. `fitBudget` THROWS when the fixed
+ *  tiers alone exceed the budget — deliberately, so a silently truncated prompt cannot
+ *  happen — and a skill too large to fit in a prompt is a skill that needs splitting.
+ *  Capping here, rather than raising the budget, is the fix (see assembleContext's skill tier). */
+export const SKILL_TIER_MAX_CHARS = 8000
+
+function capSkillBody(body: string): string {
+  if (body.length <= SKILL_TIER_MAX_CHARS) return body
+  const half = Math.floor(SKILL_TIER_MAX_CHARS / 2)
+  return `${body.slice(0, half)}\n\n…\n\n${body.slice(-half)}`
+}
+
 export interface AssembleDeps {
   listResident?: () => Promise<MemoryDTO[]>
   search?: (q: string) => Promise<MemoryDTO[]>
   liveContext?: (now: Date) => Promise<string>
   summary?: (conversationId: string) => Promise<string | null>
   recordRetrievals?: (ids: string[]) => Promise<void>
+  /** Test-only seam so skill resolution needs no database — defaults to `getSkill(name)`'s body. */
+  getSkillBody?: (name: string) => Promise<string | null>
 }
 
 export interface AssembleInput {
@@ -47,6 +62,10 @@ export interface AssembleInput {
   now?: Date
   /** Overrides ASSEMBLE_TIMEOUT_MS — test-only seam so a hang test doesn't need to wait 1.5s. */
   timeoutMs?: number
+  /** Name of a skill the user explicitly invoked (the `/`-command menu's `skill` kind). Resolved
+   *  server-side and pushed as a fixed tier — see assembleContext. A name that does not resolve
+   *  degrades to an ordinary turn rather than failing it. */
+  skill?: string
   deps?: AssembleDeps
 }
 
@@ -112,12 +131,16 @@ async function assembleContextInner(input: AssembleInput): Promise<AssembledCont
   const liveContext = d.liveContext ?? buildLiveContext
   const summaryOf = d.summary ?? loadSummary
   const record = d.recordRetrievals ?? realRecordRetrievals
+  const getSkillBody = d.getSkillBody ?? (async (name: string) => (await getSkill(name))?.body ?? null)
 
-  const [resident, liveState, summary] = await Promise.all([
+  const [resident, liveState, summary, skillBody] = await Promise.all([
     safe(() => listResident(), [] as MemoryDTO[], 'resident'),
     safe(() => liveContext(now), '', 'liveState'),
     input.conversationId
       ? safe(() => summaryOf(input.conversationId!), null as string | null, 'summary')
+      : Promise.resolve(null),
+    input.skill
+      ? safe(() => getSkillBody(input.skill!), null as string | null, 'skill')
       : Promise.resolve(null)
   ])
 
@@ -140,6 +163,13 @@ async function assembleContextInner(input: AssembleInput): Promise<AssembledCont
   const retrieved = rankForContext(deduped, { projectSlug: input.projectSlug, now, contradictedIds })
 
   const fixed: Tier[] = []
+  // First among the fixed tiers: the user asked for this skill by name, so it outranks
+  // resident facts if anything has to give (fitBudget never evicts a fixed tier — it either
+  // all fits, or the caller's ResidentOverflowError catch below drops every fixed tier at
+  // once — so "first" here is about precedence in that all-or-nothing case, not eviction order).
+  if (skillBody) {
+    fixed.push(tier('skill', `You were explicitly asked to use the "${input.skill}" skill:\n${capSkillBody(skillBody)}`))
+  }
   if (resident.length) {
     fixed.push(tier('resident', ['What you know about Tony:', ...resident.map(m => `- ${m.content}`)].join('\n')))
   }

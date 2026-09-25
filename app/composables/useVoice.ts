@@ -503,14 +503,19 @@ export function useVoice() {
      * agent answer aloud; speak=false (default) for text-only response.
      * Auto-connects the WS transparently if needed — a chat "just works" without
      * an explicit Connect step. Returns false only if connecting fails.
+     *
+     * `skill` names a `skill`-kind `/`-command the composer resolved (PromptInput.vue's
+     * onSubmit) — forwarded verbatim onto the WS frame for ws.ts to resolve server-side via
+     * assembleContext. Undefined for every ordinary turn, so JSON.stringify drops the key and
+     * the wire payload is unchanged from before this parameter existed.
      */
-    sendText: async (text: string, speak = false, attachments: AttachmentRef[] = []): Promise<boolean> => {
+    sendText: async (text: string, speak = false, attachments: AttachmentRef[] = [], skill?: string): Promise<boolean> => {
       const t = text.trim()
       if (!t && !attachments.length) return false
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return false
       if (isPlaying()) stopPlayback() // typed barge-in
-      ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments }))
+      ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments, skill }))
       return true
     },
     /**
