@@ -29,3 +29,15 @@ export const CLIENT_COMMANDS: CommandEntry[] = [
 
 /** Names no skill or macro may take. Derived, so it cannot drift from the list above. */
 export const RESERVED_COMMAND_NAMES: string[] = CLIENT_COMMANDS.map(c => c.name)
+
+/**
+ * The shape every `/`-command name must have, whatever source defines it. Kebab-case and
+ * lowercase, because `parseCommand`'s `^\/([^\s]+)` stops at the first whitespace (a name
+ * with a space in it is a row nothing can ever reach) and `mergeCommands` keys precedence on
+ * the exact string while the menu filters case-insensitively (an uppercase twin of a built-in
+ * would dodge shadowing and appear beside it).
+ *
+ * Lives here, not in `server/services/skills.ts`, so macros and skills validate against ONE
+ * constant rather than two regexes that can drift apart.
+ */
+export const COMMAND_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/

@@ -6,7 +6,7 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { useDb } from '../db'
 import { documents } from '../db/schema'
 import { createDoc, updateDoc, deleteDoc } from './documents'
-import { RESERVED_COMMAND_NAMES } from '../../shared/types/commands'
+import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES } from '../../shared/types/commands'
 
 export interface Skill {
   id: string
@@ -28,7 +28,9 @@ export interface SkillInput {
   source?: 'human' | 'agent'
 }
 
-export const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
+/** Shared with prompt macros — see COMMAND_NAME_RE. Both sources claim the same `/` namespace,
+ *  so they must agree on what a name may look like. */
+export const SKILL_NAME_RE = COMMAND_NAME_RE
 export const SKILL_BODY_MAX = 20000
 export const SKILL_PROJECT = 'mymind'
 
@@ -45,8 +47,12 @@ export function validateSkill(input: Partial<SkillInput>): { ok: true } | { ok: 
   const name = (input.name ?? '').trim()
   if (!name) return { ok: false, error: 'name is required' }
   if (!SKILL_NAME_RE.test(name)) return { ok: false, error: `name must be kebab-case (got "${name}")` }
-  if (input.name && RESERVED_COMMAND_NAMES.includes(input.name)) {
-    return { ok: false, error: `"${input.name}" is a reserved command name` }
+  // Against the TRIMMED name, because that is what createSkill stores (`input.name.trim()`,
+  // and frontmatterFor trims again). Checking the raw one let `" clear "` through validation
+  // and land as a skill named `clear` — permanently shadowed by the built-in and unreachable
+  // from `/`, which is exactly the collision this guard exists to prevent (spec Risk #4).
+  if (RESERVED_COMMAND_NAMES.includes(name)) {
+    return { ok: false, error: `"${name}" is a reserved command name` }
   }
   for (const k of ['description', 'whenToUse', 'body'] as const) {
     if (!(input[k] ?? '').trim()) return { ok: false, error: `${k} is required` }
@@ -94,10 +100,19 @@ export async function listSkills(opts: { activeOnly?: boolean } = {}): Promise<S
   return filtered.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export async function getSkill(name: string): Promise<Skill | null> {
+/**
+ * `activeOnly` gates on the frontmatter `active` flag (not a column, so it is filtered here
+ * rather than in the WHERE). Off by default: the CRUD paths — updateSkill, deleteSkill, the
+ * existence check in createSkill — must see a deactivated skill or they would happily create a
+ * second document at the same path. Prompt-assembly callers pass `true`, because a skill the
+ * menu hides must not still be force-loadable into a turn.
+ */
+export async function getSkill(name: string, opts: { activeOnly?: boolean } = {}): Promise<Skill | null> {
   const [row] = await useDb().select().from(documents)
     .where(and(liveSkills(), eq(documents.path, skillPath(name)))).limit(1)
-  return row ? docToSkill(row) : null
+  const skill = row ? docToSkill(row) : null
+  if (skill && opts.activeOnly && !skill.active) return null
+  return skill
 }
 
 export async function createSkill(input: SkillInput): Promise<Skill> {
