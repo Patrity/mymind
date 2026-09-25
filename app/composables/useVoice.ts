@@ -560,7 +560,11 @@ export function useVoice() {
      * rather than silent. Mirrors stop()'s interrupt (not discard: the list isn't being
      * replaced, so whatever was mid-stream just closes as 'interrupted' in place).
      */
-    sendClear: () => {
+    sendClear: async () => {
+      // Auto-connect exactly as sendText does. It used to return silently when the socket was
+      // not open yet, while PromptInput had already cleared the box — so a `/clear` submitted
+      // in the window before the mount-time connect lands did nothing, with no toast.
+      if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return
       turns.interrupt()
       ws.send(JSON.stringify({ type: 'clear' }))

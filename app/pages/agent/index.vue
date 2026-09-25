@@ -445,7 +445,7 @@ function startNewConversation() {
  * button.
  */
 function onComposerCommand({ name }: { name: string, args: string }) {
-  if (name === 'clear') voice.sendClear()
+  if (name === 'clear') void voice.sendClear() // async since it auto-connects; nothing to await here
   else if (name === 'new') startNewConversation()
 }
 
