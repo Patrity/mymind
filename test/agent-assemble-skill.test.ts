@@ -97,6 +97,23 @@ describe('assembleContext with a skill', () => {
     expect(r.used).toBe(0)
   })
 
+  it('does not hang the turn when the skill lookup itself hangs', async () => {
+    // Moving the lookup outside the race bought the skill an exemption from the 1500ms bound,
+    // but an UNBOUNDED await is a worse failure than the one it replaced: the old code degraded
+    // at 1500ms, a hung `documents` read would hang the turn forever. The lookup gets its own,
+    // much shorter bound instead — long enough for one indexed path read, short enough that a
+    // wedged DB costs the turn a skill rather than the whole reply.
+    const started = Date.now()
+    const r = await assembleContext({
+      userText: 'go', skill: 'browser-testing', budget: 4000, timeoutMs: 400,
+      skillTimeoutMs: 20,
+      deps: deps({ getSkillBody: () => never<string | null>(), liveContext: async () => 'Active projects: mymind.' })
+    })
+    expect(Date.now() - started).toBeLessThan(400)
+    expect(r.context).toContain('Active projects: mymind.')
+    expect(r.context).not.toContain('browser-testing')
+  })
+
   it('degrades to a normal turn when the skill does not resolve', async () => {
     const r = await assembleContext({
       userText: 'go', skill: 'missing', budget: 4000,

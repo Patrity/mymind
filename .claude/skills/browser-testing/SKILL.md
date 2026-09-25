@@ -165,6 +165,30 @@ playwright-cli mouseup
 Verify the drag actually registered by reading DOM order (`data-id` order inside the drop
 container) **before** trusting a screenshot or moving on to the reload check.
 
+## WHEN to validate: inside the task that builds the UI, never at wrap-up
+
+Cycle 71's `/` command menu passed **two code reviews and two fix rounds while rendering zero
+rows**. Nothing was unwired — the endpoint returned all 8 commands, the container was in the DOM
+and visible, typecheck was clean and the suite was green the whole time. The defect lived inside a
+vendored shadcn `Command`/`CommandItem`, which gates item visibility on an internal `filterState`
+that only `CommandInput` populates; we deliberately never mounted `CommandInput` because the
+composer's own textarea *is* the input. A plain `<ul role="listbox">` worked first try.
+
+It was caught only because the *next* task's implementer browser-validated a feature that wasn't
+its job. Every reviewer reasoned about the diff, and **a diff cannot show you an empty screen**.
+
+Two rules follow:
+
+1. **Browser validation belongs in the acceptance criteria of the task that builds the UI.** By
+   end-of-cycle wrap-up, the work has already passed reviews that structurally could not see it.
+2. **"It's already vendored in this repo" is zero evidence that a component fits.** Check what
+   internal state it requires before adopting it, or write the 20 lines of plain markup.
+
+And when asserting on a transcript or list, **scope the selector** — `document.body.innerText`
+includes the sidebar, the nav and every other panel. A `/clear` regression was "found" this way
+that did not exist: the matched text was in the conversation list, which is supposed to survive.
+The screenshot settled it in one look.
+
 ## Checklist for a UI change
 1. Dev server up; logged in.
 2. Exercise the new UI with real clicks (reka components: click by ref).

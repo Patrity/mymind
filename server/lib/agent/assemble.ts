@@ -19,6 +19,18 @@ export const DEFAULT_CONTEXT_BUDGET = 6000
  */
 export const ASSEMBLE_TIMEOUT_MS = 1500
 
+/**
+ * The skill lookup's own, much shorter bound.
+ *
+ * The skill tier is resolved OUTSIDE `ASSEMBLE_TIMEOUT_MS` (see `assembleContext`) so a slow
+ * embeddings rig cannot silently drop an instruction the user typed. But an unbounded await is
+ * a worse failure than the one that exemption replaced: the old code degraded at 1500ms, while
+ * a wedged `documents` read would hang the turn with no reply at all. This is one indexed read
+ * by path — 500ms is generous for it, and short enough that a wedged DB costs the turn its
+ * skill rather than the whole answer.
+ */
+export const SKILL_LOOKUP_TIMEOUT_MS = 500
+
 /** Degraded result when assembly exceeds its timeout — no memory augmentation this turn, but
  *  the turn itself proceeds instead of hanging. */
 const EMPTY_CONTEXT: AssembledContext = { context: '', usedMemoryIds: [], used: 0, droppedTurns: 0 }
@@ -74,6 +86,8 @@ export interface AssembleInput {
   now?: Date
   /** Overrides ASSEMBLE_TIMEOUT_MS — test-only seam so a hang test doesn't need to wait 1.5s. */
   timeoutMs?: number
+  /** Test seam for SKILL_LOOKUP_TIMEOUT_MS. */
+  skillTimeoutMs?: number
   /** Name of a skill the user explicitly invoked (the `/`-command menu's `skill` kind). Resolved
    *  server-side and pushed as a fixed tier — see assembleContext. A name that does not resolve
    *  degrades to an ordinary turn rather than failing it. */
@@ -105,6 +119,19 @@ async function loadSummary(conversationId: string): Promise<string | null> {
 }
 
 /** Best-effort: a failing tier degrades to empty rather than losing the whole context. */
+/** Resolves to `null` if `p` has not settled within `ms`. The timer is always cleared, so a
+ *  fast path never leaves a pending handle holding the event loop open. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[assembleContext] ${label} exceeded ${ms}ms — continuing without it`)
+      resolve(null)
+    }, ms)
+  })
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
+}
+
 async function safe<T>(fn: () => Promise<T>, fallback: T, label: string): Promise<T> {
   try {
     return await fn()
@@ -129,8 +156,18 @@ export async function assembleContext(input: AssembleInput): Promise<AssembledCo
   // degrades rather than throwing.
   const getSkillBody = input.deps?.getSkillBody
     ?? (async (name: string) => (await getSkill(name, { activeOnly: true }))?.body ?? null)
+  // Bounded on its own, much shorter clock — see SKILL_LOOKUP_TIMEOUT_MS. Outside the assembly
+  // race, but never unbounded: a wedged `documents` read costs this turn its skill, not its reply.
   const skillBody = input.skill
-    ? await safe(() => getSkillBody(input.skill!), null as string | null, 'skill')
+    ? await safe(
+        () => withTimeout(
+          getSkillBody(input.skill!),
+          input.skillTimeoutMs ?? SKILL_LOOKUP_TIMEOUT_MS,
+          `skill lookup for "${input.skill}"`
+        ),
+        null as string | null,
+        'skill'
+      )
     : null
 
   // What a timeout degrades to. With a skill resolved, that is NOT an empty context — the
