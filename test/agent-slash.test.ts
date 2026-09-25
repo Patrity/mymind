@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { shouldOpenMenu, menuQuery, parseCommand, applySelection, nextHighlight, shouldInterceptEnter } from '../app/lib/agent/slash'
+import { shouldOpenMenu, menuQuery, parseCommand, applySelection, nextHighlight, shouldInterceptEnter, isMenuVisible, resolveSubmission } from '../app/lib/agent/slash'
+import type { CommandEntry } from '../shared/types/commands'
 
 describe('shouldOpenMenu', () => {
   it('opens on a leading slash', () => {
@@ -111,5 +112,68 @@ describe('shouldInterceptEnter', () => {
 
   it('does not intercept a non-Enter key', () => {
     expect(shouldInterceptEnter({ key: 'ArrowDown', shiftKey: false }, 3)).toBe(false)
+  })
+})
+
+describe('isMenuVisible', () => {
+  it('is visible only when the menu is open AND something matched', () => {
+    expect(isMenuVisible(true, 3)).toBe(true)
+    expect(isMenuVisible(false, 3)).toBe(false)
+  })
+
+  it('is NOT visible when the menu is open with zero matches', () => {
+    // "/zzz": the list renders nothing, so the keyboard handler must not swallow
+    // ArrowUp/ArrowDown/Escape against an invisible menu.
+    expect(isMenuVisible(true, 0)).toBe(false)
+  })
+})
+
+// The composer's three-way dispatch — the heart of the cycle, and untested until now.
+describe('resolveSubmission', () => {
+  const client: CommandEntry = { name: 'clear', kind: 'client', description: 'Clear this conversation' }
+  const macro: CommandEntry = { name: 'standup', kind: 'prompt', description: 'Standup', template: 'What did I ship?' }
+  const skill: CommandEntry = { name: 'browser-testing', kind: 'skill', description: 'Browser testing' }
+  const cmd = (text: string) => parseCommand(text)
+
+  it('routes a client command to the page and sends no turn', () => {
+    const r = resolveSubmission('/clear', cmd('/clear'), client)
+    expect(r).toEqual({ text: '', clientCommand: 'clear' })
+    expect(r.skillName).toBeUndefined()
+  })
+
+  it('expands a prompt macro and appends the arguments', () => {
+    const r = resolveSubmission('/standup and the blockers', cmd('/standup and the blockers'), macro)
+    expect(r).toEqual({ text: 'What did I ship?\n\nand the blockers' })
+  })
+
+  it('sends the bare template when a prompt macro has no arguments', () => {
+    expect(resolveSubmission('/standup', cmd('/standup'), macro)).toEqual({ text: 'What did I ship?' })
+  })
+
+  it('sends the arguments as the turn for a skill, naming the skill alongside', () => {
+    const r = resolveSubmission('/browser-testing validate the review page', cmd('/browser-testing validate the review page'), skill)
+    expect(r).toEqual({ text: 'validate the review page', skillName: 'browser-testing' })
+  })
+
+  it('still sends a non-empty turn for a skill with NO arguments', () => {
+    // "use this skill" is a complete instruction. Returning empty text made onSubmit's
+    // `!text` guard fire AFTER submitForm had cleared the box: nothing sent, input eaten.
+    const r = resolveSubmission('/browser-testing', cmd('/browser-testing'), skill)
+    expect(r.skillName).toBe('browser-testing')
+    expect(r.text).toBeTruthy()
+    expect(r.text).toContain('browser-testing')
+  })
+
+  it('falls through as ordinary text when the name matches no entry', () => {
+    expect(resolveSubmission('/zzz hello', cmd('/zzz hello'), undefined)).toEqual({ text: '/zzz hello' })
+  })
+
+  it('leaves ordinary text alone', () => {
+    expect(resolveSubmission('what did I ship?', null, undefined)).toEqual({ text: 'what did I ship?' })
+  })
+
+  it('degrades a prompt macro with an empty template to plain text, not to nothing', () => {
+    const empty: CommandEntry = { ...macro, template: '' }
+    expect(resolveSubmission('/standup', cmd('/standup'), empty)).toEqual({ text: '/standup' })
   })
 })

@@ -4,6 +4,7 @@
  * Deliberately narrow: `/` only means "open the menu" as the FIRST character, and
  * only until the name is settled. Anything looser fires on file paths and dates.
  */
+import type { CommandEntry } from '~~/shared/types/commands'
 
 /** The menu is open while the input is a slash followed by a partial name. */
 export function shouldOpenMenu(text: string): boolean {
@@ -45,4 +46,57 @@ export function shouldInterceptEnter(
   filteredLength: number
 ): boolean {
   return e.key === 'Enter' && !e.shiftKey && filteredLength > 0
+}
+
+/** Is the menu actually ON SCREEN? The `<ul>` renders on open AND non-empty, so keyboard
+ *  handling must gate on this rather than on `shouldOpenMenu` alone: with `/zzz` typed the
+ *  menu is "open" with zero matches, and swallowing ArrowUp/ArrowDown/Escape against nothing
+ *  visible leaves the user unable to move the caret with no idea why. */
+export function isMenuVisible(open: boolean, filteredLength: number): boolean {
+  return open && filteredLength > 0
+}
+
+/** What a submitted line becomes once the `/`-command (if any) has been resolved. */
+export interface Submission {
+  /** The turn's text. Empty only when `clientCommand` is set — nothing is sent for those. */
+  text: string
+  /** `skill` kind: forwarded onto the WS frame so assembleContext can load the body. */
+  skillName?: string
+  /** `client` kind: the page maps this onto a control frame; no turn is sent. */
+  clientCommand?: string
+}
+
+/**
+ * The composer's three-way dispatch, extracted whole so it can be tested without a browser.
+ * `cmd` is `parseCommand(text)` and `entry` is the matching live command (undefined when the
+ * name matches nothing — an unknown `/foo` is ordinary text, not an error).
+ */
+export function resolveSubmission(
+  text: string,
+  cmd: { name: string, args: string } | null,
+  entry: CommandEntry | undefined
+): Submission {
+  if (!cmd || !entry) return { text }
+
+  if (entry.kind === 'client') return { text: '', clientCommand: entry.name }
+
+  if (entry.kind === 'prompt' && entry.template) {
+    // Substitute before submitting so the transcript shows what the model actually
+    // received (the expanded template), rather than an opaque "/standup".
+    return { text: cmd.args ? `${entry.template}\n\n${cmd.args}` : entry.template }
+  }
+
+  if (entry.kind === 'skill') {
+    // "Use this skill" is a complete instruction, so a bare `/browser-testing` must still
+    // send. It used to leave text empty, which tripped onSubmit's `!text` guard AFTER
+    // submitForm had already cleared the box — the most natural flow out of the menu (pick,
+    // Enter) silently sent nothing and ate the input. The body still loads server-side; this
+    // only makes the turn non-empty and the transcript honest about what was asked.
+    return { text: cmd.args || `Use the ${entry.name} skill.`, skillName: entry.name }
+  }
+
+  // A `prompt` entry with an empty template lands here and sends the raw "/name". The row
+  // should not exist (createPromptCommand rejects an empty template), but a hand-inserted
+  // one must degrade to text rather than to nothing.
+  return { text }
 }

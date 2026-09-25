@@ -45,7 +45,7 @@ import {
 } from '@/components/ai-elements/prompt-input'
 import { useFilter } from 'reka-ui'
 import { ATTACHMENT_ACCEPT, attachmentErrorToast, filesForSubmit, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, uploadAttachment } from '~/lib/agent/attachments'
-import { applySelection, menuQuery, nextHighlight, parseCommand, shouldInterceptEnter, shouldOpenMenu } from '~/lib/agent/slash'
+import { applySelection, isMenuVisible, menuQuery, nextHighlight, parseCommand, resolveSubmission, shouldInterceptEnter, shouldOpenMenu } from '~/lib/agent/slash'
 
 const props = defineProps<{
   /** `skill` is set only for a `skill`-kind command dispatch — see onSubmit. */
@@ -94,39 +94,33 @@ const modelItems = computed(() => {
 // returns immediately while isLoading is true, so onSubmit itself never runs twice for an
 // overlapping submit. Guarding it again here would be a second, redundant mechanism.
 async function onSubmit(msg: PromptInputMessage) {
-  let text = msg.text.trim()
-  // Set only for a `skill`-kind dispatch below, and carried through to sendText so the WS
-  // message can add `skill` — see sendText's doc comment. Every other path leaves it
-  // undefined, so the payload is byte-for-byte what it was before this kind existed.
-  let skillName: string | undefined
+  // The three-way dispatch itself lives in resolveSubmission (lib/agent/slash.ts) so it is
+  // unit-testable without a browser. Checked against the LIVE command list (commands.value),
+  // not the hardcoded CLIENT_COMMANDS fallback, so `kind` is what decides dispatch even if a
+  // future server-defined entry ever shadows one of these names.
+  const typed = msg.text.trim()
+  const cmd = parseCommand(typed)
+  const submission = resolveSubmission(
+    typed,
+    cmd,
+    cmd ? commands.value.find(c => c.name === cmd.name) : undefined
+  )
 
   // `client`-kind commands (/clear, /new) never become a turn — they dispatch a WS control
-  // frame instead, straight from here rather than through sendText. Checked against the LIVE
-  // command list (commands.value), not the hardcoded CLIENT_COMMANDS fallback, so kind is what
-  // decides dispatch even if a future server-defined entry ever shadows one of these names.
-  // Any attachments already in the tray are deliberately left untouched — a stray file dropped
-  // alongside a command is not part of it.
-  const cmd = parseCommand(text)
-  if (cmd) {
-    const entry = commands.value.find(c => c.name === cmd.name)
-    if (entry?.kind === 'client') {
-      emit('command', { name: entry.name, args: cmd.args })
-      setTextInput('')
-      return
-    }
-    if (entry?.kind === 'prompt' && entry.template) {
-      // Substitute before submitting so the transcript shows what the model actually
-      // received (the expanded template), rather than an opaque "/standup". Zero new
-      // protocol — this becomes an ordinary turn.
-      text = cmd.args ? `${entry.template}\n\n${cmd.args}` : entry.template
-    } else if (entry?.kind === 'skill') {
-      // Resolved server-side (assembleContext) — the composer only names it. The rest of
-      // the line, if any, becomes the turn's text; the skill body rides alongside it as a
-      // fixed context tier rather than being spliced into the visible message.
-      skillName = entry.name
-      text = cmd.args
-    }
+  // frame instead, straight from here rather than through sendText. Any attachments already
+  // in the tray are deliberately left untouched: a stray file dropped alongside a command is
+  // not part of it.
+  if (submission.clientCommand) {
+    emit('command', { name: submission.clientCommand, args: cmd!.args })
+    setTextInput('')
+    return
   }
+
+  const text = submission.text
+  // Set only for a `skill`-kind dispatch, and carried through to sendText so the WS message
+  // can add `skill` — see sendText's doc comment. Every other path leaves it undefined, so
+  // the payload is byte-for-byte what it was before this kind existed.
+  const skillName = submission.skillName
 
   // msg.files is typed FileUIPart[] (no `id`), but submitForm's processedFiles mapping
   // (context.ts) spreads the original AttachmentFile, so `.id` survives on the actual
@@ -198,6 +192,13 @@ const filteredCommands = computed(() => {
   return q ? commands.value.filter(c => contains(c.name, q)) : commands.value
 })
 
+// The single condition the list renders on AND the keyboard handler gates on. They used to
+// differ — the handler checked `menuOpen` alone — so with `/zzz` typed the menu was "open"
+// with zero matches and ArrowUp/ArrowDown/Escape were preventDefault()ed against nothing on
+// screen, stranding the caret. One computed, used in both places, is what stops that
+// reappearing.
+const menuVisible = computed(() => isMenuVisible(menuOpen.value, filteredCommands.value.length))
+
 // Keyboard highlight is ours to track (not reka's) since we never focus the listbox
 // subtree — see the useFilter comment above. Reset whenever the candidate list
 // changes shape or the menu (re)opens, so a stale index never points past the end.
@@ -217,7 +218,8 @@ function onPickCommand(name: string) {
 // (rather than exposing it as a plain fallthrough attr) specifically so this runs
 // BEFORE its own Enter-submits-the-form logic — see that component's comment.
 function onComposerKeydown(e: KeyboardEvent) {
-  if (!menuOpen.value) return
+  // menuVisible, not menuOpen — never swallow a key against a menu that is not on screen.
+  if (!menuVisible.value) return
 
   if (e.key === 'ArrowDown') {
     e.preventDefault()
@@ -302,7 +304,7 @@ watch(() => props.prefill, (v) => {
          rendered nothing. Filtering/highlighting/keyboard are all ours already; this is
          just the row markup. -->
     <ul
-      v-if="menuOpen && filteredCommands.length"
+      v-if="menuVisible"
       role="listbox"
       class="mb-2 max-h-[300px] overflow-y-auto rounded-md border border-default bg-elevated p-1"
     >
@@ -318,6 +320,11 @@ watch(() => props.prefill, (v) => {
         <span class="font-mono">/{{ c.name }}</span>
         <span class="ml-2 text-xs text-muted">{{ c.description }}</span>
         <span v-if="c.hint" class="ml-2 text-xs text-dimmed">{{ c.hint }}</span>
+        <!-- The only place `shadows` is ever surfaced: a skill (or macro) that stopped being
+             reachable because a higher-precedence source claimed its name is explainable from
+             here instead of just missing (spec §2.1 / Risk #4). Deliberately quiet — this is
+             an explanation, not a warning. -->
+        <span v-if="c.shadows?.length" class="ml-auto shrink-0 pl-2 text-xs text-dimmed">shadows {{ c.shadows.join(', ') }}</span>
       </li>
     </ul>
 
