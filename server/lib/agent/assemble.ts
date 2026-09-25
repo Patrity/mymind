@@ -34,10 +34,14 @@ export const RETRIEVAL_RELEVANCE_FLOOR = 0.2
  *  Capping here, rather than raising the budget, is the fix (see assembleContext's skill tier). */
 export const SKILL_TIER_MAX_CHARS = 8000
 
+const SKILL_TIER_JOINER = '\n\n…\n\n'
+
 function capSkillBody(body: string): string {
   if (body.length <= SKILL_TIER_MAX_CHARS) return body
-  const half = Math.floor(SKILL_TIER_MAX_CHARS / 2)
-  return `${body.slice(0, half)}\n\n…\n\n${body.slice(-half)}`
+  // The joiner counts against the cap — halving the cap and THEN adding it back
+  // returns a string longer than the constant it is named for.
+  const half = Math.floor((SKILL_TIER_MAX_CHARS - SKILL_TIER_JOINER.length) / 2)
+  return `${body.slice(0, half)}${SKILL_TIER_JOINER}${body.slice(-half)}`
 }
 
 export interface AssembleDeps {

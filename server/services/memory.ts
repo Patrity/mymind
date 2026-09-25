@@ -641,12 +641,21 @@ export async function countUnreviewedMemories(): Promise<number> {
  * Deliberately unfiltered by project — resident implies global (DB check constraint).
  * `reviewed` is not optional here: this lands in every prompt with no agent decision behind
  * it, so unreviewed enrichment output must never reach it.
+ *
+ * Capped, because the resident tier is FIXED in `fitBudget` — never evicted individually,
+ * and if the fixed tiers together overflow the budget, `assembleContext` drops ALL of them
+ * (a skill the user explicitly named included). An unbounded resident set is the one input
+ * that can blank a turn's whole context, so the cap lives here rather than in the caller.
+ * Order puts the most-retrieved first, so the cap drops the memories least reached for.
  */
+export const RESIDENT_MEMORY_LIMIT = 40
+
 export async function listResidentMemories(): Promise<MemoryDTO[]> {
   const db = useDb()
   const rows = await db.select().from(memories)
     .where(and(live(), eq(memories.resident, true), isNotNull(memories.reviewedAt)))
     .orderBy(sql`${memories.retrievalCount} desc`, memories.createdAt)
+    .limit(RESIDENT_MEMORY_LIMIT)
   return rows.map(r => toDTO(r))
 }
 

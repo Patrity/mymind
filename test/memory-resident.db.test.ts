@@ -15,7 +15,7 @@ vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 import { createHash } from 'node:crypto'
 import { useDb } from '../server/db'
 import { memories } from '../server/db/schema'
-import { createMemory, listResidentMemories, recordRetrievals } from '../server/services/memory'
+import { createMemory, listResidentMemories, recordRetrievals, RESIDENT_MEMORY_LIMIT } from '../server/services/memory'
 import { sql, inArray } from 'drizzle-orm'
 
 const mk = (content: string, project = 'alpha') =>
@@ -67,6 +67,34 @@ describe('resident tier', () => {
     const contents = res.map(m => m.content)
     expect(contents).toContain('RES-TEST pinned')
     expect(contents).not.toContain('RES-TEST unpinned')
+  })
+
+  // The resident tier is FIXED in fitBudget: it is never evicted individually, and if the
+  // fixed tiers together exceed the budget, assembleContext drops ALL of them (including a
+  // skill the user explicitly named). An unbounded resident set is therefore the one input
+  // that can silently blank a turn's whole context, so the query must cap itself.
+  it('caps the resident set at RESIDENT_MEMORY_LIMIT, keeping the most-retrieved', async () => {
+    const overflow = RESIDENT_MEMORY_LIMIT + 5
+    const rows = await useDb().insert(memories).values(
+      Array.from({ length: overflow }, (_, i) => ({
+        scope: 'user' as const,
+        content: `RES-TEST cap-${i}`,
+        contentHash: createHash('sha256').update(`RES-TEST cap-${i}`).digest('hex'),
+        resident: true,
+        applicability: 'global' as const,
+        reviewedAt: new Date(),
+        // Descending retrieval counts: cap-0 is the hottest, so the LAST 5 are what a
+        // correct LIMIT drops. An unordered or absent limit fails this.
+        retrievalCount: overflow - i
+      }))
+    ).returning()
+    expect(rows).toHaveLength(overflow)
+
+    const res = await listResidentMemories()
+    const capContents = res.map(m => m.content).filter(c => c.startsWith('RES-TEST cap-'))
+    expect(capContents.length).toBeLessThanOrEqual(RESIDENT_MEMORY_LIMIT)
+    expect(capContents).toContain('RES-TEST cap-0')
+    expect(capContents).not.toContain(`RES-TEST cap-${overflow - 1}`)
   })
 
   it('refuses a resident memory that is not global', async () => {

@@ -38,6 +38,18 @@ describe('assembleContext with a skill', () => {
     expect(r.context).toContain('…')
   })
 
+  it('caps the body to SKILL_TIER_MAX_CHARS exactly, joiner included', async () => {
+    const huge = 'y'.repeat(SKILL_TIER_MAX_CHARS * 4)
+    const r = await assembleContext({
+      userText: 'go', skill: 'big', budget: 4000,
+      deps: deps({ getSkillBody: async () => huge })
+    })
+    // The body is the tier minus its wrapper prefix; a joiner that pushes the result
+    // PAST the declared cap makes the constant a lie, so assert the real ceiling.
+    const body = r.context.slice(r.context.indexOf('skill:\n') + 'skill:\n'.length)
+    expect(body.length).toBeLessThanOrEqual(SKILL_TIER_MAX_CHARS)
+  })
+
   it('degrades to a normal turn when the skill does not resolve', async () => {
     const r = await assembleContext({
       userText: 'go', skill: 'missing', budget: 4000,
