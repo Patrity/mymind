@@ -21,6 +21,17 @@ export const memories = pgTable('memories', {
    *  Written batched by the assembler; feeds resident self-nomination. */
   retrievalCount: integer('retrieval_count').notNull().default(0),
   lastRetrievedAt: timestamp('last_retrieved_at', { withTimezone: true }),
+  /** Jev's independent read of this memory — a SECOND opinion beside `confidence`, which is
+   *  the enrichment writer grading its own work. Same orientation: higher means more likely
+   *  worth keeping. Null = not scored yet (unknown, NOT bad — see compareByJev). */
+  jevScore: real('jev_score'),
+  /** The raw Noul answers. Kept so a better weighting is a recompute rather than 2,600 more
+   *  API calls — see server/lib/memory/jev-score.ts. */
+  jevAnswers: jsonb('jev_answers'),
+  jevScoredAt: timestamp('jev_scored_at', { withTimezone: true }),
+  /** Pinned model version, never `jev-latest`: a silent model bump would make a later
+   *  comparison against these numbers meaningless. */
+  jevModel: text('jev_model'),
   evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
   project: text('project'),
   projectId: uuid('project_id'),

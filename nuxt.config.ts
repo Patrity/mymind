@@ -153,6 +153,10 @@ export default defineNuxtConfig({
       // Daily was ample for price CHANGES, but the real trigger is a NEW model showing up in
       // usage — claude-fable-5-1 read as unpriced for ~11h on 2026-09-03 awaiting the 04:00 run.
       '*/15 * * * *': ['enrich-memories', 'sync-model-prices'],
+      // Runs AFTER enrich-memories on the quarter hour rather than alongside it, so a batch
+      // written this cycle is scored on the next one rather than raced. Self-gates: it only
+      // touches unreviewed, unscored rows, and no-ops entirely when JEV_KEY is unset.
+      '5-59/15 * * * *': ['score-memories'],
       '0 3 * * *': ['prune-activity-log'],
       '*/4 * * * *': ['embed-messages'],
       // Shortly after midnight UTC: summarise yesterday's LiteLLM traffic.

@@ -28,12 +28,35 @@ interface MemoryConflictProposed {
 // A synthetic item (task-13) — NOT a review_queue row. `id` is a memories.id, so approving
 // it goes through reviewMemory(id) via useMemories(), never POST /api/review/[id]/approve
 // (which looks up review_queue by id and would 404 on a memories.id).
+/**
+ * Jev's score reads like a second confidence: higher means more likely worth keeping.
+ * Colour is a nudge, not a verdict — the calibration behind it (n=28) supports ordering the
+ * queue, not deciding anything, so the bands are deliberately coarse and never red/green
+ * "right/wrong".
+ */
+function jevColor(score: number | null | undefined): string {
+  if (score == null) return 'text-dimmed'
+  if (score < 0.4) return 'text-warning'
+  if (score < 0.6) return 'text-muted'
+  return 'text-success'
+}
+
+function jevTooltip(score: number | null | undefined): string {
+  if (score == null) return 'Not scored yet'
+  const pct = Math.round(score * 100)
+  const read = score < 0.4 ? 'likely transient or easily re-derived' : score < 0.6 ? 'mixed' : 'specific and durable'
+  return `Jev's independent read: ${pct}% — ${read}. Advisory; it orders this queue, it does not decide.`
+}
+
 interface MemoryUnreviewedProposed {
   content: string
   scope: 'user' | 'agent' | 'world'
   tags: string[]
   project?: string | null
   confidence?: number | null
+  /** Jev's second opinion, same orientation as confidence. Null until the scoring task
+   *  has reached this memory. */
+  jevScore?: number | null
 }
 
 // Mirrors shared/types/triage.ts TriageAction — a DESTINATION, not a doc classification.
@@ -681,6 +704,18 @@ async function undoDiscard(undoToken: string) {
                   >
                     {{ Math.round(((item.proposed as MemoryUnreviewedProposed).confidence ?? 0) * 100) }}% confidence
                   </span>
+                  <!-- A SECOND opinion, not a restatement: `confidence` is enrichment
+                       grading its own work, this is Jev reading the same text cold. Same
+                       orientation (higher = keep), so a big gap between the two is the
+                       signal worth looking at. Advisory only — it sorts, it never decides. -->
+                  <UTooltip :text="jevTooltip((item.proposed as MemoryUnreviewedProposed).jevScore)">
+                    <span
+                      v-if="(item.proposed as MemoryUnreviewedProposed).jevScore != null"
+                      :class="['text-xs font-medium', jevColor((item.proposed as MemoryUnreviewedProposed).jevScore)]"
+                    >
+                      {{ Math.round(((item.proposed as MemoryUnreviewedProposed).jevScore ?? 0) * 100) }}% Jev
+                    </span>
+                  </UTooltip>
                 </div>
                 <p class="text-xs text-dimmed shrink-0">
                   {{ new Date(item.createdAt).toLocaleString() }}

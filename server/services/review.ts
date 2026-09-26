@@ -3,6 +3,7 @@ import { useDb } from '../db'
 import { reviewQueue, documents, memories } from '../db/schema'
 import { publishChange } from '../utils/live-bus'
 import type { MemoryScope } from '../../shared/types/memory'
+import { compareByJev } from '../lib/memory/jev-score'
 
 export type ReviewTargetKind = 'document' | 'memory'
 
@@ -39,6 +40,9 @@ export interface MemoryUnreviewedProposed {
   tags: string[]
   project: string | null
   confidence: number | null
+  /** Jev's independent read, same orientation as `confidence` — higher means more likely
+   *  worth keeping. Null when not scored yet (unknown, not bad). */
+  jevScore: number | null
 }
 
 export interface MemoryUnreviewedFeedItem {
@@ -139,6 +143,7 @@ export async function listReviewFeed(): Promise<ReviewFeedItem[]> {
     tags: memories.tags,
     project: memories.project,
     confidence: memories.confidence,
+    jevScore: memories.jevScore,
     createdAt: memories.createdAt
   }).from(memories)
     .where(unreviewedLive())
@@ -152,13 +157,25 @@ export async function listReviewFeed(): Promise<ReviewFeedItem[]> {
       scope: m.scope as MemoryScope,
       tags: m.tags,
       project: m.project,
-      confidence: m.confidence
+      confidence: m.confidence,
+      jevScore: m.jevScore
     },
     createdAt: m.createdAt,
     docPath: null
   }))
 
-  return [...queueItems, ...memoryItems].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+  // Queue rows (conflicts, triage, enrichment) stay newest-first — each is a distinct
+  // decision with no quality score to rank by. Unreviewed MEMORIES sort worst-first, so the
+  // likely junk is the first thing on screen and clearing it is a burst rather than a
+  // scroll. Ordering only: nothing here decides anything (see lib/memory/jev-score.ts).
+  const sortedQueue = [...queueItems].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+  const sortedMemories = [...memoryItems].sort((a, b) =>
+    compareByJev(
+      { jevScore: a.proposed.jevScore, createdAt: a.createdAt },
+      { jevScore: b.proposed.jevScore, createdAt: b.createdAt }
+    )
+  )
+  return [...sortedQueue, ...sortedMemories]
 }
 
 /** The count backing `GET /api/review/count` (the sidebar Review badge). */

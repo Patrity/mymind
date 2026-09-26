@@ -372,6 +372,13 @@
       "when": 1790271281194,
       "tag": "0052_exotic_wendigo",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790441640618,
+      "tag": "0053_awesome_namor",
+      "breakpoints": true
     }
   ]
 }
