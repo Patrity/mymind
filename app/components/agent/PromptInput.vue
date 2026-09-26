@@ -316,7 +316,54 @@ watch(() => props.prefill, (v) => {
 </script>
 
 <template>
-  <PromptInput ref="rootRef" class="relative" multiple global-drop :accept="ATTACHMENT_ACCEPT">
+  <!-- The positioning anchor, and the reason the menu is a SIBLING of <PromptInput> rather
+       than a child of it: the vendored PromptInput wraps everything in
+       `<InputGroup class="overflow-hidden">` (PromptInput.vue:139) to clip the composer's
+       rounded corners. Anything absolutely positioned above the composer from inside that
+       box is clipped away entirely — present in the DOM, correct bounding rect, invisible.
+       That is exactly how it shipped broken; see the note on validating this. -->
+  <div ref="rootRef" class="relative">
+  <!-- Hand-rolled, not the vendored Command/CommandItem wrapper — see the useFilter
+       comment above (fix round 3): that wrapper's own filterState gated every row on
+       CommandInput, which we cannot mount without stealing the textarea's focus, so it
+       rendered nothing. Filtering/highlighting/keyboard are all ours already; this is
+       just the row markup.
+
+       FLOATS above the composer (absolute, anchored to the form's bottom edge) rather
+       than sitting in the flow. In the flow it grew the input block downward and shoved
+       the whole conversation up on every keystroke — which read as the composer breaking,
+       not as a menu opening. `bottom-full` puts it over the transcript like every other
+       slash menu, anchored to the wrapper above — NOT to <PromptInput>, whose InputGroup
+       is overflow-hidden and would clip it away entirely. -->
+  <div v-if="menuVisible" class="absolute inset-x-0 bottom-full z-50 mb-2">
+    <ul
+      role="listbox"
+      class="max-h-[300px] overflow-y-auto rounded-lg border border-default bg-elevated p-1 shadow-lg"
+    >
+      <li
+        v-for="(c, i) in filteredCommands"
+        :key="c.name"
+        role="option"
+        :aria-selected="i === highlightedIndex"
+        :class="['flex cursor-pointer items-baseline gap-2 rounded-sm px-2 py-1.5 text-sm', i === highlightedIndex ? 'bg-accented text-highlighted' : '']"
+        @mouseenter="highlightedIndex = i"
+        @click="onPickCommand(c.name)"
+      >
+        <span class="shrink-0 font-mono">/{{ c.name }}</span>
+        <!-- Name + one truncated line of description, and nothing else. The `hint`
+             ("Use when …") was third-order detail that made every row wrap into two or
+             three lines and buried the names the menu exists to let you scan. -->
+        <span class="truncate text-xs text-muted">{{ c.description }}</span>
+        <!-- The only place `shadows` is ever surfaced: a skill (or macro) that stopped being
+             reachable because a higher-precedence source claimed its name is explainable from
+             here instead of just missing (spec §2.1 / Risk #4). Deliberately quiet — this is
+             an explanation, not a warning, and it renders only when something IS shadowed. -->
+        <span v-if="c.shadows?.length" class="ml-auto shrink-0 pl-2 text-xs text-dimmed">shadows {{ c.shadows.join(', ') }}</span>
+      </li>
+    </ul>
+  </div>
+
+    <PromptInput multiple global-drop :accept="ATTACHMENT_ACCEPT">
     <PromptInputHeader v-if="files.length">
       <Attachments variant="inline">
         <Attachment
@@ -331,45 +378,6 @@ watch(() => props.prefill, (v) => {
         </Attachment>
       </Attachments>
     </PromptInputHeader>
-
-    <!-- Hand-rolled, not the vendored Command/CommandItem wrapper — see the useFilter
-         comment above (fix round 3): that wrapper's own filterState gated every row on
-         CommandInput, which we cannot mount without stealing the textarea's focus, so it
-         rendered nothing. Filtering/highlighting/keyboard are all ours already; this is
-         just the row markup.
-
-         FLOATS above the composer (absolute, anchored to the form's bottom edge) rather
-         than sitting in the flow. In the flow it grew the input block downward and shoved
-         the whole conversation up on every keystroke — which read as the composer breaking,
-         not as a menu opening. `bottom-full` puts it over the transcript like every other
-         slash menu; the form itself carries `relative` for this to anchor to. -->
-    <div v-if="menuVisible" class="absolute inset-x-0 bottom-full z-50 mb-2">
-      <ul
-        role="listbox"
-        class="max-h-[300px] overflow-y-auto rounded-lg border border-default bg-elevated p-1 shadow-lg"
-      >
-        <li
-          v-for="(c, i) in filteredCommands"
-          :key="c.name"
-          role="option"
-          :aria-selected="i === highlightedIndex"
-          :class="['flex cursor-pointer items-baseline gap-2 rounded-sm px-2 py-1.5 text-sm', i === highlightedIndex ? 'bg-accented text-highlighted' : '']"
-          @mouseenter="highlightedIndex = i"
-          @click="onPickCommand(c.name)"
-        >
-          <span class="shrink-0 font-mono">/{{ c.name }}</span>
-          <!-- Name + one truncated line of description, and nothing else. The `hint`
-               ("Use when …") was third-order detail that made every row wrap into two or
-               three lines and buried the names the menu exists to let you scan. -->
-          <span class="truncate text-xs text-muted">{{ c.description }}</span>
-          <!-- The only place `shadows` is ever surfaced: a skill (or macro) that stopped being
-               reachable because a higher-precedence source claimed its name is explainable from
-               here instead of just missing (spec §2.1 / Risk #4). Deliberately quiet — this is
-               an explanation, not a warning, and it renders only when something IS shadowed. -->
-          <span v-if="c.shadows?.length" class="ml-auto shrink-0 pl-2 text-xs text-dimmed">shadows {{ c.shadows.join(', ') }}</span>
-        </li>
-      </ul>
-    </div>
 
     <PromptInputBody>
       <PromptInputTextarea placeholder="Ask Bridget…" @keydown="onComposerKeydown" />
@@ -454,5 +462,6 @@ watch(() => props.prefill, (v) => {
         <PromptInputSubmit v-else :disabled="!canSubmit" />
       </PromptInputTools>
     </PromptInputFooter>
-  </PromptInput>
+    </PromptInput>
+  </div>
 </template>

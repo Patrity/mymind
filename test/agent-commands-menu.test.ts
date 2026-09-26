@@ -110,6 +110,22 @@ describe('the / command menu row', () => {
     expect(menu).toContain('Browser testing')
   })
 
+  it('lives OUTSIDE <PromptInput>, which is overflow-hidden and would clip it away', async () => {
+    // This is the one that matters. The vendored PromptInput wraps its children in
+    // `<InputGroup class="overflow-hidden">` to clip the composer's rounded corners, so a
+    // menu positioned above the composer from INSIDE it is invisible — while still being in
+    // the DOM with a perfectly correct bounding rect. It shipped that way precisely because
+    // the browser check measured getBoundingClientRect (which ignores clipping) instead of
+    // asking what actually paints. Position in the markup is the thing to pin.
+    const { html } = await renderComposer({ menuVisible: true, filteredCommands: [entry()] })
+    // SSR keeps the unresolved component's PascalCase tag name verbatim.
+    const menuAt = html.indexOf('role="listbox"')
+    const composerAt = html.indexOf('<PromptInput')
+    expect(menuAt).toBeGreaterThan(-1)
+    expect(composerAt).toBeGreaterThan(-1)
+    expect(menuAt).toBeLessThan(composerAt)
+  })
+
   it('floats over the transcript instead of growing the composer', async () => {
     // In the flow the list pushed the input block down and shoved the conversation up on
     // every keystroke, which read as the composer breaking rather than a menu opening.

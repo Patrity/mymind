@@ -189,6 +189,38 @@ includes the sidebar, the nav and every other panel. A `/clear` regression was "
 that did not exist: the matched text was in the conversation list, which is supposed to survive.
 The screenshot settled it in one look.
 
+### `getBoundingClientRect` does NOT tell you whether something is visible
+
+A clipped element still reports a full, correct rect. An `overflow-hidden` ancestor makes it
+invisible while every geometric assertion passes:
+
+```bash
+# ✗ FALSE POSITIVE — passes on a menu that is clipped to nothing
+playwright-cli eval "() => { const r = document.querySelector('[role=listbox]').getBoundingClientRect();
+  return { above: r.bottom <= document.querySelector('textarea').getBoundingClientRect().top }; }"
+
+# ✓ hit-test what actually paints at the element's own centre
+playwright-cli eval "() => { const o = document.querySelector('[role=option]'); const r = o.getBoundingClientRect();
+  const el = document.elementFromPoint(r.left + r.width/2, r.top + r.height/2);
+  return { paints: !!(el && (el === o || o.contains(el))) }; }"
+```
+
+This shipped the `/` menu completely invisible in cycle 71: the vendored `PromptInput` wraps
+its children in `<InputGroup class="overflow-hidden">` (to clip the composer's rounded
+corners), so a popover positioned *above* the composer from inside it was clipped away
+entirely — in the DOM, 8 rows, correct rect, nothing on screen. **Anything absolutely
+positioned must be a sibling of that wrapper, not a child.**
+
+When a popover/dropdown/tooltip "doesn't show", walk the ancestors for a non-`visible`
+`overflow` before touching positioning:
+
+```bash
+playwright-cli eval "() => { const out=[]; for (let el=document.querySelector('[role=listbox]').parentElement; el && el!==document.body; el=el.parentElement) {
+  const s=getComputedStyle(el); if (s.overflow!=='visible') out.push(el.tagName+'['+s.overflow+']'); } return out; }"
+```
+
+And **always screenshot a visual change and Read the image.** Geometry is not sight.
+
 ### Never assert a model reply with a word your own prompt contains
 
 The inverse mistake, and the more dangerous one — it reports success that never happened:
