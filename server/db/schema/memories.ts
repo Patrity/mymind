@@ -29,8 +29,9 @@ export const memories = pgTable('memories', {
    *  API calls — see server/lib/memory/jev-score.ts. */
   jevAnswers: jsonb('jev_answers'),
   jevScoredAt: timestamp('jev_scored_at', { withTimezone: true }),
-  /** Pinned model version, never `jev-latest`: a silent model bump would make a later
-   *  comparison against these numbers meaningless. */
+  /** The model version that ANSWERED, not the one requested — the config asks for
+   *  `jev-latest` and the API reports back which version resolved to. Stored per row so a
+   *  later calibration can segment by version instead of assuming one. */
   jevModel: text('jev_model'),
   evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
   project: text('project'),

@@ -12,13 +12,28 @@
 
 import { resolveChain } from './registry/resolve'
 
-/** Default when the config carries no explicit model id. Pinned, never `jev-latest` — a
- *  silent model bump would invalidate every stored score it is compared against. */
-export const JEV_MODEL = 'jev-1.13.0'
+/**
+ * Default when the config carries no explicit model id.
+ *
+ * `jev-latest` rather than a pinned version, because the API reports back which version
+ * actually answered (`{"model":"jev-1.13.0", ...}` for a `jev-latest` request) and we store
+ * THAT per row. So an upgrade arrives automatically and every score still records the
+ * version that produced it — a later calibration can segment by `jev_model` instead of
+ * having to assume one. Pinning would have bought provenance we already get for free, at
+ * the cost of silently staying on an old model forever.
+ */
+export const JEV_MODEL = 'jev-latest'
 
 const DEFAULT_BASE_URL = 'https://api.typesafe.ai/v1'
 
 export interface NoulAnswer { type: 'noul', noul: number }
+
+export interface JevResponse {
+  /** The version that ACTUALLY answered. With `jev-latest` this is the resolved version
+   *  (e.g. `jev-1.13.0`), which is what makes requesting "latest" safe to store. */
+  model: string
+  answers: Record<string, NoulAnswer>
+}
 
 export interface JevConfig { baseURL: string, apiKey: string, model: string }
 
@@ -58,7 +73,7 @@ export async function askJev(
   questions: Record<string, { type: string, instructions: string }>,
   cfg: JevConfig,
   attempt = 0
-): Promise<Record<string, NoulAnswer>> {
+): Promise<JevResponse> {
   const res = await fetch(`${cfg.baseURL}/systemone`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
@@ -72,8 +87,10 @@ export async function askJev(
   }
   if (!res.ok) throw new Error(`Jev ${res.status}: ${(await res.text()).slice(0, 200)}`)
 
-  const body = await res.json() as { answers?: Record<string, NoulAnswer> }
-  return body.answers ?? {}
+  const body = await res.json() as { model?: string, answers?: Record<string, NoulAnswer> }
+  // Fall back to what we ASKED for only if the API omits it — storing the literal
+  // "jev-latest" is a last resort, since it records nothing about which model ran.
+  return { model: body.model || cfg.model, answers: body.answers ?? {} }
 }
 
 /** Flatten `{ transient: { type:'noul', noul: 0.8 } }` → `{ transient: 0.8 }`. */

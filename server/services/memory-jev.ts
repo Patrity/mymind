@@ -61,12 +61,16 @@ export async function runJevScoring(opts: { limit?: number } = {}): Promise<JevS
       const row = queue.shift()
       if (!row) return
       try {
-        const answers = nouls(await askJev(row.content, JEV_QUESTIONS, cfg))
+        const res = await askJev(row.content, JEV_QUESTIONS, cfg)
+        const answers = nouls(res.answers)
         const score = jevKeepScore(answers as Partial<JevAnswers>)
         // A partial response scores null. Still stamp jevScoredAt so the row is not retried
         // forever — the raw answers are kept either way, so a later weighting can revisit it.
+        //
+        // jevModel is the version that ANSWERED, not the one requested: the config asks for
+        // `jev-latest`, so this is the only record of which model produced this score.
         await db.update(memories)
-          .set({ jevScore: score, jevAnswers: answers, jevScoredAt: new Date(), jevModel: cfg.model })
+          .set({ jevScore: score, jevAnswers: answers, jevScoredAt: new Date(), jevModel: res.model })
           .where(sql`${memories.id} = ${row.id}`)
         scored++
       } catch (err) {

@@ -25,6 +25,11 @@
  * priced out at or below the 43% base rate — it would discard more keepers than junk. So
  * nothing here deletes anything; it sorts, and a human still decides.
  *
+ * Those numbers were measured on jev-1.13.0. The config requests `jev-latest`, and each row
+ * records the version that actually answered (`memories.jev_model`), so when a newer model
+ * ships the calibration can be re-measured per version rather than silently assumed to
+ * carry over.
+ *
  * ## Why the raw answers are stored
  *
  * The expensive half is the API call; the weighting below is a pure function over its
