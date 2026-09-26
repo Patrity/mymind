@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 71
-updated: 2026-09-24
+cycle: 72
+updated: 2026-09-26
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
 mymind_hash: 8dfb0547f7e2cc8ce201900150e7d7116b620bb42fa60aa022750ee5fac02551
 ---
@@ -405,13 +405,17 @@ A `/` typed at the **start** of an empty composer opens a command menu, the way 
 
 It is **`/browser-testing`, not `/skill browser-testing`** — a skill is a first-class command name, so there is no second trigger to learn.
 
-**Why the two halves run in different places.** A prompt command is *text the user is sending*, so expanding it client-side keeps the composer, the persisted transcript and the model in agreement, and a fork/edit of that turn replays correctly. A skill body is *instruction the agent needs* and can run to thousands of characters; putting it in the message would pollute the transcript, the conversation title and every later summary. So `PromptInput.vue` passes the skill **name** as the 4th argument of `sendText` → `useVoice.sendText` → the WS frame `{type:'text', …, skill}` → `ws.ts` closes over it in `buildMemoryContext` → `assembleContext({…, skill})` pushes the body as a **fixed tier, first**, ahead of resident/live/summary. Audio turns never set it — there is no way to speak a `/`-command, by design.
+**Why the two halves run in different places.** A prompt command is *text the user is sending*, so expanding it client-side keeps the composer, the persisted transcript and the model in agreement, and a fork/edit of that turn replays correctly. A skill invocation is sent **VERBATIM** — `/db-maintenance`, or `/db-maintenance check the indexes`. An earlier version rewrote a bare invocation into "Use the db-maintenance skill.", which fixed an emptiness bug but erased the command, so neither the transcript, a fork/edit replay, nor the model reading its own history could tell a slash command had been used. A skill body is *instruction the agent needs* and can run to thousands of characters; putting it in the message would pollute the transcript, the conversation title and every later summary. So `PromptInput.vue` passes the skill **name** as the 4th argument of `sendText` → `useVoice.sendText` → the WS frame `{type:'text', …, skill}` → `ws.ts` closes over it in `buildMemoryContext` → `assembleContext({…, skill})` pushes the body as a **fixed tier, first**, ahead of resident/live/summary. Audio turns never set it — there is no way to speak a `/`-command, by design.
 
 **Pieces.** `server/lib/commands/merge.ts` is the pure precedence merge (a surviving entry carries `shadows?: CommandKind[]` naming the kinds it beat; a same-kind guard stops an entry shadowing itself). `server/services/commands.ts` merges the three sources and `GET /api/agent/commands` is a 5-line handler over it. `app/lib/agent/slash.ts` holds the trigger rules as pure functions — `shouldOpenMenu` (`/^\/[^\s]*$/`, so a `/` mid-text is just text), `applySelection`, `nextHighlight` (wrap-around), `shouldInterceptEnter`. `useCommands` caches on `['agent','commands']`, which `app/utils/live-dispatch.ts` refreshes on any `document` change — so creating or renaming a skill updates the menu live.
 
+**The menu is a plain `<ul role="listbox">`, and it is a SIBLING of `<PromptInput>`, both deliberately.**
+
+It floats over the transcript (`absolute bottom-full` on a `relative` wrapper) rather than sitting in the flow, where it grew the input block and shoved the conversation up on every keystroke. It must live OUTSIDE `<PromptInput>`: the vendored component wraps its children in `<InputGroup class="overflow-hidden">` to clip the composer's rounded corners, and anything positioned above the box is clipped away with them — present in the DOM, correct bounding rect, invisible. That shipped for one deploy. `test/agent-commands-menu.test.ts` now pins the menu's position in the markup.
+
 **The menu is a plain `<ul role="listbox">`, deliberately.** shadcn-vue's vendored `Command`/`CommandItem` gate item visibility on a `filterState` that only `CommandInput` populates, and the composer's own textarea *is* the input — so mounting `CommandInput` was never an option and the menu rendered nothing without it. That cost three fix rounds before the wrapper was dropped. Don't reach for it again here.
 
-**Keyboard.** `PromptInputTextarea.vue` declares a `keydown` emit and its Enter branch checks `e.defaultPrevented`, so the menu can claim Enter without the composer also sending. With the menu open: Enter selects, ↑/↓ wrap, Escape dismisses **and keeps the typed text**. Shift+Enter always inserts a newline and never selects.
+**Keyboard.** **Tab** completes the highlighted command, and selecting one — by Tab, Enter or click — returns focus to the textarea (a click moved focus to the `<li>`, so the next keystroke went nowhere). `PromptInputTextarea.vue` declares a `keydown` emit and its Enter branch checks `e.defaultPrevented`, so the menu can claim Enter without the composer also sending. With the menu open: Enter selects, ↑/↓ wrap, Escape dismisses **and keeps the typed text**. Shift+Enter always inserts a newline and never selects.
 
 **Skill bodies are capped.** `SKILL_TIER_MAX_CHARS = 8000` in `server/lib/agent/assemble.ts`; `capSkillBody` keeps head and tail with a `"\n\n…\n\n"` joiner **counted against the cap** (halving and then adding the joiner back returned 8005 for an 8000 cap — fixed). This matters because `fitBudget`'s fixed tiers are **all-or-nothing**: if they overflow the budget together, `assembleContext` drops *every* one of them, including the skill the user explicitly named. `listResidentMemories` is capped the same way (`RESIDENT_MEMORY_LIMIT = 40`, most-retrieved first) for the same reason.
 

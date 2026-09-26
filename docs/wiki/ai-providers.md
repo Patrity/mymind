@@ -1,8 +1,8 @@
 ---
 title: AI Model Providers
 status: shipped
-cycle: 12
-updated: 2026-06-14
+cycle: 72
+updated: 2026-09-26
 ---
 
 # AI Model Providers
@@ -22,9 +22,12 @@ interface AiConfigDoc {
 }
 ```
 
-- **`USAGES`** = `reasoning` · `bulk` · `embeddings` · `vision` · `stt` · `tts` · `rerank`.
+- **`USAGES`** = `reasoning` · `bulk` · `embeddings` · `vision` · `stt` · `tts` · `rerank` · `jev` *(cycle 72)*.
+  - **`jev`** is TypeSafe System One — a decision model, not a chat completion, so it does NOT go through `withFailover` (no fallback chain; unconfigured or unreachable simply means memories go unscored). It is in `USAGES` anyway because everything it needs — baseURL, apiKey, a model id — is what a ProviderDef + ModelDef already carry, and the whole registry (zod schema, PUT validation, the assignments UI) is generated from this array. Keeping its key in an env file instead would have made it the one model secret not editable from Settings. See [memory.md](memory.md#jev-scoring-a-second-opinion-cycle-72).
+  - Assign it the model id **`jev-latest`**: the API echoes back which version actually answered, and `memories.jev_model` stores that, so upgrades arrive automatically without losing per-row provenance.
 - **`ProviderDef.kind`** is always **`openai-compatible`** (baseURL required). There is **one transport** — non-OpenAI vendors (e.g. Anthropic/Claude) are fronted by an **OpenAI-compatible gateway (LiteLLM)** and configured as a normal `openai-compatible` provider whose baseURL points at the gateway. (Native `anthropic` support and the `@ai-sdk/anthropic` dependency were removed in cycle 21 — see the handover — because the two transports diverged: Anthropic worked on the agent's `languageModel()` path but silently broke on the `chat()` path.) `apiKeyEnc` is AES-GCM ciphertext, **server-only — never serialized to the client.**
 - **`ModelDef.dim`** is `EMBEDDING_DIM` (2560) for embedding models, else `null`.
+- ⚠️ **Adding a usage must never invalidate an existing config.** Every key in `assignments` is `.default([])` in BOTH the stored-doc schema (`registry/schema.ts`) and the PUT validator (`api/settings/ai-config.put.ts`). When they were required, adding `jev` made every config written before it existed fail to parse — and a parse failure surfaces as *"AI not configured"*, so the entire provider and model set appears to vanish and the app redirects to `/onboarding`. A usage nobody has assigned is legitimately empty, so defaulting is also the honest reading. Covered by `test/ai-registry-schema.test.ts`.
 - **`assignments[usage]`** is an *ordered* list of model ids = the failover chain for that usage (first = primary).
 
 ## Storage + encryption

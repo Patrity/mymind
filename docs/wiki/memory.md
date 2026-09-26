@@ -1,8 +1,8 @@
 ---
 title: Memory System
 status: shipped
-cycle: 70
-updated: 2026-09-24
+cycle: 72
+updated: 2026-09-26
 mymind_id: c17a75f7-52f5-4024-8e2d-c0e173245096
 mymind_hash: stale-cycle-70
 ---
@@ -12,7 +12,7 @@ mymind_hash: stale-cycle-70
 Reimplements the bridget memory service in TS: ingest AI-session transcripts, enrich into durable memories, search semantically. Nothing auto-trusted — enrichment memories are `unreviewed` until the human marks them reviewed.
 
 ## Data model
-- `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 23), `source_date` (last-observed, = source session `started_at`, cycle 23), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`, plus **cycle 70**: `applicability` (`global`|`project`, default `project`), `resident` (boolean, DB CHECK `resident => applicability='global'`), `retrieval_count`, `last_retrieved_at`. Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
+- `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 23), `source_date` (last-observed, = source session `started_at`, cycle 23), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`, plus **cycle 70**: `applicability` (`global`|`project`, default `project`), `resident` (boolean, DB CHECK `resident => applicability='global'`), `retrieval_count`, `last_retrieved_at`; plus **cycle 72**: `jev_score` (real, Jev's second opinion — see [Jev scoring](#jev-scoring-a-second-opinion-cycle-72)), `jev_answers` (jsonb, the raw Noul answers), `jev_scored_at`, `jev_model` (the version that *answered*). Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
 - `memory_relations` (cycle 13, `memory-relations.ts`): `from_id`→`to_id`, `type` (supersedes|contradicts|duplicate-of), `confidence`, `status` (active|resolved), `reason`. The lineage/conflict graph; unique edge `(from,to,type)`.
 - `sessions` (source, external_id unique, project, cwd, title, summary, message_count, started_at, last_active, metadata) + `messages` (session_id, role, content, external_uuid unique-per-session) + `mem_enrichment_state` (enrichment progress; **cycle 70** re-keyed `(source_kind, source_id)` where `source_kind` is `session`|`conversation`).
 
@@ -47,10 +47,18 @@ memories sat filed under whichever project happened to reveal them.
   per turn), intended to let the resident tier nominate itself from measured cross-project usage
   rather than a model's judgment of importance.
 
-**Current reality:** the applicability backfill (`scripts/backfill-applicability.ts`) classified 93%
-of the store as uncertain and set only **6** memories to `global`. Nothing writes `resident` yet, so
-`listResidentMemories()` returns `[]` in production — the promotion path needs `/review` approve
-handlers that do not exist. The columns are live; the tiers are effectively empty.
+**Current reality (prod, 2026-09-26):** the applicability backfill
+(`scripts/backfill-applicability.ts`) has been run against production — 2,301 live project-tagged
+memories classified, **27 set to `global`** (1.2%), 104 confirmed `project`, and 2,170 left at the
+default because the classifier was uncertain. The promoted set is genuinely cross-project (`Tony
+works for NLS`, Gulf Coast insurance, the git-worktree and PowerShell gotchas).
+
+1.2% is a thin yield and the script's own Ruling 18 predicted it: the noul distribution is too
+compressed to gate confidently. Real global promotion is meant to come from the
+**retrieval-count** path — a memory measurably reused across projects — which needs the `resident`
+writer. **Nothing writes `resident` yet**, so `listResidentMemories()` still returns `[]` in
+production; that path needs `/review` approve handlers that do not exist. The `global` tier is now
+lightly populated; the `resident` tier is empty.
 
 ## Enrichment sources (cycle 70)
 
@@ -114,6 +122,66 @@ different memories, so the caller cannot know which row the gate will judge; it 
 > memory was wrong. `contradict` has **never** archived anything — it has always inserted a
 > relation + a review row. `review-contradict` is byte-identical in effect. The branch that
 > archives is `supersede`, which is why the gate now covers it.
+
+## Jev scoring — a second opinion (cycle 72)
+
+`confidence` is the enrichment writer grading its own work. **Jev** (TypeSafe System One) is an
+independent read of the same text, stored beside it and **oriented the same way — higher means
+more likely worth keeping** — so a gap between the two is the signal worth looking at.
+
+**It sorts the review queue. It does not decide anything.** That limit is measured. Against the
+28 hand labels in `scripts/data/memory-labels-2026-09-22.jsonl`:
+
+| Signal | Predicts | AUC | 95% CI |
+|---|---|---|---|
+| `transient` ("a point-in-time snapshot") | noise | **0.81** | [0.62, 0.96] — the only significant one |
+| `rederivable` | noise | 0.62 | [0.19, 0.89] |
+| `value` (holistic "how valuable is this") | noise | **0.27** | **anti-correlated** |
+
+The pattern: **observable** questions carry signal, the **taste** question does not — it asks Jev
+to guess Tony's judgement instead of reading the text. It is not asked at all, and
+`test/memory-jev-score.test.ts` fails if anyone re-adds it. Ordering needs only to beat random
+(0.81 clears that); a drop threshold needs calibration, and with 4 noise examples every cutoff
+priced out **at or below the 43% base rate** — it would discard more keepers than junk.
+
+- `server/lib/memory/jev-score.ts` — the four pinned questions + `jevKeepScore` (pure; weighting
+  dominated by `transient`) + `compareByJev` (worst-first; **unscored sorts last**, because
+  unknown is not bad; newest-first on a tie).
+- `server/lib/ai/jev.ts` — `jevConfig()` resolves through `resolveChain('jev')`, `askJev()` POSTs
+  `{state, model, questions}` to `${baseURL}/systemone` and retries only on 429.
+- `server/services/memory-jev.ts` — `runJevScoring({limit})`, concurrency 6, targets
+  **unreviewed + unscored + live** rows only. A failure leaves the row unstamped so the next run
+  retries it; a partial response stamps with a null score so it is not retried forever.
+- `server/tasks/score-memories.ts` — cron `5-59/15`, i.e. *after* `enrich-memories` on the quarter
+  hour rather than racing it. No-ops when no `jev` model is assigned.
+
+The **raw answers are stored** so a better weighting, once there are more labels, is a recompute
+rather than thousands of API calls. `jev_model` records the version that **answered** — the config
+requests `jev-latest` and the API echoes back the resolved version — so a future calibration can
+segment by version instead of assuming one.
+
+**Known limit:** Jev is good at spotting *transient* junk and has no measured ability to spot a
+durable-sounding fact that is simply wrong or redundant. Those still sit mid-pack.
+
+## Review surface — `app/pages/review.vue` (cycle 72)
+
+Both card kinds show a **`📁 project` badge**; for a conflict it is resolved server-side from the
+NEW memory in `listReviewFeed` (the row itself has no project). Two memories can read as flatly
+contradictory and both be correct in different projects, so it is the first thing needed to judge
+one.
+
+- **Unreviewed memories** show `confidence` and `% Jev` side by side, and have **two** exits:
+  *Mark reviewed* and *Discard*. Discard archives (never deletes) and the archive response's undo
+  token drives an **Undo** toast. This matters because `assembleContext` searches with
+  `reviewed: true` — marking reviewed is exactly what lets Bridget see a memory, so with only one
+  exit the queue could promote junk into her context but never shed it.
+- **Conflicts** resolve four ways via `POST /api/review/[id]/resolve`: `keep-both`, `archive-old`,
+  `archive-new`, `archive-both`. `archivalPlan` (`server/lib/review/conflict-resolution.ts`) is a
+  pure, tested function deciding which rows to archive — inverting it would silently archive the
+  memory the user chose to keep. Every branch archives; nothing here deletes.
+
+⚠️ `POST /api/agent/undo` takes `{ token }`, **not** `{ undoToken }` (zod rejects the latter with a
+500). The archive response's field is named `undoToken`, so the asymmetry is easy to get wrong.
 
 ## UI — `app/pages/memories.vue`
 Search (hybrid), scope filter, unreviewed toggle, cards (content/scope/tags/source). Search results show a **relevance** badge; list mode shows **confidence**. Archive only — see below for where the human review gate moved. **Provenance (cycle 13):** each card surfaces its source-session link, the verbatim `quote` + `reasoning` from its evidence, and relation badges (→ supersedes / ← superseded-by / ⚠ contradicts). `/review` renders memory-conflict items (New vs Existing + Accept / Keep-both). **Cycle 24:** cards show the **source date** (`sourceDate ?? createdAt`, so imported history reads backdated, not "today") + a **project** badge, with a **project filter** (`USelectMenu`) alongside scope/tags.

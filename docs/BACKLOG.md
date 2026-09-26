@@ -360,9 +360,9 @@ baseline; see the [handover](handovers/2026-09-21-agent-chat-affordances.md). Wh
   cause is structural: the harness instructs those lines and the global CLAUDE.md overrides it, so
   every dispatch re-wins the same conflict.
 
-### Memory applicability + context assembler (cycle 70) and slash commands (cycle 71) — 🔨 built, NOT merged
+### Memory applicability + context assembler (cycle 70) and slash commands (cycle 71) — ✅ merged + deployed
 
-Both shipped on `worktree-cycle-70-memory-assembler`; migrations 0046–0052 are applied to **DEV only**. Tracked as one MyMind task ("Cycles 70+71 follow-ups"). Handovers: [`2026-09-24-memory-applicability-context-assembler.md`](handovers/2026-09-24-memory-applicability-context-assembler.md), [`2026-09-24-slash-commands.md`](handovers/2026-09-24-slash-commands.md).
+Both shipped and are live on prod; migrations 0046–0053 are applied there. Tracked as one MyMind task ("Cycles 70+71 follow-ups"). Handovers: [`2026-09-24-memory-applicability-context-assembler.md`](handovers/2026-09-24-memory-applicability-context-assembler.md), [`2026-09-24-slash-commands.md`](handovers/2026-09-24-slash-commands.md), and the follow-on [`2026-09-26-review-surface-and-jev.md`](handovers/2026-09-26-review-surface-and-jev.md).
 
 Deferred, in rough order of how much they cost to leave open:
 
@@ -375,10 +375,30 @@ Deferred, in rough order of how much they cost to leave open:
 - `capSkillBody` trims head+tail, so a long skill that puts its steps in the middle loses them. Nothing is near the 8000-char cap today.
 - **`.db.test.ts` constant-embedding hazard:** the suites stub `$fetch` to one fixed vector, so `createMemory` silently merges any two rows sharing `(scope, project)`. Tests needing distinct rows must insert directly — worth a harness fix rather than a per-test workaround, since the failure looks like a missing row, not a merge.
 
+### Memory system direction (from the cycle-72 audit) — the highest-value open work
+
+Measured on prod, 2026-09-26. These reframe what "improving memory" means:
+
+- **The store is close to write-only: 1,389 `enrich-memories` runs against 4 `search_memories` calls in 30 days.** Enrichment added 283 memories last week, up from ~45/week in August.
+- **92% of live memories are `agent` scope** (avg 162 chars), mostly project inventory a grep answers faster and that rots — 212 contain a version number, 47 a host or port. **Only 3% (80 memories) are `user` scope**, and that is the only layer not re-derivable from the repos.
+- **~43% of the corpus is stale or noise** by Tony's own labels (16 keep / 8 stale / 4 noise of 28).
+
+Open items, in the order they are worth doing:
+
+1. **Intent routing before retrieval.** Retrieval is bimodal: a specific lookup returns the right memory first, an open question ("what should I work on next on mymind") returns six topically-related memories that answer nothing. **This is not a reranker problem** — the Qwen3-Reranker at `:8883` is live, assigned, wired into `searchMemories`, and working (it separates 1.000 / 0.649 / 0.228 on a lookup). It is a topical-similarity model, so on an intent question it ranks the one memory that answers **last**. Open questions should route to tasks + handovers, not memory similarity.
+2. **A Bridget interview skill** to grow the `user` layer deliberately. Design caution: a model already holding 2,600 memories will ask leading questions and record its own paraphrase — it must quote Tony rather than summarise.
+3. **Do NOT cut the enrichment write rate** (reversing an earlier recommendation of mine). A memory not written is unrecoverable, a memory written but unread costs one row, and `retrieval_count` is the only *measured* signal of value. Write liberally, gate hard at retrieval, let usage teach you. Precision at read time matters *more* as reads increase, not less.
+4. **Jev cannot spot non-transient junk** — a durable-sounding fact that is simply wrong or redundant still sits mid-pack. The binding constraint is 4 noise examples in the labelled set, not the model. More labels of the *droppable* class would close it.
+
+### Any script that dumps memory contents is dumping personal data
+
+`scripts/data/` is gitignored as of cycle 72. GitHub push protection blocked a merge because `applicability-backfill-2026-09-24.jsonl:9` held a live OpenRouter key — a stored memory's content was literally `"User's OpenRouter API key is sk-or-…"` and the backfill script dumps every memory's content to JSONL. Four such files were carrying **1,867 raw memory contents** toward a PUBLIC repo. Nothing reached origin; history was rewritten (backup tag `pre-secret-rewrite`).
+
 Two process lessons worth keeping, both paid for in fix rounds:
 
 - **Browser-validate at the task that builds the UI, not at end-of-cycle wrap-up.** Cycle 71's `/` menu passed two code reviews and two fix rounds while rendering *nothing* — every review reasoned about the diff, and the suite was green throughout. It was caught only because the next task's implementer happened to look at the page.
 - **"Already vendored" is not "fits".** Three of those rounds went to shadcn's `Command` wrapper, which gates item visibility on a `filterState` only `CommandInput` populates — and the composer's own textarea *is* the input, so mounting it was never an option. A plain `<ul>` worked first try.
+- **Geometry is not visibility** (cycle 72). The same menu later shipped *invisible* because it sat inside an `overflow-hidden` ancestor, and the browser check asserted `getBoundingClientRect`, which reports a correct rect for a fully clipped element. Hit-test with `elementFromPoint`, and screenshot a visual change rather than measuring it. Both now in the `browser-testing` skill.
 
 ---
 
