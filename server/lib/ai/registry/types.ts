@@ -3,7 +3,12 @@
 // JSONB row (settings.key='ai_config'); ResolvedModel is the decrypted,
 // ready-to-call shape the resolver hands to consumers.
 
-export const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank'] as const
+// `jev` is TypeSafe System One — a decision model, not a chat completion. It is in this list
+// anyway because everything a caller needs (baseURL, apiKey, pinned model id) is exactly what
+// a ProviderDef + ModelDef already carry, and the whole registry — zod schema, PUT validation,
+// and the Settings assignments UI — is generated from this array. Keeping Jev's credential in
+// an env file instead would have made it the one model secret not editable from Settings.
+export const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev'] as const
 export type Usage = (typeof USAGES)[number]
 
 export const EMBEDDING_DIM = 2560
@@ -52,7 +57,7 @@ export interface ResolvedModel {
 }
 
 export function emptyAssignments(): Assignments {
-  return { reasoning: [], bulk: [], embeddings: [], vision: [], stt: [], tts: [], rerank: [] }
+  return { reasoning: [], bulk: [], embeddings: [], vision: [], stt: [], tts: [], rerank: [], jev: [] }
 }
 
 export function emptyDoc(): AiConfigDoc {

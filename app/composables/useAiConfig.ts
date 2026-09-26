@@ -11,7 +11,10 @@ export interface DraftProvider { id: string; name: string; kind: ProviderKind; b
 export interface DraftModel { id: string; providerId: string; modelId: string; label: string; dim: number | null; contextWindow: number | null }
 export interface DraftDoc { version: 1; providers: DraftProvider[]; models: DraftModel[]; assignments: Record<string, string[]> }
 
-const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank'] as const
+// Must stay in step with USAGES in server/lib/ai/registry/types.ts — the server validates
+// the PUT against its own copy, so a usage missing here is simply invisible in Settings
+// while a usage missing THERE is a 422 on save.
+const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev'] as const
 
 function uid(): string { return (globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.round(Math.random() * 1e6)}`) }
 

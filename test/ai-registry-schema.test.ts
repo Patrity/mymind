@@ -17,6 +17,24 @@ describe('config schema', () => {
     expect(parseConfig(doc()).assignments.reasoning).toEqual(['m1'])
   })
 
+  it('parses a config stored BEFORE a usage existed, defaulting the new one to empty', () => {
+    // Adding a usage to USAGES must never invalidate a config written without it. When the
+    // assignments schema required every key, adding `jev` made a real stored config fail to
+    // parse — and a parse failure reads as "AI not configured", so the entire provider and
+    // model set appeared to vanish and the app redirected to onboarding.
+    const older = doc()
+    delete (older.assignments as Record<string, unknown>).jev
+    delete (older.assignments as Record<string, unknown>).rerank
+
+    const parsed = parseConfig(older)
+    expect(parsed.assignments.jev).toEqual([])
+    expect(parsed.assignments.rerank).toEqual([])
+    // The parts that WERE stored must survive intact — the point is that nothing is lost.
+    expect(parsed.assignments.reasoning).toEqual(['m1'])
+    expect(parsed.providers).toHaveLength(1)
+    expect(parsed.models).toHaveLength(1)
+  })
+
   it('rejects a model referencing a missing provider', () => {
     const d = doc(); d.models[0]!.providerId = 'nope'
     expect(() => parseConfig(d)).toThrow(/provider/i)

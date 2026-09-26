@@ -21,8 +21,19 @@ const modelSchema = z.object({
   contextWindow: z.number().int().positive().nullable().default(null)
 })
 
+/**
+ * Every usage DEFAULTS to empty rather than being required.
+ *
+ * Without the default, adding a usage to USAGES makes the schema reject every config stored
+ * before it existed — and a parse failure here surfaces as "AI not configured", so the whole
+ * provider/model set appears to vanish and the app redirects to onboarding. Adding `jev`
+ * reproduced exactly that against a real config.
+ *
+ * A usage nobody has assigned is legitimately empty, so defaulting is also the honest
+ * reading: absent and empty mean the same thing here.
+ */
 const assignmentsSchema = z.object(
-  Object.fromEntries(USAGES.map(u => [u, z.array(z.string())])) as Record<Usage, z.ZodArray<z.ZodString>>
+  Object.fromEntries(USAGES.map(u => [u, z.array(z.string()).default([])])) as Record<Usage, z.ZodDefault<z.ZodArray<z.ZodString>>>
 )
 
 const docSchema = z.object({

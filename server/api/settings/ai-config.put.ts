@@ -17,7 +17,9 @@ const Body = z.object({
     dim: z.number().int().positive().nullable(),
     contextWindow: z.number().int().positive().nullable().default(null)
   })),
-  assignments: z.object(Object.fromEntries(USAGES.map(u => [u, z.array(z.string())])))
+  // Defaulted, not required — same reason as the stored-doc schema: an older client that
+  // does not know about a newly added usage must still be able to save, rather than 422.
+  assignments: z.object(Object.fromEntries(USAGES.map(u => [u, z.array(z.string()).default([])])))
 })
 
 export default defineEventHandler(async (event) => {
