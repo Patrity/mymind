@@ -44,3 +44,9 @@ searxng/uwsgi.ini
 
 # superpowers brainstorm visual companion
 .superpowers/
+
+# One-time script artifacts: memory/label dumps produced by scripts/*.ts.
+# These carry raw memory CONTENTS — personal data, and in one case a live API
+# key that GitHub push protection caught on the way to this PUBLIC repo.
+# Keep them local; never commit them.
+scripts/data/
