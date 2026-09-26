@@ -147,7 +147,7 @@ const toast = useToast()
 
 // The one action a memory-unreviewed item supports (task-13) — reuses the same composable
 // action app/pages/memories.vue used for its now-removed "Mark reviewed" button.
-const { review: reviewMemoryAction } = useMemories()
+const { review: reviewMemoryAction, archive: archiveMemoryAction } = useMemories()
 
 const { data, refetch, isPending, error } = useQuery({
   queryKey: ['review', 'list'],
@@ -333,6 +333,57 @@ async function markMemoryReviewed(id: string) {
     toast.add({ color: 'error', title: 'Review failed', description: err.data?.statusMessage ?? err.message })
   } finally {
     actioning.value[id] = false
+  }
+}
+
+/**
+ * Discard an unreviewed memory.
+ *
+ * "Mark reviewed" used to be the ONLY exit from this queue, which meant the queue had one
+ * outcome regardless of whether the memory was any good: junk could only ever be promoted
+ * into the reviewed set, where `assembleContext` (reviewed: true) then feeds it to Bridget.
+ * Rejecting is the other half of reviewing.
+ *
+ * Archive, not delete — and the archive endpoint hands back an undo token, so a misclick is
+ * one toast action away from being reversed rather than gone.
+ */
+async function discardMemory(id: string) {
+  actioning.value[id] = true
+  try {
+    const res = await archiveMemoryAction(id)
+    toast.add({
+      color: 'warning',
+      title: 'Memory discarded',
+      description: 'Archived, not deleted.',
+      actions: res.undoToken
+        ? [{
+            label: 'Undo',
+            color: 'neutral' as const,
+            variant: 'outline' as const,
+            onClick: () => undoDiscard(res.undoToken!)
+          }]
+        : undefined
+    })
+    await refetch()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Discard failed', description: err.data?.statusMessage ?? err.message })
+  } finally {
+    actioning.value[id] = false
+  }
+}
+
+async function undoDiscard(undoToken: string) {
+  try {
+    // The endpoint's body key is `token`, not `undoToken` — its zod schema rejects the
+    // latter outright, so sending the wrong name fails the undo, not just the naming.
+    const res = await $fetch<{ ok: boolean, reason?: string }>('/api/agent/undo', { method: 'POST', body: { token: undoToken } })
+    if (res.ok) toast.add({ color: 'success', title: 'Memory restored' })
+    else toast.add({ color: 'error', title: 'Undo failed', description: res.reason ?? 'That discard could not be undone.' })
+    await refetch()
+  } catch (e: unknown) {
+    const err = e as { data?: { statusMessage?: string }, message?: string }
+    toast.add({ color: 'error', title: 'Undo failed', description: err.data?.statusMessage ?? err.message })
   }
 }
 </script>
@@ -656,8 +707,20 @@ async function markMemoryReviewed(id: string) {
               </div>
             </div>
 
+            <!-- Two outcomes, not one. Keeping a memory and rejecting it are both reviewing;
+                 with only "Mark reviewed" the queue could promote junk but never shed it. -->
             <template #footer>
               <div class="flex justify-end gap-2">
+                <UButton
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  icon="i-lucide-trash-2"
+                  :loading="actioning[item.id]"
+                  @click="discardMemory(item.id)"
+                >
+                  Discard
+                </UButton>
                 <UButton
                   color="primary"
                   variant="soft"
