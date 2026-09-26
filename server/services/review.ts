@@ -1,4 +1,4 @@
-import { eq, and, isNull, count, sql } from 'drizzle-orm'
+import { eq, and, isNull, count, sql, inArray } from 'drizzle-orm'
 import { useDb } from '../db'
 import { reviewQueue, documents, memories } from '../db/schema'
 import { publishChange } from '../utils/live-bus'
@@ -99,14 +99,38 @@ export async function listReviewFeed(): Promise<ReviewFeedItem[]> {
     .leftJoin(documents, and(eq(documents.id, reviewQueue.targetId), eq(reviewQueue.targetKind, 'document')))
     .where(eq(reviewQueue.status, 'pending'))
 
-  const queueItems: ReviewQueueFeedItem[] = queueRows.map(r => ({
-    id: r.id,
-    docId: r.targetKind === 'document' ? r.targetId : null,
-    kind: r.kind,
-    proposed: r.proposed,
-    createdAt: r.createdAt,
-    docPath: r.docPath
-  }))
+  // A memory conflict's `proposed` carries ids and content but no PROJECT, so the reviewer
+  // had no way to tell which codebase a contradiction came from — two memories can look
+  // flatly contradictory and both be right, in different projects. Resolve it here (one
+  // batched read, not per-row) rather than making the client fetch each memory.
+  const conflictNewIds = queueRows
+    .filter(r => r.kind === 'memory-contradict' || r.kind === 'memory-supersede')
+    .map(r => (r.proposed as { newId?: string } | null)?.newId)
+    .filter((id): id is string => typeof id === 'string')
+
+  const projectByMemoryId = new Map<string, string | null>()
+  if (conflictNewIds.length) {
+    const rows = await db.select({ id: memories.id, project: memories.project })
+      .from(memories).where(inArray(memories.id, conflictNewIds))
+    for (const row of rows) projectByMemoryId.set(row.id, row.project)
+  }
+
+  const queueItems: ReviewQueueFeedItem[] = queueRows.map(r => {
+    const p = r.proposed as Record<string, unknown> | null
+    const newId = typeof p?.newId === 'string' ? p.newId : null
+    // Only widen the payload for conflict kinds; every other kind passes through untouched.
+    const proposed = newId && projectByMemoryId.has(newId)
+      ? { ...p, project: projectByMemoryId.get(newId) ?? null }
+      : r.proposed
+    return {
+      id: r.id,
+      docId: r.targetKind === 'document' ? r.targetId : null,
+      kind: r.kind,
+      proposed,
+      createdAt: r.createdAt,
+      docPath: r.docPath
+    }
+  })
 
   const unreviewedMemories = await db.select({
     id: memories.id,

@@ -21,6 +21,8 @@ interface MemoryConflictProposed {
   reasoning?: string | null
   newContent?: string | null
   existingContent?: string | null
+  /** Resolved server-side from the NEW memory (listReviewFeed) — not stored on the row. */
+  project?: string | null
 }
 
 // A synthetic item (task-13) — NOT a review_queue row. `id` is a memories.id, so approving
@@ -260,33 +262,58 @@ async function reject(item: ReviewItem) {
 
 // ── Memory conflict helpers ────────────────────────────────────────────────
 
-async function acceptConflict(id: string, kind: string) {
+// The four ways a conflict can end. Two buttons ("keep both" / "accept") assumed the NEW
+// memory is always the better one — but enrichment can produce a worse restatement of a fact
+// you already had, and both sides can be stale. Those cases had no button at all.
+type ConflictResolution = 'keep-both' | 'archive-old' | 'archive-new' | 'archive-both'
+
+const CONFLICT_TOAST: Record<ConflictResolution, { title: string, description: string, color: 'success' | 'neutral' | 'warning' }> = {
+  'keep-both': { title: 'Both memories kept', description: 'Nothing archived — the conflict is marked resolved.', color: 'neutral' },
+  'archive-old': { title: 'Old memory archived', description: 'The new memory supersedes it.', color: 'success' },
+  'archive-new': { title: 'New memory archived', description: 'The existing memory stands.', color: 'warning' },
+  'archive-both': { title: 'Both memories archived', description: 'Neither is kept.', color: 'warning' }
+}
+
+async function resolveConflict(id: string, resolution: ConflictResolution) {
   actioning.value[id] = true
   try {
-    await $fetch(`/api/review/${id}/approve`, { method: 'POST' })
-    const label = kind === 'memory-supersede' ? 'New memory kept, old archived.' : 'Contradiction resolved — old memory archived.'
-    toast.add({ color: 'success', title: 'Conflict resolved', description: label })
+    await $fetch(`/api/review/${id}/resolve`, { method: 'POST', body: { resolution } })
+    toast.add({ ...CONFLICT_TOAST[resolution] })
     await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Accept failed', description: err.data?.statusMessage ?? err.message })
+    toast.add({ color: 'error', title: 'Could not resolve conflict', description: err.data?.statusMessage ?? err.message })
   } finally {
     actioning.value[id] = false
   }
 }
 
-async function keepBoth(id: string) {
-  actioning.value[id] = true
-  try {
-    await $fetch(`/api/review/${id}/reject`, { method: 'POST' })
-    toast.add({ color: 'neutral', title: 'Both memories kept' })
-    await refetch()
-  } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Keep-both failed', description: err.data?.statusMessage ?? err.message })
-  } finally {
-    actioning.value[id] = false
-  }
+/** Menu for one conflict card. `kind` only changes the wording of the supersede case. */
+function conflictActions(item: ReviewItem) {
+  const isSupersede = item.kind === 'memory-supersede'
+  return [[
+    {
+      label: 'Keep both',
+      icon: 'i-lucide-copy',
+      onSelect: () => resolveConflict(item.id, 'keep-both')
+    },
+    {
+      label: isSupersede ? 'Archive old (accept)' : 'Archive old',
+      icon: 'i-lucide-archive',
+      onSelect: () => resolveConflict(item.id, 'archive-old')
+    },
+    {
+      label: 'Archive new',
+      icon: 'i-lucide-archive-x',
+      onSelect: () => resolveConflict(item.id, 'archive-new')
+    },
+    {
+      label: 'Archive both',
+      icon: 'i-lucide-trash-2',
+      color: 'error' as const,
+      onSelect: () => resolveConflict(item.id, 'archive-both')
+    }
+  ]]
 }
 
 // ── memory-unreviewed helpers ─────────────────────────────────────────────
@@ -378,6 +405,16 @@ async function markMemoryReviewed(id: string) {
                     variant="outline"
                     size="xs"
                   />
+                  <!-- Two memories can read as flatly contradictory and both be correct, in
+                       different projects — so the project is the first thing needed to judge
+                       a conflict, not a detail. Resolved server-side from the NEW memory. -->
+                  <UBadge
+                    :label="(item.proposed as MemoryConflictProposed).project ?? 'no project'"
+                    :color="(item.proposed as MemoryConflictProposed).project ? 'primary' : 'neutral'"
+                    variant="soft"
+                    size="xs"
+                    :icon="(item.proposed as MemoryConflictProposed).project ? 'i-lucide-folder' : undefined"
+                  />
                   <span
                     v-if="(item.proposed as MemoryConflictProposed).confidence != null"
                     class="text-xs text-muted"
@@ -418,23 +455,29 @@ async function markMemoryReviewed(id: string) {
             </div>
 
             <template #footer>
+              <!-- One menu, four outcomes. The default action stays the common one (the new
+                   memory supersedes the old); the other three are a click away rather than
+                   impossible. Nothing here is destructive-without-recovery — every branch
+                   ARCHIVES, so a wrong call is reversible. -->
               <div class="flex justify-end gap-2">
-                <UButton
-                  color="neutral"
-                  variant="ghost"
-                  size="sm"
-                  :loading="actioning[item.id]"
-                  @click="keepBoth(item.id)"
-                >
-                  Keep both
-                </UButton>
+                <UDropdownMenu :items="conflictActions(item)" :popper="{ placement: 'top-end' }">
+                  <UButton
+                    color="neutral"
+                    variant="outline"
+                    size="sm"
+                    trailing-icon="i-lucide-chevron-down"
+                    :loading="actioning[item.id]"
+                  >
+                    Resolve
+                  </UButton>
+                </UDropdownMenu>
                 <UButton
                   :color="item.kind === 'memory-supersede' ? 'warning' : 'error'"
                   size="sm"
                   :loading="actioning[item.id]"
-                  @click="acceptConflict(item.id, item.kind)"
+                  @click="resolveConflict(item.id, 'archive-old')"
                 >
-                  Accept (archive old)
+                  Archive old
                 </UButton>
               </div>
             </template>
@@ -570,6 +613,16 @@ async function markMemoryReviewed(id: string) {
                     :color="MEMORY_SCOPE_COLOR[(item.proposed as MemoryUnreviewedProposed).scope]"
                     variant="subtle"
                     size="xs"
+                  />
+                  <!-- Which codebase this came from. Without it a memory is unjudgeable:
+                       "migrations are hand-written here" is correct in one project and wrong
+                       in the next, and the reviewer had no way to tell them apart. -->
+                  <UBadge
+                    :label="(item.proposed as MemoryUnreviewedProposed).project ?? 'no project'"
+                    :color="(item.proposed as MemoryUnreviewedProposed).project ? 'primary' : 'neutral'"
+                    variant="soft"
+                    size="xs"
+                    :icon="(item.proposed as MemoryUnreviewedProposed).project ? 'i-lucide-folder' : undefined"
                   />
                   <span
                     v-if="(item.proposed as MemoryUnreviewedProposed).confidence != null"
