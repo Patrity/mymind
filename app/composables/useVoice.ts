@@ -2,6 +2,7 @@
 import { mapServerMessage } from '../lib/voice/messages'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
 import { createClientTurns } from '../lib/agent/turn-stream'
+import { epochDividers } from '../lib/agent/dividers'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
 
@@ -49,7 +50,35 @@ export function useVoice() {
    * oversight: `conversations.context_epoch_at` is the real, persisted boundary the model
    * honours regardless; only the UI's visible marker for it is ephemeral.
    */
-  const dividers = ref<{ afterMessageId: string | null; epochAt: string }[]>([])
+  /**
+   * The persisted `/clear` boundary for the open thread — `conversations.context_epoch_at`,
+   * as an ISO string, or null if it has never been cleared.
+   *
+   * Written from BOTH sources on purpose, so they cannot diverge: the `cleared` frame sets it
+   * live, and `hydrateEpoch` sets it from `ConversationDTO.contextEpochAt` when a thread is
+   * loaded or the page is reloaded. One value, one divider, identical before and after a
+   * refresh.
+   */
+  const contextEpochAt = ref<string | null>(null)
+
+  /**
+   * Where to draw "Bridget's memory starts here", derived rather than accumulated.
+   *
+   * This used to be a plain array that only ever grew from `cleared` frames, so the marker
+   * lived exactly as long as the tab that ran `/clear`: after a reload the user read pre-clear
+   * messages the model could not see, with nothing saying so — the precise divergence the
+   * divider exists to prevent. Deriving it from the persisted epoch fixes that, and makes the
+   * live and reloaded renderings the same code path instead of two that can drift.
+   *
+   * The boundary falls after the last message that predates the epoch. A live-streamed message
+   * has no `createdAt` yet; treating it as infinitely recent is correct, because anything still
+   * streaming necessarily started after a clear that has already committed.
+   *
+   * One epoch per conversation, because `context_epoch_at` is a single column — clearing twice
+   * moves the boundary rather than adding a second one. That is also what a reload has always
+   * shown, so the live view now agrees with it.
+   */
+  const dividers = computed(() => epochDividers(contextEpochAt.value, messages.value))
   /**
    * Turns the server has confirmed COMMITTED on this connection. Bumped by the `persisted`
    * frame, which ws.ts sends the moment `appendMessages` returns.
@@ -283,11 +312,9 @@ export function useVoice() {
         if (fx.persisted) turnPersisted.value++
         if (fx.cleared) {
           if (fx.cleared.epochAt) {
-            // The boundary falls right after whatever is currently on screen — the server
-            // reset ITS history to empty, but this transcript is deliberately untouched (see
-            // dividers' doc comment), so "the last message now" IS the clear point.
-            const last = messages.value.at(-1)
-            dividers.value.push({ afterMessageId: last ? last.id : null, epochAt: fx.cleared.epochAt })
+            // Same value the DTO carries on a later reload, so the divider renders identically
+            // either way — `dividers` derives its position from this plus the messages.
+            contextEpochAt.value = fx.cleared.epochAt
           } else {
             // conversationId was null server-side — nothing to clear. A toast, not the error
             // alert: this is not a failure, just nothing having happened.
@@ -523,11 +550,11 @@ export function useVoice() {
      * hydrates the transcript from the HTTP fetch (see T8).
      */
     loadConversation: async (id: string) => {
-      // Session-local markers for the OLD thread — the new one's transcript (fetched by the
-      // page after this) is a different id space, so a leftover divider would either dangle
-      // unattached or, for a top-of-list one (afterMessageId null), wrongly reappear at the
-      // start of an unrelated conversation.
-      dividers.value = []
+      // Drop the OLD thread's boundary. The new one's transcript (fetched by the page after
+      // this) is a different id space, so a leftover epoch would draw a divider against
+      // unrelated messages — or, with nothing before it, wrongly at the top of the thread.
+      // The page calls `hydrateEpoch` with the new conversation's own value once it has it.
+      contextEpochAt.value = null
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return
       ws.send(JSON.stringify({ type: 'load', conversationId: id }))
@@ -547,7 +574,7 @@ export function useVoice() {
       // which would land in the NEW empty list as a "stopped" reply from the old thread.
       turns.discard()
       messages.value = []
-      dividers.value = [] // same reasoning as loadConversation's reset
+      contextEpochAt.value = null // same reasoning as loadConversation's reset
       conversationId.value = null
       conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))
@@ -571,6 +598,13 @@ export function useVoice() {
       restAfterAbort()
     },
     dividers,
+    /**
+     * Hand over the open conversation's persisted `/clear` boundary
+     * (`ConversationDTO.contextEpochAt`). The page calls this whenever it hydrates a
+     * transcript — on load, on resume, and after a post-turn re-read — which is what makes
+     * the divider survive a refresh instead of living only in the tab that ran `/clear`.
+     */
+    hydrateEpoch: (at: string | null) => { contextEpochAt.value = at ?? null },
     conversationId,
     conversationTitle,
     turnPersisted,

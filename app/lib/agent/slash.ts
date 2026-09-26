@@ -87,12 +87,16 @@ export function resolveSubmission(
   }
 
   if (entry.kind === 'skill') {
-    // "Use this skill" is a complete instruction, so a bare `/browser-testing` must still
-    // send. It used to leave text empty, which tripped onSubmit's `!text` guard AFTER
-    // submitForm had already cleared the box — the most natural flow out of the menu (pick,
-    // Enter) silently sent nothing and ate the input. The body still loads server-side; this
-    // only makes the turn non-empty and the transcript honest about what was asked.
-    return { text: cmd.args || `Use the ${entry.name} skill.`, skillName: entry.name }
+    // The typed line goes through VERBATIM, slash and all — `/db-maintenance`, or
+    // `/db-maintenance check the indexes`. Two earlier shapes were both wrong:
+    // sending only `cmd.args` left a bare invocation empty, which tripped onSubmit's
+    // `!text` guard AFTER submitForm had cleared the box (pick from the menu, hit Enter,
+    // lose your input); substituting "Use the <name> skill." fixed the emptiness but
+    // erased the command, so the transcript — and the model reading it back — never saw
+    // that a slash command existed at all. Keeping the raw line is what makes the agent
+    // aware of its own command surface, and it is what a fork/edit of the turn replays.
+    // The body still arrives out-of-band as the skill tier; this is only the message.
+    return { text, skillName: entry.name }
   }
 
   // A `prompt` entry with an empty template lands here and sends the raw "/name". The row

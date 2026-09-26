@@ -150,18 +150,20 @@ describe('resolveSubmission', () => {
     expect(resolveSubmission('/standup', cmd('/standup'), macro)).toEqual({ text: 'What did I ship?' })
   })
 
-  it('sends the arguments as the turn for a skill, naming the skill alongside', () => {
+  it('sends a skill invocation VERBATIM, slash and all, naming the skill alongside', () => {
+    // The command must survive into the turn: the transcript, a fork/edit replay, and the
+    // model reading its own history all need to see that a slash command was used. An
+    // earlier version sent only the arguments, which erased it.
     const r = resolveSubmission('/browser-testing validate the review page', cmd('/browser-testing validate the review page'), skill)
-    expect(r).toEqual({ text: 'validate the review page', skillName: 'browser-testing' })
+    expect(r).toEqual({ text: '/browser-testing validate the review page', skillName: 'browser-testing' })
   })
 
-  it('still sends a non-empty turn for a skill with NO arguments', () => {
-    // "use this skill" is a complete instruction. Returning empty text made onSubmit's
-    // `!text` guard fire AFTER submitForm had cleared the box: nothing sent, input eaten.
+  it('sends the bare command for a skill with NO arguments', () => {
+    // Two earlier shapes were wrong here: empty text tripped onSubmit's `!text` guard AFTER
+    // submitForm had cleared the box (nothing sent, input eaten), and substituting
+    // "Use the <name> skill." fixed that but erased the command from the transcript.
     const r = resolveSubmission('/browser-testing', cmd('/browser-testing'), skill)
-    expect(r.skillName).toBe('browser-testing')
-    expect(r.text).toBeTruthy()
-    expect(r.text).toContain('browser-testing')
+    expect(r).toEqual({ text: '/browser-testing', skillName: 'browser-testing' })
   })
 
   it('falls through as ordinary text when the name matches no entry', () => {

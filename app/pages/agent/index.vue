@@ -158,6 +158,10 @@ async function resume(id: string, opts?: { quiet?: boolean }): Promise<boolean> 
     voice.messages.value = next
     voice.conversationId.value = conversation.id
     voice.conversationTitle.value = conversation.title
+    // AFTER the messages are committed: the divider's position is derived from both, and
+    // hydrating the epoch against the previous thread's transcript would place it wrongly
+    // for a frame. This is what makes "Bridget's memory starts here" survive a reload.
+    voice.hydrateEpoch(conversation.contextEpochAt)
     return true
   } catch (e) {
     // The rail is now the primary way into a thread, so a failed load must say so rather

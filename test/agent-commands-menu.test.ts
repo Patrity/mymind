@@ -102,9 +102,26 @@ describe('the / command menu row', () => {
     expect(menu).toContain('/clear')
   })
 
-  it('renders the hint when there is one', async () => {
+  it('does NOT render the hint — a row is a name and one line of description', async () => {
+    // The "Use when …" hint made every row wrap to two or three lines and buried the names
+    // the menu exists to let you scan. Name + truncated description only.
     const { menu } = await renderComposer({ menuVisible: true, filteredCommands: [entry({ hint: 'when to use it' })] })
-    expect(menu).toContain('when to use it')
+    expect(menu).not.toContain('when to use it')
+    expect(menu).toContain('Browser testing')
+  })
+
+  it('floats over the transcript instead of growing the composer', async () => {
+    // In the flow the list pushed the input block down and shoved the conversation up on
+    // every keystroke, which read as the composer breaking rather than a menu opening.
+    // The positioning lives on the wrapper AROUND the <ul>, so assert on the full html and
+    // require it to sit immediately before the list rather than anywhere on the page.
+    const { html } = await renderComposer({ menuVisible: true, filteredCommands: [entry()] })
+    const wrapper = html.slice(0, html.indexOf('<ul'))
+    const lastDiv = wrapper.lastIndexOf('<div')
+    expect(lastDiv).toBeGreaterThan(-1)
+    const openTag = wrapper.slice(lastDiv)
+    expect(openTag).toContain('absolute')
+    expect(openTag).toContain('bottom-full')
   })
 
   it('renders a shadows marker naming the source the winner displaced', async () => {

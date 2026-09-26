@@ -64,6 +64,16 @@ export interface ConversationDTO {
   messageCount: number
   lastMessageAt: string | null
   createdAt: string
+  /**
+   * The `/clear` boundary: messages created before this are still stored and still shown,
+   * but the model cannot see them (`getAgentHistory` filters on it).
+   *
+   * It has to reach the client or the divider only exists for the lifetime of the tab that
+   * ran `/clear` — after a reload the user reads pre-clear messages Bridget has no idea
+   * about, with nothing marking where her memory starts. That silent divergence is the exact
+   * thing the divider exists to prevent. Null when the conversation has never been cleared.
+   */
+  contextEpochAt: string | null
 }
 export interface ConversationListItem extends ConversationDTO {
   snippet: string | null   // first/last message preview for the list/slideover

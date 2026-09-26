@@ -210,8 +210,32 @@ watch(menuOpen, (open) => {
   if (open) highlightedIndex.value = 0
 })
 
+// `ref` on a COMPONENT yields its instance, not an element — reach the DOM through $el.
+const rootRef = ref<{ $el?: HTMLElement } | HTMLElement | null>(null)
+
+function rootEl(): HTMLElement | null {
+  const r = rootRef.value
+  if (!r) return null
+  return r instanceof HTMLElement ? r : (r.$el ?? null)
+}
+
+/**
+ * Selecting a command must leave the caret back in the composer.
+ *
+ * A mouse click moves focus to the `<li>`, and even the keyboard path can leave focus
+ * ambiguous once the list unmounts underneath it — either way the next keystroke went
+ * nowhere and the command looked like it had frozen the box. The textarea is found through
+ * the component's own root rather than a template ref because it lives inside the vendored
+ * PromptInputTextarea, which exposes no ref of its own.
+ */
+async function focusComposer() {
+  await nextTick()
+  rootEl()?.querySelector('textarea')?.focus()
+}
+
 function onPickCommand(name: string) {
   setTextInput(applySelection(name))
+  void focusComposer()
 }
 
 // Bridges keyboard control into the menu. PromptInputTextarea emits `keydown`
@@ -231,6 +255,17 @@ function onComposerKeydown(e: KeyboardEvent) {
     highlightedIndex.value = nextHighlight(highlightedIndex.value, filteredCommands.value.length, -1)
     return
   }
+  // Tab completes the highlighted command, the way a shell and every other slash menu do.
+  // Unlike Enter it has no second meaning to protect here: the composer never submits on
+  // Tab, so there is no shouldInterceptEnter-style guard — but it must still be swallowed,
+  // or focus leaves the textarea for the next control in the form.
+  if (e.key === 'Tab') {
+    e.preventDefault()
+    e.stopPropagation()
+    const chosen = filteredCommands.value[highlightedIndex.value]
+    if (chosen) onPickCommand(chosen.name)
+    return
+  }
   if (e.key === 'Enter') {
     // Shift+Enter is always a newline (PromptInputTextarea's own path), and with
     // nothing matched there is nothing to select — let "/foo" submit as plain
@@ -247,7 +282,6 @@ function onComposerKeydown(e: KeyboardEvent) {
     e.preventDefault()
     menuDismissed.value = true
   }
-  // Tab: intentionally left alone — no focus trap.
 }
 
 // `?q=` hand-off: fires at most once per distinct value (same guard as the old
@@ -282,7 +316,7 @@ watch(() => props.prefill, (v) => {
 </script>
 
 <template>
-  <PromptInput multiple global-drop :accept="ATTACHMENT_ACCEPT">
+  <PromptInput ref="rootRef" class="relative" multiple global-drop :accept="ATTACHMENT_ACCEPT">
     <PromptInputHeader v-if="files.length">
       <Attachments variant="inline">
         <Attachment
@@ -302,31 +336,40 @@ watch(() => props.prefill, (v) => {
          comment above (fix round 3): that wrapper's own filterState gated every row on
          CommandInput, which we cannot mount without stealing the textarea's focus, so it
          rendered nothing. Filtering/highlighting/keyboard are all ours already; this is
-         just the row markup. -->
-    <ul
-      v-if="menuVisible"
-      role="listbox"
-      class="mb-2 max-h-[300px] overflow-y-auto rounded-md border border-default bg-elevated p-1"
-    >
-      <li
-        v-for="(c, i) in filteredCommands"
-        :key="c.name"
-        role="option"
-        :aria-selected="i === highlightedIndex"
-        :class="['flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm', i === highlightedIndex ? 'bg-accented text-highlighted' : '']"
-        @mouseenter="highlightedIndex = i"
-        @click="onPickCommand(c.name)"
+         just the row markup.
+
+         FLOATS above the composer (absolute, anchored to the form's bottom edge) rather
+         than sitting in the flow. In the flow it grew the input block downward and shoved
+         the whole conversation up on every keystroke — which read as the composer breaking,
+         not as a menu opening. `bottom-full` puts it over the transcript like every other
+         slash menu; the form itself carries `relative` for this to anchor to. -->
+    <div v-if="menuVisible" class="absolute inset-x-0 bottom-full z-50 mb-2">
+      <ul
+        role="listbox"
+        class="max-h-[300px] overflow-y-auto rounded-lg border border-default bg-elevated p-1 shadow-lg"
       >
-        <span class="font-mono">/{{ c.name }}</span>
-        <span class="ml-2 text-xs text-muted">{{ c.description }}</span>
-        <span v-if="c.hint" class="ml-2 text-xs text-dimmed">{{ c.hint }}</span>
-        <!-- The only place `shadows` is ever surfaced: a skill (or macro) that stopped being
-             reachable because a higher-precedence source claimed its name is explainable from
-             here instead of just missing (spec §2.1 / Risk #4). Deliberately quiet — this is
-             an explanation, not a warning. -->
-        <span v-if="c.shadows?.length" class="ml-auto shrink-0 pl-2 text-xs text-dimmed">shadows {{ c.shadows.join(', ') }}</span>
-      </li>
-    </ul>
+        <li
+          v-for="(c, i) in filteredCommands"
+          :key="c.name"
+          role="option"
+          :aria-selected="i === highlightedIndex"
+          :class="['flex cursor-pointer items-baseline gap-2 rounded-sm px-2 py-1.5 text-sm', i === highlightedIndex ? 'bg-accented text-highlighted' : '']"
+          @mouseenter="highlightedIndex = i"
+          @click="onPickCommand(c.name)"
+        >
+          <span class="shrink-0 font-mono">/{{ c.name }}</span>
+          <!-- Name + one truncated line of description, and nothing else. The `hint`
+               ("Use when …") was third-order detail that made every row wrap into two or
+               three lines and buried the names the menu exists to let you scan. -->
+          <span class="truncate text-xs text-muted">{{ c.description }}</span>
+          <!-- The only place `shadows` is ever surfaced: a skill (or macro) that stopped being
+               reachable because a higher-precedence source claimed its name is explainable from
+               here instead of just missing (spec §2.1 / Risk #4). Deliberately quiet — this is
+               an explanation, not a warning, and it renders only when something IS shadowed. -->
+          <span v-if="c.shadows?.length" class="ml-auto shrink-0 pl-2 text-xs text-dimmed">shadows {{ c.shadows.join(', ') }}</span>
+        </li>
+      </ul>
+    </div>
 
     <PromptInputBody>
       <PromptInputTextarea placeholder="Ask Bridget…" @keydown="onComposerKeydown" />

@@ -47,7 +47,8 @@ function convToDTO(r: typeof conversations.$inferSelect): ConversationDTO {
     projectId: r.projectId ?? null,
     messageCount: r.messageCount,
     lastMessageAt: r.lastMessageAt ? r.lastMessageAt.toISOString() : null,
-    createdAt: r.createdAt.toISOString()
+    createdAt: r.createdAt.toISOString(),
+    contextEpochAt: r.contextEpochAt ? r.contextEpochAt.toISOString() : null
   }
 }
 
