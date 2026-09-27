@@ -12,7 +12,7 @@ import { createTurnStream } from '../../voice/turn-stream'
 import { buildTurnPersistPayload } from '../../voice/turn-persist'
 import { partialTurnMessages } from '../../voice/turn-partial'
 import { resolveTurnVoice } from '../../../services/voice-presets'
-import { appendMessages, getAgentHistory, captureTurnLeaf } from '../../../services/conversations'
+import { appendMessages, getAgentHistory, captureTurnLeaf, type NewConvMessage } from '../../../services/conversations'
 import { publishChange } from '../../../utils/live-bus'
 import { recordEvent } from '../../observability/record'
 import { assembleContext } from '../assemble'
@@ -84,6 +84,12 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   let turnUsage: { inputTokens?: number, outputTokens?: number, totalTokens?: number, contextTokens?: number, modelDefId?: string } | null = null
   let liveUserText = ''
   let liveAssistantText = ''
+  // Every steer runAgent drained this turn, in drain order. The model saw them spliced into its
+  // prompt, so the transcript must carry them too (spec §4.4) — otherwise a reload, the next
+  // turn's history and the summaries all lose words Tony actually sent. Out here so the rescue
+  // path persists them as well. Steers never drained are NOT here: queue.ts requeueUnconsumed
+  // turns those into the next run.
+  const drainedSteers: string[] = []
   const turnStart = Date.now()
   let ttftMs: number | undefined
   // The branch this turn was actually typed into. `appendMessages` reads
@@ -188,7 +194,11 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       tts, preset, refAudio, speak, context: assembled.context || undefined, modelDefId: run.modelDefId,
       profile, requestApproval: run.profile === 'interactive' ? approvalFor(run.id) : undefined,
       attachments: turnAttachments, signal: ac.signal, emit, runAgent: deps.runAgent,
-      drainSteer: () => drainSteerFor(run.id), wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined
+      drainSteer: async () => {
+        const fresh = await drainSteerFor(run.id)
+        drainedSteers.push(...fresh)
+        return fresh
+      }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined
     })
     // Finalize the timing ONCE, here, and use the same object for the live chunk below and
     // for the persist further down — so the duration and tok/s the user watches appear are
@@ -234,13 +244,15 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         usage: finalUsage
       })
       if (isWake) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
-      const ids = await appendMessages(conversationId, payload, turnLeafId) // insertion order
+      // Steers ride in the SAME append (one transaction, one chain), between the question and
+      // the reply — the order the model saw them in, and the reply stays the leaf.
+      const ids = await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId) // insertion order
       // Set BEFORE anything that can throw below: the rows are committed at this point, and
       // the `finally` rescue below keys off this flag. A `peer.send` to a socket that closed
       // mid-turn would otherwise unwind into the catch with `persisted` still false and make
       // the rescue append the same turn a second time.
       persisted = true
-      outcome = { status: 'done', suppressed, usage: finalUsage, userMessageId: ids[0], assistantMessageId: suppressed ? undefined : ids[1] }
+      outcome = { status: 'done', suppressed, usage: finalUsage, userMessageId: ids[0], assistantMessageId: added.length > 1 ? ids[ids.length - 1] : undefined }
       // Tell the client which thread it just landed in. Without this frame the page
       // has no way to learn the id/title the server derived on the first turn — the
       // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
@@ -287,7 +299,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // A wake's NO_REPLY is silent by contract on this path too: only the event row survives.
       const rescuedReply = isWake && isSuppressedReply(liveAssistantText) ? '' : liveAssistantText
       const rescuedMsgs = partialTurnMessages(liveUserText || input.text, rescuedReply)
-      if (rescuedMsgs.length) {
+      if (rescuedMsgs.length || drainedSteers.some(t => t.trim())) {
         try {
           const created = (await countMessages(conversationId)) === 0
           const payload = buildTurnPersistPayload(rescuedMsgs, {
@@ -297,8 +309,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
             reasoning: reasoningText,
             usage: buildUsageWithTiming()
           })
-          if (isWake) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
-          await appendMessages(conversationId, payload, turnLeafId)
+          if (isWake && payload.length) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
+          await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId)
           rescued = true
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: conversationId })
           // The rescued rows are real rows, so the page's re-read must be armed for them
@@ -321,6 +333,16 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     if (persisted || rescued) deps.afterPersist?.(conversationId)
   }
   return outcome
+}
+
+/** Splices drained steers in as their own user rows right after the turn's question (user or
+ *  event row) and before the reply, so the reply stays last — the leaf, and the row
+ *  `assistantMessageId` names. Typed steers are always text. With no question row at all (a
+ *  rescue whose question was empty), the steers alone are what survives. */
+export function withSteers(payload: NewConvMessage[], steers: string[]): NewConvMessage[] {
+  const rows: NewConvMessage[] = steers.filter(t => t.trim()).map(content => ({ role: 'user', content, modality: 'text' }))
+  if (!rows.length) return payload
+  return [...payload.slice(0, 1), ...rows, ...payload.slice(1)]
 }
 
 async function countMessages(conversationId: string): Promise<number> {

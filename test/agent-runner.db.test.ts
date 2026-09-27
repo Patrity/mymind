@@ -8,7 +8,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { useDb } from '../server/db'
-import { conversations, conversationMessages, agentRuns } from '../server/db/schema'
+import { conversations, conversationMessages, agentRuns, agentInbox } from '../server/db/schema'
 import { createRun, claimNextRun } from '../server/lib/agent/runtime/runs'
 import { resolveSession } from '../server/lib/agent/runtime/sessions'
 import { runTurn } from '../server/lib/agent/runtime/runner'
@@ -16,6 +16,7 @@ import { StreamHub } from '../server/lib/agent/runtime/stream'
 import { abortRun } from '../server/lib/agent/runtime/aborts'
 import { registerApprovalChannel, hasApprovalChannel } from '../server/lib/agent/runtime/approvals'
 import { appendMessages } from '../server/services/conversations'
+import { pushSteer } from '../server/lib/agent/runtime/inbox'
 import { eq, inArray } from 'drizzle-orm'
 
 const convIds: string[] = []
@@ -24,6 +25,7 @@ const convIds: string[] = []
 const HEADLESS_TEST_SLOTS = 1000
 afterAll(async () => {
   const db = useDb()
+  await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
   await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
   await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
   await db.delete(conversations).where(inArray(conversations.id, convIds))
@@ -46,6 +48,33 @@ async function queued(text: string, extra: Partial<Parameters<typeof createRun>[
   await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'user', profile: 'interactive', input: { text, modality: 'text' }, ...extra })
   const run = await claimNextRun({ onlyConversations: [s.conversationId] })
   return { run: run!, conversationId: s.conversationId }
+}
+// Rows of one appendMessages call share created_at, so (created_at, id) cannot order them —
+// the parent chain can. Walks from the root of a single-branch thread.
+async function chain(id: string) {
+  const all = await rows(id)
+  const out: typeof all = []
+  let next = all.find(x => x.parentId === null)
+  while (next) {
+    out.push(next)
+    const at = next.id
+    next = all.find(x => x.parentId === at)
+  }
+  expect(out.length).toBe(all.length) // single branch, nothing orphaned
+  return out
+}
+// Drains once mid-stream (as runAgent's prepareStep would at a step boundary), after a steer was
+// pushed for this very run, then replies — or throws, for the rescue path.
+function steeredAgent(runId: string, conversationId: string, steer: string, opts: { reply?: string, throwAfter?: boolean } = {}) {
+  return async function* (_m: unknown, ctx: { signal: AbortSignal, drainSteer?: () => Promise<string[]> }) {
+    yield { type: 'text-delta', text: 'first ' } as const
+    await pushSteer(runId, conversationId, steer, 'user')
+    const got = await ctx.drainSteer!()
+    expect(got).toEqual([steer]) // the runner hands runAgent the drained text unchanged
+    if (opts.throwAfter) throw new Error('model died')
+    if (opts.reply !== undefined) yield { type: 'text-delta', text: opts.reply } as const
+    yield { type: 'done' } as const
+  }
 }
 const rows = (id: string) => useDb().select().from(conversationMessages).where(eq(conversationMessages.conversationId, id)).orderBy(conversationMessages.createdAt, conversationMessages.id)
 
@@ -244,5 +273,59 @@ describe('runTurn', () => {
     await runTurn(empty.run, { runAgent: fakeAgent('never') as never, assemble: noAssemble as never, hub: new StreamHub(), afterPersist })
     expect(await rows(empty.conversationId)).toEqual([])
     expect(seen).toEqual([ok.conversationId, bad.conversationId])
+  })
+
+  describe('steers drained mid-turn are persisted as user rows, in order (spec §4.4)', () => {
+    it('success: [question, steer, reply] in one chain, ids name the question and the reply', async () => {
+      const { run, conversationId } = await queued('the question')
+      const out = await runTurn(run, { runAgent: steeredAgent(run.id, conversationId, 'actually, also this', { reply: 'done' }) as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(out.status).toBe('done')
+      const c = await chain(conversationId)
+      expect(c.map(x => [x.role, x.modality, x.content.trim()])).toEqual([
+        ['user', 'text', 'the question'],
+        ['user', 'text', 'actually, also this'],
+        ['assistant', 'text', 'first done']
+      ])
+      expect(out.userMessageId).toBe(c[0]!.id)
+      expect(out.assistantMessageId).toBe(c[2]!.id)
+    })
+
+    it('a drained steer survives a run that produced no reply at all', async () => {
+      const { run, conversationId } = await queued('quiet question')
+      const silent = async function* (_m: unknown, ctx: { drainSteer?: () => Promise<string[]> }) {
+        await pushSteer(run.id, conversationId, 'hello?', 'user')
+        await ctx.drainSteer!()
+        yield { type: 'done' } as const
+      }
+      const out = await runTurn(run, { runAgent: silent as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(out.status).toBe('done')
+      expect((await chain(conversationId)).map(x => [x.role, x.content])).toEqual([['user', 'quiet question'], ['user', 'hello?']])
+      expect(out.assistantMessageId).toBeUndefined()
+    })
+
+    it('rescue (throw after the drain): [question, steer, partial reply]', async () => {
+      const { run, conversationId } = await queued('doomed question')
+      const out = await runTurn(run, { runAgent: steeredAgent(run.id, conversationId, 'wait, one more thing', { throwAfter: true }) as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(out.status).toBe('failed')
+      expect((await chain(conversationId)).map(x => [x.role, x.content.trim()])).toEqual([
+        ['user', 'doomed question'],
+        ['user', 'wait, one more thing'],
+        ['assistant', 'first']
+      ])
+    })
+
+    it('a wake run keeps its event row first: [event, steer, reply]', async () => {
+      const { run, conversationId } = await wakeRun('steered')
+      const out = await runTurn(run, { runAgent: steeredAgent(run.id, conversationId, 'Tony chimed in', { reply: 'noted' }) as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(out.status).toBe('done')
+      const c = await chain(conversationId)
+      expect(c.map(x => [x.role, x.origin, x.content.trim()])).toEqual([
+        ['event', 'wake:steered', 'anything new?'],
+        ['user', null, 'Tony chimed in'],
+        ['assistant', null, 'first noted']
+      ])
+      expect(out.userMessageId).toBe(c[0]!.id)
+      expect(out.assistantMessageId).toBe(c[2]!.id)
+    })
   })
 })
