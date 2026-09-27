@@ -20,6 +20,8 @@ describe('StreamHub', () => {
     h.subscribe('c1', a.s); h.subscribe('c1', b.s); h.beginRun('c1')
     h.publish('c1', new Uint8Array([1]), { only: 'a' })
     expect(a.got).toHaveLength(1); expect(b.got).toHaveLength(0)
+    h.publish('c1', '{"type":"audio-begin"}', { only: 'a' })
+    expect(a.got).toHaveLength(2); expect(b.got).toHaveLength(0)
     const late = sink('late'); h.subscribe('c1', late.s, { replay: true })
     expect(late.got).toHaveLength(0)
   })
