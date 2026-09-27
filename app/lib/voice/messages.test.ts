@@ -125,40 +125,58 @@ describe('mapServerMessage — cid guard (belt-and-braces against a stray frame 
     expect(mapServerMessage({ type: 'error', message: 'could not start' } as never, false, 'thread-B')).toEqual({ error: 'could not start' })
   })
 
-  it('never gates conversation/persisted/approval, even with a mismatched cid', () => {
-    expect(mapServerMessage({ type: 'conversation', conversationId: 'thread-C', title: 't', cid: 'thread-C' } as never, false, 'thread-B'))
-      .toEqual({ conversation: { id: 'thread-C', title: 't' } })
+  it('drops a conversation frame for a thread other than the viewed one', () => {
+    expect(mapServerMessage({ type: 'conversation', conversationId: 'thread-A', title: 't', cid: 'thread-A' } as never, false, 'thread-B'))
+      .toEqual({})
+    expect(mapServerMessage({ type: 'conversation', conversationId: 'thread-B', title: 't', cid: 'thread-B' } as never, false, 'thread-B'))
+      .toEqual({ conversation: { id: 'thread-B', title: 't' } })
+  })
+
+  it('never gates persisted/approval, even with a mismatched cid', () => {
     expect(mapServerMessage({ type: 'persisted', conversationId: 'thread-A', cid: 'thread-A' } as never, false, 'thread-B'))
       .toEqual({ persisted: 'thread-A' })
     expect(mapServerMessage({ type: 'approval', requestId: 'r', command: 'ls', cid: 'thread-A' } as never, false, 'thread-B'))
       .toEqual({ approval: { requestId: 'r', tool: 'exec', command: 'ls', proposedPattern: '' } })
   })
 
-  describe('viewing nothing (after `new`) — leftConversationIds', () => {
+  describe('viewing nothing (after `new`) — the left view', () => {
     const delta = { type: 'chunk', turnId: 45, cid: 'thread-A', chunk: { type: 'text-delta', id: 't', delta: 'ghost' } }
+    const leftA = { ids: new Set(['thread-A']), submitted: true }
+    const conv = (id: string) => ({ type: 'conversation', conversationId: id, title: 't', cid: id })
 
-    it('drops every gated frame type tagged with the thread `new` just left', () => {
-      expect(mapServerMessage(delta as never, false, null, new Set(['thread-A']))).toEqual({})
-      expect(mapServerMessage({ type: 'user-message', turnId: 46, cid: 'thread-A', message: { id: 'u', role: 'user', parts: [] } } as never, false, null, new Set(['thread-A']))).toEqual({})
-      expect(mapServerMessage({ type: 'audio-begin', segmentId: 0, sampleRate: 24000, turnId: 46, cid: 'thread-A' } as never, false, null, new Set(['thread-A']))).toEqual({})
-      expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-A' } as never, false, null, new Set(['thread-A']))).toEqual({})
-      expect(mapServerMessage({ type: 'error', message: 'A failed', cid: 'thread-A' } as never, false, null, new Set(['thread-A']))).toEqual({})
+    it('drops every gated frame type tagged with a thread `new` left, even after a submit', () => {
+      expect(mapServerMessage(delta as never, false, null, leftA)).toEqual({})
+      expect(mapServerMessage({ type: 'user-message', turnId: 46, cid: 'thread-A', message: { id: 'u', role: 'user', parts: [] } } as never, false, null, leftA)).toEqual({})
+      expect(mapServerMessage({ type: 'audio-begin', segmentId: 0, sampleRate: 24000, turnId: 46, cid: 'thread-A' } as never, false, null, leftA)).toEqual({})
+      expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-A' } as never, false, null, leftA)).toEqual({})
+      expect(mapServerMessage({ type: 'error', message: 'A failed', cid: 'thread-A' } as never, false, null, leftA)).toEqual({})
+      // A's first turn persisting in the gap before the server processed `new`.
+      expect(mapServerMessage(conv('thread-A') as never, false, null, leftA)).toEqual({})
     })
 
-    it('passes the NEW thread\'s own first-turn frames (a cid we cannot know yet)', () => {
+    it('after the submit, passes the NEW thread\'s own frames and its conversation frame', () => {
       const own = { ...delta, turnId: 50, cid: 'thread-N' }
-      expect(mapServerMessage(own as never, false, null, new Set(['thread-A']))).toEqual({ messageFrame: own })
-      expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-N' } as never, false, null, new Set(['thread-A']))).toEqual({ state: 'thinking' })
+      expect(mapServerMessage(own as never, false, null, leftA)).toEqual({ messageFrame: own })
+      expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-N' } as never, false, null, leftA)).toEqual({ state: 'thinking' })
+      expect(mapServerMessage(conv('thread-N') as never, false, null, leftA)).toEqual({ conversation: { id: 'thread-N', title: 't' } })
     })
 
-    it('passes everything when nothing was left (fresh page, first thread ever)', () => {
-      expect(mapServerMessage(delta as never, false, null, new Set())).toEqual({ messageFrame: delta })
+    it('before any submit, drops every tagged scoped frame — even from a thread whose id was never learned', () => {
+      const none = { ids: new Set<string>(), submitted: false }
+      expect(mapServerMessage(delta as never, false, null, none)).toEqual({})
+      expect(mapServerMessage(conv('thread-A') as never, false, null, none)).toEqual({})
+      // Untagged per-socket frames still apply.
+      expect(mapServerMessage({ type: 'state', state: 'idle' } as never, false, null, none)).toEqual({ state: 'idle' })
     })
 
-    it('ignores leftConversationId once a thread is viewed (the plain mismatch check owns it)', () => {
+    it('passes everything with the default (no left-thread tracking)', () => {
+      expect(mapServerMessage(delta as never, false, null)).toEqual({ messageFrame: delta })
+    })
+
+    it('ignores the left view once a thread is viewed (the plain mismatch check owns it)', () => {
       const own = { ...delta, cid: 'thread-A' }
       // Viewing A again (resumed back to it): A's frames must render even if A is still "left".
-      expect(mapServerMessage(own as never, false, 'thread-A', new Set(['thread-A']))).toEqual({ messageFrame: own })
+      expect(mapServerMessage(own as never, false, 'thread-A', { ids: new Set(['thread-A']), submitted: false })).toEqual({ messageFrame: own })
     })
   })
 

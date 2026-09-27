@@ -305,7 +305,7 @@ export function useVoice() {
       } else {
         const m = JSON.parse(e.data as string)
         left.observe(m, conversationId.value)
-        const fx = mapServerMessage(m, isPlaying(), conversationId.value, left.ids)
+        const fx = mapServerMessage(m, isPlaying(), conversationId.value, left)
         // audio-begin now names its turn: a segment from a superseded turn is rejected
         // outright (closes the barge-in window documented on onAudioBegin).
         if (fx.audioBegin) {
@@ -459,7 +459,10 @@ export function useVoice() {
       },
       onSpeechEnd: (audio: Float32Array) => {
         state.value = 'thinking'
-        if (ws?.readyState === WebSocket.OPEN) ws.send(floatToWav(audio, 16000))
+        if (ws?.readyState === WebSocket.OPEN) {
+          left.submit() // a voice utterance starts a turn on the viewed (or new) thread
+          ws.send(floatToWav(audio, 16000))
+        }
       },
     })
     if (mySession !== session) { v.destroy(); return } // stopped during the (slow) model fetch
@@ -568,6 +571,8 @@ export function useVoice() {
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return false
       if (isPlaying()) stopPlayback() // typed barge-in
+      // Before the send: the new thread's first frames may come back before this returns.
+      left.submit()
       ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments, skill }))
       return true
     },

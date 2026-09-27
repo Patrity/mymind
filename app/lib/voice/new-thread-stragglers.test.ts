@@ -23,7 +23,7 @@ function client() {
   // Mirrors useVoice's onmessage for the fields this test cares about.
   function receive(m: { type: string } & Record<string, unknown>) {
     left.observe(m as ServerMsg, view.conversationId)
-    const fx = mapServerMessage(m as ServerMsg, false, view.conversationId, left.ids)
+    const fx = mapServerMessage(m as ServerMsg, false, view.conversationId, left)
     if (fx.messageFrame) turns.handle(fx.messageFrame)
     if (fx.state) view.state = fx.state
     if (fx.error) view.error = fx.error
@@ -38,10 +38,20 @@ function client() {
     view.conversationId = null
     view.state = 'idle' // restAfterAbort()
   }
+  // Mirrors useVoice's sendText / onSpeechEnd (the frame send itself is the server's job here).
+  const submit = () => left.submit()
+  // Mirrors resume(): discardTurn() → resetTurns() (which clears `left`) → commit the id.
+  function resume(id: string) {
+    turns.discard()
+    turns.reset()
+    left.clear()
+    messages.splice(0)
+    view.conversationId = id
+  }
   const chunk = (cid: string, turnId: number, c: AgentUIChunk) => receive({ type: 'chunk', cid, turnId, chunk: c })
   const user = (cid: string, turnId: number, id: string, text: string) =>
     receive({ type: 'user-message', cid, turnId, message: { id, role: 'user', parts: [{ type: 'text', text }] } })
-  return { messages, turns, view, left, receive, newConversation, chunk, user }
+  return { messages, turns, view, left, receive, newConversation, submit, resume, chunk, user }
 }
 
 const tick = () => new Promise(r => setTimeout(r, 0))
@@ -94,6 +104,7 @@ describe('after `new`, the abandoned thread\'s frames never render in the empty 
     c.user('A', 45, 'ua', 'q'); c.chunk('A', 45, { type: 'start', messageId: 'a45' })
     await tick()
     c.newConversation()
+    c.submit()
     c.receive({ type: 'state', state: 'thinking', cid: 'N' })
     expect(c.view.state).toBe('thinking')
     c.user('N', 47, 'un', 'hello new')
@@ -114,6 +125,7 @@ describe('after `new`, the abandoned thread\'s frames never render in the empty 
   // on its frames names it. `new` must still recognise that thread's stragglers.
   it('leaving an id-less thread mid-first-turn drops its stragglers too (id learned from cid)', async () => {
     const c = client() // viewing nothing: a fresh page / fresh New conversation
+    c.submit()
     c.user('A', 45, 'ua', 'long question')
     c.chunk('A', 45, { type: 'start', messageId: 'a45' })
     c.chunk('A', 45, { type: 'text-start', id: 't1' })
@@ -131,6 +143,8 @@ describe('after `new`, the abandoned thread\'s frames never render in the empty 
     expect(c.messages).toEqual([])
     expect(c.view.state).toBe('idle')
     // ...and a genuine first turn on the NEXT new thread still renders.
+    c.submit()
+    c.chunk('A', 45, { type: 'text-delta', id: 't2', delta: 'LATE GHOST' }) // still dropped
     c.user('N', 47, 'un', 'hello'); c.chunk('N', 47, { type: 'start', messageId: 'an' })
     c.chunk('N', 47, { type: 'finish' })
     await c.turns.settled()
@@ -141,14 +155,72 @@ describe('after `new`, the abandoned thread\'s frames never render in the empty 
     const c = client()
     c.view.conversationId = 'A'
     c.newConversation() // leaves A
+    c.submit()
     c.user('B', 46, 'ub', 'q'); c.chunk('B', 46, { type: 'start', messageId: 'b46' })
     await tick()
     c.newConversation() // leaves id-less B
+    c.submit() // typed straight away in the next new thread
     c.chunk('A', 45, { type: 'start', messageId: 'ghost-a' })
     c.chunk('B', 46, { type: 'text-start', id: 't' })
     c.chunk('B', 46, { type: 'text-delta', id: 't', delta: 'GHOST' })
     c.user('B', 48, 'ub2', 'queued')
     for (let i = 0; i < 5; i++) await tick()
     expect(c.messages).toEqual([])
+  })
+
+  // Round 5, finding 2 (the reviewer's probe): New clicked before ANY frame of an id-less
+  // thread reached the client — nothing was observed, so leave(null) had no id to record.
+  it('New before the id-less thread\'s first frame: its user-message, chunk and conversation frames are all dropped', async () => {
+    const c = client()
+    c.submit() // sent A's first message
+    c.newConversation() // ...and clicked New before a single frame of it came back
+    c.user('A', 45, 'ua', 'long question')
+    c.chunk('A', 45, { type: 'start', messageId: 'a45' })
+    c.chunk('A', 45, { type: 'text-start', id: 't' })
+    c.chunk('A', 45, { type: 'text-delta', id: 't', delta: 'GHOST' })
+    c.receive({ type: 'conversation', conversationId: 'A', title: 'A', cid: 'A' })
+    for (let i = 0; i < 5; i++) await tick()
+    expect(c.messages).toEqual([])
+    expect(c.view.conversationId).toBeNull()
+    // Then typing in the new thread: its frames and its own id are accepted, and a late A
+    // straggler (learned as left while nothing was submitted) stays dropped.
+    c.submit()
+    // A renderable late straggler (A's next queued turn's user-message) — only dropped because
+    // A's cid was learned as left from the frames that arrived before the submit.
+    c.user('A', 46, 'ua2', 'LATE GHOST')
+    c.user('N', 47, 'un', 'hello'); c.chunk('N', 47, { type: 'start', messageId: 'an' })
+    c.chunk('N', 47, { type: 'finish' })
+    c.receive({ type: 'conversation', conversationId: 'N', title: 'N', cid: 'N' })
+    await c.turns.settled()
+    expect(c.messages.map(m => m.id)).toEqual(['un', 'an'])
+    expect(c.view.conversationId).toBe('N')
+  })
+
+  // Round 5, finding 1: a LEFT thread's first turn persisting in the gap before the server
+  // processed `new` must not re-point the empty new thread at it.
+  it('a left id-less thread\'s conversation frame is not adopted after New (before or after the next submit)', async () => {
+    const c = client()
+    c.submit()
+    c.user('A', 45, 'ua', 'q'); c.chunk('A', 45, { type: 'start', messageId: 'a45' })
+    await tick()
+    c.newConversation()
+    c.receive({ type: 'conversation', conversationId: 'A', title: 'A', cid: 'A' })
+    expect(c.view.conversationId).toBeNull()
+    c.submit()
+    c.receive({ type: 'conversation', conversationId: 'A', title: 'A', cid: 'A' })
+    expect(c.view.conversationId).toBeNull()
+    // B's own frames are not dropped by a wrongly adopted A.
+    c.user('B', 47, 'ub', 'hi'); c.chunk('B', 47, { type: 'start', messageId: 'bb' }); c.chunk('B', 47, { type: 'finish' })
+    await c.turns.settled()
+    expect(c.messages.map(m => m.id)).toEqual(['ub', 'bb'])
+  })
+
+  it('resuming away from an id-less thread: its later conversation frame is not adopted', () => {
+    const c = client()
+    c.submit()
+    c.user('A', 45, 'ua', 'q')
+    c.resume('C')
+    c.receive({ type: 'conversation', conversationId: 'A', title: 'A', cid: 'A' })
+    expect(c.view.conversationId).toBe('C')
   })
 })

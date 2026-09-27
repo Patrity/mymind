@@ -4,36 +4,48 @@ import type { AgentMessageFrame } from '~~/shared/types/agent-ui'
 
 export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string }
 
-// Frame types that belong to ONE conversation's turn and must not be applied while viewing a
+// Frame types that belong to ONE conversation and must not be applied while viewing a
 // different one. Every hub-published JSON frame carries `cid` (server/lib/agent/runtime/
 // stream.ts's `withCid`); per-socket frames (approval, steered, cleared, the submit-failure
 // error/state pair ws.ts sends straight to the peer) carry none and are never gated.
-// `conversation` and `persisted` are hub-published but deliberately NOT listed: the first is
-// how a brand-new thread learns its id (its cid IS the new thread's), the second only arms a
-// re-read of whatever is viewed.
-const CONVERSATION_SCOPED = new Set(['chunk', 'user-message', 'audio-begin', 'state', 'error'])
+// `conversation` is gated too: adopting a LEFT thread's id (its first turn persisting in the
+// gap before the server processed `new`) would re-point the empty new thread at it — clear
+// the left set, arm a re-read that loads it, and drop the real new thread's frames.
+// `persisted` is deliberately NOT listed: it only arms a re-read of whatever is viewed.
+const CONVERSATION_SCOPED = new Set(['chunk', 'user-message', 'audio-begin', 'state', 'error', 'conversation'])
+
+/** What the guard needs to know about the threads `new` walked away from — see
+ *  createLeftThreads below. Only consulted while nothing is viewed. */
+export interface LeftView {
+  readonly ids: ReadonlySet<string>
+  /** Whether this socket has submitted a turn (text or voice) since the last `new`. */
+  readonly submitted: boolean
+}
 
 /**
  * Belt-and-braces alongside the client's turn-id tracking (app/lib/agent/turn-stream.ts): a
  * conversation-scoped frame whose `cid` is for a thread this socket is not viewing is a
  * straggler from a thread we switched away from — drop it outright, independent of whatever
- * the turn-id bookkeeping decides, so it can never render as a ghost message, flip `busy`, or
- * raise a stray alert in the thread we switched TO.
+ * the turn-id bookkeeping decides, so it can never render as a ghost message, flip `busy`,
+ * raise a stray alert, or re-point the view in the thread we switched TO.
  *
  * - Viewing a thread: drop any cid that differs from it.
  * - Viewing nothing (a brand-new thread, whose id arrives with the `conversation` frame after
- *   its first turn persists): the new thread's own frames carry an id we cannot know yet, so
- *   they must pass — but the threads `new` LEFT are known (`left`), and a still-running turn
- *   there (or its next queued one) keeps publishing until the server processes `new`. Drop
- *   exactly those cids. (reset() on `new` has cleared the turn-id layer's `discarded` set and
- *   zeroed `current`, so nothing below this guard would catch them.)
+ *   its first turn persists): until this socket submits, the new thread has no frames at all,
+ *   so EVERY tagged frame is from a thread we left — including one whose id we never learned
+ *   (`new` clicked before its first frame arrived). After the submit, the new thread's own
+ *   frames carry an id we cannot know yet and must pass; drop only the cids known to be left.
+ *   (reset() on `new` has cleared the turn-id layer's `discarded` set and zeroed `current`,
+ *   so nothing below this guard would catch them.)
  */
-function isForeignFrame(m: ServerMsg, viewed: string | null, left: ReadonlySet<string>): boolean {
+function isForeignFrame(m: ServerMsg, viewed: string | null, left: LeftView): boolean {
   if (m.cid === undefined || !CONVERSATION_SCOPED.has(m.type)) return false
   if (viewed !== null) return m.cid !== viewed
-  return left.has(m.cid)
+  return !left.submitted || left.ids.has(m.cid)
 }
-const NO_IDS: ReadonlySet<string> = new Set()
+// Default for callers that don't track left threads (mostly tests): lets everything through
+// while nothing is viewed, as before this guard existed.
+const NOTHING_LEFT: LeftView = { ids: new Set(), submitted: true }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own them).
@@ -73,17 +85,17 @@ export interface MsgEffect {
  * `viewedConversationId` is the thread this socket currently views (useVoice's
  * `conversationId.value`) — default `null` only for callers (mostly tests) that don't care
  * about the cid guard below; every real caller (useVoice's onmessage) passes the live value.
- * `leftConversationIds` are the threads `new` walked away from since a thread was last viewed
- * (useVoice's `leftCids`) — only consulted while `viewedConversationId` is null; see the
- * guard below.
+ * `left` is what `new` walked away from since a thread was last viewed (useVoice's `left`, a
+ * createLeftThreads()) — only consulted while `viewedConversationId` is null; see the guard
+ * above.
  */
 export function mapServerMessage(
   m: ServerMsg,
   isPlaying: boolean,
   viewedConversationId: string | null = null,
-  leftConversationIds: ReadonlySet<string> = NO_IDS
+  left: LeftView = NOTHING_LEFT
 ): MsgEffect {
-  if (isForeignFrame(m, viewedConversationId, leftConversationIds)) return {}
+  if (isForeignFrame(m, viewedConversationId, left)) return {}
   if (m.type === 'chunk') return { messageFrame: m as unknown as AgentMessageFrame }
   if (m.type === 'user-message') {
     const frame = m as unknown as Extract<AgentMessageFrame, { type: 'user-message' }>
@@ -135,21 +147,23 @@ export function mapServerMessage(
 }
 
 /**
- * The threads `new` walked away from while nothing is viewed yet — the `leftConversationIds`
+ * The threads `new` walked away from while nothing is viewed yet — the `left` view
  * mapServerMessage's cid guard needs. useVoice owns one; pure so the lifecycle is testable.
  *
  * `new` leaves either a thread with a known id, or an id-less brand-new one whose first turn
  * is still running: the client only learns that thread's id from the `conversation` frame
  * sent AFTER the turn persists. Its frames already carry the id as `cid`, though, so
- * `observe()` remembers it from them — leaving such a thread mid-first-turn (the most common
- * way to abandon a long reply) must drop its stragglers too, not just a named thread's.
+ * `observe()` learns it from them — both before `new` (the latest cid seen while viewing
+ * nothing) and after it (any tagged frame arriving before this socket's next submit can only
+ * be from a left thread). The `submitted` flag covers the frame that arrives before either.
  */
-export interface LeftThreads {
-  readonly ids: ReadonlySet<string>
-  /** Every server JSON frame, BEFORE mapping it. While viewing nothing, the latest tagged
-   *  frame names the id-less thread being viewed — remember its id. */
+export interface LeftThreads extends LeftView {
+  /** Every server JSON frame, BEFORE mapping it. */
   observe(m: ServerMsg, viewedConversationId: string | null): void
-  /** newConversation(): the thread being left (its id, or the one observed) joins `ids`. */
+  /** This socket sent a turn (text or voice): the id-less view now has frames of its own. */
+  submit(): void
+  /** newConversation(): the thread being left (its id, or the one observed) joins `ids`, and
+   *  nothing is submitted on the new thread yet. */
   leave(viewedConversationId: string | null): void
   /** A thread is viewed again (the `conversation` frame adopted, or a resume) — the plain
    *  mismatch check owns every cid from here on. */
@@ -159,17 +173,26 @@ export interface LeftThreads {
 export function createLeftThreads(): LeftThreads {
   const ids = new Set<string>()
   let unnamed: string | null = null
+  // Starts false: a fresh socket viewing nothing has submitted nothing, so no frame is ours.
+  let submitted = false
   return {
     ids,
+    get submitted() { return submitted },
     observe(m, viewed) {
-      // A left thread's straggler lands here too; recording it is harmless (leave() would
-      // only re-add an id already in `ids`), and the new thread's own frames overwrite it.
-      if (viewed === null && m.cid !== undefined) unnamed = m.cid
+      if (viewed !== null || m.cid === undefined) return
+      // Before our first submit, nothing tagged can be the new thread's — remember it as left
+      // so it stays dropped even after the submit. After it, the latest cid names the id-less
+      // thread being viewed (a left straggler recorded here is harmless: leave() would only
+      // re-add an id already in `ids`, and the thread's own frames overwrite it).
+      if (!submitted) ids.add(m.cid)
+      else unnamed = m.cid
     },
+    submit() { submitted = true },
     leave(viewed) {
       const id = viewed ?? unnamed
       if (id) ids.add(id)
       unnamed = null
+      submitted = false
     },
     clear() {
       ids.clear()
