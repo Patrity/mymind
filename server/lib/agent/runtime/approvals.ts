@@ -2,7 +2,14 @@
 // Interactive approval channels, keyed by RUN (not socket): ws.ts registers one for each run it
 // originates and removes it on close. A run whose socket is gone gets today's no-channel
 // behaviour — an immediate deny — instead of waiting out a 120s timeout nobody can see.
+//
+// The persisted exec ALLOWLIST is checked here, before any channel (Task 7 review ruling): it
+// used to live in the socket's requestApproval, so an allowlisted command from a run whose tab
+// had closed was denied. Now it applies whether or not a socket is still attached; the socket
+// channel only does the interactive prompt.
 import type { ApprovalRequest } from '../types'
+import { loadApprovals, touchApproval, matchesApproval } from '../../exec/approvals'
+import { recordEvent } from '../../observability/record'
 import type { TurnStream } from '../../voice/turn-stream'
 
 type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
@@ -17,6 +24,12 @@ export function unregisterApprovalChannel(runId: string): void {
 }
 export function approvalFor(runId: string): Channel {
   return async (req) => {
+    const patterns = (await loadApprovals(req.tool)).filter(p => matchesApproval(req.command, [p.pattern]))
+    if (patterns.length) {
+      touchApproval(patterns[0]!.id).catch(() => {})
+      recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: 'allowlisted', command: req.command, pattern: patterns[0]!.pattern } })
+      return { approved: true }
+    }
     const ch = channels.get(runId)
     return ch ? ch(req) : { approved: false }
   }
