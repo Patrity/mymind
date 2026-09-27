@@ -185,3 +185,30 @@ describe('budget estimate fidelity', () => {
     }
   })
 })
+
+describe('cycle 73 tiers', () => {
+  const base = { listResident: async () => [], search: async () => [], liveContext: async () => '', summary: async () => null, recordRetrievals: async () => {} }
+
+  it('main gets a recent-threads tier; a side thread does not', async () => {
+    const deps = { ...base, recentThreads: async () => 'Recent side threads:\n- cycle-70 planning: decided X', mainState: async () => '' }
+    const main = await assembleContext({ userText: 'hi', conversationId: 'm', conversationKind: 'main', deps })
+    const side = await assembleContext({ userText: 'hi', conversationId: 't', conversationKind: 'thread', deps })
+    expect(main.context).toContain('cycle-70 planning')
+    expect(side.context).not.toContain('cycle-70 planning')
+  })
+
+  it('a side thread gets a main-state tier; main does not', async () => {
+    const deps = { ...base, recentThreads: async () => '', mainState: async () => 'Bridget\'s main thread, lately: triaging captures' }
+    const side = await assembleContext({ userText: 'hi', conversationId: 't', conversationKind: 'thread', deps })
+    const main = await assembleContext({ userText: 'hi', conversationId: 'm', conversationKind: 'main', deps })
+    expect(side.context).toContain('triaging captures')
+    expect(main.context).not.toContain('triaging captures')
+  })
+
+  it('reports dropped turns against the runtime budget', async () => {
+    const turns = Array.from({ length: 40 }, (_, i) => tier(`turn:${i}`, 'x '.repeat(2000)))
+    const r = await assembleContext({ userText: 'hi', conversationId: 'm', conversationKind: 'main', turns, budget: 20_000, deps: { ...base, recentThreads: async () => '', mainState: async () => '' } })
+    expect(r.droppedTurns).toBeGreaterThan(0)
+    expect(r.droppedTurns).toBeLessThan(40)
+  })
+})

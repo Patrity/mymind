@@ -5,8 +5,9 @@ import { listResidentMemories, recordRetrievals as realRecordRetrievals, searchM
 import { getSkill } from '../../services/skills'
 import { useDb } from '../../db'
 import { conversations } from '../../db/schema'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { MemoryDTO } from '../../../shared/types/memory'
+import { capToTokens, RECENT_THREADS_MAX_TOKENS, MAIN_STATE_MAX_TOKENS } from './runtime/history'
 
 export const DEFAULT_CONTEXT_BUDGET = 6000
 
@@ -72,12 +73,21 @@ export interface AssembleDeps {
    *  `getSkill(name, { activeOnly: true })`, so a deactivated skill the `/` menu hides
    *  cannot still be force-loaded into a turn. */
   getSkillBody?: (name: string) => Promise<string | null>
+  /** Main-only: summaries of side threads touched recently, newest first. Defaults to
+   *  `loadRecentThreads`. `excludeId` is the calling conversation (never surface a thread's
+   *  own summary back to itself, though that only matters if main ever calls this on itself). */
+  recentThreads?: (excludeId: string) => Promise<string>
+  /** Side-thread-only: what main has been up to. Defaults to `loadMainState`. */
+  mainState?: () => Promise<string>
 }
 
 export interface AssembleInput {
   /** The user's message. EMPTY on a proactive turn — see synthesiseQuery. */
   userText: string
   conversationId?: string
+  /** 'main' gets a recent-threads tier (what Tony's been doing elsewhere); 'thread' gets a
+   *  main-state tier (what main's been up to). Undefined (most callers/tests) gets neither. */
+  conversationKind?: 'main' | 'thread'
   /** Project SLUG, not id — `memories.project` stores the slug, and that is what ranking compares. */
   projectSlug?: string
   /** Oldest-first prompt-ready turn blocks, if the caller is managing history text. */
@@ -116,6 +126,27 @@ async function loadSummary(conversationId: string): Promise<string | null> {
   const [row] = await useDb().select({ summary: conversations.summary })
     .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
   return row?.summary ?? null
+}
+
+/** Main's view of what Tony has been doing elsewhere: summaries of side threads touched in the
+ *  last 48h, newest first, capped at the source (an unbounded fixed tier blanks EVERY fixed
+ *  tier when it overflows fitBudget — the cycle-71 lesson). */
+async function loadRecentThreads(excludeId: string): Promise<string> {
+  const rows = await useDb().select({ title: conversations.title, summary: conversations.summary })
+    .from(conversations)
+    .where(sql`${conversations.id} <> ${excludeId} and ${conversations.kind} = 'thread' and ${conversations.summary} is not null and ${conversations.lastMessageAt} > now() - interval '48 hours'`)
+    .orderBy(sql`${conversations.lastMessageAt} desc`).limit(8)
+  if (!rows.length) return ''
+  const text = ['Recent side threads (summaries):', ...rows.map(r => `- ${r.title ?? 'untitled'}: ${r.summary}`)].join('\n')
+  return capToTokens(text, RECENT_THREADS_MAX_TOKENS)
+}
+
+/** A side thread's view of main: the first paragraph of main's summary. */
+async function loadMainState(): Promise<string> {
+  const [row] = await useDb().select({ summary: conversations.summary }).from(conversations)
+    .where(eq(conversations.kind, 'main')).limit(1)
+  const first = row?.summary?.split(/\n\s*\n/)[0]?.trim()
+  return first ? capToTokens(`Bridget's main thread, lately: ${first}`, MAIN_STATE_MAX_TOKENS) : ''
 }
 
 /** Best-effort: a failing tier degrades to empty rather than losing the whole context. */
@@ -203,12 +234,19 @@ async function assembleContextInner(input: AssembleInput, skillBody: string | nu
   const summaryOf = d.summary ?? loadSummary
   const record = d.recordRetrievals ?? realRecordRetrievals
 
-  const [resident, liveState, summary] = await Promise.all([
+  const kind = input.conversationKind
+  const [resident, liveState, summary, recentThreads, mainState] = await Promise.all([
     safe(() => listResident(), [] as MemoryDTO[], 'resident'),
     safe(() => liveContext(now), '', 'liveState'),
     input.conversationId
       ? safe(() => summaryOf(input.conversationId!), null as string | null, 'summary')
-      : Promise.resolve(null)
+      : Promise.resolve(null),
+    kind === 'main' && input.conversationId
+      ? safe(() => (d.recentThreads ?? loadRecentThreads)(input.conversationId!), '', 'recentThreads')
+      : Promise.resolve(''),
+    kind === 'thread'
+      ? safe(() => (d.mainState ?? loadMainState)(), '', 'mainState')
+      : Promise.resolve('')
   ])
 
   const query = input.userText.trim() || synthesiseQuery(summary, liveState)
@@ -246,6 +284,8 @@ async function assembleContextInner(input: AssembleInput, skillBody: string | nu
   }
   if (liveState) fixed.push(tier('live', liveState))
   if (summary) fixed.push(tier('summary', `Earlier in this conversation:\n${summary}`))
+  if (recentThreads) fixed.push(tier('recent-threads', recentThreads))
+  if (mainState) fixed.push(tier('main-state', mainState))
 
   const retrievedTiers = retrieved.map(m => tier(`mem:${m.id}`, `- ${m.content}`))
 
