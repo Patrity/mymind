@@ -114,4 +114,22 @@ describe('mapServerMessage — cid guard (belt-and-braces against a stray frame 
     expect(mapServerMessage({ type: 'state', state: 'idle', cid: 'thread-A' } as never, false, 'thread-B'))
       .toEqual({ state: 'idle' })
   })
+
+  // The reviewer's exact regression, retold at THIS layer (round 2 → round 3): resume()
+  // switches from thread A to thread B (discardTurn() + resetTurns(), same synchronous
+  // tick). A straggler chunk for A's still-running turn — already in flight over the wire
+  // before the server processed `load` and unsubscribed this socket — was tagged by the
+  // server with A's conversationId (server/lib/agent/runtime/stream.ts's `withCid`) before
+  // it was ever queued for delivery. By the time it arrives, this socket is viewing B — the
+  // mismatch drops it here, independent of whatever app/lib/agent/turn-stream.ts's own
+  // (now-revocable) `discarded` bookkeeping decides on its own. This is the layer that
+  // actually owns cross-thread ghost prevention as of round 3 — see turn-stream.test.ts's
+  // sibling test for what changed there (a merely-discarded turn is no longer permanently
+  // blocked, so A→B→A can replay again).
+  it('a straggler for the OLD thread\'s still-running turn, tagged with the OLD conversationId, is dropped after switching to a new thread', () => {
+    const straggler = { type: 'chunk', turnId: 45, cid: 'thread-A', chunk: { type: 'text-delta', id: 'old-a-t', delta: 'GHOST STRAGGLER CONTENT' } }
+    // viewedConversationId is now 'thread-B' — resume() already committed the switch by the
+    // time this straggler, sent before the server processed the switch, finally arrives.
+    expect(mapServerMessage(straggler as never, false, 'thread-B')).toEqual({})
+  })
 })

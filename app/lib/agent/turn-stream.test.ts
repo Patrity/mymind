@@ -121,49 +121,46 @@ describe('createClientTurns', () => {
     expect(h.textOf('wake-a')).toBe('still going')
   })
 
-  // The reviewer's confirmed regression from round 1's fix: discard() marks the old thread's
-  // ACTIVE turn closed via markClosed(), but reset() used to call closed.clear() in the very
-  // same synchronous tick (resume() calls discard() then reset()) — wiping that protection
-  // out again. A straggler chunk for that exact turn id, already in flight over the wire
-  // before the server processed `load` and unsubscribed this socket, then arrived, was
-  // accepted as a "new" turn (current had also just been reset to 0), and rendered as a
-  // ghost assistant message in whatever thread resume() just switched to.
-  it('discard() then reset() (a real thread switch) still rejects a straggler burst for the just-discarded turn', async () => {
+  // Round 2's finding: discard()-then-reset() is not, on its own, a defense against a
+  // cross-thread straggler ANY MORE — that protection now lives one layer up, in the cid
+  // guard (app/lib/voice/messages.ts's mapServerMessage — see its own ghost-scenario test).
+  // At THIS layer, discard() only ever marks a turn `discarded` (revocable), never
+  // `finished` (permanent) — see the next test for why that split exists and what it buys.
+  //
+  // Round 3's finding (why the split exists at all): a single permanently-`closed` id (round
+  // 2's fix) broke A→B→A — switching away from a thread with a still-running turn and then
+  // BACK to it never rendered the replay again, because discard() had permanently closed
+  // that exact turn id. Since the cid guard now independently drops a cross-thread
+  // straggler, a merely-discarded turn no longer needs to stay closed forever here.
+  it('discard() then reset() (switching away) does not permanently block that turn — attaching back to the SAME conversation later replays it (A→B→A)', async () => {
     const h = harness()
-    h.begin(45, 'old-a'); h.say(45, 'old-a', 'streaming on the old thread')
+    h.begin(45, 'a-thread'); h.say(45, 'a-thread', 'streaming on A')
     await new Promise(r => setTimeout(r, 0))
-    // Mirrors app/pages/agent/index.vue's resume(): discardTurn() first, then (only on a
-    // genuine switch) resetTurns() — same synchronous tick, no await between them.
+    // A -> B: mirrors resume()'s discardTurn() then resetTurns(), same synchronous tick.
     h.turns.discard()
     h.turns.reset()
-    // messages.value = next — the resumed thread's own transcript replaces the list, exactly
-    // where resume() does it, right after both calls above.
-    h.messages.splice(0)
-    // The straggler: the tail of the OLD turn's frames, already in flight over the wire
-    // before the server processed `load` and unsubscribed this socket. A self-contained
-    // begin→say→end burst (its OWN 'start'), not a bare mid-stream delta: that's what a
-    // straggler naturally is IF the client never opened turn 45 at all before the switch (a
-    // second, independent path into the same bug — discard()'s `current`-only fallback
-    // branch fires when there is no `active` turn to close, e.g. between two turns), and
-    // it's also the only shape that would visibly RENDER rather than get silently rejected
-    // by the assembler for lacking a 'start' (see the 'assembler errors' tests below) — the
-    // reviewer's browser repro described rendered "STRAGGLER LEAKED CONTENT", not a warning.
-    h.begin(45, 'old-a'); h.say(45, 'old-a', 'GHOST STRAGGLER CONTENT'); h.end(45, 'old-a')
+    h.messages.splice(0) // messages.value = next (B's own, unrelated transcript)
+    // B -> A: another discard()+reset() (nothing active on B to close), then attach()
+    // replays A's still-running turn 45 from the start — the SAME turn id as before.
+    h.turns.discard()
+    h.turns.reset()
+    h.messages.splice(0) // messages.value = next (A's own transcript, replaced again)
+    h.begin(45, 'a-thread'); h.say(45, 'a-thread', 'still going on A'); h.end(45, 'a-thread')
     await h.turns.settled()
-    expect(h.messages).toEqual([])
-    expect(h.turns.isStale(45)).toBe(true)
+    expect(h.textOf('a-thread')).toBe('still going on A')
   })
 
-  // `closed` is no longer cleared by reset() (the fix above), so a long-lived tab needs a
-  // bound on it or it grows forever. CLOSED_CAP evicts the OLDEST id once past the cap —
-  // this is a deliberate memory/correctness tradeoff: a turn id closed hundreds of turns ago
-  // becomes acceptable again (extremely unlikely to ever matter — the straggler window this
-  // protects against is a single network round-trip, not hundreds of turns), while every
-  // recently-closed id stays protected.
-  it('caps `closed` at a bounded size, evicting the oldest id first', () => {
+  // `finished` is never cleared by reset() (a turn that genuinely ended can't legitimately
+  // reappear — turn ids are one global counter, never reused), so a long-lived tab needs a
+  // bound on it or it grows forever. FINISHED_CAP evicts the OLDEST id once past the cap —
+  // a deliberate memory/correctness tradeoff: a turn closed hundreds of turns ago becomes
+  // acceptable again (extremely unlikely to ever matter), while every recently-closed id
+  // stays protected. interrupt()'s no-active-turn fallback marks `finished` (Stop really
+  // does end the turn), so it's what this test exercises.
+  it('caps `finished` at a bounded size, evicting the oldest id first', () => {
     const h = harness()
     for (let i = 1; i <= 400; i++) { h.user(i, `u${i}`, 'x'); h.turns.interrupt() }
-    h.turns.reset() // current -> 0; `closed` itself is untouched by this (the fix)
+    h.turns.reset() // current -> 0; `finished` itself is untouched by this
     // id 1 fell out of the cap ~300 closes ago — accepted again now that current is 0.
     expect(h.turns.isStale(1)).toBe(false)
     // id 398 is well within the last ~300 and must still be rejected.
