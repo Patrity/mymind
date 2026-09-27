@@ -15,6 +15,7 @@ export type ResourceName =
   | 'conversation'
   | 'graph'
   | 'voicePreset'
+  | 'agentRun'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 
