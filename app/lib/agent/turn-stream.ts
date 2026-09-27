@@ -35,6 +35,15 @@ export interface ClientTurns {
   disconnect(): void
   reset(): void
   settled(): Promise<void>
+  /**
+   * Whether `attach()` should actually (re)subscribe for `conversationId` — true the first
+   * time asked (or after `reset()`), false on an immediate repeat for the SAME id. A repeat
+   * attach on an unchanged thread would ask the hub to replay the running turn's buffered
+   * frames again into the stream that already has them, duplicating its content (the same
+   * chunks enqueued twice) rather than being a harmless no-op. Marks the id remembered as a
+   * side effect of returning true, so the caller need not track anything itself.
+   */
+  shouldAttach(conversationId: string): boolean
 }
 
 interface ActiveTurn {
@@ -49,6 +58,8 @@ interface ActiveTurn {
 export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): ClientTurns {
   let current = 0
   const closed = new Set<number>()
+  // The conversationId shouldAttach() last approved an attach for — see its doc comment.
+  let attachedTo: string | null = null
   let active: ActiveTurn | null = null
   let lastDone: Promise<void> = Promise.resolve()
   // Every turn whose assembler is still running. A turn leaves `active` the moment its
@@ -138,7 +149,16 @@ export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): C
       close({ errorText: 'Connection lost' })
       current = 0
       closed.clear()
+      // A reconnect (or a resume onto a different thread — see useVoice's resetTurns) means
+      // whatever this socket was subscribed to no longer holds: the next attach() for ANY
+      // conversationId, including one it already approved before, must be allowed to fire.
+      attachedTo = null
     },
-    settled: () => lastDone
+    settled: () => lastDone,
+    shouldAttach(conversationId) {
+      if (attachedTo === conversationId) return false
+      attachedTo = conversationId
+      return true
+    }
   }
 }

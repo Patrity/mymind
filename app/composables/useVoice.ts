@@ -578,21 +578,45 @@ export function useVoice() {
       restAfterAbort()
     },
     /**
-     * Subscribe to the currently-selected thread's live frames AND replay its running turn
-     * so far, atomically (ws.ts's `attach`). Call this AFTER `messages.value` has been
-     * committed to the resumed transcript (`load` itself does not subscribe) — an `attach`
-     * sent before that commit would have its replayed frames open a turn on top of a
-     * transcript that then gets thrown away, or (worse) get silently discarded by a
-     * `discardTurn()` that runs after it. Never send this after a `text` submit: ws.ts
-     * subscribes with replay itself when a submit lands on an unattached thread, so sending
-     * `attach` too would replay the same frames twice.
+     * Subscribe to `conversationId`'s live frames AND replay its running turn so far,
+     * atomically (ws.ts's `attach`). Call this AFTER `messages.value` has been committed to
+     * the resumed transcript (`load` itself does not subscribe) — an `attach` sent before
+     * that commit would have its replayed frames open a turn on top of a transcript that
+     * then gets thrown away, or (worse) get silently discarded by a `discardTurn()` that
+     * runs after it. Never send this after a `text` submit: ws.ts subscribes with replay
+     * itself when a submit lands on an unattached thread, so sending `attach` too would
+     * replay the same frames twice.
+     *
+     * Idempotent per `turns.shouldAttach()`: a second call for the SAME conversationId (e.g.
+     * a branch-switch resume on the thread already open) is a no-op — the socket is already
+     * subscribed there, and re-sending `attach` would replay the running turn's buffered
+     * frames again into the stream that already has them, duplicating its content.
      */
-    attach: () => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'attach' })) },
+    attach: (conversationId: string) => {
+      if (ws?.readyState === WebSocket.OPEN && turns.shouldAttach(conversationId)) {
+        ws.send(JSON.stringify({ type: 'attach' }))
+      }
+    },
     /**
      * Call right before replacing `messages` wholesale (resume, retry): the running turn —
      * if any — is closed and nothing from it is ever upserted into the new list.
      */
     discardTurn: () => turns.discard(),
+    /**
+     * Forget every turn id this socket has seen, on a genuine thread switch — NOT on a
+     * same-thread resume (a branch-switch on the thread already open). Turn ids are one
+     * counter shared across every conversation (server/lib/agent/runtime/queue.ts), so
+     * without this, chatting on a side thread (which can run its ids up to, say, 100) then
+     * resuming main where an OLDER run is still streaming at a lower id (e.g. a wake at 45,
+     * started earlier in wall-clock time on a different thread) makes that id look "stale"
+     * to `advance()` — attach()'s replay would be silently dropped wholesale.
+     *
+     * Callers MUST call `discardTurn()` first, in the same synchronous tick (no `await`
+     * between them): `discard()` closes/discards whatever was active (synchronously), so by
+     * the time this runs, `reset()`'s own turn-closing side effect is a guaranteed no-op —
+     * it can never race the old thread's turn or mislabel it "Connection lost".
+     */
+    resetTurns: () => turns.reset(),
     /**
      * Start a fresh conversation: signals the server to reset context and
      * clears the local transcript.

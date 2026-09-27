@@ -153,6 +153,12 @@ async function toggleMic() {
 async function resume(id: string, opts?: { quiet?: boolean }): Promise<boolean> {
   // A fork armed against the transcript being replaced does not apply to the new one.
   pendingFork.value = null
+  // Captured BEFORE anything below mutates `voice.conversationId` — true for a genuine
+  // thread switch, false for a same-thread resume (moveLeaf's branch-switch: fork/edit/
+  // regenerate/switchBranch all resume the id they're already on). Turn ids are one counter
+  // shared across every conversation, so only a REAL switch may forget the ones this socket
+  // has seen — see useVoice's resetTurns() doc comment for the failure this prevents.
+  const switchingThread = voice.conversationId.value !== id
   try {
     const { conversation, messages } = await conversations.getConversation(id)
     // Build first, commit last: if loadConversation throws, the old thread must stay
@@ -161,13 +167,21 @@ async function resume(id: string, opts?: { quiet?: boolean }): Promise<boolean> 
     await voice.loadConversation(id)
     // A turn still streaming in the old thread must not write into the resumed one.
     voice.discardTurn()
+    // Order matters: discardTurn() above has already closed/discarded whatever was active,
+    // synchronously, so resetTurns() can never race it — see that method's doc comment.
+    // Skipped on a same-thread resume: the running turn (if any) IS the one attach() below
+    // is about to re-subscribe to, and resetting here would make its own turn id look new
+    // again instead of already-seen.
+    if (switchingThread) voice.resetTurns()
     voice.messages.value = next
     // Subscribe + replay the thread's running turn so far, now that the committed transcript
     // is what any replayed frames land on top of. `load` (above, inside loadConversation)
     // does NOT subscribe — attach is what makes a resumed thread's live frames (and a run
     // already in flight when this tab opened it) actually reach this socket; see useVoice's
-    // attach() and ws.ts's `attach` handling.
-    voice.attach()
+    // attach() and ws.ts's `attach` handling. Idempotent: a same-thread resume no-ops rather
+    // than replaying the running turn's frames a second time into the stream that already
+    // has them.
+    voice.attach(conversation.id)
     voice.conversationId.value = conversation.id
     voice.conversationTitle.value = conversation.title
     isMainThread.value = conversation.kind === 'main'

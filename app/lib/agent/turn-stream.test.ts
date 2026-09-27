@@ -105,6 +105,50 @@ describe('createClientTurns', () => {
     expect(h.messages.map(m => m.id)).toEqual(['u3', 'u1b'])
   })
 
+  // The resume/attach bug this pins: turn ids are ONE counter shared across every
+  // conversation, so chatting on a side thread (turn 100) and then resuming a thread where an
+  // OLDER run is still streaming (turn 45 — started earlier in wall-clock time, on a
+  // DIFFERENT conversation) must not have that lower id read as "stale" and dropped.
+  it('reset() makes a turn id LOWER than the pre-reset current acceptable again (resuming a thread with an older running turn)', async () => {
+    const h = harness()
+    h.user(100, 'side-u', 'chatting on a side thread')
+    expect(h.turns.isStale(45)).toBe(true) // true before reset — 45 < 100
+    h.turns.reset()
+    h.begin(45, 'wake-a')
+    expect(h.turns.isStale(45)).toBe(false) // accepted, not dropped as "older than 100"
+    h.say(45, 'wake-a', 'still going'); h.end(45, 'wake-a')
+    await h.turns.settled()
+    expect(h.textOf('wake-a')).toBe('still going')
+  })
+
+  describe('shouldAttach()', () => {
+    it('approves the first ask for a conversationId', () => {
+      const h = harness()
+      expect(h.turns.shouldAttach('c1')).toBe(true)
+    })
+
+    it('refuses an immediate repeat ask for the SAME conversationId (moveLeaf-style same-thread resume)', () => {
+      const h = harness()
+      expect(h.turns.shouldAttach('c1')).toBe(true)
+      expect(h.turns.shouldAttach('c1')).toBe(false)
+      expect(h.turns.shouldAttach('c1')).toBe(false)
+    })
+
+    it('approves a DIFFERENT conversationId even right after approving another one', () => {
+      const h = harness()
+      expect(h.turns.shouldAttach('c1')).toBe(true)
+      expect(h.turns.shouldAttach('c2')).toBe(true)
+      expect(h.turns.shouldAttach('c1')).toBe(true) // switched back — not "already attached" anymore
+    })
+
+    it('reset() forgets the remembered id, so the very same conversationId is approved again', () => {
+      const h = harness()
+      expect(h.turns.shouldAttach('c1')).toBe(true)
+      h.turns.reset()
+      expect(h.turns.shouldAttach('c1')).toBe(true)
+    })
+  })
+
   // discard(): the page replaced the message list (new thread, resume, retry). The running
   // turn must never write into the NEW list — not even its closing "stopped" snapshot.
   describe('discard()', () => {
