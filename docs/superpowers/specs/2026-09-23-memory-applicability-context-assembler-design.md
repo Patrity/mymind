@@ -134,8 +134,28 @@ to make the resident tier self-nominating — see [§5.3](#53-resident-promotion
 
 ### 3.3 `review_queue` — polymorphic target
 
-`review_queue` is keyed on `doc_id` and cannot hold a memory item. Add `target_kind` text +
-`target_id` uuid and backfill existing rows (`target_kind = 'document'`, `target_id = doc_id`).
+**Correction (2026-09-23, found while planning).** An earlier draft of this section claimed
+`review_queue` "cannot hold a memory item." That is wrong, and the truth is worse:
+**`doc_id` is already polymorphic, dishonestly.** `server/services/memory-resolve.ts:198–206`
+inserts `memory-supersede` / `memory-contradict` rows with `docId: plan.targetId` — a
+`memories.id` — into a column named `doc_id` and declared as a document reference.
+
+Two consequences today: `listReviewFeed`'s `leftJoin(documents, eq(documents.id,
+reviewQueue.docId))` silently yields `docPath: null` for every memory row (harmless, because it
+is a left join, but it is a join that can never match), and the `one_pending_per_doc` partial
+unique index spans two id namespaces at once.
+
+So this change is a **correctness fix to an existing latent defect**, not a new capability.
+
+Add `target_kind` text + `target_id` uuid. The backfill is **kind-dependent, not a blanket
+`'document'`** — getting this wrong would mislabel every existing memory conflict row:
+
+```sql
+update review_queue set
+  target_id   = doc_id,
+  target_kind = case when kind in ('memory-supersede','memory-contradict')
+                     then 'memory' else 'document' end;
+```
 
 **`doc_id` is made nullable and left in place, not dropped** — expand/contract, with the contract
 half deferred to a later cycle. Prod is live; a column drop is the one irreversible step in this
@@ -288,7 +308,7 @@ Every step is additive; there is no destructive operation. Prod is live and migr
 just landed.
 
 1. `memories`: `applicability`, `resident`, `retrieval_count`, `last_retrieved_at` + check constraint
-2. `review_queue`: `target_kind`, `target_id`; backfill from `doc_id`; replace the partial unique
+2. `review_queue`: `target_kind`, `target_id`; **kind-dependent** backfill from `doc_id` (see §3.3 — memory-conflict rows already hold a memories.id); replace the partial unique
    index; make `doc_id` nullable and stop writing it (drop deferred — see §3.3)
 3. `conversations`: `context_epoch_at`
 4. `mem_enrichment_state`: composite key, existing rows → `('session', id)`
