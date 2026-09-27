@@ -6,6 +6,7 @@ import { getDoc, updateDoc, moveDoc } from '../../services/documents'
 import { applyTask, applyNote, applyMemory, applyAppend } from '../../services/triage'
 import { publishChange } from '../../utils/live-bus'
 import type { TriageAction } from '../../../shared/types/triage'
+import { approveAgentAction, rejectAgentAction } from '../../lib/agent/runtime/replay'
 
 /**
  * Most handlers have nothing to report beyond success. approveTriage is the exception:
@@ -188,12 +189,14 @@ export const approveHandlers: Record<string, Handler> = {
   enrichment: approveEnrichment,
   'memory-supersede': approveMemoryConflict,
   'memory-contradict': approveMemoryConflict,
-  triage: approveTriage
+  triage: approveTriage,
+  'agent-action': item => approveAgentAction(item)
 }
 
 export const rejectHandlers: Record<string, Handler> = {
   enrichment: rejectEnrichment,
   'memory-supersede': rejectMemoryConflict,
   'memory-contradict': rejectMemoryConflict,
-  triage: rejectTriage
+  triage: rejectTriage,
+  'agent-action': rejectAgentAction
 }

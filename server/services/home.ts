@@ -40,7 +40,12 @@ async function metrics(db: ReturnType<typeof useDb>, start: Date): Promise<HomeM
 async function attention(db: ReturnType<typeof useDb>): Promise<HomeAttention> {
   const r = await db.execute(sql`
     select
-      (select count(*) from review_queue where status = 'pending')                        as conflicts,
+      -- 'agent-action' rows (task-12: a headless run's proposed tool call) are excluded —
+      -- this feeds the "memory conflict(s) to resolve" NeedsAttention badge
+      -- (app/components/home/NeedsAttention.vue), and an agent action isn't a memory conflict.
+      -- They still surface in /review itself (listReviewFeed) and the sidebar Review badge
+      -- (countReviewPending), just not double-counted under this specific label.
+      (select count(*) from review_queue where status = 'pending' and kind <> 'agent-action') as conflicts,
       (select count(*) from memories where reviewed_at is null and archived_at is null)   as unreviewed,
       (select count(*) from activity_log where severity = 'error' and acked_at is null)   as errors,
       (select count(*) from documents where path like '/input/%' and deleted_at is null)  as unfiled`)
@@ -77,8 +82,11 @@ async function timelineEvents(db: ReturnType<typeof useDb>, start: Date): Promis
                    from tasks t join task_columns tc on tc.id = t.column_id
                    where coalesce(t.completed_at, t.created_at) >= ${iso} and t.deleted_at is null
                    order by at desc limit ${PER_SOURCE_LIMIT}`),
+    // 'agent-action' rows excluded — see the matching note on the `conflicts` count above;
+    // the timeline event below is hardcoded to "Memory conflict flagged", which an agent
+    // action isn't.
     db.execute(sql`select id, created_at from review_queue
-                   where created_at >= ${iso} and status = 'pending'
+                   where created_at >= ${iso} and status = 'pending' and kind <> 'agent-action'
                    order by created_at desc limit ${PER_SOURCE_LIMIT}`),
     db.execute(sql`select id, name, status, created_at from activity_log
                    where created_at >= ${iso} and severity = 'error'

@@ -84,12 +84,18 @@ interface TriageProposed {
   applied: TriageActionDTO[]
 }
 
+interface AgentActionProposed {
+  tool: string
+  args: Record<string, unknown>
+  conversationId: string
+}
+
 interface ReviewItem {
   id: string
   // null for a synthetic memory-unreviewed item — it has no backing document.
   docId: string | null
   kind: string
-  proposed: DocProposed | MemoryConflictProposed | TriageProposed | MemoryUnreviewedProposed
+  proposed: DocProposed | MemoryConflictProposed | TriageProposed | MemoryUnreviewedProposed | AgentActionProposed
   createdAt: string
   docPath: string | null
 }
@@ -122,6 +128,10 @@ function isTriage(item: ReviewItem): item is ReviewItem & { proposed: TriageProp
 
 function isMemoryUnreviewed(item: ReviewItem): item is ReviewItem & { proposed: MemoryUnreviewedProposed } {
   return item.kind === 'memory-unreviewed'
+}
+
+function isAgentAction(item: ReviewItem): item is ReviewItem & { proposed: AgentActionProposed } {
+  return item.kind === 'agent-action'
 }
 
 /** "1 action" / "2 actions" — never "1 actions". */
@@ -769,6 +779,17 @@ async function undoDiscard(undoToken: string) {
               </div>
             </template>
           </UCard>
+
+          <!-- Agent-action card (task-12: a headless run proposed a tool call instead of
+               running it unattended). Extracted into its own component rather than inlined
+               like the other cards — see app/components/review/AgentActionCard.vue. -->
+          <ReviewAgentActionCard
+            v-else-if="isAgentAction(item)"
+            :item="(item as ReviewItem & { proposed: AgentActionProposed })"
+            :loading="actioning[item.id]"
+            @approve="() => approve(item)"
+            @reject="() => reject(item)"
+          />
 
           <!-- Enrichment-doc card (original behaviour) -->
           <UCard v-else>
