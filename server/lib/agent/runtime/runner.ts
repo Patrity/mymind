@@ -148,13 +148,13 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // live "Tony said…" bubble would be a lie.
       if (isWake && e.type === 'transcript' && e.role === 'user') return
       // Controller ruling (carried from Task 7's concern): nobody is watching a wake run live,
-      // so its assistant TEXT never streams — a subscribed socket saw a suppressed NO_REPLY's
-      // words before the drop decided it was silent. Withheld here, not filtered client-side, so
-      // a stray subscriber can never observe it even for one frame. Tool/state/usage/reasoning
-      // frames are unaffected (still useful to watch live); the real reply, suppressed or not,
-      // only ever reaches a subscriber via the `persisted` re-read below. Interactive runs are
-      // untouched — this branch only fires when isWake.
-      if (isWake && e.type === 'transcript' && e.role === 'assistant') return
+      // so its assistant TEXT and REASONING never stream — a subscribed socket saw a suppressed
+      // NO_REPLY's words before the drop decided it was silent. Withheld here, not filtered
+      // client-side, so a stray subscriber can never observe them even for one frame. Tool/
+      // state/usage frames are unaffected (still useful to watch live); the real reply,
+      // suppressed or not, only ever reaches a subscriber via the `persisted` re-read below.
+      // Interactive runs are untouched — these branches only fire when isWake.
+      if (isWake && ((e.type === 'transcript' && e.role === 'assistant') || e.type === 'reasoning')) return
       ts!.emit(e)
     }
     // The thread this turn was SENT to is run.conversationId, fixed when the run was created
@@ -204,10 +204,16 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // usage with the timing filled in reuses the message-metadata chunk that was already
       // flowing: no new frame type and no protocol change.
       //
-      // Guarded so this can never OPEN a message that never started: both conditions imply
-      // a chunk already went out (a usage event, or an assistant token that set ttftMs), and
-      // turn-stream starts the message on the first chunk.
-      if (turnUsage || ttftMs !== undefined) ts.emit({ type: 'usage', ...finalUsage })
+      // Guarded so this can never OPEN a message that never started. For an INTERACTIVE run,
+      // `ttftMs !== undefined` OR `turnUsage` is correct: either implies a chunk already went
+      // out (an assistant token, or a usage event), and turn-stream starts the message on the
+      // first chunk. For a WAKE run that guard is too loose: `ttftMs` gets set above from the
+      // assistant transcript event EVEN THOUGH it was just withheld from `ts.emit`, so a wake
+      // run with no real usage event (nothing else ever streamed) would still open an empty
+      // message here just to carry usage metadata nobody streamed anything else into. Dropping
+      // the `ttftMs` half for `isWake` fixes that; `turnUsage` alone (a real usage event
+      // actually arrived) still opens it, same as before.
+      if ((!isWake && ttftMs !== undefined) || turnUsage) ts.emit({ type: 'usage', ...finalUsage })
       ts.finish()
     }
     // A wake that answered with the NO_REPLY sentinel is silent by contract: no assistant row.

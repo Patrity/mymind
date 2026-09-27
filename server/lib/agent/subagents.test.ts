@@ -72,6 +72,20 @@ describe('makeSubagentTool', () => {
     expect(researchSubagent.name).toBe('research_web')
     expect(brainSubagent.name).toBe('search_brain')
   })
+
+  // Subagents call agentTools DIRECTLY (the nested `run` above), bypassing the headless gate
+  // (server/lib/agent/runtime/gate.ts) entirely — a subagent given a mutating tool would let a
+  // headless run edit/destroy data through a side door the gate never sees. Every subagent's
+  // toolset must stay read-only, enforced at construction so a future spec that adds e.g.
+  // `edit_document` fails immediately (at module load), not silently in a headless run.
+  it('throws at construction if any toolName resolves to a non-read tool', () => {
+    expect(() => makeSubagentTool({ ...SPEC, toolNames: ['save_memory'] })).toThrow(/read/i)
+    expect(() => makeSubagentTool({ ...SPEC, toolNames: ['edit_task'] })).toThrow(/read/i)
+  })
+
+  it('does not throw for an all-read toolset (the real specs)', () => {
+    expect(() => makeSubagentTool(SPEC)).not.toThrow()
+  })
 })
 
 describe('makeSubagentTool nested event forwarding', () => {

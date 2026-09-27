@@ -134,12 +134,15 @@ describe('runTurn', () => {
     expect(r.map(x => [x.role, x.origin])).toEqual([['event', 'wake:admin']])
   })
 
-  // Controller ruling (carried from Task 7's concern): a suppressed NO_REPLY wake used to
-  // stream its text live to any subscribed socket before being dropped. A wake run's assistant
-  // TEXT must never reach a live subscriber — only the `persisted` re-read shows the (real or
-  // absent) reply. Tool/state/usage frames are unaffected; this test only pins the text-delta
-  // withholding.
-  it('a subscribed sink on a wake run that replies NO_REPLY receives no text-delta chunk', async () => {
+  // Controller ruling (carried from Task 7's concern, tightened in fix round 1): a suppressed
+  // NO_REPLY wake used to stream its text live to any subscribed socket before being dropped,
+  // AND (separately) the usage re-emit below used to open an EMPTY assistant message live for
+  // every wake run — ttftMs gets set from the withheld transcript even though nothing was ever
+  // actually streamed, so the old guard (`ttftMs !== undefined`) fired regardless. A wake run's
+  // assistant TEXT and REASONING must never reach a live subscriber, and with nothing else
+  // streamable (no real usage event, as this fake agent never emits one), NO chunk frame at all
+  // should reach the subscriber — only the `persisted` re-read shows the (real or absent) reply.
+  it('a subscribed sink on a wake run that replies NO_REPLY receives no chunk frames at all', async () => {
     const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake stream' })
     convIds.push(s.conversationId)
     await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'wake', profile: 'headless', wakeReason: 'stream-test', input: { text: 'anything new?', modality: 'text' } })
@@ -150,7 +153,27 @@ describe('runTurn', () => {
     const out = await runTurn(run, { runAgent: fakeAgent('NO_REPLY') as never, assemble: noAssemble as never, hub })
     expect(out.suppressed).toBe(true)
     const chunkTypes = got.filter(f => JSON.parse(f).type === 'chunk').map(f => JSON.parse(f).chunk.type)
-    expect(chunkTypes).not.toContain('text-delta')
+    // Nothing streamable happened (text withheld, no usage event) — no start/finish either.
+    expect(chunkTypes).toEqual([])
+  })
+
+  it('withholds reasoning frames on a wake run too, even for a real (non-suppressed) reply', async () => {
+    const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake reasoning' })
+    convIds.push(s.conversationId)
+    await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'wake', profile: 'headless', wakeReason: 'reasoning-test', input: { text: 'anything new?', modality: 'text' } })
+    const run = (await claimNextRun({ onlyConversations: [s.conversationId], headlessSlots: HEADLESS_TEST_SLOTS }))!
+    const thinksThenReplies = async function* () {
+      yield { type: 'reasoning-delta', text: 'thinking it over' } as const
+      yield { type: 'text-delta', text: 'nothing new' } as const
+      yield { type: 'done' } as const
+    }
+    const hub = new StreamHub()
+    const got: string[] = []
+    hub.subscribe(s.conversationId, { id: 'watcher', send: (d) => { if (typeof d === 'string') got.push(d) } })
+    const out = await runTurn(run, { runAgent: thinksThenReplies as never, assemble: noAssemble as never, hub })
+    expect(out.suppressed).toBe(false) // a real reply, not NO_REPLY — still must not stream live
+    const chunkTypes = got.filter(f => JSON.parse(f).type === 'chunk').map(f => JSON.parse(f).chunk.type)
+    expect(chunkTypes).toEqual([])
   })
 
   it('a thrown agent error marks the run failed and still keeps the question', async () => {

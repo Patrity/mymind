@@ -31,6 +31,15 @@ export interface SubagentDeps { run?: typeof RunAgentFn }
 
 export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): AgentTool {
   const tools = agentTools.filter(t => spec.toolNames.includes(t.name))
+  // Subagents call agentTools DIRECTLY (the nested runAgent below) — they never go through
+  // headlessTools (server/lib/agent/runtime/gate.ts), so a mutating tool handed to one would
+  // let a headless wake run edit/destroy data through a side door the gate never sees. Every
+  // subagent's toolset must stay read-only; enforced HERE, at construction (both specs below
+  // are built eagerly at module load), so a future spec that adds e.g. `edit_document` fails
+  // immediately instead of silently in a live headless run.
+  for (const t of tools) {
+    if (t.kind !== 'read') throw new Error(`makeSubagentTool(${spec.name}): '${t.name}' is kind '${t.kind}', not 'read' — subagent toolsets must be read-only (they bypass the headless gate)`)
+  }
   // Budget line derives from spec.maxSteps so prompt and cap can never diverge
   // (a hand-tuned cap bump once left the prompt claiming the old budget).
   const system = `${spec.system}\n\nBudget: you have a HARD cap of ${spec.maxSteps} tool steps; the FINAL step forces you to write with no tools available — stop digging with room to spare and write the full digest.`

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { classifyForHeadless, headlessTools } from '../server/lib/agent/runtime/gate'
 import { bridgetProfile } from '../server/lib/agent/profile'
 import type { AgentTool } from '../server/lib/agent/types'
+import type { HeadlessClass } from '../server/lib/agent/runtime/gate'
 
 describe('headless gate', () => {
   it('classifies every tool Bridget has — a new unclassified tool fails this test', () => {
@@ -32,5 +33,41 @@ describe('headless gate', () => {
   it('an unknown create-kind tool throws rather than defaulting to run', () => {
     const t: AgentTool = { name: 'brand_new_tool', description: '', schema: {}, kind: 'create', handler: async () => ({ result: 1, summary: '' }) }
     expect(() => classifyForHeadless(t)).toThrow(/unclassified/)
+  })
+})
+
+// A hand-written pin, independent of gate.ts's own logic — the tests above prove no tool
+// throws and spot-check a handful by name, but neither catches a tool silently MOVING class
+// (e.g. update_document sliding from PROPOSE_TOOLS into APPEND_TOOLS would still pass every
+// test above while quietly letting a headless run mutate an existing document unattended).
+// This table names every tool Bridget has and its expected class; it must be updated by hand
+// whenever a tool is added, removed or reclassified.
+const EXPECTED_CLASS: Record<string, HeadlessClass> = {
+  // read — always safe to run headless
+  search_memories: 'run', get_recent_memories: 'run', search_docs: 'run', search_passages: 'run',
+  list_documents: 'run', get_document: 'run', read_document: 'run', grep_document: 'run',
+  search_projects: 'run', get_project: 'run', search_tasks: 'run', web_search: 'run', web_fetch: 'run',
+  search_messages: 'run', search_sessions: 'run', read_around_message: 'run', read_session: 'run',
+  use_skill: 'run', research_web: 'run', search_brain: 'run',
+  // create-kind, but pure append (nothing existing is touched) — safe to run headless
+  save_memory: 'run', create_task: 'run', create_project: 'run', quick_capture: 'run',
+  generate_image: 'run', save_document: 'run',
+  // create-kind that edits/moves something that already exists — proposed, not run
+  edit_document: 'propose', edit_section: 'propose', update_document: 'propose',
+  move_document: 'propose', sync_document: 'propose', edit_image: 'propose',
+  create_skill: 'propose', edit_skill: 'propose',
+  // destructive-kind — always proposed
+  forget_memory: 'propose', delete_document: 'propose', edit_project: 'propose',
+  edit_task: 'propose', delete_task: 'propose', delete_skill: 'propose',
+  // dangerous — excluded outright, never even offered as a proposal
+  exec: 'exclude'
+}
+
+describe('headless gate — exhaustive table', () => {
+  it('the table names EXACTLY the tools Bridget has, no more, no less', () => {
+    expect(Object.keys(EXPECTED_CLASS).sort()).toEqual(bridgetProfile.tools.map(t => t.name).sort())
+  })
+  it.each(bridgetProfile.tools.map(t => [t.name, t] as const))('%s classifies as pinned', (name, t) => {
+    expect(classifyForHeadless(t)).toBe(EXPECTED_CLASS[name])
   })
 })

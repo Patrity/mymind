@@ -20,6 +20,23 @@ afterAll(async () => {
   await db.delete(conversations).where(inArray(conversations.id, convIds))
 })
 
+// Awaits `wake()` itself (rather than `expect(...).rejects`) so that if the validation this
+// pins ever regresses and the call unexpectedly SUCCEEDS, the row it created is still captured
+// into `convIds` for cleanup instead of leaking into the shared dev DB (a real mutation-check
+// run earlier left exactly this kind of stray row before this fix).
+async function assertWakeRejects(req: Parameters<typeof wake>[0], msg: RegExp) {
+  let result: { runId: string; conversationId: string } | undefined
+  let error: unknown
+  try {
+    result = await wake(req, { kick: false })
+  } catch (err) {
+    error = err
+  }
+  if (result) convIds.push(result.conversationId)
+  expect(error).toBeInstanceOf(Error)
+  expect((error as Error).message).toMatch(msg)
+}
+
 describe('wake', () => {
   it('queues a headless wake run on an isolated session', async () => {
     const r = await wake({ reason: 'test', prompt: 'WAKE-TEST anything new?', sessionKey: 'isolated:WAKE-TEST' }, { kick: false })
@@ -29,7 +46,7 @@ describe('wake', () => {
     expect((run!.input as { text: string }).text).toBe('WAKE-TEST anything new?')
   })
   it('rejects an empty prompt or reason', async () => {
-    await expect(wake({ reason: '', prompt: 'x' }, { kick: false })).rejects.toThrow(/reason/)
-    await expect(wake({ reason: 'x', prompt: '  ' }, { kick: false })).rejects.toThrow(/prompt/)
+    await assertWakeRejects({ reason: '', prompt: 'x', sessionKey: 'isolated:WAKE-TEST-reject' }, /reason/)
+    await assertWakeRejects({ reason: 'x', prompt: '  ', sessionKey: 'isolated:WAKE-TEST-reject' }, /prompt/)
   })
 })
