@@ -8,6 +8,7 @@ import { runTurn } from './runner'
 import { maybeSummarizeLater } from './summarize-hook'
 import { recoverStale } from './recover'
 import { publishChange } from '../../../utils/live-bus'
+import { runtimeEnabled, RuntimeDisabledError } from './flag'
 import type { AgentRun } from '../../../db/schema'
 import type { RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
@@ -23,6 +24,7 @@ export interface EnqueueResult { runId: string; conversationId: string; steered:
 type RunFn = (run: AgentRun) => Promise<RunOutcome>
 
 export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: boolean; pushSteer?: typeof pushSteer } = {}): Promise<EnqueueResult> {
+  if (!runtimeEnabled()) throw new RuntimeDisabledError()
   const doPushSteer = deps.pushSteer ?? pushSteer
   const { conversationId, created } = await resolveSession(req.sessionKey, { titleHint: req.input.text })
   if (req.trigger === 'user' && !created) {

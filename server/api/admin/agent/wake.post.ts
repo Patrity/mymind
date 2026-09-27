@@ -1,4 +1,5 @@
 import { wake } from '../../../lib/agent/runtime/wake'
+import { RuntimeDisabledError } from '../../../lib/agent/runtime/flag'
 import { requireSession } from '../../../utils/auth-guard'
 
 /**
@@ -15,6 +16,8 @@ export default defineEventHandler(async (event) => {
   try {
     return await wake({ reason: body.reason ?? 'admin', prompt: body.prompt ?? '', sessionKey, model: body.model ?? null })
   } catch (err) {
+    // Flag off: a conflict with the server's current mode, not a bad request.
+    if (err instanceof RuntimeDisabledError) throw createError({ statusCode: 409, statusMessage: err.message })
     const msg = err instanceof Error ? err.message : String(err)
     // wake()'s own validation ("wake: …") and resolveSession's not-found ("… not found") are
     // the only errors safe to surface as a client-facing 400. Anything else (a DB outage, an
