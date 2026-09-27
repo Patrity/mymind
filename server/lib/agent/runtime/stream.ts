@@ -47,3 +47,30 @@ export class StreamHub {
 }
 
 export const hub = new StreamHub()
+
+/**
+ * Wrap a sink so every JSON string frame sent through it is tagged with `conversationId` — a
+ * cheap splice right after the leading `{` (`{"cid":"<id>",…rest of the frame…}`). Binary
+ * frames (raw PCM audio) pass through untouched; they're already gated by their own tagged
+ * `audio-begin` frame, so tagging the audio bytes themselves would be redundant work for no
+ * benefit.
+ *
+ * Belt-and-braces alongside the client's turn-id tracking (app/lib/agent/turn-stream.ts): a
+ * frame the client's turn bookkeeping accepts by mistake — a bookkeeping bug, a timing edge
+ * case neither side anticipated — is still identifiable, and droppable, by conversationId
+ * alone (app/lib/voice/messages.ts's `mapServerMessage`).
+ *
+ * Keeps the WRAPPED sink's `id` verbatim: `StreamHub.hasSink`/subscriber-counting and
+ * `publish`'s `only:` targeting are keyed by sink id, and one physical socket subscribes to a
+ * DIFFERENT conversationId (a fresh `withCid` wrapper) every time it switches threads — they
+ * must all still count as the same peer.
+ */
+export function withCid(conversationId: string, sink: Sink): Sink {
+  return {
+    id: sink.id,
+    send: (d) => {
+      if (typeof d === 'string' && d.startsWith('{')) sink.send(`{"cid":${JSON.stringify(conversationId)},${d.slice(1)}`)
+      else sink.send(d)
+    }
+  }
+}

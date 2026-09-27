@@ -13,7 +13,7 @@ import { legacyHooks } from '../../lib/voice/ws-legacy'
 import { runtimeEnabled } from '../../lib/agent/runtime/flag'
 import { enqueue, abortActive, abortActiveAndWait } from '../../lib/agent/runtime/queue'
 import { abortRun } from '../../lib/agent/runtime/aborts'
-import { hub, type Sink } from '../../lib/agent/runtime/stream'
+import { hub, withCid, type Sink } from '../../lib/agent/runtime/stream'
 import { registerApprovalChannel, unregisterApprovalChannel, hasApprovalChannel, turnStreamFor } from '../../lib/agent/runtime/approvals'
 import { clearConversationContext } from '../../services/conversation-clear'
 import { useDb } from '../../db'
@@ -103,10 +103,12 @@ function select(s: ConnState, conversationId: string | null) {
   s.viewSeq++
 }
 /** Select AND subscribe, replaying the running turn so far — one synchronous step, so no live
- *  frame can slip in between the subscribe and the replay. */
+ *  frame can slip in between the subscribe and the replay. Subscribes with a `withCid`-wrapped
+ *  sink (tags every chunk/user-message/audio-begin frame with `conversationId`) — belt and
+ *  braces for the client's own turn-id tracking; see stream.ts's `withCid` doc comment. */
 function view(s: ConnState, conversationId: string | null) {
   select(s, conversationId)
-  if (conversationId) s.unsubscribe = hub.subscribe(conversationId, s.sink, { replay: true })
+  if (conversationId) s.unsubscribe = hub.subscribe(conversationId, withCid(conversationId, s.sink), { replay: true })
 }
 
 export default defineWebSocketHandler({

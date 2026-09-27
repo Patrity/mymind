@@ -55,12 +55,26 @@ interface ActiveTurn {
   done: Promise<void>
 }
 
+// Cap on how many closed turn ids `closed` remembers. Real turn ids are a single counter
+// shared across every conversation (server-side), never reused — so keeping them all would
+// be correct forever, but unbounded for a long-lived tab. A few hundred is far more than any
+// realistic straggler-frame delay (network latency between the server processing `load` and
+// whatever chunk was already queued before it) could ever need.
+const CLOSED_CAP = 300
+
 export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): ClientTurns {
   let current = 0
   const closed = new Set<number>()
   // The conversationId shouldAttach() last approved an attach for — see its doc comment.
   let attachedTo: string | null = null
   let active: ActiveTurn | null = null
+
+  /** Record a turn id as closed, evicting the oldest entry once past the cap (Set iteration
+   *  order is insertion order, so `.values().next()` is always the oldest). */
+  function markClosed(turnId: number) {
+    closed.add(turnId)
+    if (closed.size > CLOSED_CAP) closed.delete(closed.values().next().value!)
+  }
   let lastDone: Promise<void> = Promise.resolve()
   // Every turn whose assembler is still running. A turn leaves `active` the moment its
   // closing frame arrives, but its queued chunks (and the finalize) are upserted later —
@@ -98,7 +112,7 @@ export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): C
   function close(meta: CloseMeta) {
     if (!active) return
     Object.assign(active.meta, meta)
-    closed.add(active.turnId)
+    markClosed(active.turnId)
     try { active.controller.close() } catch { /* already closed */ }
     active = null
   }
@@ -137,18 +151,30 @@ export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): C
     // before any of N's frames arrive, and ids are only ever learned from those frames.
     interrupt() {
       if (active) close({ interrupted: true })
-      else if (current) closed.add(current)
+      else if (current) markClosed(current)
     },
     discard() {
       for (const turn of draining) turn.discarded = true
       if (active) close({ interrupted: true })
-      else if (current) closed.add(current)
+      else if (current) markClosed(current)
     },
     disconnect() { close({ errorText: 'Connection lost' }) },
     reset() {
       close({ errorText: 'Connection lost' })
       current = 0
-      closed.clear()
+      // `closed` is deliberately NOT cleared here. Turn ids are one counter shared across
+      // every conversation and never reused, so a closed id can never legitimately reappear —
+      // and resuming onto a DIFFERENT thread relies on `current` resetting to accept that
+      // thread's (possibly numerically lower) turn id, not on forgetting which ids this
+      // socket already closed. Clearing `closed` here was the actual bug: discard() (called
+      // right before this, in resume()) marks the OLD thread's turn closed via `markClosed`,
+      // but a straggler chunk for that exact turn — already in flight over the wire before
+      // the server processed `load` and unsubscribed this socket — arrives AFTER both calls.
+      // With `closed` wiped, `advance()` saw a "new" turn id below `current` (now reset to 0)
+      // and opened it fresh, rendering a ghost assistant message into the thread just
+      // resumed to. Leaving `closed` intact keeps that specific id rejected forever (bounded
+      // by CLOSED_CAP), while `current` still resets so a genuinely lower-but-never-closed id
+      // (e.g. an older thread's still-running wake) is accepted, same as before this fix.
       // A reconnect (or a resume onto a different thread — see useVoice's resetTurns) means
       // whatever this socket was subscribed to no longer holds: the next attach() for ANY
       // conversationId, including one it already approved before, must be allowed to fire.

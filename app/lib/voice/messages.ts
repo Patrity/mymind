@@ -2,7 +2,7 @@
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { AgentMessageFrame } from '~~/shared/types/agent-ui'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string }
 
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own them).
@@ -38,7 +38,27 @@ export interface MsgEffect {
   audioEnd?: number
 }
 
-export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
+/**
+ * `viewedConversationId` is the thread this socket currently views (useVoice's
+ * `conversationId.value`) — default `null` only for callers (mostly tests) that don't care
+ * about the cid guard below; every real caller (useVoice's onmessage) passes the live value.
+ */
+export function mapServerMessage(m: ServerMsg, isPlaying: boolean, viewedConversationId: string | null = null): MsgEffect {
+  // Belt-and-braces alongside the client's turn-id tracking (app/lib/agent/turn-stream.ts):
+  // every chunk/user-message/audio-begin frame is tagged with the conversationId it was
+  // published for (server/lib/agent/runtime/stream.ts's `withCid`). One whose cid doesn't
+  // match what this socket currently VIEWS is for a thread we've switched away from — drop
+  // it outright, independent of whatever the turn-id bookkeeping decides, so a straggler
+  // frame can never render as a ghost message in the thread we switched TO. The one
+  // exception: `viewedConversationId === null` (a brand-new thread — nothing chosen yet to
+  // compare against) lets everything through; the `conversation` frame that assigns an id
+  // follows right behind and there is nothing to mismatch against yet.
+  if (
+    (m.type === 'chunk' || m.type === 'user-message' || m.type === 'audio-begin') &&
+    m.cid !== undefined && viewedConversationId !== null && m.cid !== viewedConversationId
+  ) {
+    return {}
+  }
   if (m.type === 'chunk') return { messageFrame: m as unknown as AgentMessageFrame }
   if (m.type === 'user-message') {
     const frame = m as unknown as Extract<AgentMessageFrame, { type: 'user-message' }>

@@ -72,3 +72,46 @@ describe('mapServerMessage — steered', () => {
     expect(mapServerMessage({ type: 'steered' } as never, false)).toEqual({})
   })
 })
+
+// Belt-and-braces alongside the client's turn-id tracking (app/lib/agent/turn-stream.ts): a
+// chunk/user-message/audio-begin frame tagged (server/lib/agent/runtime/stream.ts's
+// `withCid`) for a conversation the socket no longer views must be dropped outright,
+// regardless of what the turn-id bookkeeping decides.
+describe('mapServerMessage — cid guard (belt-and-braces against a stray frame from a thread we switched away from)', () => {
+  it('drops a chunk frame whose cid does not match the currently viewed conversationId', () => {
+    const frame = { type: 'chunk', turnId: 3, cid: 'thread-A', chunk: { type: 'text-delta', id: 't', delta: 'ghost' } }
+    expect(mapServerMessage(frame as never, false, 'thread-B')).toEqual({})
+  })
+
+  it('drops a user-message frame with a mismatched cid', () => {
+    const frame = { type: 'user-message', turnId: 3, cid: 'thread-A', message: { id: 'u', role: 'user', parts: [{ type: 'text', text: 'ghost' }] } }
+    expect(mapServerMessage(frame as never, false, 'thread-B')).toEqual({})
+  })
+
+  it('drops an audio-begin frame with a mismatched cid', () => {
+    const frame = { type: 'audio-begin', segmentId: 1, sampleRate: 24000, cid: 'thread-A' }
+    expect(mapServerMessage(frame as never, false, 'thread-B')).toEqual({})
+  })
+
+  it('passes a chunk frame through when the cid MATCHES the currently viewed conversationId', () => {
+    const frame = { type: 'chunk', turnId: 3, cid: 'thread-B', chunk: { type: 'text-delta', id: 't', delta: 'hi' } }
+    expect(mapServerMessage(frame as never, false, 'thread-B')).toEqual({ messageFrame: frame })
+  })
+
+  it('passes a chunk frame through when it carries no cid at all (older/untagged frame shape)', () => {
+    const frame = { type: 'chunk', turnId: 3, chunk: { type: 'text-delta', id: 't', delta: 'hi' } }
+    expect(mapServerMessage(frame as never, false, 'thread-B')).toEqual({ messageFrame: frame })
+  })
+
+  it('passes everything through while viewedConversationId is null (a brand-new thread, nothing to compare against yet)', () => {
+    const frame = { type: 'chunk', turnId: 3, cid: 'thread-A', chunk: { type: 'text-delta', id: 't', delta: 'hi' } }
+    expect(mapServerMessage(frame as never, false, null)).toEqual({ messageFrame: frame })
+  })
+
+  it('never gates a frame type outside the three cid-checked ones, even with a mismatched cid', () => {
+    // `state` isn't one of the three gated types — a cid on it (it never actually carries one
+    // server-side) must not accidentally start being filtered.
+    expect(mapServerMessage({ type: 'state', state: 'idle', cid: 'thread-A' } as never, false, 'thread-B'))
+      .toEqual({ state: 'idle' })
+  })
+})

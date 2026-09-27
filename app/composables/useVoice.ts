@@ -293,7 +293,7 @@ export function useVoice() {
         state.value = 'speaking'
         enqueuePcm(e.data, epochs.segment())
       } else {
-        const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying())
+        const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying(), conversationId.value)
         // audio-begin now names its turn: a segment from a superseded turn is rejected
         // outright (closes the barge-in window documented on onAudioBegin).
         if (fx.audioBegin) {
@@ -625,6 +625,13 @@ export function useVoice() {
       // discard, not interrupt: interrupt still upserts the running turn's closing snapshot,
       // which would land in the NEW empty list as a "stopped" reply from the old thread.
       turns.discard()
+      // A brand-new thread is a genuine switch too (same as resume()'s `switchingThread`
+      // case) — reset right after discard(), same order, same reasoning: `closed` survives
+      // (turn ids are never reused, so nothing needs forgetting there), but `attachedTo`
+      // must, or a later resume() back to whatever thread this socket last attached to
+      // would wrongly no-op against server state that the `new` frame below already
+      // unsubscribed from.
+      turns.reset()
       messages.value = []
       contextEpochAt.value = null // same reasoning as loadConversation's reset
       conversationId.value = null
