@@ -17,6 +17,7 @@ wiki:
   - ../wiki/agent.md
 migrations:
   - 0054 conversations.kind / summarized_through; conversation_messages.origin; agent_runs; agent_inbox; review_queue_one_pending_per_target excludes agent-action
+  - 0055 agent_runs.owner (boot id of the claiming process; final review I4)
 migrations_run_on_prod: false
 mymind_task: 8fdc0fe7
 ---
@@ -30,7 +31,8 @@ WebSocket. It is an `agent_runs` row, claimed by a worker in the Nitro process, 
 unsubscribes. The reply keeps going and persists.
 
 **Status:** the branch is built and every gate is green. All six browser acceptance scenarios
-pass. It is **not merged and not deployed**. Migration 0054 is applied to the shared dev DB only.
+pass. It is **not merged and not deployed**. Migrations 0054 and 0055 are applied to the shared
+dev DB only. The final whole-branch review's fix wave is in (see "Final review fix wave").
 
 How it works today: [`docs/wiki/agent-runtime.md`](../wiki/agent-runtime.md). This handover
 covers what shipped, what the build changed relative to the spec, and what is left open.
@@ -70,8 +72,8 @@ covers what shipped, what the build changed relative to the spec, and what is le
 
 | Gate | Baseline (5dbe809) | Now |
 |---|---|---|
-| `pnpm test` | 233 files · 2119 pass · 1 skip | **246 files · 2303 pass · 1 skip** |
-| `pnpm test:db` | 36 files · 306 pass | **46 files · 381 pass** |
+| `pnpm test` | 233 files · 2119 pass · 1 skip | **248 files · 2318 pass · 1 skip** |
+| `pnpm test:db` | 36 files · 306 pass | **46 files · 391 pass** |
 | `pnpm typecheck` | clean | **clean** |
 | `pnpm build` | ok | **ok** |
 
@@ -157,11 +159,47 @@ ACCEPT-4 task and the ACCEPT5 side thread were deleted.
 - **Wake-produced assistant rows have `origin = null`.** Spec §4.2 said they would carry the wake
   origin; only the event row does. This was observed in scenario 3.
 
+## Final review fix wave (2026-09-27)
+
+The whole-branch review returned "Ready after fixes". Everything below is fixed on the branch,
+each with a mutation-checked test (full report: `.superpowers/sdd/2026-09-27-bridget-runtime/final-fix-report.md`).
+
+- **C1 — reconnect sent the next message into an invisible new thread.** Every socket open now
+  re-sends `load` + `attach` for the thread on screen (`app/lib/voice/reconnect.ts`
+  `framesOnOpen`), and every `text` frame carries `conversationId`, which the server prefers over
+  its own socket state (UUID-validated in `ws-routing.ts`). Browser-verified across a real dev
+  server kill + restart; the same probe on the pre-fix code reproduced the bug (new thread,
+  nothing rendered).
+- **C2 — one tool-heavy turn left the model with zero history.** Turns are costed after
+  `applyHistoryPolicy` (`costTurns`, the representation `buildModelMessages` sends), and
+  `fitBudget` always keeps the newest turn.
+- **I3 — a steer silently dropped attachments and the skill.** Only plain text steers; a message
+  with attachments or a skill queues its own run. `pushSteer`'s EXISTS now locks the run row
+  `for share`.
+- **I4 — a run killed by a deploy restart looked alive for ~60 s.** `agent_runs.owner` (migration
+  **0055**) holds the claiming process's `BOOT_ID`; with `AGENT_RUNTIME_EXCLUSIVE=1` (set in
+  `deploy/mymind.service`, documented in `docs/DEPLOYMENT.md`) boot recovery takes every
+  foreign-owned `running` row at once. Without the env (shared dev DB) behaviour is unchanged.
+- **I5 — an in-flight summary fold could undo `/clear`.** The fold reads `context_epoch_at` (as
+  text) at start and its UPDATE is guarded `is not distinct from` that value.
+- **I6 — unbounded first fold, sweep starvation.** Each fold sends at most 24 000 tokens of
+  transcript (oldest whole turns) and advances `summarized_through` per chunk. The sweep orders
+  by `last_message_at desc`, requires `message_count > 12` and more than 12 rows past
+  `summarized_through`, and records `{ summarized, failed }` via `recordJobSummary`.
+- **m1** — `enqueue`/`wake` throw `RuntimeDisabledError` when `agent_runtime=false` (the wake
+  endpoint answers 409), and `summarize-threads` skips.
+- **m2** — summary transcripts label event rows by their own `Note (…):` / `Background wake (…):`
+  text, never "Tony:".
+- **m3** — wiki: undo toast moved under Approve, "the only way a turn runs" qualified by the
+  flag, Known limits updated (below).
+
 ## Open / deferred
 
-- **WS reconnect does not re-send `load`/`attach`.** After any reconnect (every deploy restart),
-  the next message starts a **new** server-side thread and its reply drops out of view until
-  reload. This was flagged at Task 13 as likely must-fix before merge.
+- **Restart wedge without exclusive mode.** On the shared dev DB (no `AGENT_RUNTIME_EXCLUSIVE`) a
+  run killed by a restart still looks alive for up to 60 s. Prod sets the env.
+- **A message queued behind a wake is invisible until the wake finishes** (a queued run emits its
+  `user-message` frame only when it starts). Follow-up.
+- **Code revert is not a safe rollback** once `event` rows exist — use the `agent_runtime` flag.
 - **An `agent-action` row stuck in `applying`** after a crash between claim and settle is
   invisible in `/review` and is not auto-reset, because the tool may have run. Follow-up: surface
   `applying` rows older than N minutes as "stuck — check the thread".
@@ -174,10 +212,9 @@ ACCEPT-4 task and the ACCEPT5 side thread were deleted.
 - One-RTT client windows: submit → New → submit can pass unlearned stragglers, and `state` frames
   from before this cycle's `restAfterAbort` can race.
 - Minors: the headless slot cap is per process (a count subquery with no lock). `isUniqueViolation`
-  catches any 23505. The `pushSteer` EXISTS lacks `for share`. The `preAborted` set can grow, and
-  there are stale `preAborted` ids for never-claimed runs. There are no live `agentRun` events for
-  the queued/running states. `summarize-threads` lacks `recordJobSummary`, and the summary
-  embedding write path is untested. A concurrent-approve loser toast says "approved". `claim()`
+  catches any 23505. The `preAborted` set can grow, and there are stale `preAborted` ids for
+  never-claimed runs. There are no live `agentRun` events for the queued/running states. The
+  summary embedding write path is untested. A concurrent-approve loser toast says "approved". `claim()`
   doesn't `publishChange`, and a failed replay doesn't `publishActivity`. There is no branch-walk
   test on a steered turn (regenerate re-sends the steer). The wake run's
   `outcome.userMessageId` names the event row. `resolveSession('main')` is untested directly.
@@ -187,7 +224,8 @@ ACCEPT-4 task and the ACCEPT5 side thread were deleted.
 
 1. **Delete `server/lib/voice/ws-legacy.ts` and `server/lib/agent/runtime/flag.ts`** and the
    `runtimeEnabled()` branches in `ws.ts` and the plugin, once 73 has run in prod for a while.
-2. Fix the **WS reconnect re-attach** if it isn't done before merge.
+2. Run migration **0055** on prod with the deploy, and confirm `AGENT_RUNTIME_EXCLUSIVE=1` is in
+   the installed systemd unit (`systemctl cat mymind`).
 3. The heartbeat, cron/at/every, `schedule_wake`, CC-session-end and task-due triggers are all
    new **callers of `wake()`**. None of them may enqueue a headless run any other way.
 4. Before raising `HEADLESS_SLOTS`, make the cap a real lock rather than a per-process count.

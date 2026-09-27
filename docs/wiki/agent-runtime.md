@@ -8,7 +8,9 @@ updated: 2026-09-27
 # Agent Runtime
 
 Since cycle 73 a Bridget turn runs **on the server**, not inside a browser WebSocket.
-`server/lib/agent/runtime/` is the only way a turn runs. A turn is an `agent_runs` row that a
+With the `agent_runtime` flag on (the default), `server/lib/agent/runtime/` is the only way a
+turn runs; with it off, the legacy in-socket path runs turns instead and nothing can be queued
+or woken (see the flag section). A turn is an `agent_runs` row that a
 worker claims and executes. Sockets are **viewers**: closing the tab unsubscribes and never
 aborts. A reply keeps streaming, finishes and persists with nobody watching.
 
@@ -57,8 +59,9 @@ Wiring: `server/plugins/agent-runtime.ts` reads the flag, runs `recoverOnBoot()`
 - `agent_runs` columns: `id`, `conversation_id`, `session_key`, `trigger` (`user|wake`),
   `wake_reason`, `profile` (`interactive|headless`), `model_def_id`, `status`, `suppressed`,
   `input` jsonb, `origin_sink_id` (the socket that asked, used for TTS and audio targeting),
-  `claimed_at`, `alive_at`, `finished_at`, `error`, `usage`, `user_message_id`,
-  `assistant_message_id`, `created_at`. Indexes: `(conversation_id, status)`,
+  `claimed_at`, `alive_at`, `owner` (migration **0055**: the boot id of the process that
+  claimed it), `finished_at`, `error`, `usage`, `user_message_id`, `assistant_message_id`,
+  `created_at`. Indexes: `(conversation_id, status)`,
   `(status, created_at)`, and the partial unique index **`agent_runs_one_running`** on
   `(conversation_id) where status='running'`. The index is the guarantee that one conversation
   never has two concurrent runs.
@@ -79,17 +82,20 @@ queued ──claim──▶ running ──▶ done | failed | aborted        (ex
 | Transition | Written by |
 |---|---|
 | → `queued` | `createRun`. Callers: `enqueue` (a user message, or `wake`), `requeueUnconsumed` (unread steers, always `trigger='user'`, `profile='interactive'`). |
-| `queued` → `running` | `claimNextRun`. It picks the oldest queued run whose conversation has nothing running, and a headless run only while fewer than `HEADLESS_SLOTS = 1` headless runs are running. It sets `claimed_at`/`alive_at` = `now()`. A concurrent loser gets a unique violation, which is returned as null. |
+| `queued` → `running` | `claimNextRun`. It picks the oldest queued run whose conversation has nothing running, and a headless run only while fewer than `HEADLESS_SLOTS = 1` headless runs are running. It sets `claimed_at`/`alive_at` = `now()` and `owner` = this process's `BOOT_ID` (a random UUID per process). A concurrent loser gets a unique violation, which is returned as null. |
 | `running` (liveness) | `touchRun` every 10 s, **fenced** on `status='running'`. If the fence fails, another process recovered the run, so this process aborts it (`checkStillRunning`). |
 | `running` → `done`/`failed`/`aborted` | `finishRun`, also **fenced** on `status='running'`. A run that was recovered while it was secretly alive keeps `interrupted`. `suppressed=true` is set for a `NO_REPLY` wake. |
-| `running` → `interrupted` | `recoverOrphans`, when `coalesce(alive_at, claimed_at)` is older than 60 s. It runs at boot **and on every 5 s worker tick**, excluding run ids this process is executing. It appends an event row ("A turn was interrupted by a restart…") and requeues unread steers. **No automatic retry.** |
+| `running` → `interrupted` | `recoverOrphans`, when `coalesce(alive_at, claimed_at)` is older than 60 s. It runs at boot **and on every 5 s worker tick**, excluding run ids this process is executing. **At boot with `AGENT_RUNTIME_EXCLUSIVE=1`** (set in prod's systemd unit) it also takes every `running` row whose non-null `owner` is another boot id, however fresh — a deploy restart no longer leaves the thread "busy" for up to 60 s. Without the env (the shared dev DB) boot recovery stays age-only. It appends an event row ("A turn was interrupted by a restart…") and requeues unread steers. **No automatic retry.** |
 
 After every terminal outcome, `execute` calls `requeueUnconsumed`. A steer that arrived too late
 to be drained becomes the next run, whatever the outcome was. The spec said "abort only"; that
 was overridden because it contradicted the spec's own "never silently dropped" rule.
 
-**Steering.** When Tony sends a message while an **interactive** run is `running` on that thread,
-`pushSteer` inserts it only if the run is still running. `runAgent`'s `prepareStep` drains it at
+**Steering.** When Tony sends a **plain-text** message while an **interactive** run is `running`
+on that thread, `pushSteer` inserts it only if the run is still running (the check locks the run
+row `for share`, so a concurrent `finishRun` waits and the requeue after it sees the steer). A
+message with **attachments or a `/skill`** is never steered: a steer is text-only, so it queues
+as its own run with its input intact. `runAgent`'s `prepareStep` drains it at
 the next step boundary; an in-flight tool call finishes first. The runner persists drained steers
 as their own user rows **in the same append** as the turn: `[question, steer…, reply]`, with the
 reply last as the leaf. `groupTurns` joins consecutive user rows into one turn so a summary fold
@@ -104,7 +110,7 @@ list is the comment at the top of `ws.ts`. The essentials:
 
 | Client → server | Behaviour |
 |---|---|
-| `{type:'text',text,speak?,skill?,attachments?}` | `enqueue`. If a run is active on the viewed thread (interactive), the message is **steered** and the server replies `{type:'steered',text}`. The enqueue step is serialised per socket (`submitLock`), so two quick messages on a new thread land in one thread. |
+| `{type:'text',text,speak?,skill?,attachments?,conversationId?}` | `enqueue`. `conversationId` (a UUID) is the thread the client is showing and **wins over the socket's own view** — a socket that lost its state can never send the words into a new invisible thread. If an interactive run is active on the thread and the message is plain text, it is **steered** and the server replies `{type:'steered',text}`. The enqueue step is serialised per socket (`submitLock`), so two quick messages on a new thread land in one thread. Voice uses the socket's current view. |
 | binary WAV | STT happens **in the socket, before the run**, then it runs as an ordinary voice run (`speak=true`, `modality='voice'`). A steered utterance is followed by `state:'idle'`. |
 | `{type:'load',conversationId}` | Selects the thread. It does **not** subscribe and does **not** abort. |
 | `{type:'attach'}` | Subscribes to the selected thread **and** replays its running turn so far, in one synchronous step. The client sends it after committing the persisted transcript. |
@@ -133,6 +139,9 @@ restarts.
   replay A's still-running turn.
 - `attach(conversationId)` is idempotent per conversation. The page calls it after `resume()`
   commits the transcript.
+- **Reconnect:** every socket open (`framesOnOpen`, `app/lib/voice/reconnect.ts`) re-sends the
+  preset and model and, when a thread is on screen, `load` + `attach` for it, so a reconnected
+  socket (deploy restart, sleep, a backgrounded phone tab) views and streams the same thread.
 
 **Approvals (interactive).** `approvalFor(runId)` first checks the persisted exec allowlist, so
 an allowlisted command runs even after the tab has closed. Otherwise it asks the originating
@@ -161,8 +170,8 @@ them.
 Callers today:
 - `POST /api/admin/agent/wake` with body `{ reason, prompt, sessionKey?, model? }`. It
   **requires a web session** (`requireSession`), because a bearer API token must not be able to
-  start an unattended run. Wake validation errors and unknown threads return 400; anything else
-  returns 500.
+  start an unattended run. Wake validation errors and unknown threads return 400; the runtime
+  being off (`agent_runtime=false`) returns **409**; anything else returns 500.
 - The `/wake <prompt>` composer command posts to that endpoint with `reason: 'manual'`.
 
 Cycle 74 adds the heartbeat, cron and event triggers as new callers.
@@ -189,24 +198,37 @@ directly and would otherwise bypass the gate.
 4. An event row is appended to the originating thread: `review:approved` with "Approved: <tool>
    — <summary>", or `review:failed`.
 
-**Reject** marks the row `rejected` and appends nothing. The toast offers undo using the
-returned `undoToken`.
+The approve toast offers undo using the returned `undoToken`.
+
+**Reject** marks the row `rejected` and appends nothing.
 
 ## Summaries and the two context tiers
 
 - `getAgentHistory` reads the active path with `sinceEpoch` + `sinceSummary`, so the model sees
   only the tail after `summarized_through`. `getConversation` (the UI) still returns everything.
-- The runner groups history into turns and passes `turns.map(turnTier)` plus
+- The runner groups history into turns and passes `costTurns(turns)` plus
   `budget: RUNTIME_CONTEXT_BUDGET` (20000) to `assembleContext`. It keeps only the trailing
-  `turns.length - droppedTurns` turns. **The cycle-70 turn tier is live.**
+  `turns.length - droppedTurns` turns. **The cycle-70 turn tier is live.** `costTurns` prices
+  each turn **after** `applyHistoryPolicy` (read results capped, out-of-window payloads elided)
+  — the form `buildModelMessages` actually sends — and `fitBudget` **always keeps the newest
+  turn**, even past the ceiling, so one tool-heavy turn can never leave the model with no history.
 - `maybeSummarize(conversationId, { force? })` does nothing if the thread has ≤ 6 turns. It also
-  does nothing (unless `force` is set) while the unsummarised tail is ≤ 12 000 tokens. Otherwise
-  it folds everything but the last 6 turns into `summary` (`chat('bulk')`, incremental from the
-  previous summary), advances `summarized_through` and re-embeds `summary_embedding`. A failure
-  is logged, and the next trigger retries.
+  does nothing (unless `force` is set) while the unsummarised tail (post-policy cost) is
+  ≤ 12 000 tokens. Otherwise it folds the **oldest** turns outside the last 6 — whole turns, at
+  most `SUMMARY_FOLD_MAX_TOKENS` (24 000) of transcript per call — into `summary`
+  (`chat('bulk')`, incremental from the previous summary), advances `summarized_through` to the
+  end of that chunk and re-embeds `summary_embedding`; the next fold continues from there.
+  Transcript lines are `Tony:` / `Bridget:`; event rows appear as their own `Note (…):` /
+  `Background wake (…):` sentence, never as Tony. Returns `skipped | summarized | failed`.
+- **The write is epoch-guarded:** the fold reads `context_epoch_at` (as text, microsecond-exact)
+  with the summary at start and updates only `where context_epoch_at is not distinct from` that
+  value. A `/clear` landing during the multi-second summarizer call makes the fold write nothing.
 - Triggers: after every persisted or rescued run (`maybeSummarizeLater`, fire-and-forget), and
-  the `summarize-threads` Nitro task (`*/10`). That task force-folds side threads idle ≥ 30 min
-  with an unsummarised tail, touched in the last 7 days, 20 at a time.
+  the `summarize-threads` Nitro task (`*/10`, skipped when `agent_runtime=false`). That task
+  force-folds side threads idle ≥ 30 min, touched in the last 7 days, with `message_count > 12`
+  **and** more than 12 rows after `summarized_through` (so caught-up threads are not re-picked),
+  **most recently active first**, 20 at a time. It records `{ summarized, failed }` via
+  `recordJobSummary('summarize-threads', …)`.
 - **`recent-threads`** (main only): side-thread summaries with `last_message_at` in the last
   48 h, newest first, prefixed by title, capped at 600 tokens.
 - **`main-state`** (side threads only): the first paragraph of main's summary, capped at 300
@@ -231,7 +253,11 @@ Both tiers are fixed tiers in `assembleContext`, capped at the source.
 This is a settings row, `key='agent_runtime'`, `value={"enabled": false}`, defaulting to on. It
 is **read once at boot**, because the WS `open` hook is synchronous: **flipping it requires a
 restart.** When it is off, the plugin starts no worker and `ws.ts` delegates to `legacyHooks`
-(`server/lib/voice/ws-legacy.ts`), the old in-socket path. **Cycle 74 deletes `ws-legacy.ts` and
+(`server/lib/voice/ws-legacy.ts`), the old in-socket path. Off is legacy **end to end**:
+`enqueue` and `wake` throw `RuntimeDisabledError` (the wake endpoint answers 409), and the
+`summarize-threads` task skips. **The flag is the rollback, not a code revert:** once `event`
+rows (`role='event'`) exist, pre-cycle-73 code does not know that role, so reverting the code is
+not a safe rollback. **Cycle 74 deletes `ws-legacy.ts` and
 `flag.ts`.**
 
 ```sql
@@ -270,9 +296,15 @@ where kind = 'agent-action' order by created_at desc;
 - **One headless slot**, enforced per process by a count subquery with no lock.
 - **The UMAP layout still blocks briefly.** `computeLayoutAsync` yields between epochs; the
   worst stall went from 9434 ms to 4582 ms, and the remainder is umap-js's synchronous kNN init.
-- **A WS reconnect does not re-send `load`/`attach`.** After a reconnect (for example a deploy
-  restart), the next message starts a new server-side thread and its reply drops out of view
-  until reload.
+- **The restart wedge is handled only in exclusive mode.** With `AGENT_RUNTIME_EXCLUSIVE=1`
+  (prod) boot recovery takes over the previous boot's runs at once. Without it (the shared dev
+  DB) a run killed mid-turn by a restart still looks alive for up to 60 s: messages are
+  "steered" into it and nothing answers until the periodic tick recovers it and requeues them.
+- **A message queued behind a wake is invisible until the wake finishes.** It is a queued run,
+  not a steer, and its `user-message` frame is only emitted when it starts. Follow-up.
+- **Steers land only at step boundaries.** An in-flight tool call or a long single generation
+  finishes before a steer is read; a steer that arrives during the last step becomes the next run.
+- **Code revert is not a safe rollback** once event rows exist — use the `agent_runtime` flag.
 - **An `agent-action` row stuck in `applying`** after a crash between claim and settle is
   invisible in `/review`. It is not auto-reset, because the tool may already have run.
 - `agent-action` cards have no "rationale"; proposals carry no rationale field.
