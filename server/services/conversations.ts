@@ -124,7 +124,8 @@ export async function captureTurnLeaf(conversationId: string): Promise<string | 
 
 /**
  * Append messages as children of `parentId` and move the conversation's active leaf to the last
- * one inserted.
+ * one inserted. Returns the inserted ids in insertion order — the rows of one call share a
+ * created_at (one transaction's now()), so a caller cannot recover that order by reading back.
  *
  * `parentId` omitted → chain from the active leaf. `null` → start a NEW root (an explicit null
  * is not the same as no argument, which is why the check below is `!== undefined`).
@@ -133,8 +134,8 @@ export async function appendMessages(
   conversationId: string,
   msgs: NewConvMessage[],
   parentId?: string | null
-): Promise<void> {
-  if (!msgs.length) return
+): Promise<string[]> {
+  if (!msgs.length) return []
 
   const db = useDb()
 
@@ -157,6 +158,7 @@ export async function appendMessages(
   // never reaches them — so a crash between the two would silently lose the turn. That is a
   // failure mode this cycle introduces: before the leaf existed, the flat read still showed
   // them. Atomicity only — nothing here takes a lock or serializes concurrent appends.
+  const ids: string[] = []
   await db.transaction(async (tx) => {
     // Insert each message in order, chaining parentId linearly
     for (const msg of msgs) {
@@ -176,6 +178,7 @@ export async function appendMessages(
         })
         .returning({ id: conversationMessages.id })
       prevId = inserted!.id
+      ids.push(prevId)
     }
 
     // Bump conversation stats, and move the leaf onto what was just written — `prevId` is the
@@ -192,6 +195,7 @@ export async function appendMessages(
       })
       .where(eq(conversations.id, conversationId))
   })
+  return ids
 }
 
 /** One event row on the active path — a wake, an approval note, a restart note. */

@@ -2,7 +2,7 @@
 // ONE turn, server-owned. This is ws.ts's turn body moved (not rewritten): the ordering rules
 // in the comments below — persist before the `conversation` frame, rescue on throw/abort,
 // capture the leaf before the first await — were each learned from a production bug.
-import { desc, eq, sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { conversations, conversationMessages, type AgentRun } from '../../../db/schema'
 import { handleTurn, type TurnDeps, type VoiceEvent } from '../../voice/orchestrator'
@@ -55,10 +55,6 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   const input = run.input as RunInput
   const isWake = run.trigger === 'wake'
   const origin = isWake ? wakeOrigin(run.wakeReason ?? 'unspecified') : null
-  const ac = registerAbort(run.id)
-  const turnId = nextTurnId()
-  hub.beginRun(conversationId)
-
   // Audio + its bracket frames go ONLY to the socket that asked; everything else fans out.
   const send = (d: string | Uint8Array) => {
     const audio = typeof d !== 'string' || /^\{"type":"audio-(begin|end)"/.test(d)
@@ -113,6 +109,11 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   // True once the `finally` rescue's append has committed — the rescued rows are real rows.
   let rescued = false
   let outcome: RunOutcome = { status: 'done', suppressed: false, usage: null }
+  // Registered immediately before the try whose `finally` releases them: nothing that can throw
+  // may run in between, or a run would leak its controller and its hub replay buffer.
+  const ac = registerAbort(run.id)
+  const turnId = nextTurnId()
+  hub.beginRun(conversationId)
   try {
     // Live state is now assembled exactly once per turn, inside assembleContext
     // (called below) — that is the single fixed 'live' tier, budgeted
@@ -217,14 +218,13 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         usage: finalUsage
       })
       if (isWake) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
-      await appendMessages(conversationId, payload, turnLeafId)
+      const ids = await appendMessages(conversationId, payload, turnLeafId) // insertion order
       // Set BEFORE anything that can throw below: the rows are committed at this point, and
       // the `finally` rescue below keys off this flag. A `peer.send` to a socket that closed
       // mid-turn would otherwise unwind into the catch with `persisted` still false and make
       // the rescue append the same turn a second time.
       persisted = true
-      const ids = await lastMessageIds(conversationId, payload.length) // newest-first ids of what we just wrote
-      outcome = { status: 'done', suppressed, usage: finalUsage, userMessageId: ids.at(-1), assistantMessageId: suppressed ? undefined : ids[0] }
+      outcome = { status: 'done', suppressed, usage: finalUsage, userMessageId: ids[0], assistantMessageId: suppressed ? undefined : ids[1] }
       // Tell the client which thread it just landed in. Without this frame the page
       // has no way to learn the id/title the server derived on the first turn — the
       // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
@@ -245,7 +245,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: conversationId })
     }
   } catch (err) {
-    if ((err as Error).name === 'AbortError') {
+    // An abort can surface as some other error (a transport torn down mid-request); the signal
+    // is the authority on whether this turn was stopped.
+    if ((err as Error).name === 'AbortError' || ac.signal.aborted) {
       ts?.abort()
       return { status: 'aborted' }
     }
@@ -259,14 +261,16 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     return { status: 'failed', error: message }
   } finally {
     // A turn that aborted, threw, or hung persisted NOTHING before this — including the
-    // user's own message, because `added` comes from s.history, which the agent call only
-    // reassigns on return. The user saw their question on screen (client-side state) and
+    // user's own message, because `added` comes from handleTurn's `result`, which exists only
+    // if the agent call returns. The user saw their question on screen (client-side state) and
     // lost it on reload. A question someone actually asked has to survive the model
     // failing to answer it, so rescue whatever the turn managed to emit.
     if (!persisted) {
       // `|| input.text`: a turn that failed before handleTurn emitted the user transcript
       // (history load, assembly) still has the question the run was created with.
-      const rescuedMsgs = partialTurnMessages(liveUserText || input.text, liveAssistantText)
+      // A wake's NO_REPLY is silent by contract on this path too: only the event row survives.
+      const rescuedReply = isWake && isSuppressedReply(liveAssistantText) ? '' : liveAssistantText
+      const rescuedMsgs = partialTurnMessages(liveUserText || input.text, rescuedReply)
       if (rescuedMsgs.length) {
         try {
           const created = (await countMessages(conversationId)) === 0
@@ -302,23 +306,4 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
 async function countMessages(conversationId: string): Promise<number> {
   const [r] = await useDb().select({ n: sql<number>`count(*)::int` }).from(conversationMessages).where(eq(conversationMessages.conversationId, conversationId))
   return r?.n ?? 0
-}
-
-/** Ids of the `n` rows just appended, newest (by chain position) first. The rows of one
- *  appendMessages call share a created_at (one transaction's now()), so (created_at, id) cannot
- *  order them — the parent links can. */
-async function lastMessageIds(conversationId: string, n: number): Promise<string[]> {
-  const rows = await useDb().select({ id: conversationMessages.id, parentId: conversationMessages.parentId }).from(conversationMessages)
-    .where(eq(conversationMessages.conversationId, conversationId))
-    .orderBy(desc(conversationMessages.createdAt), desc(conversationMessages.id)).limit(n)
-  const byParent = new Map(rows.map(r => [r.parentId, r]))
-  const ids = new Set(rows.map(r => r.id))
-  // The oldest of the batch is the one whose parent is outside it; walk forward from there.
-  let cur = rows.find(r => !r.parentId || !ids.has(r.parentId))
-  const chain: string[] = []
-  while (cur && chain.length < rows.length) {
-    chain.push(cur.id)
-    cur = byParent.get(cur.id)
-  }
-  return chain.length === rows.length ? chain.reverse() : rows.map(r => r.id)
 }
