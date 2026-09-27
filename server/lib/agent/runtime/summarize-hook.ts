@@ -1,4 +1,8 @@
 // server/lib/agent/runtime/summarize-hook.ts
-// Stub for Task 10 (incremental thread summarization). queue.ts calls this after every
-// persisted/rescued turn; Task 10 fills in the real fold-if-over-threshold logic.
-export function maybeSummarizeLater(_conversationId: string): void {}
+// queue.ts calls this after every persisted/rescued turn.
+import { maybeSummarize } from './summarize'
+
+/** Fire-and-forget after a run persists. Never throws, never delays the next run. */
+export function maybeSummarizeLater(conversationId: string): void {
+  setImmediate(() => { maybeSummarize(conversationId).catch(err => console.warn('[summarize] after-run fold failed:', err)) })
+}

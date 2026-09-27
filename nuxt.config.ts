@@ -146,7 +146,7 @@ export default defineNuxtConfig({
     serverAssets: [{ baseName: 'setup', dir: 'server/assets/setup' }],
     scheduledTasks: {
       '*/5 * * * *': ['embed-documents', 'summarize-sessions'],
-      '*/10 * * * *': ['triage-input'],
+      '*/10 * * * *': ['triage-input', 'summarize-threads'],
       '*/7 * * * *': ['enrich-images'],
       // sync-model-prices runs often, but self-gates: it only hits the network when a model
       // appears that it has never attempted to price, or when the last full sync is >20h old.
