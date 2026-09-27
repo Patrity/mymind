@@ -20,7 +20,7 @@ export const reviewQueue = pgTable('review_queue', {
   // contradicted and resident-promotable; each concern needs its own slot, or the second
   // enqueueReview silently no-ops against the first's row (see migration 0051).
   onePendingPerTarget: uniqueIndex('review_queue_one_pending_per_target')
-    .on(t.targetKind, t.targetId, t.kind).where(sql`status = 'pending'`)
+    .on(t.targetKind, t.targetId, t.kind).where(sql`status = 'pending' and kind <> 'agent-action'`)
 }))
 
 export type ReviewItem = typeof reviewQueue.$inferSelect

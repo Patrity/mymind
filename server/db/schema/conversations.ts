@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, integer, jsonb, timestamp, index } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, integer, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { halfvec } from '../types/halfvec'
 
 export const conversations = pgTable('conversations', {
@@ -18,12 +18,19 @@ export const conversations = pgTable('conversations', {
    *  everything and renders a divider here, so the two readers differ VISIBLY rather than
    *  silently (cycle 68's invariant is that they must never disagree unnoticed). */
   contextEpochAt: timestamp('context_epoch_at', { withTimezone: true }),
+  /** 'main' = Bridget's one permanent home thread (proactive output lands here); 'thread' =
+   *  an ordinary side thread. At most one 'main' — enforced by conversations_one_main. */
+  kind: text('kind').notNull().default('thread'),
+  /** The summary covers every message with created_at <= this. Written with the POSTGRES
+   *  clock (it is compared against created_at). Null = no summary yet. */
+  summarizedThrough: timestamp('summarized_through', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   index('conversations_last_message_idx').on(t.lastMessageAt),
   // keyword search over titles (pg_trgm already enabled in this DB)
-  index('conversations_title_trgm').using('gin', sql`${t.title} gin_trgm_ops`)
+  index('conversations_title_trgm').using('gin', sql`${t.title} gin_trgm_ops`),
+  uniqueIndex('conversations_one_main').on(t.kind).where(sql`kind = 'main'`)
 ])
 
 export const conversationMessages = pgTable('conversation_messages', {
@@ -32,7 +39,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   // Tree edge. Branching is LIVE as of cycle 68: fork/edit/regenerate append a child to a
   // chosen parent, and conversations.active_leaf_id names the path being read.
   parentId: uuid('parent_id'),
-  role: text('role').notNull(),                 // 'user' | 'assistant'
+  role: text('role').notNull(),                 // 'user' | 'assistant' | 'event'
   content: text('content').notNull().default(''),
   modality: text('modality').notNull(),         // 'voice' | 'text'
   // AgentToolRecord[] for assistant turns (server/lib/agent/tool-history.ts):
@@ -46,6 +53,9 @@ export const conversationMessages = pgTable('conversation_messages', {
   // Nullable and additive: messages written before this column omit the count
   // rather than showing a zero. { inputTokens, outputTokens, totalTokens }.
   usage: jsonb('usage'),
+  /** For role='event' rows and wake-produced assistant rows: what caused them, e.g.
+   *  'wake:admin', 'review:approved'. Null for everything Tony typed or said. */
+  origin: text('origin'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   index('conversation_messages_convo_idx').on(t.conversationId, t.createdAt),
