@@ -22,6 +22,9 @@ export function registerApprovalChannel(runId: string, fn: Channel): void {
 export function unregisterApprovalChannel(runId: string): void {
   channels.delete(runId)
 }
+export function hasApprovalChannel(runId: string): boolean {
+  return channels.has(runId)
+}
 export function approvalFor(runId: string): Channel {
   return async (req) => {
     const patterns = (await loadApprovals(req.tool)).filter(p => matchesApproval(req.command, [p.pattern]))

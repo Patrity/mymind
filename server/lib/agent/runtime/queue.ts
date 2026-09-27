@@ -52,6 +52,31 @@ export async function abortActive(conversationId: string): Promise<boolean> {
   return active ? (abortRun(active.id), true) : false
 }
 
+// runId → a promise that resolves once execute() has fully unwound that run: runFn returned
+// (so the runner's `finally` rescue has appended whatever it salvaged), finishRun committed and
+// unread steers were requeued. Only runs THIS process is executing have one.
+const settles = new Map<string, Promise<void>>()
+
+/**
+ * Abort the conversation's running turn and wait (bounded) for it to unwind. `/clear` needs
+ * this: the aborted run's rescue appends the question + partial reply in its `finally`, and an
+ * epoch written before that append would leave those rows in model history — the ordering the
+ * legacy socket got for free from s.lock (Task 9 review ruling). A run owned by another process
+ * has no settle promise here; it is aborted-by-signal only there, so this returns without waiting.
+ */
+export async function abortActiveAndWait(conversationId: string, timeoutMs = 10_000): Promise<boolean> {
+  const active = await activeRunFor(conversationId)
+  if (!active) return false
+  abortRun(active.id)
+  const settled = settles.get(active.id)
+  if (settled) {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([settled, new Promise<void>((r) => { timer = setTimeout(r, timeoutMs) })])
+    clearTimeout(timer)
+  }
+  return true
+}
+
 // Run ids this process is actively executing right now — claimed, not yet finished. This is
 // the process's own ground truth about what it owns; the periodic tick's `recoverStale` call
 // excludes these ids so it can never recover a run this same process is still running just
@@ -77,6 +102,8 @@ export async function checkStillRunning(runId: string): Promise<boolean> {
 
 async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<void> {
   executing.add(run.id)
+  let settle!: () => void
+  settles.set(run.id, new Promise<void>((r) => { settle = r }))
   try {
     const alive = setInterval(() => { checkStillRunning(run.id).catch(err => console.error('[runtime] liveness check failed:', err)) }, ALIVE_BUMP_MS)
     const wall = run.profile === 'headless' ? setTimeout(() => abortRun(run.id), HEADLESS_WALL_CLOCK_MS) : null
@@ -100,6 +127,8 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<vo
     if (rekick) kick(runFn)
   } finally {
     executing.delete(run.id)
+    settles.delete(run.id)
+    settle()
   }
 }
 

@@ -14,6 +14,7 @@ import { resolveSession } from '../server/lib/agent/runtime/sessions'
 import { runTurn } from '../server/lib/agent/runtime/runner'
 import { StreamHub } from '../server/lib/agent/runtime/stream'
 import { abortRun } from '../server/lib/agent/runtime/aborts'
+import { registerApprovalChannel, hasApprovalChannel } from '../server/lib/agent/runtime/approvals'
 import { appendMessages } from '../server/services/conversations'
 import { eq, inArray } from 'drizzle-orm'
 
@@ -62,6 +63,14 @@ describe('runTurn', () => {
     // The ids must name the RIGHT rows, not merely two rows.
     expect(r.find(x => x.id === out.userMessageId)?.role).toBe('user')
     expect(r.find(x => x.id === out.assistantMessageId)?.role).toBe('assistant')
+  })
+
+  it('drops the run\'s approval channel when the run ends (no leak until socket close)', async () => {
+    const { run } = await queued('channel')
+    registerApprovalChannel(run.id, async () => ({ approved: false }))
+    expect(hasApprovalChannel(run.id)).toBe(true)
+    await runTurn(run, { runAgent: fakeAgent('ok') as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(hasApprovalChannel(run.id)).toBe(false)
   })
 
   it('appendMessages returns the inserted ids in insertion order', async () => {

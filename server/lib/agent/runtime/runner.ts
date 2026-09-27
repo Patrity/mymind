@@ -21,7 +21,7 @@ import type { AgentMessage } from '../run'
 import { bridgetProfile, type AgentProfile } from '../profile'
 import { hub as defaultHub, type StreamHub } from './stream'
 import { registerAbort, releaseAbort } from './aborts'
-import { approvalFor, registerTurnStream, releaseTurnStream } from './approvals'
+import { approvalFor, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
 import { drainSteerFor } from './inbox'
 import { eventModelText, wakeOrigin } from './event-text'
 import { groupTurns, turnTier, keepTrailingTurns, RUNTIME_CONTEXT_BUDGET } from './history'
@@ -296,6 +296,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       }
     }
     releaseTurnStream(run.id)
+    // The socket that originated this run registered an approval channel for it; drop it here,
+    // with the run, rather than only when that socket closes (ws.ts still unregisters on close —
+    // both are idempotent).
+    unregisterApprovalChannel(run.id)
     releaseAbort(run.id)
     hub.endRun(conversationId)
     if (persisted || rescued) deps.afterPersist?.(conversationId)
