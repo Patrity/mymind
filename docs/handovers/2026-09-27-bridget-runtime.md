@@ -2,10 +2,10 @@
 title: Bridget runtime — server-owned turns, a main thread, a turn queue, one headless wake()
 cycle: 73
 date: 2026-09-27
-status: built
-branch: feat/bridget-runtime
-merged: false
-deployed: false
+status: shipped
+branch: feat/bridget-runtime (merged, deleted)
+merged: true
+deployed: 2026-09-27 (CD run 36353659459, commit 501ecc2)
 specs:
   - ../superpowers/specs/2026-09-27-bridget-runtime-design.md
 plans:
@@ -18,7 +18,7 @@ wiki:
 migrations:
   - 0054 conversations.kind / summarized_through; conversation_messages.origin; agent_runs; agent_inbox; review_queue_one_pending_per_target excludes agent-action
   - 0055 agent_runs.owner (boot id of the claiming process; final review I4)
-migrations_run_on_prod: false
+migrations_run_on_prod: true  # 0054 + 0055 applied by CD; pre-deploy dump /root/db-backups/pre-cycle73-20260927-2156.sql.gz
 mymind_task: 8fdc0fe7
 ---
 
