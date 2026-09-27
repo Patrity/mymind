@@ -183,6 +183,29 @@ describe('ws runtime socket', () => {
     expect(m.abortActiveAndWait).toHaveBeenCalledWith('c1')
   })
 
+  it('clear releases the thread\'s pending approval BEFORE waiting, so a parked run can unwind', async () => {
+    const p = peer(); h.open(p)
+    m.enqueue.mockImplementation(async () => result('rA', 'c1'))
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'text', text: 'run a command' }))
+    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
+    // The run is parked on this approval: the exec tool does not race the abort signal, so it
+    // only unwinds (and rescues) once the approval resolves.
+    const parked = ch({ tool: 'exec', command: 'ls', proposedPattern: 'ls *' })
+    m.order.length = 0
+    m.abortActiveAndWait.mockImplementationOnce(async () => {
+      const unwound = await Promise.race([parked.then(() => true), new Promise<boolean>(r => setTimeout(() => r(false), 200))])
+      m.order.push(unwound ? 'unwound' : 'timed-out')
+      return true
+    })
+    m.clear.mockImplementationOnce(async () => { m.order.push('epoch') })
+    const t0 = Date.now()
+    await h.message(p, frame({ type: 'clear' }))
+    expect(m.order).toEqual(['unwound', 'epoch'])
+    expect(Date.now() - t0).toBeLessThan(150)
+    expect(await parked).toEqual({ approved: false })
+  })
+
   it('close drops the approval channels of runs it still holds', async () => {
     const p = peer(); h.open(p)
     m.enqueue.mockImplementation(async () => result('rX', 'c1'))

@@ -276,9 +276,13 @@ export default defineWebSocketHandler({
       case 'clear': {
         const id = s.conversationId
         if (!id) { peer.send(JSON.stringify({ type: 'cleared', epochAt: null })); return }
-        // Wait for the aborted turn to unwind: its `finally` rescue appends the question + partial
-        // reply, and those rows must land BEFORE the epoch or they stay in model history.
-        await abortActiveAndWait(id); denyFor(id)
+        // Deny this thread's pending approvals FIRST: the exec tool's approval await does not race
+        // the abort signal, so a run parked on one would not unwind until it resolves — the wait
+        // below would time out, the epoch would be written, and the rescue would land after it.
+        // Then wait for the aborted turn to unwind: its `finally` rescue appends the question +
+        // partial reply, and those rows must land BEFORE the epoch or they stay in model history.
+        denyFor(id)
+        await abortActiveAndWait(id)
         try {
           await clearConversationContext(id)
           const [row] = await useDb().select({ at: conversations.contextEpochAt }).from(conversations).where(eq(conversations.id, id)).limit(1)
