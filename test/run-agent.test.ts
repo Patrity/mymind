@@ -42,9 +42,16 @@ describe('runAgent', () => {
   it('forces a text-only follow-up when a run ends with tool calls but no assistant text', async () => {
     // Live failure: "What'd we work on yesterday?" ran search_docs + list_documents,
     // then the reasoning model ended the turn emitting NO text → no reply was persisted.
+    // Also covers fix round 1 (Task 6 review): a steer drained mid-turn — before the tool
+    // call ran, at step 0's boundary — must not be lost when the no-text guard forces this
+    // follow-up call. It was already consumed off the queue, so if the follow-up's messages
+    // don't carry it forward, it vanishes for good.
+    const drainSteer = vi.fn().mockResolvedValueOnce(['check the new spec first']).mockResolvedValue([])
     const streamText = vi.fn()
-      .mockReturnValueOnce({
+      .mockImplementationOnce((args: { prepareStep: (o: { stepNumber: number; messages: unknown[] }) => Promise<unknown> }) => ({
         fullStream: (async function* () {
+          // Simulate the SDK's step-0 boundary call to prepareStep BEFORE the tool call runs.
+          await args.prepareStep({ stepNumber: 0, messages: [{ role: 'user', content: 'what did we work on yesterday' }] })
           yield { type: 'tool-call', toolCallId: 'c1', toolName: 'search_docs', input: {} }
           yield { type: 'finish', finishReason: 'stop' }
         })(),
@@ -52,22 +59,51 @@ describe('runAgent', () => {
           { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'search_docs', input: {} }] },
           { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'search_docs', output: { type: 'text', value: 'nothing' } }] }
         ] })
-      })
-      .mockReturnValueOnce(fakeFullStream([
+      }))
+      .mockImplementationOnce(() => fakeFullStream([
         { type: 'text-delta', id: 't', delta: 'Yesterday we shipped the OAuth connector.' },
         { type: 'finish', finishReason: 'stop' }
       ]))
     const events: any[] = []
     for await (const e of runAgent(
       [{ role: 'user', content: 'what did we work on yesterday' }],
-      { signal: new AbortController().signal },
+      { signal: new AbortController().signal, drainSteer },
       { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
     )) events.push(e)
     const text = events.filter(e => e.type === 'text-delta').map(e => e.text).join('')
     expect(text).toBe('Yesterday we shipped the OAuth connector.')
     expect(streamText).toHaveBeenCalledTimes(2)
     expect((streamText.mock.calls[1]![0] as { toolChoice?: unknown }).toolChoice).toBe('none')
+    // The steer must survive into the follow-up call's messages — it was already drained off
+    // the queue during the main loop, so this is its only remaining chance to reach the model.
+    const followupMessages = (streamText.mock.calls[1]![0] as { messages: unknown[] }).messages
+    expect(followupMessages).toContainEqual({ role: 'user', content: 'check the new spec first' })
     expect(events[events.length - 1]).toEqual({ type: 'done' })
+  })
+
+  it('does not fail the turn when drainSteer rejects (Task 7 hits Postgres) — logs and continues', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const drainSteer = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
+    const streamText = vi.fn((args: { prepareStep: (o: { stepNumber: number; messages: unknown[] }) => Promise<unknown> }) => ({
+      fullStream: (async function* () {
+        // Must resolve (not throw) even though drainSteer rejected — a bad queue lookup
+        // must degrade to "no steers this step", never fail the whole running turn.
+        await args.prepareStep({ stepNumber: 0, messages: [] })
+        yield { type: 'text-delta', id: 't', delta: 'Still here.' }
+        yield { type: 'finish', finishReason: 'stop' }
+      })()
+    }))
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'hi' }],
+      { signal: new AbortController().signal, drainSteer },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+    const text = events.filter(e => e.type === 'text-delta').map(e => e.text).join('')
+    expect(text).toBe('Still here.')
+    expect(events[events.length - 1]).toEqual({ type: 'done' })
+    expect(warnSpy).toHaveBeenCalledWith('[runAgent] drainSteer failed — continuing without steers:', expect.any(Error))
+    warnSpy.mockRestore()
   })
 
   it('does NOT force a follow-up when the run already produced text (no extra model call)', async () => {

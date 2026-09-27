@@ -227,8 +227,15 @@ export async function* runAgent(
         // steps on searches → stream ended → "no report".)
         prepareStep: async ({ stepNumber, messages }: { stepNumber: number; messages: unknown[] }) => {
           if (ctx.drainSteer) {
-            const fresh = await ctx.drainSteer()
-            for (const text of fresh) steerMarks.push({ at: messages.length, text })
+            // Task 7's drainSteer hits Postgres — a rejection here must not fail the whole
+            // running turn. Treat it as "no steers this step" and keep going; the next step
+            // gets another chance to drain whatever is actually queued.
+            try {
+              const fresh = await ctx.drainSteer()
+              for (const text of fresh) steerMarks.push({ at: messages.length, text })
+            } catch (err) {
+              console.warn('[runAgent] drainSteer failed — continuing without steers:', err)
+            }
           }
           const out: { toolChoice?: 'none'; messages?: never } = {}
           if (stepNumber >= maxSteps - 1) out.toolChoice = 'none'
@@ -289,10 +296,16 @@ export async function* runAgent(
       const nudge = sawTextToolCallMarker
         ? [{ role: 'user' as const, content: 'Your previous message contained a tool call written as plain text, so it was NOT executed. If you still need it, call the tool now as a real tool call, then answer Tony.' }]
         : []
+      // Steers already drained from the queue during the main loop must not be lost here:
+      // `prior` (result.response.messages) is the SDK's own recorded output, never a spliced
+      // steer, and nothing will re-drain them for us since they're already off the queue.
+      // Raw indexes still line up: modelMessages is the SDK's initialMessages and prior is its
+      // accumulated responseMessages — exactly the stepInputMessages shape steerMarks was
+      // recorded against.
       const followup = (streamTextFn as unknown as typeof realStreamText)({
         model: chosen as never,
         system,
-        messages: [...modelMessages, ...prior, ...nudge] as never,
+        messages: [...spliceSteers([...modelMessages, ...prior], steerMarks), ...nudge] as never,
         tools,
         ...(sawTextToolCallMarker ? {} : { toolChoice: 'none' as const }),
         temperature: VOICE_TUNING.agent.temperature,
