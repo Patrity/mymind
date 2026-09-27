@@ -1,0 +1,324 @@
+// server/lib/agent/runtime/runner.ts
+// ONE turn, server-owned. This is ws.ts's turn body moved (not rewritten): the ordering rules
+// in the comments below — persist before the `conversation` frame, rescue on throw/abort,
+// capture the leaf before the first await — were each learned from a production bug.
+import { desc, eq, sql } from 'drizzle-orm'
+import { useDb } from '../../../db'
+import { conversations, conversationMessages, type AgentRun } from '../../../db/schema'
+import { handleTurn, type TurnDeps, type VoiceEvent } from '../../voice/orchestrator'
+import type { TtsProvider } from '../../voice/providers/types'
+import { speakWithPreset } from '../../voice/speak'
+import { createTurnStream } from '../../voice/turn-stream'
+import { buildTurnPersistPayload } from '../../voice/turn-persist'
+import { partialTurnMessages } from '../../voice/turn-partial'
+import { resolveTurnVoice } from '../../../services/voice-presets'
+import { appendMessages, getAgentHistory, captureTurnLeaf } from '../../../services/conversations'
+import { publishChange } from '../../../utils/live-bus'
+import { recordEvent } from '../../observability/record'
+import { assembleContext } from '../assemble'
+import { messageText } from '../run'
+import type { AgentMessage } from '../run'
+import { bridgetProfile, type AgentProfile } from '../profile'
+import { hub as defaultHub, type StreamHub } from './stream'
+import { registerAbort, releaseAbort } from './aborts'
+import { approvalFor, registerTurnStream, releaseTurnStream } from './approvals'
+import { drainSteerFor } from './inbox'
+import { eventModelText, wakeOrigin } from './event-text'
+import { groupTurns, turnTier, keepTrailingTurns, RUNTIME_CONTEXT_BUDGET } from './history'
+import { isSuppressedReply } from './suppress'
+import type { RunInput, RunOutcome } from './types'
+
+export interface RunnerDeps {
+  runAgent?: TurnDeps['runAgent']
+  assemble?: typeof assembleContext
+  hub?: StreamHub
+  afterPersist?: (conversationId: string) => void
+}
+
+let turnSeq = Date.now()
+/** Monotonic across restarts (seeded from the clock): the client drops frames whose turnId is
+ *  below the highest it has seen, so a counter that reset to 0 on deploy would silence every
+ *  turn until reload. */
+export function nextTurnId(): number {
+  return ++turnSeq
+}
+
+// Placeholder until Task 11 lands the real headless profile + gate: bridgetProfile minus every
+// dangerous tool. This already excludes `exec`, so no headless run can ever reach it.
+function headlessProfile(_run: AgentRun): AgentProfile {
+  return { ...bridgetProfile, id: 'headless', tools: bridgetProfile.tools.filter(t => !t.dangerous) }
+}
+
+export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<RunOutcome> {
+  const hub = deps.hub ?? defaultHub
+  const conversationId = run.conversationId
+  const input = run.input as RunInput
+  const isWake = run.trigger === 'wake'
+  const origin = isWake ? wakeOrigin(run.wakeReason ?? 'unspecified') : null
+  const ac = registerAbort(run.id)
+  const turnId = nextTurnId()
+  hub.beginRun(conversationId)
+
+  // Audio + its bracket frames go ONLY to the socket that asked; everything else fans out.
+  const send = (d: string | Uint8Array) => {
+    const audio = typeof d !== 'string' || /^\{"type":"audio-(begin|end)"/.test(d)
+    hub.publish(conversationId, d, audio ? { only: run.originSinkId ?? '__none__' } : undefined)
+  }
+  // TTS only while the originating socket is attached: a closed tab degrades the turn to
+  // "no audio", never "no turn".
+  const speak = !isWake && !!input.speak
+  const tts: TtsProvider = {
+    synthesize: (text, o) => (run.originSinkId && hub.hasSink(run.originSinkId))
+      ? speakWithPreset(text, o.preset, 'agent', o.signal, o.refAudio ?? null)
+      : (async function* () {})()
+  }
+  // What the ws.ts closure read off the connection / the frame, now read off the run.
+  const inputModality = input.modality
+  const speakFlag = speak
+  const turnAttachments = input.attachments ?? []
+  // The text the MODEL sees. A wake's persisted row is the raw prompt (role 'event'); the model
+  // reads it through eventModelText, same as it will on every later turn's history.
+  const userText = isWake ? eventModelText(origin, input.text) : input.text
+
+  let ts: ReturnType<typeof createTurnStream> | null = null
+  // Declared out here so the `finally` rescue can still see them when the turn throws.
+  let reasoningText = ''
+  let turnUsage: { inputTokens?: number, outputTokens?: number, totalTokens?: number, contextTokens?: number, modelDefId?: string } | null = null
+  let liveUserText = ''
+  let liveAssistantText = ''
+  const turnStart = Date.now()
+  let ttftMs: number | undefined
+  // The branch this turn was actually typed into. `appendMessages` reads
+  // conversations.active_leaf_id at PERSIST time, but PATCH /api/conversations/:id/leaf
+  // (cycle 68) can move that column mid-turn — from another tab, or the user switching
+  // branches while a reply is still streaming. Captured once, up front (the thread itself is
+  // fixed: run.conversationId), so both the success and rescue appends chain from the
+  // branch the user was reading, not wherever the leaf drifted to by the time this
+  // persists. This only fixes CHAINING — the leaf still moves to the new reply
+  // afterwards regardless (a ruled UX tradeoff, not a bug: both branches stay reachable).
+  let turnLeafId: string | undefined
+  // Built once, called at each of the two persist sites below — a single definition so
+  // the rescue path can never again drift from the success path's construction (that was
+  // this file's one production bug already, just in a different field). Each call takes
+  // its own `Date.now()` snapshot, which is correct: the rescue path's call (if it runs)
+  // happens later than the success path's, and should report how long the turn actually
+  // ran up to THAT persist, not a timestamp copied in from the other branch.
+  const buildUsageWithTiming = () => ({
+    ...(turnUsage ?? {}),
+    startedAt: new Date(turnStart).toISOString(),
+    ttftMs,
+    durationMs: Date.now() - turnStart
+  })
+  let persisted = false
+  // True once the `finally` rescue's append has committed — the rescued rows are real rows.
+  let rescued = false
+  let outcome: RunOutcome = { status: 'done', suppressed: false, usage: null }
+  try {
+    // Live state is now assembled exactly once per turn, inside assembleContext
+    // (called below) — that is the single fixed 'live' tier, budgeted
+    // alongside resident memories and retrieval. Building it again here would inject
+    // a second, unbudgeted copy of the same "Current context / Active projects / Open
+    // tasks" block into every prompt (and pay its two indexed queries twice); see
+    // orchestrator.ts's `context` construction, which concatenates this value with
+    // buildMemoryContext's output.
+    ts = createTurnStream({ turnId, attachments: turnAttachments, send })
+    // Active while this turn runs, so requestApproval (fired from inside exec!) can emit
+    // the approval-request chunk into THIS turn's stream — keyed by run id, and a conversation
+    // runs one run at a time (agent_runs_one_running), so the stream found is always this turn's.
+    registerTurnStream(run.id, ts)
+    const emit = (e: VoiceEvent) => {
+      if (e.type === 'transcript') {
+        if (e.role === 'user') liveUserText = e.text
+        else {
+          // First assistant token: the wait before this is model latency, not generation.
+          if (ttftMs === undefined) ttftMs = Date.now() - turnStart
+          liveAssistantText += e.text
+        }
+      }
+      if (e.type === 'reasoning') reasoningText += e.text
+      // Overwrite, not accumulate: at most one usage event per turn in the common
+      // case, and if the rare forced-final recovery path (run.ts) yields a second
+      // one, it's from the streamText call that actually produced the visible text —
+      // that supersedes the aborted first call's usage rather than adding to it.
+      else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens, contextTokens: e.contextTokens, modelDefId: e.modelDefId }
+      // A wake's prompt is not something Tony said: its event row renders after persist, and a
+      // live "Tony said…" bubble would be a lie.
+      if (isWake && e.type === 'transcript' && e.role === 'user') return
+      ts!.emit(e)
+    }
+    // The thread this turn was SENT to is run.conversationId, fixed when the run was created
+    // (resolveSession made the conversation first), so nothing mid-turn can redirect a rescued
+    // turn into a different thread than the one the user was typing in.
+    // The branch this turn was sent into, same reasoning — read now, before the turn's
+    // own await, not at persist time.
+    turnLeafId = await captureTurnLeaf(conversationId)
+
+    // Setup that the ws.ts closure did inside `exec` — inside this `try`, so a failure here
+    // takes the same rescue path as a failing model (the question still persists).
+    const [conv] = await useDb().select({ kind: conversations.kind, title: conversations.title })
+      .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
+    const fullHistory = await getAgentHistory(conversationId)
+    const turns = groupTurns(fullHistory)
+    const assembled = await (deps.assemble ?? assembleContext)({
+      userText, conversationId, skill: input.skill, conversationKind: conv?.kind === 'main' ? 'main' : 'thread',
+      turns: turns.map(turnTier), budget: RUNTIME_CONTEXT_BUDGET
+    })
+    // Budget telemetry — `used`/`droppedTurns` compared against the turn's own persisted
+    // `usage` (the ACTUAL contextTokens) for the same conversationId. recordEvent only buffers.
+    recordEvent({ kind: 'tool', name: 'memory:assemble', severity: 'info', meta: { used: assembled.used, droppedTurns: assembled.droppedTurns, retrievedCount: assembled.usedMemoryIds.length, conversationId, runId: run.id } })
+    const history: AgentMessage[] = keepTrailingTurns(turns, turns.length - assembled.droppedTurns)
+    // Total by construction — a silent turn touches no voice state, and neither a
+    // DB nor a storage failure can propagate out of here. Voice degrades to "no
+    // audio"; it must never degrade to "no turn". See resolveTurnVoice.
+    const { preset, refAudio } = await resolveTurnVoice(input.presetId ?? null, speak)
+    const profile = run.profile === 'headless' ? headlessProfile(run) : undefined
+
+    const result = await handleTurn(userText, history, {
+      tts, preset, refAudio, speak, context: assembled.context || undefined, modelDefId: run.modelDefId,
+      profile, requestApproval: run.profile === 'interactive' ? approvalFor(run.id) : undefined,
+      attachments: turnAttachments, signal: ac.signal, emit, runAgent: deps.runAgent,
+      drainSteer: () => drainSteerFor(run.id), wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined
+    })
+    // Finalize the timing ONCE, here, and use the same object for the live chunk below and
+    // for the persist further down — so the duration and tok/s the user watches appear are
+    // the ones a reload shows, instead of two independently-sampled clocks disagreeing.
+    const finalUsage = buildUsageWithTiming()
+    // Close the message BEFORE persisting: the UI should finish promptly; persistence
+    // (and the `conversation` frame for a new thread) follows.
+    if (ac.signal.aborted) ts.abort()
+    else {
+      // The live `usage` chunk carried tokens and the model id but no timing (see
+      // server/lib/voice/ui-stream.ts), so duration and tok/s — a goal of this cycle —
+      // only ever showed up after a reload, read back off the persisted row. Re-emitting
+      // usage with the timing filled in reuses the message-metadata chunk that was already
+      // flowing: no new frame type and no protocol change.
+      //
+      // Guarded so this can never OPEN a message that never started: both conditions imply
+      // a chunk already went out (a usage event, or an assistant token that set ttftMs), and
+      // turn-stream starts the message on the first chunk.
+      if (turnUsage || ttftMs !== undefined) ts.emit({ type: 'usage', ...finalUsage })
+      ts.finish()
+    }
+    // A wake that answered with the NO_REPLY sentinel is silent by contract: no assistant row.
+    const reply = messageText(result[result.length - 1]?.content ?? '')
+    const suppressed = isWake && result.length > history.length + 1 && isSuppressedReply(reply)
+    let added = result.slice(history.length) // [user] or [user, assistant]
+    if (suppressed) added = added.slice(0, -1)
+    if (ac.signal.aborted) outcome = { status: 'aborted' }
+    else outcome = { status: 'done', suppressed, usage: finalUsage }
+    if (added.length && !ac.signal.aborted) {
+      const created = (await countMessages(conversationId)) === 0
+      const payload = buildTurnPersistPayload(added, {
+        inputModality,
+        speakFlag,
+        attachments: turnAttachments,
+        reasoning: reasoningText,
+        // The same object the live chunk above carried — see the note there.
+        usage: finalUsage
+      })
+      if (isWake) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
+      await appendMessages(conversationId, payload, turnLeafId)
+      // Set BEFORE anything that can throw below: the rows are committed at this point, and
+      // the `finally` rescue below keys off this flag. A `peer.send` to a socket that closed
+      // mid-turn would otherwise unwind into the catch with `persisted` still false and make
+      // the rescue append the same turn a second time.
+      persisted = true
+      const ids = await lastMessageIds(conversationId, payload.length) // newest-first ids of what we just wrote
+      outcome = { status: 'done', suppressed, usage: finalUsage, userMessageId: ids.at(-1), assistantMessageId: suppressed ? undefined : ids[0] }
+      // Tell the client which thread it just landed in. Without this frame the page
+      // has no way to learn the id/title the server derived on the first turn — the
+      // toolbar kept reading "Bridget" and no rail row highlighted until a reload.
+      //
+      // SENT AFTER the append above. The page treats the arrival of a
+      // conversation id as its cue to re-read the thread (it has to: a live message's id
+      // is a stream uuid, not the row id — see app/pages/agent/index.vue), and sending
+      // this first meant that read could land before the rows existed and wipe the
+      // transcript. Ordering it after the append makes "the client knows the id" imply
+      // "the rows are committed".
+      if (created) hub.publish(conversationId, JSON.stringify({ type: 'conversation', conversationId, title: conv?.title ?? null }))
+      // The page's post-turn re-read is armed by THIS, not by `state:'idle'` — the
+      // orchestrator emits idle from inside exec, before the append, so a read armed by idle
+      // races the persist and can come back without the rows it went looking for. This is
+      // sent once the transaction has returned, on every turn, which is what the first-turn
+      // `conversation` frame above only achieved for the first turn of a thread.
+      hub.publish(conversationId, JSON.stringify({ type: 'persisted', conversationId }))
+      publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: conversationId })
+    }
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') {
+      ts?.abort()
+      return { status: 'aborted' }
+    }
+    console.error('[agent] turn failed:', err)
+    const message = (err as Error).message || 'agent pipeline error'
+    if (ts) ts.error(message)
+    else {
+      hub.publish(conversationId, JSON.stringify({ type: 'error', message }))
+      hub.publish(conversationId, JSON.stringify({ type: 'state', state: 'idle' }))
+    }
+    return { status: 'failed', error: message }
+  } finally {
+    // A turn that aborted, threw, or hung persisted NOTHING before this — including the
+    // user's own message, because `added` comes from s.history, which the agent call only
+    // reassigns on return. The user saw their question on screen (client-side state) and
+    // lost it on reload. A question someone actually asked has to survive the model
+    // failing to answer it, so rescue whatever the turn managed to emit.
+    if (!persisted) {
+      // `|| input.text`: a turn that failed before handleTurn emitted the user transcript
+      // (history load, assembly) still has the question the run was created with.
+      const rescuedMsgs = partialTurnMessages(liveUserText || input.text, liveAssistantText)
+      if (rescuedMsgs.length) {
+        try {
+          const created = (await countMessages(conversationId)) === 0
+          const payload = buildTurnPersistPayload(rescuedMsgs, {
+            inputModality,
+            speakFlag,
+            attachments: turnAttachments,
+            reasoning: reasoningText,
+            usage: buildUsageWithTiming()
+          })
+          if (isWake) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
+          await appendMessages(conversationId, payload, turnLeafId)
+          rescued = true
+          publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: conversationId })
+          // The rescued rows are real rows, so the page's re-read must be armed for them
+          // too — otherwise a turn that errored keeps its stream uuids for good. Last,
+          // because a send to a socket that has since closed must not skip publishChange.
+          hub.publish(conversationId, JSON.stringify({ type: 'persisted', conversationId }))
+        } catch (persistErr) {
+          // Last resort only — nothing above this can recover the turn now.
+          console.error('[agent] rescuing an unfinished turn failed:', persistErr)
+        }
+      }
+    }
+    releaseTurnStream(run.id)
+    releaseAbort(run.id)
+    hub.endRun(conversationId)
+    if (persisted || rescued) deps.afterPersist?.(conversationId)
+  }
+  return outcome
+}
+
+async function countMessages(conversationId: string): Promise<number> {
+  const [r] = await useDb().select({ n: sql<number>`count(*)::int` }).from(conversationMessages).where(eq(conversationMessages.conversationId, conversationId))
+  return r?.n ?? 0
+}
+
+/** Ids of the `n` rows just appended, newest (by chain position) first. The rows of one
+ *  appendMessages call share a created_at (one transaction's now()), so (created_at, id) cannot
+ *  order them — the parent links can. */
+async function lastMessageIds(conversationId: string, n: number): Promise<string[]> {
+  const rows = await useDb().select({ id: conversationMessages.id, parentId: conversationMessages.parentId }).from(conversationMessages)
+    .where(eq(conversationMessages.conversationId, conversationId))
+    .orderBy(desc(conversationMessages.createdAt), desc(conversationMessages.id)).limit(n)
+  const byParent = new Map(rows.map(r => [r.parentId, r]))
+  const ids = new Set(rows.map(r => r.id))
+  // The oldest of the batch is the one whose parent is outside it; walk forward from there.
+  let cur = rows.find(r => !r.parentId || !ids.has(r.parentId))
+  const chain: string[] = []
+  while (cur && chain.length < rows.length) {
+    chain.push(cur.id)
+    cur = byParent.get(cur.id)
+  }
+  return chain.length === rows.length ? chain.reverse() : rows.map(r => r.id)
+}
