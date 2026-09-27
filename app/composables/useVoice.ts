@@ -1,6 +1,7 @@
 // app/composables/useVoice.ts
 import { createLeftThreads, mapServerMessage } from '../lib/voice/messages'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
+import { framesOnOpen } from '../lib/voice/reconnect'
 import { createClientTurns } from '../lib/agent/turn-stream'
 import { epochDividers } from '../lib/agent/dividers'
 import type { AttachmentRef } from '~~/shared/types/conversation'
@@ -356,12 +357,18 @@ export function useVoice() {
       socket.onopen = () => {
         connected.value = true
         state.value = 'idle'
-        // Apply the persisted voice choice (and re-apply on reconnect). '' is valid and
-        // means "the server's default preset" — so is an id the server no longer has.
-        const p = desiredPreset ?? settings.value.presetId
-        socket.send(JSON.stringify({ type: 'preset', presetId: p }))
-        if (desiredModel) socket.send(JSON.stringify({ type: 'model', modelDefId: desiredModel }))
+        // A new socket has no server-side state: re-apply the voice choice ('' is valid and
+        // means "the server's default preset" — so is an id the server no longer has), the
+        // model override, and — on a reconnect — the thread on screen (load + attach), or the
+        // next message would start an invisible new thread (final review C1). reset() FIRST:
+        // it forgets `attachedTo`, so the attach below is recorded against the new socket.
         turns.reset()
+        for (const f of framesOnOpen({
+          presetId: desiredPreset ?? settings.value.presetId,
+          modelDefId: desiredModel,
+          conversationId: conversationId.value,
+          shouldAttach: id => turns.shouldAttach(id)
+        })) socket.send(JSON.stringify(f))
         resolve()
       }
       socket.addEventListener('error', () => reject(new Error('WebSocket error')), { once: true })
@@ -573,7 +580,9 @@ export function useVoice() {
       if (isPlaying()) stopPlayback() // typed barge-in
       // Before the send: the new thread's first frames may come back before this returns.
       left.submit()
-      ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments, skill }))
+      // conversationId: the thread on screen. The server prefers it over its own socket state,
+      // so a message can never be redirected into a new thread by a lost view (final review C1).
+      ws.send(JSON.stringify({ type: 'text', text: t, speak, attachments, skill, conversationId: conversationId.value ?? undefined }))
       return true
     },
     /**

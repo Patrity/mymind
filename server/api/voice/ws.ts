@@ -31,9 +31,12 @@ import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
 //   the ONLY abort; closing the tab, `load` and `new` never abort) |
 //   {type:'preset',presetId} (voice pick; null/absent = the default preset) |
 //   {type:'model',modelDefId} (ephemeral reasoning-model override; null clears) |
-//   {type:'text',text,speak?,skill?} (typed turn; `skill` names a `skill`-kind `/`-command the
-//   composer resolved to — see assembleContext's `skill` input. Sent while a turn is running on
-//   the thread, it is STEERED into that turn instead of queuing a new one) |
+//   {type:'text',text,speak?,skill?,conversationId?} (typed turn; `skill` names a `skill`-kind
+//   `/`-command the composer resolved to — see assembleContext's `skill` input. `conversationId`
+//   is the thread the client is showing; when present (a UUID) it WINS over this socket's own
+//   view, so a socket that lost its state — every reconnect starts with none — can never send
+//   the words into a new invisible thread. Sent while a turn is running on the thread, plain
+//   text is STEERED into that turn; text with attachments or a skill queues its own run) |
 //   {type:'load',conversationId} (select a thread: unsubscribes from the previous one and
 //   remembers this one, but does NOT subscribe and does NOT abort anything) |
 //   {type:'attach'} (subscribe to the selected thread AND replay its running turn so far, in one
@@ -166,11 +169,17 @@ export default defineWebSocketHandler({
       for (const id of denyPendingApprovals(hit)) peer.send(JSON.stringify({ type: 'approval-resolved', requestId: id }))
     }
 
-    const submit = (text: string, o: { speak: boolean; skill?: string; attachments: AttachmentRef[]; modality: 'text' | 'voice' }): Promise<'started' | 'steered' | 'error'> => {
+    const submit = (text: string, o: { speak: boolean; skill?: string; attachments: AttachmentRef[]; modality: 'text' | 'voice'; conversationId?: string }): Promise<'started' | 'steered' | 'error'> => {
       // Captured BEFORE queuing on the lock: a Stop pressed while this submit waits its turn
       // behind another enqueue still means "don't run this".
       const stopAt = s.stopSeq
       const job = s.submitLock.then(async (): Promise<'started' | 'steered' | 'error'> => {
+        // The client named the thread it is showing (final review C1): after a reconnect this
+        // socket's view is null, and without this the text would start a new thread the client
+        // never sees (its cid guard drops every frame of it). Re-point the view first — select,
+        // not view: the subscribe (with replay) happens below, exactly as for a loaded thread
+        // that never attached — and before `seq` is read, so it is not mistaken for navigation.
+        if (o.conversationId && o.conversationId !== s.conversationId) select(s, o.conversationId)
         // Read under the lock, so a second submit on a new thread sees the thread the first
         // one created instead of racing it into a second 'thread:new'.
         const viewing = s.conversationId
@@ -248,7 +257,7 @@ export default defineWebSocketHandler({
       case 'load': select(s, a.conversationId); return
       case 'attach': if (s.conversationId) view(s, s.conversationId); return
       case 'new': select(s, null); return
-      case 'text': await submit(a.text, { speak: a.speak, skill: a.skill, attachments: a.attachments, modality: 'text' }); return
+      case 'text': await submit(a.text, { speak: a.speak, skill: a.skill, attachments: a.attachments, modality: 'text', conversationId: a.conversationId }); return
       // Approve/deny resolve a pending approval IMMEDIATELY (like interrupt), so the awaiting
       // turn unblocks.
       case 'approve': case 'deny': {

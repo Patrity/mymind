@@ -59,6 +59,29 @@ beforeEach(() => {
 })
 
 describe('ws runtime socket', () => {
+  // Final review C1: every reconnect starts a socket with no view. The text frame names the
+  // thread the client is showing, and that wins — the words land in THAT thread, not a new one.
+  it('a text frame carrying conversationId on a fresh socket enqueues into THAT thread and follows it', async () => {
+    const cid = '0b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b'
+    const p = peer(); h.open(p)
+    const sub = vi.spyOn(hub, 'subscribe')
+    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('r1', req.sessionKey.slice(7)))
+    await h.message(p, frame({ type: 'text', text: 'after the restart', conversationId: cid }))
+    expect(sessionKeys()).toEqual([`thread:${cid}`])
+    expect(sub.mock.calls.map(c => c[0])).toEqual([cid])
+    sub.mockRestore()
+  })
+
+  it('the text frame\'s conversationId wins over a stale socket view', async () => {
+    const cid = '0b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b'
+    const p = peer(); h.open(p)
+    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('r1', req.sessionKey.slice(7)))
+    await h.message(p, frame({ type: 'load', conversationId: 'c-elsewhere' }))
+    await h.message(p, frame({ type: 'text', text: 'here', conversationId: cid }))
+    await h.message(p, frame({ type: 'text', text: 'still here' }))
+    expect(sessionKeys()).toEqual([`thread:${cid}`, `thread:${cid}`])
+  })
+
   it('two back-to-back submits on a new thread land in ONE thread (enqueue is serialised)', async () => {
     const p = peer(); h.open(p)
     const first = deferred<ReturnType<typeof result>>()
