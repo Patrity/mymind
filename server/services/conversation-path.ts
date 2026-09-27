@@ -31,20 +31,24 @@ export interface BranchInfo {
  * keep today's behaviour; only the model's `getAgentHistory` passes it. The branch index below
  * is built from the WHOLE thread regardless, because a message on the active path needs the
  * count of siblings that are off it, including siblings that predate the epoch.
+ *
+ * `opts.sinceSummary` (cycle 73) drops rows the thread summary already covers. Model-only, like
+ * `sinceEpoch`.
  */
 export async function loadActivePath(
   conversationId: string,
-  opts: { sinceEpoch?: boolean } = {}
+  opts: { sinceEpoch?: boolean; sinceSummary?: boolean } = {}
 ): Promise<{
   rows: Array<typeof conversationMessages.$inferSelect>
   branches: Map<string, BranchInfo>
 }> {
   const db = useDb()
 
-  const [conv] = await db.select({ leaf: conversations.activeLeafId, epoch: conversations.contextEpochAt })
+  const [conv] = await db.select({ leaf: conversations.activeLeafId, epoch: conversations.contextEpochAt, through: conversations.summarizedThrough })
     .from(conversations).where(sql`${conversations.id} = ${conversationId}`).limit(1)
 
   const epoch = opts.sinceEpoch ? conv?.epoch ?? null : null
+  const through = opts.sinceSummary ? conv?.through ?? null : null
 
   // `id` is the tie-break, not decoration: cycle 68's predecessor measured a 26% created_at
   // collision rate in this corpus, and each read path runs its own copy of this query. On
@@ -57,9 +61,14 @@ export async function loadActivePath(
     .where(sql`${conversationMessages.conversationId} = ${conversationId}`)
     .orderBy(conversationMessages.createdAt, conversationMessages.id)
 
-  // Only what's returned is epoch-filtered — the branch index (and the input to activePath's
-  // parent-chain walk) still sees every row in the thread. See the doc comment above.
-  const rows = epoch ? allRows.filter(r => r.createdAt.getTime() >= epoch.getTime()) : allRows
+  // Only what's returned is epoch/summary-filtered — the branch index (and the input to
+  // activePath's parent-chain walk) still sees every row in the thread. See the doc comment
+  // above. `through` is exclusive (the summary covers created_at <= through); `epoch` is
+  // inclusive, as before. Both are Postgres-clock values compared against Postgres-clock
+  // created_at.
+  const rows = allRows.filter(r =>
+    (!epoch || r.createdAt.getTime() >= epoch.getTime())
+    && (!through || r.createdAt.getTime() > through.getTime()))
 
   // Indexes cover the whole THREAD, not just the path: a message on the active path needs the
   // count of siblings that are off it, which is the only thing the pager has to render.

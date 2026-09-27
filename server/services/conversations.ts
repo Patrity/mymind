@@ -10,6 +10,8 @@ import { getImageBytes } from './images'
 import { getFileBytes } from './files'
 import { loadActivePath, type BranchInfo } from './conversation-path'
 import { branchTip } from '../../shared/utils/conversation-path'
+import { eventModelText } from '../lib/agent/runtime/event-text'
+import { publishChange } from '../utils/live-bus'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -26,7 +28,7 @@ export function deriveTitle(text: string): string {
 // ---------------------------------------------------------------------------
 
 export interface NewConvMessage {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'event'
   content: string
   modality: 'voice' | 'text'
   toolCalls?: ToolCallRecordDTO[] | null
@@ -34,6 +36,8 @@ export interface NewConvMessage {
   attachments?: AttachmentRef[] | null
   // Assistant-turn token usage from streamText, for the transcript's token readout.
   usage?: MessageUsage | null
+  // Set for role='event' rows and wake-produced assistant rows — what caused them.
+  origin?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +52,8 @@ function convToDTO(r: typeof conversations.$inferSelect): ConversationDTO {
     messageCount: r.messageCount,
     lastMessageAt: r.lastMessageAt ? r.lastMessageAt.toISOString() : null,
     createdAt: r.createdAt.toISOString(),
-    contextEpochAt: r.contextEpochAt ? r.contextEpochAt.toISOString() : null
+    contextEpochAt: r.contextEpochAt ? r.contextEpochAt.toISOString() : null,
+    kind: r.kind === 'main' ? 'main' : 'thread'
   }
 }
 
@@ -63,7 +68,7 @@ export function msgToDTO(
 ): ConversationMessageDTO {
   return {
     id: r.id,
-    role: r.role as 'user' | 'assistant',
+    role: r.role as 'user' | 'assistant' | 'event',
     content: r.content,
     modality: r.modality as 'voice' | 'text',
     toolCalls: (r.toolCalls as ToolCallRecordDTO[] | null) ?? null,
@@ -73,7 +78,8 @@ export function msgToDTO(
     createdAt: r.createdAt.toISOString(),
     parentId: r.parentId,
     branch: { index: branch?.index ?? 1, total: branch?.total ?? 1 },
-    siblingIds: branch?.siblingIds ?? [r.id]
+    siblingIds: branch?.siblingIds ?? [r.id],
+    origin: r.origin ?? null
   }
 }
 
@@ -165,7 +171,8 @@ export async function appendMessages(
           toolCalls: msg.toolCalls ?? null,
           reasoning: msg.reasoning ?? null,
           attachments: msg.attachments ?? null,
-          usage: msg.usage ?? null
+          usage: msg.usage ?? null,
+          origin: msg.origin ?? null
         })
         .returning({ id: conversationMessages.id })
       prevId = inserted!.id
@@ -185,6 +192,12 @@ export async function appendMessages(
       })
       .where(eq(conversations.id, conversationId))
   })
+}
+
+/** One event row on the active path — a wake, an approval note, a restart note. */
+export async function appendEvent(conversationId: string, content: string, origin: string): Promise<void> {
+  await appendMessages(conversationId, [{ role: 'event', content, modality: 'text', origin }])
+  publishChange({ resource: 'conversation', action: 'updated', id: conversationId })
 }
 
 /**
@@ -311,8 +324,9 @@ export async function getConversation(
 
 /** Row → AgentMessage. Never throws: a malformed tool_calls jsonb yields no records. */
 export function rowToAgentMessage(
-  r: { role: string; content: string; toolCalls: unknown; attachments: unknown }
+  r: { role: string; content: string; toolCalls: unknown; attachments: unknown; origin?: string | null }
 ): AgentMessage {
+  if (r.role === 'event') return { role: 'user', content: eventModelText(r.origin ?? null, r.content) } as AgentMessage
   const base = { role: r.role as 'user' | 'assistant', content: r.content }
   if (r.role !== 'assistant' || !Array.isArray(r.toolCalls) || !r.toolCalls.length) return base as AgentMessage
   return { ...base, role: 'assistant', toolRecords: r.toolCalls as AgentToolRecord[] } as AgentMessage
@@ -372,7 +386,10 @@ export async function getAgentHistory(id: string): Promise<AgentMessage[]> {
   // only the MODEL forgets what came before it — the UI keeps showing the full transcript. Do
   // not "fix" this back to matching `getConversation`; see test/conversation-epoch.db.test.ts
   // for the test that pins the asymmetry.
-  const { rows } = await loadActivePath(id, { sinceEpoch: true })
+  //
+  // Also WITH `sinceSummary: true` — rows the summary covers reach the model as the summary
+  // tier (assembleContext), not verbatim.
+  const { rows } = await loadActivePath(id, { sinceEpoch: true, sinceSummary: true })
 
   const msgs = rows.map(rowToAgentMessage)
 
@@ -406,7 +423,7 @@ export async function listConversations(
     .select()
     .from(conversations)
     .where(whereClause)
-    .orderBy(sql`${conversations.lastMessageAt} desc nulls last`)
+    .orderBy(sql`(${conversations.kind} = 'main') desc`, sql`${conversations.lastMessageAt} desc nulls last`)
     .limit(50)
 
   return rows.map(r => ({

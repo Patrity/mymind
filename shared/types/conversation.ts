@@ -40,7 +40,7 @@ export interface MessageUsage {
 
 export interface ConversationMessageDTO {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'event'
   content: string
   modality: 'voice' | 'text'
   toolCalls: ToolCallRecordDTO[] | null
@@ -56,6 +56,9 @@ export interface ConversationMessageDTO {
    *  branches: only the active path is fetched, so it cannot discover a sibling any other way.
    *  Its only consumer arrives in a later task; it is populated here so one task owns the DTO. */
   siblingIds: string[]
+  /** For role='event' rows and wake-produced assistant rows: what caused them, e.g.
+   *  'wake:admin', 'review:approved'. Null for everything Tony typed or said. */
+  origin: string | null
 }
 export interface ConversationDTO {
   id: string
@@ -74,6 +77,8 @@ export interface ConversationDTO {
    * thing the divider exists to prevent. Null when the conversation has never been cleared.
    */
   contextEpochAt: string | null
+  /** 'main' = Bridget's one permanent home thread; 'thread' = an ordinary side thread. */
+  kind: 'thread' | 'main'
 }
 export interface ConversationListItem extends ConversationDTO {
   snippet: string | null   // first/last message preview for the list/slideover

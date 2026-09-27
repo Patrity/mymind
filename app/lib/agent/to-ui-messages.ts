@@ -38,7 +38,9 @@ export function toUIMessages(messages: ResumeMessage[]): AgentUIMessage[] {
       ...(m.branch ? { branch: m.branch } : {}),
       ...(m.siblingIds ? { siblingIds: m.siblingIds } : {})
     }
-    if (m.role === 'user') {
+    // 'event' rows (cycle 73) fall through to the user branch for now — a plain text bubble is
+    // the closest existing rendering. Task 13 gives them their own display.
+    if (m.role === 'user' || m.role === 'event') {
       const attachments = m.attachments ?? []
       return {
         id: m.id,

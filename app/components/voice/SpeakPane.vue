@@ -124,7 +124,9 @@ async function loadSource(key: string) {
     } else if (kind === 'conv') {
       // The list carries only a snippet; the messages live on the detail route.
       const full = await getConversation(id) as { conversation: ConversationDTO, messages: ConversationMessageDTO[] }
-      text.value = messagesToScript(full.messages.map(m => ({ role: m.role, content: m.content })))
+      // 'event' rows (cycle 73) have no place in a read-aloud script yet — treat them like a
+      // user line for now; Task 13 gives them their own handling.
+      text.value = messagesToScript(full.messages.map(m => ({ role: m.role === 'event' ? 'user' as const : m.role, content: m.content })))
     }
   } catch (e) {
     sourceError.value = errorMessage(e)

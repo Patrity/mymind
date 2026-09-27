@@ -20,7 +20,7 @@ export const conversations = pgTable('conversations', {
   contextEpochAt: timestamp('context_epoch_at', { withTimezone: true }),
   /** 'main' = Bridget's one permanent home thread (proactive output lands here); 'thread' =
    *  an ordinary side thread. At most one 'main' — enforced by conversations_one_main. */
-  kind: text('kind').notNull().default('thread'),
+  kind: text('kind').notNull().default('thread').$type<'thread' | 'main'>(),
   /** The summary covers every message with created_at <= this. Written with the POSTGRES
    *  clock (it is compared against created_at). Null = no summary yet. */
   summarizedThrough: timestamp('summarized_through', { withTimezone: true }),
