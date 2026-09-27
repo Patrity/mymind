@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 72
-updated: 2026-09-26
+cycle: 73
+updated: 2026-09-27
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
 mymind_hash: 27dc5f74025cb094fb9a85db154107988dde31de36fc54c88adec477344f629e
 ---
@@ -29,7 +29,7 @@ Voice and text run through the **same** path: client WebSocket → `server/lib/v
 | `speak`: on / off | **the sole voice/text branch** — gates TTS *and* selects prompt mode (spoken-brief/no-markdown vs. text/markdown-ok). Default: on for mic, off for typed unless "Respond in voice" is on |
 | ~~canvas: on / off~~ | **removed in cycle 60**, and the column it became was removed in cycle 65. The `agent-canvas` cookie no longer exists. The Persona still reacts to `typing` on text turns (it maps to `thinking`). |
 
-The SSE `POST /api/agent/chat` still exists but is **headless/programmatic only** (cron, scripts) — the page does not use it.
+The SSE `POST /api/agent/chat` still exists but has **no caller** (stateless, unpersisted). Background work goes through `wake()` in the agent runtime — see [agent-runtime.md](agent-runtime.md).
 
 ## Entry point (`runAgent`)
 
@@ -281,6 +281,8 @@ Both put time inside the measured window that the model did not spend generating
 intervals would be more machinery than a monitoring readout justifies.
 
 ## WebSocket protocol (`server/api/voice/ws.ts`)
+
+> **Cycle 73 — turns moved out of the socket.** Everything below about `ConnState` owning the turn (`s.lock`, `s.history`, `s.ac`, `turnSeq`), control frames aborting the turn, and `ws.ts` persisting describes the **legacy** path (`server/lib/voice/ws-legacy.ts`, kept one cycle behind the `agent_runtime` flag). On the runtime path a turn is an `agent_runs` row executed by `server/lib/agent/runtime/runner.ts`; `ws.ts` enqueues and subscribes; only `interrupt` aborts; `load` selects without subscribing and `attach` subscribes + replays; frames carry `cid`; a message sent while a run is active is **steered** into it. The chunk/user-message/persisted frame semantics below are unchanged. See [agent-runtime.md](agent-runtime.md).
 
 Per-connection `ConnState` adds `conversationId` + `context` + a monotonic `turnSeq`. Frames (client→server):
 - binary WAV — a spoken utterance (`speak=true`, modality `voice`)

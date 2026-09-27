@@ -247,6 +247,27 @@ refused. **8004 can be dead while 8880/8881/8882 answer** — so embeddings, `me
 every retrieval keep working and hide the outage, and `activity_log` still logs
 `reasoning:agent | ok` because the chain head was selected, not because tokens arrived.
 
+## Driving the `/agent` composer (cycle 73)
+
+- **Target `textarea`, not its placeholder.** While a run is busy the placeholder switches from
+  "Ask Bridget…" to "Add to what she's doing…", so `fill "textarea[placeholder='Ask Bridget…']"`
+  silently matches nothing mid-turn. `playwright-cli fill textarea "…"` + `press Enter` works in
+  both states, and needs no snapshot — the textbox `ref` changes after every send anyway.
+- **Never submit by setting `.value` + dispatching `keydown Enter` inside `eval`.** The composer
+  submits the PREVIOUS text (lag-by-one): the message you think you sent goes out on the next
+  submit. Proven with a `WebSocket.prototype.send` spy. Use real `fill` + `press`.
+- **Named sessions under zsh:** `P="playwright-cli -s=x"; $P goto …` fails (zsh doesn't word-split
+  `$P`). Write a two-line wrapper script (`exec playwright-cli -s=x "$@"`) and call that.
+- **Testing steering needs step boundaries.** A steer is drained only at the NEXT step boundary;
+  a text-only reply has none, so the steer becomes a follow-up run (correct fallback, but not a
+  steer). Make the run do several sequential tool calls ("call search_memories four separate
+  times, one after another…") and send the steer right after the question.
+- **Assert runs from the DB / `GET /api/agent/runs?conversationId=`**, and wake via
+  `fetch('/api/admin/agent/wake', …)` from a logged-in page — it requires a session, not a token.
+  To test "nobody watching", `goto` another page (e.g. `/tasks`) first; `tab-close` on the last
+  tab ends the session, so open a spare `tab-new about:blank` before closing the agent tab.
+- Nitro tasks run in dev via `POST /_nitro/tasks/<name>` (not `/api/_nitro/…`, which returns the SPA).
+
 ## Checklist for a UI change
 1. Dev server up; logged in.
 2. Exercise the new UI with real clicks (reka components: click by ref).

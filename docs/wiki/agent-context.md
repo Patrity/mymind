@@ -1,8 +1,8 @@
 ---
 title: Agent Context Assembly
 status: built
-cycle: 70
-updated: 2026-09-24
+cycle: 73
+updated: 2026-09-27
 mymind_id: 4802c314-4adc-45e1-b9de-9484f1aba301
 mymind_hash: 6627d663eec6df8c2338917ca31e07b218b38470c279b76a35b249384f43ac29
 ---
@@ -16,11 +16,14 @@ what does not fit is evicted in a defined order.
 
 ## The seam
 
-`server/lib/agent/assemble.ts` → `assembleContext({ userText, conversationId, projectSlug, turns?, budget? })`
+`server/lib/agent/assemble.ts` → `assembleContext({ userText, conversationId, conversationKind?, projectSlug, turns?, budget? })`
 
 It replaced the ad-hoc pair (`buildLiveContext` + `buildMemoryContext`) that `server/api/voice/ws.ts`
-used to pass separately. Its single caller is the `buildMemoryContext` adapter in `ws.ts`, whose
-result becomes the `context` string handed to `buildSystemPrompt`.
+used to pass separately. **Since cycle 73 its caller is the runtime runner**
+(`server/lib/agent/runtime/runner.ts`, see [agent-runtime.md](agent-runtime.md)), which passes
+`turns` and `budget: RUNTIME_CONTEXT_BUDGET` (**20000**) and hands the result to `handleTurn` as the
+`context` string for `buildSystemPrompt`. (The legacy in-socket path, `server/lib/voice/ws-legacy.ts`,
+still calls it the cycle-70 way — no turns, default budget 6000 — until cycle 74 deletes it.)
 
 `buildLiveContext` survives and has exactly one caller — the assembler. `buildMemoryContext` was
 deleted; nothing calls it.
@@ -32,6 +35,8 @@ deleted; nothing calls it.
 | resident facts (`listResidentMemories()`) | fixed | never |
 | live state (active projects, open tasks) | fixed | never |
 | working summary (`conversations.summary`) | fixed, small | never |
+| `recent-threads` (main thread only, cycle 73) | fixed, ≤ 600 tokens | never |
+| `main-state` (side threads only, cycle 73) | fixed, ≤ 300 tokens | never |
 | retrieved memories | elastic | **first** |
 | recent turns | elastic, floor **and** ceiling | only below its floor |
 
@@ -56,8 +61,9 @@ A proactive turn has no user message, so there is nothing to embed against. When
 the query is **synthesised from state** — the rolling summary plus live state
 (`synthesiseQuery()`). With neither text nor state, it does not search at all.
 
-**Caveat:** nothing writes `conversations.summary` yet, so the summary tier is always absent and
-synthesis degrades to live state alone.
+`conversations.summary` has a writer since cycle 73 (see [Summaries](#summaries-and-the-two-flow-up-tiers-cycle-73)),
+so a thread with more than 6 turns and enough history has a summary to synthesise from; a short
+thread still degrades to live state alone.
 
 ## Ranking
 
@@ -98,17 +104,45 @@ Each assembly records `memory:assemble` to `activity_log` with `used`, `droppedT
 memory:assemble | ok | {"used": 254, "droppedTurns": 0, "conversationId": null, "retrievedCount": 5}
 ```
 
-`droppedTurns: 0` is not a healthy signal — see below.
+That row predates cycle 73: with no turns wired, `droppedTurns: 0` was vacuous. Runtime turns now
+pass turns and budget 20000; a main-thread turn on dev (cycle 73) logged
+`{"used": 14015, "droppedTurns": 0, "retrievedCount": 12, "runId": "…", "conversationId": "…"}`.
 
-## Known gap: turns are not wired
+## Turns are wired (cycle 73)
 
-`assembleContext`'s only caller passes **no `turns`**, so the turn tier is always empty and
-`fitBudget` never evicts anything in production. `getAgentHistory` returns the full active path and
-the orchestrator hands it to the model verbatim.
+The cycle-70 gap — `assembleContext`'s only caller passed no `turns`, so history was unbounded — is
+closed. The runner:
 
-**Conversation history is therefore still unbounded.** The floor, the ceiling and the front-trimming
-are exercised only by unit tests. Wiring it means changing the orchestrator's interface so the
-trimmed history reaches the model rather than `s.history`.
+1. reads history with `getAgentHistory`, which walks the active path with `sinceEpoch` **and**
+   `sinceSummary` (rows at or before `conversations.summarized_through` reach the model only as the
+   summary tier; `getConversation`, the UI read, still returns everything);
+2. groups it into turns (`groupTurns`, `server/lib/agent/runtime/history.ts` — a turn starts at a
+   user-role row that follows a non-user row, so an assistant's tool blocks never split from it
+   and a steer joins the turn it was typed into) and costs each with `turnTier`;
+3. passes `turns.map(turnTier)` + `budget: 20000` (turn floor 40% = 8000);
+4. keeps only the trailing `turns.length - droppedTurns` turns (`keepTrailingTurns`) as the
+   structured history the model receives.
+
+The `memory:assemble` activity row now carries a real `droppedTurns`, plus `runId`.
+
+## Summaries and the two flow-up tiers (cycle 73)
+
+- **Writer:** `maybeSummarize` (`server/lib/agent/runtime/summarize.ts`). Skips threads with ≤ 6
+  turns, and (unless forced) tails ≤ 12 000 tokens. Otherwise folds all but the last 6 turns into
+  `summary` via `chat('bulk')` (incremental: previous summary + new turns), sets
+  `summarized_through` to the last folded row's Postgres `created_at`, re-embeds
+  `summary_embedding`. Called after every persisted run (fire-and-forget) and by the `*/10`
+  `summarize-threads` task for side threads idle ≥ 30 min.
+- **`recent-threads`** (when `conversationKind === 'main'`): `Recent side threads (summaries):` then
+  `- <title>: <summary>` for up to 8 side threads with a summary and `last_message_at` in the last
+  48 h, newest first, capped to 600 tokens (`capToTokens`).
+- **`main-state`** (when `conversationKind === 'thread'`): `Bridget's main thread, lately: <first
+  paragraph of main's summary>`, capped to 300 tokens; absent until main has a summary.
+- Both are capped **at the source**: an unbounded fixed tier that overflows `fitBudget` throws
+  `ResidentOverflowError` and blanks every fixed tier (the cycle-71 lesson).
+
+Verified in the browser (cycle 73 acceptance): after a 7-turn side thread was folded, the next main
+turn's assembled context contained `Recent side threads (summaries):` with that thread's title.
 
 ## Related
 

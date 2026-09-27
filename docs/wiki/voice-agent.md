@@ -1,8 +1,8 @@
 ---
 title: Voice Agent
 status: shipped
-cycle: 68
-updated: 2026-09-22
+cycle: 73
+updated: 2026-09-27
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
 mymind_hash: 33d62667d0104b6add19c4de9e562936844a6313c32c0824dbc76474c55fa2a3
 ---
@@ -38,7 +38,7 @@ A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and
 │         ▲                                    │               │
 │  (abort on barge-in)                         ▼               │
 │  TTS provider ◄── segment+sanitize ◄── runAgent(history+text)│
-│         │                            (shared: chat + cron)   │
+│         │                        (a runtime run, not the WS) │
 │         ▼  PCM chunks ──────────────────────────────────────► client
 └──────────────────────────────────────────────────────────────┘
    STT: Speaches faster-whisper  (OpenAI /v1/audio/transcriptions)
@@ -48,7 +48,7 @@ A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and
 1. **Client voice UI** (`app/composables/useVoice.ts`) — mic capture, Silero VAD, WAV encoding, WebSocket, PCM playback + barge-in. Owns when the user is speaking.
 2. **Voice orchestrator** (`server/lib/voice/orchestrator.ts`) — STT → `runAgent` → segmented, sanitized TTS (see [Speech pipeline](#speech-pipeline-cycle-60)); AbortSignal propagation on barge-in; streams audio + transcript + tool/reasoning/usage messages back. Owns the pipeline.
 3. **Providers** (`server/lib/voice/providers/`) — the `SttProvider` interface over an OpenAI-spec local endpoint. Owns which STT model. TTS no longer lives here: it is `speakWithPreset` in `server/lib/voice/speak.ts`, resolved from the registry's `tts` assignment. Swapping either is a registry edit, not an env change.
-4. **Agent core** (`server/lib/agent/`) — `runAgent` (AI SDK `streamText`), tool registry, prompt, bus, undo. Shared verbatim by voice, `/api/agent/chat`, and future cron agents. Owns the brain.
+4. **Agent core** (`server/lib/agent/`) — `runAgent` (AI SDK `streamText`), tool registry, prompt, bus, undo. Owns the brain. Voice and text turns run through the runtime (see [agent-runtime.md](agent-runtime.md)); STT happens in the socket before the run; TTS is per-subscriber and only reaches the socket that asked. (This line used to say the loop was "shared by voice + chat + cron" — false: `/api/agent/chat` has no caller and no cron ran the agent. Since cycle 73 the only non-typed caller is `wake()`.)
 
 ## Agent core — `runAgent`
 
@@ -266,6 +266,8 @@ The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettin
 - reka-ui's `USelectMenu`/`ComboboxItem` **rejects an empty-string item value**, so `''` round-trips through a non-empty `DEFAULT_MIC` sentinel — the same pattern as the model picker's `DEFAULT_MODEL`. (This exact bug shipped once before, in cycle 45; it passes typecheck, build and code review, so it is browser-verified with a real click.)
 
 ## WebSocket protocol (`/api/voice/ws`)
+
+> **Cycle 73:** turns no longer run inside the socket. `ws.ts` enqueues a run and subscribes to its conversation; closing the socket unsubscribes and never aborts; `load`/`new` no longer abort (only `interrupt` does); new frames `attach` (client→server) and `steered` (server→client), and every hub frame carries `cid`. Audio frames and TTS go only to the originating socket, and only while it is attached. The authoritative protocol is the header of `server/api/voice/ws.ts` and [agent-runtime.md § WebSocket protocol](agent-runtime.md#websocket-protocol-serverapivoicewsts-runtime-path); tables below that say an interrupt/load "aborts the current turn" describe the legacy path (`server/lib/voice/ws-legacy.ts`, behind the `agent_runtime` flag, deleted in cycle 74).
 
 **Auth:** the WS upgrade is gated by an `upgrade()` hook in `ws.ts` validating the better-auth session — nitro server middleware does NOT run for WS upgrades (crossws handles them), so without this hook the socket was unauthenticated.
 
