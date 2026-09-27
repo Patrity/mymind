@@ -12,6 +12,7 @@ import { useDb } from '../server/db'
 import { conversations, conversationMessages } from '../server/db/schema'
 import { maybeSummarize, SUMMARY_KEEP_TURNS } from '../server/lib/agent/runtime/summarize'
 import { appendMessages, getAgentHistory, getConversation, createConversation } from '../server/services/conversations'
+import { messageText } from '../server/lib/agent/run'
 import { eq, inArray } from 'drizzle-orm'
 
 const convIds: string[] = []
@@ -75,5 +76,43 @@ describe('maybeSummarize', () => {
     await expect(maybeSummarize(id, { summarizer: async () => { throw new Error('rig down') }, embed: async () => null })).resolves.toBe('skipped')
     const [c] = await useDb().select().from(conversations).where(eq(conversations.id, id))
     expect(c!.summarizedThrough).toBeNull()
+  })
+
+  // Cycle 73 Task 7b: runner.ts persists a steered turn as [question, steer, reply] in ONE
+  // append, so those rows share one created_at. If the fold boundary landed inside that append
+  // (it did while groupTurns split turns at every user row), summarized_through = the question's
+  // created_at and sinceSummary's `>` hid the steer + reply from the model although the summary
+  // never saw them. The trailing plain turn breaks the parity that would otherwise have let the
+  // old split land on an append boundary by luck.
+  it('never hides an unsummarised row: a fold cannot split a steered append', async () => {
+    const c = await createConversation({ title: 'SUMMARIZE-TEST steers' }); convIds.push(c.id)
+    const pad = 'w '.repeat(2500)
+    for (let i = 0; i < 9; i++) {
+      await appendMessages(c.id, [
+        { role: 'user', content: `q${i} ${pad}`, modality: 'text' },
+        { role: 'user', content: `s${i} ${pad}`, modality: 'text' },
+        { role: 'assistant', content: `a${i} ${pad}`, modality: 'text' }
+      ])
+    }
+    await appendMessages(c.id, [
+      { role: 'user', content: `q9 ${pad}`, modality: 'text' },
+      { role: 'assistant', content: `a9 ${pad}`, modality: 'text' }
+    ])
+    let transcript = ''
+    const capture = async (_prev: string | null, t: string) => {
+      transcript = t
+      return 'folded'
+    }
+    expect(await maybeSummarize(c.id, { summarizer: capture, embed: async () => null })).toBe('summarized')
+
+    const marker = (text: string) => text.split(' ', 1)[0]!
+    const all = await useDb().select().from(conversationMessages).where(eq(conversationMessages.conversationId, c.id))
+    const visible = new Set((await getAgentHistory(c.id)).map(m => marker(messageText(m.content))))
+    const hidden = all.map(r => marker(r.content)).filter(m => !visible.has(m))
+    expect(hidden.length).toBeGreaterThan(0) // something was actually folded
+    // Every row the model can no longer see is in the transcript the summary was written from.
+    expect(hidden.filter(m => !transcript.includes(`${m} `))).toEqual([])
+    // …and nothing is both summarised and still shown (the fold took whole appends).
+    expect([...visible].filter(m => transcript.includes(`${m} `))).toEqual([])
   })
 })

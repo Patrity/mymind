@@ -7,9 +7,14 @@ const u = (c: string): AgentMessage => ({ role: 'user', content: c })
 const a = (c: string, extra: Partial<AgentMessage> = {}): AgentMessage => ({ role: 'assistant', content: c, ...extra } as AgentMessage)
 
 describe('runtime history', () => {
-  it('starts a turn at every user message (a steer starts its own turn — safe for slicing)', () => {
+  it('starts a turn at a user message after a non-user one; a steer (user after user) joins the turn', () => {
     const turns = groupTurns([u('q1'), a('a1'), u('q2'), u('steer'), a('a2')])
-    expect(turns.map(t => t.map(m => m.content))).toEqual([['q1', 'a1'], ['q2'], ['steer', 'a2']])
+    expect(turns.map(t => t.map(m => m.content))).toEqual([['q1', 'a1'], ['q2', 'steer', 'a2']])
+  })
+
+  it('several steers stay in one turn, and the next question after a reply starts a new one', () => {
+    const turns = groupTurns([u('q1'), u('s1'), u('s2'), a('a1'), u('q2'), a('a2')])
+    expect(turns.map(t => t.map(m => m.content))).toEqual([['q1', 's1', 's2', 'a1'], ['q2', 'a2']])
   })
 
   it('a leading assistant message (history starting mid-turn after a summary) forms its own turn', () => {

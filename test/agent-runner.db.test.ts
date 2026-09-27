@@ -314,6 +314,18 @@ describe('runTurn', () => {
       ])
     })
 
+    it('rescue with a blank question keeps the steer AND the partial reply: [steer, partial]', async () => {
+      // An empty question never reaches the model (handleTurn returns early), so the reachable
+      // case is whitespace-only. partialTurnMessages alone would drop the reply as unattributable.
+      const { run, conversationId } = await queued('   ')
+      const out = await runTurn(run, { runAgent: steeredAgent(run.id, conversationId, 'are you there?', { throwAfter: true }) as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(out.status).toBe('failed')
+      expect((await chain(conversationId)).map(x => [x.role, x.content.trim()])).toEqual([
+        ['user', 'are you there?'],
+        ['assistant', 'first']
+      ])
+    })
+
     it('a wake run keeps its event row first: [event, steer, reply]', async () => {
       const { run, conversationId } = await wakeRun('steered')
       const out = await runTurn(run, { runAgent: steeredAgent(run.id, conversationId, 'Tony chimed in', { reply: 'noted' }) as never, assemble: noAssemble as never, hub: new StreamHub() })

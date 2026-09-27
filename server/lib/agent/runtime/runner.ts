@@ -298,8 +298,16 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // (history load, assembly) still has the question the run was created with.
       // A wake's NO_REPLY is silent by contract on this path too: only the event row survives.
       const rescuedReply = isWake && isSuppressedReply(liveAssistantText) ? '' : liveAssistantText
-      const rescuedMsgs = partialTurnMessages(liveUserText || input.text, rescuedReply)
-      if (rescuedMsgs.length || drainedSteers.some(t => t.trim())) {
+      const question = liveUserText || input.text
+      // partialTurnMessages drops a reply that has no question to attribute it to. A blank
+      // question with drained steers is not that case: the reply answers the steers, so it is
+      // kept, and withSteers puts the steers ahead of it. (An EMPTY question never reaches the
+      // model — handleTurn returns early — so only a whitespace-only one can land here.)
+      const steered = drainedSteers.some(t => t.trim())
+      const rescuedMsgs: AgentMessage[] = !question.trim() && steered
+        ? (rescuedReply.trim() ? [{ role: 'assistant', content: rescuedReply }] : [])
+        : partialTurnMessages(question, rescuedReply)
+      if (rescuedMsgs.length || steered) {
         try {
           const created = (await countMessages(conversationId)) === 0
           const payload = buildTurnPersistPayload(rescuedMsgs, {
@@ -309,7 +317,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
             reasoning: reasoningText,
             usage: buildUsageWithTiming()
           })
-          if (isWake && payload.length) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
+          if (isWake && payload[0]?.role === 'user') payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
           await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId)
           rescued = true
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: conversationId })
@@ -337,12 +345,13 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
 
 /** Splices drained steers in as their own user rows right after the turn's question (user or
  *  event row) and before the reply, so the reply stays last — the leaf, and the row
- *  `assistantMessageId` names. Typed steers are always text. With no question row at all (a
- *  rescue whose question was empty), the steers alone are what survives. */
+ *  `assistantMessageId` names. Typed steers are always text. With no question row (a rescue
+ *  whose question was blank), the steers lead and the reply follows them. */
 export function withSteers(payload: NewConvMessage[], steers: string[]): NewConvMessage[] {
   const rows: NewConvMessage[] = steers.filter(t => t.trim()).map(content => ({ role: 'user', content, modality: 'text' }))
   if (!rows.length) return payload
-  return [...payload.slice(0, 1), ...rows, ...payload.slice(1)]
+  const at = payload[0] && payload[0].role !== 'assistant' ? 1 : 0
+  return [...payload.slice(0, at), ...rows, ...payload.slice(at)]
 }
 
 async function countMessages(conversationId: string): Promise<number> {

@@ -13,12 +13,21 @@ export const MAIN_STATE_MAX_TOKENS = 300
 
 export function groupTurns(messages: AgentMessage[]): AgentMessage[][] {
   const turns: AgentMessage[][] = []
+  let prev: AgentMessage | undefined
   for (const m of messages) {
     const last = turns[turns.length - 1]
-    // A turn starts at every user-role message. Slicing at a user boundary can never separate
-    // an assistant message from its own tool blocks, which is the only invariant budgeting needs.
-    if (m.role === 'user' || !last) turns.push([m])
+    // A turn starts at a user-role message that follows a NON-user message (or at the first
+    // message). Slicing at such a boundary can never separate an assistant message from its own
+    // tool blocks, which budgeting needs. A user row right after another user row JOINS the
+    // turn: that is a steer (runner.ts persists [question, steer…, reply] in ONE append, so the
+    // rows share one created_at). Splitting there let summarize.ts fold through the question
+    // and set summarized_through to that shared created_at — and sinceSummary's `>` then hid the
+    // steer and reply from the model without them ever being summarised. Events map to user
+    // role, so [event, steer…, reply] stays whole too. The only other user→user adjacency is a
+    // turn that got no reply followed by the next question; merging those is harmless.
+    if (!last || (m.role === 'user' && prev?.role !== 'user')) turns.push([m])
     else last.push(m)
+    prev = m
   }
   return turns
 }
