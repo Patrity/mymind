@@ -1,7 +1,7 @@
 import { and, eq, isNull, isNotNull, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { graphLayout, memories, documents, images, sessions, chunks } from '../db/schema'
-import { meanPool, computeLayout, type LayoutItem, type LayoutRow } from '../lib/galaxy/layout'
+import { meanPool, computeLayoutAsync, type LayoutItem, type LayoutRow } from '../lib/galaxy/layout'
 import { assembleEdges, buildEdgeSourceRows } from '../services/graph'
 import { withSpan, recordJobSummary } from '../lib/observability/record'
 import { publishChange } from '../utils/live-bus'
@@ -101,7 +101,7 @@ export async function runComputeGraphLayout(opts: { force?: boolean } = {}): Pro
     }
 
     // 2. UMAP → 3D coords.
-    const layoutRows = computeLayout(items, SEED)
+    const layoutRows = await computeLayoutAsync(items, SEED)
     const coordByKey = new Map<string, { x: number; y: number; z: number }>()
     for (const r of layoutRows) coordByKey.set(`${r.type}:${r.id}`, { x: r.x, y: r.y, z: r.z })
 

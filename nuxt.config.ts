@@ -161,10 +161,11 @@ export default defineNuxtConfig({
       '*/4 * * * *': ['embed-messages'],
       // Shortly after midnight UTC: summarise yesterday's LiteLLM traffic.
       '20 0 * * *': ['rollup-litellm-daily'],
-      // UMAP over ~2000+ vectors is heavy + synchronous (blocks the event loop),
-      // so the hourly run SKIPS the recompute unless the eligible node count
-      // changed (see the job's force guard). Manual /api/graph/recompute forces
-      // a full rebuild. Keeps new memories/projects appearing within the hour.
+      // UMAP over ~2000+ vectors is heavy; computeLayoutAsync yields between epochs
+      // (the kNN init still blocks briefly), and the hourly run also SKIPS the
+      // recompute unless the eligible node count changed (see the job's force
+      // guard). Manual /api/graph/recompute forces a full rebuild. Keeps new
+      // memories/projects appearing within the hour.
       '0 * * * *': ['compute-graph-layout']
     }
   }
