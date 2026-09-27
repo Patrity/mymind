@@ -1,5 +1,5 @@
 // app/composables/useVoice.ts
-import { mapServerMessage } from '../lib/voice/messages'
+import { createLeftThreads, mapServerMessage } from '../lib/voice/messages'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
 import { createClientTurns } from '../lib/agent/turn-stream'
 import { epochDividers } from '../lib/agent/dividers'
@@ -38,6 +38,16 @@ export function useVoice() {
    */
   const conversationId = ref<string | null>(null)
   const conversationTitle = ref<string | null>(null)
+  /**
+   * The threads newConversation() walked away from while the new one has no id yet. The
+   * server keeps a left thread's turn running (and may start its next queued one), and this
+   * socket keeps receiving its frames until ws.ts processes `new` — with `conversationId`
+   * null, mapServerMessage's cid guard has no viewed id to compare against, and turns.reset()
+   * has already forgotten the discarded turn id, so without this a straggler would render as
+   * a ghost reply (or flip busy) in the empty new thread. Cleared the moment a thread is
+   * viewed again: the new thread's `conversation` frame, or resume()'s resetTurns().
+   */
+  const left = createLeftThreads()
   /**
    * `/clear` boundaries reached on THIS connection, in the order they happened. Each names the
    * message the boundary falls after (`null` = before any message) so the transcript component
@@ -293,7 +303,9 @@ export function useVoice() {
         state.value = 'speaking'
         enqueuePcm(e.data, epochs.segment())
       } else {
-        const fx = mapServerMessage(JSON.parse(e.data as string), isPlaying(), conversationId.value)
+        const m = JSON.parse(e.data as string)
+        left.observe(m, conversationId.value)
+        const fx = mapServerMessage(m, isPlaying(), conversationId.value, left.ids)
         // audio-begin now names its turn: a segment from a superseded turn is rejected
         // outright (closes the barge-in window documented on onAudioBegin).
         if (fx.audioBegin) {
@@ -308,6 +320,7 @@ export function useVoice() {
         if (fx.conversation) {
           conversationId.value = fx.conversation.id
           conversationTitle.value = fx.conversation.title
+          left.clear() // viewing a real id again — the plain cid mismatch check takes over
         }
         if (fx.persisted) turnPersisted.value++
         // Steered: this socket's text was spliced into the running turn, not queued as a new
@@ -616,7 +629,12 @@ export function useVoice() {
      * the time this runs, `reset()`'s own turn-closing side effect is a guaranteed no-op —
      * it can never race the old thread's turn or mislabel it "Connection lost".
      */
-    resetTurns: () => turns.reset(),
+    resetTurns: () => {
+      turns.reset()
+      // resume() commits `conversationId` in this same synchronous tick — the plain cid
+      // mismatch check covers the thread `new` left from here on.
+      left.clear()
+    },
     /**
      * Start a fresh conversation: signals the server to reset context and
      * clears the local transcript.
@@ -626,12 +644,17 @@ export function useVoice() {
       // which would land in the NEW empty list as a "stopped" reply from the old thread.
       turns.discard()
       // A brand-new thread is a genuine switch too (same as resume()'s `switchingThread`
-      // case) — reset right after discard(), same order, same reasoning: `closed` survives
-      // (turn ids are never reused, so nothing needs forgetting there), but `attachedTo`
-      // must, or a later resume() back to whatever thread this socket last attached to
+      // case) — reset right after discard(), same order, same reasoning: `attachedTo` must be
+      // forgotten, or a later resume() back to whatever thread this socket last attached to
       // would wrongly no-op against server state that the `new` frame below already
-      // unsubscribed from.
+      // unsubscribed from. reset() also clears the revocable `discarded` set (only
+      // `finished` survives it) and zeroes `current`, so the turn-id layer will ACCEPT a
+      // straggler of the old thread's still-running turn — `left` below is what drops it.
       turns.reset()
+      // Remember what we left so its stragglers can be recognised while nothing is viewed —
+      // including an id-less new thread whose first turn is still running (its id is known
+      // only from its frames' cid; see createLeftThreads).
+      left.leave(conversationId.value)
       messages.value = []
       contextEpochAt.value = null // same reasoning as loadConversation's reset
       conversationId.value = null

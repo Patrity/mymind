@@ -108,11 +108,58 @@ describe('mapServerMessage — cid guard (belt-and-braces against a stray frame 
     expect(mapServerMessage(frame as never, false, null)).toEqual({ messageFrame: frame })
   })
 
-  it('never gates a frame type outside the three cid-checked ones, even with a mismatched cid', () => {
-    // `state` isn't one of the three gated types — a cid on it (it never actually carries one
-    // server-side) must not accidentally start being filtered.
-    expect(mapServerMessage({ type: 'state', state: 'idle', cid: 'thread-A' } as never, false, 'thread-B'))
-      .toEqual({ state: 'idle' })
+  it('drops a state frame with a mismatched cid (an A straggler must not flip busy on B)', () => {
+    expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-A' } as never, false, 'thread-B')).toEqual({})
+    expect(mapServerMessage({ type: 'state', state: 'idle', cid: 'thread-A' } as never, false, 'thread-B')).toEqual({})
+  })
+
+  it('drops an error frame with a mismatched cid (no stray alert on B for A\'s failure)', () => {
+    expect(mapServerMessage({ type: 'error', message: 'A blew up', cid: 'thread-A' } as never, false, 'thread-B')).toEqual({})
+  })
+
+  it('passes state/error frames whose cid matches, and untagged (per-socket) ones', () => {
+    expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-B' } as never, false, 'thread-B')).toEqual({ state: 'thinking' })
+    expect(mapServerMessage({ type: 'error', message: 'B failed', cid: 'thread-B' } as never, false, 'thread-B')).toEqual({ error: 'B failed' })
+    // ws.ts's submit-failure pair goes straight to the peer, untagged.
+    expect(mapServerMessage({ type: 'state', state: 'idle' } as never, false, 'thread-B')).toEqual({ state: 'idle' })
+    expect(mapServerMessage({ type: 'error', message: 'could not start' } as never, false, 'thread-B')).toEqual({ error: 'could not start' })
+  })
+
+  it('never gates conversation/persisted/approval, even with a mismatched cid', () => {
+    expect(mapServerMessage({ type: 'conversation', conversationId: 'thread-C', title: 't', cid: 'thread-C' } as never, false, 'thread-B'))
+      .toEqual({ conversation: { id: 'thread-C', title: 't' } })
+    expect(mapServerMessage({ type: 'persisted', conversationId: 'thread-A', cid: 'thread-A' } as never, false, 'thread-B'))
+      .toEqual({ persisted: 'thread-A' })
+    expect(mapServerMessage({ type: 'approval', requestId: 'r', command: 'ls', cid: 'thread-A' } as never, false, 'thread-B'))
+      .toEqual({ approval: { requestId: 'r', tool: 'exec', command: 'ls', proposedPattern: '' } })
+  })
+
+  describe('viewing nothing (after `new`) — leftConversationIds', () => {
+    const delta = { type: 'chunk', turnId: 45, cid: 'thread-A', chunk: { type: 'text-delta', id: 't', delta: 'ghost' } }
+
+    it('drops every gated frame type tagged with the thread `new` just left', () => {
+      expect(mapServerMessage(delta as never, false, null, new Set(['thread-A']))).toEqual({})
+      expect(mapServerMessage({ type: 'user-message', turnId: 46, cid: 'thread-A', message: { id: 'u', role: 'user', parts: [] } } as never, false, null, new Set(['thread-A']))).toEqual({})
+      expect(mapServerMessage({ type: 'audio-begin', segmentId: 0, sampleRate: 24000, turnId: 46, cid: 'thread-A' } as never, false, null, new Set(['thread-A']))).toEqual({})
+      expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-A' } as never, false, null, new Set(['thread-A']))).toEqual({})
+      expect(mapServerMessage({ type: 'error', message: 'A failed', cid: 'thread-A' } as never, false, null, new Set(['thread-A']))).toEqual({})
+    })
+
+    it('passes the NEW thread\'s own first-turn frames (a cid we cannot know yet)', () => {
+      const own = { ...delta, turnId: 50, cid: 'thread-N' }
+      expect(mapServerMessage(own as never, false, null, new Set(['thread-A']))).toEqual({ messageFrame: own })
+      expect(mapServerMessage({ type: 'state', state: 'thinking', cid: 'thread-N' } as never, false, null, new Set(['thread-A']))).toEqual({ state: 'thinking' })
+    })
+
+    it('passes everything when nothing was left (fresh page, first thread ever)', () => {
+      expect(mapServerMessage(delta as never, false, null, new Set())).toEqual({ messageFrame: delta })
+    })
+
+    it('ignores leftConversationId once a thread is viewed (the plain mismatch check owns it)', () => {
+      const own = { ...delta, cid: 'thread-A' }
+      // Viewing A again (resumed back to it): A's frames must render even if A is still "left".
+      expect(mapServerMessage(own as never, false, 'thread-A', new Set(['thread-A']))).toEqual({ messageFrame: own })
+    })
   })
 
   // The reviewer's exact regression, retold at THIS layer (round 2 → round 3): resume()

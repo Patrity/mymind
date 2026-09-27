@@ -4,6 +4,37 @@ import type { AgentMessageFrame } from '~~/shared/types/agent-ui'
 
 export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string }
 
+// Frame types that belong to ONE conversation's turn and must not be applied while viewing a
+// different one. Every hub-published JSON frame carries `cid` (server/lib/agent/runtime/
+// stream.ts's `withCid`); per-socket frames (approval, steered, cleared, the submit-failure
+// error/state pair ws.ts sends straight to the peer) carry none and are never gated.
+// `conversation` and `persisted` are hub-published but deliberately NOT listed: the first is
+// how a brand-new thread learns its id (its cid IS the new thread's), the second only arms a
+// re-read of whatever is viewed.
+const CONVERSATION_SCOPED = new Set(['chunk', 'user-message', 'audio-begin', 'state', 'error'])
+
+/**
+ * Belt-and-braces alongside the client's turn-id tracking (app/lib/agent/turn-stream.ts): a
+ * conversation-scoped frame whose `cid` is for a thread this socket is not viewing is a
+ * straggler from a thread we switched away from — drop it outright, independent of whatever
+ * the turn-id bookkeeping decides, so it can never render as a ghost message, flip `busy`, or
+ * raise a stray alert in the thread we switched TO.
+ *
+ * - Viewing a thread: drop any cid that differs from it.
+ * - Viewing nothing (a brand-new thread, whose id arrives with the `conversation` frame after
+ *   its first turn persists): the new thread's own frames carry an id we cannot know yet, so
+ *   they must pass — but the threads `new` LEFT are known (`left`), and a still-running turn
+ *   there (or its next queued one) keeps publishing until the server processes `new`. Drop
+ *   exactly those cids. (reset() on `new` has cleared the turn-id layer's `discarded` set and
+ *   zeroed `current`, so nothing below this guard would catch them.)
+ */
+function isForeignFrame(m: ServerMsg, viewed: string | null, left: ReadonlySet<string>): boolean {
+  if (m.cid === undefined || !CONVERSATION_SCOPED.has(m.type)) return false
+  if (viewed !== null) return m.cid !== viewed
+  return left.has(m.cid)
+}
+const NO_IDS: ReadonlySet<string> = new Set()
+
 export interface MsgEffect {
   // 'listening'/'connecting' never come from the server (client VAD / WS dial own them).
   state?: 'idle' | 'thinking' | 'speaking' | 'tool' | 'typing'
@@ -42,23 +73,17 @@ export interface MsgEffect {
  * `viewedConversationId` is the thread this socket currently views (useVoice's
  * `conversationId.value`) — default `null` only for callers (mostly tests) that don't care
  * about the cid guard below; every real caller (useVoice's onmessage) passes the live value.
+ * `leftConversationIds` are the threads `new` walked away from since a thread was last viewed
+ * (useVoice's `leftCids`) — only consulted while `viewedConversationId` is null; see the
+ * guard below.
  */
-export function mapServerMessage(m: ServerMsg, isPlaying: boolean, viewedConversationId: string | null = null): MsgEffect {
-  // Belt-and-braces alongside the client's turn-id tracking (app/lib/agent/turn-stream.ts):
-  // every chunk/user-message/audio-begin frame is tagged with the conversationId it was
-  // published for (server/lib/agent/runtime/stream.ts's `withCid`). One whose cid doesn't
-  // match what this socket currently VIEWS is for a thread we've switched away from — drop
-  // it outright, independent of whatever the turn-id bookkeeping decides, so a straggler
-  // frame can never render as a ghost message in the thread we switched TO. The one
-  // exception: `viewedConversationId === null` (a brand-new thread — nothing chosen yet to
-  // compare against) lets everything through; the `conversation` frame that assigns an id
-  // follows right behind and there is nothing to mismatch against yet.
-  if (
-    (m.type === 'chunk' || m.type === 'user-message' || m.type === 'audio-begin') &&
-    m.cid !== undefined && viewedConversationId !== null && m.cid !== viewedConversationId
-  ) {
-    return {}
-  }
+export function mapServerMessage(
+  m: ServerMsg,
+  isPlaying: boolean,
+  viewedConversationId: string | null = null,
+  leftConversationIds: ReadonlySet<string> = NO_IDS
+): MsgEffect {
+  if (isForeignFrame(m, viewedConversationId, leftConversationIds)) return {}
   if (m.type === 'chunk') return { messageFrame: m as unknown as AgentMessageFrame }
   if (m.type === 'user-message') {
     const frame = m as unknown as Extract<AgentMessageFrame, { type: 'user-message' }>
@@ -107,4 +132,48 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean, viewedConvers
     return { steered: m.text }
   }
   return {}
+}
+
+/**
+ * The threads `new` walked away from while nothing is viewed yet — the `leftConversationIds`
+ * mapServerMessage's cid guard needs. useVoice owns one; pure so the lifecycle is testable.
+ *
+ * `new` leaves either a thread with a known id, or an id-less brand-new one whose first turn
+ * is still running: the client only learns that thread's id from the `conversation` frame
+ * sent AFTER the turn persists. Its frames already carry the id as `cid`, though, so
+ * `observe()` remembers it from them — leaving such a thread mid-first-turn (the most common
+ * way to abandon a long reply) must drop its stragglers too, not just a named thread's.
+ */
+export interface LeftThreads {
+  readonly ids: ReadonlySet<string>
+  /** Every server JSON frame, BEFORE mapping it. While viewing nothing, the latest tagged
+   *  frame names the id-less thread being viewed — remember its id. */
+  observe(m: ServerMsg, viewedConversationId: string | null): void
+  /** newConversation(): the thread being left (its id, or the one observed) joins `ids`. */
+  leave(viewedConversationId: string | null): void
+  /** A thread is viewed again (the `conversation` frame adopted, or a resume) — the plain
+   *  mismatch check owns every cid from here on. */
+  clear(): void
+}
+
+export function createLeftThreads(): LeftThreads {
+  const ids = new Set<string>()
+  let unnamed: string | null = null
+  return {
+    ids,
+    observe(m, viewed) {
+      // A left thread's straggler lands here too; recording it is harmless (leave() would
+      // only re-add an id already in `ids`), and the new thread's own frames overwrite it.
+      if (viewed === null && m.cid !== undefined) unnamed = m.cid
+    },
+    leave(viewed) {
+      const id = viewed ?? unnamed
+      if (id) ids.add(id)
+      unnamed = null
+    },
+    clear() {
+      ids.clear()
+      unnamed = null
+    }
+  }
 }
