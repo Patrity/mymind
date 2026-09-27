@@ -23,6 +23,11 @@ export interface MsgEffect {
    *  timestamp the model now reads history FROM — null means there was nothing to clear
    *  (no conversation yet), which is a no-op, not a failure. */
   cleared?: { epochAt: string | null }
+  /** This socket's text was spliced into the thread's already-running turn instead of
+   *  queuing a new one (server/api/voice/ws.ts's `submit`). The caller renders an optimistic
+   *  user bubble for it; the post-turn re-read (armed by `persisted`) replaces it with the
+   *  real row. */
+  steered?: string
   /** A spoken segment is starting: the binary frames that follow are headerless PCM
    *  (mono / s16le) at THIS sample rate — the client cannot decode them without it.
    *  `turnId` names which turn opened it, so a segment from a superseded turn can be
@@ -76,6 +81,10 @@ export function mapServerMessage(m: ServerMsg, isPlaying: boolean): MsgEffect {
   // `/clear`'s boundary — see MsgEffect.cleared.
   if (m.type === 'cleared') {
     return { cleared: { epochAt: m.epochAt ?? null } }
+  }
+  // Steered into the running turn instead of queued — see MsgEffect.steered.
+  if (m.type === 'steered' && typeof m.text === 'string') {
+    return { steered: m.text }
   }
   return {}
 }

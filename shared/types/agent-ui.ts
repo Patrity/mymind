@@ -42,6 +42,10 @@ export interface AgentMessageMetadata {
   interrupted?: true
   /** Client-side: the turn ended with an error chunk or the socket dropped. */
   errorText?: string
+  /** Resume only — set on a `role: 'system'` message built from a persisted 'event' row (a
+   *  wake, an approval note, a restart note). `origin` is the row's own origin string
+   *  ('wake:admin', 'review:approved', 'runtime:restart', …), or null for one with none. */
+  event?: { origin: string | null }
 }
 
 // A type alias (not an interface) so it satisfies the SDK's `UIDataTypes` index signature.

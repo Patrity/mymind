@@ -12,7 +12,7 @@ import { toolOutcome, toolEnvelope, attachmentToFilePart } from '~~/shared/utils
 // a caller constructing a ResumeMessage by hand (the tests, mostly) need not supply them, and
 // an absent `branch` reads as "lone trunk message", the same default msgToDTO applies.
 export type ResumeMessage = Pick<ConversationMessageDTO, 'id' | 'role' | 'content'>
-  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments' | 'usage' | 'createdAt' | 'branch' | 'siblingIds'>>
+  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments' | 'usage' | 'createdAt' | 'branch' | 'siblingIds' | 'origin'>>
 
 const textPart = (text: string): AgentUIPart => ({ type: 'text', text, state: 'done' })
 
@@ -38,9 +38,12 @@ export function toUIMessages(messages: ResumeMessage[]): AgentUIMessage[] {
       ...(m.branch ? { branch: m.branch } : {}),
       ...(m.siblingIds ? { siblingIds: m.siblingIds } : {})
     }
-    // 'event' rows (cycle 73) fall through to the user branch for now — a plain text bubble is
-    // the closest existing rendering. Task 13 gives them their own display.
-    if (m.role === 'user' || m.role === 'event') {
+    // 'event' rows (a wake, an approval note, a restart note) render as their own divider,
+    // not a chat bubble — Conversation.vue keys off `metadata.event` to do that.
+    if (m.role === 'event') {
+      return { id: m.id, role: 'system', parts: [{ type: 'text', text: m.content }], metadata: { ...metadata, event: { origin: m.origin ?? null } } }
+    }
+    if (m.role === 'user') {
       const attachments = m.attachments ?? []
       return {
         id: m.id,

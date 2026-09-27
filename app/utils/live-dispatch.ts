@@ -72,7 +72,18 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   project: (c) => { invalidateGraph(c); invalidateHome(c) },
   task: (c) => invalidateHome(c),
   clipboard: (c) => invalidateHome(c),
-  graph: (c) => invalidateGraph(c)
+  graph: (c) => invalidateGraph(c),
+  // The Runs drawer keys its query ['agentRun', conversationId] — a per-thread list, not the
+  // default [resource, 'list']. The event's own `id` is the RUN's id, not a conversation id,
+  // so neither of the default invalidations above ever matches. Invalidating the bare
+  // ['agentRun'] prefix catches every conversationId variant of that key at once (tanstack's
+  // fuzzy queryKey matching: a query key starting with ['agentRun'] matches).
+  agentRun: (c) => c.invalidateQueries({ queryKey: ['agentRun'] })
+  // The Runs drawer keys its query ['agentRun', conversationId] — a per-thread list, not the
+  // default [resource, 'list']. The event's own `id` is the RUN's id, not a conversation id,
+  // so neither of the default invalidations above ever matches. Invalidating the bare
+  // ['agentRun'] prefix catches every conversationId variant of that key at once (tanstack's
+  // fuzzy queryKey matching: a query key starting with ['agentRun'] matches).
 }
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {

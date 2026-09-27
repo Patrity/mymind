@@ -380,7 +380,7 @@ watch(() => props.prefill, (v) => {
     </PromptInputHeader>
 
     <PromptInputBody>
-      <PromptInputTextarea placeholder="Ask Bridget…" @keydown="onComposerKeydown" />
+      <PromptInputTextarea :placeholder="busy ? 'Add to what she\'s doing…' : 'Ask Bridget…'" @keydown="onComposerKeydown" />
     </PromptInputBody>
 
     <PromptInputFooter>
@@ -451,6 +451,10 @@ watch(() => props.prefill, (v) => {
           <MicOffIcon v-else class="size-4" />
         </PromptInputButton>
 
+        <!-- Stop and Submit are independent while busy — not an if/else pair — so a typed
+             message can be STEERED into the running turn (ws.ts splices it into the active
+             run instead of queuing a new one) without first stopping it. Submit still
+             disables on empty input the same as always. -->
         <PromptInputButton
           v-if="busy"
           type="button"
@@ -459,7 +463,7 @@ watch(() => props.prefill, (v) => {
         >
           <SquareIcon class="size-4" />
         </PromptInputButton>
-        <PromptInputSubmit v-else :disabled="!canSubmit" />
+        <PromptInputSubmit :disabled="!canSubmit" />
       </PromptInputTools>
     </PromptInputFooter>
     </PromptInput>

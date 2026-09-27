@@ -82,6 +82,17 @@ function dividerLabel(epochAt: string): string {
   const time = new Date(epochAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   return `Bridget's memory of this conversation starts here · ${time}`
 }
+
+/** An `event` row (wake, approval note, restart note) renders as a divider, not a bubble —
+ *  see to-ui-messages.ts's 'event' → 'system' mapping. `origin` is `'<kind>:<detail>'` or
+ *  null; unrecognised/absent kinds fall back to a generic "note" label. */
+function eventLabel(m: AgentUIMessage): string {
+  const origin = m.metadata?.event?.origin ?? ''
+  const [kind, detail] = origin.split(':', 2)
+  const text = m.parts.find(p => p.type === 'text')?.text ?? ''
+  const head = kind === 'wake' ? `woken · ${detail}` : kind === 'review' ? `review · ${detail}` : kind === 'runtime' ? 'runtime' : 'note'
+  return `${head}: ${text.length > 80 ? text.slice(0, 79) + '…' : text}`
+}
 </script>
 
 <template>
@@ -108,7 +119,15 @@ function dividerLabel(epochAt: string): string {
         v-for="m in messages"
         :key="m.id"
       >
+        <USeparator
+          v-if="m.role === 'system' && m.metadata?.event"
+          color="neutral"
+          icon="i-lucide-alarm-clock"
+          :label="eventLabel(m)"
+          class="my-3"
+        />
         <div
+          v-else
           class="group"
         >
           <Message :from="m.role">

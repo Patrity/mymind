@@ -124,9 +124,14 @@ async function loadSource(key: string) {
     } else if (kind === 'conv') {
       // The list carries only a snippet; the messages live on the detail route.
       const full = await getConversation(id) as { conversation: ConversationDTO, messages: ConversationMessageDTO[] }
-      // 'event' rows (cycle 73) have no place in a read-aloud script yet — treat them like a
-      // user line for now; Task 13 gives them their own handling.
-      text.value = messagesToScript(full.messages.map(m => ({ role: m.role === 'event' ? 'user' as const : m.role, content: m.content })))
+      // 'event' rows (a wake, an approval note, a restart note) are never something to read
+      // aloud — they render as dividers in the agent page (Task 13), not lines of dialogue —
+      // so Voice Studio skips them entirely rather than folding them into either speaker.
+      text.value = messagesToScript(
+        full.messages
+          .filter(m => m.role !== 'event')
+          .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+      )
     }
   } catch (e) {
     sourceError.value = errorMessage(e)

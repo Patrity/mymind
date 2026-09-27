@@ -61,3 +61,14 @@ describe('mapServerMessage — /clear', () => {
       .toEqual({ cleared: { epochAt: null } })
   })
 })
+
+describe('mapServerMessage — steered', () => {
+  it('surfaces a steered frame with its text', () => {
+    expect(mapServerMessage({ type: 'steered', text: 'also check the queue' } as never, false))
+      .toEqual({ steered: 'also check the queue' })
+  })
+
+  it('ignores a steered frame with no text', () => {
+    expect(mapServerMessage({ type: 'steered' } as never, false)).toEqual({})
+  })
+})

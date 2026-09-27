@@ -10,6 +10,12 @@ const { useConversationList } = useConversations()
 const { data, error } = useConversationList(() => ({ q: q.value.trim() || undefined }))
 const conversations = computed(() => data.value ?? [])
 
+// Bridget's one permanent home thread is pinned above the date groups, not grouped into
+// them — she is always the first row, whatever her lastMessageAt is. Everything else
+// (`others`) feeds the Today/Yesterday/date grouping below exactly as before.
+const main = computed(() => conversations.value.find(c => c.kind === 'main') ?? null)
+const others = computed(() => conversations.value.filter(c => c.kind !== 'main'))
+
 // Surface load failures — the rail is now the primary way into a thread, so a
 // silently empty list would read as "you have no conversations".
 const toast = useToast()
@@ -24,7 +30,7 @@ const groups = computed(() => {
   const out = new Map<string, ConversationListItem[]>()
   const today = new Date(); today.setHours(0, 0, 0, 0)
   const yest = new Date(today); yest.setDate(yest.getDate() - 1)
-  for (const c of conversations.value) {
+  for (const c of others.value) {
     const d = c.lastMessageAt ? new Date(c.lastMessageAt) : null
     const key = !d
       ? 'Earlier'
@@ -61,6 +67,19 @@ const groups = computed(() => {
     </div>
 
     <div class="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-3">
+      <!-- Bridget's home thread — always the first row, pinned above the date groups, never
+           swept into "Today"/"Yesterday" by her own lastMessageAt (see the `main` computed). -->
+      <UButton
+        v-if="main"
+        block
+        icon="i-lucide-sparkles"
+        label="Bridget"
+        :color="main.id === props.activeId ? 'primary' : 'neutral'"
+        :variant="main.id === props.activeId ? 'soft' : 'ghost'"
+        class="text-left"
+        @click="emit('select', main.id)"
+      />
+
       <div
         v-for="[label, items] in groups"
         :key="label"

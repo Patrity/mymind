@@ -113,4 +113,9 @@ describe('toUIMessages', () => {
     expect(m!.metadata).toEqual({})
     expect(m!.metadata).not.toHaveProperty('branch')
   })
+
+  it('maps an event row to a system message carrying its origin', () => {
+    const [m] = toUIMessages([{ id: 'e1', role: 'event', content: 'check the queue', origin: 'wake:admin', createdAt: '2026-09-27T10:00:00Z' } as never])
+    expect(m).toMatchObject({ id: 'e1', role: 'system', parts: [{ type: 'text', text: 'check the queue' }], metadata: { event: { origin: 'wake:admin' } } })
+  })
 })

@@ -60,6 +60,18 @@ describe('dispatchLiveEvent', () => {
   })
 })
 
+describe('dispatchLiveEvent — agentRun', () => {
+  // The Runs drawer's query key is ['agentRun', conversationId], not the default
+  // [resource, 'list'] — and the event's `id` is the RUN's id, never a conversationId, so
+  // the default [resource, id] invalidation can't help either. Only a bare ['agentRun']
+  // prefix invalidation (tanstack's fuzzy matching) reaches every conversationId variant.
+  it('invalidates the bare ["agentRun"] prefix, not just [resource, id] / [resource, "list"]', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'agentRun', id: 'run-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['agentRun'] }])
+  })
+})
+
 describe('dispatchLiveEvent — activity', () => {
   it('invalidates activity list + count on an activity signal', () => {
     const invalidateQueries = vi.fn()

@@ -310,6 +310,19 @@ export function useVoice() {
           conversationTitle.value = fx.conversation.title
         }
         if (fx.persisted) turnPersisted.value++
+        // Steered: this socket's text was spliced into the running turn, not queued as a new
+        // one — no `user-message` frame is coming for it (that frame belongs to the turn
+        // that's already streaming), so paint an optimistic bubble here instead. It carries a
+        // synthetic id (never a server row id) purely so the post-turn re-read — armed by
+        // `persisted` above — has something to replace once the real row exists.
+        if (fx.steered) {
+          messages.value.push({
+            id: `steer-${Date.now()}`,
+            role: 'user',
+            parts: [{ type: 'text', text: fx.steered }],
+            metadata: { createdAt: new Date().toISOString() }
+          })
+        }
         if (fx.cleared) {
           if (fx.cleared.epochAt) {
             // Same value the DTO carries on a later reload, so the divider renders identically
@@ -558,8 +571,23 @@ export function useVoice() {
       if (ws?.readyState !== WebSocket.OPEN) await connect()
       if (ws?.readyState !== WebSocket.OPEN) return
       ws.send(JSON.stringify({ type: 'load', conversationId: id }))
-      restAfterAbort() // the server aborts the running turn for us; nothing sends idle back
+      // The server no longer aborts — the old thread's turn keeps running server-side and
+      // persists; we only stop rendering it. Nothing else will send this socket an idle
+      // frame for it (that frame only ever goes to the run's own conversation), so the UI
+      // has to rest itself.
+      restAfterAbort()
     },
+    /**
+     * Subscribe to the currently-selected thread's live frames AND replay its running turn
+     * so far, atomically (ws.ts's `attach`). Call this AFTER `messages.value` has been
+     * committed to the resumed transcript (`load` itself does not subscribe) — an `attach`
+     * sent before that commit would have its replayed frames open a turn on top of a
+     * transcript that then gets thrown away, or (worse) get silently discarded by a
+     * `discardTurn()` that runs after it. Never send this after a `text` submit: ws.ts
+     * subscribes with replay itself when a submit lands on an unattached thread, so sending
+     * `attach` too would replay the same frames twice.
+     */
+    attach: () => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'attach' })) },
     /**
      * Call right before replacing `messages` wholesale (resume, retry): the running turn —
      * if any — is closed and nothing from it is ever upserted into the new list.
@@ -578,7 +606,10 @@ export function useVoice() {
       conversationId.value = null
       conversationTitle.value = null
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'new' }))
-      restAfterAbort() // the server aborts the running turn for us; nothing sends idle back
+      // The server no longer aborts — the old thread's turn keeps running server-side and
+      // persists; we only stop rendering it. Nothing else will send this socket an idle
+      // frame for it, so the UI has to rest itself.
+      restAfterAbort()
     },
     /**
      * `/clear` — ask the server to forget this thread's context (writes an epoch, deletes

@@ -85,6 +85,12 @@ const threadsOpen = ref(false)
 // Full-bleed voice mode (the overlay itself lands with the avatar work).
 const fullBleed = ref(false)
 
+// The Runs drawer's toolbar button only shows on Bridget's main thread — side threads never
+// have a wake/headless run on them, so a runs history for one would always be empty. Set from
+// `resume`'s own ConversationDTO, the only place the page ever learns a thread's `kind`.
+const isMainThread = ref(false)
+const runsOpen = ref(false)
+
 // The context meter's data: the latest assistant message's usage against the
 // answering model's context window, falling back to the selected override / the
 // reasoning chain head when the message's own usage didn't carry a modelDefId.
@@ -156,8 +162,15 @@ async function resume(id: string, opts?: { quiet?: boolean }): Promise<boolean> 
     // A turn still streaming in the old thread must not write into the resumed one.
     voice.discardTurn()
     voice.messages.value = next
+    // Subscribe + replay the thread's running turn so far, now that the committed transcript
+    // is what any replayed frames land on top of. `load` (above, inside loadConversation)
+    // does NOT subscribe — attach is what makes a resumed thread's live frames (and a run
+    // already in flight when this tab opened it) actually reach this socket; see useVoice's
+    // attach() and ws.ts's `attach` handling.
+    voice.attach()
     voice.conversationId.value = conversation.id
     voice.conversationTitle.value = conversation.title
+    isMainThread.value = conversation.kind === 'main'
     // AFTER the messages are committed: the divider's position is derived from both, and
     // hydrating the epoch against the previous thread's transcript would place it wrongly
     // for a frame. This is what makes "Bridget's memory starts here" survive a reload.
@@ -439,6 +452,7 @@ function startNewConversation() {
   voice.newConversation() // also clears voice.conversationId / conversationTitle
   pendingFork.value = null
   threadsOpen.value = false
+  isMainThread.value = false // a fresh thread is never the main one
 }
 
 /**
@@ -481,7 +495,18 @@ onMounted(async () => {
   }
   if (agentModel.value) voice.setModel(agentModel.value)
   const c = route.query.c
-  if (typeof c === 'string' && c) await resume(c) // never throws — it has its own try/catch
+  if (typeof c === 'string' && c) {
+    await resume(c) // never throws — it has its own try/catch
+  } else {
+    // No explicit thread requested: open Bridget's one permanent home thread by default,
+    // same as the rail's pinned row. `/api/agent/main` creates it lazily on first request.
+    try {
+      const main = await $fetch<{ conversation: { id: string } }>('/api/agent/main')
+      await resume(main.conversation.id) // never throws — it has its own try/catch
+    } catch (e) {
+      console.warn('[agent] could not open the main thread', e)
+    }
+  }
   // Only now hand `?q=` to the composer — see the comment on handoffText.
   handoffText.value = initialComposerText
   // ...and only now drop `q` from the address bar, once the composer actually has it.
@@ -613,6 +638,15 @@ onMounted(() => {
           @full-bleed="fullBleed = true"
         >
           <template #actions>
+            <!-- Only on Bridget's home thread — side threads never have a wake/headless run. -->
+            <UButton
+              v-if="isMainThread"
+              icon="i-lucide-history"
+              variant="ghost"
+              color="neutral"
+              aria-label="Runs"
+              @click="runsOpen = true"
+            />
             <AgentSettingsSlideover
               v-model:speak="speakReply"
               :voice="voice"
@@ -707,5 +741,10 @@ onMounted(() => {
         />
       </template>
     </USlideover>
+
+    <AgentRunsDrawer
+      v-model:open="runsOpen"
+      :conversation-id="voice.conversationId.value"
+    />
   </div>
 </template>
