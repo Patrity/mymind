@@ -36,6 +36,10 @@ describe('sessions', () => {
     await expect(resolveSession('thread:00000000-0000-0000-0000-000000000000')).rejects.toThrow(/not found/)
   })
 
+  it('thread:<id> rejects a non-UUID id the same clean way, without hitting the DB driver', async () => {
+    await expect(resolveSession('thread:not-a-uuid')).rejects.toThrow(/not found/)
+  })
+
   it('main is created once and then reused (touches the real main row — read-only if it exists)', async () => {
     const a = await getOrCreateMain()
     const b = await getOrCreateMain()
