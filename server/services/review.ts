@@ -5,7 +5,7 @@ import { publishChange } from '../utils/live-bus'
 import type { MemoryScope } from '../../shared/types/memory'
 import { compareByJev } from '../lib/memory/jev-score'
 
-export type ReviewTargetKind = 'document' | 'memory'
+export type ReviewTargetKind = 'document' | 'memory' | 'agent_run'
 
 // ---------------------------------------------------------------------------
 // `/review` is the single approval surface (task-13). It merges two sources:

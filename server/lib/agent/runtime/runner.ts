@@ -23,6 +23,7 @@ import { hub as defaultHub, type StreamHub } from './stream'
 import { registerAbort, releaseAbort } from './aborts'
 import { approvalFor, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
 import { drainSteerFor } from './inbox'
+import { headlessTools } from './gate'
 import { eventModelText, wakeOrigin } from './event-text'
 import { groupTurns, turnTier, keepTrailingTurns, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
@@ -43,10 +44,11 @@ export function nextTurnId(): number {
   return ++turnSeq
 }
 
-// Placeholder until Task 11 lands the real headless profile + gate: bridgetProfile minus every
-// dangerous tool. This already excludes `exec`, so no headless run can ever reach it.
-function headlessProfile(_run: AgentRun): AgentProfile {
-  return { ...bridgetProfile, id: 'headless', tools: bridgetProfile.tools.filter(t => !t.dangerous) }
+// The headless gate (Task 11): every tool that edits or destroys existing data becomes a
+// /review proposal instead of running, and anything `dangerous` (exec) is excluded outright —
+// see gate.ts. Bound to THIS run so a proposal's review row can point back at it.
+function headlessProfile(run: AgentRun): AgentProfile {
+  return { ...bridgetProfile, id: 'headless', tools: headlessTools(bridgetProfile.tools, { id: run.id, conversationId: run.conversationId }) }
 }
 
 export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<RunOutcome> {
@@ -145,6 +147,14 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // A wake's prompt is not something Tony said: its event row renders after persist, and a
       // live "Tony said…" bubble would be a lie.
       if (isWake && e.type === 'transcript' && e.role === 'user') return
+      // Controller ruling (carried from Task 7's concern): nobody is watching a wake run live,
+      // so its assistant TEXT never streams — a subscribed socket saw a suppressed NO_REPLY's
+      // words before the drop decided it was silent. Withheld here, not filtered client-side, so
+      // a stray subscriber can never observe it even for one frame. Tool/state/usage/reasoning
+      // frames are unaffected (still useful to watch live); the real reply, suppressed or not,
+      // only ever reaches a subscriber via the `persisted` re-read below. Interactive runs are
+      // untouched — this branch only fires when isWake.
+      if (isWake && e.type === 'transcript' && e.role === 'assistant') return
       ts!.emit(e)
     }
     // The thread this turn was SENT to is run.conversationId, fixed when the run was created

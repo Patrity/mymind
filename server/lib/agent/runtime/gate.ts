@@ -1,0 +1,55 @@
+// server/lib/agent/runtime/gate.ts
+// What a background run may do on its own. Interactive Bridget runs edits immediately behind
+// undo because Tony is watching; with nobody watching, anything that edits or destroys existing
+// data becomes a /review proposal instead (deny → propose → continue). Classification is
+// EXPLICIT: a new tool that is neither read, a known append, nor a known mutation throws here,
+// so it cannot silently default into running unattended.
+import { useDb } from '../../../db'
+import { reviewQueue } from '../../../db/schema'
+import { publishChange } from '../../../utils/live-bus'
+import type { AgentTool } from '../types'
+
+export type HeadlessClass = 'run' | 'propose' | 'exclude'
+export interface AgentActionProposal { runId: string; conversationId: string; tool: string; args: Record<string, unknown> }
+export type ProposeFn = (p: AgentActionProposal) => Promise<string>
+
+export const APPEND_TOOLS: ReadonlySet<string> = new Set(['save_memory', 'create_task', 'create_project', 'quick_capture', 'generate_image', 'save_document'])
+export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill'])
+
+export function classifyForHeadless(t: AgentTool): HeadlessClass {
+  if (t.dangerous) return 'exclude'
+  if (t.kind === 'read') return 'run'
+  if (APPEND_TOOLS.has(t.name)) return 'run'
+  if (t.kind === 'destructive' || PROPOSE_TOOLS.has(t.name)) return 'propose'
+  throw new Error(`unclassified tool for headless runs: ${t.name} (kind ${t.kind}) — add it to APPEND_TOOLS or PROPOSE_TOOLS`)
+}
+
+export async function proposeAction(p: AgentActionProposal): Promise<string> {
+  const [row] = await useDb().insert(reviewQueue).values({
+    targetKind: 'agent_run', targetId: p.runId, kind: 'agent-action',
+    proposed: { tool: p.tool, args: p.args, conversationId: p.conversationId }
+  }).returning({ id: reviewQueue.id })
+  publishChange({ resource: 'review', action: 'created', id: row!.id })
+  return row!.id
+}
+
+export function headlessTools(registry: AgentTool[], run: { id: string; conversationId: string }, propose: ProposeFn = proposeAction): AgentTool[] {
+  const out: AgentTool[] = []
+  for (const t of registry) {
+    const c = classifyForHeadless(t)
+    if (c === 'exclude') continue
+    if (c === 'run') { out.push(t); continue }
+    out.push({
+      ...t,
+      dangerous: false,
+      handler: async (args) => {
+        const reviewId = await propose({ runId: run.id, conversationId: run.conversationId, tool: t.name, args })
+        return {
+          result: { proposed: true, reviewId, note: "Queued for Tony's approval in /review." },
+          summary: `proposed ${t.name} for approval`
+        }
+      }
+    })
+  }
+  return out
+}

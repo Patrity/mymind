@@ -134,6 +134,25 @@ describe('runTurn', () => {
     expect(r.map(x => [x.role, x.origin])).toEqual([['event', 'wake:admin']])
   })
 
+  // Controller ruling (carried from Task 7's concern): a suppressed NO_REPLY wake used to
+  // stream its text live to any subscribed socket before being dropped. A wake run's assistant
+  // TEXT must never reach a live subscriber — only the `persisted` re-read shows the (real or
+  // absent) reply. Tool/state/usage frames are unaffected; this test only pins the text-delta
+  // withholding.
+  it('a subscribed sink on a wake run that replies NO_REPLY receives no text-delta chunk', async () => {
+    const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake stream' })
+    convIds.push(s.conversationId)
+    await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'wake', profile: 'headless', wakeReason: 'stream-test', input: { text: 'anything new?', modality: 'text' } })
+    const run = (await claimNextRun({ onlyConversations: [s.conversationId], headlessSlots: HEADLESS_TEST_SLOTS }))!
+    const hub = new StreamHub()
+    const got: string[] = []
+    hub.subscribe(s.conversationId, { id: 'watcher', send: (d) => { if (typeof d === 'string') got.push(d) } })
+    const out = await runTurn(run, { runAgent: fakeAgent('NO_REPLY') as never, assemble: noAssemble as never, hub })
+    expect(out.suppressed).toBe(true)
+    const chunkTypes = got.filter(f => JSON.parse(f).type === 'chunk').map(f => JSON.parse(f).chunk.type)
+    expect(chunkTypes).not.toContain('text-delta')
+  })
+
   it('a thrown agent error marks the run failed and still keeps the question', async () => {
     const { run, conversationId } = await queued('explode')
     const boom = async function* () {

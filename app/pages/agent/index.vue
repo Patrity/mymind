@@ -443,14 +443,18 @@ function startNewConversation() {
 
 /**
  * A `client`-kind command from the composer's `/` menu (AgentPromptInput's `command` emit —
- * `prompt`/`skill` kinds never reach here, they become an ordinary turn instead). Only two
- * exist today and neither takes `args`; this is the one place that knows how each maps onto
- * the WS/page-local action, same as `startNewConversation` already owning `/new`'s toolbar
- * button.
+ * `prompt`/`skill` kinds never reach here, they become an ordinary turn instead). This is the
+ * one place that knows how each maps onto the WS/page-local action, same as
+ * `startNewConversation` already owning `/new`'s toolbar button. `/wake` is the odd one out:
+ * it takes `args` (the prompt) and fires a background run on Bridget's main thread rather than
+ * anything in THIS conversation, so it posts to the admin endpoint instead of the socket.
  */
-function onComposerCommand({ name }: { name: string, args: string }) {
+function onComposerCommand({ name, args }: { name: string, args: string }) {
   if (name === 'clear') void voice.sendClear() // async since it auto-connects; nothing to await here
   else if (name === 'new') startNewConversation()
+  else if (name === 'wake') void $fetch('/api/admin/agent/wake', { method: 'POST', body: { reason: 'manual', prompt: args } })
+    .then(() => toast.add({ title: 'Bridget woken', description: 'The run lands in her main thread.' }))
+    .catch((e: { data?: { statusMessage?: string } }) => toast.add({ color: 'error', title: 'Wake failed', description: e?.data?.statusMessage }))
 }
 
 // Auto-connect the WS on mount so the chat is usable immediately — typing and

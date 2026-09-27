@@ -24,7 +24,8 @@ export interface CommandEntry {
  */
 export const CLIENT_COMMANDS: CommandEntry[] = [
   { name: 'clear', kind: 'client', description: 'Clear this conversation', hint: 'Bridget forgets the transcript; nothing is deleted' },
-  { name: 'new', kind: 'client', description: 'Start a new conversation', hint: 'Leaves the current one intact' }
+  { name: 'new', kind: 'client', description: 'Start a new conversation', hint: 'Leaves the current one intact' },
+  { name: 'wake', kind: 'client', description: 'Wake Bridget in the background (main thread)', hint: '/wake <what to look at> — runs with nobody watching; NO_REPLY if nothing matters' }
 ]
 
 /** Names no skill or macro may take. Derived, so it cannot drift from the list above. */
