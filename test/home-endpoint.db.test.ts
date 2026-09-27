@@ -11,6 +11,10 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 const { getHome } = await import('../server/services/home')
 const { HOME_RANGE_KEYS } = await import('../shared/types/home')
+const { useDb } = await import('../server/db')
+const { reviewQueue } = await import('../server/db/schema')
+const { eq } = await import('drizzle-orm')
+const { randomUUID } = await import('node:crypto')
 
 describe('getHome', () => {
   it('returns a complete payload for every range key', async () => {
@@ -42,5 +46,24 @@ describe('getHome', () => {
     const r = await getHome('30d')
     const entries = r.timeline.days.flatMap(d => d.entries)
     for (const e of entries) expect(e.href.length).toBeGreaterThan(0)
+  })
+
+  // task-12 fix round 1: a headless run's proposed tool call (kind='agent-action') is not a
+  // memory conflict — the NeedsAttention widget's "conflicts" badge is hardcoded to "memory
+  // conflict(s) to resolve" (app/components/home/NeedsAttention.vue), and its timeline event is
+  // hardcoded to "Memory conflict flagged". A pending agent-action row must not inflate either.
+  it('a pending agent-action row does not inflate the conflicts count', async () => {
+    const before = await getHome('30d')
+    const db = useDb()
+    const [row] = await db.insert(reviewQueue).values({
+      targetKind: 'agent_run', targetId: randomUUID(), kind: 'agent-action',
+      proposed: { tool: 'edit_task', args: {}, conversationId: randomUUID() }
+    }).returning()
+    try {
+      const after = await getHome('30d')
+      expect(after.attention.conflicts).toBe(before.attention.conflicts)
+    } finally {
+      await db.delete(reviewQueue).where(eq(reviewQueue.id, row!.id))
+    }
   })
 })

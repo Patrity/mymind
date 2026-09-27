@@ -4,7 +4,7 @@
      STORED call deterministically (server/lib/agent/runtime/replay.ts); reject does nothing. -->
 <script setup lang="ts">
 const props = defineProps<{
-  item: { id: string; createdAt: string; proposed: { tool: string; args: Record<string, unknown>; conversationId: string } }
+  item: { id: string; createdAt: string; proposed: { tool: string; args: Record<string, unknown>; conversationId?: string | null } }
   loading?: boolean
 }>()
 const emit = defineEmits<{ approve: [id: string]; reject: [id: string] }>()
@@ -36,6 +36,7 @@ const args = computed(() => JSON.stringify(props.item.proposed.args, null, 2))
 
     <div class="space-y-2">
       <NuxtLink
+        v-if="item.proposed.conversationId"
         :to="`/agent?c=${item.proposed.conversationId}`"
         class="text-xs text-muted hover:underline inline-flex items-center gap-1"
       >

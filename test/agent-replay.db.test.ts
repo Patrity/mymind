@@ -13,6 +13,7 @@ import { useDb } from '../server/db'
 import { conversations, conversationMessages, reviewQueue } from '../server/db/schema'
 import { approveAgentAction, rejectAgentAction, replayAgentAction } from '../server/lib/agent/runtime/replay'
 import { createConversation } from '../server/services/conversations'
+import { hasUndo } from '../server/lib/agent/undo'
 import { eq, inArray } from 'drizzle-orm'
 import type { AgentTool } from '../server/lib/agent/types'
 
@@ -81,5 +82,36 @@ describe('agent-action review', () => {
       tools: [{ name: 'exec', description: '', kind: 'destructive', dangerous: true, schema: {}, handler: async () => ({ result: 1, summary: '' }) }]
     })
     expect(r).toEqual({ ok: false, error: 'exec is not replayable' })
+  })
+
+  it('two concurrent approvals on the same row run the tool exactly once', async () => {
+    calls = 0
+    const { row } = await item({ id: 't4', status: 'done' })
+    // A double-click, two open /review tabs, or a retried request — whatever races it, the
+    // stored call (not idempotent for tools like create_skill/edit_image) must run at most once.
+    const [a, b] = await Promise.all([
+      approveAgentAction(row, { tools }),
+      approveAgentAction(row, { tools })
+    ])
+    expect(calls).toBe(1)
+    // Exactly one of the two callers actually won the claim and got the real result back; the
+    // other lost the race and got the empty no-op result.
+    expect([a, b].filter(r => r.summary !== undefined)).toHaveLength(1)
+    const [after] = await useDb().select().from(reviewQueue).where(eq(reviewQueue.id, row.id))
+    expect(after!.status).toBe('approved')
+  })
+
+  it('registers an undo token when the replayed tool returns one', async () => {
+    const undoTools: AgentTool[] = [{
+      name: 'edit_task',
+      description: '',
+      kind: 'destructive',
+      schema: { id: z.string(), status: z.string() },
+      handler: async (a) => ({ result: { ok: true }, summary: `moved ${a.id}`, undo: async () => {} })
+    }]
+    const { row } = await item({ id: 't5', status: 'done' })
+    const res = await approveAgentAction(row, { tools: undoTools })
+    expect(res.undoToken).toBeTruthy()
+    expect(hasUndo(res.undoToken!)).toBe(true)
   })
 })

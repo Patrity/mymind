@@ -14,7 +14,8 @@ export default defineEventHandler(async (event) => {
 
   const result = await handler(item)
 
-  // Only approveTriage (kind: 'triage') returns `applied` — the actual actions it
-  // applied, not the pre-request queue length. Other kinds have nothing to report.
-  return { ok: true, applied: result?.applied }
+  // Only approveTriage (kind: 'triage') returns `applied`; only approveAgentAction (kind:
+  // 'agent-action') returns `undoToken`/`summary`. Other kinds have nothing to report — those
+  // fields stay undefined for them.
+  return { ok: true, applied: result?.applied, undoToken: result?.undoToken, summary: result?.summary }
 })

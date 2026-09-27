@@ -13,8 +13,12 @@ import { approveAgentAction, rejectAgentAction } from '../../lib/agent/runtime/r
  * the caller (the approve endpoint, then the UI toast) needs to know how many of the
  * QUEUED actions actually applied — after task-11b, that should be all of them, but the
  * count must come from what really happened, not from the pre-request queue length.
+ *
+ * approveAgentAction is the other exception: `undoToken`/`summary` carry the replayed tool
+ * call's own result back to the UI toast (undo offer + a real description instead of a generic
+ * "Document updated.").
  */
-export interface HandlerResult { applied?: TriageAction[] }
+export interface HandlerResult { applied?: TriageAction[]; undoToken?: string; summary?: string }
 
 type Handler = (item: ReviewItem) => Promise<HandlerResult | void>
 

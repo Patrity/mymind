@@ -87,7 +87,9 @@ interface TriageProposed {
 interface AgentActionProposed {
   tool: string
   args: Record<string, unknown>
-  conversationId: string
+  // Optional defensively (task-12 fix round 1) — AgentActionCard skips the thread link when
+  // this is missing rather than rendering a dead `/agent?c=undefined` NuxtLink.
+  conversationId?: string | null
 }
 
 interface ReviewItem {
@@ -178,6 +180,11 @@ function triageDestination(action: TriageActionDTO): string {
 
 const toast = useToast()
 
+// Redeems an undo token through POST /api/agent/undo — same composable app/pages/agent/index.vue
+// uses for its tool-call Undo chips (task-12 fix round 1: agent-action approve can hand back an
+// undoToken too, when the replayed tool's handler returned one).
+const redeemUndo = useUndo()
+
 // The one action a memory-unreviewed item supports (task-13) — reuses the same composable
 // action app/pages/memories.vue used for its now-removed "Mark reviewed" button.
 const { review: reviewMemoryAction, archive: archiveMemoryAction } = useMemories()
@@ -259,17 +266,39 @@ async function undoRecent(row: TriageRecentDTO) {
 
 const actioning = ref<Record<string, boolean>>({})
 
+/** Redeem an agent-action approve's undoToken (POST /api/agent/undo) and toast the outcome.
+ *  useUndo() already toasts a REFUSAL itself (undo-feedback.ts) — this only adds the success
+ *  side, mirroring app/pages/agent/index.vue's undoTool / app/pages/galaxy.vue's onUndo. */
+async function undoAgentAction(undoToken: string) {
+  const { ok } = await redeemUndo(undoToken)
+  if (ok) toast.add({ color: 'success', title: 'Reverted' })
+}
+
 async function approve(item: ReviewItem) {
   actioning.value[item.id] = true
   try {
-    // `applied` is what the server actually applied (only populated for kind: 'triage') —
-    // not item.proposed.queued.length, which is the pre-request queue and would silently
-    // over-report if an action failed to apply.
-    const res = await $fetch<{ ok: boolean, applied?: TriageActionDTO[] }>(`/api/review/${item.id}/approve`, { method: 'POST' })
+    // `applied` is what the server actually applied (only populated for kind: 'triage');
+    // `summary`/`undoToken` are only populated for kind: 'agent-action' (the replayed tool
+    // call's own result — see server/lib/agent/runtime/replay.ts).
+    const res = await $fetch<{ ok: boolean, applied?: TriageActionDTO[], summary?: string, undoToken?: string }>(`/api/review/${item.id}/approve`, { method: 'POST' })
     const description = isTriage(item)
       ? `Applied ${pluralize(res.applied?.length ?? 0, 'action')}.`
-      : 'Document updated.'
-    toast.add({ color: 'success', title: 'Proposal approved', description })
+      : isAgentAction(item)
+        ? (res.summary ?? 'Bridget could not apply that action — see the thread.')
+        : 'Document updated.'
+    toast.add({
+      color: 'success',
+      title: 'Proposal approved',
+      description,
+      actions: res.undoToken
+        ? [{
+            label: 'Undo',
+            color: 'neutral' as const,
+            variant: 'outline' as const,
+            onClick: () => undoAgentAction(res.undoToken!)
+          }]
+        : undefined
+    })
     await refetch()
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
