@@ -86,7 +86,8 @@ It keeps: session auth in `upgrade`, STT, voice presets, model picker, the appro
   turn synthesises audio from the events it receives. Tab closed mid-reply → text completes and
   persists, audio is dropped. Voice degrades to "no audio", never to "no turn" (existing invariant).
 - `requestApproval` for **interactive** runs still round-trips the originating socket; if that
-  socket has gone, the call falls through to the headless gate (§6.2) rather than blocking 120 s.
+  socket has gone, the call is **denied immediately** (today's no-channel behaviour) rather than
+  blocking 120 s. Only `exec` is `dangerous` in the interactive profile.
 
 Expected size after the move: ~150 lines, from 463.
 
@@ -186,8 +187,10 @@ Headless proposals (§6.2) insert `kind = 'agent-action'`, `target_kind = 'agent
 `target_id = <run id>`, payload `{ tool, args, rationale, conversationId, callId }`. Cycle 70 made
 the table polymorphic. One run may propose several actions, so `agent-action` rows are exempted
 from `review_queue_one_pending_per_target` (its `where` clause gains `and kind <> 'agent-action'`);
-the migration drops and recreates that index. Approve/reject go through the existing
-`server/api/review/[id]/resolve.post.ts`, with a new `agent-action` branch.
+the migration drops and recreates that index. Approve/reject go through the existing generic
+verbs (`server/api/review/[id]/approve.post.ts` / `reject.post.ts`) by registering `agent-action`
+handlers in `server/api/review/kinds.ts` (`approveHandlers` / `rejectHandlers`), and
+`ReviewTargetKind` gains `'agent_run'`.
 
 ## 5. Context: bounded history, summaries, summaries flowing up
 
@@ -195,7 +198,11 @@ the migration drops and recreates that index. Approve/reject go through the exis
 
 - **Verbatim tail:** messages after `summarized_through` on the active path (respecting
   `context_epoch_at`), passed to `assembleContext` as the `turns` tier — the wiring cycle 70
-  deferred (task `7372f495`). Budget eviction now actually runs.
+  deferred (task `7372f495`). Budget eviction now actually runs. Once turns share the budget,
+  6000 tokens (sized for memory-only context) is too small: runtime calls pass
+  `budget: RUNTIME_CONTEXT_BUDGET = 20000` (turn floor 40% = 8000). History reaches the model
+  as structured messages exactly as today — the assembler only decides **how many** trailing
+  turns survive; the runner slices the history array at a user-message boundary to match.
 - **`summary` tier:** everything before `summarized_through`, as prose. Already rendered by
   `assembleContext` (`Earlier in this conversation:`); it simply finally has content.
 - `getAgentHistory` gains `sinceSummary: true` for the runner; `getConversation` (UI) does **not** —
@@ -259,13 +266,13 @@ call passes `gate.ts`, keyed on the tool's existing `kind`:
 | class | tools | headless behaviour |
 |---|---|---|
 | `read` | all `kind: 'read'` | run |
-| append | `save_memory`, `create_task`, `create_project`, `quick_capture`, `generate_image`, `save_document` **to a path that does not exist** | run |
-| mutate / destroy | every `kind: 'destructive'` (`forget_memory`, `delete_*`, `edit_task`, `edit_project`) + `edit_document`, `edit_section`, `update_document`, `move_document`, `sync_document`, `edit_image`, `save_document` to an existing path, `create_skill`, `edit_skill` | **propose** |
+| append | `save_memory`, `create_task`, `create_project`, `quick_capture`, `generate_image`, `save_document` (`createDoc` never overwrites — an existing path fails, it does not replace) | run |
+| mutate / destroy | every `kind: 'destructive'` (`forget_memory`, `delete_*`, `edit_task`, `edit_project`) + `edit_document`, `edit_section`, `update_document`, `move_document`, `sync_document`, `edit_image`, `create_skill`, `edit_skill` | **propose** |
 
 **Propose** = do not run the handler; insert the `agent-action` review row; return to the model
 `{ proposed: true, reviewId, note: "Queued for Tony's approval in /review." }`. The run continues.
 
-**Approve** in `/review` → `POST /api/review/[id]/resolve` with `approve` replays
+**Approve** in `/review` → `POST /api/review/[id]/approve` (the `agent-action` handler) replays
 `{ tool, args }` through `buildAiTools` with approval pre-granted (deterministic — no model turn),
 records the result, and appends an `event` row to the originating conversation
 (*"Approved: edit_task — …"*). **Reject** appends nothing but marks the row. The replay re-validates
