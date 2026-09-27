@@ -266,4 +266,43 @@ describe('queue', () => {
     const [queuedRow] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, queued.runId))
     expect(queuedRow!.status).toBe('queued') // untouched by claimNextRun — [] scopes to nothing
   })
+
+  // Final review I3: a steer is text-only, so a message carrying attachments or a skill must
+  // queue as its own run with its input intact instead of being spliced (and stripped).
+  it.each([
+    ['attachments', { attachments: [{ id: '00000000-0000-4000-8000-000000000001', kind: 'image' as const, mime: 'image/png' }] }],
+    ['a skill', { skill: 'db-maintenance' }]
+  ])('a message with %s into a busy interactive run queues a normal run, never steers', async (_label, extra) => {
+    const first = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: 'QUEUE-TEST steer-rich', modality: 'text' } }, { kick: false })
+    convIds.push(first.conversationId)
+    await claimNextRun({ onlyConversations: [first.conversationId] })
+    const second = await enqueue({ sessionKey: `thread:${first.conversationId}`, trigger: 'user', profile: 'interactive', input: { text: 'look at this', modality: 'text', ...extra } }, { kick: false })
+    expect(second.steered).toBe(false)
+    expect(second.runId).not.toBe(first.runId)
+    expect(await useDb().select().from(agentInbox).where(eq(agentInbox.runId, first.runId))).toHaveLength(0)
+    const [row] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, second.runId))
+    expect(row!.status).toBe('queued')
+    expect(row!.input).toMatchObject(extra)
+  })
+
+  it('pushSteer waits on a concurrent finishRun and then refuses (for share closes the millisecond race)', async () => {
+    const first = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: 'QUEUE-TEST steer-lock', modality: 'text' } }, { kick: false })
+    convIds.push(first.conversationId)
+    await claimNextRun({ onlyConversations: [first.conversationId] })
+    // An uncommitted "finishRun" holds the row; pushSteer must block on it and re-check the
+    // committed status — not read the pre-update snapshot and insert into a finished run.
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const finishing = useDb().transaction(async (tx) => {
+      await tx.update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, first.runId))
+      await gate
+    })
+    await new Promise(r => setTimeout(r, 100))
+    const steer = pushSteer(first.runId, first.conversationId, 'raced the finish', 'user')
+    await new Promise(r => setTimeout(r, 200))
+    release()
+    await finishing
+    expect(await steer).toBe(false)
+    expect(await useDb().select().from(agentInbox).where(eq(agentInbox.runId, first.runId))).toHaveLength(0)
+  })
 })

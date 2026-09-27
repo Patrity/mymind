@@ -30,7 +30,12 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
     // Steer only into an INTERACTIVE run (Task 8 review ruling): a headless wake is not a
     // conversation Tony is watching live, so his message queues behind it like any other
     // trigger instead of splicing into a background turn he can't see.
-    if (active && active.profile === 'interactive') {
+    // Steer only PLAIN text (final review I3): a steer is text-only all the way down —
+    // pushSteer stores one string and requeueUnconsumed rebuilds text only — so a message
+    // carrying attachments or a `/skill` would silently lose them. It queues as its own run
+    // instead, behind the busy one, with its full input intact.
+    const plain = !req.input.attachments?.length && !req.input.skill
+    if (active && active.profile === 'interactive' && plain) {
       const steered = await doPushSteer(active.id, conversationId, req.input.text, 'user')
       if (steered) return { runId: active.id, conversationId, steered: true, created }
       // pushSteer's own atomic check found the run no longer 'running' — it finished in the

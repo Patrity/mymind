@@ -15,12 +15,18 @@ import type { RunInput } from './types'
  * makes the check and the insert one atomic statement — no window for the run to finish
  * between "is it running" and "attach to it". Returns whether it actually inserted; `enqueue`
  * falls back to creating a fresh run when it didn't.
+ *
+ * `for share` (final review I3) closes the last millisecond: without a row lock, finishRun's
+ * UPDATE could commit between this statement's snapshot and its insert, and execute()'s
+ * requeueUnconsumed could run before the insert was visible — a steer attached to a finished
+ * run that nothing ever drains. The share lock makes finishRun wait for this insert to commit,
+ * so the requeue that follows it always sees the steer.
  */
 export async function pushSteer(runId: string, conversationId: string, text: string, source: 'user' | 'wake'): Promise<boolean> {
   const result = await useDb().execute(sql`
     insert into agent_inbox (run_id, conversation_id, mode, content, source)
     select ${runId}::uuid, ${conversationId}::uuid, 'steer', ${text}, ${source}
-    where exists (select 1 from agent_runs where id = ${runId}::uuid and status = 'running')
+    where exists (select 1 from agent_runs where id = ${runId}::uuid and status = 'running' for share)
     returning id
   `)
   return result.rows.length > 0
