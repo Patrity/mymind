@@ -71,6 +71,19 @@ describe('composePrompt always-armed exec guidance', () => {
   })
 })
 
+describe('wake mode', () => {
+  const opts = { persona: 'P', speak: false, toneLine: 'T' }
+  it('adds the wake section and the NO_REPLY contract', () => {
+    const p = composePrompt({ ...opts, wake: { reason: 'admin' } })
+    expect(p).toContain('You were woken by: admin')
+    expect(p).toContain('reply with exactly NO_REPLY')
+  })
+  it('drops the confirm-before-editing rule, which cannot be honoured with nobody there', () => {
+    expect(composePrompt({ ...opts, wake: { reason: 'x' } })).not.toContain('CONFIRM with Tony first')
+    expect(composePrompt(opts)).toContain('CONFIRM with Tony first')
+  })
+})
+
 describe('nowLine', () => {
   it('formats an exact timestamp with timezone', async () => {
     const { nowLine } = await import('../server/lib/agent/prompt')

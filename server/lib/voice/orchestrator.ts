@@ -51,7 +51,13 @@ export interface TurnDeps {
    *  the real search-backed builder; tests omit it → no injection). Never throws. */
   buildMemoryContext?: (userText: string) => Promise<string>
   emit: (e: VoiceEvent) => void
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[] }) => AsyncGenerator<AgentEvent>
+  /** Drains messages Tony sent mid-turn (runtime runner, Task 7/9) — forwarded verbatim into
+   *  runAgent's ctx, which splices them into the running streamText loop at each step boundary. */
+  drainSteer?: () => Promise<string[]>
+  /** Present only for a headless/background wake (runtime runner) — forwarded verbatim into
+   *  runAgent's ctx to switch the system prompt into wake mode (NO_REPLY contract, no confirm-first). */
+  wake?: { reason: string }
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string } }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -145,7 +151,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const subagentSteps = new Map<string, SubagentStep[]>()
 
   let sawText = false
-  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id) })) {
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake })) {
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {
       deps.emit({ type: 'reasoning', text: ev.text })   // display only — never chunked/spoken/persisted here

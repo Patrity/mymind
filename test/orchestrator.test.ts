@@ -334,3 +334,36 @@ describe('turn voice resolution degrades, never fails the turn', () => {
     expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
   })
 })
+
+describe('handleTurn — steering + wake passthrough', () => {
+  // Task 7 (runtime runner) wires drainSteer/wake through handleTurn -> runAgent; lock the
+  // forwarding here so that wiring lands on a contract that already holds, verbatim.
+  it('forwards drainSteer and wake into the runAgent ctx unchanged', async () => {
+    let capturedCtx: any
+    const drainSteer = async () => ['steered']
+    const wake = { reason: 'admin' }
+    const capturingRunAgent = ((_m: any, c: any) => {
+      capturedCtx = c
+      return (async function* () { yield { type: 'done' } })()
+    }) as any
+    await handleTurn('hi', [], {
+      tts, preset, speak: false, runAgent: capturingRunAgent, drainSteer, wake,
+      signal: new AbortController().signal, emit: () => {}
+    })
+    expect(capturedCtx.drainSteer).toBe(drainSteer)
+    expect(capturedCtx.wake).toBe(wake)
+  })
+  it('omits both when the caller does not supply them (no accidental wake-mode leakage)', async () => {
+    let capturedCtx: any
+    const capturingRunAgent = ((_m: any, c: any) => {
+      capturedCtx = c
+      return (async function* () { yield { type: 'done' } })()
+    }) as any
+    await handleTurn('hi', [], {
+      tts, preset, speak: false, runAgent: capturingRunAgent,
+      signal: new AbortController().signal, emit: () => {}
+    })
+    expect(capturedCtx.drainSteer).toBeUndefined()
+    expect(capturedCtx.wake).toBeUndefined()
+  })
+})

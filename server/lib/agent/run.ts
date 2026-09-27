@@ -10,6 +10,7 @@ import type { AgentTool, ToolStartEvent, ToolResultEvent, SubagentEvent } from '
 import { recordEvent } from '../observability/record'
 import { redactImageUrlsForModel } from './image-embed'
 import { applyHistoryPolicy, toolBlocksFor } from './tool-history'
+import { spliceSteers, type SteerMark } from './runtime/steer'
 
 export type { AgentContentPart } from './types'
 import type { AgentContentPart } from './types'
@@ -154,7 +155,7 @@ type StreamTextFn = (args: never) => { fullStream: AsyncIterable<unknown> }
 export interface RunDeps {
   streamText?: StreamTextFn
   tools?: AgentTool[]
-  buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string }) => Promise<string>
+  buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; wake?: { reason: string } }) => Promise<string>
   /** Test-only override for the reasoning chain (model + registry modelDefId pairs), used
    *  in place of reasoningChain() when present. */
   chain?: { model: unknown; modelDefId: string }[]
@@ -166,7 +167,7 @@ export interface RunDeps {
 // stripping — the old dual-enable lever (powerful profile + exec cookie) is gone.
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string } },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
@@ -178,7 +179,7 @@ export async function* runAgent(
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
-  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context })
+  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context, wake: ctx.wake })
   const maxSteps = ctx.maxSteps ?? VOICE_TUNING.agent.maxSteps
 
   publishActivity({ type: 'state', state: 'thinking' })
@@ -204,6 +205,11 @@ export async function* runAgent(
   let chosen: (typeof chain)[number]['model'] | undefined
   let chosenId: string | undefined
   let lastErr: unknown
+  // Steers (messages Tony sends mid-turn) are drained at each step boundary and recorded with
+  // the index they arrived at, then re-spliced on every later step — see runtime/steer.ts for
+  // why (prepareStep's returned `messages` applies to that step's call only). Declared once
+  // before the failover loop so a mid-loop model retry does not lose a steer already drained.
+  const steerMarks: SteerMark[] = []
   for (let i = 0; i < chain.length; i++) {
     const model = chain[i]!.model
     const started = Date.now()
@@ -215,11 +221,20 @@ export async function* runAgent(
         tools,
         temperature: VOICE_TUNING.agent.temperature,
         stopWhen: stepCountIs(maxSteps),
-        // Final-step guarantee: the last allowed step is text-only, so a run can
-        // never end on a tool call with no reply. (Live failure: research_web
-        // burned all 10 steps on searches → stream ended → "no report".)
-        prepareStep: ({ stepNumber }: { stepNumber: number }) =>
-          stepNumber >= maxSteps - 1 ? { toolChoice: 'none' as const } : undefined,
+        // Final-step guarantee (unchanged) + steering: messages Tony sent while this turn was
+        // running are drained at each step boundary and spliced in at the point they arrived.
+        // (Live failure this final-step guarantee still covers: research_web burned all 10
+        // steps on searches → stream ended → "no report".)
+        prepareStep: async ({ stepNumber, messages }: { stepNumber: number; messages: unknown[] }) => {
+          if (ctx.drainSteer) {
+            const fresh = await ctx.drainSteer()
+            for (const text of fresh) steerMarks.push({ at: messages.length, text })
+          }
+          const out: { toolChoice?: 'none'; messages?: never } = {}
+          if (stepNumber >= maxSteps - 1) out.toolChoice = 'none'
+          if (steerMarks.length) out.messages = spliceSteers(messages, steerMarks) as never
+          return Object.keys(out).length ? out : undefined
+        },
         abortSignal: ctx.signal
       })
       recordEvent({ kind: 'attempt', name: 'reasoning:agent', status: 'ok', severity: 'info', usage: 'reasoning', provider: (model as { label?: string } | undefined)?.label ?? null, modelId: (model as { modelId?: string } | undefined)?.modelId ?? null, attempt: i, durationMs: Date.now() - started })

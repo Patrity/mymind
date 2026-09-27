@@ -31,10 +31,12 @@ describe('runAgent', () => {
       { signal: new AbortController().signal, maxSteps: 4 },
       { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
     )) { /* drain */ }
-    const args = streamText.mock.calls[0]![0] as unknown as { prepareStep: (o: { stepNumber: number }) => unknown }
-    expect(args.prepareStep({ stepNumber: 0 })).toBeUndefined()
-    expect(args.prepareStep({ stepNumber: 2 })).toBeUndefined()
-    expect(args.prepareStep({ stepNumber: 3 })).toEqual({ toolChoice: 'none' }) // last of 4 (0-indexed)
+    // prepareStep is async now (it awaits ctx.drainSteer when present) — the final-step
+    // toolChoice guarantee is unchanged, just delivered via a resolved promise.
+    const args = streamText.mock.calls[0]![0] as unknown as { prepareStep: (o: { stepNumber: number; messages: unknown[] }) => Promise<unknown> }
+    await expect(args.prepareStep({ stepNumber: 0, messages: [] })).resolves.toBeUndefined()
+    await expect(args.prepareStep({ stepNumber: 2, messages: [] })).resolves.toBeUndefined()
+    await expect(args.prepareStep({ stepNumber: 3, messages: [] })).resolves.toEqual({ toolChoice: 'none' }) // last of 4 (0-indexed)
   })
 
   it('forces a text-only follow-up when a run ends with tool calls but no assistant text', async () => {
@@ -193,5 +195,53 @@ describe('runAgent', () => {
     )) events.push(e)
     expect(events.some(e => e.type === 'usage')).toBe(false)
     expect(events[events.length - 1]).toEqual({ type: 'done' })
+  })
+})
+
+describe('runAgent — steering via prepareStep', () => {
+  // SDK verification (AI SDK 6.0.198, node_modules/ai/dist/index.mjs streamStep): each step
+  // recomputes `stepInputMessages = [...initialMessages, ...responseMessages]` FRESH — the
+  // model's own accumulated response messages, never a previous prepareStep call's returned
+  // `messages` override. So a returned `messages` array applies to THAT step's API call only
+  // and does not carry into later steps; runAgent must re-splice a drained steer on every
+  // subsequent step itself (see server/lib/agent/runtime/steer.ts). This fake mirrors that
+  // exactly: it calls prepareStep twice with RAW message arrays that do NOT include step 0's
+  // spliced-in steer, the same way the real SDK would recompute them.
+  it('re-splices a drained steer into every later step (prepareStep messages do not carry forward)', async () => {
+    const initialMessages = ['sys-free-history', 'user:q']
+    const drainSteer = vi.fn()
+      .mockResolvedValueOnce(['actually use the other doc'])
+      .mockResolvedValue([])
+    const stepOutputs: unknown[] = []
+    let capturedPrepareStep: ((o: { stepNumber: number; messages: unknown[] }) => Promise<{ messages?: unknown[] } | undefined>) | undefined
+    const streamText = vi.fn((args: { prepareStep: typeof capturedPrepareStep }) => {
+      capturedPrepareStep = args.prepareStep
+      return {
+        fullStream: (async function* () {
+          const step0 = await capturedPrepareStep!({ stepNumber: 0, messages: initialMessages })
+          stepOutputs.push(step0)
+          yield { type: 'tool-call', toolCallId: 'c1', toolName: 'x', input: {} }
+          // Step 1's raw messages, recomputed fresh by the (faked) SDK from initial + the
+          // model's own tool round — NOT including step 0's spliced-in steer.
+          const step1Messages = [...initialMessages, 'asst:tool-call', 'tool:result']
+          const step1 = await capturedPrepareStep!({ stepNumber: 1, messages: step1Messages })
+          stepOutputs.push(step1)
+          yield { type: 'text-delta', id: 't', delta: 'done' }
+          yield { type: 'finish', finishReason: 'stop' }
+        })()
+      }
+    })
+    const events: any[] = []
+    for await (const e of runAgent(
+      [{ role: 'user', content: 'q' }],
+      { signal: new AbortController().signal, maxSteps: 10, drainSteer },
+      { streamText: streamText as never, tools: [], buildSystemPrompt: async () => 'test-system' }
+    )) events.push(e)
+
+    expect(drainSteer).toHaveBeenCalledTimes(2)
+    expect(stepOutputs[0]).toEqual({ messages: ['sys-free-history', 'user:q', { role: 'user', content: 'actually use the other doc' }] })
+    // The steer is re-spliced at the SAME logical position (right after the messages that
+    // existed when it arrived), even though step 1's raw array has grown around it.
+    expect(stepOutputs[1]).toEqual({ messages: ['sys-free-history', 'user:q', { role: 'user', content: 'actually use the other doc' }, 'asst:tool-call', 'tool:result'] })
   })
 })
