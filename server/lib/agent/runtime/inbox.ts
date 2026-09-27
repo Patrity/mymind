@@ -7,8 +7,23 @@ import { agentInbox, type AgentRun } from '../../../db/schema'
 import { createRun } from './runs'
 import type { RunInput } from './types'
 
-export async function pushSteer(runId: string, conversationId: string, text: string, source: 'user' | 'wake'): Promise<void> {
-  await useDb().insert(agentInbox).values({ runId, conversationId, mode: 'steer', content: text, source })
+/**
+ * Insert a steer, but ONLY if the run it's aimed at is still 'running' — closes the enqueue
+ * race (Task 8 review, fix round 1): `enqueue` reads `activeRunFor` and then calls this in a
+ * separate await; if the run finishes in between, an unconditional insert would attach the
+ * steer to a run that will never drain it (Tony's words silently dropped). The `where exists`
+ * makes the check and the insert one atomic statement — no window for the run to finish
+ * between "is it running" and "attach to it". Returns whether it actually inserted; `enqueue`
+ * falls back to creating a fresh run when it didn't.
+ */
+export async function pushSteer(runId: string, conversationId: string, text: string, source: 'user' | 'wake'): Promise<boolean> {
+  const result = await useDb().execute(sql`
+    insert into agent_inbox (run_id, conversation_id, mode, content, source)
+    select ${runId}::uuid, ${conversationId}::uuid, 'steer', ${text}, ${source}
+    where exists (select 1 from agent_runs where id = ${runId}::uuid and status = 'running')
+    returning id
+  `)
+  return result.rows.length > 0
 }
 
 /** Unconsumed steers for this run, oldest first, marked consumed in the same statement. */
@@ -19,12 +34,17 @@ export async function drainSteerFor(runId: string): Promise<string[]> {
   return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).map(r => r.content)
 }
 
-/** After an abort: whatever Tony typed that the run never read becomes the next run. His words
- *  are never silently dropped. */
+/** On every terminal outcome (done/failed/aborted) and on recovery: whatever Tony typed that
+ *  the run never read becomes the next run. His words are never silently dropped — this holds
+ *  regardless of WHY the run ended, not only on abort (Task 8 review, fix round 1: a steer can
+ *  arrive during the last step's generation, or in the gap between runTurn returning and
+ *  finishRun, and was previously only requeued on 'aborted'). Always interactive/user: an
+ *  unread steer is always something Tony typed, even when the run it missed was a headless
+ *  wake — the follow-up must run as a normal interactive turn, not inherit 'headless'. */
 export async function requeueUnconsumed(run: AgentRun): Promise<string | null> {
   const left = await drainSteerFor(run.id)
   if (!left.length) return null
   const input: RunInput = { text: left.join('\n\n'), modality: 'text' }
-  const next = await createRun({ conversationId: run.conversationId, sessionKey: run.sessionKey, trigger: 'user', profile: run.profile as 'interactive' | 'headless', input, originSinkId: run.originSinkId })
+  const next = await createRun({ conversationId: run.conversationId, sessionKey: run.sessionKey, trigger: 'user', profile: 'interactive', input, originSinkId: run.originSinkId })
   return next.id
 }

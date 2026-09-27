@@ -22,13 +22,20 @@ export interface EnqueueResult { runId: string; conversationId: string; steered:
 
 type RunFn = (run: AgentRun) => Promise<RunOutcome>
 
-export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: boolean } = {}): Promise<EnqueueResult> {
+export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: boolean; pushSteer?: typeof pushSteer } = {}): Promise<EnqueueResult> {
+  const doPushSteer = deps.pushSteer ?? pushSteer
   const { conversationId, created } = await resolveSession(req.sessionKey, { titleHint: req.input.text })
   if (req.trigger === 'user' && !created) {
     const active = await activeRunFor(conversationId)
-    if (active) {
-      await pushSteer(active.id, conversationId, req.input.text, 'user')
-      return { runId: active.id, conversationId, steered: true, created }
+    // Steer only into an INTERACTIVE run (Task 8 review ruling): a headless wake is not a
+    // conversation Tony is watching live, so his message queues behind it like any other
+    // trigger instead of splicing into a background turn he can't see.
+    if (active && active.profile === 'interactive') {
+      const steered = await doPushSteer(active.id, conversationId, req.input.text, 'user')
+      if (steered) return { runId: active.id, conversationId, steered: true, created }
+      // pushSteer's own atomic check found the run no longer 'running' — it finished in the
+      // gap between the read above and the insert. Fall through to createRun: the words are
+      // never dropped, they just become a fresh queued run instead of a steer.
     }
   }
   const run = await createRun({
@@ -45,21 +52,55 @@ export async function abortActive(conversationId: string): Promise<boolean> {
   return active ? (abortRun(active.id), true) : false
 }
 
-async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<void> {
-  const alive = setInterval(() => { touchRun(run.id).catch(() => {}) }, ALIVE_BUMP_MS)
-  const wall = run.profile === 'headless' ? setTimeout(() => abortRun(run.id), HEADLESS_WALL_CLOCK_MS) : null
-  let outcome: RunOutcome
-  try {
-    outcome = await runFn(run)
-  } catch (err) {
-    outcome = { status: 'failed', error: (err as Error).message }
-  } finally {
-    clearInterval(alive); if (wall) clearTimeout(wall)
+// Run ids this process is actively executing right now — claimed, not yet finished. This is
+// the process's own ground truth about what it owns; the periodic tick's `recoverStale` call
+// excludes these ids so it can never recover a run this same process is still running just
+// because an alive_at bump happened to lag (Task 8 review, fix round 1).
+const executing = new Set<string>()
+
+/**
+ * The liveness check the alive-bump interval performs every ALIVE_BUMP_MS. Broken out as its
+ * own function so a test can call it directly instead of waiting 10s for the real timer.
+ * `touchRun` is now fenced to `status='running'` (runs.ts) — a `false` result means someone
+ * else (another checkout's periodic tick on the shared dev DB, most likely) already marked
+ * this run 'interrupted' while this process still thinks it owns it. Task 8 review ruling:
+ * abort it here rather than let the turn run to a finishRun that fencing will now just no-op.
+ */
+export async function checkStillRunning(runId: string): Promise<boolean> {
+  const ok = await touchRun(runId)
+  if (!ok) {
+    console.warn(`[runtime] run ${runId} was marked non-running elsewhere while this process was still executing it — aborting`)
+    abortRun(runId)
   }
-  await finishRun(run.id, outcome).catch(err => console.error('[runtime] finishRun failed:', err))
-  if (outcome.status === 'aborted') await requeueUnconsumed(run).catch(() => null)
-  publishChange({ resource: 'agentRun', action: 'updated', id: run.id })
-  if (rekick) kick(runFn)
+  return ok
+}
+
+async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<void> {
+  executing.add(run.id)
+  try {
+    const alive = setInterval(() => { checkStillRunning(run.id).catch(err => console.error('[runtime] liveness check failed:', err)) }, ALIVE_BUMP_MS)
+    const wall = run.profile === 'headless' ? setTimeout(() => abortRun(run.id), HEADLESS_WALL_CLOCK_MS) : null
+    let outcome: RunOutcome
+    try {
+      outcome = await runFn(run)
+    } catch (err) {
+      outcome = { status: 'failed', error: (err as Error).message }
+    } finally {
+      clearInterval(alive); if (wall) clearTimeout(wall)
+    }
+    await finishRun(run.id, outcome).catch(err => console.error('[runtime] finishRun failed:', err))
+    // Every terminal outcome, not only 'aborted' (Task 8 review ruling — overrides spec §4.4's
+    // abort-only wording): a steer that arrived during the last step's generation, or in the
+    // gap between runFn returning and finishRun committing, is just as unread as one orphaned
+    // by an abort. drainSteerFor's UPDATE...WHERE consumed_at IS NULL is atomic, so calling
+    // this unconditionally is safe even when recovery (recover.ts) already requeued this same
+    // run's steers first — whichever ran first drains them, the other finds nothing left.
+    await requeueUnconsumed(run).catch(err => console.error('[runtime] requeueUnconsumed failed:', err))
+    publishChange({ resource: 'agentRun', action: 'updated', id: run.id })
+    if (rekick) kick(runFn)
+  } finally {
+    executing.delete(run.id)
+  }
 }
 
 /** Claim and START everything currently runnable; returns how many were started. */
@@ -110,7 +151,7 @@ export async function workerTick(opts: { onlyConversations?: string[] } = {}): P
   if (ticking) return false
   ticking = true
   try {
-    await recoverStale({ onlyConversations: opts.onlyConversations })
+    await recoverStale({ onlyConversations: opts.onlyConversations, excludeRunIds: [...executing] })
     if (opts.onlyConversations) await pumpOnce({ onlyConversations: opts.onlyConversations, rekick: false })
     else kick()
   } catch (err) {

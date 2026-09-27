@@ -68,6 +68,34 @@ describe('run store', () => {
     expect(row!.finishedAt).toBeTruthy()
   })
 
+  it('touchRun is fenced to status=running: bumps aliveAt while running, reports false once the run has moved on', async () => {
+    const c = await conv('touch-fence')
+    const r = await createRun({ conversationId: c, sessionKey: `thread:${c}`, trigger: 'user', profile: 'interactive', input })
+    await claimNextRun({ onlyConversations: [c] })
+    expect(await touchRun(r.id)).toBe(true)
+    await finishRun(r.id, { status: 'done' })
+    // The row has moved on ('done'); a stray liveness bump (e.g. an alive-interval callback
+    // that fired just after finishRun committed) must not match it, let alone resurrect it.
+    expect(await touchRun(r.id)).toBe(false)
+    const [row] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, r.id))
+    expect(row!.status).toBe('done')
+  })
+
+  it('finishRun is fenced to status=running: never overwrites a run recovery already marked interrupted', async () => {
+    const c = await conv('finish-fence')
+    const r = await createRun({ conversationId: c, sessionKey: `thread:${c}`, trigger: 'user', profile: 'interactive', input })
+    await claimNextRun({ onlyConversations: [c] })
+    // Simulate another process's recovery pass winning the race: the row is 'interrupted'
+    // before this process's own finishRun call lands. Backdate aliveAt (never staleMs:0 —
+    // the dev DB is shared) so recoverOrphans's real 60s threshold sees it as stale.
+    await useDb().update(agentRuns).set({ aliveAt: sql`now() - interval '5 minutes'` }).where(eq(agentRuns.id, r.id))
+    await recoverOrphans({ onlyConversations: [c] })
+    await finishRun(r.id, { status: 'done', usage: { totalTokens: 7 } })
+    const [row] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, r.id))
+    expect(row!.status).toBe('interrupted') // finishRun's write was fenced out, not applied
+    expect(row!.usage).toBeNull()
+  })
+
   it('recoverOrphans marks stale running rows interrupted and leaves fresh ones alone', async () => {
     const c1 = await conv('stale'); const c2 = await conv('fresh')
     const stale = await createRun({ conversationId: c1, sessionKey: `thread:${c1}`, trigger: 'user', profile: 'interactive', input })
