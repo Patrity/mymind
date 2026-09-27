@@ -52,12 +52,15 @@ export function fitBudget(input: FitInput): FitResult {
   const retrievalWant = retrieved.reduce((a, t) => a + t.tokens, 0)
   const turnCeiling = Math.max(turnFloor, available - retrievalWant)
 
-  // Pack turns newest-first (iterate backwards) up to turnCeiling, then reverse
+  // Pack turns newest-first (iterate backwards) up to turnCeiling, then reverse. The NEWEST
+  // turn is always kept, even past the ceiling (final review C2): without it one oversized turn
+  // made the model see no history at all — not even the turn it is answering a follow-up to.
+  // `used` can then exceed `budget`; retrieval simply gets nothing.
   const keptTurnsReversed: Tier[] = []
   let turnTokens = 0
   for (let i = turns.length - 1; i >= 0; i--) {
     const t = turns[i]!
-    if (turnTokens + t.tokens > turnCeiling) break
+    if (keptTurnsReversed.length > 0 && turnTokens + t.tokens > turnCeiling) break
     keptTurnsReversed.push(t)
     turnTokens += t.tokens
   }

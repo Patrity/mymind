@@ -25,7 +25,7 @@ import { approvalFor, registerTurnStream, releaseTurnStream, unregisterApprovalC
 import { drainSteerFor } from './inbox'
 import { headlessTools } from './gate'
 import { eventModelText, wakeOrigin } from './event-text'
-import { groupTurns, turnTier, keepTrailingTurns, RUNTIME_CONTEXT_BUDGET } from './history'
+import { groupTurns, costTurns, keepTrailingTurns, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
 import type { RunInput, RunOutcome } from './types'
 
@@ -178,7 +178,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     const turns = groupTurns(fullHistory)
     const assembled = await (deps.assemble ?? assembleContext)({
       userText, conversationId, skill: input.skill, conversationKind: conv?.kind === 'main' ? 'main' : 'thread',
-      turns: turns.map(turnTier), budget: RUNTIME_CONTEXT_BUDGET
+      turns: costTurns(turns), budget: RUNTIME_CONTEXT_BUDGET
     })
     // Budget telemetry — `used`/`droppedTurns` compared against the turn's own persisted
     // `usage` (the ACTUAL contextTokens) for the same conversationId. recordEvent only buffers.

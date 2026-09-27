@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { groupTurns, turnTier, keepTrailingTurns, capToTokens } from '../server/lib/agent/runtime/history'
+import { groupTurns, turnTier, costTurns, keepTrailingTurns, capToTokens, RUNTIME_CONTEXT_BUDGET } from '../server/lib/agent/runtime/history'
+import { fitBudget, tier } from '../server/lib/agent/budget'
 import { estimateTokens } from '../server/lib/chunking/chunk-markdown'
 import type { AgentMessage } from '../server/lib/agent/run'
 
@@ -36,5 +37,35 @@ describe('runtime history', () => {
   it('capToTokens never exceeds the cap', () => {
     const t = capToTokens('word '.repeat(5000), 300)
     expect(estimateTokens(t)).toBeLessThanOrEqual(300)
+  })
+
+  // Final review C2 — the reviewer's shape: 5 short turns, then one turn with 8 web_fetch
+  // results of 8000 chars, under a 4k fixed tier.
+  describe('a tool-heavy newest turn', () => {
+    const fetches = Array.from({ length: 8 }, (_, i) => ({
+      callId: `c${i}`, name: 'web_fetch', kind: 'read', args: { url: `https://example.com/${i}` },
+      result: { content: 'z'.repeat(8000) }, summary: 'fetched', textOffset: 0
+    }))
+    const history = [
+      ...Array.from({ length: 5 }, (_, i) => [u(`question ${i}`), a(`answer ${i}`)]).flat(),
+      u('read these'), a('here is what they say', { toolRecords: fetches } as never)
+    ]
+    const fixed = [tier('resident', 'r'.repeat(4000 * 3.8))]
+
+    it('costs turns from the post-policy representation, so older turns survive', () => {
+      const turns = groupTurns(history)
+      const fit = fitBudget({ fixed, turns: costTurns(turns), retrieved: [], budget: RUNTIME_CONTEXT_BUDGET })
+      expect(fit.kept.turns.length).toBeGreaterThan(1)
+      expect(fit.droppedTurns).toBe(0)
+    })
+
+    it('always keeps the newest turn, even when it alone exceeds the ceiling', () => {
+      const turns = groupTurns(history)
+      // Raw (pre-policy) pricing of the heavy turn is past the ceiling on its own.
+      const raw = turns.map(turnTier)
+      expect(raw[raw.length - 1]!.tokens).toBeGreaterThan(RUNTIME_CONTEXT_BUDGET - fixed[0]!.tokens)
+      const fit = fitBudget({ fixed, turns: raw, retrieved: [], budget: RUNTIME_CONTEXT_BUDGET })
+      expect(fit.kept.turns.map(t => t.name)).toEqual([`turn:${turns.length - 1}`])
+    })
   })
 })
