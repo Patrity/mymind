@@ -1,4 +1,4 @@
-import { recoverOrphans } from './runs'
+import { recoverOrphans, runtimeExclusive } from './runs'
 import { requeueUnconsumed } from './inbox'
 import { appendEvent } from '../../../services/conversations'
 
@@ -10,8 +10,8 @@ import { appendEvent } from '../../../services/conversations'
  *  dead). No automatic retry of the turn itself — a half-run tool loop is not safely repeatable.
  *  Shared by `recoverOnBoot` (once, at startup) and `recoverStale` (every worker tick) — same
  *  query, same note, same requeue, different caller. */
-async function recoverAndNote(opts: { onlyConversations?: string[]; excludeRunIds?: string[] } = {}): Promise<number> {
-  const dead = await recoverOrphans({ onlyConversations: opts.onlyConversations, excludeRunIds: opts.excludeRunIds })
+async function recoverAndNote(opts: { onlyConversations?: string[]; excludeRunIds?: string[]; takeoverForeign?: boolean } = {}): Promise<number> {
+  const dead = await recoverOrphans({ onlyConversations: opts.onlyConversations, excludeRunIds: opts.excludeRunIds, takeoverForeign: opts.takeoverForeign })
   for (const r of dead) {
     await appendEvent(r.conversationId, 'A turn was interrupted by a restart and did not finish.', 'runtime:restart')
       .catch(err => console.error('[runtime] recovery note failed:', err))
@@ -21,9 +21,13 @@ async function recoverAndNote(opts: { onlyConversations?: string[]; excludeRunId
   return dead.length
 }
 
-/** On boot: catches whatever died with the previous process. */
-export async function recoverOnBoot(opts: { onlyConversations?: string[]; excludeRunIds?: string[] } = {}): Promise<number> {
-  return recoverAndNote(opts)
+/** On boot: catches whatever died with the previous process. In an exclusive deployment
+ *  (AGENT_RUNTIME_EXCLUSIVE=1 — prod's systemd unit) that includes a run the previous process
+ *  was executing seconds ago: it is owned by another boot id, so it is dead whatever its
+ *  alive_at says (final review I4). Without the flag (the shared dev DB, where other
+ *  checkouts' servers own live runs) it stays age-only — the 60s window, handled by the tick. */
+export async function recoverOnBoot(opts: { onlyConversations?: string[]; excludeRunIds?: string[]; exclusive?: boolean } = {}): Promise<number> {
+  return recoverAndNote({ ...opts, takeoverForeign: opts.exclusive ?? runtimeExclusive() })
 }
 
 /** On every worker tick (Task 2 review ruling): a fast restart (<60s) can leave a stale

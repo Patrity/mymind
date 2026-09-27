@@ -10,7 +10,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 import { conversations, conversationMessages, agentRuns, agentInbox } from '../server/db/schema'
 import { enqueue, pumpOnce, abortActive, workerTick, checkStillRunning } from '../server/lib/agent/runtime/queue'
 import { recoverOnBoot } from '../server/lib/agent/runtime/recover'
-import { claimNextRun, createRun } from '../server/lib/agent/runtime/runs'
+import { claimNextRun, createRun, BOOT_ID } from '../server/lib/agent/runtime/runs'
 import { resolveSession } from '../server/lib/agent/runtime/sessions'
 import { pushSteer, requeueUnconsumed } from '../server/lib/agent/runtime/inbox'
 import { registerAbort, releaseAbort } from '../server/lib/agent/runtime/aborts'
@@ -304,5 +304,44 @@ describe('queue', () => {
     await finishing
     expect(await steer).toBe(false)
     expect(await useDb().select().from(agentInbox).where(eq(agentInbox.runId, first.runId))).toHaveLength(0)
+  })
+
+  // Final review I4: a run the previous process was executing seconds before a deploy restart
+  // looks alive (fresh alive_at). In an exclusive deployment boot recovery takes it over by
+  // owner; on the shared dev DB (no flag) it stays age-only.
+  describe('boot recovery by owner', () => {
+    async function freshForeignRun(label: string) {
+      const r = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: `QUEUE-TEST ${label}`, modality: 'text' } }, { kick: false })
+      convIds.push(r.conversationId)
+      const claimed = await claimNextRun({ onlyConversations: [r.conversationId] })
+      expect(claimed!.owner).toBe(BOOT_ID)
+      await useDb().update(agentRuns).set({ owner: 'a-previous-boot', aliveAt: sql`now()` }).where(eq(agentRuns.id, r.runId))
+      return r
+    }
+
+    it('with AGENT_RUNTIME_EXCLUSIVE=1 a fresh run owned by another boot is recovered; our own is not', async () => {
+      const foreign = await freshForeignRun('owner-foreign')
+      const ours = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: 'QUEUE-TEST owner-ours', modality: 'text' } }, { kick: false })
+      convIds.push(ours.conversationId)
+      await claimNextRun({ onlyConversations: [ours.conversationId] })
+      vi.stubEnv('AGENT_RUNTIME_EXCLUSIVE', '1')
+      try {
+        expect(await recoverOnBoot({ onlyConversations: [foreign.conversationId, ours.conversationId] })).toBe(1)
+      } finally { vi.unstubAllEnvs() }
+      const [f] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, foreign.runId))
+      expect(f!.status).toBe('interrupted')
+      const [o] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, ours.runId))
+      expect(o!.status).toBe('running')
+    })
+
+    it('without the flag a fresh run owned by another boot is left alone (age-only)', async () => {
+      const foreign = await freshForeignRun('owner-shared')
+      vi.stubEnv('AGENT_RUNTIME_EXCLUSIVE', '')
+      try {
+        expect(await recoverOnBoot({ onlyConversations: [foreign.conversationId] })).toBe(0)
+      } finally { vi.unstubAllEnvs() }
+      const [f] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, foreign.runId))
+      expect(f!.status).toBe('running')
+    })
   })
 })

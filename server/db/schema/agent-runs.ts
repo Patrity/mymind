@@ -18,6 +18,7 @@ export const agentRuns = pgTable('agent_runs', {
   originSinkId: text('origin_sink_id'),               // the socket that sent it (audio + approvals)
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
   aliveAt: timestamp('alive_at', { withTimezone: true }),
+  owner: text('owner'),                               // boot id of the process that claimed it
   finishedAt: timestamp('finished_at', { withTimezone: true }),
   error: text('error'),
   usage: jsonb('usage'),

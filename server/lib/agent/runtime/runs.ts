@@ -2,13 +2,27 @@
 // The run store. Serialisation is the DATABASE's job, not a promise chain: a claim takes the
 // oldest queued run whose conversation has nothing running, and agent_runs_one_running makes a
 // second concurrent claim on the same conversation fail at the index, not merely unlikely.
-import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm'
+import { randomUUID } from 'node:crypto'
+import { and, desc, eq, inArray, notInArray, or, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentRuns, type AgentRun } from '../../../db/schema'
 import type { RunInput, RunOutcome, RunProfile, RunTrigger } from './types'
 
 export const HEADLESS_SLOTS = 1
 export const ORPHAN_STALE_MS = 60_000
+
+/**
+ * This process's boot id, stamped on every run it claims (agent_runs.owner). After a deploy
+ * restart, a run the OLD process was executing still looks alive for up to ORPHAN_STALE_MS
+ * (its alive_at is only seconds old), so boot recovery skipped it and the thread sat wedged —
+ * messages "steered" into a dead run — until the periodic tick caught it (final review I4).
+ * With the owner known, an EXCLUSIVE deployment (AGENT_RUNTIME_EXCLUSIVE=1: this is the only
+ * process running agent turns against the database) can take over every foreign-owned run at
+ * boot regardless of age. Never on the shared dev DB: other checkouts' live dev servers own
+ * runs there that are genuinely still running.
+ */
+export const BOOT_ID = randomUUID()
+export function runtimeExclusive(): boolean { return process.env.AGENT_RUNTIME_EXCLUSIVE === '1' }
 
 export async function createRun(i: {
   conversationId: string; sessionKey: string; trigger: RunTrigger; profile: RunProfile; input: RunInput
@@ -61,7 +75,7 @@ export async function claimNextRun(opts: { headlessSlots?: number; onlyConversat
       const id = (picked.rows[0] as { id?: string } | undefined)?.id
       if (!id) return null
       const [row] = await tx.update(agentRuns)
-        .set({ status: 'running', claimedAt: sql`now()`, aliveAt: sql`now()` })
+        .set({ status: 'running', claimedAt: sql`now()`, aliveAt: sql`now()`, owner: BOOT_ID })
         .where(eq(agentRuns.id, id)).returning()
       return row ?? null
     })
@@ -107,7 +121,12 @@ export async function activeRunFor(conversationId: string): Promise<AgentRun | n
   return row ?? null
 }
 
-export async function recoverOrphans(opts: { staleMs?: number; onlyConversations?: string[]; excludeRunIds?: string[] } = {}): Promise<AgentRun[]> {
+export async function recoverOrphans(opts: {
+  staleMs?: number; onlyConversations?: string[]; excludeRunIds?: string[]
+  /** Also recover any 'running' row claimed by a DIFFERENT boot, however fresh its alive_at.
+   *  Only safe when this process is the sole runtime on the database — see BOOT_ID. */
+  takeoverForeign?: boolean
+} = {}): Promise<AgentRun[]> {
   const staleSec = Math.round((opts.staleMs ?? ORPHAN_STALE_MS) / 1000)
   // Same "undefined = unscoped, [] = nothing" distinction as claimNextRun — an empty array
   // must never be read the same as "no scope given" (that inverted the intent of a caller
@@ -125,7 +144,11 @@ export async function recoverOrphans(opts: { staleMs?: number; onlyConversations
     .set({ status: 'interrupted', finishedAt: sql`now()`, error: 'interrupted by a restart' })
     .where(and(
       eq(agentRuns.status, 'running'),
-      sql`coalesce(${agentRuns.aliveAt}, ${agentRuns.claimedAt}) < now() - make_interval(secs => ${staleSec})`,
+      or(
+        sql`coalesce(${agentRuns.aliveAt}, ${agentRuns.claimedAt}) < now() - make_interval(secs => ${staleSec})`,
+        // A null owner (claimed before 0055, or by a process predating it) stays age-only.
+        opts.takeoverForeign ? sql`(${agentRuns.owner} is not null and ${agentRuns.owner} <> ${BOOT_ID})` : undefined
+      ),
       convScope,
       idScope
     ))

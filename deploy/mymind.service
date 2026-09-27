@@ -9,6 +9,10 @@ User=root
 WorkingDirectory=/opt/mymind
 # Parity with the old docker runtime stage (which set ENV NODE_ENV=production).
 Environment=NODE_ENV=production
+# This is the ONLY process running agent turns against the prod DB, so boot recovery may take
+# over any 'running' agent run claimed by a previous boot, however fresh (cycle 73, I4).
+# Never set this where other processes share the DB (the dev DB / worktrees).
+Environment=AGENT_RUNTIME_EXCLUSIVE=1
 # .env first, then .env.native overrides (DB/searxng/storage/host) — order matters.
 EnvironmentFile=/opt/mymind/.env
 EnvironmentFile=/opt/mymind/.env.native

@@ -72,6 +72,7 @@ Extensions are created automatically on **first** DB boot via `db/init/01-extens
 | `STORAGE_DRIVER` / `STORAGE_LOCAL_DIR` | ✅ | `local` + `/app/.data/uploads` (a mounted volume in compose). `s3` + `STORAGE_S3_*` to use S3. |
 | `MAX_UPLOAD_BYTES` | optional | default 50 MB. |
 | `NITRO_PORT` / `NITRO_HOST` | optional | default `3000` / `0.0.0.0`. |
+| `AGENT_RUNTIME_EXCLUSIVE` | prod: `1` | Set in `deploy/mymind.service`. Declares this process the **only** agent runtime on the database, so boot recovery marks every `running` agent run claimed by a previous boot (`agent_runs.owner` ≠ this boot's id) `interrupted` at once, instead of waiting the 60 s orphan threshold — without it a deploy restart leaves the thread "busy" (messages steered into a dead run) for up to a minute. **Leave unset anywhere the DB is shared** (the dev DB, worktrees): another checkout's live server owns genuinely running runs there. |
 | `AI_<ROLE>_BASE_URL / _API_KEY / _MODEL` | optional (seed) | **NOT runtime config** — see §4a. Leftover roles (`REASONING`, `BULK`, `EMBEDDINGS`, `VISION`, `STT`, `TTS_BREEZE`, `RERANK`) are a **one-time onboarding seed** consumed only by the `/onboarding` "Import from environment" button. Safe to leave set (pre-fills the registry on first run) or to omit (configure in `/settings` by hand). |
 
 ### 4a. AI models are configured in-app, not by env
