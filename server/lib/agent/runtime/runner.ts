@@ -145,7 +145,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     registerTurnStream(run.id, ts)
     // A run with no socket channel prompts over iMessage when its reply_to (read at
     // request time) names a chat; otherwise it denies, as before.
-    if (run.profile === 'interactive' && !hasApprovalChannel(run.id)) registerApprovalChannel(run.id, replyToApprovalChannel(run.id))
+    if (run.profile === 'interactive' && !hasApprovalChannel(run.id)) registerApprovalChannel(run.id, replyToApprovalChannel(run.id, { signal: ac.signal }))
     const emit = (e: VoiceEvent) => {
       if (e.type === 'transcript') {
         if (e.role === 'user') liveUserText = e.text

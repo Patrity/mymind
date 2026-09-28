@@ -51,6 +51,7 @@ const db = () => useDb()
 const TAG = `chap-${Date.now().toString(36)}`
 const FAST = { pollMs: 50, timeoutMs: 500 }
 const REQ: ApprovalRequest = { tool: 'exec', command: 'ls -la /tmp', proposedPattern: 'ls *' }
+const REQ_LONG = (command: string): ApprovalRequest => ({ tool: 'exec', command, proposedPattern: 'cat *' })
 
 let fake: FakeBlueBubbles
 let failFake: FakeBlueBubbles
@@ -132,6 +133,21 @@ describe('imessageApprovalChannel', () => {
     expect(row).toMatchObject({ id, status: 'approved', chatGuid: CHAT })
     expect(row!.resolvedAt).not.toBeNull()
     expect(row!.expiresAt.getTime() - row!.createdAt.getTime()).toBeGreaterThanOrEqual(400)
+  })
+
+  it('a long command is texted cut to 300 chars with an ellipsis (T9)', async () => {
+    const run = await newRun()
+    const long = `cat <<'EOF'\n${'x'.repeat(1000)}\nEOF`
+    const sentBefore = fake.sent.length
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ_LONG(long))
+    const { promptGuid } = await promptFor(run)
+    const msg = fake.sent.slice(sentBefore)[0]!.message!
+    const cmd = /^Run `([\s\S]*)`\?\n/.exec(msg)![1]!
+    expect(cmd).toHaveLength(300)
+    expect(cmd.endsWith('…')).toBe(true)
+    expect(long.startsWith(cmd.slice(0, 299))).toBe(true)
+    await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
+    expect(await p).toEqual({ approved: false })
   })
 
   it('a love tapback approves too', async () => {
@@ -227,6 +243,43 @@ describe('imessageApprovalChannel', () => {
     const [row] = await rowsFor(run)
     expect(row!.status).toBe('denied')
     expect(row!.promptGuid).toBeNull()
+  })
+})
+
+describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wait', () => {
+  it('aborting mid-wait denies at once and marks the row denied; a later like changes nothing', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 60_000, timeoutMs: 60_000, signal: ac.signal })(REQ)
+    const { promptGuid } = await promptFor(run)
+    const t0 = Date.now()
+    ac.abort()
+    expect(await p).toEqual({ approved: false })
+    expect(Date.now() - t0).toBeLessThan(1_000) // the abort, not the 60 s timeout or poll
+    expect((await rowsFor(run))[0]!.status).toBe('denied')
+    await resolveTapback(tapback(promptGuid))
+    expect((await rowsFor(run))[0]!.status).toBe('denied')
+    expect(events.some(e => e.name === 'exec:approval' && e.meta?.reason === 'aborted' && e.meta?.runId === run)).toBe(true)
+  })
+
+  it('already aborted → denied immediately, no prompt texted, no row', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    ac.abort()
+    const sentBefore = fake.sent.length
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST, signal: ac.signal })(REQ)).toEqual({ approved: false })
+    expect(fake.sent.length).toBe(sentBefore)
+    expect(await rowsFor(run)).toHaveLength(0)
+  })
+
+  it('replyToApprovalChannel forwards the signal', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    const p = replyToApprovalChannel(run, { client: bb, pollMs: 60_000, timeoutMs: 60_000, signal: ac.signal })(REQ)
+    await promptFor(run)
+    ac.abort()
+    expect(await p).toEqual({ approved: false })
+    expect((await rowsFor(run))[0]!.status).toBe('denied')
   })
 })
 

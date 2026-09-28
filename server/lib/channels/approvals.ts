@@ -31,13 +31,21 @@ export interface ApprovalChannelDeps {
   client?: BlueBubblesClient | null
   pollMs?: number
   timeoutMs?: number
+  /** The run's abort signal (the runner passes `ac.signal`). Stop / `/clear` abort the run; the
+   *  exec tool awaits the approval without racing the signal, so the wait itself must end on it
+   *  (final review I1) — otherwise the run stays `running` until the 10-min expiry. */
+  signal?: AbortSignal
 }
 
 // In-process waiters keyed by approval id; resolveTapback / expireApprovals wake them directly.
 const waiters = new Map<string, (status: ApprovalStatus) => void>()
 
+/** The command as texted: at most PROMPT_COMMAND_MAX chars (a long heredoc is not texted in full). */
+export const PROMPT_COMMAND_MAX = 300
+
 function promptText(req: ApprovalRequest): string {
-  return `Run \`${req.command}\`?\n👍 to approve · 👎 to deny`
+  const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
+  return `Run \`${cmd}\`?\n👍 to approve · 👎 to deny`
 }
 
 /** pending → `to`, only if still pending. True when this call made the transition. */
@@ -61,8 +69,9 @@ function logOutcome(runId: string, command: string, outcome: string, reason?: st
   })
 }
 
-/** Wait until the row leaves `pending` (map or poll), or expire it after `timeoutMs`. */
-function waitFor(id: string, pollMs: number, timeoutMs: number): Promise<ApprovalStatus> {
+/** Wait until the row leaves `pending` (map or poll), or expire it after `timeoutMs`, or deny
+ *  it the moment `signal` aborts (the run was stopped: nothing may approve it afterwards). */
+function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSignal): Promise<ApprovalStatus> {
   return new Promise((resolve) => {
     let done = false
     const finish = (s: ApprovalStatus) => {
@@ -70,8 +79,16 @@ function waitFor(id: string, pollMs: number, timeoutMs: number): Promise<Approva
       done = true
       clearInterval(poll)
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       if (waiters.get(id) === finish) waiters.delete(id)
       resolve(s)
+    }
+    // Aborted: pending → denied. If a tapback settled it first, that status stands in the row,
+    // but the run is stopping either way, so the waiter reports denied.
+    const onAbort = () => {
+      settle(id, 'denied')
+        .catch(err => console.warn(`[channels] approval ${id} cancel failed:`, err instanceof Error ? err.message : err))
+        .finally(() => finish('denied'))
     }
     waiters.set(id, finish)
     const poll = setInterval(() => {
@@ -89,6 +106,8 @@ function waitFor(id: string, pollMs: number, timeoutMs: number): Promise<Approva
           finish('expired')
         })
     }, timeoutMs)
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
   })
 }
 
@@ -101,6 +120,11 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
   const pollMs = deps.pollMs ?? DEFAULT_POLL_MS
   const timeoutMs = deps.timeoutMs ?? APPROVAL_TIMEOUT_MS
   return async (req) => {
+    // Stopped before it could even ask: nothing to record, nothing to text.
+    if (deps.signal?.aborted) {
+      logOutcome(runId, req.command, 'denied', 'aborted')
+      return { approved: false }
+    }
     const db = useDb()
     const client = deps.client !== undefined ? deps.client : await imessageClient()
     const unavailable = !client ? 'imessage-not-configured' : lastHealth().privateApi === false ? 'private-api-off' : null
@@ -129,8 +153,8 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
     }
     await db.update(channelApprovals).set({ promptGuid }).where(eq(channelApprovals.id, id))
 
-    const status = await waitFor(id, pollMs, timeoutMs)
-    logOutcome(runId, req.command, status)
+    const status = await waitFor(id, pollMs, timeoutMs, deps.signal)
+    logOutcome(runId, req.command, status, deps.signal?.aborted ? 'aborted' : undefined)
     return { approved: status === 'approved' }
   }
 }

@@ -52,7 +52,8 @@ vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
 })
 
 import { useDb } from '../server/db'
-import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelDeliveries } from '../server/db/schema'
+import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelApprovals, channelDeliveries } from '../server/db/schema'
+import { startFakeBlueBubbles } from './fixtures/fake-bluebubbles'
 import { createJob } from '../server/lib/agent/jobs/store'
 import { channelPresence } from '../server/lib/channels/presence'
 import { createRun, claimNextRun } from '../server/lib/agent/runtime/runs'
@@ -625,6 +626,41 @@ describe('runTurn — channel deliveries', () => {
     } finally {
       start.mockRestore()
       stop.mockRestore()
+    }
+  })
+
+  // Final review I1: the runner hands the run's abort signal to the iMessage approval channel.
+  it('Stop during an iMessage approval wait unwinds the run at once and denies the approval row', async () => {
+    const bb = await startFakeBlueBubbles({ privateApi: true })
+    const prev = process.env.BLUEBUBBLES_FAKE_URL
+    process.env.BLUEBUBBLES_FAKE_URL = bb.url // the runner's own imessageClient() → the fake
+    try {
+      const { run } = await running('approve over imessage', { replyTo })
+      const agent = async function* (_m: unknown, ctx: { requestApproval?: (r: { tool: string; command: string; proposedPattern: string }) => Promise<{ approved: boolean }> }) {
+        const r = await ctx.requestApproval!({ tool: 'exec', command: 'rtest-i1-abort-approval', proposedPattern: 'rtest-i1-abort-approval' })
+        yield { type: 'text-delta', text: r.approved ? 'ran it' : 'not run' } as const
+        yield { type: 'done' } as const
+      }
+      const turn = runTurn(run, { runAgent: agent as never, assemble: noAssemble as never, hub: new StreamHub() })
+      let prompted = false
+      for (let i = 0; i < 200 && !prompted; i++) {
+        const [a] = await useDb().select().from(channelApprovals).where(eq(channelApprovals.runId, run.id))
+        prompted = !!a?.promptGuid
+        if (!prompted) await new Promise(r => setTimeout(r, 10))
+      }
+      expect(prompted).toBe(true)
+      expect(bb.sent.at(-1)).toMatchObject({ kind: 'text', chatGuid: CHAT })
+      const t0 = Date.now()
+      abortRun(run.id)
+      const out = await turn
+      expect(out.status).toBe('aborted')
+      expect(Date.now() - t0).toBeLessThan(2_000) // not the 10-minute approval expiry
+      const [a] = await useDb().select().from(channelApprovals).where(eq(channelApprovals.runId, run.id))
+      expect(a!.status).toBe('denied')
+    } finally {
+      if (prev === undefined) delete process.env.BLUEBUBBLES_FAKE_URL
+      else process.env.BLUEBUBBLES_FAKE_URL = prev
+      await bb.close()
     }
   })
 
