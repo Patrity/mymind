@@ -1,7 +1,7 @@
-import { and, eq, or, sql } from 'drizzle-orm'
+import { and, eq, isNotNull, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { conversations, conversationMessages } from '../db/schema'
-import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO, MessageUsage } from '../../shared/types/conversation'
+import { conversations, conversationMessages, channelDeliveries } from '../db/schema'
+import type { ConversationDTO, ConversationMessageDTO, ConversationListItem, AttachmentRef, ToolCallRecordDTO, MessageUsage, MessageDeliveryDTO } from '../../shared/types/conversation'
 import type { AgentMessage, AgentContentPart } from '../lib/agent/run'
 import type { AgentToolRecord } from '../lib/agent/tool-history'
 import { TOOL_HISTORY_WINDOW } from '../lib/agent/tool-history'
@@ -65,7 +65,8 @@ function convToDTO(r: typeof conversations.$inferSelect): ConversationDTO {
  */
 export function msgToDTO(
   r: typeof conversationMessages.$inferSelect,
-  branch?: BranchInfo
+  branch?: BranchInfo,
+  deliveries?: MessageDeliveryDTO[]
 ): ConversationMessageDTO {
   return {
     id: r.id,
@@ -80,7 +81,8 @@ export function msgToDTO(
     parentId: r.parentId,
     branch: { index: branch?.index ?? 1, total: branch?.total ?? 1 },
     siblingIds: branch?.siblingIds ?? [r.id],
-    origin: r.origin ?? null
+    origin: r.origin ?? null,
+    ...(r.role === 'assistant' && deliveries?.length ? { deliveries } : {})
   }
 }
 
@@ -328,10 +330,41 @@ export async function getConversation(
   // reads and the context the model gets can never be two different conversations.
   const { rows: msgs, branches } = await loadActivePath(id)
 
+  const deliveries = await deliveriesByMessage(msgs.filter(m => m.role === 'assistant').map(m => m.id))
+
   return {
     conversation: convToDTO(conv),
-    messages: msgs.map(m => msgToDTO(m, branches.get(m.id)))
+    messages: msgs.map(m => msgToDTO(m, branches.get(m.id), deliveries.get(m.id)))
   }
+}
+
+/** Channel deliveries (cycle 75) of the given messages, grouped by message id — one query. */
+export async function deliveriesByMessage(messageIds: string[]): Promise<Map<string, MessageDeliveryDTO[]>> {
+  const out = new Map<string, MessageDeliveryDTO[]>()
+  if (!messageIds.length) return out
+  const rows = await useDb()
+    .select({ messageId: channelDeliveries.messageId, channel: channelDeliveries.channel, status: channelDeliveries.status })
+    .from(channelDeliveries)
+    // One array parameter, however long the thread (main is permanent): no per-id bind params.
+    .where(sql`${channelDeliveries.messageId} = any(${sql.param(messageIds)}::uuid[])`)
+    .orderBy(channelDeliveries.createdAt)
+  for (const r of rows) {
+    if (!r.messageId) continue
+    const list = out.get(r.messageId) ?? []
+    list.push({ channel: r.channel as MessageDeliveryDTO['channel'], status: r.status })
+    out.set(r.messageId, list)
+  }
+  return out
+}
+
+/** Every delivery of a reply in one conversation, for the live badge refresh in /agent. */
+export async function conversationDeliveries(conversationId: string): Promise<({ messageId: string } & MessageDeliveryDTO)[]> {
+  const rows = await useDb()
+    .select({ messageId: channelDeliveries.messageId, channel: channelDeliveries.channel, status: channelDeliveries.status })
+    .from(channelDeliveries)
+    .where(and(eq(channelDeliveries.conversationId, conversationId), isNotNull(channelDeliveries.messageId)))
+    .orderBy(channelDeliveries.createdAt)
+  return rows.map(r => ({ messageId: r.messageId!, channel: r.channel as MessageDeliveryDTO['channel'], status: r.status }))
 }
 
 /** Row → AgentMessage. Never throws: a malformed tool_calls jsonb yields no records. */

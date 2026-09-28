@@ -11,6 +11,8 @@ import { Message, MessageContent, MessageResponse } from '@/components/ai-elemen
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { subagentSteps } from '~/lib/agent/render'
 import { splitOrigin } from '~~/shared/utils/event-origin'
+import type { MessageDeliveryDTO } from '~~/shared/types/conversation'
+import { deliveryBadge, summarizeDeliveries } from '~/lib/channels/delivery-badge'
 
 const props = defineProps<{
   messages: AgentUIMessage[]
@@ -29,6 +31,10 @@ const props = defineProps<{
    *  boundary while this list still shows everything, and that divergence must stay visible,
    *  not silent. */
   dividers?: { afterMessageId: string | null, epochAt: string }[]
+  /** Cycle 75: channel deliveries by message id, refreshed live (the page's
+   *  GET /api/conversations/:id/deliveries query). Wins over the `metadata.deliveries` the
+   *  message was loaded with, which is only as fresh as the last transcript read. */
+  deliveries?: Record<string, MessageDeliveryDTO[]>
 }>()
 const emit = defineEmits<{
   undo: [toolCallId: string, undoToken: string]
@@ -82,6 +88,17 @@ function dividersAfter(afterMessageId: string | null) {
 function dividerLabel(epochAt: string): string {
   const time = new Date(epochAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   return `Bridget's memory of this conversation starts here · ${time}`
+}
+
+/** A user message that arrived by iMessage (cycle 75) — its row's origin is `imessage:<chatGuid>`. */
+function viaIMessage(m: AgentUIMessage): boolean {
+  return m.role === 'user' && !!m.metadata?.origin?.startsWith('imessage:')
+}
+
+/** Badges for where an assistant reply was also sent, one per channel. */
+function deliveryBadges(m: AgentUIMessage) {
+  if (m.role !== 'assistant') return []
+  return summarizeDeliveries(props.deliveries?.[m.id] ?? m.metadata?.deliveries ?? []).map(d => ({ channel: d.channel, ...deliveryBadge(d) }))
 }
 
 /** An `event` row (wake, approval note, restart note) renders as a divider, not a bubble —
@@ -208,6 +225,17 @@ function eventLabel(m: AgentUIMessage): string {
                   :part="p"
                 />
               </template>
+              <UTooltip
+                v-if="viaIMessage(m) && editingId !== m.id"
+                text="via iMessage"
+              >
+                <UIcon
+                  name="i-lucide-smartphone"
+                  class="size-3.5 self-end text-dimmed"
+                  aria-label="via iMessage"
+                  data-testid="imessage-marker"
+                />
+              </UTooltip>
               <UAlert
                 v-if="m.metadata?.errorText"
                 color="error"
@@ -235,6 +263,21 @@ function eventLabel(m: AgentUIMessage): string {
             @fork="emit('fork', m.id)"
             @branch="(d: -1 | 1) => emit('branch', m.id, d)"
           />
+          <div
+            v-if="deliveryBadges(m).length"
+            class="flex flex-wrap items-center gap-1.5 pt-0.5"
+            data-testid="delivery-badges"
+          >
+            <UBadge
+              v-for="b in deliveryBadges(m)"
+              :key="b.channel"
+              size="xs"
+              variant="subtle"
+              :color="b.color"
+              :icon="b.icon"
+              :label="b.label"
+            />
+          </div>
         </div>
         <USeparator
           v-for="d in dividersAfter(m.id)"

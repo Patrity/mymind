@@ -3,7 +3,7 @@
 // Shared by the server encoder (server/lib/voice/ui-stream.ts), the client assembler
 // (app/lib/agent/turn-stream.ts) and resume (app/lib/agent/to-ui-messages.ts).
 import type { UIMessage, UIMessageChunk } from 'ai'
-import type { AttachmentRef, MessageUsage } from './conversation'
+import type { AttachmentRef, MessageUsage, MessageDeliveryDTO } from './conversation'
 
 export type AgentToolKind = 'read' | 'create' | 'destructive'
 
@@ -46,6 +46,11 @@ export interface AgentMessageMetadata {
    *  wake, an approval note, a restart note). `origin` is the row's own origin string
    *  ('wake:admin', 'review:approved', 'runtime:restart', …), or null for one with none. */
   event?: { origin: string | null }
+  /** Resume only, user messages (cycle 75) — the row's origin when it did not come from this
+   *  app, e.g. `imessage:<chatGuid>`; Conversation.vue marks those bubbles 📱. */
+  origin?: string
+  /** Resume only, assistant messages (cycle 75) — where the reply was also sent. */
+  deliveries?: MessageDeliveryDTO[]
 }
 
 // A type alias (not an interface) so it satisfies the SDK's `UIDataTypes` index signature.

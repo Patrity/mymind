@@ -2,6 +2,8 @@
 import { useQuery } from '@tanstack/vue-query'
 import type { NavigationMenuItem } from '@nuxt/ui'
 import type { ActivityCount } from '~~/shared/types/activity'
+import { channelsDotColor } from '~/lib/channels/status-dot'
+import type { ChannelsStatus } from '~/composables/useChannelsConfig'
 
 // The single Review badge (below) covers unreviewed memories too (task-13 folded
 // GET /api/memories/count's unreviewed items into GET /api/review/count's `pending`) —
@@ -40,21 +42,37 @@ watch(() => activityCount.value?.latest, (latest) => {
   })
 }, { deep: false })
 
+// Cycle 75: BlueBubbles health for the Channels nav dot. The server only reports the last
+// catch-up health check (every 2 min), so a minute's polling is plenty; the Channels tab
+// invalidates this key after a Test connection so the dot follows a forced check at once.
+const { data: channelsStatus } = useQuery({
+  queryKey: ['channels', 'status'],
+  queryFn: () => $fetch<ChannelsStatus>('/api/channels/status'),
+  refetchInterval: 60_000
+})
+const channelsDot = computed(() => channelsDotColor(channelsStatus.value?.imessage))
+
 const route = useRoute()
 
-const settingsChildren: NavigationMenuItem[] = [
+const settingsChildren = computed<NavigationMenuItem[]>(() => [
   { label: 'Providers', icon: 'i-lucide-server', to: '/settings/providers' },
   { label: 'Models', icon: 'i-lucide-box', to: '/settings/models' },
   { label: 'Model Configuration', icon: 'i-lucide-sliders-horizontal', to: '/settings/model-config' },
   { label: 'API Keys', icon: 'i-lucide-key-round', to: '/settings/api-keys' },
   { label: 'Activity & Alerts', icon: 'i-lucide-activity', to: '/settings/alerts' },
+  {
+    label: 'Channels',
+    icon: 'i-lucide-message-circle',
+    to: '/settings/channels',
+    ...(channelsDot.value ? { chip: { color: channelsDot.value } } : {})
+  },
   { label: 'Bridget', icon: 'i-lucide-bot', to: '/settings/bridget' },
   { label: 'Search', icon: 'i-lucide-search', to: '/settings/search' },
   { label: 'Agent Tools', icon: 'i-lucide-terminal', to: '/settings/agent-tools' },
   { label: 'Secrets', icon: 'i-lucide-key-square', to: '/settings/secrets' },
   { label: 'Image Gen', icon: 'i-lucide-image', to: '/settings/image-gen' },
   { label: 'Analytics', icon: 'i-lucide-chart-line', to: '/settings/analytics' }
-]
+])
 
 const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Home', icon: 'i-lucide-house', to: '/' },
@@ -88,8 +106,11 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
   {
     label: 'Settings',
     icon: 'i-lucide-settings',
+    // A red/amber Channels dot is repeated here: the group is collapsed outside /settings, which
+    // would hide it on the child item everywhere else in the app. Green stays on Channels only.
+    ...(channelsDot.value && channelsDot.value !== 'success' ? { chip: { color: channelsDot.value } } : {}),
     defaultOpen: route.path.startsWith('/settings'),
-    children: settingsChildren
+    children: settingsChildren.value
   }
 ])
 </script>

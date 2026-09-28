@@ -12,7 +12,7 @@ import { toolOutcome, toolEnvelope, attachmentToFilePart } from '~~/shared/utils
 // a caller constructing a ResumeMessage by hand (the tests, mostly) need not supply them, and
 // an absent `branch` reads as "lone trunk message", the same default msgToDTO applies.
 export type ResumeMessage = Pick<ConversationMessageDTO, 'id' | 'role' | 'content'>
-  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments' | 'usage' | 'createdAt' | 'branch' | 'siblingIds' | 'origin'>>
+  & Partial<Pick<ConversationMessageDTO, 'toolCalls' | 'reasoning' | 'attachments' | 'usage' | 'createdAt' | 'branch' | 'siblingIds' | 'origin' | 'deliveries'>>
 
 const textPart = (text: string): AgentUIPart => ({ type: 'text', text, state: 'done' })
 
@@ -49,7 +49,8 @@ export function toUIMessages(messages: ResumeMessage[]): AgentUIMessage[] {
         id: m.id,
         role: 'user',
         parts: [...(m.content ? [{ type: 'text' as const, text: m.content }] : []), ...attachments.map(attachmentToFilePart)],
-        metadata: { ...metadata, ...(attachments.length ? { attachments } : {}) }
+        // `origin` marks a message that did not come from this app (cycle 75: `imessage:<chatGuid>`).
+        metadata: { ...metadata, ...(attachments.length ? { attachments } : {}), ...(m.origin ? { origin: m.origin } : {}) }
       }
     }
 
@@ -73,6 +74,6 @@ export function toUIMessages(messages: ResumeMessage[]): AgentUIMessage[] {
       const trailing = m.content.slice(cursor)
       if (trailing) parts.push(textPart(trailing))
     }
-    return { id: m.id, role: 'assistant', parts, metadata }
+    return { id: m.id, role: 'assistant', parts, metadata: m.deliveries?.length ? { ...metadata, deliveries: m.deliveries } : metadata }
   })
 }

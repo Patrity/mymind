@@ -59,6 +59,14 @@ export interface ConversationMessageDTO {
   /** For role='event' rows and wake-produced assistant rows: what caused them, e.g.
    *  'wake:admin', 'review:approved'. Null for everything Tony typed or said. */
   origin: string | null
+  /** Assistant rows only (cycle 75): where this reply was also sent — one entry per
+   *  channel_deliveries row (an iMessage reply with images owns several). Absent when none. */
+  deliveries?: MessageDeliveryDTO[]
+}
+/** A channel delivery of an assistant reply, as badged under its bubble. */
+export interface MessageDeliveryDTO {
+  channel: 'imessage' | 'email'
+  status: string
 }
 export interface ConversationDTO {
   id: string

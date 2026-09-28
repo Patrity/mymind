@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { AttachmentRef } from '~~/shared/types/conversation'
+import { useQuery } from '@tanstack/vue-query'
+import type { AttachmentRef, MessageDeliveryDTO } from '~~/shared/types/conversation'
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { uiMessageText } from '~/lib/agent/render'
 import { contextMeterData } from '~/lib/agent/context-meter'
@@ -10,6 +11,20 @@ definePageMeta({ title: 'Agent' })
 const voice = useVoice()
 const route = useRoute()
 const conversations = useConversations()
+
+// Cycle 75: where each reply was also sent (iMessage / email), badged under it. The transcript
+// is not a vue-query read, so this small query is what the `channelDelivery` live event (it
+// invalidates the ['conversation'] prefix) refreshes — "sending" becomes "sent" without a reload.
+const { data: deliveryRows } = useQuery({
+  queryKey: computed(() => ['conversation', voice.conversationId.value, 'deliveries'] as const),
+  queryFn: () => $fetch<({ messageId: string } & MessageDeliveryDTO)[]>(`/api/conversations/${voice.conversationId.value}/deliveries`),
+  enabled: computed(() => !!voice.conversationId.value)
+})
+const liveDeliveries = computed(() => {
+  const out: Record<string, MessageDeliveryDTO[]> = {}
+  for (const d of deliveryRows.value ?? []) (out[d.messageId] ??= []).push({ channel: d.channel, status: d.status })
+  return out
+})
 
 // Home's "Ask the brain" box hands the question over via ?q=, and the composer submits it
 // automatically on arrival — you land in a running answer, not a filled-in box.
@@ -674,6 +689,7 @@ onMounted(() => {
           class="flex-1 min-h-0"
           :messages="voice.messages.value"
           :dividers="voice.dividers.value"
+          :deliveries="liveDeliveries"
           :undone="undone"
           :approval="voice.pendingApproval.value"
           :state="voice.state.value"
