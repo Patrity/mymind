@@ -12,9 +12,11 @@
 // `at` job's `enabled: false` — goes through store.setJobEnabled (system revision).
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { agentJobs, agentConfigRevisions, agentRuns, type AgentJobRow } from '../../../db/schema'
+import { agentJobs, agentJobFires, agentConfigRevisions, agentRuns, type AgentJobRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import { wake } from '../runtime/wake'
+import { getOrCreateMain } from '../runtime/sessions'
+import { appendEvent } from '../../../services/conversations'
 import { parseJob, type JobSpec } from './parse'
 import { nextRunAt, inActiveHours } from './schedule'
 import { setJobEnabled } from './store'
@@ -75,28 +77,45 @@ function slugScope(onlySlugs: string[] | undefined) {
 interface Claimed { id: string; slug: string; spec: JobSpec | null; kind: string | null }
 
 /** Deletes `at` jobs fired more than 30 days ago, with their revisions (no FK cascade there). */
+// `not enabled`: an `at` job re-armed with a new time is live again, whatever fired_at says
+// (writeJob also clears fired_at on re-arm — belt and braces).
 async function pruneFiredAtJobs(onlySlugs: string[] | undefined): Promise<number> {
-  return useDb().transaction(async (tx) => {
+  const ids = await useDb().transaction(async (tx) => {
     const res = await tx.execute(sql`
       select id from agent_jobs
-      where trigger_kind = 'at' and fired_at is not null
+      where trigger_kind = 'at' and not enabled and fired_at is not null
         and fired_at < now() - make_interval(days => ${AT_JOB_PRUNE_DAYS})
         ${slugScope(onlySlugs)}`)
     const ids = (res.rows as { id: string }[]).map(r => r.id)
-    if (!ids.length) return 0
+    if (!ids.length) return ids
     await tx.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, ids)))
     await tx.delete(agentJobs).where(inArray(agentJobs.id, ids))
-    for (const id of ids) publishChange({ resource: 'agentJob', action: 'deleted', id })
-    return ids.length
+    return ids
   })
+  // Only after commit: a live client must never refetch a row a rolled-back delete kept.
+  for (const id of ids) publishChange({ resource: 'agentJob', action: 'deleted', id })
+  return ids.length
+}
+
+/**
+ * An `at` job fires once, so when its one moment is skipped or fails it is disabled without ever
+ * having run — tell Tony, once per job (deduped through agent_job_fires, key `at:not-fired`).
+ */
+async function noteAtNotFired(jobId: string, slug: string, reason: string, mainConversationId?: string): Promise<void> {
+  const inserted = await useDb().insert(agentJobFires).values({ jobId, eventKey: 'at:not-fired' })
+    .onConflictDoNothing().returning({ jobId: agentJobFires.jobId })
+  if (!inserted.length) return
+  const mainId = mainConversationId ?? await getOrCreateMain()
+  await appendEvent(mainId, `Reminder ${slug} did not fire: ${reason}. It is now turned off; re-arm it on /jobs/${slug} if it still matters.`, 'runtime:job-not-fired')
 }
 
 /**
  * Claim and act on every due job. `onlySlugs` is the test seam (the dev DB is shared: a test must
  * never claim a real job); `now` overrides the clock for the claim + active-hours check (default:
- * Postgres `now()`); `wakeFn` replaces wake().
+ * Postgres `now()`); `wakeFn` replaces wake(); `mainConversationId` stands in for main (the
+ * "reminder did not fire" note) so tests never write to the real main thread.
  */
-export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?: WakeFn } = {}): Promise<{ fired: string[]; skipped: string[] }> {
+export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?: WakeFn; mainConversationId?: string } = {}): Promise<{ fired: string[]; skipped: string[] }> {
   const wakeFn = opts.wakeFn ?? wake
   const fired: string[] = []
   const skipped: string[] = []
@@ -127,26 +146,33 @@ export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?
   })
 
   for (const job of claimed.jobs) {
+    let notFired: string | null = null
     try {
       if (!job.spec) {
         console.warn(`[jobs] job "${job.slug}" no longer parses at fire time — skipped`)
-        await setOutcome(job.id, 'skipped'); skipped.push(job.slug)
+        notFired = 'its file no longer parses'
       } else if (!inActiveHours(job.spec, claimed.now)) {
-        await setOutcome(job.id, 'skipped'); skipped.push(job.slug)
+        notFired = 'it came due outside its active hours'
       } else if (await hasActiveRun(job.id)) {
-        await setOutcome(job.id, 'skipped'); skipped.push(job.slug)
+        notFired = 'its previous run was still going'
       } else {
         await fireJob(job.slug, job.id, job.spec, job.spec.body, wakeFn)
         fired.push(job.slug)
       }
+      if (notFired) { await setOutcome(job.id, 'skipped'); skipped.push(job.slug) }
     } catch (err) {
       console.error(`[jobs] firing "${job.slug}" failed:`, err)
+      notFired = `waking it failed (${(err as Error).message})`
       await setOutcome(job.id, 'failed').catch(() => {})
       skipped.push(job.slug)
     }
     if (job.kind === 'at') {
       await setJobEnabled(job.slug, false, 'system')
         .catch(err => console.error(`[jobs] disabling fired at-job "${job.slug}" failed:`, err))
+      if (notFired) {
+        await noteAtNotFired(job.id, job.slug, notFired, opts.mainConversationId)
+          .catch(err => console.error(`[jobs] posting the not-fired note for "${job.slug}" failed:`, err))
+      }
     }
   }
 

@@ -16,26 +16,33 @@ export const MAX_CONSECUTIVE_FAILURES = 3
 
 export type JobOutcome = 'spoke' | 'silent' | 'failed'
 
-/** 'aborted' counts as a failure: a headless job run is only aborted by its wall clock. */
-export function jobOutcomeOf(o: RunOutcome): JobOutcome {
-  if (o.status !== 'done') return 'failed'
-  return o.suppressed ? 'silent' : 'spoke'
+/**
+ * done → spoke/silent. failed → failed. aborted → failed too, but only a WALL-CLOCK abort
+ * (`timedOut`, marked by queue.ts execute) is a real failure that counts toward auto-disable;
+ * Tony pressing Stop or clearing the thread records 'failed' without touching the streak.
+ */
+export function jobOutcomeOf(o: RunOutcome): { outcome: JobOutcome; countsAsFailure: boolean } {
+  if (o.status === 'done') return { outcome: o.suppressed ? 'silent' : 'spoke', countsAsFailure: false }
+  if (o.status === 'aborted' && !o.timedOut) return { outcome: 'failed', countsAsFailure: false }
+  return { outcome: 'failed', countsAsFailure: true }
 }
 
 /** `mainConversationId` is the test seam — tests must never write to the real main thread. */
 export async function onRunFinished(run: AgentRun, outcome: RunOutcome, opts: { mainConversationId?: string } = {}): Promise<void> {
   if (!run.jobId) return
-  const result = jobOutcomeOf(outcome)
+  const { outcome: result, countsAsFailure } = jobOutcomeOf(outcome)
   const [job] = await useDb().update(agentJobs).set({
     lastOutcome: result,
-    consecutiveFailures: result === 'failed' ? sql`${agentJobs.consecutiveFailures} + 1` : 0
+    consecutiveFailures: countsAsFailure
+      ? sql`${agentJobs.consecutiveFailures} + 1`
+      : result === 'failed' ? agentJobs.consecutiveFailures : 0
   }).where(eq(agentJobs.id, run.jobId)).returning()
   if (!job) return // the job was deleted while its run was in flight
   publishChange({ resource: 'agentJob', action: 'updated', id: job.id })
 
   // `enabled` guards the note: a run that was already queued when the job got disabled fails
   // again → streak 4, but the job is off and Tony has already been told.
-  if (result !== 'failed' || job.consecutiveFailures < MAX_CONSECUTIVE_FAILURES || !job.enabled) return
+  if (!countsAsFailure || job.consecutiveFailures < MAX_CONSECUTIVE_FAILURES || !job.enabled) return
   await setJobEnabled(job.slug, false, 'system')
   const mainId = opts.mainConversationId ?? await getOrCreateMain()
   const why = outcome.error ? ` The last error was: ${outcome.error}.` : ''

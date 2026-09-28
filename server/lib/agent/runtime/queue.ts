@@ -113,13 +113,17 @@ export async function checkStillRunning(runId: string): Promise<boolean> {
   return ok
 }
 
-async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<void> {
+// Run ids whose headless wall clock fired. execute() reads it to tell a timeout abort from a
+// user abort (Stop / clear), which reach the runner identically through abortRun.
+const timedOut = new Set<string>()
+
+async function execute(run: AgentRun, runFn: RunFn, rekick: boolean, wallClockMs = HEADLESS_WALL_CLOCK_MS): Promise<void> {
   executing.add(run.id)
   let settle!: () => void
   settles.set(run.id, new Promise<void>((r) => { settle = r }))
   try {
     const alive = setInterval(() => { checkStillRunning(run.id).catch(err => console.error('[runtime] liveness check failed:', err)) }, ALIVE_BUMP_MS)
-    const wall = run.profile === 'headless' ? setTimeout(() => abortRun(run.id), HEADLESS_WALL_CLOCK_MS) : null
+    const wall = run.profile === 'headless' ? setTimeout(() => { timedOut.add(run.id); abortRun(run.id) }, wallClockMs) : null
     let outcome: RunOutcome
     try {
       outcome = await runFn(run)
@@ -128,6 +132,7 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<vo
     } finally {
       clearInterval(alive); if (wall) clearTimeout(wall)
     }
+    if (outcome.status === 'aborted' && timedOut.has(run.id)) outcome = { ...outcome, timedOut: true }
     await finishRun(run.id, outcome).catch(err => console.error('[runtime] finishRun failed:', err))
     // Cycle 74: a job-fired run writes its job's outcome (spoke/silent/failed, failure streak,
     // auto-disable). Never allowed to break the run's own unwind.
@@ -143,6 +148,7 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<vo
     if (rekick) kick(runFn)
   } finally {
     executing.delete(run.id)
+    timedOut.delete(run.id)
     settles.delete(run.id)
     settle()
   }
@@ -151,14 +157,15 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<vo
 /** Claim and START everything currently runnable; returns how many were started. */
 /** `rekick: false` + `onlyConversations` is the test seam: the dev DB is shared, and an unscoped
  *  re-pump after a test run finishes would claim (and fake-execute) other sessions' queued runs. */
-export async function pumpOnce(opts: { onlyConversations?: string[]; run?: RunFn; rekick?: boolean } = {}): Promise<number> {
+/** `wallClockMs` is a test seam for the headless wall clock (default HEADLESS_WALL_CLOCK_MS). */
+export async function pumpOnce(opts: { onlyConversations?: string[]; run?: RunFn; rekick?: boolean; wallClockMs?: number } = {}): Promise<number> {
   const runFn = opts.run ?? ((r: AgentRun) => runTurn(r, { afterPersist: maybeSummarizeLater }))
   let started = 0
   for (;;) {
     const run = await claimNextRun({ onlyConversations: opts.onlyConversations })
     if (!run) return started
     started++
-    void execute(run, runFn, opts.rekick !== false)
+    void execute(run, runFn, opts.rekick !== false, opts.wallClockMs)
   }
 }
 

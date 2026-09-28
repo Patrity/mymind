@@ -180,6 +180,19 @@ type WriteOutcome
     | { kind: 'conflict', current: { content: string, contentHash: string } }
     | { kind: 'not-found' }
 
+/**
+ * Runtime columns a write resets (Task 5 review):
+ * - off → on clears the failure streak. Otherwise a job auto-disabled after 3 failures, then
+ *   fixed and re-enabled, would be disabled again by its first failure.
+ * - an `at` job re-armed with a future time clears fired_at, so the 30-day prune can't delete it.
+ */
+function rearm(existing: AgentJobRow, spec: JobSpec, nextRunAt: Date | null): Partial<AgentJobRow> {
+  const out: Partial<AgentJobRow> = {}
+  if (spec.enabled && !existing.enabled) out.consecutiveFailures = 0
+  if (spec.trigger.kind === 'at' && spec.enabled && nextRunAt) out.firedAt = null
+  return out
+}
+
 async function writeJob(
   slug: string,
   content: string,
@@ -236,7 +249,7 @@ async function writeJob(
       // Re-checked IN the UPDATE so a write landing between the read above and this statement
       // still loses, rather than clobbering a concurrent writer (mirrors saveSkillSource).
       const [updated] = await tx.update(agentJobs)
-        .set({ ...derived, updatedAt: sql`now()` })
+        .set({ ...derived, ...rearm(existing, spec, derived.nextRunAt), updatedAt: sql`now()` })
         .where(and(eq(agentJobs.id, existing.id), eq(agentJobs.contentHash, expectedHash)))
         .returning()
       if (!updated) {

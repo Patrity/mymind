@@ -23,4 +23,7 @@ export interface RunOutcome {
   usage?: Record<string, unknown> | null
   userMessageId?: string
   assistantMessageId?: string
+  /** Set by queue.ts execute() when an 'aborted' run was stopped by its headless wall clock rather
+   *  than by Tony (Stop / clear). Job outcomes count only the former toward auto-disable. */
+  timedOut?: boolean
 }

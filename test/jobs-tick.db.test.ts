@@ -26,7 +26,10 @@ import type { AgentRun } from '../server/db/schema'
 import { createConversation } from '../server/services/conversations'
 import { createRun } from '../server/lib/agent/runtime/runs'
 import { wake, type WakeRequest } from '../server/lib/agent/runtime/wake'
-import { createJob, saveJob, getJob } from '../server/lib/agent/jobs/store'
+import { createJob, saveJob, getJob, setJobEnabled } from '../server/lib/agent/jobs/store'
+import { pumpOnce } from '../server/lib/agent/runtime/queue'
+import { registerAbort, releaseAbort, abortRun } from '../server/lib/agent/runtime/aborts'
+import type { RunOutcome } from '../server/lib/agent/runtime/types'
 import { jobsTick } from '../server/lib/agent/jobs/tick'
 import { fireEvent, dueTaskEvents } from '../server/lib/agent/jobs/events'
 import { onRunFinished, MAX_CONSECUTIVE_FAILURES } from '../server/lib/agent/jobs/outcome'
@@ -277,6 +280,41 @@ describe('jobsTick — scheduling', () => {
     expect(revs).toHaveLength(0)
   })
 
+  it('11b. a re-armed `at` job is never pruned; re-arming clears fired_at', async () => {
+    const slug = `${PREFIX}rearm`
+    const when = new Date(Date.now() + 3600_000).toISOString()
+    await createJob({ slug, content: md(`trigger: at ${when}\nenabled: false`, 'Again.'), actor: 'agent' })
+    await db().update(agentJobs).set({ firedAt: sql`now() - interval '31 days'` }).where(eq(agentJobs.slug, slug))
+    await setJobEnabled(slug, true, 'human')
+    expect((await row(slug)).firedAt).toBeNull()
+    // Even with a stale fired_at, an enabled job is kept.
+    await db().update(agentJobs).set({ firedAt: sql`now() - interval '31 days'` }).where(eq(agentJobs.slug, slug))
+    await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(await getJob(slug)).not.toBeNull()
+  })
+
+  it('6b. an `at` job that could not fire is disabled with one note in main (deduped per job)', async () => {
+    const slug = `${PREFIX}at-missed`
+    const now = new Date(await dbNow())
+    const hhmm = (d: Date) => `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
+    const hours = `${hhmm(new Date(now.getTime() + 2 * 3600_000))}-${hhmm(new Date(now.getTime() + 3 * 3600_000))}`
+    const fm = (en: boolean) => `trigger: at ${new Date(now.getTime() + 3600_000).toISOString()}\nenabled: ${en}\ntimezone: UTC\nactive_hours: ${hours}`
+    await createJob({ slug, content: md(fm(true), 'Missed reminder.'), actor: 'agent' })
+    const notes = async () => db().select().from(conversationMessages)
+      .where(and(eq(conversationMessages.conversationId, scratchMain), eq(conversationMessages.origin, 'runtime:job-not-fired')))
+    for (let i = 0; i < 2; i++) {
+      await makeDue(slug)
+      const res = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake, mainConversationId: scratchMain })
+      expect(res.skipped).toEqual([slug])
+      expect((await row(slug)).enabled).toBe(false)
+      await setJobEnabled(slug, true, 'human') // re-arm; the second miss must not note again
+    }
+    expect(callsFor(slug)).toHaveLength(0)
+    const n = await notes()
+    expect(n).toHaveLength(1)
+    expect(n[0]!.content).toMatch(new RegExp(`^Reminder ${slug} did not fire: it came due outside its active hours`))
+  })
+
   it('wake() carries jobId and context onto the real agent_runs row', async () => {
     const slug = `${PREFIX}wake`
     const job = await createJob({ slug, content: md('trigger: every 30m', 'W.'), actor: 'human' })
@@ -377,10 +415,62 @@ describe('onRunFinished', () => {
       .where(and(eq(conversationMessages.conversationId, scratchMain), eq(conversationMessages.origin, 'runtime:job-disabled')))
     expect(notes).toHaveLength(1)
     expect(notes[0]!.content).toContain(slug)
+
+    // I1: re-enabling resets the streak — one failure after a fix must not re-disable it.
+    await setJobEnabled(slug, true, 'human')
+    expect((await row(slug)).consecutiveFailures).toBe(0)
+    await onRunFinished(await jobRun(slug), { status: 'failed', error: 'once' }, opts)
+    const after = await row(slug)
+    expect(after.enabled).toBe(true)
+    expect(after.consecutiveFailures).toBe(1)
   })
 
-  it('a run with no job_id is ignored', async () => {
-    const [run] = await db().select().from(agentRuns).where(eq(agentRuns.conversationId, scratch)).limit(1)
-    await expect(onRunFinished({ ...run!, jobId: null }, { status: 'failed' }, { mainConversationId: scratchMain })).resolves.toBeUndefined()
+  it('9c. a user abort records failed without counting; a wall-clock abort counts (through execute)', async () => {
+    const slug = `${PREFIX}aborts`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'A.'), actor: 'human' })
+    // Hangs until aborted, like a real turn.
+    const hang = async (run: AgentRun): Promise<RunOutcome> => {
+      const ac = registerAbort(run.id)
+      await new Promise<void>(r => ac.signal.aborted ? r() : ac.signal.addEventListener('abort', () => r()))
+      releaseAbort(run.id)
+      return { status: 'aborted' }
+    }
+    async function runThroughExecute(opts: { wallClockMs?: number; userAbort?: boolean }) {
+      const conv = (await createConversation({ title: `${PREFIX}exec` })).id
+      convIds.push(conv)
+      const r = await createRun({
+        conversationId: conv, sessionKey: `thread:${conv}`, trigger: 'wake', profile: 'headless',
+        input: { text: 'A.', modality: 'text' }, wakeReason: `job:${slug}`, jobId: job.id
+      })
+      expect(await pumpOnce({ onlyConversations: [conv], run: hang, rekick: false, wallClockMs: opts.wallClockMs })).toBe(1)
+      if (opts.userAbort) abortRun(r.id)
+      for (let i = 0; i < 100; i++) {
+        const [cur] = await db().select({ s: agentRuns.status }).from(agentRuns).where(eq(agentRuns.id, r.id))
+        if (cur!.s === 'aborted') break
+        await new Promise(res => setTimeout(res, 50))
+      }
+      await new Promise(res => setTimeout(res, 200)) // onRunFinished runs right after finishRun
+    }
+    await runThroughExecute({ userAbort: true })
+    expect(await row(slug)).toMatchObject({ lastOutcome: 'failed', consecutiveFailures: 0 })
+    await runThroughExecute({ wallClockMs: 50 })
+    expect(await row(slug)).toMatchObject({ lastOutcome: 'failed', consecutiveFailures: 1 })
+  })
+
+  it('a run with no job_id is ignored: no job row changes, no note is posted', async () => {
+    const slug = `${PREFIX}nojob`
+    await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'N.'), actor: 'human' })
+    const run = await jobRun(slug)
+    const snapshot = async () => ({
+      jobs: await db().select({ slug: agentJobs.slug, o: agentJobs.lastOutcome, f: agentJobs.consecutiveFailures, e: agentJobs.enabled, h: agentJobs.contentHash })
+        .from(agentJobs).where(like(agentJobs.slug, `${PREFIX}%`)).orderBy(agentJobs.slug),
+      notes: (await db().select({ id: conversationMessages.id }).from(conversationMessages)
+        .where(eq(conversationMessages.conversationId, scratchMain))).length
+    })
+    const before = await snapshot()
+    for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i++) {
+      await onRunFinished({ ...run, jobId: null }, { status: 'failed', error: 'x' }, { mainConversationId: scratchMain })
+    }
+    expect(await snapshot()).toEqual(before)
   })
 })
