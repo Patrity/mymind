@@ -65,7 +65,7 @@ import { createRun } from '../server/lib/agent/runtime/runs'
 import { enqueue, type EnqueueRequest } from '../server/lib/agent/runtime/queue'
 import { blueBubblesClient, type BlueBubblesClient } from '../server/lib/channels/bluebubbles/client'
 import { parseWebhook } from '../server/lib/channels/bluebubbles/parse'
-import { handleInbound, catchUpTick, lastHealth, _resetCatchUp, type InboundDeps } from '../server/lib/channels/inbound'
+import { handleInbound, catchUpTick, catchUpWindowStart, lastHealth, _resetCatchUp, type InboundDeps } from '../server/lib/channels/inbound'
 import type { InboundMessage } from '../server/lib/channels/types'
 import { startFakeBlueBubbles, type FakeBlueBubbles } from './fixtures/fake-bluebubbles'
 import emoji from './fixtures/bluebubbles/emoji-reaction.json'
@@ -404,6 +404,20 @@ describe('catchUpTick', () => {
     fake.setDown(false)
   })
 
+  // Runs first in this block: the cursor is then the handleInbound rows' fixed 2026-09-21 date,
+  // days old, so only the 24 h floor can keep the 25-hour-old message out of the scan.
+  it('M1: never reaches back more than 24 h, however old the cursor', async () => {
+    const old = guid('cu-25h'), fresh = guid('cu-1m')
+    fake.pushMessage(raw(old, { text: 'from yesterday-ish', dateCreated: Date.now() - 25 * 3_600_000 }))
+    fake.pushMessage(raw(fresh, { text: 'just now', dateCreated: Date.now() - 60_000 }))
+    const queriesBefore = fake.queries.length
+    expect(await tick()).toEqual({ processed: 1, healthy: true })
+    expect(calls.map(c => c.replyTo?.messageGuid)).toEqual([fresh])
+    expect(await inboundRow(old)).toBeUndefined()
+    const q = fake.queries[queriesBefore] as { after: number }
+    expect(q.after).toBeGreaterThanOrEqual(Date.now() - 24 * 3_600_000 - 5_000)
+  })
+
   it('a message after the cursor is enqueued once; running it again does nothing new', async () => {
     const g = guid('cu')
     fake.pushMessage(raw(g))
@@ -477,5 +491,23 @@ describe('catchUpTick', () => {
       expect((await status(young)).status).toBe('sent_unconfirmed')
       expect((await status(aged)).status).toBe('sent')
     })
+  })
+})
+
+describe('catchUpWindowStart (M1)', () => {
+  const NOW = 1_800_000_000_000
+  const MIN = 60_000
+  it('no inbound history yet: the cursor is now − 5 min, then the 5-min overlap', () => {
+    expect(catchUpWindowStart(null, 0, NOW)).toBe(NOW - 10 * MIN)
+  })
+  it('a recent cursor: cursor − overlap; the in-memory high-water mark wins when later', () => {
+    expect(catchUpWindowStart(NOW - 60 * MIN, 0, NOW)).toBe(NOW - 65 * MIN)
+    expect(catchUpWindowStart(NOW - 60 * MIN, NOW - 30 * MIN, NOW)).toBe(NOW - 35 * MIN)
+  })
+  it('a future-dated cursor is capped at now', () => {
+    expect(catchUpWindowStart(NOW + 60 * MIN, 0, NOW)).toBe(NOW - 5 * MIN)
+  })
+  it('never earlier than now − 24 h', () => {
+    expect(catchUpWindowStart(NOW - 30 * 24 * 60 * MIN, 0, NOW)).toBe(NOW - 24 * 60 * MIN)
   })
 })

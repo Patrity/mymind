@@ -47,8 +47,13 @@ export interface InboundDeps {
 
 export const CATCH_UP_INTERVAL_MS = 120_000
 export const CATCH_UP_OVERLAP_MS = 300_000
-/** With no inbound history yet, catch-up starts this far back. */
-const CATCH_UP_FIRST_LOOKBACK_MS = 3_600_000
+/** With no inbound history yet, the cursor starts this far back (then the overlap applies).
+ *  Short on purpose (final review M1): a fresh install must not answer texts another MyMind
+ *  already answered — e.g. real-phone acceptance texts sent to dev, replayed by a new prod. */
+export const CATCH_UP_FIRST_LOOKBACK_MS = 300_000
+/** Catch-up never reaches further back than this (M1): after a long outage, or re-enabling
+ *  iMessage after weeks, old texts are not each turned into a turn and a reply. */
+export const CATCH_UP_MAX_AGE_MS = 86_400_000
 const CATCH_UP_PAGE = 100
 const CATCH_UP_MAX_PAGES = 10
 
@@ -247,16 +252,26 @@ export function _resetCatchUp(): void {
   health = { ok: false, privateApi: null, checkedAt: null }
 }
 
-async function inboundCursor(): Promise<number> {
+async function inboundCursor(): Promise<number | null> {
   const [row] = await useDb().select({ at: max(channelInbound.receivedAt) }).from(channelInbound)
     .where(eq(channelInbound.channel, 'imessage'))
-  return row?.at ? new Date(row.at).getTime() : Date.now() - CATCH_UP_FIRST_LOOKBACK_MS
+  return row?.at ? new Date(row.at).getTime() : null
+}
+
+/**
+ * Where a catch-up scan starts: the inbound cursor (the newest message date recorded; with none
+ * yet, `now − CATCH_UP_FIRST_LOOKBACK_MS`) or the in-memory high-water mark, whichever is later,
+ * capped at `now` (a message dated in the future — clock skew on the Mac — must not push the
+ * window past messages still to come), minus the overlap — and never earlier than
+ * `now − CATCH_UP_MAX_AGE_MS` (M1).
+ */
+export function catchUpWindowStart(cursor: number | null, highWater: number, now: number): number {
+  const from = Math.min(Math.max(cursor ?? now - CATCH_UP_FIRST_LOOKBACK_MS, highWater), now) - CATCH_UP_OVERLAP_MS
+  return Math.max(from, now - CATCH_UP_MAX_AGE_MS)
 }
 
 async function catchUpMessages(client: BlueBubblesClient, deps: InboundDeps): Promise<number> {
-  // Capped at now: a message dated in the future (clock skew on the Mac) must not push the
-  // window past messages that are still to come.
-  let after = Math.min(Math.max(await inboundCursor(), scannedUpTo), Date.now()) - CATCH_UP_OVERLAP_MS
+  let after = catchUpWindowStart(await inboundCursor(), scannedUpTo, Date.now())
   let processed = 0
   let newest = scannedUpTo
   let failedAt: number | null = null
