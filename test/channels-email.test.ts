@@ -48,6 +48,72 @@ describe('renderEmail', () => {
     const md = '# Title\n\nSome **bold** text with <script>bad()</script>.'
     expect(renderEmail(md).text).toBe(md)
   })
+
+  it('renders an empty message without throwing', () => {
+    const { html, text } = renderEmail('')
+    expect(text).toBe('')
+    expect(html).toContain('<div')
+    expect(html).not.toMatch(/undefined|null/)
+  })
+})
+
+// Fix round 1 (task-5-review.md): marked's html() escaping only intercepts raw-HTML tokens — it
+// does nothing for a live href/src marked's own link/image renderers produce from ordinary
+// markdown syntax (`[text](url)`, `<url>`, `![alt](url)`). renderEmail now also runs its output
+// through isomorphic-dompurify (same package/purpose as shared/utils/sanitize-html.ts and
+// app/components/clipboard/MessageText.vue) with a scheme allow-list: links only http/https/
+// mailto, image src only http/https — everything else is stripped. Each case below checks the
+// *live* attribute is gone (no executable href/src survives) while the surrounding legitimate
+// content (the link label, the alt text) survives. The one exception is the bare autolink case:
+// CommonMark's `<scheme:...>` autolink has no separate label — its visible text IS the URL
+// string — so a sanitizer that preserves content (as DOMPurify and every mainstream one does)
+// necessarily leaves that string visible as inert text once the href itself is stripped. What
+// must never survive is the *live* href, which the assertion below checks directly.
+describe('renderEmail — URL scheme sanitization', () => {
+  it('strips a javascript: link href, keeping the link text', () => {
+    const { html } = renderEmail('[click me](javascript:alert(1))')
+    expect(html).not.toContain('javascript:alert(1)')
+    expect(html).not.toMatch(/<a[^>]*href/i)
+    expect(html).toContain('click me')
+  })
+
+  it('strips a javascript: autolink href; the inert text (the URL itself) survives', () => {
+    const { html } = renderEmail('<javascript:alert(1)>')
+    expect(html).not.toMatch(/href\s*=\s*"javascript:/i)
+    expect(html).not.toMatch(/<a[^>]*href/i)
+    expect(html).toContain('javascript:alert(1)') // inert text, not a live href — see block comment
+  })
+
+  it('strips a data: image src, keeping the alt text', () => {
+    const { html } = renderEmail('![a broken image](data:image/png;base64,AAAA)')
+    expect(html).not.toContain('data:image')
+    expect(html).not.toMatch(/<img[^>]*src/i)
+    expect(html).toContain('a broken image')
+  })
+
+  it('strips a vbscript: link href, keeping the link text', () => {
+    const { html } = renderEmail('[click here](vbscript:msgbox(1))')
+    expect(html).not.toContain('vbscript:msgbox(1)')
+    expect(html).not.toMatch(/<a[^>]*href/i)
+    expect(html).toContain('click here')
+  })
+
+  it('neutralizes a live onclick attribute from raw inline HTML, keeping the surrounding text', () => {
+    const { html } = renderEmail('<a href="https://example.com" onclick="alert(1)">click me</a>')
+    // The html()-token escaping (kept from before this fix round) is the layer that neutralizes
+    // this vector: the tag is never parsed as a real element, so it never reaches DOMPurify as
+    // one — there is no real <a ...> anywhere in the output, live or otherwise. DOMPurify's
+    // FORBID_ATTR (onclick/onerror/onload) still runs as defense-in-depth for the same
+    // attribute, in case that escaping layer ever regresses. Note: round-tripping the escaped
+    // text through DOMPurify's HTML parser/serializer (to apply the URL-scheme sanitization
+    // above) normalizes `&quot;` back to a literal `"` in this now-plain-text content — quotes
+    // don't need entity-escaping outside an attribute value, so this is not a live attribute
+    // re-appearing, just a harmless serialization difference; `<`/`>` (which DO need escaping
+    // in text content) stay escaped, which is what actually matters here.
+    expect(html).not.toMatch(/<a\b[^>]*\bonclick\s*=/i) // no real <a> element with onclick
+    expect(html).not.toMatch(/<a\s/) // no real <a> element at all — the whole tag stayed inert text
+    expect(html).toContain('click me')
+  })
 })
 
 describe('emailSubject', () => {
