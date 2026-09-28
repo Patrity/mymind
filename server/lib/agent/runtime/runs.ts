@@ -156,8 +156,11 @@ export async function recoverOrphans(opts: {
     .returning()
 }
 
-export async function listRuns(o: { conversationId?: string; limit?: number }): Promise<AgentRun[]> {
+export async function listRuns(o: { conversationId?: string; jobId?: string; limit?: number }): Promise<AgentRun[]> {
   return useDb().select().from(agentRuns)
-    .where(o.conversationId ? eq(agentRuns.conversationId, o.conversationId) : undefined)
+    .where(and(
+      o.conversationId ? eq(agentRuns.conversationId, o.conversationId) : undefined,
+      o.jobId ? eq(agentRuns.jobId, o.jobId) : undefined
+    ))
     .orderBy(desc(agentRuns.createdAt)).limit(Math.min(o.limit ?? 50, 200))
 }
