@@ -15,30 +15,44 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
+// `guard.on`: any useDb() call throws — proves a read went through the given transaction.
+const guard = vi.hoisted(() => ({ on: false }))
+vi.mock('../server/db', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../server/db')>()
+  return { ...real, useDb: () => { if (guard.on) throw new Error('planDeliveries used a second pooled connection'); return real.useDb() } }
+})
+
 const cfg = vi.hoisted(() => ({
+  real: false,
   imessage: { enabled: true, defaultHandle: '+15550000081' as string | null, defaultChatGuid: 'iMessage;-;+15550000081' as string | null },
   email: { enabled: true, to: 'tony@example.test' as string | null }
 }))
-vi.mock('../server/lib/channels/config', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../server/lib/channels/config')>()),
-  loadChannelsConfig: async () => ({
+vi.mock('../server/lib/channels/config', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../server/lib/channels/config')>()
+  return {
+  ...real,
+  // cfg.real: the real loader (used only inside a rolled-back transaction, below).
+  loadChannelsConfig: async (db?: Parameters<typeof real.loadChannelsConfig>[0]) => cfg.real ? real.loadChannelsConfig(db) : ({
     imessage: { enabled: cfg.imessage.enabled, serverUrl: '', passwordEnc: null, webhookToken: 'x', allowedHandles: [], defaultHandle: cfg.imessage.defaultHandle, defaultChatGuid: cfg.imessage.defaultChatGuid },
     email: { enabled: cfg.email.enabled, to: cfg.email.to },
     presenceAwayMinutes: 10
   })
-}))
+  }
+})
 const events = vi.hoisted(() => ({ calls: [] as unknown[] }))
 vi.mock('../server/lib/observability/record', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../server/lib/observability/record')>()),
   recordEvent: (e: unknown) => { events.calls.push(e) }
 }))
 
-import { and, eq, inArray, like } from 'drizzle-orm'
+import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { agentConfigRevisions, agentJobs, agentRuns, conversations, settings, type AgentRun } from '../server/db/schema'
 import { createConversation } from '../server/services/conversations'
 import { createJob } from '../server/lib/agent/jobs/store'
-import { planDeliveries } from '../server/lib/channels/deliver'
+import { planDeliveries, stripImageEmbeds } from '../server/lib/channels/deliver'
+import { invalidateChannelsConfig } from '../server/lib/channels/config'
+import type { NewDelivery } from '../server/lib/channels/outbox'
 import { markActive, _resetPresence } from '../server/lib/channels/presence'
 
 const PREFIX = 'chdeltest-'
@@ -159,7 +173,7 @@ describe('planDeliveries', () => {
     const text = `Look ![chart](/api/images/${IMG}/raw)`
     const { run: r } = await jobRun('img', '[imessage, email]')
     const plans = await planDeliveries(r, reply(text))
-    expect(plans.find(p => p.channel === 'imessage')!.payload).toEqual({ text, images: [IMG] })
+    expect(plans.find(p => p.channel === 'imessage')!.payload).toEqual({ text: 'Look', images: [IMG] })
     expect(plans.find(p => p.channel === 'email')!.payload).toEqual({ text, subject: `Bridget · ${PREFIX}img` })
   })
 
@@ -188,7 +202,61 @@ describe('planDeliveries', () => {
     expect(await planDeliveries(await run({ replyTo: replyTo() }), reply())).toEqual([])
   })
 
+  it('an empty or whitespace-only reply plans nothing', async () => {
+    const { run: r } = await jobRun('empty', '[imessage, email]')
+    await useDb().update(agentRuns).set({ replyTo: replyTo() }).where(eq(agentRuns.id, r.id))
+    expect(await planDeliveries(r, reply(''))).toEqual([])
+    expect(await planDeliveries(r, reply(' \n\t '))).toEqual([])
+  })
+
+  it('does every read on the transaction it is given — no second pooled connection', async () => {
+    const { job, run: r } = await jobRun('tx-only', '[auto, email]')
+    await useDb().update(agentRuns).set({ replyTo: replyTo() }).where(eq(agentRuns.id, r.id))
+    markActive() // present: [auto] adds nothing, and isAway reads the (tx-loaded) config
+    const rollback = new Error('rollback')
+    let plans: NewDelivery[] = []
+    cfg.real = true
+    invalidateChannelsConfig()
+    try {
+      await expect(useDb().transaction(async (tx) => {
+        // Settings that exist ONLY inside this transaction (rolled back below): the plan can
+        // only see them if its config load read through `tx`.
+        await tx.insert(settings).values([
+          { key: 'channel_imessage', value: { enabled: true, serverUrl: '', passwordEnc: null, webhookToken: 'a'.repeat(64), allowedHandles: [], defaultHandle: null, defaultChatGuid: null } },
+          { key: 'channel_email', value: { enabled: true, to: 'txonly@example.test' } }
+        ]).onConflictDoUpdate({ target: settings.key, set: { value: sql`excluded.value` } })
+        guard.on = true
+        try {
+          plans = await planDeliveries(r, reply(), tx)
+        } finally {
+          guard.on = false
+        }
+        throw rollback
+      })).rejects.toBe(rollback)
+    } finally {
+      cfg.real = false
+      invalidateChannelsConfig() // it cached the rolled-back config
+    }
+    expect(plans.map(p => [p.channel, p.target, p.source])).toEqual([
+      ['imessage', CHAT, 'reply'],
+      ['email', 'txonly@example.test', 'job']
+    ])
+    expect(plans[1]!.payload.subject).toBe(`Bridget · ${job.slug}`)
+  })
+
   it('never wrote the channel settings rows', async () => {
     expect(await channelSettingsRows()).toEqual(settingsBefore)
+  })
+})
+
+describe('stripImageEmbeds', () => {
+  const B = 'a1b2c3d4-0000-4000-8000-00000000000b'
+  it('removes the embeds of attached images and leaves everything else', () => {
+    const text = `Chart: ![chart](/api/images/${IMG}/raw) and ![other](/api/images/${B}/raw), [link](/api/images/${IMG}/raw) ![x](/api/i/slug)`
+    expect(stripImageEmbeds(text, [IMG])).toBe(`Chart:  and ![other](/api/images/${B}/raw), [link](/api/images/${IMG}/raw) ![x](/api/i/slug)`)
+  })
+  it('an image-only reply becomes empty text; no ids → unchanged', () => {
+    expect(stripImageEmbeds(`![c](/api/images/${IMG}/raw)`, [IMG])).toBe('')
+    expect(stripImageEmbeds(' as is ', [])).toBe(' as is ')
   })
 })

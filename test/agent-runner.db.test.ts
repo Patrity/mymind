@@ -10,7 +10,23 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // Cycle 75, Task 8: channel config is stubbed (never written — the dev DB is shared), and every
 // delivery row the runner inserts is pushed to the year 2100 INSIDE the same transaction, so no
 // live worker's deliveriesTick can ever find one due. Rows are tracked and deleted in afterAll.
-const chan = vi.hoisted(() => ({ deliveryIds: [] as string[], failInsert: false }))
+const chan = vi.hoisted(() => ({ deliveryIds: [] as string[], failInsert: false, failPlan: false }))
+// chan.failPlan: planning runs a query that FAILS on the db it was handed (which aborts a plain
+// transaction), then throws — the reply must still commit.
+vi.mock('../server/lib/channels/deliver', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../server/lib/channels/deliver')>()
+  const { sql } = await import('drizzle-orm')
+  return {
+    ...real,
+    planDeliveries: async (...args: Parameters<typeof real.planDeliveries>) => {
+      if (chan.failPlan) {
+        await args[2]!.execute(sql`select 1/0`)
+        throw new Error('unreachable: the query above throws')
+      }
+      return real.planDeliveries(...args)
+    }
+  }
+})
 vi.mock('../server/lib/channels/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../server/lib/channels/config')>()),
   loadChannelsConfig: async () => ({
@@ -598,6 +614,24 @@ describe('runTurn — channel deliveries', () => {
     expect(out.status).toBe('failed')
     expect((await rows(conversationId)).map(r => r.role).sort()).toEqual(['assistant', 'user']) // rescued
     expect(await deliveriesOf(conversationId)).toHaveLength(0)
+  })
+
+  it('a planning failure (even a failed query on the transaction) still saves the reply, without deliveries', async () => {
+    const { run, conversationId } = await running('plan fails', { replyTo })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    chan.failPlan = true
+    try {
+      const out = await runTurn(run, { runAgent: fakeAgent('still saved') as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(out.status).toBe('done')
+      const r = await rows(conversationId)
+      expect(r).toHaveLength(2)
+      expect(r.find(x => x.id === out.assistantMessageId)?.content).toBe('still saved')
+      expect(await deliveriesOf(conversationId)).toHaveLength(0)
+      expect(err).toHaveBeenCalledWith('[agent] planning channel deliveries failed:', expect.anything())
+    } finally {
+      chan.failPlan = false
+      err.mockRestore()
+    }
   })
 
   it('a failing delivery insert rolls back the success-path append with it', async () => {

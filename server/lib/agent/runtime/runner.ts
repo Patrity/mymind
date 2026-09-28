@@ -264,12 +264,14 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // A reply that goes out over a channel (reply_to / a job's `deliver`) gets its
       // channel_deliveries rows in the SAME transaction as the message: both or neither.
       // planDeliveries reads reply_to fresh (a steer may have set it mid-run); for a run with
-      // neither it plans nothing. The rescue path below never delivers.
+      // neither it plans nothing. Its reads go through this transaction (no second pooled
+      // connection), inside a savepoint: a planning failure — even a failed query — rolls back
+      // to it and the reply still commits, just without deliveries. The rescue path never delivers.
       const deliveryIds: string[] = []
       const ids = await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId, { // insertion order
         inTx: async (tx, newIds) => {
           if (added.length < 2) return
-          const plans = await planDeliveries(run, { text: reply, messageId: newIds[newIds.length - 1]!, conversationId })
+          const plans = await tx.transaction(sp => planDeliveries(run, { text: reply, messageId: newIds[newIds.length - 1]!, conversationId }, sp))
             .catch((err) => { console.error('[agent] planning channel deliveries failed:', err); return [] })
           if (plans.length) deliveryIds.push(...await insertDeliveries(tx, plans))
         }

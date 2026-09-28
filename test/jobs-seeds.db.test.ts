@@ -15,7 +15,8 @@ import { useDb } from '../server/db'
 import { agentJobs, agentConfigRevisions } from '../server/db/schema'
 import { listRevisions } from '../server/lib/agent/config/revisions'
 import { SEED_JOB_SLUGS, SEED_JOBS, SEED_JOBS_V1 } from '../server/lib/agent/jobs/seeds'
-import { createJob, saveJob, getJob, upgradeSeedJobs } from '../server/lib/agent/jobs/store'
+import { createJob, saveJob, getJob, setJobEnabled, upgradeSeedJobs } from '../server/lib/agent/jobs/store'
+import { setFrontmatterKey } from '../shared/utils/frontmatter'
 
 const PREFIX = 'jseedtest-'
 const md = (fm: string, body: string) => `---\n${fm}\n---\n${body}\n`
@@ -54,6 +55,14 @@ describe('seed content', () => {
     expect(SEED_JOBS['session-digest']).toMatch(/^deliver: \[app\]$/m)
     for (const slug of SEED_JOB_SLUGS) expect(SEED_JOBS[slug]).toMatch(/^enabled: false$/m)
   })
+
+  it('switching a seed on changes only its enabled line, in both versions', () => {
+    for (const slug of SEED_JOB_SLUGS) {
+      const onV1 = setFrontmatterKey(SEED_JOBS_V1[slug], 'enabled', true)
+      expect(onV1).toBe(SEED_JOBS_V1[slug].replace(/^enabled: false$/m, 'enabled: true'))
+      expect(setFrontmatterKey(SEED_JOBS[slug], 'enabled', true).replace(/^deliver: .*\n/m, '')).toBe(onV1)
+    }
+  })
 })
 
 describe('upgradeSeedJobs (scoped fake slugs)', () => {
@@ -88,6 +97,30 @@ describe('upgradeSeedJobs (scoped fake slugs)', () => {
     expect(await upgradeSeedJobs({ seeds, previous, onlySlugs })).toBe(0)
     expect((await getJob(plain))!.contentHash).toBe(aAfter.contentHash)
     expect(await listRevisions('job', a.id)).toHaveLength(2)
+  })
+
+  it('an unedited seed that was only switched on is upgraded and stays enabled; an enabled AND edited one is left alone', async () => {
+    // A yearly trigger: an enabled test job must never come due for a live worker.
+    const y1 = (n: string) => md('trigger: cron 0 0 1 1 *\nenabled: false', `Yearly ${n}.`)
+    const y2 = (n: string) => md('trigger: cron 0 0 1 1 *\ndeliver: [app]\nenabled: false', `Yearly ${n}.`)
+    const on = `${PREFIX}on`
+    const onEdited = `${PREFIX}on-edited`
+    const s = { [on]: y2('a'), [onEdited]: y2('b') }
+    const p = { [on]: y1('a'), [onEdited]: y1('b') }
+    await createJob({ slug: on, content: y1('a'), actor: 'system' })
+    const enabled = await setJobEnabled(on, true, 'human') // exactly what the /jobs switch writes
+    expect(enabled.content).toBe(setFrontmatterKey(y1('a'), 'enabled', true))
+    await createJob({ slug: onEdited, content: md('trigger: cron 0 0 1 1 *\nenabled: true', 'Yearly b, mine.'), actor: 'human' })
+    const editedBefore = (await getJob(onEdited))!
+
+    expect(await upgradeSeedJobs({ seeds: s, previous: p, onlySlugs: [on, onEdited] })).toBe(1)
+    const after = (await getJob(on))!
+    expect(after.content).toBe(setFrontmatterKey(y2('a'), 'enabled', true))
+    expect(after.content).toMatch(/^deliver: \[app\]$/m)
+    expect(after.enabled).toBe(true)
+    expect((await getJob(onEdited))!.contentHash).toBe(editedBefore.contentHash)
+
+    expect(await upgradeSeedJobs({ seeds: s, previous: p, onlySlugs: [on, onEdited] })).toBe(0)
   })
 
   it('never touched the real seed jobs on the dev DB', async () => {

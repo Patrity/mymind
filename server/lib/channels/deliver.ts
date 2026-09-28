@@ -7,7 +7,7 @@ import { useDb } from '../../db'
 import { agentJobs, agentRuns, type AgentRun } from '../../db/schema'
 import { recordEvent } from '../observability/record'
 import { parseJob } from '../agent/jobs/parse'
-import { loadChannelsConfig } from './config'
+import { loadChannelsConfig, type ChannelsDb } from './config'
 import { isAway } from './presence'
 import { directChatGuid } from './bluebubbles/client'
 import { emailSubject } from './email/render'
@@ -48,6 +48,18 @@ export function extractImageIds(markdown: string): string[] {
   return out
 }
 
+/** The iMessage text for a reply whose images go as attachments: each attached image's
+ *  `![alt](…/api/images/<id>/raw)` embed is removed (it would arrive as a raw link next to the
+ *  photo), and the ends trimmed. Everything else — including plain `[text](…)` links — stays. */
+export function stripImageEmbeds(markdown: string, ids: string[]): string {
+  if (!ids.length) return markdown
+  const idSet = new Set(ids.map(i => i.toLowerCase()))
+  return markdown.replace(/!\[[^\]]*\]\(\s*([^)\s]*)\s*\)/g, (whole, url: string) => {
+    const m = /\/api\/images\/([0-9a-f-]{36})\/raw$/i.exec(url)
+    return m && idSet.has(m[1]!.toLowerCase()) ? '' : whole
+  }).trim()
+}
+
 function readReplyChat(v: unknown): string | null {
   const r = v as { channel?: unknown; chatGuid?: unknown } | null
   return r?.channel === 'imessage' && typeof r.chatGuid === 'string' && r.chatGuid ? r.chatGuid : null
@@ -67,21 +79,27 @@ function warnSkipped(slug: string, channel: OutboundChannelId, why: string): voi
  *   the default chat, email to the configured address with subject `Bridget · <slug>`;
  * - both → iMessage de-duplicated by target (the reply wins).
  * Images linked in the reply ride along on iMessage (outbox.ts splits them into their own rows);
- * email keeps them as links in the text. Only reads — the caller inserts the rows.
+ * email keeps them as links in the text. An empty reply plans nothing. Only reads — the caller
+ * inserts the rows.
+ *
+ * `db`: every read goes through it. The runner passes its append transaction, so planning never
+ * takes a second pooled connection while that transaction holds one (the pool is finite).
  */
 export async function planDeliveries(
   run: AgentRun,
-  reply: { text: string; messageId: string; conversationId: string }
+  reply: { text: string; messageId: string; conversationId: string },
+  db: ChannelsDb = useDb()
 ): Promise<NewDelivery[]> {
-  const [fresh] = await useDb().select({ replyTo: agentRuns.replyTo, jobId: agentRuns.jobId })
+  if (!reply.text.trim()) return []
+  const [fresh] = await db.select({ replyTo: agentRuns.replyTo, jobId: agentRuns.jobId })
     .from(agentRuns).where(eq(agentRuns.id, run.id)).limit(1)
   const replyChat = readReplyChat(fresh ? fresh.replyTo : run.replyTo)
   const jobId = fresh ? fresh.jobId : run.jobId
   if (!replyChat && !jobId) return []
 
-  const config = await loadChannelsConfig()
+  const config = await loadChannelsConfig(db)
   const images = extractImageIds(reply.text)
-  const imessagePayload: DeliveryPayload = images.length ? { text: reply.text, images } : { text: reply.text }
+  const imessagePayload: DeliveryPayload = images.length ? { text: stripImageEmbeds(reply.text, images), images } : { text: reply.text }
   const base = { conversationId: reply.conversationId, messageId: reply.messageId, jobId: jobId ?? null, runId: run.id }
   const out: NewDelivery[] = []
   const addIMessage = (target: string, source: 'reply' | 'job') => {
@@ -91,7 +109,7 @@ export async function planDeliveries(
   if (replyChat && config.imessage.enabled) addIMessage(replyChat, 'reply')
 
   if (jobId) {
-    const [job] = await useDb().select({ slug: agentJobs.slug, content: agentJobs.content }).from(agentJobs).where(eq(agentJobs.id, jobId)).limit(1)
+    const [job] = await db.select({ slug: agentJobs.slug, content: agentJobs.content }).from(agentJobs).where(eq(agentJobs.id, jobId)).limit(1)
     // The timezone is irrelevant to `deliver`; any valid default parses the same list.
     const parsed = job ? parseJob(job.content, { defaultTimezone: 'UTC' }) : null
     if (job && parsed && !parsed.ok) console.warn(`[channels] job ${job.slug}: not delivering, its file does not parse: ${parsed.error}`)
@@ -100,7 +118,7 @@ export async function planDeliveries(
       const channels = resolveDeliverChannels(deliver, {
         imessageEnabled: config.imessage.enabled,
         emailEnabled: config.email.enabled,
-        away: await isAway()
+        away: await isAway(Date.now(), db)
       })
       // Named explicitly but switched off since the job was saved (ruling 4: not re-validated).
       if (deliver.includes('imessage') && !config.imessage.enabled) warnSkipped(job.slug, 'imessage', 'iMessage is disabled')

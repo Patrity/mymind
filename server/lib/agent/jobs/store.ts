@@ -607,10 +607,12 @@ export async function installSeedJobs(): Promise<number> {
 
 /**
  * Moves each installed seed from its cycle-74 content (SEED_JOBS_V1) to the current SEED_JOBS
- * (cycle 75: the `deliver:` lines). Hash-guarded: only a seed whose stored content hashes the
- * same as its previous version is rewritten (actor `system`, CAS on that hash); an edited seed is
- * left alone, and a second run is a no-op. Safe on every boot. Returns how many were upgraded.
- * `seeds` / `previous` / `onlySlugs` are the test seam — the real seeds live on the shared dev DB.
+ * (cycle 75: the `deliver:` lines). Hash-guarded: only a seed whose stored content is its previous
+ * version — exactly, or with just its `enabled:` line switched on (what setJobEnabled writes) —
+ * is rewritten, keeping that enabled state (actor `system`, CAS on the stored hash). Any other
+ * edit is left alone, and a second run is a no-op. Safe on every boot. Returns how many were
+ * upgraded. `seeds` / `previous` / `onlySlugs` are the test seam — the real seeds live on the
+ * shared dev DB.
  */
 export async function upgradeSeedJobs(opts: {
   seeds?: Record<string, string>
@@ -625,13 +627,21 @@ export async function upgradeSeedJobs(opts: {
     const prev = previous[slug]
     if (next === undefined || prev === undefined || next === prev) continue
     const row = await rowBySlug(slug)
-    if (!row || row.contentHash !== hashOf(prev)) continue
+    if (!row) continue
+    let target: string
+    if (row.contentHash === hashOf(prev)) target = next
+    else if (row.contentHash === hashOf(setFrontmatterKey(prev, 'enabled', true))) target = setFrontmatterKey(next, 'enabled', true)
+    else continue
     try {
-      await writeJob(slug, next, row.contentHash, 'system', null)
+      await writeJob(slug, target, row.contentHash, 'system', null)
       upgraded++
     } catch (err) {
-      // A concurrent edit (ConflictError) means the seed is no longer the untouched original.
-      if (!(err instanceof ConflictError)) console.error(`[jobs] upgrading seed job "${slug}" failed:`, err)
+      // A concurrent edit (ConflictError) means the seed is no longer the untouched original. A
+      // JobValidationError (an enabled seed whose new `deliver` names a channel that isn't set
+      // up) leaves it at its previous version until that channel is configured.
+      if (err instanceof ConflictError) continue
+      if (err instanceof JobValidationError) console.warn(`[jobs] seed job "${slug}" left at its previous version: ${err.message}`)
+      else console.error(`[jobs] upgrading seed job "${slug}" failed:`, err)
     }
   }
   return upgraded

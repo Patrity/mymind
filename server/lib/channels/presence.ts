@@ -2,7 +2,7 @@
 // Is Tony at the web app right now? The client posts POST /api/presence on input/focus/visibility
 // (throttled to once a minute); we keep the last ping in memory. After a restart he counts as away
 // until the first ping — accepted in the spec (at most one extra iMessage).
-import { loadChannelsConfig } from './config'
+import { loadChannelsConfig, type ChannelsDb } from './config'
 
 let lastActiveAt: number | null = null
 
@@ -10,9 +10,10 @@ export function markActive(at: number = Date.now()): void {
   if (lastActiveAt === null || at > lastActiveAt) lastActiveAt = at
 }
 
-export async function isAway(now: number = Date.now()): Promise<boolean> {
+/** `db`: pass the open transaction when called inside one (see loadChannelsConfig). */
+export async function isAway(now: number = Date.now(), db?: ChannelsDb): Promise<boolean> {
   if (lastActiveAt === null) return true
-  const { presenceAwayMinutes } = await loadChannelsConfig()
+  const { presenceAwayMinutes } = await loadChannelsConfig(db)
   return now - lastActiveAt >= presenceAwayMinutes * 60_000
 }
 

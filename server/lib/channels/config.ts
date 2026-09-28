@@ -182,6 +182,11 @@ export function mergeChannelsPut(existing: ChannelsConfig, body: ChannelsPutBody
 
 let cache: ChannelsConfig | null = null
 
+/** The pool, or an open transaction — a caller inside a transaction passes it so a cold load
+ *  does not take a second pooled connection while its transaction holds one. */
+type DbTx = Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0]
+export type ChannelsDb = ReturnType<typeof useDb> | DbTx
+
 async function upsert(key: string, value: unknown): Promise<void> {
   const now = new Date()
   await useDb().insert(settings)
@@ -197,9 +202,9 @@ const STORED_TOKEN_VALID = sql`(coalesce(jsonb_typeof("settings"."value"->'webho
  * (`rotateWebhookToken`) changes it. Done in one statement so a PUT that loaded before a
  * concurrent regenerate cannot write the old token back.
  */
-async function upsertIMessageKeepingToken(im: IMessageConfig): Promise<void> {
+async function upsertIMessageKeepingToken(im: IMessageConfig, db: ChannelsDb = useDb()): Promise<void> {
   const now = new Date()
-  await useDb().insert(settings)
+  await db.insert(settings)
     .values({ key: KEY_IMESSAGE, value: im, updatedAt: now })
     .onConflictDoUpdate({
       target: settings.key,
@@ -210,28 +215,33 @@ async function upsertIMessageKeepingToken(im: IMessageConfig): Promise<void> {
     })
 }
 
-async function readRows(): Promise<Map<string, unknown>> {
-  const rows = await useDb().select().from(settings)
+async function readRows(db: ChannelsDb = useDb()): Promise<Map<string, unknown>> {
+  const rows = await db.select().from(settings)
     .where(inArray(settings.key, [KEY_IMESSAGE, KEY_EMAIL, KEY_PRESENCE]))
   return new Map(rows.map(r => [r.key, r.value]))
 }
 
 // Note: a cold load can WRITE (first-time token generation / repair of a bad token). It is
 // idempotent after that first write, so read paths like isAway() calling it are safe.
-export async function loadChannelsConfig(): Promise<ChannelsConfig> {
+export async function loadChannelsConfig(db?: ChannelsDb): Promise<ChannelsConfig> {
   if (cache) return cache
-  let byKey = await readRows()
+  const exec = db ?? useDb()
+  let byKey = await readRows(exec)
   let c = parseChannelsConfig({ imessage: byKey.get(KEY_IMESSAGE), email: byKey.get(KEY_EMAIL), presenceAwayMinutes: byKey.get(KEY_PRESENCE) })
   const rawIm = byKey.get(KEY_IMESSAGE)
+  let wrote = false
   if (!isRecord(rawIm) || !isValidStoredToken(rawIm.webhookToken)) {
     // First load, or a row without a usable token: persist the generated token (the rest of the
     // row is written normalised). If another process got there first its token wins — re-read.
-    await upsertIMessageKeepingToken(c.imessage)
-    byKey = await readRows()
+    await upsertIMessageKeepingToken(c.imessage, exec)
+    wrote = true
+    byKey = await readRows(exec)
     const stored = byKey.get(KEY_IMESSAGE)
     if (isRecord(stored) && isValidStoredToken(stored.webhookToken)) c = { ...c, imessage: { ...c.imessage, webhookToken: stored.webhookToken } }
   }
-  cache = c
+  // A token written inside the caller's transaction is not durable until that commits (it may
+  // roll back), so it is not cached; the next load outside a transaction persists and caches.
+  if (!wrote || !db) cache = c
   return c
 }
 
