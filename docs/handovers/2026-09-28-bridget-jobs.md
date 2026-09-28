@@ -18,6 +18,8 @@ migrations:
   - 0056 agent_skills, agent_jobs, agent_config_revisions, agent_job_fires; agent_runs.job_id (fk, on delete set null)
 migrations_run_on_prod: false  # 0056 is applied to the shared dev DB only; the skills data move runs from a boot plugin, not the migration
 seed_jobs_enabled: false  # morning-brief, evening-wrap, heartbeat, session-digest ship DISABLED; Tony enables them on /jobs
+final_review: fixed  # 0 C / 5 I / 11 M; I1-I5 and M1-M8, M10, M11 fixed in the fix wave; M9 parked as a deviation
+prod_agent_timezone: unset  # prod is Etc/UTC; set Settings -> Bridget -> Agent timezone to America/Chicago after deploy, BEFORE enabling any seed
 mymind_task: null  # set by the controller
 ---
 
@@ -31,8 +33,9 @@ Skills moved out of `documents` into their own table. Skills and Jobs are now ma
 on one shared markdown editor, extracted from `/documents`.
 
 **Status:** built on `feat/bridget-jobs`. All gates are green and all six browser acceptance
-scenarios pass. It is **not merged and not deployed**. Migration 0056 is on the shared dev DB
-only.
+scenarios pass. The final whole-branch review (0 critical, 5 important, 11 minor) is fixed; see
+[Final review fix wave](#final-review-fix-wave). It is **not merged and not deployed**. Migration
+0056 is on the shared dev DB only.
 
 **The four seed jobs ship disabled.** `morning-brief`, `evening-wrap`, `heartbeat` and
 `session-digest` are installed on boot with `enabled: false`. Tony turns them on from `/jobs`.
@@ -94,12 +97,12 @@ How it works today: [`docs/wiki/agent-jobs.md`](../wiki/agent-jobs.md), plus the
 
 ## Gates
 
-| Gate | Baseline (211205c) | Now (7fdeea5 + this docs commit) |
-|---|---|---|
-| `pnpm test` | 2318 pass · 1 skip | **258 files · 2485 pass · 1 skip** |
-| `pnpm test:db` | 391 pass | **54 files · 467 pass** |
-| `pnpm typecheck` | clean | **clean** |
-| `pnpm build` | ok | **ok** |
+| Gate | Baseline (211205c) | Build (7fdeea5 + docs) | After the final review fix wave (03e3d80) |
+|---|---|---|---|
+| `pnpm test` | 2318 pass · 1 skip | 258 files · 2485 pass · 1 skip | **261 files · 2497 pass · 1 skip** |
+| `pnpm test:db` | 391 pass | 54 files · 467 pass | **54 files · 483 pass** |
+| `pnpm typecheck` | clean | clean | **clean** |
+| `pnpm build` | ok | ok | **ok** |
 
 Every new test was mutation-checked by its task's implementer and reviewer. The SDD ledger is
 `.superpowers/sdd/2026-09-28-bridget-jobs/progress.md`, with per-task reports and reviews
@@ -113,7 +116,7 @@ chain head.
 
 | # | Scenario | Result | Evidence |
 |---|---|---|---|
-| 1 | Heartbeat `every 5m` from `/jobs`; next fire times; Run now | **PASS** (both paths) | I used New job → Heartbeat template → slug `accept74-heartbeat`, set `trigger: every 5m`, `enabled: true`, and saved. The panel read "every 5 minutes · America/Chicago" with 5:43, 5:48, 5:53, 5:58 and 6:03 AM CDT, which matches `GET /api/jobs/:slug` `nextFireTimes` (10:43:05Z + 5 min steps) and the stored `next_run_at`. **Run now** created run `d06a0282` (`job_id` set, `input.context=light`) → `done`, not suppressed. Main got a `wake:job:accept74-heartbeat` event row and the reply. The job showed `last_outcome=spoke`, and `next_run_at` was unchanged (schedule untouched). Recent runs showed "spoke · just now · 4 s · view in thread". **Silent path:** with the body "Reply with exactly NO_REPLY", run `6bce9a41` was `done`, `suppressed=true`, with null user and assistant ids. The main thread's message count was **49 before and 49 after**. The Runs drawer listed "wake · job:accept74-heartbeat · done · silent" and the job read `last_outcome=silent`. Run now on a disabled job returned `{skipped:'disabled'}`. |
+| 1 | Heartbeat `every 5m` from `/jobs`; next fire times; Run now | **PASS** (both paths) | I used New job → Heartbeat template → slug `accept74-heartbeat`, set `trigger: every 5m`, `enabled: true`, and saved. The panel read "every 5 minutes · America/Chicago" with 5:43, 5:48, 5:53, 5:58 and 6:03 AM CDT, which matches `GET /api/jobs/:slug` `nextFireTimes` (10:43:05Z + 5 min steps) and the stored `next_run_at`. **Run now** created run `d06a0282` (`job_id` set, `input.context=light`) → `done`, not suppressed. Main got a `wake:job:accept74-heartbeat` event row and the reply. The job showed `last_outcome=spoke`, and `next_run_at` was unchanged (schedule untouched). Recent runs showed "spoke · just now · 4 s · view in thread". **Silent path:** with the body "Reply with exactly NO_REPLY", run `6bce9a41` was `done`, `suppressed=true`, with null user and assistant ids. The main thread's message count was **49 before and 49 after**. The Runs drawer listed "wake · job:accept74-heartbeat · done · silent" and the job read `last_outcome=silent`. Run now on a disabled job returned `{skipped:'disabled'}` (since changed by the final review's M10: a human Run now runs a disabled job). |
 | 2 | Broken frontmatter → inline error; doesn't fire | **PASS** (as ruled: rejected at write) | I typed `trigger: sometimes soon` plus `bogus_key: 1` and pressed Save. The page showed "Not saved · unknown key: bogus_key" and the panel showed "Invalid · unknown key: bogus_key". The DB `content_hash`, `parse_error` (null) and `next_run_at` were **unchanged**, so the broken file was never stored and cannot fire. A direct `PUT` with `every 1m` returned **400** "trigger must fire at least 5 minutes apart". Navigating away raised the `beforeunload` guard. |
 | 3 | "remind me in 10 minutes to stretch" → `at` job → fires → reply in main → disabled | **PASS** | From the `/agent` composer, `schedule_wake` created `reminder-25a098` (`source=agent`, `at 10:54:53Z`, enabled, `context: light`). `/jobs` showed the row "reminder-25a098 · agent · once on Sep 28, 05:54 · in 10 minutes". I moved its `at` to +70 s through a CAS `PUT`. The tick fired it at 10:46:22: run `done`, not suppressed, and main got the event row `wake:job:reminder-25a098` plus her reply. Afterwards the job had `enabled=false`, `fired_at` set, `next_run_at=null` and `last_outcome=spoke`. The revisions were agent (create) → human (move) → **system** (`enabled: false`). The `/jobs` switch rendered `aria-checked=false`. |
 | 4 | `session-digest` enabled → a CC session ends → digest in main | **PASS** | I enabled it with the real switch on `/jobs`, minted a dev API token, and POSTed `SessionEnd` to `/api/hooks/cc/SessionEnd`. A bare synthetic session (no title or summary, 0 min) fired the job (an `agent_job_fires` row keyed by the session id, and the prompt carried the plain-sentence event block), and she judged it trivial: `silent`, which the job body permits. I then made a second synthetic session with a title, a summary and a 42-min duration (fixture set in the DB between SessionStart and SessionEnd): run `ead34925` was `done`, not suppressed, and the assistant row in main began "Session digest — "Cycle 74 acceptance…" (mymind, 42 min)". I disabled the job again with the switch. |
@@ -137,6 +140,50 @@ messages) and their 8 `agent_runs` rows.
 **The heartbeat really used the gate.** Its first run proposed `forget_memory` on a test-noise
 memory ("The user requested a list of numbers from 1 to 1000"). This is `review_queue`
 `5774e687`, `agent-action`, still **pending**, left for Tony to decide.
+
+## Final review fix wave
+
+The final whole-branch review (`.superpowers/sdd/2026-09-28-bridget-jobs/final-review.md`) found
+0 critical, 5 important and 11 minor issues. The rulings at the end of the SDD ledger decided each
+one; the fix report is `final-fix-report.md` beside it. Every fix has a test that goes red when the
+fix is removed (mutation-checked against the code, never by splicing a WHERE).
+
+| # | Finding | Fix |
+|---|---|---|
+| I1 | Self-perpetuating wakes bypassed the 5-min and 50-enabled guards (`schedule_wake("in 1m")` chains; job A `run_job` B `run_job` A) | Agent-written `at` times need **≥ 5 min** lead; Bridget may create **≤ 10 `at` jobs per rolling hour** (counted from first revisions, so deletes don't reset it); `run_job` returns `refused_in_job_run` inside a job-fired run. `ToolContext` gained `runId` (runner → `handleTurn` → `runAgent` → `buildAiTools`). |
+| I2 | `delete_job` left no revision and undo lost the history | `deleteJob` records a final revision (actor, run id) in the delete transaction; `restoreJob` re-creates under the **original id**; `delete_job`'s undo uses it. |
+| I3 | Every `isolated` fire opened a new thread (empty for silent runs) | `isolated:<slug>` reuses the thread its newest run used — the stable key is `agent_runs.session_key`, recorded by every run and never pruned. A deleted thread is replaced on the next fire. |
+| I4 | Event fires ignored no-self-overlap; `task.due` fired one wake per task | `fireEvent` skips a job with a queued/running run **without recording the key**; `task.due` fires each job **once per tick** with one event block listing every newly-due task, deduped per task, deferred (no keys) while the job's previous run is going. |
+| I5 | No way to set the timezone; a later change never reached saved jobs; rollback left a cycle-73 build with no skills | **Settings → Bridget → Agent timezone** (IANA select, "Use browser timezone", "Server default"); `PUT /api/settings/agent-timezone` re-derives every job without its own `timezone:` (`rederiveDefaultTimezone`). The rollback un-delete SQL is in [agent-runtime.md § Rollback](../wiki/agent-runtime.md#rollback), verified read-only on dev. |
+| M1 | The wake divider and the model's history dropped the job slug | `shared/utils/event-origin.ts` `splitOrigin` splits on the first colon, used by `Conversation.vue` and `event-text.ts`: "woken · job:<slug>". |
+| M2 | "Summary: done.." | One full stop at most. |
+| M3 | Agent revisions never carried `run_id` | They do now (`ToolContext.runId`); MCP calls have no run, so null. |
+| M4 | `source` meant "last writer" and `system` became `human` | A `system` write keeps the existing `source`. |
+| M5 | Disabling re-validated (a job pinned to a removed model could not be switched off, nor auto-disabled) | Disabling skips validation; only enabling validates. |
+| M6 | An enabled `at` saved in the past sat enabled forever | Creating, saving or enabling an enabled past `at` is a validation error. |
+| M7 | Skill documents the move skipped silently disappeared | Every remaining live `type='skill'` document is reported by path with a reason in the boot log. |
+| M8 | The `/skills` toggle regenerated the markdown and dropped extra keys | An update that changes only `active` rewrites that one line (`setFrontmatterKey`). |
+| M9 | Spec §11's per-job run counts on `/jobs` | **Parked** — a deviation (below); the wiki's run-count query covers it. |
+| M10 | Run now on a disabled job was refused | A human Run now (API/UI) works on a disabled job; the agent's `run_job` still refuses. |
+| M11 | `onRunFinished` ran after a fenced `finishRun` | Skipped when the finish was fenced (the row already says `interrupted`). |
+
+**Browser-validated** (playwright-cli, dev on :3079, 2026-09-28 06:32–06:38 CDT), with a scratch
+job `fixwave-tz` (`cron 30 7 1 1 *`, no `timezone:` line):
+- **Agent timezone:** the field loaded as "Server default (America/Chicago)" (no setting on dev).
+  I picked `Asia/Tokyo` with real clicks and saved. The toast read "5 jobs now follow
+  Asia/Tokyo", the job's `timezone` became `Asia/Tokyo` with `next_run_at` 2026-12-31T22:30Z
+  (from 2027-01-01T13:30Z), and `/jobs/fixwave-tz` showed "Asia/Tokyo · Fri, Jan 1, 7:30 AM
+  GMT+9". Choosing "Server default" and saving deleted the setting row again (0 rows, as before)
+  and moved every job back to `America/Chicago`.
+- **Run now on a disabled job:** with the job disabled, the page's **Run now** toasted "Run
+  started"; run `ece50e5f` → `done`, not suppressed, in main. The job stayed disabled with
+  `next_run_at` null and `last_outcome = spoke`.
+- **Wake divider:** `/agent` showed "woken · job:fixwave-tz: Final review fix wave check: …",
+  and her reply named the job.
+- **Cleanup:** `DELETE /api/jobs/fixwave-tz` recorded its final revision (4 revisions), which I
+  then removed by id. The four seeds are disabled with byte-identical `content_hash` and
+  `America/Chicago`; `agent_timezone` is absent, as it was. The main thread keeps the one wake
+  and its reply.
 
 ## Deviations from the spec (rulings, all from the SDD ledger)
 
@@ -210,7 +257,37 @@ memory ("The user requested a list of numbers from 1 to 1000"). This is `review_
   behind a running run, for a wake or for a non-plain message behind an interactive run. The
   client paints the bubble immediately.
 - **The runtime is always on.** The `AGENT_RUNTIME` flag and the legacy path are gone, so
-  rollback is a code revert to a cycle-73 build.
+  rollback is a code revert to a cycle-73 build **plus the skills un-delete SQL** (final review I5).
+
+**Final review rulings**
+- **I1:** agent-written `at` triggers need ≥ 5 min lead (`MIN_INTERVAL_MS`); ≤ 10 agent-created
+  `at` jobs per rolling hour; `run_job` refused (the tool returns an explanation) when the calling
+  run is itself job-fired. Cost if wrong: Bridget can't chain jobs from inside a job.
+- **I2:** `deleteJob` records a final revision in the delete transaction; `restoreJob` keeps the
+  original id and history; undo uses it.
+- **I3:** one reused conversation per isolated slug (stable lookup: `agent_runs.session_key`), not
+  one per fire. Cost if wrong: an isolated job's history accumulates in one thread (summaries
+  handle it).
+- **I4:** `fireEvent` skips when `hasActiveRun` (key not inserted, so `task.due` retries next
+  tick); `task.due` batches every newly-due task into one fire per tick with an event block
+  listing them. Cost if wrong: a single digest instead of per-task wakes.
+- **I5:** prod is `Etc/UTC` with no `agent_timezone` setting (checked read-only 2026-09-28). An
+  "Agent timezone" field in Settings; changing it re-derives jobs without an explicit timezone.
+  Docs gain the rollback un-delete SQL and the timezone step. The controller sets
+  `America/Chicago` on prod after deploy, before any seed is enabled. The `agent_runtime` setting
+  is absent on prod and the flag was removed in Task 7 — no action.
+- **Minors:** fix M1 (divider AND server event text), M2, M3 (run id wired through
+  `ToolContext`), M4, M5 (disabling always succeeds), M6 (an enabled past `at` is a validation
+  error), M7 (log skipped docs by path), M8 (skill toggle uses `setFrontmatterKey`), M11 (skip
+  `onRunFinished` when the finish was fenced).
+- **M10 revised:** a human Run now (API/UI) works on a disabled job so Tony can try a seed before
+  enabling it; the agent's `run_job` still refuses disabled jobs.
+- **M9 parked — a deviation:** spec §11 says `/jobs` shows per-job run counts; only the SQL
+  query in the wiki (§ Operational queries) provides them.
+- **The M8 byte-stable path is toggle-only.** Any update that changes another field still
+  regenerates the markdown from fields (and drops extra frontmatter keys).
+- **A skipped `cc.session_end`** (the job's previous run still going) is not retried; that
+  session is not digested. `task.due` defers instead, because its source is re-read every tick.
 
 ## Follow-ups (every parked item, plus what acceptance found)
 
@@ -248,15 +325,15 @@ memory ("The user requested a list of numbers from 1 to 1000"). This is `review_
     - A revert to another target's revision returns 400, not 404.
 13. **`CodeLanguage` is defined three times.** (T10 minor; the stale toolbar comment was fixed in
     T11.)
-14. **The job divider label shows `job`, not the slug.** It reads "woken · job: …" because
-    `Conversation.vue` `eventLabel` does `origin.split(':', 2)` on `wake:job:<slug>`. (Found in
-    acceptance.)
-15. **`eventBlock` doubles the full stop** when the session summary already ends with one
-    ("…not done.."). (Found in acceptance.)
+14. ~~The job divider label shows `job`, not the slug.~~ Fixed in the final review fix wave (M1).
+15. ~~`eventBlock` doubles the full stop.~~ Fixed in the final review fix wave (M2).
 16. **The pre-existing triage/undo DB tests leak 14 soft-deleted task rows** per `pnpm test:db`
     run, confirmed again today. (Noted in T5.)
 17. **The wiki mirror to MyMind** for `agent-jobs`, `agent-runtime` and `agent-skills` is left to
     the controller. (T7 concern.)
+18. **Per-job run counts on `/jobs`** (spec §11, final review M9): parked; use the wiki query.
+19. **`agent_runs.session_key` has no index.** The isolated-thread lookup scans it; fine at
+    today's volume.
 
 **Dev-DB incident (Task 3, repaired).** A mutation check spliced a raw `sql\`true or …\`` into a
 drizzle `and()`. It escaped the test scope and migrated 15 real dev skill documents. They were
@@ -271,10 +348,22 @@ their original `deleted_at`. The rule now lives in the SDD `db-safety.md` and th
    - the skills plugin moves prod's skill documents into `agent_skills` (check the
      `[agent-skills-migrate] moved N` log line, and that `/skills` lists them);
    - the runtime plugin installs the four seed jobs, **disabled**.
-3. Set the `agent_timezone` setting if the server zone isn't Tony's. Otherwise the jobs use the
-   server's zone.
-4. Tony enables the seeds on `/jobs`. Watch the per-job run counts query in the wiki for
-   heartbeat cost.
+3. **Set the timezone before enabling any seed.** Prod runs `Etc/UTC` and has no
+   `agent_timezone` setting, so `morning-brief` would fire at 07:30 UTC (02:30 CDT). Open
+   **Settings → Bridget → Agent timezone**, pick `America/Chicago`, and Save. Saving re-derives
+   every job without its own `timezone:` line (the toast says how many), so the order is safe even
+   if a job was saved before. Check with
+   `select slug, timezone, next_run_at from agent_jobs order by slug;` — every seed should read
+   `America/Chicago`. (A raw `insert into settings` skips the re-derive; use the page, or re-save
+   it there afterwards.)
+4. Tony enables the seeds on `/jobs` (he can try one first with **Run now** while it is still
+   disabled). Watch the per-job run counts query in the wiki for heartbeat cost.
+
+**Rolling back** is a redeploy of a cycle-73 build **plus the skills un-delete**: the move
+soft-deleted prod's skill documents, and cycle-73 code reads skills only from `documents`. The
+exact SQL (preview, un-delete in a transaction, and the list of skills changed after the move,
+which exist only in `agent_skills`) is in
+[agent-runtime.md § Rollback](../wiki/agent-runtime.md#rollback).
 
 ## Where cycle 75 starts
 

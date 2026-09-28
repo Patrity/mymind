@@ -56,7 +56,12 @@ project docs (spec D7).
   (`migrateSkillsFromDocuments`). It is idempotent. For each live `type='skill'` document under
   the legacy folder whose basename is not already a slug in `agent_skills`, it inserts the row,
   soft-deletes the document and records a `system` revision, all in one transaction. A document
-  that fails is skipped and reported, and stays in place. It is a plugin rather than SQL because
+  that fails is skipped and reported, and stays in place. **Every other live `type='skill'`
+  document is reported too**, by path, with the reason: one whose slug already exists in
+  `agent_skills`, or one outside `/projects/mymind/skills/` (moved with `move_document`). Nothing
+  moves those and Bridget no longer reads skill documents, so the `[agent-skills-migrate] skipped
+  <path>: <reason>` boot-log line is the only trace. Rolling back past this move needs the
+  un-delete SQL in [agent-runtime.md § Rollback](agent-runtime.md#rollback). It is a plugin rather than SQL because
   rebuilding markdown from jsonb frontmatter plus body is fragile in SQL. Nitro does not await
   plugins, so on the very first boot there is a window of a few milliseconds with an empty skills
   index.
@@ -128,7 +133,10 @@ Delete a skill permanently (reversible via undo). Prefer `edit_skill` with `acti
 - **`/skills`** (main nav, `app/pages/skills/index.vue`) shows the global **Skills enabled**
   kill switch in the header, a **New skill** dialog (a name, then a starter file), and one card
   per skill: name, description, when-to-use, a `human`/`agent` source badge, an **active** switch and
-  the updated time.
+  the updated time. The switch (like `edit_skill` with only `active`) rewrites just the `active:`
+  line of the stored markdown (`setFrontmatterKey`), so extra frontmatter keys and formatting
+  added in the raw editor survive. An `updateSkill` that changes any other field regenerates the
+  file from fields and drops them.
 - **`/skills/[slug]`** (`app/pages/skills/[slug].vue`) is the shared `MarkdownConfigEditor`
   (raw CodeMirror, preview, split) plus `RevisionsPanel` (diff against the previous revision,
   **Revert**). It has explicit **Save** (button or ⌘S), no autosave. A "Not saved: <error>"

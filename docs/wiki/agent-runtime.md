@@ -266,6 +266,51 @@ Cycle 74 deleted the cycle-73 rollback lever (`server/lib/voice/ws-legacy.ts`, t
 now the only way a turn runs, unconditionally. Roll back by redeploying a cycle-73 build (revert
 the cycle-74 merge); the `agent_runtime` setting no longer exists.
 
+**A code revert alone leaves the reverted build with no skills.** On its first boot, cycle 74
+moved every skill document into `agent_skills` and soft-deleted the document; cycle-73 code reads
+skills only from `documents`. After redeploying the cycle-73 build, un-delete exactly the moved
+documents. Each move soft-deleted its document (`deleted_at = now()`, the transaction start) and
+recorded a `system` skill revision (`clock_timestamp()`, milliseconds later) in the **same
+transaction**, and the move is the only writer of `system` skill revisions. Match on both:
+
+```sql
+-- 1. preview: the documents the cycle-74 move soft-deleted (expect one row per system revision)
+select d.path, d.deleted_at from documents d
+where d.type = 'skill' and d.deleted_at is not null
+  and d.path like '/projects/mymind/skills/%'
+  and exists (
+    select 1 from agent_config_revisions r
+    where r.target_kind = 'skill' and r.actor = 'system'
+      and r.created_at >= d.deleted_at and r.created_at < d.deleted_at + interval '5 seconds'
+      and r.content like '---' || chr(10) || 'name: '
+          || regexp_replace(d.path, '^.*/([^/]+)\.md$', '\1') || chr(10) || '%');
+select count(*) from agent_config_revisions where target_kind = 'skill' and actor = 'system';
+
+-- 2. un-delete them (same predicate), in a transaction; check the row count against step 1
+begin;
+update documents d set deleted_at = null
+where d.type = 'skill' and d.deleted_at is not null
+  and d.path like '/projects/mymind/skills/%'
+  and exists (
+    select 1 from agent_config_revisions r
+    where r.target_kind = 'skill' and r.actor = 'system'
+      and r.created_at >= d.deleted_at and r.created_at < d.deleted_at + interval '5 seconds'
+      and r.content like '---' || chr(10) || 'name: '
+          || regexp_replace(d.path, '^.*/([^/]+)\.md$', '\1') || chr(10) || '%');
+commit;
+
+-- 3. skills created or edited AFTER the move exist only in agent_skills — recreate these by
+--    hand as documents (or accept losing the edits); the un-deleted documents hold the pre-move text
+select s.slug, r.actor, r.created_at from agent_skills s
+join agent_config_revisions r on r.target_kind = 'skill' and r.target_id = s.id and r.actor <> 'system'
+order by r.created_at;
+```
+
+The window and the `name:` match keep older soft-deleted skill documents (deleted before cycle
+74, or by hand) deleted. Verified read-only on the dev DB on 2026-09-28: the preview matched
+exactly the 6 moved documents (6 `system` revisions) and none of the 12 other soft-deleted skill documents in that folder.
+The four job tables stay (migration 0056 is additive) and are simply unused by cycle-73 code.
+
 ## Operational queries
 
 ```sql

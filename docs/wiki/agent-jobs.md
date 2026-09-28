@@ -26,7 +26,7 @@ listed in the handover.
 ```markdown
 ---
 trigger: cron 30 7 * * 1-5     # cron <expr> | every <n>m|<n>h | at <ISO datetime> | event <name>
-timezone: America/New_York     # IANA; default = settings `agent_timezone`, else the server's zone
+timezone: America/New_York     # IANA; default = Settings → Bridget → Agent timezone, else the server's zone
 active_hours: 07:00-23:00      # optional, [start, end), wraps past midnight when end < start
 model: default                 # or a registry model id
 thread: main                   # main | isolated
@@ -43,10 +43,10 @@ If nothing matters, reply NO_REPLY.
 | Key | Default | Rules (`server/lib/agent/jobs/parse.ts`) |
 |---|---|---|
 | `trigger` | required | `cron <5-field expr>` (croner), `every <n>m` / `every <n>h`, `at <ISO datetime>`, `event cc.session_end` / `event task.due`. |
-| `timezone` | `agent_timezone` setting, else `Intl` server zone | Must be a valid IANA zone. Stored resolved on the row. |
+| `timezone` | `agent_timezone` setting (Settings → Bridget → **Agent timezone**), else `Intl` server zone | Must be a valid IANA zone. Stored resolved on the row; changing the setting re-derives every job without its own `timezone:` line (see [Timezone](#timezone)). |
 | `active_hours` | none (always) | `HH:MM-HH:MM`. |
 | `model` | `default` (the resolver's chain) | Anything else must be a registry model id. |
-| `thread` | `main` | `isolated` wakes into a fresh thread titled `wake: <slug>`. |
+| `thread` | `main` | `isolated` wakes into **one side thread per slug**, titled `wake: <slug>` and reused fire after fire (see [Scheduling](#scheduling)). |
 | `context` | `full` | `light` = the last **4** turns of history (after the summary tier). |
 | `deliver` | `[app]` | A string array, stored only. |
 | `enabled` | `false` | Boolean. The UI switch rewrites just this line. |
@@ -63,6 +63,22 @@ in an overlap it takes the earlier instant.
   checked over an 8-day window from a fixed Monday in the job's timezone.
 - At most **50** jobs may be enabled. An advisory lock serialises the count check, so two
   concurrent enables can't both pass at 49.
+- An **enabled `at` job in the past** is rejected (creating, saving or enabling one): it would
+  sit enabled forever with no next run. Save it with `enabled: false` instead.
+
+**Wake-rate guards on Bridget's own writes** (actor `agent`, final review I1). The rules above
+bound a job's cadence and how many run at once, but not a chain of one-off wakes (each fired
+reminder schedules the next; a fired `at` job disables itself and frees its slot) or two jobs that
+run each other:
+- an `at` time Bridget arms (a create, an enable, or a changed trigger) must be at least
+  **5 min** ahead — `schedule_wake("in 1m")` is refused;
+- Bridget may create at most **10 `at` jobs per rolling hour**
+  (`MAX_AGENT_AT_CREATES_PER_HOUR`). The count is taken from each job's **first revision**
+  (`countAgentAtCreatesLastHour`), so deleting reminders or letting them fire does not reset it;
+- `run_job` is refused with `refused_in_job_run` when the run calling it was itself fired by a
+  job (`agent_runs.job_id` of `ToolContext.runId`), so A→B→A cannot ping-pong.
+
+Human (UI/API) and `system` writes are not subject to these three.
 
 **Invalid content is rejected at write time.** A save or an agent tool call that fails to parse
 or breaks a guard gets a 400 (or `{ ok: false, error }` from a tool) with the exact message, and
@@ -89,22 +105,37 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 |---|---|
 | `parse.ts` | Markdown → `JobSpec` or `{ error }`. Pure. |
 | `schedule.ts` | `nextRunAt`, `nextFireTimes`, `describeTrigger` ("weekdays at 7:30"), `inActiveHours`, `resolveAtInstant`, `minCronGapMs`. Pure, croner-based and DST-safe. |
-| `store.ts` | **The only writer of `agent_jobs`.** `createJob`, `saveJob` (CAS), `setJobEnabled`, `deleteJob`, `revertJob`, `revalidateAll` (boot), `installSeedJobs`. |
+| `store.ts` | **The only writer of `agent_jobs`.** `createJob`, `saveJob` (CAS), `setJobEnabled`, `deleteJob` (records a final revision), `restoreJob` (re-creates under the original id), `revertJob`, `revalidateAll` (boot), `rederiveDefaultTimezone`, `installSeedJobs`, `countAgentAtCreatesLastHour`. |
 | `tick.ts` | `jobsTick` (claims due jobs and fires them), `runJobNow`, `fireJob`, `hasActiveRun`. |
 | `events.ts` | `fireEvent(name, key, payload)`, `dueTaskEvents()` and `eventBlock()` (the plain-sentence event description appended to the prompt). |
 | `outcome.ts` | `onRunFinished`, called by `queue.ts` `execute` after every run: writes `last_outcome` and the failure streak, and auto-disables. |
 | `seeds.ts` | The four seed job files. |
 | `wake-time.ts` | `schedule_wake`'s `when` parser. |
-| `timezone.ts` | `getDefaultTimezone()`. |
+| `timezone.ts` | `getDefaultTimezone()`, `serverTimezone()`, `getAgentTimezoneSetting()` / `setAgentTimezoneSetting()`. |
 
 **Every write** follows the same order: parse (reject on failure), derive columns (`next_run_at`
 only while enabled), enabled-count guard, CAS on `content_hash` inside the UPDATE (zero rows means
 409 with the current content), record a revision, then `publishChange('agentJob')`. Re-enabling a
 job resets `consecutive_failures`. Re-arming an `at` job with a future time clears `fired_at`.
 
+**`source`** is who authored the current content: a `human` or `agent` write sets it, while a
+`system` write (the tick disabling a fired `at` job, the failure auto-disable, a seed install)
+keeps it. A reminder Bridget scheduled keeps its `agent` badge after it fires; a human edit
+relabels it `human`.
+
 **`setJobEnabled`** rewrites only the `enabled:` line (`shared/utils/frontmatter.ts`
 `setFrontmatterKey`, a targeted line replace). Every other byte is unchanged, so enabling and then
-disabling a job returns its exact original `content_hash`.
+disabling a job returns its exact original `content_hash`. Enabling goes through the full write
+path. **Disabling always succeeds**: it skips re-validation (a job pinned to a model that has
+left the registry, or any pinned job while the registry is unreadable, can still be switched off
+— by the UI, the `at` self-disable or the 3-failure auto-disable) and changes only the content,
+`enabled`, `next_run_at` and `source`, still under CAS and with a revision.
+
+**`deleteJob`** deletes the row and records its final content as a revision (actor and run id)
+in the same transaction, so a delete shows in history. **`restoreJob(priorId, slug, content)`**
+re-creates it under its **original id** through the normal write path, so the revision history
+(keyed by that id) is whole again; `delete_job`'s undo uses it. Fire rows (`agent_job_fires`,
+cascade) and `agent_runs.job_id` links (set null) do not come back.
 
 ## Scheduling
 
@@ -137,30 +168,59 @@ only, followed by `dueTaskEvents()`):
      in hours);
    - if its previous run is still `queued`/`running` → `skipped`;
    - otherwise `fireJob` → `wake({ reason: 'job:<slug>', prompt: body, sessionKey: 'main' |
-     'isolated:<slug>', model, jobId, context })`, which sets `last_run_id`.
+     'isolated:<slug>', model, jobId, context })`, which sets `last_run_id`. An `isolated:<slug>`
+     key resolves to **the thread its newest run used** (`runtime/sessions.ts`): the stable key
+     is `agent_runs.session_key`, which every run records alongside its thread, and runs are
+     never pruned. Only the first fire (or one after Tony deletes the thread) creates it, so a
+     silent heartbeat on `thread: isolated` does not leave an empty thread per fire.
 3. An `at` job is then disabled with a **system** revision (`setJobEnabled(slug, false,
    'system')`). If it did not fire, one note goes to main: "Reminder X did not fire: … It is now
    turned off; re-arm it on /jobs/X".
 4. Disabled `at` jobs fired more than **30 days** ago are deleted with their revisions.
 
 **Run now** (`runJobNow`, the UI button and the `run_job` tool) fires immediately and leaves the
-schedule alone. It returns `{ skipped: 'disabled' | 'invalid' | 'overlap' }` instead of firing
-when those apply.
+schedule alone. It returns `{ skipped: 'invalid' | 'overlap' }` instead of firing when those
+apply. A **human** Run now (`POST /api/jobs/:slug/run`, `allowDisabled: true`) also works on a
+**disabled** job, so a seed can be tried before it is enabled; the agent's `run_job` still gets
+`skipped: 'disabled'`.
+
+## Timezone
+
+The zone a job uses when its file names none is the `agent_timezone` setting, set in **Settings →
+Bridget → Agent timezone** (`app/components/settings/AgentTimezone.vue`; an IANA select with a
+"Use browser timezone" shortcut and a "Server default" option that clears the setting). With no
+setting it is the server process's `Intl` zone (prod runs `Etc/UTC`).
+
+Each job row stores the zone it resolved when it was saved, and the tick passes `row.timezone`
+back as the default. So `PUT /api/settings/agent-timezone` calls **`rederiveDefaultTimezone()`**
+after writing the setting: every job whose file has no `timezone:` line gets the new zone and,
+when enabled and valid, a `next_run_at` recomputed from now. Content is untouched (no revision),
+and each update is guarded by `content_hash`. A job with its own `timezone:` never moves.
+Changing the setting row by raw SQL skips this step; re-save the setting from the page instead.
 
 ## Events
 
 | Event | Source | Key | Payload |
 |---|---|---|---|
 | `cc.session_end` | `POST /api/hooks/cc/SessionEnd` (fire-and-forget after the session upsert) | session id | `sessionId`, `title`, `project` (canonical slug), `durationMinutes`, `summary` |
-| `task.due` | `dueTaskEvents()` on every worker tick | `task:<id>:<due ISO>` | `taskId`, `title`, `dueDate` |
+| `task.due` | `dueTaskEvents()` on every worker tick | `task:<id>:<due ISO>` (one per task) | `tasks: [{ taskId, title, dueDate }]` (one fire per job per tick) |
 
 `task.due` covers tasks with `due_date <= now()` that are not completed or deleted and fell due
 within the last **7 days**. Moving a task's due date makes it a new event. When no enabled job
 listens for `task.due`, the tasks query is skipped.
 
 `fireEvent` loads enabled, valid jobs whose trigger is `event <name>`, applies `filter`
-(string-equal on each key), then inserts `(job_id, key)` into `agent_job_fires`. Only a job whose
-insert landed wakes. A repeated hook delivery fires nothing. The prompt is the body plus a blank
+(string-equal on each key), **skips a job whose previous run is still queued or running** (spec
+§4's no-self-overlap rule — nothing piles up on main; the key is not recorded, so that session's
+digest is simply not made), then inserts `(job_id, key)` into `agent_job_fires`. Only a job whose
+insert landed wakes. A repeated hook delivery fires nothing.
+
+**`task.due` is batched.** `dueTaskEvents()` fires each listening job **at most once per tick**,
+with one event block listing every task newly due for it ("3 tasks are due and not completed yet:
+'A', due … (task id …); …" — a single task reads as the one-task sentence). Dedupe stays per task:
+one `agent_job_fires` row per `(job, task:<id>:<due ISO>)`, so a task never re-fires. A job whose
+previous run is still going is skipped **without** recording any key, so those tasks join the
+next tick's batch. The prompt is the body plus a blank
 line plus `eventBlock()`, a plain sentence with no brackets (the model imitates markers). Events
 are **at-most-once**: a wake failure after the fire row landed is logged and marks the job
 `failed`, but is not retried.
@@ -175,6 +235,10 @@ are **at-most-once**: a wake failure after the fire row landed is logged and mar
 | `done`, suppressed (`NO_REPLY` or an empty reply) | `silent` | reset to 0 |
 | `failed`, or `aborted` by the 5 min headless wall clock | `failed` | +1 |
 | `aborted` by Tony (Stop, `/clear`) | `failed` | unchanged |
+
+`execute` skips `onRunFinished` when `finishRun` was **fenced** (the row was no longer `running`:
+another process recovered it as `interrupted` while this one still ran it), so the job never
+records `spoke`/`silent` for a run whose row says `interrupted`.
 
 After **3** consecutive counted failures the job is disabled (system revision) and main gets
 "Job X failed 3 times in a row, so I turned it off. The last error was: … Re-enable it on
@@ -207,8 +271,9 @@ starts). It installs a slug only if it is missing, always **disabled**, with act
 | `heartbeat` | `every 30m`, `active_hours: 08:00-22:00` | `context: light`; checklist body; `NO_REPLY` when nothing needs attention |
 | `session-digest` | `event cc.session_end` | `thread: main`, `context: light`; "Propose tasks rather than creating duplicates" |
 
-The timezone is the `agent_timezone` setting, or the server zone when that setting is absent. On
-the dev box that is `America/Chicago`.
+The seeds name no `timezone:`, so they follow the Agent timezone setting (see [Timezone](#timezone)),
+or the server zone when it is absent. On the dev box that is `America/Chicago`; **prod runs
+`Etc/UTC`, so set the Agent timezone before enabling any seed.**
 
 ## Agent tools
 
@@ -221,12 +286,14 @@ In `server/lib/agent/tools/jobs.ts`, registered in `agentTools`, so they are als
 | `get_job` | read | run | content, status and the next 5 fire times (same anchor as the API) |
 | `create_job` | create | run | `{ slug, content }` |
 | `edit_job` | create | run | `old_string`/`new_string` (+ `replace_all`) like `edit_document`, or `content` for a full replacement |
-| `delete_job` | destructive | **run** (`FREE_TOOLS`) | Job upkeep is Bridget's own (spec D2) |
-| `run_job` | create | run | `not_found` / `overlap` / `disabled` / `invalid` on skip |
-| `schedule_wake` | create | run | `{ when, prompt, thread? }` creates `reminder-<6 hex>`, an enabled `at` job with `context: light`. `when` is an ISO datetime (offset-less = default timezone), `in <n>m\|h\|d`, or `today\|tomorrow HH:MM`. Past times are rejected. |
+| `delete_job` | destructive | **run** (`FREE_TOOLS`) | Job upkeep is Bridget's own (spec D2). Records a final revision (actor `agent`, the run id); undo = `restoreJob`, same id and history |
+| `run_job` | create | run | `not_found` / `overlap` / `disabled` / `invalid` on skip; `refused_in_job_run` inside a job-fired run |
+| `schedule_wake` | create | run | `{ when, prompt, thread? }` creates `reminder-<6 hex>`, an enabled `at` job with `context: light`. `when` is an ISO datetime (offset-less = default timezone), `in <n>m\|h\|d`, or `today\|tomorrow HH:MM`. It must be at least **5 min** ahead, and at most **10** per rolling hour (see Guards). |
 
 Every failure returns `{ ok: false, error }` and never throws. Agent writes record revisions
-with actor `agent` and the run id.
+with actor `agent` and the **run id** — `ToolContext.runId`, which the runtime runner threads
+through `handleTurn` → `runAgent` → `buildAiTools`. A call from MCP has no run, so its revisions
+carry a null `run_id`.
 
 ## HTTP API
 
@@ -236,11 +303,14 @@ with actor `agent` and the run id.
 | `POST /api/jobs` `{ slug, content }` | create, 201; 409 if the slug exists; 400 when invalid |
 | `GET /api/jobs/:slug` | `{ job, nextFireTimes (5), runs (last 10: status, suppressed, durationMs, conversationId, assistantMessageId) }` |
 | `PUT /api/jobs/:slug` `{ content, expectedHash }` | CAS save; 409 `{ current }`; 404; 400 |
-| `DELETE /api/jobs/:slug` | delete (revisions stay) |
+| `DELETE /api/jobs/:slug` | delete; records a final `human` revision (revisions stay) |
 | `PUT /api/jobs/:slug/enabled` `{ enabled }` | rewrites the `enabled:` line |
-| `POST /api/jobs/:slug/run` | `{ runId }` or `{ skipped }` |
+| `POST /api/jobs/:slug/run` | `{ runId }` or `{ skipped }`; runs a disabled job too |
 | `GET /api/jobs/:slug/revisions` | newest first |
 | `POST /api/jobs/:slug/revert` `{ revisionId }` | restores as a new revision |
+
+| `GET /api/settings/agent-timezone` | `{ timezone (setting or null), effective, server }` |
+| `PUT /api/settings/agent-timezone` `{ timezone: string \| null }` | sets (IANA, else 400) or clears the setting, then `rederiveDefaultTimezone()`; returns the GET shape plus `rederived` |
 
 A malformed slug returns 400 before any query (`server/utils/agent-config-http.ts`, shared with
 the skill-source routes).
@@ -267,8 +337,13 @@ the skill-source routes).
   shared with `/skills` and separate from the documents page's cookie.
 - **Live:** `publishChange` resource `agentJob` invalidates `['jobs']`. A job-fired run finishing
   publishes it too, so outcomes appear without a reload.
-- In the transcript a fired job shows as the wake divider followed by her reply. Only `state`
-  frames stream live during a wake.
+- In the transcript a fired job shows as the wake divider, **"woken · job:<slug>: …"**, followed
+  by her reply. The origin is split on its first colon only (`shared/utils/event-origin.ts`
+  `splitOrigin`, shared with the server's `eventModelText`, which reads "Background wake
+  (job:<slug>): …" to the model). Only `state` frames stream live during a wake.
+- **Settings → Bridget** carries the **Agent timezone** field (see [Timezone](#timezone)).
+- **Per-job run counts are not on `/jobs`** (spec §11 asked for them): use the per-job run
+  count query below. A recorded deviation.
 
 ## Operational queries
 
@@ -311,7 +386,10 @@ order by f.fired_at desc limit 20;
   so both can pass and produce two runs.
 - **The cron density check** looks at a fixed 8-day window, so a day-of-month or month-restricted
   pattern that is dense only outside that window slips through.
-- **Revisions have no FK.** Deleting a job leaves its revisions, and the 30-day `at` prune deletes
-  them explicitly.
-- **The `woken ·` divider shows `job` instead of the slug** for job wakes. `Conversation.vue`
-  splits the origin `wake:job:<slug>` with `split(':', 2)`.
+- **Revisions have no FK.** Deleting a job leaves its revisions (so `restoreJob` can bring them
+  back), and the 30-day `at` prune deletes them explicitly.
+- **The isolated-thread lookup** scans `agent_runs.session_key`, which has no index. Fine at
+  today's volume; add one if `agent_runs` grows large. Two racing FIRST fires of one isolated
+  job could each open a thread; the newest run's thread wins afterwards.
+- **A skipped `cc.session_end`** (the job's previous run still going) is not retried: that
+  session is simply not digested.
