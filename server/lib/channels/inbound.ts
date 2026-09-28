@@ -58,6 +58,7 @@ const HEIC = /^image\/hei[cf]$/i
 
 const PHOTO_FAILED = "(couldn't load the photo)"
 const VOICE_FAILED = "(a voice memo I couldn't transcribe)"
+const PHOTOS_SKIPPED = `(more than ${MAX_IMAGES} photos, the rest were skipped)`
 
 /** An unconfirmed image-only send can't be matched by text; after this long it counts as sent. */
 const IMAGE_CONFIRM_AFTER_MS = 600_000
@@ -124,9 +125,12 @@ async function transcribeMemo(client: BlueBubblesClient | null, a: InboundAttach
 async function buildInput(ev: InboundMessage, client: BlueBubblesClient | null, transcribe: Transcribe): Promise<BuiltInput> {
   const lines: string[] = ev.text.trim() ? [ev.text.trim()] : []
   const attachments: AttachmentRef[] = []
+  let skippedPhotos = false
   for (const a of ev.attachments) {
     if (a.mime.startsWith('image/')) {
-      const ref = attachments.length < MAX_IMAGES ? await loadPhoto(client, a) : null
+      // Past the cap a photo is skipped, not failed: one note for all of them, at the end.
+      if (attachments.length >= MAX_IMAGES) { skippedPhotos = true; continue }
+      const ref = await loadPhoto(client, a)
       if (ref) attachments.push(ref)
       else lines.push(PHOTO_FAILED)
     } else if (a.mime.startsWith('audio/')) {
@@ -136,6 +140,7 @@ async function buildInput(ev: InboundMessage, client: BlueBubblesClient | null, 
       lines.push(`(an attachment I can't open: ${a.name || 'file'})`)
     }
   }
+  if (skippedPhotos) lines.push(PHOTOS_SKIPPED)
   return { text: lines.join('\n'), attachments }
 }
 

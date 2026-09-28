@@ -278,6 +278,14 @@ describe('handleInbound', () => {
     expect(calls[0]!.input.text).toBe("look\n(couldn't load the photo)")
   })
 
+  it('a 5th photo is skipped with one "(more than 4 photos…)" note, not "(couldn\'t load the photo)"', async () => {
+    const photo = (i: number) => ({ guid: 'chin-att-photo', mime: 'image/heic', name: `IMG_${i}.HEIC` })
+    const m = msg({ text: 'trip pics', attachments: [1, 2, 3, 4, 5, 6].map(photo) })
+    expect(await handleInbound(m, deps())).toBe('enqueued')
+    expect(calls[0]!.input.attachments).toHaveLength(4)
+    expect(calls[0]!.input.text).toBe('trip pics\n(more than 4 photos, the rest were skipped)')
+  })
+
   it('a voice memo is transcribed with its real MIME and filename and appended as (voice memo)', async () => {
     const m = msg({ text: '', attachments: [{ guid: 'chin-att-voice', mime: 'audio/x-caf', name: 'Audio Message.caf' }] })
     expect(await handleInbound(m, deps())).toBe('enqueued')
