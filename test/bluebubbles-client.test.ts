@@ -72,6 +72,14 @@ describe('blueBubblesClient', () => {
     expect(e.status).toBe(401)
   })
 
+  it('408 and 429 are retryable; 404 is not', async () => {
+    for (const [status, retryable] of [[408, true], [429, true], [404, false]] as const) {
+      const fetchImpl = (async () => new Response(JSON.stringify({ status, message: 'x' }), { status })) as typeof fetch
+      const e = await rejection(blueBubblesClient({ serverUrl: 'http://bb.invalid', password: 'p', privateApi: false, fetchImpl }).sendText(CHAT, 'x', 'd-s'))
+      expect([e.status, e.retryable]).toEqual([status, retryable])
+    }
+  })
+
   it('a network error is retryable', async () => {
     fake = await startFakeBlueBubbles()
     const url = fake.url
@@ -169,11 +177,40 @@ describe('imessageClient', () => {
     expect(mocks.loadChannelsConfig).not.toHaveBeenCalled()
   })
 
-  it('is null when iMessage is disabled or has no password', async () => {
-    mocks.loadChannelsConfig.mockResolvedValue({ imessage: { enabled: false, serverUrl: 'http://x', passwordEnc: 'pw' } })
+  it('under vitest without a fake URL it is null even when a real server is configured', async () => {
+    expect(process.env.VITEST).toBeTruthy()
+    mocks.loadChannelsConfig.mockResolvedValue({ imessage: { enabled: true, serverUrl: 'http://real.invalid', passwordEnc: 'pw' } })
     expect(await imessageClient()).toBeNull()
-    mocks.loadChannelsConfig.mockResolvedValue({ imessage: { enabled: true, serverUrl: 'http://x', passwordEnc: null } })
-    expect(await imessageClient()).toBeNull()
+    expect(mocks.loadChannelsConfig).not.toHaveBeenCalled()
+  })
+
+  it('outside vitest: null when iMessage is disabled or has no password, a client otherwise', async () => {
+    const vitest = process.env.VITEST
+    delete process.env.VITEST // config is mocked here, so nothing real is reachable
+    try {
+      mocks.loadChannelsConfig.mockResolvedValue({ imessage: { enabled: false, serverUrl: 'http://x', passwordEnc: 'pw' } })
+      expect(await imessageClient()).toBeNull()
+      mocks.loadChannelsConfig.mockResolvedValue({ imessage: { enabled: true, serverUrl: 'http://x', passwordEnc: null } })
+      expect(await imessageClient()).toBeNull()
+      mocks.loadChannelsConfig.mockResolvedValue({ imessage: { enabled: true, serverUrl: 'http://x', passwordEnc: 'pw' } })
+      expect(await imessageClient()).not.toBeNull()
+    }
+    finally { process.env.VITEST = vitest }
+  })
+
+  it('reuses one client per config, so serverInfo is fetched once across sends', async () => {
+    fake = await startFakeBlueBubbles()
+    process.env.BLUEBUBBLES_FAKE_URL = fake.url
+    const spy = vi.spyOn(globalThis, 'fetch')
+    try {
+      await imessageChannel.send({ id: 'c-1', target: CHAT, attempts: 0, firstClaimedAt: null, payload: { text: 'one' } })
+      await imessageChannel.send({ id: 'c-2', target: CHAT, attempts: 0, firstClaimedAt: null, payload: { text: 'two' } })
+      const infos = spy.mock.calls.filter(c => String(c[0]).includes('/api/v1/server/info'))
+      expect(infos).toHaveLength(1)
+      expect(fake.sent).toHaveLength(2)
+      expect(await imessageClient()).toBe(await imessageClient())
+    }
+    finally { spy.mockRestore() }
   })
 })
 
@@ -219,6 +256,58 @@ describe('imessageChannel.send', () => {
     const r = await imessageChannel.send({ ...base, attempts: 1, firstClaimedAt: new Date(), payload: { text: 'hello' } })
     expect(r.ok).toBe(true)
     expect(fake.sent).toHaveLength(1)
+  })
+
+  it('nothing sent (empty text, no loadable image) → non-retryable "nothing to send"', async () => {
+    await withFake()
+    mocks.getImageBytes.mockResolvedValue(null)
+    expect(await imessageChannel.send({ ...base, payload: { text: '', images: ['gone'] } }))
+      .toEqual({ ok: false, error: 'nothing to send', retryable: false })
+    expect(await imessageChannel.send({ ...base, payload: { text: '' } }))
+      .toEqual({ ok: false, error: 'nothing to send', retryable: false })
+    expect(fake.sent).toHaveLength(0)
+  })
+
+  it('an image-only retry skips the duplicate check and sends the image', async () => {
+    await withFake()
+    mocks.getImageBytes.mockResolvedValue({ bytes: Buffer.from([1]), mime: 'image/png' })
+    const spy = vi.spyOn(globalThis, 'fetch')
+    try {
+      const r = await imessageChannel.send({ ...base, attempts: 2, firstClaimedAt: new Date(), payload: { text: '', images: ['img-a'] } })
+      expect(r.ok).toBe(true)
+      expect(spy.mock.calls.some(c => /\/chat\/[^/]+\/message/.test(String(c[0])))).toBe(false)
+      expect(fake.sent.map(s => s.kind)).toEqual(['attachment'])
+    }
+    finally { spy.mockRestore() }
+  })
+
+  it('an unconfirmed (timed-out AppleScript) send passes through as ok + unconfirmed', async () => {
+    await withFake({ privateApi: false })
+    const real = globalThis.fetch
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).includes('/api/v1/message/text')) throw Object.assign(new Error('timed out'), { name: 'TimeoutError' })
+      return real(input, init)
+    })
+    try {
+      expect(await imessageChannel.send({ ...base, payload: { text: 'slow' } })).toEqual({ ok: true, externalId: undefined, unconfirmed: true })
+    }
+    finally { spy.mockRestore() }
+  })
+
+  it('a retry whose duplicate check throws does NOT resend — retryable error instead', async () => {
+    await withFake()
+    const real = globalThis.fetch
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (/\/api\/v1\/chat\/[^/]+\/message/.test(String(input))) return new Response('{}', { status: 500 })
+      return real(input, init)
+    })
+    try {
+      const r = await imessageChannel.send({ ...base, attempts: 1, firstClaimedAt: new Date(), payload: { text: 'hello' } })
+      expect(r).toMatchObject({ ok: false, retryable: true })
+      expect((r as { error: string }).error).toMatch(/^duplicate check failed/)
+      expect(fake.sent).toHaveLength(0)
+    }
+    finally { spy.mockRestore() }
   })
 
   it('maps a 503 to a retryable failure', async () => {

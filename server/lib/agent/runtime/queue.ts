@@ -11,6 +11,7 @@ import { publishChange } from '../../../utils/live-bus'
 import { jobsTick } from '../jobs/tick'
 import { dueTaskEvents } from '../jobs/events'
 import { onRunFinished } from '../jobs/outcome'
+import { deliveriesTick } from '../../channels/outbox'
 import type { AgentRun } from '../../../db/schema'
 import type { RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
@@ -218,6 +219,8 @@ export async function workerTick(opts: { onlyConversations?: string[] } = {}): P
       // the other, nor the pump below. Fires go through wake(), which kicks the pump itself.
       try { await jobsTick() } catch (err) { console.error('[runtime] jobs tick failed:', err) }
       try { await dueTaskEvents() } catch (err) { console.error('[runtime] task.due events failed:', err) }
+      // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).
+      try { await deliveriesTick() } catch (err) { console.error('[runtime] deliveries tick failed:', err) }
       kick()
     }
   } catch (err) {

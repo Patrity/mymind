@@ -3,7 +3,10 @@
 //
 // Retry safety (Review Focus 4): a retry after an unconfirmed or failed attempt first looks for
 // Bridget's own message with the same text in that chat since the row was first claimed. If it
-// is there, the earlier attempt went out — report success without sending again.
+// is there, the earlier attempt went out — report success without sending again. If that check
+// itself fails, the result is a retryable error and nothing is sent: an unknown answer must never
+// turn into a second text. An image-only row (the outbox splits images into their own rows) has
+// no text to match, so it skips the check — a rare duplicate photo beats a lost one.
 import type { Channel, SendResult } from '../types'
 import { loadChannelsConfig } from '../config'
 import { getImageBytes } from '../../../services/images'
@@ -40,16 +43,22 @@ export const imessageChannel: Channel = {
     try {
       const text = d.payload.text
       if (d.attempts > 0 && d.firstClaimedAt && text) {
-        const found = await client.findOwnMessage(d.target, text, d.firstClaimedAt.getTime() - OWN_MESSAGE_LOOKBACK_MS)
+        let found: string | null
+        try { found = await client.findOwnMessage(d.target, text, d.firstClaimedAt.getTime() - OWN_MESSAGE_LOOKBACK_MS) }
+        catch (e) {
+          return { ok: false, error: `duplicate check failed, not resending yet: ${e instanceof Error ? e.message : String(e)}`, retryable: true }
+        }
         if (found) return { ok: true, externalId: found }
       }
 
       let externalId: string | undefined
       let unconfirmed = false
+      let sentAny = false
       if (text) {
         const r = await client.sendText(d.target, text, d.id)
         externalId = r.guid ?? undefined
         unconfirmed ||= r.unconfirmed
+        sentAny = true
       }
 
       const ids = d.payload.images ?? []
@@ -62,8 +71,10 @@ export const imessageChannel: Channel = {
         const r = await client.sendAttachment(d.target, { name: `image-${i + 1}.${extFor(img.mime)}`, mime: img.mime, data: img.bytes }, `${d.id}-img${i}`)
         externalId ??= r.guid ?? undefined
         unconfirmed ||= r.unconfirmed
+        sentAny = true
       }
 
+      if (!sentAny) return { ok: false, error: 'nothing to send', retryable: false }
       return unconfirmed ? { ok: true, externalId, unconfirmed: true } : { ok: true, externalId }
     }
     catch (e) {

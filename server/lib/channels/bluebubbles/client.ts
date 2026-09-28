@@ -2,7 +2,7 @@
 // Thin REST client for a BlueBubbles server (v1 API). Every request carries `?password=` (URL-
 // encoded via URLSearchParams) and a 15 s timeout. Chat GUIDs contain `;` and `+`, so they are
 // always URL-encoded in paths. Errors surface as BlueBubblesError with a `retryable` verdict:
-// 5xx / network / timeout → retryable, 4xx → not.
+// 5xx / 408 / 429 / network / timeout → retryable, other 4xx → not.
 //
 // The one special case is a timed-out AppleScript send: AppleScript sends routinely take longer
 // than the HTTP timeout yet still go out, so that is reported as `unconfirmed` (the delivery
@@ -54,6 +54,11 @@ function isTimeout(e: unknown): boolean {
   return e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')
 }
 
+/** 5xx, 408 (request timeout) and 429 (rate limited) are worth retrying; other 4xx are not. */
+function retryableStatus(status: number): boolean {
+  return status >= 500 || status === 408 || status === 429
+}
+
 function rec(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null ? v as Record<string, unknown> : {}
 }
@@ -96,7 +101,7 @@ export function blueBubblesClient(cfg: {
         detail = env.error?.message ?? env.message ?? ''
       }
       catch { /* non-JSON error body */ }
-      throw new BlueBubblesError(`BlueBubbles ${method} ${path} → ${res.status}${detail ? `: ${detail}` : ''}`, res.status >= 500, res.status)
+      throw new BlueBubblesError(`BlueBubbles ${method} ${path} → ${res.status}${detail ? `: ${detail}` : ''}`, retryableStatus(res.status), res.status)
     }
     return res
   }
@@ -224,17 +229,29 @@ export function blueBubblesClient(cfg: {
 /** The fake server's password — BLUEBUBBLES_FAKE_URL always pairs with it. */
 export const FAKE_BLUEBUBBLES_PASSWORD = 'fake'
 
+// One client per (server URL, password): each client detects the Private API once via
+// serverInfo, so reusing it keeps that request off every send. A config change makes a new key.
+let cached: { key: string; client: BlueBubblesClient } | null = null
+function clientFor(serverUrl: string, password: string): BlueBubblesClient {
+  const key = `${serverUrl}\n${password}`
+  if (cached?.key !== key) cached = { key, client: blueBubblesClient({ serverUrl, password }) }
+  return cached.client
+}
+
 /**
  * A client for the configured BlueBubbles server, or null when iMessage is disabled or lacks a
  * server URL / password. BLUEBUBBLES_FAKE_URL (dev + tests) overrides the config entirely: the
- * client points at that fake with password `fake`, so no real text can leave.
+ * client points at that fake with password `fake`, so no real text can leave. Under vitest
+ * (VITEST set) without a fake URL it is always null — the dev DB is shared and may hold a real
+ * server's config, so no test can ever reach it.
  */
 export async function imessageClient(): Promise<BlueBubblesClient | null> {
   const fakeUrl = process.env.BLUEBUBBLES_FAKE_URL
-  if (fakeUrl) return blueBubblesClient({ serverUrl: fakeUrl, password: FAKE_BLUEBUBBLES_PASSWORD })
+  if (fakeUrl) return clientFor(fakeUrl, FAKE_BLUEBUBBLES_PASSWORD)
+  if (process.env.VITEST) return null
   const c = (await loadChannelsConfig()).imessage
   if (!c.enabled || !c.serverUrl) return null
   const password = blueBubblesPassword(c)
   if (!password) return null
-  return blueBubblesClient({ serverUrl: c.serverUrl, password })
+  return clientFor(c.serverUrl, password)
 }
