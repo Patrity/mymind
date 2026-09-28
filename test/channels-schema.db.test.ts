@@ -12,7 +12,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { agentRuns, channelDeliveries, conversations } from '../server/db/schema'
 import { createRun } from '../server/lib/agent/runtime/runs'
@@ -77,5 +77,10 @@ describe('channels schema (0057)', () => {
 
     const [after] = await useDb().select().from(channelDeliveries).where(eq(channelDeliveries.id, delivery!.id))
     expect(after!.runId).toBeNull()
+  })
+
+  it('0058: channel_deliveries has an index on conversation_id (the per-thread deliveries read)', async () => {
+    const r = await useDb().execute(sql`select indexdef from pg_indexes where tablename = 'channel_deliveries' and indexname = 'channel_deliveries_conversation_idx'`)
+    expect((r.rows[0] as { indexdef?: string } | undefined)?.indexdef).toMatch(/\(conversation_id\)/)
   })
 })

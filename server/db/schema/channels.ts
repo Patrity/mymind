@@ -27,7 +27,10 @@ export const channelDeliveries = pgTable('channel_deliveries', {
   sentAt: timestamp('sent_at', { withTimezone: true })
 }, t => [
   index('channel_deliveries_due_idx').on(t.status, t.nextAttemptAt),
-  index('channel_deliveries_message_idx').on(t.messageId)
+  index('channel_deliveries_message_idx').on(t.messageId),
+  // 0058: GET /api/conversations/:id/deliveries (re-read by every open /agent tab on each
+  // delivery event) filters on it.
+  index('channel_deliveries_conversation_idx').on(t.conversationId)
 ])
 
 /** Inbound dedupe: a primary-key insert on `guid` in the enqueue transaction decides which of

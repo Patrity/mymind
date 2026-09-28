@@ -1,0 +1,1 @@
+CREATE INDEX "channel_deliveries_conversation_idx" ON "channel_deliveries" USING btree ("conversation_id");
