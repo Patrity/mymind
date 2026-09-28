@@ -19,7 +19,8 @@ import { getOrCreateMain } from '../runtime/sessions'
 import { appendEvent } from '../../../services/conversations'
 import { ConflictError } from '../../../services/skills'
 import { getDefaultTimezone } from './timezone'
-import { SEED_JOB_SLUGS, SEED_JOBS } from './seeds'
+import { SEED_JOB_SLUGS, SEED_JOBS, SEED_JOBS_V1 } from './seeds'
+import { loadChannelsConfig } from '../../channels/config'
 
 export { ConflictError }
 export { getDefaultTimezone }
@@ -192,6 +193,21 @@ export async function getJob(slug: string): Promise<JobDTO | null> {
 // lock serializes the enabled-count race, and a lost create/create race on the slug's unique
 // index is mapped to ConflictError rather than surfacing a raw Postgres error.
 
+/**
+ * Cycle 75 ruling 4: an ENABLED job may only name `imessage`/`email` in `deliver` while that
+ * channel is enabled. Checked on writes only (create, save, enable) — never in revalidateAll, so
+ * a channel switched off later doesn't invalidate jobs; delivery skips it then (planDeliveries).
+ * A disabled job may name it. Config is loaded only when an explicit channel is named.
+ */
+async function assertDeliverChannelsSetUp(deliver: string[]): Promise<void> {
+  const wantsIMessage = deliver.includes('imessage')
+  const wantsEmail = deliver.includes('email')
+  if (!wantsIMessage && !wantsEmail) return
+  const c = await loadChannelsConfig()
+  if (wantsIMessage && !c.imessage.enabled) throw new JobValidationError('deliver: iMessage is not set up — configure it in Settings → Channels')
+  if (wantsEmail && !c.email.enabled) throw new JobValidationError('deliver: email is not set up — configure it in Settings → Channels')
+}
+
 type WriteOutcome
   = | { kind: 'ok', row: AgentJobRow, wasCreate: boolean }
     | { kind: 'conflict', current: { content: string, contentHash: string } }
@@ -278,6 +294,7 @@ async function writeJob(
   if (isAt && spec.enabled && !derived.nextRunAt) {
     throw new JobValidationError('the `at` time is in the past — set a future time, or save it with enabled: false')
   }
+  if (spec.enabled) await assertDeliverChannelsSetUp(spec.deliver)
 
   let outcome: WriteOutcome
   try {
@@ -586,6 +603,38 @@ export async function installSeedJobs(): Promise<number> {
     installed++
   }
   return installed
+}
+
+/**
+ * Moves each installed seed from its cycle-74 content (SEED_JOBS_V1) to the current SEED_JOBS
+ * (cycle 75: the `deliver:` lines). Hash-guarded: only a seed whose stored content hashes the
+ * same as its previous version is rewritten (actor `system`, CAS on that hash); an edited seed is
+ * left alone, and a second run is a no-op. Safe on every boot. Returns how many were upgraded.
+ * `seeds` / `previous` / `onlySlugs` are the test seam — the real seeds live on the shared dev DB.
+ */
+export async function upgradeSeedJobs(opts: {
+  seeds?: Record<string, string>
+  previous?: Record<string, string>
+  onlySlugs?: string[]
+} = {}): Promise<number> {
+  const seeds: Record<string, string> = opts.seeds ?? SEED_JOBS
+  const previous: Record<string, string> = opts.previous ?? SEED_JOBS_V1
+  let upgraded = 0
+  for (const slug of opts.onlySlugs ?? Object.keys(seeds)) {
+    const next = seeds[slug]
+    const prev = previous[slug]
+    if (next === undefined || prev === undefined || next === prev) continue
+    const row = await rowBySlug(slug)
+    if (!row || row.contentHash !== hashOf(prev)) continue
+    try {
+      await writeJob(slug, next, row.contentHash, 'system', null)
+      upgraded++
+    } catch (err) {
+      // A concurrent edit (ConflictError) means the seed is no longer the untouched original.
+      if (!(err instanceof ConflictError)) console.error(`[jobs] upgrading seed job "${slug}" failed:`, err)
+    }
+  }
+  return upgraded
 }
 
 export { JOB_BODY_MAX }

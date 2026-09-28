@@ -10,7 +10,7 @@ describe('parseJob', () => {
   })
   it('applies defaults', () => {
     const r = p('trigger: every 30m')
-    expect(r.ok && r.spec).toMatchObject({ timezone: 'America/New_York', model: 'default', thread: 'main', context: 'full', deliver: ['app'], enabled: false, activeHours: null, filter: null })
+    expect(r.ok && r.spec).toMatchObject({ timezone: 'America/New_York', model: 'default', thread: 'main', context: 'full', deliver: ['auto'], enabled: false, activeHours: null, filter: null })
   })
   it.each([
     ['trigger: every 4m', /at least 5 minutes/],
@@ -27,6 +27,23 @@ describe('parseJob', () => {
     const r = p(fm)
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error).toMatch(err)
+  })
+  it('defaults deliver to [auto] (cycle 75 ruling 3)', () => {
+    const r = p('trigger: every 30m')
+    expect(r.ok && r.spec.deliver).toEqual(['auto'])
+  })
+  it('accepts every known deliver value', () => {
+    const r = p('trigger: every 30m\ndeliver: [app, auto, imessage, email]')
+    expect(r.ok && r.spec.deliver).toEqual(['app', 'auto', 'imessage', 'email'])
+  })
+  it('rejects an unknown deliver value, naming it and the allowed set', () => {
+    const r = p('trigger: every 30m\ndeliver: [app, sms]')
+    expect(r).toEqual({ ok: false, error: 'invalid deliver: sms (allowed: app, auto, imessage, email)' })
+  })
+  it('rejects an empty deliver list', () => {
+    const r = p('trigger: every 30m\ndeliver: []')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/deliver/)
   })
   it('rejects an empty body and a missing frontmatter block', () => {
     expect(p('trigger: every 30m', '   ').ok).toBe(false)

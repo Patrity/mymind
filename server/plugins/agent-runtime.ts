@@ -1,6 +1,6 @@
 import { recoverOnBoot } from '../lib/agent/runtime/recover'
 import { startWorker, stopWorker } from '../lib/agent/runtime/queue'
-import { installSeedJobs, revalidateAll } from '../lib/agent/jobs/store'
+import { installSeedJobs, upgradeSeedJobs, revalidateAll } from '../lib/agent/jobs/store'
 
 // Boot order: recover runs orphaned by the previous process, then start the worker. Recovery
 // before the worker so a stale 'running' row cannot block its conversation's queue for the 60s
@@ -20,6 +20,8 @@ export default defineNitroPlugin(async (nitro) => {
   try {
     const installed = await installSeedJobs()
     if (installed) console.info(`[runtime] installed ${installed} seed job(s), disabled`)
+    const upgraded = await upgradeSeedJobs()
+    if (upgraded) console.info(`[runtime] upgraded ${upgraded} unedited seed job(s) to the current version`)
   } catch (err) {
     // Same reasoning as recovery above: a head start, not a precondition. A failure here must
     // not stop turns from running.

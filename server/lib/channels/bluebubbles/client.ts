@@ -226,9 +226,14 @@ export function blueBubblesClient(cfg: {
     },
 
     async resolveDirectChat(handle) {
-      return `iMessage;-;${normaliseHandle(handle)}`
+      return directChatGuid(handle)
     }
   }
+}
+
+/** Chat GUID of the direct (1:1) iMessage chat with a handle — deterministic, no server needed. */
+export function directChatGuid(handle: string): string {
+  return `iMessage;-;${normaliseHandle(handle)}`
 }
 
 /** The fake server's password — BLUEBUBBLES_FAKE_URL always pairs with it. */

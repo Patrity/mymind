@@ -28,6 +28,9 @@ import { eventModelText, wakeOrigin } from './event-text'
 import { groupTurns, costTurns, keepTrailingTurns, LIGHT_CONTEXT_TURNS, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
 import type { RunInput, RunOutcome } from './types'
+import { planDeliveries } from '../../channels/deliver'
+import { insertDeliveries } from '../../channels/outbox'
+import { channelPresence } from '../../channels/presence'
 
 export interface RunnerDeps {
   runAgent?: TurnDeps['runAgent']
@@ -126,6 +129,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   const turnId = nextTurnId()
   hub.beginRun(conversationId)
   try {
+    void channelPresence.start(run) // read receipt + typing in the reply chat; never throws
     // Live state is now assembled exactly once per turn, inside assembleContext
     // (called below) — that is the single fixed 'live' tier, budgeted
     // alongside resident memories and retrieval. Building it again here would inject
@@ -257,7 +261,20 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       if (isWake) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
       // Steers ride in the SAME append (one transaction, one chain), between the question and
       // the reply — the order the model saw them in, and the reply stays the leaf.
-      const ids = await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId) // insertion order
+      // A reply that goes out over a channel (reply_to / a job's `deliver`) gets its
+      // channel_deliveries rows in the SAME transaction as the message: both or neither.
+      // planDeliveries reads reply_to fresh (a steer may have set it mid-run); for a run with
+      // neither it plans nothing. The rescue path below never delivers.
+      const deliveryIds: string[] = []
+      const ids = await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId, { // insertion order
+        inTx: async (tx, newIds) => {
+          if (added.length < 2) return
+          const plans = await planDeliveries(run, { text: reply, messageId: newIds[newIds.length - 1]!, conversationId })
+            .catch((err) => { console.error('[agent] planning channel deliveries failed:', err); return [] })
+          if (plans.length) deliveryIds.push(...await insertDeliveries(tx, plans))
+        }
+      })
+      for (const id of deliveryIds) publishChange({ resource: 'channelDelivery', action: 'created', id })
       // Set BEFORE anything that can throw below: the rows are committed at this point, and
       // the `finally` rescue below keys off this flag. A `peer.send` to a socket that closed
       // mid-turn would otherwise unwind into the catch with `persisted` still false and make
@@ -352,6 +369,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // both are idempotent).
     unregisterApprovalChannel(run.id)
     releaseAbort(run.id)
+    void channelPresence.stop(run)
     hub.endRun(conversationId)
     if (persisted || rescued) deps.afterPersist?.(conversationId)
   }

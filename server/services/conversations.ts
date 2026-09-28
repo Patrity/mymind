@@ -12,6 +12,7 @@ import { loadActivePath, type BranchInfo } from './conversation-path'
 import { branchTip } from '../../shared/utils/conversation-path'
 import { eventModelText } from '../lib/agent/runtime/event-text'
 import { publishChange } from '../utils/live-bus'
+import type { DbTx } from '../lib/channels/outbox'
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -129,11 +130,16 @@ export async function captureTurnLeaf(conversationId: string): Promise<string | 
  *
  * `parentId` omitted → chain from the active leaf. `null` → start a NEW root (an explicit null
  * is not the same as no argument, which is why the check below is `!== undefined`).
+ *
+ * `opts.inTx` runs inside the same transaction, after the inserts and the leaf move, with the
+ * new ids in insertion order — for writes that must commit or roll back with the messages
+ * (cycle 75: a reply's channel deliveries). A throw there rolls the whole append back.
  */
 export async function appendMessages(
   conversationId: string,
   msgs: NewConvMessage[],
-  parentId?: string | null
+  parentId?: string | null,
+  opts: { inTx?: (tx: DbTx, ids: string[]) => Promise<void> } = {}
 ): Promise<string[]> {
   if (!msgs.length) return []
 
@@ -194,6 +200,8 @@ export async function appendMessages(
         activeLeafId: prevId
       })
       .where(eq(conversations.id, conversationId))
+
+    if (opts.inTx) await opts.inTx(tx, [...ids])
   })
   return ids
 }

@@ -10,6 +10,22 @@ import { describe, it, expect, afterAll, vi, onTestFinished } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
+// Cycle 75: the store's "deliver channel must be set up" check reads the channel config. Stubbed
+// (never written): the dev DB is shared, and enabling iMessage there — even for a moment — would
+// switch it on for every live dev server using it.
+const chan = vi.hoisted(() => ({ imessage: false, email: false, loads: 0 }))
+vi.mock('../server/lib/channels/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../server/lib/channels/config')>()),
+  loadChannelsConfig: async () => {
+    chan.loads++
+    return {
+      imessage: { enabled: chan.imessage, serverUrl: '', passwordEnc: null, webhookToken: 'x', allowedHandles: [], defaultHandle: null, defaultChatGuid: null },
+      email: { enabled: chan.email, to: null },
+      presenceAwayMinutes: 10
+    }
+  }
+}))
+
 import { Client } from 'pg'
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
@@ -501,5 +517,51 @@ describe('job store — final review fixes', () => {
     expect(q.nextRunAt).toBe(pinned.nextRunAt)
     // Idempotent.
     expect(await rederiveDefaultTimezone({ onlyIds: ids, defaultTimezone: 'Asia/Tokyo' })).toBe(0)
+  })
+})
+
+describe('job store — deliver channels must be set up (cycle 75 ruling 4)', () => {
+  it('rejects saving an ENABLED job that names a disabled channel, naming the channel', async () => {
+    chan.imessage = false
+    chan.email = false
+    await expect(createJob({ slug: `${PREFIX}dl-im`, content: md('trigger: every 30m\ndeliver: [auto, imessage]\nenabled: true', 'Hi.'), actor: 'human' }))
+      .rejects.toThrow(new JobValidationError('deliver: iMessage is not set up — configure it in Settings → Channels'))
+    await expect(createJob({ slug: `${PREFIX}dl-em`, content: md('trigger: every 30m\ndeliver: [email]\nenabled: true', 'Hi.'), actor: 'human' }))
+      .rejects.toThrow(/deliver: email is not set up/)
+    expect(await getJob(`${PREFIX}dl-im`)).toBeNull()
+    expect(await getJob(`${PREFIX}dl-em`)).toBeNull()
+  })
+
+  it('lets a DISABLED job name a disabled channel, but enabling it is then refused until the channel is on', async () => {
+    chan.imessage = false
+    const slug = `${PREFIX}dl-off`
+    const job = await createJob({ slug, content: md('trigger: every 30m\ndeliver: [imessage]\nenabled: false', 'Hi.'), actor: 'human' })
+    expect(job.enabled).toBe(false)
+    await expect(setJobEnabled(slug, true, 'human')).rejects.toThrow(/iMessage is not set up/)
+    expect((await getJob(slug))!.enabled).toBe(false)
+
+    chan.imessage = true
+    expect((await setJobEnabled(slug, true, 'human')).enabled).toBe(true)
+    chan.imessage = false
+  })
+
+  it('accepts an enabled job with [app] / [auto] (no explicit channel) without loading channel config', async () => {
+    chan.imessage = false
+    chan.email = false
+    const before = chan.loads
+    const a = await createJob({ slug: `${PREFIX}dl-auto`, content: md('trigger: every 30m\ndeliver: [auto]\nenabled: true', 'Hi.'), actor: 'human' })
+    const b = await createJob({ slug: `${PREFIX}dl-default`, content: md('trigger: every 30m\nenabled: true', 'Hi.'), actor: 'human' })
+    expect(a.enabled && b.enabled).toBe(true)
+    expect(chan.loads).toBe(before)
+  })
+
+  it('revalidateAll never applies the channel check: an enabled job whose channel went off stays valid', async () => {
+    chan.imessage = true
+    const job = await createJob({ slug: `${PREFIX}dl-reval`, content: md('trigger: every 30m\ndeliver: [imessage]\nenabled: true', 'Hi.'), actor: 'human' })
+    chan.imessage = false
+    expect(await revalidateAll({ onlyIds: [job.id] })).toBe(0)
+    const after = (await getJob(job.slug))!
+    expect(after.parseError).toBeNull()
+    expect(after.enabled).toBe(true)
   })
 })

@@ -26,6 +26,7 @@ export const MIN_INTERVAL_MS = 5 * 60_000
 
 const ACCEPTED_KEYS = new Set(['trigger', 'timezone', 'active_hours', 'model', 'thread', 'context', 'deliver', 'enabled', 'filter'])
 const KNOWN_EVENTS = ['cc.session_end', 'task.due']
+export const DELIVER_VALUES = ['app', 'auto', 'imessage', 'email'] as const
 const ACTIVE_HOURS_RE = /^\d{2}:\d{2}-\d{2}:\d{2}$/
 
 type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -129,11 +130,16 @@ export function parseJob(
     context = data.context
   }
 
-  let deliver: string[] = ['app']
+  // Cycle 75 ruling 3: no `deliver:` key means `[auto]` (iMessage when Tony is away). Whether a
+  // named channel is actually configured is a store.ts write-time check, not a parse error.
+  let deliver: string[] = ['auto']
   if (data.deliver !== undefined) {
     if (!Array.isArray(data.deliver) || !data.deliver.every(d => typeof d === 'string')) {
-      return { ok: false, error: `invalid deliver: ${String(data.deliver)}` }
+      return { ok: false, error: `invalid deliver: ${String(data.deliver)} (allowed: ${DELIVER_VALUES.join(', ')})` }
     }
+    if (!data.deliver.length) return { ok: false, error: `invalid deliver: empty list (allowed: ${DELIVER_VALUES.join(', ')})` }
+    const unknown = data.deliver.find(d => !(DELIVER_VALUES as readonly string[]).includes(d))
+    if (unknown !== undefined) return { ok: false, error: `invalid deliver: ${unknown} (allowed: ${DELIVER_VALUES.join(', ')})` }
     deliver = data.deliver
   }
 

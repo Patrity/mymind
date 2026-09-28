@@ -7,8 +7,38 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
+// Cycle 75, Task 8: channel config is stubbed (never written — the dev DB is shared), and every
+// delivery row the runner inserts is pushed to the year 2100 INSIDE the same transaction, so no
+// live worker's deliveriesTick can ever find one due. Rows are tracked and deleted in afterAll.
+const chan = vi.hoisted(() => ({ deliveryIds: [] as string[], failInsert: false }))
+vi.mock('../server/lib/channels/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../server/lib/channels/config')>()),
+  loadChannelsConfig: async () => ({
+    imessage: { enabled: true, serverUrl: '', passwordEnc: null, webhookToken: 'x', allowedHandles: [], defaultHandle: '+15550000091', defaultChatGuid: 'iMessage;-;+15550000091' },
+    email: { enabled: true, to: 'tony@example.test' },
+    presenceAwayMinutes: 10
+  })
+}))
+vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../server/lib/channels/outbox')>()
+  const { channelDeliveries } = await import('../server/db/schema')
+  const { inArray } = await import('drizzle-orm')
+  return {
+    ...real,
+    insertDeliveries: async (tx: Parameters<typeof real.insertDeliveries>[0], rows: Parameters<typeof real.insertDeliveries>[1]) => {
+      if (chan.failInsert) throw new Error('delivery insert failed')
+      const ids = await real.insertDeliveries(tx, rows)
+      if (ids.length) await tx.update(channelDeliveries).set({ nextAttemptAt: new Date('2100-01-01T00:00:00Z') }).where(inArray(channelDeliveries.id, ids))
+      chan.deliveryIds.push(...ids)
+      return ids
+    }
+  }
+})
+
 import { useDb } from '../server/db'
-import { conversations, conversationMessages, agentRuns, agentInbox } from '../server/db/schema'
+import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelDeliveries } from '../server/db/schema'
+import { createJob } from '../server/lib/agent/jobs/store'
+import { channelPresence } from '../server/lib/channels/presence'
 import { createRun, claimNextRun } from '../server/lib/agent/runtime/runs'
 import { resolveSession } from '../server/lib/agent/runtime/sessions'
 import { runTurn } from '../server/lib/agent/runtime/runner'
@@ -18,7 +48,7 @@ import { registerApprovalChannel, hasApprovalChannel } from '../server/lib/agent
 import { appendMessages } from '../server/services/conversations'
 import { pushSteer } from '../server/lib/agent/runtime/inbox'
 import { jobOutcomeOf } from '../server/lib/agent/jobs/outcome'
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, like } from 'drizzle-orm'
 
 const convIds: string[] = []
 // Runs here are never finished (runTurn leaves that to its caller), so a headless run stays
@@ -26,6 +56,12 @@ const convIds: string[] = []
 const HEADLESS_TEST_SLOTS = 1000
 afterAll(async () => {
   const db = useDb()
+  if (chan.deliveryIds.length) await db.delete(channelDeliveries).where(inArray(channelDeliveries.id, chan.deliveryIds))
+  const jobs = await db.select({ id: agentJobs.id }).from(agentJobs).where(like(agentJobs.slug, 'rtest-deliver-%'))
+  if (jobs.length) {
+    await db.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, jobs.map(j => j.id))))
+    await db.delete(agentJobs).where(inArray(agentJobs.id, jobs.map(j => j.id)))
+  }
   await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
   await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
   await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
@@ -486,5 +522,95 @@ describe('runTurn', () => {
       expect(out.userMessageId).toBe(c[0]!.id)
       expect(out.assistantMessageId).toBe(c[2]!.id)
     })
+  })
+})
+
+// Cycle 75, Task 8: the reply's channel deliveries are written in the persist transaction.
+describe('runTurn — channel deliveries', () => {
+  const CHAT = 'iMessage;-;+15550000092'
+  const replyTo = { channel: 'imessage' as const, chatGuid: CHAT, messageGuid: 'in-1' }
+  // Inserted straight in 'running' (never queued), so no live worker can claim it first.
+  async function running(text: string, extra: Partial<typeof agentRuns.$inferInsert> = {}) {
+    const s = await resolveSession('thread:new', { titleHint: `RUNNER-TEST ${text}` })
+    convIds.push(s.conversationId)
+    const [run] = await useDb().insert(agentRuns).values({
+      conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'user', profile: 'interactive',
+      status: 'running', claimedAt: new Date(), aliveAt: new Date(), owner: 'runner-test', input: { text, modality: 'text' }, ...extra
+    }).returning()
+    return { run: run!, conversationId: s.conversationId }
+  }
+  const deliveriesOf = (conversationId: string) => useDb().select().from(channelDeliveries).where(eq(channelDeliveries.conversationId, conversationId))
+  const boom = async function* () {
+    yield { type: 'text-delta', text: 'partial ' } as const
+    throw new Error('model died')
+  }
+
+  it('a run with replyTo writes one iMessage delivery pointing at the persisted reply', async () => {
+    const { run, conversationId } = await running('text me back', { replyTo })
+    const out = await runTurn(run, { runAgent: fakeAgent('on it') as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(out.status).toBe('done')
+    const d = await deliveriesOf(conversationId)
+    expect(d).toHaveLength(1)
+    expect(d[0]).toMatchObject({ channel: 'imessage', target: CHAT, source: 'reply', status: 'pending', messageId: out.assistantMessageId, runId: run.id, payload: { text: 'on it' } })
+  })
+
+  it('a job wake writes its deliver channels; a silent (NO_REPLY) one writes none', async () => {
+    const job = await createJob({ slug: 'rtest-deliver-email', content: '---\ntrigger: every 30m\ndeliver: [email]\nenabled: false\n---\nBrief.\n', actor: 'human' })
+    const wake = { trigger: 'wake', profile: 'headless', jobId: job.id, wakeReason: `job:${job.slug}`, input: { text: 'Brief.', modality: 'text' } } as const
+    const a = await running('job wake', wake)
+    const out = await runTurn(a.run, { runAgent: fakeAgent('Morning.') as never, assemble: noAssemble as never, hub: new StreamHub() })
+    const d = await deliveriesOf(a.conversationId)
+    expect(d).toHaveLength(1)
+    expect(d[0]).toMatchObject({ channel: 'email', target: 'tony@example.test', source: 'job', jobId: job.id, messageId: out.assistantMessageId, payload: { subject: 'Bridget · rtest-deliver-email' } })
+
+    const b = await running('silent job wake', wake)
+    await runTurn(b.run, { runAgent: fakeAgent('NO_REPLY') as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(await deliveriesOf(b.conversationId)).toHaveLength(0)
+  })
+
+  it('starts the chat presence (read + typing) with the run and stops it when the run ends, even on failure', async () => {
+    const start = vi.spyOn(channelPresence, 'start')
+    const stop = vi.spyOn(channelPresence, 'stop')
+    try {
+      const ok = await running('presence ok', { replyTo })
+      await runTurn(ok.run, { runAgent: fakeAgent('hi') as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(start).toHaveBeenCalledWith(ok.run)
+      expect(stop).toHaveBeenCalledWith(ok.run)
+      const bad = await running('presence boom', { replyTo })
+      await runTurn(bad.run, { runAgent: boom as never, assemble: noAssemble as never, hub: new StreamHub() })
+      expect(stop).toHaveBeenCalledWith(bad.run)
+    } finally {
+      start.mockRestore()
+      stop.mockRestore()
+    }
+  })
+
+  it('an ordinary app run writes no delivery', async () => {
+    const { run, conversationId } = await running('just the app')
+    await runTurn(run, { runAgent: fakeAgent('hello') as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(await rows(conversationId)).toHaveLength(2)
+    expect(await deliveriesOf(conversationId)).toHaveLength(0)
+  })
+
+  it('a rescued (crashed) turn with replyTo writes no delivery', async () => {
+    const { run, conversationId } = await running('phone then crash', { replyTo })
+    const out = await runTurn(run, { runAgent: boom as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(out.status).toBe('failed')
+    expect((await rows(conversationId)).map(r => r.role).sort()).toEqual(['assistant', 'user']) // rescued
+    expect(await deliveriesOf(conversationId)).toHaveLength(0)
+  })
+
+  it('a failing delivery insert rolls back the success-path append with it', async () => {
+    const { run, conversationId } = await running('insert fails', { replyTo })
+    chan.failInsert = true
+    try {
+      const out = await runTurn(run, { runAgent: fakeAgent('never lands') as never, assemble: noAssemble as never, hub: new StreamHub() })
+      // The success append threw (so the turn failed); only the rescue's copy exists — one pair, not two.
+      expect(out.status).toBe('failed')
+      expect(await rows(conversationId)).toHaveLength(2)
+      expect(await deliveriesOf(conversationId)).toHaveLength(0)
+    } finally {
+      chan.failInsert = false
+    }
   })
 })
