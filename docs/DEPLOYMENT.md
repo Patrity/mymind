@@ -177,6 +177,7 @@ mymind.example.com {
 - `GET /share/**` (SSR public document pages) and `GET /api/share/**`
 - `GET /api/i/**` (public image blobs, `is_public` only)
 - `GET/POST /api/auth/**` (better-auth)
+- `POST /api/channels/bluebubbles/webhook?token=…` (cycle 75, BlueBubbles; self-authenticating by token, 404 otherwise — see §19)
 Rate-limit `/api/auth`, `/api/upload`, and `/api/hooks` at the proxy.
 
 ## 7. Background scheduled tasks
@@ -503,3 +504,44 @@ then `systemctl stop mymind`. Keep until the native deploy is confirmed stable.
 > **Note:** post-B3.1 the `exec` tool returns **`disabled`** (fail-closed) until **B3.2** reworks
 > the runner for the native root-in-LXC model. The approval gate, allowlist, and
 > `/settings → Agent Tools` UI remain intact.
+
+## 19. Bridget channels — iMessage (BlueBubbles) + email (Resend) (cycle 75)
+
+Full reference: [`docs/wiki/channels.md`](wiki/channels.md). Migration **0057** is additive and
+runs with the normal CD `pnpm db:migrate`. **There are no new env vars on prod.** All
+configuration lives in the DB and is set in the app. (`BLUEBUBBLES_FAKE_URL` and `RESEND_FAKE` are
+dev-only; never set them on the server. `RESEND_FAKE` is inert in a production build anyway.)
+
+**Network reachability runs both ways.**
+- **Prod → BlueBubbles:** LXC 114 must reach the Mac's BlueBubbles server (for example
+  `http://<mac-lan-ip>:1234`) for sends, the 2-minute catch-up, typing/read receipts and attachment
+  downloads. Check it from the box:
+  `pct exec 114 -- curl -s "http://<mac-lan-ip>:1234/api/v1/server/info?password=<pw>"`.
+- **BlueBubbles → prod:** the Mac must reach the webhook. Use either the LAN URL
+  `http://192.168.2.89:3000/api/channels/bluebubbles/webhook?token=<token>` or the public
+  `https://brain.costanzoclan.com/api/channels/bluebubbles/webhook?token=<token>`. The path is exempt
+  from session auth (the token is the credential; a bad token is a 404). The reverse proxy must pass
+  it through, including the query string. If the webhook can't get through, the catch-up still
+  delivers every message within about 2 minutes.
+
+**One-time setup after the deploy:**
+1. **Settings → Bridget → Agent timezone** = `America/Chicago` (cycle 74; prod runs `Etc/UTC`).
+   Do this before enabling any job.
+2. **Settings → Activity & Alerts:** Resend API key + sender address (email needs both).
+3. **Settings → Channels:** enable iMessage, enter the Server URL + password, add the allowed
+   handle(s), pick the default handle, and Save. Enable Email with the **Send to** address. Presence
+   defaults to 10 min.
+4. **Test connection** → confirm the green **Private API on** badge. Amber (Private API off) still
+   sends texts via AppleScript, but there are no tapbacks, typing, or exec approvals.
+5. Copy the **Webhook URL** from Settings → Channels (it is built from the origin you are browsing;
+   swap in the LAN origin if you prefer it). In the BlueBubbles server app: **Settings → API &
+   Webhooks → Add**, paste it, and tick **New Messages** and **Message Updates**.
+6. **Send test message** / **Send test email**, then text Bridget from the phone.
+
+**Heads-up:** a job with no `deliver:` line now means `deliver: [auto]` (it texts Tony when he is
+away from the app). Prod has no enabled jobs yet, but review any custom job before enabling it.
+
+**Ops:** the Settings → Channels nav dot (green / amber / red), `GET /api/channels/status`, and
+`journalctl -u mymind | grep '\[channels\]'`. The stuck-delivery and recent-inbound queries are in
+the wiki page. **Regenerating the webhook token** breaks the registered webhook until the new URL
+is pasted into BlueBubbles.

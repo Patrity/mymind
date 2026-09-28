@@ -1,7 +1,7 @@
 ---
 title: Agent Runtime (server-owned turns, main thread, wake)
 status: built
-cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74)
+cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74; `reply_to`, iMessage approvals and channel deliveries: cycle 75)
 updated: 2026-09-28
 ---
 
@@ -26,7 +26,7 @@ code. The build's deviations from the spec are listed in the handover.
 | File | Responsibility |
 |---|---|
 | `runner.ts` | `runTurn(run)`: runs one turn. This is the old `ws.ts` turn body moved verbatim: capture the leaf, load history (bounded), `assembleContext`, `handleTurn`/`runAgent`, persist, then send the `conversation`/`persisted` frames, with rescue on throw or abort. It persists drained steers as user rows, streams only `state` frames for a wake run, slices history to the last 4 turns for `context: 'light'`, and makes a suppressed wake leave no rows at all. |
-| `queue.ts` | `enqueue` (resolve the session, then either steer or `createRun`), the pump (`pumpOnce` / `kick`), `execute` (10 s liveness bump, 5 min headless wall clock, `finishRun`, requeue of unread steers), `abortActive` / `abortActiveAndWait`, and `workerTick` (every 5 s: `recoverStale`, then `jobsTick()` and `dueTaskEvents()` (cycle 74, each guarded on its own), then pump). After every run `execute` calls the jobs `onRunFinished` hook. |
+| `queue.ts` | `enqueue` (resolve the session, then either steer or `createRun`), the pump (`pumpOnce` / `kick`), `execute` (10 s liveness bump, 5 min headless wall clock, `finishRun`, requeue of unread steers), `abortActive` / `abortActiveAndWait`, and `workerTick` (every 5 s: `recoverStale`, then `jobsTick()` and `dueTaskEvents()` (cycle 74), then `deliveriesTick()` and `catchUpTick()` (cycle 75), each guarded on its own, then pump). `enqueue` carries an optional `replyTo` onto the new run. After every run `execute` calls the jobs `onRunFinished` hook. |
 | `runs.ts` | Run store: `createRun`, `claimNextRun` (one statement, `for update skip locked`, headless slot cap), fenced `touchRun`/`finishRun`, `activeRunFor`, `recoverOrphans`, `listRuns`. |
 | `sessions.ts` | `resolveSession`. `main` returns the main conversation (created lazily; at most one, enforced by an index). `thread:new` makes a new side thread. `thread:<uuid>` returns an existing thread (the id's shape is validated before querying). `isolated:<slug>` makes a fresh thread titled `wake: <slug>`. |
 | `stream.ts` | `StreamHub`: per-conversation fan-out to sinks, a replay buffer of the running turn's JSON frames, and `only:` targeting for audio. `withCid` tags frames with `cid`. |
@@ -63,6 +63,10 @@ Wiring: `server/plugins/agent-runtime.ts` runs `recoverOnBoot()`, installs/reval
   `(status, created_at)`, and the partial unique index **`agent_runs_one_running`** on
   `(conversation_id) where status='running'`. The index is the guarantee that one conversation
   never has two concurrent runs.
+- `agent_runs.reply_to` (migration **0057**, cycle 75): jsonb `{ channel: 'imessage', chatGuid,
+  messageGuid }`, set when an inbound iMessage creates the run, or set on a running interactive run
+  (when it has none) when the iMessage steers into it. `input.origin` (`imessage:<chatGuid>`) is
+  stamped on the persisted user row. See [Channels](#channels-cycle-75).
 - `agent_inbox`: `run_id` (fk, cascade), `conversation_id`, `mode` (only `steer` is written this
   cycle), `content`, `attachments`, `source`, `created_at`, `consumed_at`. This deviates from the
   spec: steers are keyed to the run they target, and drain marks them with `consumed_at` rather
@@ -151,6 +155,34 @@ socket's channel. If that channel is gone, the call is **denied immediately**; i
 out the 120 s timeout. Headless runs get no approval channel at all, and `exec` is excluded from
 them.
 
+**Approvals over iMessage (cycle 75).** An interactive run with no socket approval channel (an
+inbound iMessage run, or an app run whose tab closed) registers `replyToApprovalChannel(runId)` at
+turn start. At request time it reads the run's `reply_to` **fresh**, because a steer can set it
+mid-run. When that names an iMessage chat, it texts "Run \`cmd\`? 👍 to approve · 👎 to deny" and
+waits up to **10 min** for a 👍/❤️ (approve) or 👎 (deny) tapback on that message. Otherwise it
+denies, as before. A socket channel registered by `ws.ts` overwrites it, so an app tab that is
+watching still gets the in-app prompt. Details: [channels.md](channels.md#exec-approvals-over-imessage).
+
+## Channels (cycle 75)
+
+The runtime is how iMessage reaches Bridget and how her replies leave the app
+([channels.md](channels.md)):
+
+- **Inbound:** `handleInbound` enqueues an iMessage on **main** with `trigger: 'user'`,
+  `profile: 'interactive'`, `input.origin` and `replyTo`. When a turn is running it steers into
+  it, but only into an interactive run. A headless job run on main is never steered into; the
+  message queues behind it with its own `reply_to`, so the answer still goes back to his phone.
+- **Deliveries in the persist transaction:** the runner's `appendMessages` gets an `inTx` hook. In
+  a savepoint on the same transaction it calls `planDeliveries(run, reply, tx)` (`reply_to` read
+  fresh, the job's `deliver` list, presence) and inserts the `channel_deliveries` rows. The reply
+  and its deliveries commit together. A planning read failure rolls back to the savepoint and the
+  reply saves without deliveries. An empty or suppressed reply plans nothing, and the **rescue
+  path never delivers**. After commit it publishes `channelDelivery` `created`.
+- **Presence in the chat:** `channelPresence.start(run)` marks the reply chat read and turns
+  typing on at turn start; `stop` turns typing off in the `finally`. Both are fire-and-forget.
+- **Worker tick:** after `jobsTick` and `dueTaskEvents`, `workerTick` runs `deliveriesTick()` (the
+  outbox) and `catchUpTick()` (self-throttled to 2 min), each guarded on its own.
+
 ## Headless runs, `wake()` and the gate
 
 `wake({ reason, prompt, sessionKey = 'main', model?, jobId?, context? })`:
@@ -192,7 +224,7 @@ Callers today:
 | Class | Tools | Headless behaviour |
 |---|---|---|
 | exclude | anything `dangerous` (`exec`) | not offered |
-| run | every `kind: 'read'`, plus `APPEND_TOOLS` = `save_memory`, `create_task`, `create_project`, `quick_capture`, `generate_image`, `save_document`, `create_job`, `edit_job`, `run_job`, `schedule_wake`, plus `FREE_TOOLS` = `delete_job` (destructive-kind, but job upkeep is hers, spec D2; checked before the destructive rule) | runs |
+| run | every `kind: 'read'`, plus `APPEND_TOOLS` = `save_memory`, `create_task`, `create_project`, `quick_capture`, `generate_image`, `save_document`, `create_job`, `edit_job`, `run_job`, `schedule_wake`, `send_message` (cycle 75: Tony-only, rate-limited), plus `FREE_TOOLS` = `delete_job` (destructive-kind, but job upkeep is hers, spec D2; checked before the destructive rule) | runs |
 | propose | every `kind: 'destructive'`, plus `PROPOSE_TOOLS` = `edit_document`, `edit_section`, `update_document`, `move_document`, `sync_document`, `edit_image`, `create_skill`, `edit_skill` | handler not run; inserts `review_queue` `kind='agent-action'`, `target_kind='agent_run'`, `proposed={tool,args,conversationId}`; returns `{proposed:true, reviewId, note}` and the run continues |
 
 An unclassified tool **throws** in `classifyForHeadless`, and a test enumerates the whole

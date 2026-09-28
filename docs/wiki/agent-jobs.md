@@ -1,7 +1,7 @@
 ---
 title: Agent Jobs (markdown-configured schedules and triggers)
 status: built
-cycle: 74
+cycle: 74 (`deliver` targets: cycle 75)
 updated: 2026-09-28
 ---
 
@@ -31,7 +31,7 @@ active_hours: 07:00-23:00      # optional, [start, end), wraps past midnight whe
 model: default                 # or a registry model id
 thread: main                   # main | isolated
 context: light                 # light | full
-deliver: [app]                 # stored; only 'app' exists until cycle 75
+deliver: [auto, imessage]      # app | auto | imessage | email (cycle 75); default [auto]
 enabled: true
 filter: { project: mymind }    # event jobs only: key/value match on the event payload
 ---
@@ -48,7 +48,7 @@ If nothing matters, reply NO_REPLY.
 | `model` | `default` (the resolver's chain) | Anything else must be a registry model id. |
 | `thread` | `main` | `isolated` wakes into **one side thread per slug**, titled `wake: <slug>` and reused fire after fire (see [Scheduling](#scheduling)). |
 | `context` | `full` | `light` = the last **4** turns of history (after the summary tier). |
-| `deliver` | `[app]` | A string array, stored only. |
+| `deliver` | `[auto]` (cycle 75; was `[app]`) | A non-empty list of `app`, `auto`, `imessage`, `email`. Anything else is a parse error. See [Delivery](#delivery-cycle-75). An **enabled** job may name `imessage`/`email` only while that channel is enabled in Settings → Channels (checked on create, save and enable, not at boot). |
 | `enabled` | `false` | Boolean. The UI switch rewrites just this line. |
 | `filter` | none | A flat map; values are coerced to strings. |
 
@@ -109,7 +109,7 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 | `tick.ts` | `jobsTick` (claims due jobs and fires them), `runJobNow`, `fireJob`, `hasActiveRun`. |
 | `events.ts` | `fireEvent(name, key, payload)`, `dueTaskEvents()` and `eventBlock()` (the plain-sentence event description appended to the prompt). |
 | `outcome.ts` | `onRunFinished`, called by `queue.ts` `execute` after every run: writes `last_outcome` and the failure streak, and auto-disables. |
-| `seeds.ts` | The four seed job files. |
+| `seeds.ts` | The four seed job files (`SEED_JOBS`), plus `SEED_JOBS_V1`, the cycle-74 content byte for byte, which `upgradeSeedJobs` matches against. |
 | `wake-time.ts` | `schedule_wake`'s `when` parser. |
 | `timezone.ts` | `getDefaultTimezone()`, `serverTimezone()`, `getAgentTimezoneSetting()` / `setAgentTimezoneSetting()`. |
 
@@ -268,14 +268,47 @@ starts). It installs a slug only if it is missing, always **disabled**, with act
 
 | Slug | Trigger | Notes |
 |---|---|---|
-| `morning-brief` | `cron 30 7 * * 1-5` | `context: light` |
-| `evening-wrap` | `cron 0 21 * * *` | `context: light` |
-| `heartbeat` | `every 30m`, `active_hours: 08:00-22:00` | `context: light`; checklist body; `NO_REPLY` when nothing needs attention |
-| `session-digest` | `event cc.session_end` | `thread: main`, `context: light`; "Propose tasks rather than creating duplicates" |
+| `morning-brief` | `cron 30 7 * * 1-5` | `context: light`, `deliver: [auto, imessage]` |
+| `evening-wrap` | `cron 0 21 * * *` | `context: light`, `deliver: [auto]` |
+| `heartbeat` | `every 30m`, `active_hours: 08:00-22:00` | `context: light`, `deliver: [auto]`; checklist body; `NO_REPLY` when nothing needs attention |
+| `session-digest` | `event cc.session_end` | `thread: main`, `context: light`, `deliver: [app]`; "Propose tasks rather than creating duplicates" |
+
+**Seed upgrade (cycle 75).** `upgradeSeedJobs()` runs on boot right after `installSeedJobs()`. It
+moves a seed from its cycle-74 content (`SEED_JOBS_V1`) to the current one, which adds the
+`deliver:` lines. It is hash-guarded: only a seed whose stored content is exactly its previous
+version, or that version with just `enabled: true` switched on, is rewritten (actor `system`, CAS),
+and an enabled seed stays enabled. Any other edit is left alone, and a second boot is a no-op. An
+enabled seed whose new `deliver` names a channel that isn't set up stays at its previous version
+with a warning until the channel is configured.
 
 The seeds name no `timezone:`, so they follow the Agent timezone setting (see [Timezone](#timezone)),
 or the server zone when it is absent. On the dev box that is `America/Chicago`; **prod runs
 `Etc/UTC`, so set the Agent timezone before enabling any seed.**
+
+## Delivery (cycle 75)
+
+A job's reply always lands in its thread in the app. `deliver` says where **else** it goes. This
+is resolved when the run finishes (`server/lib/channels/deliver.ts` `resolveDeliverChannels` and
+`planDeliveries`), in the same transaction as the reply:
+
+| Value | Effect |
+|---|---|
+| `app` | Nothing outbound. |
+| `auto` | iMessage to the default handle, **only while Tony is away** from the app (no activity ping for `presence_away_minutes`, default 10). Never email. |
+| `imessage` | iMessage to the default handle, always. |
+| `email` | Email to Settings → Channels → Email **Send to**, always, with subject **`Bridget · <slug>`**. |
+
+- **No `deliver:` line means `[auto]`** (preflight ruling 3; it was `[app]` in cycle 74). An
+  enabled custom job without the line may start texting Tony when he is away.
+- A silent or empty reply delivers nothing. A channel that is disabled when the run finishes is
+  skipped with an activity `warn` (`channels:deliver-skipped`); so is iMessage with no default
+  handle.
+- A job run that also has `reply_to` (a steered iMessage) sends one iMessage, not two.
+- Delivery status shows as badges under the reply in `/agent`, and a delivery that finally fails
+  posts an event note on main. The outbox, retries and duplicate check are in
+  [channels.md](channels.md).
+- The UI: the job status panel shows **Delivers to** (for example "App · Email",
+  `app/lib/jobs/deliver-label.ts`), and the **New job** templates carry a `deliver:` line.
 
 ## Agent tools
 
@@ -344,6 +377,7 @@ the skill-source routes).
   `splitOrigin`, shared with the server's `eventModelText`, which reads "Background wake
   (job:<slug>): …" to the model). Only `state` frames stream live during a wake.
 - **Settings → Bridget** carries the **Agent timezone** field (see [Timezone](#timezone)).
+- The status panel shows **Delivers to** from the parsed `deliver` list (cycle 75).
 - **Per-job run counts are not on `/jobs`** (spec §11 asked for them): use the per-job run
   count query below. A recorded deviation.
 

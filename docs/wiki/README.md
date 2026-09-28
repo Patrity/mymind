@@ -29,8 +29,9 @@ The **living** reference for how each shipped system works **today** — one pag
 | CI/CD deploy pipeline (GitHub Actions → Proxmox homelab) | [ci-deploy-pipeline.md](ci-deploy-pipeline.md) | shipped |
 | Projects (canonical git-keyed entities, dashboard, doc-assoc, merge) | [projects.md](projects.md) | shipped |
 | Voice agent (VAD, WebSocket orchestrator, STT/TTS, Three.js visualizer) | [voice-agent.md](voice-agent.md) | shipped |
-| Agent runtime (server-owned turns, run queue, main thread, steering, `wake()`, headless gate) | [agent-runtime.md](agent-runtime.md) | shipped (cycle 73); cycle-74 changes built |
-| Agent jobs (markdown-configured cron/every/at/event schedules, heartbeat, reminders, `/jobs`) | [agent-jobs.md](agent-jobs.md) | built (cycle 74) |
+| Agent runtime (server-owned turns, run queue, main thread, steering, `wake()`, headless gate) | [agent-runtime.md](agent-runtime.md) | shipped (cycle 73); cycle-74 and cycle-75 changes built |
+| Agent jobs (markdown-configured cron/every/at/event schedules, heartbeat, reminders, `/jobs`) | [agent-jobs.md](agent-jobs.md) | built (cycle 74; `deliver` targets cycle 75) |
 | Agent skills (markdown how-tos in `agent_skills`, tier-1 index, `/skills`, revisions) | [agent-skills.md](agent-skills.md) | built (cycle 74; shipped cycle 49) |
+| Channels (two-way iMessage via BlueBubbles, outbound email via Resend, presence-aware job delivery, outbox, tapback approvals) | [channels.md](channels.md) | built (cycle 75) |
 | Voice studio (`/voice` — authoring Breeze presets, reading MyMind aloud) | [voice-studio.md](voice-studio.md) | shipped |
 | Voice agent integration guide (legacy Kyutai/Unmute reference) | [voice-agent-integration.md](voice-agent-integration.md) | shipped |
