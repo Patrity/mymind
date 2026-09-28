@@ -13,7 +13,7 @@ import type { AgentTool } from '../types'
 import { applyReplace } from '../../documents/edit-ops'
 import {
   listJobs, getJob, createJob, saveJob, deleteJob, getDefaultTimezone,
-  JobValidationError, ConflictError, type JobDTO
+  JobValidationError, JobNotFoundError, ConflictError, type JobDTO
 } from '../jobs/store'
 import type { runJobNow as RunJobNowFn } from '../jobs/tick'
 import { parseJob, type JobSpec } from '../jobs/parse'
@@ -108,7 +108,11 @@ export const jobTools: AgentTool[] = [
         if (err instanceof ConflictError) {
           return { result: { ok: false, error: 'a job with that slug already exists', current: err.current }, summary: 'create_job: slug already exists' }
         }
-        throw err
+        // Defense in depth: createJob always passes expectedHash:null, so writeJob's
+        // 'not-found' branch (JobNotFoundError) can't actually trigger here — but never let ANY
+        // raw error escape the tool contract (review fix round 1: matches create_skill/edit_skill).
+        const message = err instanceof Error ? err.message : String(err)
+        return { result: { ok: false, error: message }, summary: `create_job failed: ${message}` }
       }
     }
   },
@@ -117,7 +121,7 @@ export const jobTools: AgentTool[] = [
     description: 'Edit an existing job. Either find/replace (`old_string`/`new_string`, unique match unless `replace_all` — like edit_document) or pass full `content` to replace the whole file. Re-validated and re-scheduled on save. On failure returns ok:false with error "not_found", "no_match", "ambiguous_match", "empty_old_string", "missing_args", or a validation/conflict message; nothing is written in any case.',
     kind: 'create',
     schema: {
-      slug: z.string().describe('Job slug'),
+      slug: z.string().min(1).describe('Job slug'),
       old_string: z.string().optional().describe('Exact text to replace (must be unique unless replace_all)'),
       new_string: z.string().optional().describe('Replacement text'),
       replace_all: z.boolean().optional().describe('Replace every occurrence'),
@@ -158,13 +162,22 @@ export const jobTools: AgentTool[] = [
           }
         }
       } catch (err) {
+        // The job was deleted between the getJob read above and this saveJob call landing —
+        // writeJob's CAS finds no row at all (not a hash mismatch), so it resolves 'not-found'
+        // rather than ConflictError. Map it to the SAME not_found shape the initial getJob
+        // check above already returns, rather than leaking the raw exception (review fix
+        // round 1, Important).
+        if (err instanceof JobNotFoundError) {
+          return { result: jobNotFound(slug), summary: 'edit_job: not found' }
+        }
         if (err instanceof JobValidationError) {
           return { result: { ok: false, error: err.message }, summary: `edit_job rejected: ${err.message}` }
         }
         if (err instanceof ConflictError) {
           return { result: { ok: false, error: 'the job changed since it was read', current: err.current }, summary: 'edit_job: conflict' }
         }
-        throw err
+        const message = err instanceof Error ? err.message : String(err)
+        return { result: { ok: false, error: message }, summary: `edit_job failed: ${message}` }
       }
     }
   },
@@ -250,7 +263,11 @@ export const jobTools: AgentTool[] = [
         if (err instanceof ConflictError) {
           return { result: { ok: false, error: 'reminder slug collision — try again' }, summary: 'schedule_wake: slug collision' }
         }
-        throw err
+        // Defense in depth: createJob always passes expectedHash:null, so writeJob's
+        // 'not-found' branch (JobNotFoundError) can't actually trigger here — but never let ANY
+        // raw error escape the tool contract (review fix round 1: matches create_skill/edit_skill).
+        const message = err instanceof Error ? err.message : String(err)
+        return { result: { ok: false, error: message }, summary: `schedule_wake failed: ${message}` }
       }
     }
   }

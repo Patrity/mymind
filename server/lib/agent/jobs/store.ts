@@ -53,6 +53,18 @@ export class JobValidationError extends Error {
   }
 }
 
+/** Thrown when a slug names no job — notably when one is deleted between a caller's read
+ *  (getJob) and its write (saveJob passing that read's contentHash as expectedHash): the CAS
+ *  finds no row at all, not a hash mismatch, so writeJob resolves that as 'not-found' rather
+ *  than ConflictError. A distinct type (not a plain Error) so callers like the edit_job tool can
+ *  map it to a stable `error: 'not_found'` code instead of leaking a raw exception/message. */
+export class JobNotFoundError extends Error {
+  constructor(slug: string) {
+    super(`no job named "${slug}"`)
+    this.name = 'JobNotFoundError'
+  }
+}
+
 export interface JobDTO {
   id: string
   slug: string
@@ -270,7 +282,7 @@ async function writeJob(
     throw new ConflictError({ content: now?.content ?? '', contentHash: now?.contentHash ?? '' })
   }
 
-  if (outcome.kind === 'not-found') throw new Error(`no job named "${slug}"`)
+  if (outcome.kind === 'not-found') throw new JobNotFoundError(slug)
   if (outcome.kind === 'conflict') throw new ConflictError(outcome.current)
 
   publishChange({ resource: 'agentJob', action: outcome.wasCreate ? 'created' : 'updated', id: outcome.row.id })
@@ -301,7 +313,7 @@ export async function saveJob(
  *  next_run_at, cleared when disabling) stay consistent and the change gets a revision. */
 export async function setJobEnabled(slug: string, enabled: boolean, actor: 'human' | 'agent' | 'system'): Promise<JobDTO> {
   const existing = await rowBySlug(slug)
-  if (!existing) throw new Error(`no job named "${slug}"`)
+  if (!existing) throw new JobNotFoundError(slug)
   const content = setFrontmatterKey(existing.content, 'enabled', enabled)
   return writeJob(slug, content, existing.contentHash, actor, null)
 }
@@ -316,7 +328,7 @@ export async function deleteJob(slug: string): Promise<boolean> {
 /** Restores a job to one of its revisions' content (recorded as a NEW revision by `actor`). */
 export async function revertJob(slug: string, revisionId: string, actor: 'human' | 'agent'): Promise<JobDTO> {
   const row = await rowBySlug(slug)
-  if (!row) throw new Error(`no job named "${slug}"`)
+  if (!row) throw new JobNotFoundError(slug)
   const rev = await getRevision(revisionId)
   if (!rev || rev.targetKind !== 'job' || rev.targetId !== row.id) {
     throw new Error(`revision ${revisionId} does not belong to job "${slug}"`)

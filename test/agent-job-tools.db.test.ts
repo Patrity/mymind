@@ -21,7 +21,8 @@ import { and, eq, inArray, like } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { agentJobs, agentConfigRevisions, agentRuns, conversations } from '../server/db/schema'
 import { listRevisions } from '../server/lib/agent/config/revisions'
-import { createJob as storeCreateJob, getJob as storeGetJob } from '../server/lib/agent/jobs/store'
+import { createJob as storeCreateJob, getJob as storeGetJob, deleteJob as storeDeleteJob } from '../server/lib/agent/jobs/store'
+import * as jobsStore from '../server/lib/agent/jobs/store'
 import { createRun } from '../server/lib/agent/runtime/runs'
 import { jobTools } from '../server/lib/agent/tools/jobs'
 import type { ToolContext } from '../server/lib/agent/types'
@@ -189,6 +190,27 @@ describe('job tools — edit_job', () => {
     await storeCreateJob({ slug, content: md('trigger: every 10m\nenabled: true', 'v1'), actor: 'human' })
     const out = await T.edit_job!.handler({ slug }, ctx)
     expect((out.result as { ok: boolean, error: string }).error).toBe('missing_args')
+  })
+
+  it('review fix round 1: a job deleted between the read and the write returns ok:false not_found, not a raw exception', async () => {
+    const slug = `${PREFIX}edit-vanish`
+    const job = await storeCreateJob({ slug, content: md('trigger: every 10m\nenabled: true', 'v1'), actor: 'human' })
+    // getJob returns the STALE (pre-delete) job so edit_job's own not-found check passes and it
+    // proceeds to saveJob — reproducing the real race (deleted between the read and the write
+    // landing), not just "never existed". Restored even if an assertion below throws.
+    const spy = vi.spyOn(jobsStore, 'getJob').mockResolvedValueOnce(job)
+    try {
+      await storeDeleteJob(slug) // the row is genuinely gone by the time saveJob's CAS runs
+      const out = await T.edit_job!.handler({ slug, content: md('trigger: every 10m\nenabled: true', 'v2') }, ctx)
+      const res = out.result as { ok: boolean, error: string }
+      expect(res.ok).toBe(false)
+      expect(res.error).toBe('not_found')
+    } finally {
+      spy.mockRestore()
+      // Same leak the delete_job test guards against: the job is already gone, so afterAll's
+      // slug-prefix sweep can never find its revision again — clean it explicitly.
+      await useDb().delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), eq(agentConfigRevisions.targetId, job.id)))
+    }
   })
 })
 
