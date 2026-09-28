@@ -26,7 +26,10 @@ export const agentRuns = pgTable('agent_runs', {
   usage: jsonb('usage'),
   userMessageId: uuid('user_message_id'),
   assistantMessageId: uuid('assistant_message_id'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Cycle 75: set when this run should answer back over a channel (e.g. an iMessage that
+   *  woke the agent) rather than only the web UI. See runtime/types.ts ReplyTo. */
+  replyTo: jsonb('reply_to')
 }, (t) => [
   index('agent_runs_conv_status_idx').on(t.conversationId, t.status),
   index('agent_runs_status_created_idx').on(t.status, t.createdAt),

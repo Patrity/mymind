@@ -83,7 +83,10 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   // so neither of the default invalidations above ever matches. Invalidating the bare
   // ['agentRun'] prefix catches every conversationId variant of that key at once (tanstack's
   // fuzzy queryKey matching: a query key starting with ['agentRun'] matches).
-  agentRun: (c) => c.invalidateQueries({ queryKey: ['agentRun'] })
+  agentRun: (c) => c.invalidateQueries({ queryKey: ['agentRun'] }),
+  // Cycle 75: a channel delivery (iMessage/email send) is shown inline in the conversation
+  // it replied to — invalidate the ['conversation'] prefix so any open thread view refreshes.
+  channelDelivery: (c) => c.invalidateQueries({ queryKey: ['conversation'] })
 }
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {

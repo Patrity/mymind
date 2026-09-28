@@ -16,6 +16,10 @@ export interface RunInput {
   context?: 'light' | 'full'
 }
 
+/** Cycle 75: where to send this run's reply besides the web UI — set when the run was
+ *  woken by an inbound iMessage, so the answer routes back to the sender's chat. */
+export interface ReplyTo { channel: 'imessage'; chatGuid: string; messageGuid: string }
+
 export interface RunOutcome {
   status: 'done' | 'failed' | 'aborted'
   suppressed?: boolean

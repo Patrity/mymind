@@ -88,6 +88,16 @@ describe('dispatchLiveEvent — agentRun', () => {
   })
 })
 
+describe('dispatchLiveEvent — channelDelivery', () => {
+  // Cycle 75: a channel delivery is shown inline in the conversation it replied to — an open
+  // thread view (keyed under ['conversation', ...]) must refresh when a send lands or fails.
+  it('invalidates the ["conversation"] prefix', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'channelDelivery', id: 'cd-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['conversation'] }])
+  })
+})
+
 describe('dispatchLiveEvent — activity', () => {
   it('invalidates activity list + count on an activity signal', () => {
     const invalidateQueries = vi.fn()
