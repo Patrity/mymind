@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, jsonb, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { conversations } from './conversations'
+import { agentJobs } from './agent-config'
 
 /** One row per agent turn, whatever started it. The DB claim (runtime/runs.ts) plus
  *  agent_runs_one_running make two concurrent turns on one conversation impossible. */
@@ -10,6 +11,7 @@ export const agentRuns = pgTable('agent_runs', {
   sessionKey: text('session_key').notNull(),
   trigger: text('trigger').notNull(),                 // 'user' | 'wake'
   wakeReason: text('wake_reason'),
+  jobId: uuid('job_id').references(() => agentJobs.id, { onDelete: 'set null' }), // set when trigger='wake' from a job fire
   profile: text('profile').notNull(),                 // 'interactive' | 'headless'
   modelDefId: text('model_def_id'),
   status: text('status').notNull().default('queued'), // queued|running|done|failed|interrupted|aborted
