@@ -57,6 +57,12 @@ export function useConfigSource(kind: ConfigKind, slug: MaybeRefOrGetter<string>
     error.value = null
   }
 
+  // A rejected save's message describes the text as it was sent; once the user edits again it no
+  // longer applies, so it clears (the next save re-validates).
+  watch(content, () => {
+    if (error.value) error.value = null
+  })
+
   // A different slug is a different document: start over.
   watch(slugValue, () => {
     content.value = ''

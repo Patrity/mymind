@@ -187,26 +187,48 @@ export function nextRunAt(spec: JobSpec, from: Date): Date | null {
   }
 }
 
-export function nextFireTimes(spec: JobSpec, n: number, from: Date = new Date()): Date[] {
+/** Candidates examined per requested fire time before nextFireTimes gives up (an `every 5m` job
+ *  whose active_hours never match would otherwise loop forever). */
+export const FIRE_TIMES_CANDIDATES_PER_RESULT = 2000
+
+/**
+ * The next `n` times the job will actually fire — only instants inside its active_hours, since
+ * the tick skips the rest. `anchor` is the job's stored next_run_at: an `every` job fires on its
+ * own cadence from there, not from `from` (the request time), so when the anchor is still ahead
+ * the preview starts at it. Cron and at ignore the anchor (they are wall-clock anchored already).
+ * Stops after n × FIRE_TIMES_CANDIDATES_PER_RESULT candidates, so it may return fewer than n.
+ */
+export function nextFireTimes(spec: JobSpec, n: number, from: Date = new Date(), opts: { anchor?: Date | null } = {}): Date[] {
+  if (n <= 0) return []
+  const cap = n * FIRE_TIMES_CANDIDATES_PER_RESULT
+  const out: Date[] = []
+  const keep = (d: Date) => {
+    if (inActiveHours(spec, d)) out.push(d)
+  }
   switch (spec.trigger.kind) {
     case 'cron': {
       const cron = new Cron(spec.trigger.expr, { timezone: spec.timezone, paused: true })
-      return cron.nextRuns(n, from)
+      let cur = from
+      for (let i = 0; i < cap && out.length < n; i++) {
+        const next = cron.nextRun(cur)
+        if (!next) break
+        keep(next)
+        cur = next
+      }
+      return out
     }
     case 'every': {
       const every = parseEveryExpr(spec.trigger.expr)
       if (!every) return []
-      const out: Date[] = []
-      let t = from.getTime()
-      for (let i = 0; i < n; i++) {
-        t += every.ms
-        out.push(new Date(t))
-      }
+      const anchor = opts.anchor?.getTime()
+      const first = anchor !== undefined && anchor > from.getTime() ? anchor : from.getTime() + every.ms
+      for (let i = 0; i < cap && out.length < n; i++) keep(new Date(first + i * every.ms))
       return out
     }
     case 'at': {
       const next = nextRunAt(spec, from)
-      return next ? [next] : []
+      if (next) keep(next)
+      return out
     }
     case 'event':
       return []
@@ -272,15 +294,22 @@ export function describeTrigger(spec: JobSpec): string {
  * start-inclusive, end-exclusive (`[start, end)`), and wraps past midnight when `end < start`.
  * Returns true when the job has no active_hours restriction.
  */
+// One formatter per timezone: nextFireTimes can test thousands of candidates, and building an
+// Intl.DateTimeFormat per call dominated that (≈350 ms for 10k candidates).
+const hourMinuteFormatters = new Map<string, Intl.DateTimeFormat>()
+function hourMinuteFormatter(timeZone: string): Intl.DateTimeFormat {
+  let f = hourMinuteFormatters.get(timeZone)
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone })
+    hourMinuteFormatters.set(timeZone, f)
+  }
+  return f
+}
+
 export function inActiveHours(spec: JobSpec, at: Date): boolean {
   if (!spec.activeHours) return true
   const { start, end } = spec.activeHours
-  const parts = new Intl.DateTimeFormat('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-    timeZone: spec.timezone
-  }).formatToParts(at)
+  const parts = hourMinuteFormatter(spec.timezone).formatToParts(at)
   const hh = parts.find(p => p.type === 'hour')?.value ?? '00'
   const mm = parts.find(p => p.type === 'minute')?.value ?? '00'
   const current = `${hh}:${mm}`

@@ -14,7 +14,9 @@ export default defineEventHandler(async (event) => {
   if (!job) throw createError({ statusCode: 404, statusMessage: `no job named "${slug}"` })
 
   const parsed = parseJob(job.content, { defaultTimezone: job.timezone ?? await getDefaultTimezone() })
-  const fireTimes = parsed.ok ? nextFireTimes(parsed.spec, 5).map(d => d.toISOString()) : []
+  // An enabled job's stored next_run_at anchors an `every` cadence (see nextFireTimes).
+  const anchor = job.enabled && job.nextRunAt ? new Date(job.nextRunAt) : null
+  const fireTimes = parsed.ok ? nextFireTimes(parsed.spec, 5, new Date(), { anchor }).map(d => d.toISOString()) : []
 
   const runs = await listRuns({ jobId: job.id, limit: 10 })
 
