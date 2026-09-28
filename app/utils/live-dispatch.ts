@@ -64,6 +64,10 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   // write — human or a background agent — refreshes the skills list and the `/` menu, where
   // active skills are the other command source.
   agentSkill: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); c.invalidateQueries({ queryKey: ['agent', 'commands'] }) },
+  // Jobs (cycle 74): the /jobs list, each job's source/status/runs and its revisions all sit
+  // under ['jobs']. A job's run finishing publishes agentJob too (outcome.ts), so the runs list
+  // and last-outcome badge refresh without a separate agentRun hook.
+  agentJob: (c) => { c.invalidateQueries({ queryKey: ['jobs'] }) },
   // A folder mutation rewrites document paths, and the tree the user is looking at is keyed
   // ['document','list'] — invalidating only ['folder',*] (the default below) would leave the
   // tree stale, which is the whole point of wiring folders into live reactivity.

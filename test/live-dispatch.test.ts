@@ -66,6 +66,14 @@ describe('dispatchLiveEvent', () => {
     expect(c.calls).toContainEqual([{ queryKey: ['skills'] }])
     expect(c.calls).toContainEqual([{ queryKey: ['agent', 'commands'] }])
   })
+
+  // Cycle 74: /jobs keys everything under ['jobs'] (list, source, revisions) — none of which the
+  // default ['agentJob', …] invalidations reach.
+  it('agentJob events invalidate the bare ["jobs"] prefix', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'agentJob', id: 'j-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['jobs'] }])
+  })
 })
 
 describe('dispatchLiveEvent — agentRun', () => {
