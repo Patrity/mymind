@@ -12,13 +12,16 @@ vi.stubGlobal('getQuery', (e: { query: Record<string, unknown> }) => e.query)
 vi.stubGlobal('readBody', async (e: { body: unknown }) => e.body)
 
 const TOKEN = 'a'.repeat(64)
-const state = vi.hoisted(() => ({ imessage: {} as Record<string, unknown> }))
+const state = vi.hoisted(() => ({ imessage: {} as Record<string, unknown>, dbDown: false }))
 const mocks = vi.hoisted(() => ({ handleInbound: vi.fn() }))
 
 // The settings read loadChannelsConfig makes: select().from(settings).where(...) → rows.
 vi.mock('../server/db', () => ({
   useDb: () => ({
-    select: () => ({ from: () => ({ where: async () => [{ key: 'channel_imessage', value: state.imessage }] }) })
+    select: () => ({ from: () => ({ where: async () => {
+      if (state.dbDown) throw new Error('connection refused')
+      return [{ key: 'channel_imessage', value: state.imessage }]
+    } }) })
   })
 }))
 vi.mock('../server/lib/channels/inbound', () => ({ handleInbound: mocks.handleInbound }))
@@ -37,6 +40,7 @@ beforeEach(() => {
   mocks.handleInbound.mockReset()
   mocks.handleInbound.mockResolvedValue('enqueued')
   state.imessage = { enabled: true, serverUrl: 'http://bb.local', passwordEnc: null, webhookToken: TOKEN, allowedHandles: ['+15551234567'], defaultHandle: null, defaultChatGuid: null }
+  state.dbDown = false
   invalidateChannelsConfig()
 })
 
@@ -53,6 +57,15 @@ describe('BlueBubbles webhook route', () => {
 
   it('a repeated ?token= (array) is a 404, never a match', async () => {
     expect(await status(handler(evt({ token: [TOKEN, TOKEN] })))).toBe(404)
+  })
+
+  it('the token check itself failing (DB down) is a 404, never a 500', async () => {
+    state.dbDown = true
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(await status(handler(evt({ token: TOKEN })))).toBe(404)
+    } finally { spy.mockRestore() }
+    expect(mocks.handleInbound).not.toHaveBeenCalled()
   })
 
   it('the right token while iMessage is disabled is a 404', async () => {

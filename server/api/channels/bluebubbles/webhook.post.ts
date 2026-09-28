@@ -10,7 +10,12 @@ import { handleInbound } from '../../../lib/channels/inbound'
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)
   const token = typeof q.token === 'string' ? q.token : undefined
-  if (!(await verifyWebhookToken(token))) throw createError({ statusCode: 404, statusMessage: 'Not Found' })
+  // A failing check (a DB blip loading the config) is a 404 too: a 500 here would confirm to an
+  // unauthenticated caller that the endpoint exists.
+  let ok = false
+  try { ok = await verifyWebhookToken(token) }
+  catch (err) { console.error('[channels] BlueBubbles webhook token check failed:', err) }
+  if (!ok) throw createError({ statusCode: 404, statusMessage: 'Not Found' })
 
   try {
     const { event: ev } = parseWebhook(await readBody(event))
