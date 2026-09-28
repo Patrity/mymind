@@ -1,0 +1,183 @@
+/**
+ * Pure job-file parser. Turns a job markdown document (frontmatter + body) into a validated
+ * JobSpec, or a single human-readable error. No DB, no scheduling — see schedule.ts for that.
+ */
+import { Cron } from 'croner'
+import { splitFrontmatter } from '../../../../shared/utils/frontmatter'
+
+export type TriggerKind = 'cron' | 'every' | 'at' | 'event'
+
+export interface JobSpec {
+  trigger: { kind: TriggerKind; expr: string }
+  timezone: string
+  activeHours: { start: string; end: string } | null
+  model: string
+  thread: 'main' | 'isolated'
+  context: 'light' | 'full'
+  deliver: string[]
+  enabled: boolean
+  filter: Record<string, string> | null
+  body: string
+}
+
+export const JOB_BODY_MAX = 20_000
+export const MIN_INTERVAL_MS = 5 * 60_000
+
+const ACCEPTED_KEYS = new Set(['trigger', 'timezone', 'active_hours', 'model', 'thread', 'context', 'deliver', 'enabled', 'filter'])
+const KNOWN_EVENTS = ['cc.session_end', 'task.due']
+const ACTIVE_HOURS_RE = /^\d{2}:\d{2}-\d{2}:\d{2}$/
+
+type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string }
+
+function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function parseEvery(expr: string): ParseResult<number> {
+  const m = /^(\d+)(m|h)$/.exec(expr)
+  if (!m) return { ok: false, error: `invalid every expression: ${expr}` }
+  const n = Number(m[1])
+  const ms = m[2] === 'h' ? n * 60 * 60_000 : n * 60_000
+  if (ms < MIN_INTERVAL_MS) return { ok: false, error: 'trigger must fire at least 5 minutes apart' }
+  return { ok: true, value: ms }
+}
+
+function parseTrigger(raw: string, timezone: string): ParseResult<{ kind: TriggerKind; expr: string }> {
+  const m = /^(cron|every|at|event)\s+(.+)$/.exec(raw.trim())
+  if (!m) return { ok: false, error: `unknown trigger: ${raw}` }
+  const kind = m[1] as TriggerKind
+  const expr = (m[2] ?? '').trim()
+
+  if (kind === 'cron') {
+    let cron: Cron
+    try {
+      cron = new Cron(expr, { timezone, paused: true })
+    } catch {
+      return { ok: false, error: `invalid cron: ${expr}` }
+    }
+    const [firstRun, secondRun] = cron.nextRuns(2, new Date())
+    if (firstRun && secondRun && secondRun.getTime() - firstRun.getTime() < MIN_INTERVAL_MS) {
+      return { ok: false, error: 'trigger must fire at least 5 minutes apart' }
+    }
+    return { ok: true, value: { kind, expr } }
+  }
+
+  if (kind === 'every') {
+    const every = parseEvery(expr)
+    if (!every.ok) return every
+    return { ok: true, value: { kind, expr } }
+  }
+
+  if (kind === 'at') {
+    if (Number.isNaN(Date.parse(expr))) return { ok: false, error: `trigger 'at' requires a valid date: ${expr}` }
+    return { ok: true, value: { kind, expr } }
+  }
+
+  // kind === 'event'
+  if (!KNOWN_EVENTS.includes(expr)) return { ok: false, error: `unknown event: ${expr}` }
+  return { ok: true, value: { kind, expr } }
+}
+
+export function parseJob(
+  md: string,
+  opts: { defaultTimezone: string; isKnownModel?: (id: string) => boolean }
+): { ok: true; spec: JobSpec } | { ok: false; error: string } {
+  const { data, body, error: splitError } = splitFrontmatter(md)
+  if (splitError) return { ok: false, error: splitError }
+
+  for (const key of Object.keys(data)) {
+    if (!ACCEPTED_KEYS.has(key)) return { ok: false, error: `unknown key: ${key}` }
+  }
+
+  const timezoneRaw = data.timezone
+  const timezone = typeof timezoneRaw === 'string' ? timezoneRaw : opts.defaultTimezone
+  if (!isValidTimezone(timezone)) return { ok: false, error: `invalid timezone: ${timezone}` }
+
+  const triggerRaw = data.trigger
+  if (typeof triggerRaw !== 'string' || !triggerRaw.trim()) {
+    return { ok: false, error: `unknown trigger: ${String(triggerRaw)}` }
+  }
+  const trigger = parseTrigger(triggerRaw, timezone)
+  if (!trigger.ok) return trigger
+
+  let activeHours: { start: string; end: string } | null = null
+  if (data.active_hours !== undefined) {
+    if (typeof data.active_hours !== 'string' || !ACTIVE_HOURS_RE.test(data.active_hours)) {
+      return { ok: false, error: `invalid active_hours: ${String(data.active_hours)}` }
+    }
+    const [start, end] = data.active_hours.split('-')
+    activeHours = { start: start ?? '', end: end ?? '' }
+  }
+
+  let thread: 'main' | 'isolated' = 'main'
+  if (data.thread !== undefined) {
+    if (data.thread !== 'main' && data.thread !== 'isolated') {
+      return { ok: false, error: `invalid thread: ${String(data.thread)}` }
+    }
+    thread = data.thread
+  }
+
+  let context: 'light' | 'full' = 'full'
+  if (data.context !== undefined) {
+    if (data.context !== 'light' && data.context !== 'full') {
+      return { ok: false, error: `invalid context: ${String(data.context)}` }
+    }
+    context = data.context
+  }
+
+  let deliver: string[] = ['app']
+  if (data.deliver !== undefined) {
+    if (!Array.isArray(data.deliver) || !data.deliver.every(d => typeof d === 'string')) {
+      return { ok: false, error: `invalid deliver: ${String(data.deliver)}` }
+    }
+    deliver = data.deliver
+  }
+
+  let enabled = false
+  if (data.enabled !== undefined) {
+    if (typeof data.enabled !== 'boolean') return { ok: false, error: `invalid enabled: ${String(data.enabled)}` }
+    enabled = data.enabled
+  }
+
+  let filter: Record<string, string> | null = null
+  if (data.filter !== undefined) {
+    if (typeof data.filter !== 'object' || data.filter === null || Array.isArray(data.filter)) {
+      return { ok: false, error: `invalid filter: ${String(data.filter)}` }
+    }
+    filter = data.filter as Record<string, string>
+  }
+
+  let model = 'default'
+  if (data.model !== undefined) {
+    if (typeof data.model !== 'string') return { ok: false, error: `invalid model: ${String(data.model)}` }
+    model = data.model
+    if (model !== 'default' && opts.isKnownModel && !opts.isKnownModel(model)) {
+      return { ok: false, error: `unknown model: ${model}` }
+    }
+  }
+
+  const trimmedBody = body.trim()
+  if (!trimmedBody) return { ok: false, error: 'job body must not be empty' }
+  if (trimmedBody.length > JOB_BODY_MAX) return { ok: false, error: `job body exceeds ${JOB_BODY_MAX} characters` }
+
+  return {
+    ok: true,
+    spec: {
+      trigger: trigger.value,
+      timezone,
+      activeHours,
+      model,
+      thread,
+      context,
+      deliver,
+      enabled,
+      filter,
+      body: trimmedBody
+    }
+  }
+}
