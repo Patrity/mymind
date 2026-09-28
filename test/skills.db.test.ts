@@ -8,12 +8,12 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { and, eq, inArray, like } from 'drizzle-orm'
+import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { agentSkills, agentConfigRevisions } from '../server/db/schema'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, listSkills,
-  getSkillSource, saveSkillSource, listSkillRevisions, revertSkill, ConflictError
+  getSkillSource, saveSkillSource, listSkillRevisions, revertSkill, restoreSkill, ConflictError
 } from '../server/services/skills'
 import { assembleContext } from '../server/lib/agent/assemble'
 import { splitFrontmatter } from '../shared/utils/frontmatter'
@@ -35,6 +35,9 @@ const deps = {
 
 async function cleanup() {
   const db = useDb()
+  // Revisions outlive a deleted skill (no FK), so a slug lookup can't find every fixture's
+  // history — match the fixture markdown itself (every one starts with `name: sktest-`).
+  await db.execute(sql`delete from agent_config_revisions where target_kind = 'skill' and content like ${'---\nname: ' + PREFIX + '%'}`)
   const rows = await db.select({ id: agentSkills.id }).from(agentSkills).where(like(agentSkills.slug, `${PREFIX}%`))
   if (!rows.length) return
   const ids = rows.map(r => r.id)
@@ -139,5 +142,41 @@ describe('skill source editing', () => {
     expect(reverted.content).toBe(src!.content)
     expect((await getSkill(`${PREFIX}rev`))?.body).toBe('first')
     expect((await listSkillRevisions(`${PREFIX}rev`))).toHaveLength(3)
+  })
+
+  it('treats a null expectedHash as create-only: it creates, but never overwrites an existing skill', async () => {
+    const md = `---\nname: ${PREFIX}new\ndescription: d\nwhen_to_use: w\nactive: true\nsource: human\n---\nfresh`
+    const created = await saveSkillSource(`${PREFIX}new`, md, null, 'human')
+    expect((await getSkill(`${PREFIX}new`))?.body).toBe('fresh')
+
+    const err = await saveSkillSource(`${PREFIX}new`, md.replace('fresh', 'clobber'), null, 'human')
+      .then(() => null, (e: unknown) => e)
+    expect(err).toBeInstanceOf(ConflictError)
+    expect((err as ConflictError).current).toEqual({ content: created.content, contentHash: created.contentHash })
+    expect((await getSkill(`${PREFIX}new`))?.body).toBe('fresh')
+  })
+})
+
+describe('delete and restore', () => {
+  it('records the delete as a revision, and restoreSkill brings the skill back under the SAME id with its full history', async () => {
+    const s = await createSkill({ name: `${PREFIX}del`, description: 'd', whenToUse: 'w', body: 'one' })
+    await updateSkill(`${PREFIX}del`, { body: 'two' }, { actor: 'agent' })
+    const before = await getSkillSource(`${PREFIX}del`)
+
+    expect(await deleteSkill(`${PREFIX}del`, { actor: 'agent' })).toBe(true)
+    const afterDelete = await useDb().select().from(agentConfigRevisions)
+      .where(and(eq(agentConfigRevisions.targetKind, 'skill'), eq(agentConfigRevisions.targetId, s.id)))
+    expect(afterDelete).toHaveLength(3) // create, update, delete
+    expect(afterDelete.some(r => r.actor === 'agent' && r.content === before!.content)).toBe(true)
+
+    const restored = await restoreSkill(before!.id, before!.content, 'agent')
+    expect(restored.id).toBe(s.id)
+    expect((await getSkill(`${PREFIX}del`))).toMatchObject({ id: s.id, body: 'two' })
+    const revs = await listSkillRevisions(`${PREFIX}del`)
+    expect(revs).toHaveLength(4)
+    expect(revs.map(r => r.actor)).toEqual(['agent', 'agent', 'agent', 'human'])
+
+    // Restoring over a live skill is refused.
+    await expect(restoreSkill(before!.id, before!.content, 'agent')).rejects.toThrow(/already exists/)
   })
 })

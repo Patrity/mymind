@@ -8,8 +8,9 @@ export default defineNitroPlugin(async () => {
   // No DB at prerender time (same guard as agent-runtime.ts).
   if (import.meta.prerender) return
   try {
-    const moved = await migrateSkillsFromDocuments()
+    const { moved, skipped } = await migrateSkillsFromDocuments()
     console.info(`[agent-skills-migrate] moved ${moved} skill document(s) into agent_skills`)
+    for (const s of skipped) console.warn(`[agent-skills-migrate] skipped ${s.path}: ${s.reason}`)
   } catch (err) {
     console.error('[agent-skills-migrate] skills data move failed:', err)
   }

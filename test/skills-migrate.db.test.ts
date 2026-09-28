@@ -2,7 +2,7 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { inArray, like } from 'drizzle-orm'
+import { inArray, like, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { documents, agentSkills, agentConfigRevisions } from '../server/db/schema'
 import { migrateSkillsFromDocuments } from '../server/services/skills'
@@ -10,10 +10,12 @@ import { splitFrontmatter } from '../shared/utils/frontmatter'
 
 // The dev DB is shared and holds REAL skill documents: every call here passes `onlyPaths`
 // so the move touches the fixtures alone.
-const PATHS = ['/projects/mymind/skills/migtest-a.md', '/projects/mymind/skills/migtest-b.md']
+const PATHS = ['/projects/mymind/skills/migtest-a.md', '/projects/mymind/skills/migtest-b.md',
+  '/projects/mymind/skills/migtest-nokind.md', '/projects/mymind/skills/migtest-invalid.md']
 
 async function cleanup() {
   const db = useDb()
+  await db.execute(sql`delete from agent_config_revisions where target_kind = 'skill' and content like ${'---\nname: migtest-%'}`)
   const skills = await db.select({ id: agentSkills.id }).from(agentSkills).where(like(agentSkills.slug, 'migtest-%'))
   if (skills.length) {
     await db.delete(agentConfigRevisions).where(inArray(agentConfigRevisions.targetId, skills.map(s => s.id)))
@@ -34,7 +36,7 @@ describe('migrateSkillsFromDocuments', () => {
         frontmatter: { kind: 'skill', name: 'migtest-b', description: 'db', whenToUse: 'wb' } }
     ])
 
-    expect(await migrateSkillsFromDocuments({ onlyPaths: PATHS })).toBe(2)
+    expect(await migrateSkillsFromDocuments({ onlyPaths: PATHS })).toEqual({ moved: 2, skipped: [] })
 
     const rows = await db.select().from(agentSkills).where(like(agentSkills.slug, 'migtest-%'))
     const a = rows.find(r => r.slug === 'migtest-a')!
@@ -55,7 +57,7 @@ describe('migrateSkillsFromDocuments', () => {
     expect(revs.every(r => r.actor === 'system' && r.targetKind === 'skill')).toBe(true)
 
     // Second run: nothing new.
-    expect(await migrateSkillsFromDocuments({ onlyPaths: PATHS })).toBe(0)
+    expect(await migrateSkillsFromDocuments({ onlyPaths: PATHS })).toEqual({ moved: 0, skipped: [] })
     expect(await db.select().from(agentSkills).where(like(agentSkills.slug, 'migtest-%'))).toHaveLength(2)
   })
 
@@ -66,11 +68,36 @@ describe('migrateSkillsFromDocuments', () => {
     // Live doc with the same slug — the NOT EXISTS filter must skip it, and not soft-delete it.
     await db.insert(documents).values({ path: PATHS[0]!, title: 'migtest-a', type: 'skill', project: 'mymind', content: 'body A',
       frontmatter: { kind: 'skill', name: 'migtest-a', description: 'd', whenToUse: 'w' } })
-    expect(await migrateSkillsFromDocuments({ onlyPaths: PATHS })).toBe(0)
+    // Filtered out by NOT EXISTS — neither moved nor reported as skipped.
+    expect(await migrateSkillsFromDocuments({ onlyPaths: PATHS })).toEqual({ moved: 0, skipped: [] })
     const [row] = await db.select().from(agentSkills).where(like(agentSkills.slug, 'migtest-%'))
     expect(row!.content).toBe('EXISTING')
     // …and the document it did not move stays live.
     const [doc] = await db.select().from(documents).where(inArray(documents.path, PATHS))
     expect(doc!.deletedAt).toBeNull()
+  })
+
+  it('moves the good documents and reports the bad ones instead of stopping at them', async () => {
+    await cleanup()
+    const db = useDb()
+    await db.insert(documents).values([
+      // No `kind: skill` — never a visible skill.
+      { path: PATHS[2]!, title: 'migtest-nokind', type: 'skill', project: 'mymind', content: 'x',
+        frontmatter: { name: 'migtest-nokind', description: 'd', whenToUse: 'w' } },
+      // A skill, but fails validation (empty description) — throws inside the per-document try.
+      { path: PATHS[3]!, title: 'migtest-invalid', type: 'skill', project: 'mymind', content: 'x',
+        frontmatter: { kind: 'skill', name: 'migtest-invalid', description: '', whenToUse: 'w' } },
+      { path: PATHS[0]!, title: 'migtest-a', type: 'skill', project: 'mymind', content: 'body A',
+        frontmatter: { kind: 'skill', name: 'migtest-a', description: 'd', whenToUse: 'w' } }
+    ])
+    const res = await migrateSkillsFromDocuments({ onlyPaths: PATHS })
+    expect(res.moved).toBe(1)
+    expect(res.skipped.map(s => s.path).sort()).toEqual([PATHS[3], PATHS[2]].sort())
+    expect(res.skipped.find(s => s.path === PATHS[3])!.reason).toMatch(/description is required/)
+    const rows = await db.select().from(agentSkills).where(like(agentSkills.slug, 'migtest-%'))
+    expect(rows.map(r => r.slug)).toEqual(['migtest-a'])
+    // The bad documents stay live.
+    const bad = await db.select().from(documents).where(inArray(documents.path, [PATHS[2]!, PATHS[3]!]))
+    expect(bad.every(d => d.deletedAt === null)).toBe(true)
   })
 })

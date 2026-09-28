@@ -35,6 +35,7 @@ export interface SkillInput {
 }
 
 export interface SkillSource {
+  id: string
   slug: string
   content: string
   contentHash: string
@@ -169,6 +170,7 @@ function rowToSkill(row: AgentSkillRow): Skill {
 
 function rowToSource(row: AgentSkillRow): SkillSource {
   return {
+    id: row.id,
     slug: row.slug,
     content: row.content,
     contentHash: row.contentHash,
@@ -257,18 +259,45 @@ export async function updateSkill(
   return rowToSkill(row)
 }
 
-/** Hard-deletes the row. Its revisions stay (no FK) until they age out. */
-export async function deleteSkill(name: string): Promise<boolean> {
-  const deleted = await useDb().delete(agentSkills).where(eq(agentSkills.slug, name)).returning({ id: agentSkills.id })
-  if (!deleted.length) return false
-  publishChange({ resource: 'agentSkill', action: 'deleted', id: deleted[0]!.id })
+/**
+ * Hard-deletes the row, first recording a final revision of the content being deleted (by
+ * `actor`) so the delete shows in history. Revisions carry no FK and survive; restoreSkill
+ * re-inserts under the SAME id, so an undone delete keeps its whole history.
+ */
+export async function deleteSkill(name: string, opts: { actor?: RevisionActor } = {}): Promise<boolean> {
+  const deleted = await useDb().transaction(async (tx) => {
+    const [row] = await tx.delete(agentSkills).where(eq(agentSkills.slug, name)).returning()
+    if (!row) return null
+    await recordRevision({ targetKind: 'skill', targetId: row.id, content: row.content, actor: opts.actor ?? 'human' }, tx)
+    return row
+  })
+  if (!deleted) return false
+  publishChange({ resource: 'agentSkill', action: 'deleted', id: deleted.id })
   return true
 }
 
 /**
+ * Re-inserts a deleted skill under its ORIGINAL id (the delete_skill undo), through the same
+ * validation as saveSkillSource, and records a revision. Throws when the slug or id is taken.
+ */
+export async function restoreSkill(priorId: string, content: string, actor: RevisionActor): Promise<SkillSource> {
+  const { input, error } = parseSkillMarkdown(content)
+  if (error) throw new Error(`invalid frontmatter: ${error}`)
+  const v = validateSkill(input)
+  if (!v.ok) throw new Error(v.error)
+  if (await rowBySlug(input.name)) throw new Error(`skill "${input.name}" already exists`)
+  const [row] = await useDb().insert(agentSkills)
+    .values({ id: priorId, slug: input.name, ...derivedColumns(content, input) }).returning()
+  await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor })
+  publishChange({ resource: 'agentSkill', action: 'created', id: row!.id })
+  return rowToSource(row!)
+}
+
+/**
  * Compare-and-swap write of a skill's whole markdown. `expectedHash` is the contentHash the
- * editor loaded; a mismatch throws ConflictError(current). `expectedHash: null` skips the check —
- * and creates the skill when none exists at `slug`. The frontmatter `name` must equal `slug`
+ * editor loaded; a mismatch throws ConflictError(current). `expectedHash: null` means CREATE-ONLY:
+ * it inserts a new skill at `slug`, and throws ConflictError(current) if one already exists (a
+ * "new skill" save must never silently overwrite). The frontmatter `name` must equal `slug`
  * (renames go through updateSkill); invalid content is rejected, never stored.
  */
 export async function saveSkillSource(
@@ -287,16 +316,14 @@ export async function saveSkillSource(
     if (expectedHash !== null) throw new Error(`no skill named "${slug}"`)
     ;[row] = await db.insert(agentSkills).values({ slug, ...derivedColumns(content, input) }).returning()
   } else {
-    if (expectedHash !== null && existing.contentHash !== expectedHash) {
+    if (expectedHash === null || existing.contentHash !== expectedHash) {
       throw new ConflictError({ content: existing.content, contentHash: existing.contentHash })
     }
     // The hash is re-checked IN the UPDATE so a write landing between the read above and this
     // statement still loses rather than being clobbered.
     ;[row] = await db.update(agentSkills)
       .set({ ...derivedColumns(content, input), updatedAt: sql`now()` })
-      .where(expectedHash === null
-        ? eq(agentSkills.id, existing.id)
-        : and(eq(agentSkills.id, existing.id), eq(agentSkills.contentHash, expectedHash)))
+      .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.contentHash, expectedHash)))
       .returning()
     if (!row) {
       const now = await rowBySlug(slug)
@@ -325,14 +352,19 @@ const LEGACY_SKILL_DIR = `/projects/${SKILL_PROJECT}/skills/`
 
 /**
  * Moves live skill documents into agent_skills: rebuilds the markdown from the document's jsonb
- * frontmatter + content, inserts it, and soft-deletes the document — in one transaction, with a
- * `system` revision. Idempotent: a slug already in agent_skills is skipped (and its document left
- * alone). Documents that were never valid skills (no `kind: skill` / no name) are left untouched,
- * as they were invisible as skills before the move too.
+ * frontmatter + content, inserts it, and soft-deletes the document — in one transaction per
+ * document, with a `system` revision. Idempotent: a slug already in agent_skills is filtered out
+ * (and its document left alone).
+ *
+ * One bad document must not block the rest on every boot: each is tried on its own, and any that
+ * is not moved — no `kind: skill`/name, fails validation, or throws — is left live and reported
+ * in `skipped` with the reason.
  *
  * `onlyPaths` is a TEST seam: the dev DB is shared and holds real skill documents.
  */
-export async function migrateSkillsFromDocuments(opts: { onlyPaths?: string[] } = {}): Promise<number> {
+export async function migrateSkillsFromDocuments(
+  opts: { onlyPaths?: string[] } = {}
+): Promise<{ moved: number, skipped: { path: string, reason: string }[] }> {
   const db = useDb()
   const docs = await db.select().from(documents).where(and(
     isNull(documents.deletedAt),
@@ -344,24 +376,34 @@ export async function migrateSkillsFromDocuments(opts: { onlyPaths?: string[] } 
   ))
 
   let moved = 0
+  const skipped: { path: string, reason: string }[] = []
   for (const doc of docs) {
-    const skill = docToSkill(doc)
-    if (!skill) continue
-    const slug = doc.path.slice(LEGACY_SKILL_DIR.length).replace(/\.md$/, '')
-    const content = skillToMarkdown({ ...skill, name: slug })
-    // No ON CONFLICT: the NOT EXISTS above is the idempotence guard, and a slug that appears
-    // between the select and here should fail loudly (the boot plugin logs it) rather than
-    // soft-delete a document whose content never landed anywhere.
-    const inserted = await db.transaction(async (tx) => {
-      const [row] = await tx.insert(agentSkills)
-        .values({ slug, ...derivedColumns(content, parseSkillMarkdown(content).input) })
-        .returning()
-      await tx.update(documents).set({ deletedAt: sql`now()` }).where(eq(documents.id, doc.id))
-      await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor: 'system' }, tx)
-      return row!
-    })
-    moved++
-    publishChange({ resource: 'agentSkill', action: 'created', id: inserted.id })
+    try {
+      const skill = docToSkill(doc)
+      if (!skill) {
+        skipped.push({ path: doc.path, reason: 'not a skill document (missing kind: skill or name)' })
+        continue
+      }
+      // Basename — the same slug the NOT EXISTS above derives in SQL.
+      const slug = doc.path.slice(doc.path.lastIndexOf('/') + 1).replace(/\.md$/, '')
+      const content = skillToMarkdown({ ...skill, name: slug })
+      const parsed = parseSkillMarkdown(content).input
+      const v = validateSkill(parsed)
+      if (!v.ok) throw new Error(v.error)
+      // No ON CONFLICT: the NOT EXISTS above is the idempotence guard; a slug that appears between
+      // the select and here fails this document (reported) rather than soft-deleting a document
+      // whose content never landed anywhere.
+      const inserted = await db.transaction(async (tx) => {
+        const [row] = await tx.insert(agentSkills).values({ slug, ...derivedColumns(content, parsed) }).returning()
+        await tx.update(documents).set({ deletedAt: sql`now()` }).where(eq(documents.id, doc.id))
+        await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor: 'system' }, tx)
+        return row!
+      })
+      moved++
+      publishChange({ resource: 'agentSkill', action: 'created', id: inserted.id })
+    } catch (err) {
+      skipped.push({ path: doc.path, reason: err instanceof Error ? err.message : String(err) })
+    }
   }
-  return moved
+  return { moved, skipped }
 }

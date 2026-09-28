@@ -13,7 +13,7 @@ import { searchProvider } from '../search/resolve'
 import { fetchAsMarkdown } from '../search/fetch'
 import { generateImage, editImage } from '../imagegen/comfy'
 import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getImageBytes } from '../../services/images'
-import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill, getSkillSource, saveSkillSource } from '../../services/skills'
+import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill, getSkillSource, restoreSkill } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
@@ -1152,7 +1152,7 @@ export const agentTools: AgentTool[] = [
         return {
           result: s,
           summary: `created skill "${s.name}"`,
-          undo: async () => { await deleteSkill(s.name) }
+          undo: async () => { await deleteSkill(s.name, { actor: 'agent' }) }
         }
       } catch (err) {
         return { result: { error: (err as Error).message }, summary: `skill not created: ${(err as Error).message}` }
@@ -1196,13 +1196,14 @@ export const agentTools: AgentTool[] = [
       const name = a.name as string
       const prior = await getSkillSource(name)
       if (!prior) return { result: { error: `no skill named "${name}"` }, summary: `no such skill "${name}"` }
-      await deleteSkill(name)
+      await deleteSkill(name, { actor: 'agent' })
+      const { id: priorId, content: priorContent } = prior
       return {
         result: { deleted: name },
         summary: `deleted skill "${name}"`,
-        // Skills are hard-deleted from agent_skills (cycle 74), so undo re-creates the skill
-        // from its exact prior markdown. It gets a new id; the old id's revisions remain.
-        undo: async () => { await saveSkillSource(name, prior.content, null, 'agent') }
+        // Skills are hard-deleted from agent_skills (cycle 74); undo re-inserts the exact prior
+        // markdown under the ORIGINAL id, so the skill keeps its whole revision history.
+        undo: async () => { await restoreSkill(priorId, priorContent, 'agent') }
       }
     }
   }
