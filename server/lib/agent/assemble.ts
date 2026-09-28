@@ -182,13 +182,13 @@ export async function assembleContext(input: AssembleInput): Promise<AssembledCo
   // proactive retrieval — nobody asked for those memories — but the wrong one for a skill:
   // the composer has already stripped `/browser-testing` out of the message text, so a slow
   // embeddings rig (a recurring condition here) would send the turn as the bare argument with
-  // no skill loaded and no trace one was ever named. This is one indexed `documents` lookup by
-  // path, not an embeddings call. `safe()` still wraps it, so a missing or broken skill
+  // no skill loaded and no trace one was ever named. This is one indexed `agent_skills` lookup by
+  // slug, not an embeddings call. `safe()` still wraps it, so a missing or broken skill
   // degrades rather than throwing.
   const getSkillBody = input.deps?.getSkillBody
     ?? (async (name: string) => (await getSkill(name, { activeOnly: true }))?.body ?? null)
   // Bounded on its own, much shorter clock — see SKILL_LOOKUP_TIMEOUT_MS. Outside the assembly
-  // race, but never unbounded: a wedged `documents` read costs this turn its skill, not its reply.
+  // race, but never unbounded: a wedged `agent_skills` read costs this turn its skill, not its reply.
   const skillBody = input.skill
     ? await safe(
         () => withTimeout(

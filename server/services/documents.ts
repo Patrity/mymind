@@ -79,8 +79,10 @@ export async function resolveDocProjectFromPath(
 }
 
 const live = () => isNull(documents.deletedAt)
-// Skills are documents (type='skill') but are NOT knowledge — they must never
-// surface in doc/passage search. NULL type is a normal document, so allow it.
+// Skills were documents (type='skill') until cycle 74 moved them to agent_skills; the old rows
+// are soft-deleted by the boot move, so this now matches nothing new and stays as a harmless
+// guard (skills are NOT knowledge and must never surface in doc/passage search). NULL type is a
+// normal document, so allow it.
 // Exported so other services (triage's resolveAppendTarget) share this exact
 // predicate instead of re-deriving a copy that can drift out of sync.
 export const notSkill = () => or(ne(documents.type, 'skill'), isNull(documents.type))

@@ -50,12 +50,20 @@ describe('dispatchLiveEvent', () => {
     expect(c.calls).toContainEqual([{ queryKey: ['review', 'count'] }])
   })
 
-  // Skills are documents (task-5, slash-commands cycle): the composer's `/` menu
-  // (useCommands, ['agent','commands']) must refresh when a skill is created or
-  // edited, not just the /settings/skills list.
+  // Prompt macros still publish `document`, so the composer's `/` menu
+  // (useCommands, ['agent','commands']) must refresh on a document event.
   it('document events also invalidate the command menu', () => {
     const c = fakeClient()
     dispatchLiveEvent(c as never, ev({ resource: 'document', id: 'd-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['agent', 'commands'] }])
+  })
+
+  // Cycle 74: skills live in agent_skills with their own resource — a skill write must refresh
+  // the skills list AND the `/` menu (active skills are a command source).
+  it('agentSkill events invalidate the skills list and the command menu', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'agentSkill', id: 's-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['skills'] }])
     expect(c.calls).toContainEqual([{ queryKey: ['agent', 'commands'] }])
   })
 })

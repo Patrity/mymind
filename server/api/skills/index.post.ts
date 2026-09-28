@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import { createSkill } from '../../services/skills'
-import { publishChange } from '../../utils/live-bus'
 
 const Body = z.object({
   name: z.string(), description: z.string(), whenToUse: z.string(),
@@ -15,8 +14,8 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: (err as Error).message })
   }
   try {
-    const s = await createSkill({ ...input, source: 'human' })
-    publishChange({ resource: 'document', action: 'created', id: s.id })
+    // createSkill publishes the `agentSkill` live event itself.
+    const s = await createSkill({ ...input, source: 'human' }, { actor: 'human' })
     return s
   } catch (err) {
     throw createError({ statusCode: 400, statusMessage: (err as Error).message })

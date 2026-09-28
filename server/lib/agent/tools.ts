@@ -13,7 +13,7 @@ import { searchProvider } from '../search/resolve'
 import { fetchAsMarkdown } from '../search/fetch'
 import { generateImage, editImage } from '../imagegen/comfy'
 import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getImageBytes } from '../../services/images'
-import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill } from '../../services/skills'
+import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill, getSkillSource, saveSkillSource } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
@@ -1147,12 +1147,12 @@ export const agentTools: AgentTool[] = [
       const v = validateSkill(input)
       if (!v.ok) return { result: { error: v.error }, summary: `skill rejected: ${v.error}` }
       try {
-        const s = await createSkill({ ...input, source: 'agent' })
-        publishChange({ resource: 'document', action: 'created', id: s.id })
+        // The skills service publishes the `agentSkill` live event on every write.
+        const s = await createSkill({ ...input, source: 'agent' }, { actor: 'agent' })
         return {
           result: s,
           summary: `created skill "${s.name}"`,
-          undo: async () => { await deleteSkill(s.name); publishChange({ resource: 'document', action: 'deleted', id: s.id }) }
+          undo: async () => { await deleteSkill(s.name) }
         }
       } catch (err) {
         return { result: { error: (err as Error).message }, summary: `skill not created: ${(err as Error).message}` }
@@ -1173,15 +1173,13 @@ export const agentTools: AgentTool[] = [
       if (!prior) return { result: { error: `no skill named "${args.name}"` }, summary: `no such skill "${args.name}"` }
       const { name, newName, ...rest } = args
       try {
-        const s = await updateSkill(name, { ...rest, ...(newName ? { name: newName } : {}) })
+        const s = await updateSkill(name, { ...rest, ...(newName ? { name: newName } : {}) }, { actor: 'agent' })
         if (!s) return { result: { error: `no skill named "${name}"` }, summary: `no such skill "${name}"` }
-        publishChange({ resource: 'document', action: 'updated', id: s.id })
         return {
           result: s,
           summary: `updated skill "${s.name}"`,
           undo: async () => {
-            await updateSkill(s.name, { name: prior.name, description: prior.description, whenToUse: prior.whenToUse, body: prior.body, active: prior.active, source: prior.source })
-            publishChange({ resource: 'document', action: 'updated', id: prior.id })
+            await updateSkill(s.name, { name: prior.name, description: prior.description, whenToUse: prior.whenToUse, body: prior.body, active: prior.active, source: prior.source }, { actor: 'agent' })
           }
         }
       } catch (err) {
@@ -1196,17 +1194,15 @@ export const agentTools: AgentTool[] = [
     schema: { name: z.string() },
     handler: async (a) => {
       const name = a.name as string
-      const prior = await getSkill(name)
+      const prior = await getSkillSource(name)
       if (!prior) return { result: { error: `no skill named "${name}"` }, summary: `no such skill "${name}"` }
       await deleteSkill(name)
-      publishChange({ resource: 'document', action: 'deleted', id: prior.id })
       return {
         result: { deleted: name },
         summary: `deleted skill "${name}"`,
-        // Restore the original soft-deleted row (same id) rather than createSkill, which
-        // would orphan it and mint a NEW document id — breaking any audit reference to the
-        // old id. Mirrors delete_document's undo.
-        undo: async () => { await restoreDoc(prior.id); publishChange({ resource: 'document', action: 'created', id: prior.id }) }
+        // Skills are hard-deleted from agent_skills (cycle 74), so undo re-creates the skill
+        // from its exact prior markdown. It gets a new id; the old id's revisions remain.
+        undo: async () => { await saveSkillSource(name, prior.content, null, 'agent') }
       }
     }
   }

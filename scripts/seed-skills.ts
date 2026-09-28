@@ -3,6 +3,10 @@
 //    or: node_modules/.bin/tsx --env-file=.env.native scripts/seed-skills.ts   (prod, LXC 114 — reads .env.native, NOT .env)
 // `pnpm seed:skills` runs the dev form above.
 //
+// Cycle 74: skills live in agent_skills (markdown + frontmatter); every seed write records a
+// `system` revision. Run the app once first (its boot plugin moves any pre-cycle-74 skill
+// documents over) — a seed that lands first claims the slug and the move then skips that doc.
+//
 // `useDb()` reads `useRuntimeConfig().databaseUrl`, which is a Nuxt auto-import
 // not available to a bare tsx process. Polyfill both auto-imports as globals
 // BEFORE importing anything that calls them (matches the pattern used
@@ -173,10 +177,10 @@ async function main() {
   for (const seed of SEEDS) {
     const existing = await getSkill(seed.name)
     if (existing) {
-      await updateSkill(seed.name, seed)
+      await updateSkill(seed.name, seed, { actor: 'system' })
       console.log(`updated  ${seed.name}`)
     } else {
-      await createSkill(seed)
+      await createSkill(seed, { actor: 'system' })
       console.log(`created  ${seed.name}`)
     }
   }

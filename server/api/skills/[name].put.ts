@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import { updateSkill } from '../../services/skills'
-import { publishChange } from '../../utils/live-bus'
 
 const Body = z.object({
   description: z.string().optional(), whenToUse: z.string().optional(),
@@ -16,9 +15,9 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: (err as Error).message })
   }
   try {
-    const s = await updateSkill(name, patch)
+    // updateSkill publishes the `agentSkill` live event itself.
+    const s = await updateSkill(name, patch, { actor: 'human' })
     if (!s) throw createError({ statusCode: 404, statusMessage: `no skill named "${name}"` })
-    publishChange({ resource: 'document', action: 'updated', id: s.id })
     return s
   } catch (err) {
     const e = err as { statusCode?: number, message: string }

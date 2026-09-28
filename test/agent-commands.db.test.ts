@@ -1,6 +1,6 @@
 process.loadEnvFile('.env')
 
-import { describe, it, expect, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
@@ -8,9 +8,24 @@ import { sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { listCommands } from '../server/services/commands'
 import { createPromptCommand } from '../server/services/prompt-commands'
+import { createSkill, deleteSkill, getSkill } from '../server/services/skills'
+
+// Own the active skill these tests look for, rather than depend on the shared dev DB holding
+// real ones (cycle 74 moved skills into agent_skills; a fresh DB has none until the boot move).
+const SKILL = 'sktest-cmd-menu'
+beforeAll(async () => {
+  const prior = await getSkill(SKILL)
+  if (prior) await deleteSkill(SKILL)
+  await createSkill({ name: SKILL, description: 'Menu probe', whenToUse: 'Use in the command-menu test', body: 'b' })
+})
 
 afterAll(async () => {
   await useDb().execute(sql`delete from prompt_commands where name like 'cmd-test-%'`)
+  const s = await getSkill(SKILL)
+  if (s) {
+    await deleteSkill(SKILL)
+    await useDb().execute(sql`delete from agent_config_revisions where target_kind = 'skill' and target_id = ${s.id}`)
+  }
 })
 
 describe('listCommands', () => {

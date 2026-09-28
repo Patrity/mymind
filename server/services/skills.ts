@@ -1,11 +1,17 @@
 // server/services/skills.ts
-// A skill IS a document: documents.type = 'skill', filed at the reserved path
-// /projects/mymind/skills/<name>.md, with the skill contract in frontmatter.
-// This module is the ONLY place that knows that mapping.
-import { and, eq, isNull } from 'drizzle-orm'
+// Cycle 74: a skill is a row in `agent_skills` whose `content` is markdown with YAML
+// frontmatter — the single source of truth. The name/description/when_to_use/active/source
+// columns are DERIVED from that markdown on every write and never edited directly.
+// (Before cycle 74 skills were documents: type='skill' at /projects/mymind/skills/<name>.md.
+// migrateSkillsFromDocuments moves those rows over; skillPath/docToSkill remain for it.)
+// This module is the ONLY place that knows the storage mapping.
+import { createHash } from 'node:crypto'
+import { and, asc, eq, inArray, isNull, like, sql } from 'drizzle-orm'
 import { useDb } from '../db'
-import { documents } from '../db/schema'
-import { createDoc, updateDoc, deleteDoc } from './documents'
+import { agentSkills, documents, type AgentSkillRow } from '../db/schema'
+import { publishChange } from '../utils/live-bus'
+import { recordRevision, listRevisions, getRevision, type RevisionActor } from '../lib/agent/config/revisions'
+import { splitFrontmatter, joinFrontmatter } from '../../shared/utils/frontmatter'
 import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES } from '../../shared/types/commands'
 
 export interface Skill {
@@ -28,12 +34,33 @@ export interface SkillInput {
   source?: 'human' | 'agent'
 }
 
+export interface SkillSource {
+  slug: string
+  content: string
+  contentHash: string
+  active: boolean
+  source: 'human' | 'agent'
+  updatedAt: string
+}
+
+/** Thrown by saveSkillSource when the caller's expectedHash is stale — carries what is there now
+ *  so the editor can show the other writer's version instead of silently clobbering it. */
+export class ConflictError extends Error {
+  current: { content: string, contentHash: string }
+  constructor(current: { content: string, contentHash: string }) {
+    super('skill was changed by someone else — reload and re-apply your edit')
+    this.name = 'ConflictError'
+    this.current = current
+  }
+}
+
 /** Shared with prompt macros — see COMMAND_NAME_RE. Both sources claim the same `/` namespace,
  *  so they must agree on what a name may look like. */
 export const SKILL_NAME_RE = COMMAND_NAME_RE
 export const SKILL_BODY_MAX = 20000
 export const SKILL_PROJECT = 'mymind'
 
+/** The pre-cycle-74 document path of a skill — only the documents→agent_skills move uses it. */
 export function skillPath(name: string): string {
   return `/projects/${SKILL_PROJECT}/skills/${name}.md`
 }
@@ -43,14 +70,14 @@ export function skillPath(name: string): string {
  * live immediately) means this is the sole gate, so it must be strict about
  * shape while saying nothing about content.
  */
-export function validateSkill(input: Partial<SkillInput>): { ok: true } | { ok: false; error: string } {
+export function validateSkill(input: Partial<SkillInput>): { ok: true } | { ok: false, error: string } {
   const name = (input.name ?? '').trim()
   if (!name) return { ok: false, error: 'name is required' }
   if (!SKILL_NAME_RE.test(name)) return { ok: false, error: `name must be kebab-case (got "${name}")` }
-  // Against the TRIMMED name, because that is what createSkill stores (`input.name.trim()`,
-  // and frontmatterFor trims again). Checking the raw one let `" clear "` through validation
-  // and land as a skill named `clear` — permanently shadowed by the built-in and unreachable
-  // from `/`, which is exactly the collision this guard exists to prevent (spec Risk #4).
+  // Against the TRIMMED name, because that is what createSkill stores (`input.name.trim()`).
+  // Checking the raw one let `" clear "` through validation and land as a skill named `clear` —
+  // permanently shadowed by the built-in and unreachable from `/`, which is exactly the
+  // collision this guard exists to prevent (spec Risk #4).
   if (RESERVED_COMMAND_NAMES.includes(name)) {
     return { ok: false, error: `"${name}" is a reserved command name` }
   }
@@ -63,7 +90,8 @@ export function validateSkill(input: Partial<SkillInput>): { ok: true } | { ok: 
   return { ok: true }
 }
 
-export function docToSkill(row: { id: string; content: string; frontmatter: unknown; updatedAt: Date }): Skill | null {
+/** Maps a pre-cycle-74 skill DOCUMENT to a Skill (null when it is not one). Used by the move. */
+export function docToSkill(row: { id: string, content: string, frontmatter: unknown, updatedAt: Date }): Skill | null {
   const fm = (row.frontmatter ?? {}) as Record<string, unknown>
   if (fm.kind !== 'skill') return null
   const name = typeof fm.name === 'string' ? fm.name : ''
@@ -80,60 +108,132 @@ export function docToSkill(row: { id: string; content: string; frontmatter: unkn
   }
 }
 
-function frontmatterFor(input: SkillInput): Record<string, unknown> {
-  return {
-    kind: 'skill',
+// ---- markdown <-> fields --------------------------------------------------------------
+
+const hashOf = (content: string) => createHash('sha256').update(content).digest('hex')
+
+/** The canonical markdown for a skill. Frontmatter uses snake_case `when_to_use`; the DTO keeps
+ *  `whenToUse`. */
+export function skillToMarkdown(input: SkillInput): string {
+  return joinFrontmatter({
     name: input.name.trim(),
     description: input.description.trim(),
-    whenToUse: input.whenToUse.trim(),
+    when_to_use: input.whenToUse.trim(),
     active: input.active ?? true,
     source: input.source ?? 'human'
+  }, input.body)
+}
+
+/** Parses skill markdown back into fields. Lenient on types (a non-string field reads as '');
+ *  validateSkill is what rejects bad shape. */
+export function parseSkillMarkdown(content: string): { input: Required<SkillInput>, error?: string } {
+  const { data, body, error } = splitFrontmatter(content)
+  const str = (v: unknown) => (typeof v === 'string' ? v : '')
+  return {
+    input: {
+      name: str(data.name).trim(),
+      description: str(data.description).trim(),
+      whenToUse: str(data.when_to_use).trim(),
+      body,
+      active: data.active === undefined ? true : data.active === true,
+      source: data.source === 'agent' ? 'agent' : 'human'
+    },
+    ...(error ? { error } : {})
   }
 }
 
-const liveSkills = () => and(isNull(documents.deletedAt), eq(documents.type, 'skill'))
+function derivedColumns(content: string, input: Required<SkillInput>) {
+  return {
+    content,
+    contentHash: hashOf(content),
+    name: input.name,
+    description: input.description,
+    whenToUse: input.whenToUse,
+    active: input.active,
+    source: input.source
+  }
+}
+
+function rowToSkill(row: AgentSkillRow): Skill {
+  return {
+    id: row.id,
+    name: row.slug,
+    description: row.description ?? '',
+    whenToUse: row.whenToUse ?? '',
+    active: row.active,
+    source: row.source === 'agent' ? 'agent' : 'human',
+    body: splitFrontmatter(row.content).body,
+    updatedAt: row.updatedAt.toISOString()
+  }
+}
+
+function rowToSource(row: AgentSkillRow): SkillSource {
+  return {
+    slug: row.slug,
+    content: row.content,
+    contentHash: row.contentHash,
+    active: row.active,
+    source: row.source === 'agent' ? 'agent' : 'human',
+    updatedAt: row.updatedAt.toISOString()
+  }
+}
+
+async function rowBySlug(slug: string): Promise<AgentSkillRow | null> {
+  const [row] = await useDb().select().from(agentSkills).where(eq(agentSkills.slug, slug)).limit(1)
+  return row ?? null
+}
+
+// ---- reads ------------------------------------------------------------------------------
 
 export async function listSkills(opts: { activeOnly?: boolean } = {}): Promise<Skill[]> {
-  const rows = await useDb().select().from(documents).where(liveSkills())
-  const skills = rows.map(r => docToSkill(r)).filter((s): s is Skill => s !== null)
-  const filtered = opts.activeOnly ? skills.filter(s => s.active) : skills
-  return filtered.sort((a, b) => a.name.localeCompare(b.name))
+  const rows = await useDb().select().from(agentSkills)
+    .where(opts.activeOnly ? eq(agentSkills.active, true) : undefined)
+    .orderBy(asc(agentSkills.slug))
+  return rows.map(rowToSkill).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /**
- * `activeOnly` gates on the frontmatter `active` flag (not a column, so it is filtered here
- * rather than in the WHERE). Off by default: the CRUD paths — updateSkill, deleteSkill, the
- * existence check in createSkill — must see a deactivated skill or they would happily create a
- * second document at the same path. Prompt-assembly callers pass `true`, because a skill the
+ * `activeOnly` off by default: the CRUD paths — updateSkill, deleteSkill, the existence check in
+ * createSkill — must see a deactivated skill or they would happily create a second one at the
+ * same slug. Prompt-assembly callers (the `/skill` slash tier) pass `true`, because a skill the
  * menu hides must not still be force-loadable into a turn.
  */
 export async function getSkill(name: string, opts: { activeOnly?: boolean } = {}): Promise<Skill | null> {
-  const [row] = await useDb().select().from(documents)
-    .where(and(liveSkills(), eq(documents.path, skillPath(name)))).limit(1)
-  const skill = row ? docToSkill(row) : null
-  if (skill && opts.activeOnly && !skill.active) return null
-  return skill
+  const row = await rowBySlug(name)
+  if (!row) return null
+  if (opts.activeOnly && !row.active) return null
+  return rowToSkill(row)
 }
 
-export async function createSkill(input: SkillInput): Promise<Skill> {
+export async function getSkillSource(slug: string): Promise<SkillSource | null> {
+  const row = await rowBySlug(slug)
+  return row ? rowToSource(row) : null
+}
+
+export async function listSkillRevisions(slug: string): Promise<{ id: string, content: string, actor: string, createdAt: string }[]> {
+  const row = await rowBySlug(slug)
+  return row ? listRevisions('skill', row.id) : []
+}
+
+// ---- writes -----------------------------------------------------------------------------
+// Every write: validate → write content + derived columns → record a revision → publish.
+
+export async function createSkill(input: SkillInput, opts: { actor?: RevisionActor } = {}): Promise<Skill> {
   const v = validateSkill(input)
   if (!v.ok) throw new Error(v.error)
   const name = input.name.trim()
-  if (await getSkill(name)) throw new Error(`skill "${name}" already exists`)
-  const doc = await createDoc({
-    path: skillPath(name),
-    title: name,
-    content: input.body,
-    frontmatter: frontmatterFor({ ...input, name }),
-    project: SKILL_PROJECT,
-    type: 'skill'
-  })
-  const skill = await getSkill(name)
-  if (!skill) throw new Error(`skill "${name}" was created (doc ${doc.id}) but could not be read back`)
-  return skill
+  if (await rowBySlug(name)) throw new Error(`skill "${name}" already exists`)
+  const content = skillToMarkdown({ ...input, name })
+  const parsed = parseSkillMarkdown(content).input
+  const [row] = await useDb().insert(agentSkills).values({ slug: name, ...derivedColumns(content, parsed) }).returning()
+  await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor: opts.actor ?? input.source ?? 'human' })
+  publishChange({ resource: 'agentSkill', action: 'created', id: row!.id })
+  return rowToSkill(row!)
 }
 
-export async function updateSkill(name: string, patch: Partial<SkillInput>): Promise<Skill | null> {
+export async function updateSkill(
+  name: string, patch: Partial<SkillInput>, opts: { actor?: RevisionActor } = {}
+): Promise<Skill | null> {
   const current = await getSkill(name)
   if (!current) return null
   const merged: SkillInput = {
@@ -146,19 +246,122 @@ export async function updateSkill(name: string, patch: Partial<SkillInput>): Pro
   }
   const v = validateSkill(merged)
   if (!v.ok) throw new Error(v.error)
-  if (merged.name !== name && await getSkill(merged.name)) throw new Error(`skill "${merged.name}" already exists`)
-  await updateDoc(current.id, {
-    path: skillPath(merged.name),
-    title: merged.name,
-    content: merged.body,
-    frontmatter: frontmatterFor(merged),
-    type: 'skill'
-  })
-  return getSkill(merged.name)
+  if (merged.name !== name && await rowBySlug(merged.name)) throw new Error(`skill "${merged.name}" already exists`)
+  const content = skillToMarkdown(merged)
+  const [row] = await useDb().update(agentSkills)
+    .set({ slug: merged.name, ...derivedColumns(content, parseSkillMarkdown(content).input), updatedAt: sql`now()` })
+    .where(eq(agentSkills.id, current.id)).returning()
+  if (!row) return null
+  await recordRevision({ targetKind: 'skill', targetId: row.id, content, actor: opts.actor ?? 'human' })
+  publishChange({ resource: 'agentSkill', action: 'updated', id: row.id })
+  return rowToSkill(row)
 }
 
+/** Hard-deletes the row. Its revisions stay (no FK) until they age out. */
 export async function deleteSkill(name: string): Promise<boolean> {
-  const s = await getSkill(name)
-  if (!s) return false
-  return deleteDoc(s.id)
+  const deleted = await useDb().delete(agentSkills).where(eq(agentSkills.slug, name)).returning({ id: agentSkills.id })
+  if (!deleted.length) return false
+  publishChange({ resource: 'agentSkill', action: 'deleted', id: deleted[0]!.id })
+  return true
+}
+
+/**
+ * Compare-and-swap write of a skill's whole markdown. `expectedHash` is the contentHash the
+ * editor loaded; a mismatch throws ConflictError(current). `expectedHash: null` skips the check —
+ * and creates the skill when none exists at `slug`. The frontmatter `name` must equal `slug`
+ * (renames go through updateSkill); invalid content is rejected, never stored.
+ */
+export async function saveSkillSource(
+  slug: string, content: string, expectedHash: string | null, actor: RevisionActor
+): Promise<SkillSource> {
+  const { input, error } = parseSkillMarkdown(content)
+  if (error) throw new Error(`invalid frontmatter: ${error}`)
+  const v = validateSkill(input)
+  if (!v.ok) throw new Error(v.error)
+  if (input.name !== slug) throw new Error(`frontmatter name "${input.name}" must match the skill "${slug}"`)
+
+  const db = useDb()
+  const existing = await rowBySlug(slug)
+  let row: AgentSkillRow | undefined
+  if (!existing) {
+    if (expectedHash !== null) throw new Error(`no skill named "${slug}"`)
+    ;[row] = await db.insert(agentSkills).values({ slug, ...derivedColumns(content, input) }).returning()
+  } else {
+    if (expectedHash !== null && existing.contentHash !== expectedHash) {
+      throw new ConflictError({ content: existing.content, contentHash: existing.contentHash })
+    }
+    // The hash is re-checked IN the UPDATE so a write landing between the read above and this
+    // statement still loses rather than being clobbered.
+    ;[row] = await db.update(agentSkills)
+      .set({ ...derivedColumns(content, input), updatedAt: sql`now()` })
+      .where(expectedHash === null
+        ? eq(agentSkills.id, existing.id)
+        : and(eq(agentSkills.id, existing.id), eq(agentSkills.contentHash, expectedHash)))
+      .returning()
+    if (!row) {
+      const now = await rowBySlug(slug)
+      throw new ConflictError({ content: now?.content ?? '', contentHash: now?.contentHash ?? '' })
+    }
+  }
+  await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor })
+  publishChange({ resource: 'agentSkill', action: existing ? 'updated' : 'created', id: row!.id })
+  return rowToSource(row!)
+}
+
+/** Restores a skill to one of its revisions (recorded as a new revision by `actor`). */
+export async function revertSkill(slug: string, revisionId: string, actor: RevisionActor): Promise<SkillSource> {
+  const row = await rowBySlug(slug)
+  if (!row) throw new Error(`no skill named "${slug}"`)
+  const rev = await getRevision(revisionId)
+  if (!rev || rev.targetKind !== 'skill' || rev.targetId !== row.id) {
+    throw new Error(`revision ${revisionId} does not belong to skill "${slug}"`)
+  }
+  return saveSkillSource(slug, rev.content, row.contentHash, actor)
+}
+
+// ---- one-time data move (cycle 74) ------------------------------------------------------
+
+const LEGACY_SKILL_DIR = `/projects/${SKILL_PROJECT}/skills/`
+
+/**
+ * Moves live skill documents into agent_skills: rebuilds the markdown from the document's jsonb
+ * frontmatter + content, inserts it, and soft-deletes the document — in one transaction, with a
+ * `system` revision. Idempotent: a slug already in agent_skills is skipped (and its document left
+ * alone). Documents that were never valid skills (no `kind: skill` / no name) are left untouched,
+ * as they were invisible as skills before the move too.
+ *
+ * `onlyPaths` is a TEST seam: the dev DB is shared and holds real skill documents.
+ */
+export async function migrateSkillsFromDocuments(opts: { onlyPaths?: string[] } = {}): Promise<number> {
+  const db = useDb()
+  const docs = await db.select().from(documents).where(and(
+    isNull(documents.deletedAt),
+    eq(documents.type, 'skill'),
+    like(documents.path, `${LEGACY_SKILL_DIR}%`),
+    opts.onlyPaths ? inArray(documents.path, opts.onlyPaths) : undefined,
+    sql`not exists (select 1 from agent_skills s where s.slug =
+          regexp_replace(${documents.path}, '^.*/([^/]+)\\.md$', '\\1'))`
+  ))
+
+  let moved = 0
+  for (const doc of docs) {
+    const skill = docToSkill(doc)
+    if (!skill) continue
+    const slug = doc.path.slice(LEGACY_SKILL_DIR.length).replace(/\.md$/, '')
+    const content = skillToMarkdown({ ...skill, name: slug })
+    // No ON CONFLICT: the NOT EXISTS above is the idempotence guard, and a slug that appears
+    // between the select and here should fail loudly (the boot plugin logs it) rather than
+    // soft-delete a document whose content never landed anywhere.
+    const inserted = await db.transaction(async (tx) => {
+      const [row] = await tx.insert(agentSkills)
+        .values({ slug, ...derivedColumns(content, parseSkillMarkdown(content).input) })
+        .returning()
+      await tx.update(documents).set({ deletedAt: sql`now()` }).where(eq(documents.id, doc.id))
+      await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor: 'system' }, tx)
+      return row!
+    })
+    moved++
+    publishChange({ resource: 'agentSkill', action: 'created', id: inserted.id })
+  }
+  return moved
 }

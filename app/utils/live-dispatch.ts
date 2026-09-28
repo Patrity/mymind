@@ -57,12 +57,13 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   // who just clicked sees feedback.
   review: (c) => { c.invalidateQueries({ queryKey: ['review', 'count'] }); invalidateHome(c) },
   activity: (c) => { c.invalidateQueries({ queryKey: ['activity', 'count'] }); invalidateHome(c) },
-  // A skill is a document (type='skill') — a background agent write needs the
-  // /settings/skills list to refresh too, not just the document graph/detail. The
-  // `/` command menu (useCommands, ['agent','commands']) rides the same signal —
-  // skills ARE prompt-commands' other source and there is no `skill` ResourceName
-  // member (see shared/types/commands.ts / server/services/prompt-commands.ts).
-  document: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); c.invalidateQueries({ queryKey: ['agent', 'commands'] }); invalidateGraph(c); invalidateHome(c) },
+  // Prompt macros (server/services/prompt-commands.ts) still publish `document`, so the `/`
+  // command menu (useCommands, ['agent','commands']) keeps riding this signal.
+  document: (c) => { c.invalidateQueries({ queryKey: ['agent', 'commands'] }); invalidateGraph(c); invalidateHome(c) },
+  // Skills moved out of documents into agent_skills (cycle 74) with their own resource. A skill
+  // write — human or a background agent — refreshes the skills list and the `/` menu, where
+  // active skills are the other command source.
+  agentSkill: (c) => { c.invalidateQueries({ queryKey: ['skills'] }); c.invalidateQueries({ queryKey: ['agent', 'commands'] }) },
   // A folder mutation rewrites document paths, and the tree the user is looking at is keyed
   // ['document','list'] — invalidating only ['folder',*] (the default below) would leave the
   // tree stale, which is the whole point of wiring folders into live reactivity.
