@@ -15,7 +15,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "seed:skills": "node_modules/.bin/tsx --env-file=.env scripts/seed-skills.ts",
-    "label": "node_modules/.bin/tsx scripts/label-memories.ts"
+    "label": "node_modules/.bin/tsx scripts/label-memories.ts",
+    "fake:bluebubbles": "node --experimental-strip-types --no-warnings=ExperimentalWarning test/fixtures/fake-bluebubbles.ts --port 4455"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.48",

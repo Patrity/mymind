@@ -3,7 +3,8 @@ import type { SpeakChunk } from '../speak'
 import type { VoicePresetDTO } from '../../../../shared/types/voice-presets'
 
 export interface SttProvider {
-  transcribe(audio: Uint8Array, opts?: { language?: string; signal?: AbortSignal }): Promise<string>
+  /** `mime`/`filename` label the upload (e.g. an iMessage voice memo is `audio/x-caf`); default WAV. */
+  transcribe(audio: Uint8Array, opts?: { language?: string; signal?: AbortSignal; mime?: string; filename?: string }): Promise<string>
 }
 
 /**

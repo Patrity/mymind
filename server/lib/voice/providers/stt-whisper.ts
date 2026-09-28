@@ -6,7 +6,7 @@ export function whisperStt(cfg: { baseURL: string; model: string; apiKey?: strin
   return {
     async transcribe(audio, opts) {
       const form = new FormData()
-      form.append('file', new Blob([audio as BlobPart], { type: 'audio/wav' }), 'utterance.wav')
+      form.append('file', new Blob([audio as BlobPart], { type: opts?.mime ?? 'audio/wav' }), opts?.filename ?? 'utterance.wav')
       form.append('model', cfg.model)
       if (opts?.language) form.append('language', opts.language)
       const res = await fetch(`${base}/audio/transcriptions`, {
