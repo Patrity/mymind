@@ -342,9 +342,10 @@ export async function revalidateAll(
       // derived this row's columns correctly from the content IT saw; this stale-content pass
       // must not clobber it with derivations computed from what is now a stale read.
       const guard = and(eq(agentJobs.id, row.id), eq(agentJobs.contentHash, row.contentHash))
+      let touched: { id: string }[]
       if (result.ok) {
         const spec = result.spec
-        await db.update(agentJobs).set({
+        touched = await db.update(agentJobs).set({
           parseError: null,
           enabled: spec.enabled,
           triggerKind: spec.trigger.kind,
@@ -352,31 +353,40 @@ export async function revalidateAll(
           timezone: spec.timezone,
           nextRunAt: spec.enabled ? computeNextRunAt(spec, new Date()) : null,
           updatedAt: sql`now()`
-        }).where(guard)
+        }).where(guard).returning({ id: agentJobs.id })
       } else {
-        await db.update(agentJobs).set({
+        touched = await db.update(agentJobs).set({
           parseError: newParseError,
           nextRunAt: null,
           updatedAt: sql`now()`
-        }).where(guard)
+        }).where(guard).returning({ id: agentJobs.id })
       }
-      changed++
-      publishChange({ resource: 'agentJob', action: 'updated', id: row.id })
 
-      // Only the null -> non-null transition posts to main (planning ruling): re-invalidating an
-      // already-invalid job on every boot, or a job recovering, must not spam the thread.
-      if (row.parseError === null && newParseError !== null) {
-        try {
-          const mainId = opts.mainConversationId ?? await getOrCreateMain()
-          await appendEvent(
-            mainId,
-            `Job ${row.slug} is invalid: ${newParseError} — fix it on /jobs/${row.slug}.`,
-            'runtime:job-invalid'
-          )
-        } catch (err) {
-          // Review fix round 1, item 6: one job's note failing to post (e.g. main unreachable)
-          // must not abort the rest of the boot revalidation pass.
-          console.error(`[jobs] failed to post the invalid-job note for "${row.slug}":`, err)
+      // Review fix round 2, item 2: the guard matching ZERO rows means a concurrent writer won
+      // (this row's real content_hash no longer equals the stale one this pass read) — that
+      // writer's own write already derived everything correctly from what it saw. Counting this
+      // as "changed", publishing it, or (worse) posting "Job X is invalid" here would be acting on
+      // a snapshot that's already been overtaken — possibly reporting a job as newly-invalid that
+      // the concurrent writer just REPAIRED.
+      if (touched.length > 0) {
+        changed++
+        publishChange({ resource: 'agentJob', action: 'updated', id: row.id })
+
+        // Only the null -> non-null transition posts to main (planning ruling): re-invalidating
+        // an already-invalid job on every boot, or a job recovering, must not spam the thread.
+        if (row.parseError === null && newParseError !== null) {
+          try {
+            const mainId = opts.mainConversationId ?? await getOrCreateMain()
+            await appendEvent(
+              mainId,
+              `Job ${row.slug} is invalid: ${newParseError} — fix it on /jobs/${row.slug}.`,
+              'runtime:job-invalid'
+            )
+          } catch (err) {
+            // Review fix round 1, item 6: one job's note failing to post (e.g. main unreachable)
+            // must not abort the rest of the boot revalidation pass.
+            console.error(`[jobs] failed to post the invalid-job note for "${row.slug}":`, err)
+          }
         }
       }
     }

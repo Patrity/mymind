@@ -69,16 +69,26 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * uses.)
  *
  * Only when the key is ABSENT does this fall back to the yaml Document API (parse the block,
- * `.set()`, re-stringify) to insert it — which CAN reformat other lines, but there is no existing
- * line to preserve in that case.
+ * `.set()`, re-stringify) to insert it — which CAN reformat other lines (and always normalizes to
+ * LF), but there is no existing line to preserve in that case.
+ *
+ * CRLF: `FRONTMATTER_RE`'s `\r?` on each fence line means the captured frontmatter text's LAST
+ * line never has a trailing `\r` (it was consumed matching the closing fence) while every EARLIER
+ * line still does — so `.` (which never matches `\r`) against a not-yet-stripped line would
+ * simply never match a key that isn't last, silently tripping the whole-document-reserialize
+ * fallback this function exists to avoid (which also then converts the file to LF). Fixed by
+ * detecting the line ending once (from the opening fence) and re-joining every line — matched
+ * ones and untouched ones alike — with that SAME separator, so the fences and every unchanged
+ * line come back byte-identical, CRLF included.
  */
 export function setFrontmatterKey(md: string, key: string, value: unknown): string {
   const match = FRONTMATTER_RE.exec(md)
   if (!match) return joinFrontmatter({ [key]: value }, md)
   const fmText = match[1] ?? ''
   const body = match[2] ?? ''
+  const sep = md.startsWith('---\r\n') ? '\r\n' : '\n'
 
-  const lines = fmText.split('\n')
+  const lines = fmText.split('\n').map(l => (l.endsWith('\r') ? l.slice(0, -1) : l))
   const lineRe = new RegExp(`^${escapeRegExp(key)}:(.*)$`)
   const idx = lines.findIndex(l => lineRe.test(l))
 
@@ -99,7 +109,7 @@ export function setFrontmatterKey(md: string, key: string, value: unknown): stri
     const leadingWs = /^\s*/.exec(valueRegion)![0]
     const serialized = stringify(value, SINGLE_LINE_STRINGIFY_OPTS).replace(/\n+$/, '')
     lines[idx] = `${key}:${leadingWs}${serialized}${suffix}`
-    return `---\n${lines.join('\n')}\n---\n${body}`
+    return `---${sep}${lines.join(sep)}${sep}---${sep}${body}`
   }
 
   const doc = parseDocument(fmText)

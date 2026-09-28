@@ -107,6 +107,56 @@ describe('setFrontmatterKey', () => {
     expect(after).toContain('deliver: [app]                 # stored; only \'app\' is honoured until cycle 75')
   })
 
+  // Task 4 review fix round 2, item 1: FRONTMATTER_RE's `\r?` on each fence consumes the LAST
+  // captured line's own trailing \r (it belongs to the closing fence's match), so a naive
+  // split-on-'\n' left every EARLIER line with a trailing \r still attached. `.` never matches
+  // `\r`, so `/^enabled:(.*)$/` silently failed to match a CRLF `enabled:` line that wasn't last —
+  // idx came back -1, and the code fell back to the whole-document yaml reserialize, which both
+  // reformats every line (the exact bug this file exists to avoid) AND converts CRLF to LF. Same
+  // spec §3 fixture, CRLF line endings, with `enabled` NOT the last key (filter still is).
+  it('is byte-stable AND preserves CRLF on the spec §3 job file, CRLF, key not last', () => {
+    const lines = [
+      '---',
+      'trigger: cron 30 7 * * 1-5     # cron <expr> | every <n>m|<n>h | at <ISO datetime> | event <name>',
+      'timezone: America/New_York     # IANA; default = settings `agent_timezone`, else server TZ',
+      'active_hours: 07:00-23:00      # optional; ticks outside → outcome \'skipped\'',
+      'model: default                 # or a registry model id',
+      'thread: main                   # main | isolated',
+      'context: light                 # light | full',
+      'deliver: [app]                 # stored; only \'app\' is honoured until cycle 75',
+      'enabled: true',
+      'filter: { project: mymind }    # event jobs only; optional key/value match on the event payload',
+      '---',
+      'Give Tony a morning brief: what\'s due today and overdue, what changed overnight,',
+      'captures waiting in triage, anything stale for 3+ days. Under 10 lines.',
+      'If nothing matters, reply NO_REPLY.',
+      ''
+    ]
+    const md = lines.join('\r\n')
+    const updated = setFrontmatterKey(md, 'enabled', false)
+    const before = md.split('\r\n')
+    const after = updated.split('\r\n')
+
+    // Splitting on \r\n alone must fully account for every line break — a bare \n anywhere would
+    // desync this split (proving CRLF was NOT uniformly preserved).
+    expect(after.length).toBe(before.length)
+    for (let i = 0; i < before.length; i++) {
+      if (before[i] === 'enabled: true') {
+        expect(after[i]).toBe('enabled: false')
+      } else {
+        expect(after[i]).toBe(before[i])
+      }
+    }
+    // No bare LF anywhere in the output (every \n is part of a \r\n pair) — the direct "CRLF
+    // preserved" assertion.
+    expect(/(?<!\r)\n/.test(updated)).toBe(false)
+    // These two lines only survive byte-identical if the whole-document reserialize fallback did
+    // NOT run (it collapses comment padding and flow-map spacing) — the same evidence used to
+    // prove the LF version above took the targeted-line path, not the fallback.
+    expect(after).toContain('filter: { project: mymind }    # event jobs only; optional key/value match on the event payload')
+    expect(after).toContain('deliver: [app]                 # stored; only \'app\' is honoured until cycle 75')
+  })
+
   it('replaces a flow-collection value on the target line itself (that line MAY reformat)', () => {
     const md = '---\nfilter: { project: mymind }    # comment\nenabled: true\n---\nx\n'
     const updated = setFrontmatterKey(md, 'filter', { project: 'bridget' })
