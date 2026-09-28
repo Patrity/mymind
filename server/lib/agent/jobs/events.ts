@@ -8,6 +8,7 @@ import { useDb } from '../../../db'
 import { agentJobs, agentJobFires } from '../../../db/schema'
 import { wake } from '../runtime/wake'
 import { fireJob, hasActiveRun, specFor } from './tick'
+import { MIN_INTERVAL_MS } from './parse'
 
 export type JobEventName = 'cc.session_end' | 'task.due'
 type WakeFn = typeof wake
@@ -155,6 +156,10 @@ export async function dueTaskEvents(opts: { onlySlugs?: string[]; onlyTaskIds?: 
     const fresh = due.filter(d => !firedPairs.has(`${job.id}|${d.key}`)
       && (!spec.filter || Object.entries(spec.filter).every(([k, v]) => String((d.payload as Record<string, unknown>)[k]) === v)))
     if (!fresh.length) continue
+    // Rate guard (final re-review N1): a job-fired run can create an already-overdue task, which
+    // would re-fire this job on the next tick. task.due fires are spaced MIN_INTERVAL_MS apart per
+    // job, like every/cron triggers; tasks due in the gap are batched into the next fire.
+    if (job.lastRunAt && Date.now() - job.lastRunAt.getTime() < MIN_INTERVAL_MS) continue
     if (await hasActiveRun(job.id)) continue // retried next tick: no key recorded
     const inserted = await useDb().insert(agentJobFires)
       .values(fresh.map(d => ({ jobId: job.id, eventKey: d.key })))

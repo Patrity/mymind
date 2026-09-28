@@ -260,6 +260,10 @@ job `fixwave-tz` (`cron 30 7 1 1 *`, no `timezone:` line):
   rollback is a code revert to a cycle-73 build **plus the skills un-delete SQL** (final review I5).
 
 **Final review rulings**
+- **N1 (final re-review):** `task.due` fires are spaced ≥ 5 min apart per job (from
+  `last_run_at`); tasks due inside the gap are deferred with no key recorded and join the next
+  batch. Closes a self-feeding loop (a job-fired run creating an overdue task). Cost if wrong: a
+  due-task nudge arrives up to 5 min late.
 - **I1:** agent-written `at` triggers need ≥ 5 min lead (`MIN_INTERVAL_MS`); ≤ 10 agent-created
   `at` jobs per rolling hour; `run_job` refused (the tool returns an explanation) when the calling
   run is itself job-fired. Cost if wrong: Bridget can't chain jobs from inside a job.
@@ -334,6 +338,16 @@ job `fixwave-tz` (`cron 30 7 1 1 *`, no `timezone:` line):
 18. **Per-job run counts on `/jobs`** (spec §11, final review M9): parked; use the wiki query.
 19. **`agent_runs.session_key` has no index.** The isolated-thread lookup scans it; fine at
     today's volume.
+20. **Final re-review minors (parked).**
+    - Changing `agent_timezone` re-arms every `every` job from now, so an `every 1d` job can slip
+      up to a day.
+    - The hourly cap counts only newly created agent `at` jobs; the 5-min lead is what bounds
+      re-arming an existing one.
+    - A silent `schedule_wake` into an isolated thread still leaves an empty thread on its first
+      fire.
+    - The M11 test waits on a fixed 300 ms sleep.
+    - A restored job loses its `agent_job_fires` rows, so it re-announces tasks overdue in the
+      last 7 days.
 
 **Dev-DB incident (Task 3, repaired).** A mutation check spliced a raw `sql\`true or …\`` into a
 drizzle `and()`. It escaped the test scope and migrated 15 real dev skill documents. They were

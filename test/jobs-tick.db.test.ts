@@ -94,6 +94,11 @@ async function finishJobRuns(jobId: string) {
     .where(and(eq(agentRuns.jobId, jobId), inArray(agentRuns.status, ['queued', 'running'])))
 }
 
+/** Moves a job's last fire outside the task.due rate gap (MIN_INTERVAL_MS). */
+async function backdateLastRun(jobId: string) {
+  await db().update(agentJobs).set({ lastRunAt: sql`now() - interval '10 minutes'` }).where(eq(agentJobs.id, jobId))
+}
+
 async function makeDue(slug: string, agoMs = 60_000) {
   await db().update(agentJobs).set({ nextRunAt: sql`now() - make_interval(secs => ${agoMs / 1000})` })
     .where(eq(agentJobs.slug, slug))
@@ -367,6 +372,7 @@ describe('event triggers', () => {
     expect(callsFor(slug)[0]!.prompt).toContain(`${PREFIX}fixture task`)
     // a new due date is a new key → fires again
     await db().update(tasks).set({ dueDate: sql`now() - interval '2 hours'` }).where(eq(tasks.id, t!.id))
+    await backdateLastRun((await row(slug)).id)
     expect(await dueTaskEvents(scope)).toBe(1)
     // completed tasks never fire
     await db().update(tasks).set({ dueDate: sql`now() - interval '3 hours'`, completedAt: sql`now()` }).where(eq(tasks.id, t!.id))
@@ -530,7 +536,12 @@ describe('final review fixes — events', () => {
     expect(await dueTaskEvents(scope([a, b, c]))).toBe(0)
     expect(await firesFor(job.id)).toBe(2)
     await finishJobRuns(job.id)
-    // Next tick: only C fires; A and B never again.
+    // N1: inside the 5-min gap since the last fire, C is still deferred (no key recorded) — a
+    // job-fired run creating an overdue task cannot re-fire its own job on the next tick.
+    expect(await dueTaskEvents(scope([a, b, c]))).toBe(0)
+    expect(await firesFor(job.id)).toBe(2)
+    await backdateLastRun(job.id)
+    // Next tick past the gap: only C fires; A and B never again.
     expect(await dueTaskEvents(scope([a, b, c]))).toBe(1)
     const last = callsFor(slug)[1]!.prompt
     expect(last).toContain(`${PREFIX}batch C`)

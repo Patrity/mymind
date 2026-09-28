@@ -220,7 +220,9 @@ with one event block listing every task newly due for it ("3 tasks are due and n
 'A', due … (task id …); …" — a single task reads as the one-task sentence). Dedupe stays per task:
 one `agent_job_fires` row per `(job, task:<id>:<due ISO>)`, so a task never re-fires. A job whose
 previous run is still going is skipped **without** recording any key, so those tasks join the
-next tick's batch. The prompt is the body plus a blank
+next tick's batch. A job that fired less than 5 minutes ago (`MIN_INTERVAL_MS`, measured
+from `last_run_at`) is also deferred the same way, so a job-fired run that creates an overdue task
+cannot re-fire its own job on the next tick. The prompt is the body plus a blank
 line plus `eventBlock()`, a plain sentence with no brackets (the model imitates markers). Events
 are **at-most-once**: a wake failure after the fire row landed is logged and marks the job
 `failed`, but is not retried.
