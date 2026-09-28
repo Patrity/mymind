@@ -56,6 +56,10 @@ import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
 //   {type:'user-message',turnId,message} (the turn's user message, once, before its chunks) |
 //   {type:'steered',text} (this socket's text was spliced into the running turn, not queued;
 //   for a voice utterance it is followed by {type:'state',state:'idle'}) |
+//   {type:'queued',text,cid} (this socket's text became its own run QUEUED behind the thread's
+//   running run — a headless wake, typically — so the client paints its bubble now; `cid` names
+//   the thread, and the client's cid guard gates it like any conversation-scoped frame. Followed
+//   by {type:'state',state:'idle'} for a voice utterance, same as `steered`) |
 //   {type:'approval'|'approval-resolved',...} (exec approval lifecycle) |
 //   {type:'conversation',conversationId,title} (emitted once, when the first turn of a new thread persists) |
 //   {type:'persisted',conversationId} (the turn's rows are committed — arms the page's re-read) |
@@ -169,11 +173,11 @@ export default defineWebSocketHandler({
       for (const id of denyPendingApprovals(hit)) peer.send(JSON.stringify({ type: 'approval-resolved', requestId: id }))
     }
 
-    const submit = (text: string, o: { speak: boolean; skill?: string; attachments: AttachmentRef[]; modality: 'text' | 'voice'; conversationId?: string }): Promise<'started' | 'steered' | 'error'> => {
+    const submit = (text: string, o: { speak: boolean; skill?: string; attachments: AttachmentRef[]; modality: 'text' | 'voice'; conversationId?: string }): Promise<'started' | 'steered' | 'queued' | 'error'> => {
       // Captured BEFORE queuing on the lock: a Stop pressed while this submit waits its turn
       // behind another enqueue still means "don't run this".
       const stopAt = s.stopSeq
-      const job = s.submitLock.then(async (): Promise<'started' | 'steered' | 'error'> => {
+      const job = s.submitLock.then(async (): Promise<'started' | 'steered' | 'queued' | 'error'> => {
         // The client named the thread it is showing (final review C1): after a reconnect this
         // socket's view is null, and without this the text would start a new thread the client
         // never sees (its cid guard drops every frame of it). Re-point the view first — select,
@@ -206,6 +210,12 @@ export default defineWebSocketHandler({
           // this thread but never attached (a loaded thread), or it would see nothing live.
           if (stillViewing && (r.conversationId !== s.conversationId || !s.unsubscribe)) view(s, r.conversationId)
           if (r.steered) { peer.send(JSON.stringify({ type: 'steered', text })); return 'steered' }
+          // Queued behind a running run (cycle 74): its own user-message frame only comes when
+          // that run STARTS — minutes away behind a wake — so without this the words vanish.
+          if (r.queuedBehind) {
+            peer.send(JSON.stringify({ type: 'queued', text, cid: r.conversationId }))
+            return 'queued'
+          }
           return 'started'
         } catch (err) {
           peer.send(JSON.stringify({ type: 'error', message: (err as Error).message || 'could not start the turn' }))
@@ -224,9 +234,10 @@ export default defineWebSocketHandler({
         peer.send(JSON.stringify({ type: 'state', state: 'thinking' }))
         const text = (await stt.transcribe(frame.bytes, { language: VOICE_TUNING.stt.language })).trim()
         if (!text) { peer.send(JSON.stringify({ type: 'state', state: 'idle' })); return }
-        // A steered utterance starts no turn of its own, so nothing else will ever move this
-        // socket out of the 'thinking' state it just entered.
-        if (await submit(text, { speak: true, attachments: [], modality: 'voice' }) === 'steered') {
+        // A steered utterance starts no turn of its own, and a queued one none yet, so nothing
+        // else will move this socket out of the 'thinking' state it just entered.
+        const how = await submit(text, { speak: true, attachments: [], modality: 'voice' })
+        if (how === 'steered' || how === 'queued') {
           peer.send(JSON.stringify({ type: 'state', state: 'idle' }))
         }
       } catch (err) {

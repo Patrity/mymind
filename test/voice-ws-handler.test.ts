@@ -48,7 +48,7 @@ const frame = (o: Record<string, unknown>) => ({ rawData: JSON.stringify(o), uin
 const wav = () => { const b = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0]); return { rawData: b, uint8Array: () => b } }
 const sessionKeys = () => m.enqueue.mock.calls.map(c => (c[0] as { sessionKey: string }).sessionKey)
 const deferred = <T>() => { let resolve!: (v: T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
-const result = (runId: string, conversationId: string, steered = false) => ({ runId, conversationId, steered, created: false })
+const result = (runId: string, conversationId: string, steered = false) => ({ runId, conversationId, steered, created: false, queuedBehind: false })
 /** Let the submit's lock callback run, so its enqueue is genuinely awaiting. */
 const inFlight = async () => { await new Promise(r => setTimeout(r, 5)); expect(m.enqueue).toHaveBeenCalledTimes(1) }
 const types = (p: { sent: string[] }) => p.sent.map(s => JSON.parse(s) as { type: string; [k: string]: unknown })
@@ -188,6 +188,38 @@ describe('ws runtime socket', () => {
     await h.message(p, wav())
     const t = types(p).map(f => f.type === 'state' ? `state:${f.state}` : f.type)
     expect(t).toEqual(['state:thinking', 'steered', 'state:idle'])
+  })
+
+  // Cycle 74: a message queued behind a running HEADLESS run gets a `queued` frame (tagged with
+  // its thread, so the client's cid guard can gate it) — the client paints the bubble now.
+  it('a text queued behind a headless run sends {type:queued, text, cid}', async () => {
+    const p = peer()
+    h.open(p)
+    m.enqueue.mockImplementation(async () => ({ ...result('rNew', 'c1'), queuedBehind: true }))
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'text', text: 'while she works' }))
+    expect(types(p).filter(f => f.type === 'queued')).toEqual([{ type: 'queued', text: 'while she works', cid: 'c1' }])
+    // Still a run of its own: Stop and approvals follow it like any queued turn.
+    expect(m.registerApprovalChannel).toHaveBeenCalledWith('rNew', expect.any(Function))
+  })
+
+  it('a queued voice utterance returns the client to idle', async () => {
+    const p = peer()
+    h.open(p)
+    m.enqueue.mockImplementation(async () => ({ ...result('rNew', 'c1'), queuedBehind: true }))
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, wav())
+    const t = types(p).map(f => f.type === 'state' ? `state:${f.state}` : f.type)
+    expect(t).toEqual(['state:thinking', 'queued', 'state:idle'])
+  })
+
+  it('a text that simply starts a run sends no queued frame', async () => {
+    const p = peer()
+    h.open(p)
+    m.enqueue.mockImplementation(async () => ({ ...result('rNew', 'c1'), queuedBehind: false }))
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'text', text: 'hello' }))
+    expect(types(p).map(f => f.type)).not.toContain('queued')
   })
 
   it('clear waits for the aborted run to unwind BEFORE writing the epoch', async () => {

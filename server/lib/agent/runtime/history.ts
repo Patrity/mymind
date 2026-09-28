@@ -11,6 +11,9 @@ import { applyHistoryPolicy } from '../tool-history'
 export const RUNTIME_CONTEXT_BUDGET = 20_000
 export const RECENT_THREADS_MAX_TOKENS = 600
 export const MAIN_STATE_MAX_TOKENS = 300
+/** `context: 'light'` runs (cycle 74 jobs) see only this many trailing turns of verbatim history
+ *  — after the summary tier, which still applies (getAgentHistory is already since-summary). */
+export const LIGHT_CONTEXT_TURNS = 4
 
 export function groupTurns(messages: AgentMessage[]): AgentMessage[][] {
   const turns: AgentMessage[][] = []

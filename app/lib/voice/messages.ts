@@ -7,12 +7,14 @@ export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: s
 // Frame types that belong to ONE conversation and must not be applied while viewing a
 // different one. Every hub-published JSON frame carries `cid` (server/lib/agent/runtime/
 // stream.ts's `withCid`); per-socket frames (approval, steered, cleared, the submit-failure
-// error/state pair ws.ts sends straight to the peer) carry none and are never gated.
+// error/state pair ws.ts sends straight to the peer) carry none and are never gated. `queued`
+// is per-socket too, but ws.ts tags it with its thread by hand — a bubble for a thread we have
+// since left must not paint into the one we are viewing.
 // `conversation` is gated too: adopting a LEFT thread's id (its first turn persisting in the
 // gap before the server processed `new`) would re-point the empty new thread at it — clear
 // the left set, arm a re-read that loads it, and drop the real new thread's frames.
 // `persisted` is deliberately NOT listed: it only arms a re-read of whatever is viewed.
-const CONVERSATION_SCOPED = new Set(['chunk', 'user-message', 'audio-begin', 'state', 'error', 'conversation'])
+const CONVERSATION_SCOPED = new Set(['chunk', 'user-message', 'audio-begin', 'state', 'error', 'conversation', 'queued'])
 
 /** What the guard needs to know about the threads `new` walked away from — see
  *  createLeftThreads below. Only consulted while nothing is viewed. */
@@ -71,6 +73,10 @@ export interface MsgEffect {
    *  user bubble for it; the post-turn re-read (armed by `persisted`) replaces it with the
    *  real row. */
   steered?: string
+  /** This socket's text was queued as its own run BEHIND the thread's running run (a headless
+   *  wake, typically). Painted as an optimistic bubble like `steered`; unlike a steer, its run
+   *  later sends its own `user-message`, which replaces the bubble (see queuedEchoIndex). */
+  queued?: string
   /** A spoken segment is starting: the binary frames that follow are headerless PCM
    *  (mono / s16le) at THIS sample rate — the client cannot decode them without it.
    *  `turnId` names which turn opened it, so a segment from a superseded turn can be
@@ -143,7 +149,30 @@ export function mapServerMessage(
   if (m.type === 'steered' && typeof m.text === 'string') {
     return { steered: m.text }
   }
+  // Queued behind the running run — see MsgEffect.queued.
+  if (m.type === 'queued' && typeof m.text === 'string') {
+    return { queued: m.text }
+  }
   return {}
+}
+
+/** Id prefix of the optimistic bubble painted for a `queued` frame (never a server row id). */
+export const QUEUED_ID_PREFIX = 'queued-'
+
+interface BubbleLike { id: string, role: string, parts?: readonly { type: string, text?: string }[] }
+const bubbleText = (m: BubbleLike) => (m.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')
+
+/**
+ * Where, if anywhere, the optimistic bubble of a queued message sits once that message's run
+ * starts and sends its own `user-message`. The caller removes it before upserting the real one:
+ * left in place, the question shows twice while the run streams, and the post-turn re-read then
+ * REFUSES the (shorter) server list, stranding the turn on stream ids. A steer bubble never
+ * matches — a steer gets no user-message of its own; the re-read replaces it.
+ */
+export function queuedEchoIndex(list: readonly BubbleLike[], incoming: BubbleLike): number {
+  if (incoming.role !== 'user') return -1
+  const text = bubbleText(incoming)
+  return list.findIndex(m => m.role === 'user' && m.id.startsWith(QUEUED_ID_PREFIX) && bubbleText(m) === text)
 }
 
 /**

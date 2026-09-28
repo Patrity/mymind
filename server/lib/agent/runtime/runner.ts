@@ -25,7 +25,7 @@ import { approvalFor, registerTurnStream, releaseTurnStream, unregisterApprovalC
 import { drainSteerFor } from './inbox'
 import { headlessTools } from './gate'
 import { eventModelText, wakeOrigin } from './event-text'
-import { groupTurns, costTurns, keepTrailingTurns, RUNTIME_CONTEXT_BUDGET } from './history'
+import { groupTurns, costTurns, keepTrailingTurns, LIGHT_CONTEXT_TURNS, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
 import type { RunInput, RunOutcome } from './types'
 
@@ -116,6 +116,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   let persisted = false
   // True once the `finally` rescue's append has committed — the rescued rows are real rows.
   let rescued = false
+  // True when the turn COMPLETED as a suppressed (NO_REPLY) wake: writing nothing was the
+  // decision, not a failure, so the `finally` rescue must not second-guess it.
+  let silent = false
   let outcome: RunOutcome = { status: 'done', suppressed: false, usage: null }
   // Registered immediately before the try whose `finally` releases them: nothing that can throw
   // may run in between, or a run would leak its controller and its hub replay buffer.
@@ -175,7 +178,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     const [conv] = await useDb().select({ kind: conversations.kind, title: conversations.title })
       .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
     const fullHistory = await getAgentHistory(conversationId)
-    const turns = groupTurns(fullHistory)
+    // A light-context run (a job's `context: light`) keeps only the last few turns — sliced here,
+    // BEFORE costing, so the budget and droppedTurns below describe what the model really sees.
+    const allTurns = groupTurns(fullHistory)
+    const turns = input.context === 'light' ? allTurns.slice(-LIGHT_CONTEXT_TURNS) : allTurns
     const assembled = await (deps.assemble ?? assembleContext)({
       userText, conversationId, skill: input.skill, conversationKind: conv?.kind === 'main' ? 'main' : 'thread',
       turns: costTurns(turns), budget: RUNTIME_CONTEXT_BUDGET
@@ -226,11 +232,18 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       if ((!isWake && ttftMs !== undefined) || turnUsage) ts.emit({ type: 'usage', ...finalUsage })
       ts.finish()
     }
-    // A wake that answered with the NO_REPLY sentinel is silent by contract: no assistant row.
+    // A wake that answered with the NO_REPLY sentinel is silent by contract, and a silent run
+    // leaves NOTHING in the thread (cycle 74 D4 — cycle 73 kept the event row): no rows, no
+    // `conversation`/`persisted` frame, no afterPersist. Its agent_runs row (outcome suppressed,
+    // finished by queue.ts) is the only trace. A wake is headless, so enqueue never steers into
+    // it and drainedSteers is empty here — nothing Tony typed can be dropped by this.
     const reply = messageText(result[result.length - 1]?.content ?? '')
     const suppressed = isWake && result.length > history.length + 1 && isSuppressedReply(reply)
     let added = result.slice(history.length) // [user] or [user, assistant]
-    if (suppressed) added = added.slice(0, -1)
+    if (suppressed) {
+      added = []
+      silent = true
+    }
     if (ac.signal.aborted) outcome = { status: 'aborted' }
     else outcome = { status: 'done', suppressed, usage: finalUsage }
     if (added.length && !ac.signal.aborted) {
@@ -293,10 +306,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // if the agent call returns. The user saw their question on screen (client-side state) and
     // lost it on reload. A question someone actually asked has to survive the model
     // failing to answer it, so rescue whatever the turn managed to emit.
-    if (!persisted) {
+    if (!persisted && !silent) {
       // `|| input.text`: a turn that failed before handleTurn emitted the user transcript
       // (history load, assembly) still has the question the run was created with.
-      // A wake's NO_REPLY is silent by contract on this path too: only the event row survives.
+      // A wake's NO_REPLY is silent by contract on this path too.
       const rescuedReply = isWake && isSuppressedReply(liveAssistantText) ? '' : liveAssistantText
       const question = liveUserText || input.text
       // partialTurnMessages drops a reply that has no question to attribute it to. A blank
@@ -304,9 +317,12 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // kept, and withSteers puts the steers ahead of it. (An EMPTY question never reaches the
       // model — handleTurn returns early — so only a whitespace-only one can land here.)
       const steered = drainedSteers.some(t => t.trim())
-      const rescuedMsgs: AgentMessage[] = !question.trim() && steered
-        ? (rescuedReply.trim() ? [{ role: 'assistant', content: rescuedReply }] : [])
-        : partialTurnMessages(question, rescuedReply)
+      // A wake with no (or a suppressed) reply rescues nothing: its event row is meaningless
+      // alone (cycle 74 D4, same rule as the success path).
+      let rescuedMsgs: AgentMessage[]
+      if (isWake && !rescuedReply.trim() && !steered) rescuedMsgs = []
+      else if (!question.trim() && steered) rescuedMsgs = rescuedReply.trim() ? [{ role: 'assistant', content: rescuedReply }] : []
+      else rescuedMsgs = partialTurnMessages(question, rescuedReply)
       if (rescuedMsgs.length || steered) {
         try {
           const created = (await countMessages(conversationId)) === 0

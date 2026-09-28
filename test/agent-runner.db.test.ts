@@ -17,6 +17,7 @@ import { abortRun } from '../server/lib/agent/runtime/aborts'
 import { registerApprovalChannel, hasApprovalChannel } from '../server/lib/agent/runtime/approvals'
 import { appendMessages } from '../server/services/conversations'
 import { pushSteer } from '../server/lib/agent/runtime/inbox'
+import { jobOutcomeOf } from '../server/lib/agent/jobs/outcome'
 import { eq, inArray } from 'drizzle-orm'
 
 const convIds: string[] = []
@@ -152,15 +153,85 @@ describe('runTurn', () => {
     expect((await p).status).toBe('aborted')
   })
 
-  it('a wake run persists an event row (not a user row) and drops a NO_REPLY reply', async () => {
+  // Cycle 74 D4 (replaces cycle 73's "the event row is kept"): a silent run leaves NOTHING in
+  // the thread — only its agent_runs row (outcome suppressed). No rows, no persisted frame.
+  it('a wake run that replies NO_REPLY persists zero rows and publishes no persisted frame', async () => {
     const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake' })
     convIds.push(s.conversationId)
     await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'wake', profile: 'headless', wakeReason: 'admin', input: { text: 'anything new?', modality: 'text' } })
     const run = (await claimNextRun({ onlyConversations: [s.conversationId], headlessSlots: HEADLESS_TEST_SLOTS }))!
-    const out = await runTurn(run, { runAgent: fakeAgent('NO_REPLY') as never, assemble: noAssemble as never, hub: new StreamHub() })
-    expect(out.suppressed).toBe(true)
-    const r = await rows(s.conversationId)
-    expect(r.map(x => [x.role, x.origin])).toEqual([['event', 'wake:admin']])
+    const hub = new StreamHub()
+    const got: string[] = []
+    hub.subscribe(s.conversationId, { id: 'watcher', send: (d) => {
+      if (typeof d === 'string') got.push(d)
+    } })
+    const afterPersist = vi.fn()
+    const out = await runTurn(run, { runAgent: fakeAgent('NO_REPLY') as never, assemble: noAssemble as never, hub, afterPersist })
+    expect(out).toMatchObject({ status: 'done', suppressed: true })
+    // The run's outcome is the only trace — and a job reads it as 'silent' (Task 5's onRunFinished).
+    expect(jobOutcomeOf(out).outcome).toBe('silent')
+    expect(await rows(s.conversationId)).toEqual([])
+    expect(got.map(f => JSON.parse(f).type)).not.toContain('persisted')
+    expect(got.map(f => JSON.parse(f).type)).not.toContain('conversation')
+    expect(afterPersist).not.toHaveBeenCalled()
+  })
+
+  it('a speaking wake run persists [event, assistant]', async () => {
+    const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake speaks' })
+    convIds.push(s.conversationId)
+    await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'wake', profile: 'headless', wakeReason: 'admin', input: { text: 'anything new?', modality: 'text' } })
+    const run = (await claimNextRun({ onlyConversations: [s.conversationId], headlessSlots: HEADLESS_TEST_SLOTS }))!
+    const out = await runTurn(run, { runAgent: fakeAgent('the build is red') as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(out).toMatchObject({ status: 'done', suppressed: false })
+    expect((await chain(s.conversationId)).map(x => [x.role, x.origin, x.content.trim()])).toEqual([
+      ['event', 'wake:admin', 'anything new?'],
+      ['assistant', null, 'the build is red']
+    ])
+  })
+
+  // Cycle 74: `context: 'light'` sends only the last LIGHT_CONTEXT_TURNS (4) turns of history.
+  it('a light-context wake over a 10-turn thread sends the model at most 4 prior turns', async () => {
+    const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake light' })
+    convIds.push(s.conversationId)
+    for (let i = 0; i < 10; i++) {
+      await appendMessages(s.conversationId, [
+        { role: 'user', content: `q${i}`, modality: 'text' },
+        { role: 'assistant', content: `a${i}`, modality: 'text' }
+      ])
+    }
+    await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'wake', profile: 'headless', wakeReason: 'light', input: { text: 'anything new?', modality: 'text', context: 'light' } })
+    const run = (await claimNextRun({ onlyConversations: [s.conversationId], headlessSlots: HEADLESS_TEST_SLOTS }))!
+    let sent: { role: string, content: unknown }[] = []
+    const capture = async function* (m: { role: string, content: unknown }[]) {
+      sent = m
+      yield { type: 'text-delta', text: 'NO_REPLY' } as const
+      yield { type: 'done' } as const
+    }
+    await runTurn(run, { runAgent: capture as never, assemble: noAssemble as never, hub: new StreamHub() })
+    const users = sent.filter(x => x.role === 'user')
+    expect(users.length).toBeLessThanOrEqual(5) // 4 prior turns + the current prompt
+    expect(users.slice(0, -1).map(x => x.content)).toEqual(['q6', 'q7', 'q8', 'q9'])
+  })
+
+  it('a full-context wake over the same kind of thread still sends every turn', async () => {
+    const s = await resolveSession('thread:new', { titleHint: 'RUNNER-TEST wake full' })
+    convIds.push(s.conversationId)
+    for (let i = 0; i < 10; i++) {
+      await appendMessages(s.conversationId, [
+        { role: 'user', content: `q${i}`, modality: 'text' },
+        { role: 'assistant', content: `a${i}`, modality: 'text' }
+      ])
+    }
+    await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'wake', profile: 'headless', wakeReason: 'full', input: { text: 'anything new?', modality: 'text' } })
+    const run = (await claimNextRun({ onlyConversations: [s.conversationId], headlessSlots: HEADLESS_TEST_SLOTS }))!
+    let sent: { role: string }[] = []
+    const capture = async function* (m: { role: string }[]) {
+      sent = m
+      yield { type: 'text-delta', text: 'NO_REPLY' } as const
+      yield { type: 'done' } as const
+    }
+    await runTurn(run, { runAgent: capture as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(sent.filter(x => x.role === 'user')).toHaveLength(11)
   })
 
   // Controller ruling (carried from Task 7's concern, tightened in fix round 1): a suppressed
@@ -251,10 +322,26 @@ describe('runTurn', () => {
     ])
   })
 
-  it('a wake that throws after NO_REPLY rescues only the event row', async () => {
+  // Cycle 74 D4 (replaces cycle 73's "rescues only the event row"): the event row is
+  // meaningless alone, so a rescued wake with a suppressed or empty reply persists nothing.
+  it('a wake that throws after NO_REPLY rescues nothing', async () => {
     const { run, conversationId } = await wakeRun('rescue-silent')
-    await runTurn(run, { runAgent: throwsAfter('NO_REPLY ') as never, assemble: noAssemble as never, hub: new StreamHub() })
-    expect((await rows(conversationId)).map(x => [x.role, x.origin])).toEqual([['event', 'wake:rescue-silent']])
+    const afterPersist = vi.fn()
+    const out = await runTurn(run, { runAgent: throwsAfter('NO_REPLY ') as never, assemble: noAssemble as never, hub: new StreamHub(), afterPersist })
+    expect(out.status).toBe('failed')
+    expect(await rows(conversationId)).toEqual([])
+    expect(afterPersist).not.toHaveBeenCalled()
+  })
+
+  it('a wake that throws before saying anything rescues nothing', async () => {
+    const { run, conversationId } = await wakeRun('rescue-empty')
+    // eslint-disable-next-line require-yield -- the model dies before its first token
+    const boom = async function* () {
+      throw new Error('model died')
+    }
+    const out = await runTurn(run, { runAgent: boom as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(out.status).toBe('failed')
+    expect(await rows(conversationId)).toEqual([])
   })
 
   it('afterPersist fires when the turn persisted or was rescued, and not otherwise', async () => {

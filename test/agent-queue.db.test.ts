@@ -38,6 +38,7 @@ describe('queue', () => {
     const r = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: 'QUEUE-TEST hi', modality: 'text' } }, { kick: false })
     convIds.push(r.conversationId)
     expect(r.created).toBe(true); expect(r.steered).toBe(false)
+    expect(r.queuedBehind).toBe(false) // nothing running — it is not behind anything
     const [row] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, r.runId))
     expect(row!.status).toBe('queued')
   })
@@ -48,6 +49,7 @@ describe('queue', () => {
     await claimNextRun({ onlyConversations: [first.conversationId] })
     const second = await enqueue({ sessionKey: `thread:${first.conversationId}`, trigger: 'user', profile: 'interactive', input: { text: 'actually, the other doc', modality: 'text' } }, { kick: false })
     expect(second.steered).toBe(true); expect(second.runId).toBe(first.runId)
+    expect(second.queuedBehind).toBe(false) // steered, not queued
     const inbox = await useDb().select().from(agentInbox).where(eq(agentInbox.runId, first.runId))
     expect(inbox.map(i => i.content)).toEqual(['actually, the other doc'])
     const runs = await useDb().select().from(agentRuns).where(eq(agentRuns.conversationId, first.conversationId))
@@ -231,6 +233,8 @@ describe('queue', () => {
     await claimNextRun({ onlyConversations: [s.conversationId], headlessSlots: HEADLESS_TEST_SLOTS })
     const userMsg = await enqueue({ sessionKey: `thread:${s.conversationId}`, trigger: 'user', profile: 'interactive', input: { text: 'hello while headless runs', modality: 'text' } }, { kick: false })
     expect(userMsg.steered).toBe(false)
+    // Cycle 74: the socket tells the client it queued (ws.ts sends `queued`), so the bubble shows.
+    expect(userMsg.queuedBehind).toBe(true)
     expect(userMsg.runId).not.toBe(headless.id)
     const [row] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, userMsg.runId))
     expect(row!.status).toBe('queued')

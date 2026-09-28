@@ -24,7 +24,13 @@ export interface EnqueueRequest {
   /** The agent_jobs row this run fires for (cycle 74) — outcome.ts reads it back on finish. */
   jobId?: string | null
 }
-export interface EnqueueResult { runId: string; conversationId: string; steered: boolean; created: boolean }
+export interface EnqueueResult {
+  runId: string; conversationId: string; steered: boolean; created: boolean
+  /** A user message that became its own queued run BEHIND a run already running on the thread
+   *  (a headless wake, or a non-plain message behind an interactive one). ws.ts answers it with a
+   *  `queued` frame so the client paints the bubble now instead of when the run starts. */
+  queuedBehind: boolean
+}
 
 type RunFn = (run: AgentRun) => Promise<RunOutcome>
 
@@ -32,8 +38,9 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
   if (!runtimeEnabled()) throw new RuntimeDisabledError()
   const doPushSteer = deps.pushSteer ?? pushSteer
   const { conversationId, created } = await resolveSession(req.sessionKey, { titleHint: req.input.text })
+  let active: AgentRun | null | undefined
   if (req.trigger === 'user' && !created) {
-    const active = await activeRunFor(conversationId)
+    active = await activeRunFor(conversationId)
     // Steer only into an INTERACTIVE run (Task 8 review ruling): a headless wake is not a
     // conversation Tony is watching live, so his message queues behind it like any other
     // trigger instead of splicing into a background turn he can't see.
@@ -44,7 +51,7 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
     const plain = !req.input.attachments?.length && !req.input.skill
     if (active && active.profile === 'interactive' && plain) {
       const steered = await doPushSteer(active.id, conversationId, req.input.text, 'user')
-      if (steered) return { runId: active.id, conversationId, steered: true, created }
+      if (steered) return { runId: active.id, conversationId, steered: true, created, queuedBehind: false }
       // pushSteer's own atomic check found the run no longer 'running' — it finished in the
       // gap between the read above and the insert. Fall through to createRun: the words are
       // never dropped, they just become a fresh queued run instead of a steer.
@@ -57,7 +64,7 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
     jobId: req.jobId ?? null
   })
   if (deps.kick !== false) kick(deps.run)
-  return { runId: run.id, conversationId, steered: false, created }
+  return { runId: run.id, conversationId, steered: false, created, queuedBehind: !!active }
 }
 
 export async function abortActive(conversationId: string): Promise<boolean> {

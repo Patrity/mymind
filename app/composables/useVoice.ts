@@ -1,5 +1,5 @@
 // app/composables/useVoice.ts
-import { createLeftThreads, mapServerMessage } from '../lib/voice/messages'
+import { createLeftThreads, mapServerMessage, queuedEchoIndex, QUEUED_ID_PREFIX } from '../lib/voice/messages'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
 import { framesOnOpen } from '../lib/voice/reconnect'
 import { createClientTurns } from '../lib/agent/turn-stream'
@@ -100,6 +100,17 @@ export function useVoice() {
    * would not change an id.
    */
   const turnPersisted = ref(0)
+  /** A user bubble for words the server accepted but no `user-message` frame will show yet —
+   *  steered into a running turn, or queued behind one. The synthetic id (never a server row
+   *  id) is what the post-turn re-read, or the queued run's own user-message, replaces. */
+  function appendOptimisticUser(text: string, idPrefix: string) {
+    messages.value.push({
+      id: `${idPrefix}${Date.now()}`,
+      role: 'user',
+      parts: [{ type: 'text', text }],
+      metadata: { createdAt: new Date().toISOString() }
+    })
+  }
   const { settings } = useVoiceSettings()
   // Only for the /clear no-op case (no conversation yet) — see the `cleared` handling below.
   const toast = useToast()
@@ -313,7 +324,16 @@ export function useVoice() {
           if (fx.audioBegin.turnId !== undefined && turns.isStale(fx.audioBegin.turnId)) epochs.rejectSegment()
           else onAudioBegin(fx.audioBegin.sampleRate)
         }
-        if (fx.messageFrame) turns.handle(fx.messageFrame)
+        if (fx.messageFrame) {
+          // A queued message's run has started and sent its own user-message: drop the
+          // optimistic bubble painted for it (fx.queued below), or the question shows twice
+          // and the post-turn re-read refuses the shorter server list.
+          if (fx.messageFrame.type === 'user-message') {
+            const i = queuedEchoIndex(messages.value, fx.messageFrame.message)
+            if (i >= 0) messages.value.splice(i, 1)
+          }
+          turns.handle(fx.messageFrame)
+        }
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
         if (fx.approval) pendingApproval.value = fx.approval
@@ -329,14 +349,10 @@ export function useVoice() {
         // that's already streaming), so paint an optimistic bubble here instead. It carries a
         // synthetic id (never a server row id) purely so the post-turn re-read — armed by
         // `persisted` above — has something to replace once the real row exists.
-        if (fx.steered) {
-          messages.value.push({
-            id: `steer-${Date.now()}`,
-            role: 'user',
-            parts: [{ type: 'text', text: fx.steered }],
-            metadata: { createdAt: new Date().toISOString() }
-          })
-        }
+        if (fx.steered) appendOptimisticUser(fx.steered, 'steer-')
+        // Queued behind a running headless run (cycle 74): same optimistic bubble. Its run sends
+        // a real user-message when it starts, which replaces this one (see messageFrame above).
+        if (fx.queued) appendOptimisticUser(fx.queued, QUEUED_ID_PREFIX)
         if (fx.cleared) {
           if (fx.cleared.epochAt) {
             // Same value the DTO carries on a later reload, so the divider renders identically

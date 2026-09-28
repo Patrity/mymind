@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mapServerMessage } from './messages'
+import { mapServerMessage, queuedEchoIndex, QUEUED_ID_PREFIX } from './messages'
 
 describe('mapServerMessage — audio framing', () => {
   it('surfaces audio-begin with its sample rate', () => {
@@ -70,6 +70,44 @@ describe('mapServerMessage — steered', () => {
 
   it('ignores a steered frame with no text', () => {
     expect(mapServerMessage({ type: 'steered' } as never, false)).toEqual({})
+  })
+})
+
+// Cycle 74: a user message queued behind a running headless (wake) run. Conversation-scoped —
+// it carries `cid` and a straggler from a thread we left must not paint a bubble here.
+describe('mapServerMessage — queued', () => {
+  it('surfaces a queued frame for the viewed thread with its text', () => {
+    expect(mapServerMessage({ type: 'queued', text: 'hi', cid: 'thread-B' } as never, false, 'thread-B'))
+      .toEqual({ queued: 'hi' })
+  })
+
+  it('drops a queued frame whose cid is not the viewed thread', () => {
+    expect(mapServerMessage({ type: 'queued', text: 'hi', cid: 'thread-A' } as never, false, 'thread-B')).toEqual({})
+  })
+
+  it('ignores a queued frame with no text', () => {
+    expect(mapServerMessage({ type: 'queued', cid: 'thread-B' } as never, false, 'thread-B')).toStrictEqual({})
+  })
+})
+
+describe('queuedEchoIndex — the queued run\'s own user-message replaces its optimistic bubble', () => {
+  const bubble = (id: string, text: string, role = 'user') => ({ id, role, parts: [{ type: 'text', text }] })
+  it('finds the optimistic queued bubble whose text matches the arriving user message', () => {
+    const list = [bubble('m1', 'hi'), bubble(`${QUEUED_ID_PREFIX}1`, 'other'), bubble(`${QUEUED_ID_PREFIX}2`, 'hi')]
+    expect(queuedEchoIndex(list, bubble('u9', 'hi'))).toBe(2)
+  })
+
+  it('never matches a real row or a steer bubble with the same text', () => {
+    const list = [bubble('m1', 'hi'), bubble('steer-1', 'hi')]
+    expect(queuedEchoIndex(list, bubble('u9', 'hi'))).toBe(-1)
+  })
+
+  it('only a USER message can replace the bubble', () => {
+    expect(queuedEchoIndex([bubble(`${QUEUED_ID_PREFIX}1`, 'hi')], bubble('a9', 'hi', 'assistant'))).toBe(-1)
+  })
+
+  it('does not match on different text', () => {
+    expect(queuedEchoIndex([bubble(`${QUEUED_ID_PREFIX}1`, 'hi')], bubble('u9', 'bye'))).toBe(-1)
   })
 })
 
