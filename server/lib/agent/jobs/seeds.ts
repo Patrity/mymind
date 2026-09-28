@@ -9,6 +9,7 @@ export type SeedJobSlug = (typeof SEED_JOB_SLUGS)[number]
 export const SEED_JOBS: Record<SeedJobSlug, string> = {
   'morning-brief': `---
 trigger: cron 30 7 * * 1-5
+context: light
 enabled: false
 ---
 Give Tony a morning brief: what's due today and overdue, what changed overnight,
@@ -18,6 +19,7 @@ If nothing matters, reply NO_REPLY.
 
   'evening-wrap': `---
 trigger: cron 0 21 * * *
+context: light
 enabled: false
 ---
 Give Tony an evening wrap: what got done today, what's still open, anything due

@@ -6,7 +6,7 @@
 // max 50 enabled) and the fact a job's `enabled` switch rewrites one frontmatter line instead of
 // a dedicated column.
 import { createHash } from 'node:crypto'
-import { and, asc, eq, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentJobs, type AgentJobRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
@@ -26,6 +26,22 @@ export { getDefaultTimezone }
 
 export const MAX_ENABLED_JOBS = 50
 export const JOB_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+// A single FIXED advisory-lock key serializes the enabled-count check against every other
+// concurrent enabling write, globally — MAX_ENABLED_JOBS is a whole-TABLE invariant, not a
+// per-slug one, so a per-row lock (e.g. on the slug) would not help: two concurrent creates of
+// DIFFERENT slugs could each read count=49 and both commit, landing at 51 enabled. Held for the
+// transaction's lifetime (`_xact_`), released automatically on commit/rollback. Arbitrary
+// constant (review fix round 1, item 3), scoped to this one guard only. Exported ONLY so a test
+// can take the SAME key with a raw client and prove writeJob actually blocks on it (a real
+// concurrent-timing race is otherwise too fast/unreliable to force deterministically in a test).
+export const MAX_ENABLED_LOCK_KEY = 740_450_001
+
+/** True for a Postgres unique-violation (23505), from either node-postgres shape. */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string, cause?: { code?: string } }
+  return e?.code === '23505' || e?.cause?.code === '23505'
+}
 
 /** Thrown when a job's markdown fails to parse, or a write violates a guard (rate/count).
  *  Invalid content is REJECTED at write time — it is never stored (planning ruling in
@@ -64,8 +80,12 @@ async function rowBySlug(slug: string): Promise<AgentJobRow | null> {
   return row ?? null
 }
 
-async function countEnabledExcluding(slug: string): Promise<number> {
-  const [row] = await useDb().select({ count: sql<number>`count(*)::int` }).from(agentJobs)
+// Anything with the drizzle query surface (the pool, or an open transaction) — so the
+// enabled-count check can run against the SAME `tx` as the write it's guarding.
+type Executor = Pick<ReturnType<typeof useDb>, 'select'>
+
+async function countEnabledExcluding(slug: string, db: Executor): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(agentJobs)
     .where(and(eq(agentJobs.enabled, true), ne(agentJobs.slug, slug)))
   return row?.count ?? 0
 }
@@ -74,17 +94,23 @@ async function countEnabledExcluding(slug: string): Promise<number> {
  * Builds an `isKnownModel` predicate off the AI registry's configured model ids (Task 4 brief:
  * "find how registry model ids are listed... and pass isKnownModel"). `'default'` (the job
  * frontmatter default, meaning "use the resolver's own chain") is always considered known,
- * regardless of registry state — including when the registry can't be read at all (DB down /
- * settings row missing in a way loadConfig can't shrug off): a job that never named a specific
- * model must not become unwritable just because model resolution is unavailable.
+ * regardless of registry state.
+ *
+ * `failOpen` controls what happens when the registry genuinely can't be read (DB down / config
+ * row corrupt): write paths (`writeJob`, the default, `failOpen: false`) fail CLOSED — only
+ * `'default'` is known, so a human/agent saving a job that pins a SPECIFIC model while the
+ * registry is unreachable is rejected rather than silently accepted unverified. `revalidateAll`
+ * (boot) passes `failOpen: true` — every id is treated as known — because a registry outage must
+ * never mass-invalidate every job that happens to name a real model; nothing about those jobs
+ * changed, only the registry's availability did (review fix round 1, item 7).
  */
-async function buildIsKnownModel(): Promise<(id: string) => boolean> {
+async function buildIsKnownModel(opts: { failOpen?: boolean } = {}): Promise<(id: string) => boolean> {
   try {
     const cfg = await loadConfig()
     const knownIds = new Set(cfg.models.map(m => m.id))
     return (id: string) => id === 'default' || knownIds.has(id)
   } catch {
-    return (id: string) => id === 'default'
+    return opts.failOpen ? () => true : (id: string) => id === 'default'
   }
 }
 
@@ -144,7 +170,15 @@ export async function getJob(slug: string): Promise<JobDTO | null> {
 // ---- writes ---------------------------------------------------------------------------------
 // Every write, in order (Task 4 brief): parse -> JobValidationError on failure -> derive columns
 // (nextRunAt only when enabled) -> enforce MAX_ENABLED_JOBS -> CAS on content_hash inside the
-// UPDATE's WHERE (zero rows => ConflictError) -> recordRevision -> publishChange.
+// UPDATE's WHERE (zero rows => ConflictError) -> recordRevision -> publishChange. The count-check
+// + insert/update + revision run in ONE transaction (review fix round 1, items 3-4): an advisory
+// lock serializes the enabled-count race, and a lost create/create race on the slug's unique
+// index is mapped to ConflictError rather than surfacing a raw Postgres error.
+
+type WriteOutcome
+  = | { kind: 'ok', row: AgentJobRow, wasCreate: boolean }
+    | { kind: 'conflict', current: { content: string, contentHash: string } }
+    | { kind: 'not-found' }
 
 async function writeJob(
   slug: string,
@@ -161,13 +195,6 @@ async function writeJob(
   if (!result.ok) throw new JobValidationError(result.error)
   const spec = result.spec
 
-  if (spec.enabled) {
-    const enabledCount = await countEnabledExcluding(slug)
-    if (enabledCount >= MAX_ENABLED_JOBS) {
-      throw new JobValidationError(`at most ${MAX_ENABLED_JOBS} jobs may be enabled at once`)
-    }
-  }
-
   const derived = {
     content,
     contentHash: hashOf(content),
@@ -180,32 +207,61 @@ async function writeJob(
     parseError: null as string | null
   }
 
-  const db = useDb()
-  const existing = await rowBySlug(slug)
-  let row: AgentJobRow | undefined
-  if (!existing) {
-    if (expectedHash !== null) throw new Error(`no job named "${slug}"`)
-    ;[row] = await db.insert(agentJobs).values({ slug, ...derived }).returning()
-  } else {
-    if (expectedHash === null || existing.contentHash !== expectedHash) {
-      throw new ConflictError({ content: existing.content, contentHash: existing.contentHash })
-    }
-    // Re-checked IN the UPDATE so a write landing between the read above and this statement
-    // still loses, rather than clobbering a concurrent writer (mirrors saveSkillSource).
-    ;[row] = await db.update(agentJobs)
-      .set({ ...derived, updatedAt: sql`now()` })
-      .where(and(eq(agentJobs.id, existing.id), eq(agentJobs.contentHash, expectedHash)))
-      .returning()
-    if (!row) {
-      const now = await rowBySlug(slug)
-      throw new ConflictError({ content: now?.content ?? '', contentHash: now?.contentHash ?? '' })
-    }
-  }
-  if (!row) throw new Error(`failed to write job "${slug}"`)
+  let outcome: WriteOutcome
+  try {
+    outcome = await useDb().transaction(async (tx): Promise<WriteOutcome> => {
+      if (spec.enabled) {
+        // Held for the transaction's lifetime: serializes this count-check + write against every
+        // other concurrent enabling write, so two concurrent creates can't each read count=49
+        // and both commit past "< 50".
+        await tx.execute(sql`select pg_advisory_xact_lock(${MAX_ENABLED_LOCK_KEY})`)
+        const enabledCount = await countEnabledExcluding(slug, tx)
+        if (enabledCount >= MAX_ENABLED_JOBS) {
+          throw new JobValidationError(`at most ${MAX_ENABLED_JOBS} jobs may be enabled at once`)
+        }
+      }
 
-  await recordRevision({ targetKind: 'job', targetId: row.id, content, actor, runId: runId ?? null })
-  publishChange({ resource: 'agentJob', action: existing ? 'updated' : 'created', id: row.id })
-  return rowToJobDTO(row)
+      const [existing] = await tx.select().from(agentJobs).where(eq(agentJobs.slug, slug)).limit(1)
+
+      if (!existing) {
+        if (expectedHash !== null) return { kind: 'not-found' }
+        const [inserted] = await tx.insert(agentJobs).values({ slug, ...derived }).returning()
+        await recordRevision({ targetKind: 'job', targetId: inserted!.id, content, actor, runId }, tx)
+        return { kind: 'ok', row: inserted!, wasCreate: true }
+      }
+
+      if (expectedHash === null || existing.contentHash !== expectedHash) {
+        return { kind: 'conflict', current: { content: existing.content, contentHash: existing.contentHash } }
+      }
+      // Re-checked IN the UPDATE so a write landing between the read above and this statement
+      // still loses, rather than clobbering a concurrent writer (mirrors saveSkillSource).
+      const [updated] = await tx.update(agentJobs)
+        .set({ ...derived, updatedAt: sql`now()` })
+        .where(and(eq(agentJobs.id, existing.id), eq(agentJobs.contentHash, expectedHash)))
+        .returning()
+      if (!updated) {
+        // No SQL error occurred (an UPDATE matching zero rows isn't one) — safe to keep querying
+        // this same tx.
+        const [now] = await tx.select().from(agentJobs).where(eq(agentJobs.slug, slug)).limit(1)
+        return { kind: 'conflict', current: { content: now?.content ?? '', contentHash: now?.contentHash ?? '' } }
+      }
+      await recordRevision({ targetKind: 'job', targetId: updated.id, content, actor, runId }, tx)
+      return { kind: 'ok', row: updated, wasCreate: false }
+    })
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err
+    // Lost a create/create race on the slug's unique index. The transaction above has already
+    // rolled back entirely on the thrown error, so recovery runs as a FRESH query here — never
+    // against that now-aborted transaction, which would refuse any further command on it.
+    const now = await rowBySlug(slug)
+    throw new ConflictError({ content: now?.content ?? '', contentHash: now?.contentHash ?? '' })
+  }
+
+  if (outcome.kind === 'not-found') throw new Error(`no job named "${slug}"`)
+  if (outcome.kind === 'conflict') throw new ConflictError(outcome.current)
+
+  publishChange({ resource: 'agentJob', action: outcome.wasCreate ? 'created' : 'updated', id: outcome.row.id })
+  return rowToJobDTO(outcome.row)
 }
 
 export async function createJob(i: {
@@ -262,11 +318,18 @@ export async function revertJob(slug: string, revisionId: string, actor: 'human'
 // a previously-invalid job now parses. next_run_at is only touched on a validity TRANSITION
 // (never recomputed for a job that was already valid — that's the tick worker's job, and
 // clobbering it here would silently defeat "a missed run fires once").
-export async function revalidateAll(opts: { mainConversationId?: string } = {}): Promise<number> {
+export async function revalidateAll(
+  opts: { mainConversationId?: string, onlyIds?: string[] } = {}
+): Promise<number> {
   const db = useDb()
   const rows = await db.select().from(agentJobs)
+    .where(opts.onlyIds ? inArray(agentJobs.id, opts.onlyIds) : undefined)
   const defaultTimezone = await getDefaultTimezone()
-  const isKnownModel = await buildIsKnownModel()
+  // Fail OPEN (review fix round 1, item 7): a registry outage must never mass-invalidate every
+  // job that happens to name a real model — nothing about those jobs changed, only the
+  // registry's availability did. Write paths (writeJob's own buildIsKnownModel() call) stay fail
+  // CLOSED.
+  const isKnownModel = await buildIsKnownModel({ failOpen: true })
   let changed = 0
 
   for (const row of rows) {
@@ -274,6 +337,11 @@ export async function revalidateAll(opts: { mainConversationId?: string } = {}):
     const newParseError = result.ok ? null : result.error
 
     if (newParseError !== row.parseError) {
+      // Review fix round 1, item 5: also requires content_hash unchanged since the SELECT above
+      // — if a real write landed on this row between the select and here, that write already
+      // derived this row's columns correctly from the content IT saw; this stale-content pass
+      // must not clobber it with derivations computed from what is now a stale read.
+      const guard = and(eq(agentJobs.id, row.id), eq(agentJobs.contentHash, row.contentHash))
       if (result.ok) {
         const spec = result.spec
         await db.update(agentJobs).set({
@@ -284,13 +352,13 @@ export async function revalidateAll(opts: { mainConversationId?: string } = {}):
           timezone: spec.timezone,
           nextRunAt: spec.enabled ? computeNextRunAt(spec, new Date()) : null,
           updatedAt: sql`now()`
-        }).where(eq(agentJobs.id, row.id))
+        }).where(guard)
       } else {
         await db.update(agentJobs).set({
           parseError: newParseError,
           nextRunAt: null,
           updatedAt: sql`now()`
-        }).where(eq(agentJobs.id, row.id))
+        }).where(guard)
       }
       changed++
       publishChange({ resource: 'agentJob', action: 'updated', id: row.id })
@@ -298,12 +366,18 @@ export async function revalidateAll(opts: { mainConversationId?: string } = {}):
       // Only the null -> non-null transition posts to main (planning ruling): re-invalidating an
       // already-invalid job on every boot, or a job recovering, must not spam the thread.
       if (row.parseError === null && newParseError !== null) {
-        const mainId = opts.mainConversationId ?? await getOrCreateMain()
-        await appendEvent(
-          mainId,
-          `Job ${row.slug} is invalid: ${newParseError} — fix it on /jobs/${row.slug}.`,
-          'runtime:job-invalid'
-        )
+        try {
+          const mainId = opts.mainConversationId ?? await getOrCreateMain()
+          await appendEvent(
+            mainId,
+            `Job ${row.slug} is invalid: ${newParseError} — fix it on /jobs/${row.slug}.`,
+            'runtime:job-invalid'
+          )
+        } catch (err) {
+          // Review fix round 1, item 6: one job's note failing to post (e.g. main unreachable)
+          // must not abort the rest of the boot revalidation pass.
+          console.error(`[jobs] failed to post the invalid-job note for "${row.slug}":`, err)
+        }
       }
     }
 

@@ -10,6 +10,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
+import { Client } from 'pg'
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { agentJobs, agentConfigRevisions, conversations, conversationMessages } from '../server/db/schema'
@@ -17,7 +18,7 @@ import { listRevisions } from '../server/lib/agent/config/revisions'
 import { SEED_JOB_SLUGS } from '../server/lib/agent/jobs/seeds'
 import {
   createJob, saveJob, getJob, setJobEnabled, revertJob, revalidateAll, installSeedJobs,
-  JobValidationError, ConflictError, MAX_ENABLED_JOBS
+  JobValidationError, ConflictError, MAX_ENABLED_JOBS, MAX_ENABLED_LOCK_KEY
 } from '../server/lib/agent/jobs/store'
 
 const PREFIX = 'jstest-'
@@ -156,6 +157,115 @@ describe('job store — enabled-jobs guard', () => {
   })
 })
 
+describe('job store — enabled-jobs guard race (review fix round 1, item 3)', () => {
+  // A genuine concurrent-timing race (two transactions each reading the enabled count before
+  // either writes) is too fast on local Postgres (sub-millisecond round trips) to force
+  // reliably with a bare Promise.all — verified empirically: 5 concurrent createJob calls at the
+  // cap boundary consistently let exactly one through even with the advisory lock DELETED from
+  // the source, making that shape of test pass regardless of the fix (vacuous). Instead: hold the
+  // SAME fixed lock key manually with a raw client and prove createJob's write actually blocks
+  // behind it until released — deterministic, not timing-dependent.
+  it('actually takes pg_advisory_xact_lock(MAX_ENABLED_LOCK_KEY) around the enabled-count check + write', async () => {
+    const holder = new Client({ connectionString: process.env.DATABASE_URL })
+    await holder.connect()
+    await holder.query('BEGIN')
+    await holder.query('SELECT pg_advisory_xact_lock($1)', [MAX_ENABLED_LOCK_KEY])
+
+    const slug = `${PREFIX}lock-holds`
+    let settled = false
+    const pending = createJob({ slug, content: md('trigger: every 10m\nenabled: true', 'x'), actor: 'human' })
+      .then(
+        (r) => {
+          settled = true
+          return r
+        },
+        (e: unknown) => {
+          settled = true
+          throw e
+        }
+      )
+    pending.catch(() => {}) // avoid an unhandled-rejection warning if an assertion below throws first
+
+    try {
+      await new Promise(r => setTimeout(r, 300))
+      expect(settled).toBe(false) // still blocked behind the held lock, 300ms later
+
+      await holder.query('COMMIT') // releases the advisory lock
+      const result = await pending
+      expect(settled).toBe(true)
+      expect(result.slug).toBe(slug)
+    } finally {
+      await holder.query('COMMIT').catch(() => {}) // no-op if already committed above
+      await holder.end().catch(() => {})
+      await pending.catch(() => {}) // let the (now unblocked) write finish before cleaning up rows
+      const db = useDb()
+      const ids = (await db.select({ id: agentJobs.id }).from(agentJobs).where(eq(agentJobs.slug, slug))).map(r => r.id)
+      if (ids.length) await db.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, ids)))
+      await db.delete(agentJobs).where(eq(agentJobs.slug, slug))
+    }
+  })
+
+  it('lets exactly one concurrent create through the last enabled slot (integration sanity check — not the primary proof above)', async () => {
+    const db = useDb()
+    const [before] = await db.select({ count: sql<number>`count(*)::int` }).from(agentJobs).where(eq(agentJobs.enabled, true))
+    const alreadyEnabled = before?.count ?? 0
+    const room = Math.max(0, MAX_ENABLED_JOBS - alreadyEnabled)
+    const fillerSlugs: string[] = []
+    const raceSlugs = Array.from({ length: 5 }, (_, i) => `${PREFIX}race-${i}`)
+    try {
+      for (let i = 0; i < room - 1; i++) {
+        const slug = `${PREFIX}race-filler-${i}`
+        fillerSlugs.push(slug)
+        await createJob({ slug, content: md('trigger: every 5h\nenabled: true', `filler ${i}`), actor: 'human' })
+      }
+
+      const results = await Promise.allSettled(raceSlugs.map(slug => createJob({
+        slug, content: md('trigger: every 5h\nenabled: true', 'race'), actor: 'human'
+      })))
+      const succeeded = results.filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+
+      expect(succeeded).toHaveLength(1)
+      expect(failed).toHaveLength(raceSlugs.length - 1)
+      for (const f of failed) expect(f.reason).toBeInstanceOf(JobValidationError)
+
+      const [after] = await db.select({ count: sql<number>`count(*)::int` }).from(agentJobs).where(eq(agentJobs.enabled, true))
+      expect(after?.count ?? 0).toBe(MAX_ENABLED_JOBS)
+    } finally {
+      const allSlugs = [...fillerSlugs, ...raceSlugs]
+      const ids = (await db.select({ id: agentJobs.id }).from(agentJobs).where(inArray(agentJobs.slug, allSlugs))).map(r => r.id)
+      if (ids.length) await db.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, ids)))
+      await db.delete(agentJobs).where(inArray(agentJobs.slug, allSlugs))
+    }
+  })
+})
+
+describe('job store — create/create race on one slug (review fix round 1, item 4)', () => {
+  it('maps the loser of a concurrent create on the SAME slug to ConflictError, not a raw Postgres error', async () => {
+    const slug = `${PREFIX}race-slug`
+    try {
+      const results = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => createJob({
+        slug, content: md('trigger: every 10m\nenabled: false', `attempt ${i}`), actor: 'human'
+      })))
+      const succeeded = results.filter((r): r is PromiseFulfilledResult<unknown> => r.status === 'fulfilled')
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+
+      expect(succeeded).toHaveLength(1)
+      expect(failed).toHaveLength(4)
+      for (const f of failed) expect(f.reason).toBeInstanceOf(ConflictError)
+
+      // Exactly one row landed — the loser's write never happened.
+      const rows = await useDb().select().from(agentJobs).where(eq(agentJobs.slug, slug))
+      expect(rows).toHaveLength(1)
+    } finally {
+      const db = useDb()
+      const ids = (await db.select({ id: agentJobs.id }).from(agentJobs).where(eq(agentJobs.slug, slug))).map(r => r.id)
+      if (ids.length) await db.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, ids)))
+      await db.delete(agentJobs).where(eq(agentJobs.slug, slug))
+    }
+  })
+})
+
 describe('job store — revert', () => {
   it('revertJob restores an older revision\'s content and writes a new revision', async () => {
     const slug = `${PREFIX}revert`
@@ -235,33 +345,68 @@ describe('job store — revalidateAll (boot)', () => {
       return rows.length
     }
 
+    // Review fix round 1, item 2: `onlyIds` scopes revalidateAll to rows THIS test created —
+    // the shared dev DB may hold other real jobs, and without this seam `changed` could not be
+    // asserted exactly (some other row's validity might independently flip mid-run).
+    const onlyIds = [job.id]
+
     try {
       // Simulate an external break (e.g. a registry model removed) by writing invalid content
       // straight to the row — store.ts itself would reject this at write time; revalidateAll is
       // the one path that must tolerate content that is already invalid.
       await db.update(agentJobs).set({ content: md('trigger: nonsense', 'body') }).where(eq(agentJobs.id, job.id))
 
-      const changed1 = await revalidateAll({ mainConversationId: fakeMainId })
-      expect(changed1).toBeGreaterThanOrEqual(1)
+      const changed1 = await revalidateAll({ mainConversationId: fakeMainId, onlyIds })
+      expect(changed1).toBe(1)
       const broken = await getJob(slug)
       expect(broken?.parseError).toMatch(/unknown trigger/)
       expect(broken?.nextRunAt).toBeNull()
       expect(await countNotes()).toBe(1)
 
-      // Re-running against the SAME still-broken content must not re-notify.
-      await revalidateAll({ mainConversationId: fakeMainId })
+      // Re-running against the SAME still-broken content must not re-notify, and — scoped to
+      // exactly this one row — must report 0 jobs changed (nothing transitioned).
+      const changed2 = await revalidateAll({ mainConversationId: fakeMainId, onlyIds })
+      expect(changed2).toBe(0)
       expect(await countNotes()).toBe(1)
 
       // Repair it (again, simulating an external fix) — parse_error clears and nextRunAt comes
       // back, but there is still no SECOND note (only the invalid transition notifies).
       await db.update(agentJobs).set({ content: md('trigger: every 10m\nenabled: true', 'body text') }).where(eq(agentJobs.id, job.id))
-      await revalidateAll({ mainConversationId: fakeMainId })
+      const changed3 = await revalidateAll({ mainConversationId: fakeMainId, onlyIds })
+      expect(changed3).toBe(1)
       const fixed = await getJob(slug)
       expect(fixed?.parseError).toBeNull()
       expect(fixed?.nextRunAt).not.toBeNull()
       expect(await countNotes()).toBe(1)
     } finally {
       await db.delete(conversations).where(eq(conversations.id, fakeMainId))
+    }
+  })
+
+  it('review fix round 1, item 6: one job\'s notify failure does not abort the rest of the pass', async () => {
+    const db = useDb()
+    const slugA = `${PREFIX}revalidate-notify-a`
+    const slugB = `${PREFIX}revalidate-notify-b`
+    const jobA = await createJob({ slug: slugA, content: md('trigger: every 10m\nenabled: true', 'a'), actor: 'human' })
+    const jobB = await createJob({ slug: slugB, content: md('trigger: every 10m\nenabled: true', 'b'), actor: 'human' })
+    try {
+      await db.update(agentJobs).set({ content: md('trigger: nonsense', 'a') }).where(eq(agentJobs.id, jobA.id))
+      await db.update(agentJobs).set({ content: md('trigger: nonsense', 'b') }).where(eq(agentJobs.id, jobB.id))
+
+      // A well-formed but NON-EXISTENT conversation id: appendEvent's insert violates the
+      // conversation_messages -> conversations foreign key and throws for EVERY job's notify in
+      // this pass (both A and B transition null -> non-null). Without the try/catch, the first
+      // throw would abort the loop and job B would never get its parse_error set.
+      const bogusMainId = '00000000-0000-0000-0000-000000000000'
+      const changed = await revalidateAll({ mainConversationId: bogusMainId, onlyIds: [jobA.id, jobB.id] })
+
+      expect(changed).toBe(2)
+      expect((await getJob(slugA))?.parseError).toMatch(/unknown trigger/)
+      expect((await getJob(slugB))?.parseError).toMatch(/unknown trigger/)
+    } finally {
+      const ids = [jobA.id, jobB.id]
+      await db.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, ids)))
+      await db.delete(agentJobs).where(inArray(agentJobs.id, ids))
     }
   })
 })

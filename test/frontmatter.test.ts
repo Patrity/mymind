@@ -65,4 +65,51 @@ describe('setFrontmatterKey', () => {
     const updated = setFrontmatterKey('just a body', 'enabled', false)
     expect(updated).toBe('---\nenabled: false\n---\njust a body')
   })
+
+  // Task 4 review fix round 1, item 1: the old implementation re-serialised the WHOLE frontmatter
+  // block via the yaml Document API, which collapses comment padding (multiple spaces before `#`)
+  // and drops flow-collection padding (`{ project: mymind }` -> `{project: mymind}`). This is the
+  // spec §3 job file, verbatim byte-for-byte (copied via a script that printed each line's repr,
+  // not hand-typed) — including both shapes the bug report named.
+  it('is byte-stable on the spec §3 job file verbatim (comments + flow map)', () => {
+    const lines = [
+      '---',
+      'trigger: cron 30 7 * * 1-5     # cron <expr> | every <n>m|<n>h | at <ISO datetime> | event <name>',
+      'timezone: America/New_York     # IANA; default = settings `agent_timezone`, else server TZ',
+      'active_hours: 07:00-23:00      # optional; ticks outside → outcome \'skipped\'',
+      'model: default                 # or a registry model id',
+      'thread: main                   # main | isolated',
+      'context: light                 # light | full',
+      'deliver: [app]                 # stored; only \'app\' is honoured until cycle 75',
+      'enabled: true',
+      'filter: { project: mymind }    # event jobs only; optional key/value match on the event payload',
+      '---',
+      'Give Tony a morning brief: what\'s due today and overdue, what changed overnight,',
+      'captures waiting in triage, anything stale for 3+ days. Under 10 lines.',
+      'If nothing matters, reply NO_REPLY.',
+      ''
+    ]
+    const md = lines.join('\n')
+    const updated = setFrontmatterKey(md, 'enabled', false)
+    const before = md.split('\n')
+    const after = updated.split('\n')
+
+    expect(after.length).toBe(before.length)
+    for (let i = 0; i < before.length; i++) {
+      if (before[i] === 'enabled: true') {
+        expect(after[i]).toBe('enabled: false')
+      } else {
+        expect(after[i]).toBe(before[i])
+      }
+    }
+    // Spot-check the two shapes the bug report named explicitly.
+    expect(after).toContain('filter: { project: mymind }    # event jobs only; optional key/value match on the event payload')
+    expect(after).toContain('deliver: [app]                 # stored; only \'app\' is honoured until cycle 75')
+  })
+
+  it('replaces a flow-collection value on the target line itself (that line MAY reformat)', () => {
+    const md = '---\nfilter: { project: mymind }    # comment\nenabled: true\n---\nx\n'
+    const updated = setFrontmatterKey(md, 'filter', { project: 'bridget' })
+    expect(updated).toBe('---\nfilter: {project: bridget}    # comment\nenabled: true\n---\nx\n')
+  })
 })
