@@ -9,13 +9,16 @@ describe('channelsDotColor', () => {
     expect(channelsDotColor(undefined)).toBeNull()
   })
   it('green when ok with the Private API on', () => {
-    expect(channelsDotColor({ enabled: true, ok: true, privateApi: true })).toBe('success')
+    expect(channelsDotColor({ enabled: true, ok: true, privateApi: true, checkedAt: 1 })).toBe('success')
   })
   it('amber when ok with the Private API off', () => {
-    expect(channelsDotColor({ enabled: true, ok: true, privateApi: false })).toBe('warning')
+    expect(channelsDotColor({ enabled: true, ok: true, privateApi: false, checkedAt: 1 })).toBe('warning')
   })
   it('red when the last check failed, whatever the Private API said', () => {
-    expect(channelsDotColor({ enabled: true, ok: false, privateApi: null })).toBe('error')
-    expect(channelsDotColor({ enabled: true, ok: false, privateApi: true })).toBe('error')
+    expect(channelsDotColor({ enabled: true, ok: false, privateApi: null, checkedAt: 1 })).toBe('error')
+    expect(channelsDotColor({ enabled: true, ok: false, privateApi: true, checkedAt: 1 })).toBe('error')
+  })
+  it('neutral while enabled but not checked yet (M6) — never red before the first check', () => {
+    expect(channelsDotColor({ enabled: true, ok: false, privateApi: null, checkedAt: null })).toBe('neutral')
   })
 })

@@ -245,6 +245,13 @@ export function lastHealth(): Health {
   return { ...health }
 }
 
+/** Forget the last health check (M6): after a save that enabled iMessage or changed its server
+ *  or password, the old snapshot describes a different setup — `checkedAt: null` until the next
+ *  catch-up tick checks, so the nav dot shows neutral rather than a stale red/green. */
+export function resetHealth(): void {
+  health = { ok: false, privateApi: null, checkedAt: null }
+}
+
 /** Test seam: forget the throttle, the scan high-water mark and the health snapshot. */
 export function _resetCatchUp(): void {
   lastRunAt = 0

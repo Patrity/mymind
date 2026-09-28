@@ -16,7 +16,7 @@ const cfg = {
   presenceAwayMinutes: 10
 }
 const mocks = vi.hoisted(() => ({
-  load: vi.fn(), save: vi.fn(), rotate: vi.fn(), dto: vi.fn(), markActive: vi.fn()
+  load: vi.fn(), save: vi.fn(), rotate: vi.fn(), dto: vi.fn(), markActive: vi.fn(), resetHealth: vi.fn()
 }))
 vi.mock('../server/lib/channels/config', async (orig) => {
   const actual = await orig<typeof import('../server/lib/channels/config')>()
@@ -30,6 +30,7 @@ vi.mock('../server/lib/channels/config', async (orig) => {
   }
 })
 vi.mock('../server/lib/channels/presence', () => ({ markActive: mocks.markActive }))
+vi.mock('../server/lib/channels/inbound', () => ({ resetHealth: mocks.resetHealth }))
 
 type H = (e: unknown) => Promise<unknown> | unknown
 const get = (await import('../server/api/settings/channels.get')).default as H
@@ -93,6 +94,16 @@ describe('session callers', () => {
   it('PUT valid → saves the merged config and returns the DTO', async () => {
     expect(await put(evt(session, goodBody))).toEqual({ ok: 'dto' })
     expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ imessage: expect.objectContaining({ enabled: true, serverUrl: 'http://bb.local:1234' }) }))
+  })
+  it('M6: PUT that enables iMessage (or changes its server) forgets the last health check', async () => {
+    await put(evt(session, goodBody)) // cfg has it disabled → enabled
+    expect(mocks.resetHealth).toHaveBeenCalledOnce()
+  })
+  it('M6: PUT that changes only the allowlist of an enabled, unchanged server keeps the health check', async () => {
+    mocks.load.mockResolvedValue({ ...cfg, imessage: { ...cfg.imessage, enabled: true, serverUrl: 'http://bb.local:1234' } })
+    await put(evt(session, { ...goodBody, imessage: { ...goodBody.imessage, allowedHandles: ['+15551234567', '+15550000001'] } }))
+    expect(mocks.save).toHaveBeenCalled()
+    expect(mocks.resetHealth).not.toHaveBeenCalled()
   })
   it('regenerate rotates the token and returns the DTO', async () => {
     expect(await regen(evt(session))).toEqual({ ok: 'dto' })

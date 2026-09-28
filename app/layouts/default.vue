@@ -107,8 +107,9 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     label: 'Settings',
     icon: 'i-lucide-settings',
     // A red/amber Channels dot is repeated here: the group is collapsed outside /settings, which
-    // would hide it on the child item everywhere else in the app. Green stays on Channels only.
-    ...(channelsDot.value && channelsDot.value !== 'success' ? { chip: { color: channelsDot.value } } : {}),
+    // would hide it on the child item everywhere else in the app. Green and neutral (not checked
+    // yet) stay on Channels only.
+    ...(channelsDot.value === 'error' || channelsDot.value === 'warning' ? { chip: { color: channelsDot.value } } : {}),
     defaultOpen: route.path.startsWith('/settings'),
     children: settingsChildren.value
   }
