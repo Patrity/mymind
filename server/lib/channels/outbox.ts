@@ -92,16 +92,19 @@ async function claim(now: Date, onlyIds?: string[]): Promise<ChannelDelivery[]> 
 
 type Outcome = 'sent' | 'retried' | 'failed'
 
-async function record(row: ChannelDelivery, r: SendResult, now: Date): Promise<Outcome | null> {
-  const attempts = row.attempts + 1
+/** `sendMade: false` records a result for a row that was not sent this time (attempts unchanged). */
+async function record(row: ChannelDelivery, r: SendResult, now: Date, sendMade = true): Promise<Outcome | null> {
+  const attempts = row.attempts + (sendMade ? 1 : 0)
+  // Ruling 2: after the n-th failed send, n >= MAX_ATTEMPTS → failed, else wait BACKOFF_MS[n-1].
+  const delay = !r.ok && r.retryable && attempts < MAX_ATTEMPTS ? nextAttemptDelayMs(attempts - 1) : null
   let set: Partial<typeof channelDeliveries.$inferInsert>
   let outcome: Outcome
   if (r.ok) {
     outcome = 'sent'
     set = { status: r.unconfirmed ? 'sent_unconfirmed' : 'sent', attempts, externalId: r.externalId ?? null, sentAt: now, lastError: null }
-  } else if (r.retryable && attempts < MAX_ATTEMPTS) {
+  } else if (delay !== null) {
     outcome = 'retried'
-    set = { status: 'pending', attempts, lastError: r.error, nextAttemptAt: new Date(now.getTime() + nextAttemptDelayMs(attempts - 1)!) }
+    set = { status: 'pending', attempts, lastError: r.error, nextAttemptAt: new Date(now.getTime() + delay) }
   } else {
     outcome = 'failed'
     set = { status: 'failed', attempts, lastError: r.error }
@@ -122,6 +125,21 @@ async function noteFailure(row: ChannelDelivery, error: string, mainConversation
   await appendEvent(mainId, `Couldn't deliver to ${label}: ${error}`, 'channel:delivery-failed')
 }
 
+async function sendRow(row: ChannelDelivery): Promise<SendResult> {
+  try {
+    return await channelFor(row.channel as OutboundChannelId).send({
+      id: row.id,
+      target: row.target,
+      payload: row.payload as DeliveryPayload,
+      // Sends already made before this one (the column is incremented after the result).
+      attempts: row.attempts,
+      firstClaimedAt: row.firstClaimedAt
+    })
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), retryable: true }
+  }
+}
+
 /**
  * Claim due deliveries and send them. `onlyIds` is the test seam (the dev DB is shared: a test
  * must never claim a real row); `now` overrides the clock (default: Postgres `now()`);
@@ -135,21 +153,14 @@ export async function deliveriesTick(opts: { onlyIds?: string[]; mainConversatio
   for (const row of rows) publishChange({ resource: 'channelDelivery', action: 'updated', id: row.id })
 
   for (const row of rows) {
-    let result: SendResult
+    // Only a reclaim can bring a row here with its sends used up (its last send was interrupted
+    // and counted at claim time): give up rather than make a send past MAX_ATTEMPTS.
+    const exhausted = row.attempts >= MAX_ATTEMPTS
+    const result: SendResult = exhausted
+      ? { ok: false, error: `gave up after ${row.attempts} attempts (the last one was interrupted)${row.lastError ? `; last error: ${row.lastError}` : ''}`, retryable: false }
+      : await sendRow(row)
     try {
-      result = await channelFor(row.channel as OutboundChannelId).send({
-        id: row.id,
-        target: row.target,
-        payload: row.payload as DeliveryPayload,
-        // Sends already made before this one (the column is incremented after the result).
-        attempts: row.attempts,
-        firstClaimedAt: row.firstClaimedAt
-      })
-    } catch (err) {
-      result = { ok: false, error: err instanceof Error ? err.message : String(err), retryable: true }
-    }
-    try {
-      const outcome = await record(row, result, now)
+      const outcome = await record(row, result, now, !exhausted)
       if (!outcome) continue
       counts[outcome]++
       if (outcome === 'failed' && !result.ok && row.source !== 'note') {

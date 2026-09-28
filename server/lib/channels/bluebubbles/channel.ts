@@ -5,7 +5,8 @@
 // Bridget's own message with the same text in that chat since the row was first claimed. If it
 // is there, the earlier attempt went out — report success without sending again. If that check
 // itself fails, the result is a retryable error and nothing is sent: an unknown answer must never
-// turn into a second text. An image-only row (the outbox splits images into their own rows) has
+// turn into a second text (a 404 is the exception: it means "not found", so the send goes
+// ahead). An image-only row (the outbox splits images into their own rows) has
 // no text to match, so it skips the check — a rare duplicate photo beats a lost one.
 import type { Channel, SendResult } from '../types'
 import { loadChannelsConfig } from '../config'
@@ -46,7 +47,11 @@ export const imessageChannel: Channel = {
         let found: string | null
         try { found = await client.findOwnMessage(d.target, text, d.firstClaimedAt.getTime() - OWN_MESSAGE_LOOKBACK_MS) }
         catch (e) {
-          return { ok: false, error: `duplicate check failed, not resending yet: ${e instanceof Error ? e.message : String(e)}`, retryable: true }
+          // 404: the server has no such chat/route → nothing of ours is there, so send.
+          if (!(e instanceof BlueBubblesError && e.status === 404)) {
+            return { ok: false, error: `duplicate check failed, not resending yet: ${e instanceof Error ? e.message : String(e)}`, retryable: true }
+          }
+          found = null
         }
         if (found) return { ok: true, externalId: found }
       }

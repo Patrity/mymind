@@ -11,6 +11,7 @@
 process.loadEnvFile('.env')
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
+import { Client } from 'pg'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
@@ -69,11 +70,16 @@ beforeEach(async () => {
   await db().update(conversations).set({ activeLeafId: null, messageCount: 0 }).where(eq(conversations.id, scratchMain))
 })
 
+// The ONLY insert path in this file. The move to 2100 happens in the SAME transaction as the
+// insert, so no committed row is ever due on the real clock — a real worker tick on the shared
+// DB can never claim one.
 async function insert(rows: NewDelivery[]): Promise<string[]> {
-  const ids = await db().transaction(tx => insertDeliveries(tx, rows))
+  const ids = await db().transaction(async (tx) => {
+    const inserted = await insertDeliveries(tx, rows)
+    await tx.update(channelDeliveries).set({ nextAttemptAt: T0 }).where(inArray(channelDeliveries.id, inserted))
+    return inserted
+  })
   deliveryIds.push(...ids)
-  // Due only in 2100: invisible to any real-clock worker tick on the shared DB.
-  await db().update(channelDeliveries).set({ nextAttemptAt: T0 }).where(inArray(channelDeliveries.id, ids))
   return ids
 }
 
@@ -222,6 +228,21 @@ describe('deliveriesTick', () => {
     expect((await row(fresh!)).status).toBe('sending')
   })
 
+  it('a reclaimed row whose sends are used up fails with a note instead of a 7th send', async () => {
+    const [id] = await insert([one('last')])
+    await db().update(channelDeliveries).set({
+      status: 'sending', attempts: 5, lastError: 'server down', claimedAt: at(-180_000), firstClaimedAt: at(-7_200_000)
+    }).where(eq(channelDeliveries.id, id!))
+    expect(await tick([id!], T0)).toEqual({ sent: 0, retried: 0, failed: 1 })
+    expect(script.calls).toHaveLength(0)
+    const r = await row(id!)
+    expect(r.status).toBe('failed')
+    expect(r.attempts).toBe(6)
+    expect((await notes()).map(n => n.content)).toEqual([
+      "Couldn't deliver to iMessage: gave up after 6 attempts (the last one was interrupted); last error: server down"
+    ])
+  })
+
   it('unconfirmed → sent_unconfirmed', async () => {
     const [id] = await insert([one()])
     script.next.push({ ok: true, unconfirmed: true })
@@ -231,7 +252,29 @@ describe('deliveriesTick', () => {
     expect(r.externalId).toBeNull()
   })
 
-  it('two concurrent ticks send each row exactly once (SKIP LOCKED)', async () => {
+  it('a row locked by another claim is skipped at once, not waited on (SKIP LOCKED, not plain FOR UPDATE)', async () => {
+    const [locked, free] = await insert([one('locked'), one('free')])
+    const holder = new Client({ connectionString: process.env.DATABASE_URL })
+    await holder.connect()
+    try {
+      await holder.query('begin')
+      await holder.query('select id from channel_deliveries where id = $1 for update', [locked])
+      const outcome = await Promise.race([
+        tick([locked!, free!], T0),
+        new Promise<'blocked'>(r => setTimeout(() => r('blocked'), 2_000))
+      ])
+      expect(outcome).toEqual({ sent: 1, retried: 0, failed: 0 })
+      expect(script.calls.map(c => c.id)).toEqual([free])
+    }
+    finally {
+      await holder.query('rollback')
+      await holder.end()
+    }
+    // Once released, the skipped row is claimable as normal.
+    expect(await tick([locked!], T0)).toEqual({ sent: 1, retried: 0, failed: 0 })
+  })
+
+  it('two concurrent ticks send each row exactly once', async () => {
     const ids = await insert([one('a'), one('b'), one('c'), one('d'), one('e')])
     script.delayMs = 20
     const [r1, r2] = await Promise.all([tick(ids, T0), tick(ids, T0)])

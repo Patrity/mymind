@@ -294,6 +294,21 @@ describe('imessageChannel.send', () => {
     finally { spy.mockRestore() }
   })
 
+  it('a retry whose duplicate check 404s treats it as not found and sends once', async () => {
+    await withFake()
+    const real = globalThis.fetch
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (/\/api\/v1\/chat\/[^/]+\/message/.test(String(input))) return new Response('{}', { status: 404 })
+      return real(input, init)
+    })
+    try {
+      const r = await imessageChannel.send({ ...base, attempts: 1, firstClaimedAt: new Date(), payload: { text: 'hello' } })
+      expect(r).toEqual({ ok: true, externalId: fake.sent[0]!.guid })
+      expect(fake.sent.map(x => x.message)).toEqual(['hello'])
+    }
+    finally { spy.mockRestore() }
+  })
+
   it('a retry whose duplicate check throws does NOT resend — retryable error instead', async () => {
     await withFake()
     const real = globalThis.fetch
