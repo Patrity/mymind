@@ -507,8 +507,9 @@ then `systemctl stop mymind`. Keep until the native deploy is confirmed stable.
 
 ## 19. Bridget channels — iMessage (BlueBubbles) + email (Resend) (cycle 75)
 
-Full reference: [`docs/wiki/channels.md`](wiki/channels.md). Migration **0057** is additive and
-runs with the normal CD `pnpm db:migrate`. **There are no new env vars on prod.** All
+Full reference: [`docs/wiki/channels.md`](wiki/channels.md). Migrations **0057** (tables) and
+**0058** (an index on `channel_deliveries.conversation_id`) are additive and run with the normal CD
+`pnpm db:migrate`. **There are no new env vars on prod.** All
 configuration lives in the DB and is set in the app. (`BLUEBUBBLES_FAKE_URL` and `RESEND_FAKE` are
 dev-only; never set them on the server. `RESEND_FAKE` is inert in a production build anyway.)
 
@@ -523,6 +524,17 @@ dev-only; never set them on the server. `RESEND_FAKE` is inert in a production b
   from session auth (the token is the credential; a bad token is a 404). The reverse proxy must pass
   it through, including the query string. If the webhook can't get through, the catch-up still
   delivers every message within about 2 minutes.
+
+**One BlueBubbles server ↔ one MyMind.** The 2-minute catch-up polls BlueBubbles whether or not a
+webhook is registered, so if dev and prod are both enabled against the same BlueBubbles server,
+**both answer every text**. Before enabling iMessage on prod, switch it off on dev (Settings →
+Channels → iMessage off, or restore dev's settings after any real-phone session), and never run a
+real-phone check on dev while prod's iMessage is enabled.
+
+**Catch-up bounds.** On a fresh install (no inbound rows yet) the catch-up starts 5 minutes back,
+so prod does not replay texts dev already answered; and it never reads back more than 24 hours,
+so enabling iMessage after a long gap (or recovering from a long outage) does not answer a backlog
+of old texts one by one. Texts older than that are simply never answered — tell Tony to re-send.
 
 **One-time setup after the deploy:**
 1. **Settings → Bridget → Agent timezone** = `America/Chicago` (cycle 74; prod runs `Etc/UTC`).
@@ -541,7 +553,8 @@ dev-only; never set them on the server. `RESEND_FAKE` is inert in a production b
 **Heads-up:** a job with no `deliver:` line now means `deliver: [auto]` (it texts Tony when he is
 away from the app). Prod has no enabled jobs yet, but review any custom job before enabling it.
 
-**Ops:** the Settings → Channels nav dot (green / amber / red), `GET /api/channels/status`, and
+**Ops:** the Settings → Channels nav dot (green / amber / red; neutral grey right after boot or
+after saving a new server, until the first check), `GET /api/channels/status`, and
 `journalctl -u mymind | grep '\[channels\]'`. The stuck-delivery and recent-inbound queries are in
 the wiki page. **Regenerating the webhook token** breaks the registered webhook until the new URL
 is pasted into BlueBubbles.

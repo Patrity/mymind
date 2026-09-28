@@ -26,7 +26,7 @@ code. The build's deviations from the spec are listed in the handover.
 | File | Responsibility |
 |---|---|
 | `runner.ts` | `runTurn(run)`: runs one turn. This is the old `ws.ts` turn body moved verbatim: capture the leaf, load history (bounded), `assembleContext`, `handleTurn`/`runAgent`, persist, then send the `conversation`/`persisted` frames, with rescue on throw or abort. It persists drained steers as user rows, streams only `state` frames for a wake run, slices history to the last 4 turns for `context: 'light'`, and makes a suppressed wake leave no rows at all. |
-| `queue.ts` | `enqueue` (resolve the session, then either steer or `createRun`), the pump (`pumpOnce` / `kick`), `execute` (10 s liveness bump, 5 min headless wall clock, `finishRun`, requeue of unread steers), `abortActive` / `abortActiveAndWait`, and `workerTick` (every 5 s: `recoverStale`, then `jobsTick()` and `dueTaskEvents()` (cycle 74), then `deliveriesTick()` and `catchUpTick()` (cycle 75), each guarded on its own, then pump). `enqueue` carries an optional `replyTo` onto the new run. After every run `execute` calls the jobs `onRunFinished` hook. |
+| `queue.ts` | `enqueue` (resolve the session, then either steer or `createRun`), the pump (`pumpOnce` / `kick`), `execute` (10 s liveness bump, 5 min headless wall clock, `finishRun`, requeue of unread steers), `abortActive` / `abortActiveAndWait`, and `workerTick` (every 5 s: `recoverStale`, then `jobsTick()` and `dueTaskEvents()` (cycle 74), then `deliveriesTick()` and `catchUpTick()` (cycle 75), each guarded on its own, then pump). `enqueue` carries an optional `replyTo` onto the new run, and `noSteer: true` (set by channel input) makes it always create a run, never steer. `workerTick` reaches `catchUpTick` through a dynamic `import()` (inbound.ts imports `enqueue` from queue.ts, so a static import back would be a cycle). After every run `execute` calls the jobs `onRunFinished` hook. |
 | `runs.ts` | Run store: `createRun`, `claimNextRun` (one statement, `for update skip locked`, headless slot cap), fenced `touchRun`/`finishRun`, `activeRunFor`, `recoverOrphans`, `listRuns`. |
 | `sessions.ts` | `resolveSession`. `main` returns the main conversation (created lazily; at most one, enforced by an index). `thread:new` makes a new side thread. `thread:<uuid>` returns an existing thread (the id's shape is validated before querying). `isolated:<slug>` makes a fresh thread titled `wake: <slug>`. |
 | `stream.ts` | `StreamHub`: per-conversation fan-out to sinks, a replay buffer of the running turn's JSON frames, and `only:` targeting for audio. `withCid` tags frames with `cid`. |
@@ -64,8 +64,8 @@ Wiring: `server/plugins/agent-runtime.ts` runs `recoverOnBoot()`, installs/reval
   `(conversation_id) where status='running'`. The index is the guarantee that one conversation
   never has two concurrent runs.
 - `agent_runs.reply_to` (migration **0057**, cycle 75): jsonb `{ channel: 'imessage', chatGuid,
-  messageGuid }`, set when an inbound iMessage creates the run, or set on a running interactive run
-  (when it has none) when the iMessage steers into it. `input.origin` (`imessage:<chatGuid>`) is
+  messageGuid }`, set only when an inbound iMessage creates the run (inbound never steers — final
+  review C1 — so it is never set on a running run). `input.origin` (`imessage:<chatGuid>`) is
   stamped on the persisted user row. See [Channels](#channels-cycle-75).
 - `agent_inbox`: `run_id` (fk, cascade), `conversation_id`, `mode` (only `steer` is written this
   cycle), `content`, `attachments`, `source`, `created_at`, `consumed_at`. This deviates from the
@@ -102,7 +102,11 @@ the next step boundary; an in-flight tool call finishes first. The runner persis
 as their own user rows **in the same append** as the turn: `[question, steer…, reply]`, with the
 reply last as the leaf. `groupTurns` joins consecutive user rows into one turn so a summary fold
 can never split that append. Messages sent while a **headless** run is active are queued, not
-steered. **Queued visibility (cycle 74):** when `enqueue` makes a user message its own run behind
+steered. **Channel input never steers** (`enqueue({ noSteer: true })`, cycle 75 final review C1):
+an inbound iMessage always becomes its own queued run carrying `reply_to` and `origin`, even
+while an interactive run is active. A steer the run never reads is requeued as a bare run with no
+`reply_to`, so a steered text could lose its phone reply, and a steer into an app turn would text
+that turn's reply to the phone. App steering is unchanged. **Queued visibility (cycle 74):** when `enqueue` makes a user message its own run behind
 one already running on the thread (a wake, or a non-plain message behind an interactive run), it
 returns `queuedBehind: true`. `ws.ts` then answers `{type:'queued',text,cid}`, and the client
 paints the user bubble at once. The bubble is replaced when that run's `user-message` frame
@@ -156,11 +160,13 @@ out the 120 s timeout. Headless runs get no approval channel at all, and `exec` 
 them.
 
 **Approvals over iMessage (cycle 75).** An interactive run with no socket approval channel (an
-inbound iMessage run, or an app run whose tab closed) registers `replyToApprovalChannel(runId)` at
-turn start. At request time it reads the run's `reply_to` **fresh**, because a steer can set it
-mid-run. When that names an iMessage chat, it texts "Run \`cmd\`? 👍 to approve · 👎 to deny" and
-waits up to **10 min** for a 👍/❤️ (approve) or 👎 (deny) tapback on that message. Otherwise it
-denies, as before. A socket channel registered by `ws.ts` overwrites it, so an app tab that is
+inbound iMessage run, or an app run whose tab closed) registers
+`replyToApprovalChannel(runId, { signal: ac.signal })` at turn start. At request time it reads the
+run's `reply_to`. When that names an iMessage chat, it texts "Run \`cmd\`? 👍 to approve · 👎 to
+deny" (the command cut to 300 chars) and waits up to **10 min** for a 👍/❤️ (approve) or 👎 (deny)
+tapback on that message. Otherwise it denies, as before. **The wait honours the run's abort
+signal** (final review I1): Stop or `/clear` settles the row `denied` and unwinds the run at once,
+instead of leaving it `running` (blocking main) until the expiry. A socket channel registered by `ws.ts` overwrites it, so an app tab that is
 watching still gets the in-app prompt. Details: [channels.md](channels.md#exec-approvals-over-imessage).
 
 ## Channels (cycle 75)
@@ -169,15 +175,18 @@ The runtime is how iMessage reaches Bridget and how her replies leave the app
 ([channels.md](channels.md)):
 
 - **Inbound:** `handleInbound` enqueues an iMessage on **main** with `trigger: 'user'`,
-  `profile: 'interactive'`, `input.origin` and `replyTo`. When a turn is running it steers into
-  it, but only into an interactive run. A headless job run on main is never steered into; the
-  message queues behind it with its own `reply_to`, so the answer still goes back to his phone.
+  `profile: 'interactive'`, `input.origin`, `replyTo` and `noSteer: true`. It **never steers**:
+  whatever is running on main (interactive or headless), the text queues behind it as its own run
+  with its own `reply_to`, so every text gets its own answer on his phone.
 - **Deliveries in the persist transaction:** the runner's `appendMessages` gets an `inTx` hook. In
-  a savepoint on the same transaction it calls `planDeliveries(run, reply, tx)` (`reply_to` read
-  fresh, the job's `deliver` list, presence) and inserts the `channel_deliveries` rows. The reply
+  a savepoint on the same transaction it calls `planDeliveries(run, reply, tx)` (`reply_to`, the
+  job's `deliver` list, presence) and inserts the `channel_deliveries` rows. The reply
   and its deliveries commit together. A planning read failure rolls back to the savepoint and the
   reply saves without deliveries. An empty or suppressed reply plans nothing, and the **rescue
-  path never delivers**. After commit it publishes `channelDelivery` `created`.
+  path never delivers** the partial reply. After commit it publishes `channelDelivery` `created`.
+- **Failure note:** a turn that ends `failed` (not `aborted`) on a run with `reply_to` queues one
+  `source: 'note'` iMessage, "Sorry — something went wrong answering that." (`queueFailureNote`,
+  in the runner's `finally`), so the phone is not left silent.
 - **Presence in the chat:** `channelPresence.start(run)` marks the reply chat read and turns
   typing on at turn start; `stop` turns typing off in the `finally`. Both are fire-and-forget.
 - **Worker tick:** after `jobsTick` and `dueTaskEvents`, `workerTick` runs `deliveriesTick()` (the

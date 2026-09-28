@@ -16,11 +16,12 @@ wiki:
   - ../wiki/agent-runtime.md
 migrations:
   - 0057 channel_deliveries, channel_inbound, channel_approvals; agent_runs.reply_to (jsonb)
-migrations_run_on_prod: false  # 0057 is applied to the shared dev DB only. Cycle 74 (0056) is not deployed either: deploying both applies 0056 + 0057
+  - 0058 index channel_deliveries(conversation_id) (final review fix wave)
+migrations_run_on_prod: false  # 0057 + 0058 are applied to the shared dev DB only. Cycle 74 (0056) is not deployed either: deploying both applies 0056 + 0057 + 0058
 seed_jobs_enabled: false  # the four seeds were upgraded (deliver lines) by the hash-guarded boot upgrade and stay DISABLED
 fake_acceptance: passed  # spec §11 scenarios 1-7 + email, against the fake BlueBubbles server and RESEND_FAKE
 real_phone_acceptance: pending  # spec §11 scenarios 1-5 with Tony's phone; checklist below
-final_review: pending  # the controller's whole-branch review has not run yet
+final_review: with-fixes-applied  # whole-branch review (1 C / 4 I / 9 M) → fix wave done on this branch; see "Final review fix wave" below
 prod_agent_timezone: unset  # from cycle 74: set Settings -> Bridget -> Agent timezone to America/Chicago after deploy, BEFORE enabling any job
 mymind_task: null  # set by the controller
 ---
@@ -36,10 +37,12 @@ is active in the app, it stays in the app. All outbound traffic goes through a D
 retries and a duplicate check, so a retry never double-texts him.
 
 **Status:** built on `feat/bridget-channels`. All gates are green, and the fake-server acceptance
-(spec §11 scenarios 1–7, plus email) passes. **Not merged, not deployed.** Migration 0057 is on the
-shared dev DB only. The real-phone acceptance (scenarios 1–5) is still owed and needs Tony; the
-checklist is [below](#real-phone-acceptance-checklist-for-the-controller-with-tony). The
-controller's final whole-branch review has not run yet.
+(spec §11 scenarios 1–7, plus email) passes. **Not merged, not deployed.** Migrations 0057 and 0058
+are on the shared dev DB only. The real-phone acceptance (scenarios 1–5) is still owed and needs
+Tony; the checklist is [below](#real-phone-acceptance-checklist-for-the-controller-with-tony). The
+controller's final whole-branch review ran ("with fixes") and its fix wave is done — see
+[Final review fix wave](#final-review-fix-wave). The headline behaviour change: **an inbound
+iMessage never steers into a running turn**; it always gets its own run and its own phone reply.
 
 How it works today: [`docs/wiki/channels.md`](../wiki/channels.md), plus the updated
 [`agent-jobs.md`](../wiki/agent-jobs.md) (`deliver`) and
@@ -65,7 +68,9 @@ the persist transaction).
   - `deliver`: `resolveDeliverChannels`, `planDeliveries`;
   - `approvals`: tapback approvals.
 - **Runtime integration:**
-  - `enqueue`/`createRun` carry `replyTo`, and an iMessage steer sets it on the run it joins;
+  - `enqueue`/`createRun` carry `replyTo`; inbound iMessage enqueues with `noSteer: true`, so it
+    is always its own run (final review C1 — the build first steered it and set `reply_to` on the
+    joined run);
   - the runner plans deliveries inside the append transaction (in a savepoint), starts and stops
     chat presence, and registers a `reply_to` approval channel for interactive runs without a
     socket channel;
@@ -99,12 +104,19 @@ the persist transaction).
 
 ## Gates
 
-| Gate | Cycle-74 final (on master) | After Task 1 (d063979) | This branch (2aae9e1 + docs) |
-|---|---|---|---|
-| `pnpm test` | 261 files · 2497 pass · 1 skip | 261 files · 2498 pass · 1 skip | **277 files · 2716 pass · 1 skip** |
-| `pnpm test:db` (whole suite) | 54 files · 483 pass | — | **64 files · 599 pass** |
-| `pnpm typecheck` | clean | clean | **clean** |
-| `pnpm build` | ok | — | **ok** |
+| Gate | Cycle-74 final (on master) | After Task 1 (d063979) | Build end (2aae9e1 + docs) | After the final fix wave |
+|---|---|---|---|---|
+| `pnpm test` | 261 files · 2497 pass · 1 skip | 261 files · 2498 pass · 1 skip | 277 files · 2716 pass · 1 skip | **279 files · 2735 pass · 1 skip** |
+| `pnpm test:db` (whole suite) | 54 files · 483 pass | — | 64 files · 599 pass | **64 files · 616 pass** |
+| `pnpm typecheck` | clean | clean | clean | **clean** |
+| `pnpm build` | ok | — | ok | **ok** |
+
+The fix wave was re-verified in the browser (playwright-cli, dev on :3075 against the fake on
+:4455): after a Save that enabled iMessage the Channels dot was **neutral** (`checkedAt` null, not
+repeated on the Settings parent), and Test connection turned it green; two texts sent one second
+apart gave **two runs and two phone replies** (the second queued behind the first, no steer row),
+the first texted as plain text ("Fruits | - Mango…" from "## Fruits / - **Mango**…"); a text whose
+chat was not the sender's own returned `ignored:chat-mismatch`.
 
 Every new test was mutation-checked by its task's implementer. This task's test
 (`test/resend-fake.test.ts`) went red when the `&& import.meta.dev` half of the guard was removed.
@@ -168,8 +180,8 @@ PORT=3075 BETTER_AUTH_URL=http://localhost:3075 BLUEBUBBLES_FAKE_URL=http://127.
   built. `first_claimed_at` bounds the window.
 - **Two schema additions:** `channel_deliveries.source` (for the tool rate limit, and so failure
   notes don't recurse) and `channel_approvals.chat_guid`.
-- **`reply_to` on steers:** steered iMessage text is persisted without `origin`, so steers get no
-  📱 marker.
+- ~~**`reply_to` on steers:** steered iMessage text is persisted without `origin`, so steers get no
+  📱 marker.~~ Superseded by final-review Ruling C1: inbound iMessage never steers.
 - **A rescued turn** creates no delivery.
 - **A job naming a channel that is now disabled** is skipped with an activity `warn`, not a note
   on main.
@@ -236,9 +248,10 @@ PORT=3075 BETTER_AUTH_URL=http://localhost:3075 BLUEBUBBLES_FAKE_URL=http://127.
   - unknown senders' GUIDs recorded, to stop repeat warnings;
   - catch-up pagination, the early already-seen check and the in-memory high-water mark;
   - the widened `catchUpTick` test seams;
-  - steered text without `origin`.
+  - steered text without `origin` (moot since Ruling C1).
 - **Task 7 → 8:** `planDeliveries` reads `agent_runs.reply_to` FRESH from the DB at finish (steers
-  set it after the run started). Cost if wrong: a steered iMessage gets no phone reply.
+  set it after the run started). Since Ruling C1 nothing sets it after creation; the read stays and
+  is simply current.
 - **Task 7 → 9:** `resolveTapback` applies the allowlist, group and from-me filters itself
   (tapbacks are routed before those filters).
 - **Task 8** accepted all four implementer choices (cost if wrong: one extra read per app turn):
@@ -280,10 +293,62 @@ PORT=3075 BETTER_AUTH_URL=http://localhost:3075 BLUEBUBBLES_FAKE_URL=http://127.
 - A Task 10 mutation run inserted one real pending `channel_deliveries` row on dev. It was deleted,
   and dev had no channel config at the time, so nothing could send.
 
+## Final review fix wave
+
+The controller's whole-branch review (`.superpowers/sdd/2026-09-28-bridget-channels/final-review.md`)
+returned **with fixes**: 1 critical, 4 important, 9 minor, plus a triage of the parked minors. The
+rulings below are binding; the fix wave implemented them in focused `fix(channels): …` commits
+(`df281d8..` on this branch). Full evidence (tests, mutation checks, browser re-verification):
+`.superpowers/sdd/2026-09-28-bridget-channels/final-fix-report.md`.
+
+**Final-review rulings:**
+- **Ruling C1 — inbound iMessage NEVER steers.** `enqueue` has a `noSteer` option, applied only in
+  the steer check; `handleInbound` always passes it, so channel input is always its own queued run
+  carrying `reply_to` and `origin`. The "set `reply_to` on the steered run" path is deleted. This
+  removes the whole class: a steer the run never read being requeued without `reply_to` (lost
+  phone reply), an app turn inheriting `reply_to`, and the `reply_to`-after-`pushSteer` gap. App
+  steering is unchanged. **Cost if wrong:** a text sent mid-turn waits for that turn to finish
+  instead of being merged into it.
+- **Ruling I1 — the iMessage approval wait honours the run's abort signal.** The runner passes
+  `ac.signal` into `replyToApprovalChannel`; an abort settles the row `pending → denied` and denies
+  at once (reason `aborted`), so Stop and `/clear` unwind the run instead of waiting out the
+  10-minute expiry. Covers the parked T9 "cancel on run end" minor.
+- **Ruling I2 — the chat must be the sender's own direct chat.** Webhook and catch-up drop a
+  message whose chat GUID's handle part (`<service>;-;<handle>`, any service prefix) does not
+  normalise to the sender: `ignored:chat-mismatch` (+ an activity warn). `resolveTapback` applies
+  the same match. **Cost if wrong:** a real direct chat whose GUID names a different handle form
+  than the sender (to verify on the real server — checklist below) would be ignored.
+- **Ruling I3 — a failed run with `reply_to` queues a short iMessage note**, "Sorry — something
+  went wrong answering that." (`source: 'note'`, via the outbox). Not for aborted runs or app runs.
+- **Ruling I4 — every test that inserts `channel_deliveries` commits them non-claimable** (future
+  `next_attempt_at` in the same transaction, or a non-due status); scratch runs sit behind a
+  `running` sentinel whose `alive_at` is in 2100.
+- **Minor rulings fixed now:**
+  - **M1** catch-up: the first-ever cursor is `now − 5 min` (was 1 h), and it never processes
+    messages older than 24 h;
+  - **M2** docs: one BlueBubbles server ↔ one MyMind (dev and prod both enabled both answer);
+  - **M4** email keeps image links, as the wiki said: app-relative images become absolute links
+    on `BETTER_AUTH_URL`'s origin, app-relative links are made absolute;
+  - **M5** the wiki's "email can be enabled only when…" reworded (UI-only; not enforced server-side);
+  - **M6** the status dot is neutral before the first check (and after a save that enables
+    iMessage or changes its server/password);
+  - **M7** iMessage text is converted from markdown to plain text (headings/emphasis stripped,
+    links as `text (url)`); email keeps markdown;
+  - **T7** the inbound DB test deletes its queued runs before the busy run stops running, and the
+    sentinel's `alive_at` is in 2100;
+  - **T9** the approval prompt's command is capped at 300 chars;
+  - **T11 M3** `channel_deliveries(conversation_id)` indexed by a **new migration 0058** (0057 was
+    already applied on dev — an applied migration is never edited);
+  - **T7** `verifyWebhookToken` inside the try (a failing check is a 404, never a 500);
+  - **T7** the `queue.ts` ↔ `inbound.ts` import cycle broken with a dynamic import in `workerTick`;
+  - **T7** photos past the fourth get one "(more than 4 photos, the rest were skipped)" note.
+- **Deferred to follow-ups:** M3 (slow sends stall the tick), M8 (presence plugin session fetch),
+  M9 (denial reasons to the model), and every other parked minor — listed below.
+
 ## Follow-ups (every parked item, plus what acceptance found)
 
 **Parked minors from the task reviews.** Items marked "→ final fix wave" were earmarked for the
-controller's final-review fix wave, which has not run yet.
+controller's final-review fix wave; what it fixed is struck through, the rest stays parked.
 
 1. **isGroup** OR-branches are not independently covered; the fixtures carry both signals, as real
    BlueBubbles does. (T2)
@@ -296,16 +361,15 @@ controller's final-review fix wave, which has not run yet.
 6. **A 10-row batch of slow sends can outlast the 2-min reclaim.** Claim-fenced writes keep it
    consistent. `sentAny` is cosmetic. (T6)
 7. **Inbound (T7) → final fix wave:**
-   - `verifyWebhookToken` sits outside the webhook's try, so a DB failure gives a 500 instead of a
-     404;
-   - the inbound DB test marks the headless run done before deleting the `replyTo` queued run (a
-     claim window; swap the order);
-   - a `queue.ts` ↔ `inbound.ts` import cycle → use a dynamic import in `workerTick`;
+   - ~~`verifyWebhookToken` sits outside the webhook's try~~ — fixed (404 on a failing check);
+   - ~~the inbound DB test marks the headless run done before deleting the queued run~~ — fixed;
+   - ~~a `queue.ts` ↔ `inbound.ts` import cycle~~ — fixed (dynamic import in `workerTick`);
    - STT is double-billed in a true webhook/catch-up race;
-   - unknown senders' raw handles are stored unmasked in `channel_inbound`, which is never pruned;
-   - the test sentinel never bumps `alive_at`;
+   - unknown senders' raw handles are stored unmasked in `channel_inbound`, which is never pruned
+     (the reviewer would prefer masked or hashed; not a blocker);
+   - ~~the test sentinel never bumps `alive_at`~~ — fixed (`alive_at` in 2100);
    - a crash between the dedupe insert and the enqueue loses the message (plan-accepted);
-   - a 5th photo gets a misleading "(couldn't load the photo)" note;
+   - ~~a 5th photo gets a misleading note~~ — fixed;
    - the 20 MB cap is checked after the download.
 8. **Deliveries (T8):**
    - the config cache is skipped when a caller passes the pool explicitly (tests only);
@@ -313,11 +377,11 @@ controller's final-review fix wave, which has not run yet.
    - image-link extraction accepts any host;
    - the no-client presence test is weak.
 9. **Approvals (T9) → final fix wave:**
-   - cancel a run's pending approvals in the runner `finally` (a stale 👍 is recorded `approved`
-     but nothing runs, and there is no feedback);
-   - a failed expiry update leaves the row `pending`;
+   - ~~cancel a run's pending approvals on run end~~ — fixed by Ruling I1 (the wait honours the
+     abort signal and settles the row `denied`);
+   - a failed expiry update leaves the row `pending` (housekeeping re-expires it);
    - the runner test covers only the ws-first order;
-   - the command is shown raw (no length cap);
+   - ~~the command is shown raw (no length cap)~~ — fixed (300 chars);
    - the group check is only `;+;` (safe via the chat match);
    - the tests were written after the code.
 10. **`send_message` (T10):**
@@ -325,14 +389,33 @@ controller's final-review fix wave, which has not run yet.
     - `subject` is silently dropped for iMessage;
     - disabled/no-target is covered for a single channel only.
 11. **UI (T11):**
-    - M3: `conversationDeliveries` scans every main-thread delivery per event (no
-      `conversation_id` index);
+    - ~~M3: no `conversation_id` index~~ — fixed by migration 0058;
     - M5: clearing the presence field gives a 422 with no hint;
     - M6: the ref+load draft pattern departs from `live-data.md` (brief-mandated).
 12. **The voice memo success path and real HEIC conversion were not exercised on the fake.** The
     fake serves PNG bytes for every download. Covered by real-phone scenarios 2 and 3.
 13. **The wiki mirror to MyMind** for `channels`, `agent-jobs` and `agent-runtime` is left to the
     controller.
+14. **Deferred from the final review:**
+    - **M3 slow sends stall the worker tick:** a blackholed BlueBubbles host costs 15 s × (duplicate
+      check + send) × up to 10 rows, plus catch-up's 15 s, delaying `recoverStale`, `jobsTick` and
+      `dueTaskEvents` for minutes. Fix idea: a per-tick send budget (~20 s) or running
+      `deliveriesTick` outside `ticking`.
+    - **M8 `presence.client.ts` calls `authClient.getSession()` on every route change** — one
+      extra request per navigation. Fix idea: sync once, plus on a 401.
+    - **M9 approval denial reasons stay in activity meta:** the model only sees `{denied:true}`, so
+      over iMessage Tony can't tell "you said no" from "approvals can't work right now"
+      (`private-api-off`, `prompt-send-failed`, `aborted`). Fix idea: return a reason the model can
+      relay.
+    - From the triage, accepted as-is: T2 isGroup coverage; T3/T8 cold-cache token writes; T4 fake
+      DESC; T5 escapeHtml; T6 slow batch vs reclaim (fenced); T7 STT double-billing, crash window,
+      20 MB after download, unmasked unknown-sender handles; T8 pool-passed cache skip, image-link
+      host, weak presence test; T9 failed-expiry update, ws-first-only test, `;+;` group check;
+      T10 non-atomic rate limit, subject dropped for iMessage, single-channel coverage; T11 M5
+      presence 422 hint, M6 draft pattern.
+15. **Email with Resend unconfigured (M5):** the server does not refuse `email.enabled: true`
+    without a Resend key/sender (only the UI does). Each email delivery then fails non-retryably
+    and posts a failure note on main. Enforcing it server-side is a possible follow-up.
 
 ### Real-phone acceptance checklist (for the controller with Tony)
 
@@ -341,9 +424,14 @@ BlueBubbles for the session. Unset `BLUEBUBBLES_FAKE_URL` and `RESEND_FAKE`, and
 Channels to the real server. Before starting, snapshot and afterwards restore the channel settings
 on the shared dev DB.
 
+**Before starting: prod's iMessage must be disabled** (one BlueBubbles server ↔ one MyMind — both
+would answer every text), and restore dev's settings afterwards.
+
 1. **Text Bridget → reply on the phone and in `/agent` main.** Check the 📱 marker on his message,
    the green "sent" badge on her reply, and typing dots and a read receipt on the phone while she
-   works.
+   works. The reply must arrive as **plain text** (no `**`, `#` or `[..](..)` syntax).
+   - **Double-text:** send a second text while she is still answering the first → it waits, then
+     gets **its own reply** on the phone (inbound never steers — Ruling C1).
 2. **A photo → she describes it.** Use a real iPhone HEIC photo. It must arrive as JPEG (via
    `original=false`) and be described, not "(couldn't load the photo)".
 3. **A voice memo → she answers its content.** It must be transcribed, not "(a voice memo I
@@ -354,7 +442,11 @@ on the shared dev DB.
    reaches his phone. Repeat while active in the app: `[auto, imessage]` still texts (explicit
    `imessage`), while an `[auto]`-only job (e.g. evening-wrap) should NOT text.
 
-Also verify these four things on Tony's real server, which the fake cannot show:
+Also verify these things on Tony's real server, which the fake cannot show:
+- **The chat GUID form on real payloads (Ruling I2):** the webhook's `chats[0].guid` must be
+  `<service>;-;<handle>` with the handle matching `handle.address` after normalisation (e.g. a
+  phone number vs an Apple ID email in the same chat would not match). If his texts come back
+  `ignored:chat-mismatch` (activity `imessage:chat-mismatch`), log both values.
 - **The voice memo's real MIME type** (expected `audio/x-caf`, "Audio Message.caf") and that STT
   accepts it. Check the `[channels] inbound voice memo` log and the persisted input text.
 - **Whether the webhook fires before the attachment has finished downloading on the Mac.** If the
@@ -368,18 +460,21 @@ Also verify these four things on Tony's real server, which the fake cannot show:
 
 ## Deploying (when merged)
 
-Cycle 74 is not deployed either. Deploying 74 and 75 together applies migrations **0056 and
-0057**. Follow the cycle-74 handover's deploy steps first (backup, the skills move, the seed
+Cycle 74 is not deployed either. Deploying 74 and 75 together applies migrations **0056, 0057 and
+0058**. Follow the cycle-74 handover's deploy steps first (backup, the skills move, the seed
 install), then:
 
 1. Take a pre-deploy dump to `/root/db-backups` (not `/opt/mymind`).
-2. CD applies **0056** and **0057**. On first boot, the four seeds are installed with this cycle's
+2. CD applies **0056**, **0057** and **0058**. On first boot, the four seeds are installed with this cycle's
    `deliver:` lines (a fresh install writes `SEED_JOBS` directly), **disabled**.
 3. **Set the prod `agent_timezone`** (from cycle 74): Settings → Bridget → Agent timezone =
    `America/Chicago`, before enabling any job.
 4. **Settings → Activity & Alerts:** the Resend API key and sender (email needs both).
 5. **Settings → Channels:** enable iMessage (Server URL, password, allowed handle, default handle)
-   and Email (Send to), then Save.
+   and Email (Send to), then Save. **First make sure dev's iMessage is disabled** — one BlueBubbles
+   server ↔ one MyMind; the catch-up polls regardless of the webhook, so both would answer every
+   text. Prod's first catch-up reaches back only 5 minutes (and never more than 24 h), so it will
+   not replay texts dev already answered.
 6. **Register the webhook in BlueBubbles:** Settings → API & Webhooks → add the URL, with events
    **New Messages** and **Message Updates**. Use the prod LAN URL
    `http://192.168.2.89:3000/api/channels/bluebubbles/webhook?token=…` (LXC 114), or the public
@@ -393,7 +488,7 @@ install), then:
 
 Full steps and the network notes: [`DEPLOYMENT.md` §19](../DEPLOYMENT.md#19-bridget-channels--imessage-bluebubbles--email-resend-cycle-75).
 
-**Rolling back:** 0057 is additive and nothing older reads its tables, so a redeploy of the
+**Rolling back:** 0057 and 0058 are additive and nothing older reads its tables, so a redeploy of the
 cycle-74 build works with the tables left in place. Unregister the BlueBubbles webhook first;
 otherwise its calls just fail harmlessly (the cycle-74 build has no such route, so they are
 rejected by auth).
@@ -402,7 +497,6 @@ rejected by auth).
 
 - Cycle 76 is the self-improvement cycle on the roadmap. Before it, merge 74 + 75, deploy, and run
   the real-phone checklist with Tony.
-- The final whole-branch review and its fix wave are still to run. Follow-ups 7 and 9 are
-  earmarked for it.
+- The final whole-branch review ran and its fix wave is done. What it deferred is follow-up 14.
 - The cycle-74 reliability follow-ups (interrupted runs leave `last_outcome` stale, at-most-once
   across a crash, the `runJobNow` race) matter more now that job results reach a phone.
