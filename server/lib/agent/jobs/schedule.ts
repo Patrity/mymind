@@ -138,8 +138,14 @@ const CRON_CHECK_MAX_RUNS = 5_000
  * starting from a fixed reference instant (a Monday) — deterministic regardless of wall-clock
  * "now", and covers every weekday. Returns null when fewer than 2 occurrences fall in the
  * window (nothing to compare — not a density violation).
+ *
+ * `earlyExitBelowMs` (Task 2 review, perf): once a gap strictly below this threshold is found,
+ * the scan stops immediately rather than walking the rest of the 8-day window — for a valid
+ * dense-looking-but-fine pattern the full scan cost ~400ms; the caller (parse.ts) only ever asks
+ * "is the minimum gap below MIN_INTERVAL_MS?", so the exact global minimum is unneeded once one
+ * violation is found. Omitting it (or passing nothing) keeps the old full-scan behaviour.
  */
-export function minCronGapMs(cron: Cron): number | null {
+export function minCronGapMs(cron: Cron, earlyExitBelowMs?: number): number | null {
   const windowEnd = CRON_CHECK_REFERENCE_MS + CRON_CHECK_WINDOW_MS
   let prev: Date | null = null
   let current: Date = new Date(CRON_CHECK_REFERENCE_MS)
@@ -147,7 +153,11 @@ export function minCronGapMs(cron: Cron): number | null {
   for (let i = 0; i < CRON_CHECK_MAX_RUNS; i++) {
     const next = cron.nextRun(current)
     if (!next || next.getTime() > windowEnd) break
-    if (prev) min = Math.min(min, next.getTime() - prev.getTime())
+    if (prev) {
+      const gap = next.getTime() - prev.getTime()
+      min = Math.min(min, gap)
+      if (earlyExitBelowMs !== undefined && gap < earlyExitBelowMs) break
+    }
     prev = next
     current = next
   }

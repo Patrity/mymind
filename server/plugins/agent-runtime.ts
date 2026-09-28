@@ -1,6 +1,7 @@
 import { loadRuntimeFlag } from '../lib/agent/runtime/flag'
 import { recoverOnBoot } from '../lib/agent/runtime/recover'
 import { startWorker, stopWorker } from '../lib/agent/runtime/queue'
+import { installSeedJobs, revalidateAll } from '../lib/agent/jobs/store'
 
 // Boot order: read the flag, recover runs orphaned by the previous process, then start the
 // worker. Recovery before the worker so a stale 'running' row cannot block its conversation's
@@ -22,6 +23,20 @@ export default defineNitroPlugin(async (nitro) => {
     // whatever this one-time pass missed, so a failure here must not stop turns from running
     // at all — only this one boot-time sweep is skipped.
     console.error('[runtime] boot recovery failed — starting the worker anyway; the periodic tick will retry shortly:', err)
+  }
+  try {
+    const installed = await installSeedJobs()
+    if (installed) console.info(`[runtime] installed ${installed} seed job(s), disabled`)
+  } catch (err) {
+    // Same reasoning as recovery above: a head start, not a precondition. A failure here must
+    // not stop turns from running.
+    console.error('[runtime] seed job install failed:', err)
+  }
+  try {
+    const changed = await revalidateAll()
+    if (changed) console.warn(`[runtime] revalidated jobs on boot — ${changed} job(s) changed validity`)
+  } catch (err) {
+    console.error('[runtime] job revalidation failed:', err)
   }
   startWorker()
   nitro.hooks.hook('close', () => stopWorker())

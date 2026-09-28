@@ -59,7 +59,7 @@ function parseTrigger(raw: string, timezone: string): ParseResult<{ kind: Trigge
     } catch {
       return { ok: false, error: `invalid cron: ${expr}` }
     }
-    const minGap = minCronGapMs(cron)
+    const minGap = minCronGapMs(cron, MIN_INTERVAL_MS)
     if (minGap !== null && minGap < MIN_INTERVAL_MS) {
       return { ok: false, error: 'trigger must fire at least 5 minutes apart' }
     }
