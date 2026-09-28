@@ -68,6 +68,17 @@ describe('mapServerMessage — steered', () => {
       .toEqual({ steered: 'also check the queue' })
   })
 
+  // Fix round 1: steered is conversation-scoped (ws.ts tags it with its thread) — a steer bubble
+  // must not paint into a thread the socket has since navigated to.
+  it('surfaces a steered frame whose cid is the viewed thread', () => {
+    expect(mapServerMessage({ type: 'steered', text: 'also', cid: 'thread-B' } as never, false, 'thread-B'))
+      .toEqual({ steered: 'also' })
+  })
+
+  it('drops a steered frame whose cid is not the viewed thread', () => {
+    expect(mapServerMessage({ type: 'steered', text: 'also', cid: 'thread-A' } as never, false, 'thread-B')).toEqual({})
+  })
+
   it('ignores a steered frame with no text', () => {
     expect(mapServerMessage({ type: 'steered' } as never, false)).toEqual({})
   })

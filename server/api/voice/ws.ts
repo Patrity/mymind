@@ -54,8 +54,9 @@ import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
 //   (bracket each spoken segment; originating socket only) | {type:'state',state} |
 //   {type:'chunk',turnId,chunk} (an AI SDK UIMessageChunk for the turn's assistant message) |
 //   {type:'user-message',turnId,message} (the turn's user message, once, before its chunks) |
-//   {type:'steered',text} (this socket's text was spliced into the running turn, not queued;
-//   for a voice utterance it is followed by {type:'state',state:'idle'}) |
+//   {type:'steered',text,cid} (this socket's text was spliced into the running turn, not queued;
+//   `cid` names the thread and the client's cid guard gates it; for a voice utterance it is
+//   followed by {type:'state',state:'idle'}) |
 //   {type:'queued',text,cid} (this socket's text became its own run QUEUED behind the thread's
 //   running run — a headless wake, typically — so the client paints its bubble now; `cid` names
 //   the thread, and the client's cid guard gates it like any conversation-scoped frame. Followed
@@ -209,7 +210,12 @@ export default defineWebSocketHandler({
           // otherwise this would undo the user's navigation. Subscribe too when the socket is on
           // this thread but never attached (a loaded thread), or it would see nothing live.
           if (stillViewing && (r.conversationId !== s.conversationId || !s.unsubscribe)) view(s, r.conversationId)
-          if (r.steered) { peer.send(JSON.stringify({ type: 'steered', text })); return 'steered' }
+          // Tagged with its thread: conversation-scoped, so the client's cid guard drops a steer
+          // bubble for a thread the socket has since navigated away from.
+          if (r.steered) {
+            peer.send(JSON.stringify({ type: 'steered', text, cid: r.conversationId }))
+            return 'steered'
+          }
           // Queued behind a running run (cycle 74): its own user-message frame only comes when
           // that run STARTS — minutes away behind a wake — so without this the words vanish.
           if (r.queuedBehind) {

@@ -153,17 +153,15 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // one, it's from the streamText call that actually produced the visible text —
       // that supersedes the aborted first call's usage rather than adding to it.
       else if (e.type === 'usage') turnUsage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens, contextTokens: e.contextTokens, modelDefId: e.modelDefId }
-      // A wake's prompt is not something Tony said: its event row renders after persist, and a
-      // live "Tony said…" bubble would be a lie.
-      if (isWake && e.type === 'transcript' && e.role === 'user') return
-      // Controller ruling (carried from Task 7's concern): nobody is watching a wake run live,
-      // so its assistant TEXT and REASONING never stream — a subscribed socket saw a suppressed
-      // NO_REPLY's words before the drop decided it was silent. Withheld here, not filtered
-      // client-side, so a stray subscriber can never observe them even for one frame. Tool/
-      // state/usage frames are unaffected (still useful to watch live); the real reply,
-      // suppressed or not, only ever reaches a subscriber via the `persisted` re-read below.
-      // Interactive runs are untouched — these branches only fire when isWake.
-      if (isWake && ((e.type === 'transcript' && e.role === 'assistant') || e.type === 'reasoning')) return
+      // A wake run streams ONLY `state` frames (cycle 74 fix round 1, widening Task 7's ruling
+      // that withheld its text and reasoning). Its prompt is not something Tony said, so no
+      // user-message; its text/reasoning would show a suppressed NO_REPLY before the drop; and
+      // any tool/usage chunk would open a live assistant message that — a silent wake sending no
+      // `persisted` re-read (D4) — stays on screen as a ghost and makes the viewer's next re-read
+      // refuse the shorter server list. Withheld here, not filtered client-side, so a subscriber
+      // never observes one frame. What she said reaches a subscriber only via the `persisted`
+      // re-read below, and a silent wake shows nothing at all. Interactive runs are untouched.
+      if (isWake && e.type !== 'state') return
       ts!.emit(e)
     }
     // The thread this turn was SENT to is run.conversationId, fixed when the run was created
@@ -220,25 +218,23 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // usage with the timing filled in reuses the message-metadata chunk that was already
       // flowing: no new frame type and no protocol change.
       //
-      // Guarded so this can never OPEN a message that never started. For an INTERACTIVE run,
-      // `ttftMs !== undefined` OR `turnUsage` is correct: either implies a chunk already went
-      // out (an assistant token, or a usage event), and turn-stream starts the message on the
-      // first chunk. For a WAKE run that guard is too loose: `ttftMs` gets set above from the
-      // assistant transcript event EVEN THOUGH it was just withheld from `ts.emit`, so a wake
-      // run with no real usage event (nothing else ever streamed) would still open an empty
-      // message here just to carry usage metadata nobody streamed anything else into. Dropping
-      // the `ttftMs` half for `isWake` fixes that; `turnUsage` alone (a real usage event
-      // actually arrived) still opens it, same as before.
-      if ((!isWake && ttftMs !== undefined) || turnUsage) ts.emit({ type: 'usage', ...finalUsage })
+      // Guarded so this can never OPEN a message that never started: `ttftMs !== undefined` OR
+      // `turnUsage` implies a chunk already went out (an assistant token, or a usage event), and
+      // turn-stream starts the message on the first chunk. Never for a wake: it streams no
+      // chunks at all (see `emit` above), so this would open a message just to carry usage.
+      if (!isWake && (ttftMs !== undefined || turnUsage)) ts.emit({ type: 'usage', ...finalUsage })
       ts.finish()
     }
-    // A wake that answered with the NO_REPLY sentinel is silent by contract, and a silent run
-    // leaves NOTHING in the thread (cycle 74 D4 — cycle 73 kept the event row): no rows, no
+    // A wake that answered with the NO_REPLY sentinel — or with nothing (no assistant message,
+    // or only whitespace; fix round 1 ruling, same as the rescue path) — is silent, and a silent
+    // run leaves NOTHING in the thread (cycle 74 D4 — cycle 73 kept the event row): no rows, no
     // `conversation`/`persisted` frame, no afterPersist. Its agent_runs row (outcome suppressed,
-    // finished by queue.ts) is the only trace. A wake is headless, so enqueue never steers into
-    // it and drainedSteers is empty here — nothing Tony typed can be dropped by this.
-    const reply = messageText(result[result.length - 1]?.content ?? '')
-    const suppressed = isWake && result.length > history.length + 1 && isSuppressedReply(reply)
+    // which a job reads as 'silent', finished by queue.ts) is the only trace. A wake is headless,
+    // so enqueue never steers into it and drainedSteers is empty here — nothing Tony typed can be
+    // dropped by this.
+    const hasReply = result.length > history.length + 1 // else result's last row is the question
+    const reply = hasReply ? messageText(result[result.length - 1]?.content ?? '') : ''
+    const suppressed = isWake && (!reply.trim() || isSuppressedReply(reply))
     let added = result.slice(history.length) // [user] or [user, assistant]
     if (suppressed) {
       added = []

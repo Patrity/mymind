@@ -276,6 +276,48 @@ describe('runTurn', () => {
     expect(chunkTypes).toEqual([])
   })
 
+  // Fix round 1 ruling: a wake run streams ONLY state frames. With D4 a silent wake sends no
+  // `persisted` re-read, so a tool/usage chunk that opened a live assistant message would stay
+  // on screen as a ghost — and strand the viewer's next re-read (screen N+1 vs server N).
+  it('a wake run with tool calls and usage streams no chunk or user-message frames, only state', async () => {
+    const { run, conversationId } = await wakeRun('tools-live')
+    const hub = new StreamHub()
+    const got: string[] = []
+    hub.subscribe(conversationId, { id: 'watcher', send: (d) => {
+      if (typeof d === 'string') got.push(d)
+    } })
+    const toolsThenSilent = async function* () {
+      yield { type: 'tool-start', callId: 'c1', name: 'search_tasks', args: {} } as const
+      yield { type: 'tool-result', callId: 'c1', name: 'search_tasks', summary: 'listed tasks (0)', args: {}, result: { hits: 0 }, kind: 'read' } as const
+      yield { type: 'usage', inputTokens: 10, outputTokens: 2, totalTokens: 12 } as const
+      yield { type: 'text-delta', text: 'NO_REPLY' } as const
+      yield { type: 'done' } as const
+    }
+    const out = await runTurn(run, { runAgent: toolsThenSilent as never, assemble: noAssemble as never, hub })
+    expect(out).toMatchObject({ status: 'done', suppressed: true })
+    const types = got.map(f => JSON.parse(f).type)
+    expect(types).not.toContain('chunk')
+    expect(types).not.toContain('user-message')
+    expect(types).toContain('state') // state still streams (the tool indicator)
+    expect(await rows(conversationId)).toEqual([])
+  })
+
+  // Fix round 1 ruling: an empty (trimmed) final reply on a wake is silent too — nothing persists
+  // and the job reads it as 'silent', matching the rescue path.
+  it('a wake whose final reply is empty persists nothing and is silent', async () => {
+    const { run, conversationId } = await wakeRun('empty-reply')
+    const blank = async function* () {
+      yield { type: 'text-delta', text: '   ' } as const
+      yield { type: 'done' } as const
+    }
+    const afterPersist = vi.fn()
+    const out = await runTurn(run, { runAgent: blank as never, assemble: noAssemble as never, hub: new StreamHub(), afterPersist })
+    expect(out).toMatchObject({ status: 'done', suppressed: true })
+    expect(jobOutcomeOf(out).outcome).toBe('silent')
+    expect(await rows(conversationId)).toEqual([])
+    expect(afterPersist).not.toHaveBeenCalled()
+  })
+
   it('a thrown agent error marks the run failed and still keeps the question', async () => {
     const { run, conversationId } = await queued('explode')
     const boom = async function* () {

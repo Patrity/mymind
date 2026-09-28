@@ -6,15 +6,15 @@ export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: s
 
 // Frame types that belong to ONE conversation and must not be applied while viewing a
 // different one. Every hub-published JSON frame carries `cid` (server/lib/agent/runtime/
-// stream.ts's `withCid`); per-socket frames (approval, steered, cleared, the submit-failure
-// error/state pair ws.ts sends straight to the peer) carry none and are never gated. `queued`
-// is per-socket too, but ws.ts tags it with its thread by hand — a bubble for a thread we have
-// since left must not paint into the one we are viewing.
+// stream.ts's `withCid`); per-socket frames (approval, cleared, the submit-failure error/state
+// pair ws.ts sends straight to the peer) carry none and are never gated. `steered` and `queued`
+// are per-socket too, but ws.ts tags them with their thread by hand — a bubble for a thread we
+// have since left must not paint into the one we are viewing.
 // `conversation` is gated too: adopting a LEFT thread's id (its first turn persisting in the
 // gap before the server processed `new`) would re-point the empty new thread at it — clear
 // the left set, arm a re-read that loads it, and drop the real new thread's frames.
 // `persisted` is deliberately NOT listed: it only arms a re-read of whatever is viewed.
-const CONVERSATION_SCOPED = new Set(['chunk', 'user-message', 'audio-begin', 'state', 'error', 'conversation', 'queued'])
+const CONVERSATION_SCOPED = new Set(['chunk', 'user-message', 'audio-begin', 'state', 'error', 'conversation', 'steered', 'queued'])
 
 /** What the guard needs to know about the threads `new` walked away from — see
  *  createLeftThreads below. Only consulted while nothing is viewed. */

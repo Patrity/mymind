@@ -188,6 +188,8 @@ describe('ws runtime socket', () => {
     await h.message(p, wav())
     const t = types(p).map(f => f.type === 'state' ? `state:${f.state}` : f.type)
     expect(t).toEqual(['state:thinking', 'steered', 'state:idle'])
+    // Conversation-scoped: tagged with its thread so the client's cid guard can gate it.
+    expect(types(p).find(f => f.type === 'steered')).toEqual({ type: 'steered', text: 'spoken words', cid: 'c1' })
   })
 
   // Cycle 74: a message queued behind a running HEADLESS run gets a `queued` frame (tagged with
