@@ -95,11 +95,17 @@ function viaIMessage(m: AgentUIMessage): boolean {
   return m.role === 'user' && !!m.metadata?.origin?.startsWith('imessage:')
 }
 
-/** Badges for where an assistant reply was also sent, one per channel. */
-function deliveryBadges(m: AgentUIMessage) {
-  if (m.role !== 'assistant') return []
-  return summarizeDeliveries(props.deliveries?.[m.id] ?? m.metadata?.deliveries ?? []).map(d => ({ channel: d.channel, ...deliveryBadge(d) }))
-}
+/** Badges for where each assistant reply was also sent, one per channel — computed once per
+ *  render pass, keyed by message id (the template reads it twice: v-if and v-for). */
+const badgesById = computed(() => {
+  const out: Record<string, (ReturnType<typeof deliveryBadge> & { channel: MessageDeliveryDTO['channel'] })[]> = {}
+  for (const m of props.messages) {
+    if (m.role !== 'assistant') continue
+    const list = summarizeDeliveries(props.deliveries?.[m.id] ?? m.metadata?.deliveries ?? [])
+    if (list.length) out[m.id] = list.map(d => ({ channel: d.channel, ...deliveryBadge(d) }))
+  }
+  return out
+})
 
 /** An `event` row (wake, approval note, restart note) renders as a divider, not a bubble —
  *  see to-ui-messages.ts's 'event' → 'system' mapping. `origin` is `'<kind>:<detail>'` or
@@ -264,12 +270,12 @@ function eventLabel(m: AgentUIMessage): string {
             @branch="(d: -1 | 1) => emit('branch', m.id, d)"
           />
           <div
-            v-if="deliveryBadges(m).length"
+            v-if="badgesById[m.id]"
             class="flex flex-wrap items-center gap-1.5 pt-0.5"
             data-testid="delivery-badges"
           >
             <UBadge
-              v-for="b in deliveryBadges(m)"
+              v-for="b in badgesById[m.id]"
               :key="b.channel"
               size="xs"
               variant="subtle"

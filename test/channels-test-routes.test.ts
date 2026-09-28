@@ -7,10 +7,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 vi.stubGlobal('readBody', async (e: { body: unknown }) => e.body)
+vi.stubGlobal('getRouterParam', (e: { params?: Record<string, string> }, k: string) => e.params?.[k])
 
 const mocks = vi.hoisted(() => ({
   load: vi.fn(), resendReady: vi.fn(), client: vi.fn(), catchUp: vi.fn(), health: vi.fn(),
-  insert: vi.fn(), publish: vi.fn(), serverInfo: vi.fn()
+  insert: vi.fn(), publish: vi.fn(), serverInfo: vi.fn(), convDeliveries: vi.fn()
 }))
 vi.mock('../server/lib/channels/config', () => ({ loadChannelsConfig: mocks.load, resendReady: mocks.resendReady }))
 vi.mock('../server/lib/channels/bluebubbles/client', () => ({
@@ -20,12 +21,14 @@ vi.mock('../server/lib/channels/bluebubbles/client', () => ({
 vi.mock('../server/lib/channels/inbound', () => ({ catchUpTick: mocks.catchUp, lastHealth: mocks.health }))
 vi.mock('../server/lib/channels/outbox', () => ({ insertDeliveries: mocks.insert }))
 vi.mock('../server/utils/live-bus', () => ({ publishChange: mocks.publish }))
+vi.mock('../server/services/conversations', () => ({ conversationDeliveries: mocks.convDeliveries }))
 vi.mock('../server/db', () => ({ useDb: () => ({ transaction: (fn: (tx: unknown) => unknown) => fn('TX') }) }))
 
 type H = (e: unknown) => Promise<unknown>
 const testIMessage = (await import('../server/api/settings/channels/test-imessage.post')).default as H
 const testEmail = (await import('../server/api/settings/channels/test-email.post')).default as H
 const status = (await import('../server/api/channels/status.get')).default as H
+const deliveries = (await import('../server/api/conversations/[id]/deliveries.get')).default as H
 
 const session = { type: 'session', userId: 'u1' }
 const evt = (body: unknown = {}, client: unknown = session) => ({ context: { client }, body })
@@ -147,5 +150,37 @@ describe('GET /api/channels/status', () => {
       imessage: { enabled: false, ok: false, privateApi: null, checkedAt: 5, error: 'down' },
       email: { enabled: false, ready: true }
     })
+  })
+})
+
+describe.each([
+  ['POST /api/settings/channels/test-imessage', () => testIMessage],
+  ['POST /api/settings/channels/test-email', () => testEmail],
+  ['GET /api/channels/status', () => status],
+  ['GET /api/conversations/:id/deliveries', () => deliveries]
+])('%s requires a web session', (_name, h) => {
+  const conv = { id: '00000000-0000-4000-8000-000000000001' }
+  it.each([
+    ['an api-token client', { type: 'api-token', tokenId: 't1' }],
+    ['an oauth client', { type: 'oauth', tokenId: 't2' }],
+    ['an anonymous request', undefined]
+  ])('rejects %s with 403 and touches nothing', async (_who, client) => {
+    await expect(h()({ context: { client }, body: { send: true }, params: conv })).rejects.toMatchObject({ statusCode: 403 })
+    for (const m of [mocks.load, mocks.client, mocks.health, mocks.insert, mocks.convDeliveries]) expect(m).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /api/conversations/:id/deliveries', () => {
+  it('returns the conversation\'s deliveries for a session caller', async () => {
+    const rows = [{ messageId: 'm1', channel: 'imessage', status: 'sent' }]
+    mocks.convDeliveries.mockResolvedValue(rows)
+    const id = '00000000-0000-4000-8000-000000000001'
+    expect(await deliveries({ ...evt(), params: { id } })).toEqual(rows)
+    expect(mocks.convDeliveries).toHaveBeenCalledWith(id)
+  })
+
+  it('a malformed id → 400, no query', async () => {
+    await expect(deliveries({ ...evt(), params: { id: 'not-a-uuid' } })).rejects.toMatchObject({ statusCode: 400 })
+    expect(mocks.convDeliveries).not.toHaveBeenCalled()
   })
 })
