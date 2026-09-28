@@ -8,8 +8,9 @@ import { json } from '@codemirror/lang-json'
 import { sql } from '@codemirror/lang-sql'
 import { yaml } from '@codemirror/lang-yaml'
 
-// Supported editor languages (subset of what's installed)
-type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'json' | 'sql' | 'yaml'
+// Supported editor languages (subset of what's installed). The one definition — Editor.vue and
+// MarkdownConfigEditor.vue import it from here.
+export type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'json' | 'sql' | 'yaml'
 
 const props = withDefaults(defineProps<{
   modelValue: string

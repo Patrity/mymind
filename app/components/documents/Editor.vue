@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DocumentDTO } from '~~/shared/types/documents'
+import type { CodeLanguage } from '~/components/CodeEditor.client.vue'
 
-type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'json' | 'sql' | 'yaml'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 import type { BreadcrumbItem } from '@nuxt/ui'

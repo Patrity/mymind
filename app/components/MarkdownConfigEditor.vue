@@ -11,10 +11,8 @@
  * Slots: `header` (left of the header row), `actions` (right of the toggle), `banner`
  * (between the header row and the markdown toolbar).
  */
-import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
+import type { CodeLanguage, EditorSelection2 } from '~/components/CodeEditor.client.vue'
 import { resolveViewMode, type ViewMode } from '~/lib/documents/view-mode'
-
-type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'json' | 'sql' | 'yaml'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -22,6 +20,8 @@ const props = withDefaults(defineProps<{
   readonly?: boolean
   /** Cookie that persists the view-mode preference. Defaults to the documents page's. */
   viewModeCookie?: string
+  /** View mode used until the user picks one (i.e. while the cookie is unset). */
+  defaultViewMode?: ViewMode
   /** `@paste-image` listener. Declared as a prop (Vue binds `@paste-image` to it) so that
    *  with no listener CodeEditor keeps its default paste/drop behaviour instead of swallowing
    *  the image. The caller uploads it and inserts the result via the exposed `insertText`. */
@@ -30,6 +30,7 @@ const props = withDefaults(defineProps<{
   language: 'markdown',
   readonly: false,
   viewModeCookie: 'mm.documents.viewMode',
+  defaultViewMode: 'edit',
   onPasteImage: undefined
 })
 
@@ -55,7 +56,7 @@ function toolbarInsertText(snippet: string) {
 // actually rendered is `mode` below, which can differ for one document without
 // overwriting the preference.
 const storedMode = useCookie<ViewMode>(props.viewModeCookie, {
-  default: () => 'edit',
+  default: () => props.defaultViewMode,
   maxAge: 60 * 60 * 24 * 365
 })
 

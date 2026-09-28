@@ -51,7 +51,6 @@ const settingsChildren: NavigationMenuItem[] = [
   { label: 'Bridget', icon: 'i-lucide-bot', to: '/settings/bridget' },
   { label: 'Search', icon: 'i-lucide-search', to: '/settings/search' },
   { label: 'Agent Tools', icon: 'i-lucide-terminal', to: '/settings/agent-tools' },
-  { label: 'Agent Skills', icon: 'i-lucide-graduation-cap', to: '/settings/skills' },
   { label: 'Secrets', icon: 'i-lucide-key-square', to: '/settings/secrets' },
   { label: 'Image Gen', icon: 'i-lucide-image', to: '/settings/image-gen' },
   { label: 'Analytics', icon: 'i-lucide-chart-line', to: '/settings/analytics' }
@@ -77,6 +76,8 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     badge: (obsConfig.value?.alerts.badge !== false && (activityCount.value?.unacked ?? 0) > 0) ? activityCount.value!.unacked : undefined
   },
   { label: 'Memory', icon: 'i-lucide-brain', to: '/memories' },
+  { label: 'Skills', icon: 'i-lucide-graduation-cap', to: '/skills' },
+  { label: 'Jobs', icon: 'i-lucide-calendar-clock', to: '/jobs' },
   { label: 'Galaxy', icon: 'i-lucide-orbit', to: '/galaxy' },
   {
     label: 'Review',

@@ -2,8 +2,8 @@
 import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
 import { wrap, toggleLinePrefix, setHeading, insertAt, makeLink } from '~~/shared/utils/md-transforms'
 
-// The editor ref comes from Editor.vue — it's the ComponentPublicInstance of CodeEditor.
-// We receive a callback approach: Editor.vue passes `applyTransform` and `insertText` directly.
+// Rendered by MarkdownConfigEditor.vue (shared by /documents, /skills and /jobs), which owns the
+// CodeEditor ref and passes `applyTransform` and `insertText` down as callbacks.
 const props = defineProps<{
   applyTransform: (fn: (s: EditorSelection2) => EditorSelection2) => void
   insertText: (snippet: string) => void
