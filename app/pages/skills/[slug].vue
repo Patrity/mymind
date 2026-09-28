@@ -164,11 +164,25 @@ async function confirmDelete() {
         class="flex h-full min-h-0"
       >
         <div class="flex-1 min-w-0 flex flex-col min-h-0">
+          <!-- Mounted only once the source is loaded. On a hard page load the editor otherwise
+               mounts during the initial Suspense render, where CodeEditor.client.vue's onMounted
+               runs before its root element exists and CodeMirror never attaches (blank pane;
+               client-side navigation was unaffected). -->
+          <div
+            v-if="!loaded"
+            class="p-4 flex flex-col gap-2"
+          >
+            <USkeleton
+              v-for="i in 6"
+              :key="i"
+              class="h-4 w-full"
+            />
+          </div>
           <MarkdownConfigEditor
+            v-else
             v-model="content"
             view-mode-cookie="mm.config.viewMode"
             default-view-mode="split"
-            :readonly="!loaded"
             @save="onSave"
           >
             <template #header>
@@ -221,6 +235,7 @@ async function confirmDelete() {
         <div class="w-80 shrink-0 border-l border-default min-h-0 hidden lg:flex flex-col">
           <ConfigRevisionsPanel
             kind="skill"
+            :dirty="dirty"
             :slug="slug"
             @reverted="reload"
           />

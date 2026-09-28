@@ -3,15 +3,21 @@
  * Revision history of a skill or job (cycle 74): newest first, actor + time. Selecting one shows
  * a read-only line diff from the revision BEFORE it to it (what that write changed) and a Revert
  * button, which restores that revision's content as a new revision. Shared by /skills/[slug]
- * and /jobs/[slug].
+ * and /jobs/[slug]. Revert is disabled while the editor is `dirty`.
  */
 import { useQuery } from '@tanstack/vue-query'
 import { configEndpoints, type ConfigKind } from '~/lib/config/source'
-import { lineDiff } from '~/lib/config/line-diff'
+import { lineDiff, type DiffLine } from '~/lib/config/line-diff'
 
 interface Revision { id: string, content: string, actor: string, createdAt: string }
 
-const props = defineProps<{ kind: ConfigKind, slug: string }>()
+const props = defineProps<{
+  kind: ConfigKind
+  slug: string
+  /** The editor has unsaved edits. Revert would replace them without asking (the page reloads
+   *  the reverted content), so every Revert is disabled until they are saved or discarded. */
+  dirty?: boolean
+}>()
 const emit = defineEmits<{ reverted: [] }>()
 
 const toast = useToast()
@@ -38,6 +44,11 @@ const diff = computed(() => {
   const prev = revisions.value[selectedIndex.value + 1]
   return lineDiff(prev?.content ?? '', selected.value.content)
 })
+// v-text, not interpolation: under whitespace-pre-wrap the template's own indentation around a
+// {{ }} would render as leading spaces.
+function diffLineText(line: DiffLine): string {
+  return (line.kind === 'add' ? '+ ' : line.kind === 'del' ? '- ' : '  ') + line.text
+}
 const isLatest = computed(() => selectedIndex.value === 0)
 
 function toggle(id: string) {
@@ -52,7 +63,7 @@ const actorColor = (actor: string) => (actor === 'agent' ? 'primary' : actor ===
 
 const reverting = ref(false)
 async function revert() {
-  if (!selected.value) return
+  if (!selected.value || props.dirty) return
   reverting.value = true
   try {
     await $fetch(endpoints.value.revert, { method: 'POST', body: { revisionId: selected.value.id } })
@@ -145,30 +156,47 @@ watch(error, (err) => {
           v-if="selectedId === r.id"
           class="px-3 pb-3 flex flex-col gap-2"
         >
-          <pre
+          <div
             class="text-xs font-mono rounded-md border border-default bg-elevated/40 max-h-80 overflow-auto py-1"
             data-testid="revision-diff"
-          ><div
-            v-for="(line, li) in diff"
-            :key="li"
-            class="px-2 whitespace-pre-wrap break-words"
-            :class="{
-              'bg-success/10 text-success': line.kind === 'add',
-              'bg-error/10 text-error': line.kind === 'del',
-              'text-muted': line.kind === 'same'
-            }"
-          >{{ line.kind === 'add' ? '+ ' : line.kind === 'del' ? '- ' : '  ' }}{{ line.text }}</div></pre>
-          <UButton
+          >
+            <div
+              v-for="(line, li) in diff"
+              :key="li"
+              class="px-2 whitespace-pre-wrap break-words"
+              :class="{
+                'bg-success/10 text-success': line.kind === 'add',
+                'bg-error/10 text-error': line.kind === 'del',
+                'text-muted': line.kind === 'same'
+              }"
+              v-text="diffLineText(line)"
+            />
+          </div>
+          <UTooltip
             v-if="!isLatest"
-            icon="i-lucide-undo-2"
-            size="xs"
-            color="neutral"
-            variant="outline"
-            label="Revert to this version"
-            :loading="reverting"
-            class="self-start"
-            @click="revert"
-          />
+            :text="dirty ? 'Save or discard your edits first' : undefined"
+            :disabled="!dirty"
+          >
+            <UButton
+              icon="i-lucide-undo-2"
+              size="xs"
+              color="neutral"
+              variant="outline"
+              label="Revert to this version"
+              :loading="reverting"
+              :disabled="dirty"
+              class="self-start"
+              data-testid="revert-revision"
+              @click="revert"
+            />
+          </UTooltip>
+          <p
+            v-if="!isLatest && dirty"
+            class="text-xs text-muted"
+            data-testid="revert-hint"
+          >
+            Save or discard your edits first.
+          </p>
         </div>
       </div>
     </div>
