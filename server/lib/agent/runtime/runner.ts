@@ -28,7 +28,7 @@ import { eventModelText, wakeOrigin } from './event-text'
 import { groupTurns, costTurns, keepTrailingTurns, LIGHT_CONTEXT_TURNS, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
 import type { RunInput, RunOutcome } from './types'
-import { planDeliveries } from '../../channels/deliver'
+import { planDeliveries, queueFailureNote } from '../../channels/deliver'
 import { insertDeliveries } from '../../channels/outbox'
 import { channelPresence } from '../../channels/presence'
 import { replyToApprovalChannel } from '../../channels/approvals'
@@ -124,6 +124,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   // decision, not a failure, so the `finally` rescue must not second-guess it.
   let silent = false
   let outcome: RunOutcome = { status: 'done', suppressed: false, usage: null }
+  // The turn threw (not an abort): an iMessage-origin run texts a short failure note (I3).
+  let failed = false
   // Registered immediately before the try whose `finally` releases them: nothing that can throw
   // may run in between, or a run would leak its controller and its hub replay buffer.
   const ac = registerAbort(run.id)
@@ -270,7 +272,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // planDeliveries reads reply_to off the row (set at creation only — C1); for a run with
       // neither it plans nothing. Its reads go through this transaction (no second pooled
       // connection), inside a savepoint: a planning failure — even a failed query — rolls back
-      // to it and the reply still commits, just without deliveries. The rescue path never delivers.
+      // to it and the reply still commits, just without deliveries. The rescue path never delivers
+      // the partial reply (a failed iMessage turn gets a short note instead — see the `finally`).
       const deliveryIds: string[] = []
       const ids = await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId, { // insertion order
         inTx: async (tx, newIds) => {
@@ -314,6 +317,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       return { status: 'aborted' }
     }
     console.error('[agent] turn failed:', err)
+    failed = true
     const message = (err as Error).message || 'agent pipeline error'
     if (ts) ts.error(message)
     else {
@@ -378,6 +382,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     void channelPresence.stop(run)
     hub.endRun(conversationId)
     if (persisted || rescued) deps.afterPersist?.(conversationId)
+    // The rescue path never delivers the partial reply; a failed turn with a reply chat gets
+    // one "sorry" note instead, so the phone isn't left silent (final review I3).
+    if (failed) await queueFailureNote(run).catch(err => console.error('[agent] queueing the failure note failed:', err))
   }
   return outcome
 }

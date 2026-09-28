@@ -3,6 +3,7 @@
 // planDeliveries, which reads the run, its job, the channel config and presence, and returns the
 // channel_deliveries rows for the runner to insert in the same transaction as the reply.
 import { eq } from 'drizzle-orm'
+import { publishChange } from '../../utils/live-bus'
 import { useDb } from '../../db'
 import { agentJobs, agentRuns, type AgentRun } from '../../db/schema'
 import { recordEvent } from '../observability/record'
@@ -11,7 +12,7 @@ import { loadChannelsConfig, type ChannelsDb } from './config'
 import { isAway } from './presence'
 import { directChatGuid } from './bluebubbles/client'
 import { emailSubject } from './email/render'
-import type { NewDelivery } from './outbox'
+import { insertDeliveries, type NewDelivery } from './outbox'
 import type { DeliveryPayload, OutboundChannelId } from './types'
 
 /**
@@ -138,4 +139,25 @@ export async function planDeliveries(
     }
   }
   return out
+}
+
+/** What the phone gets when a turn it asked for fails (final review I3). */
+export const FAILURE_NOTE = 'Sorry — something went wrong answering that.'
+
+/**
+ * A run that answers over iMessage (`reply_to`) ended `failed` (not aborted): queue one short
+ * `source: 'note'` iMessage so the phone isn't left with a typing bubble and then silence. Goes
+ * through the outbox like any reply (retries, and a note that fails is never noted again).
+ * Nothing when the run has no reply chat or iMessage is disabled. Returns the inserted ids.
+ */
+export async function queueFailureNote(run: AgentRun): Promise<string[]> {
+  const chat = readReplyChat(run.replyTo)
+  if (!chat) return []
+  if (!(await loadChannelsConfig()).imessage.enabled) return []
+  const ids = await useDb().transaction(tx => insertDeliveries(tx, [{
+    channel: 'imessage', target: chat, payload: { text: FAILURE_NOTE }, source: 'note',
+    conversationId: run.conversationId, runId: run.id
+  }]))
+  for (const id of ids) publishChange({ resource: 'channelDelivery', action: 'created', id })
+  return ids
 }

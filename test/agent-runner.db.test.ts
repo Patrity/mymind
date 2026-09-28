@@ -54,6 +54,7 @@ vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
 import { useDb } from '../server/db'
 import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelApprovals, channelDeliveries } from '../server/db/schema'
 import { startFakeBlueBubbles } from './fixtures/fake-bluebubbles'
+import { FAILURE_NOTE } from '../server/lib/channels/deliver'
 import { createJob } from '../server/lib/agent/jobs/store'
 import { channelPresence } from '../server/lib/channels/presence'
 import { createRun, claimNextRun } from '../server/lib/agent/runtime/runs'
@@ -671,12 +672,31 @@ describe('runTurn — channel deliveries', () => {
     expect(await deliveriesOf(conversationId)).toHaveLength(0)
   })
 
-  it('a rescued (crashed) turn with replyTo writes no delivery', async () => {
+  it('I3: a failed (crashed) turn with replyTo delivers no partial reply — only one short failure note', async () => {
     const { run, conversationId } = await running('phone then crash', { replyTo })
     const out = await runTurn(run, { runAgent: boom as never, assemble: noAssemble as never, hub: new StreamHub() })
     expect(out.status).toBe('failed')
     expect((await rows(conversationId)).map(r => r.role).sort()).toEqual(['assistant', 'user']) // rescued
-    expect(await deliveriesOf(conversationId)).toHaveLength(0)
+    const d = await deliveriesOf(conversationId)
+    expect(d).toHaveLength(1)
+    expect(d[0]).toMatchObject({ channel: 'imessage', target: CHAT, source: 'note', runId: run.id, messageId: null, payload: { text: FAILURE_NOTE } })
+  })
+
+  it('I3: no failure note for a failed app run, nor for an aborted iMessage run', async () => {
+    const app = await running('app crash')
+    const err = vi.spyOn(console, 'error')
+    try {
+      expect((await runTurn(app.run, { runAgent: boom as never, assemble: noAssemble as never, hub: new StreamHub() })).status).toBe('failed')
+      expect(err).not.toHaveBeenCalledWith('[agent] queueing the failure note failed:', expect.anything())
+    } finally { err.mockRestore() }
+    expect(await deliveriesOf(app.conversationId)).toHaveLength(0)
+
+    const stopped = await running('phone then stop', { replyTo })
+    const turn = runTurn(stopped.run, { runAgent: fakeAgent('a b c d e f', { delayMs: 30 }) as never, assemble: noAssemble as never, hub: new StreamHub() })
+    await new Promise(r => setTimeout(r, 50))
+    abortRun(stopped.run.id)
+    expect((await turn).status).toBe('aborted')
+    expect(await deliveriesOf(stopped.conversationId)).toHaveLength(0)
   })
 
   it('a planning failure (even a failed query on the transaction) still saves the reply, without deliveries', async () => {
