@@ -100,6 +100,16 @@ async function notes() {
 const tick = (ids: string[], now: Date) => deliveriesTick({ onlyIds: ids, mainConversationId: scratchMain, now })
 
 describe('insertDeliveries', () => {
+  it('M7: iMessage text is stored as plain text; email keeps its markdown', async () => {
+    const md = '## Plan\n**Buy** [milk](https://shop.test)'
+    const ids = await insert([
+      one(md),
+      { channel: 'email', target: 'tony@example.com', payload: { text: md, subject: 'Bridget · message' }, source: 'job' }
+    ])
+    const rows = await Promise.all(ids.map(row))
+    expect(rows.map(r => (r.payload as { text: string }).text)).toEqual(['Plan\nBuy milk (https://shop.test)', md])
+  })
+
   it('splits an iMessage payload with images into a text row + one row per image; email is never split', async () => {
     const ids = await insert([
       one('look', { payload: { text: 'look', images: ['img-a', 'img-b'] } }),

@@ -15,6 +15,7 @@ import { publishChange } from '../../utils/live-bus'
 import { appendEvent } from '../../services/conversations'
 import { getOrCreateMain } from '../agent/runtime/sessions'
 import { channelFor } from './registry'
+import { markdownToPlainText } from './plain-text'
 import { MAX_ATTEMPTS, nextAttemptDelayMs } from './backoff'
 import type { DeliveryPayload, OutboundChannelId, SendResult } from './types'
 
@@ -40,11 +41,16 @@ const CHANNEL_LABEL: Record<OutboundChannelId, string> = { imessage: 'iMessage',
  * An iMessage payload with images becomes one text-only row (when there is text) plus one row
  * per image, each retried on its own — a failed photo must never be lost because the text went
  * out, nor re-send the text when only the photo is retried. Email rows are never split.
+ * iMessage text is stored as plain text (markdown stripped — the phone renders none; final review
+ * M7), so the send, the duplicate check and the unconfirmed-send check all match the same string.
+ * Email keeps its markdown: it is rendered to HTML at send time.
  */
 function splitPayload(d: NewDelivery): DeliveryPayload[] {
-  const images = d.payload.images ?? []
-  if (d.channel !== 'imessage' || !images.length) return [d.payload]
-  const { images: _drop, ...rest } = d.payload
+  if (d.channel !== 'imessage') return [d.payload]
+  const payload = { ...d.payload, text: markdownToPlainText(d.payload.text) }
+  const images = payload.images ?? []
+  if (!images.length) return [payload]
+  const { images: _drop, ...rest } = payload
   const parts: DeliveryPayload[] = rest.text ? [rest] : []
   for (const id of images) parts.push({ text: '', images: [id] })
   return parts
