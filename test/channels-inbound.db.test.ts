@@ -209,6 +209,22 @@ describe('handleInbound', () => {
     expect(calls).toHaveLength(0)
   })
 
+  it('I2: an allowed sender in a chat that is not their own direct chat → ignored:chat-mismatch, nothing recorded or enqueued', async () => {
+    const m = msg({ chatGuid: 'iMessage;-;+15550009999' }) // sender is Tony, the reply chat is not
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(await handleInbound(m, deps())).toBe('ignored:chat-mismatch')
+    } finally { warn.mockRestore() }
+    expect(calls).toHaveLength(0)
+    expect(await inboundRow(m.guid)).toBeUndefined()
+    const before = captured.activityIds.length
+    await captured.flush!() // its activity warn lands now, not in a later test's window
+    const [row] = await db().select().from(activityLog).where(eq(activityLog.id, captured.activityIds[before]!))
+    expect(row).toMatchObject({ name: 'imessage:chat-mismatch', severity: 'warn' })
+    // The same sender in their own chat under another service prefix still goes through.
+    expect(await handleInbound(msg({ chatGuid: `SMS;-;${ALLOWED}` }), deps())).toBe('enqueued')
+  })
+
   it('an iOS 18 emoji reaction (non-tapback association) is never a turn', async () => {
     const ev = parseWebhook(emoji).event as InboundMessage
     expect(await handleInbound({ ...ev, guid: guid('emoji') }, deps())).toBe('ignored:reaction')

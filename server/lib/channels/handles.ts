@@ -26,6 +26,19 @@ export function isAllowed(handle: string, allowlist: string[]): boolean {
   return !!h && allowlist.some(a => normaliseHandle(a) === h)
 }
 
+/**
+ * True when `chatGuid` is `sender`'s own direct chat: `<service>;-;<handle>` (any service prefix —
+ * iMessage, SMS, any) whose handle part normalises to the sender. The webhook is public behind a
+ * token, and the allowlist checks the payload's sender while replies go to its chat, so the two
+ * must name the same person (final review I2) — otherwise a forged payload could ask as Tony and
+ * have the answer texted to another number.
+ */
+export function isSendersDirectChat(chatGuid: string, sender: string): boolean {
+  const m = /^[^;]+;-;(.+)$/.exec(chatGuid)
+  const s = normaliseHandle(sender)
+  return !!m && !!s && normaliseHandle(m[1]!) === s
+}
+
 /** Mask a handle for logs: last 4 digits of a phone, or first letter + domain of an email. */
 export function maskHandle(h: string): string {
   if (h.includes('@')) {

@@ -186,7 +186,9 @@ describe('imessageApprovalChannel', () => {
     ['a tapback in a group chat', () => ({ chatGuid: 'iMessage;+;chat-chap-group' }), 'iMessage;+;chat-chap-group'],
     ['a tapback on a different message', () => ({ targetGuid: 'fake-msg-not-the-prompt' })],
     ['a tapback on the prompt guid from a different chat', () => ({ chatGuid: 'iMessage;-;+15550001111', sender: ALLOWED })],
-    ['a non-approval tapback (laugh)', () => ({ tapback: 'laugh' })]
+    ['a non-approval tapback (laugh)', () => ({ tapback: 'laugh' })],
+    // I2: prompt and tapback in the same chat, allowed sender — but it is someone else's chat.
+    ['an allowed sender tapping in a chat that is not their own', () => ({ chatGuid: 'iMessage;-;+15550002222', sender: ALLOWED }), 'iMessage;-;+15550002222']
   ]
   it.each(ignored)('%s is ignored and the request expires', async (_label, over, promptChat) => {
     const chat = promptChat ?? CHAT

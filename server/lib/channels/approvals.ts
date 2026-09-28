@@ -16,7 +16,7 @@ import { agentRuns, channelApprovals } from '../../db/schema'
 import type { ApprovalRequest } from '../agent/types'
 import { recordEvent } from '../observability/record'
 import { loadChannelsConfig } from './config'
-import { isAllowed } from './handles'
+import { isAllowed, isSendersDirectChat } from './handles'
 import { lastHealth } from './inbound'
 import { imessageClient, type BlueBubblesClient } from './bluebubbles/client'
 import type { TapbackEvent } from './types'
@@ -175,12 +175,13 @@ export function replyToApprovalChannel(runId: string, deps: ApprovalChannelDeps 
 
 /**
  * A tapback from the webhook / catch-up. Tapbacks are routed here BEFORE the inbound pipeline's
- * filters, so every filter is applied here: removed tapbacks, Bridget's own, group chats and
- * senders not on the allowlist never resolve anything. The tapback must target a pending,
+ * filters, so every filter is applied here: removed tapbacks, Bridget's own, group chats, a chat
+ * that is not the sender's own direct chat and senders not on the allowlist never resolve anything. The tapback must target a pending,
  * unexpired prompt in the same chat the prompt went to.
  */
 export async function resolveTapback(ev: TapbackEvent): Promise<'tapback'> {
   if (ev.removed || ev.isFromMe || ev.chatGuid.includes(';+;')) return 'tapback'
+  if (!isSendersDirectChat(ev.chatGuid, ev.sender)) return 'tapback' // I2: the sender's own chat only
   const to = ev.tapback === 'love' || ev.tapback === 'like' ? 'approved' : ev.tapback === 'dislike' ? 'denied' : null
   if (!to) return 'tapback'
   const cfg = (await loadChannelsConfig()).imessage

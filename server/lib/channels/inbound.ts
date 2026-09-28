@@ -22,7 +22,7 @@ import { enqueue } from '../agent/runtime/queue'
 import type { ReplyTo } from '../agent/runtime/types'
 import type { AttachmentRef } from '../agent/attachments'
 import { loadChannelsConfig } from './config'
-import { isAllowed, maskHandle } from './handles'
+import { isAllowed, isSendersDirectChat, maskHandle } from './handles'
 import { resolveTapback, expireApprovals } from './approvals'
 import { imessageClient, BlueBubblesError, type BlueBubblesClient } from './bluebubbles/client'
 import { parseBlueBubblesMessage } from './bluebubbles/parse'
@@ -30,7 +30,7 @@ import type { InboundAttachment, InboundMessage, TapbackEvent } from './types'
 
 export type InboundOutcome =
   | 'enqueued' | 'duplicate'
-  | 'ignored:from-me' | 'ignored:group' | 'ignored:sender' | 'ignored:empty' | 'ignored:reaction'
+  | 'ignored:from-me' | 'ignored:group' | 'ignored:chat-mismatch' | 'ignored:sender' | 'ignored:empty' | 'ignored:reaction'
   | 'tapback'
 
 export type Transcribe = (audio: Uint8Array, opts: { mime: string; filename: string }) => Promise<string>
@@ -141,7 +141,8 @@ async function buildInput(ev: InboundMessage, client: BlueBubblesClient | null, 
 
 /**
  * Run one inbound event through the pipeline (spec §4, in order): tapback → approvals; drop
- * non-tapback reactions, Bridget's own messages, group chats and unknown senders; build the
+ * non-tapback reactions, Bridget's own messages, group chats, a chat that is not the sender's own
+ * direct chat (I2) and unknown senders; build the
  * input; then dedupe-insert + enqueue on main with `origin` and `replyTo` — always a new run,
  * never a steer (final review C1).
  */
@@ -152,6 +153,12 @@ export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: Inb
   if (ev.associatedMessageGuid) return 'ignored:reaction'
   if (ev.isFromMe) return 'ignored:from-me'
   if (ev.isGroup) return 'ignored:group'
+  // I2: the reply goes to ev.chatGuid, the allowlist checks ev.sender — they must be one person.
+  if (!isSendersDirectChat(ev.chatGuid, ev.sender)) {
+    console.warn(`[channels] inbound ${ev.guid}: chat does not match the sender ${maskHandle(ev.sender)}, ignored`)
+    recordEvent({ kind: 'inbound', name: 'imessage:chat-mismatch', severity: 'warn', status: 'warn', meta: { sender: maskHandle(ev.sender) } })
+    return 'ignored:chat-mismatch'
+  }
 
   const cfg = (await loadChannelsConfig()).imessage
   if (!isAllowed(ev.sender, cfg.allowedHandles)) {
