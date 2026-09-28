@@ -4,16 +4,24 @@ import { enqueue } from './queue'
 import { runtimeEnabled, RuntimeDisabledError } from './flag'
 import type { SessionKey } from './types'
 
-export interface WakeRequest { reason: string; prompt: string; sessionKey?: SessionKey; model?: string | null }
+export interface WakeRequest {
+  reason: string; prompt: string; sessionKey?: SessionKey; model?: string | null
+  /** The job this wake fires for (cycle 74): stamped on agent_runs.job_id. */
+  jobId?: string | null
+  /** History depth for the run (RunInput.context); omitted = full. */
+  context?: 'light' | 'full'
+}
 
 export async function wake(req: WakeRequest, deps: { kick?: boolean } = {}): Promise<{ runId: string; conversationId: string }> {
   if (!runtimeEnabled()) throw new RuntimeDisabledError()
   const reason = req.reason.trim(); const prompt = req.prompt.trim()
-  if (!reason || !/^[a-z0-9][a-z0-9:_-]{0,63}$/i.test(reason)) throw new Error('wake: reason must be a short slug')
+  // Up to 80 chars: a job fire's reason is 'job:' + a slug of up to 64 (cycle 74).
+  if (!reason || !/^[a-z0-9][a-z0-9:_-]{0,79}$/i.test(reason)) throw new Error('wake: reason must be a short slug')
   if (!prompt) throw new Error('wake: prompt is required')
   const r = await enqueue({
     sessionKey: req.sessionKey ?? 'main', trigger: 'wake', profile: 'headless', wakeReason: reason,
-    modelDefId: req.model ?? null, input: { text: prompt, modality: 'text' }
+    modelDefId: req.model ?? null, jobId: req.jobId ?? null,
+    input: { text: prompt, modality: 'text', ...(req.context ? { context: req.context } : {}) }
   }, { kick: deps.kick })
   return { runId: r.runId, conversationId: r.conversationId }
 }

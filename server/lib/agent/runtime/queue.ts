@@ -9,6 +9,9 @@ import { maybeSummarizeLater } from './summarize-hook'
 import { recoverStale } from './recover'
 import { publishChange } from '../../../utils/live-bus'
 import { runtimeEnabled, RuntimeDisabledError } from './flag'
+import { jobsTick } from '../jobs/tick'
+import { dueTaskEvents } from '../jobs/events'
+import { onRunFinished } from '../jobs/outcome'
 import type { AgentRun } from '../../../db/schema'
 import type { RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
@@ -18,6 +21,8 @@ export const ALIVE_BUMP_MS = 10_000
 export interface EnqueueRequest {
   sessionKey: SessionKey | 'thread:new'; input: RunInput; trigger: RunTrigger; profile: RunProfile
   wakeReason?: string; modelDefId?: string | null; originSinkId?: string | null
+  /** The agent_jobs row this run fires for (cycle 74) — outcome.ts reads it back on finish. */
+  jobId?: string | null
 }
 export interface EnqueueResult { runId: string; conversationId: string; steered: boolean; created: boolean }
 
@@ -48,7 +53,8 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
   const run = await createRun({
     conversationId, sessionKey: created && req.sessionKey === 'thread:new' ? `thread:${conversationId}` : req.sessionKey,
     trigger: req.trigger, profile: req.profile, input: req.input,
-    wakeReason: req.wakeReason ?? null, modelDefId: req.modelDefId ?? null, originSinkId: req.originSinkId ?? null
+    wakeReason: req.wakeReason ?? null, modelDefId: req.modelDefId ?? null, originSinkId: req.originSinkId ?? null,
+    jobId: req.jobId ?? null
   })
   if (deps.kick !== false) kick(deps.run)
   return { runId: run.id, conversationId, steered: false, created }
@@ -123,6 +129,9 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean): Promise<vo
       clearInterval(alive); if (wall) clearTimeout(wall)
     }
     await finishRun(run.id, outcome).catch(err => console.error('[runtime] finishRun failed:', err))
+    // Cycle 74: a job-fired run writes its job's outcome (spoke/silent/failed, failure streak,
+    // auto-disable). Never allowed to break the run's own unwind.
+    await onRunFinished(run, outcome).catch(err => console.error('[runtime] job outcome failed:', err))
     // Every terminal outcome, not only 'aborted' (Task 8 review ruling — overrides spec §4.4's
     // abort-only wording): a steer that arrived during the last step's generation, or in the
     // gap between runFn returning and finishRun committing, is just as unread as one orphaned
@@ -189,7 +198,14 @@ export async function workerTick(opts: { onlyConversations?: string[] } = {}): P
   try {
     await recoverStale({ onlyConversations: opts.onlyConversations, excludeRunIds: [...executing] })
     if (opts.onlyConversations) await pumpOnce({ onlyConversations: opts.onlyConversations, rekick: false })
-    else kick()
+    else {
+      // Cycle 74 jobs — production (unscoped) ticks only: a scoped test tick must never claim or
+      // fire a real job on the shared dev DB. Each guarded alone so one failing never starves
+      // the other, nor the pump below. Fires go through wake(), which kicks the pump itself.
+      try { await jobsTick() } catch (err) { console.error('[runtime] jobs tick failed:', err) }
+      try { await dueTaskEvents() } catch (err) { console.error('[runtime] task.due events failed:', err) }
+      kick()
+    }
   } catch (err) {
     console.error('[runtime] worker tick failed:', err)
   } finally {

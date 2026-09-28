@@ -26,11 +26,12 @@ export function runtimeExclusive(): boolean { return process.env.AGENT_RUNTIME_E
 
 export async function createRun(i: {
   conversationId: string; sessionKey: string; trigger: RunTrigger; profile: RunProfile; input: RunInput
-  wakeReason?: string | null; modelDefId?: string | null; originSinkId?: string | null
+  wakeReason?: string | null; modelDefId?: string | null; originSinkId?: string | null; jobId?: string | null
 }): Promise<AgentRun> {
   const [row] = await useDb().insert(agentRuns).values({
     conversationId: i.conversationId, sessionKey: i.sessionKey, trigger: i.trigger, profile: i.profile,
-    input: i.input, wakeReason: i.wakeReason ?? null, modelDefId: i.modelDefId ?? null, originSinkId: i.originSinkId ?? null
+    input: i.input, wakeReason: i.wakeReason ?? null, modelDefId: i.modelDefId ?? null, originSinkId: i.originSinkId ?? null,
+    jobId: i.jobId ?? null
   }).returning()
   return row!
 }

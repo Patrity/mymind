@@ -12,6 +12,8 @@ export interface RunInput {
   skill?: string
   speak?: boolean
   presetId?: string | null
+  /** 'light' = only the last few turns of history (cycle 74 jobs); absent/'full' = today's behaviour. */
+  context?: 'light' | 'full'
 }
 
 export interface RunOutcome {

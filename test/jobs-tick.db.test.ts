@@ -1,0 +1,386 @@
+// DB-backed — harness pattern from test/agent-runs.db.test.ts
+//
+// Cycle 74, Task 5: the jobs scheduler (tick.ts), event triggers (events.ts) and run outcomes
+// (outcome.ts). The dev DB is SHARED with live dev servers in other checkouts, so:
+//   - every job slug is prefixed `jstick-` and every jobsTick/fireEvent/dueTaskEvents call is
+//     scoped with `onlySlugs` (and `onlyTaskIds`) — no real job or task is ever claimed/fired;
+//   - onRunFinished posts its note to a SCRATCH thread via the `mainConversationId` seam;
+//   - the fake wakeFn creates REAL agent_runs rows (so job_id linkage and overlap are real) in a
+//     scratch thread that holds a permanent `running` INTERACTIVE sentinel run: claimNextRun
+//     never claims a queued run of a conversation that has one running, so no other process's
+//     pump can pick these fake runs up and execute a real model turn. (Interactive, so it never
+//     occupies the global headless slot; claimed_at/alive_at null, so no age-based recovery.)
+process.loadEnvFile('.env')
+
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+
+vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+
+import { Client } from 'pg'
+import { and, desc, eq, inArray, like, sql } from 'drizzle-orm'
+import { useDb } from '../server/db'
+import {
+  agentJobs, agentJobFires, agentConfigRevisions, agentRuns, conversations, conversationMessages, tasks, taskColumns
+} from '../server/db/schema'
+import type { AgentRun } from '../server/db/schema'
+import { createConversation } from '../server/services/conversations'
+import { createRun } from '../server/lib/agent/runtime/runs'
+import { wake, type WakeRequest } from '../server/lib/agent/runtime/wake'
+import { createJob, saveJob, getJob } from '../server/lib/agent/jobs/store'
+import { jobsTick } from '../server/lib/agent/jobs/tick'
+import { fireEvent, dueTaskEvents } from '../server/lib/agent/jobs/events'
+import { onRunFinished, MAX_CONSECUTIVE_FAILURES } from '../server/lib/agent/jobs/outcome'
+
+const PREFIX = 'jstick-'
+const db = () => useDb()
+
+function md(fm: string, body: string): string {
+  return `---\n${fm}\n---\n${body}\n`
+}
+
+let scratch = ''       // runs land here (sentinel-guarded)
+let scratchB = ''      // a 'running' job run is moved here (one running per conversation)
+let scratchMain = ''   // stands in for main in onRunFinished
+const convIds: string[] = []
+const taskIds: string[] = []
+
+async function cleanupJobs() {
+  const rows = await db().select({ id: agentJobs.id }).from(agentJobs).where(like(agentJobs.slug, `${PREFIX}%`))
+  if (rows.length) {
+    const ids = rows.map(r => r.id)
+    await db().delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, ids)))
+    await db().delete(agentJobFires).where(inArray(agentJobFires.jobId, ids))
+    await db().delete(agentJobs).where(inArray(agentJobs.id, ids))
+  }
+}
+
+beforeAll(async () => {
+  await cleanupJobs()
+  for (let i = 0; i < 3; i++) convIds.push((await createConversation({ title: `${PREFIX}scratch-${i}` })).id)
+  ;[scratch, scratchB, scratchMain] = convIds as [string, string, string]
+  await db().insert(agentRuns).values({
+    conversationId: scratch, sessionKey: `thread:${scratch}`, trigger: 'user', profile: 'interactive',
+    status: 'running', input: { text: 'sentinel', modality: 'text' }
+  })
+})
+
+afterAll(async () => {
+  await db().delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
+  await cleanupJobs()
+  if (taskIds.length) await db().delete(tasks).where(inArray(tasks.id, taskIds))
+  await db().delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
+  await db().delete(conversations).where(inArray(conversations.id, convIds))
+})
+
+// The fake wake: records the request, creates a real (queued, never claimable) run with job_id.
+const calls: WakeRequest[] = []
+const fakeWake = (async (req: WakeRequest) => {
+  calls.push(req)
+  const run = await createRun({
+    conversationId: scratch, sessionKey: `thread:${scratch}`, trigger: 'wake', profile: 'headless',
+    input: { text: req.prompt, modality: 'text', ...(req.context ? { context: req.context } : {}) },
+    wakeReason: req.reason, jobId: req.jobId ?? null
+  })
+  return { runId: run.id, conversationId: scratch }
+}) as typeof wake
+
+function callsFor(slug: string) { return calls.filter(c => c.reason === `job:${slug}`) }
+
+async function finishJobRuns(jobId: string) {
+  await db().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` })
+    .where(and(eq(agentRuns.jobId, jobId), inArray(agentRuns.status, ['queued', 'running'])))
+}
+
+async function makeDue(slug: string, agoMs = 60_000) {
+  await db().update(agentJobs).set({ nextRunAt: sql`now() - make_interval(secs => ${agoMs / 1000})` })
+    .where(eq(agentJobs.slug, slug))
+}
+
+async function row(slug: string) {
+  const [r] = await db().select().from(agentJobs).where(eq(agentJobs.slug, slug))
+  return r!
+}
+
+async function dbNow(): Promise<number> {
+  const r = await db().execute(sql`select now() as now`)
+  return new Date((r.rows[0] as { now: string | Date }).now).getTime()
+}
+
+const HALF_HOUR = 30 * 60_000
+
+describe('jobsTick — scheduling', () => {
+  it('1. a due every-30m job fires once and next_run_at advances ~30 min', async () => {
+    const slug = `${PREFIX}due`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true\ncontext: light', 'Check in.'), actor: 'human' })
+    await makeDue(slug)
+    const res = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(res.fired).toEqual([slug])
+    expect(callsFor(slug)).toHaveLength(1)
+    expect(callsFor(slug)[0]).toMatchObject({ prompt: 'Check in.', sessionKey: 'main', model: null, jobId: job.id, context: 'light' })
+    const r = await row(slug)
+    const now = await dbNow()
+    expect(Math.abs(r.nextRunAt!.getTime() - (now + HALF_HOUR))).toBeLessThan(60_000)
+    expect(r.lastRunAt).not.toBeNull()
+    // job_id linkage is a real row
+    const [run] = await db().select().from(agentRuns).where(eq(agentRuns.id, r.lastRunId!))
+    expect(run!.jobId).toBe(job.id)
+    // not due any more: a second tick fires nothing
+    const again = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(again.fired).toEqual([])
+    await finishJobRuns(job.id)
+  })
+
+  it('2. concurrent jobsTick calls fire a due job exactly once', async () => {
+    const slug = `${PREFIX}race`
+    await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'Race.'), actor: 'human' })
+    await makeDue(slug)
+    const results = await Promise.all(Array.from({ length: 4 }, () => jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })))
+    expect(results.flatMap(r => r.fired)).toEqual([slug])
+    expect(callsFor(slug)).toHaveLength(1)
+    await finishJobRuns((await row(slug)).id)
+  })
+
+  it('2b. a tick running while another tick holds the claim fires nothing (deterministic interleave)', async () => {
+    const slug = `${PREFIX}held`
+    await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'Held.'), actor: 'human' })
+    await makeDue(slug)
+    // Play the OTHER ticker by hand: lock the row and advance it, and hold the transaction open
+    // while this process's tick runs. Scoped by slug — the only row this client touches.
+    const other = new Client({ connectionString: process.env.DATABASE_URL })
+    await other.connect()
+    try {
+      await other.query('begin')
+      await other.query(`select id from agent_jobs where slug = $1 for update`, [slug])
+      await other.query(`update agent_jobs set next_run_at = now() + interval '30 minutes' where slug = $1`, [slug])
+      const tick = jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+      // SKIP LOCKED: the tick passes the held row instead of queueing behind it. (Without it,
+      // Postgres re-checks the WHERE after the wait and still fires once — but a slow claim
+      // would stall every other ticker, so not blocking is pinned here too.)
+      const finishedWhileHeld = await Promise.race([
+        tick.then(() => true),
+        new Promise<boolean>(r => setTimeout(() => r(false), 1500))
+      ])
+      await other.query('commit')
+      expect(finishedWhileHeld).toBe(true)
+      const res = await tick
+      expect(res.fired).toEqual([])
+      expect(callsFor(slug)).toHaveLength(0)
+    } finally {
+      await other.query('rollback').catch(() => {})
+      await other.end()
+    }
+  })
+
+  it('3. missed runs: 3 hours overdue fires exactly once, then next_run_at ≈ now + 30m', async () => {
+    const slug = `${PREFIX}missed`
+    await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'Missed.'), actor: 'human' })
+    await makeDue(slug, 3 * 3600_000)
+    for (let i = 0; i < 3; i++) {
+      await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+      await finishJobRuns((await row(slug)).id) // no overlap can mask a burst
+    }
+    expect(callsFor(slug)).toHaveLength(1)
+    const now = await dbNow()
+    expect(Math.abs((await row(slug)).nextRunAt!.getTime() - (now + HALF_HOUR))).toBeLessThan(60_000)
+  })
+
+  it('4. overlap: previous run still running → skipped, schedule advances, no wake', async () => {
+    const slug = `${PREFIX}overlap`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'Overlap.'), actor: 'human' })
+    await makeDue(slug)
+    await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(callsFor(slug)).toHaveLength(1)
+    // Move the run to its own conversation and mark it running (interactive: no headless slot).
+    await db().update(agentRuns).set({ status: 'running', conversationId: scratchB, profile: 'interactive' })
+      .where(eq(agentRuns.jobId, job.id))
+    await makeDue(slug)
+    const res = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(res.skipped).toEqual([slug])
+    expect(res.fired).toEqual([])
+    expect(callsFor(slug)).toHaveLength(1)
+    const r = await row(slug)
+    expect(r.lastOutcome).toBe('skipped')
+    expect(r.nextRunAt!.getTime()).toBeGreaterThan(await dbNow())
+    await finishJobRuns(job.id)
+  })
+
+  it('5. outside active_hours → skipped, no wake', async () => {
+    const slug = `${PREFIX}hours`
+    const now = new Date(await dbNow())
+    const hhmm = (d: Date) => `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
+    const start = hhmm(new Date(now.getTime() + 2 * 3600_000))
+    const end = hhmm(new Date(now.getTime() + 3 * 3600_000))
+    await createJob({ slug, content: md(`trigger: every 30m\nenabled: true\ntimezone: UTC\nactive_hours: ${start}-${end}`, 'Hours.'), actor: 'human' })
+    await makeDue(slug)
+    const res = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(res.skipped).toEqual([slug])
+    expect(callsFor(slug)).toHaveLength(0)
+    expect((await row(slug)).lastOutcome).toBe('skipped')
+  })
+
+  it('6. an `at` job fires, then enabled: false is written with a system revision and fired_at set', async () => {
+    const slug = `${PREFIX}at`
+    const when = new Date(Date.now() + 3600_000).toISOString()
+    const job = await createJob({ slug, content: md(`trigger: at ${when}\nenabled: true`, 'Remind me.'), actor: 'agent' })
+    await makeDue(slug)
+    const res = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(res.fired).toEqual([slug])
+    expect(callsFor(slug)).toHaveLength(1)
+    const r = await row(slug)
+    expect(r.enabled).toBe(false)
+    expect(r.content).toMatch(/^enabled: false$/m)
+    expect(r.firedAt).not.toBeNull()
+    expect(r.nextRunAt).toBeNull()
+    const [rev] = await db().select().from(agentConfigRevisions)
+      .where(and(eq(agentConfigRevisions.targetKind, 'job'), eq(agentConfigRevisions.targetId, job.id)))
+      .orderBy(desc(agentConfigRevisions.createdAt)).limit(1)
+    expect(rev!.actor).toBe('system')
+    expect(rev!.content).toBe(r.content)
+    await finishJobRuns(job.id)
+  })
+
+  it('10. edit during a run: no refire while it runs; the next fire uses the new body', async () => {
+    const slug = `${PREFIX}edit`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'Old body.'), actor: 'human' })
+    await makeDue(slug)
+    await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(callsFor(slug)).toHaveLength(1)
+    await db().update(agentRuns).set({ status: 'running', conversationId: scratchB, profile: 'interactive' })
+      .where(eq(agentRuns.jobId, job.id))
+    const cur = await getJob(slug)
+    await saveJob(slug, md('trigger: every 30m\nenabled: true', 'New body.'), cur!.contentHash, 'human')
+    await makeDue(slug)
+    await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(callsFor(slug)).toHaveLength(1) // overlap: not fired again
+    await finishJobRuns(job.id)
+    await makeDue(slug)
+    await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
+    expect(callsFor(slug)).toHaveLength(2)
+    expect(callsFor(slug)[1]!.prompt).toContain('New body.')
+    expect(callsFor(slug)[1]!.prompt).not.toContain('Old body.')
+    await finishJobRuns(job.id)
+  })
+
+  it('11. fired `at` jobs are pruned 30 days after firing (31 days pruned, 29 kept)', async () => {
+    const old = `${PREFIX}prune-old`
+    const recent = `${PREFIX}prune-recent`
+    const when = new Date(Date.now() + 3600_000).toISOString()
+    const a = await createJob({ slug: old, content: md(`trigger: at ${when}\nenabled: false`, 'Old.'), actor: 'agent' })
+    await createJob({ slug: recent, content: md(`trigger: at ${when}\nenabled: false`, 'Recent.'), actor: 'agent' })
+    await db().update(agentJobs).set({ firedAt: sql`now() - interval '31 days'` }).where(eq(agentJobs.slug, old))
+    await db().update(agentJobs).set({ firedAt: sql`now() - interval '29 days'` }).where(eq(agentJobs.slug, recent))
+    await jobsTick({ onlySlugs: [old, recent], wakeFn: fakeWake })
+    expect(await getJob(old)).toBeNull()
+    expect(await getJob(recent)).not.toBeNull()
+    const revs = await db().select().from(agentConfigRevisions)
+      .where(and(eq(agentConfigRevisions.targetKind, 'job'), eq(agentConfigRevisions.targetId, a.id)))
+    expect(revs).toHaveLength(0)
+  })
+
+  it('wake() carries jobId and context onto the real agent_runs row', async () => {
+    const slug = `${PREFIX}wake`
+    const job = await createJob({ slug, content: md('trigger: every 30m', 'W.'), actor: 'human' })
+    const r = await wake({ reason: `job:${slug}`, prompt: 'W.', sessionKey: `thread:${scratch}`, jobId: job.id, context: 'light' }, { kick: false })
+    const [run] = await db().select().from(agentRuns).where(eq(agentRuns.id, r.runId))
+    expect(run!.jobId).toBe(job.id)
+    expect((run!.input as { context?: string }).context).toBe('light')
+    await finishJobRuns(job.id)
+  })
+})
+
+describe('event triggers', () => {
+  it('7. cc.session_end fires a matching job once per key; a non-matching filter does not fire', async () => {
+    const match = `${PREFIX}ev-match`
+    const other = `${PREFIX}ev-other`
+    await createJob({ slug: match, content: md('trigger: event cc.session_end\nenabled: true\nfilter: { project: mymind }', 'Digest it.'), actor: 'human' })
+    await createJob({ slug: other, content: md('trigger: event cc.session_end\nenabled: true\nfilter: { project: other }', 'Other.'), actor: 'human' })
+    const scope = { onlySlugs: [match, other], wakeFn: fakeWake }
+    const first = await fireEvent('cc.session_end', 'sess-1', { project: 'mymind' }, scope)
+    expect(first).toEqual([match])
+    const again = await fireEvent('cc.session_end', 'sess-1', { project: 'mymind' }, scope)
+    expect(again).toEqual([])
+    expect(callsFor(match)).toHaveLength(1)
+    expect(callsFor(other)).toHaveLength(0)
+    expect(callsFor(match)[0]!.prompt).toMatch(/^Digest it\.\n\nA Claude Code session just ended/)
+    expect(callsFor(match)[0]!.prompt).not.toMatch(/[[\]]/)
+    await finishJobRuns((await row(match)).id)
+  })
+
+  it('8. dueTaskEvents fires a task.due job once per (task, due date)', async () => {
+    const slug = `${PREFIX}due-task`
+    await createJob({ slug, content: md('trigger: event task.due\nenabled: true', 'A task is due.'), actor: 'human' })
+    const [col] = await db().select({ id: taskColumns.id }).from(taskColumns).limit(1)
+    const [t] = await db().insert(tasks).values({
+      title: `${PREFIX}fixture task`, columnId: col!.id, dueDate: sql`now() - interval '1 hour'`
+    }).returning()
+    taskIds.push(t!.id)
+    const scope = { onlySlugs: [slug], onlyTaskIds: [t!.id], wakeFn: fakeWake }
+    expect(await dueTaskEvents(scope)).toBe(1)
+    await finishJobRuns((await row(slug)).id)
+    expect(await dueTaskEvents(scope)).toBe(0)
+    expect(callsFor(slug)).toHaveLength(1)
+    expect(callsFor(slug)[0]!.prompt).toContain(`${PREFIX}fixture task`)
+    // a new due date is a new key → fires again
+    await db().update(tasks).set({ dueDate: sql`now() - interval '2 hours'` }).where(eq(tasks.id, t!.id))
+    expect(await dueTaskEvents(scope)).toBe(1)
+    // completed tasks never fire
+    await db().update(tasks).set({ dueDate: sql`now() - interval '3 hours'`, completedAt: sql`now()` }).where(eq(tasks.id, t!.id))
+    expect(await dueTaskEvents(scope)).toBe(0)
+    expect(callsFor(slug)).toHaveLength(2)
+    await finishJobRuns((await row(slug)).id)
+  })
+})
+
+describe('onRunFinished', () => {
+  async function jobRun(slug: string): Promise<AgentRun> {
+    const r = await row(slug)
+    const res = await fakeWake({ reason: `job:${slug}`, prompt: 'x', jobId: r.id })
+    const [run] = await db().select().from(agentRuns).where(eq(agentRuns.id, res.runId))
+    await finishJobRuns(r.id)
+    return run!
+  }
+
+  it('9a. done + suppressed → silent; done → spoke', async () => {
+    const slug = `${PREFIX}outcome`
+    await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'O.'), actor: 'human' })
+    const opts = { mainConversationId: scratchMain }
+    await onRunFinished(await jobRun(slug), { status: 'done', suppressed: true }, opts)
+    expect((await row(slug)).lastOutcome).toBe('silent')
+    await onRunFinished(await jobRun(slug), { status: 'done' }, opts)
+    expect((await row(slug)).lastOutcome).toBe('spoke')
+  })
+
+  it('9b. failed ×3 → auto-disabled with a system revision and a runtime:job-disabled note in main', async () => {
+    const slug = `${PREFIX}failing`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'F.'), actor: 'human' })
+    const opts = { mainConversationId: scratchMain }
+    for (let i = 1; i < MAX_CONSECUTIVE_FAILURES; i++) {
+      await onRunFinished(await jobRun(slug), { status: 'failed', error: 'boom' }, opts)
+      expect((await row(slug)).enabled).toBe(true)
+    }
+    // a success in between resets the streak
+    await onRunFinished(await jobRun(slug), { status: 'done' }, opts)
+    expect((await row(slug)).consecutiveFailures).toBe(0)
+    for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i++) {
+      await onRunFinished(await jobRun(slug), { status: 'failed', error: 'boom' }, opts)
+    }
+    const r = await row(slug)
+    expect(r.lastOutcome).toBe('failed')
+    expect(r.consecutiveFailures).toBe(MAX_CONSECUTIVE_FAILURES)
+    expect(r.enabled).toBe(false)
+    expect(r.content).toMatch(/^enabled: false$/m)
+    const [rev] = await db().select().from(agentConfigRevisions)
+      .where(and(eq(agentConfigRevisions.targetKind, 'job'), eq(agentConfigRevisions.targetId, job.id)))
+      .orderBy(desc(agentConfigRevisions.createdAt)).limit(1)
+    expect(rev!.actor).toBe('system')
+    const notes = await db().select().from(conversationMessages)
+      .where(and(eq(conversationMessages.conversationId, scratchMain), eq(conversationMessages.origin, 'runtime:job-disabled')))
+    expect(notes).toHaveLength(1)
+    expect(notes[0]!.content).toContain(slug)
+  })
+
+  it('a run with no job_id is ignored', async () => {
+    const [run] = await db().select().from(agentRuns).where(eq(agentRuns.conversationId, scratch)).limit(1)
+    await expect(onRunFinished({ ...run!, jobId: null }, { status: 'failed' }, { mainConversationId: scratchMain })).resolves.toBeUndefined()
+  })
+})
