@@ -2,15 +2,13 @@
 title: Agent Runtime (server-owned turns, main thread, wake)
 status: built
 cycle: 73
-updated: 2026-09-27
+updated: 2026-09-28
 ---
 
 # Agent Runtime
 
 Since cycle 73 a Bridget turn runs **on the server**, not inside a browser WebSocket.
-With the `agent_runtime` flag on (the default), `server/lib/agent/runtime/` is the only way a
-turn runs; with it off, the legacy in-socket path runs turns instead and nothing can be queued
-or woken (see the flag section). A turn is an `agent_runs` row that a
+`server/lib/agent/runtime/` is the only way a turn runs. A turn is an `agent_runs` row that a
 worker claims and executes. Sockets are **viewers**: closing the tab unsubscribes and never
 aborts. A reply keeps streaming, finishes and persists with nobody watching.
 
@@ -43,9 +41,8 @@ code. The build's deviations from the spec are listed in the handover.
 | `history.ts` | `groupTurns`, `turnTier`, `keepTrailingTurns`, `capToTokens`, and the constants `RUNTIME_CONTEXT_BUDGET = 20000`, `RECENT_THREADS_MAX_TOKENS = 600`, `MAIN_STATE_MAX_TOKENS = 300`. |
 | `event-text.ts` | How an `event` row reads to the model: a plain sentence with no brackets. |
 | `suppress.ts` | `isSuppressedReply`: `NO_REPLY` alone, or opening/closing a remainder of ≤ 300 chars. |
-| `flag.ts` | The `agent_runtime` rollback flag (see below). |
 
-Wiring: `server/plugins/agent-runtime.ts` reads the flag, runs `recoverOnBoot()`, then
+Wiring: `server/plugins/agent-runtime.ts` runs `recoverOnBoot()`, installs/revalidates jobs, then
 `startWorker()`. Boot recovery failing does not stop the worker, because the periodic tick retries.
 
 ## Data model (migration 0054, additive)
@@ -170,8 +167,8 @@ them.
 Callers today:
 - `POST /api/admin/agent/wake` with body `{ reason, prompt, sessionKey?, model? }`. It
   **requires a web session** (`requireSession`), because a bearer API token must not be able to
-  start an unattended run. Wake validation errors and unknown threads return 400; the runtime
-  being off (`agent_runtime=false`) returns **409**; anything else returns 500.
+  start an unattended run. Wake validation errors and unknown threads return 400; anything else
+  returns 500.
 - The `/wake <prompt>` composer command posts to that endpoint with `reason: 'manual'`.
 
 Cycle 74 adds the heartbeat, cron and event triggers as new callers.
@@ -224,7 +221,7 @@ The approve toast offers undo using the returned `undoToken`.
   with the summary at start and updates only `where context_epoch_at is not distinct from` that
   value. A `/clear` landing during the multi-second summarizer call makes the fold write nothing.
 - Triggers: after every persisted or rescued run (`maybeSummarizeLater`, fire-and-forget), and
-  the `summarize-threads` Nitro task (`*/10`, skipped when `agent_runtime=false`). That task
+  the `summarize-threads` Nitro task (`*/10`). That task
   force-folds side threads idle ≥ 30 min, touched in the last 7 days, with `message_count > 12`
   **and** more than 12 rows after `summarized_through` (so caught-up threads are not re-picked),
   **most recently active first**, 20 at a time. It records `{ summarized, failed }` via
@@ -248,22 +245,12 @@ Both tiers are fixed tiers in `assembleContext`, capped at the source.
 - `/review` renders `agent-action` cards (`app/components/review/AgentActionCard.vue`) with the
   tool, pretty args, a link to the originating thread, and Approve / Reject.
 
-## `agent_runtime` rollback flag
+## Rollback
 
-This is a settings row, `key='agent_runtime'`, `value={"enabled": false}`, defaulting to on. It
-is **read once at boot**, because the WS `open` hook is synchronous: **flipping it requires a
-restart.** When it is off, the plugin starts no worker and `ws.ts` delegates to `legacyHooks`
-(`server/lib/voice/ws-legacy.ts`), the old in-socket path. Off is legacy **end to end**:
-`enqueue` and `wake` throw `RuntimeDisabledError` (the wake endpoint answers 409), and the
-`summarize-threads` task skips. **The flag is the rollback, not a code revert:** once `event`
-rows (`role='event'`) exist, pre-cycle-73 code does not know that role, so reverting the code is
-not a safe rollback. **Cycle 74 deletes `ws-legacy.ts` and
-`flag.ts`.**
-
-```sql
-insert into settings (key, value) values ('agent_runtime', '{"enabled": false}')
-  on conflict (key) do update set value = excluded.value;   -- then restart the service
-```
+Cycle 74 deleted the cycle-73 rollback lever (`server/lib/voice/ws-legacy.ts`, the
+`agent_runtime` settings flag, and every branch that read it) — `server/lib/agent/runtime/` is
+now the only way a turn runs, unconditionally. Roll back by redeploying a cycle-73 build (revert
+the cycle-74 merge); the `agent_runtime` setting no longer exists.
 
 ## Operational queries
 
@@ -304,7 +291,8 @@ where kind = 'agent-action' order by created_at desc;
   not a steer, and its `user-message` frame is only emitted when it starts. Follow-up.
 - **Steers land only at step boundaries.** An in-flight tool call or a long single generation
   finishes before a steer is read; a steer that arrives during the last step becomes the next run.
-- **Code revert is not a safe rollback** once event rows exist — use the `agent_runtime` flag.
+- **A cycle-73 rollback build is not risk-free once `event` rows (`role='event'`) exist** —
+  pre-cycle-73 code does not know that role. See Rollback above.
 - **An `agent-action` row stuck in `applying`** after a crash between claim and settle is
   invisible in `/review`. It is not auto-reset, because the tool may already have run.
 - `agent-action` cards have no "rationale"; proposals carry no rationale field.

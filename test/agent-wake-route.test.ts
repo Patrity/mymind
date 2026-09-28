@@ -17,7 +17,6 @@ vi.mock('../server/lib/agent/runtime/wake', () => ({ wake }))
 // requireSession itself is NOT mocked — it's a pure predicate over event.context.client
 // (server/utils/auth-guard.ts) with no I/O, so exercising the real thing is what actually
 // proves the endpoint is wired to it.
-const { RuntimeDisabledError } = await import('../server/lib/agent/runtime/flag')
 const handler = (await import('../server/api/admin/agent/wake.post')).default as (e: unknown) => Promise<unknown>
 const evt = (client: { type?: string } | undefined, body: unknown = {}) => ({ context: { client }, body })
 
@@ -49,11 +48,6 @@ describe('POST /api/admin/agent/wake', () => {
   it('maps a not-found error (bad thread sessionKey) to 400 too', async () => {
     wake.mockRejectedValue(new Error('conversation deadbeef not found'))
     await expect(handler(evt({ type: 'session', userId: 'u1' }, { reason: 'x', prompt: 'y' }))).rejects.toMatchObject({ statusCode: 400 })
-  })
-
-  it('maps a disabled runtime (agent_runtime=false) to 409', async () => {
-    wake.mockRejectedValue(new RuntimeDisabledError())
-    await expect(handler(evt({ type: 'session', userId: 'u1' }, { reason: 'x', prompt: 'y' }))).rejects.toMatchObject({ statusCode: 409 })
   })
 
   it('lets an unexpected error propagate UNMODIFIED rather than laundering it into a 400', async () => {

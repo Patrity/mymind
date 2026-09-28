@@ -9,8 +9,6 @@ import type { SttProvider } from '../../lib/voice/providers/types'
 import { withFailover } from '../../lib/ai/registry/resolve'
 import { VOICE_TUNING } from '../../lib/voice/tuning'
 import { routeFrame } from '../../lib/voice/ws-routing'
-import { legacyHooks } from '../../lib/voice/ws-legacy'
-import { runtimeEnabled } from '../../lib/agent/runtime/flag'
 import { enqueue, abortActive, abortActiveAndWait } from '../../lib/agent/runtime/queue'
 import { abortRun } from '../../lib/agent/runtime/aborts'
 import { hub, withCid, type Sink } from '../../lib/agent/runtime/stream'
@@ -129,7 +127,6 @@ export default defineWebSocketHandler({
   },
   // open/close stay synchronous (crossws); only message may await.
   open(peer) {
-    if (!runtimeEnabled()) return legacyHooks.open(peer)
     conns.set(peer, {
       sink: { id: randomUUID(), send: d => peer.send(d) },
       presetId: null, model: null, conversationId: null, unsubscribe: null,
@@ -138,7 +135,6 @@ export default defineWebSocketHandler({
     })
   },
   async message(peer, message) {
-    if (!runtimeEnabled()) return legacyHooks.message(peer, message)
     const s = conns.get(peer); if (!s) return
     // Classify by CONTENT, not transport type: crossws@0.3.5's node adapter drops
     // the isBinary flag, so JSON control frames arrive as Buffers (see frames.ts).
@@ -325,7 +321,6 @@ export default defineWebSocketHandler({
     }
   },
   close(peer) {
-    if (!runtimeEnabled()) return legacyHooks.close(peer)
     const s = conns.get(peer); if (!s) return
     // Unsubscribe only — the runs this socket started keep going and persist.
     s.unsubscribe?.()

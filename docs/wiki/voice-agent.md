@@ -2,7 +2,7 @@
 title: Voice Agent
 status: shipped
 cycle: 73
-updated: 2026-09-27
+updated: 2026-09-28
 mymind_id: 34c1de13-ab16-4662-a177-0f8ac99f478e
 mymind_hash: 33d62667d0104b6add19c4de9e562936844a6313c32c0824dbc76474c55fa2a3
 ---
@@ -267,7 +267,7 @@ The client capture/barge-in/playback knobs are **user-tunable**: `useVoiceSettin
 
 ## WebSocket protocol (`/api/voice/ws`)
 
-> **Cycle 73:** turns no longer run inside the socket. `ws.ts` enqueues a run and subscribes to its conversation; closing the socket unsubscribes and never aborts; `load`/`new` no longer abort (only `interrupt` does); new frames `attach` (client→server) and `steered` (server→client), and every hub frame carries `cid`. Audio frames and TTS go only to the originating socket, and only while it is attached. The authoritative protocol is the header of `server/api/voice/ws.ts` and [agent-runtime.md § WebSocket protocol](agent-runtime.md#websocket-protocol-serverapivoicewsts-runtime-path); tables below that say an interrupt/load "aborts the current turn" describe the legacy path (`server/lib/voice/ws-legacy.ts`, behind the `agent_runtime` flag, deleted in cycle 74).
+> **Cycle 73:** turns no longer run inside the socket. `ws.ts` enqueues a run and subscribes to its conversation; closing the socket unsubscribes and never aborts; `load`/`new` no longer abort (only `interrupt` does); new frames `attach` (client→server) and `steered` (server→client), and every hub frame carries `cid`. Audio frames and TTS go only to the originating socket, and only while it is attached. The authoritative protocol is the header of `server/api/voice/ws.ts` and [agent-runtime.md § WebSocket protocol](agent-runtime.md#websocket-protocol-serverapivoicewsts-runtime-path); tables below that say an interrupt/load "aborts the current turn" describe the pre-cycle-73 in-socket path, deleted in cycle 74 along with the `agent_runtime` flag that gated it.
 
 **Auth:** the WS upgrade is gated by an `upgrade()` hook in `ws.ts` validating the better-auth session — nitro server middleware does NOT run for WS upgrades (crossws handles them), so without this hook the socket was unauthenticated.
 

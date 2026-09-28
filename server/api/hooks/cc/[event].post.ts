@@ -5,7 +5,6 @@ import { publishChange } from '../../../utils/live-bus'
 import { useDb } from '../../../db'
 import { projects, type Session } from '../../../db/schema'
 import { fireEvent } from '../../../lib/agent/jobs/events'
-import { runtimeEnabled } from '../../../lib/agent/runtime/flag'
 
 const Body = z.object({
   source: z.string().default('claude_code'),
@@ -54,7 +53,7 @@ export default defineEventHandler(async (event) => {
   publishChange({ resource: 'session', action: 'updated', id: session.id })
   // Cycle 74: `cc.session_end` event jobs. Fire-and-forget — the hook answers Claude Code
   // immediately; dedupe (key = session id) makes a repeated SessionEnd delivery harmless.
-  if (isEnd && runtimeEnabled()) void fireSessionEnd(session).catch(err => console.error('[jobs] cc.session_end failed:', err))
+  if (isEnd) void fireSessionEnd(session).catch(err => console.error('[jobs] cc.session_end failed:', err))
   return { ok: true, sessionId: session.id }
 })
 

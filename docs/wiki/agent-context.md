@@ -2,7 +2,7 @@
 title: Agent Context Assembly
 status: built
 cycle: 73
-updated: 2026-09-27
+updated: 2026-09-28
 mymind_id: 4802c314-4adc-45e1-b9de-9484f1aba301
 mymind_hash: 6627d663eec6df8c2338917ca31e07b218b38470c279b76a35b249384f43ac29
 ---
@@ -22,8 +22,9 @@ It replaced the ad-hoc pair (`buildLiveContext` + `buildMemoryContext`) that `se
 used to pass separately. **Since cycle 73 its caller is the runtime runner**
 (`server/lib/agent/runtime/runner.ts`, see [agent-runtime.md](agent-runtime.md)), which passes
 `turns` and `budget: RUNTIME_CONTEXT_BUDGET` (**20000**) and hands the result to `handleTurn` as the
-`context` string for `buildSystemPrompt`. (The legacy in-socket path, `server/lib/voice/ws-legacy.ts`,
-still calls it the cycle-70 way — no turns, default budget 6000 — until cycle 74 deletes it.)
+`context` string for `buildSystemPrompt`. (Cycle 74 deleted the legacy in-socket path,
+`server/lib/voice/ws-legacy.ts`, which had called it the cycle-70 way — no turns, default budget
+6000.)
 
 `buildLiveContext` survives and has exactly one caller — the assembler. `buildMemoryContext` was
 deleted; nothing calls it.

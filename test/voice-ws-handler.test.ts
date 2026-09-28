@@ -20,8 +20,6 @@ const m = vi.hoisted(() => ({
   clear: vi.fn(async () => {}),
   order: [] as string[]
 }))
-vi.mock('../server/lib/voice/ws-legacy', () => ({ legacyHooks: {} }))
-vi.mock('../server/lib/agent/runtime/flag', () => ({ runtimeEnabled: () => true }))
 vi.mock('../server/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue, abortActive: m.abortActive, abortActiveAndWait: m.abortActiveAndWait }))
 vi.mock('../server/lib/agent/runtime/aborts', () => ({ abortRun: m.abortRun }))
 vi.mock('../server/lib/agent/runtime/approvals', () => ({

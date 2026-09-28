@@ -2,7 +2,7 @@
 title: Agent Surface (/agent)
 status: shipped
 cycle: 73
-updated: 2026-09-27
+updated: 2026-09-28
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
 mymind_hash: 27dc5f74025cb094fb9a85db154107988dde31de36fc54c88adec477344f629e
 ---
@@ -282,7 +282,7 @@ intervals would be more machinery than a monitoring readout justifies.
 
 ## WebSocket protocol (`server/api/voice/ws.ts`)
 
-> **Cycle 73 — turns moved out of the socket.** Everything below about `ConnState` owning the turn (`s.lock`, `s.history`, `s.ac`, `turnSeq`), control frames aborting the turn, and `ws.ts` persisting describes the **legacy** path (`server/lib/voice/ws-legacy.ts`, kept one cycle behind the `agent_runtime` flag). On the runtime path a turn is an `agent_runs` row executed by `server/lib/agent/runtime/runner.ts`; `ws.ts` enqueues and subscribes; only `interrupt` aborts; `load` selects without subscribing and `attach` subscribes + replays; frames carry `cid`; a message sent while a run is active is **steered** into it. The chunk/user-message/persisted frame semantics below are unchanged. See [agent-runtime.md](agent-runtime.md).
+> **Cycle 73 — turns moved out of the socket.** Everything below about `ConnState` owning the turn (`s.lock`, `s.history`, `s.ac`, `turnSeq`), and control frames aborting the turn, describes the **cycle-73-and-earlier** in-socket path, deleted in cycle 74. A turn is now always an `agent_runs` row executed by `server/lib/agent/runtime/runner.ts`; `ws.ts` enqueues and subscribes; only `interrupt` aborts; `load` selects without subscribing and `attach` subscribes + replays; frames carry `cid`; a message sent while a run is active is **steered** into it. The chunk/user-message/persisted frame semantics below are unchanged. See [agent-runtime.md](agent-runtime.md).
 
 Per-connection `ConnState` adds `conversationId` + `context` + a monotonic `turnSeq`. Frames (client→server):
 - binary WAV — a spoken utterance (`speak=true`, modality `voice`)
