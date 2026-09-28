@@ -49,9 +49,12 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   search_projects: 'run', get_project: 'run', search_tasks: 'run', web_search: 'run', web_fetch: 'run',
   search_messages: 'run', search_sessions: 'run', read_around_message: 'run', read_session: 'run',
   use_skill: 'run', research_web: 'run', search_brain: 'run',
+  list_jobs: 'run', get_job: 'run',
   // create-kind, but pure append (nothing existing is touched) — safe to run headless
   save_memory: 'run', create_task: 'run', create_project: 'run', quick_capture: 'run',
   generate_image: 'run', save_document: 'run',
+  // jobs (spec D2): free even in a background run — Bridget's own upkeep, not Tony's data
+  create_job: 'run', edit_job: 'run', run_job: 'run', schedule_wake: 'run', delete_job: 'run',
   // create-kind that edits/moves something that already exists — proposed, not run
   edit_document: 'propose', edit_section: 'propose', update_document: 'propose',
   move_document: 'propose', sync_document: 'propose', edit_image: 'propose',

@@ -15,6 +15,7 @@ import { generateImage, editImage } from '../imagegen/comfy'
 import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getImageBytes } from '../../services/images'
 import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill, getSkillSource, restoreSkill } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
+import { jobTools } from './tools/jobs'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 import { clampPaging, buildPage } from './paging'
@@ -1206,7 +1207,9 @@ export const agentTools: AgentTool[] = [
         undo: async () => { await restoreSkill(priorId, priorContent, 'agent') }
       }
     }
-  }
+  },
+  // ---- jobs (cycle 74, Task 8) ----
+  ...jobTools
 ]
 
 const byName = new Map(agentTools.map(t => [t.name, t]))

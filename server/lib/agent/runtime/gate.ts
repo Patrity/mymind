@@ -13,13 +13,27 @@ export type HeadlessClass = 'run' | 'propose' | 'exclude'
 export interface AgentActionProposal { runId: string; conversationId: string; tool: string; args: Record<string, unknown> }
 export type ProposeFn = (p: AgentActionProposal) => Promise<string>
 
-export const APPEND_TOOLS: ReadonlySet<string> = new Set(['save_memory', 'create_task', 'create_project', 'quick_capture', 'generate_image', 'save_document'])
+export const APPEND_TOOLS: ReadonlySet<string> = new Set([
+  'save_memory', 'create_task', 'create_project', 'quick_capture', 'generate_image', 'save_document',
+  // jobs (cycle 74, Task 8, spec D2): Bridget may edit her own jobs freely, including in
+  // background runs — job management is her own upkeep, not a change to Tony's data.
+  'create_job', 'edit_job', 'run_job', 'schedule_wake'
+])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill'])
+
+// Tools that run headless DESPITE being `destructive`-kind — checked BEFORE the destructive rule
+// below, so they never fall into 'propose'. Currently just delete_job: spec D2 says job
+// deletion is free even in a background run, same reasoning as the APPEND_TOOLS jobs entries
+// above (Bridget's own upkeep, not a change to Tony's data) — it's `destructive`-kind only
+// because deleting a job is irreversible-by-default (no restore-with-history primitive), not
+// because it needs a human in the loop.
+export const FREE_TOOLS: ReadonlySet<string> = new Set(['delete_job'])
 
 export function classifyForHeadless(t: AgentTool): HeadlessClass {
   if (t.dangerous) return 'exclude'
   if (t.kind === 'read') return 'run'
   if (APPEND_TOOLS.has(t.name)) return 'run'
+  if (FREE_TOOLS.has(t.name)) return 'run'
   if (t.kind === 'destructive' || PROPOSE_TOOLS.has(t.name)) return 'propose'
   throw new Error(`unclassified tool for headless runs: ${t.name} (kind ${t.kind}) — add it to APPEND_TOOLS or PROPOSE_TOOLS`)
 }

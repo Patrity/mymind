@@ -4,20 +4,20 @@ import { agentTools, toolByName } from '../server/lib/agent/tools'
 import { MCP_INSTRUCTIONS } from '../server/lib/mcp/server'
 
 describe('agent tool registry', () => {
-  it('exposes the expected 38 tools', () => {
+  it('exposes the expected 45 tools', () => {
     const names = agentTools.map(t => t.name).sort()
     expect(names).toEqual([
-      'create_project', 'create_skill', 'create_task',
-      'delete_document', 'delete_skill', 'delete_task',
-      'edit_document', 'edit_image', 'edit_project', 'edit_section', 'edit_skill', 'edit_task',
+      'create_job', 'create_project', 'create_skill', 'create_task',
+      'delete_document', 'delete_job', 'delete_skill', 'delete_task',
+      'edit_document', 'edit_image', 'edit_job', 'edit_project', 'edit_section', 'edit_skill', 'edit_task',
       'forget_memory',
       'generate_image',
-      'get_document', 'get_project', 'get_recent_memories',
+      'get_document', 'get_job', 'get_project', 'get_recent_memories',
       'grep_document',
-      'list_documents',
+      'list_documents', 'list_jobs',
       'move_document',
-      'quick_capture', 'read_around_message', 'read_document', 'read_session',
-      'save_document', 'save_memory',
+      'quick_capture', 'read_around_message', 'read_document', 'read_session', 'run_job',
+      'save_document', 'save_memory', 'schedule_wake',
       'search_docs', 'search_memories', 'search_messages', 'search_passages', 'search_projects', 'search_sessions', 'search_tasks',
       'sync_document',
       'update_document',
@@ -35,6 +35,13 @@ describe('agent tool registry', () => {
     expect(toolByName('list_documents')!.kind).toBe('read')
     expect(toolByName('get_document')!.kind).toBe('read')
     expect(toolByName('save_document')!.kind).toBe('create')
+    expect(toolByName('list_jobs')!.kind).toBe('read')
+    expect(toolByName('get_job')!.kind).toBe('read')
+    expect(toolByName('create_job')!.kind).toBe('create')
+    expect(toolByName('edit_job')!.kind).toBe('create')
+    expect(toolByName('run_job')!.kind).toBe('create')
+    expect(toolByName('schedule_wake')!.kind).toBe('create')
+    expect(toolByName('delete_job')!.kind).toBe('destructive')
   })
 
   it('every tool has a non-empty description and zod shape', () => {
