@@ -30,7 +30,7 @@ import { createJob, saveJob, getJob, setJobEnabled } from '../server/lib/agent/j
 import { pumpOnce } from '../server/lib/agent/runtime/queue'
 import { registerAbort, releaseAbort, abortRun } from '../server/lib/agent/runtime/aborts'
 import type { RunOutcome } from '../server/lib/agent/runtime/types'
-import { jobsTick } from '../server/lib/agent/jobs/tick'
+import { jobsTick, runJobNow } from '../server/lib/agent/jobs/tick'
 import { fireEvent, dueTaskEvents } from '../server/lib/agent/jobs/events'
 import { onRunFinished, MAX_CONSECUTIVE_FAILURES } from '../server/lib/agent/jobs/outcome'
 
@@ -479,5 +479,106 @@ describe('onRunFinished', () => {
       await onRunFinished({ ...run, jobId: null }, { status: 'failed', error: 'x' }, { mainConversationId: scratchMain })
     }
     expect(await snapshot()).toEqual(before)
+  })
+})
+
+// ---- cycle 74 final review fix wave --------------------------------------------------------
+
+describe('final review fixes — events', () => {
+  async function dueTask(title: string, hoursAgo: number): Promise<string> {
+    const [col] = await db().select({ id: taskColumns.id }).from(taskColumns).limit(1)
+    const [t] = await db().insert(tasks).values({
+      title, columnId: col!.id, dueDate: sql`now() - make_interval(hours => ${hoursAgo})`
+    }).returning()
+    taskIds.push(t!.id)
+    return t!.id
+  }
+  const firesFor = async (jobId: string) =>
+    (await db().select().from(agentJobFires).where(eq(agentJobFires.jobId, jobId))).length
+
+  it('I4: fireEvent skips a job whose previous run is still going, without recording the key', async () => {
+    const slug = `${PREFIX}ev-overlap`
+    const job = await createJob({ slug, content: md('trigger: event cc.session_end\nenabled: true', 'Digest.'), actor: 'human' })
+    const scope = { onlySlugs: [slug], wakeFn: fakeWake }
+    expect(await fireEvent('cc.session_end', 'ov-1', {}, scope)).toEqual([slug])
+    // Run for ov-1 still queued → ov-2 is skipped and leaves no fire row.
+    expect(await fireEvent('cc.session_end', 'ov-2', {}, scope)).toEqual([])
+    expect(await firesFor(job.id)).toBe(1)
+    await finishJobRuns(job.id)
+    expect(await fireEvent('cc.session_end', 'ov-2', {}, scope)).toEqual([slug])
+    expect(callsFor(slug)).toHaveLength(2)
+    await finishJobRuns(job.id)
+  })
+
+  it('I4: task.due batches every newly-due task into ONE fire per tick; tasks never re-fire; overlap defers', async () => {
+    const slug = `${PREFIX}due-batch`
+    const job = await createJob({ slug, content: md('trigger: event task.due\nenabled: true', 'Tasks are due.'), actor: 'human' })
+    const a = await dueTask(`${PREFIX}batch A`, 1)
+    const b = await dueTask(`${PREFIX}batch B`, 2)
+    const c = await dueTask(`${PREFIX}batch C`, 3)
+    const scope = (ids: string[]) => ({ onlySlugs: [slug], onlyTaskIds: ids, wakeFn: fakeWake })
+
+    expect(await dueTaskEvents(scope([a, b]))).toBe(1)
+    expect(callsFor(slug)).toHaveLength(1)
+    const prompt = callsFor(slug)[0]!.prompt
+    expect(prompt).toMatch(/^Tasks are due\.\n\n2 tasks are due and not completed yet: /)
+    expect(prompt).toContain(`${PREFIX}batch A`)
+    expect(prompt).toContain(`${PREFIX}batch B`)
+    expect(await firesFor(job.id)).toBe(2) // dedupe stays per task
+
+    // C becomes visible while the batch's run is still going: deferred, no key recorded.
+    expect(await dueTaskEvents(scope([a, b, c]))).toBe(0)
+    expect(await firesFor(job.id)).toBe(2)
+    await finishJobRuns(job.id)
+    // Next tick: only C fires; A and B never again.
+    expect(await dueTaskEvents(scope([a, b, c]))).toBe(1)
+    const last = callsFor(slug)[1]!.prompt
+    expect(last).toContain(`${PREFIX}batch C`)
+    expect(last).not.toContain(`${PREFIX}batch A`)
+    await finishJobRuns(job.id)
+    expect(await dueTaskEvents(scope([a, b, c]))).toBe(0)
+    expect(callsFor(slug)).toHaveLength(2)
+  })
+})
+
+describe('final review fixes — Run now and fenced finish', () => {
+  it('M10: a human Run now (allowDisabled) runs a disabled job; without it the run is skipped', async () => {
+    const slug = `${PREFIX}runnow-disabled`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: false', 'Try me.'), actor: 'human' })
+    expect(await runJobNow(slug, { wakeFn: fakeWake })).toEqual({ skipped: 'disabled' })
+    const res = await runJobNow(slug, { wakeFn: fakeWake, allowDisabled: true })
+    expect(res).toHaveProperty('runId')
+    expect(callsFor(slug)).toHaveLength(1)
+    const r = await row(slug)
+    expect(r.enabled).toBe(false)
+    expect(r.nextRunAt).toBeNull() // schedule untouched
+    await finishJobRuns(job.id)
+  })
+
+  it('M11: a run whose finish was fenced (recovered as interrupted meanwhile) records no job outcome', async () => {
+    const slug = `${PREFIX}fenced`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'F.'), actor: 'human' })
+    const conv = (await createConversation({ title: `${PREFIX}fenced` })).id
+    convIds.push(conv)
+    const r = await createRun({
+      conversationId: conv, sessionKey: `thread:${conv}`, trigger: 'wake', profile: 'headless',
+      input: { text: 'F.', modality: 'text' }, wakeReason: `job:${slug}`, jobId: job.id
+    })
+    // The turn "completes", but another process recovered the row as interrupted first.
+    const fencedTurn = async (run: AgentRun): Promise<RunOutcome> => {
+      await db().update(agentRuns).set({ status: 'interrupted' }).where(eq(agentRuns.id, run.id))
+      return { status: 'done', suppressed: false }
+    }
+    expect(await pumpOnce({ onlyConversations: [conv], run: fencedTurn, rekick: false })).toBe(1)
+    for (let i = 0; i < 40; i++) {
+      await new Promise(res => setTimeout(res, 50))
+      const [cur] = await db().select({ s: agentRuns.status }).from(agentRuns).where(eq(agentRuns.id, r.id))
+      if (cur!.s === 'interrupted') break
+    }
+    await new Promise(res => setTimeout(res, 300))
+    const after = await row(slug)
+    expect(after.lastOutcome).toBeNull()
+    const [final] = await db().select({ s: agentRuns.status }).from(agentRuns).where(eq(agentRuns.id, r.id))
+    expect(final!.s).toBe('interrupted')
   })
 })

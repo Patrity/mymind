@@ -6,7 +6,7 @@
 // and only deletes the ones it created itself).
 process.loadEnvFile('.env')
 
-import { describe, it, expect, afterAll, vi } from 'vitest'
+import { describe, it, expect, afterAll, vi, onTestFinished } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
@@ -18,6 +18,7 @@ import { listRevisions } from '../server/lib/agent/config/revisions'
 import { SEED_JOB_SLUGS } from '../server/lib/agent/jobs/seeds'
 import {
   createJob, saveJob, getJob, setJobEnabled, revertJob, revalidateAll, installSeedJobs,
+  deleteJob, restoreJob, rederiveDefaultTimezone,
   JobValidationError, ConflictError, MAX_ENABLED_JOBS, MAX_ENABLED_LOCK_KEY
 } from '../server/lib/agent/jobs/store'
 
@@ -408,5 +409,97 @@ describe('job store — revalidateAll (boot)', () => {
       await db.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, ids)))
       await db.delete(agentJobs).where(inArray(agentJobs.id, ids))
     }
+  })
+})
+
+// ---- cycle 74 final review fix wave --------------------------------------------------------
+
+describe('job store — final review fixes', () => {
+  const future = () => new Date(Date.now() + 3 * 3600_000).toISOString()
+  const past = () => new Date(Date.now() - 3600_000).toISOString()
+
+  it('M4: a system write keeps the author\'s source — an agent reminder stays `agent` after the tick disables it', async () => {
+    const slug = `${PREFIX}m4-source`
+    await createJob({ slug, content: md(`trigger: at ${future()}\nenabled: true`, 'Ping.'), actor: 'agent' })
+    const off = await setJobEnabled(slug, false, 'system')
+    expect(off.source).toBe('agent')
+    // …and a human edit still relabels it (source = who authored the current content).
+    const human = await saveJob(slug, md(`trigger: at ${future()}\nenabled: false`, 'Ping 2.'), off.contentHash, 'human')
+    expect(human.source).toBe('human')
+    const sys = await setJobEnabled(slug, false, 'system')
+    expect(sys.source).toBe('human')
+  })
+
+  it('M5: disabling always succeeds, even when the content would no longer validate (unknown model)', async () => {
+    const slug = `${PREFIX}m5-disable`
+    const job = await createJob({ slug, content: md('trigger: every 10m\nenabled: true', 'Hi.'), actor: 'human' })
+    // A model that has left the registry: the content is stored as-is (the hash is left alone,
+    // so the CAS still matches), exactly the state revalidateAll would later flag.
+    const pinned = md('trigger: every 10m\nenabled: true\nmodel: jstest-no-such-model', 'Hi.')
+    await useDb().update(agentJobs).set({ content: pinned }).where(eq(agentJobs.id, job.id))
+    const off = await setJobEnabled(slug, false, 'human')
+    expect(off.enabled).toBe(false)
+    expect(off.nextRunAt).toBeNull()
+    expect(off.content).toMatch(/^enabled: false$/m)
+    expect(off.content).toContain('model: jstest-no-such-model')
+    const revs = await listRevisions('job', job.id)
+    expect(revs[0]!.content).toBe(off.content)
+    // Enabling it again still validates.
+    await expect(setJobEnabled(slug, true, 'human')).rejects.toBeInstanceOf(JobValidationError)
+  })
+
+  it('M6: an enabled `at` job in the past is a validation error; disabled it saves', async () => {
+    const slug = `${PREFIX}m6-past`
+    await expect(createJob({ slug, content: md(`trigger: at ${past()}\nenabled: true`, 'Late.'), actor: 'human' }))
+      .rejects.toThrow(/in the past/)
+    expect(await getJob(slug)).toBeNull()
+    const off = await createJob({ slug, content: md(`trigger: at ${past()}\nenabled: false`, 'Late.'), actor: 'human' })
+    expect(off.enabled).toBe(false)
+    await expect(setJobEnabled(slug, true, 'human')).rejects.toThrow(/in the past/)
+    expect((await getJob(slug))!.enabled).toBe(false)
+  })
+
+  it('I2: deleteJob records a final revision; restoreJob brings it back under the SAME id with its history', async () => {
+    const slug = `${PREFIX}i2-delete`
+    const job = await createJob({ slug, content: md('trigger: every 10m\nenabled: false', 'v1'), actor: 'human' })
+    // The job is deleted mid-test: if anything below fails, the prefix sweep can't find its
+    // revisions again, so they go by id.
+    onTestFinished(async () => {
+      if ((await getJob(slug))?.id !== job.id) await useDb().delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), eq(agentConfigRevisions.targetId, job.id)))
+    })
+    const v2 = await saveJob(slug, md('trigger: every 10m\nenabled: false', 'v2'), job.contentHash, 'human')
+    const runId = '00000000-0000-4000-8000-00000000abcd'
+    expect(await deleteJob(slug, { actor: 'agent', runId })).toBe(true)
+    expect(await getJob(slug)).toBeNull()
+    const afterDelete = await listRevisions('job', job.id)
+    expect(afterDelete).toHaveLength(3)
+    const [finalRev] = await useDb().select().from(agentConfigRevisions)
+      .where(eq(agentConfigRevisions.id, afterDelete[0]!.id))
+    expect(finalRev).toMatchObject({ actor: 'agent', runId, content: v2.content })
+
+    const restored = await restoreJob(job.id, slug, v2.content, 'agent')
+    expect(restored.id).toBe(job.id)
+    expect(restored.content).toBe(v2.content)
+    expect(await listRevisions('job', job.id)).toHaveLength(4)
+    // A taken slug refuses the restore.
+    await expect(restoreJob('00000000-0000-4000-8000-00000000abce', slug, v2.content, 'agent')).rejects.toBeInstanceOf(ConflictError)
+  })
+
+  it('I5: rederiveDefaultTimezone moves jobs WITHOUT a timezone: line to the new default and leaves explicit ones alone', async () => {
+    const plain = await createJob({ slug: `${PREFIX}i5-plain`, content: md('trigger: cron 30 7 * * *\nenabled: true', 'Brief.'), actor: 'human' })
+    const pinned = await createJob({ slug: `${PREFIX}i5-pinned`, content: md('trigger: cron 30 7 * * *\ntimezone: Europe/London\nenabled: true', 'Brief.'), actor: 'human' })
+    const ids = [plain.id, pinned.id]
+    expect(await rederiveDefaultTimezone({ onlyIds: ids, defaultTimezone: 'Asia/Tokyo' })).toBe(plain.timezone === 'Asia/Tokyo' ? 0 : 1)
+    const p = (await getJob(plain.slug))!
+    const q = (await getJob(pinned.slug))!
+    expect(p.timezone).toBe('Asia/Tokyo')
+    // 07:30 in Tokyo is 22:30 UTC.
+    expect(new Date(p.nextRunAt!).getUTCHours()).toBe(22)
+    expect(new Date(p.nextRunAt!).getUTCMinutes()).toBe(30)
+    expect(p.contentHash).toBe(plain.contentHash) // content untouched
+    expect(q.timezone).toBe('Europe/London')
+    expect(q.nextRunAt).toBe(pinned.nextRunAt)
+    // Idempotent.
+    expect(await rederiveDefaultTimezone({ onlyIds: ids, defaultTimezone: 'Asia/Tokyo' })).toBe(0)
   })
 })

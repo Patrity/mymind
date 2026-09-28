@@ -180,3 +180,18 @@ describe('delete and restore', () => {
     await expect(restoreSkill(before!.id, before!.content, 'agent')).rejects.toThrow(/already exists/)
   })
 })
+
+describe('the active toggle (final review M8)', () => {
+  it('flips only the `active:` line of the stored markdown, keeping extra keys and formatting', async () => {
+    const name = `${PREFIX}m8-toggle`
+    const content = `---\nname: ${name}\ndescription:   Spaced desc   # a comment\nwhen_to_use: w\nactive: true\nsource: human\nextra_key: keep me\n---\nBody with  two  spaces.\n`
+    await saveSkillSource(name, content, null, 'human')
+    await updateSkill(name, { active: false }, { actor: 'human' })
+    const src = await getSkillSource(name)
+    expect(src!.content).toBe(content.replace('active: true', 'active: false'))
+    expect((await getSkill(name))!.active).toBe(false)
+    // Any other change still regenerates from fields (the extra key is not a field).
+    await updateSkill(name, { active: true, body: 'New body' }, { actor: 'human' })
+    expect((await getSkillSource(name))!.content).not.toContain('extra_key')
+  })
+})

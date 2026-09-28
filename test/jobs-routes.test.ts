@@ -254,7 +254,8 @@ describe('POST /api/jobs/:slug/run', () => {
     getJob.mockResolvedValue(JOB)
     runJobNow.mockResolvedValue({ runId: 'r1' })
     await expect(jobRun(evt({ params: { slug: 'daily-digest' } }))).resolves.toEqual({ runId: 'r1' })
-    expect(runJobNow).toHaveBeenCalledWith('daily-digest')
+    // A human Run now works on a disabled job (final review M10): the route opts in.
+    expect(runJobNow).toHaveBeenCalledWith('daily-digest', { allowDisabled: true })
   })
 
   it('passes through a skip result', async () => {

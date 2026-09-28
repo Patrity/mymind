@@ -180,11 +180,14 @@ export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?
   return { fired, skipped }
 }
 
-/** "Run now" (UI + run_job tool): fires immediately, respecting overlap; the schedule is untouched. */
-export async function runJobNow(slug: string, deps: { wakeFn?: WakeFn } = {}): Promise<{ runId: string } | { skipped: 'overlap' | 'disabled' | 'invalid' }> {
+/** "Run now" (UI + run_job tool): fires immediately, respecting overlap; the schedule is untouched.
+ *  `allowDisabled` (final review M10, revised ruling): a HUMAN Run now (the API/UI) works on a
+ *  disabled job, so Tony can try a seed before enabling it; the agent's run_job leaves it unset
+ *  and still gets `skipped: 'disabled'`. */
+export async function runJobNow(slug: string, deps: { wakeFn?: WakeFn; allowDisabled?: boolean } = {}): Promise<{ runId: string } | { skipped: 'overlap' | 'disabled' | 'invalid' }> {
   const [row] = await useDb().select().from(agentJobs).where(eq(agentJobs.slug, slug)).limit(1)
   if (!row) throw new Error(`no job named "${slug}"`)
-  if (!row.enabled) return { skipped: 'disabled' }
+  if (!row.enabled && !deps.allowDisabled) return { skipped: 'disabled' }
   const spec = row.parseError ? null : await specFor(row)
   if (!spec) return { skipped: 'invalid' }
   if (await hasActiveRun(row.id)) return { skipped: 'overlap' }

@@ -11,7 +11,8 @@ import { splitFrontmatter } from '../shared/utils/frontmatter'
 // The dev DB is shared and holds REAL skill documents: every call here passes `onlyPaths`
 // so the move touches the fixtures alone.
 const PATHS = ['/projects/mymind/skills/migtest-a.md', '/projects/mymind/skills/migtest-b.md',
-  '/projects/mymind/skills/migtest-nokind.md', '/projects/mymind/skills/migtest-invalid.md']
+  '/projects/mymind/skills/migtest-nokind.md', '/projects/mymind/skills/migtest-invalid.md',
+  '/projects/mymind/elsewhere/migtest-moved.md']
 
 async function cleanup() {
   const db = useDb()
@@ -68,8 +69,13 @@ describe('migrateSkillsFromDocuments', () => {
     // Live doc with the same slug — the NOT EXISTS filter must skip it, and not soft-delete it.
     await db.insert(documents).values({ path: PATHS[0]!, title: 'migtest-a', type: 'skill', project: 'mymind', content: 'body A',
       frontmatter: { kind: 'skill', name: 'migtest-a', description: 'd', whenToUse: 'w' } })
-    // Filtered out by NOT EXISTS — neither moved nor reported as skipped.
-    expect(await migrateSkillsFromDocuments({ onlyPaths: PATHS })).toEqual({ moved: 0, skipped: [] })
+    // Filtered out of the move by NOT EXISTS — not moved, but REPORTED (final review M7): the
+    // document is live yet Bridget no longer reads skill documents, so it would vanish silently.
+    const res = await migrateSkillsFromDocuments({ onlyPaths: PATHS })
+    expect(res.moved).toBe(0)
+    expect(res.skipped).toHaveLength(1)
+    expect(res.skipped[0]).toMatchObject({ path: PATHS[0] })
+    expect(res.skipped[0]!.reason).toMatch(/already exists in agent_skills/)
     const [row] = await db.select().from(agentSkills).where(like(agentSkills.slug, 'migtest-%'))
     expect(row!.content).toBe('EXISTING')
     // …and the document it did not move stays live.
@@ -99,5 +105,17 @@ describe('migrateSkillsFromDocuments', () => {
     // The bad documents stay live.
     const bad = await db.select().from(documents).where(inArray(documents.path, [PATHS[2]!, PATHS[3]!]))
     expect(bad.every(d => d.deletedAt === null)).toBe(true)
+  })
+
+  it('M7: reports a live skill document outside the legacy skills folder by path', async () => {
+    await cleanup()
+    const db = useDb()
+    await db.insert(documents).values({ path: PATHS[4]!, title: 'migtest-moved', type: 'skill', project: 'mymind', content: 'x',
+      frontmatter: { kind: 'skill', name: 'migtest-moved', description: 'd', whenToUse: 'w' } })
+    const res = await migrateSkillsFromDocuments({ onlyPaths: PATHS })
+    expect(res.moved).toBe(0)
+    expect(res.skipped).toEqual([{ path: PATHS[4], reason: expect.stringMatching(/outside \/projects\/mymind\/skills\//) }])
+    const [doc] = await db.select().from(documents).where(inArray(documents.path, [PATHS[4]!]))
+    expect(doc!.deletedAt).toBeNull()
   })
 })

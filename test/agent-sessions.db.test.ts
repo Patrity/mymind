@@ -7,7 +7,8 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { useDb } from '../server/db'
-import { conversations, conversationMessages } from '../server/db/schema'
+import { agentRuns, conversations, conversationMessages } from '../server/db/schema'
+import { createRun } from '../server/lib/agent/runtime/runs'
 import { resolveSession, getOrCreateMain } from '../server/lib/agent/runtime/sessions'
 import { appendMessages, getAgentHistory, getConversation } from '../server/services/conversations'
 import { eq, inArray, sql } from 'drizzle-orm'
@@ -48,10 +49,23 @@ describe('sessions', () => {
     expect(c!.kind).toBe('main')
   })
 
-  it('isolated:<slug> always creates a fresh thread', async () => {
-    const a = await resolveSession('isolated:SESS-TEST'); convIds.push(a.conversationId)
-    const b = await resolveSession('isolated:SESS-TEST'); convIds.push(b.conversationId)
-    expect(a.conversationId).not.toBe(b.conversationId)
+  it('isolated:<slug> reuses ONE thread per slug once a run has used it (final review I3)', async () => {
+    const key = `isolated:sess-test-${Date.now()}` as const
+    const a = await resolveSession(key); convIds.push(a.conversationId)
+    expect(a.created).toBe(true)
+    // The first fire's run records the key with its thread; later fires find it there.
+    await createRun({ conversationId: a.conversationId, sessionKey: key, trigger: 'wake', profile: 'headless', input: { text: 'x', modality: 'text' } })
+    await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.conversationId, a.conversationId))
+    const b = await resolveSession(key); if (b.conversationId !== a.conversationId) convIds.push(b.conversationId)
+    expect(b).toEqual({ conversationId: a.conversationId, created: false })
+    // Another slug gets its own thread.
+    const other = await resolveSession(`${key}-other`); convIds.push(other.conversationId)
+    expect(other.conversationId).not.toBe(a.conversationId)
+    // A deleted thread (its runs cascade away) is replaced by a fresh one.
+    await useDb().delete(conversations).where(eq(conversations.id, a.conversationId))
+    const c = await resolveSession(key); convIds.push(c.conversationId)
+    expect(c.created).toBe(true)
+    expect(c.conversationId).not.toBe(a.conversationId)
   })
 })
 

@@ -7,7 +7,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentJobs, agentJobFires } from '../../../db/schema'
 import { wake } from '../runtime/wake'
-import { fireJob, specFor } from './tick'
+import { fireJob, hasActiveRun, specFor } from './tick'
 
 export type JobEventName = 'cc.session_end' | 'task.due'
 type WakeFn = typeof wake
@@ -16,6 +16,17 @@ type WakeFn = typeof wake
 export const TASK_DUE_LOOKBACK_DAYS = 7
 
 const str = (v: unknown): string | null => (v === null || v === undefined || v === '' ? null : String(v))
+
+/** `text` as the end of a sentence: one full stop, never "done.." (final review M2). */
+const sentence = (text: string): string => /[.!?…]$/.test(text.trimEnd()) ? text.trimEnd() : `${text.trimEnd()}.`
+
+/** One due task as a clause: 'title', due X (task id Y). */
+function taskClause(t: Record<string, unknown>): string {
+  const title = str(t.title) ?? 'untitled'
+  const due = str(t.dueDate)
+  const id = str(t.taskId)
+  return `'${title}'${due ? `, due ${due}` : ''}${id ? ` (task id ${id})` : ''}`
+}
 
 /**
  * The plain-sentence description of an event appended to a job's prompt. No brackets or tags:
@@ -28,8 +39,14 @@ export function eventBlock(name: string, payload: Record<string, unknown>): stri
     const minutes = typeof payload.durationMinutes === 'number' ? `${payload.durationMinutes} minutes` : 'unknown duration'
     const summary = str(payload.summary) ?? 'not summarised yet'
     const id = str(payload.sessionId)
-    return `A Claude Code session just ended: '${title}' in project ${project}, ${minutes}. Summary: ${summary}.`
+    return `A Claude Code session just ended: '${title}' in project ${project}, ${minutes}. Summary: ${sentence(summary)}`
       + (id ? ` Its session id is ${id}.` : '')
+  }
+  // task.due batches (final review I4): one fire per tick lists every newly-due task.
+  if (name === 'task.due' && Array.isArray(payload.tasks)) {
+    const tasks = payload.tasks as Record<string, unknown>[]
+    if (tasks.length === 1) return eventBlock('task.due', tasks[0]!)
+    return `${tasks.length} tasks are due and not completed yet: ${tasks.map(taskClause).join('; ')}.`
   }
   if (name === 'task.due') {
     const title = str(payload.title) ?? 'untitled'
@@ -75,6 +92,10 @@ export async function fireEvent(
     const spec = await specFor(job)
     if (!spec) continue
     if (spec.filter && !Object.entries(spec.filter).every(([k, v]) => String(payload[k]) === v)) continue
+    // No self-overlap (spec §4; final review I4): a job whose previous run is still queued or
+    // running is skipped WITHOUT recording the key, so nothing piles up behind it on main.
+    // For a cc.session_end that event is simply not digested; task.due retries next tick.
+    if (await hasActiveRun(job.id)) continue
     const inserted = await useDb().insert(agentJobFires).values({ jobId: job.id, eventKey: key })
       .onConflictDoNothing().returning({ jobId: agentJobFires.jobId })
     if (!inserted.length) continue // already fired for this key
@@ -92,9 +113,16 @@ export async function fireEvent(
 /**
  * The `task.due` source, run on every worker tick: tasks whose due date has passed (within the
  * last 7 days) and that are not completed. Key = task id + due date, so moving a due date makes
- * it a new event. Returns how many job fires happened. `onlySlugs`/`onlyTaskIds` are test seams.
+ * it a new event.
+ *
+ * Batched (final review I4): each listening job fires AT MOST ONCE per tick, with one event block
+ * listing every task newly due for it — never one queued wake per task. Dedupe stays per task
+ * (one agent_job_fires row per (job, task key)), so a task never re-fires; a job whose previous
+ * run is still going is skipped with no keys recorded, so those tasks retry on a later tick.
+ * Returns how many job fires happened. `onlySlugs`/`onlyTaskIds` are test seams.
  */
 export async function dueTaskEvents(opts: { onlySlugs?: string[]; onlyTaskIds?: string[]; wakeFn?: WakeFn } = {}): Promise<number> {
+  const wakeFn = opts.wakeFn ?? wake
   const jobs = await eventJobs('task.due', opts.onlySlugs)
   if (!jobs.length) return 0 // nobody listening: skip the tasks query entirely
   if (opts.onlyTaskIds && !opts.onlyTaskIds.length) return 0
@@ -110,22 +138,37 @@ export async function dueTaskEvents(opts: { onlySlugs?: string[]; onlyTaskIds?: 
   const rows = res.rows as { id: string; title: string; due_date: string | Date }[]
   if (!rows.length) return 0
 
-  // Skip keys every listening job has already fired for, so a steady state of overdue tasks costs
+  const due = rows.map(r => {
+    const dueDate = new Date(r.due_date).toISOString()
+    return { key: `task:${r.id}:${dueDate}`, payload: { taskId: r.id, title: r.title, dueDate } }
+  })
+  // Skip keys each listening job has already fired for, so a steady state of overdue tasks costs
   // one read per tick instead of an insert attempt per (task, job).
-  const keys = rows.map(r => `task:${r.id}:${new Date(r.due_date).toISOString()}`)
   const done = await useDb().select({ jobId: agentJobFires.jobId, eventKey: agentJobFires.eventKey }).from(agentJobFires)
-    .where(and(inArray(agentJobFires.jobId, jobs.map(j => j.id)), inArray(agentJobFires.eventKey, keys)))
+    .where(and(inArray(agentJobFires.jobId, jobs.map(j => j.id)), inArray(agentJobFires.eventKey, due.map(d => d.key))))
   const firedPairs = new Set(done.map(d => `${d.jobId}|${d.eventKey}`))
 
   let count = 0
-  for (const [i, r] of rows.entries()) {
-    const key = keys[i]!
-    if (jobs.every(j => firedPairs.has(`${j.id}|${key}`))) continue
-    const dueDate = new Date(r.due_date).toISOString()
-    const slugs = await fireEvent('task.due', key, { taskId: r.id, title: r.title, dueDate }, {
-      onlySlugs: opts.onlySlugs ?? jobs.map(j => j.slug), wakeFn: opts.wakeFn
-    })
-    count += slugs.length
+  for (const job of jobs) {
+    const spec = await specFor(job)
+    if (!spec) continue
+    const fresh = due.filter(d => !firedPairs.has(`${job.id}|${d.key}`)
+      && (!spec.filter || Object.entries(spec.filter).every(([k, v]) => String((d.payload as Record<string, unknown>)[k]) === v)))
+    if (!fresh.length) continue
+    if (await hasActiveRun(job.id)) continue // retried next tick: no key recorded
+    const inserted = await useDb().insert(agentJobFires)
+      .values(fresh.map(d => ({ jobId: job.id, eventKey: d.key })))
+      .onConflictDoNothing().returning({ eventKey: agentJobFires.eventKey })
+    const landed = new Set(inserted.map(i => i.eventKey))
+    const tasks = fresh.filter(d => landed.has(d.key)).map(d => d.payload)
+    if (!tasks.length) continue // a concurrent tick recorded them first
+    try {
+      await fireJob(job.slug, job.id, spec, `${spec.body}\n\n${eventBlock('task.due', { tasks })}`, wakeFn)
+      count++
+    } catch (err) {
+      console.error(`[jobs] task.due could not wake "${job.slug}":`, err)
+      await useDb().update(agentJobs).set({ lastOutcome: 'failed' }).where(eq(agentJobs.id, job.id)).catch(() => {})
+    }
   }
   return count
 }

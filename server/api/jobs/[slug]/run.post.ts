@@ -9,5 +9,6 @@ export default defineEventHandler(async (event) => {
   const slug = requireJobSlug(event)
   const job = await getJob(slug)
   if (!job) throw createError({ statusCode: 404, statusMessage: `no job named "${slug}"` })
-  return runJobNow(slug)
+  // A human Run now works on a disabled job (final review M10) — only the agent tool refuses it.
+  return runJobNow(slug, { allowDisabled: true })
 })

@@ -202,7 +202,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         const fresh = await drainSteerFor(run.id)
         drainedSteers.push(...fresh)
         return fresh
-      }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined
+      }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined,
+      runId: run.id
     })
     // Finalize the timing ONCE, here, and use the same object for the live chunk below and
     // for the persist further down — so the duration and tok/s the user watches appear are

@@ -108,12 +108,14 @@ export async function touchRun(id: string): Promise<boolean> {
  * process's turn actually completed (Task 8 review ruling: this reverses Task 2's "finishRun
  * stays unguarded" — a run can now legitimately be taken from under a live process).
  */
-export async function finishRun(id: string, o: RunOutcome): Promise<void> {
-  await useDb().update(agentRuns).set({
+export async function finishRun(id: string, o: RunOutcome): Promise<boolean> {
+  const done = await useDb().update(agentRuns).set({
     status: o.status, suppressed: o.suppressed ?? false, error: o.error ?? null, usage: o.usage ?? null,
     userMessageId: o.userMessageId ?? null, assistantMessageId: o.assistantMessageId ?? null,
     finishedAt: sql`now()`
-  }).where(and(eq(agentRuns.id, id), eq(agentRuns.status, 'running')))
+  }).where(and(eq(agentRuns.id, id), eq(agentRuns.status, 'running'))).returning({ id: agentRuns.id })
+  // False = fenced: the row was no longer 'running' (recovered as interrupted elsewhere).
+  return done.length > 0
 }
 
 export async function activeRunFor(conversationId: string): Promise<AgentRun | null> {

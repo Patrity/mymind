@@ -138,10 +138,12 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean, wallClockMs
       clearInterval(alive); if (wall) clearTimeout(wall)
     }
     if (outcome.status === 'aborted' && timedOut.has(run.id)) outcome = { ...outcome, timedOut: true }
-    await finishRun(run.id, outcome).catch(err => console.error('[runtime] finishRun failed:', err))
+    const finished = await finishRun(run.id, outcome).catch((err) => { console.error('[runtime] finishRun failed:', err); return false })
     // Cycle 74: a job-fired run writes its job's outcome (spoke/silent/failed, failure streak,
-    // auto-disable). Never allowed to break the run's own unwind.
-    await onRunFinished(run, outcome).catch(err => console.error('[runtime] job outcome failed:', err))
+    // auto-disable). Never allowed to break the run's own unwind. Skipped when finishRun was
+    // FENCED (final review M11): the row already says 'interrupted' (recovered elsewhere while
+    // this process was still running it), so recording spoke/silent here would contradict it.
+    if (finished) await onRunFinished(run, outcome).catch(err => console.error('[runtime] job outcome failed:', err))
     // Every terminal outcome, not only 'aborted' (Task 8 review ruling — overrides spec §4.4's
     // abort-only wording): a steer that arrived during the last step's generation, or in the
     // gap between runFn returning and finishRun committing, is just as unread as one orphaned

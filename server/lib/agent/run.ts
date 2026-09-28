@@ -167,7 +167,7 @@ export interface RunDeps {
 // stripping — the old dual-enable lever (powerful profile + exec cookie) is gone.
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string } },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
@@ -175,7 +175,7 @@ export async function* runAgent(
   const registry = deps.tools ?? profile.tools
   const buildPrompt = deps.buildSystemPrompt ?? realBuildSystemPrompt
   let channel = createChannel()
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, onEvent: e => channel.push({ kind: 'event', ev: e }) })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }) })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).

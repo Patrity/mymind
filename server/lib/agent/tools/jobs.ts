@@ -8,11 +8,14 @@
 // Every handler below returns { ok:false, error } for a validation/conflict/guard failure —
 // mirrors edit_document et al. in tools.ts — never lets a raw store.ts exception reach the model.
 import { randomBytes } from 'node:crypto'
+import { eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { useDb } from '../../../db'
+import { agentRuns } from '../../../db/schema'
 import type { AgentTool } from '../types'
 import { applyReplace } from '../../documents/edit-ops'
 import {
-  listJobs, getJob, createJob, saveJob, deleteJob, getDefaultTimezone,
+  listJobs, getJob, createJob, saveJob, deleteJob, restoreJob, getDefaultTimezone,
   JobValidationError, JobNotFoundError, ConflictError, type JobDTO
 } from '../jobs/store'
 import type { runJobNow as RunJobNowFn } from '../jobs/tick'
@@ -51,6 +54,14 @@ function jobStatus(job: JobDTO) {
     consecutiveFailures: job.consecutiveFailures,
     updatedAt: job.updatedAt
   }
+}
+
+/** The job that fired the run making this call, if any (final review I1). A tool call outside
+ *  the runtime (MCP, legacy callers) carries no run id and is never job-fired. */
+async function firingJobOf(runId: string | undefined): Promise<string | null> {
+  if (!runId) return null
+  const [run] = await useDb().select({ jobId: agentRuns.jobId }).from(agentRuns).where(eq(agentRuns.id, runId)).limit(1)
+  return run?.jobId ?? null
 }
 
 const jobNotFound = (slug: string) => ({ ok: false as const, error: 'not_found' as const, message: `no job named "${slug}"`, slug })
@@ -92,15 +103,15 @@ export const jobTools: AgentTool[] = [
       slug: z.string().min(1).describe('Job slug (lowercase letters/digits/hyphens)'),
       content: z.string().min(1).describe('Full job markdown: frontmatter + body')
     },
-    handler: async (a) => {
+    handler: async (a, ctx) => {
       const slug = a.slug as string
       const content = a.content as string
       try {
-        const job = await createJob({ slug, content, actor: 'agent' })
+        const job = await createJob({ slug, content, actor: 'agent', runId: ctx.runId ?? null })
         return {
           result: { ok: true, slug: job.slug, status: jobStatus(job) },
           summary: `created job "${job.slug}"`,
-          undo: async () => { await deleteJob(job.slug) }
+          undo: async () => { await deleteJob(job.slug, { actor: 'agent' }) }
         }
       } catch (err) {
         if (err instanceof JobValidationError) {
@@ -128,7 +139,7 @@ export const jobTools: AgentTool[] = [
       replace_all: z.boolean().optional().describe('Replace every occurrence'),
       content: z.string().optional().describe('Full replacement content (alternative to old_string/new_string)')
     },
-    handler: async (a) => {
+    handler: async (a, ctx) => {
       const slug = a.slug as string
       const job = await getJob(slug)
       if (!job) return { result: jobNotFound(slug), summary: 'edit_job: not found' }
@@ -152,7 +163,7 @@ export const jobTools: AgentTool[] = [
 
       const priorContent = job.content
       try {
-        const updated = await saveJob(slug, newContent, job.contentHash, 'agent')
+        const updated = await saveJob(slug, newContent, job.contentHash, 'agent', ctx.runId ?? null)
         return {
           result: { ok: true, slug: updated.slug, status: jobStatus(updated) },
           summary: `edited job "${slug}"`,
@@ -187,29 +198,48 @@ export const jobTools: AgentTool[] = [
     description: 'Delete a job. Free to call even in a background run (spec D2) — job management is Bridget\'s own upkeep, not a change to Tony\'s data. On failure returns ok:false with error "not_found".',
     kind: 'destructive',
     schema: { slug: z.string().describe('Job slug') },
-    handler: async (a) => {
+    handler: async (a, ctx) => {
       const slug = a.slug as string
       const job = await getJob(slug)
       if (!job) return { result: jobNotFound(slug), summary: 'delete_job: not found' }
-      const deleted = await deleteJob(slug)
+      // The delete records a final revision (actor agent, this run), so it shows in the job's
+      // history and is revertible (final review I2).
+      const deleted = await deleteJob(slug, { actor: 'agent', runId: ctx.runId ?? null })
       if (!deleted) return { result: jobNotFound(slug), summary: 'delete_job: not found' }
       return {
         result: { ok: true, slug },
         summary: `deleted job "${slug}"`,
-        // No restore-with-history primitive exists for jobs (unlike restoreSkill) — undo
-        // recreates the job from its last content instead, as a NEW row/revision history.
-        undo: async () => { await createJob({ slug, content: job.content, actor: 'agent' }).catch(() => {}) }
+        // restoreJob re-creates it under its ORIGINAL id, so its revision history comes back too.
+        undo: async () => {
+          try {
+            await restoreJob(job.id, slug, job.content, 'agent')
+          } catch (err) {
+            return { ok: false, reason: `could not restore job "${slug}": ${err instanceof Error ? err.message : String(err)}` }
+          }
+        }
       }
     }
   },
   {
     name: 'run_job',
-    description: 'Run a job right now, outside its schedule (schedule is untouched). On failure or skip returns ok:false with error "not_found", "overlap" (previous run still going), "disabled", or "invalid" (doesn\'t currently parse).',
+    description: 'Run a job right now, outside its schedule (schedule is untouched). Not available from inside a run that a job itself started. On failure or skip returns ok:false with error "not_found", "overlap" (previous run still going), "disabled", "invalid" (doesn\'t currently parse), or "refused_in_job_run".',
     kind: 'create',
     schema: { slug: z.string().describe('Job slug') },
-    handler: async (a) => {
+    handler: async (a, ctx) => {
       const slug = a.slug as string
       try {
+        // Final review I1: a job-fired run may not start another job run — job A running B
+        // running A would ping-pong forever (overlap only checks the target's own runs).
+        if (await firingJobOf(ctx.runId)) {
+          return {
+            result: {
+              ok: false,
+              error: 'refused_in_job_run',
+              message: 'run_job is not available inside a run that a job started (it could chain jobs into a loop). Do the work here, or schedule_wake a follow-up at least 5 minutes out.'
+            },
+            summary: `run_job "${slug}" refused: called from a job-fired run`
+          }
+        }
         // Dynamic import breaks a real cycle: tools.ts -> tools/jobs.ts -> jobs/tick.ts ->
         // runtime/wake.ts -> runtime/queue.ts -> runtime/runner.ts -> profile.ts -> tools.ts
         // (same pattern as subagents.ts's run.ts import, for the same reason).
@@ -225,14 +255,14 @@ export const jobTools: AgentTool[] = [
   },
   {
     name: 'schedule_wake',
-    description: 'Schedule a one-off reminder/wake for yourself: creates an `at` job that fires once and then disables itself. `when` accepts an ISO datetime (with or without an offset — offset-less is wall-clock time in the default timezone), a relative time (`in 10m`, `in 2h`, `in 1d`), or `today HH:MM` / `tomorrow HH:MM`. Past times are rejected. On failure returns ok:false with error explaining why `when` was rejected.',
+    description: 'Schedule a one-off reminder/wake for yourself: creates an `at` job that fires once and then disables itself. `when` accepts an ISO datetime (with or without an offset — offset-less is wall-clock time in the default timezone), a relative time (`in 10m`, `in 2h`, `in 1d`), or `today HH:MM` / `tomorrow HH:MM`. Must be at least 5 minutes from now; at most 10 wakes may be scheduled per hour. On failure returns ok:false with error explaining why `when` was rejected.',
     kind: 'create',
     schema: {
       when: z.string().min(1).describe('ISO datetime, "in <n>m|h|d", or "today|tomorrow HH:MM"'),
       prompt: z.string().min(1).describe('What to do/say when it fires'),
       thread: z.enum(['main', 'isolated']).optional().describe('Which thread to wake into (default main)')
     },
-    handler: async (a) => {
+    handler: async (a, ctx) => {
       const when = a.when as string
       const prompt = a.prompt as string
       const thread = a.thread as 'main' | 'isolated' | undefined
@@ -249,11 +279,11 @@ export const jobTools: AgentTool[] = [
       const content = `---\n${lines.join('\n')}\n---\n${prompt}\n`
 
       try {
-        const job = await createJob({ slug, content, actor: 'agent' })
+        const job = await createJob({ slug, content, actor: 'agent', runId: ctx.runId ?? null })
         return {
           result: { ok: true, slug: job.slug, at: resolved.at.toISOString() },
           summary: `scheduled wake "${job.slug}" for ${resolved.at.toISOString()}`,
-          undo: async () => { await deleteJob(job.slug) }
+          undo: async () => { await deleteJob(job.slug, { actor: 'agent' }) }
         }
       } catch (err) {
         if (err instanceof JobValidationError) {

@@ -11,7 +11,7 @@ import { useDb } from '../db'
 import { agentSkills, documents, type AgentSkillRow } from '../db/schema'
 import { publishChange } from '../utils/live-bus'
 import { recordRevision, listRevisions, getRevision, type RevisionActor } from '../lib/agent/config/revisions'
-import { splitFrontmatter, joinFrontmatter } from '../../shared/utils/frontmatter'
+import { splitFrontmatter, joinFrontmatter, setFrontmatterKey } from '../../shared/utils/frontmatter'
 import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES } from '../../shared/types/commands'
 
 export interface Skill {
@@ -249,7 +249,15 @@ export async function updateSkill(
   const v = validateSkill(merged)
   if (!v.ok) throw new Error(v.error)
   if (merged.name !== name && await rowBySlug(merged.name)) throw new Error(`skill "${merged.name}" already exists`)
-  const content = skillToMarkdown(merged)
+  // Final review M8: a write that changes ONLY `active` (the /skills toggle, or edit_skill with
+  // just active) flips that one frontmatter line of the stored markdown, byte-stable, instead of
+  // regenerating the file from fields — which would drop any extra key or formatting Tony added
+  // in the raw editor. Any other change still regenerates.
+  const onlyActive = merged.active !== current.active
+    && merged.name === current.name && merged.description === current.description
+    && merged.whenToUse === current.whenToUse && merged.body === current.body && merged.source === current.source
+  const stored = onlyActive ? await rowBySlug(name) : null
+  const content = stored ? setFrontmatterKey(stored.content, 'active', merged.active) : skillToMarkdown(merged)
   const [row] = await useDb().update(agentSkills)
     .set({ slug: merged.name, ...derivedColumns(content, parseSkillMarkdown(content).input), updatedAt: sql`now()` })
     .where(eq(agentSkills.id, current.id)).returning()
@@ -360,6 +368,11 @@ const LEGACY_SKILL_DIR = `/projects/${SKILL_PROJECT}/skills/`
  * is not moved — no `kind: skill`/name, fails validation, or throws — is left live and reported
  * in `skipped` with the reason.
  *
+ * Every OTHER live `type='skill'` document is reported in `skipped` too (final review M7) — one
+ * whose slug already exists in agent_skills (e.g. `seed:skills` ran first), or one that lives
+ * outside the legacy skills folder (moved with move_document). Nothing moves it, and Bridget no
+ * longer reads skills from documents, so without a line in the boot log it would silently vanish.
+ *
  * `onlyPaths` is a TEST seam: the dev DB is shared and holds real skill documents.
  */
 export async function migrateSkillsFromDocuments(
@@ -404,6 +417,23 @@ export async function migrateSkillsFromDocuments(
     } catch (err) {
       skipped.push({ path: doc.path, reason: err instanceof Error ? err.message : String(err) })
     }
+  }
+
+  const reported = new Set([...docs.map(d => d.path)])
+  const leftover = await db.select({ path: documents.path }).from(documents).where(and(
+    isNull(documents.deletedAt),
+    eq(documents.type, 'skill'),
+    opts.onlyPaths ? inArray(documents.path, opts.onlyPaths) : undefined
+  ))
+  for (const { path } of leftover) {
+    if (reported.has(path)) continue
+    const slug = path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/, '')
+    skipped.push({
+      path,
+      reason: path.startsWith(LEGACY_SKILL_DIR)
+        ? `a skill named "${slug}" already exists in agent_skills — this document was left live and is not read by Bridget`
+        : `outside ${LEGACY_SKILL_DIR} — not moved; recreate it on /skills if it is still wanted`
+    })
   }
   return { moved, skipped }
 }

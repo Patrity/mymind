@@ -30,7 +30,7 @@ const ACTIVE_HOURS_RE = /^\d{2}:\d{2}-\d{2}:\d{2}$/
 
 type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
-function isValidTimezone(tz: string): boolean {
+export function isValidTimezone(tz: string): boolean {
   try {
     new Intl.DateTimeFormat(undefined, { timeZone: tz })
     return true

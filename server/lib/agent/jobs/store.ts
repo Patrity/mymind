@@ -12,7 +12,7 @@ import { agentJobs, type AgentJobRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import { recordRevision, getRevision, type RevisionActor } from '../config/revisions'
 import { setFrontmatterKey } from '../../../../shared/utils/frontmatter'
-import { parseJob, JOB_BODY_MAX, type JobSpec, type TriggerKind } from './parse'
+import { parseJob, JOB_BODY_MAX, MIN_INTERVAL_MS, type JobSpec, type TriggerKind } from './parse'
 import { nextRunAt as computeNextRunAt, describeTrigger } from './schedule'
 import { loadConfig } from '../../ai/registry/store'
 import { getOrCreateMain } from '../runtime/sessions'
@@ -25,6 +25,11 @@ export { ConflictError }
 export { getDefaultTimezone }
 
 export const MAX_ENABLED_JOBS = 50
+/** Final review I1: at most this many `at` jobs Bridget may CREATE per rolling hour. With the
+ *  5-minute minimum lead on agent-written `at` times, this bounds a self-perpetuating wake chain
+ *  (each fire scheduling the next, or fanning out) that the 50-enabled cap alone never sees —
+ *  a fired `at` job disables itself and frees its slot. */
+export const MAX_AGENT_AT_CREATES_PER_HOUR = 10
 export const JOB_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 
 // A single FIXED advisory-lock key serializes the enabled-count check against every other
@@ -205,12 +210,48 @@ function rearm(existing: AgentJobRow, spec: JobSpec, nextRunAt: Date | null): Pa
   return out
 }
 
+/**
+ * `source` is who AUTHORED the job's current content (final review M4): a human or agent write
+ * sets it; a `system` write (the tick disabling a fired `at` job, the failure auto-disable, a
+ * seed install) keeps whatever it was — so a reminder Bridget scheduled keeps its `agent` badge
+ * after it fires. A system CREATE (seeds) is `human`.
+ */
+function sourceFor(actor: RevisionActor, existing: string | null): 'human' | 'agent' {
+  if (actor === 'system') return existing === 'agent' ? 'agent' : 'human'
+  return actor === 'agent' ? 'agent' : 'human'
+}
+
+// Postgres ARE: a frontmatter line `trigger: at …` (optionally quoted). Used only to recognise
+// an `at` job from its FIRST revision's content, since the row itself may since be deleted.
+const AT_TRIGGER_LINE_RE = '(^|\n)trigger:[ \t]*["\']?at[ \t]'
+
+/**
+ * How many `at` jobs Bridget created in the last rolling hour (final review I1). Counted from
+ * revisions, not from agent_jobs: a created job's FIRST revision survives the job being fired,
+ * disabled or deleted (revisions carry no FK; delete_job now even adds one), so neither
+ * deleting reminders nor letting them fire resets the count. Exported so a DB test can read the
+ * baseline on the shared dev DB.
+ */
+export async function countAgentAtCreatesLastHour(db: Pick<ReturnType<typeof useDb>, 'execute'> = useDb()): Promise<number> {
+  const res = await db.execute(sql`
+    select count(*)::int as n from agent_config_revisions r
+    where r.target_kind = 'job' and r.actor = 'agent'
+      and r.created_at > now() - interval '1 hour'
+      and r.content ~ ${AT_TRIGGER_LINE_RE}
+      and not exists (
+        select 1 from agent_config_revisions p
+        where p.target_kind = 'job' and p.target_id = r.target_id and p.created_at < r.created_at
+      )`)
+  return Number((res.rows[0] as { n: number } | undefined)?.n ?? 0)
+}
+
 async function writeJob(
   slug: string,
   content: string,
   expectedHash: string | null,
   actor: RevisionActor,
-  runId: string | null
+  runId: string | null,
+  opts: { id?: string } = {}
 ): Promise<JobDTO> {
   if (!JOB_SLUG_RE.test(slug)) throw new JobValidationError(`invalid slug: ${slug}`)
 
@@ -219,11 +260,11 @@ async function writeJob(
   const result = parseJob(content, { defaultTimezone, isKnownModel })
   if (!result.ok) throw new JobValidationError(result.error)
   const spec = result.spec
+  const isAt = spec.trigger.kind === 'at'
 
   const derived = {
     content,
     contentHash: hashOf(content),
-    source: actor === 'agent' ? 'agent' : 'human',
     enabled: spec.enabled,
     triggerKind: spec.trigger.kind,
     triggerExpr: spec.trigger.expr,
@@ -232,14 +273,23 @@ async function writeJob(
     parseError: null as string | null
   }
 
+  // Final review M6: an enabled `at` job whose moment has passed would sit enabled forever with
+  // no next run (and the 30-day prune needs `not enabled`). Enabling or saving one is an error.
+  if (isAt && spec.enabled && !derived.nextRunAt) {
+    throw new JobValidationError('the `at` time is in the past — set a future time, or save it with enabled: false')
+  }
+
   let outcome: WriteOutcome
   try {
     outcome = await useDb().transaction(async (tx): Promise<WriteOutcome> => {
-      if (spec.enabled) {
+      const agentAtCreate = actor === 'agent' && isAt && expectedHash === null
+      if (spec.enabled || agentAtCreate) {
         // Held for the transaction's lifetime: serializes this count-check + write against every
         // other concurrent enabling write, so two concurrent creates can't each read count=49
-        // and both commit past "< 50".
+        // and both commit past "< 50" (and the same for the agent `at` hourly cap below).
         await tx.execute(sql`select pg_advisory_xact_lock(${MAX_ENABLED_LOCK_KEY})`)
+      }
+      if (spec.enabled) {
         const enabledCount = await countEnabledExcluding(slug, tx)
         if (enabledCount >= MAX_ENABLED_JOBS) {
           throw new JobValidationError(`at most ${MAX_ENABLED_JOBS} jobs may be enabled at once`)
@@ -248,9 +298,25 @@ async function writeJob(
 
       const [existing] = await tx.select().from(agentJobs).where(eq(agentJobs.slug, slug)).limit(1)
 
+      // Final review I1: a wake Bridget arms must be at least MIN_INTERVAL_MS ahead — the same
+      // 5 minutes every/cron triggers must keep apart — so a fired reminder that schedules the
+      // next one can't loop faster than that. Only when this write ARMS a time (a create, an
+      // enable, or a changed trigger): editing the body of a reminder already due in 3 minutes
+      // is not a new wake.
+      if (actor === 'agent' && isAt && spec.enabled && derived.nextRunAt) {
+        const armsTime = !existing || !existing.enabled || existing.triggerKind !== 'at' || existing.triggerExpr !== spec.trigger.expr
+        if (armsTime && derived.nextRunAt.getTime() - Date.now() < MIN_INTERVAL_MS) {
+          throw new JobValidationError(`a wake you schedule must be at least ${MIN_INTERVAL_MS / 60_000} minutes ahead`)
+        }
+      }
+
       if (!existing) {
         if (expectedHash !== null) return { kind: 'not-found' }
-        const [inserted] = await tx.insert(agentJobs).values({ slug, ...derived }).returning()
+        if (agentAtCreate && await countAgentAtCreatesLastHour(tx) >= MAX_AGENT_AT_CREATES_PER_HOUR) {
+          throw new JobValidationError(`at most ${MAX_AGENT_AT_CREATES_PER_HOUR} reminders/wakes may be scheduled per hour — try again later`)
+        }
+        const [inserted] = await tx.insert(agentJobs)
+          .values({ ...(opts.id ? { id: opts.id } : {}), slug, ...derived, source: sourceFor(actor, null) }).returning()
         await recordRevision({ targetKind: 'job', targetId: inserted!.id, content, actor, runId }, tx)
         return { kind: 'ok', row: inserted!, wasCreate: true }
       }
@@ -261,7 +327,7 @@ async function writeJob(
       // Re-checked IN the UPDATE so a write landing between the read above and this statement
       // still loses, rather than clobbering a concurrent writer (mirrors saveSkillSource).
       const [updated] = await tx.update(agentJobs)
-        .set({ ...derived, ...rearm(existing, spec, derived.nextRunAt), updatedAt: sql`now()` })
+        .set({ ...derived, source: sourceFor(actor, existing.source), ...rearm(existing, spec, derived.nextRunAt), updatedAt: sql`now()` })
         .where(and(eq(agentJobs.id, existing.id), eq(agentJobs.contentHash, expectedHash)))
         .returning()
       if (!updated) {
@@ -309,20 +375,68 @@ export async function saveJob(
 }
 
 /** Flips only the `enabled:` frontmatter line (setFrontmatterKey keeps every other line
- *  byte-stable) and goes through the normal write path, so derived columns (notably
- *  next_run_at, cleared when disabling) stay consistent and the change gets a revision. */
-export async function setJobEnabled(slug: string, enabled: boolean, actor: 'human' | 'agent' | 'system'): Promise<JobDTO> {
+ *  byte-stable), so the change gets a revision and derived columns stay consistent.
+ *
+ *  Enabling goes through the normal write path (full validation, the 50 cap, next_run_at).
+ *  DISABLING always succeeds (final review M5): it skips re-validation entirely — a job pinned
+ *  to a model that has left the registry, or any pinned job while the registry is unreadable,
+ *  must still be switchable off (the UI switch, a fired `at` job's self-disable, the 3-failure
+ *  auto-disable). Only `enabled`, `next_run_at` and the content change; the other derived
+ *  columns (and any parse_error) stay as they were. */
+export async function setJobEnabled(slug: string, enabled: boolean, actor: 'human' | 'agent' | 'system', runId: string | null = null): Promise<JobDTO> {
   const existing = await rowBySlug(slug)
   if (!existing) throw new JobNotFoundError(slug)
   const content = setFrontmatterKey(existing.content, 'enabled', enabled)
-  return writeJob(slug, content, existing.contentHash, actor, null)
+  if (enabled) return writeJob(slug, content, existing.contentHash, actor, runId)
+
+  const updated = await useDb().transaction(async (tx) => {
+    const [row] = await tx.update(agentJobs).set({
+      content,
+      contentHash: hashOf(content),
+      enabled: false,
+      nextRunAt: null,
+      source: sourceFor(actor, existing.source),
+      updatedAt: sql`now()`
+    }).where(and(eq(agentJobs.id, existing.id), eq(agentJobs.contentHash, existing.contentHash))).returning()
+    if (!row) return null
+    await recordRevision({ targetKind: 'job', targetId: row.id, content, actor, runId }, tx)
+    return row
+  })
+  if (!updated) {
+    const now = await rowBySlug(slug)
+    if (!now) throw new JobNotFoundError(slug)
+    throw new ConflictError({ content: now.content, contentHash: now.contentHash })
+  }
+  publishChange({ resource: 'agentJob', action: 'updated', id: updated.id })
+  return rowToJobDTO(updated)
 }
 
-export async function deleteJob(slug: string): Promise<boolean> {
-  const [row] = await useDb().delete(agentJobs).where(eq(agentJobs.slug, slug)).returning()
+/**
+ * Deletes a job and records its final content as a revision in the same transaction (final
+ * review I2), so the delete shows in history with its actor/run and restoreJob can bring the job
+ * back under its ORIGINAL id — revisions carry no FK, so the job's history survives with it.
+ */
+export async function deleteJob(slug: string, opts: { actor?: RevisionActor, runId?: string | null } = {}): Promise<boolean> {
+  const row = await useDb().transaction(async (tx) => {
+    const [deleted] = await tx.delete(agentJobs).where(eq(agentJobs.slug, slug)).returning()
+    if (!deleted) return null
+    await recordRevision({ targetKind: 'job', targetId: deleted.id, content: deleted.content, actor: opts.actor ?? 'human', runId: opts.runId ?? null }, tx)
+    return deleted
+  })
   if (!row) return false
   publishChange({ resource: 'agentJob', action: 'deleted', id: row.id })
   return true
+}
+
+/**
+ * Re-creates a deleted job under its ORIGINAL id (the delete_job undo), through the normal
+ * validated write path, so its revision history — keyed by that id — is whole again. Throws
+ * ConflictError when the slug (or id) has been taken since.
+ */
+export async function restoreJob(
+  priorId: string, slug: string, content: string, actor: RevisionActor, runId: string | null = null
+): Promise<JobDTO> {
+  return writeJob(slug, content, null, actor, runId, { id: priorId })
 }
 
 /** Restores a job to one of its revisions' content (recorded as a NEW revision by `actor`). */
@@ -421,6 +535,42 @@ export async function revalidateAll(
     await new Promise(resolve => setImmediate(resolve))
   }
 
+  return changed
+}
+
+// ---- default-timezone re-derivation ---------------------------------------------------------
+
+/**
+ * Re-derives every job that does NOT name its own `timezone:` against the current default
+ * (the `agent_timezone` setting — final review I5). Each row stores the timezone it resolved at
+ * write time and the tick hands `row.timezone` back as the default, so without this a settings
+ * change would never reach already-saved jobs. Rewrites only `timezone` and, for an enabled
+ * valid job, `next_run_at` (computed from now). Content is untouched, so no revision; guarded on
+ * content_hash like revalidateAll. Returns how many rows changed. `onlyIds` is the test seam.
+ */
+export async function rederiveDefaultTimezone(opts: { onlyIds?: string[], defaultTimezone?: string } = {}): Promise<number> {
+  const db = useDb()
+  const rows = await db.select().from(agentJobs)
+    .where(opts.onlyIds ? inArray(agentJobs.id, opts.onlyIds) : undefined)
+  // `defaultTimezone` is a test seam: the setting is one global row on the shared dev DB.
+  const defaultTimezone = opts.defaultTimezone ?? await getDefaultTimezone()
+  let changed = 0
+  for (const row of rows) {
+    // A job whose file names its own `timezone:` parses to that zone whatever the default is,
+    // so it is unchanged here and skipped by the comparison.
+    const result = parseJob(row.content, { defaultTimezone })
+    if (!result.ok || row.timezone === result.spec.timezone) continue
+    const spec = result.spec
+    const touched = await db.update(agentJobs).set({
+      timezone: spec.timezone,
+      nextRunAt: row.enabled && !row.parseError ? computeNextRunAt(spec, new Date()) : null,
+      updatedAt: sql`now()`
+    }).where(and(eq(agentJobs.id, row.id), eq(agentJobs.contentHash, row.contentHash))).returning({ id: agentJobs.id })
+    if (touched.length) {
+      changed++
+      publishChange({ resource: 'agentJob', action: 'updated', id: row.id })
+    }
+  }
   return changed
 }
 

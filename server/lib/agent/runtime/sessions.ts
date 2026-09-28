@@ -1,9 +1,9 @@
 // Session key → conversation. `main` is Bridget's one home thread (created lazily, at most one
 // by index); `thread:new` starts a side thread; `thread:<id>` continues one; `isolated:<slug>`
-// is a fresh thread for a noisy background errand.
-import { eq } from 'drizzle-orm'
+// is ONE side thread per slug for a noisy background errand (reused fire after fire).
+import { desc, eq } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { conversations } from '../../../db/schema'
+import { agentRuns, conversations } from '../../../db/schema'
 import { createConversation, deriveTitle } from '../../../services/conversations'
 import type { SessionKey } from './types'
 
@@ -32,6 +32,18 @@ export async function resolveSession(key: SessionKey | 'thread:new', opts: { tit
     return { conversationId: c.id, created: true }
   }
   if (key.startsWith('isolated:')) {
+    // Final review I3: reuse the slug's thread rather than opening one per fire — a silent run
+    // writes no rows (D4), so a fresh thread each time left an empty `wake: <slug>` thread behind
+    // for every heartbeat. The stable key is agent_runs.session_key: every run enqueued for this
+    // key records it, together with the thread it ran in, and agent_runs rows are never pruned.
+    // The newest such run whose thread still exists wins; if Tony deleted the thread (its runs
+    // cascade away with it) or none exists yet, a new one is created and becomes the key's thread
+    // from its first run on. (Two racing FIRST fires could each open one; the newest run's thread
+    // wins from then on — a job never overlaps its own run, so this stays rare.)
+    const [prior] = await useDb().select({ id: agentRuns.conversationId }).from(agentRuns)
+      .innerJoin(conversations, eq(conversations.id, agentRuns.conversationId))
+      .where(eq(agentRuns.sessionKey, key)).orderBy(desc(agentRuns.createdAt)).limit(1)
+    if (prior) return { conversationId: prior.id, created: false }
     const c = await createConversation({ title: `wake: ${key.slice('isolated:'.length)}` })
     return { conversationId: c.id, created: true }
   }

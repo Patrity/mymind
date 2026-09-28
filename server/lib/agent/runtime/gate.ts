@@ -25,8 +25,8 @@ export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edi
 // below, so they never fall into 'propose'. Currently just delete_job: spec D2 says job
 // deletion is free even in a background run, same reasoning as the APPEND_TOOLS jobs entries
 // above (Bridget's own upkeep, not a change to Tony's data) — it's `destructive`-kind only
-// because deleting a job is irreversible-by-default (no restore-with-history primitive), not
-// because it needs a human in the loop.
+// because it removes a row, not because it needs a human in the loop: the delete records a
+// final revision and restoreJob brings the job back under its original id (final review I2).
 export const FREE_TOOLS: ReadonlySet<string> = new Set(['delete_job'])
 
 export function classifyForHeadless(t: AgentTool): HeadlessClass {

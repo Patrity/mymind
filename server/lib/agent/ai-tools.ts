@@ -10,6 +10,7 @@ export interface RunHooks {
   signal: AbortSignal
   requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
   attachmentImageIds?: string[]
+  runId?: string
   onEvent: (e: ToolStartEvent | ToolResultEvent | SubagentEvent) => void
 }
 
@@ -20,7 +21,7 @@ function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): Appro
 
 /** Adapt the agent tool registry into an AI SDK ToolSet (execute = gate + handler + bus + undo). */
 export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
-  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds }
+  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId }
   const set: ToolSet = {}
   for (const t of registry) {
     set[t.name] = tool({

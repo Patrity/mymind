@@ -22,6 +22,9 @@ export interface ToolContext {
   // Present only on the interactive (WS) path; a dangerous tool with no channel auto-denies.
   requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
   attachmentImageIds?: string[]  // image attachments of the current turn (edit_image source)
+  /** The agent_runs row this call belongs to (runtime runner path only; absent on MCP / legacy
+   *  callers). Lets a tool stamp revisions with the run and tell a job-fired run from others. */
+  runId?: string
   /** A tool that runs its own agent loop (a subagent) reports each nested call here; ai-tools
    *  re-emits it as a `subagent-event` keyed to THIS call's toolCallId. */
   onNestedEvent?: (e: NestedToolEvent) => void

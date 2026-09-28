@@ -12,5 +12,30 @@ export const AGENT_TIMEZONE_SETTING_KEY = 'agent_timezone'
 export async function getDefaultTimezone(): Promise<string> {
   const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_TIMEZONE_SETTING_KEY)).limit(1)
   if (row && typeof row.value === 'string' && row.value.trim()) return row.value
+  return serverTimezone()
+}
+
+/** The server process's own IANA zone — what jobs use when no `agent_timezone` is set. */
+export function serverTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone
+}
+
+/** The stored `agent_timezone` setting, or null when unset. */
+export async function getAgentTimezoneSetting(): Promise<string | null> {
+  const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_TIMEZONE_SETTING_KEY)).limit(1)
+  return row && typeof row.value === 'string' && row.value.trim() ? row.value : null
+}
+
+/**
+ * Sets (an IANA zone) or clears (null → back to the server's zone) the `agent_timezone` setting.
+ * The caller re-derives stored jobs afterwards (store.ts rederiveDefaultTimezone): each job row
+ * keeps the zone it resolved when it was saved. Validation is the caller's (the PUT route).
+ */
+export async function setAgentTimezoneSetting(tz: string | null): Promise<void> {
+  if (tz === null) {
+    await useDb().delete(settings).where(eq(settings.key, AGENT_TIMEZONE_SETTING_KEY))
+    return
+  }
+  await useDb().insert(settings).values({ key: AGENT_TIMEZONE_SETTING_KEY, value: tz, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: settings.key, set: { value: tz, updatedAt: new Date() } })
 }

@@ -10,6 +10,7 @@ import { Conversation, ConversationContent, ConversationScrollButton } from '@/c
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { subagentSteps } from '~/lib/agent/render'
+import { splitOrigin } from '~~/shared/utils/event-origin'
 
 const props = defineProps<{
   messages: AgentUIMessage[]
@@ -88,7 +89,7 @@ function dividerLabel(epochAt: string): string {
  *  null; unrecognised/absent kinds fall back to a generic "note" label. */
 function eventLabel(m: AgentUIMessage): string {
   const origin = m.metadata?.event?.origin ?? ''
-  const [kind, detail] = origin.split(':', 2)
+  const { kind, detail } = splitOrigin(origin)
   const text = m.parts.find(p => p.type === 'text')?.text ?? ''
   const head = kind === 'wake' ? `woken · ${detail}` : kind === 'review' ? `review · ${detail}` : kind === 'runtime' ? 'runtime' : 'note'
   return `${head}: ${text.length > 80 ? text.slice(0, 79) + '…' : text}`

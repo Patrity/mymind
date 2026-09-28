@@ -57,7 +57,10 @@ export interface TurnDeps {
   /** Present only for a headless/background wake (runtime runner) — forwarded verbatim into
    *  runAgent's ctx to switch the system prompt into wake mode (NO_REPLY contract, no confirm-first). */
   wake?: { reason: string }
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string } }) => AsyncGenerator<AgentEvent>
+  /** The agent_runs row of this turn (runtime runner) — forwarded into runAgent's ctx so tools
+   *  see it as ToolContext.runId. */
+  runId?: string
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -151,7 +154,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const subagentSteps = new Map<string, SubagentStep[]>()
 
   let sawText = false
-  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake })) {
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId })) {
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {
       deps.emit({ type: 'reasoning', text: ev.text })   // display only — never chunked/spoken/persisted here

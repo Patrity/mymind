@@ -8,6 +8,9 @@ describe('event rows in model history', () => {
     expect(t).toBe('Background wake (admin): summarise yesterday')
     expect(t).not.toMatch(/[[\]<>]/)
   })
+  it('a job wake keeps its slug for the model (final review M1: split on the first colon only)', () => {
+    expect(eventModelText(wakeOrigin('job:morning-brief'), 'brief me')).toBe('Background wake (job:morning-brief): brief me')
+  })
   it('renders a review event', () => {
     expect(eventModelText('review:approved', 'Approved: edit_task — moved to done')).toBe('Note (review approved): Approved: edit_task — moved to done')
   })
