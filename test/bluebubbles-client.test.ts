@@ -16,6 +16,7 @@ vi.mock('../server/services/images', () => ({ getImageBytes: mocks.getImageBytes
 
 const { blueBubblesClient, BlueBubblesError, imessageClient } = await import('../server/lib/channels/bluebubbles/client')
 const { imessageChannel } = await import('../server/lib/channels/bluebubbles/channel')
+const { emailChannel } = await import('../server/lib/channels/email/channel')
 const { channelFor } = await import('../server/lib/channels/registry')
 
 const CHAT = 'iMessage;-;+15551234567'
@@ -236,9 +237,10 @@ describe('imessageChannel.send', () => {
 })
 
 describe('channelFor', () => {
-  it('imessage → the iMessage adapter; email → a placeholder that throws', async () => {
+  // The email adapter itself (Resend send, retryable mapping, markdown rendering) is covered in
+  // test/channels-email.test.ts — this just checks the id → adapter mapping.
+  it('imessage → the iMessage adapter; email → the Resend adapter', () => {
     expect(channelFor('imessage')).toBe(imessageChannel)
-    await expect(channelFor('email').send({ ...{ id: 'x', target: 'a@b.c', attempts: 0, firstClaimedAt: null }, payload: { text: 'x' } }))
-      .rejects.toThrow('not implemented')
+    expect(channelFor('email')).toBe(emailChannel)
   })
 })

@@ -55,6 +55,7 @@
     "croner": "^10.0.1",
     "drizzle-orm": "^0.45.2",
     "isomorphic-dompurify": "^3.15.0",
+    "marked": "^18.0.14",
     "motion-v": "^2.4.4",
     "nanoid": "^5.1.11",
     "node-html-markdown": "^2.0.0",
