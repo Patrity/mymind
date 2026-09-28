@@ -11,7 +11,9 @@
 //     marker only — it must never count (or be blocked by) real 'tool' deliveries;
 //   - every delivery row this file creates is tracked by id and deleted in afterAll/inline;
 //   - no real iMessage/email ever sends here — this only inserts channel_deliveries rows, it
-//     never runs the outbox worker.
+//     never runs the outbox worker. And no LIVE worker can claim them either (final review I4):
+//     the tool's insertDeliveries is wrapped to move its rows to 2100 in the SAME transaction,
+//     and the rate-limit seed rows are inserted due in 2100 (both stay `pending`, never due).
 process.loadEnvFile('.env')
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
@@ -23,6 +25,20 @@ const cfg = vi.hoisted(() => ({
   imessage: { enabled: true, defaultHandle: '+15550000091' as string | null, defaultChatGuid: 'iMessage;-;+15550000091' as string | null },
   email: { enabled: true, to: 'tony@example.test' as string | null }
 }))
+const FAR_FUTURE = vi.hoisted(() => new Date('2100-01-01T00:00:00Z'))
+vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../server/lib/channels/outbox')>()
+  const { channelDeliveries } = await import('../server/db/schema')
+  const { inArray } = await import('drizzle-orm')
+  return {
+    ...real,
+    insertDeliveries: async (tx: Parameters<typeof real.insertDeliveries>[0], rows: Parameters<typeof real.insertDeliveries>[1]) => {
+      const ids = await real.insertDeliveries(tx, rows)
+      if (ids.length) await tx.update(channelDeliveries).set({ nextAttemptAt: FAR_FUTURE }).where(inArray(channelDeliveries.id, ids))
+      return ids
+    }
+  }
+})
 vi.mock('../server/lib/channels/config', async (importOriginal) => {
   const real = await importOriginal<typeof import('../server/lib/channels/config')>()
   return {
@@ -114,6 +130,7 @@ describe('send_message tool', () => {
       id: result.deliveryId, channel: 'imessage', target: 'iMessage;-;+15550000091',
       source: 'tool', payload: { text }, status: 'pending'
     })
+    expect(rows[0]!.nextAttemptAt.getTime()).toBe(FAR_FUTURE.getTime()) // never due for a live worker
 
     const notes = await eventsOnScratch()
     expect(notes).toHaveLength(1)
@@ -159,10 +176,11 @@ describe('send_message tool', () => {
   it('the 21st call in an hour hits the rate limit — scoped to this test\'s own seeded rows', async () => {
     const seedRows = Array.from({ length: SEND_MESSAGE_RATE_LIMIT }, (_, i) => ({
       channel: 'imessage', target: 'iMessage;-;+15550000091', payload: { text: `chtool-seed-${i}` },
-      source: 'tool' as const, conversationId: MARKER
+      source: 'tool' as const, conversationId: MARKER, nextAttemptAt: FAR_FUTURE
     }))
     const inserted = await useDb().insert(channelDeliveries).values(seedRows).returning({ id: channelDeliveries.id })
     const seededIds = inserted.map(r => r.id)
+    deliveryIds.push(...seededIds) // afterAll too, should the inline delete below never run
 
     const original = channelToolDeps.countSince
     channelToolDeps.countSince = async (channel, since) => {
