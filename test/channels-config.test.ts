@@ -1,8 +1,8 @@
 // Cycle 75, Task 3: pure parse / redact / merge for the channel settings (no DB).
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi, afterEach } from 'vitest'
 import {
   parseChannelsConfig, redactChannelsConfig, mergeChannelsPut, blueBubblesPassword,
-  newWebhookToken, ChannelsConfigError, type ChannelsConfig, type ChannelsPutBody
+  newWebhookToken, ChannelsConfigError, ChannelsPutBodySchema, type ChannelsConfig, type ChannelsPutBody
 } from '../server/lib/channels/config'
 import { encryptSecret, decryptSecret } from '../server/lib/ai/registry/crypto'
 
@@ -135,5 +135,68 @@ describe('mergeChannelsPut', () => {
   })
   it('an empty email "to" becomes null', () => {
     expect(mergeChannelsPut(base(), body({}, { email: { enabled: true, to: '' } })).email).toEqual({ enabled: true, to: null })
+  })
+})
+
+describe('parseChannelsConfig — tolerant of malformed stored rows', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('falls back field by field, keeps good fields and a valid token, warns once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const c = parseChannelsConfig({
+      imessage: { enabled: 'true', serverUrl: 5, passwordEnc: 'enc-ok', webhookToken: 'c'.repeat(64), allowedHandles: 'nope', defaultHandle: '+15551234567', defaultChatGuid: 7 },
+      email: { enabled: 1, to: 'tony@example.com' },
+      presenceAwayMinutes: '10'
+    })
+    expect(c.imessage).toEqual({
+      enabled: false, serverUrl: '', passwordEnc: 'enc-ok', webhookToken: 'c'.repeat(64),
+      allowedHandles: [], defaultHandle: '+15551234567', defaultChatGuid: null
+    })
+    expect(c.email).toEqual({ enabled: false, to: 'tony@example.com' })
+    expect(c.presenceAwayMinutes).toBe(10)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]![0])).toContain('channel_imessage.enabled')
+    expect(String(warn.mock.calls[0]![0])).toContain('presence_away_minutes')
+  })
+
+  it('a non-object row yields all defaults and a fresh token, without throwing', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const c = parseChannelsConfig({ imessage: 'garbage', email: [1, 2], presenceAwayMinutes: 999 })
+    expect(c.imessage.enabled).toBe(false)
+    expect(c.imessage.allowedHandles).toEqual([])
+    expect(c.imessage.webhookToken).toMatch(/^[0-9a-f]{64}$/)
+    expect(c.email).toEqual({ enabled: false, to: null })
+    expect(c.presenceAwayMinutes).toBe(10)
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('an invalid token (number / empty string) is replaced with a fresh one', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(parseChannelsConfig({ imessage: { webhookToken: 42 } }).imessage.webhookToken).toMatch(/^[0-9a-f]{64}$/)
+    expect(parseChannelsConfig({ imessage: { webhookToken: '' } }).imessage.webhookToken).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('does not warn for well-formed or absent rows', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    parseChannelsConfig({})
+    parseChannelsConfig({ imessage: base().imessage, email: { enabled: true, to: null }, presenceAwayMinutes: 30 })
+    expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChannelsPutBodySchema', () => {
+  const withUrl = (serverUrl: string) => ({ ...body({ serverUrl }) })
+  it('accepts only http/https server URLs (or empty)', () => {
+    expect(ChannelsPutBodySchema.safeParse(withUrl('http://192.168.2.5:1234')).success).toBe(true)
+    expect(ChannelsPutBodySchema.safeParse(withUrl('https://bb.example.com')).success).toBe(true)
+    expect(ChannelsPutBodySchema.safeParse(withUrl('')).success).toBe(true)
+    expect(ChannelsPutBodySchema.safeParse(withUrl('file:///etc/passwd')).success).toBe(false)
+    expect(ChannelsPutBodySchema.safeParse(withUrl('javascript:alert(1)')).success).toBe(false)
+    expect(ChannelsPutBodySchema.safeParse(withUrl('ftp://bb.example.com')).success).toBe(false)
+    expect(ChannelsPutBodySchema.safeParse(withUrl('not a url')).success).toBe(false)
+  })
+  it('validates email "to"', () => {
+    expect(ChannelsPutBodySchema.safeParse(body({}, { email: { enabled: true, to: 'nope' } })).success).toBe(false)
+    expect(ChannelsPutBodySchema.safeParse(body({}, { email: { enabled: true, to: 'a@b.co' } })).success).toBe(true)
   })
 })

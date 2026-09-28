@@ -9,7 +9,7 @@
 // so Tony can paste it into BlueBubbles (controller ruling, cycle 75).
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { z } from 'zod'
-import { inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { settings } from '../../db/schema'
 import { encryptSecret, decryptSecret } from '../ai/registry/crypto'
@@ -43,32 +43,70 @@ export function newWebhookToken(): string {
   return randomBytes(32).toString('hex')
 }
 
-const imessageSchema = z.object({
-  enabled: z.boolean().default(false),
-  serverUrl: z.string().default(''),
-  passwordEnc: z.string().nullable().default(null),
-  webhookToken: z.string().min(1).optional(),
-  allowedHandles: z.array(z.string()).default([]),
-  defaultHandle: z.string().nullable().default(null),
-  defaultChatGuid: z.string().nullable().default(null)
-})
-const emailSchema = z.object({
-  enabled: z.boolean().default(false),
-  to: z.string().nullable().default(null)
-})
+// Field-by-field schemas for the STORED rows. Parsing is tolerant: a malformed field (e.g. a
+// hand-edited `enabled: "true"`) falls back to its default on its own and logs one warning, so
+// a bad row can never 500 the settings routes, the webhook check, or delivery routing.
+const imessageFields = {
+  enabled: [z.boolean(), false],
+  serverUrl: [z.string(), ''],
+  passwordEnc: [z.string().nullable(), null],
+  allowedHandles: [z.array(z.string()), []],
+  defaultHandle: [z.string().nullable(), null],
+  defaultChatGuid: [z.string().nullable(), null]
+} as const
+const emailFields = {
+  enabled: [z.boolean(), false],
+  to: [z.string().nullable(), null]
+} as const
+const presenceSchema = z.number().int().min(PRESENCE_MIN).max(PRESENCE_MAX)
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** A stored webhook token is usable when it is a non-empty string. */
+export function isValidStoredToken(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0
+}
+
+function parseFields(
+  raw: unknown, fields: Record<string, readonly [z.ZodType, unknown]>, where: string, bad: string[]
+): Record<string, unknown> {
+  const obj = raw === undefined ? {} : raw
+  if (!isRecord(obj)) bad.push(`${where} (not an object)`)
+  const src = isRecord(obj) ? obj : {}
+  const out: Record<string, unknown> = {}
+  for (const [k, [schema, dflt]] of Object.entries(fields)) {
+    if (!(k in src) || src[k] === undefined) { out[k] = Array.isArray(dflt) ? [] : dflt; continue }
+    const r = schema.safeParse(src[k])
+    if (r.success) out[k] = r.data
+    else { out[k] = Array.isArray(dflt) ? [] : dflt; bad.push(`${where}.${k}`) }
+  }
+  return out
+}
 
 /**
- * Parse the three stored values into a config. When the iMessage row has no webhook token a
- * fresh one is generated here; persisting it is the caller's job (`loadChannelsConfig` does).
+ * Parse the three stored values into a config. Never throws: malformed fields fall back to
+ * their defaults (one console.warn per parse). When the iMessage row has no usable webhook
+ * token a fresh one is generated here; persisting it is the caller's job (`loadChannelsConfig`).
  */
 export function parseChannelsConfig(raw: { imessage?: unknown, email?: unknown, presenceAwayMinutes?: unknown }): ChannelsConfig {
-  const im = imessageSchema.parse(raw.imessage ?? {})
-  const email = emailSchema.parse(raw.email ?? {})
-  const mins = z.number().int().min(PRESENCE_MIN).max(PRESENCE_MAX).safeParse(raw.presenceAwayMinutes)
+  const bad: string[] = []
+  const im = parseFields(raw.imessage, imessageFields, KEY_IMESSAGE, bad) as Omit<IMessageConfig, 'webhookToken'>
+  const email = parseFields(raw.email, emailFields, KEY_EMAIL, bad) as unknown as EmailChannelConfig
+  const rawToken = isRecord(raw.imessage) ? raw.imessage.webhookToken : undefined
+  if (rawToken !== undefined && !isValidStoredToken(rawToken)) bad.push(`${KEY_IMESSAGE}.webhookToken`)
+  let presenceAwayMinutes = PRESENCE_DEFAULT
+  if (raw.presenceAwayMinutes !== undefined) {
+    const r = presenceSchema.safeParse(raw.presenceAwayMinutes)
+    if (r.success) presenceAwayMinutes = r.data
+    else bad.push(KEY_PRESENCE)
+  }
+  if (bad.length) console.warn(`[channels] malformed channel settings, using defaults for: ${bad.join(', ')}`)
   return {
-    imessage: { ...im, webhookToken: im.webhookToken ?? newWebhookToken() },
+    imessage: { ...im, webhookToken: isValidStoredToken(rawToken) ? rawToken : newWebhookToken() },
     email,
-    presenceAwayMinutes: mins.success ? mins.data : PRESENCE_DEFAULT
+    presenceAwayMinutes
   }
 }
 
@@ -99,14 +137,14 @@ const PasswordField = z.union([
 export const ChannelsPutBodySchema = z.object({
   imessage: z.object({
     enabled: z.boolean(),
-    serverUrl: z.union([z.literal(''), z.string().trim().url()]),
+    serverUrl: z.union([z.literal(''), z.url({ protocol: /^https?$/ }).trim()]),
     password: PasswordField,
     allowedHandles: z.array(z.string()),
     defaultHandle: z.string().nullable()
   }),
   email: z.object({
     enabled: z.boolean(),
-    to: z.union([z.literal(''), z.string().trim().email()]).nullable()
+    to: z.union([z.literal(''), z.email().trim()]).nullable()
   }),
   presenceAwayMinutes: z.number()
 })
@@ -151,25 +189,73 @@ async function upsert(key: string, value: unknown): Promise<void> {
     .onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } })
 }
 
-export async function loadChannelsConfig(): Promise<ChannelsConfig> {
-  if (cache) return cache
+// SQL: true when the EXISTING channel_imessage row already holds a usable webhook token.
+const STORED_TOKEN_VALID = sql`(coalesce(jsonb_typeof("settings"."value"->'webhookToken') = 'string' and "settings"."value"->>'webhookToken' <> '', false))`
+
+/**
+ * Write the iMessage row but never replace a usable stored webhook token: only rotation
+ * (`rotateWebhookToken`) changes it. Done in one statement so a PUT that loaded before a
+ * concurrent regenerate cannot write the old token back.
+ */
+async function upsertIMessageKeepingToken(im: IMessageConfig): Promise<void> {
+  const now = new Date()
+  await useDb().insert(settings)
+    .values({ key: KEY_IMESSAGE, value: im, updatedAt: now })
+    .onConflictDoUpdate({
+      target: settings.key,
+      set: {
+        value: sql`excluded.value || (case when ${STORED_TOKEN_VALID} then jsonb_build_object('webhookToken', "settings"."value"->'webhookToken') else '{}'::jsonb end)`,
+        updatedAt: now
+      }
+    })
+}
+
+async function readRows(): Promise<Map<string, unknown>> {
   const rows = await useDb().select().from(settings)
     .where(inArray(settings.key, [KEY_IMESSAGE, KEY_EMAIL, KEY_PRESENCE]))
-  const byKey = new Map(rows.map(r => [r.key, r.value]))
-  const rawIm = byKey.get(KEY_IMESSAGE) as { webhookToken?: unknown } | undefined
-  const c = parseChannelsConfig({ imessage: rawIm, email: byKey.get(KEY_EMAIL), presenceAwayMinutes: byKey.get(KEY_PRESENCE) })
-  // First load (or a row without a token): persist the generated token so it stays stable.
-  if (typeof rawIm?.webhookToken !== 'string' || !rawIm.webhookToken) await upsert(KEY_IMESSAGE, c.imessage)
+  return new Map(rows.map(r => [r.key, r.value]))
+}
+
+// Note: a cold load can WRITE (first-time token generation / repair of a bad token). It is
+// idempotent after that first write, so read paths like isAway() calling it are safe.
+export async function loadChannelsConfig(): Promise<ChannelsConfig> {
+  if (cache) return cache
+  let byKey = await readRows()
+  let c = parseChannelsConfig({ imessage: byKey.get(KEY_IMESSAGE), email: byKey.get(KEY_EMAIL), presenceAwayMinutes: byKey.get(KEY_PRESENCE) })
+  const rawIm = byKey.get(KEY_IMESSAGE)
+  if (!isRecord(rawIm) || !isValidStoredToken(rawIm.webhookToken)) {
+    // First load, or a row without a usable token: persist the generated token (the rest of the
+    // row is written normalised). If another process got there first its token wins — re-read.
+    await upsertIMessageKeepingToken(c.imessage)
+    byKey = await readRows()
+    const stored = byKey.get(KEY_IMESSAGE)
+    if (isRecord(stored) && isValidStoredToken(stored.webhookToken)) c = { ...c, imessage: { ...c.imessage, webhookToken: stored.webhookToken } }
+  }
   cache = c
   return c
 }
 
+/**
+ * Persist all three keys. The webhook token in `c` is ignored when a usable one is already
+ * stored (see upsertIMessageKeepingToken); rotate it with `rotateWebhookToken`.
+ */
 export async function saveChannelsConfig(c: ChannelsConfig): Promise<void> {
   const validated = parseChannelsConfig({ imessage: c.imessage, email: c.email, presenceAwayMinutes: c.presenceAwayMinutes })
-  await upsert(KEY_IMESSAGE, validated.imessage)
+  await upsertIMessageKeepingToken(validated.imessage)
   await upsert(KEY_EMAIL, validated.email)
   await upsert(KEY_PRESENCE, validated.presenceAwayMinutes)
-  cache = validated
+  cache = null // the stored token may differ from c's; the next load reads the truth
+}
+
+/** Replace the webhook token with a fresh one; the old token stops verifying immediately. */
+export async function rotateWebhookToken(): Promise<string> {
+  await loadChannelsConfig() // ensures the row exists and is an object with a token
+  const token = newWebhookToken()
+  await useDb().update(settings)
+    .set({ value: sql`jsonb_set("settings"."value", '{webhookToken}', to_jsonb(${token}::text))`, updatedAt: new Date() })
+    .where(eq(settings.key, KEY_IMESSAGE))
+  cache = null
+  return token
 }
 
 export function invalidateChannelsConfig(): void { cache = null }

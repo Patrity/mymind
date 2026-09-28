@@ -3,17 +3,20 @@
 // restored exactly in afterAll (deleted if it was absent). No other rows are touched.
 process.loadEnvFile('.env')
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi, afterEach } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
+vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 
-import { inArray } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { settings, type SettingRow } from '../server/db/schema'
 import {
   loadChannelsConfig, saveChannelsConfig, invalidateChannelsConfig, verifyWebhookToken, blueBubblesPassword,
-  type ChannelsConfig
+  mergeChannelsPut, rotateWebhookToken, type ChannelsConfig
 } from '../server/lib/channels/config'
+import { isAway, markActive, _resetPresence } from '../server/lib/channels/presence'
 import { encryptSecret } from '../server/lib/ai/registry/crypto'
 
 const KEYS = ['channel_imessage', 'channel_email', 'presence_away_minutes']
@@ -88,5 +91,112 @@ describe('channel settings (DB)', () => {
     await saveChannelsConfig({ ...c, imessage: { ...c.imessage, enabled: false } })
     invalidateChannelsConfig()
     expect(await verifyWebhookToken(token)).toBe(false)
+  })
+})
+
+async function storedToken(): Promise<unknown> {
+  const [row] = await useDb().select().from(settings).where(eq(settings.key, 'channel_imessage'))
+  return (row?.value as { webhookToken?: unknown } | undefined)?.webhookToken
+}
+const tokenOf = (dto: { imessage: { webhookUrlPath: string } }) => dto.imessage.webhookUrlPath.split('token=')[1]!
+
+describe('webhook token is only changed by rotation (DB)', () => {
+  it('save ignores a different token in the config it is given', async () => {
+    const c = await loadChannelsConfig()
+    const before = c.imessage.webhookToken
+    await saveChannelsConfig({ ...c, imessage: { ...c.imessage, webhookToken: 'f'.repeat(64) } })
+    expect(await storedToken()).toBe(before)
+    invalidateChannelsConfig()
+    expect((await loadChannelsConfig()).imessage.webhookToken).toBe(before)
+  })
+
+  it('a PUT that loaded before a concurrent regenerate does not undo the rotation', async () => {
+    invalidateChannelsConfig()
+    const stale = await loadChannelsConfig()
+    const rotated = await rotateWebhookToken()
+    expect(rotated).not.toBe(stale.imessage.webhookToken)
+    const merged = mergeChannelsPut(stale, {
+      imessage: { enabled: true, serverUrl: 'http://bb-test.invalid:1234', password: null, allowedHandles: ['+15550000002'], defaultHandle: null },
+      email: { enabled: false, to: null },
+      presenceAwayMinutes: 12
+    })
+    expect(merged.imessage.webhookToken).toBe(stale.imessage.webhookToken) // the stale value is in hand...
+    await saveChannelsConfig(merged)
+    expect(await storedToken()).toBe(rotated) // ...but the stored rotated token survives
+    invalidateChannelsConfig()
+    const after = await loadChannelsConfig()
+    expect(after.imessage.webhookToken).toBe(rotated)
+    expect(after.imessage.allowedHandles).toEqual(['+15550000002'])
+    expect(after.presenceAwayMinutes).toBe(12)
+  })
+
+  it('POST regenerate-token (session): new token differs, the old one stops verifying', async () => {
+    const regen = (await import('../server/api/settings/channels/regenerate-token.post')).default as (e: unknown) => Promise<{ imessage: { webhookUrlPath: string } }>
+    invalidateChannelsConfig()
+    const c = await loadChannelsConfig()
+    await saveChannelsConfig({ ...c, imessage: { ...c.imessage, enabled: true } })
+    invalidateChannelsConfig()
+    const old = (await loadChannelsConfig()).imessage.webhookToken
+    expect(await verifyWebhookToken(old)).toBe(true)
+
+    const dto = await regen({ context: { client: { type: 'session', userId: 'u1' } } })
+    const fresh = tokenOf(dto)
+    expect(fresh).toMatch(/^[0-9a-f]{64}$/)
+    expect(fresh).not.toBe(old)
+    expect(await storedToken()).toBe(fresh)
+    expect(await verifyWebhookToken(old)).toBe(false)
+    expect(await verifyWebhookToken(fresh)).toBe(true)
+  })
+})
+
+describe('malformed stored rows never throw (DB)', () => {
+  afterEach(() => { vi.restoreAllMocks(); _resetPresence() })
+
+  async function writeRaw(rows: Array<{ key: string, value: unknown }>) {
+    await clearKeys()
+    await useDb().insert(settings).values(rows.map(r => ({ ...r, value: r.value as object })))
+    invalidateChannelsConfig()
+  }
+
+  it('bad field types fall back; a valid token is kept and verifies; isAway works', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const tok = 'd'.repeat(64)
+    await writeRaw([
+      { key: 'channel_imessage', value: { enabled: true, serverUrl: 5, webhookToken: tok, allowedHandles: 'x' } },
+      { key: 'channel_email', value: 'not-an-object' },
+      { key: 'presence_away_minutes', value: 'ten' }
+    ])
+    const c = await loadChannelsConfig()
+    expect(c.imessage.enabled).toBe(true)
+    expect(c.imessage.serverUrl).toBe('')
+    expect(c.imessage.allowedHandles).toEqual([])
+    expect(c.imessage.webhookToken).toBe(tok)
+    expect(c.email).toEqual({ enabled: false, to: null })
+    expect(c.presenceAwayMinutes).toBe(10)
+    expect(warn).toHaveBeenCalled()
+    expect(await verifyWebhookToken(tok)).toBe(true)
+    expect(await verifyWebhookToken('e'.repeat(64))).toBe(false)
+    const t0 = Date.now()
+    markActive(t0)
+    expect(await isAway(t0 + 60_000)).toBe(false)
+    expect(await isAway(t0 + 10 * 60_000)).toBe(true)
+  })
+
+  it('a non-object / bad-token iMessage row is repaired with a fresh persisted token; verify stays false', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await writeRaw([{ key: 'channel_imessage', value: 12345 }])
+    const c = await loadChannelsConfig()
+    expect(c.imessage.enabled).toBe(false)
+    expect(c.imessage.webhookToken).toMatch(/^[0-9a-f]{64}$/)
+    expect(await storedToken()).toBe(c.imessage.webhookToken)
+    expect(await verifyWebhookToken(c.imessage.webhookToken)).toBe(false) // disabled
+    expect(await isAway()).toBe(true)
+
+    await writeRaw([{ key: 'channel_imessage', value: { enabled: true, webhookToken: 99 } }])
+    const d = await loadChannelsConfig()
+    expect(d.imessage.webhookToken).toMatch(/^[0-9a-f]{64}$/)
+    expect(await storedToken()).toBe(d.imessage.webhookToken)
+    expect(await verifyWebhookToken('99')).toBe(false)
+    expect(await verifyWebhookToken(d.imessage.webhookToken)).toBe(true)
   })
 })

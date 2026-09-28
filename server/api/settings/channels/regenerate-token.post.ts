@@ -1,10 +1,12 @@
-import { loadChannelsConfig, saveChannelsConfig, invalidateChannelsConfig, newWebhookToken, channelsConfigDTO } from '../../../lib/channels/config'
+import { loadChannelsConfig, rotateWebhookToken, invalidateChannelsConfig, channelsConfigDTO } from '../../../lib/channels/config'
+import { requireSession } from '../../../utils/auth-guard'
 
-// Rotates the BlueBubbles webhook token. The old URL stops working immediately (404); Tony must
-// paste the new webhookUrlPath into BlueBubbles.
-export default defineEventHandler(async () => {
-  const c = await loadChannelsConfig()
-  await saveChannelsConfig({ ...c, imessage: { ...c.imessage, webhookToken: newWebhookToken() } })
+// Web session only. Rotates the BlueBubbles webhook token: the old URL stops working
+// immediately (404); Tony must paste the new webhookUrlPath into BlueBubbles.
+export default defineEventHandler(async (event) => {
+  requireSession(event)
+
+  await rotateWebhookToken()
   invalidateChannelsConfig()
   return channelsConfigDTO(await loadChannelsConfig())
 })
