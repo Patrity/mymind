@@ -93,7 +93,10 @@ export function parseBlueBubblesMessage(data: unknown): InboundMessage | Tapback
       attachments,
       date: new Date(dateMs),
       isFromMe,
-      isGroup
+      isGroup,
+      // An association that isn't a tapback (emoji reaction 2006/3006, sticker, …): flagged so
+      // the inbound pipeline drops it rather than treating it as a plain message.
+      ...(typeof assocGuidRaw === 'string' && assocGuidRaw ? { associatedMessageGuid: stripTargetPrefix(assocGuidRaw) } : {})
     }
     return message
   } catch {

@@ -18,6 +18,8 @@ export interface TurnPersistContext {
   attachments: AttachmentRef[]
   reasoning: string
   usage: NewConvMessage['usage']
+  /** Where the USER's half came from (cycle 75, e.g. `imessage:<chatGuid>`); user rows only. */
+  origin?: string
 }
 
 /** Builds the appendMessages payload for one turn's added messages. */
@@ -32,6 +34,7 @@ export function buildTurnPersistPayload(added: AgentMessage[], ctx: TurnPersistC
     toolCalls: m.role === 'assistant' && m.toolRecords?.length ? m.toolRecords : null,
     reasoning: m.role === 'assistant' ? (ctx.reasoning || null) : null,
     attachments: m.role === 'user' ? ctx.attachments : null,
+    origin: m.role === 'user' ? (ctx.origin ?? null) : null,
     usage: m.role === 'assistant' ? ctx.usage : null
   }))
 }

@@ -249,6 +249,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         inputModality,
         speakFlag,
         attachments: turnAttachments,
+        origin: input.origin,
         reasoning: reasoningText,
         // The same object the live chunk above carried — see the note there.
         usage: finalUsage
@@ -327,6 +328,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
             inputModality,
             speakFlag,
             attachments: turnAttachments,
+            origin: input.origin,
             reasoning: reasoningText,
             usage: buildUsageWithTiming()
           })

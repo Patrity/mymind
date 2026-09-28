@@ -330,6 +330,24 @@ describe('runTurn', () => {
     expect((await rows(conversationId)).find(x => x.role === 'user')?.content).toBe('explode')
   })
 
+  it('cycle 75: an inbound-iMessage run stamps input.origin on its user row only — normal and rescue paths', async () => {
+    const origin = 'imessage:iMessage;-;+15551234567'
+    const ok = await queued('from my phone', { input: { text: 'from my phone', modality: 'text', origin } })
+    await runTurn(ok.run, { runAgent: fakeAgent('got it') as never, assemble: noAssemble as never, hub: new StreamHub() })
+    const r1 = await rows(ok.conversationId)
+    expect(r1.find(x => x.role === 'user')?.origin).toBe(origin)
+    expect(r1.find(x => x.role === 'assistant')?.origin).toBeNull()
+
+    const bad = await queued('phone then boom', { input: { text: 'phone then boom', modality: 'text', origin } })
+    const boom = async function* () {
+      yield { type: 'text-delta', text: 'partial ' } as const
+      throw new Error('model died')
+    }
+    await runTurn(bad.run, { runAgent: boom as never, assemble: noAssemble as never, hub: new StreamHub() })
+    const r2 = await rows(bad.conversationId)
+    expect(r2.find(x => x.role === 'user')?.origin).toBe(origin)
+  })
+
   it('a failure before the model ever runs (assembly throws) still keeps the question', async () => {
     const { run, conversationId } = await queued('before-model')
     const boom = async () => {

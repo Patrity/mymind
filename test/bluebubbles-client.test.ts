@@ -72,6 +72,24 @@ describe('blueBubblesClient', () => {
     expect(e.status).toBe(401)
   })
 
+  it('a later serverInfo refreshes the detected send method (Private API toggled on the Mac)', async () => {
+    fake = await startFakeBlueBubbles({ privateApi: false })
+    const c = client()
+    await c.sendText(CHAT, 'one', 'd-pa1')
+    fake.setPrivateApi(true)
+    await c.serverInfo() // what catch-up's health check does every 2 min
+    await c.sendText(CHAT, 'two', 'd-pa2')
+    expect(fake.sent.map(s => s.method)).toEqual(['apple-script', 'private-api'])
+  })
+
+  it('an explicitly configured send method is not overridden by serverInfo', async () => {
+    fake = await startFakeBlueBubbles({ privateApi: true })
+    const c = client({ privateApi: false })
+    await c.serverInfo()
+    await c.sendText(CHAT, 'x', 'd-pa3')
+    expect(fake.sent[0]!.method).toBe('apple-script')
+  })
+
   it('408 and 429 are retryable; 404 is not', async () => {
     for (const [status, retryable] of [[408, true], [429, true], [404, false]] as const) {
       const fetchImpl = (async () => new Response(JSON.stringify({ status, message: 'x' }), { status })) as typeof fetch

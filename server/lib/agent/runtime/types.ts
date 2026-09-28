@@ -14,6 +14,9 @@ export interface RunInput {
   presetId?: string | null
   /** 'light' = only the last few turns of history (cycle 74 jobs); absent/'full' = today's behaviour. */
   context?: 'light' | 'full'
+  /** Cycle 75: where the message came from (e.g. `imessage:<chatGuid>`), stamped on the persisted
+   *  user row so the UI can mark it. Absent for app-typed messages. */
+  origin?: string
 }
 
 /** Cycle 75: where to send this run's reply besides the web UI — set when the run was

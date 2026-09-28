@@ -121,11 +121,16 @@ export function blueBubblesClient(cfg: {
 
   async function serverInfo() {
     const d = rec(await data('GET', '/api/v1/server/info'))
-    return {
+    const info = {
       privateApi: d.private_api === true,
       serverVersion: typeof d.server_version === 'string' ? d.server_version : '',
       detectedIcloud: typeof d.detected_icloud === 'string' && d.detected_icloud ? d.detected_icloud : null
     }
+    // Every successful check refreshes the detected send method (the catch-up health check runs
+    // this every 2 min), so turning the Private API on or off on the Mac takes effect without a
+    // restart. An explicitly configured mode is left alone.
+    if (cfg.privateApi === undefined) privateApi = Promise.resolve(info.privateApi)
+    return info
   }
 
   function usesPrivateApi(): Promise<boolean> {

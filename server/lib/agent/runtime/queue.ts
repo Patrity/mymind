@@ -13,7 +13,8 @@ import { dueTaskEvents } from '../jobs/events'
 import { onRunFinished } from '../jobs/outcome'
 import { deliveriesTick } from '../../channels/outbox'
 import type { AgentRun } from '../../../db/schema'
-import type { RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
+import { catchUpTick } from '../../channels/inbound'
+import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
 export const HEADLESS_WALL_CLOCK_MS = 300_000
 export const ALIVE_BUMP_MS = 10_000
@@ -23,6 +24,9 @@ export interface EnqueueRequest {
   wakeReason?: string; modelDefId?: string | null; originSinkId?: string | null
   /** The agent_jobs row this run fires for (cycle 74) — outcome.ts reads it back on finish. */
   jobId?: string | null
+  /** Cycle 75: answer this run back over a channel too (an inbound iMessage). Only a NEW run
+   *  carries it — on a steer the caller sets it on the run it steered into. */
+  replyTo?: ReplyTo | null
 }
 export interface EnqueueResult {
   runId: string; conversationId: string; steered: boolean; created: boolean
@@ -60,7 +64,7 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
     conversationId, sessionKey: created && req.sessionKey === 'thread:new' ? `thread:${conversationId}` : req.sessionKey,
     trigger: req.trigger, profile: req.profile, input: req.input,
     wakeReason: req.wakeReason ?? null, modelDefId: req.modelDefId ?? null, originSinkId: req.originSinkId ?? null,
-    jobId: req.jobId ?? null
+    jobId: req.jobId ?? null, replyTo: req.replyTo ?? null
   })
   if (deps.kick !== false) kick(deps.run)
   return { runId: run.id, conversationId, steered: false, created, queuedBehind: !!active }
@@ -221,6 +225,8 @@ export async function workerTick(opts: { onlyConversations?: string[] } = {}): P
       try { await dueTaskEvents() } catch (err) { console.error('[runtime] task.due events failed:', err) }
       // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).
       try { await deliveriesTick() } catch (err) { console.error('[runtime] deliveries tick failed:', err) }
+      // Cycle 75 inbound catch-up + BlueBubbles health (self-throttled to every 2 min).
+      try { await catchUpTick() } catch (err) { console.error('[runtime] iMessage catch-up failed:', err) }
       kick()
     }
   } catch (err) {

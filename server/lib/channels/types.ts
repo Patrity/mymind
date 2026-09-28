@@ -38,6 +38,9 @@ export interface InboundMessage {
   date: Date
   isFromMe: boolean
   isGroup: boolean
+  /** Set when the payload points at another message (associatedMessageGuid) but is NOT a
+   *  recognised tapback — an iOS 18 emoji reaction, a sticker, etc. Never becomes a turn. */
+  associatedMessageGuid?: string
 }
 
 export type Tapback = 'love' | 'like' | 'dislike' | 'laugh' | 'emphasize' | 'question'

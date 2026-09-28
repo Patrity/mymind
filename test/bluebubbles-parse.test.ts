@@ -35,3 +35,14 @@ describe('parseWebhook', () => {
     expect(parseWebhook({ type: 'new-message', data: { guid: 5 } }).event).toBeNull()
   })
 })
+
+describe('non-tapback associations (cycle 75 Task 7 ruling)', () => {
+  it('an iOS 18 emoji reaction (2006) parses as a message flagged with its associated guid', async () => {
+    const emoji = (await import('./fixtures/bluebubbles/emoji-reaction.json')).default
+    const e = parseWebhook(emoji).event as any
+    expect(e).toMatchObject({ kind: 'message', guid: 'A1B2-EMOJI', associatedMessageGuid: 'PROMPT-GUID' })
+  })
+  it('a plain message carries no associatedMessageGuid', () => {
+    expect((parseWebhook(text).event as any).associatedMessageGuid).toBeUndefined()
+  })
+})

@@ -35,6 +35,10 @@ export interface FakeBlueBubbles {
   /** Raw message objects served by /message/query and /chat/:guid/message. */
   messages: FakeMessage[]
   pushMessage(m: unknown): void
+  /** Flip what /server/info reports for the Private API. */
+  setPrivateApi(on: boolean): void
+  /** Make /server/info answer 503 (a BlueBubbles outage) until set back. */
+  setDown(down: boolean): void
   close(): Promise<void>
 }
 
@@ -71,8 +75,14 @@ export async function startFakeBlueBubbles(opts: {
   port?: number
   /** Log each request (method + path, never the password) — standalone mode. */
   verbose?: boolean
+  /** Image downloads come back as `image/heic` even with original=false (a failed conversion). */
+  heicAttachments?: boolean
+  /** Per-attachment-guid download type/name (default: a PNG named photo.png). */
+  attachmentTypes?: Record<string, { mime: string; name: string }>
 } = {}): Promise<FakeBlueBubbles> {
   const password = opts.password ?? 'fake'
+  let privateApi = opts.privateApi ?? false
+  let down = false
   let failSends = opts.failSends ?? 0
   let seq = 0
   const sent: FakeSent[] = []
@@ -100,7 +110,8 @@ export async function startFakeBlueBubbles(opts: {
       const json = (): Record<string, unknown> => (body.length ? JSON.parse(body.toString('utf8')) : {})
 
       if (method === 'GET' && path === '/api/v1/server/info') {
-        return reply(res, 200, { private_api: opts.privateApi ?? false, server_version: '1.9.9-fake', detected_icloud: 'fake@icloud.com' })
+        if (down) return reply(res, 503, null, 'Service Unavailable')
+        return reply(res, 200, { private_api: privateApi, server_version: '1.9.9-fake', detected_icloud: 'fake@icloud.com' })
       }
 
       if (method === 'POST' && path === '/api/v1/message/text') {
@@ -166,11 +177,13 @@ export async function startFakeBlueBubbles(opts: {
       const att = path.match(/^\/api\/v1\/attachment\/([^/]+)(\/download)?$/)
       if (att && method === 'GET') {
         const guid = decodeURIComponent(att[1]!)
+        const type = opts.attachmentTypes?.[guid] ?? { mime: 'image/png', name: 'photo.png' }
+        const mime = opts.heicAttachments && type.mime.startsWith('image/') ? 'image/heic' : type.mime
         if (att[2]) {
-          res.writeHead(200, { 'content-type': 'image/png', 'content-length': TINY_PNG.length })
+          res.writeHead(200, { 'content-type': mime, 'content-length': TINY_PNG.length })
           return res.end(TINY_PNG)
         }
-        return reply(res, 200, { guid, transferName: 'photo.png', mimeType: 'image/png' })
+        return reply(res, 200, { guid, transferName: type.name, mimeType: mime })
       }
 
       return reply(res, 404, null, 'Not Found')
@@ -186,6 +199,8 @@ export async function startFakeBlueBubbles(opts: {
     password,
     sent, reactions, typing, reads, queries, messages,
     pushMessage(m: unknown) { messages.push(m as FakeMessage) },
+    setPrivateApi(on: boolean) { privateApi = on },
+    setDown(d: boolean) { down = d },
     close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()) })
   }
 }
