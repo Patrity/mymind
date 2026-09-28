@@ -1,0 +1,5 @@
+{ "type": "new-message", "data": {
+  "guid": "A1B2-GROUP", "text": "hey everyone", "isFromMe": false, "dateCreated": 1790000005000,
+  "handle": { "address": "+15551234567" },
+  "chats": [{ "guid": "iMessage;+;chat123456", "style": 43 }],
+  "attachments": [], "associatedMessageGuid": null, "associatedMessageType": null } }

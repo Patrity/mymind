@@ -1,0 +1,6 @@
+{ "type": "new-message", "data": {
+  "guid": "A1B2-PHOTO", "text": "", "isFromMe": false, "dateCreated": 1790000001000,
+  "handle": { "address": "+15551234567" },
+  "chats": [{ "guid": "iMessage;-;+15551234567", "style": 45 }],
+  "attachments": [{ "guid": "ATT-PHOTO", "mimeType": "image/heic", "transferName": "IMG_0001.HEIC" }],
+  "associatedMessageGuid": null, "associatedMessageType": null } }

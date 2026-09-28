@@ -1,0 +1,5 @@
+{ "type": "new-message", "data": {
+  "guid": "A1B2-FROMME", "text": "on my way", "isFromMe": true, "dateCreated": 1790000006000,
+  "handle": { "address": "+15551234567" },
+  "chats": [{ "guid": "iMessage;-;+15551234567", "style": 45 }],
+  "attachments": [], "associatedMessageGuid": null, "associatedMessageType": null } }

@@ -1,0 +1,5 @@
+{ "type": "new-message", "data": {
+  "guid": "A1B2-TAPBACK-DISLIKE", "text": "Disliked “Run …”", "isFromMe": false, "dateCreated": 1790000004000,
+  "handle": { "address": "+15551234567" },
+  "chats": [{ "guid": "iMessage;-;+15551234567", "style": 45 }],
+  "attachments": [], "associatedMessageGuid": "p:0/PROMPT-GUID", "associatedMessageType": "dislike" } }

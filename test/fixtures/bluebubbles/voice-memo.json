@@ -1,0 +1,6 @@
+{ "type": "new-message", "data": {
+  "guid": "A1B2-VOICE", "text": "", "isFromMe": false, "dateCreated": 1790000002000,
+  "handle": { "address": "+15551234567" },
+  "chats": [{ "guid": "iMessage;-;+15551234567", "style": 45 }],
+  "attachments": [{ "guid": "ATT-VOICE", "mimeType": "audio/x-caf", "transferName": "Audio Message.caf" }],
+  "associatedMessageGuid": null, "associatedMessageType": null } }
