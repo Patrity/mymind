@@ -23,9 +23,10 @@ const saveJob = vi.fn()
 const setJobEnabled = vi.fn()
 const deleteJob = vi.fn()
 const revertJob = vi.fn()
+const getDefaultTimezone = vi.fn(async () => 'America/Chicago')
 vi.mock('../server/lib/agent/jobs/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../server/lib/agent/jobs/store')>()
-  return { ...actual, listJobs, getJob, createJob, saveJob, setJobEnabled, deleteJob, revertJob }
+  return { ...actual, listJobs, getJob, createJob, saveJob, setJobEnabled, deleteJob, revertJob, getDefaultTimezone }
 })
 
 const runJobNow = vi.fn()
@@ -94,6 +95,12 @@ describe('GET /api/jobs', () => {
     listJobs.mockResolvedValue([JOB])
     await expect(jobsIndexGet(evt())).resolves.toEqual([JOB])
   })
+
+  it('a row with no timezone gets the server default, never left for the browser', async () => {
+    listJobs.mockResolvedValue([JOB, { ...JOB, id: 'j2', slug: 'broken', timezone: null, parseError: 'unknown model: x' }])
+    const out = await jobsIndexGet(evt()) as { slug: string, timezone: string }[]
+    expect(out.map(j => [j.slug, j.timezone])).toEqual([['daily-digest', 'UTC'], ['broken', 'America/Chicago']])
+  })
 })
 
 // ---- POST /api/jobs -------------------------------------------------------------------------
@@ -128,6 +135,22 @@ describe('POST /api/jobs', () => {
 // ---- GET /api/jobs/:slug --------------------------------------------------------------------
 
 describe('GET /api/jobs/:slug', () => {
+  it('fills a missing timezone with the server default', async () => {
+    getJob.mockResolvedValue({ ...JOB, timezone: null, parseError: 'unknown model: x' })
+    listRuns.mockResolvedValue([])
+    const out = await jobGet(evt({ params: { slug: 'daily-digest' } })) as { job: { timezone: string } }
+    expect(out.job.timezone).toBe('America/Chicago')
+  })
+
+  it('anchors every-job fire times on the stored next run while enabled', async () => {
+    const next = new Date(Date.now() + 3 * 60_000).toISOString()
+    getJob.mockResolvedValue({ ...JOB, nextRunAt: next })
+    listRuns.mockResolvedValue([])
+    const out = await jobGet(evt({ params: { slug: 'daily-digest' } })) as { nextFireTimes: string[] }
+    expect(out.nextFireTimes[0]).toBe(next)
+    expect(new Date(out.nextFireTimes[1]!).getTime() - new Date(next).getTime()).toBe(10 * 60_000)
+  })
+
   it('returns job + 5 next fire times + up to 10 mapped runs', async () => {
     getJob.mockResolvedValue(JOB)
     const claimed = new Date('2026-01-01T00:00:00.000Z')

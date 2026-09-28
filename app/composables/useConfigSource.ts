@@ -14,7 +14,8 @@
  * The decisions themselves live in app/lib/config/source.ts (unit-tested).
  */
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { MaybeRefOrGetter } from 'vue'
+// Explicit (not auto-)imports so the composable also runs under plain vitest.
+import { computed, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import {
   classifySaveError, configEndpoints, reconcileSnapshot, toSnapshot,
   type ConfigKind, type SourceSnapshot

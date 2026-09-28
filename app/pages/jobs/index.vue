@@ -43,9 +43,14 @@ watch(error, (err) => {
 
 const setEnabled = useMutation({
   mutationFn: (p: { slug: string, enabled: boolean }) => $fetch(`/api/jobs/${p.slug}/enabled`, { method: 'PUT', body: { enabled: p.enabled } }),
+  // Resolves after the list refetch, so the switch stays disabled until it shows the new state.
   onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
   onError: (e: unknown) => toast.add({ color: 'error', title: 'Could not toggle job', description: errorMessage(e) })
 })
+
+// The row whose toggle is in flight: its switch is disabled until the PUT and the refetch
+// settle, so a double click can't send two writes.
+const togglingSlug = computed(() => (setEnabled.isPending.value ? setEnabled.variables.value?.slug ?? null : null))
 
 // Relative times drift; re-render them every 30 s.
 const now = ref(new Date())
@@ -224,6 +229,8 @@ async function createJob() {
         <template #enabled-cell="{ row }">
           <USwitch
             :model-value="row.original.enabled"
+            :loading="togglingSlug === row.original.slug"
+            :disabled="togglingSlug === row.original.slug"
             :aria-label="`${row.original.slug} enabled`"
             :data-testid="`job-enabled-${row.original.slug}`"
             @update:model-value="(v: boolean) => setEnabled.mutate({ slug: row.original.slug, enabled: v })"

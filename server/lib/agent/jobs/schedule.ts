@@ -166,17 +166,16 @@ export function minCronGapMs(cron: Cron, earlyExitBelowMs?: number): number | nu
 
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * The next time the job actually fires: the first instant inside its active_hours (the same
+ * bounded scan as nextFireTimes), so the stored next_run_at — and the list, the detail preview and
+ * the tick — never point at an out-of-hours slot. The tick's own inActiveHours check stays as a
+ * guard. `at` is the exception: its one instant is returned even when it falls outside the hours,
+ * because the tick must still claim it to disable the job and leave the "could not fire" note
+ * (a null would strand it enabled forever).
+ */
 export function nextRunAt(spec: JobSpec, from: Date): Date | null {
   switch (spec.trigger.kind) {
-    case 'cron': {
-      const cron = new Cron(spec.trigger.expr, { timezone: spec.timezone, paused: true })
-      return cron.nextRun(from)
-    }
-    case 'every': {
-      const every = parseEveryExpr(spec.trigger.expr)
-      if (!every) return null
-      return new Date(from.getTime() + every.ms)
-    }
     case 'at': {
       const resolved = resolveAtInstant(spec.trigger.expr, spec.timezone)
       if (!resolved) return null
@@ -184,36 +183,79 @@ export function nextRunAt(spec: JobSpec, from: Date): Date | null {
     }
     case 'event':
       return null
+    default:
+      return nextFireTimes(spec, 1, from)[0] ?? null
   }
 }
 
-/** Candidates examined per requested fire time before nextFireTimes gives up (an `every 5m` job
- *  whose active_hours never match would otherwise loop forever). */
+/** The anchor nextFireTimes takes for a stored job: its next_run_at, but only while enabled (a
+ *  disabled job's stored slot is stale). Shared by GET /api/jobs/:slug and the get_job tool. */
+export function fireTimesAnchor(job: { enabled: boolean, nextRunAt: string | null }): Date | null {
+  return job.enabled && job.nextRunAt ? new Date(job.nextRunAt) : null
+}
+
+/** Every scan looks at most this far ahead of `from` (so a sparse schedule may show fewer times). */
+export const SCAN_HORIZON_MS = 366 * 24 * 3600_000
+/** …and examines at most this many candidates per requested fire time. */
 export const FIRE_TIMES_CANDIDATES_PER_RESULT = 2000
 
 /**
+ * An instant at or before the next start of the job's active_hours window after the out-of-hours
+ * instant `d` (null when the job has no window). Pure local-minute arithmetic — croner here cost
+ * ~0.3 ms a call. A DST shift can make the arithmetic off by up to an hour, so a jump of more
+ * than an hour lands an hour EARLY (still out of hours, one more cheap step lands exactly); only
+ * the final ≤ 1 h step is exact arithmetic.
+ */
+function towardWindowStart(spec: JobSpec, d: Date): Date | null {
+  if (!spec.activeHours) return null
+  const [sh, sm] = spec.activeHours.start.split(':')
+  const startMin = Number(sh) * 60 + Number(sm)
+  const { minutes } = localTime(spec.timezone, d)
+  let delta = (startMin - minutes + 1440) % 1440
+  if (delta === 0) delta = 1440
+  if (delta > 60) delta -= 60
+  const minuteFloor = d.getTime() - (d.getTime() % 60_000)
+  return new Date(minuteFloor + delta * 60_000)
+}
+
+/**
  * The next `n` times the job will actually fire — only instants inside its active_hours, since
- * the tick skips the rest. `anchor` is the job's stored next_run_at: an `every` job fires on its
- * own cadence from there, not from `from` (the request time), so when the anchor is still ahead
- * the preview starts at it. Cron and at ignore the anchor (they are wall-clock anchored already).
- * Stops after n × FIRE_TIMES_CANDIDATES_PER_RESULT candidates, so it may return fewer than n.
+ * the tick skips the rest. An out-of-hours candidate jumps straight to the next window start
+ * rather than stepping through the night one slot at a time.
+ *
+ * `anchor` is the job's stored next_run_at: an `every` job fires on its own cadence from there,
+ * not from `from` (the request time), so when the anchor is still ahead the preview starts at it.
+ * Cron and at ignore the anchor (they are wall-clock anchored already).
+ *
+ * Bounded by SCAN_HORIZON_MS past `from` and n × FIRE_TIMES_CANDIDATES_PER_RESULT candidates, so
+ * it may return fewer than n (none at all when no fire time ever falls inside the hours).
  */
 export function nextFireTimes(spec: JobSpec, n: number, from: Date = new Date(), opts: { anchor?: Date | null } = {}): Date[] {
   if (n <= 0) return []
   const cap = n * FIRE_TIMES_CANDIDATES_PER_RESULT
+  const horizon = from.getTime() + SCAN_HORIZON_MS
   const out: Date[] = []
-  const keep = (d: Date) => {
-    if (inActiveHours(spec, d)) out.push(d)
-  }
+
   switch (spec.trigger.kind) {
     case 'cron': {
       const cron = new Cron(spec.trigger.expr, { timezone: spec.timezone, paused: true })
-      let cur = from
-      for (let i = 0; i < cap && out.length < n; i++) {
-        const next = cron.nextRun(cur)
-        if (!next) break
-        keep(next)
-        cur = next
+      // With day-of-month and month both `*`, the local fire times repeat every week, as do the
+      // local active hours: eight days without an in-hours candidate means there never is one.
+      const [, , dom, month] = spec.trigger.expr.trim().split(/\s+/)
+      const weekly = dom === '*' && month === '*'
+      const weekOut = from.getTime() + 8 * 24 * 3600_000
+      let c = cron.nextRun(from)
+      for (let i = 0; c && c.getTime() <= horizon && i < cap && out.length < n; i++) {
+        if (weekly && !out.length && c.getTime() > weekOut) break
+        if (inActiveHours(spec, c)) {
+          out.push(c)
+          c = cron.nextRun(c)
+          continue
+        }
+        const ws = towardWindowStart(spec, c)
+        if (!ws) break
+        // The first cron instant at or after that point (cron is minute-granular).
+        c = cron.nextRun(new Date(ws.getTime() - 1000))
       }
       return out
     }
@@ -221,13 +263,25 @@ export function nextFireTimes(spec: JobSpec, n: number, from: Date = new Date(),
       const every = parseEveryExpr(spec.trigger.expr)
       if (!every) return []
       const anchor = opts.anchor?.getTime()
-      const first = anchor !== undefined && anchor > from.getTime() ? anchor : from.getTime() + every.ms
-      for (let i = 0; i < cap && out.length < n; i++) keep(new Date(first + i * every.ms))
+      let c = anchor !== undefined && anchor > from.getTime() ? anchor : from.getTime() + every.ms
+      for (let i = 0; c <= horizon && i < cap && out.length < n; i++) {
+        const d = new Date(c)
+        if (inActiveHours(spec, d)) {
+          out.push(d)
+          c += every.ms
+          continue
+        }
+        // The tick re-derives an every job's next run from when it fires, so the cadence
+        // restarts at the window start (a heartbeat resumes at 08:00, not 08:07).
+        const ws = towardWindowStart(spec, d)
+        if (!ws) break
+        c = ws.getTime()
+      }
       return out
     }
     case 'at': {
       const next = nextRunAt(spec, from)
-      if (next) keep(next)
+      if (next && inActiveHours(spec, next)) out.push(next)
       return out
     }
     case 'event':
@@ -306,13 +360,17 @@ function hourMinuteFormatter(timeZone: string): Intl.DateTimeFormat {
   return f
 }
 
+function localTime(timeZone: string, at: Date): { hhmm: string, minutes: number } {
+  const parts = hourMinuteFormatter(timeZone).formatToParts(at)
+  const hh = parts.find(p => p.type === 'hour')?.value ?? '00'
+  const mm = parts.find(p => p.type === 'minute')?.value ?? '00'
+  return { hhmm: `${hh}:${mm}`, minutes: Number(hh) * 60 + Number(mm) }
+}
+
 export function inActiveHours(spec: JobSpec, at: Date): boolean {
   if (!spec.activeHours) return true
   const { start, end } = spec.activeHours
-  const parts = hourMinuteFormatter(spec.timezone).formatToParts(at)
-  const hh = parts.find(p => p.type === 'hour')?.value ?? '00'
-  const mm = parts.find(p => p.type === 'minute')?.value ?? '00'
-  const current = `${hh}:${mm}`
+  const current = localTime(spec.timezone, at).hhmm
   if (start <= end) return current >= start && current < end
   return current >= start || current < end
 }

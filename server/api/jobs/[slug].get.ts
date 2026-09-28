@@ -4,7 +4,7 @@
 // depend on whether the pinned model is still registered).
 import { getJob, getDefaultTimezone } from '../../lib/agent/jobs/store'
 import { parseJob } from '../../lib/agent/jobs/parse'
-import { nextFireTimes } from '../../lib/agent/jobs/schedule'
+import { fireTimesAnchor, nextFireTimes } from '../../lib/agent/jobs/schedule'
 import { listRuns } from '../../lib/agent/runtime/runs'
 import { requireJobSlug } from '../../utils/agent-config-http'
 
@@ -13,15 +13,19 @@ export default defineEventHandler(async (event) => {
   const job = await getJob(slug)
   if (!job) throw createError({ statusCode: 404, statusMessage: `no job named "${slug}"` })
 
-  const parsed = parseJob(job.content, { defaultTimezone: job.timezone ?? await getDefaultTimezone() })
+  // A row stores its resolved timezone; only an unparseable one can have none, and then the page
+  // shows times in the server's default zone, never the browser's.
+  const timezone = job.timezone ?? await getDefaultTimezone()
+  const parsed = parseJob(job.content, { defaultTimezone: timezone })
   // An enabled job's stored next_run_at anchors an `every` cadence (see nextFireTimes).
-  const anchor = job.enabled && job.nextRunAt ? new Date(job.nextRunAt) : null
-  const fireTimes = parsed.ok ? nextFireTimes(parsed.spec, 5, new Date(), { anchor }).map(d => d.toISOString()) : []
+  const fireTimes = parsed.ok
+    ? nextFireTimes(parsed.spec, 5, new Date(), { anchor: fireTimesAnchor(job) }).map(d => d.toISOString())
+    : []
 
   const runs = await listRuns({ jobId: job.id, limit: 10 })
 
   return {
-    job,
+    job: { ...job, timezone },
     nextFireTimes: fireTimes,
     runs: runs.map(r => ({
       id: r.id,

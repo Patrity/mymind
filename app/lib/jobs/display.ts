@@ -2,6 +2,7 @@
  * Pure display helpers for the /jobs pages (cycle 74): outcome → badge colour, a run's outcome
  * from its status, times in the job's own timezone, and the Run-now toast text.
  */
+import { splitFrontmatter } from '~~/shared/utils/frontmatter'
 
 export type BadgeColor = 'success' | 'neutral' | 'error' | 'warning' | 'info'
 
@@ -111,4 +112,16 @@ export function runNowToast(res: RunNowResult): { color: BadgeColor, title: stri
     invalid: 'the job does not parse — fix it first'
   }[res.skipped]
   return { color: 'warning', title: `skipped: ${res.skipped}`, description: why }
+}
+
+/**
+ * Why the Schedule preview is empty (the server returned no fire times), or null when there is
+ * nothing to explain (an invalid job, whose error the validation block already shows).
+ */
+export function emptyPreviewReason(job: { triggerKind: string | null, content: string, parseError: string | null }): string | null {
+  if (job.parseError) return null
+  if (job.triggerKind === 'event') return 'Fires when the event happens, not on a clock.'
+  if (splitFrontmatter(job.content).data.active_hours !== undefined) return 'No fire time falls within active_hours.'
+  if (job.triggerKind === 'at') return 'Its time has already passed.'
+  return 'No upcoming fire time.'
 }

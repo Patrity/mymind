@@ -6,12 +6,13 @@
  */
 import { useQueryClient } from '@tanstack/vue-query'
 import {
-  formatAgo, formatDuration, formatInZone, formatRelative, outcomeColor, runNowToast, runOutcome, runThreadLink,
+  emptyPreviewReason, formatAgo, formatDuration, formatInZone, formatRelative, outcomeColor, runNowToast, runOutcome, runThreadLink,
   type JobRunRow, type RunNowResult
 } from '~/lib/jobs/display'
 
 interface JobInfo {
   slug: string
+  content: string
   enabled: boolean
   triggerKind: string | null
   timezone: string | null
@@ -132,10 +133,11 @@ async function runNow() {
         </li>
       </ul>
       <p
-        v-else-if="job?.triggerKind === 'event'"
+        v-else-if="job && emptyPreviewReason(job)"
         class="mt-2 text-xs text-dimmed"
+        data-testid="job-no-fire-times"
       >
-        Fires when the event happens, not on a clock.
+        {{ emptyPreviewReason(job) }}
       </p>
     </div>
 

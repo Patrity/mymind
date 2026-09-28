@@ -12,6 +12,7 @@ definePageMeta({ title: 'Job' })
 interface JobEnvelope {
   job: {
     slug: string
+    content: string
     source: 'human' | 'agent'
     enabled: boolean
     triggerKind: string | null

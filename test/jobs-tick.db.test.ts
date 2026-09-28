@@ -214,11 +214,18 @@ describe('jobsTick — scheduling', () => {
     const start = hhmm(new Date(now.getTime() + 2 * 3600_000))
     const end = hhmm(new Date(now.getTime() + 3 * 3600_000))
     await createJob({ slug, content: md(`trigger: every 30m\nenabled: true\ntimezone: UTC\nactive_hours: ${start}-${end}`, 'Hours.'), actor: 'human' })
+    // next_run_at is the first in-hours instant — the window start (minute-floored), not now + 30m.
+    const windowStart = Math.floor((now.getTime() + 2 * 3600_000) / 60_000) * 60_000
+    expect(Math.abs((await row(slug)).nextRunAt!.getTime() - windowStart)).toBeLessThan(60_000)
+    // The tick's own active-hours check still guards a slot that comes due outside the hours.
     await makeDue(slug)
     const res = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake })
     expect(res.skipped).toEqual([slug])
     expect(callsFor(slug)).toHaveLength(0)
-    expect((await row(slug)).lastOutcome).toBe('skipped')
+    const after = await row(slug)
+    expect(after.lastOutcome).toBe('skipped')
+    // …and re-arms at the window start, not at the next out-of-hours slot.
+    expect(Math.abs(after.nextRunAt!.getTime() - windowStart)).toBeLessThan(60_000)
   })
 
   it('6. an `at` job fires, then enabled: false is written with a system revision and fired_at set', async () => {

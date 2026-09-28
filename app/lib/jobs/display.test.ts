@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatAgo, formatDuration, formatInZone, formatRelative, outcomeColor, runNowToast, runOutcome, runThreadLink, type JobRunRow } from './display'
+import { emptyPreviewReason, formatAgo, formatDuration, formatInZone, formatRelative, outcomeColor, runNowToast, runOutcome, runThreadLink, type JobRunRow } from './display'
 
 const run = (p: Partial<JobRunRow>): JobRunRow => ({
   id: 'r1', status: 'done', suppressed: false, createdAt: '2026-09-28T12:00:00Z',
@@ -73,5 +73,19 @@ describe('runNowToast', () => {
     expect(runNowToast({ runId: 'r' }).color).toBe('success')
     const t = runNowToast({ skipped: 'overlap' })
     expect(t).toMatchObject({ color: 'warning', title: 'skipped: overlap' })
+  })
+})
+
+describe('emptyPreviewReason', () => {
+  const job = (content: string, triggerKind = 'cron', parseError: string | null = null) => ({ content, triggerKind, parseError })
+  it('names active_hours when the job has them', () => {
+    expect(emptyPreviewReason(job('---\ntrigger: cron 0 3 * * *\nactive_hours: 08:00-22:00\n---\nx'))).toBe('No fire time falls within active_hours.')
+  })
+  it('does not blame active_hours for a job without them, or mention them in the body', () => {
+    expect(emptyPreviewReason(job('---\ntrigger: at 2020-01-01T09:00:00\n---\nactive_hours: 1', 'at'))).toBe('Its time has already passed.')
+  })
+  it('explains event jobs and stays quiet for invalid ones', () => {
+    expect(emptyPreviewReason(job('---\ntrigger: event cc.session_end\n---\nx', 'event'))).toMatch(/event happens/)
+    expect(emptyPreviewReason(job('---\nbad\n---\nx', 'cron', 'unknown key: bad'))).toBeNull()
   })
 })

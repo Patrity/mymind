@@ -17,7 +17,7 @@ import {
 } from '../jobs/store'
 import type { runJobNow as RunJobNowFn } from '../jobs/tick'
 import { parseJob, type JobSpec } from '../jobs/parse'
-import { nextFireTimes } from '../jobs/schedule'
+import { fireTimesAnchor, nextFireTimes } from '../jobs/schedule'
 import { resolveWakeWhen } from '../jobs/wake-time'
 
 /** Re-parses a stored job's content for scheduling purposes only (nextFireTimes doesn't need
@@ -76,7 +76,8 @@ export const jobTools: AgentTool[] = [
       const job = await getJob(slug)
       if (!job) return { result: jobNotFound(slug), summary: 'get_job: not found' }
       const spec = await specFor(job)
-      const fireTimes = spec ? nextFireTimes(spec, 5).map(d => d.toISOString()) : []
+      // Same anchor as GET /api/jobs/:slug, so Bridget and the UI list the same times.
+      const fireTimes = spec ? nextFireTimes(spec, 5, new Date(), { anchor: fireTimesAnchor(job) }).map(d => d.toISOString()) : []
       return {
         result: { ok: true, slug: job.slug, content: job.content, status: jobStatus(job), nextFireTimes: fireTimes },
         summary: `got job "${job.slug}"`
