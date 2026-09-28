@@ -40,4 +40,22 @@ describe('parseJob', () => {
     const r = p('trigger: event cc.session_end\nfilter: { project: mymind }')
     expect(r.ok && r.spec.filter).toEqual({ project: 'mymind' })
   })
+  it('coerces scalar filter values to strings and rejects nested ones', () => {
+    const r = p('trigger: event cc.session_end\nfilter: { count: 3, active: true }')
+    expect(r.ok && r.spec.filter).toEqual({ count: '3', active: 'true' })
+    const nested = p('trigger: event cc.session_end\nfilter: { nested: { a: 1 } }')
+    expect(nested.ok).toBe(false)
+  })
+  it('rejects a cron pattern whose minimum gap across an 8-day window is under 5 minutes, regardless of wall-clock "now"', () => {
+    // 0,3 * * * * fires at :00 and :03 every hour -> a 3-minute gap, however parseJob is called.
+    expect(p('trigger: cron 0,3 * * * *').ok).toBe(false)
+  })
+  it('does not reject a cron pattern whose density only looks suspicious (duplicate list value collapses to one occurrence)', () => {
+    // "9,9" is a duplicate hour value -> semantically identical to "9" -> fires once daily, no violation.
+    const r = p('trigger: cron 0 9,9 * * *')
+    expect(r.ok).toBe(true)
+  })
+  it('accepts a normal weekday cron (5-day-apart minimum well over 5 minutes)', () => {
+    expect(p('trigger: cron 30 7 * * 1-5').ok).toBe(true)
+  })
 })

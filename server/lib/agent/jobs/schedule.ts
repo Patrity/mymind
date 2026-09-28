@@ -1,18 +1,160 @@
 /**
  * Pure scheduling helpers over a validated JobSpec. Croner does the timezone/DST-aware cron
- * math; `every`/`at` are plain arithmetic; `event` jobs never have a next run.
+ * math; `every`/`at` are plain arithmetic (or Intl-driven wall-clock resolution for `at`);
+ * `event` jobs never have a next run.
  */
 import { Cron } from 'croner'
 import type { JobSpec } from './parse'
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
-function everyToMs(expr: string): number {
+// ---------------------------------------------------------------------------------------------
+// `every n(m|h)` — one shared parser so validation (parse.ts) and scheduling/describing (here)
+// can never drift apart on what counts as a valid interval or how many ms it is.
+// ---------------------------------------------------------------------------------------------
+
+export interface EveryDuration { n: number; unit: 'm' | 'h'; ms: number }
+
+export function parseEveryExpr(expr: string): EveryDuration | null {
   const m = /^(\d+)(m|h)$/.exec(expr)
-  if (!m) throw new Error(`invalid every expression: ${expr}`)
+  if (!m) return null
   const n = Number(m[1])
-  return m[2] === 'h' ? n * 60 * 60_000 : n * 60_000
+  const unit = (m[2] ?? 'm') as 'm' | 'h'
+  const ms = unit === 'h' ? n * 60 * 60_000 : n * 60_000
+  return { n, unit, ms }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Timezone-aware `at` resolution. An offset-less ISO datetime (no trailing Z/±HH:MM) is wall-
+// clock time in the job's `timezone`, not the server process's timezone — resolved purely via
+// Intl (never relies on `process.env.TZ` / the Date object's local-time methods).
+// ---------------------------------------------------------------------------------------------
+
+const OFFSET_SUFFIX_RE = /(Z|[+-]\d{2}:?\d{2})$/
+const NAIVE_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?$/
+
+function offsetMinutesAt(utcMs: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).formatToParts(new Date(utcMs))
+  const get = (type: string) => Number(parts.find(p => p.type === type)?.value ?? 0)
+  const asUTC = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'))
+  return Math.round((asUTC - utcMs) / 60_000)
+}
+
+function wallClockMatches(utcMs: number, timeZone: string, y: number, mo: number, d: number, h: number, mi: number, s: number): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  }).formatToParts(new Date(utcMs))
+  const get = (type: string) => Number(parts.find(p => p.type === type)?.value ?? 0)
+  return get('year') === y && get('month') === mo && get('day') === d && get('hour') === h && get('minute') === mi && get('second') === s
+}
+
+/** Binary-searches for the exact instant the UTC offset flips from the "before" to the "after"
+ *  regime within [lowMs, highMs] (lowMs must sample the old offset, highMs the new one). */
+function findTransitionInstant(lowMs: number, highMs: number, timeZone: string): number {
+  let lo = lowMs
+  let hi = highMs
+  const targetOffset = offsetMinutesAt(hi, timeZone)
+  for (let i = 0; i < 40; i++) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (offsetMinutesAt(mid, timeZone) === targetOffset) hi = mid
+    else lo = mid
+  }
+  return hi
+}
+
+/**
+ * Resolves an `at` trigger's ISO datetime string to a concrete instant. A string with an
+ * explicit offset (trailing `Z` or `±HH:MM`) is parsed as-is. An offset-less string is treated
+ * as wall-clock time in `timeZone`:
+ *  - in a DST gap (the wall-clock time never occurs), shifts forward to the first valid instant
+ *    (the transition moment itself);
+ *  - in a DST overlap (the wall-clock time occurs twice), takes the earlier of the two instants.
+ * Returns null when `expr` isn't a recognizable date.
+ */
+export function resolveAtInstant(expr: string, timeZone: string): Date | null {
+  if (OFFSET_SUFFIX_RE.test(expr)) {
+    const t = Date.parse(expr)
+    return Number.isNaN(t) ? null : new Date(t)
+  }
+
+  const m = NAIVE_DATETIME_RE.exec(expr)
+  if (!m) {
+    const t = Date.parse(expr)
+    return Number.isNaN(t) ? null : new Date(t)
+  }
+
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  const h = Number(m[4])
+  const mi = Number(m[5])
+  const s = Number(m[6] ?? '0')
+  const naiveUTC = Date.UTC(y, mo - 1, d, h, mi, s)
+
+  // Stage 1: rough offset guess treating the naive value as if it were already UTC, to land in
+  // the right ballpark regardless of how far the zone's offset is from UTC.
+  const roughOffset = offsetMinutesAt(naiveUTC, timeZone)
+  const roughUTC = naiveUTC - roughOffset * 60_000
+
+  // Stage 2: sample the offset a few hours either side of that rough estimate — wide enough to
+  // straddle any real-world DST transition (all are <= 2h) — to detect gaps/overlaps.
+  const WINDOW_MS = 3 * 60 * 60_000
+  const beforeMs = roughUTC - WINDOW_MS
+  const afterMs = roughUTC + WINDOW_MS
+  const offsetBefore = offsetMinutesAt(beforeMs, timeZone)
+  const offsetAfter = offsetMinutesAt(afterMs, timeZone)
+  const candidateBefore = naiveUTC - offsetBefore * 60_000
+  const candidateAfter = naiveUTC - offsetAfter * 60_000
+  const matchesBefore = wallClockMatches(candidateBefore, timeZone, y, mo, d, h, mi, s)
+  const matchesAfter = wallClockMatches(candidateAfter, timeZone, y, mo, d, h, mi, s)
+
+  if (matchesBefore && matchesAfter) return new Date(Math.min(candidateBefore, candidateAfter)) // overlap: earlier instant
+  if (matchesBefore) return new Date(candidateBefore)
+  if (matchesAfter) return new Date(candidateAfter)
+  if (offsetBefore === offsetAfter) return new Date(candidateBefore) // no transition nearby; trust the guess
+
+  // Gap: the wall-clock time never occurs. Shift forward to the first valid instant.
+  return new Date(findTransitionInstant(beforeMs, afterMs, timeZone))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cron density check — used by parse.ts's validation, kept here since it needs a live `Cron`.
+// ---------------------------------------------------------------------------------------------
+
+const CRON_CHECK_REFERENCE_MS = Date.UTC(2026, 0, 5, 0, 0, 0) // 2026-01-05T00:00:00Z, a Monday
+const CRON_CHECK_WINDOW_MS = 8 * 24 * 60 * 60_000 // 8 days — covers every weekday at least once
+const CRON_CHECK_MAX_RUNS = 5_000
+
+/**
+ * Minimum gap (ms) between consecutive occurrences of `cron` within a fixed 8-day window
+ * starting from a fixed reference instant (a Monday) — deterministic regardless of wall-clock
+ * "now", and covers every weekday. Returns null when fewer than 2 occurrences fall in the
+ * window (nothing to compare — not a density violation).
+ */
+export function minCronGapMs(cron: Cron): number | null {
+  const windowEnd = CRON_CHECK_REFERENCE_MS + CRON_CHECK_WINDOW_MS
+  let prev: Date | null = null
+  let current: Date = new Date(CRON_CHECK_REFERENCE_MS)
+  let min = Infinity
+  for (let i = 0; i < CRON_CHECK_MAX_RUNS; i++) {
+    const next = cron.nextRun(current)
+    if (!next || next.getTime() > windowEnd) break
+    if (prev) min = Math.min(min, next.getTime() - prev.getTime())
+    prev = next
+    current = next
+  }
+  return min === Infinity ? null : min
+}
+
+// ---------------------------------------------------------------------------------------------
 
 export function nextRunAt(spec: JobSpec, from: Date): Date | null {
   switch (spec.trigger.kind) {
@@ -21,12 +163,14 @@ export function nextRunAt(spec: JobSpec, from: Date): Date | null {
       return cron.nextRun(from)
     }
     case 'every': {
-      const ms = everyToMs(spec.trigger.expr)
-      return new Date(from.getTime() + ms)
+      const every = parseEveryExpr(spec.trigger.expr)
+      if (!every) return null
+      return new Date(from.getTime() + every.ms)
     }
     case 'at': {
-      const t = Date.parse(spec.trigger.expr)
-      return t > from.getTime() ? new Date(t) : null
+      const resolved = resolveAtInstant(spec.trigger.expr, spec.timezone)
+      if (!resolved) return null
+      return resolved.getTime() > from.getTime() ? resolved : null
     }
     case 'event':
       return null
@@ -40,11 +184,12 @@ export function nextFireTimes(spec: JobSpec, n: number, from: Date = new Date())
       return cron.nextRuns(n, from)
     }
     case 'every': {
-      const ms = everyToMs(spec.trigger.expr)
+      const every = parseEveryExpr(spec.trigger.expr)
+      if (!every) return []
       const out: Date[] = []
       let t = from.getTime()
       for (let i = 0; i < n; i++) {
-        t += ms
+        t += every.ms
         out.push(new Date(t))
       }
       return out
@@ -76,16 +221,15 @@ function describeCron(expr: string): string {
 }
 
 function describeEvery(expr: string): string {
-  const m = /^(\d+)(m|h)$/.exec(expr)
-  if (!m) return `every ${expr}`
-  const n = Number(m[1])
-  const unit = m[2] === 'h' ? 'hour' : 'minute'
-  return `every ${n} ${unit}${n === 1 ? '' : 's'}`
+  const every = parseEveryExpr(expr)
+  if (!every) return `every ${expr}`
+  const unit = every.unit === 'h' ? 'hour' : 'minute'
+  return `every ${every.n} ${unit}${every.n === 1 ? '' : 's'}`
 }
 
 function describeAt(expr: string, timezone: string): string {
-  const t = Date.parse(expr)
-  if (Number.isNaN(t)) return `at ${expr}`
+  const resolved = resolveAtInstant(expr, timezone)
+  if (!resolved) return `at ${expr}`
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     month: 'short',
@@ -93,7 +237,7 @@ function describeAt(expr: string, timezone: string): string {
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23'
-  }).formatToParts(new Date(t))
+  }).formatToParts(resolved)
   const get = (type: string) => parts.find(p => p.type === type)?.value ?? ''
   return `once on ${get('month')} ${get('day')}, ${get('hour')}:${get('minute')}`
 }
@@ -113,6 +257,11 @@ export function describeTrigger(spec: JobSpec): string {
   }
 }
 
+/**
+ * True when `at` (in the job's timezone) falls within `spec.activeHours`. The window is
+ * start-inclusive, end-exclusive (`[start, end)`), and wraps past midnight when `end < start`.
+ * Returns true when the job has no active_hours restriction.
+ */
 export function inActiveHours(spec: JobSpec, at: Date): boolean {
   if (!spec.activeHours) return true
   const { start, end } = spec.activeHours

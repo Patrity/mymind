@@ -4,6 +4,7 @@
  */
 import { Cron } from 'croner'
 import { splitFrontmatter } from '../../../../shared/utils/frontmatter'
+import { parseEveryExpr, resolveAtInstant, minCronGapMs } from './schedule'
 
 export type TriggerKind = 'cron' | 'every' | 'at' | 'event'
 
@@ -39,12 +40,10 @@ function isValidTimezone(tz: string): boolean {
 }
 
 function parseEvery(expr: string): ParseResult<number> {
-  const m = /^(\d+)(m|h)$/.exec(expr)
-  if (!m) return { ok: false, error: `invalid every expression: ${expr}` }
-  const n = Number(m[1])
-  const ms = m[2] === 'h' ? n * 60 * 60_000 : n * 60_000
-  if (ms < MIN_INTERVAL_MS) return { ok: false, error: 'trigger must fire at least 5 minutes apart' }
-  return { ok: true, value: ms }
+  const every = parseEveryExpr(expr)
+  if (!every) return { ok: false, error: `invalid every expression: ${expr}` }
+  if (every.ms < MIN_INTERVAL_MS) return { ok: false, error: 'trigger must fire at least 5 minutes apart' }
+  return { ok: true, value: every.ms }
 }
 
 function parseTrigger(raw: string, timezone: string): ParseResult<{ kind: TriggerKind; expr: string }> {
@@ -60,8 +59,8 @@ function parseTrigger(raw: string, timezone: string): ParseResult<{ kind: Trigge
     } catch {
       return { ok: false, error: `invalid cron: ${expr}` }
     }
-    const [firstRun, secondRun] = cron.nextRuns(2, new Date())
-    if (firstRun && secondRun && secondRun.getTime() - firstRun.getTime() < MIN_INTERVAL_MS) {
+    const minGap = minCronGapMs(cron)
+    if (minGap !== null && minGap < MIN_INTERVAL_MS) {
       return { ok: false, error: 'trigger must fire at least 5 minutes apart' }
     }
     return { ok: true, value: { kind, expr } }
@@ -74,7 +73,7 @@ function parseTrigger(raw: string, timezone: string): ParseResult<{ kind: Trigge
   }
 
   if (kind === 'at') {
-    if (Number.isNaN(Date.parse(expr))) return { ok: false, error: `trigger 'at' requires a valid date: ${expr}` }
+    if (!resolveAtInstant(expr, timezone)) return { ok: false, error: `trigger 'at' requires a valid date: ${expr}` }
     return { ok: true, value: { kind, expr } }
   }
 
@@ -149,7 +148,14 @@ export function parseJob(
     if (typeof data.filter !== 'object' || data.filter === null || Array.isArray(data.filter)) {
       return { ok: false, error: `invalid filter: ${String(data.filter)}` }
     }
-    filter = data.filter as Record<string, string>
+    const coerced: Record<string, string> = {}
+    for (const [key, value] of Object.entries(data.filter as Record<string, unknown>)) {
+      if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+        return { ok: false, error: `invalid filter value for ${key}: must be a string, number, or boolean` }
+      }
+      coerced[key] = String(value)
+    }
+    filter = coerced
   }
 
   let model = 'default'

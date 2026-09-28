@@ -32,4 +32,38 @@ describe('schedule', () => {
     const night = spec('trigger: every 30m\nactive_hours: 22:00-06:00')
     expect(inActiveHours(night, new Date('2026-10-03T03:00:00Z'))).toBe(true)
   })
+  it('active_hours boundary: start is inclusive, end is exclusive', () => {
+    const day = spec('trigger: every 30m\nactive_hours: 08:00-22:00')
+    expect(inActiveHours(day, new Date('2026-10-02T12:00:00Z'))).toBe(true)   // exactly 08:00 EDT (start, inclusive)
+    expect(inActiveHours(day, new Date('2026-10-03T02:00:00Z'))).toBe(false)  // exactly 22:00 EDT (end, exclusive)
+  })
+  it('an offset-less at trigger is wall-clock time in the job timezone, not the process timezone', () => {
+    const london = spec('trigger: at 2026-10-02T09:00:00\ntimezone: Europe/London')
+    expect(nextRunAt(london, new Date('2026-10-01T00:00:00Z'))?.toISOString()).toBe('2026-10-02T08:00:00.000Z')
+    const ny = spec('trigger: at 2026-10-02T09:00:00\ntimezone: America/New_York')
+    expect(nextRunAt(ny, new Date('2026-10-01T00:00:00Z'))?.toISOString()).toBe('2026-10-02T13:00:00.000Z')
+  })
+  it('resolves an offset-less at trigger the same regardless of the server process TZ', () => {
+    const originalTZ = process.env.TZ
+    process.env.TZ = 'Pacific/Auckland'
+    try {
+      const ny = spec('trigger: at 2026-10-02T09:00:00\ntimezone: America/New_York')
+      expect(nextRunAt(ny, new Date('2026-10-01T00:00:00Z'))?.toISOString()).toBe('2026-10-02T13:00:00.000Z')
+    } finally {
+      if (originalTZ === undefined) delete process.env.TZ
+      else process.env.TZ = originalTZ
+    }
+  })
+  it('shifts an at trigger inside a spring-forward gap to the first valid instant', () => {
+    // 2027-03-14T02:00-02:59:59 America/New_York never occurs (clocks jump 02:00 EST -> 03:00 EDT).
+    // 02:30 falls inside that gap; the first valid instant afterward is 03:00:00 EDT = 07:00:00Z.
+    const s = spec('trigger: at 2027-03-14T02:30:00\ntimezone: America/New_York')
+    expect(nextRunAt(s, new Date('2027-03-13T00:00:00Z'))?.toISOString()).toBe('2027-03-14T07:00:00.000Z')
+  })
+  it('takes the earlier instant for an at trigger inside a fall-back overlap', () => {
+    // 2027-11-07T01:00-01:59:59 America/New_York occurs twice (clocks fall back 02:00 EDT -> 01:00 EST).
+    // 01:30 occurs first as 01:30 EDT (05:30Z), then again as 01:30 EST (06:30Z); take the earlier.
+    const s = spec('trigger: at 2027-11-07T01:30:00\ntimezone: America/New_York')
+    expect(nextRunAt(s, new Date('2027-11-06T00:00:00Z'))?.toISOString()).toBe('2027-11-07T05:30:00.000Z')
+  })
 })
