@@ -82,9 +82,24 @@ function sanitize(html: string): string {
   }
 }
 
-/** Renders a markdown message body for email. `text` is always the original markdown, unmodified. */
-export function renderEmail(markdown: string): { html: string, text: string } {
-  const body = sanitize(marked.parse(markdown, { async: false }))
+/**
+ * App-relative targets (`/api/images/<id>/raw`, `/tasks/…`) have no base URL in an inbox, so the
+ * sanitizer would drop them (final review M4). With the app's `origin` they are made absolute, and
+ * an app-relative IMAGE becomes a link to it (`[alt](origin/…)`, "image" when it has no alt): the
+ * image route needs a session an email client doesn't have, so an inline <img> would be broken.
+ * External (http/https) images are left inline. Without an origin nothing changes.
+ */
+export function absolutizeAppLinks(markdown: string, origin: string | undefined): string {
+  if (!origin) return markdown
+  const base = origin.replace(/\/+$/, '')
+  return markdown.replace(/(!?)\[([^\]]*)\]\(\s*(\/(?!\/)[^)\s]*)\s*\)/g, (_m, bang: string, label: string, path: string) =>
+    bang ? `[${label.trim() || 'image'}](${base}${path})` : `[${label}](${base}${path})`)
+}
+
+/** Renders a markdown message body for email. `text` is always the original markdown, unmodified.
+ *  `origin` (the app's public origin) keeps app-relative links and images as working links (M4). */
+export function renderEmail(markdown: string, opts: { origin?: string } = {}): { html: string, text: string } {
+  const body = sanitize(marked.parse(absolutizeAppLinks(markdown, opts.origin), { async: false }))
   return { html: `<div style="${CONTAINER_STYLE}">${body}</div>`, text: markdown }
 }
 

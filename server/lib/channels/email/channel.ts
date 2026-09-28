@@ -10,6 +10,16 @@ import { decryptSecret } from '../../ai/registry/crypto'
 import { sendResendEmail } from '../../observability/email'
 import { renderEmail, emailSubject } from './render'
 
+/** The app's public origin (BETTER_AUTH_URL), for app-relative links in the email (M4). */
+function appOrigin(): string | undefined {
+  try {
+    const url = useRuntimeConfig().betterAuthUrl as string | undefined
+    return url ? new URL(url).origin : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function resendCreds(): Promise<{ apiKey: string, from: string } | null> {
   const e = (await loadObsConfig()).alerts.email
   if (!e.apiKeyEnc || !e.from) return null
@@ -38,7 +48,7 @@ export const emailChannel: Channel = {
     const creds = await resendCreds()
     if (!creds) return { ok: false, error: 'Resend is not configured (missing API key or sender address)', retryable: false }
 
-    const { html, text } = renderEmail(d.payload.text)
+    const { html, text } = renderEmail(d.payload.text, { origin: appOrigin() })
     const subject = d.payload.subject ?? emailSubject('message')
 
     try {

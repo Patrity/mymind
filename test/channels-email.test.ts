@@ -69,6 +69,39 @@ describe('renderEmail', () => {
 // string — so a sanitizer that preserves content (as DOMPurify and every mainstream one does)
 // necessarily leaves that string visible as inert text once the href itself is stripped. What
 // must never survive is the *live* href, which the assertion below checks directly.
+describe('renderEmail — app-relative links and images (M4)', () => {
+  const ORIGIN = 'https://brain.example.test'
+  it('an app image embed becomes a working absolute LINK (the image route needs a session)', () => {
+    const { html } = renderEmail('Here: ![chart](/api/images/0b0c1d2e-0000-4000-8000-000000000001/raw)', { origin: ORIGIN })
+    expect(html).toContain('<a href="https://brain.example.test/api/images/0b0c1d2e-0000-4000-8000-000000000001/raw">chart</a>')
+    expect(html).not.toContain('<img')
+  })
+  it('an app-relative link is made absolute; an alt-less image is labelled "image"', () => {
+    const { html } = renderEmail('[your tasks](/tasks) and ![](/api/images/x/raw)', { origin: ORIGIN })
+    expect(html).toContain('<a href="https://brain.example.test/tasks">your tasks</a>')
+    expect(html).toContain('<a href="https://brain.example.test/api/images/x/raw">image</a>')
+  })
+  it('external links and images are untouched; protocol-relative (//host) is not treated as app-relative', () => {
+    const { html } = renderEmail('[x](https://other.test/a) ![p](https://other.test/p.png) [y](//evil.test/z)', { origin: ORIGIN })
+    expect(html).toContain('<a href="https://other.test/a">x</a>')
+    expect(html).toContain('<img src="https://other.test/p.png" alt="p">')
+    expect(html).not.toContain('evil.test')
+  })
+})
+
+describe('emailChannel.send — app origin (M4)', () => {
+  it('uses BETTER_AUTH_URL\'s origin for app-relative links', async () => {
+    mocks.loadChannels.mockResolvedValue({ email: { enabled: true, to: 'tony@example.com' } })
+    mocks.loadObs.mockResolvedValue({ alerts: { email: { apiKeyEnc: encryptSecret('resend-key'), from: 'bridget@mymind.dev' } } })
+    vi.stubGlobal('useRuntimeConfig', () => ({ betterAuthUrl: 'https://brain.example.test/' }))
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: 'x' }), { status: 200 }))
+    vi.stubGlobal('$fetch', fetchMock)
+    await emailChannel.send({ id: 'd1', target: 'tony@example.com', payload: { text: '![c](/api/images/abc/raw)' }, attempts: 0, firstClaimedAt: null })
+    const [, init] = fetchMock.mock.calls[0] as [string, { body: Record<string, unknown> }]
+    expect(init.body.html).toContain('href="https://brain.example.test/api/images/abc/raw"')
+  })
+})
+
 describe('renderEmail — URL scheme sanitization', () => {
   it('strips a javascript: link href, keeping the link text', () => {
     const { html } = renderEmail('[click me](javascript:alert(1))')
