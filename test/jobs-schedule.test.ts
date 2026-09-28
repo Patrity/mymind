@@ -13,7 +13,7 @@ describe('schedule', () => {
   it('fires once across spring-forward (US, 2027-03-14)', () => {
     const s = spec('trigger: cron 30 7 * * *')
     const fires = nextFireTimes(s, 3, new Date('2027-03-13T12:00:00Z')).map(d => d.toISOString())
-    expect(fires).toEqual(['2027-03-14T11:30:00.000Z', '2027-03-15T11:30:00.000Z', '2027-03-16T11:30:00.000Z'])
+    expect(fires).toEqual(['2027-03-13T12:30:00.000Z', '2027-03-14T11:30:00.000Z', '2027-03-15T11:30:00.000Z'])
   })
   it('every interval and one-shot at', () => {
     expect(nextRunAt(spec('trigger: every 30m'), new Date('2026-10-02T12:00:00Z'))?.toISOString()).toBe('2026-10-02T12:30:00.000Z')
