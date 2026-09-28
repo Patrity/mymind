@@ -25,8 +25,14 @@ export interface EnqueueRequest {
   /** The agent_jobs row this run fires for (cycle 74) — outcome.ts reads it back on finish. */
   jobId?: string | null
   /** Cycle 75: answer this run back over a channel too (an inbound iMessage). Only a NEW run
-   *  carries it — on a steer the caller sets it on the run it steered into. */
+   *  carries it, and channel input never steers (`noSteer`), so a run's reply_to is fixed when
+   *  it is created. */
   replyTo?: ReplyTo | null
+  /** Never steer into an active run: always a new queued run (final review C1 ruling). Channel
+   *  input sets it: a steer the run never reads is requeued without reply_to/origin, and a steer
+   *  into an app turn would text that turn's reply to the phone. The cost: a text sent mid-turn
+   *  waits for that turn to finish instead of being merged into it. */
+  noSteer?: boolean
 }
 export interface EnqueueResult {
   runId: string; conversationId: string; steered: boolean; created: boolean
@@ -52,7 +58,7 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
     // carrying attachments or a `/skill` would silently lose them. It queues as its own run
     // instead, behind the busy one, with its full input intact.
     const plain = !req.input.attachments?.length && !req.input.skill
-    if (active && active.profile === 'interactive' && plain) {
+    if (active && active.profile === 'interactive' && plain && !req.noSteer) {
       const steered = await doPushSteer(active.id, conversationId, req.input.text, 'user')
       if (steered) return { runId: active.id, conversationId, steered: true, created, queuedBehind: false }
       // pushSteer's own atomic check found the run no longer 'running' — it finished in the

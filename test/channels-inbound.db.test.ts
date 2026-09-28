@@ -5,7 +5,9 @@
 //   - nothing is ever enqueued on the real main: the fake enqueue creates REAL agent_runs rows in
 //     a SCRATCH conversation holding a permanent `running` INTERACTIVE sentinel run (claimNextRun
 //     never claims a queued run of a conversation with one running, so no pump anywhere executes
-//     them); the real-enqueue tests use `kick: false` and the `mainConversationId` seam;
+//     them; its alive_at is in 2100 so no live recoverStale ever interrupts it); the real-enqueue
+//     tests use `kick: false` and the `mainConversationId` seam, and always delete their queued
+//     runs BEFORE the busy run stops running;
 //   - every inbound GUID is prefixed `chin-` and deleted in afterAll;
 //   - BlueBubbles is the in-process fake; STT is an injected stub (the real chain is never called);
 //   - images land in a temp storage dir (removed after); their rows are hard-deleted by name
@@ -71,6 +73,7 @@ import emoji from './fixtures/bluebubbles/emoji-reaction.json'
 const db = () => useDb()
 const TAG = `chin-${Date.now().toString(36)}-`
 let seq = 0
+const FAR_FUTURE = new Date('2100-01-01T00:00:00Z')
 const guid = (label: string) => `${TAG}${label}-${++seq}`
 
 const ATTACHMENTS = {
@@ -94,7 +97,9 @@ beforeAll(async () => {
   ;[scratch, scratchReal] = convIds as [string, string]
   await db().insert(agentRuns).values({
     conversationId: scratch, sessionKey: `thread:${scratch}`, trigger: 'user', profile: 'interactive',
-    status: 'running', input: { text: 'sentinel', modality: 'text' }
+    // alive_at in 2100: a live dev server's recoverStale (60 s staleness) never interrupts it,
+    // so the queued runs behind it are never claimable for as long as the file runs.
+    status: 'running', aliveAt: FAR_FUTURE, input: { text: 'sentinel', modality: 'text' }
   })
 })
 
@@ -114,14 +119,12 @@ afterAll(async () => {
 })
 
 // The fake enqueue: records the request; creates a real queued (never claimable) run carrying
-// the request's reply_to, or — when `steerInto` is set — reports a steer into that run.
+// the request's reply_to.
 const calls: EnqueueRequest[] = []
-let steerInto: string | null = null
 let enqueueThrows = false
 const fakeEnqueue = (async (req: EnqueueRequest) => {
   calls.push(structuredClone(req))
   if (enqueueThrows) throw new Error('enqueue exploded')
-  if (steerInto) return { runId: steerInto, conversationId: scratch, steered: true, created: false, queuedBehind: false }
   const run = await createRun({
     conversationId: scratch, sessionKey: `thread:${scratch}`, trigger: req.trigger, profile: req.profile,
     input: req.input, replyTo: req.replyTo ?? null
@@ -146,7 +149,6 @@ async function inboundRow(g: string) {
 
 beforeEach(() => {
   calls.length = 0
-  steerInto = null
   enqueueThrows = false
   transcribe.mockReset()
   transcribe.mockResolvedValue('buy milk')
@@ -293,21 +295,9 @@ describe('handleInbound', () => {
     expect(await handleInbound(m, deps())).toBe('enqueued')
   })
 
-  it('steered → reply_to set on the run when it was null, and never overwritten when set', async () => {
-    const bare = await createRun({ conversationId: scratch, sessionKey: `thread:${scratch}`, trigger: 'user', profile: 'interactive', input: { text: 'x', modality: 'text' } })
-    steerInto = bare.id
-    const m = msg()
-    expect(await handleInbound(m, deps())).toBe('steered')
-    const [a] = await db().select().from(agentRuns).where(eq(agentRuns.id, bare.id))
-    expect(a!.replyTo).toEqual({ channel: 'imessage', chatGuid: CHAT, messageGuid: m.guid })
-    expect((await inboundRow(m.guid))!.runId).toBe(bare.id)
-
-    const prior = { channel: 'imessage', chatGuid: 'iMessage;-;+15550000000', messageGuid: 'earlier' } as const
-    const set = await createRun({ conversationId: scratch, sessionKey: `thread:${scratch}`, trigger: 'user', profile: 'interactive', input: { text: 'y', modality: 'text' }, replyTo: prior })
-    steerInto = set.id
-    expect(await handleInbound(msg(), deps())).toBe('steered')
-    const [b] = await db().select().from(agentRuns).where(eq(agentRuns.id, set.id))
-    expect(b!.replyTo).toEqual(prior)
+  it('C1: every inbound text asks enqueue never to steer (noSteer)', async () => {
+    expect(await handleInbound(msg(), deps())).toBe('enqueued')
+    expect(calls[0]!.noSteer).toBe(true)
   })
 })
 
@@ -318,19 +308,44 @@ describe('handleInbound with the real enqueue (kick: false, scratch "main")', ()
     await db().delete(agentRuns).where(eq(agentRuns.conversationId, scratchReal))
     const [run] = await db().insert(agentRuns).values({
       conversationId: scratchReal, sessionKey: `thread:${scratchReal}`, trigger: profile === 'headless' ? 'wake' : 'user',
-      profile, status: 'running', input: { text: 'busy', modality: 'text' }
+      profile, status: 'running', aliveAt: FAR_FUTURE, input: { text: 'busy', modality: 'text' }
     }).returning()
     return run!
   }
 
-  it('Tony texts while an interactive run is busy: steered into it, and it gains reply_to', async () => {
+  // Deletes this conversation's queued runs BEFORE the running one stops running: a queued run
+  // behind a finished one is claimable, and a live dev pump would execute it for real.
+  async function release(runningId: string) {
+    await db().delete(agentRuns).where(and(eq(agentRuns.conversationId, scratchReal), eq(agentRuns.status, 'queued')))
+    await db().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, runningId))
+  }
+
+  it('C1: Tony texts while an INTERACTIVE run is busy — never steered: its own queued run with reply_to + origin', async () => {
     const running = await busy('interactive')
-    const m = msg({ text: 'also this' })
-    expect(await handleInbound(m, realDeps())).toBe('steered')
-    const [r] = await db().select().from(agentRuns).where(eq(agentRuns.id, running.id))
-    expect(r!.replyTo).toEqual({ channel: 'imessage', chatGuid: CHAT, messageGuid: m.guid })
-    const inbox = await db().select().from(agentInbox).where(eq(agentInbox.runId, running.id))
-    expect(inbox.map(i => i.content)).toEqual(['also this'])
+    try {
+      const m = msg({ text: 'also this' })
+      expect(await handleInbound(m, realDeps())).toBe('enqueued')
+      const row = await inboundRow(m.guid)
+      expect(row!.runId).not.toBe(running.id)
+      const [q] = await db().select().from(agentRuns).where(eq(agentRuns.id, row!.runId!))
+      expect(q).toMatchObject({ status: 'queued', profile: 'interactive', trigger: 'user' })
+      expect(q!.replyTo).toEqual({ channel: 'imessage', chatGuid: CHAT, messageGuid: m.guid })
+      expect((q!.input as { origin?: string }).origin).toBe(`imessage:${CHAT}`)
+      // The busy run is untouched: no steer row, no reply_to.
+      const [r] = await db().select().from(agentRuns).where(eq(agentRuns.id, running.id))
+      expect(r!.replyTo).toBeNull()
+      expect(await db().select().from(agentInbox).where(eq(agentInbox.runId, running.id))).toHaveLength(0)
+    } finally { await release(running.id) }
+  })
+
+  it('C1: app steering is unchanged — a plain app message into the same busy interactive run still steers', async () => {
+    const running = await busy('interactive')
+    try {
+      const r = await enqueue({ sessionKey: `thread:${scratchReal}`, trigger: 'user', profile: 'interactive', input: { text: 'from the app', modality: 'text' } }, { kick: false })
+      expect(r).toMatchObject({ steered: true, runId: running.id })
+      const inbox = await db().select().from(agentInbox).where(eq(agentInbox.runId, running.id))
+      expect(inbox.map(i => i.content)).toEqual(['from the app'])
+    } finally { await release(running.id) }
   })
 
   it('Review Focus 5: a busy HEADLESS run is not steered into — the text queues as its own run and keeps reply_to', async () => {
@@ -347,11 +362,7 @@ describe('handleInbound with the real enqueue (kick: false, scratch "main")', ()
       expect((q!.input as { origin?: string }).origin).toBe(`imessage:${CHAT}`)
       const [h] = await db().select().from(agentRuns).where(eq(agentRuns.id, running.id))
       expect(h!.replyTo).toBeNull()
-    } finally {
-      await db().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, running.id))
-      // The queued run must never be claimable once the headless row stops running.
-      await db().delete(agentRuns).where(and(eq(agentRuns.conversationId, scratchReal), eq(agentRuns.status, 'queued')))
-    }
+    } finally { await release(running.id) }
   })
 })
 

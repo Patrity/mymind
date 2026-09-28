@@ -137,7 +137,7 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
 
 /**
  * The runner's channel for an interactive run: reads the run's `reply_to` FRESH at request time
- * (an iMessage steer can set it on a run already going — same read as planDeliveries) and, when
+ * (same read as planDeliveries; since C1 it is fixed at run creation, the read is just current) and, when
  * it names an iMessage chat, prompts there. Otherwise denies, as no channel would.
  */
 export function replyToApprovalChannel(runId: string, deps: ApprovalChannelDeps = {}): Channel {

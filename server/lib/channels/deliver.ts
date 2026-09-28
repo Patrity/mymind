@@ -73,7 +73,8 @@ function warnSkipped(slug: string, channel: OutboundChannelId, why: string): voi
 
 /**
  * The delivery rows for a run's finished, non-silent reply (spec §5.1):
- * - `reply_to` (read FRESH — an iMessage steer sets it on a run that is already going) → one
+ * - `reply_to` (read from the row; set only when an inbound iMessage creates the run — channel
+ *   input never steers, final review C1) → one
  *   iMessage reply to that chat;
  * - a job run → its `deliver` list resolved against channel enablement and presence: iMessage to
  *   the default chat, email to the configured address with subject `Bridget · <slug>`;

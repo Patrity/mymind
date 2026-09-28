@@ -143,8 +143,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // the approval-request chunk into THIS turn's stream — keyed by run id, and a conversation
     // runs one run at a time (agent_runs_one_running), so the stream found is always this turn's.
     registerTurnStream(run.id, ts)
-    // A run with no socket channel prompts over iMessage when its reply_to (read fresh at
-    // request time — a steer can set it mid-run) names a chat; otherwise it denies, as before.
+    // A run with no socket channel prompts over iMessage when its reply_to (read at
+    // request time) names a chat; otherwise it denies, as before.
     if (run.profile === 'interactive' && !hasApprovalChannel(run.id)) registerApprovalChannel(run.id, replyToApprovalChannel(run.id))
     const emit = (e: VoiceEvent) => {
       if (e.type === 'transcript') {
@@ -267,7 +267,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // the reply — the order the model saw them in, and the reply stays the leaf.
       // A reply that goes out over a channel (reply_to / a job's `deliver`) gets its
       // channel_deliveries rows in the SAME transaction as the message: both or neither.
-      // planDeliveries reads reply_to fresh (a steer may have set it mid-run); for a run with
+      // planDeliveries reads reply_to off the row (set at creation only — C1); for a run with
       // neither it plans nothing. Its reads go through this transaction (no second pooled
       // connection), inside a savepoint: a planning failure — even a failed query — rolls back
       // to it and the reply still commits, just without deliveries. The rescue path never delivers.

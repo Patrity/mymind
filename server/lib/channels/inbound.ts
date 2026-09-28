@@ -10,9 +10,9 @@
 //
 // catchUpTick doubles as the BlueBubbles health check (lastHealth) and confirms outbound
 // deliveries left `sent_unconfirmed` by an AppleScript send that timed out.
-import { and, asc, eq, inArray, isNull, max, type SQL } from 'drizzle-orm'
+import { and, asc, eq, inArray, max, type SQL } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { agentRuns, channelDeliveries, channelInbound } from '../../db/schema'
+import { channelDeliveries, channelInbound } from '../../db/schema'
 import { createImage, deleteImage } from '../../services/images'
 import { withFailover } from '../ai/registry/resolve'
 import { sttFromModel } from '../voice/providers'
@@ -29,7 +29,7 @@ import { parseBlueBubblesMessage } from './bluebubbles/parse'
 import type { InboundAttachment, InboundMessage, TapbackEvent } from './types'
 
 export type InboundOutcome =
-  | 'enqueued' | 'steered' | 'duplicate'
+  | 'enqueued' | 'duplicate'
   | 'ignored:from-me' | 'ignored:group' | 'ignored:sender' | 'ignored:empty' | 'ignored:reaction'
   | 'tapback'
 
@@ -142,7 +142,8 @@ async function buildInput(ev: InboundMessage, client: BlueBubblesClient | null, 
 /**
  * Run one inbound event through the pipeline (spec §4, in order): tapback → approvals; drop
  * non-tapback reactions, Bridget's own messages, group chats and unknown senders; build the
- * input; then dedupe-insert + enqueue on main with `origin` and `replyTo`.
+ * input; then dedupe-insert + enqueue on main with `origin` and `replyTo` — always a new run,
+ * never a steer (final review C1).
  */
 export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: InboundDeps = {}): Promise<InboundOutcome> {
   if (ev.kind === 'tapback') return resolveTapback(ev)
@@ -195,7 +196,10 @@ export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: Inb
         ...(input.attachments.length ? { attachments: input.attachments } : {}),
         origin: `imessage:${ev.chatGuid}`
       },
-      replyTo
+      replyTo,
+      // Final review C1 ruling: an inbound text is always its own run carrying reply_to + origin,
+      // even while an interactive turn is running (it queues behind it, never steers into it).
+      noSteer: true
     })
   } catch (err) {
     // Un-claim the GUID so the next catch-up retries this message rather than losing it.
@@ -206,12 +210,6 @@ export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: Inb
   }
 
   await db.update(channelInbound).set({ runId: result.runId }).where(eq(channelInbound.guid, ev.guid))
-  if (result.steered) {
-    // Merged into a running interactive turn: its reply should reach the phone too, unless
-    // that run already answers somewhere.
-    await db.update(agentRuns).set({ replyTo }).where(and(eq(agentRuns.id, result.runId), isNull(agentRuns.replyTo)))
-    return 'steered'
-  }
   return 'enqueued'
 }
 
@@ -260,7 +258,7 @@ async function catchUpMessages(client: BlueBubblesClient, deps: InboundDeps): Pr
       if (!ev) continue
       try {
         const outcome = await handleInbound(ev, { ...deps, client })
-        if (outcome === 'enqueued' || outcome === 'steered') processed++
+        if (outcome === 'enqueued') processed++
       } catch (err) {
         // One bad message never stops the rest of the scan; the overlap retries it next tick.
         console.error(`[channels] catch-up: message ${ev.guid} failed:`, err)
@@ -321,7 +319,7 @@ async function confirmUnconfirmed(client: BlueBubblesClient, opts: { onlyIds?: s
  * (minus a 5-min overlap) through handleInbound, then unconfirmed-delivery confirmation.
  * Also expires overdue approvals. Self-throttled to CATCH_UP_INTERVAL_MS; `force` bypasses it.
  * Returns null when throttled. `onlyDeliveryIds` / `onlyApprovalIds` / `now` are test seams.
- * `processed` counts messages that became (or joined) a turn.
+ * `processed` counts messages that became a turn.
  */
 export async function catchUpTick(opts: InboundDeps & { force?: boolean; onlyDeliveryIds?: string[]; onlyApprovalIds?: string[]; now?: Date } = {}): Promise<{ processed: number; healthy: boolean } | null> {
   if (running) return null
