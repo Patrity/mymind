@@ -5,9 +5,7 @@ type CodeLanguage = 'plaintext' | 'markdown' | 'javascript' | 'typescript' | 'js
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 import type { BreadcrumbItem } from '@nuxt/ui'
-import type { EditorSelection2 } from '~/components/CodeEditor.client.vue'
 import { createAutosave } from '~/lib/documents/autosave'
-import { resolveViewMode, type ViewMode } from '~/lib/documents/view-mode'
 
 const props = defineProps<{
   documentId: string | null
@@ -51,23 +49,15 @@ watch(liveDocData, (fresh) => {
   }
 })
 
-// CodeEditor ref — used to wire toolbar transforms
-const codeEditorRef = ref<{ applyTransform: (fn: (s: EditorSelection2) => EditorSelection2) => void, insertText: (s: string) => void } | null>(null)
+// MarkdownConfigEditor ref — its exposed insertText places the uploaded image link
+const markdownEditorRef = ref<{ insertText: (s: string) => void } | null>(null)
 
-function toolbarApplyTransform(fn: (s: EditorSelection2) => EditorSelection2) {
-  codeEditorRef.value?.applyTransform(fn)
-}
-
-function toolbarInsertText(snippet: string) {
-  codeEditorRef.value?.insertText(snippet)
-}
-
-/** Called by CodeEditor when the user pastes or drops an image file. */
+/** Called by MarkdownConfigEditor (via CodeEditor) when the user pastes or drops an image file. */
 async function onEditorImage(file: File) {
   const toastId = toast.add({ color: 'neutral', title: 'Uploading image…' })
   try {
     const result = await uploadImage(file, true)
-    codeEditorRef.value?.insertText(`![](${result.url})`)
+    markdownEditorRef.value?.insertText(`![](${result.url})`)
     toast.remove(toastId.id)
   } catch (e: unknown) {
     const err = e as { data?: { statusMessage?: string }, message?: string }
@@ -75,18 +65,6 @@ async function onEditorImage(file: File) {
     toast.add({ color: 'error', title: 'Upload failed', description: err.data?.statusMessage ?? err.message })
   }
 }
-
-// View mode preference, persisted in a cookie. This is the user's INTENT — the mode
-// actually rendered is `mode` below, which can differ for one document without
-// overwriting the preference.
-const storedMode = useCookie<ViewMode>('mm.documents.viewMode', {
-  default: () => 'edit',
-  maxAge: 60 * 60 * 24 * 365
-})
-
-const mode = computed<ViewMode>(() =>
-  resolveViewMode(storedMode.value, { content: content.value, isMarkdown: isMarkdown.value })
-)
 
 function detectLanguage(path: string): CodeLanguage {
   const lower = path.toLowerCase()
@@ -102,7 +80,6 @@ function detectLanguage(path: string): CodeLanguage {
 const language = computed<CodeLanguage>(() =>
   doc.value ? detectLanguage(doc.value.path) : 'plaintext'
 )
-const isMarkdown = computed(() => language.value === 'markdown')
 
 /**
  * The toolbar's breadcrumb — replaces the old raw `font-mono` path string. Every segment except
@@ -324,61 +301,41 @@ onUnmounted(() => {
     class="h-full flex flex-col"
     :class="{ 'opacity-60 pointer-events-none transition-opacity': loading }"
   >
-    <!-- Toolbar -->
-    <div class="flex items-center gap-2 px-3 py-2 border-b border-default text-sm flex-wrap shrink-0">
-      <UIcon
-        name="i-lucide-file-text"
-        class="size-4 text-dimmed shrink-0"
-      />
-      <UBreadcrumb
-        :items="breadcrumbItems"
-        :title="doc.path"
-        class="min-w-0"
-        :ui="{ list: 'flex-wrap', link: 'text-xs', linkLeadingIcon: 'size-3.5', separatorIcon: 'size-3.5 shrink-0' }"
-      />
+    <!-- Header row (breadcrumb, status, view-mode toggle, actions), markdown toolbar and
+         editor/preview area — shared with /skills and /jobs via MarkdownConfigEditor. -->
+    <MarkdownConfigEditor
+      ref="markdownEditorRef"
+      :model-value="content"
+      :language="language"
+      :readonly="loading"
+      @update:model-value="onContentUpdate"
+      @save="onSaveShortcut"
+      @paste-image="onEditorImage"
+    >
+      <template #header>
+        <UIcon
+          name="i-lucide-file-text"
+          class="size-4 text-dimmed shrink-0"
+        />
+        <UBreadcrumb
+          :items="breadcrumbItems"
+          :title="doc.path"
+          class="min-w-0"
+          :ui="{ list: 'flex-wrap', link: 'text-xs', linkLeadingIcon: 'size-3.5', separatorIcon: 'size-3.5 shrink-0' }"
+        />
 
-      <!-- Save status badge -->
-      <UBadge
-        v-if="statusBadge"
-        :color="statusBadge.color"
-        variant="subtle"
-        size="xs"
-      >
-        {{ statusBadge.label }}
-      </UBadge>
-
-      <div class="ml-auto flex items-center gap-1 shrink-0">
-        <!-- View mode toggle (markdown only) -->
-        <div
-          v-if="isMarkdown"
-          class="flex items-center rounded-md overflow-hidden border border-default"
+        <!-- Save status badge -->
+        <UBadge
+          v-if="statusBadge"
+          :color="statusBadge.color"
+          variant="subtle"
+          size="xs"
         >
-          <UButton
-            icon="i-lucide-pencil"
-            size="xs"
-            :variant="mode === 'edit' ? 'solid' : 'ghost'"
-            :color="mode === 'edit' ? 'primary' : 'neutral'"
-            class="rounded-none"
-            @click="storedMode = 'edit'"
-          />
-          <UButton
-            icon="i-lucide-columns-2"
-            size="xs"
-            :variant="mode === 'split' ? 'solid' : 'ghost'"
-            :color="mode === 'split' ? 'primary' : 'neutral'"
-            class="rounded-none border-x border-default"
-            @click="storedMode = 'split'"
-          />
-          <UButton
-            icon="i-lucide-eye"
-            size="xs"
-            :variant="mode === 'preview' ? 'solid' : 'ghost'"
-            :color="mode === 'preview' ? 'primary' : 'neutral'"
-            class="rounded-none"
-            @click="storedMode = 'preview'"
-          />
-        </div>
+          {{ statusBadge.label }}
+        </UBadge>
+      </template>
 
+      <template #actions>
         <!-- Source image link (transcription-derived docs only) -->
         <UButton
           v-if="doc.ocrId"
@@ -401,80 +358,45 @@ onUnmounted(() => {
           :title="doc.isPublic ? 'Public — click to make private' : 'Private — click to share'"
           @click="toggleShare"
         />
-      </div>
-    </div>
+      </template>
 
-    <!-- Slim progress indicator while switching to another document -->
-    <UProgress
-      v-if="loading"
-      size="xs"
-      class="shrink-0"
-    />
-
-    <!-- Public URL notice — click anywhere to copy the absolute URL -->
-    <div
-      v-if="publicUrl"
-      class="flex items-center gap-2 px-3 py-1.5 bg-success/5 border-b border-success/20 text-xs text-success shrink-0 cursor-pointer hover:bg-success/10 transition-colors select-none"
-      title="Click to copy link"
-      @click="copyPublicLink"
-    >
-      <UIcon
-        name="i-lucide-copy"
-        class="size-3.5 shrink-0"
-      />
-      <span>Public at:</span>
-      <span class="underline underline-offset-2 font-mono">{{ publicUrl }}</span>
-      <UIcon
-        name="i-lucide-external-link"
-        class="size-3 shrink-0 ml-auto opacity-60"
-        @click.stop
-      />
-      <NuxtLink
-        :to="publicUrl"
-        target="_blank"
-        class="opacity-60 hover:opacity-100"
-        title="Open in new tab"
-        @click.stop
-      >
-        <span class="sr-only">Open</span>
-      </NuxtLink>
-    </div>
-
-    <!-- Markdown toolbar (edit/split mode only, markdown files only) -->
-    <DocumentsMarkdownToolbar
-      v-if="isMarkdown && mode !== 'preview'"
-      :apply-transform="toolbarApplyTransform"
-      :insert-text="toolbarInsertText"
-    />
-
-    <!-- Editor + Preview area -->
-    <div class="flex-1 min-h-0 flex">
-      <!-- Code editor pane -->
-      <div
-        v-if="mode !== 'preview'"
-        class="min-h-0 relative"
-        :class="mode === 'split' ? 'w-1/2 border-r border-default' : 'w-full'"
-      >
-        <!-- CodeEditor.client.vue — browser-only, no hydration concerns under SPA -->
-        <CodeEditor
-          ref="codeEditorRef"
-          :model-value="content"
-          :language="language"
-          :read-only="loading"
-          :on-image="onEditorImage"
-          @update:model-value="onContentUpdate"
-          @save="onSaveShortcut"
+      <template #banner>
+        <!-- Slim progress indicator while switching to another document -->
+        <UProgress
+          v-if="loading"
+          size="xs"
+          class="shrink-0"
         />
-      </div>
 
-      <!-- Preview pane -->
-      <div
-        v-if="mode !== 'edit' && isMarkdown"
-        class="min-h-0 overflow-auto p-4 bg-elevated/30"
-        :class="mode === 'split' ? 'w-1/2' : 'w-full'"
-      >
-        <MdView :source="content" />
-      </div>
-    </div>
+        <!-- Public URL notice — click anywhere to copy the absolute URL -->
+        <div
+          v-if="publicUrl"
+          class="flex items-center gap-2 px-3 py-1.5 bg-success/5 border-b border-success/20 text-xs text-success shrink-0 cursor-pointer hover:bg-success/10 transition-colors select-none"
+          title="Click to copy link"
+          @click="copyPublicLink"
+        >
+          <UIcon
+            name="i-lucide-copy"
+            class="size-3.5 shrink-0"
+          />
+          <span>Public at:</span>
+          <span class="underline underline-offset-2 font-mono">{{ publicUrl }}</span>
+          <UIcon
+            name="i-lucide-external-link"
+            class="size-3 shrink-0 ml-auto opacity-60"
+            @click.stop
+          />
+          <NuxtLink
+            :to="publicUrl"
+            target="_blank"
+            class="opacity-60 hover:opacity-100"
+            title="Open in new tab"
+            @click.stop
+          >
+            <span class="sr-only">Open</span>
+          </NuxtLink>
+        </div>
+      </template>
+    </MarkdownConfigEditor>
   </div>
 </template>
