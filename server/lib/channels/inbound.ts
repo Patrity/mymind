@@ -23,7 +23,7 @@ import type { ReplyTo } from '../agent/runtime/types'
 import type { AttachmentRef } from '../agent/attachments'
 import { loadChannelsConfig } from './config'
 import { isAllowed, maskHandle } from './handles'
-import { resolveTapback } from './approvals'
+import { resolveTapback, expireApprovals } from './approvals'
 import { imessageClient, BlueBubblesError, type BlueBubblesClient } from './bluebubbles/client'
 import { parseBlueBubblesMessage } from './bluebubbles/parse'
 import type { InboundAttachment, InboundMessage, TapbackEvent } from './types'
@@ -319,15 +319,19 @@ async function confirmUnconfirmed(client: BlueBubblesClient, opts: { onlyIds?: s
 /**
  * The periodic catch-up (spec §4.6): health check, then every message since the inbound cursor
  * (minus a 5-min overlap) through handleInbound, then unconfirmed-delivery confirmation.
- * Self-throttled to CATCH_UP_INTERVAL_MS; `force` bypasses it. Returns null when throttled.
+ * Also expires overdue approvals. Self-throttled to CATCH_UP_INTERVAL_MS; `force` bypasses it.
+ * Returns null when throttled. `onlyDeliveryIds` / `onlyApprovalIds` / `now` are test seams.
  * `processed` counts messages that became (or joined) a turn.
  */
-export async function catchUpTick(opts: InboundDeps & { force?: boolean; onlyDeliveryIds?: string[]; now?: Date } = {}): Promise<{ processed: number; healthy: boolean } | null> {
+export async function catchUpTick(opts: InboundDeps & { force?: boolean; onlyDeliveryIds?: string[]; onlyApprovalIds?: string[]; now?: Date } = {}): Promise<{ processed: number; healthy: boolean } | null> {
   if (running) return null
   if (!opts.force && Date.now() - lastRunAt < CATCH_UP_INTERVAL_MS) return null
   running = true
   lastRunAt = Date.now()
   try {
+    // Housekeeping, whatever BlueBubbles' state: approvals whose waiter died with a restart.
+    await expireApprovals(opts.now, { onlyIds: opts.onlyApprovalIds })
+      .catch(err => console.error('[channels] expiring approvals failed:', err))
     const client = opts.client !== undefined ? opts.client : await imessageClient()
     if (!client) {
       health = { ok: false, privateApi: null, checkedAt: Date.now(), error: 'iMessage is not configured' }
@@ -341,7 +345,7 @@ export async function catchUpTick(opts: InboundDeps & { force?: boolean; onlyDel
       health = { ok: false, privateApi: null, checkedAt: Date.now(), error: err instanceof Error ? err.message : String(err) }
       return { processed: 0, healthy: false }
     }
-    const { force: _f, onlyDeliveryIds, now, ...deps } = opts
+    const { force: _f, onlyDeliveryIds, onlyApprovalIds: _a, now, ...deps } = opts
     try {
       const processed = await catchUpMessages(client, deps)
       await confirmUnconfirmed(client, { onlyIds: onlyDeliveryIds, now })

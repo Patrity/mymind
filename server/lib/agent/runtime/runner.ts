@@ -21,7 +21,7 @@ import type { AgentMessage } from '../run'
 import { bridgetProfile, type AgentProfile } from '../profile'
 import { hub as defaultHub, type StreamHub } from './stream'
 import { registerAbort, releaseAbort } from './aborts'
-import { approvalFor, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
+import { approvalFor, hasApprovalChannel, registerApprovalChannel, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
 import { drainSteerFor } from './inbox'
 import { headlessTools } from './gate'
 import { eventModelText, wakeOrigin } from './event-text'
@@ -31,6 +31,7 @@ import type { RunInput, RunOutcome } from './types'
 import { planDeliveries } from '../../channels/deliver'
 import { insertDeliveries } from '../../channels/outbox'
 import { channelPresence } from '../../channels/presence'
+import { replyToApprovalChannel } from '../../channels/approvals'
 
 export interface RunnerDeps {
   runAgent?: TurnDeps['runAgent']
@@ -142,6 +143,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // the approval-request chunk into THIS turn's stream — keyed by run id, and a conversation
     // runs one run at a time (agent_runs_one_running), so the stream found is always this turn's.
     registerTurnStream(run.id, ts)
+    // A run with no socket channel prompts over iMessage when its reply_to (read fresh at
+    // request time — a steer can set it mid-run) names a chat; otherwise it denies, as before.
+    if (run.profile === 'interactive' && !hasApprovalChannel(run.id)) registerApprovalChannel(run.id, replyToApprovalChannel(run.id))
     const emit = (e: VoiceEvent) => {
       if (e.type === 'transcript') {
         if (e.role === 'user') liveUserText = e.text

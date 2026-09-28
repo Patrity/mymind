@@ -60,7 +60,7 @@ import { resolveSession } from '../server/lib/agent/runtime/sessions'
 import { runTurn } from '../server/lib/agent/runtime/runner'
 import { StreamHub } from '../server/lib/agent/runtime/stream'
 import { abortRun } from '../server/lib/agent/runtime/aborts'
-import { registerApprovalChannel, hasApprovalChannel } from '../server/lib/agent/runtime/approvals'
+import { registerApprovalChannel, hasApprovalChannel, approvalFor } from '../server/lib/agent/runtime/approvals'
 import { appendMessages } from '../server/services/conversations'
 import { pushSteer } from '../server/lib/agent/runtime/inbox'
 import { jobOutcomeOf } from '../server/lib/agent/jobs/outcome'
@@ -153,6 +153,33 @@ describe('runTurn', () => {
     expect(hasApprovalChannel(run.id)).toBe(true)
     await runTurn(run, { runAgent: fakeAgent('ok') as never, assemble: noAssemble as never, hub: new StreamHub() })
     expect(hasApprovalChannel(run.id)).toBe(false)
+  })
+
+  it('cycle 75: a run with no socket channel gets the reply_to (iMessage) channel; a socket channel is kept', async () => {
+    const a = await queued('no socket')
+    let during = false
+    const probe = async function* () {
+      during = hasApprovalChannel(a.run.id)
+      yield { type: 'text-delta', text: 'ok ' } as const
+      yield { type: 'done' } as const
+    }
+    await runTurn(a.run, { runAgent: probe as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(during).toBe(true)
+    expect(hasApprovalChannel(a.run.id)).toBe(false)
+
+    const b = await queued('socket')
+    const socket = vi.fn(async () => ({ approved: true }))
+    registerApprovalChannel(b.run.id, socket)
+    let asked: { approved: boolean } | null = null
+    const asks = async function* () {
+      // A tool name no allowlist row uses, so approvalFor falls through to the channel.
+      asked = await approvalFor(b.run.id)({ tool: `exec-rtest-${Date.now()}`, command: 'rtest cmd', proposedPattern: 'rtest *' })
+      yield { type: 'text-delta', text: 'ok ' } as const
+      yield { type: 'done' } as const
+    }
+    await runTurn(b.run, { runAgent: asks as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(socket).toHaveBeenCalledTimes(1)
+    expect(asked).toEqual({ approved: true })
   })
 
   it('appendMessages returns the inserted ids in insertion order', async () => {

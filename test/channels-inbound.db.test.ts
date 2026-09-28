@@ -357,7 +357,7 @@ describe('handleInbound with the real enqueue (kick: false, scratch "main")', ()
 
 describe('catchUpTick', () => {
   const T0 = new Date('2100-01-01T00:00:00Z')
-  const tick = (extra: Parameters<typeof catchUpTick>[0] = {}) => catchUpTick({ ...deps(), force: true, onlyDeliveryIds: [], ...extra })
+  const tick = (extra: Parameters<typeof catchUpTick>[0] = {}) => catchUpTick({ ...deps(), force: true, onlyDeliveryIds: [], onlyApprovalIds: [], ...extra })
   const raw = (g: string, over: Record<string, unknown> = {}) => ({
     guid: g, text: 'from catch-up', isFromMe: false, dateCreated: Date.now(),
     handle: { address: ALLOWED }, chats: [{ guid: CHAT, style: 45 }], attachments: [],
@@ -381,7 +381,7 @@ describe('catchUpTick', () => {
 
   it('without force it is throttled to once per 2 min (null)', async () => {
     expect(await tick()).not.toBeNull()
-    expect(await catchUpTick({ ...deps(), onlyDeliveryIds: [] })).toBeNull()
+    expect(await catchUpTick({ ...deps(), onlyDeliveryIds: [], onlyApprovalIds: [] })).toBeNull()
   })
 
   it('serverInfo failing → unhealthy, nothing processed', async () => {
