@@ -13,7 +13,6 @@ import { dueTaskEvents } from '../jobs/events'
 import { onRunFinished } from '../jobs/outcome'
 import { deliveriesTick } from '../../channels/outbox'
 import type { AgentRun } from '../../../db/schema'
-import { catchUpTick } from '../../channels/inbound'
 import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
 export const HEADLESS_WALL_CLOCK_MS = 300_000
@@ -232,7 +231,12 @@ export async function workerTick(opts: { onlyConversations?: string[] } = {}): P
       // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).
       try { await deliveriesTick() } catch (err) { console.error('[runtime] deliveries tick failed:', err) }
       // Cycle 75 inbound catch-up + BlueBubbles health (self-throttled to every 2 min).
-      try { await catchUpTick() } catch (err) { console.error('[runtime] iMessage catch-up failed:', err) }
+      // Imported lazily: inbound.ts imports enqueue from this file, and a static import back would
+      // make the two modules' load order matter (a load-order hazard, not a bug today).
+      try {
+        const { catchUpTick } = await import('../../channels/inbound')
+        await catchUpTick()
+      } catch (err) { console.error('[runtime] iMessage catch-up failed:', err) }
       kick()
     }
   } catch (err) {
