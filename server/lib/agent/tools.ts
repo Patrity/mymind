@@ -16,6 +16,7 @@ import { createGeneratedImage, deleteImage, serveUrl, resolveSourceImageId, getI
 import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSkill, getSkillSource, restoreSkill } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
 import { jobTools } from './tools/jobs'
+import { channelTools } from './tools/channels'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 import { clampPaging, buildPage } from './paging'
@@ -1209,7 +1210,9 @@ export const agentTools: AgentTool[] = [
     }
   },
   // ---- jobs (cycle 74, Task 8) ----
-  ...jobTools
+  ...jobTools,
+  // ---- channels (cycle 75, Task 10) ----
+  ...channelTools
 ]
 
 const byName = new Map(agentTools.map(t => [t.name, t]))

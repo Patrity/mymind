@@ -4,7 +4,7 @@ import { agentTools, toolByName } from '../server/lib/agent/tools'
 import { MCP_INSTRUCTIONS } from '../server/lib/mcp/server'
 
 describe('agent tool registry', () => {
-  it('exposes the expected 45 tools', () => {
+  it('exposes the expected 46 tools', () => {
     const names = agentTools.map(t => t.name).sort()
     expect(names).toEqual([
       'create_job', 'create_project', 'create_skill', 'create_task',
@@ -19,6 +19,7 @@ describe('agent tool registry', () => {
       'quick_capture', 'read_around_message', 'read_document', 'read_session', 'run_job',
       'save_document', 'save_memory', 'schedule_wake',
       'search_docs', 'search_memories', 'search_messages', 'search_passages', 'search_projects', 'search_sessions', 'search_tasks',
+      'send_message',
       'sync_document',
       'update_document',
       'use_skill',

@@ -55,6 +55,9 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   generate_image: 'run', save_document: 'run',
   // jobs (spec D2): free even in a background run — Bridget's own upkeep, not Tony's data
   create_job: 'run', edit_job: 'run', run_job: 'run', schedule_wake: 'run', delete_job: 'run',
+  // send_message (cycle 75, Task 10): Tony-only, rate-limited outbound note — an append, not a
+  // change to his data, so it runs headless like the other append tools.
+  send_message: 'run',
   // create-kind that edits/moves something that already exists — proposed, not run
   edit_document: 'propose', edit_section: 'propose', update_document: 'propose',
   move_document: 'propose', sync_document: 'propose', edit_image: 'propose',

@@ -17,7 +17,10 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   'save_memory', 'create_task', 'create_project', 'quick_capture', 'generate_image', 'save_document',
   // jobs (cycle 74, Task 8, spec D2): Bridget may edit her own jobs freely, including in
   // background runs — job management is her own upkeep, not a change to Tony's data.
-  'create_job', 'edit_job', 'run_job', 'schedule_wake'
+  'create_job', 'edit_job', 'run_job', 'schedule_wake',
+  // send_message (cycle 75, Task 10): Tony-only, rate-limited, never rethrows — an outbound
+  // note to Tony, not a change to his data, so it runs headless like the other append tools.
+  'send_message'
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill'])
 
