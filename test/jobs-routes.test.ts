@@ -142,6 +142,20 @@ describe('GET /api/jobs/:slug', () => {
     expect(out.job.timezone).toBe('America/Chicago')
   })
 
+  it('derives deliver from the content it re-parses, not the stored row', async () => {
+    getJob.mockResolvedValue({ ...JOB, content: '---\ntrigger: every 10m\ndeliver: [imessage, email]\nenabled: true\n---\ndo the thing' })
+    listRuns.mockResolvedValue([])
+    const out = await jobGet(evt({ params: { slug: 'daily-digest' } })) as { job: { deliver: string[] } }
+    expect(out.job.deliver).toEqual(['imessage', 'email'])
+  })
+
+  it('deliver is empty when the content no longer parses', async () => {
+    getJob.mockResolvedValue({ ...JOB, content: '---\ntrigger: nonsense\nenabled: true\n---\ndo the thing' })
+    listRuns.mockResolvedValue([])
+    const out = await jobGet(evt({ params: { slug: 'daily-digest' } })) as { job: { deliver: string[] } }
+    expect(out.job.deliver).toEqual([])
+  })
+
   it('anchors every-job fire times on the stored next run while enabled', async () => {
     const next = new Date(Date.now() + 3 * 60_000).toISOString()
     getJob.mockResolvedValue({ ...JOB, nextRunAt: next })
@@ -164,7 +178,8 @@ describe('GET /api/jobs/:slug', () => {
       job: unknown, nextFireTimes: string[], runs: { durationMs: number | null }[]
     }
     expect(listRuns).toHaveBeenCalledWith({ jobId: 'j1', limit: 10 })
-    expect(out.job).toEqual(JOB)
+    // No `deliver:` line in JOB.content, so the parser's default (`[auto]`) is what the route derives.
+    expect(out.job).toEqual({ ...JOB, deliver: ['auto'] })
     expect(out.nextFireTimes).toHaveLength(5)
     expect(out.runs).toEqual([{
       id: 'r1', status: 'done', suppressed: false, createdAt: claimed.toISOString(),

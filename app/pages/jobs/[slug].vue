@@ -20,6 +20,7 @@ interface JobEnvelope {
     description: string | null
     parseError: string | null
     consecutiveFailures: number
+    deliver: string[]
   }
   nextFireTimes: string[]
   runs: JobRunRow[]

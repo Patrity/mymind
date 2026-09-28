@@ -24,6 +24,18 @@ describe('job templates', () => {
     expect(kind('morning-brief')).toBe('cron 30 7 * * 1-5')
   })
 
+  it('templates deliver to the app plus iMessage-when-away, except the digest which stays app-only', () => {
+    const deliverOf = (id: Parameters<typeof jobTemplate>[0]) => {
+      const r = parseJob(jobTemplate(id).content, { defaultTimezone: 'UTC' })
+      if (!r.ok) throw new Error(`${id}: ${r.error}`)
+      return r.spec.deliver
+    }
+    expect(deliverOf('morning-brief')).toEqual(['auto'])
+    expect(deliverOf('heartbeat')).toEqual(['auto'])
+    expect(deliverOf('blank')).toEqual(['auto'])
+    expect(deliverOf('event-digest')).toEqual(['app'])
+  })
+
   it('JOB_SLUG_RE is the same pattern the server enforces', () => {
     const src = readFileSync(new URL('../../../server/lib/agent/jobs/store.ts', import.meta.url), 'utf8')
     const m = /export const JOB_SLUG_RE = (\/.+\/)\s*$/m.exec(src)

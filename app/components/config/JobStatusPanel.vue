@@ -5,6 +5,7 @@
  * the page already holds, so it makes no request of its own except Run now.
  */
 import { useQueryClient } from '@tanstack/vue-query'
+import { deliverLabel } from '~/lib/jobs/deliver-label'
 import {
   emptyPreviewReason, formatAgo, formatDuration, formatInZone, formatRelative, outcomeColor, runNowToast, runOutcome, runThreadLink,
   type JobRunRow, type RunNowResult
@@ -19,6 +20,7 @@ interface JobInfo {
   description: string | null
   parseError: string | null
   consecutiveFailures: number
+  deliver: string[]
 }
 
 const props = defineProps<{
@@ -138,6 +140,23 @@ async function runNow() {
         data-testid="job-no-fire-times"
       >
         {{ emptyPreviewReason(job) }}
+      </p>
+    </div>
+
+    <!-- Delivery -->
+    <div v-if="job">
+      <div class="flex items-center gap-2 mb-1">
+        <UIcon
+          name="i-lucide-send"
+          class="size-4 text-dimmed"
+        />
+        <span class="font-medium text-highlighted">Delivers to</span>
+      </div>
+      <p
+        class="text-muted"
+        data-testid="job-deliver-label"
+      >
+        {{ deliverLabel(job.deliver) }}
       </p>
     </div>
 

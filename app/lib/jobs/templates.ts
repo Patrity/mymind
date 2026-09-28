@@ -20,6 +20,7 @@ export const JOB_TEMPLATES: readonly JobTemplate[] = [
     content: `---
 trigger: cron 30 7 * * 1-5
 context: light
+deliver: [auto]
 enabled: false
 ---
 Give Tony a morning brief: what's due today and overdue, what changed overnight,
@@ -35,6 +36,7 @@ If nothing matters, reply NO_REPLY.
 trigger: every 30m
 active_hours: 08:00-22:00
 context: light
+deliver: [auto]
 enabled: false
 ---
 Check in on:
@@ -54,6 +56,7 @@ Reply NO_REPLY if nothing merits attention.
 trigger: event cc.session_end
 thread: main
 context: light
+deliver: [app]
 enabled: false
 ---
 Write a 3-6 line digest of the Claude Code session that just ended: what was done,
@@ -66,6 +69,7 @@ what was deferred, anything that looks stuck. Reply NO_REPLY if the session was 
     description: 'A daily job to fill in yourself.',
     content: `---
 trigger: cron 0 9 * * *
+deliver: [auto]
 enabled: false
 ---
 Describe what the agent should do when this job fires.

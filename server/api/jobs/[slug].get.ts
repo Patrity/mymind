@@ -25,7 +25,7 @@ export default defineEventHandler(async (event) => {
   const runs = await listRuns({ jobId: job.id, limit: 10 })
 
   return {
-    job: { ...job, timezone },
+    job: { ...job, timezone, deliver: parsed.ok ? parsed.spec.deliver : [] },
     nextFireTimes: fireTimes,
     runs: runs.map(r => ({
       id: r.id,
