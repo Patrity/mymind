@@ -342,6 +342,10 @@ rulings below are binding; the fix wave implemented them in focused `fix(channel
   - **T7** `verifyWebhookToken` inside the try (a failing check is a 404, never a 500);
   - **T7** the `queue.ts` ↔ `inbound.ts` import cycle broken with a dynamic import in `workerTick`;
   - **T7** photos past the fourth get one "(more than 4 photos, the rest were skipped)" note.
+- **Final re-review (controller fix):** `markdownToPlainText` mangled code and URLs (`__init__.py` →
+  `init.py`, `?q=*foo*` → `?q=foo`). Code spans and URLs are now shelved behind placeholders before
+  the emphasis passes, and `**`/`__` need word edges; 7 regression cases in
+  `test/channels-plain-text.test.ts` (red on the previous version). Cost if wrong: none.
 - **Deferred to follow-ups:** M3 (slow sends stall the tick), M8 (presence plugin session fetch),
   M9 (denial reasons to the model), and every other parked minor — listed below.
 
@@ -457,6 +461,14 @@ Also verify these things on Tony's real server, which the fake cannot show:
 - **Whether the `findOwnMessage` route exists** on Tony's server:
   `curl "http://<mac>:1234/api/v1/chat/iMessage%3B-%3B%2B1…/message?password=…&limit=1&sort=DESC"`
   must return 200. A 404 means the duplicate check is skipped, and a retry could double-text.
+
+**Final re-review leftovers (parked):**
+- A Stop and a 👍 landing within milliseconds can report "approved" to the run after the Stop
+  (`approvals.ts` `onAbort` waits on its DB update before resolving). The exec pre-spawn abort
+  check still stops the command from running.
+- A transitive import cycle remains: queue → runner → approvals → inbound → queue (call-time only).
+- The status dot can stay neutral for up to 2 min after enabling iMessage (until the first
+  catch-up or a Test connection).
 
 ## Deploying (when merged)
 

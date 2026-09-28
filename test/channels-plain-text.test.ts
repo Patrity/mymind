@@ -29,3 +29,15 @@ describe('markdownToPlainText', () => {
     expect(plain("Sorry — something went wrong answering that.")).toBe("Sorry — something went wrong answering that.")
   })
 })
+
+describe('markdownToPlainText — code and URLs are never mangled (final re-review)', () => {
+  it.each([
+    ['`__init__.py`', '__init__.py'],
+    ['see https://x.dev/pkg/__init__.py now', 'see https://x.dev/pkg/__init__.py now'],
+    ['open https://x.dev/_next_/page', 'open https://x.dev/_next_/page'],
+    ['run `rm -rf *_old_*`', 'run rm -rf *_old_*'],
+    ['search https://x.dev/?q=*foo* ok', 'search https://x.dev/?q=*foo* ok'],
+    ['[docs](https://x.dev/__a__/b)', 'docs (https://x.dev/__a__/b)'],
+    ['**bold** and __strong__ and my__var__name', 'bold and strong and my__var__name']
+  ])('%s → %s', (md, want) => expect(plain(md)).toBe(want))
+})
