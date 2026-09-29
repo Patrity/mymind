@@ -9,9 +9,16 @@
 import { loadPersona } from './persona'
 import { listSkills } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
+import { getDefaultTimezone, serverTimezone } from './jobs/timezone'
 
-export function timeOfDayTone(now: Date): string {
-  const h = now.getHours()
+/** The hour (0–23) of `now` on Tony's wall clock in `tz` (the server itself may run on UTC). */
+function hourIn(now: Date, tz?: string): number {
+  if (!tz) return now.getHours()
+  return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: tz }).format(now))
+}
+
+export function timeOfDayTone(now: Date, tz?: string): string {
+  const h = hourIn(now, tz)
   if (h >= 5 && h < 12) return 'It is morning — be crisp and help Tony line up his day.'
   if (h >= 12 && h < 17) return 'It is afternoon — stay focused and momentum-oriented.'
   if (h >= 17 && h < 22) return 'It is evening — a lighter, winding-down tone is fine.'
@@ -19,9 +26,8 @@ export function timeOfDayTone(now: Date): string {
 }
 
 /** Exact wall-clock line — the tone line alone leaves the model guessing the date. */
-export function nowLine(now: Date): string {
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const stamp = now.toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+export function nowLine(now: Date, tz: string = serverTimezone()): string {
+  const stamp = now.toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: tz })
   return `Current date and time: ${stamp} (${tz}).`
 }
 
@@ -99,6 +105,8 @@ export function composePrompt(opts: { persona: string; speak: boolean; toneLine:
 export async function buildSystemPrompt(opts: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; now?: Date; wake?: { reason: string } }): Promise<string> {
   const persona = await loadPersona()
   const now = opts.now ?? new Date()
+  // Tony's timezone (the `agent_timezone` setting), not the server's — prod runs on UTC.
+  const tz = await getDefaultTimezone().catch(() => serverTimezone())
   let skillsIndex = ''
   try {
     if (await skillsEnabled()) {
@@ -108,5 +116,5 @@ export async function buildSystemPrompt(opts: { profile?: { personaKey: string; 
   } catch (err) {
     console.warn('[buildSystemPrompt] skills index unavailable:', err)
   }
-  return composePrompt({ persona, speak: opts.speak, toneLine: timeOfDayTone(now), nowLine: nowLine(now), context: opts.context, skillsIndex, wake: opts.wake })
+  return composePrompt({ persona, speak: opts.speak, toneLine: timeOfDayTone(now, tz), nowLine: nowLine(now, tz), context: opts.context, skillsIndex, wake: opts.wake })
 }

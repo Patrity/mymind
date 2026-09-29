@@ -4,6 +4,7 @@ import { useDb } from '../../db'
 import { projects, tasks, taskColumns } from '../../db/schema'
 import { statusForKind } from '../tasks/status-kind'
 import type { TaskColumnKind } from '../../../shared/types/task-columns'
+import { getDefaultTimezone, serverTimezone } from './jobs/timezone'
 
 /**
  * Cheap live-state block injected into Bridget's prompt; rebuilt per turn.
@@ -15,6 +16,11 @@ import type { TaskColumnKind } from '../../../shared/types/task-columns'
  * is enforced against soft-deleted rows too), so without this filter a deleted column's cards
  * would get injected into every agent turn.
  */
+/** YYYY-MM-DD on the wall clock in `tz`. */
+export function contextDate(now: Date, tz: string): string {
+  return now.toLocaleDateString('en-CA', { timeZone: tz })
+}
+
 export async function buildLiveContext(now: Date): Promise<string> {
   const db = useDb()
   const [activeProjects, openTasks] = await Promise.all([
@@ -32,5 +38,8 @@ export async function buildLiveContext(now: Date): Promise<string> {
       `- ${t.title}${t.project ? ` (${t.project})` : ''} [${statusForKind(t.kind as TaskColumnKind)}]`))
   }
   if (!lines.length) return ''
-  return [`Current context (as of ${now.toISOString().slice(0, 10)}):`, ...lines].join('\n')
+  // The date on Tony's wall clock (agent_timezone), not UTC — late evening in Chicago is already
+  // "tomorrow" in UTC and contradicted the prompt's time line.
+  const tz = await getDefaultTimezone().catch(() => serverTimezone())
+  return [`Current context (as of ${contextDate(now, tz)}):`, ...lines].join('\n')
 }
