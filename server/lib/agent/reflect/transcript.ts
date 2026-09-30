@@ -40,6 +40,15 @@ function renderMessage(m: TranscriptMessage): string {
   return text ? `[${m.role}] ${text}` : ''
 }
 
+/**
+ * Tony's own messages, rendered exactly as the transcript renders them (`[user] …`), one entry per
+ * message — the gate's `userInput`. Every `user` row is Tony: typed in the app, or an iMessage from
+ * an allowlisted handle (origin `imessage:…`); wake prompts are `event` rows.
+ */
+export function tonyMessages(msgs: TranscriptMessage[]): string[] {
+  return msgs.filter(m => m.role === 'user').map(renderMessage).filter(Boolean)
+}
+
 export function buildThreadTranscript(msgs: TranscriptMessage[], opts: { maxChars?: number } = {}): string {
   const maxChars = opts.maxChars ?? TRANSCRIPT_MAX_CHARS
   // Stable sort: rows written in one append share a created_at and keep their given order.

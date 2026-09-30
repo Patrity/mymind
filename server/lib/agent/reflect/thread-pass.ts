@@ -13,7 +13,7 @@ import { getSkillSource, listSkills } from '../../../services/skills'
 import { getProfileSource } from '../../../services/profile'
 import { getSelfImprovementMode } from '../self-improvement-mode'
 import { threadCandidates, markReflected } from './candidates'
-import { buildThreadTranscript } from './transcript'
+import { buildThreadTranscript, tonyMessages } from './transcript'
 import { skillFilesForPrompt, threadReflectionMessages } from './prompt'
 import { callReflector } from './call'
 import { processProposal, REJECTION_MEMORY_MS } from './apply'
@@ -102,7 +102,7 @@ async function reflectThread(conversationId: string, since: Date | null, opts: P
       // Evidence is checked against the transcript ONLY — never the skills list or profile that
       // were also in the prompt (Task 5 ruling).
       await processProposal(p, {
-        pass: 'thread', conversationId, runIds: [], input: transcript, shownSkills,
+        pass: 'thread', conversationId, runIds: [], input: transcript, userInput: tonyMessages(msgs), shownSkills,
         ...targetAtPass(p, profile, skillSnaps)
       }, { jev: opts.jev })
     } catch (err) {

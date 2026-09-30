@@ -37,7 +37,8 @@ export const JOBS_SYSTEM_PROMPT = [
   'You review how Tony responded to Bridget\'s scheduled jobs over the last 14 days and propose at most 3 improvements.',
   'Most jobs warrant NONE, and an empty list is the right answer.',
   'Propose a change only when the signals and snippets show Tony\'s response to that job\'s messages.',
-  SHARED_RULES.replace('from the transcript', 'from the job\'s snippets'),
+  'A job Tony mostly ignores, or taps back on negatively, may warrant a job.disable or a quieter job.edit.',
+  SHARED_RULES.replace('from the transcript', 'from the job\'s [signals] line or snippets'),
   '',
   PROPOSAL_SHAPE,
   'Kinds:',
@@ -112,10 +113,10 @@ export function threadReflectionMessages(i: {
 }
 
 export function jobsReflectionMessages(i: {
-  jobs: { slug: string; content: string; source: string; signals: Record<string, number>; snippets: string[] }[]
+  jobs: { slug: string; content: string; source: string; signalLine: string; snippets: string[] }[]
 }): ChatMessage[] {
   const jobs = i.jobs.map((j) => {
-    const signals = Object.entries(j.signals).map(([k, n]) => `${k}: ${n}`).join(', ') || '(none)'
+    const signals = j.signalLine
     const snippets = j.snippets.length ? j.snippets.map(s => `- ${s}`).join('\n') : '(none)'
     return [
       `## Job ${j.slug} (authored by ${j.source === 'agent' ? 'Bridget' : 'Tony'})`,

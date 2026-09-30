@@ -48,8 +48,11 @@ export interface ProposalSource {
   pass: 'thread' | 'jobs'
   conversationId: string | null
   runIds: string[]
-  /** The evidence source (GateContext.input): the transcript, or the job's signal snippets only. */
+  /** The evidence source (GateContext.input): the transcript, or the job's signal lines + snippets. */
   input: string
+  /** Tony's own messages within `input` (GateContext.userInput): the thread's `[user]` blocks, or
+   *  the job's reply texts. Auto-apply needs one evidence quote inside one of them. */
+  userInput: string[]
   /** The target's content hash when the pass read it — BEFORE the model call; null for a create. */
   expectedHash: string | null
   /** The target's content read together with `expectedHash` (the diff base). When omitted the
@@ -134,6 +137,13 @@ function validator(defaultTimezone: string, target: TargetState, src: ProposalSo
     if (!parsed.ok) return parsed.error
     return activeHoursNeverMatchError(parsed.spec)
   }
+}
+
+/** Every tool Bridget can call (her profile: agentTools, exec, subagents, decide_review). Loaded
+ *  lazily: the profile imports the tool registry, which reaches back to the review handlers. */
+async function registeredToolNames(): Promise<string[]> {
+  const { bridgetProfile } = await import('../profile')
+  return bridgetProfile.tools.map(t => t.name)
 }
 
 /** Auto-applies since midnight in the agent timezone (spec §5.8: ≤ 5 per day). */
@@ -233,6 +243,8 @@ export async function processProposal(
   const ctx: GateContext = {
     mode: await getSelfImprovementMode(),
     input: src.input,
+    userInput: src.userInput,
+    toolNames: await registeredToolNames(),
     targetAuthor: target.author,
     currentContent,
     recentRejections: await recentRejections(p.kind, p.target),

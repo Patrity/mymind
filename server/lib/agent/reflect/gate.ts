@@ -23,6 +23,17 @@ export interface GateContext {
    * count as evidence of Tony saying it.
    */
   input: string
+  /**
+   * Tony's own words: each of HIS messages in `input`, one entry per message (the thread pass
+   * renders them as `[user] …`; the jobs pass passes his reply texts). Auto-apply needs at least
+   * one evidence quote inside one of them — the evidence check alone proves a quote is in the
+   * transcript, not that Tony said it, and `[bridget]` / `[tool … → summary]` lines can carry
+   * third-party text (a web page title, a quoted email). Final review I3.
+   */
+  userInput: string[]
+  /** Every registered agent tool name. A skill that names one steers Bridget's tool use, so it
+   *  goes to review whatever else it says (final review I3). */
+  toolNames: string[]
   /** Who last authored the target: skill source / job source; 'human' for the profile; 'missing'
    *  when the target does not exist (fine for skill.create, a drop for any edit). */
   targetAuthor: 'human' | 'agent' | 'missing'
@@ -57,6 +68,23 @@ export const EVIDENCE_MIN_CHARS = 12
 const normaliseWs = (s: string) => s.replace(/\s+/g, ' ').trim()
 
 const isEdit = (k: Proposal['kind']) => k !== 'skill.create'
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** True when the text names any of the tools as a whole word (case-insensitive). */
+export function namesTool(text: string, toolNames: string[]): boolean {
+  if (!toolNames.length) return false
+  return new RegExp(`\\b(?:${toolNames.map(escapeRe).join('|')})\\b`, 'i').test(text)
+}
+
+/** At least one evidence quote lies inside one of Tony's own messages. */
+function quotesTony(p: Proposal, userInput: string[]): boolean {
+  const mine = userInput.map(normaliseWs)
+  return p.evidence.some((q) => {
+    const quote = normaliseWs(q)
+    return mine.some(u => u.includes(quote))
+  })
+}
 const isSkill = (k: Proposal['kind']) => k === 'skill.create' || k === 'skill.edit'
 
 export function gate(p: Proposal, ctx: GateContext): GateResult {
@@ -96,8 +124,13 @@ export function gate(p: Proposal, ctx: GateContext): GateResult {
   // already in review so /review shows them; caps and review_only are about `auto` and apply only to it.
   const demote = (reason: string) => { route = 'review'; reasons.push(reason) }
 
-  // 6. Sensitive skill content.
+  // 5b. Tony's own words: a proposal whose every quote comes from Bridget, a tool summary or an
+  //     event line (any of which can carry injected third-party text) is never auto-applied.
+  if (!quotesTony(p, ctx.userInput)) demote('not_from_tony')
+
+  // 6. Sensitive skill content, or a skill that names a registered tool.
   if (isSkill(p.kind) && SENSITIVE.test(content)) demote('sensitive')
+  if (isSkill(p.kind) && namesTool(content, ctx.toolNames)) demote('names_tool')
 
   // 7. Jev — one-way: it can demote, never promote.
   if (ctx.jev === 'unavailable') demote('jev_unavailable')

@@ -183,11 +183,11 @@ describe('reflection prompts', () => {
   })
 
   it('jobs prompt lists each job with its signals and snippets', () => {
-    const m = jobsReflectionMessages({ jobs: [{ slug: 'morning-brief', content: '---\ntrigger: cron 0 7 * * *\n---\nbrief', source: 'agent', signals: { ignored: 6, replied: 1 }, snippets: ['stop sending these'] }] })
+    const m = jobsReflectionMessages({ jobs: [{ slug: 'morning-brief', content: '---\ntrigger: cron 0 7 * * *\n---\nbrief', source: 'agent', signalLine: '[signals] morning-brief: 6 ignored, 1 replied in 14 days', snippets: ['stop sending these'] }] })
     expect(m[0]!.content).toContain('job.disable')
     const user = m[1]!.content as string
     expect(user).toContain('morning-brief')
-    expect(user).toContain('ignored: 6')
+    expect(user).toContain('[signals] morning-brief: 6 ignored, 1 replied in 14 days')
     expect(user).toContain('stop sending these')
   })
 })

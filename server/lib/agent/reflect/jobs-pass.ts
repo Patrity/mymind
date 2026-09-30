@@ -3,8 +3,11 @@
 // The nightly jobs pass (spec §4.2): close the observation windows that ended (→ `ignored`), then
 // show the reflector every enabled job with at least 5 signals in the last 14 days — its file,
 // signal counts by kind and up to 5 detail snippets — in ONE call, and route each proposal
-// through processProposal. A proposal's evidence is checked against ITS job's signal snippets
-// only — never the job's own file, nor other jobs' snippets (Task 7 ruling).
+// through processProposal. A proposal's evidence is checked against ITS job's signal line and
+// snippets only — never the job's own file, nor other jobs' (Task 7 ruling). The signal line
+// ("[signals] <slug>: 9 ignored, 0 replied …") is written by this code, never the model, so a
+// job Tony only ignores or taps back on has quotable evidence too (final review I2); being code-
+// written, it is not Tony's words, so a proposal that quotes only it goes to review.
 import { and, desc, gte, inArray, isNotNull } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentSignals } from '../../../db/schema'
@@ -30,9 +33,26 @@ interface JobInput {
   content: string
   contentHash: string
   source: string
-  signals: Record<string, number>
+  /** The code-written signal summary line (quotable evidence). */
+  signalLine: string
   snippets: string[]
+  /** Tony's reply texts — the snippets that are his words (GateContext.userInput). */
+  replies: string[]
   runIds: string[]
+}
+
+/** Kinds whose `detail` is the text of Tony's reply (a tapback's detail is its name). */
+const REPLY_KINDS = new Set(['replied', 'said_stop', 'said_thanks'])
+const SIGNAL_ORDER = ['ignored', 'replied', 'said_stop', 'said_thanks', 'tapback_positive', 'tapback_negative']
+
+/**
+ * "[signals] <slug>: 9 ignored, 0 replied, 1 tapback_negative in 14 days" — ignored and replied
+ * always, any other kind when present.
+ */
+export function signalLine(slug: string, counts: Record<string, number>): string {
+  const kinds = [...SIGNAL_ORDER, ...Object.keys(counts).filter(k => !SIGNAL_ORDER.includes(k)).sort()]
+  const parts = kinds.filter(k => k === 'ignored' || k === 'replied' || counts[k]).map(k => `${counts[k] ?? 0} ${k}`)
+  return `[signals] ${slug}: ${parts.join(', ')} in 14 days`
 }
 
 export async function runJobsPass(
@@ -61,8 +81,10 @@ export async function runJobsPass(
     const signals: Record<string, number> = {}
     for (const r of mine) signals[r.kind] = (signals[r.kind] ?? 0) + 1
     inputs.push({
-      id: j.id, slug: j.slug, content: j.content, contentHash: j.contentHash, source: j.source, signals,
+      id: j.id, slug: j.slug, content: j.content, contentHash: j.contentHash, source: j.source,
+      signalLine: signalLine(j.slug, signals),
       snippets: mine.map(r => r.detail?.trim()).filter((d): d is string => !!d).slice(0, JOBS_SNIPPETS),
+      replies: [...new Set(mine.filter(r => REPLY_KINDS.has(r.kind)).map(r => r.detail?.trim()).filter((d): d is string => !!d))],
       runIds: [...new Set(mine.map(r => r.runId).filter((id): id is string => !!id))]
     })
   }
@@ -81,9 +103,10 @@ export async function runJobsPass(
         pass: 'jobs',
         conversationId: null,
         runIds: job?.runIds ?? [],
-        // Evidence is Tony's reaction — the signal snippets ONLY, never the job's own file (quoting
-        // it proves nothing). A job the pass didn't show has no evidence source at all.
-        input: job ? job.snippets.join('\n') : '',
+        // Evidence is Tony's reaction — the signal line and snippets ONLY, never the job's own file
+        // (quoting it proves nothing). A job the pass didn't show has no evidence source at all.
+        input: job ? [job.signalLine, ...job.snippets].join('\n') : '',
+        userInput: job?.replies ?? [],
         expectedHash: job?.contentHash ?? null,
         baseContent: job?.content ?? ''
       }, { jev: opts.jev })

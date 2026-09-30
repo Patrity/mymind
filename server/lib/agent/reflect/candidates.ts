@@ -7,7 +7,8 @@ import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { conversations } from '../../../db/schema'
 
-/** Spec §4.1, verbatim: ≥ 4 new messages, idle ≥ 30 min, not reflected in the last 2 h. */
+/** Spec §4.1, verbatim: ≥ 4 new messages, idle ≥ 30 min, not reflected in the last 2 h — plus
+ *  (final review I3) at least one new message from Tony. */
 export const REFLECT_MIN_NEW_MESSAGES = 4
 export const REFLECT_IDLE_MS = 30 * 60_000
 export const REFLECT_COOLDOWN_MS = 2 * 3600_000
@@ -32,7 +33,12 @@ export async function threadCandidates(
     // of the same append compare µs-greater than it.
     sql`(select count(*) from conversation_messages m where m.conversation_id = ${conversations.id}
           and m.role in ('user', 'assistant')
-          and date_trunc('milliseconds', m.created_at) > coalesce(${conversations.reflectedThrough}, '-infinity'::timestamptz)) >= ${REFLECT_MIN_NEW_MESSAGES}`
+          and date_trunc('milliseconds', m.created_at) > coalesce(${conversations.reflectedThrough}, '-infinity'::timestamptz)) >= ${REFLECT_MIN_NEW_MESSAGES}`,
+    // …at least one of them Tony's (final review I3): job and heartbeat output in main, or a wake
+    // thread's own turns, are not a conversation with him and give nothing to learn from.
+    sql`exists (select 1 from conversation_messages u where u.conversation_id = ${conversations.id}
+          and u.role = 'user'
+          and date_trunc('milliseconds', u.created_at) > coalesce(${conversations.reflectedThrough}, '-infinity'::timestamptz))`
   )).orderBy(desc(conversations.lastMessageAt)).limit(opts.limit ?? REFLECT_CANDIDATE_LIMIT)
   return rows.map(r => ({ conversationId: r.id, since: r.since }))
 }

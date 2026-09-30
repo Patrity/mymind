@@ -50,7 +50,7 @@ function proposal(kind: Proposal['kind'], target: string, content?: string, reas
   return { kind, target, content, reason, confidence: 0.9, evidence: EVIDENCE }
 }
 const src = (expectedHash: string | null, over: Partial<ProposalSource> = {}): ProposalSource =>
-  ({ pass: 'thread', conversationId: null, runIds: [], input: TRANSCRIPT, expectedHash, ...over })
+  ({ pass: 'thread', conversationId: null, runIds: [], input: TRANSCRIPT, userInput: [TRANSCRIPT], expectedHash, ...over })
 
 async function run(p: Proposal, s: ProposalSource, jev: typeof okJev = okJev) {
   const r = await processProposal(p, s, { jev })
@@ -297,7 +297,7 @@ describe('processProposal → applyImprovement', () => {
   it('job.disable goes to review; a rejected one is not asked again for 30 days', async () => {
     const slug = `${TAG}job`
     const job = await createJob({ slug, content: jobMd('Scratch job.'), actor: 'agent' })
-    const jobSrc = src(job.contentHash, { pass: 'jobs', input: 'always summarise the weekly report in three bullet points' })
+    const jobSrc = src(job.contentHash, { pass: 'jobs', input: 'always summarise the weekly report in three bullet points', userInput: ['always summarise the weekly report in three bullet points'] })
     const r = await run(proposal('job.disable', slug), jobSrc)
     expect(r.status).toBe('pending_review')
     expect((await improvement(r.improvementId)).proposal).toMatchObject({ reasons: ['tier'] })
@@ -353,7 +353,7 @@ describe('processProposal → applyImprovement', () => {
 
   describe('job.edit', () => {
     const jobSrc = (hash: string, content: string) =>
-      src(hash, { pass: 'jobs', input: EVIDENCE[0]!, baseContent: content })
+      src(hash, { pass: 'jobs', input: EVIDENCE[0]!, userInput: [EVIDENCE[0]!], baseContent: content })
 
     it('of Bridget\'s job auto-applies through saveJob with provenance', async () => {
       const slug = `${TAG}jedit`

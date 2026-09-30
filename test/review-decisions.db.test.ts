@@ -102,7 +102,7 @@ async function improvement(label: string) {
   const s = await saveSkillSource(slug, md(slug, 'Original body.', 'human'), null, 'human')
   const r = await processProposal(
     { kind: 'skill.edit', target: slug, content: md(slug, 'Proposed body.', 'human'), reason: 'Tony asked for it', confidence: 0.9, evidence: ['always summarise the weekly report in three bullet points'] },
-    { pass: 'thread', conversationId: null, runIds: [], input: '[user] please always summarise the weekly report in three bullet points', expectedHash: s.contentHash },
+    { pass: 'thread', conversationId: null, runIds: [], input: '[user] please always summarise the weekly report in three bullet points', userInput: ['[user] please always summarise the weekly report in three bullet points'], expectedHash: s.contentHash },
     { jev: okJev }
   )
   improvementIds.push(r.improvementId)

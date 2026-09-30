@@ -26,11 +26,11 @@ const NOW = new Date()
 const minAgo = (m: number) => new Date(NOW.getTime() - m * 60_000)
 
 /** A scratch thread whose messages were created `ageMin[i]` minutes ago. */
-async function scratch(ageMin: number[], reflectedThrough: Date | null = null) {
+async function scratch(ageMin: number[], reflectedThrough: Date | null = null, roles?: string[]) {
   const c = await createConversation({ title: 'REFLECT-CANDIDATES-TEST' }); convIds.push(c.id)
   const db = useDb()
   await db.insert(conversationMessages).values(ageMin.map((m, i) => ({
-    conversationId: c.id, role: i % 2 ? 'assistant' : 'user', content: `m${i}`, modality: 'text', createdAt: minAgo(m)
+    conversationId: c.id, role: roles?.[i] ?? (i % 2 ? 'assistant' : 'user'), content: `m${i}`, modality: 'text', createdAt: minAgo(m)
   })))
   await db.update(conversations).set({
     messageCount: ageMin.length, lastMessageAt: minAgo(Math.min(...ageMin)), reflectedThrough
@@ -80,6 +80,18 @@ describe('threadCandidates', () => {
     const stale = await scratch([8 * day + 30, 8 * day + 20, 8 * day + 10, 8 * day])
     const recent = await scratch([6 * day + 30, 6 * day + 20, 6 * day + 10, 6 * day])
     expect(await ids([stale, recent])).toEqual([recent])
+  })
+
+  it('skips a thread whose new messages include none from Tony (job/heartbeat output only) — final review I3', async () => {
+    const botOnly = await scratch([70, 60, 50, 40], null, ['assistant', 'assistant', 'assistant', 'assistant'])
+    const withTony = await scratch([70, 60, 50, 40], null, ['assistant', 'assistant', 'user', 'assistant'])
+    expect(await ids([botOnly, withTony])).toEqual([withTony])
+  })
+
+  it('a Tony message from before the watermark does not count', async () => {
+    const through = minAgo(200)
+    const id = await scratch([300, 190, 180, 170, 160], through, ['user', 'assistant', 'assistant', 'assistant', 'assistant'])
+    expect(await ids([id])).toEqual([])
   })
 
   it('orders by last message, most recent first, and honours limit', async () => {
