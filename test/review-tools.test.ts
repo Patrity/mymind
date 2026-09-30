@@ -76,6 +76,16 @@ describe('decide_review exposure', () => {
     expect(bridgetProfile.tools).toContain(decideReviewTool)
   })
 
+  it('is not allowlistable (confirmed every call); exec still is', async () => {
+    const { execTool } = await import('../server/lib/agent/tools/exec')
+    expect(decideReviewTool.allowlistable).not.toBe(true)
+    expect(execTool.allowlistable).toBe(true)
+    const requestApproval = vi.fn().mockResolvedValue({ approved: false })
+    const set = buildAiTools([decideReviewTool], { signal: ctx.signal, onEvent: () => {}, requestApproval })
+    await (set.decide_review as { execute: (i: unknown) => Promise<unknown> }).execute({ id: IMPROVEMENT_ID, choice: 'approve' })
+    expect(requestApproval.mock.calls[0]![0]).toMatchObject({ tool: 'decide_review', allowlistable: false })
+  })
+
   it('is excluded from headless runs — not even turned into a proposal', () => {
     expect(classifyForHeadless(decideReviewTool)).toBe('exclude')
     const tools = headlessTools(bridgetProfile.tools, { id: 'r', conversationId: 'c' }, async () => 'x')

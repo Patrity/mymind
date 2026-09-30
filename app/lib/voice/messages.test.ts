@@ -185,7 +185,7 @@ describe('mapServerMessage — cid guard (belt-and-braces against a stray frame 
     expect(mapServerMessage({ type: 'persisted', conversationId: 'thread-A', cid: 'thread-A' } as never, false, 'thread-B'))
       .toEqual({ persisted: 'thread-A' })
     expect(mapServerMessage({ type: 'approval', requestId: 'r', command: 'ls', cid: 'thread-A' } as never, false, 'thread-B'))
-      .toEqual({ approval: { requestId: 'r', tool: 'exec', command: 'ls', proposedPattern: '' } })
+      .toEqual({ approval: { requestId: 'r', tool: 'exec', command: 'ls', proposedPattern: '', allowlistable: false } })
   })
 
   describe('viewing nothing (after `new`) — the left view', () => {

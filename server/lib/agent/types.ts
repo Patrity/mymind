@@ -14,6 +14,9 @@ export interface ApprovalRequest {
   command: string     // the exact thing that will run / change
   proposedPattern: string // an "always allow" suggestion (editable in the UI)
   callId?: string // the SDK toolCallId — lets the UI render the approval on that tool part
+  /** Set by buildAiTools from the TOOL (never from describeApproval): only then may a persisted
+   *  allowlist pattern auto-approve it, or an "always allow" be saved for it. */
+  allowlistable?: boolean
 }
 
 /** Per-call context handed to every tool handler. */
@@ -51,6 +54,9 @@ export interface AgentTool {
   schema: ZodRawShape // → OpenAI tool JSON schema AND MCP registration
   kind: ToolKind
   dangerous?: boolean // requires human approval before the handler runs
+  /** Opt-in: a persisted "always allow" pattern may approve this dangerous tool without asking.
+   *  Only exec sets it — decide_review (cycle 76) must be confirmed on every call. */
+  allowlistable?: boolean
   // Derive the approval request from the call args (tool-agnostic gate). Defaults
   // to a JSON-of-args command + `<name> *` pattern when omitted.
   describeApproval?: (args: Record<string, unknown>) => ApprovalRequest

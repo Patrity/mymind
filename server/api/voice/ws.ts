@@ -156,7 +156,7 @@ export default defineWebSocketHandler({
           }
         }, Number(process.env.APPROVAL_TIMEOUT_MS ?? 120_000))
         s.pendingApprovals.set(requestId, { resolve, timer, req, runId, conversationId })
-        peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern }))
+        peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern, allowlistable: req.allowlistable === true }))
         if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool })
       })
     }
@@ -284,10 +284,15 @@ export default defineWebSocketHandler({
               ? { kind: 'approve', remember: a.remember, pattern: a.pattern, proposedPattern: pending.req.proposedPattern }
               : { kind: 'deny' }
           )
-          if (outcome.persist && outcome.pattern) {
-            addApproval({ pattern: outcome.pattern, tool: pending.req.tool }).catch(err => console.error('[exec] persist approval failed:', err))
+          // Never save an "always allow" for a tool that isn't allowlistable (decide_review): the
+          // client hides the option, and this refuses a crafted frame that sends it anyway.
+          const remember = outcome.persist && !!outcome.pattern && pending.req.allowlistable === true
+          if (remember) {
+            addApproval({ pattern: outcome.pattern!, tool: pending.req.tool }).catch(err => console.error('[exec] persist approval failed:', err))
+          } else if (outcome.persist) {
+            recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'remember-refused', tool: pending.req.tool, pattern: outcome.pattern } })
           }
-          recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: a.kind, command: pending.req.command, pattern: outcome.pattern, remembered: outcome.persist } })
+          recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: a.kind, command: pending.req.command, pattern: remember ? outcome.pattern : null, remembered: remember } })
           pending.resolve({ approved: outcome.approved })
         }
         return

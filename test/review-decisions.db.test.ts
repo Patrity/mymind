@@ -222,6 +222,34 @@ describe('decideReview — memory conflicts', () => {
     expect(await status(c.row.id)).toBe(queueStatus)
   })
 
+  it('page and Bridget deciding at once: the one that loses the race gets not_pending and archives nothing', async () => {
+    // Deterministic race: hold the queue row locked, let decideReview read it as pending and block
+    // on its claim, then "the page" decides (keep-both) and commits. decideReview's guarded claim
+    // re-checks `status = 'pending'` after the lock is released — zero rows, so nothing is archived.
+    const c = await conflict()
+    let bridget!: Promise<Awaited<ReturnType<typeof decideReview>>>
+    await db().transaction(async (tx) => {
+      await tx.select({ id: reviewQueue.id }).from(reviewQueue).where(eq(reviewQueue.id, c.row.id)).for('update')
+      bridget = decideReview(c.row.id, 'archive-both')
+      await new Promise(r => setTimeout(r, 300))
+      await tx.update(reviewQueue).set({ status: 'rejected', resolvedAt: new Date() }).where(eq(reviewQueue.id, c.row.id))
+    })
+    expect(await bridget).toMatchObject({ ok: false, reason: 'not_pending' })
+    expect((await memoryRow(c.newId)).archivedAt).toBeNull()
+    expect((await memoryRow(c.existingId)).archivedAt).toBeNull()
+    expect(await relationStatus(c.newId, c.existingId)).toBe('active')
+    expect(await status(c.row.id)).toBe('rejected')
+  })
+
+  it('a decision on a conflict already decided on the page → not_pending, nothing archived', async () => {
+    const c = await conflict()
+    expect(await callRoute(resolveRoute, c.row.id, { resolution: 'keep-both' })).toMatchObject({ ok: true })
+    expect(await decideReview(c.row.id, 'archive-both')).toMatchObject({ ok: false, reason: 'not_pending' })
+    expect((await memoryRow(c.newId)).archivedAt).toBeNull()
+    expect((await memoryRow(c.existingId)).archivedAt).toBeNull()
+    expect(await status(c.row.id)).toBe('rejected')
+  })
+
   it('approve / reject are not conflict choices for the tool → invalid_choice, nothing archived', async () => {
     const c = await conflict('memory-contradict')
     expect(await decideReview(c.row.id, 'approve')).toMatchObject({ ok: false, reason: 'invalid_choice' })

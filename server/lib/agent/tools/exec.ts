@@ -21,6 +21,7 @@ export const execTool: AgentTool = {
     command: z.string().min(1).describe('The shell command to run'),
     cwd: z.string().optional().describe('Working directory for the command — absolute, or relative to /opt/mymind/workspace. Runs as root in the LXC (no jail).')
   },
+  allowlistable: true,
   describeApproval: (a) => ({ tool: 'exec', command: a.command as string, proposedPattern: proposedPattern(a.command as string) }),
   redactForLog: async (input) => {
     const secrets = await getDecryptedSecrets()

@@ -18,6 +18,7 @@ const m = vi.hoisted(() => ({
   hasApprovalChannel: vi.fn(() => true),
   transcribe: vi.fn(async () => 'spoken words'),
   clear: vi.fn(async () => {}),
+  addApproval: vi.fn(async () => ({})),
   order: [] as string[]
 }))
 vi.mock('../server/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue, abortActive: m.abortActive, abortActiveAndWait: m.abortActiveAndWait }))
@@ -31,6 +32,9 @@ vi.mock('../server/lib/voice/providers', () => ({ sttFromModel: () => ({ transcr
 vi.mock('../server/services/conversation-clear', () => ({ clearConversationContext: m.clear }))
 vi.mock('../server/db', () => ({ useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ at: new Date(0) }] }) }) }) }) }))
 vi.mock('../server/lib/observability/record', () => ({ recordEvent: vi.fn() }))
+vi.mock('../server/lib/exec/approvals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../server/lib/exec/approvals')>()), addApproval: m.addApproval
+}))
 
 import handler from '../server/api/voice/ws'
 import { hub } from '../server/lib/agent/runtime/stream'
@@ -131,6 +135,29 @@ describe('ws runtime socket', () => {
     expect(sub.mock.calls[0]![0]).toBe('c1')
     expect(sub.mock.calls[0]![2]).toEqual({ replay: true })
     sub.mockRestore()
+  })
+
+  it('"always allow" is saved only for an allowlistable tool — a crafted remember for decide_review is refused', async () => {
+    const p = peer(); h.open(p)
+    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result(`run-${req.sessionKey}`, req.sessionKey.slice(7)))
+    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
+    await h.message(p, frame({ type: 'text', text: 'a' }))
+    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
+
+    const decide = ch({ tool: 'decide_review', command: 'approve — x', proposedPattern: '', allowlistable: false })
+    const decideFrame = types(p).filter(f => f.type === 'approval').at(-1)!
+    expect(decideFrame.allowlistable).toBe(false)
+    await h.message(p, frame({ type: 'approve', requestId: decideFrame.requestId, remember: true, pattern: 'approve *' }))
+    expect(await decide).toEqual({ approved: true })
+    expect(m.addApproval).not.toHaveBeenCalled()
+
+    // exec (allowlistable) still saves the pattern — regression.
+    const exec = ch({ tool: 'exec', command: 'git status', proposedPattern: 'git *', allowlistable: true })
+    const execFrame = types(p).filter(f => f.type === 'approval').at(-1)!
+    expect(execFrame.allowlistable).toBe(true)
+    await h.message(p, frame({ type: 'approve', requestId: execFrame.requestId, remember: true }))
+    expect(await exec).toEqual({ approved: true })
+    expect(m.addApproval).toHaveBeenCalledWith({ pattern: 'git *', tool: 'exec' })
   })
 
   it('Stop denies only the approvals of the thread in view', async () => {

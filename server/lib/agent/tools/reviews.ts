@@ -62,7 +62,8 @@ export const decideReviewTool: AgentTool = {
   describeApproval: (a) => {
     const id = String(a.id)
     const choice = String(a.choice)
-    // proposedPattern '' → an "always allow" tick persists nothing: every decision is confirmed.
+    // Not allowlistable (no `allowlistable` flag): no saved pattern can approve it and the card
+    // offers no "always allow" — every decision is confirmed.
     return { tool: 'decide_review', command: `${choice} — ${summaryCache.get(id) ?? id}`, proposedPattern: '' }
   },
   handler: async (a) => {

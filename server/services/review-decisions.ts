@@ -132,23 +132,30 @@ async function resolveMemoryConflict(item: ReviewItem, resolution: ConflictResol
   if (!p?.newId || !p?.existingId) {
     return { ok: false, reason: 'apply_failed', kind: item.kind, message: 'Conflict row is missing newId/existingId' }
   }
-  const db = useDb()
   const plan = archivalPlan(resolution, { newId: p.newId, existingId: p.existingId })
 
-  if (plan.archive.length) {
-    await db.update(memories)
-      .set({ archivedAt: new Date(), supersededBy: plan.supersededBy, updatedAt: new Date() })
-      .where(inArray(memories.id, plan.archive))
-  }
+  // Claim the item FIRST, guarded on `pending`, in one transaction with the archival: with two
+  // deciders (the page and Bridget) a second decision racing the first must change nothing —
+  // it claims zero rows and reports not_pending, and the archival never runs twice.
+  const claimed = await useDb().transaction(async (tx) => {
+    const [row] = await tx.update(reviewQueue)
+      .set({ status: queueStatusFor(resolution), resolvedAt: new Date() })
+      .where(and(eq(reviewQueue.id, item.id), eq(reviewQueue.status, 'pending')))
+      .returning({ id: reviewQueue.id })
+    if (!row) return false
 
-  // The relation is resolved either way — the human has ruled, so it must never come back.
-  await db.update(memoryRelations)
-    .set({ status: 'resolved', resolvedAt: new Date() })
-    .where(and(eq(memoryRelations.toId, p.existingId), eq(memoryRelations.fromId, p.newId)))
-
-  await db.update(reviewQueue)
-    .set({ status: queueStatusFor(resolution), resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
+    if (plan.archive.length) {
+      await tx.update(memories)
+        .set({ archivedAt: new Date(), supersededBy: plan.supersededBy, updatedAt: new Date() })
+        .where(inArray(memories.id, plan.archive))
+    }
+    // The relation is resolved either way — the human has ruled, so it must never come back.
+    await tx.update(memoryRelations)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(and(eq(memoryRelations.toId, p.existingId!), eq(memoryRelations.fromId, p.newId!)))
+    return true
+  })
+  if (!claimed) return notPending(item.id)
 
   publishChange({ resource: 'review', action: 'updated', id: item.id })
   for (const memId of plan.archive) publishChange({ resource: 'memory', action: 'updated', id: memId })
@@ -157,7 +164,7 @@ async function resolveMemoryConflict(item: ReviewItem, resolution: ConflictResol
   return { ok: true, summary: `${label}: ${plan.archive.length ? `archived ${plan.archive.length} memory(ies)` : 'nothing archived'}.`, applied: plan.archive }
 }
 
-/** The synthetic `memory-unreviewed` kind: approve = keep (mark reviewed), reject = forget
+/** The synthetic `memory-unreviewed` kind: approve = Mark reviewed, reject = Discard
  *  (archive, undoable) — the same service calls as POST /api/memories/[id]/review and /archive,
  *  which is what the /review page's Mark reviewed / Discard buttons use. */
 async function decideUnreviewedMemory(id: string, choice: string): Promise<DecisionResult> {
@@ -172,7 +179,7 @@ async function decideUnreviewedMemory(id: string, choice: string): Promise<Decis
     const r = await reviewMemory(id)
     if (!r) return notPending(id)
     publishChange({ resource: 'memory', action: 'updated', id })
-    return { ok: true, summary: 'Memory kept (marked reviewed).' }
+    return { ok: true, summary: 'Memory marked reviewed.' }
   }
   const r = await archiveMemory(id)
   if (!r) return notPending(id)
@@ -181,7 +188,7 @@ async function decideUnreviewedMemory(id: string, choice: string): Promise<Decis
     await unarchiveMemory(id)
     publishChange({ resource: 'memory', action: 'updated', id })
   })
-  return { ok: true, summary: 'Memory forgotten (archived, undoable).', undoToken }
+  return { ok: true, summary: 'Memory discarded (archived, undoable).', undoToken }
 }
 
 // ── Listing ─────────────────────────────────────────────────────────────────

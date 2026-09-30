@@ -20,8 +20,8 @@ describe('reviewChoices', () => {
     expect(reviewChoices({ kind: 'memory-supersede' }).find(c => c.id === 'archive-both')!.tone).toBe('error')
   })
 
-  it('memory-unreviewed: Keep / Forget', () => {
-    expect(reviewChoices({ kind: 'memory-unreviewed' }).map(c => [c.id, c.label])).toEqual([['approve', 'Keep'], ['reject', 'Forget']])
+  it('memory-unreviewed: Mark reviewed / Discard (the page\'s words)', () => {
+    expect(reviewChoices({ kind: 'memory-unreviewed' }).map(c => [c.id, c.label])).toEqual([['approve', 'Mark reviewed'], ['reject', 'Discard']])
   })
 
   it.each(['self-improvement', 'agent-action', 'triage', 'enrichment', 'anything-else'])('%s: Approve / Reject', (kind) => {

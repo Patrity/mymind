@@ -62,8 +62,10 @@ describe('mapServerMessage conversation frame', () => {
 
 describe('mapServerMessage approval frames', () => {
   it('maps an approval request', () => {
-    const fx = mapServerMessage({ type: 'approval', requestId: 'r1', tool: 'exec', command: 'git status', proposedPattern: 'git *' }, false)
-    expect(fx.approval).toEqual({ requestId: 'r1', tool: 'exec', command: 'git status', proposedPattern: 'git *' })
+    const fx = mapServerMessage({ type: 'approval', requestId: 'r1', tool: 'exec', command: 'git status', proposedPattern: 'git *', allowlistable: true }, false)
+    expect(fx.approval).toEqual({ requestId: 'r1', tool: 'exec', command: 'git status', proposedPattern: 'git *', allowlistable: true })
+    // A server that omits it (or a non-allowlistable tool) → no "always allow".
+    expect(mapServerMessage({ type: 'approval', requestId: 'r2', tool: 'decide_review', command: 'approve — x', proposedPattern: '' }, false).approval!.allowlistable).toBe(false)
   })
   it('maps an approval-resolved (timeout) frame', () => {
     expect(mapServerMessage({ type: 'approval-resolved', requestId: 'r1' }, false).approvalResolved).toBe('r1')

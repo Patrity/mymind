@@ -12,6 +12,8 @@ export interface PendingApprovalDetails {
   tool: string
   command: string
   proposedPattern: string
+  /** False for tools Tony must confirm every time (decide_review): no "always allow". */
+  allowlistable?: boolean
 }
 
 type ApprovalPart = Extract<AgentUIPart, { type: 'dynamic-tool'; state: 'approval-requested' }>
@@ -37,8 +39,10 @@ watch(
 
 const inputJson = computed(() => JSON.stringify(props.part.input, null, 2))
 
+const canRemember = computed(() => props.details?.allowlistable === true)
+
 function approve() {
-  emit('approve', props.part.approval.id, { remember: remember.value, pattern: pattern.value })
+  emit('approve', props.part.approval.id, { remember: canRemember.value && remember.value, pattern: pattern.value })
 }
 function deny() {
   emit('deny', props.part.approval.id)
@@ -61,7 +65,7 @@ function deny() {
           <span v-else>Approve <code class="font-mono">{{ part.toolName }}</code>?</span>
         </ConfirmationTitle>
         <pre class="overflow-x-auto whitespace-pre-wrap break-all rounded bg-elevated/60 p-2 text-xs font-mono">{{ details ? details.command : inputJson }}</pre>
-        <div v-if="details" class="flex flex-wrap items-center gap-2">
+        <div v-if="details && canRemember" class="flex flex-wrap items-center gap-2" data-testid="approval-always-allow">
           <UCheckbox v-model="remember" />
           <span class="text-sm text-muted">Always allow commands matching</span>
           <UInput v-model="pattern" :disabled="!remember" size="xs" class="max-w-xs flex-1 font-mono" />

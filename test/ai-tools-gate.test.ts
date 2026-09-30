@@ -21,8 +21,18 @@ describe('buildAiTools dangerous-tool gate', () => {
     const requestApproval = vi.fn().mockResolvedValue({ approved: true })
     const set = buildAiTools([dangerTool()], { signal: new AbortController().signal, onEvent: () => {}, requestApproval })
     const res = await exec(set, { command: 'echo hi' })
-    expect(requestApproval).toHaveBeenCalledWith({ tool: 'exec', command: 'echo hi', proposedPattern: 'echo *', callId: '' })
+    expect(requestApproval).toHaveBeenCalledWith({ tool: 'exec', command: 'echo hi', proposedPattern: 'echo *', allowlistable: false, callId: '' })
     expect(res).toEqual({ ran: 'echo hi' })
+  })
+  it('the request carries allowlistable from the TOOL, never from describeApproval', async () => {
+    const requestApproval = vi.fn().mockResolvedValue({ approved: false })
+    const allow = dangerTool(); allow.allowlistable = true
+    await exec(buildAiTools([allow], { signal: new AbortController().signal, onEvent: () => {}, requestApproval }), { command: 'echo hi' })
+    expect(requestApproval.mock.calls[0]![0]).toMatchObject({ allowlistable: true })
+    const spoof = dangerTool()
+    spoof.describeApproval = a => ({ tool: 'exec', command: a.command as string, proposedPattern: 'echo *', allowlistable: true })
+    await exec(buildAiTools([spoof], { signal: new AbortController().signal, onEvent: () => {}, requestApproval }), { command: 'echo hi' })
+    expect(requestApproval.mock.calls[1]![0]).toMatchObject({ allowlistable: false })
   })
   it('skips the handler and returns a denied result when denied', async () => {
     const handler = vi.fn()

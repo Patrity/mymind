@@ -2,7 +2,7 @@
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { AgentMessageFrame } from '~~/shared/types/agent-ui'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; allowlistable?: boolean; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string }
 
 // Frame types that belong to ONE conversation and must not be applied while viewing a
 // different one. Every hub-published JSON frame carries `cid` (server/lib/agent/runtime/
@@ -55,7 +55,7 @@ export interface MsgEffect {
   /** A `chunk` or `user-message` frame — handed to lib/agent/turn-stream.ts as-is. */
   messageFrame?: AgentMessageFrame
   error?: string
-  approval?: { requestId: string; tool: string; command: string; proposedPattern: string }
+  approval?: { requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean }
   approvalResolved?: string // requestId that was settled server-side (timeout)
   /** The server lazily created a thread on this turn — id + its derived title. */
   conversation?: { id: string; title: string | null }
@@ -128,7 +128,7 @@ export function mapServerMessage(
     return isPlaying ? {} : { state: 'idle' }
   }
   if (m.type === 'approval' && m.requestId && m.command) {
-    return { approval: { requestId: m.requestId, tool: m.tool ?? 'exec', command: m.command, proposedPattern: m.proposedPattern ?? '' } }
+    return { approval: { requestId: m.requestId, tool: m.tool ?? 'exec', command: m.command, proposedPattern: m.proposedPattern ?? '', allowlistable: m.allowlistable === true } }
   }
   if (m.type === 'approval-resolved' && m.requestId) {
     return { approvalResolved: m.requestId }

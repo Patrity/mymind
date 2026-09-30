@@ -15,8 +15,11 @@ export interface RunHooks {
 }
 
 function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
-  if (t.describeApproval) return t.describeApproval(input)
-  return { tool: t.name, command: JSON.stringify(input), proposedPattern: `${t.name} *` }
+  const req = t.describeApproval
+    ? t.describeApproval(input)
+    : { tool: t.name, command: JSON.stringify(input), proposedPattern: `${t.name} *` }
+  // From the tool definition, overriding anything describeApproval returned.
+  return { ...req, allowlistable: t.allowlistable === true }
 }
 
 /** Adapt the agent tool registry into an AI SDK ToolSet (execute = gate + handler + bus + undo). */

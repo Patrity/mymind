@@ -162,8 +162,24 @@ const approvalDetails = ref<PendingApprovalDetails | null>({
   requestId: 'r1',
   tool: 'exec',
   command: 'rm -rf /tmp/scratch',
-  proposedPattern: 'rm -rf /tmp/*'
+  proposedPattern: 'rm -rf /tmp/*',
+  allowlistable: true
 })
+// decide_review (cycle 76) is not allowlistable: its card must offer no "always allow".
+const decideApprovalDetails = ref<PendingApprovalDetails | null>({
+  requestId: 'r3',
+  tool: 'decide_review',
+  command: 'approve — skill.edit weekly-report: Tony asked for bullets',
+  proposedPattern: '',
+  allowlistable: false
+})
+const decideApprovalMessages: AgentUIMessage[] = [{
+  id: 'approval-3', role: 'assistant',
+  parts: [{
+    type: 'dynamic-tool', toolName: 'decide_review', toolCallId: 't-decide', state: 'approval-requested',
+    input: { id: '22222222-2222-4222-8222-222222222222', choice: 'approve' }, approval: { id: 'r3' }
+  }]
+}]
 const approvalFixtureMessages: AgentUIMessage[] = [
   {
     id: 'approval-1', role: 'assistant',
@@ -567,6 +583,20 @@ function onBranchPagerGo(which: string, dir: -1 | 1) {
         <p v-if="approvalLog" class="text-xs text-muted-foreground">
           {{ approvalLog }}
         </p>
+        <p class="text-xs text-muted-foreground">
+          decide_review (not allowlistable) — no "always allow" row.
+        </p>
+        <AgentConversation
+          class="h-72"
+          data-testid="decide-approval-fixture"
+          :messages="decideApprovalMessages"
+          :approval="decideApprovalDetails"
+          state="tool"
+          :connected="true"
+          :hero="true"
+          @approve="onApprovalApprove"
+          @deny="onApprovalDeny"
+        />
       </section>
 
       <section class="space-y-3">

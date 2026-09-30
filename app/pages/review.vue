@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
 import { useTimeAgo } from '@vueuse/core'
-import { reviewChoices, CONFLICT_TOAST, MEMORY_CONFLICT_KINDS, type ConflictChoiceId } from '~~/shared/review/choices'
+import { reviewChoices, CONFLICT_TOAST, MEMORY_CONFLICT_KINDS, type ConflictChoiceId, type ReviewChoice } from '~~/shared/review/choices'
 
 definePageMeta({ title: 'Review' })
 
@@ -371,6 +371,9 @@ function conflictActions(item: ReviewItem) {
 }
 
 // ── memory-unreviewed helpers ─────────────────────────────────────────────
+//
+// Button labels come from the shared registry (Bridget's decide_review offers the same choices).
+const UNREVIEWED_CHOICE = Object.fromEntries(reviewChoices({ kind: 'memory-unreviewed' }).map(c => [c.id, c])) as Record<'approve' | 'reject', ReviewChoice>
 //
 // `id` here is a memories.id, not a review_queue.id — go through reviewMemory(id),
 // never POST /api/review/[id]/approve (that endpoint 404s on an id review_queue
@@ -785,7 +788,7 @@ async function undoDiscard(undoToken: string) {
                   :loading="actioning[item.id]"
                   @click="discardMemory(item.id)"
                 >
-                  Discard
+                  {{ UNREVIEWED_CHOICE.reject.label }}
                 </UButton>
                 <UButton
                   color="primary"
@@ -795,7 +798,7 @@ async function undoDiscard(undoToken: string) {
                   :loading="actioning[item.id]"
                   @click="markMemoryReviewed(item.id)"
                 >
-                  Mark reviewed
+                  {{ UNREVIEWED_CHOICE.approve.label }}
                 </UButton>
               </div>
             </template>

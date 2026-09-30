@@ -35,8 +35,8 @@ export function reviewChoices(item: { kind: string }): ReviewChoice[] {
   if (MEMORY_CONFLICT_KINDS.has(item.kind)) return conflictChoices(item.kind)
   if (item.kind === 'memory-unreviewed') {
     return [
-      { id: 'approve', label: 'Keep', description: 'Mark the memory reviewed so it is used as a reviewed fact.', tone: 'primary' },
-      { id: 'reject', label: 'Forget', description: 'Archive the memory (not deleted; undoable).', tone: 'neutral' }
+      { id: 'approve', label: 'Mark reviewed', description: 'Keep the memory: mark it reviewed so it is used as a reviewed fact.', tone: 'primary' },
+      { id: 'reject', label: 'Discard', description: 'Forget the memory: archive it (not deleted; undoable).', tone: 'neutral' }
     ]
   }
   return [
