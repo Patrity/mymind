@@ -306,7 +306,7 @@ describe('jobsTick — scheduling', () => {
     expect(await getJob(slug)).not.toBeNull()
   })
 
-  it('6b. an `at` job that could not fire is disabled with one note in main (deduped per job)', async () => {
+  it('6b. an `at` job that could not fire is disabled with one note in main per arming (a re-arm that misses again notes again)', async () => {
     const slug = `${PREFIX}at-missed`
     const now = new Date(await dbNow())
     const hhmm = (d: Date) => `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
@@ -320,11 +320,13 @@ describe('jobsTick — scheduling', () => {
       const res = await jobsTick({ onlySlugs: [slug], wakeFn: fakeWake, mainConversationId: scratchMain })
       expect(res.skipped).toEqual([slug])
       expect((await row(slug)).enabled).toBe(false)
-      await setJobEnabled(slug, true, 'human') // re-arm; the second miss must not note again
+      expect(await notes()).toHaveLength(i + 1) // one per miss: re-arming clears the marker (final review M2)
+      await setJobEnabled(slug, true, 'human') // re-arm
     }
     expect(callsFor(slug)).toHaveLength(0)
     const n = await notes()
-    expect(n).toHaveLength(1)
+    expect(n).toHaveLength(2)
+    expect(n[1]!.content).toMatch(new RegExp(`^Reminder ${slug} did not fire: it came due outside its active hours`))
     expect(n[0]!.content).toMatch(new RegExp(`^Reminder ${slug} did not fire: it came due outside its active hours`))
   })
 
