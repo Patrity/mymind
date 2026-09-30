@@ -12,10 +12,18 @@ export const OBSERVATION_WINDOW_MS = 2 * 60 * 60 * 1000
 const STOP = ['stop', 'not useful', "don't send", 'dont send', 'unsubscribe', 'too many']
 const THANKS = ['thanks', 'thank you', 'helpful', 'perfect', 'nice']
 
-/** Whole words only ("stopwatch" is not "stop"); a phrase's spaces match any run of whitespace. */
+/** A negation right before a phrase flips it: "don't stop", "do not stop" (via `not`),
+ *  "not helpful", "no thanks". */
+const NEGATION = String.raw`(?:don't|dont|not|never|no)\s+`
+
+/**
+ * Whole words only: "stopwatch" is not "stop", and a hyphen joins words too ("non-stop"). A
+ * phrase's spaces match any run of whitespace. A negated phrase does not count.
+ */
 function lexicon(words: string[]): RegExp {
   const alts = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+'))
-  return new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alts.join('|')})(?![\\p{L}\\p{N}_])`, 'iu')
+  const edge = String.raw`[\p{L}\p{N}_\-]`
+  return new RegExp(`(?<!${edge})(?<!(?<!${edge})${NEGATION})(?:${alts.join('|')})(?!${edge})`, 'iu')
 }
 const STOP_RE = lexicon(STOP)
 const THANKS_RE = lexicon(THANKS)

@@ -17,6 +17,31 @@ describe('classifyReplyText', () => {
     expect(classifyReplyText('nicely done, thankful')).toEqual([])
   })
 
+  it('a negated or hyphenated stop word is not a stop', () => {
+    expect(classifyReplyText("don't stop")).toEqual([])
+    expect(classifyReplyText('don’t stop these')).toEqual([])
+    expect(classifyReplyText('Do NOT stop, this is great')).toEqual([])
+    expect(classifyReplyText('never stop')).toEqual([])
+    expect(classifyReplyText('non-stop updates')).toEqual([])
+    expect(classifyReplyText('a stop-gap')).toEqual([])
+    expect(classifyReplyText('not too many')).toEqual([])
+  })
+
+  it('a negated thanks word is not thanks', () => {
+    expect(classifyReplyText('not helpful')).toEqual([])
+    expect(classifyReplyText('no thanks')).toEqual([])
+  })
+
+  it('a negation word that is part of another word does not negate', () => {
+    expect(classifyReplyText('piano stop')).toEqual(['said_stop'])
+    expect(classifyReplyText('knot stop')).toEqual(['said_stop'])
+  })
+
+  it('the stop phrases that contain a negation still count', () => {
+    expect(classifyReplyText("don't send these")).toEqual(['said_stop'])
+    expect(classifyReplyText('not useful')).toEqual(['said_stop'])
+  })
+
   it('several thanks phrases → one said_thanks, no duplicates', () => {
     expect(classifyReplyText('Thank you, perfect')).toEqual(['said_thanks'])
   })

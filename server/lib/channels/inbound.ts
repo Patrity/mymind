@@ -161,9 +161,10 @@ async function buildInput(ev: InboundMessage, client: BlueBubblesClient | null, 
 export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: InboundDeps = {}): Promise<InboundOutcome> {
   if (ev.kind === 'tapback') {
     // Cycle 76: a tapback that did not answer an approval prompt may be Tony reacting to a job's
-    // message — an engagement signal. Its failure is logged, never surfaced.
+    // message — an engagement signal. Fire-and-forget: the webhook never waits on it, and its
+    // failure is logged, never surfaced.
     if (!await resolveTapback(ev)) {
-      await noteTapback(ev).catch(err => console.warn('[channels] tapback signal failed:', err instanceof Error ? err.message : err))
+      void noteTapback(ev).catch(err => console.warn('[channels] tapback signal failed:', err instanceof Error ? err.message : err))
     }
     return 'tapback'
   }

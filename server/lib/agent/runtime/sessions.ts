@@ -13,10 +13,16 @@ import type { SessionKey } from './types'
 // Postgres driver error (invalid input syntax for type uuid) up through the caller.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** Main's id, or null when it doesn't exist yet. Read-only (never creates it). */
+export async function findMain(): Promise<string | null> {
+  const [existing] = await useDb().select({ id: conversations.id }).from(conversations).where(eq(conversations.kind, 'main')).limit(1)
+  return existing?.id ?? null
+}
+
 export async function getOrCreateMain(): Promise<string> {
   const db = useDb()
-  const [existing] = await db.select({ id: conversations.id }).from(conversations).where(eq(conversations.kind, 'main')).limit(1)
-  if (existing) return existing.id
+  const existing = await findMain()
+  if (existing) return existing
   // Two callers can race here; the loser hits conversations_one_main and re-reads.
   const [row] = await db.insert(conversations).values({ title: 'Bridget', kind: 'main' })
     .onConflictDoNothing().returning({ id: conversations.id })

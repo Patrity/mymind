@@ -4,8 +4,11 @@
 // hooks that write them (queue.ts enqueue, channels/inbound.ts tapbacks). The dev DB is SHARED with
 // real data and live dev servers, so:
 //   - a SCRATCH conversation stands in for main: noteUserReply gets it through its
-//     `mainConversationId` seam, and getOrCreateMain is mocked to it for the enqueue hook (which
-//     calls noteUserReply without the seam) — nothing here ever reads or writes real main;
+//     `mainConversationId` seam, and the read-only findMain is mocked to it for the enqueue hook
+//     (which calls noteUserReply without the seam); getOrCreateMain is mocked to THROW (the signal
+//     path must never create main) — nothing here ever reads or writes real main;
+//   - the `signals_started_at` setting is passed through closeObservations' `startedAt` seam,
+//     except in the one test of the key itself, which snapshots the real row and restores it;
 //   - jobs are created DISABLED with slug prefix `sig-` (no real tick fires them); their runs are
 //     inserted directly as `done` (never claimable), plus one permanent `running` INTERACTIVE
 //     sentinel run in the scratch thread so no pump anywhere claims the one queued run the
@@ -23,7 +26,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 const ALLOWED = '+15557654321'
 const CHAT = `iMessage;-;${ALLOWED}`
-const holder = vi.hoisted(() => ({ mainId: '' }))
+const holder = vi.hoisted(() => ({ mainId: '', noMain: false }))
 
 vi.mock('../server/lib/channels/config', async (orig) => {
   const actual = await orig<typeof import('../server/lib/channels/config')>()
@@ -38,16 +41,18 @@ vi.mock('../server/lib/channels/config', async (orig) => {
 })
 vi.mock('../server/lib/agent/signals/write', async (orig) => {
   const actual = await orig<typeof import('../server/lib/agent/signals/write')>()
-  return { ...actual, openObservation: vi.fn(actual.openObservation) }
+  return { ...actual, openObservation: vi.fn(actual.openObservation), noteTapback: vi.fn(actual.noteTapback) }
 })
 vi.mock('../server/lib/agent/runtime/sessions', async (orig) => {
   const actual = await orig<typeof import('../server/lib/agent/runtime/sessions')>()
   return {
     ...actual,
-    getOrCreateMain: async () => {
-      if (!holder.mainId) throw new Error('test reached getOrCreateMain before the scratch main existed')
+    findMain: async () => {
+      if (holder.noMain) return null
+      if (!holder.mainId) throw new Error('test reached findMain before the scratch main existed')
       return holder.mainId
-    }
+    },
+    getOrCreateMain: async () => { throw new Error('the signal path must never create main') }
   }
 })
 
@@ -55,7 +60,7 @@ import { and, eq, inArray, like } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import {
   agentConfigRevisions, agentJobs, agentRuns, agentSignals, channelApprovals, channelDeliveries, conversationMessages, conversations,
-  type AgentRun
+  settings, type AgentRun
 } from '../server/db/schema'
 import { createConversation } from '../server/services/conversations'
 import { createJob } from '../server/lib/agent/jobs/store'
@@ -63,7 +68,7 @@ import { enqueue } from '../server/lib/agent/runtime/queue'
 import { handleInbound } from '../server/lib/channels/inbound'
 import type { TapbackEvent } from '../server/lib/channels/types'
 import { OBSERVATION_WINDOW_MS } from '../server/lib/agent/signals/classify'
-import { closeObservations, noteTapback, noteUserReply, openObservation } from '../server/lib/agent/signals/write'
+import { closeObservations, noteTapback, noteUserReply, openObservation, SIGNALS_STARTED_AT_KEY, CLOSE_LOOKBACK_MS } from '../server/lib/agent/signals/write'
 import { onRunFinished } from '../server/lib/agent/jobs/outcome'
 
 const db = () => useDb()
@@ -81,6 +86,8 @@ const approvalIds: string[] = []
 let jobA = ''
 let jobB = ''
 let jobC = ''
+let jobD = ''
+let jobE = ''
 let seq = 0
 
 /** One day of the year 2000 per test: windows of different tests never overlap. */
@@ -107,6 +114,8 @@ beforeAll(async () => {
   jobA = (await createJob({ slug: `${TAG}a`, content: md('trigger: every 30m', 'A.'), actor: 'human' })).id
   jobB = (await createJob({ slug: `${TAG}b`, content: md('trigger: every 30m', 'B.'), actor: 'human' })).id
   jobC = (await createJob({ slug: `${TAG}c`, content: md('trigger: every 30m', 'C.'), actor: 'human' })).id
+  jobD = (await createJob({ slug: `${TAG}d`, content: md('trigger: every 30m', 'D.'), actor: 'human' })).id
+  jobE = (await createJob({ slug: `${TAG}e`, content: md('trigger: every 30m', 'E.'), actor: 'human' })).id
 })
 
 afterAll(async () => {
@@ -179,13 +188,40 @@ describe('noteUserReply', () => {
     expect(await kindsFor(m.messageId)).toEqual(['replied'])
   })
 
-  it('two replies → a single replied', async () => {
+  it('two replies → a single replied, keeping the first reply as detail', async () => {
     const m = await jobMessage(jobA, day(4))
     expect(await reply('one', new Date(day(4).getTime() + 10 * 60 * 1000))).toBe(1)
-    expect(await reply('two, thanks', new Date(day(4).getTime() + 20 * 60 * 1000))).toBe(0)
+    expect(await reply('two', new Date(day(4).getTime() + 20 * 60 * 1000))).toBe(0)
     const rows = await signalsFor(m.messageId)
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ kind: 'replied', detail: 'one' })
+  })
+
+  it('a later stop or thanks still counts after the message was already replied to, once per kind', async () => {
+    const m = await jobMessage(jobA, day(9))
+    expect(await reply('ok', new Date(day(9).getTime() + 10 * 60 * 1000))).toBe(1)
+    expect(await reply('actually, stop sending these', new Date(day(9).getTime() + 20 * 60 * 1000))).toBe(1)
+    expect(await reply('stop. thanks though', new Date(day(9).getTime() + 30 * 60 * 1000))).toBe(1)
+    expect(await kindsFor(m.messageId)).toEqual(['replied', 'said_stop', 'said_thanks'])
+    const stop = (await signalsFor(m.messageId)).find(r => r.kind === 'said_stop')
+    expect(stop!.detail).toBe('actually, stop sending these')
+  })
+
+  it('a negated stop word → replied only', async () => {
+    const m = await jobMessage(jobA, day(14))
+    expect(await reply("don't stop, these are great", new Date(day(14).getTime() + 60_000))).toBe(1)
+    expect(await kindsFor(m.messageId)).toEqual(['replied'])
+  })
+
+  it('with no main conversation yet → nothing, and main is never created', async () => {
+    const m = await jobMessage(jobA, day(15))
+    holder.noMain = true
+    try {
+      expect(await noteUserReply({ conversationId: scratchMain, text: 'hi', at: new Date(day(15).getTime() + 60_000) })).toBe(0)
+    } finally {
+      holder.noMain = false
+    }
+    expect(await signalsFor(m.messageId)).toHaveLength(0)
   })
 
   it('a stop phrase → both replied and said_stop', async () => {
@@ -263,8 +299,20 @@ describe('tapbacks', () => {
     const m = await jobMessage(jobB, day(10))
     const d = await jobDelivery(jobB, m)
     expect(await handleInbound(tapback(d.externalId, { tapback: 'laugh' }))).toBe('tapback')
+    // Fire-and-forget: handleInbound returns before the signal lands.
+    await vi.waitFor(async () => expect(await signalsFor(m.messageId)).toHaveLength(1), { timeout: 3000, interval: 50 })
     const [s] = await signalsFor(m.messageId)
     expect(s).toMatchObject({ kind: 'tapback_positive', jobId: jobB, runId: m.runId, deliveryId: d.id, detail: 'laugh' })
+  })
+
+  it('the webhook never waits on the tapback signal', async () => {
+    vi.mocked(noteTapback).mockImplementationOnce(() => new Promise<boolean>(() => {})) // never settles
+    const out = await Promise.race([
+      handleInbound(tapback(`${TAG}hang`)),
+      new Promise(r => setTimeout(() => r('handleInbound waited on noteTapback'), 1000))
+    ])
+    expect(out).toBe('tapback')
+    expect(noteTapback).toHaveBeenCalled()
   })
 
   it('dislike → tapback_negative; question, removed and own tapbacks → nothing', async () => {
@@ -277,6 +325,21 @@ describe('tapbacks', () => {
     expect(await noteTapback(tapback(d.externalId, { tapback: 'dislike' }))).toBe(true)
     expect(await noteTapback(tapback(d.externalId, { tapback: 'dislike' }))).toBe(false) // one per kind
     expect(await kindsFor(m.messageId)).toEqual(['tapback_negative'])
+  })
+
+  it("a stranger's tapback, a group chat's and one from a chat that isn't the sender's own → nothing", async () => {
+    const m = await jobMessage(jobB, day(16))
+    const d = await jobDelivery(jobB, m)
+    const STRANGER = '+15550000001'
+    expect(await noteTapback(tapback(d.externalId, { sender: STRANGER, chatGuid: `iMessage;-;${STRANGER}` }))).toBe(false)
+    expect(await noteTapback(tapback(d.externalId, { chatGuid: 'iMessage;+;chat123456' }))).toBe(false)
+    expect(await noteTapback(tapback(d.externalId, { chatGuid: `iMessage;-;${STRANGER}` }))).toBe(false)
+    // Through the pipeline too (a stranger's tapback isn't an approval either).
+    expect(await handleInbound(tapback(d.externalId, { sender: STRANGER, chatGuid: `iMessage;-;${STRANGER}` }))).toBe('tapback')
+    await new Promise(r => setTimeout(r, 300))
+    expect(await signalsFor(m.messageId)).toHaveLength(0)
+    // The allowed sender in their own chat does count.
+    expect(await noteTapback(tapback(d.externalId))).toBe(true)
   })
 
   it('a tapback on a message that is no job delivery → nothing', async () => {
@@ -300,6 +363,7 @@ describe('tapbacks', () => {
     expect(await handleInbound(tapback(d.externalId, { tapback: 'like' }))).toBe('tapback')
     const [row] = await db().select({ status: channelApprovals.status }).from(channelApprovals).where(eq(channelApprovals.id, a!.id))
     expect(row!.status).toBe('approved')
+    await new Promise(r => setTimeout(r, 300)) // a (wrongly) fired-and-forgotten noteTapback would land by now
     expect(await signalsFor(m.messageId)).toHaveLength(0)
   })
 })
@@ -314,14 +378,56 @@ describe('closeObservations', () => {
     const open = await jobMessage(jobC, new Date(now.getTime() - HOUR))
     const otherJob = await jobMessage(jobA, new Date(now.getTime() - 3 * HOUR))
 
-    const n = await closeObservations(now, { onlyJobIds: [jobC] })
+    const n = await closeObservations(now, { onlyJobIds: [jobC], startedAt: day(1) })
     expect(await kindsFor(silent.messageId)).toEqual(['ignored'])
     expect(await kindsFor(answered.messageId)).toEqual(['tapback_positive'])
     expect(await signalsFor(open.messageId)).toHaveLength(0)
     expect(await signalsFor(otherJob.messageId)).toHaveLength(0) // outside onlyJobIds
     // jobC's earlier enqueue-test messages are real-clock (not yet closed at a year-2000 `now`).
     expect(n).toBe(1)
-    expect(await closeObservations(now, { onlyJobIds: [jobC] })).toBe(0) // idempotent
+    expect(await closeObservations(now, { onlyJobIds: [jobC], startedAt: day(1) })).toBe(0) // idempotent
+  })
+
+  it('never judges a message from before signals started, nor one older than 14 days', async () => {
+    const now = day(28)
+    const startedAt = new Date(now.getTime() - 5 * HOUR)
+    const beforeStart = await jobMessage(jobD, new Date(now.getTime() - 6 * HOUR))
+    const afterStart = await jobMessage(jobD, new Date(now.getTime() - 3 * HOUR))
+    expect(await closeObservations(now, { onlyJobIds: [jobD], startedAt })).toBe(1)
+    expect(await signalsFor(beforeStart.messageId)).toHaveLength(0)
+    expect(await kindsFor(afterStart.messageId)).toEqual(['ignored'])
+
+    // Signals started long ago: the 14-day lookback is the bound.
+    const later = new Date(now.getTime() + 30 * 24 * HOUR)
+    const tooOld = await jobMessage(jobD, new Date(later.getTime() - CLOSE_LOOKBACK_MS - HOUR))
+    const recent = await jobMessage(jobD, new Date(later.getTime() - CLOSE_LOOKBACK_MS + HOUR))
+    expect(await closeObservations(later, { onlyJobIds: [jobD], startedAt: day(1) })).toBe(1)
+    expect(await signalsFor(tooOld.messageId)).toHaveLength(0)
+    expect(await kindsFor(recent.messageId)).toEqual(['ignored'])
+  })
+
+  it('the first call writes signals_started_at = now and later calls keep it (real key, restored)', async () => {
+    const [snapshot] = await db().select().from(settings).where(eq(settings.key, SIGNALS_STARTED_AT_KEY))
+    try {
+      await db().delete(settings).where(eq(settings.key, SIGNALS_STARTED_AT_KEY))
+      const first = new Date(Date.UTC(2001, 0, 1, 12))
+      const old = await jobMessage(jobE, new Date(first.getTime() - 3 * HOUR))
+      expect(await closeObservations(first, { onlyJobIds: [jobE] })).toBe(0)
+      expect(await signalsFor(old.messageId)).toHaveLength(0) // before signals started
+      const [row] = await db().select().from(settings).where(eq(settings.key, SIGNALS_STARTED_AT_KEY))
+      expect(row!.value).toBe(first.toISOString())
+
+      const second = new Date(first.getTime() + 10 * HOUR)
+      const fresh = await jobMessage(jobE, new Date(first.getTime() + HOUR))
+      expect(await closeObservations(second, { onlyJobIds: [jobE] })).toBe(1)
+      expect(await kindsFor(fresh.messageId)).toEqual(['ignored'])
+      expect(await signalsFor(old.messageId)).toHaveLength(0)
+      const [again] = await db().select().from(settings).where(eq(settings.key, SIGNALS_STARTED_AT_KEY))
+      expect(again!.value).toBe(first.toISOString()) // not moved by the second call
+    } finally {
+      await db().delete(settings).where(eq(settings.key, SIGNALS_STARTED_AT_KEY))
+      if (snapshot) await db().insert(settings).values(snapshot)
+    }
   })
 
   it('an empty onlyJobIds closes nothing', async () => {
