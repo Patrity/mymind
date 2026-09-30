@@ -1,0 +1,1 @@
+ALTER TABLE "agent_jobs" ADD COLUMN "fire_failures" integer DEFAULT 0 NOT NULL;

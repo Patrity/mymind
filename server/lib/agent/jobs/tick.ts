@@ -36,6 +36,9 @@ export const CRASHED_FIRE_AFTER_MS = 2 * 60_000
  *  first tick, and an old NULL run_id is more likely a row from before migration 0059, or one
  *  whose run was deleted with its thread (on delete set null) — neither is a crash to repair. */
 export const CRASHED_FIRE_LOOKBACK_HOURS = 24
+/** An `at` job whose wake fails (throws, or its process crashes) this many times in a row gives up:
+ *  disabled, with the "did not fire" note. Counted in agent_jobs.fire_failures. */
+export const MAX_FIRE_FAILURES = 5
 export const ONE_ACTIVE_RUN_PER_JOB_INDEX = 'agent_runs_one_active_per_job'
 
 type WakeFn = typeof wake
@@ -94,23 +97,41 @@ export async function fireJob(slug: string, jobId: string, spec: JobSpec, prompt
   }
   // The run exists from here on: bookkeeping failures are logged, never thrown (a throw would
   // make the caller undo a claim whose run is already queued, and fire the job twice).
-  await useDb().update(agentJobs).set({ lastRunId: runId, lastRunAt: sql`now()` }).where(eq(agentJobs.id, jobId))
+  await useDb().update(agentJobs).set({ lastRunId: runId, lastRunAt: sql`now()`, fireFailures: 0 }).where(eq(agentJobs.id, jobId))
     .catch(err => console.error(`[jobs] recording run ${runId} on "${slug}" failed:`, err))
   publishChange({ resource: 'agentJob', action: 'updated', id: jobId })
   return { runId }
 }
 
 /**
- * Undoes an `at` job's claim so the next tick fires it again: fired_at cleared, next_run_at back
- * to its instant (already past, so due at once). `enabled` is untouched — the tick disables an
- * `at` job only after its fire was dealt with. Unparseable content falls back to `fallback`.
+ * After an `at` job's wake failed (it threw, or a crash stranded the claim): counts the failure
+ * and, below MAX_FIRE_FAILURES, undoes the claim so the next tick fires it again — fired_at
+ * cleared, next_run_at back to its instant (already past, so due at once). At the cap the claim
+ * stays and `gaveUp` is set: the caller disables the job with the "did not fire" note. `enabled`
+ * is untouched here. Unparseable content falls back to `fallback`. One statement, so `onlyIf`
+ * (the sweep's re-check) and the count are atomic; null = `onlyIf` no longer matched.
  */
-async function rearmAtJob(jobId: string, spec: JobSpec | null, fallback: Date, onlyIf?: SQL): Promise<boolean> {
+async function retryAtJob(jobId: string, spec: JobSpec | null, fallback: Date, onlyIf?: SQL): Promise<{ failures: number; gaveUp: boolean } | null> {
   const instant = (spec && resolveAtInstant(spec.trigger.expr, spec.timezone)) ?? fallback
-  const done = await useDb().update(agentJobs).set({ firedAt: null, nextRunAt: instant })
-    .where(and(eq(agentJobs.id, jobId), onlyIf)).returning({ id: agentJobs.id })
-  if (done.length) publishChange({ resource: 'agentJob', action: 'updated', id: jobId })
-  return done.length > 0
+  const atCap = sql`${agentJobs.fireFailures} + 1 >= ${MAX_FIRE_FAILURES}`
+  const [r] = await useDb().update(agentJobs).set({
+    fireFailures: sql`${agentJobs.fireFailures} + 1`,
+    firedAt: sql`case when ${atCap} then ${agentJobs.firedAt} else null end`,
+    nextRunAt: sql`case when ${atCap} then ${agentJobs.nextRunAt} else ${instant.toISOString()}::timestamptz end`
+  }).where(and(eq(agentJobs.id, jobId), onlyIf)).returning({ failures: agentJobs.fireFailures })
+  if (!r) return null
+  publishChange({ resource: 'agentJob', action: 'updated', id: jobId })
+  return { failures: r.failures, gaveUp: r.failures >= MAX_FIRE_FAILURES }
+}
+
+const gaveUpReason = (failures: number, why: string) => `waking it failed ${failures} times in a row (${why})`
+
+/** An `at` job that gave up: disabled (system revision) with the one "did not fire" note. */
+async function giveUpAtJob(jobId: string, slug: string, reason: string, mainConversationId?: string): Promise<void> {
+  await setJobEnabled(slug, false, 'system')
+    .catch(err => console.error(`[jobs] disabling fired at-job "${slug}" failed:`, err))
+  await noteAtNotFired(jobId, slug, reason, mainConversationId)
+    .catch(err => console.error(`[jobs] posting the not-fired note for "${slug}" failed:`, err))
 }
 
 async function setOutcome(jobId: string, outcome: 'skipped' | 'failed'): Promise<void> {
@@ -199,7 +220,7 @@ export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?
 
   for (const job of claimed.jobs) {
     let notFired: string | null = null
-    let wakeFailed = false
+    let wakeError: string | null = null
     try {
       if (!job.spec) {
         console.warn(`[jobs] job "${job.slug}" no longer parses at fire time — skipped`)
@@ -216,21 +237,22 @@ export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?
       if (notFired) { await setOutcome(job.id, 'skipped'); skipped.push(job.slug) }
     } catch (err) {
       console.error(`[jobs] firing "${job.slug}" failed:`, err)
-      wakeFailed = true
+      wakeError = (err as Error).message
       await setOutcome(job.id, 'failed').catch(() => {})
       skipped.push(job.slug)
     }
-    if (job.kind === 'at' && wakeFailed) {
-      // Nothing ran: undo the claim so the next tick tries again (no note — it has not missed yet).
-      await rearmAtJob(job.id, job.spec, claimed.now)
-        .catch(err => console.error(`[jobs] re-arming "${job.slug}" after a failed wake failed:`, err))
-    } else if (job.kind === 'at') {
+    if (job.kind !== 'at') continue
+    if (wakeError !== null) {
+      // Nothing ran: undo the claim so the next tick tries again (no note — it has not missed
+      // yet), until MAX_FIRE_FAILURES in a row. A failed re-arm is left to the crash sweep.
+      const retry = await retryAtJob(job.id, job.spec, claimed.now)
+        .catch((err) => { console.error(`[jobs] re-arming "${job.slug}" after a failed wake failed:`, err); return null })
+      if (retry?.gaveUp) await giveUpAtJob(job.id, job.slug, gaveUpReason(retry.failures, wakeError), opts.mainConversationId)
+    } else if (notFired) {
+      await giveUpAtJob(job.id, job.slug, notFired, opts.mainConversationId)
+    } else {
       await setJobEnabled(job.slug, false, 'system')
         .catch(err => console.error(`[jobs] disabling fired at-job "${job.slug}" failed:`, err))
-      if (notFired) {
-        await noteAtNotFired(job.id, job.slug, notFired, opts.mainConversationId)
-          .catch(err => console.error(`[jobs] posting the not-fired note for "${job.slug}" failed:`, err))
-      }
     }
   }
 
@@ -263,7 +285,7 @@ export async function runJobNow(slug: string, deps: { wakeFn?: WakeFn; allowDisa
  *   cc.session_end cannot (its payload is gone) — the delete only frees the key for a redelivery.
  * Idempotent: a repaired row no longer matches. `onlySlugs`/`now` are the test seams.
  */
-export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date } = {}): Promise<{ rearmed: string[]; clearedFires: number }> {
+export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date; mainConversationId?: string } = {}): Promise<{ rearmed: string[]; gaveUp: string[]; clearedFires: number }> {
   const now = opts.now ? sql`${opts.now.toISOString()}::timestamptz` : sql`now()`
   const stale = sql`(${now} - make_interval(secs => ${CRASHED_FIRE_AFTER_MS / 1000}))`
   const crashedAt = await useDb().execute(sql`
@@ -272,13 +294,22 @@ export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date
       and not exists (select 1 from agent_runs r where r.job_id = j.id and r.created_at >= j.fired_at)
       ${slugScope(opts.onlySlugs)}`)
   const rearmed: string[] = []
+  const gaveUp: string[] = []
   for (const r of crashedAt.rows as { id: string; slug: string; content: string; timezone: string | null; fired_at: string | Date }[]) {
     const firedAt = new Date(r.fired_at)
-    // Re-checked in the UPDATE: a write since the select (Tony re-arming or disabling it, a tick
-    // firing it) wins, and the sweep leaves the row alone.
-    const stillCrashed = sql`${agentJobs.enabled} and ${agentJobs.firedAt} is not null
+    // Re-checked in the UPDATE: a write since the select (Tony re-arming or disabling it, another
+    // sweep re-arming it and a tick re-claiming it — a fresh fired_at) wins, and this sweep leaves
+    // the row alone. A crash counts as a failed wake toward MAX_FIRE_FAILURES.
+    const stillCrashed = sql`${agentJobs.enabled} and ${agentJobs.firedAt} is not null and ${agentJobs.firedAt} < ${stale}
       and not exists (select 1 from agent_runs r where r.job_id = ${agentJobs.id} and r.created_at >= ${agentJobs.firedAt})`
-    if (!await rearmAtJob(r.id, await specFor(r), firedAt, stillCrashed)) continue
+    const retry = await retryAtJob(r.id, await specFor(r), firedAt, stillCrashed)
+    if (!retry) continue
+    if (retry.gaveUp) {
+      console.warn(`[jobs] "${r.slug}" never woke after ${retry.failures} tries (crash?) — giving up`)
+      await giveUpAtJob(r.id, r.slug, gaveUpReason(retry.failures, 'the server stopped while waking it'), opts.mainConversationId)
+      gaveUp.push(r.slug)
+      continue
+    }
     console.warn(`[jobs] "${r.slug}" was claimed at ${firedAt.toISOString()} but never woke (crash?) — re-armed`)
     rearmed.push(r.slug)
   }
@@ -293,5 +324,5 @@ export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date
   for (const r of cleared.rows as { slug: string; event_key: string }[]) {
     console.warn(`[jobs] fire "${r.event_key}" of "${r.slug}" never woke (crash?) — cleared so it can fire again`)
   }
-  return { rearmed, clearedFires: cleared.rows.length }
+  return { rearmed, gaveUp, clearedFires: cleared.rows.length }
 }

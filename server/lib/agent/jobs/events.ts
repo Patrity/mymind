@@ -82,7 +82,7 @@ async function eventJobs(name: JobEventName, onlySlugs: string[] | undefined) {
 /**
  * Wakes a job for fire rows `keys` that just landed, and settles them: run_id recorded on success;
  * rows deleted when nothing ran (overlap, or the wake threw) so the keys can fire again. A throw
- * also marks the job failed. Returns whether a run was started.
+ * also marks the job failed and stamps last_run_at (the task.due retry spacing). Returns whether a run was started.
  */
 async function fireAndSettle(
   job: { id: string; slug: string }, keys: string[], wakeIt: () => Promise<FireResult>, what: string
@@ -93,7 +93,9 @@ async function fireAndSettle(
     res = await wakeIt()
   } catch (err) {
     console.error(`[jobs] ${what} could not wake "${job.slug}":`, err)
-    await useDb().update(agentJobs).set({ lastOutcome: 'failed' }).where(eq(agentJobs.id, job.id)).catch(() => {})
+    // last_run_at too: dueTaskEvents' MIN_INTERVAL_MS gap then spaces the retries of a wake that
+    // keeps throwing (5 min, not every tick).
+    await useDb().update(agentJobs).set({ lastOutcome: 'failed', lastRunAt: sql`now()` }).where(eq(agentJobs.id, job.id)).catch(() => {})
   }
   if (res && 'runId' in res) {
     await useDb().update(agentJobFires).set({ runId: res.runId }).where(rows)

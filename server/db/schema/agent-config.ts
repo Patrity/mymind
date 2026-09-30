@@ -37,6 +37,9 @@ export const agentJobs = pgTable('agent_jobs', {
   lastRunId: uuid('last_run_id'),
   lastOutcome: text('last_outcome'),      // 'spoke' | 'silent' | 'failed' | 'skipped'
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  // Failed wakes of an `at` job in a row (a wake that threw, or a crash the sweep repaired) —
+  // not run outcomes. Reset when a run is created; at MAX_FIRE_FAILURES the job gives up (tick.ts).
+  fireFailures: integer('fire_failures').notNull().default(0),
   firedAt: timestamp('fired_at', { withTimezone: true }), // set when an `at` job has fired (pruning)
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()

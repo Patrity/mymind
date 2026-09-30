@@ -92,7 +92,7 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 
 | Table | Columns |
 |---|---|
-| `agent_jobs` | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,63}$`), `content`, `content_hash` (sha256, the CAS token), `source` (`human`/`agent`). **Derived:** `enabled`, `trigger_kind`, `trigger_expr`, `timezone`, `next_run_at`, `parse_error`. **Runtime:** `last_run_at`, `last_run_id`, `last_outcome` (`spoke`/`silent`/`failed`/`skipped`), `consecutive_failures`, `fired_at` (`at` jobs). `created_at`, `updated_at`. Partial index `agent_jobs_due (next_run_at) where enabled and parse_error is null`. |
+| `agent_jobs` | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,63}$`), `content`, `content_hash` (sha256, the CAS token), `source` (`human`/`agent`). **Derived:** `enabled`, `trigger_kind`, `trigger_expr`, `timezone`, `next_run_at`, `parse_error`. **Runtime:** `last_run_at`, `last_run_id`, `last_outcome` (`spoke`/`silent`/`failed`/`skipped`), `consecutive_failures`, `fired_at` (`at` jobs), `fire_failures` (0060: failed `at` wakes in a row). `created_at`, `updated_at`. Partial index `agent_jobs_due (next_run_at) where enabled and parse_error is null`. |
 | `agent_config_revisions` | `target_kind` (`skill`/`job`), `target_id`, `content`, `actor` (`human`/`agent`/`system`), `run_id`, `created_at`. The last **100** per target are kept, pruned on write. No FK: a deleted job's revisions stay until deleted explicitly. |
 | `agent_job_fires` | PK `(job_id, event_key)`, `fired_at`, `run_id` (0059: nullable FK to `agent_runs`, `on delete set null`; NULL until the fire's run exists); FK cascade on job delete. It dedupes event fires and the one-per-job "reminder did not fire" note (key `at:not-fired`). |
 | `agent_runs.job_id` | Nullable FK, `on delete set null`. Partial unique index `agent_runs_one_active_per_job (job_id) where job_id is not null and status in ('queued','running')` (0059): one active run per job. |
@@ -175,7 +175,11 @@ only, followed by `dueTaskEvents()`):
      never pruned. Only the first fire (or one after Tony deletes the thread) creates it, so a
      silent heartbeat on `thread: isolated` does not leave an empty thread per fire.
 3. If the wake **throws**, an `at` job's claim is undone instead (`fired_at` null, `next_run_at`
-   back to its instant, still enabled, no note) and the next tick retries it.
+   back to its instant, still enabled, no note) and the next tick retries it. Each failed wake
+   (and each crash the sweep repairs) adds one to `fire_failures`. At **5** in a row
+   (`MAX_FIRE_FAILURES`) the job gives up: it is disabled with the did-not-fire note ("waking it
+   failed 5 times in a row (…)"). Creating a run resets the count to 0, and so does re-arming
+   the job.
    Otherwise an `at` job is then disabled with a **system** revision (`setJobEnabled(slug, false,
    'system')`). If it did not fire, one note goes to main: "Reminder X did not fire: … It is now
    turned off; re-arm it on /jobs/X".
@@ -228,8 +232,9 @@ from `last_run_at`) is also deferred the same way, so a job-fired run that creat
 cannot re-fire its own job on the next tick. The prompt is the body plus a blank
 line plus `eventBlock()`, a plain sentence with no brackets (the model imitates markers). Once the
 run exists its id is written to the fire rows' `run_id`. A wake that **throws** marks the job
-`failed` and deletes the fire rows it just inserted, so the key can fire again (`task.due` retries
-on the next tick; `cc.session_end` only on a redelivery). An overlap deletes them the same way.
+`failed`, stamps `last_run_at` and deletes the fire rows it just inserted, so the key can fire
+again (`task.due` retries once the 5-minute gap has passed; `cc.session_end` only on a
+redelivery). An overlap deletes them the same way.
 
 ## Overlap and crash recovery
 
@@ -243,7 +248,9 @@ path, never as an error (`runJobNow` → `{ skipped: 'overlap' }`).
 **Crash sweep.** `sweepCrashedFires()` runs first in every unscoped `workerTick` and repairs what
 a crash between a fire's commit and its wake left behind (older than **2 minutes**, and no run of
 the job created since):
-- an enabled `at` job with `fired_at` set → re-armed as above, and logged;
+- an enabled `at` job with `fired_at` set → re-armed as above and counted toward the 5-failure
+  cap (the UPDATE re-checks every condition, staleness included, so two sweeps cannot both
+  re-arm it), and logged;
 - an `event` job's fire row with `run_id` NULL (fired within the last 24 h) → deleted, and
   logged. `task.due` re-fires on the next tick. A lost `cc.session_end` cannot be re-fired (the
   payload is gone); the delete only frees its key for a redelivery.
@@ -439,8 +446,7 @@ order by f.fired_at desc limit 20;
   (`next_run_at = null`, "—" on the page). Follow-up: reject it at write time.
 - **Interrupted runs leave `last_outcome` stale.** `recoverOrphans` marks runs `interrupted`
   outside `execute`, so `onRunFinished` never sees them and the streak does not move.
-- **A `cc.session_end` lost to a crash** is not re-fired (see Overlap and crash recovery). An
-  `at` job that crashes its process on every wake is re-armed after every crash.
+- **A `cc.session_end` lost to a crash** is not re-fired (see Overlap and crash recovery).
 - **The cron density check** looks at a fixed 8-day window, so a day-of-month or month-restricted
   pattern that is dense only outside that window slips through.
 - **Revisions have no FK.** Deleting a job leaves its revisions (so `restoreJob` can bring them

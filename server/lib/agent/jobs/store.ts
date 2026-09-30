@@ -218,11 +218,14 @@ type WriteOutcome
  * - off → on clears the failure streak. Otherwise a job auto-disabled after 3 failures, then
  *   fixed and re-enabled, would be disabled again by its first failure.
  * - an `at` job re-armed with a future time clears fired_at, so the 30-day prune can't delete it.
+ *   It also resets fire_failures.
  */
 function rearm(existing: AgentJobRow, spec: JobSpec, nextRunAt: Date | null): Partial<AgentJobRow> {
   const out: Partial<AgentJobRow> = {}
   if (spec.enabled && !existing.enabled) out.consecutiveFailures = 0
-  if (spec.trigger.kind === 'at' && spec.enabled && nextRunAt) out.firedAt = null
+  // …and starts its failed-wake count afresh (a reminder that gave up and is re-armed gets
+  // MAX_FIRE_FAILURES tries again).
+  if (spec.trigger.kind === 'at' && spec.enabled && nextRunAt) { out.firedAt = null; out.fireFailures = 0 }
   return out
 }
 
