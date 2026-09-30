@@ -36,13 +36,12 @@ function questionSet(kind: Proposal['kind']): Record<string, Question> {
 }
 
 /**
- * Ask Jev about `p`. `evidence` is the text Jev reads the proposal against — the caller passes the
- * same pass input the gate's evidence check uses (the transcript; for the jobs pass, the signal
- * snippets plus the job content). Never throws.
+ * Ask Jev about `p`. Jev reads the proposal and its OWN evidence quotes (already checked verbatim
+ * against the transcript by the gate) — not the whole transcript, which is the wrong input for
+ * observable questions about one proposal. Never throws.
  */
 export async function jevCheck(
   p: Proposal,
-  evidence: string,
   deps: { ask?: typeof askJev; cfg?: JevConfig | null } = {}
 ): Promise<JevVerdict | 'unavailable'> {
   try {
@@ -50,7 +49,7 @@ export async function jevCheck(
     if (!cfg) return 'unavailable'
     const qs = questionSet(p.kind)
     const questions = Object.fromEntries(Object.entries(qs).map(([k, q]) => [k, { type: q.type, instructions: q.instructions }]))
-    const state = [p.kind, p.target, p.content ?? '', p.reason, evidence].filter(s => s.trim()).join('\n\n')
+    const state = [p.kind, p.target, p.content ?? '', p.reason, p.evidence.join('\n')].filter(s => s.trim()).join('\n\n')
     const res = await (deps.ask ?? askJev)(state, questions, cfg)
     const answers = nouls(res.answers)
     // A missing answer is not a safe answer: without every question read, Jev cannot vouch.

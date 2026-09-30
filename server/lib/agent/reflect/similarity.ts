@@ -9,6 +9,16 @@ export function normaliseText(s: string): string {
   return s.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * The change a proposal makes: the normalised, non-empty lines of `proposed` that are not lines of
+ * `current`, one per line. '' when nothing was added or changed (e.g. a pure deletion, or no content).
+ */
+export function contentDelta(proposed: string, current: string): string {
+  const lines = (s: string) => s.split('\n').map(normaliseText).filter(Boolean)
+  const have = new Set(lines(current))
+  return lines(proposed).filter(l => !have.has(l)).join('\n')
+}
+
 /** Word 3-shingles. A text of one or two words is a single shingle (itself), so short texts still
  *  compare; an empty text has none. */
 function shingles(s: string): Set<string> {

@@ -9,7 +9,7 @@
 import type { SelfImprovementMode } from '../self-improvement-mode'
 import type { Proposal } from './schema'
 import type { JevVerdict } from './jev'
-import { similarity } from './similarity'
+import { contentDelta, similarity } from './similarity'
 
 export type Route = 'auto' | 'review' | 'dropped'
 
@@ -26,8 +26,11 @@ export interface GateContext {
   /** Who last authored the target: skill source / job source; 'human' for the profile; 'missing'
    *  when the target does not exist (fine for skill.create, a drop for any edit). */
   targetAuthor: 'human' | 'agent' | 'missing'
-  /** Rejections of the last 30 days. */
-  recentRejections: { kind: string; target: string; content: string }[]
+  /** The target's content at pass time ('' for a create, or a job.disable with nothing to compare). */
+  currentContent: string
+  /** Rejections of the last 30 days. `delta` is `contentDelta(rejected content, content at that
+   *  pass)`, stored at rejection — the CHANGE Tony said no to, not the whole document. */
+  recentRejections: { kind: string; target: string; delta: string }[]
   /** null = valid, else a reason (existing parsers/validators, skill size, profile budget). */
   validate: (p: Proposal) => string | null
   /** Proposals auto-applied so far today (agent timezone). */
@@ -43,7 +46,12 @@ export interface GateResult { route: Route; reasons: string[] }
 export const AUTO_PER_DAY = 5
 export const SIMILARITY_REJECT = 0.8
 export const SKILL_MAX_BYTES = 4096
-export const SENSITIVE = /\b(exec|shell|command line|terminal|sudo|rm -rf|password|secret|token|api key|credential|delete|drop table)\b/i
+/** Anything touching commands, credentials or deletion. Stems and plurals on purpose: a false
+ *  positive only routes a skill to review, a miss auto-applies it. */
+export const SENSITIVE = /\b(exec\w*|shells?|commands?|command[\s-]line|terminals?|sudo|rm\s+-(?:rf|fr)|passwords?|secrets?|tokens?|api[\s_-]?keys?|credentials?|delet\w*|drop\s+table)\b/i
+/** An evidence quote shorter than this (whitespace-normalised) is a substring of nearly any
+ *  transcript, so it proves nothing. */
+export const EVIDENCE_MIN_CHARS = 12
 
 /** Whitespace collapsed only — case and punctuation stay exact. No fuzzy matching. */
 const normaliseWs = (s: string) => s.replace(/\s+/g, ' ').trim()
@@ -57,13 +65,16 @@ export function gate(p: Proposal, ctx: GateContext): GateResult {
   // 1. Mode.
   if (ctx.mode === 'off') return drop('mode_off')
 
-  // 2. Evidence: verbatim (whitespace-normalised) substrings of the transcript.
+  // 2. Evidence: verbatim (whitespace-normalised) substrings of the transcript, long enough to mean something.
+  if (p.evidence.some(q => normaliseWs(q).length < EVIDENCE_MIN_CHARS)) return drop('evidence_too_short')
   const input = normaliseWs(ctx.input)
   if (!p.evidence.every(q => input.includes(normaliseWs(q)))) return drop('evidence')
 
-  // 3. Rejection memory.
+  // 3. Rejection memory, on the change rather than the document: otherwise one rejected edit to a
+  //    long profile/skill would silence every later edit to it for 30 days. Empty deltas never match.
   const content = p.content ?? ''
-  if (ctx.recentRejections.some(r => r.kind === p.kind && r.target === p.target && similarity(content, r.content) >= SIMILARITY_REJECT)) {
+  const delta = contentDelta(content, ctx.currentContent)
+  if (delta && ctx.recentRejections.some(r => r.kind === p.kind && r.target === p.target && r.delta && similarity(delta, r.delta) >= SIMILARITY_REJECT)) {
     return drop('rejected_recently')
   }
 
@@ -75,8 +86,9 @@ export function gate(p: Proposal, ctx: GateContext): GateResult {
   // 5. Tier.
   let route: Route = 'review'
   const reasons: string[] = []
-  if (p.kind === 'skill.create') route = 'auto'
-  else if ((p.kind === 'skill.edit' || p.kind === 'job.edit') && ctx.targetAuthor === 'agent') route = 'auto'
+  //    A skill.create whose slug already exists is tiered as an edit of that skill.
+  if (p.kind === 'skill.create' && ctx.targetAuthor === 'missing') route = 'auto'
+  else if ((p.kind === 'skill.create' || p.kind === 'skill.edit' || p.kind === 'job.edit') && ctx.targetAuthor === 'agent') route = 'auto'
   else reasons.push('tier')
 
   // 6–9 only ever demote. Sensitivity and Jev are facts about the proposal, noted even on an item
