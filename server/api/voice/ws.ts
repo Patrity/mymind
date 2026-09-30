@@ -22,6 +22,7 @@ import type { AttachmentRef } from '../../lib/agent/attachments'
 import { addApproval, approvalOutcome } from '../../lib/exec/approvals'
 import { recordEvent } from '../../lib/observability/record'
 import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
+import { capArgs, ARGS_WRITE_CAP } from '../../lib/agent/tool-history'
 
 // Client→server: binary frame = one WAV utterance (transcribed HERE, then run as an ordinary
 //   voice turn) | text JSON {type:'interrupt'} (Stop: abort the viewed thread's running
@@ -157,7 +158,9 @@ export default defineWebSocketHandler({
         }, Number(process.env.APPROVAL_TIMEOUT_MS ?? 120_000))
         s.pendingApprovals.set(requestId, { resolve, timer, req, runId, conversationId })
         peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern, allowlistable: req.allowlistable === true }))
-        if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool, args: req.args })
+        // Capped like the tool-start frame's args (orchestrator.ts): the card must not ship a
+        // whole document to the browser.
+        if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool, args: req.args && capArgs(req.args, ARGS_WRITE_CAP) })
       })
     }
     // Deny the pending approvals of one thread's runs and tell the client each request is

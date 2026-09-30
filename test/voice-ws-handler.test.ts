@@ -154,6 +154,22 @@ describe('ws runtime socket', () => {
     await h.message(p, frame({ type: 'deny', requestId }))
   })
 
+  it('the approval request\'s args are capped like tool-start args (a huge argument never ships whole)', async () => {
+    const p = peer(); h.open(p)
+    const emit = vi.fn()
+    m.turnStreamFor.mockReturnValue({ emit })
+    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
+    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
+    await h.message(p, frame({ type: 'text', text: 'a' }))
+    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
+    void ch({ tool: 'exec', command: 'cat', proposedPattern: 'cat *', allowlistable: true, callId: 'call-big', args: { command: 'x'.repeat(20_000) } })
+    const requestId = types(p).filter(f => f.type === 'approval').at(-1)!.requestId
+    const sent = emit.mock.calls.at(-1)![0] as { args: Record<string, unknown> }
+    expect(sent.args).toMatchObject({ truncated: true })
+    expect(JSON.stringify(sent.args).length).toBeLessThan(5000)
+    await h.message(p, frame({ type: 'deny', requestId }))
+  })
+
   it('"always allow" is saved only for an allowlistable tool — a crafted remember for decide_review is refused', async () => {
     const p = peer(); h.open(p)
     m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result(`run-${req.sessionKey}`, req.sessionKey.slice(7)))
