@@ -162,6 +162,13 @@ describe('migration 0059', () => {
   })
 })
 
+describe('migration 0062', () => {
+  it('indexes agent_runs on (job_id, created_at) for the sweep\'s "any run since" checks', async () => {
+    const idx = await db().execute(sql`select indexdef from pg_indexes where indexname = 'agent_runs_job_created_idx'`)
+    expect(idx.rows).toEqual([{ indexdef: 'CREATE INDEX agent_runs_job_created_idx ON public.agent_runs USING btree (job_id, created_at)' }])
+  })
+})
+
 describe('overlap is enforced by the database on every fire path', () => {
   it('two concurrent runJobNow calls on one job produce exactly one run', async () => {
     const slug = `${PREFIX}runnow-race`

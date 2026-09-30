@@ -435,6 +435,13 @@
       "when": 1790743979101,
       "tag": "0061_tidy_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1790746335268,
+      "tag": "0062_early_blur",
+      "breakpoints": true
     }
   ]
 }

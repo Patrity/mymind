@@ -1,0 +1,1 @@
+CREATE INDEX "agent_runs_job_created_idx" ON "agent_runs" USING btree ("job_id","created_at");
