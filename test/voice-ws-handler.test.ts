@@ -19,13 +19,14 @@ const m = vi.hoisted(() => ({
   transcribe: vi.fn(async () => 'spoken words'),
   clear: vi.fn(async () => {}),
   addApproval: vi.fn(async () => ({})),
+  turnStreamFor: vi.fn((): unknown => undefined),
   order: [] as string[]
 }))
 vi.mock('../server/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue, abortActive: m.abortActive, abortActiveAndWait: m.abortActiveAndWait }))
 vi.mock('../server/lib/agent/runtime/aborts', () => ({ abortRun: m.abortRun }))
 vi.mock('../server/lib/agent/runtime/approvals', () => ({
   registerApprovalChannel: m.registerApprovalChannel, unregisterApprovalChannel: m.unregisterApprovalChannel,
-  hasApprovalChannel: m.hasApprovalChannel, turnStreamFor: () => undefined
+  hasApprovalChannel: m.hasApprovalChannel, turnStreamFor: m.turnStreamFor
 }))
 vi.mock('../server/lib/ai/registry/resolve', () => ({ withFailover: (_u: string, fn: (x: unknown) => unknown) => fn({}) }))
 vi.mock('../server/lib/voice/providers', () => ({ sttFromModel: () => ({ transcribe: m.transcribe }) }))
@@ -58,6 +59,7 @@ const types = (p: { sent: string[] }) => p.sent.map(s => JSON.parse(s) as { type
 beforeEach(() => {
   vi.clearAllMocks()
   m.hasApprovalChannel.mockReturnValue(true)
+  m.turnStreamFor.mockReturnValue(undefined)
 })
 
 describe('ws runtime socket', () => {
@@ -135,6 +137,21 @@ describe('ws runtime socket', () => {
     expect(sub.mock.calls[0]![0]).toBe('c1')
     expect(sub.mock.calls[0]![2]).toEqual({ replay: true })
     sub.mockRestore()
+  })
+
+  it('the approval request reaches the run\'s turn stream with the call\'s args (the card renders even if it beats tool-start)', async () => {
+    const p = peer(); h.open(p)
+    const emit = vi.fn()
+    m.turnStreamFor.mockReturnValue({ emit })
+    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
+    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
+    await h.message(p, frame({ type: 'text', text: 'a' }))
+    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
+    void ch({ tool: 'decide_review', command: 'approve — x', proposedPattern: '', allowlistable: false, callId: 'call-1', args: { id: 'rq-1', choice: 'approve' } })
+    const requestId = types(p).filter(f => f.type === 'approval').at(-1)!.requestId
+    expect(m.turnStreamFor).toHaveBeenCalledWith('run-1')
+    expect(emit).toHaveBeenCalledWith({ type: 'approval-request', approvalId: requestId, callId: 'call-1', name: 'decide_review', args: { id: 'rq-1', choice: 'approve' } })
+    await h.message(p, frame({ type: 'deny', requestId }))
   })
 
   it('"always allow" is saved only for an allowlistable tool — a crafted remember for decide_review is refused', async () => {

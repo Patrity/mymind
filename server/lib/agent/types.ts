@@ -14,6 +14,9 @@ export interface ApprovalRequest {
   command: string     // the exact thing that will run / change
   proposedPattern: string // an "always allow" suggestion (editable in the UI)
   callId?: string // the SDK toolCallId — lets the UI render the approval on that tool part
+  /** The call's recorded (masked) args, so the approval card renders them even when the
+   *  approval request reaches the UI stream before the call's tool-start. */
+  args?: Record<string, unknown>
   /** Set by buildAiTools from the TOOL (never from describeApproval): only then may a persisted
    *  allowlist pattern auto-approve it, or an "always allow" be saved for it. */
   allowlistable?: boolean

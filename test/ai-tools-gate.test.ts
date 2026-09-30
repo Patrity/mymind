@@ -21,8 +21,14 @@ describe('buildAiTools dangerous-tool gate', () => {
     const requestApproval = vi.fn().mockResolvedValue({ approved: true })
     const set = buildAiTools([dangerTool()], { signal: new AbortController().signal, onEvent: () => {}, requestApproval })
     const res = await exec(set, { command: 'echo hi' })
-    expect(requestApproval).toHaveBeenCalledWith({ tool: 'exec', command: 'echo hi', proposedPattern: 'echo *', allowlistable: false, callId: '' })
+    expect(requestApproval).toHaveBeenCalledWith({ tool: 'exec', command: 'echo hi', proposedPattern: 'echo *', allowlistable: false, callId: '', args: { command: 'echo hi' } })
     expect(res).toEqual({ ran: 'echo hi' })
+  })
+  it('the request carries the MASKED args (the ones tool-start records), never the raw input', async () => {
+    const requestApproval = vi.fn().mockResolvedValue({ approved: false })
+    const t = dangerTool(); t.redactForLog = async () => ({ command: 'echo ***' })
+    await exec(buildAiTools([t], { signal: new AbortController().signal, onEvent: () => {}, requestApproval }), { command: 'echo secret' })
+    expect(requestApproval.mock.calls[0]![0]).toMatchObject({ args: { command: 'echo ***' } })
   })
   it('the request carries allowlistable from the TOOL, never from describeApproval', async () => {
     const requestApproval = vi.fn().mockResolvedValue({ approved: false })

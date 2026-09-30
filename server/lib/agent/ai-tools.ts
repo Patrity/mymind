@@ -57,7 +57,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           const auto = t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
             const decision = ctx.requestApproval
-              ? await ctx.requestApproval({ ...approvalRequestFor(t, input), callId })
+              ? await ctx.requestApproval({ ...approvalRequestFor(t, input), callId, args: safeArgs })
               : { approved: false } // fail-safe: no channel → auto-deny
             if (decision.approved !== true) {
               const summary = `denied: ${t.name}`

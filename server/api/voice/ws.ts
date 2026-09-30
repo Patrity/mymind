@@ -157,7 +157,7 @@ export default defineWebSocketHandler({
         }, Number(process.env.APPROVAL_TIMEOUT_MS ?? 120_000))
         s.pendingApprovals.set(requestId, { resolve, timer, req, runId, conversationId })
         peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern, allowlistable: req.allowlistable === true }))
-        if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool })
+        if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool, args: req.args })
       })
     }
     // Deny the pending approvals of one thread's runs and tell the client each request is

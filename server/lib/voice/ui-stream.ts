@@ -47,11 +47,17 @@ export function createUIChunkEncoder(messageId: string): UIChunkEncoder {
           return e.role === 'assistant' && e.text ? delta('text', e.text) : []
         case 'reasoning':
           return e.text ? delta('reasoning', e.text) : []
+        // A call's state never regresses. The approval request is emitted synchronously from
+        // inside the tool call (ws.ts requestApproval) while tool-start travels through the
+        // orchestrator's async loop, so for a tool that awaits nothing before asking, the
+        // approval arrives FIRST. A second tool-input-available would reset that part from
+        // approval-requested to input-available and hide the card — so a call already opened
+        // is left alone (the approval request carried its args).
         case 'tool-start':
-          return [...close(), ...input(e.callId, e.name, e.args)]
+          return started.has(e.callId) ? [] : [...close(), ...input(e.callId, e.name, e.args)]
         case 'approval-request': {
           const out = close()
-          if (!started.has(e.callId)) out.push(...input(e.callId, e.name, {}))
+          if (!started.has(e.callId)) out.push(...input(e.callId, e.name, e.args ?? {}))
           out.push({ type: 'tool-approval-request', approvalId: e.approvalId, toolCallId: e.callId })
           return out
         }

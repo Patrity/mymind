@@ -173,6 +173,32 @@ describe('createUIChunkEncoder', () => {
     expect(no.message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ state: 'output-denied' })
   })
 
+  // Task 11a: the approval request is emitted synchronously from inside the tool call, while
+  // tool-start travels through the orchestrator's async loop — for a tool that awaits nothing
+  // before asking (decide_review), the approval arrives FIRST. Both orders must end in the same
+  // awaiting-approval part carrying the args, and a later tool-start must not reset it to running.
+  describe('approval vs tool-start ordering', () => {
+    const args = { id: 'rq-1', choice: 'approve' }
+    const start: VoiceEvent = { type: 'tool-start', callId: 'c1', name: 'decide_review', args }
+    const ask: VoiceEvent = { type: 'approval-request', approvalId: 'r1', callId: 'c1', name: 'decide_review', args }
+    const orders: Array<[string, VoiceEvent[]]> = [['tool-start → approval', [start, ask]], ['approval → tool-start', [ask, start]]]
+
+    for (const [label, events] of orders) {
+      it(`${label}: ends awaiting approval with the args`, async () => {
+        const { message, errors } = await assemble(encodeTurn(events).slice(0, -2)) // no finish: still pending
+        expect(errors).toEqual([])
+        expect(visible(message)).toEqual([{ type: 'dynamic-tool', toolName: 'decide_review', toolCallId: 'c1', state: 'approval-requested', input: args, approval: { id: 'r1' } }])
+      })
+
+      it(`${label}: an approved result finalises to output-available; a denied one to output-denied`, async () => {
+        const ok = await assemble(encodeTurn([...events, { type: 'tool', callId: 'c1', name: 'decide_review', summary: 'approved', args, result: { ok: true } }]))
+        expect(ok.message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ state: 'output-available', input: args, approval: { id: 'r1' }, output: { value: { ok: true } } })
+        const no = await assemble(encodeTurn([...events, { type: 'tool', callId: 'c1', name: 'decide_review', summary: 'denied: decide_review', args, result: { denied: true } }]))
+        expect(no.message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ state: 'output-denied', input: args, approval: { id: 'r1' } })
+      })
+    }
+  })
+
   it('an approval request for a call never opened opens it first', async () => {
     const { message } = await assemble(encodeTurn([{ type: 'approval-request', approvalId: 'r9', callId: 'c9', name: 'exec' }]).slice(0, -2))
     expect(message.parts.find(p => p.type === 'dynamic-tool')).toMatchObject({ toolCallId: 'c9', toolName: 'exec', state: 'approval-requested' })
