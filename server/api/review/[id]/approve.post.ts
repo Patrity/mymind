@@ -1,21 +1,23 @@
-import { eq } from 'drizzle-orm'
-import { useDb } from '../../../db'
-import { reviewQueue } from '../../../db/schema'
-import { approveHandlers } from '../kinds'
+import { decideReview } from '../../../services/review-decisions'
+import { SELF_IMPROVEMENT_CONFLICT } from '../kinds'
 
+// A thin wrapper over decideReview (server/services/review-decisions.ts), the path Bridget's
+// decide_review tool shares. `route: true` keeps this endpoint's historical contract: review_queue
+// ids only, and `approve` accepted for every kind with a handler.
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
-  const db = useDb()
-  const [item] = await db.select().from(reviewQueue).where(eq(reviewQueue.id, id)).limit(1)
-  if (!item || item.status !== 'pending') throw createError({ statusCode: 404 })
-
-  const handler = approveHandlers[item.kind]
-  if (!handler) throw createError({ statusCode: 400, statusMessage: `Unknown review kind: ${item.kind}` })
-
-  const result = await handler(item)
+  const r = await decideReview(id, 'approve', { route: true })
+  if (!r.ok) {
+    switch (r.reason) {
+      case 'unknown_kind': throw createError({ statusCode: 400, statusMessage: `Unknown review kind: ${r.kind}` })
+      case 'conflict': throw createError({ statusCode: 409, message: SELF_IMPROVEMENT_CONFLICT, data: { current: r.current, summary: SELF_IMPROVEMENT_CONFLICT } })
+      case 'apply_failed': throw createError({ statusCode: 422, message: r.message, data: { summary: r.message } })
+      default: throw createError({ statusCode: 404 })
+    }
+  }
 
   // Only approveTriage (kind: 'triage') returns `applied`; only approveAgentAction (kind:
-  // 'agent-action') returns `undoToken`/`summary`. Other kinds have nothing to report — those
-  // fields stay undefined for them.
-  return { ok: true, applied: result?.applied, undoToken: result?.undoToken, summary: result?.summary }
+  // 'agent-action') and approveSelfImprovement return `undoToken`/`summary`. Other kinds have
+  // nothing to report — those fields stay undefined for them.
+  return { ok: true, applied: r.result?.applied, undoToken: r.result?.undoToken, summary: r.result?.summary }
 })

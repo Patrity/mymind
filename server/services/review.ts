@@ -72,7 +72,7 @@ export type ReviewFeedItem = ReviewQueueFeedItem | MemoryUnreviewedFeedItem
  * sibling conflict decision sits unresolved in the same feed. Both listReviewFeed and
  * countReviewPending call this one function, so the exclusion covers both.
  */
-const unreviewedLive = () => and(
+export const unreviewedLive = () => and(
   isNull(memories.archivedAt),
   isNull(memories.reviewedAt),
   sql`not exists (

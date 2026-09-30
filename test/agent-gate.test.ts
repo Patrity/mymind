@@ -50,6 +50,7 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   search_messages: 'run', search_sessions: 'run', read_around_message: 'run', read_session: 'run',
   use_skill: 'run', research_web: 'run', search_brain: 'run',
   list_jobs: 'run', get_job: 'run',
+  list_reviews: 'run',
   // create-kind, but pure append (nothing existing is touched) — safe to run headless
   save_memory: 'run', create_task: 'run', create_project: 'run', quick_capture: 'run',
   generate_image: 'run', save_document: 'run',
@@ -66,7 +67,10 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   forget_memory: 'propose', delete_document: 'propose', edit_project: 'propose',
   edit_task: 'propose', delete_task: 'propose', delete_skill: 'propose',
   // dangerous — excluded outright, never even offered as a proposal
-  exec: 'exclude'
+  exec: 'exclude',
+  // decide_review (cycle 76): dangerous — refused outright in a headless run, never proposed
+  // (approving a proposal via a proposal is circular)
+  decide_review: 'exclude'
 }
 
 describe('headless gate — exhaustive table', () => {

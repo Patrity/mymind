@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
 import { useTimeAgo } from '@vueuse/core'
+import { reviewChoices, CONFLICT_TOAST, MEMORY_CONFLICT_KINDS, type ConflictChoiceId } from '~~/shared/review/choices'
 
 definePageMeta({ title: 'Review' })
 
@@ -92,12 +93,22 @@ interface AgentActionProposed {
   conversationId?: string | null
 }
 
+// kind: 'self-improvement' (cycle 76) — rendered by app/components/review/SelfImprovementCard.vue.
+interface SelfImprovementProposed {
+  improvementId: string
+  proposal: { kind: string, target: string, content?: string, reason: string, confidence: number, evidence: string[] }
+  reasons?: string[]
+  jev?: { answers: Record<string, number> } | 'unavailable' | null
+  currentContent?: string
+  conversationId?: string | null
+}
+
 interface ReviewItem {
   id: string
   // null for a synthetic memory-unreviewed item — it has no backing document.
   docId: string | null
   kind: string
-  proposed: DocProposed | MemoryConflictProposed | TriageProposed | MemoryUnreviewedProposed | AgentActionProposed
+  proposed: DocProposed | MemoryConflictProposed | TriageProposed | MemoryUnreviewedProposed | AgentActionProposed | SelfImprovementProposed
   createdAt: string
   docPath: string | null
 }
@@ -117,8 +128,6 @@ interface TriageRecentDTO {
   createdAt: string
   docPath: string | null
 }
-
-const MEMORY_CONFLICT_KINDS = new Set(['memory-supersede', 'memory-contradict'])
 
 function isMemoryConflict(item: ReviewItem): item is ReviewItem & { proposed: MemoryConflictProposed } {
   return MEMORY_CONFLICT_KINDS.has(item.kind)
@@ -285,7 +294,7 @@ async function approve(item: ReviewItem) {
       ? `Applied ${pluralize(res.applied?.length ?? 0, 'action')}.`
       : isAgentAction(item)
         ? (res.summary ?? 'Bridget could not apply that action — see the thread.')
-        : 'Document updated.'
+        : (res.summary ?? 'Document updated.')
     toast.add({
       color: 'success',
       title: 'Proposal approved',
@@ -301,8 +310,11 @@ async function approve(item: ReviewItem) {
     })
     await refetch()
   } catch (e: unknown) {
-    const err = e as { data?: { statusMessage?: string }, message?: string }
-    toast.add({ color: 'error', title: 'Approve failed', description: err.data?.statusMessage ?? err.message })
+    // A self-improvement conflict (409) or apply failure (422) carries its reason in data.summary;
+    // on a conflict the item was refreshed server-side, so reload it to show the new diff.
+    const err = e as { statusCode?: number, data?: { statusMessage?: string, data?: { summary?: string } }, message?: string }
+    toast.add({ color: 'error', title: 'Approve failed', description: err.data?.data?.summary ?? err.data?.statusMessage ?? err.message })
+    if (err.statusCode === 409) await refetch()
   } finally {
     actioning.value[item.id] = false
   }
@@ -324,19 +336,10 @@ async function reject(item: ReviewItem) {
 
 // ── Memory conflict helpers ────────────────────────────────────────────────
 
-// The four ways a conflict can end. Two buttons ("keep both" / "accept") assumed the NEW
-// memory is always the better one — but enrichment can produce a worse restatement of a fact
-// you already had, and both sides can be stale. Those cases had no button at all.
-type ConflictResolution = 'keep-both' | 'archive-old' | 'archive-new' | 'archive-both'
-
-const CONFLICT_TOAST: Record<ConflictResolution, { title: string, description: string, color: 'success' | 'neutral' | 'warning' }> = {
-  'keep-both': { title: 'Both memories kept', description: 'Nothing archived — the conflict is marked resolved.', color: 'neutral' },
-  'archive-old': { title: 'Old memory archived', description: 'The new memory supersedes it.', color: 'success' },
-  'archive-new': { title: 'New memory archived', description: 'The existing memory stands.', color: 'warning' },
-  'archive-both': { title: 'Both memories archived', description: 'Neither is kept.', color: 'warning' }
-}
-
-async function resolveConflict(id: string, resolution: ConflictResolution) {
+// The four ways a conflict can end — labels, descriptions and toasts come from the shared
+// review-choices registry (shared/review/choices.ts), the same one Bridget's list_reviews /
+// decide_review tools use, so the page and the tools can't disagree.
+async function resolveConflict(id: string, resolution: ConflictChoiceId) {
   actioning.value[id] = true
   try {
     await $fetch(`/api/review/${id}/resolve`, { method: 'POST', body: { resolution } })
@@ -350,32 +353,21 @@ async function resolveConflict(id: string, resolution: ConflictResolution) {
   }
 }
 
-/** Menu for one conflict card. `kind` only changes the wording of the supersede case. */
+const CONFLICT_ICON: Record<ConflictChoiceId, string> = {
+  'keep-both': 'i-lucide-copy',
+  'archive-old': 'i-lucide-archive',
+  'archive-new': 'i-lucide-archive-x',
+  'archive-both': 'i-lucide-trash-2'
+}
+
+/** Menu for one conflict card, from reviewChoices (the supersede case says "(accept)"). */
 function conflictActions(item: ReviewItem) {
-  const isSupersede = item.kind === 'memory-supersede'
-  return [[
-    {
-      label: 'Keep both',
-      icon: 'i-lucide-copy',
-      onSelect: () => resolveConflict(item.id, 'keep-both')
-    },
-    {
-      label: isSupersede ? 'Archive old (accept)' : 'Archive old',
-      icon: 'i-lucide-archive',
-      onSelect: () => resolveConflict(item.id, 'archive-old')
-    },
-    {
-      label: 'Archive new',
-      icon: 'i-lucide-archive-x',
-      onSelect: () => resolveConflict(item.id, 'archive-new')
-    },
-    {
-      label: 'Archive both',
-      icon: 'i-lucide-trash-2',
-      color: 'error' as const,
-      onSelect: () => resolveConflict(item.id, 'archive-both')
-    }
-  ]]
+  return [reviewChoices(item).map(c => ({
+    label: c.label,
+    icon: CONFLICT_ICON[c.id as ConflictChoiceId],
+    color: c.tone === 'error' ? 'error' as const : undefined,
+    onSelect: () => resolveConflict(item.id, c.id as ConflictChoiceId)
+  }))]
 }
 
 // ── memory-unreviewed helpers ─────────────────────────────────────────────
@@ -815,6 +807,16 @@ async function undoDiscard(undoToken: string) {
           <ReviewAgentActionCard
             v-else-if="isAgentAction(item)"
             :item="(item as ReviewItem & { proposed: AgentActionProposed })"
+            :loading="actioning[item.id]"
+            @approve="() => approve(item)"
+            @reject="() => reject(item)"
+          />
+
+          <!-- Self-improvement card (cycle 76): Bridget proposes a change to a skill, job or the
+               "About Tony" profile; approve applies it through the target's store. -->
+          <ReviewSelfImprovementCard
+            v-else-if="item.kind === 'self-improvement'"
+            :item="(item as ReviewItem & { proposed: SelfImprovementProposed })"
             :loading="actioning[item.id]"
             @approve="() => approve(item)"
             @reject="() => reject(item)"

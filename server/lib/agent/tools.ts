@@ -17,6 +17,7 @@ import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSk
 import { skillsEnabled } from './skills-config'
 import { jobTools } from './tools/jobs'
 import { channelTools } from './tools/channels'
+import { listReviewsTool } from './tools/reviews'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
 import { searchMessagesForAgent, searchSessionsForAgent } from '../../services/session-search'
 import { clampPaging, buildPage } from './paging'
@@ -1212,7 +1213,9 @@ export const agentTools: AgentTool[] = [
   // ---- jobs (cycle 74, Task 8) ----
   ...jobTools,
   // ---- channels (cycle 75, Task 10) ----
-  ...channelTools
+  ...channelTools,
+  // ---- review (cycle 76, Task 9): list only — decide_review is profile-only (profile.ts) ----
+  listReviewsTool
 ]
 
 const byName = new Map(agentTools.map(t => [t.name, t]))
