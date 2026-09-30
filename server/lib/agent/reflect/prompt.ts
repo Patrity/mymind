@@ -3,6 +3,10 @@
 // Prompts for the two reflector passes. The reflector has no tools: everything it sees is in
 // these messages, and everything it can do is emit proposals, which plain code then gates.
 import type { ChatMessage } from '../../ai/chat'
+import { PROFILE_TOKEN_BUDGET } from '../profile-budget'
+
+/** Spec: skill ≤ 4 KB. Stated to the model so it doesn't spend a proposal the gate will drop. */
+export const REFLECT_SKILL_MAX_BYTES = 4096
 
 const SHARED_RULES = [
   'Every proposal must include 1–5 exact quotes copied verbatim from the transcript as evidence.',
@@ -23,6 +27,7 @@ export const THREAD_SYSTEM_PROMPT = [
   '- "skill.create": target is the new skill\'s name (lowercase-hyphenated); content is the full skill file (YAML frontmatter with name, description, when_to_use, then the markdown body).',
   '- "skill.edit": target is an existing skill\'s name; content is the full new skill file.',
   '- "profile.edit": target is "profile"; content is the FULL new profile, not a diff.',
+  `Size limits: a skill file must be at most 4 KB (${REFLECT_SKILL_MAX_BYTES} bytes); the profile must be at most ${PROFILE_TOKEN_BUDGET.toLocaleString('en-US')} tokens (about ${(PROFILE_TOKEN_BUDGET * 4).toLocaleString('en-US')} characters). Anything larger is discarded.`,
   'Do not re-propose anything listed under recently rejected.'
 ].join('\n')
 

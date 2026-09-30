@@ -44,6 +44,34 @@ describe('parseReflectorOutput', () => {
     expect(parseReflectorOutput('I think everything went fine.', THREAD).ok).toBe(false)
   })
 
+  it('returns ok:false, without throwing, for a closed but invalid JSON block', () => {
+    let r: ReturnType<typeof parseReflectorOutput> | undefined
+    expect(() => { r = parseReflectorOutput('{"proposals": [oops]}', THREAD) }).not.toThrow()
+    expect(r).toEqual({ ok: false, error: expect.stringContaining('not valid JSON') })
+  })
+
+  it('leaves code fences inside JSON strings intact, fenced or not', () => {
+    const p = item({
+      content: '---\nname: deploy-check\n---\nRun:\n```bash\nls -la\n```\ndone',
+      evidence: ['use ```ls``` first', 'then `pwd`']
+    })
+    expect(parseReflectorOutput(json([p]), THREAD)).toEqual({ ok: true, proposals: [p] })
+    expect(parseReflectorOutput('```json\n' + json([p]) + '\n```', THREAD)).toEqual({ ok: true, proposals: [p] })
+    expect(parseReflectorOutput('Here you go:\n```json\n' + json([p]) + '\n```', THREAD)).toEqual({ ok: true, proposals: [p] })
+  })
+
+  it('skips brackets in prose that are not the reply', () => {
+    const r = parseReflectorOutput('Per the [user] request (see [1]):\n' + json([item()]), THREAD)
+    expect(r).toEqual({ ok: true, proposals: [item()] })
+  })
+
+  it('repairs trailing commas only outside strings', () => {
+    const raw = '{"proposals": [{"kind": "skill.create", "target": "x", "reason": "keep ,] and ,} here", "confidence": 0.5, "evidence": ["quote with , ] inside",],},]}'
+    const r = parseReflectorOutput(raw, THREAD)
+    expect(r.ok && r.proposals[0]!.reason).toBe('keep ,] and ,} here')
+    expect(r.ok && r.proposals[0]!.evidence).toEqual(['quote with , ] inside'])
+  })
+
   it('treats an empty proposals list, an empty reply and "none" as no proposals', () => {
     expect(parseReflectorOutput('{ "proposals": [] }', THREAD)).toEqual({ ok: true, proposals: [] })
     expect(parseReflectorOutput('   ', THREAD)).toEqual({ ok: true, proposals: [] })
@@ -111,6 +139,8 @@ describe('reflection prompts', () => {
     expect(m[0]!.role).toBe('system')
     expect(m[0]!.content).toContain('Most threads warrant NONE, and an empty list is the right answer.')
     expect(m[0]!.content).toContain('Never propose tools, permissions, commands to run, or secrets.')
+    expect(m[0]!.content).toContain('at most 4 KB')
+    expect(m[0]!.content).toContain('at most 1,500 tokens')
     const user = m[1]!.content as string
     expect(user).toContain('deploy-check')
     expect(user).toMatch(/deploy-check.*Bridget/)

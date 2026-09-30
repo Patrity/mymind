@@ -12,6 +12,9 @@ export const REFLECT_MIN_NEW_MESSAGES = 4
 export const REFLECT_IDLE_MS = 30 * 60_000
 export const REFLECT_COOLDOWN_MS = 2 * 3600_000
 export const REFLECT_CANDIDATE_LIMIT = 5
+/** Only threads active this recently: every thread starts with a null watermark, and the first
+ *  pass must not work back through all history. */
+export const REFLECT_RECENCY_MS = 7 * 24 * 3600_000
 
 export async function threadCandidates(
   opts: { now?: Date; limit?: number; onlyConversationIds?: string[] } = {}
@@ -22,6 +25,7 @@ export async function threadCandidates(
     opts.onlyConversationIds ? inArray(conversations.id, opts.onlyConversationIds) : undefined,
     isNotNull(conversations.lastMessageAt),
     sql`${conversations.lastMessageAt} <= ${now} - make_interval(secs => ${REFLECT_IDLE_MS / 1000})`,
+    sql`${conversations.lastMessageAt} > ${now} - make_interval(secs => ${REFLECT_RECENCY_MS / 1000})`,
     sql`(${conversations.reflectedThrough} is null or ${conversations.reflectedThrough} < ${now} - make_interval(secs => ${REFLECT_COOLDOWN_MS / 1000}))`,
     // Conversation turns only — 'event' rows are system notices, not something Bridget did.
     // Millisecond-truncated like summarize.ts: the watermark is written from a JS Date, so rows

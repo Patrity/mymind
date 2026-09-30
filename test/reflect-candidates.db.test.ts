@@ -75,6 +75,13 @@ describe('threadCandidates', () => {
     expect(await ids([id])).toEqual([])
   })
 
+  it('only considers threads active within the last 7 days', async () => {
+    const day = 24 * 60
+    const stale = await scratch([8 * day + 30, 8 * day + 20, 8 * day + 10, 8 * day])
+    const recent = await scratch([6 * day + 30, 6 * day + 20, 6 * day + 10, 6 * day])
+    expect(await ids([stale, recent])).toEqual([recent])
+  })
+
   it('orders by last message, most recent first, and honours limit', async () => {
     const a = await scratch([200, 190, 180, 170])
     const b = await scratch([100, 90, 80, 45])

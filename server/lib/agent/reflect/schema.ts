@@ -1,7 +1,7 @@
 // server/lib/agent/reflect/schema.ts
 //
 // The reflector's output contract, and a tolerant parser for what models actually send back:
-// code fences, prose around the JSON, trailing commas, a bare array, or just "none". One bad
+// a wrapping code fence, prose around the JSON, trailing commas, a bare array, or just "none". One bad
 // item never sinks the others — invalid items are dropped individually. Nothing here throws.
 import { z } from 'zod'
 
@@ -22,10 +22,16 @@ export const MAX_PROPOSALS = 3
 
 export type ReflectorResult = { ok: true; proposals: Proposal[] } | { ok: false; error: string }
 
-/** The first balanced `{...}` or `[...]` block, string- and escape-aware. Null when none closes. */
-function firstJsonBlock(text: string): string | null {
-  const start = text.search(/[{[]/)
-  if (start < 0) return null
+/** A fence wrapping the WHOLE reply (```json … ```), unwrapped. Fences anywhere else are left
+ *  alone: skill bodies and evidence quotes legitimately contain them inside JSON strings. */
+function unwrapFence(text: string): string {
+  const m = /^```[\w-]*[ \t]*\n?([\s\S]*?)\n?[ \t]*```$/.exec(text)
+  return m ? m[1]!.trim() : text
+}
+
+/** The balanced `{...}` or `[...]` block starting at `start`, string- and escape-aware.
+ *  Null when it never closes or a closer mismatches. */
+function blockAt(text: string, start: number): string | null {
   const stack: string[] = []
   let inString = false
   for (let i = start; i < text.length; i++) {
@@ -46,35 +52,63 @@ function firstJsonBlock(text: string): string | null {
   return null
 }
 
+/** Drop commas that directly precede a `}` or `]`, outside strings only. */
+function stripTrailingCommas(block: string): string {
+  let out = ''
+  let inString = false
+  for (let i = 0; i < block.length; i++) {
+    const ch = block[i]!
+    if (inString) {
+      out += ch
+      if (ch === '\\') { out += block[i + 1] ?? ''; i++ }
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === ',' && /^\s*[}\]]/.test(block.slice(i + 1))) continue
+    out += ch
+  }
+  return out
+}
+
+/** Strict parse, then once more with trailing commas removed. Throws only if both fail. */
 function parseLenient(block: string): unknown {
   try {
     return JSON.parse(block)
   } catch {
-    // The one malformation models commonly produce. Only tried after a strict parse fails, so a
-    // literal ",}" inside a valid string is never rewritten.
-    return JSON.parse(block.replace(/,\s*([}\]])/g, '$1'))
+    return JSON.parse(stripTrailingCommas(block))
   }
 }
 
+/** `{ proposals: [...] }` or a bare array of objects — anything else (e.g. a `[1]` in prose)
+ *  is not the reply, and the scan moves on. */
+function proposalItems(parsed: unknown): unknown[] | null {
+  if (Array.isArray(parsed)) return parsed.every(x => x && typeof x === 'object' && !Array.isArray(x)) ? parsed : null
+  if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { proposals?: unknown }).proposals)) {
+    return (parsed as { proposals: unknown[] }).proposals
+  }
+  return null
+}
+
 export function parseReflectorOutput(raw: string, allowed: Proposal['kind'][]): ReflectorResult {
-  const text = (raw ?? '').replace(/```[a-zA-Z]*/g, '').trim()
+  const text = unwrapFence((raw ?? '').trim())
   if (!text || /^(none|no proposals?)\b\.?/i.test(text)) return { ok: true, proposals: [] }
 
-  const block = firstJsonBlock(text)
-  if (!block) return { ok: false, error: 'reflector output contained no JSON' }
-  let parsed: unknown
-  try {
-    parsed = parseLenient(block)
-  } catch (err) {
-    return { ok: false, error: `reflector output is not valid JSON: ${(err as Error).message}` }
+  // Try each `{` / `[` in turn: prose before the JSON ("per the [user] request …") often
+  // contains brackets that are not the reply.
+  let items: unknown[] | null = null
+  let error = 'reflector output contained no JSON'
+  for (let start = text.search(/[{[]/); start >= 0 && !items; start = nextBracket(text, start + 1)) {
+    const block = blockAt(text, start)
+    if (!block) continue
+    try {
+      items = proposalItems(parseLenient(block))
+      if (!items) error = 'reflector output has no proposals array'
+    } catch (err) {
+      error = `reflector output is not valid JSON: ${(err as Error).message}`
+    }
   }
-
-  const items = Array.isArray(parsed)
-    ? parsed
-    : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { proposals?: unknown }).proposals))
-        ? (parsed as { proposals: unknown[] }).proposals
-        : null
-  if (!items) return { ok: false, error: 'reflector output has no proposals array' }
+  if (!items) return { ok: false, error }
 
   const proposals: Proposal[] = []
   for (const item of items) {
@@ -84,4 +118,9 @@ export function parseReflectorOutput(raw: string, allowed: Proposal['kind'][]): 
     if (proposals.length >= MAX_PROPOSALS) break
   }
   return { ok: true, proposals }
+}
+
+function nextBracket(text: string, from: number): number {
+  const i = text.slice(from).search(/[{[]/)
+  return i < 0 ? -1 : from + i
 }
