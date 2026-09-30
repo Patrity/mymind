@@ -160,6 +160,35 @@ thread is marked reflected with no proposals (never blocks forever).
   link to the source thread.
 - **Prompt**: the profile is injected after the persona under an "About Tony" heading.
 
+## 7a. Review tools for Bridget (added after spec review, 2026-09-30)
+
+Tony wants to work the `/review` queue from an agent session. Two tools:
+
+- **`list_reviews({ kind?, limit? = 20 })`** — read class; available in every run (the digest uses
+  it). Returns pending items: `id`, `kind`, `summary`, `created_at`, a kind-specific `detail`
+  (e.g. both memory texts for a conflict; the diff, reason and evidence for `self-improvement`),
+  and **`choices: { id, label, description }[]`** — the exact outcomes that item supports:
+  - generic kinds (triage, agent-action, `self-improvement`, …): `approve`, `reject`;
+  - memory conflicts (`memory-supersede`, `memory-contradict`): the four `ConflictResolution`
+    values (`keep-both`, `archive-old`, `archive-new`, and the fourth in
+    `server/lib/review/conflict-resolution.ts`), labelled as the `/review` page labels them.
+  The choice list comes from ONE registry (`reviewChoices(item)`) that the `/review` page also
+  renders from, so the page and the tool can't disagree.
+- **`decide_review({ id, choice, note? })`** — `choice` must be one of that item's listed choices
+  (anything else → an explanatory result, no change). It calls the SAME service functions as the
+  page's approve / reject / resolve routes — extracted from the route handlers into
+  `server/services/review-decisions.ts` so both share them (undo tokens, revisions, rejection
+  memory and live events behave identically).
+  - **Interactive runs only**: refused outright in headless runs (jobs, heartbeat, wakes,
+    reflection) — not turned into a proposal (approving a proposal via a proposal is circular).
+  - **Every call needs Tony's confirmation** through the existing approval path (the inline card in
+    the app; a 👍 over iMessage), showing the item summary and the chosen outcome — so an injected
+    instruction can't approve anything even inside Tony's own session.
+  - **Not exposed on the MyMind MCP server**; `list_reviews` may be.
+- Tests: headless refusal; a denied confirmation changes nothing; each choice routes to the same
+  service call as the page (per kind); a choice not in the item's list is refused; `reviewChoices`
+  is shared by page and tool; `decide_review` is absent from the MCP tool list.
+
 ## 8. Digest
 
 A seed job `self-improvement-digest` (cron `30 21 * * *`, `context: light`, `deliver: [auto]`,
