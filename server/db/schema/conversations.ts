@@ -24,6 +24,9 @@ export const conversations = pgTable('conversations', {
   /** The summary covers every message with created_at <= this. Written with the POSTGRES
    *  clock (it is compared against created_at). Null = no summary yet. */
   summarizedThrough: timestamp('summarized_through', { withTimezone: true }),
+  /** Cycle 76: the reflector's per-thread pass covers every message with created_at <= this.
+   *  Same shape as summarizedThrough. Null = never reflected. */
+  reflectedThrough: timestamp('reflected_through', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [

@@ -7,7 +7,7 @@ import { agentConfigRevisions } from '../../../db/schema'
 
 export const REVISIONS_KEPT = 100
 
-export type RevisionTargetKind = 'skill' | 'job'
+export type RevisionTargetKind = 'skill' | 'job' | 'profile'
 export type RevisionActor = 'human' | 'agent' | 'system'
 
 // Anything with the drizzle query surface — the pool or an open transaction — so a caller that
@@ -15,7 +15,12 @@ export type RevisionActor = 'human' | 'agent' | 'system'
 type Executor = Pick<ReturnType<typeof useDb>, 'insert' | 'execute'>
 
 export async function recordRevision(
-  i: { targetKind: RevisionTargetKind, targetId: string, content: string, actor: RevisionActor, runId?: string | null },
+  i: {
+    targetKind: RevisionTargetKind, targetId: string, content: string, actor: RevisionActor,
+    runId?: string | null,
+    // Cycle 76: set when this revision came from a reflector improvement's apply path.
+    improvementId?: string | null
+  },
   db: Executor = useDb()
 ): Promise<void> {
   await db.insert(agentConfigRevisions).values({
@@ -24,6 +29,7 @@ export async function recordRevision(
     content: i.content,
     actor: i.actor,
     runId: i.runId ?? null,
+    improvementId: i.improvementId ?? null,
     // clock_timestamp, not now(): several revisions written in one transaction (or in a tight
     // loop) must still order strictly, or "keep the newest 100" has ties to break arbitrarily.
     createdAt: sql`clock_timestamp()`
@@ -41,12 +47,15 @@ export async function recordRevision(
 
 export async function listRevisions(
   targetKind: RevisionTargetKind, targetId: string, limit = REVISIONS_KEPT
-): Promise<{ id: string, content: string, actor: string, createdAt: string }[]> {
+): Promise<{ id: string, content: string, actor: string, improvementId: string | null, createdAt: string }[]> {
   const rows = await useDb().select().from(agentConfigRevisions)
     .where(and(eq(agentConfigRevisions.targetKind, targetKind), eq(agentConfigRevisions.targetId, targetId)))
     .orderBy(desc(agentConfigRevisions.createdAt))
     .limit(limit)
-  return rows.map(r => ({ id: r.id, content: r.content, actor: r.actor, createdAt: r.createdAt.toISOString() }))
+  return rows.map(r => ({
+    id: r.id, content: r.content, actor: r.actor, improvementId: r.improvementId,
+    createdAt: r.createdAt.toISOString()
+  }))
 }
 
 export async function getRevision(id: string): Promise<{ id: string, targetKind: string, targetId: string, content: string } | null> {

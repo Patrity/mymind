@@ -50,11 +50,15 @@ export const agentJobs = pgTable('agent_jobs', {
 
 export const agentConfigRevisions = pgTable('agent_config_revisions', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-  targetKind: text('target_kind').notNull(), // 'skill' | 'job'
+  targetKind: text('target_kind').notNull(), // 'skill' | 'job' | 'profile'
   targetId: uuid('target_id').notNull(),
   content: text('content').notNull(),
   actor: text('actor').notNull(),            // 'human' | 'agent' | 'system'
   runId: uuid('run_id'),
+  // Cycle 76: set when this revision was written by a reflector improvement's apply path —
+  // the improvement's provenance for the change (server/lib/agent/self-improvement-mode.ts's
+  // neighbours in reflect/ read this back). Null for ordinary human/agent edits.
+  improvementId: uuid('improvement_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [index('agent_config_revisions_target').on(t.targetKind, t.targetId, t.createdAt)])
 
