@@ -567,7 +567,10 @@ describe('final review fixes — Run now and fenced finish', () => {
     await finishJobRuns(job.id)
   })
 
-  it('M11: a run whose finish was fenced (recovered as interrupted meanwhile) records no job outcome', async () => {
+  // Since reliability Task 2 the RECOVERING process records the job outcome (failed, counted —
+  // see "recovery — an interrupted job run updates its job"); here the row is flipped by hand, not
+  // by recovery, so this pins only the fenced owner's side: it must not write one too.
+  it('M11: a run whose finish was fenced (recovered as interrupted meanwhile) gets no outcome from its owner', async () => {
     const slug = `${PREFIX}fenced`
     const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'F.'), actor: 'human' })
     const conv = (await createConversation({ title: `${PREFIX}fenced` })).id

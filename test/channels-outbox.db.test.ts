@@ -23,6 +23,8 @@ const script = vi.hoisted(() => ({
   next: [] as Result[],
   /** A result chosen by the payload text — for concurrent sends, where call order is not fixed. */
   byText: {} as Record<string, Result>,
+  /** Each send's start and end, in the order they happened: `start <text or first image>`. */
+  events: [] as { target: string; event: string }[],
   delayMs: 0
 }))
 vi.mock('../server/lib/channels/registry', () => ({
@@ -31,7 +33,10 @@ vi.mock('../server/lib/channels/registry', () => ({
     isEnabled: async () => true,
     async send(d: Send): Promise<Result> {
       script.calls.push(structuredClone(d))
+      const label = d.payload.text || d.payload.images?.[0] || ''
+      script.events.push({ target: d.target, event: `start ${label}` })
       if (script.delayMs) await new Promise(r => setTimeout(r, script.delayMs))
+      script.events.push({ target: d.target, event: `end ${label}` })
       return script.byText[d.payload.text] ?? script.next.shift() ?? { ok: true, externalId: `ext-${d.id}` }
     }
   })
@@ -70,6 +75,7 @@ beforeEach(async () => {
   script.next.length = 0
   script.delayMs = 0
   script.byText = {}
+  script.events.length = 0
   await db().delete(conversationMessages).where(eq(conversationMessages.conversationId, scratchMain))
   await db().update(conversations).set({ activeLeafId: null, messageCount: 0 }).where(eq(conversations.id, scratchMain))
 })
@@ -356,8 +362,12 @@ describe('the worker tick and the outbox', () => {
     expect((await row(b!)).status).toBe('sent')
   })
 
-  it('claimed rows are sent concurrently and each one gets its own outcome', async () => {
-    const [ok, retry, fail] = await insert([one('c ok'), one('c retry'), one('c fail')])
+  it('rows for different chats are sent concurrently and each one gets its own outcome', async () => {
+    const [ok, retry, fail] = await insert([
+      one('c ok'),
+      one('c retry', { target: 'iMessage;-;+15550000007' }),
+      { channel: 'email', target: 'tony@example.com', payload: { text: 'c fail', subject: 'Bridget · message' }, source: 'job' }
+    ])
     script.byText = {
       'c retry': { ok: false, error: 'hiccup', retryable: true },
       'c fail': { ok: false, error: 'bad address', retryable: false }
@@ -370,6 +380,26 @@ describe('the worker tick and the outbox', () => {
     expect(await row(ok!)).toMatchObject({ status: 'sent', attempts: 1, externalId: `ext-${ok}` })
     expect(await row(retry!)).toMatchObject({ status: 'pending', attempts: 1, lastError: 'hiccup' })
     expect(await row(fail!)).toMatchObject({ status: 'failed', attempts: 1, lastError: 'bad address' })
-    expect((await notes()).map(n => n.content)).toEqual(["Couldn't deliver to iMessage: bad address"])
+    expect((await notes()).map(n => n.content)).toEqual(["Couldn't deliver to email: bad address"])
+  })
+
+  it('one chat\'s sends go out one at a time in the order queued; another chat overlaps them', async () => {
+    const OTHER = 'iMessage;-;+15550000008'
+    const ids = await insert([
+      one('look', { payload: { text: 'look', images: ['img-1', 'img-2'] } }), // text, img-1, img-2
+      one('reply 1'),
+      one('reply 2'),
+      one('other chat', { target: OTHER })
+    ])
+    script.delayMs = 300
+    expect(await tick(ids, T0)).toEqual({ sent: 6, retried: 0, failed: 0 })
+    // One at a time, in the order queued: each send to this chat starts after the previous ended.
+    expect(script.events.filter(e => e.target === CHAT).map(e => e.event)).toEqual([
+      'start look', 'end look', 'start img-1', 'end img-1', 'start img-2', 'end img-2',
+      'start reply 1', 'end reply 1', 'start reply 2', 'end reply 2'
+    ])
+    // The other chat did not wait for this one: its send started before the first one here ended.
+    const when = (target: string, event: string) => script.events.findIndex(e => e.target === target && e.event === event)
+    expect(when(OTHER, 'start other chat')).toBeLessThan(when(CHAT, 'end look'))
   })
 })

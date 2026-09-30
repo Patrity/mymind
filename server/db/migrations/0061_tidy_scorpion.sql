@@ -1,0 +1,1 @@
+ALTER TABLE "channel_deliveries" ADD COLUMN "seq" bigserial NOT NULL;

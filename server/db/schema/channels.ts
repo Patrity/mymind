@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, jsonb, integer, timestamp, index } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, jsonb, integer, timestamp, index, bigserial } from 'drizzle-orm/pg-core'
 import { agentRuns } from './agent-runs'
 import { agentJobs } from './agent-config'
 
@@ -24,7 +24,11 @@ export const channelDeliveries = pgTable('channel_deliveries', {
   lastError: text('last_error'),
   externalId: text('external_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  sentAt: timestamp('sent_at', { withTimezone: true })
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  /** 0061: insertion order. Rows split from one payload (text + images) share next_attempt_at
+   *  and created_at (one transaction), so this is the claim-order tiebreak that keeps a chat's
+   *  sends in the order they were queued. */
+  seq: bigserial('seq', { mode: 'number' }).notNull()
 }, t => [
   index('channel_deliveries_due_idx').on(t.status, t.nextAttemptAt),
   index('channel_deliveries_message_idx').on(t.messageId),

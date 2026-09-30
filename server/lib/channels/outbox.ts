@@ -82,17 +82,20 @@ async function claim(now: Date, onlyIds?: string[]): Promise<ChannelDelivery[]> 
   return useDb().transaction(async (tx) => {
     const picked = await tx.select({ id: channelDeliveries.id }).from(channelDeliveries)
       .where(onlyIds ? and(inArray(channelDeliveries.id, onlyIds), due) : due)
-      .orderBy(channelDeliveries.nextAttemptAt)
+      .orderBy(channelDeliveries.nextAttemptAt, channelDeliveries.seq)
       .limit(DELIVERY_CLAIM_LIMIT)
       .for('update', { skipLocked: true })
     if (!picked.length) return []
     // SET expressions read the OLD row, so `status = 'sending'` here means "was reclaimed".
-    return tx.update(channelDeliveries).set({
+    const claimed = await tx.update(channelDeliveries).set({
       status: 'sending',
       claimedAt: now,
       firstClaimedAt: sql`coalesce(${channelDeliveries.firstClaimedAt}, ${now.toISOString()}::timestamptz)`,
       attempts: sql`${channelDeliveries.attempts} + case when ${channelDeliveries.status} = 'sending' then 1 else 0 end`
     }).where(inArray(channelDeliveries.id, picked.map(p => p.id))).returning()
+    // RETURNING has no order: put the rows back in claim order (a chat's sends go out in it).
+    const rank = new Map(picked.map((p, i) => [p.id, i]))
+    return claimed.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!)
   })
 }
 
@@ -158,9 +161,22 @@ export async function deliveriesTick(opts: { onlyIds?: string[]; mainConversatio
   const rows = await claim(now, opts.onlyIds)
   for (const row of rows) publishChange({ resource: 'channelDelivery', action: 'updated', id: row.id })
 
-  // Sent concurrently (the claim limit bounds how many): one slow chat must not hold up the
-  // rest of the batch. Each row's result is still written under its own claim guard (record).
-  await Promise.all(rows.map(async (row) => {
+  // Sent concurrently ACROSS chats (the claim limit bounds how many), one after another in claim
+  // order WITHIN a chat: one slow chat must not hold up the rest of the batch, but a text and its
+  // split image rows, or two replies, must reach the phone in the order they were queued.
+  // allSettled, not all: the single-flight guard in queue.ts clears when this resolves, so no send
+  // may still be running then — even if a future step here throws.
+  const byTarget = new Map<string, ChannelDelivery[]>()
+  for (const row of rows) {
+    const key = `${row.channel}\u0000${row.target}`
+    byTarget.set(key, [...(byTarget.get(key) ?? []), row])
+  }
+  const settled = await Promise.allSettled([...byTarget.values()].map(async (chat) => {
+    for (const row of chat) await deliverOne(row)
+  }))
+  for (const s of settled) if (s.status === 'rejected') console.error('[channels] a delivery send failed:', s.reason)
+
+  async function deliverOne(row: ChannelDelivery): Promise<void> {
     // Only a reclaim can bring a row here with its sends used up (its last send was interrupted
     // and counted at claim time): give up rather than make a send past MAX_ATTEMPTS.
     const exhausted = row.attempts >= MAX_ATTEMPTS
@@ -178,6 +194,6 @@ export async function deliveriesTick(opts: { onlyIds?: string[]; mainConversatio
     } catch (err) {
       console.error(`[channels] recording delivery ${row.id} failed:`, err)
     }
-  }))
+  }
   return counts
 }

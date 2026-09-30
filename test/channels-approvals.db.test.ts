@@ -86,6 +86,17 @@ async function rowsFor(runId: string) {
   return db().select().from(channelApprovals).where(eq(channelApprovals.runId, runId))
 }
 
+/** The run's approval status once it reads `want` (Stop's audit write lands in the background). */
+async function statusOnce(runId: string, want: string): Promise<string | undefined> {
+  let status: string | undefined
+  for (let i = 0; i < 200; i++) {
+    status = (await rowsFor(runId))[0]?.status
+    if (status === want) break
+    await new Promise(r => setTimeout(r, 10))
+  }
+  return status
+}
+
 /** Wait until the run's approval prompt has been sent and its guid stored. */
 async function promptFor(runId: string): Promise<{ id: string; promptGuid: string; chatGuid: string }> {
   for (let i = 0; i < 100; i++) {
@@ -266,7 +277,7 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     ac.abort()
     expect(await p).toEqual({ approved: false })
     expect(Date.now() - t0).toBeLessThan(1_000) // the abort, not the 60 s timeout or poll
-    expect((await rowsFor(run))[0]!.status).toBe('denied')
+    expect(await statusOnce(run, 'denied')).toBe('denied')
     await resolveTapback(tapback(promptGuid))
     expect((await rowsFor(run))[0]!.status).toBe('denied')
     expect(events.some(e => e.name === 'exec:approval' && e.meta?.reason === 'aborted' && e.meta?.runId === run)).toBe(true)
@@ -289,7 +300,7 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     await promptFor(run)
     ac.abort()
     expect(await p).toEqual({ approved: false })
-    expect((await rowsFor(run))[0]!.status).toBe('denied')
+    expect(await statusOnce(run, 'denied')).toBe('denied')
   })
 })
 
@@ -312,17 +323,33 @@ describe('Stop always beats a late 👍 (reliability Task 2)', () => {
     return { ran, call: () => exec.execute({ command: REQ.command }, { toolCallId: `${TAG}-call`, messages: [] }) }
   }
 
-  it('abort, then a like in the same instant: denied, the exec never runs', async () => {
+  it('abort, then a like in the same instant: the wait is denied at once, before any DB write lands', async () => {
     const run = await newRun()
     const ac = new AbortController()
     const { ran, call } = gatedExec(run, ac.signal)
     const p = call()
-    const { promptGuid } = await promptFor(run)
-    ac.abort()
-    const tb = resolveTapback(tapback(promptGuid))
-    expect(await p).toEqual({ denied: true })
-    await tb
-    expect(ran).toEqual([])
+    const { id, promptGuid } = await promptFor(run)
+    // Hold the row so NO write to it can land: the abort's and the like's updates both queue.
+    // The wait must be decided by the abort itself, not by whichever DB write comes back first
+    // (the old code decided only after its write returned, so it could not answer here).
+    const locker = new Client({ connectionString: process.env.DATABASE_URL })
+    await locker.connect()
+    try {
+      await locker.query('begin')
+      await locker.query('select id from channel_approvals where id = $1 for update', [id])
+      ac.abort()
+      const tb = resolveTapback(tapback(promptGuid))
+      const decided = await Promise.race([p, new Promise(r => setTimeout(() => r('still waiting'), 1_000))])
+      expect(decided).toEqual({ denied: true })
+      expect(ran).toEqual([])
+      await locker.query('commit')
+      await tb
+      expect(ran).toEqual([])
+      expect(await statusOnce(run, 'denied')).toBe('denied')
+    } finally {
+      await locker.query('rollback').catch(() => {})
+      await locker.end()
+    }
   })
 
   it('a like already on its way to the row when Stop is pressed cannot flip the wait to approved', async () => {
@@ -353,10 +380,9 @@ describe('Stop always beats a late 👍 (reliability Task 2)', () => {
       expect(await p).toEqual({ denied: true })
       await tb
       expect(ran).toEqual([])
-      // The row holds whichever guarded update Postgres let through first — nearly always the
-      // tapback's ('approved', which the wait and the exec ignored), since it queued first; the
-      // lock queue does not strictly guarantee that order, so either decided status is fine.
-      expect(['approved', 'denied']).toContain((await rowsFor(run))[0]!.status)
+      // The like's update usually reaches the row first ('approved'); Stop's own update then
+      // overwrites it, so the audit row matches what happened: denied, nothing ran.
+      expect(await statusOnce(run, 'denied')).toBe('denied')
     } finally {
       await locker.query('rollback').catch(() => {})
       await locker.end()
