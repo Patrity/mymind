@@ -322,6 +322,18 @@ them):
 `user` row with `origin = 'imessage:…'` (allowlisted handles only), and wake prompts are `event`
 rows. Filtering on `origin is null` would have excluded Tony's own iMessages.
 
+### Final re-review (controller fix, 9c9eca9)
+
+- **N1 — auto-apply needs EVERY evidence quote from Tony.** The fix wave required only one; a
+  probe showed injected text plus any ≥12-char Tony line ("okay sounds good") still auto-applied.
+  `quotesTony` now uses `every`. Job control and outbound messaging (`enable/disable/turn on/off`,
+  `job(s)`, `schedul*`, `send*`, `email`, `imessage`, `text tony/me`) are now SENSITIVE, so a learned
+  skill can't quietly steer jobs or messages even when grounded in Tony's words. Tests go red on
+  `every`→`some`. Cost if wrong: more skills go to review.
+- Parked from the re-review: a DB error after the store write can leave an item in `deciding`
+  (applied, reported not_pending); a second click on the page returns a bare 404; eval mixed row 1
+  nearly copies the prompt's worked example, so the 3/3 mixed score is flattering.
+
 ## Follow-ups (every deferred or parked item)
 
 **Final wave (named), status after the fix wave:**
