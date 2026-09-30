@@ -446,6 +446,20 @@ describe('job store — final review fixes', () => {
     expect(sys.source).toBe('human')
   })
 
+  it('cycle 76 M4: an agent edit of Tony\'s job leaves it Tony\'s (the reflector may not auto-edit it afterwards)', async () => {
+    const slug = `${PREFIX}m4-tony-stays`
+    const created = await createJob({ slug, content: md(`trigger: at ${future()}\nenabled: false`, 'Tony wrote this.'), actor: 'human' })
+    expect(created.source).toBe('human')
+    const edited = await saveJob(slug, md(`trigger: at ${future()}\nenabled: false`, 'Bridget reworded it.'), created.contentHash, 'agent')
+    expect(edited.source).toBe('human')
+    const toggled = await setJobEnabled(slug, false, 'agent', null, edited.contentHash)
+    expect(toggled.source).toBe('human')
+    // An agent-authored job stays Bridget's under her own edits.
+    const mine = `${PREFIX}m4-agent-stays`
+    const a = await createJob({ slug: mine, content: md(`trigger: at ${future()}\nenabled: false`, 'Mine.'), actor: 'agent' })
+    expect((await saveJob(mine, md(`trigger: at ${future()}\nenabled: false`, 'Still mine.'), a.contentHash, 'agent')).source).toBe('agent')
+  })
+
   it('M5: disabling always succeeds, even when the content would no longer validate (unknown model)', async () => {
     const slug = `${PREFIX}m5-disable`
     const job = await createJob({ slug, content: md('trigger: every 10m\nenabled: true', 'Hi.'), actor: 'human' })

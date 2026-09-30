@@ -233,14 +233,19 @@ function rearm(existing: AgentJobRow, spec: JobSpec, nextRunAt: Date | null): Pa
 }
 
 /**
- * `source` is who AUTHORED the job's current content (final review M4): a human or agent write
- * sets it; a `system` write (the tick disabling a fired `at` job, the failure auto-disable, a
- * seed install) keeps whatever it was — so a reminder Bridget scheduled keeps its `agent` badge
- * after it fires. A system CREATE (seeds) is `human`.
+ * `source` is who AUTHORED the job (final review M4): a human or agent create sets it, and a
+ * human write makes it Tony's. A `system` write (the tick disabling a fired `at` job, the failure
+ * auto-disable, a seed install) keeps whatever it was — so a reminder Bridget scheduled keeps its
+ * `agent` badge after it fires. A system CREATE (seeds) is `human`.
+ *
+ * An AGENT write never takes a job from Tony (cycle 76 final review M4): an edit_job he asked for
+ * in chat, or a reflector edit, leaves his job `human` — otherwise that one edit
+ * would make it auto-editable by the reflector from then on.
  */
 function sourceFor(actor: RevisionActor, existing: string | null): 'human' | 'agent' {
   if (actor === 'system') return existing === 'agent' ? 'agent' : 'human'
-  return actor === 'agent' ? 'agent' : 'human'
+  if (actor === 'agent') return existing === 'human' ? 'human' : 'agent'
+  return 'human'
 }
 
 // Postgres ARE: a frontmatter line `trigger: at …` (optionally quoted). Used only to recognise
