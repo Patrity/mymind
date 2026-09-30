@@ -181,8 +181,8 @@ context: light
 deliver: [auto]
 enabled: false
 ---
-Call list_improvements for today. If there are no applied changes and nothing pending review, reply NO_REPLY.
-Otherwise give Tony a short digest: each change you made to yourself today (one line, with its link so he can undo it), then how many proposals are waiting in /review.
+Call list_improvements for today. Reply NO_REPLY unless one of today's items is applied, or was raised today and is still pending_review or conflict. Proposals still waiting from earlier days (pendingReview) are not a reason to write.
+Otherwise give Tony a short digest: each change you made to yourself today (one line, with its link so he can undo it), each proposal raised today, then how many proposals are waiting in /review in total.
 `)
     const result = parseJob(content, { defaultTimezone: 'America/Chicago' })
     expect(result.ok).toBe(true)
@@ -210,7 +210,11 @@ Otherwise give Tony a short digest: each change you made to yourself today (one 
     expect(after).toHaveLength(5)
     const digest = after.find(([slug]) => slug === 'self-improvement-digest')![1]!
     expect(digest.enabled).toBe(false)
-    expect(digest.content).toBe(SEED_JOBS['self-improvement-digest'])
+    // A fresh install writes the current seed verbatim. A row installed earlier is never rewritten
+    // (installSeedJobs skips existing slugs; the digest has no upgrade path) — on the shared dev
+    // DB it may hold this branch's pre-final-review wording (cycle 76 m4).
+    const wasInstalled = before.find(([slug]) => slug === 'self-improvement-digest')![1] !== null
+    if (!wasInstalled) expect(digest.content).toBe(SEED_JOBS['self-improvement-digest'])
     expect(digest.parseError).toBeNull()
 
     // The four pre-existing seeds are unchanged by this run (already installed on the shared dev
