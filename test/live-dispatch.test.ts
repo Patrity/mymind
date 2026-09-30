@@ -82,6 +82,14 @@ describe('dispatchLiveEvent', () => {
     dispatchLiveEvent(c as never, ev({ resource: 'agentProfile', id: 'p-1' }))
     expect(c.calls).toContainEqual([{ queryKey: ['profile'] }])
   })
+
+  // Cycle 76 (Task 7): a pending improvement is a /review card.
+  it('agentImprovement events invalidate the ["review"] and ["agentImprovement"] prefixes', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'agentImprovement', id: 'i-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['review'] }])
+    expect(c.calls).toContainEqual([{ queryKey: ['agentImprovement'] }])
+  })
 })
 
 describe('dispatchLiveEvent — agentRun', () => {

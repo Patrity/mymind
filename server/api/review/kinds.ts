@@ -7,6 +7,7 @@ import { applyTask, applyNote, applyMemory, applyAppend } from '../../services/t
 import { publishChange } from '../../utils/live-bus'
 import type { TriageAction } from '../../../shared/types/triage'
 import { approveAgentAction, rejectAgentAction } from '../../lib/agent/runtime/replay'
+import { applyImprovement, rejectImprovement } from '../../lib/agent/reflect/apply'
 
 /**
  * Most handlers have nothing to report beyond success. approveTriage is the exception:
@@ -189,12 +190,51 @@ async function rejectTriage(item: ReviewItem): Promise<void> {
   publishChange({ resource: 'review', action: 'updated', id: item.id })
 }
 
+// ── Self-improvement kind (cycle 76) ──────────────────────────────────────
+//
+// targetKind 'improvement', targetId = the agent_improvements row. Approve applies it through the
+// target's store as actor 'human' (CAS on the hash stored with the proposal). A CAS conflict —
+// Tony edited the target since the proposal — writes nothing: the item stays pending with its
+// `currentContent` refreshed (applyImprovement refreshed the improvement's expectedHash too), and
+// the handler throws a 409 carrying the current content (preflight Ruling 1).
+
+export const SELF_IMPROVEMENT_CONFLICT = 'Changed since proposed — reload the review'
+
+async function approveSelfImprovement(item: ReviewItem): Promise<HandlerResult> {
+  const db = useDb()
+  const res = await applyImprovement(item.targetId, 'human')
+  if (!res.ok) {
+    const proposed = { ...(item.proposed as Record<string, unknown>), currentContent: res.conflict.content }
+    await db.update(reviewQueue).set({ proposed }).where(eq(reviewQueue.id, item.id))
+    publishChange({ resource: 'review', action: 'updated', id: item.id })
+    throw createError({
+      statusCode: 409,
+      message: SELF_IMPROVEMENT_CONFLICT,
+      data: { current: res.conflict, summary: SELF_IMPROVEMENT_CONFLICT }
+    })
+  }
+  await db.update(reviewQueue)
+    .set({ status: 'approved', resolvedAt: new Date() })
+    .where(eq(reviewQueue.id, item.id))
+  publishChange({ resource: 'review', action: 'updated', id: item.id })
+  return { summary: 'Improvement applied.' }
+}
+
+async function rejectSelfImprovement(item: ReviewItem): Promise<void> {
+  await rejectImprovement(item.targetId)
+  await useDb().update(reviewQueue)
+    .set({ status: 'rejected', resolvedAt: new Date() })
+    .where(eq(reviewQueue.id, item.id))
+  publishChange({ resource: 'review', action: 'updated', id: item.id })
+}
+
 export const approveHandlers: Record<string, Handler> = {
   enrichment: approveEnrichment,
   'memory-supersede': approveMemoryConflict,
   'memory-contradict': approveMemoryConflict,
   triage: approveTriage,
-  'agent-action': item => approveAgentAction(item)
+  'agent-action': item => approveAgentAction(item),
+  'self-improvement': approveSelfImprovement
 }
 
 export const rejectHandlers: Record<string, Handler> = {
@@ -202,5 +242,6 @@ export const rejectHandlers: Record<string, Handler> = {
   'memory-supersede': rejectMemoryConflict,
   'memory-contradict': rejectMemoryConflict,
   triage: rejectTriage,
-  'agent-action': rejectAgentAction
+  'agent-action': rejectAgentAction,
+  'self-improvement': rejectSelfImprovement
 }

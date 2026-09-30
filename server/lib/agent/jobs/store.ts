@@ -273,7 +273,7 @@ async function writeJob(
   expectedHash: string | null,
   actor: RevisionActor,
   runId: string | null,
-  opts: { id?: string } = {}
+  opts: { id?: string, improvementId?: string | null } = {}
 ): Promise<JobDTO> {
   if (!JOB_SLUG_RE.test(slug)) throw new JobValidationError(`invalid slug: ${slug}`)
 
@@ -344,7 +344,7 @@ async function writeJob(
         }
         const [inserted] = await tx.insert(agentJobs)
           .values({ ...(opts.id ? { id: opts.id } : {}), slug, ...derived, source: sourceFor(actor, null) }).returning()
-        await recordRevision({ targetKind: 'job', targetId: inserted!.id, content, actor, runId }, tx)
+        await recordRevision({ targetKind: 'job', targetId: inserted!.id, content, actor, runId, improvementId: opts.improvementId }, tx)
         return { kind: 'ok', row: inserted!, wasCreate: true }
       }
 
@@ -369,7 +369,7 @@ async function writeJob(
       if ('firedAt' in reset) {
         await tx.delete(agentJobFires).where(and(eq(agentJobFires.jobId, updated.id), eq(agentJobFires.eventKey, AT_NOT_FIRED_KEY)))
       }
-      await recordRevision({ targetKind: 'job', targetId: updated.id, content, actor, runId }, tx)
+      await recordRevision({ targetKind: 'job', targetId: updated.id, content, actor, runId, improvementId: opts.improvementId }, tx)
       return { kind: 'ok', row: updated, wasCreate: false }
     })
   } catch (err) {
@@ -402,9 +402,11 @@ export async function saveJob(
   content: string,
   expectedHash: string | null,
   actor: 'human' | 'agent' | 'system',
-  runId?: string | null
+  runId?: string | null,
+  // Cycle 76: set when a reflector improvement makes this write (provenance on the revision).
+  opts: { improvementId?: string | null } = {}
 ): Promise<JobDTO> {
-  return writeJob(slug, content, expectedHash, actor, runId ?? null)
+  return writeJob(slug, content, expectedHash, actor, runId ?? null, { improvementId: opts.improvementId })
 }
 
 /** Flips only the `enabled:` frontmatter line (setFrontmatterKey keeps every other line
@@ -416,7 +418,11 @@ export async function saveJob(
  *  must still be switchable off (the UI switch, a fired `at` job's self-disable, the 3-failure
  *  auto-disable). Only `enabled`, `next_run_at` and the content change; the other derived
  *  columns (and any parse_error) stay as they were. */
-export async function setJobEnabled(slug: string, enabled: boolean, actor: 'human' | 'agent' | 'system', runId: string | null = null, expectedHash?: string): Promise<JobDTO> {
+export async function setJobEnabled(
+  slug: string, enabled: boolean, actor: 'human' | 'agent' | 'system', runId: string | null = null, expectedHash?: string,
+  // Cycle 76: set when a reflector improvement makes this write (provenance on the revision).
+  opts: { improvementId?: string | null } = {}
+): Promise<JobDTO> {
   const existing = await rowBySlug(slug)
   if (!existing) throw new JobNotFoundError(slug)
   // `expectedHash` (the crash sweep): only flip the content the caller looked at. A write since
@@ -425,7 +431,7 @@ export async function setJobEnabled(slug: string, enabled: boolean, actor: 'huma
     throw new ConflictError({ content: existing.content, contentHash: existing.contentHash })
   }
   const content = setFrontmatterKey(existing.content, 'enabled', enabled)
-  if (enabled) return writeJob(slug, content, existing.contentHash, actor, runId)
+  if (enabled) return writeJob(slug, content, existing.contentHash, actor, runId, { improvementId: opts.improvementId })
 
   const updated = await useDb().transaction(async (tx) => {
     const [row] = await tx.update(agentJobs).set({
@@ -437,7 +443,7 @@ export async function setJobEnabled(slug: string, enabled: boolean, actor: 'huma
       updatedAt: sql`now()`
     }).where(and(eq(agentJobs.id, existing.id), eq(agentJobs.contentHash, existing.contentHash))).returning()
     if (!row) return null
-    await recordRevision({ targetKind: 'job', targetId: row.id, content, actor, runId }, tx)
+    await recordRevision({ targetKind: 'job', targetId: row.id, content, actor, runId, improvementId: opts.improvementId }, tx)
     return row
   })
   if (!updated) {

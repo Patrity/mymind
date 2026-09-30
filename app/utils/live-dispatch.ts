@@ -72,6 +72,10 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   // (server/services/profile.ts), read under ['profile', ...] (app/lib/config/source.ts's
   // queryBase for kind 'profile') rather than the default ['agentProfile', ...].
   agentProfile: (c) => { c.invalidateQueries({ queryKey: ['profile'] }) },
+  // Cycle 76 (Task 7): a reflector improvement changed state (applied, queued for review,
+  // rejected, conflicted). Pending ones are /review cards, so the whole ['review'] prefix
+  // refreshes along with any improvement list.
+  agentImprovement: (c) => { c.invalidateQueries({ queryKey: ['review'] }); c.invalidateQueries({ queryKey: ['agentImprovement'] }) },
   // A folder mutation rewrites document paths, and the tree the user is looking at is keyed
   // ['document','list'] — invalidating only ['folder',*] (the default below) would leave the
   // tree stale, which is the whole point of wiring folders into live reactivity.

@@ -309,7 +309,9 @@ export async function restoreSkill(priorId: string, content: string, actor: Revi
  * (renames go through updateSkill); invalid content is rejected, never stored.
  */
 export async function saveSkillSource(
-  slug: string, content: string, expectedHash: string | null, actor: RevisionActor
+  slug: string, content: string, expectedHash: string | null, actor: RevisionActor,
+  // Cycle 76: set when a reflector improvement makes this write (provenance on the revision).
+  opts: { improvementId?: string | null } = {}
 ): Promise<SkillSource> {
   const { input, error } = parseSkillMarkdown(content)
   if (error) throw new Error(`invalid frontmatter: ${error}`)
@@ -338,7 +340,7 @@ export async function saveSkillSource(
       throw new ConflictError({ content: now?.content ?? '', contentHash: now?.contentHash ?? '' })
     }
   }
-  await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor })
+  await recordRevision({ targetKind: 'skill', targetId: row!.id, content, actor, improvementId: opts.improvementId })
   publishChange({ resource: 'agentSkill', action: existing ? 'updated' : 'created', id: row!.id })
   return rowToSource(row!)
 }
