@@ -278,6 +278,29 @@ describe('runThreadPass', () => {
     expect((imp!.proposal as { reasons: string[] }).reasons).toEqual(['names_tool'])
   })
 
+  it('reads the active branch only, and advances the watermark over every branch (final review m9)', async () => {
+    const c = await createConversation({ title: `${TAG}thread` }); convIds.push(c.id)
+    const [u1, kept, u2, leaf, abandoned] = Array.from({ length: 5 }, () => crypto.randomUUID())
+    await db().insert(conversationMessages).values([
+      { id: u1, parentId: null, conversationId: c.id, role: 'user', content: `Remember: ${QUOTE}.`, modality: 'text', createdAt: minAgo(80) },
+      { id: kept, parentId: u1, conversationId: c.id, role: 'assistant', content: 'The kept reply.', modality: 'text', createdAt: minAgo(70) },
+      { id: u2, parentId: kept, conversationId: c.id, role: 'user', content: 'Thanks.', modality: 'text', createdAt: minAgo(60) },
+      { id: leaf, parentId: u2, conversationId: c.id, role: 'assistant', content: 'Any time.', modality: 'text', createdAt: minAgo(50) },
+      // A regenerated-away sibling of `kept`, written last: off the active path.
+      { id: abandoned, parentId: u1, conversationId: c.id, role: 'assistant', content: 'The abandoned reply.', modality: 'text', createdAt: minAgo(40) }
+    ])
+    await db().update(conversations).set({ messageCount: 5, lastMessageAt: minAgo(40), activeLeafId: leaf }).where(eq(conversations.id, c.id))
+    let transcript = ''
+    const chatFn = vi.fn(async (_r: string, messages: ChatMessage[]) => {
+      transcript = messages.map(m => m.content).join('\n')
+      return '{"proposals": []}'
+    })
+    await runThreadPass({ now: NOW, onlyConversationIds: [c.id], chatFn: chatFn as never, jev })
+    expect(transcript).toContain('[bridget] The kept reply.')
+    expect(transcript).not.toContain('The abandoned reply.')
+    expect((await watermark(c.id))!.getTime()).toBe(minAgo(40).getTime())
+  })
+
   it('does nothing when self-improvement is off', async () => {
     const t = await scratchThread()
     const chatFn = vi.fn(async () => '{"proposals": []}')

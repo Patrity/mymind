@@ -11,9 +11,10 @@ import { agentImprovements, conversationMessages } from '../../../db/schema'
 import type { chat } from '../../ai/chat'
 import { getSkillSource, listSkills } from '../../../services/skills'
 import { getProfileSource } from '../../../services/profile'
+import { loadActivePath } from '../../../services/conversation-path'
 import { getSelfImprovementMode } from '../self-improvement-mode'
 import { threadCandidates, markReflected } from './candidates'
-import { buildThreadTranscript, tonyMessages } from './transcript'
+import { buildThreadTranscript, tonyMessages, type TranscriptMessage } from './transcript'
 import { skillFilesForPrompt, threadReflectionMessages } from './prompt'
 import { callReflector } from './call'
 import { processProposal, REJECTION_MEMORY_MS } from './apply'
@@ -21,7 +22,7 @@ import type { jevCheck } from './jev'
 import type { Proposal } from './schema'
 
 const THREAD_KINDS: Proposal['kind'][] = ['skill.create', 'skill.edit', 'profile.edit']
-/** Newest rows read per thread; the transcript keeps the newest 24k chars of them anyway. */
+/** Newest active-path rows read per thread; the transcript keeps the newest 24k chars of them anyway. */
 const MESSAGE_LIMIT = 400
 const REJECTION_TITLES = 20
 
@@ -31,16 +32,23 @@ const retryPending = new Set<string>()
 
 type PassOpts = { now?: Date; onlyConversationIds?: string[]; chatFn?: typeof chat; jev?: typeof jevCheck }
 
-async function newMessages(conversationId: string, since: Date | null) {
+/**
+ * The ACTIVE branch's messages since the watermark (final review m9: a regenerated or abandoned
+ * reply is not what Tony saw last, so it must not read as part of the conversation), newest
+ * MESSAGE_LIMIT of them, plus `through`: the newest message on ANY branch since the watermark.
+ * The watermark advances over every branch — the candidate count covers them all, so a newer
+ * off-branch row left uncovered would make the thread a candidate again forever.
+ */
+async function newMessages(conversationId: string, since: Date | null): Promise<{ msgs: TranscriptMessage[]; through: Date | null }> {
   // Millisecond-truncated like threadCandidates: the watermark is a JS Date.
-  const rows = await useDb().select({
-    id: conversationMessages.id, role: conversationMessages.role, content: conversationMessages.content,
-    toolCalls: conversationMessages.toolCalls, createdAt: conversationMessages.createdAt
-  }).from(conversationMessages).where(and(
-    eq(conversationMessages.conversationId, conversationId),
-    since ? sql`date_trunc('milliseconds', ${conversationMessages.createdAt}) > ${since.toISOString()}::timestamptz` : undefined
-  )).orderBy(desc(conversationMessages.createdAt)).limit(MESSAGE_LIMIT)
-  return rows.reverse()
+  const after = since ? sql`date_trunc('milliseconds', ${conversationMessages.createdAt}) > ${since.toISOString()}::timestamptz` : undefined
+  const [latest] = await useDb().select({ at: conversationMessages.createdAt }).from(conversationMessages)
+    .where(and(eq(conversationMessages.conversationId, conversationId), after))
+    .orderBy(desc(conversationMessages.createdAt)).limit(1)
+  if (!latest) return { msgs: [], through: null }
+  const { rows } = await loadActivePath(conversationId)
+  const msgs = rows.filter(r => !since || r.createdAt.getTime() > since.getTime()).slice(-MESSAGE_LIMIT)
+  return { msgs, through: latest.at }
 }
 
 async function rejectionTitles(): Promise<string[]> {
@@ -63,9 +71,10 @@ function targetAtPass(p: Proposal, profile: Snapshot, skills: Map<string, Snapsh
 }
 
 async function reflectThread(conversationId: string, since: Date | null, opts: PassOpts): Promise<number> {
-  const msgs = await newMessages(conversationId, since)
-  if (!msgs.length) return 0
-  const through = msgs[msgs.length - 1]!.createdAt
+  const { msgs, through } = await newMessages(conversationId, since)
+  if (!through) return 0
+  // Everything new is on another branch: nothing to read, but the watermark still moves.
+  if (!msgs.length) { await markReflected(conversationId, through); return 0 }
   const transcript = buildThreadTranscript(msgs)
   // Snapshot every target the model may rewrite, together with its hash, before the call.
   const skills = await Promise.all((await listSkills()).map(async (s) => {
