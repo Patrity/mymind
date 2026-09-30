@@ -23,7 +23,20 @@
 // Polyfill both auto-imports as globals BEFORE importing anything that calls them (same pattern
 // as scripts/seed-skills.ts).
 ;(globalThis as any).useRuntimeConfig = () => ({ databaseUrl: process.env.DATABASE_URL })
-;(globalThis as any).$fetch = globalThis.fetch
+// chat() calls `$fetch(url, { method, headers, body: <object> })` and expects PARSED JSON back
+// (ofetch semantics). Plain `fetch` sends "[object Object]" and returns a Response, so every call
+// failed with "model returned no usable content" (seen on the first real run, cycle 76 Task 11).
+// ofetch is only a transitive dependency, so this is a minimal self-contained shim.
+;(globalThis as any).$fetch = async (url: string, opts: { method?: string, headers?: Record<string, string>, body?: unknown, signal?: AbortSignal } = {}) => {
+  const res = await fetch(url, {
+    method: opts.method,
+    signal: opts.signal,
+    headers: { 'content-type': 'application/json', ...opts.headers },
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json()
+}
 
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
