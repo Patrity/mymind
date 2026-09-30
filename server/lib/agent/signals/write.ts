@@ -76,6 +76,9 @@ export async function noteUserReply(
   const open = await jobMessages().where(and(
     isNotNull(agentRuns.jobId),
     eq(agentRuns.conversationId, mainId), // a run's reply is written to its own thread
+    // Bounds the scan of main's runs, which otherwise grows forever (final review m6): a run
+    // whose message is still in its 2 h window started well inside the 14 days the jobs pass reads.
+    gte(agentRuns.createdAt, new Date(i.at.getTime() - CLOSE_LOOKBACK_MS)),
     gte(conversationMessages.createdAt, new Date(i.at.getTime() - OBSERVATION_WINDOW_MS)),
     lte(conversationMessages.createdAt, i.at)
   ))

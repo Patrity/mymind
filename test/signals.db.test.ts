@@ -248,6 +248,17 @@ describe('noteUserReply', () => {
     expect(await signalsFor(inOther.messageId)).toHaveLength(0)
   })
 
+  it('only runs from the last 14 days are scanned (final review m6)', async () => {
+    const m = await jobMessage(jobA, day(18))
+    // A run row older than 14 days: outside the scan even though its message is in the window.
+    await db().update(agentRuns).set({ createdAt: new Date(day(18).getTime() - 15 * 24 * HOUR) }).where(eq(agentRuns.id, m.runId))
+    expect(await reply('seen it', new Date(day(18).getTime() + HOUR))).toBe(0)
+    expect(await signalsFor(m.messageId)).toHaveLength(0)
+    // The same message with a run inside the 14 days is marked.
+    await db().update(agentRuns).set({ createdAt: day(18) }).where(eq(agentRuns.id, m.runId))
+    expect(await reply('seen it', new Date(day(18).getTime() + HOUR))).toBe(1)
+  })
+
   it('an assistant message of a non-job run is never marked', async () => {
     const [m] = await db().insert(conversationMessages).values({
       conversationId: scratchMain, role: 'assistant', content: `${TAG}chat`, modality: 'text', createdAt: day(8)
