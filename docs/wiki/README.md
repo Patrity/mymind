@@ -33,5 +33,6 @@ The **living** reference for how each shipped system works **today** — one pag
 | Agent jobs (markdown-configured cron/every/at/event schedules, heartbeat, reminders, `/jobs`) | [agent-jobs.md](agent-jobs.md) | built (cycle 74; `deliver` targets cycle 75) |
 | Agent skills (markdown how-tos in `agent_skills`, tier-1 index, `/skills`, revisions) | [agent-skills.md](agent-skills.md) | built (cycle 74; shipped cycle 49) |
 | Channels (two-way iMessage via BlueBubbles, outbound email via Resend, presence-aware job delivery, outbox, tapback approvals) | [channels.md](channels.md) | built (cycle 75) |
-| Voice studio (`/voice` — authoring Breeze presets, reading MyMind aloud) | [voice-studio.md](voice-studio.md) | shipped |
+| Bridget self-improvement (reflector, proposal gate, About Tony profile, engagement signals, job tuning, `list_reviews`/`decide_review`) | [self-improvement.md](self-improvement.md) | built (cycle 76, unmerged) |
+| Voice studio (Settings → Voice since cycle 76; `/voice` redirects — authoring Breeze presets, reading MyMind aloud) | [voice-studio.md](voice-studio.md) | shipped |
 | Voice agent integration guide (legacy Kyutai/Unmute reference) | [voice-agent-integration.md](voice-agent-integration.md) | shipped |

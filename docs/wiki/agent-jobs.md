@@ -2,7 +2,7 @@
 title: Agent Jobs (markdown-configured schedules and triggers)
 status: shipped  # cycle 74 deployed 2026-09-29; the reliability pass (0059-0062) is built, not deployed
 cycle: 74 (`deliver` targets: cycle 75)
-updated: 2026-09-30
+updated: 2026-09-30  # cycle 76: digest seed, engagement signals, nightly tuning (built, unmerged)
 ---
 
 # Agent Jobs
@@ -316,6 +316,7 @@ starts). It installs a slug only if it is missing, always **disabled**, with act
 | `evening-wrap` | `cron 0 21 * * *` | `context: light`, `deliver: [auto]` |
 | `heartbeat` | `every 30m`, `active_hours: 08:00-22:00` | `context: light`, `deliver: [auto]`; checklist body; `NO_REPLY` when nothing needs attention |
 | `session-digest` | `event cc.session_end` | `thread: main`, `context: light`, `deliver: [app]`; "Propose tasks rather than creating duplicates" |
+| `self-improvement-digest` (cycle 76) | `cron 30 21 * * *` | `context: light`, `deliver: [auto]`; lists today's `agent_improvements` via `list_improvements`, `NO_REPLY` when none. Born with its `deliver:` line, so it has no V1 and is never upgraded |
 
 **Seed upgrade (cycle 75).** `upgradeSeedJobs()` runs on boot right after `installSeedJobs()`. It
 moves a seed from its cycle-74 content (`SEED_JOBS_V1`) to the current one, which adds the
@@ -328,6 +329,19 @@ with a warning until the channel is configured.
 The seeds name no `timezone:`, so they follow the Agent timezone setting (see [Timezone](#timezone)),
 or the server zone when it is absent. On the dev box that is `America/Chicago`; **prod runs
 `Etc/UTC`, so set the Agent timezone before enabling any seed.**
+
+## Self-improvement: signals and nightly tuning (cycle 76, built)
+
+Every job message a run posts opens a 2 h observation window. Tony's reply, stop/thanks words, a
+tapback, or silence (`ignored`) becomes an `agent_signals` row. A nightly pass (hourly tick,
+running once a day from 03:00 agent time) shows the reflector each enabled job with **≥ 5
+signals in 14 days**. It may propose `job.edit` or `job.disable`:
+
+- `job.edit` of an agent-authored job may auto-apply (CAS on the hash read before the call);
+- a Tony-authored job, any change to `enabled`, and every `job.disable` go to `/review`;
+- evidence must quote the job's own signal snippets.
+
+See [self-improvement.md](self-improvement.md).
 
 ## Delivery (cycle 75)
 
@@ -448,6 +462,10 @@ where r.created_at > now() - interval '1 day' group by 1 order by 2 desc;
 select created_at, actor, run_id from agent_config_revisions
 where target_kind = 'job' and target_id = (select id from agent_jobs where slug = 'heartbeat')
 order by created_at desc;
+
+-- engagement signals per job over the tuning window (cycle 76)
+select j.slug, s.kind, count(*) from agent_signals s join agent_jobs j on j.id = s.job_id
+where s.created_at > now() - interval '14 days' group by 1, 2 order by 1, 2;
 
 -- event dedupe rows
 select j.slug, f.event_key, f.fired_at from agent_job_fires f join agent_jobs j on j.id = f.job_id

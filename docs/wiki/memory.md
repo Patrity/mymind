@@ -2,7 +2,7 @@
 title: Memory System
 status: shipped
 cycle: 72
-updated: 2026-09-26
+updated: 2026-09-30
 mymind_id: c17a75f7-52f5-4024-8e2d-c0e173245096
 mymind_hash: d4ea96997da904ab23477600de75a585a82d29a5a5fac0cc1b515bda45aea925
 ---
@@ -179,6 +179,20 @@ one.
   `archive-new`, `archive-both`. `archivalPlan` (`server/lib/review/conflict-resolution.ts`) is a
   pure, tested function deciding which rows to archive — inverting it would silently archive the
   memory the user chose to keep. Every branch archives; nothing here deletes.
+
+**Deciding from an agent session (cycle 76, built on `feat/bridget-self-improvement`).** The
+choices each item offers come from ONE registry, `shared/review/choices.ts` `reviewChoices`. The
+page renders its buttons from it:
+- unreviewed memories: `approve` "Mark reviewed" and `reject` "Discard";
+- conflicts: the four resolutions above;
+- other kinds: approve and reject.
+
+The approve, reject and resolve routes are thin wrappers over
+`server/services/review-decisions.ts` `decideReview`. Bridget's **`list_reviews`** (read, also
+on MCP) lists pending items with their `choices`. **`decide_review`** calls the same service, so
+undo tokens and live events are identical. It is dangerous and **confirmed by Tony on every
+call** (app card or iMessage 👍). It is never allowlistable, refused in headless runs, and absent
+from MCP. See [self-improvement.md](self-improvement.md#review-and-the-review-tools).
 
 ⚠️ `POST /api/agent/undo` takes `{ token }`, **not** `{ undoToken }` (zod rejects the latter with a
 500). The archive response's field is named `undoToken`, so the asymmetry is easy to get wrong.

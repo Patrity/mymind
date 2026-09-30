@@ -2,7 +2,7 @@
 title: Agent Skills
 status: built
 cycle: 74
-updated: 2026-09-28
+updated: 2026-09-30  # cycle 76: reflection provenance + learned badge (built, unmerged)
 ---
 
 # Agent Skills
@@ -68,6 +68,14 @@ project docs (spec D7).
 - `server/services/skills.ts` is the only module that knows this mapping. `listSkills`,
   `getSkill`, the prompt's Tier-1 index, `use_skill`, the slash-command skill tier and MCP all read
   `agent_skills`.
+
+- **Reflection (cycle 76, built on `feat/bridget-self-improvement`):** the self-improvement
+  reflector can propose `skill.create` / `skill.edit`. A new skill, or an edit of a skill whose
+  `source` is `agent`, may **auto-apply**. An edit of a human skill, or anything that trips the
+  sensitive-content check (exec, shell, credentials, deletion…), goes to `/review`. Applied
+  changes write a revision with actor `agent` and `agent_config_revisions.improvement_id` set. On
+  apply the `source:` line is re-derived (`agent` on a create, the existing author on an edit).
+  See [self-improvement.md](self-improvement.md).
 
 ## Autonomy & safety
 
@@ -143,6 +151,9 @@ Delete a skill permanently (reversible via undo). Prefer `edit_skill` with `acti
   message clears on the next edit. Revert is disabled while the editor is dirty. There is a
   **Delete skill** button and a `beforeunload` guard. The view mode is persisted in the
   `mm.config.viewMode` cookie, shared with `/jobs`.
+- **Learned badge (cycle 76):** in `RevisionsPanel`, a revision with a non-null `improvementId`
+  (written by reflection) shows a **learned** badge (`data-testid="learned-badge"`) and a link to
+  the source thread.
 - The Settings "Agent Skills" tab is gone (`SkillsTab.vue` and `pages/settings/skills.vue` were
   deleted).
 - The revisions column is hidden below the `lg` breakpoint. There is no mobile layout for it yet.

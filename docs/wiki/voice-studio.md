@@ -2,7 +2,7 @@
 title: Voice Studio
 status: shipped
 cycle: 67
-updated: 2026-09-20
+updated: 2026-09-30
 mymind_id: b7dc4979-0fa0-41b0-8774-c6c2c470748c
 mymind_hash: 18834ce7821633bd8927a95c1dd15abeeca58b000d508da9a50f1a819a849d10
 ---
@@ -10,6 +10,10 @@ mymind_hash: 18834ce7821633bd8927a95c1dd15abeeca58b000d508da9a50f1a819a849d10
 # Voice Studio
 
 `/voice` — where a voice is **authored**, and where anything in MyMind can be **read aloud**.
+
+> **Cycle 76 (built on `feat/bridget-self-improvement`, unmerged):** the studio now lives at
+> **Settings → Voice** (`app/pages/settings/voice.vue`), unchanged. `/voice` 301-redirects there,
+> and the main-nav entry is gone. Read "`/voice`" below as that page.
 
 Before cycle 61 this route was a redirect to `/agent` (cycle 28 merged the old talk page into the
 unified surface). Cycle 61 gave `/voice` a new job rather than restoring the old one: Breeze TTS 2
