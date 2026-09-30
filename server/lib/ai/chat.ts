@@ -29,11 +29,16 @@ export function extractContent(res: unknown): string {
   return content
 }
 
+/** Per-attempt request timeout when the caller names none. */
+export const CHAT_TIMEOUT_MS = 60_000
+
 // `role` here is a registry Usage (e.g. 'bulk', 'vision').
+// `timeoutMs` bounds each attempt of the failover chain (default CHAT_TIMEOUT_MS): a caller that
+// asks for a long output (the reflector's full skill/profile files) needs more than a minute.
 export async function chat(
   role: Usage,
   messages: ChatMessage[],
-  opts: { temperature?: number, maxTokens?: number } = {}
+  opts: { temperature?: number, maxTokens?: number, timeoutMs?: number } = {}
 ): Promise<string> {
   return withFailover(role, async (m) => {
     const res = await $fetch<unknown>(
@@ -41,7 +46,7 @@ export async function chat(
       {
         method: 'POST',
         headers: m.apiKey ? { authorization: `Bearer ${m.apiKey}` } : undefined,
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? CHAT_TIMEOUT_MS),
         body: { model: m.modelId, messages, temperature: opts.temperature ?? 0.2, max_tokens: opts.maxTokens ?? 600 }
       }
     )

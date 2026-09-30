@@ -118,7 +118,8 @@ describe('callReflector', () => {
     expect(r).toEqual({ ok: true, proposals: [item()] })
     expect(calls[0]![0]).toBe('reasoning')
     expect(calls[0]![1]).toBe(msgs)
-    expect(calls[0]![2]).toEqual({ temperature: 0.2, maxTokens: 1500 })
+    // Final review I1: room for a full profile or skill file per proposal, and time to write it.
+    expect(calls[0]![2]).toEqual({ temperature: 0.2, maxTokens: 6000, timeoutMs: 120_000 })
   })
 
   it('returns ok:false instead of throwing when the model call fails', async () => {
@@ -142,8 +143,9 @@ describe('reflection prompts', () => {
     expect(m[0]!.content).toContain('at most 4 KB')
     expect(m[0]!.content).toContain('at most 1,500 tokens')
     // Task 11a: one proposal per lesson, split by kind (observed: a receipts procedure merged into a profile edit).
-    expect(m[0]!.content).toContain('One proposal per distinct lesson; never merge unrelated lessons into one proposal.')
-    expect(m[0]!.content).toContain('A procedure (where or how to do something) is a skill, never a profile edit; a preference about Tony is a profile edit, never a skill.')
+    expect(m[0]!.content).toContain('a procedure (where or how to do something) is a skill, a preference about Tony is a profile edit, and the two are never merged.')
+    // Final review I1: one worked two-proposal example (procedure → skill, preference → profile).
+    expect(m[0]!.content).toContain('yields TWO proposals: skill.create "filing-receipts" (a procedure: where receipts go) and profile.edit (a preference: bullet points).')
     const user = m[1]!.content as string
     expect(user).toContain('deploy-check')
     expect(user).toMatch(/deploy-check.*Bridget/)
