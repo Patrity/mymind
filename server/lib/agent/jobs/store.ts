@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto'
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { agentJobs, type AgentJobRow } from '../../../db/schema'
+import { agentJobs, agentJobFires, type AgentJobRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import { recordRevision, getRevision, type RevisionActor } from '../config/revisions'
 import { setFrontmatterKey } from '../../../../shared/utils/frontmatter'
@@ -26,6 +26,8 @@ export { ConflictError }
 export { getDefaultTimezone }
 
 export const MAX_ENABLED_JOBS = 50
+/** agent_job_fires key deduping an `at` job's one "did not fire" note (tick.ts noteAtNotFired). */
+export const AT_NOT_FIRED_KEY = 'at:not-fired'
 /** Final review I1: at most this many `at` jobs Bridget may CREATE per rolling hour. With the
  *  5-minute minimum lead on agent-written `at` times, this bounds a self-perpetuating wake chain
  *  (each fire scheduling the next, or fanning out) that the 50-enabled cap alone never sees —
@@ -351,8 +353,9 @@ async function writeJob(
       }
       // Re-checked IN the UPDATE so a write landing between the read above and this statement
       // still loses, rather than clobbering a concurrent writer (mirrors saveSkillSource).
+      const reset = rearm(existing, spec, derived.nextRunAt)
       const [updated] = await tx.update(agentJobs)
-        .set({ ...derived, source: sourceFor(actor, existing.source), ...rearm(existing, spec, derived.nextRunAt), updatedAt: sql`now()` })
+        .set({ ...derived, source: sourceFor(actor, existing.source), ...reset, updatedAt: sql`now()` })
         .where(and(eq(agentJobs.id, existing.id), eq(agentJobs.contentHash, expectedHash)))
         .returning()
       if (!updated) {
@@ -360,6 +363,11 @@ async function writeJob(
         // this same tx.
         const [now] = await tx.select().from(agentJobs).where(eq(agentJobs.slug, slug)).limit(1)
         return { kind: 'conflict', current: { content: now?.content ?? '', contentHash: now?.contentHash ?? '' } }
+      }
+      // A re-armed `at` job is a new reminder: drop the old "did not fire" dedupe marker, so if
+      // this one gives up too, Tony hears about it (final review M2).
+      if ('firedAt' in reset) {
+        await tx.delete(agentJobFires).where(and(eq(agentJobFires.jobId, updated.id), eq(agentJobFires.eventKey, AT_NOT_FIRED_KEY)))
       }
       await recordRevision({ targetKind: 'job', targetId: updated.id, content, actor, runId }, tx)
       return { kind: 'ok', row: updated, wasCreate: false }
@@ -408,9 +416,14 @@ export async function saveJob(
  *  must still be switchable off (the UI switch, a fired `at` job's self-disable, the 3-failure
  *  auto-disable). Only `enabled`, `next_run_at` and the content change; the other derived
  *  columns (and any parse_error) stay as they were. */
-export async function setJobEnabled(slug: string, enabled: boolean, actor: 'human' | 'agent' | 'system', runId: string | null = null): Promise<JobDTO> {
+export async function setJobEnabled(slug: string, enabled: boolean, actor: 'human' | 'agent' | 'system', runId: string | null = null, expectedHash?: string): Promise<JobDTO> {
   const existing = await rowBySlug(slug)
   if (!existing) throw new JobNotFoundError(slug)
+  // `expectedHash` (the crash sweep): only flip the content the caller looked at. A write since
+  // (Tony re-arming the reminder) wins, and the flip is a ConflictError instead.
+  if (expectedHash !== undefined && existing.contentHash !== expectedHash) {
+    throw new ConflictError({ content: existing.content, contentHash: existing.contentHash })
+  }
   const content = setFrontmatterKey(existing.content, 'enabled', enabled)
   if (enabled) return writeJob(slug, content, existing.contentHash, actor, runId)
 

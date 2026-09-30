@@ -36,7 +36,7 @@ import {
 import { createConversation } from '../server/services/conversations'
 import { createRun } from '../server/lib/agent/runtime/runs'
 import type { wake, WakeRequest } from '../server/lib/agent/runtime/wake'
-import { createJob, setJobEnabled } from '../server/lib/agent/jobs/store'
+import { createJob, setJobEnabled, ConflictError } from '../server/lib/agent/jobs/store'
 import { resolveAtInstant } from '../server/lib/agent/jobs/schedule'
 import { jobsTick, runJobNow, sweepCrashedFires, MAX_FIRE_FAILURES } from '../server/lib/agent/jobs/tick'
 import { fireEvent, dueTaskEvents } from '../server/lib/agent/jobs/events'
@@ -350,29 +350,63 @@ describe('crash sweep', () => {
 
     const slugs = [crashed, ran, fresh, ev, skippedAt].map(j => j.slug)
     const out = await sweepCrashedFires({ onlySlugs: slugs })
-    expect(out).toEqual({ rearmed: [`${PREFIX}sw-crashed`], gaveUp: [], clearedFires: 1 })
+    expect(out).toEqual({ rearmed: [`${PREFIX}sw-crashed`], gaveUp: [], disabled: [`${PREFIX}sw-ran`], clearedFires: 1 })
 
     const c = await row(`${PREFIX}sw-crashed`)
     expect(c.enabled).toBe(true)
     expect(c.firedAt).toBeNull()
     expect(c.fireFailures).toBe(1) // a crash counts as a failed wake
     expect(c.nextRunAt!.getTime()).toBe(resolveAtInstant(when, 'UTC')!.getTime())
-    expect((await row(`${PREFIX}sw-ran`)).firedAt).not.toBeNull()
+    const ranRow = await row(`${PREFIX}sw-ran`)
+    expect(ranRow.firedAt).not.toBeNull()
+    expect(ranRow.enabled).toBe(false) // it fired: the missed self-disable is done now
     expect((await row(`${PREFIX}sw-fresh`)).firedAt).not.toBeNull()
     expect((await firesFor(ev.id)).map(f => f.eventKey).sort()).toEqual(['in-flight', 'settled'])
     expect(await firesFor(skippedAt.id)).toHaveLength(1)
     expect((await row(`${PREFIX}sw-notfired`)).firedAt).not.toBeNull()
 
     // Idempotent: a second sweep finds nothing.
-    expect(await sweepCrashedFires({ onlySlugs: slugs })).toEqual({ rearmed: [], gaveUp: [], clearedFires: 0 })
+    expect(await sweepCrashedFires({ onlySlugs: slugs })).toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 0 })
     await finishJobRuns(ran.id)
+  })
+
+  it('disables a fired `at` job whose self-disable never happened, with no note, and leaves a re-armed one alone', async () => {
+    const when = new Date(Date.now() + 3600_000).toISOString()
+    const atFm = md(`trigger: at ${when}\nenabled: true`, 'Fired.')
+    // The run landed, then the process died before the tick's setJobEnabled(false).
+    const stuck = await createJob({ slug: `${PREFIX}sw-stuck`, content: atFm, actor: 'human' })
+    // Same shape, but Tony re-armed it (new content) after the sweep read the row: the disable is
+    // pinned to the content hash it read, so the re-arm wins.
+    const rearmedByTony = await createJob({ slug: `${PREFIX}sw-stuck-rearmed`, content: atFm, actor: 'human' })
+    for (const j of [stuck, rearmedByTony]) {
+      await db().update(agentJobs).set({ firedAt: sql`now() - interval '5 minutes'`, nextRunAt: null }).where(eq(agentJobs.id, j.id))
+      await jobRunRow(j.id)
+      await finishJobRuns(j.id)
+    }
+    const before = (await notFiredNotes()).length
+    const out = await sweepCrashedFires({ onlySlugs: [stuck.slug], mainConversationId: scratchMain })
+    expect(out).toEqual({ rearmed: [], gaveUp: [], disabled: [stuck.slug], clearedFires: 0 })
+    const r = await row(stuck.slug)
+    expect(r.enabled).toBe(false)
+    expect(r.content).toMatch(/^enabled: false$/m)
+    expect(r.firedAt).not.toBeNull()
+    expect((await notFiredNotes()).length).toBe(before)
+    expect(await sweepCrashedFires({ onlySlugs: [stuck.slug], mainConversationId: scratchMain }))
+      .toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 0 })
+
+    // The stale-hash disable: exactly what the sweep would call after a concurrent re-arm.
+    const staleHash = (await row(rearmedByTony.slug)).contentHash
+    await db().update(agentJobs).set({ content: atFm.replace('Fired.', 'Re-armed.'), contentHash: 'rearmed-by-tony' })
+      .where(eq(agentJobs.id, rearmedByTony.id))
+    await expect(setJobEnabled(rearmedByTony.slug, false, 'system', null, staleHash)).rejects.toBeInstanceOf(ConflictError)
+    expect((await row(rearmedByTony.slug)).enabled).toBe(true)
   })
 
   it('keeps an unrecorded fire row whose run did land (crash between wake and run_id write)', async () => {
     const ev = await createJob({ slug: `${PREFIX}sw-landed`, content: md('trigger: event cc.session_end\nenabled: true', 'L.'), actor: 'human' })
     await db().insert(agentJobFires).values({ jobId: ev.id, eventKey: 'landed', firedAt: sql`now() - interval '10 minutes'` })
     await jobRunRow(ev.id) // created after fired_at, run_id never written
-    expect(await sweepCrashedFires({ onlySlugs: [ev.slug] })).toEqual({ rearmed: [], gaveUp: [], clearedFires: 0 })
+    expect(await sweepCrashedFires({ onlySlugs: [ev.slug] })).toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 0 })
     expect(await firesFor(ev.id)).toHaveLength(1)
     await finishJobRuns(ev.id)
   })
@@ -380,13 +414,13 @@ describe('crash sweep', () => {
   it('the `now` seam moves the 2-minute threshold', async () => {
     const ev = await createJob({ slug: `${PREFIX}sw-now`, content: md('trigger: event cc.session_end\nenabled: true', 'N.'), actor: 'human' })
     await db().insert(agentJobFires).values({ jobId: ev.id, eventKey: 'young' })
-    expect(await sweepCrashedFires({ onlySlugs: [ev.slug] })).toEqual({ rearmed: [], gaveUp: [], clearedFires: 0 })
+    expect(await sweepCrashedFires({ onlySlugs: [ev.slug] })).toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 0 })
     const later = new Date(Date.now() + 3 * 60_000)
-    expect(await sweepCrashedFires({ onlySlugs: [ev.slug], now: later })).toEqual({ rearmed: [], gaveUp: [], clearedFires: 1 })
+    expect(await sweepCrashedFires({ onlySlugs: [ev.slug], now: later })).toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 1 })
   })
 
   it('scoped to nothing, it touches nothing', async () => {
-    expect(await sweepCrashedFires({ onlySlugs: [] })).toEqual({ rearmed: [], gaveUp: [], clearedFires: 0 })
+    expect(await sweepCrashedFires({ onlySlugs: [] })).toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 0 })
   })
 })
 
@@ -428,7 +462,7 @@ describe('retry cap: an `at` job gives up after MAX_FIRE_FAILURES failed wakes',
     await db().update(agentJobs).set({ firedAt: sql`now() - interval '5 minutes'`, nextRunAt: null, fireFailures: MAX_FIRE_FAILURES - 1 })
       .where(eq(agentJobs.id, job.id))
     const out = await sweepCrashedFires({ onlySlugs: [slug], mainConversationId: scratchMain })
-    expect(out).toEqual({ rearmed: [], gaveUp: [slug], clearedFires: 0 })
+    expect(out).toEqual({ rearmed: [], gaveUp: [slug], disabled: [], clearedFires: 0 })
     const r = await row(slug)
     expect(r.enabled).toBe(false)
     expect(r.fireFailures).toBe(MAX_FIRE_FAILURES)
@@ -436,7 +470,7 @@ describe('retry cap: an `at` job gives up after MAX_FIRE_FAILURES failed wakes',
     expect(notes).toHaveLength(1)
     expect(notes[0]!.content).toContain(`waking it failed ${MAX_FIRE_FAILURES} times in a row`)
     // Idempotent: a disabled job is not swept again.
-    expect(await sweepCrashedFires({ onlySlugs: [slug], mainConversationId: scratchMain })).toEqual({ rearmed: [], gaveUp: [], clearedFires: 0 })
+    expect(await sweepCrashedFires({ onlySlugs: [slug], mainConversationId: scratchMain })).toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 0 })
   })
 
   it('a run that is actually created resets the count', async () => {
@@ -456,6 +490,23 @@ describe('retry cap: an `at` job gives up after MAX_FIRE_FAILURES failed wakes',
     await setJobEnabled(slug, false, 'human')
     await setJobEnabled(slug, true, 'human')
     expect((await row(slug)).fireFailures).toBe(0)
+  })
+
+  it('a re-armed reminder that gives up again posts its note again', async () => {
+    const slug = `${PREFIX}cap-renote`
+    const job = await atJob(slug)
+    const giveUp = async () => {
+      await db().update(agentJobs).set({ fireFailures: MAX_FIRE_FAILURES - 1 }).where(eq(agentJobs.id, job.id))
+      await makeDue(slug)
+      await jobsTick({ onlySlugs: [slug], wakeFn: throwingWake, mainConversationId: scratchMain })
+      expect((await row(slug)).enabled).toBe(false)
+    }
+    await giveUp()
+    expect(await notesFor(slug)).toHaveLength(1)
+    await setJobEnabled(slug, true, 'human')
+    expect((await firesFor(job.id)).map(f => f.eventKey)).not.toContain('at:not-fired')
+    await giveUp()
+    expect(await notesFor(slug)).toHaveLength(2)
   })
 })
 
@@ -477,7 +528,7 @@ describe('the sweep re-checks staleness in its UPDATE', () => {
       const sweep = sweepCrashedFires({ onlySlugs: [slug], mainConversationId: scratchMain })
       await new Promise(r => setTimeout(r, 500))
       await other.query('commit')
-      expect(await sweep).toEqual({ rearmed: [], gaveUp: [], clearedFires: 0 })
+      expect(await sweep).toEqual({ rearmed: [], gaveUp: [], disabled: [], clearedFires: 0 })
     } finally {
       await other.query('rollback').catch(() => {})
       await other.end()

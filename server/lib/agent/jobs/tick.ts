@@ -25,7 +25,7 @@ import { getOrCreateMain } from '../runtime/sessions'
 import { appendEvent } from '../../../services/conversations'
 import { parseJob, type JobSpec } from './parse'
 import { nextRunAt, inActiveHours, resolveAtInstant } from './schedule'
-import { setJobEnabled } from './store'
+import { setJobEnabled, ConflictError, AT_NOT_FIRED_KEY } from './store'
 import { getDefaultTimezone } from './timezone'
 
 export const JOBS_CLAIM_LIMIT = 10
@@ -175,7 +175,7 @@ async function pruneFiredAtJobs(onlySlugs: string[] | undefined): Promise<number
  * having run — tell Tony, once per job (deduped through agent_job_fires, key `at:not-fired`).
  */
 async function noteAtNotFired(jobId: string, slug: string, reason: string, mainConversationId?: string): Promise<void> {
-  const inserted = await useDb().insert(agentJobFires).values({ jobId, eventKey: 'at:not-fired' })
+  const inserted = await useDb().insert(agentJobFires).values({ jobId, eventKey: AT_NOT_FIRED_KEY })
     .onConflictDoNothing().returning({ jobId: agentJobFires.jobId })
   if (!inserted.length) return
   const mainId = mainConversationId ?? await getOrCreateMain()
@@ -280,12 +280,16 @@ export async function runJobNow(slug: string, deps: { wakeFn?: WakeFn; allowDisa
  * its claim / fire rows BEFORE its wake, so a crash in between would otherwise lose it:
  * - an `at` job claimed more than 2 min ago, still enabled (the tick disables it only after the
  *   fire), with no run of it created since the claim → re-armed, and the next tick fires it;
+ * - an `at` job claimed more than 2 min ago, still enabled, whose run WAS created since the claim
+ *   (the crash, or a failed write, hit between the fire and the tick's self-disable) → disabled,
+ *   with no note: it did fire. Otherwise it shows enabled forever, is never pruned, and holds
+ *   one of the MAX_ENABLED_JOBS slots;
  * - an event fire row more than 2 min old with no run_id and no run of its job since → deleted,
  *   so the key can fire again. task.due re-fires on the next dueTaskEvents tick; a lost
  *   cc.session_end cannot (its payload is gone) — the delete only frees the key for a redelivery.
  * Idempotent: a repaired row no longer matches. `onlySlugs`/`now` are the test seams.
  */
-export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date; mainConversationId?: string } = {}): Promise<{ rearmed: string[]; gaveUp: string[]; clearedFires: number }> {
+export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date; mainConversationId?: string } = {}): Promise<{ rearmed: string[]; gaveUp: string[]; disabled: string[]; clearedFires: number }> {
   const now = opts.now ? sql`${opts.now.toISOString()}::timestamptz` : sql`now()`
   const stale = sql`(${now} - make_interval(secs => ${CRASHED_FIRE_AFTER_MS / 1000}))`
   const crashedAt = await useDb().execute(sql`
@@ -313,6 +317,23 @@ export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date
     console.warn(`[jobs] "${r.slug}" was claimed at ${firedAt.toISOString()} but never woke (crash?) — re-armed`)
     rearmed.push(r.slug)
   }
+  const firedStillOn = await useDb().execute(sql`
+    select j.slug, j.content_hash from agent_jobs j
+    where j.trigger_kind = 'at' and j.enabled and j.fired_at is not null and j.fired_at < ${stale}
+      and exists (select 1 from agent_runs r where r.job_id = j.id and r.created_at >= j.fired_at)
+      ${slugScope(opts.onlySlugs)}`)
+  const disabled: string[] = []
+  for (const r of firedStillOn.rows as { slug: string; content_hash: string }[]) {
+    // Pinned to the hash just read: a re-arm since the select changes the content and wins.
+    try {
+      await setJobEnabled(r.slug, false, 'system', null, r.content_hash)
+    } catch (err) {
+      if (!(err instanceof ConflictError)) console.error(`[jobs] disabling fired at-job "${r.slug}" failed:`, err)
+      continue
+    }
+    console.warn(`[jobs] "${r.slug}" fired but was never turned off (crash?) — disabled`)
+    disabled.push(r.slug)
+  }
   const cleared = await useDb().execute(sql`
     delete from agent_job_fires f using agent_jobs j
     where f.job_id = j.id and j.trigger_kind = 'event' and f.run_id is null
@@ -324,5 +345,5 @@ export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date
   for (const r of cleared.rows as { slug: string; event_key: string }[]) {
     console.warn(`[jobs] fire "${r.event_key}" of "${r.slug}" never woke (crash?) — cleared so it can fire again`)
   }
-  return { rearmed, gaveUp, clearedFires: cleared.rows.length }
+  return { rearmed, gaveUp, disabled, clearedFires: cleared.rows.length }
 }
