@@ -71,10 +71,11 @@ export function gate(p: Proposal, ctx: GateContext): GateResult {
   if (!p.evidence.every(q => input.includes(normaliseWs(q)))) return drop('evidence')
 
   // 3. Rejection memory, on the change rather than the document: otherwise one rejected edit to a
-  //    long profile/skill would silence every later edit to it for 30 days. Empty deltas never match.
+  //    long profile/skill would silence every later edit to it for 30 days. Empty deltas never match
+  //    (checking the proposal side suffices: similarity is only non-zero when both sides have shingles).
   const content = p.content ?? ''
   const delta = contentDelta(content, ctx.currentContent)
-  if (delta && ctx.recentRejections.some(r => r.kind === p.kind && r.target === p.target && r.delta && similarity(delta, r.delta) >= SIMILARITY_REJECT)) {
+  if (delta && ctx.recentRejections.some(r => r.kind === p.kind && r.target === p.target && similarity(delta, r.delta) >= SIMILARITY_REJECT)) {
     return drop('rejected_recently')
   }
 
