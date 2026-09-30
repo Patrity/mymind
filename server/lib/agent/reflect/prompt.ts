@@ -43,18 +43,65 @@ export const JOBS_SYSTEM_PROMPT = [
   '- "job.disable": target is the job slug; no content.'
 ].join('\n')
 
+/** Each active skill's file is shown up to 2 KB, all of them together up to 16 KB (Task 7 ruling). */
+export const SKILL_FILE_SHOWN_MAX = 2048
+export const SKILL_FILES_TOTAL_MAX = 16384
+const TRUNCATED = '\n[… truncated]'
+
+export interface PromptSkill {
+  name: string
+  description: string
+  source: 'human' | 'agent'
+  /** The skill's markdown file. Absent → listed by name only. */
+  content?: string
+  active?: boolean
+}
+
+const bytes = (s: string) => Buffer.byteLength(s, 'utf8')
+
+function truncateBytes(s: string, max: number): string {
+  let out = s.slice(0, max)
+  while (bytes(out) > max) out = out.slice(0, -1)
+  return out
+}
+
+/**
+ * Which skill files go in the thread prompt: every ACTIVE skill's file, cut to 2 KB each, while
+ * the total stays within 16 KB; the rest are listed by name only. `full` is true only when the
+ * whole file was shown — a skill.edit replaces the whole file, so it may only target those
+ * (anything else is written blind and is dropped as `body_not_shown`).
+ */
+export function skillFilesForPrompt(skills: PromptSkill[]): Map<string, { text: string; full: boolean }> {
+  const out = new Map<string, { text: string; full: boolean }>()
+  let used = 0
+  for (const s of skills) {
+    if (s.active === false || !s.content) continue
+    const full = bytes(s.content) <= SKILL_FILE_SHOWN_MAX
+    const text = full ? s.content : truncateBytes(s.content, SKILL_FILE_SHOWN_MAX - bytes(TRUNCATED)) + TRUNCATED
+    if (used + bytes(text) > SKILL_FILES_TOTAL_MAX) continue
+    used += bytes(text)
+    out.set(s.name, { text, full })
+  }
+  return out
+}
+
 export function threadReflectionMessages(i: {
   transcript: string
-  skills: { name: string; description: string; source: 'human' | 'agent' }[]
+  skills: PromptSkill[]
   profile: string
   recentRejections: string[]
 }): ChatMessage[] {
   const skills = i.skills.length
     ? i.skills.map(s => `- ${s.name} (authored by ${s.source === 'agent' ? 'Bridget' : 'Tony'}): ${s.description}`).join('\n')
     : '(none)'
+  const files = skillFilesForPrompt(i.skills)
+  const fileBlocks = files.size
+    ? [...files].map(([name, f]) => `### ${name}${f.full ? '' : ' (truncated — cannot be edited)'}\n${f.text.trim()}`).join('\n\n')
+    : '(none)'
   const rejections = i.recentRejections.length ? i.recentRejections.map(r => `- ${r}`).join('\n') : '(none)'
   const user = [
     '## Existing skills', skills, '',
+    '## Skill files', 'A skill.edit may only target a skill whose full file is shown here; it replaces the whole file.', fileBlocks, '',
     '## Current profile of Tony', i.profile.trim() || '(empty)', '',
     '## Recently rejected proposals (last 30 days)', rejections, '',
     '## Transcript', i.transcript

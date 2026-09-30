@@ -9,6 +9,7 @@
 process.loadEnvFile('.env')
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+vi.stubGlobal('createError', (o: { statusCode: number, message?: string }) => Object.assign(new Error(o.message ?? 'err'), o))
 
 import { and, eq, inArray, like, notInArray, or, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
@@ -17,7 +18,9 @@ import {
   conversations, reviewQueue, settings, type AgentProfileRow
 } from '../server/db/schema'
 import { createConversation } from '../server/services/conversations'
-import { getSkillSource } from '../server/services/skills'
+import { getSkillSource, saveSkillSource } from '../server/services/skills'
+import { getProfileSource, saveProfileSource } from '../server/services/profile'
+import { approveHandlers } from '../server/api/review/kinds'
 import { createJob } from '../server/lib/agent/jobs/store'
 import { SELF_IMPROVEMENT_MODE_KEY, setSelfImprovementMode } from '../server/lib/agent/self-improvement-mode'
 import { SIGNALS_STARTED_AT_KEY } from '../server/lib/agent/signals/write'
@@ -176,6 +179,45 @@ describe('runThreadPass', () => {
     expect((await watermark(t.id))!.getTime()).toBe(t.lastAt.getTime())
   })
 
+  it('reads the CAS base before the model call: Tony editing the profile mid-call is a conflict on approve, never a silent revert', async () => {
+    const t = await scratchThread()
+    const before = await getProfileSource()
+    const tony = `${before.content}\nTony typed this while the reflector was thinking.`.trim()
+    const proposed = `${before.content}\n- ${QUOTE}`.trim()
+    const chatFn = vi.fn(async () => {
+      await saveProfileSource(tony, (await getProfileSource()).contentHash, 'human')
+      return JSON.stringify({ proposals: [{ kind: 'profile.edit', target: 'profile', content: proposed, reason: 'stated', confidence: 0.9, evidence: [QUOTE] }] })
+    })
+    await runThreadPass({ now: NOW, onlyConversationIds: [t.id], chatFn, jev })
+    const [imp] = await db().select().from(agentImprovements).where(eq(agentImprovements.sourceConversationId, t.id))
+    expect(imp).toMatchObject({ kind: 'profile.edit', status: 'pending_review' })
+    // Hash and diff base are the version the model saw, not Tony's newer one.
+    expect(imp!.proposal).toMatchObject({ expectedHash: before.contentHash, currentContent: before.content })
+
+    const [item] = await db().select().from(reviewQueue).where(eq(reviewQueue.targetId, imp!.id))
+    const err = await approveHandlers['self-improvement']!(item!).catch(e => e)
+    expect(err?.statusCode).toBe(409)
+    expect((await getProfileSource()).content).toBe(tony)
+  })
+
+  it('a skill.edit of a skill whose file was not shown is dropped (body_not_shown); the skill is still listed', async () => {
+    const t = await scratchThread()
+    const slug = `${TAG}hidden`
+    // Inactive: its file is never in the prompt (scratch skills stay inactive on the shared DB).
+    await saveSkillSource(slug, md(`name: ${slug}\ndescription: Hidden scratch skill\nwhen_to_use: Never\nactive: false\nsource: agent`, 'Hidden body.'), null, 'agent')
+    let prompt = ''
+    const chatFn = vi.fn(async (_r: string, messages: ChatMessage[]) => {
+      prompt = messages.map(m => m.content).join('\n')
+      return JSON.stringify({ proposals: [{ kind: 'skill.edit', target: slug, content: md(`name: ${slug}\ndescription: Hidden scratch skill\nwhen_to_use: Never\nactive: false`, 'Blind.'), reason: 'r', confidence: 0.9, evidence: [QUOTE] }] })
+    })
+    await runThreadPass({ now: NOW, onlyConversationIds: [t.id], chatFn: chatFn as never, jev })
+    expect(prompt).toContain(`- ${slug} (authored by Bridget): Hidden scratch skill`)
+    expect(prompt).not.toContain('Hidden body.')
+    const [imp] = await db().select().from(agentImprovements).where(eq(agentImprovements.sourceConversationId, t.id))
+    expect(imp).toMatchObject({ status: 'dropped', dropReason: 'invalid: body_not_shown' })
+    expect((await getSkillSource(slug))!.content).toContain('Hidden body.')
+  })
+
   it('retries once after a chatFn failure, then advances with no proposals', async () => {
     const t = await scratchThread()
     const chatFn = vi.fn(async (): Promise<string> => { throw new Error('model down') })
@@ -248,6 +290,17 @@ describe('runJobsPass', () => {
     expect(byTarget[five.slug]).toMatchObject({ kind: 'job.disable', status: 'pending_review', route: 'review' })
     expect(byTarget[four.slug]).toMatchObject({ status: 'dropped', dropReason: 'evidence' })
     expect(byTarget[other.slug]).toMatchObject({ status: 'dropped', dropReason: 'evidence' })
+  })
+
+  it('a quote taken only from the job\'s own file is not evidence', async () => {
+    const job = await createJob({ slug: `${TAG}selfquote`, content: jobMd('Send the Chicago weather summary every morning.'), actor: 'agent' })
+    await db().insert(agentSignals).values(Array.from({ length: 5 }, () => ({ jobId: job.id, kind: 'ignored', detail: null, createdAt: new Date(NOW.getTime() - 3600_000) })))
+    const chatFn = vi.fn(async () => JSON.stringify({ proposals: [
+      { kind: 'job.disable', target: job.slug, reason: 'ignored', confidence: 0.9, evidence: ['Send the Chicago weather summary every morning.'] }
+    ] }))
+    await runJobsPass({ now: NOW, onlyJobSlugs: [job.slug], chatFn, jev })
+    const [imp] = await db().select().from(agentImprovements).where(eq(agentImprovements.target, job.slug))
+    expect(imp).toMatchObject({ status: 'dropped', dropReason: 'evidence' })
   })
 
   it('makes no model call when no job has enough signals', async () => {

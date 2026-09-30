@@ -202,9 +202,18 @@ export const SELF_IMPROVEMENT_CONFLICT = 'Changed since proposed — reload the 
 
 async function approveSelfImprovement(item: ReviewItem): Promise<HandlerResult> {
   const db = useDb()
-  const res = await applyImprovement(item.targetId, 'human')
+  let res: Awaited<ReturnType<typeof applyImprovement>>
+  try {
+    res = await applyImprovement(item.targetId, 'human')
+  } catch (err) {
+    // Not a CAS conflict: the target was deleted, or the content no longer validates. Nothing was
+    // written and the item stays pending (Tony can reject it); say why instead of a bare 500.
+    const summary = `Could not apply: ${(err as Error)?.message ?? String(err)}`
+    throw createError({ statusCode: 422, message: summary, data: { summary } })
+  }
   if (!res.ok) {
-    const proposed = { ...(item.proposed as Record<string, unknown>), currentContent: res.conflict.content }
+    const prev = item.proposed as Record<string, unknown> & { proposal?: Record<string, unknown> }
+    const proposed = { ...prev, currentContent: res.conflict.content, proposal: { ...prev.proposal, content: res.content } }
     await db.update(reviewQueue).set({ proposed }).where(eq(reviewQueue.id, item.id))
     publishChange({ resource: 'review', action: 'updated', id: item.id })
     throw createError({

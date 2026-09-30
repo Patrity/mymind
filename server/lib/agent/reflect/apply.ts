@@ -16,7 +16,7 @@
 //   - reasons:        every gate reason (drops and demotions);
 //   - delta:          written at rejection — contentDelta(rejected content, currentContent), the
 //     CHANGE Tony said no to. The gate's rejection memory compares against it for 30 days.
-import { and, desc, eq, gte, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentConfigRevisions, agentImprovements, reviewQueue } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
@@ -50,8 +50,14 @@ export interface ProposalSource {
   runIds: string[]
   /** The evidence source (GateContext.input): the transcript, or the job's snippets + content. */
   input: string
-  /** The target's content hash when the pass read it; null for a create. */
+  /** The target's content hash when the pass read it — BEFORE the model call; null for a create. */
   expectedHash: string | null
+  /** The target's content read together with `expectedHash` (the diff base). When omitted the
+   *  target is read now; passes always pass it, so hash and diff base describe the same version. */
+  baseContent?: string
+  /** Thread pass: the skills whose FULL file the reflector saw. An edit of any other existing skill
+   *  was written blind and is dropped (`invalid: body_not_shown`). Omitted → not checked. */
+  shownSkills?: string[]
 }
 
 export type ProcessStatus = 'applied' | 'pending_review' | 'dropped' | 'conflict'
@@ -62,6 +68,8 @@ const isJob = (k: Proposal['kind']) => k === 'job.edit' || k === 'job.disable'
 interface TargetState {
   author: GateContext['targetAuthor']
   content: string
+  /** Jobs only: whether the job is enabled now. */
+  enabled?: boolean
   /** agent_config_revisions key; null when the target does not exist. */
   revisionKey: { kind: RevisionTargetKind; id: string | null } | null
 }
@@ -73,7 +81,7 @@ async function readTarget(p: Proposal): Promise<TargetState> {
   }
   if (isJob(p.kind)) {
     const j = await getJob(p.target)
-    return j ? { author: j.source, content: j.content, revisionKey: { kind: 'job', id: j.id } } : { author: 'missing', content: '', revisionKey: null }
+    return j ? { author: j.source, content: j.content, enabled: j.enabled, revisionKey: { kind: 'job', id: j.id } } : { author: 'missing', content: '', revisionKey: null }
   }
   // The profile is always Tony's (D2: profile edits always need his approval). It is a singleton,
   // so its revisions are keyed by kind alone.
@@ -87,17 +95,28 @@ async function readTarget(p: Proposal): Promise<TargetState> {
  * proposal can't make a Tony skill "agent-authored" (and thus auto-editable) by rewriting that line.
  */
 function withSkillSource(p: Proposal, target: TargetState): Proposal {
-  if (!isSkill(p.kind) || !p.content || splitFrontmatter(p.content).error) return p
-  const source = target.author === 'missing' ? 'agent' : target.author
-  return { ...p, content: setFrontmatterKey(p.content, 'source', source) }
+  if (!isSkill(p.kind) || !p.content) return p
+  return { ...p, content: setSkillSource(p.content, target.author === 'missing' ? 'agent' : target.author) }
 }
 
-function validator(defaultTimezone: string): (p: Proposal) => string | null {
+function setSkillSource(content: string, source: 'human' | 'agent'): string {
+  return splitFrontmatter(content).error ? content : setFrontmatterKey(content, 'source', source)
+}
+
+/** A job file's `enabled`, or null when it doesn't parse. */
+function jobEnabled(content: string, defaultTimezone: string): boolean | null {
+  const parsed = parseJob(content, { defaultTimezone })
+  return parsed.ok ? parsed.spec.enabled : null
+}
+
+function validator(defaultTimezone: string, target: TargetState, src: ProposalSource): (p: Proposal) => string | null {
   return (p) => {
     if (p.kind === 'job.disable') return null
     const content = p.content ?? ''
     if (!content.trim()) return 'content is required'
     if (isSkill(p.kind)) {
+      // A create over an existing slug is an edit too: either way it replaces a file.
+      if (src.shownSkills && target.author !== 'missing' && !src.shownSkills.includes(p.target)) return 'body_not_shown'
       const bytes = Buffer.byteLength(content, 'utf8')
       if (bytes > SKILL_MAX_BYTES) return `skill is ${bytes} bytes (max ${SKILL_MAX_BYTES})`
       const { input, error } = parseSkillMarkdown(content)
@@ -121,9 +140,11 @@ function validator(defaultTimezone: string): (p: Proposal) => string | null {
 export async function countAutoAppliedToday(): Promise<number> {
   const tz = await getDefaultTimezone()
   const res = await useDb().execute(sql`
-    select count(*)::int as n from agent_improvements
-    where route = 'auto' and status = 'applied'
-      and decided_at >= (date_trunc('day', now() at time zone ${tz}) at time zone ${tz})`)
+    select count(*)::int as n from agent_improvements i
+    where i.route = 'auto' and i.status = 'applied'
+      and i.decided_at >= (date_trunc('day', now() at time zone ${tz}) at time zone ${tz})
+      -- applied BY THE AGENT: an auto proposal that conflicted and Tony then approved is his change.
+      and exists (select 1 from agent_config_revisions r where r.improvement_id = i.id and r.actor = 'agent')`)
   return Number((res.rows[0] as { n: number } | undefined)?.n ?? 0)
 }
 
@@ -139,12 +160,15 @@ async function changedWithin24h(key: TargetState['revisionKey']): Promise<boolea
   return !!row
 }
 
-/** Rejections of this kind + target in the last 30 days. */
-async function recentRejections(kind: string, target: string): Promise<{ kind: string; target: string; delta: string }[]> {
+/** skill.create and skill.edit of one slug are one family: a create over an existing slug is an edit. */
+const kindFamily = (kind: Proposal['kind']): Proposal['kind'][] => isSkill(kind) ? ['skill.create', 'skill.edit'] : [kind]
+
+/** Rejections of this kind (family) + target in the last 30 days, reported under `kind` for the gate. */
+async function recentRejections(kind: Proposal['kind'], target: string): Promise<{ kind: string; target: string; delta: string }[]> {
   const since = new Date(Date.now() - REJECTION_MEMORY_MS)
   const rows = await useDb().select({ proposal: agentImprovements.proposal }).from(agentImprovements).where(and(
     eq(agentImprovements.status, 'rejected'),
-    eq(agentImprovements.kind, kind),
+    inArray(agentImprovements.kind, kindFamily(kind)),
     eq(agentImprovements.target, target),
     gte(agentImprovements.decidedAt, since)
   ))
@@ -192,9 +216,11 @@ export async function processProposal(
 ): Promise<{ improvementId: string; status: ProcessStatus }> {
   const target = await readTarget(proposal)
   const p = withSkillSource(proposal, target)
-  // '' for a create (the whole file is the change); a job.disable has no content, so its delta is
-  // always '' and never matches — it is remembered by kind + target below instead.
-  const currentContent = target.author === 'missing' ? '' : target.content
+  // The diff base is the content the pass read WITH expectedHash (before its model call), so an
+  // edit landing mid-call shows up as a CAS conflict, never as a silent revert. '' for a create
+  // (the whole file is the change); a job.disable has no content, so its delta is always '' and
+  // never matches — it is remembered by kind + target below instead.
+  const currentContent = src.baseContent ?? (target.author === 'missing' ? '' : target.content)
   const stored: StoredProposal = { ...p, expectedHash: src.expectedHash, currentContent, reasons: [] }
 
   // A job.disable Tony rejected in the last 30 days is not asked again (it has no content to compare).
@@ -203,13 +229,14 @@ export async function processProposal(
     return { improvementId: await recordImprovement(p, src, stored, 'dropped', null, 'rejected_recently'), status: 'dropped' }
   }
 
+  const defaultTimezone = await getDefaultTimezone()
   const ctx: GateContext = {
     mode: await getSelfImprovementMode(),
     input: src.input,
     targetAuthor: target.author,
     currentContent,
     recentRejections: await recentRejections(p.kind, p.target),
-    validate: validator(await getDefaultTimezone()),
+    validate: validator(defaultTimezone, target, src),
     autoAppliedToday: await countAutoAppliedToday(),
     targetChangedWithin24h: await changedWithin24h(target.revisionKey),
     jev: 'unavailable'
@@ -220,7 +247,14 @@ export async function processProposal(
   let jev: JevVerdict | 'unavailable' | null = null
   if (result.route !== 'dropped') {
     jev = await (deps.jev ?? jevCheck)(p)
-    result = gate(p, { ...ctx, jev })
+    // The mode is re-read just before applying (spec §9): the Jev call takes seconds.
+    result = gate(p, { ...ctx, mode: await getSelfImprovementMode(), jev })
+  }
+  // Turning a job on or off is Tony's call (D2): a job.edit that changes `enabled`, in either
+  // direction, never auto-applies — it would otherwise be a job.disable that skips /review.
+  if (result.route !== 'dropped' && p.kind === 'job.edit' && target.enabled !== undefined) {
+    const next = jobEnabled(p.content ?? '', defaultTimezone)
+    if (next !== null && next !== target.enabled) result = { route: 'review', reasons: [...result.reasons, 'changes_enabled'] }
   }
   stored.reasons = result.reasons
 
@@ -259,7 +293,11 @@ export async function processProposal(
 export async function applyImprovement(
   improvementId: string,
   actor: 'agent' | 'human'
-): Promise<{ ok: true; revisionId: string | null } | { ok: false; conflict: { content: string; contentHash: string } }> {
+): Promise<
+  | { ok: true; revisionId: string | null }
+  // `content` is the proposal's content after the refresh (its `source:` line may have changed).
+  | { ok: false; conflict: { content: string; contentHash: string }; content: string | undefined }
+> {
   const db = useDb()
   const [row] = await db.select().from(agentImprovements).where(eq(agentImprovements.id, improvementId)).limit(1)
   if (!row) throw new Error(`no improvement ${improvementId}`)
@@ -286,10 +324,15 @@ export async function applyImprovement(
     }
   } catch (err) {
     if (!(err instanceof ConflictError)) throw err
-    const refreshed: StoredProposal = { ...sp, expectedHash: err.current.contentHash, currentContent: err.current.content }
+    // A skill's author may have changed underneath (Tony created the slug, or relabelled his file):
+    // re-derive the `source:` line from the CURRENT file, so approving can't relabel his skill.
+    const refreshedContent = (sp.kind === 'skill.create' || sp.kind === 'skill.edit') && sp.content
+      ? setSkillSource(sp.content, parseSkillMarkdown(err.current.content).input.source)
+      : sp.content
+    const refreshed: StoredProposal = { ...sp, content: refreshedContent, expectedHash: err.current.contentHash, currentContent: err.current.content }
     await db.update(agentImprovements).set({ status: 'conflict', proposal: refreshed }).where(eq(agentImprovements.id, improvementId))
     publishChange({ resource: 'agentImprovement', action: 'updated', id: improvementId })
-    return { ok: false, conflict: err.current }
+    return { ok: false, conflict: err.current, content: refreshedContent }
   }
 
   const [rev] = await db.select({ id: agentConfigRevisions.id }).from(agentConfigRevisions)

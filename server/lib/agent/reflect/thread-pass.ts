@@ -14,7 +14,7 @@ import { getProfileSource } from '../../../services/profile'
 import { getSelfImprovementMode } from '../self-improvement-mode'
 import { threadCandidates, markReflected } from './candidates'
 import { buildThreadTranscript } from './transcript'
-import { threadReflectionMessages } from './prompt'
+import { skillFilesForPrompt, threadReflectionMessages } from './prompt'
 import { callReflector } from './call'
 import { processProposal, REJECTION_MEMORY_MS } from './apply'
 import type { jevCheck } from './jev'
@@ -53,11 +53,13 @@ async function rejectionTitles(): Promise<string[]> {
   return rows.map(r => `${r.kind} ${r.target}: ${(r.proposal as { reason?: string }).reason ?? ''}`.trim())
 }
 
-/** The target's hash as the pass sees it: the CAS base for the apply. */
-async function hashAtPass(p: Proposal): Promise<string | null> {
-  if (p.kind === 'profile.edit') return (await getProfileSource()).contentHash
-  // A skill.create over an existing slug is applied as an edit of that skill.
-  return (await getSkillSource(p.target))?.contentHash ?? null
+type Snapshot = { content: string; contentHash: string }
+
+/** The target as the pass showed it to the model — read BEFORE the call, so a concurrent edit is
+ *  a CAS conflict at apply time. A skill.create over an existing slug is an edit of that skill. */
+function targetAtPass(p: Proposal, profile: Snapshot, skills: Map<string, Snapshot>): { expectedHash: string | null; baseContent: string } {
+  const snap = p.kind === 'profile.edit' ? profile : skills.get(p.target)
+  return snap ? { expectedHash: snap.contentHash, baseContent: snap.content } : { expectedHash: null, baseContent: '' }
 }
 
 async function reflectThread(conversationId: string, since: Date | null, opts: PassOpts): Promise<number> {
@@ -65,11 +67,19 @@ async function reflectThread(conversationId: string, since: Date | null, opts: P
   if (!msgs.length) return 0
   const through = msgs[msgs.length - 1]!.createdAt
   const transcript = buildThreadTranscript(msgs)
-  const skills = (await listSkills()).map(s => ({ name: s.name, description: s.description, source: s.source }))
+  // Snapshot every target the model may rewrite, together with its hash, before the call.
+  const skills = await Promise.all((await listSkills()).map(async (s) => {
+    const src = await getSkillSource(s.name)
+    return { name: s.name, description: s.description, source: s.source, active: s.active, content: src?.content, contentHash: src?.contentHash }
+  }))
+  const skillSnaps = new Map(skills.filter(s => s.content !== undefined && s.contentHash !== undefined)
+    .map(s => [s.name, { content: s.content!, contentHash: s.contentHash! }]))
+  const profile = await getProfileSource()
+  const shownSkills = [...skillFilesForPrompt(skills)].filter(([, f]) => f.full).map(([name]) => name)
   const messages = threadReflectionMessages({
     transcript,
     skills,
-    profile: (await getProfileSource()).content,
+    profile: profile.content,
     recentRejections: await rejectionTitles()
   })
 
@@ -91,7 +101,10 @@ async function reflectThread(conversationId: string, since: Date | null, opts: P
     try {
       // Evidence is checked against the transcript ONLY — never the skills list or profile that
       // were also in the prompt (Task 5 ruling).
-      await processProposal(p, { pass: 'thread', conversationId, runIds: [], input: transcript, expectedHash: await hashAtPass(p) }, { jev: opts.jev })
+      await processProposal(p, {
+        pass: 'thread', conversationId, runIds: [], input: transcript, shownSkills,
+        ...targetAtPass(p, profile, skillSnaps)
+      }, { jev: opts.jev })
     } catch (err) {
       console.warn(`[reflect] thread ${conversationId}: proposal ${p.kind} ${p.target} failed:`, err)
     }

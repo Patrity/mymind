@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseReflectorOutput, type Proposal } from '../server/lib/agent/reflect/schema'
 import { callReflector } from '../server/lib/agent/reflect/call'
-import { threadReflectionMessages, jobsReflectionMessages } from '../server/lib/agent/reflect/prompt'
+import { threadReflectionMessages, jobsReflectionMessages, skillFilesForPrompt, SKILL_FILE_SHOWN_MAX, SKILL_FILES_TOTAL_MAX } from '../server/lib/agent/reflect/prompt'
 
 const THREAD: Proposal['kind'][] = ['skill.create', 'skill.edit', 'profile.edit']
 
@@ -148,6 +148,33 @@ describe('reflection prompts', () => {
     expect(user).toContain('Tony likes brevity.')
     expect(user).toContain('skill.create deploy-notes')
     expect(user).toContain('[user] remember I prefer tea')
+  })
+
+  it('thread prompt shows active skill files within 2 KB each / 16 KB total; the rest by name only', () => {
+    const file = (name: string, kb: number) => `---\nname: ${name}\n---\n` + 'x'.repeat(kb * 1024)
+    const skills = [
+      { name: 'small', description: 'd', source: 'agent' as const, active: true, content: file('small', 1) },
+      { name: 'inactive', description: 'd', source: 'agent' as const, active: false, content: file('inactive', 1) },
+      { name: 'big', description: 'd', source: 'human' as const, active: true, content: file('big', 5) },
+      ...Array.from({ length: 8 }, (_, i) => ({ name: `fill-${i}`, description: 'd', source: 'agent' as const, active: true, content: file(`fill-${i}`, 1.9) }))
+    ]
+    const shown = skillFilesForPrompt(skills)
+    expect(shown.get('small')).toMatchObject({ full: true })
+    expect(shown.has('inactive')).toBe(false)
+    // Over 2 KB: cut to 2 KB with a marker, and NOT full (an edit of it would be blind).
+    expect(shown.get('big')!.full).toBe(false)
+    expect(Buffer.byteLength(shown.get('big')!.text)).toBeLessThanOrEqual(SKILL_FILE_SHOWN_MAX)
+    expect(shown.get('big')!.text).toContain('[… truncated]')
+    // The 16 KB total holds small (~1 KB) + big (2 KB) + six ~1.9 KB fills; the last two don't fit.
+    const total = [...shown.values()].reduce((n, f) => n + Buffer.byteLength(f.text), 0)
+    expect(total).toBeLessThanOrEqual(SKILL_FILES_TOTAL_MAX)
+    expect([...shown.keys()]).toEqual(['small', 'big', 'fill-0', 'fill-1', 'fill-2', 'fill-3', 'fill-4', 'fill-5'])
+
+    const user = threadReflectionMessages({ transcript: 't', skills, profile: '', recentRejections: [] })[1]!.content as string
+    expect(user).toContain('### small\n---\nname: small')
+    expect(user).toContain('### big (truncated — cannot be edited)')
+    expect(user).not.toContain('### fill-6')
+    expect(user).toContain('- fill-6 (authored by Bridget): d') // still listed by name
   })
 
   it('jobs prompt lists each job with its signals and snippets', () => {

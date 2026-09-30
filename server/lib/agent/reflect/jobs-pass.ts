@@ -3,8 +3,8 @@
 // The nightly jobs pass (spec §4.2): close the observation windows that ended (→ `ignored`), then
 // show the reflector every enabled job with at least 5 signals in the last 14 days — its file,
 // signal counts by kind and up to 5 detail snippets — in ONE call, and route each proposal
-// through processProposal. A proposal's evidence is checked against ITS job's snippets and file
-// only, never the other jobs' (Task 5/7 ruling: signal snippets plus the job content).
+// through processProposal. A proposal's evidence is checked against ITS job's signal snippets
+// only — never the job's own file, nor other jobs' snippets (Task 7 ruling).
 import { and, desc, gte, inArray, isNotNull } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentSignals } from '../../../db/schema'
@@ -81,9 +81,11 @@ export async function runJobsPass(
         pass: 'jobs',
         conversationId: null,
         runIds: job?.runIds ?? [],
-        // A proposal for a job the pass didn't show has no evidence source, so its quotes can't match.
-        input: job ? [...job.snippets, job.content].join('\n') : '',
-        expectedHash: job?.contentHash ?? null
+        // Evidence is Tony's reaction — the signal snippets ONLY, never the job's own file (quoting
+        // it proves nothing). A job the pass didn't show has no evidence source at all.
+        input: job ? job.snippets.join('\n') : '',
+        expectedHash: job?.contentHash ?? null,
+        baseContent: job?.content ?? ''
       }, { jev: opts.jev })
     } catch (err) {
       console.warn(`[reflect] jobs pass: proposal ${p.kind} ${p.target} failed:`, err)
