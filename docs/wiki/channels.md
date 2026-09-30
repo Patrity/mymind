@@ -2,7 +2,7 @@
 title: Channels (iMessage via BlueBubbles, email via Resend, presence-aware delivery)
 status: built
 cycle: 75
-updated: 2026-09-28
+updated: 2026-09-30
 ---
 
 # Channels
@@ -43,7 +43,10 @@ iPhone ──iMessage──▶ Mac (BlueBubbles, Private API)
 ```
 
 Both the outbox tick and the catch-up ride the runtime's existing 5-second `workerTick`
-(`server/lib/agent/runtime/queue.ts`). There is no separate scheduler.
+(`server/lib/agent/runtime/queue.ts`). There is no separate scheduler. The outbox is started
+**off** the tick (`startDeliveries()`, single-flight): the tick does not wait for sends, so a
+blackholed BlueBubbles host no longer delays `recoverStale`, `jobsTick` or `dueTaskEvents`, and a
+tick that finds a batch still sending starts nothing.
 
 | File (`server/lib/channels/`) | Role |
 |---|---|
@@ -274,6 +277,11 @@ pending ──claim──▶ sending ──▶ sent | sent_unconfirmed | pending
 | `last_error`, `external_id`, `sent_at` | Outcome. |
 | `conversation_id`, `message_id`, `job_id`, `run_id` | Links for badges and ops (`message_id` is indexed). |
 
+- **Send order:** the claimed rows are grouped by `channel + target`. Groups send
+  **concurrently** (`Promise.allSettled`); rows within a group send **one at a time in claim
+  order**, so a text goes out before the images split from it and replies stay in order. Claim
+  order is `(next_attempt_at, seq)`: `seq` (bigserial, migration 0061) breaks the tie between rows
+  inserted in one transaction.
 - **Claim:** up to 10 due rows (`pending` with `next_attempt_at <= now()`, or `sending` whose
   claim is older than **2 min**, which means a process died mid-send), under
   `FOR UPDATE SKIP LOCKED`. A reclaim counts the interrupted attempt as a send, so the duplicate
@@ -321,9 +329,12 @@ expiry ends with exactly one outcome. The waiter learns the outcome from the in-
 whose waiter died with a restart.
 
 **Stop and `/clear` unwind the wait** (final review I1): the runner passes the run's abort signal.
-An abort while waiting settles the row `pending → denied` and denies at once (logged with reason
-`aborted`); an abort before the prompt is sent denies without texting or writing a row. A 👍 after
-that changes nothing. Without this the run stayed `running` for up to the 10-minute expiry,
+An abort while waiting denies **at once, before any DB write** (logged with reason `aborted`), so a
+👍 landing in the same instant cannot flip the wait and the command never runs. The row is then
+settled in the background by `denyOnAbort`, which moves it from `pending` **or `approved`** to
+`denied`, so the audit row agrees with the run even when a 👍's update reached the row first. An
+abort before the prompt is sent denies without texting or writing a row. A 👍 after that changes
+nothing. Without this the run stayed `running` for up to the 10-minute expiry,
 blocking main.
 
 The tapback must also come from the chat that is the tapper's own direct chat (the same I2 match
@@ -443,4 +454,6 @@ the tables, or drop them along with `agent_runs.reply_to` once no deployed code 
 - Catch-up reads at most the last 24 h; texts older than that (a long outage) are never answered.
 - One BlueBubbles server serves one MyMind: dev and prod both enabled would both answer.
 - `channel_inbound` is never pruned. Unknown senders' raw handles are stored unmasked there.
+- A text row that fails with a retryable error while its images send gets a later
+  `next_attempt_at`, so on a flaky send a photo can arrive before its caption (per-row retries).
 - See the handover's follow-ups for the parked review minors and the real-phone checks still owed.

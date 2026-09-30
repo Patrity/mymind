@@ -2,7 +2,7 @@
 title: Agent Jobs (markdown-configured schedules and triggers)
 status: built
 cycle: 74 (`deliver` targets: cycle 75)
-updated: 2026-09-29
+updated: 2026-09-30
 ---
 
 # Agent Jobs
@@ -44,7 +44,7 @@ If nothing matters, reply NO_REPLY.
 |---|---|---|
 | `trigger` | required | `cron <5-field expr>` (croner), `every <n>m` / `every <n>h`, `at <ISO datetime>`, `event cc.session_end` / `event task.due`. |
 | `timezone` | `agent_timezone` setting (Settings → Bridget → **Agent timezone**), else `Intl` server zone | Must be a valid IANA zone. Stored resolved on the row; changing the setting re-derives every job without its own `timezone:` line (see [Timezone](#timezone)). |
-| `active_hours` | none (always) | `HH:MM-HH:MM`. |
+| `active_hours` | none (always) | `HH:MM-HH:MM`. A `cron`/`every` job whose schedule never fires inside it (within the 366-day horizon) is rejected on write, enabled or not: "active_hours: the schedule never fires inside <start>-<end>". `at` and `event` jobs are exempt. |
 | `model` | `default` (the resolver's chain) | Anything else must be a registry model id. |
 | `thread` | `main` | `isolated` wakes into **one side thread per slug**, titled `wake: <slug>` and reused fire after fire (see [Scheduling](#scheduling)). |
 | `context` | `full` | `light` = the last **4** turns of history (after the summary tier). |
@@ -143,9 +143,13 @@ cascade) and `agent_runs.job_id` links (set null) do not come back.
 - `cron` and `every` return the first candidate inside `active_hours`. The scan jumps straight
   to the next window start instead of stepping through the night, and is bounded by a
   **366-day horizon** and a candidate cap.
-- A cron or every job whose `active_hours` can never match gets `next_run_at = null`. The
-  save is not rejected. The page shows "—" and "no fire time falls within active_hours" (see
-  Known limits).
+- A cron or every job whose `active_hours` can never match is **rejected on write** (create,
+  save, enable, revert, restore) with "active_hours: the schedule never fires inside
+  <start>-<end>" (`activeHoursNeverMatchError` in `schedule.ts`, called by `writeJob`), whether
+  it is enabled or not. A schedule with no fire time in the horizon even without the hours (for
+  example `0 9 29 2 *`) is not blamed on the window and still saves. Boot `revalidateAll` does not
+  run this check, so a job saved before it existed keeps `next_run_at = null`, and its page shows
+  "—" and "no fire time falls within active_hours".
 - `at` returns its exact instant even when it is outside the hours, so the tick still claims it,
   disables it and leaves the did-not-fire note.
 - `event` returns null.
@@ -267,6 +271,12 @@ It is idempotent, and `onlySlugs`/`now` are its test seams.
 | `done`, suppressed (`NO_REPLY` or an empty reply) | `silent` | reset to 0 |
 | `failed`, or `aborted` by the 5 min headless wall clock | `failed` | +1 |
 | `aborted` by Tony (Stop, `/clear`) | `failed` | unchanged |
+
+**An interrupted run counts as a failure.** `recoverOnBoot` and `recoverStale` call
+`onRunFinished(run, { status: 'failed', error: 'interrupted by a restart' })` for every run they
+recover, so `last_outcome`, the streak and the 3-strike disable all move (a job run killed by
+restarts three times in a row is turned off). Tony's Stop is never recovered (it ends `aborted`
+in its own process), so it still does not count.
 
 `execute` skips `onRunFinished` when `finishRun` was **fenced** (the row was no longer `running`:
 another process recovered it as `interrupted` while this one still ran it), so the job never
@@ -442,10 +452,8 @@ order by f.fired_at desc limit 20;
 
 ## Known limits
 
-- **A cron/every job whose `active_hours` can never match** saves fine and never fires
-  (`next_run_at = null`, "—" on the page). Follow-up: reject it at write time.
-- **Interrupted runs leave `last_outcome` stale.** `recoverOrphans` marks runs `interrupted`
-  outside `execute`, so `onRunFinished` never sees them and the streak does not move.
+- **A job saved before the active_hours write check** (reliability pass, 2026-09-30) whose hours
+  can never match still sits with `next_run_at = null` ("—" on the page) until it is next saved.
 - **A `cc.session_end` lost to a crash** is not re-fired (see Overlap and crash recovery).
 - **The cron density check** looks at a fixed 8-day window, so a day-of-month or month-restricted
   pattern that is dense only outside that window slips through.

@@ -295,19 +295,19 @@ job `fixwave-tz` (`cron 30 7 1 1 *`, no `timezone:` line):
 
 ## Follow-ups (every parked item, plus what acceptance found)
 
-1. **Reject unsatisfiable `active_hours` at write.** Today a cron/every job whose hours can never
+1. ~~**Reject unsatisfiable `active_hours` at write.**~~ **Resolved** in the reliability pass ([reliability handover](2026-09-29-bridget-reliability.md)): `writeJob` rejects a cron/every schedule that never fires inside its hours. Today a cron/every job whose hours can never
    match saves with `next_run_at = null` and silently never fires. Its page shows "—" and "no
    fire time falls within active_hours". (Parked in T12.)
 2. **A mobile right column on `/skills/[slug]` and `/jobs/[slug]`.** The status and revisions
    panels are hidden below `lg`. (Parked in T11/T12.)
-3. **Interrupted runs leave `last_outcome` stale (T5 M2).** A fix: have `recoverOrphans` call
+3. ~~**Interrupted runs leave `last_outcome` stale (T5 M2).**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)): recovery reports a job run as `failed`, so the streak and the 3-strike disable move. A fix: have `recoverOrphans` call
    `onRunFinished` with a failed outcome for rows that have a `job_id`.
-4. **At-most-once across a crash (T5 M3).**
+4. ~~**At-most-once across a crash (T5 M3).**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)): a failed wake re-arms the `at` job (up to 5 failures) or releases the event fire rows, and a crash sweep repairs what a crash left behind.
    - An event fire row, and an `at` job's claim, both commit before the wake. A crash or a wake
      error between them loses the fire.
    - A crash between the claim and the disable leaves an inert enabled `at` job.
    - A fix: an outbox, or re-arm on a failed wake.
-5. **`runJobNow` can race the tick (T5 M5)** and produce two runs. A fix: `select … for update`
+5. ~~**`runJobNow` can race the tick (T5 M5)**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)) with a partial unique index (one active run per job) instead of a row lock: and produce two runs. A fix: `select … for update`
    on the job row, and check for overlap inside that transaction.
 6. **The queued bubble lingers** until a reload when the queued run ends `interrupted`. An
    attachment-only queued message shows text only until its run starts. (Parked in T6.)
@@ -384,4 +384,4 @@ which exist only in `agent_skills`) is in
 - `deliver` is parsed and stored; only `app` is honoured. Channels (two-way BlueBubbles) plug in
   at `fireJob`/`wake` and the runner's reply path.
 - Follow-ups 1, 3, 4 and 5 are the reliability items worth doing before jobs go beyond in-app
-  delivery.
+  delivery. (All four resolved in the reliability pass: [reliability handover](2026-09-29-bridget-reliability.md).)

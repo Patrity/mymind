@@ -401,7 +401,7 @@ controller's final-review fix wave; what it fixed is struck through, the rest st
 13. **The wiki mirror to MyMind** for `channels`, `agent-jobs` and `agent-runtime` is left to the
     controller.
 14. **Deferred from the final review:**
-    - **M3 slow sends stall the worker tick:** a blackholed BlueBubbles host costs 15 s × (duplicate
+    - ~~**M3 slow sends stall the worker tick:**~~ **Resolved** in the reliability pass ([reliability handover](2026-09-29-bridget-reliability.md)): the outbox runs off the tick (single-flight) and sends concurrently across chats. Original note: a blackholed BlueBubbles host costs 15 s × (duplicate
       check + send) × up to 10 rows, plus catch-up's 15 s, delaying `recoverStale`, `jobsTick` and
       `dueTaskEvents` for minutes. Fix idea: a per-tick send budget (~20 s) or running
       `deliveriesTick` outside `ticking`.
@@ -463,7 +463,8 @@ Also verify these things on Tony's real server, which the fake cannot show:
   must return 200. A 404 means the duplicate check is skipped, and a retry could double-text.
 
 **Final re-review leftovers (parked):**
-- A Stop and a 👍 landing within milliseconds can report "approved" to the run after the Stop
+- ~~A Stop and a 👍 landing within milliseconds can report "approved" to the run after the Stop~~
+  **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)): Stop denies before any DB write, and the row always ends `denied`. Original note: a Stop and a 👍 landing within milliseconds can report "approved" to the run after the Stop
   (`approvals.ts` `onAbort` waits on its DB update before resolving). The exec pre-spawn abort
   check still stops the command from running.
 - A transitive import cycle remains: queue → runner → approvals → inbound → queue (call-time only).
@@ -512,3 +513,4 @@ rejected by auth).
 - The final whole-branch review ran and its fix wave is done. What it deferred is follow-up 14.
 - The cycle-74 reliability follow-ups (interrupted runs leave `last_outcome` stale, at-most-once
   across a crash, the `runJobNow` race) matter more now that job results reach a phone.
+  (Resolved in the reliability pass: [reliability handover](2026-09-29-bridget-reliability.md).)
