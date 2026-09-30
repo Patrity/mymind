@@ -74,6 +74,14 @@ describe('dispatchLiveEvent', () => {
     dispatchLiveEvent(c as never, ev({ resource: 'agentJob', id: 'j-1' }))
     expect(c.calls).toContainEqual([{ queryKey: ['jobs'] }])
   })
+
+  // Cycle 76 (Task 2): Settings -> Profile reads under ['profile', …] (queryBase 'profile'),
+  // not the default ['agentProfile', …] the base invalidations below would produce.
+  it('agentProfile events invalidate the bare ["profile"] prefix', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'agentProfile', id: 'p-1' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['profile'] }])
+  })
 })
 
 describe('dispatchLiveEvent — agentRun', () => {

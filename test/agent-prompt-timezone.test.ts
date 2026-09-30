@@ -7,10 +7,20 @@ vi.mock('../server/lib/agent/jobs/timezone', () => tzMock)
 vi.mock('../server/lib/agent/persona', () => ({ loadPersona: vi.fn(async () => 'persona') }))
 vi.mock('../server/lib/agent/skills-config', () => ({ skillsEnabled: vi.fn(async () => false) }))
 vi.mock('../server/services/skills', () => ({ listSkills: vi.fn(async () => []) }))
+// Cycle 76, Task 2: the "About Tony" profile the prompt injects — mocked here so these tests
+// never hit the DB. Defaults to an empty profile (no section emitted); individual tests below
+// override it to prove the injection and the never-throws-on-failure contract.
+const getProfileSource = vi.hoisted(() => vi.fn())
+vi.mock('../server/services/profile', () => ({ getProfileSource }))
 
 import { buildSystemPrompt, nowLine, timeOfDayTone } from '../server/lib/agent/prompt'
 
 const AT = new Date('2026-09-29T01:30:00Z') // 20:30 in America/Chicago (CDT)
+
+beforeEach(() => {
+  getProfileSource.mockReset()
+  getProfileSource.mockResolvedValue({ content: '', contentHash: 'h', updatedBy: 'human', updatedAt: '2026-01-01T00:00:00.000Z' })
+})
 
 describe('prompt time lines in the agent timezone', () => {
   beforeEach(() => { tzMock.getDefaultTimezone.mockReset() })
@@ -40,6 +50,36 @@ describe('prompt time lines in the agent timezone', () => {
     const p = await buildSystemPrompt({ speak: false, now: AT })
     expect(p).toContain('1:30 AM')
     expect(p).toContain('(UTC)')
+  })
+})
+
+describe('buildSystemPrompt — "About Tony" profile injection (cycle 76, Task 2)', () => {
+  beforeEach(() => { tzMock.getDefaultTimezone.mockResolvedValue('UTC') })
+
+  it('injects the profile under "## About Tony" when the store has content', async () => {
+    getProfileSource.mockResolvedValue({ content: 'Likes terse answers.', contentHash: 'h', updatedBy: 'human', updatedAt: '2026-01-01T00:00:00.000Z' })
+    const p = await buildSystemPrompt({ speak: false, now: AT })
+    expect(p).toContain('## About Tony\nLikes terse answers.')
+  })
+
+  it('never throws and emits no profile section when the store load fails', async () => {
+    getProfileSource.mockRejectedValue(new Error('db down'))
+    await expect(buildSystemPrompt({ speak: false, now: AT })).resolves.not.toThrow()
+    const p = await buildSystemPrompt({ speak: false, now: AT })
+    expect(p).not.toContain('About Tony')
+  })
+
+  it('omits the section entirely for an empty/whitespace-only profile', async () => {
+    getProfileSource.mockResolvedValue({ content: '   \n  ', contentHash: 'h', updatedBy: 'human', updatedAt: '2026-01-01T00:00:00.000Z' })
+    const p = await buildSystemPrompt({ speak: false, now: AT })
+    expect(p).not.toContain('About Tony')
+  })
+
+  it('clamps an over-budget profile and still never throws', async () => {
+    const long = Array.from({ length: 2000 }, (_, i) => `line ${i} xxxxxxxxxx`).join('\n')
+    getProfileSource.mockResolvedValue({ content: long, contentHash: 'h', updatedBy: 'human', updatedAt: '2026-01-01T00:00:00.000Z' })
+    const p = await buildSystemPrompt({ speak: false, now: AT })
+    expect(p).toContain('…(profile truncated)')
   })
 })
 

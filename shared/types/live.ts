@@ -18,6 +18,7 @@ export type ResourceName =
   | 'agentRun'
   | 'agentSkill'
   | 'agentJob'
+  | 'agentProfile'
   | 'channelDelivery'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'

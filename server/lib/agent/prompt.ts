@@ -10,6 +10,8 @@ import { loadPersona } from './persona'
 import { listSkills } from '../../services/skills'
 import { skillsEnabled } from './skills-config'
 import { getDefaultTimezone, serverTimezone } from './jobs/timezone'
+import { getProfileSource } from '../../services/profile'
+import { clampProfile } from './profile-budget'
 
 /** The hour (0–23) of `now` on Tony's wall clock in `tz` (the server itself may run on UTC). */
 function hourIn(now: Date, tz?: string): number {
@@ -42,9 +44,12 @@ export function renderSkillsIndex(skills: { name: string; description: string; w
   ].join('\n')
 }
 
-export function composePrompt(opts: { persona: string; speak: boolean; toneLine: string; nowLine?: string; context?: string; skillsIndex?: string; wake?: { reason: string } }): string {
+export function composePrompt(opts: { persona: string; speak: boolean; toneLine: string; nowLine?: string; profile?: string; context?: string; skillsIndex?: string; wake?: { reason: string } }): string {
   const { persona, speak, toneLine, context } = opts
   const lines = [persona, '']
+  // Right after the persona, before anything else — Tony's own definition of Bridget comes
+  // first, what she knows about him comes second.
+  if (opts.profile) lines.push(`## About Tony\n${opts.profile}`, '')
   if (opts.nowLine) lines.push(opts.nowLine)
   lines.push(toneLine, '')
   if (opts.wake) {
@@ -102,6 +107,8 @@ export function composePrompt(opts: { persona: string; speak: boolean; toneLine:
   return lines.join('\n')
 }
 
+// NOTE: opts.profile here is run.ts's AgentProfile (personaKey/tools) — Bridget's TOOL profile,
+// unrelated to the "About Tony" profile this function loads internally below (server/services/profile.ts).
 export async function buildSystemPrompt(opts: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; now?: Date; wake?: { reason: string } }): Promise<string> {
   const persona = await loadPersona()
   const now = opts.now ?? new Date()
@@ -116,5 +123,14 @@ export async function buildSystemPrompt(opts: { profile?: { personaKey: string; 
   } catch (err) {
     console.warn('[buildSystemPrompt] skills index unavailable:', err)
   }
-  return composePrompt({ persona, speak: opts.speak, toneLine: timeOfDayTone(now, tz), nowLine: nowLine(now, tz), context: opts.context, skillsIndex, wake: opts.wake })
+  // Cycle 76, Task 2: "About Tony" — never lets a load failure (DB down, etc.) break a turn; an
+  // empty/whitespace-only profile is treated the same as "no profile yet" and omitted entirely.
+  let profile = ''
+  try {
+    const source = await getProfileSource()
+    if (source.content.trim()) profile = clampProfile(source.content).text
+  } catch (err) {
+    console.warn('[buildSystemPrompt] profile unavailable:', err)
+  }
+  return composePrompt({ persona, speak: opts.speak, toneLine: timeOfDayTone(now, tz), nowLine: nowLine(now, tz), profile, context: opts.context, skillsIndex, wake: opts.wake })
 }

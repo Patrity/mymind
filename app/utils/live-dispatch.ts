@@ -68,6 +68,10 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   // under ['jobs']. A job's run finishing publishes agentJob too (outcome.ts), so the runs list
   // and last-outcome badge refresh without a separate agentRun hook.
   agentJob: (c) => { c.invalidateQueries({ queryKey: ['jobs'] }) },
+  // Cycle 76 (Task 2): the "About Tony" profile — a singleton config, same shape as a skill/job
+  // (server/services/profile.ts), read under ['profile', ...] (app/lib/config/source.ts's
+  // queryBase for kind 'profile') rather than the default ['agentProfile', ...].
+  agentProfile: (c) => { c.invalidateQueries({ queryKey: ['profile'] }) },
   // A folder mutation rewrites document paths, and the tree the user is looking at is keyed
   // ['document','list'] — invalidating only ['folder',*] (the default below) would leave the
   // tree stale, which is the whole point of wiring folders into live reactivity.

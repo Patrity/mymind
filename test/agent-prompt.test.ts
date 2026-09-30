@@ -62,6 +62,22 @@ describe('composePrompt', () => {
   })
 })
 
+// Cycle 76, Task 2: the "About Tony" profile — injected right after the persona, before the
+// tone line / date / anything else. Omitted entirely when there is no profile text.
+describe('composePrompt — "About Tony" profile (cycle 76)', () => {
+  it('emits the profile under a heading right after the persona', () => {
+    const p = composePrompt({ persona: 'You are Bridget.', speak: false, toneLine: 'TONE_MARKER', profile: 'Likes terse answers.' })
+    expect(p).toContain('## About Tony\nLikes terse answers.')
+    // Right after the persona: the persona line, then the About Tony block, then the tone line.
+    expect(p.indexOf('You are Bridget.')).toBeLessThan(p.indexOf('## About Tony'))
+    expect(p.indexOf('## About Tony')).toBeLessThan(p.indexOf('TONE_MARKER'))
+  })
+  it('omits the section entirely when no profile is supplied', () => {
+    const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
+    expect(p).not.toContain('About Tony')
+  })
+})
+
 describe('composePrompt always-armed exec guidance', () => {
   it('always includes exec + approval guidance (the powerful/exec levers are gone)', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
