@@ -48,7 +48,7 @@ export interface ProposalSource {
   pass: 'thread' | 'jobs'
   conversationId: string | null
   runIds: string[]
-  /** The evidence source (GateContext.input): the transcript, or the job's snippets + content. */
+  /** The evidence source (GateContext.input): the transcript, or the job's signal snippets only. */
   input: string
   /** The target's content hash when the pass read it — BEFORE the model call; null for a create. */
   expectedHash: string | null

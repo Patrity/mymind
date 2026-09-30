@@ -152,7 +152,11 @@ export default defineNuxtConfig({
       // appears that it has never attempted to price, or when the last full sync is >20h old.
       // Daily was ample for price CHANGES, but the real trigger is a NEW model showing up in
       // usage — claude-fable-5-1 read as unpriced for ~11h on 2026-09-03 awaiting the 04:00 run.
-      '*/15 * * * *': ['enrich-memories', 'sync-model-prices'],
+      '*/15 * * * *': ['enrich-memories', 'sync-model-prices', 'reflect-threads'],
+      // Self-gates: does real work only once the agent-timezone hour reaches 3 and it hasn't run
+      // yet today (preflight Ruling 2, cycle 76 progress.md — Nitro cron is UTC-only, so a fixed
+      // expression can't land on 03:30 in an arbitrary, DST-shifting agent timezone).
+      '40 * * * *': ['reflect-jobs'],
       // Runs AFTER enrich-memories on the quarter hour rather than alongside it, so a batch
       // written this cycle is scored on the next one rather than raced. Self-gates: it only
       // touches unreviewed, unscored rows, and no-ops entirely when JEV_KEY is unset.

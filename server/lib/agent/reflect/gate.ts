@@ -18,9 +18,9 @@ export interface GateContext {
   /**
    * The evidence source: every evidence quote must appear in this text. It is the TRANSCRIPT the
    * reflector saw — for the thread pass the rendered conversation, for the jobs pass the signal
-   * snippets plus the job content. It must NOT include the skills list or the About Tony profile
-   * that were also in the prompt; otherwise quoting the existing profile or a skill would count as
-   * evidence of Tony saying it.
+   * snippets only. It must NOT include the skills list, the job's own file, or the About Tony
+   * profile that were also in the prompt; otherwise quoting an existing file or the profile would
+   * count as evidence of Tony saying it.
    */
   input: string
   /** Who last authored the target: skill source / job source; 'human' for the profile; 'missing'
