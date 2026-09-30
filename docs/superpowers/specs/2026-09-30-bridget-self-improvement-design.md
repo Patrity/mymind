@@ -170,8 +170,7 @@ Tony wants to work the `/review` queue from an agent session. Two tools:
   and **`choices: { id, label, description }[]`** — the exact outcomes that item supports:
   - generic kinds (triage, agent-action, `self-improvement`, …): `approve`, `reject`;
   - memory conflicts (`memory-supersede`, `memory-contradict`): the four `ConflictResolution`
-    values (`keep-both`, `archive-old`, `archive-new`, and the fourth in
-    `server/lib/review/conflict-resolution.ts`), labelled as the `/review` page labels them.
+    values (`keep-both`, `archive-old`, `archive-new`, `archive-both`), labelled as the `/review` page labels them.
   The choice list comes from ONE registry (`reviewChoices(item)`) that the `/review` page also
   renders from, so the page and the tool can't disagree.
 - **`decide_review({ id, choice, note? })`** — `choice` must be one of that item's listed choices
