@@ -1,6 +1,7 @@
 // server/lib/channels/approvals.ts
 // Exec approvals over iMessage (spec §6). A run that answers over iMessage (`reply_to`) gets an
-// approval channel that texts "Run `cmd`? 👍 to approve · 👎 to deny" to the reply chat and waits:
+// approval channel that texts "Run `cmd`? 👍 to approve · 👎 to deny" (worded per tool — see
+// approvalPromptText) to the reply chat and waits:
 // a 👍/❤️ tapback from an allowed handle on THAT message in THAT chat approves, 👎 denies, and
 // 10 minutes of silence expires (= denies).
 //
@@ -43,9 +44,17 @@ const waiters = new Map<string, (status: ApprovalStatus) => void>()
 /** The command as texted: at most PROMPT_COMMAND_MAX chars (a long heredoc is not texted in full). */
 export const PROMPT_COMMAND_MAX = 300
 
-function promptText(req: ApprovalRequest): string {
+/**
+ * The texted question, worded per tool (final review m1): exec asks to run a command; a review
+ * decision is not a command, so it reads as one (`command` is "<choice> — <summary>"); any other
+ * dangerous tool names itself.
+ */
+export function approvalPromptText(req: ApprovalRequest): string {
   const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
-  return `Run \`${cmd}\`?\n👍 to approve · 👎 to deny`
+  const ask = req.tool === 'exec' ? `Run \`${cmd}\`?`
+    : req.tool === 'decide_review' ? `Approve review decision: ${cmd}?`
+      : `Allow ${req.tool}: \`${cmd}\`?`
+  return `${ask}\n👍 to approve · 👎 to deny`
 }
 
 /** pending → `to`, only if still pending. True when this call made the transition. */
@@ -154,7 +163,7 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
 
     let promptGuid: string | null = null
     try {
-      promptGuid = (await client.sendText(chatGuid, promptText(req), randomUUID())).guid
+      promptGuid = (await client.sendText(chatGuid, approvalPromptText(req), randomUUID())).guid
     } catch (err) {
       console.warn(`[channels] approval prompt for run ${runId} failed:`, err instanceof Error ? err.message : err)
     }
