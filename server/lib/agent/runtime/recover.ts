@@ -1,6 +1,18 @@
 import { recoverOrphans, runtimeExclusive } from './runs'
 import { requeueUnconsumed } from './inbox'
 import { appendEvent } from '../../../services/conversations'
+import { onRunFinished } from '../jobs/outcome'
+
+/** The outcome a recovered job run records: a crash or restart is a real failure (it counts
+ *  toward auto-disable), unlike Tony pressing Stop, which finishes the run as 'aborted' in its
+ *  own process and never reaches recovery. Same error text recoverOrphans writes on the row. */
+const INTERRUPTED_OUTCOME = { status: 'failed', error: 'interrupted by a restart' } as const
+
+type RecoverOpts = {
+  onlyConversations?: string[]; excludeRunIds?: string[]
+  /** Test seam, passed to onRunFinished: where an auto-disable note goes instead of main. */
+  mainConversationId?: string
+}
 
 /** Any run still 'running' with a stale liveness stamp died with the old process. Mark it, say
  *  so in its thread, and requeue whatever it never read — a fast restart drops a run mid-turn
@@ -10,9 +22,14 @@ import { appendEvent } from '../../../services/conversations'
  *  dead). No automatic retry of the turn itself — a half-run tool loop is not safely repeatable.
  *  Shared by `recoverOnBoot` (once, at startup) and `recoverStale` (every worker tick) — same
  *  query, same note, same requeue, different caller. */
-async function recoverAndNote(opts: { onlyConversations?: string[]; excludeRunIds?: string[]; takeoverForeign?: boolean } = {}): Promise<number> {
+async function recoverAndNote(opts: RecoverOpts & { takeoverForeign?: boolean } = {}): Promise<number> {
   const dead = await recoverOrphans({ onlyConversations: opts.onlyConversations, excludeRunIds: opts.excludeRunIds, takeoverForeign: opts.takeoverForeign })
   for (const r of dead) {
+    // A job-fired run updates its job like any finished run (last_outcome, failure streak,
+    // auto-disable). Recovery is the only outcome writer for it: the owning process, if it is
+    // somehow still alive, finds its finishRun fenced and skips onRunFinished.
+    await onRunFinished(r, INTERRUPTED_OUTCOME, { mainConversationId: opts.mainConversationId })
+      .catch(err => console.error('[runtime] recovery job outcome failed:', err))
     await appendEvent(r.conversationId, 'A turn was interrupted by a restart and did not finish.', 'runtime:restart')
       .catch(err => console.error('[runtime] recovery note failed:', err))
     await requeueUnconsumed(r)
@@ -26,7 +43,7 @@ async function recoverAndNote(opts: { onlyConversations?: string[]; excludeRunId
  *  was executing seconds ago: it is owned by another boot id, so it is dead whatever its
  *  alive_at says (final review I4). Without the flag (the shared dev DB, where other
  *  checkouts' servers own live runs) it stays age-only — the 60s window, handled by the tick. */
-export async function recoverOnBoot(opts: { onlyConversations?: string[]; excludeRunIds?: string[]; exclusive?: boolean } = {}): Promise<number> {
+export async function recoverOnBoot(opts: RecoverOpts & { exclusive?: boolean } = {}): Promise<number> {
   return recoverAndNote({ ...opts, takeoverForeign: opts.exclusive ?? runtimeExclusive() })
 }
 
@@ -39,6 +56,6 @@ export async function recoverOnBoot(opts: { onlyConversations?: string[]; exclud
  *  alive_at bumps (bumped every 10s), not actually dead. `excludeRunIds` is queue.ts's
  *  in-process `executing` set (Task 8 review, fix round 1) — never let this process's own
  *  periodic tick recover a run IT is still actively running. */
-export async function recoverStale(opts: { onlyConversations?: string[]; excludeRunIds?: string[] } = {}): Promise<number> {
+export async function recoverStale(opts: RecoverOpts = {}): Promise<number> {
   return recoverAndNote(opts)
 }

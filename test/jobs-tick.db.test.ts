@@ -33,6 +33,7 @@ import type { RunOutcome } from '../server/lib/agent/runtime/types'
 import { jobsTick, runJobNow } from '../server/lib/agent/jobs/tick'
 import { fireEvent, dueTaskEvents } from '../server/lib/agent/jobs/events'
 import { onRunFinished, MAX_CONSECUTIVE_FAILURES } from '../server/lib/agent/jobs/outcome'
+import { recoverOnBoot, recoverStale } from '../server/lib/agent/runtime/recover'
 
 const PREFIX = 'jstick-'
 const db = () => useDb()
@@ -591,5 +592,48 @@ describe('final review fixes — Run now and fenced finish', () => {
     expect(after.lastOutcome).toBeNull()
     const [final] = await db().select({ s: agentRuns.status }).from(agentRuns).where(eq(agentRuns.id, r.id))
     expect(final!.s).toBe('interrupted')
+  })
+})
+
+// ---- reliability pass, Task 2 ------------------------------------------------------------------
+
+describe('recovery — an interrupted job run updates its job', () => {
+  /** A job run in its OWN scratch thread, left `running` by a dead process (`status` overridable).
+   *  alive_at is 5 minutes old, past ORPHAN_STALE_MS, and recovery is scoped to this thread. */
+  async function deadJobRun(jobId: string, status: 'running' | 'aborted' = 'running'): Promise<string> {
+    const conv = (await createConversation({ title: `${PREFIX}crash` })).id
+    convIds.push(conv)
+    await db().insert(agentRuns).values({
+      conversationId: conv, sessionKey: `thread:${conv}`, trigger: 'wake', profile: 'headless',
+      status, input: { text: 'J.', modality: 'text' }, wakeReason: 'job:test', jobId,
+      claimedAt: sql`now() - interval '5 minutes'`, aliveAt: sql`now() - interval '5 minutes'`
+    })
+    return conv
+  }
+
+  it('periodic and boot recovery record failed and count it; the third one auto-disables with a note', async () => {
+    const slug = `${PREFIX}crashy`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'C.'), actor: 'human' })
+    const opts = { mainConversationId: scratchMain }
+
+    expect(await recoverStale({ onlyConversations: [await deadJobRun(job.id)], ...opts })).toBe(1)
+    expect(await row(slug)).toMatchObject({ lastOutcome: 'failed', consecutiveFailures: 1, enabled: true })
+
+    expect(await recoverOnBoot({ onlyConversations: [await deadJobRun(job.id)], exclusive: false, ...opts })).toBe(1)
+    expect(await row(slug)).toMatchObject({ consecutiveFailures: 2, enabled: true })
+
+    expect(await recoverStale({ onlyConversations: [await deadJobRun(job.id)], ...opts })).toBe(1)
+    expect(await row(slug)).toMatchObject({ lastOutcome: 'failed', consecutiveFailures: MAX_CONSECUTIVE_FAILURES, enabled: false })
+    const notes = await db().select().from(conversationMessages)
+      .where(and(eq(conversationMessages.conversationId, scratchMain), eq(conversationMessages.origin, 'runtime:job-disabled')))
+    expect(notes.filter(n => n.content.includes(slug))).toHaveLength(1)
+    expect(notes.find(n => n.content.includes(slug))!.content).toContain('interrupted by a restart')
+  })
+
+  it('a run Tony stopped (finished aborted) is not recovered and does not count', async () => {
+    const slug = `${PREFIX}stopped`
+    const job = await createJob({ slug, content: md('trigger: every 30m\nenabled: true', 'S.'), actor: 'human' })
+    expect(await recoverStale({ onlyConversations: [await deadJobRun(job.id, 'aborted')], mainConversationId: scratchMain })).toBe(0)
+    expect(await row(slug)).toMatchObject({ lastOutcome: null, consecutiveFailures: 0, enabled: true })
   })
 })
