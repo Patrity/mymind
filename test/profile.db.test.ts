@@ -59,6 +59,29 @@ afterAll(async () => {
 })
 
 describe('profile store (server/services/profile.ts)', () => {
+  // Task 2 review, fix round 1: agent_profile carries no unique constraint, so a plain
+  // select-then-insert lazy-create can race concurrent first-ever calls into multiple rows.
+  // getProfileSource() closes this with a pg_advisory_xact_lock-guarded re-select-then-insert
+  // (server/services/profile.ts). A fan-out of 25 concurrent calls (not just 2) is what actually
+  // exercises the race on a fast local Postgres: 2 calls over Promise.all were not enough to
+  // reliably overlap in manual testing (BEGIN + re-select + INSERT + COMMIT for the first caller
+  // often finished before the second's transaction even opened), but 25 reliably produced several
+  // extra rows against the pre-fix code — see the mutation check in the report.
+  it('25 concurrent getProfileSource() calls on an absent row produce exactly one row', async () => {
+    await useDb().delete(agentConfigRevisions).where(eq(agentConfigRevisions.targetKind, 'profile'))
+    await useDb().delete(agentProfile)
+
+    const results = await Promise.all(Array.from({ length: 25 }, () => getProfileSource()))
+    for (const r of results) expect(r.content).toBe('')
+    // Every call must have resolved to the SAME row (same content/hash/updatedAt/updatedBy) —
+    // two distinct rows would show up here as differing `updatedAt` values.
+    expect(results).toEqual(results.map(() => results[0]))
+
+    const rows = await useDb().select().from(agentProfile)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.content).toBe('')
+  })
+
   it('lazily creates the row with empty content when none exists', async () => {
     // Clear the table for this assertion — already captured in `snapshot` for final restore.
     await useDb().delete(agentConfigRevisions).where(eq(agentConfigRevisions.targetKind, 'profile'))
