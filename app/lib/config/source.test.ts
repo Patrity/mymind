@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { classifySaveError, configEndpoints, reconcileSnapshot, skillStarterMarkdown, toSnapshot } from './source'
+import { profileStarterMarkdown } from './profile-starter'
 import { splitFrontmatter } from '~~/shared/utils/frontmatter'
 
 describe('reconcileSnapshot', () => {
@@ -62,6 +63,22 @@ describe('configEndpoints', () => {
   it('keys skills under the live-invalidated ["skills"] base and jobs under ["jobs"]', () => {
     expect(configEndpoints('skill', 'a-b')).toMatchObject({ queryBase: 'skills', source: '/api/skills/a-b/source', save: '/api/skills/a-b/source' })
     expect(configEndpoints('job', 'a-b')).toMatchObject({ queryBase: 'jobs', source: '/api/jobs/a-b', save: '/api/jobs/a-b', revert: '/api/jobs/a-b/revert' })
+  })
+
+  it('maps the profile singleton to /api/profile/* under the live-invalidated ["profile"] base, ignoring the slug', () => {
+    expect(configEndpoints('profile', 'x')).toEqual({
+      queryBase: 'profile',
+      source: '/api/profile/source',
+      save: '/api/profile/source',
+      revisions: '/api/profile/revisions',
+      revert: '/api/profile/revert'
+    })
+  })
+})
+
+describe('profileStarterMarkdown', () => {
+  it('is the About Tony template with its four sections', () => {
+    expect(profileStarterMarkdown()).toBe('# About Tony\n\n## How I like answers\n-\n\n## What a good brief looks like\n-\n\n## Routines\n-\n\n## Things to avoid\n-\n')
   })
 })
 

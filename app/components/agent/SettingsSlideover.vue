@@ -17,7 +17,7 @@ const { settings } = useVoiceSettings()
 // Persona character variant — labels capitalized from the lowercase variant names.
 const personaVariantItems = PERSONA_VARIANTS.map(v => ({ label: v[0]!.toUpperCase() + v.slice(1), value: v }))
 
-// Voice picker — presets authored in /voice, not an enum from a provider.
+// Voice picker — presets authored in /settings/voice, not an enum from a provider.
 const { data: presetList } = await useFetch('/api/voice/presets', {
   default: () => ({ presets: [] as { id: string, name: string, isDefault: boolean }[] })
 })

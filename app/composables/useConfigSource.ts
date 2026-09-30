@@ -1,6 +1,7 @@
 /**
- * Load + explicit-save of a skill's or job's whole markdown (cycle 74), shared by
- * /skills/[slug] and /jobs/[slug]. No autosave: invalid content is rejected at write time, so a
+ * Load + explicit-save of a skill's, job's or the profile's whole markdown (cycles 74/76), shared
+ * by /skills/[slug], /jobs/[slug] and /settings/profile (kind 'profile' is a singleton: its slug
+ * only keys the query, the routes ignore it). No autosave: invalid content is rejected at write time, so a
  * save is a deliberate act (Save button / ⌘S).
  *
  * - Every save is a CAS write: it sends the `contentHash` it last loaded as `expectedHash`.

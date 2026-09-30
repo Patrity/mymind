@@ -34,7 +34,7 @@ type Executor = Pick<ReturnType<typeof useDb>, 'select' | 'insert' | 'execute'>
 
 /** The one profile row, if it has ever been created. Deterministic tie-break (oldest by
  *  updated_at, then by id) in case more than one somehow exists — there is no unique constraint
- *  enforcing the singleton, only the advisory-lock guard in getProfileSource(). */
+ *  enforcing the singleton, only the advisory-lock guard in ensureProfileRow(). */
 async function currentRow(db: Executor = useDb()): Promise<AgentProfileRow | null> {
   const [row] = await db.select().from(agentProfile)
     .orderBy(asc(agentProfile.updatedAt), asc(agentProfile.id))
@@ -43,7 +43,8 @@ async function currentRow(db: Executor = useDb()): Promise<AgentProfileRow | nul
 }
 
 /**
- * Reads the profile, creating the single row lazily with empty content on first call.
+ * The one profile row, creating it with empty content if it does not exist yet. Shared by every
+ * path that may be first to touch the profile (getProfileSource, saveProfileSource).
  *
  * Race guard (Task 2 review, fix round 1): two concurrent first-ever calls could otherwise both
  * see "no row" from the plain select above and each INSERT one, since agent_profile carries no
@@ -52,53 +53,51 @@ async function currentRow(db: Executor = useDb()): Promise<AgentProfileRow | nul
  * one caller ever creates the row; every other concurrent caller's re-select finds the winner's
  * row instead.
  */
-export async function getProfileSource(): Promise<ProfileSource> {
+async function ensureProfileRow(): Promise<AgentProfileRow> {
   const row = await currentRow()
-  if (row) return rowToSource(row)
+  if (row) return row
   return useDb().transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(${PROFILE_ROW_LOCK_KEY})`)
     const again = await currentRow(tx)
-    if (again) return rowToSource(again)
+    if (again) return again
     const content = ''
     const [inserted] = await tx.insert(agentProfile).values({ content, contentHash: hashOf(content) }).returning()
-    return rowToSource(inserted!)
+    return inserted!
   })
+}
+
+/** Reads the profile, creating the single row lazily with empty content on first call. */
+export async function getProfileSource(): Promise<ProfileSource> {
+  return rowToSource(await ensureProfileRow())
 }
 
 /**
  * Compare-and-swap write of the profile's whole markdown. `expectedHash` is the contentHash the
- * editor loaded; a mismatch throws ConflictError(current) — including when the row does not
- * exist yet, in which case "current" is the lazily-created empty row's would-be hash (the same
- * hash getProfileSource() would have handed out).
+ * editor loaded; a mismatch throws ConflictError(current). A missing row is first created empty
+ * through ensureProfileRow() (the same advisory-locked create getProfileSource uses — Task 3), so
+ * a first-ever save CASes against the empty row's hash and concurrent first saves can never
+ * insert more than one row: exactly one wins, the rest conflict.
  */
 export async function saveProfileSource(
   content: string, expectedHash: string, actor: RevisionActor, opts: { improvementId?: string } = {}
 ): Promise<ProfileSource> {
-  const db = useDb()
-  const existing = await currentRow()
-  let row: AgentProfileRow | undefined
-  if (!existing) {
-    const emptyHash = hashOf('')
-    if (expectedHash !== emptyHash) throw new ConflictError({ content: '', contentHash: emptyHash })
-    ;[row] = await db.insert(agentProfile).values({ content, contentHash: hashOf(content), updatedBy: actor }).returning()
-  } else {
-    if (existing.contentHash !== expectedHash) {
-      throw new ConflictError({ content: existing.content, contentHash: existing.contentHash })
-    }
-    // Re-checked IN the UPDATE so a write landing between the read above and this statement
-    // still loses rather than being clobbered (same race guard as saveSkillSource).
-    ;[row] = await db.update(agentProfile)
-      .set({ content, contentHash: hashOf(content), updatedBy: actor, updatedAt: new Date() })
-      .where(and(eq(agentProfile.id, existing.id), eq(agentProfile.contentHash, expectedHash)))
-      .returning()
-    if (!row) {
-      const now = await currentRow()
-      throw new ConflictError({ content: now?.content ?? '', contentHash: now?.contentHash ?? '' })
-    }
+  const existing = await ensureProfileRow()
+  if (existing.contentHash !== expectedHash) {
+    throw new ConflictError({ content: existing.content, contentHash: existing.contentHash })
   }
-  await recordRevision({ targetKind: 'profile', targetId: row!.id, content, actor, improvementId: opts.improvementId ?? null })
-  publishChange({ resource: 'agentProfile', action: existing ? 'updated' : 'created', id: row!.id })
-  return rowToSource(row!)
+  // Re-checked IN the UPDATE so a write landing between the read above and this statement
+  // still loses rather than being clobbered (same race guard as saveSkillSource).
+  const [row] = await useDb().update(agentProfile)
+    .set({ content, contentHash: hashOf(content), updatedBy: actor, updatedAt: new Date() })
+    .where(and(eq(agentProfile.id, existing.id), eq(agentProfile.contentHash, expectedHash)))
+    .returning()
+  if (!row) {
+    const now = await currentRow()
+    throw new ConflictError({ content: now?.content ?? '', contentHash: now?.contentHash ?? '' })
+  }
+  await recordRevision({ targetKind: 'profile', targetId: row.id, content, actor, improvementId: opts.improvementId ?? null })
+  publishChange({ resource: 'agentProfile', action: 'updated', id: row.id })
+  return rowToSource(row)
 }
 
 export async function listProfileRevisions(): Promise<{ id: string; content: string; actor: string; createdAt: Date; improvementId: string | null }[]> {

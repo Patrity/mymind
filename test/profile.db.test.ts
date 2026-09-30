@@ -19,22 +19,22 @@ import { ConflictError } from '../server/services/skills'
 const hashOf = (s: string) => createHash('sha256').update(s).digest('hex')
 
 let snapshot: AgentProfileRow | null = null
-let beforeRevisionIds: string[] = []
+// The snapshot row's revisions, in full: some tests clear the whole table (and its profile
+// revisions) to exercise the lazy-create path, so the original rows are re-inserted afterwards.
+let snapshotRevisions: (typeof agentConfigRevisions.$inferSelect)[] = []
 
 beforeAll(async () => {
   const rows = await useDb().select().from(agentProfile)
   snapshot = rows[0] ?? null
   if (snapshot) {
-    const revs = await useDb().select({ id: agentConfigRevisions.id }).from(agentConfigRevisions)
+    snapshotRevisions = await useDb().select().from(agentConfigRevisions)
       .where(and(eq(agentConfigRevisions.targetKind, 'profile'), eq(agentConfigRevisions.targetId, snapshot.id)))
-    beforeRevisionIds = revs.map(r => r.id)
   }
 })
 
 afterAll(async () => {
   const db = useDb()
-  // Remove every profile row this file created (there is only ever meant to be one, but be
-  // defensive) other than the original snapshot's row.
+  // Remove every profile row this file created, and its revisions, other than the snapshot's row.
   const rows = await db.select().from(agentProfile)
   for (const row of rows) {
     if (!snapshot || row.id !== snapshot.id) {
@@ -43,16 +43,18 @@ afterAll(async () => {
     }
   }
   if (snapshot) {
-    // Restore the original row byte-for-byte.
-    await db.update(agentProfile).set({
-      content: snapshot.content, contentHash: snapshot.contentHash,
-      updatedBy: snapshot.updatedBy, updatedAt: snapshot.updatedAt
-    }).where(eq(agentProfile.id, snapshot.id))
-    // Delete only the revisions THIS file created (i.e. not present before beforeAll ran).
+    // Restore the original row byte-for-byte — re-inserting it if a test deleted it.
+    await db.insert(agentProfile).values(snapshot).onConflictDoUpdate({
+      target: agentProfile.id,
+      set: { content: snapshot.content, contentHash: snapshot.contentHash, updatedBy: snapshot.updatedBy, updatedAt: snapshot.updatedAt }
+    })
+    // Its revisions: drop the ones THIS file added, re-insert any original a test deleted.
+    const keep = snapshotRevisions.map(r => r.id)
     const afterRevs = await db.select({ id: agentConfigRevisions.id }).from(agentConfigRevisions)
       .where(and(eq(agentConfigRevisions.targetKind, 'profile'), eq(agentConfigRevisions.targetId, snapshot.id)))
-    const toDelete = afterRevs.map(r => r.id).filter(id => !beforeRevisionIds.includes(id))
+    const toDelete = afterRevs.map(r => r.id).filter(id => !keep.includes(id))
     if (toDelete.length) await db.delete(agentConfigRevisions).where(inArray(agentConfigRevisions.id, toDelete))
+    if (snapshotRevisions.length) await db.insert(agentConfigRevisions).values(snapshotRevisions).onConflictDoNothing()
   }
   // else: there was no row before this file ran — the loop above already removed everything
   // this file created, so the table is back to empty, matching the original (empty) state.
@@ -97,6 +99,51 @@ describe('profile store (server/services/profile.ts)', () => {
     expect(again.contentHash).toBe(source.contentHash)
     const rows = await useDb().select().from(agentProfile)
     expect(rows).toHaveLength(1)
+  })
+
+  // Task 3 (ruled from the Task 2 review): saveProfileSource must create a missing row through the
+  // same advisory-locked helper getProfileSource uses, not its own unguarded insert — otherwise
+  // concurrent first-ever SAVES race into several rows just as concurrent reads once did.
+  it('a first-ever save on an absent row creates exactly one row and records the revision', async () => {
+    await useDb().delete(agentConfigRevisions).where(eq(agentConfigRevisions.targetKind, 'profile'))
+    await useDb().delete(agentProfile)
+
+    const saved = await saveProfileSource('First words.', hashOf(''), 'human')
+    expect(saved).toMatchObject({ content: 'First words.', contentHash: hashOf('First words.'), updatedBy: 'human' })
+    const rows = await useDb().select().from(agentProfile)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.content).toBe('First words.')
+    const revs = await listProfileRevisions()
+    expect(revs).toHaveLength(1)
+    expect(revs[0]).toMatchObject({ content: 'First words.', actor: 'human' })
+  })
+
+  it('a first-ever save with a hash other than the empty row\'s conflicts and writes nothing but the empty row', async () => {
+    await useDb().delete(agentConfigRevisions).where(eq(agentConfigRevisions.targetKind, 'profile'))
+    await useDb().delete(agentProfile)
+
+    await expect(saveProfileSource('nope', 'stale', 'human')).rejects.toBeInstanceOf(ConflictError)
+    const rows = await useDb().select().from(agentProfile)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.content).toBe('')
+    expect(await listProfileRevisions()).toHaveLength(0)
+  })
+
+  it('25 concurrent first-ever saves on an absent row produce exactly one row; one wins, the rest conflict', async () => {
+    await useDb().delete(agentConfigRevisions).where(eq(agentConfigRevisions.targetKind, 'profile'))
+    await useDb().delete(agentProfile)
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 25 }, (_, i) => saveProfileSource(`save ${i}`, hashOf(''), 'human'))
+    )
+    const won = results.filter(r => r.status === 'fulfilled')
+    const lost = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+    expect(won).toHaveLength(1)
+    for (const r of lost) expect(r.reason).toBeInstanceOf(ConflictError)
+
+    const rows = await useDb().select().from(agentProfile)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.content).toBe((won[0] as PromiseFulfilledResult<{ content: string }>).value.content)
   })
 
   it('saves with the right hash: new hash plus a profile revision recorded with the actor', async () => {

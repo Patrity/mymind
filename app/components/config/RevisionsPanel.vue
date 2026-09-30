@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * Revision history of a skill or job (cycle 74): newest first, actor + time. Selecting one shows
+ * Revision history of a skill, job or the "About Tony" profile (cycles 74/76): newest first, actor + time. Selecting one shows
  * a read-only line diff from the revision BEFORE it to it (what that write changed) and a Revert
- * button, which restores that revision's content as a new revision. Shared by /skills/[slug]
- * and /jobs/[slug]. Revert is disabled while the editor is `dirty`.
+ * button, which restores that revision's content as a new revision. Shared by /skills/[slug],
+ * /jobs/[slug] and /settings/profile (kind="profile"; its slug is ignored — see configEndpoints).
+ * Revert is disabled while the editor is `dirty`.
  */
 import { useQuery } from '@tanstack/vue-query'
 import { configEndpoints, type ConfigKind } from '~/lib/config/source'

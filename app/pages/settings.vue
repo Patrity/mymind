@@ -6,10 +6,18 @@ const title = computed(() => {
   const t = route.meta.title as string | undefined
   return t ? `Settings · ${t}` : 'Settings'
 })
+// A child that brings its own UDashboardPanel(s) — a full-height editor (Profile) or a
+// multi-column studio (Voice) — sets definePageMeta({ settingsPanel: false }) and renders bare,
+// instead of inside this padded, scrolling panel body.
+const ownPanel = computed(() => route.meta.settingsPanel === false)
 </script>
 
 <template>
-  <UDashboardPanel id="settings">
+  <NuxtPage v-if="ownPanel" />
+  <UDashboardPanel
+    v-else
+    id="settings"
+  >
     <template #header>
       <UDashboardNavbar :title="title">
         <template #leading><UDashboardSidebarCollapse /></template>

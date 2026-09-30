@@ -67,6 +67,8 @@ const settingsChildren = computed<NavigationMenuItem[]>(() => [
     ...(channelsDot.value ? { chip: { color: channelsDot.value } } : {})
   },
   { label: 'Bridget', icon: 'i-lucide-bot', to: '/settings/bridget' },
+  { label: 'Profile', icon: 'i-lucide-user-round', to: '/settings/profile' },
+  { label: 'Voice', icon: 'i-lucide-mic-vocal', to: '/settings/voice' },
   { label: 'Search', icon: 'i-lucide-search', to: '/settings/search' },
   { label: 'Agent Tools', icon: 'i-lucide-terminal', to: '/settings/agent-tools' },
   { label: 'Secrets', icon: 'i-lucide-key-square', to: '/settings/secrets' },
@@ -79,7 +81,6 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
   { label: 'Capture', icon: 'i-lucide-plus', to: '/capture' },
   { label: 'Clipboard', icon: 'i-lucide-clipboard', to: '/clipboard' },
   { label: 'Agent', icon: 'i-lucide-bot', to: '/agent' },
-  { label: 'Voice', icon: 'i-lucide-mic-vocal', to: '/voice' },
   { label: 'Conversations', icon: 'i-lucide-messages-square', to: '/agent/history' },
   { label: 'Documents', icon: 'i-lucide-files', to: '/documents' },
   { label: 'Gallery', icon: 'i-lucide-image', to: '/gallery' },

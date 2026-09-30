@@ -4,7 +4,7 @@
  */
 import { joinFrontmatter } from '~~/shared/utils/frontmatter'
 
-export type ConfigKind = 'skill' | 'job'
+export type ConfigKind = 'skill' | 'job' | 'profile'
 
 /** What the editor needs from the server: the markdown and the hash it must send back (CAS). */
 export interface SourceSnapshot {
@@ -14,8 +14,18 @@ export interface SourceSnapshot {
 
 /** HTTP routes and the vue-query key base for each kind. The key base matches what
  *  app/utils/live-dispatch.ts invalidates for the kind's live resource (`agentSkill` ->
- *  ['skills'], `agentJob` -> ['jobs']), so a write elsewhere refetches the open source. */
+ *  ['skills'], `agentJob` -> ['jobs'], `agentProfile` -> ['profile']), so a write elsewhere
+ *  refetches the open source. The profile is a singleton (cycle 76): its routes take no slug. */
 export function configEndpoints(kind: ConfigKind, slug: string) {
+  if (kind === 'profile') {
+    return {
+      queryBase: 'profile',
+      source: '/api/profile/source',
+      save: '/api/profile/source',
+      revisions: '/api/profile/revisions',
+      revert: '/api/profile/revert'
+    } as const
+  }
   const s = encodeURIComponent(slug)
   if (kind === 'skill') {
     return {
@@ -36,7 +46,7 @@ export function configEndpoints(kind: ConfigKind, slug: string) {
   } as const
 }
 
-/** Normalises a GET/PUT response of either kind to a snapshot. */
+/** Normalises a GET/PUT response of any kind to a snapshot. */
 export function toSnapshot(res: unknown): SourceSnapshot {
   const r = res as { job?: SourceSnapshot } & Partial<SourceSnapshot>
   const src = r.job ?? r
