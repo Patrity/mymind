@@ -607,6 +607,9 @@ describe('runTurn — channel deliveries', () => {
     const d = await deliveriesOf(a.conversationId)
     expect(d).toHaveLength(1)
     expect(d[0]).toMatchObject({ channel: 'email', target: 'tony@example.test', source: 'job', jobId: job.id, messageId: out.assistantMessageId, payload: { subject: 'Bridget · rtest-deliver-email' } })
+    // runTurn leaves the status to execute(); finish it, or the second run of the same job would
+    // break agent_runs_one_active_per_job (one active run per job).
+    await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, a.run.id))
 
     const b = await running('silent job wake', wake)
     await runTurn(b.run, { runAgent: fakeAgent('NO_REPLY') as never, assemble: noAssemble as never, hub: new StreamHub() })

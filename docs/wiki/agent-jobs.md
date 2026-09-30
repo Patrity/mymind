@@ -2,7 +2,7 @@
 title: Agent Jobs (markdown-configured schedules and triggers)
 status: built
 cycle: 74 (`deliver` targets: cycle 75)
-updated: 2026-09-28
+updated: 2026-09-29
 ---
 
 # Agent Jobs
@@ -94,8 +94,8 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 |---|---|
 | `agent_jobs` | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,63}$`), `content`, `content_hash` (sha256, the CAS token), `source` (`human`/`agent`). **Derived:** `enabled`, `trigger_kind`, `trigger_expr`, `timezone`, `next_run_at`, `parse_error`. **Runtime:** `last_run_at`, `last_run_id`, `last_outcome` (`spoke`/`silent`/`failed`/`skipped`), `consecutive_failures`, `fired_at` (`at` jobs). `created_at`, `updated_at`. Partial index `agent_jobs_due (next_run_at) where enabled and parse_error is null`. |
 | `agent_config_revisions` | `target_kind` (`skill`/`job`), `target_id`, `content`, `actor` (`human`/`agent`/`system`), `run_id`, `created_at`. The last **100** per target are kept, pruned on write. No FK: a deleted job's revisions stay until deleted explicitly. |
-| `agent_job_fires` | PK `(job_id, event_key)`, `fired_at`; FK cascade on job delete. It dedupes event fires and the one-per-job "reminder did not fire" note (key `at:not-fired`). |
-| `agent_runs.job_id` | Nullable FK, `on delete set null`. |
+| `agent_job_fires` | PK `(job_id, event_key)`, `fired_at`, `run_id` (0059: nullable FK to `agent_runs`, `on delete set null`; NULL until the fire's run exists); FK cascade on job delete. It dedupes event fires and the one-per-job "reminder did not fire" note (key `at:not-fired`). |
+| `agent_runs.job_id` | Nullable FK, `on delete set null`. Partial unique index `agent_runs_one_active_per_job (job_id) where job_id is not null and status in ('queued','running')` (0059): one active run per job. |
 
 `agent_skills` is in the same migration; see [agent-skills.md](agent-skills.md).
 
@@ -106,7 +106,7 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 | `parse.ts` | Markdown → `JobSpec` or `{ error }`. Pure. |
 | `schedule.ts` | `nextRunAt`, `nextFireTimes`, `describeTrigger` ("weekdays at 7:30"), `inActiveHours`, `resolveAtInstant`, `minCronGapMs`. Pure, croner-based and DST-safe. |
 | `store.ts` | **The only writer of `agent_jobs`.** `createJob`, `saveJob` (CAS), `setJobEnabled`, `deleteJob` (records a final revision), `restoreJob` (re-creates under the original id), `revertJob`, `revalidateAll` (boot), `rederiveDefaultTimezone`, `installSeedJobs`, `countAgentAtCreatesLastHour`. |
-| `tick.ts` | `jobsTick` (claims due jobs and fires them), `runJobNow`, `fireJob`, `hasActiveRun`. |
+| `tick.ts` | `jobsTick` (claims due jobs and fires them), `runJobNow`, `fireJob`, `hasActiveRun`, `sweepCrashedFires` (crash recovery). |
 | `events.ts` | `fireEvent(name, key, payload)`, `dueTaskEvents()` and `eventBlock()` (the plain-sentence event description appended to the prompt). |
 | `outcome.ts` | `onRunFinished`, called by `queue.ts` `execute` after every run: writes `last_outcome` and the failure streak, and auto-disables. |
 | `seeds.ts` | The four seed job files (`SEED_JOBS`), plus `SEED_JOBS_V1`, the cycle-74 content byte for byte, which `upgradeSeedJobs` matches against. |
@@ -166,14 +166,17 @@ only, followed by `dueTaskEvents()`):
    - if it no longer parses → `skipped`;
    - if it is outside `active_hours` → `skipped` (a guard only, because `next_run_at` is already
      in hours);
-   - if its previous run is still `queued`/`running` → `skipped`;
+   - if its previous run is still `queued`/`running` → `skipped` (this check is a fast path;
+     see **Overlap and crash recovery**);
    - otherwise `fireJob` → `wake({ reason: 'job:<slug>', prompt: body, sessionKey: 'main' |
      'isolated:<slug>', model, jobId, context })`, which sets `last_run_id`. An `isolated:<slug>`
      key resolves to **the thread its newest run used** (`runtime/sessions.ts`): the stable key
      is `agent_runs.session_key`, which every run records alongside its thread, and runs are
      never pruned. Only the first fire (or one after Tony deletes the thread) creates it, so a
      silent heartbeat on `thread: isolated` does not leave an empty thread per fire.
-3. An `at` job is then disabled with a **system** revision (`setJobEnabled(slug, false,
+3. If the wake **throws**, an `at` job's claim is undone instead (`fired_at` null, `next_run_at`
+   back to its instant, still enabled, no note) and the next tick retries it.
+   Otherwise an `at` job is then disabled with a **system** revision (`setJobEnabled(slug, false,
    'system')`). If it did not fire, one note goes to main: "Reminder X did not fire: … It is now
    turned off; re-arm it on /jobs/X".
 4. Disabled `at` jobs fired more than **30 days** ago are deleted with their revisions.
@@ -223,9 +226,29 @@ previous run is still going is skipped **without** recording any key, so those t
 next tick's batch. A job that fired less than 5 minutes ago (`MIN_INTERVAL_MS`, measured
 from `last_run_at`) is also deferred the same way, so a job-fired run that creates an overdue task
 cannot re-fire its own job on the next tick. The prompt is the body plus a blank
-line plus `eventBlock()`, a plain sentence with no brackets (the model imitates markers). Events
-are **at-most-once**: a wake failure after the fire row landed is logged and marks the job
-`failed`, but is not retried.
+line plus `eventBlock()`, a plain sentence with no brackets (the model imitates markers). Once the
+run exists its id is written to the fire rows' `run_id`. A wake that **throws** marks the job
+`failed` and deletes the fire rows it just inserted, so the key can fire again (`task.due` retries
+on the next tick; `cc.session_end` only on a redelivery). An overlap deletes them the same way.
+
+## Overlap and crash recovery
+
+**Overlap is enforced by the database.** `agent_runs_one_active_per_job` allows one
+queued-or-running run per job. Every fire path (`jobsTick`, `fireEvent`, `dueTaskEvents`,
+`runJobNow` and so the `run_job` tool) keeps its `hasActiveRun` pre-check as a fast path, but a
+fire that races another fire of the same job fails its run insert (23505 on that index), and
+`fireJob` returns `{ overlap: true }`. It is then handled as the ordinary overlap skip for that
+path, never as an error (`runJobNow` → `{ skipped: 'overlap' }`).
+
+**Crash sweep.** `sweepCrashedFires()` runs first in every unscoped `workerTick` and repairs what
+a crash between a fire's commit and its wake left behind (older than **2 minutes**, and no run of
+the job created since):
+- an enabled `at` job with `fired_at` set → re-armed as above, and logged;
+- an `event` job's fire row with `run_id` NULL (fired within the last 24 h) → deleted, and
+  logged. `task.due` re-fires on the next tick. A lost `cc.session_end` cannot be re-fired (the
+  payload is gone); the delete only frees its key for a redelivery.
+
+It is idempotent, and `onlySlugs`/`now` are its test seams.
 
 ## Outcomes and failures
 
@@ -416,10 +439,8 @@ order by f.fired_at desc limit 20;
   (`next_run_at = null`, "—" on the page). Follow-up: reject it at write time.
 - **Interrupted runs leave `last_outcome` stale.** `recoverOrphans` marks runs `interrupted`
   outside `execute`, so `onRunFinished` never sees them and the streak does not move.
-- **At-most-once across a crash.** An event's fire row and an `at` job's claim commit before the
-  wake. A crash or a wake error in between loses that fire.
-- **`runJobNow` can race the tick.** There is no row lock between the overlap check and the wake,
-  so both can pass and produce two runs.
+- **A `cc.session_end` lost to a crash** is not re-fired (see Overlap and crash recovery). An
+  `at` job that crashes its process on every wake is re-armed after every crash.
 - **The cron density check** looks at a fixed 8-day window, so a day-of-month or month-restricted
   pattern that is dense only outside that window slips through.
 - **Revisions have no FK.** Deleting a job leaves its revisions (so `restoreJob` can bring them

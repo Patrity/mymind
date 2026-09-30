@@ -1,0 +1,3 @@
+ALTER TABLE "agent_job_fires" ADD COLUMN "run_id" uuid;--> statement-breakpoint
+ALTER TABLE "agent_job_fires" ADD CONSTRAINT "agent_job_fires_run_id_agent_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."agent_runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "agent_runs_one_active_per_job" ON "agent_runs" USING btree ("job_id") WHERE job_id is not null and status in ('queued', 'running');

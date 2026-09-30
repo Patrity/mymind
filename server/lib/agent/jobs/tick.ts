@@ -7,10 +7,16 @@
 // Single catch-up: next_run_at is computed from NOW, never from the missed next_run_at, so a job
 // that was due hours ago (server down) fires once and reschedules — no burst.
 //
+// No overlap: agent_runs_one_active_per_job (a partial unique index) allows one queued-or-running
+// run per job, so a fire that races another fire of the same job fails its insert and is treated
+// as an overlap skip. The hasActiveRun checks are only the cheap fast path.
+// No lost fire: a wake that throws undoes what the fire committed before it (an `at` claim, an
+// event's fire rows), and sweepCrashedFires repairs what a crash between the two left behind.
+//
 // Content is untouched here: only runtime columns (last_run_at, next_run_at, fired_at,
 // last_outcome, last_run_id) are written directly. The one content change a fire causes — an
 // `at` job's `enabled: false` — goes through store.setJobEnabled (system revision).
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentJobs, agentJobFires, agentConfigRevisions, agentRuns, type AgentJobRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
@@ -18,12 +24,19 @@ import { wake } from '../runtime/wake'
 import { getOrCreateMain } from '../runtime/sessions'
 import { appendEvent } from '../../../services/conversations'
 import { parseJob, type JobSpec } from './parse'
-import { nextRunAt, inActiveHours } from './schedule'
+import { nextRunAt, inActiveHours, resolveAtInstant } from './schedule'
 import { setJobEnabled } from './store'
 import { getDefaultTimezone } from './timezone'
 
 export const JOBS_CLAIM_LIMIT = 10
 export const AT_JOB_PRUNE_DAYS = 30
+/** A fire whose wake has not landed this long after it committed is treated as crashed. */
+export const CRASHED_FIRE_AFTER_MS = 2 * 60_000
+/** Unrecorded fire rows older than this are left alone: a crash is repaired on the next boot's
+ *  first tick, and an old NULL run_id is more likely a row from before migration 0059, or one
+ *  whose run was deleted with its thread (on delete set null) — neither is a crash to repair. */
+export const CRASHED_FIRE_LOOKBACK_HOURS = 24
+export const ONE_ACTIVE_RUN_PER_JOB_INDEX = 'agent_runs_one_active_per_job'
 
 type WakeFn = typeof wake
 
@@ -53,12 +66,51 @@ export function wakeRequestFor(slug: string, jobId: string, spec: JobSpec, promp
   }
 }
 
-/** Wakes the job and records the run it started. Throws whatever wake throws. */
-export async function fireJob(slug: string, jobId: string, spec: JobSpec, prompt: string, wakeFn: WakeFn): Promise<string> {
-  const { runId } = await wakeFn(wakeRequestFor(slug, jobId, spec, prompt))
+/** The insert of a job's run hit agent_runs_one_active_per_job: another run of it is active. */
+export function isJobOverlapError(err: unknown): boolean {
+  // drizzle wraps the pg error (DrizzleQueryError.cause); walk a few levels of `cause`.
+  let e = err as { code?: string; constraint?: string; cause?: unknown } | undefined
+  for (let depth = 0; e && depth < 4; depth++) {
+    if (e.code === '23505' && e.constraint === ONE_ACTIVE_RUN_PER_JOB_INDEX) return true
+    e = e.cause as typeof e
+  }
+  return false
+}
+
+export type FireResult = { runId: string } | { overlap: true }
+
+/**
+ * Wakes the job and records the run it started. `{ overlap: true }` when the database refused
+ * the run because another run of this job is active. Throws whatever else wake throws — and ONLY
+ * when no run was created, so a caller may safely undo its claim on a throw.
+ */
+export async function fireJob(slug: string, jobId: string, spec: JobSpec, prompt: string, wakeFn: WakeFn): Promise<FireResult> {
+  let runId: string
+  try {
+    ({ runId } = await wakeFn(wakeRequestFor(slug, jobId, spec, prompt)))
+  } catch (err) {
+    if (isJobOverlapError(err)) return { overlap: true }
+    throw err
+  }
+  // The run exists from here on: bookkeeping failures are logged, never thrown (a throw would
+  // make the caller undo a claim whose run is already queued, and fire the job twice).
   await useDb().update(agentJobs).set({ lastRunId: runId, lastRunAt: sql`now()` }).where(eq(agentJobs.id, jobId))
+    .catch(err => console.error(`[jobs] recording run ${runId} on "${slug}" failed:`, err))
   publishChange({ resource: 'agentJob', action: 'updated', id: jobId })
-  return runId
+  return { runId }
+}
+
+/**
+ * Undoes an `at` job's claim so the next tick fires it again: fired_at cleared, next_run_at back
+ * to its instant (already past, so due at once). `enabled` is untouched — the tick disables an
+ * `at` job only after its fire was dealt with. Unparseable content falls back to `fallback`.
+ */
+async function rearmAtJob(jobId: string, spec: JobSpec | null, fallback: Date, onlyIf?: SQL): Promise<boolean> {
+  const instant = (spec && resolveAtInstant(spec.trigger.expr, spec.timezone)) ?? fallback
+  const done = await useDb().update(agentJobs).set({ firedAt: null, nextRunAt: instant })
+    .where(and(eq(agentJobs.id, jobId), onlyIf)).returning({ id: agentJobs.id })
+  if (done.length) publishChange({ resource: 'agentJob', action: 'updated', id: jobId })
+  return done.length > 0
 }
 
 async function setOutcome(jobId: string, outcome: 'skipped' | 'failed'): Promise<void> {
@@ -147,6 +199,7 @@ export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?
 
   for (const job of claimed.jobs) {
     let notFired: string | null = null
+    let wakeFailed = false
     try {
       if (!job.spec) {
         console.warn(`[jobs] job "${job.slug}" no longer parses at fire time — skipped`)
@@ -155,18 +208,23 @@ export async function jobsTick(opts: { onlySlugs?: string[]; now?: Date; wakeFn?
         notFired = 'it came due outside its active hours'
       } else if (await hasActiveRun(job.id)) {
         notFired = 'its previous run was still going'
+      } else if ('overlap' in await fireJob(job.slug, job.id, job.spec, job.spec.body, wakeFn)) {
+        notFired = 'its previous run was still going'
       } else {
-        await fireJob(job.slug, job.id, job.spec, job.spec.body, wakeFn)
         fired.push(job.slug)
       }
       if (notFired) { await setOutcome(job.id, 'skipped'); skipped.push(job.slug) }
     } catch (err) {
       console.error(`[jobs] firing "${job.slug}" failed:`, err)
-      notFired = `waking it failed (${(err as Error).message})`
+      wakeFailed = true
       await setOutcome(job.id, 'failed').catch(() => {})
       skipped.push(job.slug)
     }
-    if (job.kind === 'at') {
+    if (job.kind === 'at' && wakeFailed) {
+      // Nothing ran: undo the claim so the next tick tries again (no note — it has not missed yet).
+      await rearmAtJob(job.id, job.spec, claimed.now)
+        .catch(err => console.error(`[jobs] re-arming "${job.slug}" after a failed wake failed:`, err))
+    } else if (job.kind === 'at') {
       await setJobEnabled(job.slug, false, 'system')
         .catch(err => console.error(`[jobs] disabling fired at-job "${job.slug}" failed:`, err))
       if (notFired) {
@@ -191,6 +249,49 @@ export async function runJobNow(slug: string, deps: { wakeFn?: WakeFn; allowDisa
   const spec = row.parseError ? null : await specFor(row)
   if (!spec) return { skipped: 'invalid' }
   if (await hasActiveRun(row.id)) return { skipped: 'overlap' }
-  const runId = await fireJob(slug, row.id, spec, spec.body, deps.wakeFn ?? wake)
-  return { runId }
+  const res = await fireJob(slug, row.id, spec, spec.body, deps.wakeFn ?? wake)
+  return 'overlap' in res ? { skipped: 'overlap' } : res
+}
+
+/**
+ * Repairs fires a crash left half-done, from the production (unscoped) worker tick. A fire commits
+ * its claim / fire rows BEFORE its wake, so a crash in between would otherwise lose it:
+ * - an `at` job claimed more than 2 min ago, still enabled (the tick disables it only after the
+ *   fire), with no run of it created since the claim → re-armed, and the next tick fires it;
+ * - an event fire row more than 2 min old with no run_id and no run of its job since → deleted,
+ *   so the key can fire again. task.due re-fires on the next dueTaskEvents tick; a lost
+ *   cc.session_end cannot (its payload is gone) — the delete only frees the key for a redelivery.
+ * Idempotent: a repaired row no longer matches. `onlySlugs`/`now` are the test seams.
+ */
+export async function sweepCrashedFires(opts: { onlySlugs?: string[]; now?: Date } = {}): Promise<{ rearmed: string[]; clearedFires: number }> {
+  const now = opts.now ? sql`${opts.now.toISOString()}::timestamptz` : sql`now()`
+  const stale = sql`(${now} - make_interval(secs => ${CRASHED_FIRE_AFTER_MS / 1000}))`
+  const crashedAt = await useDb().execute(sql`
+    select j.id, j.slug, j.content, j.timezone, j.fired_at from agent_jobs j
+    where j.trigger_kind = 'at' and j.enabled and j.fired_at is not null and j.fired_at < ${stale}
+      and not exists (select 1 from agent_runs r where r.job_id = j.id and r.created_at >= j.fired_at)
+      ${slugScope(opts.onlySlugs)}`)
+  const rearmed: string[] = []
+  for (const r of crashedAt.rows as { id: string; slug: string; content: string; timezone: string | null; fired_at: string | Date }[]) {
+    const firedAt = new Date(r.fired_at)
+    // Re-checked in the UPDATE: a write since the select (Tony re-arming or disabling it, a tick
+    // firing it) wins, and the sweep leaves the row alone.
+    const stillCrashed = sql`${agentJobs.enabled} and ${agentJobs.firedAt} is not null
+      and not exists (select 1 from agent_runs r where r.job_id = ${agentJobs.id} and r.created_at >= ${agentJobs.firedAt})`
+    if (!await rearmAtJob(r.id, await specFor(r), firedAt, stillCrashed)) continue
+    console.warn(`[jobs] "${r.slug}" was claimed at ${firedAt.toISOString()} but never woke (crash?) — re-armed`)
+    rearmed.push(r.slug)
+  }
+  const cleared = await useDb().execute(sql`
+    delete from agent_job_fires f using agent_jobs j
+    where f.job_id = j.id and j.trigger_kind = 'event' and f.run_id is null
+      and f.fired_at < ${stale}
+      and f.fired_at > ${now} - make_interval(hours => ${CRASHED_FIRE_LOOKBACK_HOURS})
+      and not exists (select 1 from agent_runs r where r.job_id = f.job_id and r.created_at >= f.fired_at)
+      ${slugScope(opts.onlySlugs)}
+    returning j.slug, f.event_key`)
+  for (const r of cleared.rows as { slug: string; event_key: string }[]) {
+    console.warn(`[jobs] fire "${r.event_key}" of "${r.slug}" never woke (crash?) — cleared so it can fire again`)
+  }
+  return { rearmed, clearedFires: cleared.rows.length }
 }

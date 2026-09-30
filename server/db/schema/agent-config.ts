@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { pgTable, uuid, text, boolean, integer, timestamp, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core'
+import { agentRuns } from './agent-runs'
 
 /** Agent skills — markdown with frontmatter is the single source of truth (cycle 74). */
 export const agentSkills = pgTable('agent_skills', {
@@ -57,7 +58,10 @@ export const agentConfigRevisions = pgTable('agent_config_revisions', {
 export const agentJobFires = pgTable('agent_job_fires', {
   jobId: uuid('job_id').notNull().references(() => agentJobs.id, { onDelete: 'cascade' }),
   eventKey: text('event_key').notNull(),
-  firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow()
+  firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
+  // The run this fire started. NULL = the wake has not landed yet; a row still NULL after
+  // 2 minutes is a crashed fire, and the crash sweep (jobs/tick.ts) deletes it so the key can fire again.
+  runId: uuid('run_id').references(() => agentRuns.id, { onDelete: 'set null' })
 }, (t) => [primaryKey({ columns: [t.jobId, t.eventKey], name: 'agent_job_fires_pkey' })])
 
 export type AgentSkillRow = typeof agentSkills.$inferSelect

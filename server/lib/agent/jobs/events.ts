@@ -3,11 +3,14 @@
 // `task.due` (a tick query). Dedupe is the database's job: (job_id, event_key) is agent_job_fires'
 // primary key, and a fire only wakes the job when ITS insert actually landed — a repeated hook
 // delivery or the next tick seeing the same due task inserts nothing and wakes nothing.
+// A fire row with run_id NULL is a fire whose wake has not landed: a wake that throws or overlaps
+// deletes its rows again (the key stays free), and tick.ts sweepCrashedFires clears one a crash
+// stranded.
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentJobs, agentJobFires } from '../../../db/schema'
 import { wake } from '../runtime/wake'
-import { fireJob, hasActiveRun, specFor } from './tick'
+import { fireJob, hasActiveRun, specFor, type FireResult } from './tick'
 import { MIN_INTERVAL_MS } from './parse'
 
 export type JobEventName = 'cc.session_end' | 'task.due'
@@ -77,9 +80,36 @@ async function eventJobs(name: JobEventName, onlySlugs: string[] | undefined) {
 }
 
 /**
+ * Wakes a job for fire rows `keys` that just landed, and settles them: run_id recorded on success;
+ * rows deleted when nothing ran (overlap, or the wake threw) so the keys can fire again. A throw
+ * also marks the job failed. Returns whether a run was started.
+ */
+async function fireAndSettle(
+  job: { id: string; slug: string }, keys: string[], wakeIt: () => Promise<FireResult>, what: string
+): Promise<boolean> {
+  const rows = and(eq(agentJobFires.jobId, job.id), inArray(agentJobFires.eventKey, keys))
+  let res: FireResult | null = null
+  try {
+    res = await wakeIt()
+  } catch (err) {
+    console.error(`[jobs] ${what} could not wake "${job.slug}":`, err)
+    await useDb().update(agentJobs).set({ lastOutcome: 'failed' }).where(eq(agentJobs.id, job.id)).catch(() => {})
+  }
+  if (res && 'runId' in res) {
+    await useDb().update(agentJobFires).set({ runId: res.runId }).where(rows)
+      .catch(err => console.error(`[jobs] recording run ${res.runId} on ${what} fire of "${job.slug}" failed:`, err))
+    return true
+  }
+  // Left behind on a failed delete, the rows are cleared by the crash sweep 2 minutes later.
+  await useDb().delete(agentJobFires).where(rows)
+    .catch(err => console.error(`[jobs] releasing ${what} keys of "${job.slug}" failed:`, err))
+  return false
+}
+
+/**
  * Fires every enabled job listening for `name` whose filter matches `payload`, at most once per
- * (job, key). Returns the slugs that fired. A wake failure after the fire row landed is logged,
- * not retried: at-most-once is the safer failure for an event (no repeated nags).
+ * (job, key). Returns the slugs that fired. A wake that fails or overlaps releases the key again
+ * (its fire row is deleted), so a redelivery of the same event can still fire.
  */
 export async function fireEvent(
   name: JobEventName,
@@ -100,13 +130,8 @@ export async function fireEvent(
     const inserted = await useDb().insert(agentJobFires).values({ jobId: job.id, eventKey: key })
       .onConflictDoNothing().returning({ jobId: agentJobFires.jobId })
     if (!inserted.length) continue // already fired for this key
-    try {
-      await fireJob(job.slug, job.id, spec, `${spec.body}\n\n${eventBlock(name, payload)}`, wakeFn)
-      fired.push(job.slug)
-    } catch (err) {
-      console.error(`[jobs] event ${name} could not wake "${job.slug}":`, err)
-      await useDb().update(agentJobs).set({ lastOutcome: 'failed' }).where(eq(agentJobs.id, job.id)).catch(() => {})
-    }
+    const prompt = `${spec.body}\n\n${eventBlock(name, payload)}`
+    if (await fireAndSettle(job, [key], () => fireJob(job.slug, job.id, spec, prompt, wakeFn), `event ${name}`)) fired.push(job.slug)
   }
   return fired
 }
@@ -167,13 +192,8 @@ export async function dueTaskEvents(opts: { onlySlugs?: string[]; onlyTaskIds?: 
     const landed = new Set(inserted.map(i => i.eventKey))
     const tasks = fresh.filter(d => landed.has(d.key)).map(d => d.payload)
     if (!tasks.length) continue // a concurrent tick recorded them first
-    try {
-      await fireJob(job.slug, job.id, spec, `${spec.body}\n\n${eventBlock('task.due', { tasks })}`, wakeFn)
-      count++
-    } catch (err) {
-      console.error(`[jobs] task.due could not wake "${job.slug}":`, err)
-      await useDb().update(agentJobs).set({ lastOutcome: 'failed' }).where(eq(agentJobs.id, job.id)).catch(() => {})
-    }
+    const prompt = `${spec.body}\n\n${eventBlock('task.due', { tasks })}`
+    if (await fireAndSettle(job, [...landed], () => fireJob(job.slug, job.id, spec, prompt, wakeFn), 'task.due')) count++
   }
   return count
 }

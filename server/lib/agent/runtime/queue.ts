@@ -8,7 +8,7 @@ import { runTurn } from './runner'
 import { maybeSummarizeLater } from './summarize-hook'
 import { recoverStale } from './recover'
 import { publishChange } from '../../../utils/live-bus'
-import { jobsTick } from '../jobs/tick'
+import { jobsTick, sweepCrashedFires } from '../jobs/tick'
 import { dueTaskEvents } from '../jobs/events'
 import { onRunFinished } from '../jobs/outcome'
 import { deliveriesTick } from '../../channels/outbox'
@@ -226,6 +226,8 @@ export async function workerTick(opts: { onlyConversations?: string[] } = {}): P
       // Cycle 74 jobs — production (unscoped) ticks only: a scoped test tick must never claim or
       // fire a real job on the shared dev DB. Each guarded alone so one failing never starves
       // the other, nor the pump below. Fires go through wake(), which kicks the pump itself.
+      // The crash sweep goes first, so an `at` job it re-arms fires in this same tick.
+      try { await sweepCrashedFires() } catch (err) { console.error('[runtime] jobs crash sweep failed:', err) }
       try { await jobsTick() } catch (err) { console.error('[runtime] jobs tick failed:', err) }
       try { await dueTaskEvents() } catch (err) { console.error('[runtime] task.due events failed:', err) }
       // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).

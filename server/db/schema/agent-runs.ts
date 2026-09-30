@@ -33,7 +33,10 @@ export const agentRuns = pgTable('agent_runs', {
 }, (t) => [
   index('agent_runs_conv_status_idx').on(t.conversationId, t.status),
   index('agent_runs_status_created_idx').on(t.status, t.createdAt),
-  uniqueIndex('agent_runs_one_running').on(t.conversationId).where(sql`status = 'running'`)
+  uniqueIndex('agent_runs_one_running').on(t.conversationId).where(sql`status = 'running'`),
+  // A job never overlaps itself: at most one queued-or-running run per job. The fire paths'
+  // hasActiveRun checks are only fast paths; this index is what makes a race lose (jobs/tick.ts).
+  uniqueIndex('agent_runs_one_active_per_job').on(t.jobId).where(sql`job_id is not null and status in ('queued', 'running')`)
 ])
 
 /** Messages that arrive while a run is busy. 'steer' rows are drained into the running turn
