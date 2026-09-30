@@ -141,6 +141,9 @@ describe('reflection prompts', () => {
     expect(m[0]!.content).toContain('Never propose tools, permissions, commands to run, or secrets.')
     expect(m[0]!.content).toContain('at most 4 KB')
     expect(m[0]!.content).toContain('at most 1,500 tokens')
+    // Task 11a: one proposal per lesson, split by kind (observed: a receipts procedure merged into a profile edit).
+    expect(m[0]!.content).toContain('One proposal per distinct lesson; never merge unrelated lessons into one proposal.')
+    expect(m[0]!.content).toContain('A procedure (where or how to do something) is a skill, never a profile edit; a preference about Tony is a profile edit, never a skill.')
     const user = m[1]!.content as string
     expect(user).toContain('deploy-check')
     expect(user).toMatch(/deploy-check.*Bridget/)

@@ -20,6 +20,8 @@ export const THREAD_SYSTEM_PROMPT = [
   'You review Bridget\'s recent work and propose at most 3 improvements.',
   'Most threads warrant NONE, and an empty list is the right answer.',
   'Propose a skill only for a reusable procedure she worked out or was corrected into; propose a profile edit only for a preference Tony stated or clearly showed.',
+  'One proposal per distinct lesson; never merge unrelated lessons into one proposal.',
+  'A procedure (where or how to do something) is a skill, never a profile edit; a preference about Tony is a profile edit, never a skill.',
   SHARED_RULES,
   '',
   PROPOSAL_SHAPE,
