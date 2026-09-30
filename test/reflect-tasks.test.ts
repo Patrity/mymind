@@ -136,4 +136,26 @@ describe('reflect-jobs task — time gate (mode on)', () => {
     expect(out).toEqual({ result: { jobs: 0, proposals: 0 } })
     expect(dbState.inserted).toEqual([])
   })
+
+  it('runJobsPass throws: reflect_jobs_last_date is NOT written, and a later tick the same day still runs', async () => {
+    // First tick: runJobsPass rejects mid-pass.
+    vi.setSystemTime(new Date('2027-01-15T03:40:00Z'))
+    m.mode.mockResolvedValueOnce('on')
+    m.runJobsPass.mockRejectedValueOnce(new Error('boom'))
+    dbState.lastDateRow = null
+    await expect(run(jobsTask)).rejects.toThrow('boom')
+    expect(dbState.inserted).toEqual([]) // never persisted — the crash happened before setLastDate
+
+    // Second tick, later the SAME day: since nothing was persisted, the settings row a real
+    // getLastDate() would see is still whatever it was before (unchanged by the failed run) —
+    // here that's still null, so shouldRunJobsPass still gates true and the retry proceeds.
+    vi.setSystemTime(new Date('2027-01-15T04:40:00Z'))
+    m.mode.mockResolvedValueOnce('on')
+    m.runJobsPass.mockResolvedValueOnce({ jobs: 1, proposals: 0 })
+    const out = await run(jobsTask)
+    expect(m.runJobsPass).toHaveBeenCalledTimes(2) // once rejected, once succeeded
+    expect(out).toEqual({ result: { jobs: 1, proposals: 0 } })
+    expect(dbState.inserted).toHaveLength(1)
+    expect(dbState.inserted[0]).toMatchObject({ key: 'reflect_jobs_last_date', value: '2027-01-15' })
+  })
 })
