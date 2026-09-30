@@ -248,6 +248,25 @@ describe('deliveriesTick', () => {
     expect((await row(fresh!)).status).toBe('sending')
   })
 
+  it('M1: a chat with a row still sending gets none of its pending rows claimed until that row is done; other chats go on', async () => {
+    const OTHER = 'iMessage;-;+15550000009'
+    const [interrupted, later, other] = await insert([one('interrupted'), one('later'), one('elsewhere', { target: OTHER })])
+    // The process died mid-send 30 s ago: not reclaimable yet.
+    await db().update(channelDeliveries).set({ status: 'sending', claimedAt: at(-30_000), firstClaimedAt: at(-30_000) }).where(eq(channelDeliveries.id, interrupted!))
+    const ids = [interrupted!, later!, other!]
+
+    expect(await tick(ids, T0)).toEqual({ sent: 1, retried: 0, failed: 0 })
+    expect(script.calls.map(c => c.payload.text)).toEqual(['elsewhere'])
+    expect((await row(later!)).status).toBe('pending')
+
+    // Reclaimable now: the interrupted row goes; the later one still waits (its chat had a row
+    // sending when the tick claimed) …
+    expect(await tick(ids, at(100_000))).toEqual({ sent: 1, retried: 0, failed: 0 })
+    // … and goes out on the next tick, after it.
+    expect(await tick(ids, at(100_000))).toEqual({ sent: 1, retried: 0, failed: 0 })
+    expect(script.calls.map(c => c.payload.text)).toEqual(['elsewhere', 'interrupted', 'later'])
+  })
+
   it('a reclaimed row whose sends are used up fails with a note instead of a 7th send', async () => {
     const [id] = await insert([one('last')])
     await db().update(channelDeliveries).set({

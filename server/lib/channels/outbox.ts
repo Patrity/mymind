@@ -75,8 +75,15 @@ export async function insertDeliveries(tx: DbTx, rows: NewDelivery[]): Promise<s
 
 async function claim(now: Date, onlyIds?: string[]): Promise<ChannelDelivery[]> {
   const reclaimBefore = new Date(now.getTime() - SENDING_RECLAIM_MS)
+  // A chat with a row still `sending` gets none of its pending rows claimed (final review M1):
+  // after a crash mid-send, that row waits SENDING_RECLAIM_MS to be reclaimed, and the chat's
+  // later rows must not go out ahead of it. The same holds for a send in flight elsewhere.
+  // Scoped like the rest of the claim (`onlyIds` is the test seam).
+  const inScope = onlyIds ? sql`and s.id in (${sql.join(onlyIds.map(id => sql`${id}`), sql`, `)})` : sql``
+  const chatNotSending = sql`not exists (select 1 from channel_deliveries s
+    where s.status = 'sending' and s.channel = ${channelDeliveries.channel} and s.target = ${channelDeliveries.target} ${inScope})`
   const due: SQL = or(
-    and(eq(channelDeliveries.status, 'pending'), lte(channelDeliveries.nextAttemptAt, now)),
+    and(eq(channelDeliveries.status, 'pending'), lte(channelDeliveries.nextAttemptAt, now), chatNotSending),
     and(eq(channelDeliveries.status, 'sending'), lt(channelDeliveries.claimedAt, reclaimBefore))
   )!
   return useDb().transaction(async (tx) => {
