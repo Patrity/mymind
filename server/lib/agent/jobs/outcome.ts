@@ -11,6 +11,7 @@ import { appendEvent } from '../../../services/conversations'
 import { getOrCreateMain } from '../runtime/sessions'
 import type { RunOutcome } from '../runtime/types'
 import { setJobEnabled } from './store'
+import { openObservation } from '../signals/write'
 
 export const MAX_CONSECUTIVE_FAILURES = 3
 
@@ -39,6 +40,12 @@ export async function onRunFinished(run: AgentRun, outcome: RunOutcome, opts: { 
   }).where(eq(agentJobs.id, run.jobId)).returning()
   if (!job) return // the job was deleted while its run was in flight
   publishChange({ resource: 'agentJob', action: 'updated', id: job.id })
+
+  // Cycle 76: a job run that spoke puts its message under observation (engagement signals).
+  if (result === 'spoke' && outcome.assistantMessageId) {
+    await openObservation({ id: run.id, jobId: run.jobId, assistantMessageId: outcome.assistantMessageId })
+      .catch(err => console.error('[jobs] opening the observation window failed:', err))
+  }
 
   // `enabled` guards the note: a run that was already queued when the job got disabled fails
   // again → streak 4, but the job is off and Tony has already been told.

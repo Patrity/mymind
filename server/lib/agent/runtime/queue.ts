@@ -11,6 +11,7 @@ import { publishChange } from '../../../utils/live-bus'
 import { jobsTick, sweepCrashedFires } from '../jobs/tick'
 import { dueTaskEvents } from '../jobs/events'
 import { onRunFinished } from '../jobs/outcome'
+import { noteUserReply } from '../signals/write'
 import { deliveriesTick } from '../../channels/outbox'
 import type { AgentRun } from '../../../db/schema'
 import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
@@ -43,9 +44,20 @@ export interface EnqueueResult {
 
 type RunFn = (run: AgentRun) => Promise<RunOutcome>
 
+/** Cycle 76: Tony wrote — a `replied` signal for any job message in main still in its window.
+ *  noteUserReply itself decides whether the thread is main (the app enqueues main as
+ *  `thread:<id>`, iMessage as `main`). Fire-and-forget: never awaited, never thrown into the turn. */
+function noteReply(req: EnqueueRequest, conversationId: string, at: Date): void {
+  if (req.trigger !== 'user') return
+  const opts = req.sessionKey === 'main' ? { mainConversationId: conversationId } : {}
+  void noteUserReply({ conversationId, text: req.input.text, at }, opts)
+    .catch(err => console.error('[runtime] reply signal failed:', err))
+}
+
 export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: boolean; pushSteer?: typeof pushSteer } = {}): Promise<EnqueueResult> {
   const doPushSteer = deps.pushSteer ?? pushSteer
   const { conversationId, created } = await resolveSession(req.sessionKey, { titleHint: req.input.text })
+  const at = new Date()
   let active: AgentRun | null | undefined
   if (req.trigger === 'user' && !created) {
     active = await activeRunFor(conversationId)
@@ -59,7 +71,10 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
     const plain = !req.input.attachments?.length && !req.input.skill
     if (active && active.profile === 'interactive' && plain && !req.noSteer) {
       const steered = await doPushSteer(active.id, conversationId, req.input.text, 'user')
-      if (steered) return { runId: active.id, conversationId, steered: true, created, queuedBehind: false }
+      if (steered) {
+        noteReply(req, conversationId, at)
+        return { runId: active.id, conversationId, steered: true, created, queuedBehind: false }
+      }
       // pushSteer's own atomic check found the run no longer 'running' — it finished in the
       // gap between the read above and the insert. Fall through to createRun: the words are
       // never dropped, they just become a fresh queued run instead of a steer.
@@ -71,6 +86,7 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
     wakeReason: req.wakeReason ?? null, modelDefId: req.modelDefId ?? null, originSinkId: req.originSinkId ?? null,
     jobId: req.jobId ?? null, replyTo: req.replyTo ?? null
   })
+  noteReply(req, conversationId, at)
   if (deps.kick !== false) kick(deps.run)
   return { runId: run.id, conversationId, steered: false, created, queuedBehind: !!active }
 }

@@ -19,6 +19,7 @@ import { sttFromModel } from '../voice/providers'
 import { recordEvent } from '../observability/record'
 import { publishChange } from '../../utils/live-bus'
 import { enqueue } from '../agent/runtime/queue'
+import { noteTapback } from '../agent/signals/write'
 import type { ReplyTo } from '../agent/runtime/types'
 import type { AttachmentRef } from '../agent/attachments'
 import { loadChannelsConfig } from './config'
@@ -150,14 +151,22 @@ async function buildInput(ev: InboundMessage, client: BlueBubblesClient | null, 
 }
 
 /**
- * Run one inbound event through the pipeline (spec §4, in order): tapback → approvals; drop
+ * Run one inbound event through the pipeline (spec §4, in order): tapback → approvals, else an
+ * engagement signal (cycle 76); drop
  * non-tapback reactions, Bridget's own messages, group chats, a chat that is not the sender's own
  * direct chat (I2) and unknown senders; build the
  * input; then dedupe-insert + enqueue on main with `origin` and `replyTo` — always a new run,
  * never a steer (final review C1).
  */
 export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: InboundDeps = {}): Promise<InboundOutcome> {
-  if (ev.kind === 'tapback') return resolveTapback(ev)
+  if (ev.kind === 'tapback') {
+    // Cycle 76: a tapback that did not answer an approval prompt may be Tony reacting to a job's
+    // message — an engagement signal. Its failure is logged, never surfaced.
+    if (!await resolveTapback(ev)) {
+      await noteTapback(ev).catch(err => console.warn('[channels] tapback signal failed:', err instanceof Error ? err.message : err))
+    }
+    return 'tapback'
+  }
   // Ledger ruling (Task 2 carry-over): anything pointing at another message that isn't a
   // recognised tapback (iOS 18 emoji reactions, stickers) is never a turn.
   if (ev.associatedMessageGuid) return 'ignored:reaction'

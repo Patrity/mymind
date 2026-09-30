@@ -191,14 +191,17 @@ export function replyToApprovalChannel(runId: string, deps: ApprovalChannelDeps 
  * filters, so every filter is applied here: removed tapbacks, Bridget's own, group chats, a chat
  * that is not the sender's own direct chat and senders not on the allowlist never resolve anything. The tapback must target a pending,
  * unexpired prompt in the same chat the prompt went to.
+ *
+ * True when the tapback answered an approval prompt (even one a racing expiry settled first):
+ * the caller then must not count it as anything else (cycle 76 engagement signals).
  */
-export async function resolveTapback(ev: TapbackEvent): Promise<'tapback'> {
-  if (ev.removed || ev.isFromMe || ev.chatGuid.includes(';+;')) return 'tapback'
-  if (!isSendersDirectChat(ev.chatGuid, ev.sender)) return 'tapback' // I2: the sender's own chat only
+export async function resolveTapback(ev: TapbackEvent): Promise<boolean> {
+  if (ev.removed || ev.isFromMe || ev.chatGuid.includes(';+;')) return false
+  if (!isSendersDirectChat(ev.chatGuid, ev.sender)) return false // I2: the sender's own chat only
   const to = ev.tapback === 'love' || ev.tapback === 'like' ? 'approved' : ev.tapback === 'dislike' ? 'denied' : null
-  if (!to) return 'tapback'
+  if (!to) return false
   const cfg = (await loadChannelsConfig()).imessage
-  if (!isAllowed(ev.sender, cfg.allowedHandles)) return 'tapback'
+  if (!isAllowed(ev.sender, cfg.allowedHandles)) return false
 
   const [row] = await useDb().select({ id: channelApprovals.id }).from(channelApprovals).where(and(
     eq(channelApprovals.promptGuid, ev.targetGuid),
@@ -206,9 +209,9 @@ export async function resolveTapback(ev: TapbackEvent): Promise<'tapback'> {
     eq(channelApprovals.status, 'pending'),
     gt(channelApprovals.expiresAt, new Date())
   )).limit(1)
-  if (!row) return 'tapback'
+  if (!row) return false
   if (await settle(row.id, to)) waiters.get(row.id)?.(to)
-  return 'tapback'
+  return true
 }
 
 /**

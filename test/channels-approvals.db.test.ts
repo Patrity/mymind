@@ -146,7 +146,7 @@ describe('imessageApprovalChannel', () => {
     const sent = fake.sent.slice(sentBefore)
     expect(sent).toHaveLength(1)
     expect(sent[0]).toMatchObject({ kind: 'text', chatGuid: CHAT, message: 'Run `ls -la /tmp`?\n👍 to approve · 👎 to deny', guid: promptGuid })
-    expect(await resolveTapback(tapback(promptGuid))).toBe('tapback')
+    expect(await resolveTapback(tapback(promptGuid))).toBe(true)
     expect(await p).toEqual({ approved: true })
     const [row] = await rowsFor(run)
     expect(row).toMatchObject({ id, status: 'approved', chatGuid: CHAT })
