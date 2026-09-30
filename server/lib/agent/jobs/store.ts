@@ -620,8 +620,9 @@ export async function rederiveDefaultTimezone(opts: { onlyIds?: string[], defaul
 
 // ---- seeds --------------------------------------------------------------------------------
 
-/** Installs the four seed jobs (spec §8), disabled, skipping any slug that already exists —
- *  safe to call on every boot. Returns how many were newly installed. */
+/** Installs every seed job (spec §8; self-improvement-digest per cycle 76 Task 10), disabled,
+ *  skipping any slug that already exists — safe to call on every boot. Returns how many were
+ *  newly installed. */
 export async function installSeedJobs(): Promise<number> {
   let installed = 0
   for (const slug of SEED_JOB_SLUGS) {
@@ -640,6 +641,10 @@ export async function installSeedJobs(): Promise<number> {
  * edit is left alone, and a second run is a no-op. Safe on every boot. Returns how many were
  * upgraded. `seeds` / `previous` / `onlySlugs` are the test seam — the real seeds live on the
  * shared dev DB.
+ *
+ * self-improvement-digest (cycle 76) has no V1 predecessor — SEED_JOBS_V1 doesn't carry that key,
+ * so the loop below always finds `prev === undefined` for it and skips it; installSeedJobs is its
+ * only install path.
  */
 export async function upgradeSeedJobs(opts: {
   seeds?: Record<string, string>

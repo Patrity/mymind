@@ -14,7 +14,7 @@ import { and, eq, inArray, like } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { agentJobs, agentConfigRevisions } from '../server/db/schema'
 import { listRevisions } from '../server/lib/agent/config/revisions'
-import { SEED_JOB_SLUGS, SEED_JOBS, SEED_JOBS_V1 } from '../server/lib/agent/jobs/seeds'
+import { SEED_JOB_SLUGS, SEED_JOBS, SEED_JOBS_V1, SEED_JOBS_V1_SLUGS } from '../server/lib/agent/jobs/seeds'
 import { createJob, saveJob, getJob, setJobEnabled, upgradeSeedJobs } from '../server/lib/agent/jobs/store'
 import { setFrontmatterKey } from '../shared/utils/frontmatter'
 
@@ -44,8 +44,8 @@ beforeAll(async () => {
 afterAll(cleanup)
 
 describe('seed content', () => {
-  it('each current seed is its V1 content plus exactly one `deliver:` line', () => {
-    for (const slug of SEED_JOB_SLUGS) {
+  it('each of the original four seeds is its V1 content plus exactly one `deliver:` line', () => {
+    for (const slug of SEED_JOBS_V1_SLUGS) {
       expect(SEED_JOBS_V1[slug]).not.toMatch(/^deliver:/m)
       expect(SEED_JOBS[slug].replace(/^deliver: .*\n/m, '')).toBe(SEED_JOBS_V1[slug])
     }
@@ -56,12 +56,21 @@ describe('seed content', () => {
     for (const slug of SEED_JOB_SLUGS) expect(SEED_JOBS[slug]).toMatch(/^enabled: false$/m)
   })
 
-  it('switching a seed on changes only its enabled line, in both versions', () => {
-    for (const slug of SEED_JOB_SLUGS) {
+  it('switching one of the original four seeds on changes only its enabled line, in both versions', () => {
+    for (const slug of SEED_JOBS_V1_SLUGS) {
       const onV1 = setFrontmatterKey(SEED_JOBS_V1[slug], 'enabled', true)
       expect(onV1).toBe(SEED_JOBS_V1[slug].replace(/^enabled: false$/m, 'enabled: true'))
       expect(setFrontmatterKey(SEED_JOBS[slug], 'enabled', true).replace(/^deliver: .*\n/m, '')).toBe(onV1)
     }
+  })
+
+  // Cycle 76, Task 10: self-improvement-digest was born with `deliver:` already in place — it has
+  // no V1 predecessor (SEED_JOBS_V1 doesn't carry the key), so it's excluded from the loops above
+  // and never touched by upgradeSeedJobs (see test/improvements-tool.db.test.ts for its content/
+  // parse/install coverage).
+  it('self-improvement-digest has no V1 predecessor', () => {
+    expect(SEED_JOBS_V1_SLUGS).not.toContain('self-improvement-digest')
+    expect((SEED_JOBS_V1 as Record<string, string | undefined>)['self-improvement-digest']).toBeUndefined()
   })
 })
 

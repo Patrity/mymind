@@ -1,16 +1,29 @@
 <script setup lang="ts">
 /**
- * Revision history of a skill, job or the "About Tony" profile (cycles 74/76): newest first, actor + time. Selecting one shows
- * a read-only line diff from the revision BEFORE it to it (what that write changed) and a Revert
- * button, which restores that revision's content as a new revision. Shared by /skills/[slug],
- * /jobs/[slug] and /settings/profile (kind="profile"; its slug is ignored — see configEndpoints).
- * Revert is disabled while the editor is `dirty`.
+ * Revision history of a skill, job or the "About Tony" profile (cycles 74/76): newest first, actor + time. A
+ * revision the reflector wrote carries a "learned" badge (Task 10) — its `improvementId` — and,
+ * once expanded, a link to the conversation that prompted it (`sourceConversationId`, joined
+ * server-side from agent_improvements). Selecting a revision shows a read-only line diff from the
+ * revision BEFORE it to it (what that write changed) and a Revert button, which restores that
+ * revision's content as a new revision. Shared by /skills/[slug], /jobs/[slug] and
+ * /settings/profile (kind="profile"; its slug is ignored — see configEndpoints). Revert is
+ * disabled while the editor is `dirty`.
  */
 import { useQuery } from '@tanstack/vue-query'
 import { configEndpoints, type ConfigKind } from '~/lib/config/source'
 import { lineDiff, type DiffLine } from '~/lib/config/line-diff'
 
-interface Revision { id: string, content: string, actor: string, createdAt: string }
+interface Revision {
+  id: string
+  content: string
+  actor: string
+  createdAt: string
+  // cycle 76, Task 10: set when this revision came from a reflector improvement's apply path —
+  // the "learned" badge + source-thread link below. Absent on an older revisions response is
+  // treated the same as null (optional, so this component tolerates either shape).
+  improvementId?: string | null
+  sourceConversationId?: string | null
+}
 
 const props = defineProps<{
   kind: ConfigKind
@@ -146,6 +159,15 @@ watch(error, (err) => {
           >
             {{ r.actor }}
           </UBadge>
+          <UBadge
+            v-if="r.improvementId"
+            color="primary"
+            variant="outline"
+            size="sm"
+            data-testid="learned-badge"
+          >
+            learned
+          </UBadge>
           <span class="text-xs text-muted truncate">{{ formatTime(r.createdAt) }}</span>
           <span
             v-if="i === 0"
@@ -173,6 +195,18 @@ watch(error, (err) => {
               v-text="diffLineText(line)"
             />
           </div>
+          <NuxtLink
+            v-if="r.sourceConversationId"
+            :to="`/agent?c=${r.sourceConversationId}`"
+            class="text-xs text-muted hover:underline inline-flex items-center gap-1 self-start"
+            data-testid="source-thread-link"
+          >
+            <UIcon
+              name="i-lucide-message-square"
+              class="size-3.5"
+            />
+            View the source thread
+          </NuxtLink>
           <UTooltip
             v-if="!isLatest"
             :text="dirty ? 'Save or discard your edits first' : undefined"

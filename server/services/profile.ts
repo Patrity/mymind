@@ -100,11 +100,14 @@ export async function saveProfileSource(
   return rowToSource(row)
 }
 
-export async function listProfileRevisions(): Promise<{ id: string; content: string; actor: string; createdAt: Date; improvementId: string | null }[]> {
+export async function listProfileRevisions(): Promise<{ id: string; content: string; actor: string; createdAt: Date; improvementId: string | null; sourceConversationId: string | null }[]> {
   const row = await currentRow()
   if (!row) return []
   const revs = await listRevisions('profile', row.id)
-  return revs.map(r => ({ id: r.id, content: r.content, actor: r.actor, createdAt: new Date(r.createdAt), improvementId: r.improvementId }))
+  return revs.map(r => ({
+    id: r.id, content: r.content, actor: r.actor, createdAt: new Date(r.createdAt),
+    improvementId: r.improvementId, sourceConversationId: r.sourceConversationId
+  }))
 }
 
 /** Restores the profile to one of its revisions (recorded as a NEW revision by `actor`). */

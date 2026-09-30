@@ -51,6 +51,7 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   use_skill: 'run', research_web: 'run', search_brain: 'run',
   list_jobs: 'run', get_job: 'run',
   list_reviews: 'run',
+  list_improvements: 'run',
   // create-kind, but pure append (nothing existing is touched) — safe to run headless
   save_memory: 'run', create_task: 'run', create_project: 'run', quick_capture: 'run',
   generate_image: 'run', save_document: 'run',

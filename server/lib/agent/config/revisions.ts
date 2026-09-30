@@ -3,7 +3,7 @@
 // or job's markdown records the full content here, so any edit — human or agent — is revertible.
 import { and, desc, eq, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { agentConfigRevisions } from '../../../db/schema'
+import { agentConfigRevisions, agentImprovements } from '../../../db/schema'
 
 export const REVISIONS_KEPT = 100
 
@@ -47,13 +47,29 @@ export async function recordRevision(
 
 export async function listRevisions(
   targetKind: RevisionTargetKind, targetId: string, limit = REVISIONS_KEPT
-): Promise<{ id: string, content: string, actor: string, improvementId: string | null, createdAt: string }[]> {
-  const rows = await useDb().select().from(agentConfigRevisions)
+): Promise<{
+  id: string, content: string, actor: string, improvementId: string | null,
+  // cycle 76, Task 10: the improvement's source thread, for the "learned" badge's link — joined
+  // here (not read back separately by every caller) so every revisions list, whatever target
+  // kind, carries it for free. Null for an ordinary human/agent edit, or when the improvement's
+  // pass had no conversation (a jobs pass).
+  sourceConversationId: string | null, createdAt: string
+}[]> {
+  const rows = await useDb().select({
+    id: agentConfigRevisions.id,
+    content: agentConfigRevisions.content,
+    actor: agentConfigRevisions.actor,
+    improvementId: agentConfigRevisions.improvementId,
+    createdAt: agentConfigRevisions.createdAt,
+    sourceConversationId: agentImprovements.sourceConversationId
+  }).from(agentConfigRevisions)
+    .leftJoin(agentImprovements, eq(agentConfigRevisions.improvementId, agentImprovements.id))
     .where(and(eq(agentConfigRevisions.targetKind, targetKind), eq(agentConfigRevisions.targetId, targetId)))
     .orderBy(desc(agentConfigRevisions.createdAt))
     .limit(limit)
   return rows.map(r => ({
     id: r.id, content: r.content, actor: r.actor, improvementId: r.improvementId,
+    sourceConversationId: r.sourceConversationId ?? null,
     createdAt: r.createdAt.toISOString()
   }))
 }

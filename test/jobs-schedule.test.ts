@@ -202,7 +202,7 @@ describe('activeHoursNeverMatchError', () => {
   })
   it('none of the seed jobs or the /jobs templates trip it', () => {
     const contents = [...Object.values(SEED_JOBS), ...JOB_TEMPLATES.map(t => t.content)]
-    expect(contents.length).toBe(8)
+    expect(contents.length).toBe(9)
     for (const c of contents) {
       const r = parseJob(c, { defaultTimezone: 'America/New_York' })
       if (!r.ok) throw new Error(r.error)

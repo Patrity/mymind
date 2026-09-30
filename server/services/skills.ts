@@ -212,7 +212,7 @@ export async function getSkillSource(slug: string): Promise<SkillSource | null> 
   return row ? rowToSource(row) : null
 }
 
-export async function listSkillRevisions(slug: string): Promise<{ id: string, content: string, actor: string, createdAt: string }[]> {
+export async function listSkillRevisions(slug: string): Promise<{ id: string, content: string, actor: string, improvementId: string | null, sourceConversationId: string | null, createdAt: string }[]> {
   const row = await rowBySlug(slug)
   return row ? listRevisions('skill', row.id) : []
 }
