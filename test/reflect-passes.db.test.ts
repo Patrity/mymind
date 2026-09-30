@@ -275,7 +275,7 @@ describe('runThreadPass', () => {
     await runThreadPass({ now: NOW, onlyConversationIds: [t.id], chatFn, jev })
     const [imp] = await db().select().from(agentImprovements).where(eq(agentImprovements.sourceConversationId, t.id))
     expect(imp).toMatchObject({ status: 'pending_review', route: 'review' })
-    expect((imp!.proposal as { reasons: string[] }).reasons).toEqual(['names_tool'])
+    expect((imp!.proposal as { reasons: string[] }).reasons).toContain('names_tool')
   })
 
   it('reads the active branch only, and advances the watermark over every branch (final review m9)', async () => {

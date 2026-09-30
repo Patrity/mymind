@@ -59,7 +59,9 @@ export const SIMILARITY_REJECT = 0.8
 export const SKILL_MAX_BYTES = 4096
 /** Anything touching commands, credentials or deletion. Stems and plurals on purpose: a false
  *  positive only routes a skill to review, a miss auto-applies it. */
-export const SENSITIVE = /\b(exec\w*|shells?|commands?|command[\s-]line|terminals?|sudo|rm\s+-(?:rf|fr)|passwords?|secrets?|tokens?|api[\s_-]?keys?|credentials?|delet\w*|drop\s+table)\b/i
+// Job control and outbound messaging are sensitive too (final re-review N1): a learned skill
+// must not quietly turn jobs on/off or send messages on Bridget's own initiative.
+export const SENSITIVE = /\b(exec\w*|shells?|commands?|command[\s-]line|terminals?|sudo|rm\s+-(?:rf|fr)|passwords?|secrets?|tokens?|api[\s_-]?keys?|credentials?|delet\w*|drop\s+table|enabl\w*|disabl\w*|turn\s+(?:on|off)|jobs?|schedul\w*|send\w*|e-?mail\w*|imessage|text\s+(?:tony|me|him))\b/i
 /** An evidence quote shorter than this (whitespace-normalised) is a substring of nearly any
  *  transcript, so it proves nothing. */
 export const EVIDENCE_MIN_CHARS = 12
@@ -77,10 +79,11 @@ export function namesTool(text: string, toolNames: string[]): boolean {
   return new RegExp(`\\b(?:${toolNames.map(escapeRe).join('|')})\\b`, 'i').test(text)
 }
 
-/** At least one evidence quote lies inside one of Tony's own messages. */
+/** EVERY evidence quote lies inside one of Tony's own messages. One Tony quote beside an injected
+ *  quote is not enough (final re-review N1): the injected text could carry the actual lesson. */
 function quotesTony(p: Proposal, userInput: string[]): boolean {
   const mine = userInput.map(normaliseWs)
-  return p.evidence.some((q) => {
+  return p.evidence.length > 0 && p.evidence.every((q) => {
     const quote = normaliseWs(q)
     return mine.some(u => u.includes(quote))
   })
