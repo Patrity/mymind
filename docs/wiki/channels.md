@@ -1,6 +1,6 @@
 ---
 title: Channels (iMessage via BlueBubbles, email via Resend, presence-aware delivery)
-status: built
+status: shipped
 cycle: 75
 updated: 2026-09-30
 ---
@@ -21,8 +21,9 @@ Resend key and sender).
 Where this page and the spec disagree, this page describes the code. The handover lists the
 build's deviations.
 
-**Status ladder:** planned → in-progress → **built** (not merged, not deployed; migrations 0057 and
-0058 are on the shared dev DB only) → shipped.
+**Status ladder:** planned → in-progress → built → **shipped** (cycle 75 deployed 2026-09-29 by CD
+36506477530; prod migrations through 0058). The reliability pass (the outbox off the worker tick,
+per-chat order, `seq`, migration 0061) is built on `fix/bridget-reliability` and not yet deployed.
 
 ## Architecture
 
@@ -285,7 +286,10 @@ pending ──claim──▶ sending ──▶ sent | sent_unconfirmed | pending
 - **Claim:** up to 10 due rows (`pending` with `next_attempt_at <= now()`, or `sending` whose
   claim is older than **2 min**, which means a process died mid-send), under
   `FOR UPDATE SKIP LOCKED`. A reclaim counts the interrupted attempt as a send, so the duplicate
-  check runs. A reclaimed row whose sends are used up goes straight to `failed`.
+  check runs. A reclaimed row whose sends are used up goes straight to `failed`. A `pending` row
+  is **not** claimed while any row of its chat (`channel + target`) is `sending`: after a crash
+  mid-send the interrupted row waits the 2 min to be reclaimed, and the chat's later rows wait
+  behind it rather than overtaking it.
 - **Backoff:** after the n-th failed send, the row goes to `failed` if `n >= 6`, else waits
   `BACKOFF_MS[n-1]` from **30 s, 2 m, 10 m, 1 h, 1 h, 1 h**. That makes 6 sends total. A
   non-retryable error goes straight to `failed`.

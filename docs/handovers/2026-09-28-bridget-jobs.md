@@ -2,10 +2,10 @@
 title: Bridget jobs — markdown-configured schedules and triggers, plus Skills and Jobs as first-class pages
 cycle: 74
 date: 2026-09-28
-status: built
+status: shipped
 branch: feat/bridget-jobs (worktree .claude/worktrees/bridget-jobs, base 211205c)
-merged: false
-deployed: false
+merged: true
+deployed: 2026-09-29 (CD run 36506477530, commit b71f342, together with cycle 75)
 specs:
   - ../superpowers/specs/2026-09-28-bridget-jobs-design.md
 plans:
@@ -16,11 +16,11 @@ wiki:
   - ../wiki/agent-skills.md
 migrations:
   - 0056 agent_skills, agent_jobs, agent_config_revisions, agent_job_fires; agent_runs.job_id (fk, on delete set null)
-migrations_run_on_prod: false  # 0056 is applied to the shared dev DB only; the skills data move runs from a boot plugin, not the migration
+migrations_run_on_prod: true  # 0056 applied by CD on 2026-09-29 (prod is at 0058 with cycle 75); the skills data move runs from a boot plugin, not the migration
 seed_jobs_enabled: false  # morning-brief, evening-wrap, heartbeat, session-digest ship DISABLED; Tony enables them on /jobs
 final_review: fixed  # 0 C / 5 I / 11 M; I1-I5 and M1-M8, M10, M11 fixed in the fix wave; M9 parked as a deviation
-prod_agent_timezone: unset  # prod is Etc/UTC; set Settings -> Bridget -> Agent timezone to America/Chicago after deploy, BEFORE enabling any seed
-mymind_task: null  # set by the controller
+prod_agent_timezone: America/Chicago  # set after deploy; CD run 36511966371 (bb8e5b9) made the prompt's time, tone and context date use it
+mymind_task: 2dd2bae9-e717-4ed0-b895-5b9ee0bfefd2
 ---
 
 # Cycle 74: Bridget jobs
@@ -302,13 +302,12 @@ job `fixwave-tz` (`cron 30 7 1 1 *`, no `timezone:` line):
    panels are hidden below `lg`. (Parked in T11/T12.)
 3. ~~**Interrupted runs leave `last_outcome` stale (T5 M2).**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)): recovery reports a job run as `failed`, so the streak and the 3-strike disable move. A fix: have `recoverOrphans` call
    `onRunFinished` with a failed outcome for rows that have a `job_id`.
-4. ~~**At-most-once across a crash (T5 M3).**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)): a failed wake re-arms the `at` job (up to 5 failures) or releases the event fire rows, and a crash sweep repairs what a crash left behind.
+4. ~~**At-most-once across a crash (T5 M3).**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)): a failed wake re-arms the `at` job (up to 5 failures) or releases the event fire rows, and a crash sweep repairs what a crash left behind: it re-arms an `at` claim that never woke, frees an orphan event fire row, and (final fix wave) turns off an `at` job that fired but whose self-disable was skipped.
    - An event fire row, and an `at` job's claim, both commit before the wake. A crash or a wake
      error between them loses the fire.
    - A crash between the claim and the disable leaves an inert enabled `at` job.
    - A fix: an outbox, or re-arm on a failed wake.
-5. ~~**`runJobNow` can race the tick (T5 M5)**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)) with a partial unique index (one active run per job) instead of a row lock: and produce two runs. A fix: `select … for update`
-   on the job row, and check for overlap inside that transaction.
+5. ~~**`runJobNow` can race the tick (T5 M5)**~~ **Resolved** ([reliability handover](2026-09-29-bridget-reliability.md)) with a partial unique index (one active run per job) instead of a row lock. It could fire concurrently with the tick and produce two runs.
 6. **The queued bubble lingers** until a reload when the queued run ends `interrupted`. An
    attachment-only queued message shows text only until its run starts. (Parked in T6.)
 7. **The cron density check** misses day-of-month or month-restricted patterns that are dense

@@ -16,11 +16,12 @@ migrations:
   - 0059 unique index agent_runs_one_active_per_job (job_id where status in queued/running); agent_job_fires.run_id (fk agent_runs, on delete set null)
   - 0060 agent_jobs.fire_failures integer not null default 0
   - 0061 channel_deliveries.seq bigserial not null (claim-order tiebreak)
-migrations_run_on_prod: false  # 0059-0061 applied on the shared dev DB only; prod is at 0058 (cycles 74 + 75 deployed)
+  - 0062 index agent_runs_job_created_idx on agent_runs(job_id, created_at) (final review M5)
+migrations_run_on_prod: false  # 0059-0062 applied on the shared dev DB only; prod is at 0058 (cycles 74 + 75 deployed 2026-09-29 by CD 36506477530 + 36511966371)
 prod_precheck_0059: passed  # no prod job has more than one queued/running run (4 job runs total), so the unique index applies cleanly
 seed_jobs_enabled: false  # unchanged; the four seeds and the /jobs templates pass the new active_hours check (tested)
-final_review: pending  # per-task reviews clean (Tasks 1-2 after one fix round each); Task 3 review and the whole-branch review are the controller's
-mymind_task: null  # set by the controller
+final_review: fixed  # whole-branch review 0 C / 1 I / 7 M; I1 and M1-M7 all fixed in one fix wave (.superpowers/sdd/2026-09-29-reliability/final-fix-report.md)
+mymind_task: 8e66ffd0-a94f-4017-a9a1-99deea55c7bb  # tracked under the cycle 75 task
 ---
 
 # Reliability pass: Bridget jobs and channels
@@ -113,6 +114,33 @@ Tony's phone. This pass closes them in three tasks, built subagent-driven on
 
 Mutation evidence for each task is in its report under `.superpowers/sdd/2026-09-29-reliability/`.
 
+## Final review fix wave (1f90ed1, 7e67bcd, 2a3aa65, 7cc8e81, plus this docs commit)
+
+The whole-branch review found 0 C / 1 I / 7 M. One wave fixed all of them:
+
+- **I1:** a crash between a fired `at` job's run and its self-disable left it enabled forever
+  (never pruned, holding a slot toward the 50 cap). The crash sweep now also turns off an
+  enabled `at` job with a stale `fired_at` whose run exists since. It posts no note, because it
+  did fire. The disable is pinned to the content hash the sweep read (`setJobEnabled(…, expectedHash)`),
+  so a re-arm since wins. `sweepCrashedFires` returns `disabled: string[]`.
+- **M1:** after a crash mid-send, a chat's later rows went out before the interrupted row that
+  waited 2 min to be reclaimed. The claim now skips a `pending` row while any row of its chat
+  (`channel + target`) is `sending`.
+- **M2:** re-arming an `at` job deletes its `at:not-fired` marker in the same transaction, so a
+  re-armed reminder that gives up again posts its note. Cycle 74's test 6b asserted the old
+  behaviour and now expects one note per arming.
+- **M3, M4:** deferred item 4 above and the jobs handover's follow-up 5 are reworded.
+- **M5:** migration **0062** adds `agent_runs_job_created_idx (job_id, created_at)` (applied on dev).
+- **M6:** the jobs and channels handovers and roadmap rows 74/75 now record the 2026-09-29 deploy
+  (CD 36506477530 + 36511966371, prod at 0058, prod `agent_timezone` America/Chicago).
+- **M7:** the jobs wiki's Known limits say to turn off a legacy unsatisfiable job with the enable
+  switch, not the editor.
+
+Gates on the wave: `pnpm test` 280 files, 2752 passed, 1 skipped; `pnpm test:db` 65 files, 650
+passed; `pnpm typecheck` and `pnpm build` exit 0. Every behaviour fix was mutation-checked (the
+fix broken one file at a time, the test went red, restored with `git checkout`). Details:
+`.superpowers/sdd/2026-09-29-reliability/final-fix-report.md`.
+
 ## Rulings (from the SDD ledger)
 
 1. `fired_at` serves as the sweep clock. The sweep uses a 24 h window, and it keeps a fire row
@@ -148,11 +176,14 @@ From Task 1:
 2. **The sweep wiring is untested.** Removing the `sweepCrashedFires()` call from `workerTick`
    leaves every test green, as with the `jobsTick`/`dueTaskEvents` calls. The unscoped tick is
    never run against the shared dev DB. The wiring was confirmed by reading the code.
+   **Follow-up task (final review ruling):** a pure test that mocks `../jobs/tick` and asserts
+   the unscoped `workerTick` calls `sweepCrashedFires` before `jobsTick`, without touching the DB.
 3. **Test log noise.** The wake-failure and sweep tests print the expected
    `console.error`/`console.warn` lines.
-4. **The first sweep on prod** deletes any event fire row from the last 24 h that has no `run_id`
-   and no run since. That covers every row written before 0059, since those rows have no
-   `run_id`. A `task.due` row would re-fire. Prod has no enabled event jobs (all jobs are
+4. **The first sweep on prod** deletes an event fire row from the last 24 h only when it has no
+   `run_id` AND no run of its job was created since: a fire whose wake never produced a run.
+   Rows written before 0059 have no `run_id`, so the "no run since" check is what keeps a
+   pre-0059 fire that did run. A deleted `task.due` row would re-fire. Prod has no enabled event jobs (all jobs are
    disabled), so there is nothing to re-fire today.
 5. **Undo race.** A concurrent `fireEvent` for the same key that lost the insert gives up and does
    not retry after the failed wake's undo. A `cc.session_end` lost this way is not digested. This
@@ -169,7 +200,9 @@ From Task 2:
 9. **Worst-case single-flight hold ≈ the largest same-chat group × 15 s** (the adapter timeout).
    It is bounded but can span several ticks. The channels handover's follow-up 6 (a slow batch vs
    the 2-min reclaim) still applies within one chat.
-10. **Photo before caption on a flaky send** (ruling 7).
+10. **Photo before caption on a flaky send** (ruling 7). Its crash-reclaim cousin (a chat's later
+    rows overtaking a row stuck `sending`, final review M1) is fixed: the claim skips a chat
+    while any of its rows is `sending`.
 11. **The claim-order re-sort and the `seq` tiebreak are defensive.** Postgres returned
     `RETURNING` rows in picked order in every run, so no test proves them.
 
@@ -180,7 +213,8 @@ From Task 3:
     within active_hours" for them.
 
 Also:
-13. **MyMind task and wiki mirror** for `agent-jobs`, `channels` and `agent-runtime`: left to the
+13. **MyMind task and wiki mirror** for `agent-jobs`, `channels` and `agent-runtime`: the pass is
+    tracked under the cycle 75 task (`mymind_task` above); the wiki mirror is left to the
     controller.
 
 ## Earlier follow-ups this resolves
@@ -195,19 +229,20 @@ Also:
 ## Deploying (when merged; the controller deploys)
 
 1. Take a pre-deploy dump to `/root/db-backups`, gzipped (not `/opt/mymind`, which CD wipes).
-2. CD applies **0059, 0060 and 0061** on top of prod's 0058.
+2. CD applies **0059, 0060, 0061 and 0062** on top of prod's 0058.
    - **0059's pre-check is done.** No prod job has more than one queued or running run (4 job runs
      in total), so the unique index builds cleanly. If the deploy is delayed, re-run the check:
      `select job_id, count(*) from agent_runs where job_id is not null and status in ('queued','running') group by job_id having count(*) > 1;`
      It must return no rows.
-   - 0060 and 0061 are additive. 0061 adds a `bigserial` column to the populated
+   - 0060, 0061 and 0062 are additive. 0062 is a plain `CREATE INDEX` on `agent_runs(job_id,
+     created_at)`, a brief lock on a small table. 0061 adds a `bigserial` column to the populated
      `channel_deliveries`, which fills existing rows from the new sequence.
 3. After boot, check the journal for `[jobs]` sweep lines on the first ticks. Deferred item 4 is
    the only expected one-time effect, and prod has no enabled event jobs.
 4. Nothing to configure. The four seeds and the templates pass the new `active_hours` check.
 
-**Rolling back:** the three migrations are additive, and a 75 build runs with them in place:
-- It ignores `run_id`, `fire_failures` and `seq`. `seq` fills itself on insert.
+**Rolling back:** the four migrations are additive, and a 75 build runs with them in place:
+- It ignores `run_id`, `fire_failures`, `seq` and the 0062 index. `seq` fills itself on insert.
 - The index would turn a lost fire race into a raw insert error in the old code instead of a
   second run. To remove that, run `drop index agent_runs_one_active_per_job;`.
 

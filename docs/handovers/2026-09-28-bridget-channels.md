@@ -2,10 +2,10 @@
 title: Bridget channels — two-way iMessage via BlueBubbles, outbound email via Resend, presence-aware delivery
 cycle: 75
 date: 2026-09-28
-status: built
+status: shipped
 branch: feat/bridget-channels (worktree .claude/worktrees/bridget-channels, base dea0d69)
-merged: false
-deployed: false
+merged: true
+deployed: 2026-09-29 (CD run 36506477530, commit b71f342; follow-up CD 36511966371, bb8e5b9, the prompt timezone fix)
 specs:
   - ../superpowers/specs/2026-09-28-bridget-channels-design.md
 plans:
@@ -17,13 +17,13 @@ wiki:
 migrations:
   - 0057 channel_deliveries, channel_inbound, channel_approvals; agent_runs.reply_to (jsonb)
   - 0058 index channel_deliveries(conversation_id) (final review fix wave)
-migrations_run_on_prod: false  # 0057 + 0058 are applied to the shared dev DB only. Cycle 74 (0056) is not deployed either: deploying both applies 0056 + 0057 + 0058
+migrations_run_on_prod: true  # 0056 + 0057 + 0058 applied by CD on 2026-09-29; prod is at 0058
 seed_jobs_enabled: false  # the four seeds were upgraded (deliver lines) by the hash-guarded boot upgrade and stay DISABLED
 fake_acceptance: passed  # spec §11 scenarios 1-7 + email, against the fake BlueBubbles server and RESEND_FAKE
 real_phone_acceptance: pending  # spec §11 scenarios 1-5 with Tony's phone; checklist below
 final_review: with-fixes-applied  # whole-branch review (1 C / 4 I / 9 M) → fix wave done on this branch; see "Final review fix wave" below
-prod_agent_timezone: unset  # from cycle 74: set Settings -> Bridget -> Agent timezone to America/Chicago after deploy, BEFORE enabling any job
-mymind_task: null  # set by the controller
+prod_agent_timezone: America/Chicago
+mymind_task: 8e66ffd0-a94f-4017-a9a1-99deea55c7bb
 ---
 
 # Cycle 75: Bridget channels

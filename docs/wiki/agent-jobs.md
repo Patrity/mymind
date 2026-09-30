@@ -1,6 +1,6 @@
 ---
 title: Agent Jobs (markdown-configured schedules and triggers)
-status: built
+status: shipped  # cycle 74 deployed 2026-09-29; the reliability pass (0059-0062) is built, not deployed
 cycle: 74 (`deliver` targets: cycle 75)
 updated: 2026-09-30
 ---
@@ -95,7 +95,7 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 | `agent_jobs` | `id`, `slug` (unique, `^[a-z0-9][a-z0-9-]{0,63}$`), `content`, `content_hash` (sha256, the CAS token), `source` (`human`/`agent`). **Derived:** `enabled`, `trigger_kind`, `trigger_expr`, `timezone`, `next_run_at`, `parse_error`. **Runtime:** `last_run_at`, `last_run_id`, `last_outcome` (`spoke`/`silent`/`failed`/`skipped`), `consecutive_failures`, `fired_at` (`at` jobs), `fire_failures` (0060: failed `at` wakes in a row). `created_at`, `updated_at`. Partial index `agent_jobs_due (next_run_at) where enabled and parse_error is null`. |
 | `agent_config_revisions` | `target_kind` (`skill`/`job`), `target_id`, `content`, `actor` (`human`/`agent`/`system`), `run_id`, `created_at`. The last **100** per target are kept, pruned on write. No FK: a deleted job's revisions stay until deleted explicitly. |
 | `agent_job_fires` | PK `(job_id, event_key)`, `fired_at`, `run_id` (0059: nullable FK to `agent_runs`, `on delete set null`; NULL until the fire's run exists); FK cascade on job delete. It dedupes event fires and the one-per-job "reminder did not fire" note (key `at:not-fired`). |
-| `agent_runs.job_id` | Nullable FK, `on delete set null`. Partial unique index `agent_runs_one_active_per_job (job_id) where job_id is not null and status in ('queued','running')` (0059): one active run per job. |
+| `agent_runs.job_id` | Nullable FK, `on delete set null`. Partial unique index `agent_runs_one_active_per_job (job_id) where job_id is not null and status in ('queued','running')` (0059): one active run per job. Plain index `agent_runs_job_created_idx (job_id, created_at)` (0062) for the sweep's "any run since" checks and `listRuns({ jobId })`. |
 
 `agent_skills` is in the same migration; see [agent-skills.md](agent-skills.md).
 
@@ -183,7 +183,8 @@ only, followed by `dueTaskEvents()`):
    (and each crash the sweep repairs) adds one to `fire_failures`. At **5** in a row
    (`MAX_FIRE_FAILURES`) the job gives up: it is disabled with the did-not-fire note ("waking it
    failed 5 times in a row (…)"). Creating a run resets the count to 0, and so does re-arming
-   the job.
+   the job. Re-arming also deletes the job's `at:not-fired` row, so a re-armed reminder that
+   gives up again gets its note again.
    Otherwise an `at` job is then disabled with a **system** revision (`setJobEnabled(slug, false,
    'system')`). If it did not fire, one note goes to main: "Reminder X did not fire: … It is now
    turned off; re-arm it on /jobs/X".
@@ -249,13 +250,16 @@ fire that races another fire of the same job fails its run insert (23505 on that
 `fireJob` returns `{ overlap: true }`. It is then handled as the ordinary overlap skip for that
 path, never as an error (`runJobNow` → `{ skipped: 'overlap' }`).
 
-**Crash sweep.** `sweepCrashedFires()` runs first in every unscoped `workerTick` and repairs what
-a crash between a fire's commit and its wake left behind (older than **2 minutes**, and no run of
-the job created since):
-- an enabled `at` job with `fired_at` set → re-armed as above and counted toward the 5-failure
+**Crash sweep.** `sweepCrashedFires()` runs first in every unscoped `workerTick` and repairs
+what a crash left half-done (older than **2 minutes**):
+- an enabled `at` job with `fired_at` set and no run of it created since → re-armed as above and counted toward the 5-failure
   cap (the UPDATE re-checks every condition, staleness included, so two sweeps cannot both
   re-arm it), and logged;
-- an `event` job's fire row with `run_id` NULL (fired within the last 24 h) → deleted, and
+- an enabled `at` job with `fired_at` set whose run **was** created since (the crash hit between
+  the fire and the tick's self-disable) → disabled with a system revision, no note (it did fire),
+  and logged. The disable is pinned to the content hash the sweep read, so a re-arm since wins;
+- an `event` job's fire row with `run_id` NULL (fired within the last 24 h) and no run of its job
+  created since → deleted, and
   logged. `task.due` re-fires on the next tick. A lost `cc.session_end` cannot be re-fired (the
   payload is gone); the delete only frees its key for a redelivery.
 
@@ -454,6 +458,9 @@ order by f.fired_at desc limit 20;
 
 - **A job saved before the active_hours write check** (reliability pass, 2026-09-30) whose hours
   can never match still sits with `next_run_at = null` ("—" on the page) until it is next saved.
+  Any save of it, even one through the editor that only sets `enabled: false`, is rejected until
+  the hours or trigger are fixed. Use the **enable switch** (`setJobEnabled`, which skips
+  re-validation) to turn such a job off.
 - **A `cc.session_end` lost to a crash** is not re-fired (see Overlap and crash recovery).
 - **The cron density check** looks at a fixed 8-day window, so a day-of-month or month-restricted
   pattern that is dense only outside that window slips through.
