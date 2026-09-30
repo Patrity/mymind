@@ -31,9 +31,16 @@ vi.mock('../server/lib/channels/config', async (orig) => {
 })
 vi.mock('../server/lib/observability/record', async (orig) => {
   const actual = await orig<typeof import('../server/lib/observability/record')>()
-  return { ...actual, recordEvent: (e: { name: string; meta?: Record<string, unknown> }) => { events.push(e) } }
+  return {
+    ...actual,
+    recordEvent: (e: { name: string; meta?: Record<string, unknown> }) => { events.push(e) },
+    // buildAiTools (the Stop-vs-👍 race) wraps a handler that runs in a span: no activity rows.
+    withSpan: (_span: unknown, fn: () => unknown) => fn()
+  }
 })
 
+import { Client } from 'pg'
+import { z } from 'zod'
 import { eq, inArray, count } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { agentRuns, channelApprovals, conversations } from '../server/db/schema'
@@ -43,7 +50,8 @@ import {
   imessageApprovalChannel, replyToApprovalChannel, resolveTapback, expireApprovals, _dropWaiters, APPROVAL_TIMEOUT_MS
 } from '../server/lib/channels/approvals'
 import { catchUpTick, lastHealth, _resetCatchUp } from '../server/lib/channels/inbound'
-import type { ApprovalRequest } from '../server/lib/agent/types'
+import type { AgentTool, ApprovalRequest } from '../server/lib/agent/types'
+import { buildAiTools } from '../server/lib/agent/ai-tools'
 import type { TapbackEvent } from '../server/lib/channels/types'
 import { startFakeBlueBubbles, type FakeBlueBubbles } from './fixtures/fake-bluebubbles'
 
@@ -282,6 +290,77 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     ac.abort()
     expect(await p).toEqual({ approved: false })
     expect((await rowsFor(run))[0]!.status).toBe('denied')
+  })
+})
+
+describe('Stop always beats a late 👍 (reliability Task 2)', () => {
+  /** A dangerous exec-like tool gated by the iMessage approval channel, exactly as the runner
+   *  wires it (buildAiTools → ctx.requestApproval). `ran` records whether the handler executed. */
+  function gatedExec(run: string, signal: AbortSignal) {
+    const ran: string[] = []
+    const t: AgentTool = {
+      name: 'fake_exec', description: 'test', kind: 'write', dangerous: true,
+      schema: { command: z.string() },
+      describeApproval: () => REQ,
+      handler: async (input) => { ran.push(String(input.command)); return { result: { ok: true }, summary: 'ran' } }
+    }
+    const tools = buildAiTools([t], {
+      signal, onEvent: () => {},
+      requestApproval: imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 60_000, timeoutMs: 60_000, signal })
+    })
+    const exec = tools.fake_exec as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }
+    return { ran, call: () => exec.execute({ command: REQ.command }, { toolCallId: `${TAG}-call`, messages: [] }) }
+  }
+
+  it('abort, then a like in the same instant: denied, the exec never runs', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    const { ran, call } = gatedExec(run, ac.signal)
+    const p = call()
+    const { promptGuid } = await promptFor(run)
+    ac.abort()
+    const tb = resolveTapback(tapback(promptGuid))
+    expect(await p).toEqual({ denied: true })
+    await tb
+    expect(ran).toEqual([])
+  })
+
+  it('a like already on its way to the row when Stop is pressed cannot flip the wait to approved', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    const { ran, call } = gatedExec(run, ac.signal)
+    const p = call()
+    const { id, promptGuid } = await promptFor(run)
+    // Hold the approval row's lock so both guarded updates queue on it, the tapback's FIRST:
+    // its update then wins the row, as a 👍 that reached Postgres a moment before Stop would.
+    const locker = new Client({ connectionString: process.env.DATABASE_URL })
+    await locker.connect()
+    try {
+      await locker.query('begin')
+      await locker.query('select id from channel_approvals where id = $1 for update', [id])
+      const tb = resolveTapback(tapback(promptGuid))
+      let queued = false
+      for (let i = 0; i < 200 && !queued; i++) {
+        // Blocked on OUR lock = the tapback's guarded update (the only writer of this row).
+        // Not matched by query text: pg_stat_activity can still show the backend's previous select.
+        const r = await locker.query('select count(*)::int as n from pg_stat_activity where pg_backend_pid() = any(pg_blocking_pids(pid))')
+        queued = r.rows[0].n > 0
+        if (!queued) await new Promise(res => setTimeout(res, 10))
+      }
+      expect(queued).toBe(true)
+      ac.abort() // Stop, while the like's update is still blocked
+      await locker.query('commit')
+      expect(await p).toEqual({ denied: true })
+      await tb
+      expect(ran).toEqual([])
+      // The row holds whichever guarded update Postgres let through first — nearly always the
+      // tapback's ('approved', which the wait and the exec ignored), since it queued first; the
+      // lock queue does not strictly guarantee that order, so either decided status is fine.
+      expect(['approved', 'denied']).toContain((await rowsFor(run))[0]!.status)
+    } finally {
+      await locker.query('rollback').catch(() => {})
+      await locker.end()
+    }
   })
 })
 

@@ -74,7 +74,8 @@ function logOutcome(runId: string, command: string, outcome: string, reason?: st
 function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSignal): Promise<ApprovalStatus> {
   return new Promise((resolve) => {
     let done = false
-    const finish = (s: ApprovalStatus) => {
+    // A promise argument locks the outcome now and settles once it does (the abort's DB write).
+    const finish = (s: ApprovalStatus | Promise<ApprovalStatus>) => {
       if (done) return
       done = true
       clearInterval(poll)
@@ -83,12 +84,16 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
       if (waiters.get(id) === finish) waiters.delete(id)
       resolve(s)
     }
-    // Aborted: pending → denied. If a tapback settled it first, that status stands in the row,
-    // but the run is stopping either way, so the waiter reports denied.
+    // Aborted: Stop always beats a late 👍. The waiter is decided as denied SYNCHRONOUSLY,
+    // before any await — `finish` drops the in-process waiter, so a tapback whose guarded update
+    // lands in the same instant finds nothing to wake and can never flip this wait to approved
+    // (it used to be decided only after the DB round trip, which a 👍 already queued ahead of it
+    // could win). Then pending → denied in the row; the promise settles once that write is done.
+    // If the tapback's update reached the row first, its status stands there, but nothing ran.
     const onAbort = () => {
-      settle(id, 'denied')
+      finish(settle(id, 'denied')
         .catch(err => console.warn(`[channels] approval ${id} cancel failed:`, err instanceof Error ? err.message : err))
-        .finally(() => finish('denied'))
+        .then(() => 'denied' as const))
     }
     waiters.set(id, finish)
     const poll = setInterval(() => {
