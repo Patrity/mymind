@@ -50,6 +50,12 @@ describe('threadCandidates', () => {
     expect(await ids([id])).toEqual([])
   })
 
+  it('judges idleness against the `now` option, not the DB clock', async () => {
+    const id = await scratch([70, 60, 50, 10])
+    expect(await ids([id])).toEqual([])
+    expect((await threadCandidates({ now: new Date(NOW.getTime() + 30 * 60_000), onlyConversationIds: [id] })).map(r => r.conversationId)).toEqual([id])
+  })
+
   it('includes a thread with 4 new messages idle 40 min, with since = null', async () => {
     const id = await scratch([70, 60, 50, 40])
     expect(await threadCandidates({ now: NOW, onlyConversationIds: [id] })).toEqual([{ conversationId: id, since: null }])

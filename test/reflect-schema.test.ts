@@ -48,6 +48,9 @@ describe('parseReflectorOutput', () => {
     expect(parseReflectorOutput('{ "proposals": [] }', THREAD)).toEqual({ ok: true, proposals: [] })
     expect(parseReflectorOutput('   ', THREAD)).toEqual({ ok: true, proposals: [] })
     expect(parseReflectorOutput('None.', THREAD)).toEqual({ ok: true, proposals: [] })
+    // The fence strip is what makes a fenced "none" or an empty fence readable.
+    expect(parseReflectorOutput('```\nnone\n```', THREAD)).toEqual({ ok: true, proposals: [] })
+    expect(parseReflectorOutput('```json\n```', THREAD)).toEqual({ ok: true, proposals: [] })
   })
 
   it('keeps at most 3 of 5 valid items', () => {
