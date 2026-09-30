@@ -163,7 +163,8 @@ them.
 inbound iMessage run, or an app run whose tab closed) registers
 `replyToApprovalChannel(runId, { signal: ac.signal })` at turn start. At request time it reads the
 run's `reply_to`. When that names an iMessage chat, it texts "Run \`cmd\`? 👍 to approve · 👎 to
-deny" (the command cut to 300 chars) and waits up to **10 min** for a 👍/❤️ (approve) or 👎 (deny)
+deny" (worded per tool since cycle 76 — `decide_review` reads "Approve review decision: …?"; the
+command cut to 300 chars) and waits up to **10 min** for a 👍/❤️ (approve) or 👎 (deny)
 tapback on that message. Otherwise it denies, as before. **The wait honours the run's abort
 signal** (final review I1): Stop or `/clear` settles the row `denied` and unwinds the run at once,
 instead of leaving it `running` (blocking main) until the expiry. A socket channel registered by `ws.ts` overwrites it, so an app tab that is

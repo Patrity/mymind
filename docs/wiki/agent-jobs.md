@@ -118,10 +118,12 @@ only while enabled), enabled-count guard, CAS on `content_hash` inside the UPDAT
 409 with the current content), record a revision, then `publishChange('agentJob')`. Re-enabling a
 job resets `consecutive_failures`. Re-arming an `at` job with a future time clears `fired_at`.
 
-**`source`** is who authored the current content: a `human` or `agent` write sets it, while a
+**`source`** is who authored the job: a create sets it, a `human` write makes it `human`, and a
 `system` write (the tick disabling a fired `at` job, the failure auto-disable, a seed install)
 keeps it. A reminder Bridget scheduled keeps its `agent` badge after it fires; a human edit
-relabels it `human`.
+relabels it `human`. **An `agent` write never takes a job from Tony** (cycle 76 final review M4):
+an `edit_job` he asked for, or a reflector edit, leaves his job `human`, so the jobs pass can
+never auto-edit it afterwards.
 
 **`setJobEnabled`** rewrites only the `enabled:` line (`shared/utils/frontmatter.ts`
 `setFrontmatterKey`, a targeted line replace). Every other byte is unchanged, so enabling and then

@@ -322,7 +322,10 @@ At request time it reads the run's `reply_to`. If that names an iMessage chat, i
 > Run \`<command>\`?
 > 👍 to approve · 👎 to deny
 
-The command is cut to **300 characters** (ending `…`), so a long heredoc is not texted in full.
+The question is worded per tool (`approvalPromptText`, cycle 76 final review m1): `exec` asks
+"Run \`<command>\`?"; `decide_review` asks "Approve review decision: <choice> — <summary>?"; any
+other dangerous tool asks "Allow <tool>: \`<command>\`?". The command is cut to **300 characters**
+(ending `…`), so a long heredoc is not texted in full.
 
 A row goes into `channel_approvals` (`pending`, `expires_at = now + 10 min`, `prompt_guid` = the
 sent message's GUID). A **👍 or ❤️** tapback from an allowed handle, on **that** message, in

@@ -21,8 +21,9 @@ migrations:
 migrations_run_on_prod: false  # 0063 applied on dev only; prod runs through 0062 (cycles 73–75 + the reliability pass deployed)
 seed_jobs_enabled: false  # all five seeds, including the new self-improvement-digest, install DISABLED
 acceptance: passed  # scenarios 1–5 (playwright-cli, dev :3076, 2026-09-30); scenario 3 passed after the Task 11a fix
-eval: { none_precision: "10/10", kind_hit_rate: "10/10", exact_slug_hit_rate: "5/10" }
-final_review: pending
+eval: { none_precision: "10/10", single_hit_rate: "9/10", mixed_both_kinds: "3/3", run: "final fix wave, 2026-09-30" }
+final_review: fixed  # ready with fixes (0 C / 3 I / ~10 M); fix wave 7c2b9e7..eefea03 plus docs
+deploy_precondition: set prod self_improvement_mode = review_only BEFORE deploying
 prod_agent_timezone: America/Chicago
 mymind_task: null  # not mirrored — this session had no MCP/prod writes
 ---
@@ -63,9 +64,19 @@ How it works today: [wiki/self-improvement.md](../wiki/self-improvement.md).
 | 10 | 20e5f3e | `list_improvements`, `self-improvement-digest` seed (disabled), learned badge |
 | 11 | dc10fca | `reflect:eval` gets a real `$fetch` shim (plain `fetch` failed every call) |
 | 11a | 7ceb6cc, 7dd80d6, f04ec2a | Approval-card race fix; reflector prompt splits lessons by kind; `tsx` is a devDependency |
-| 11 | (this commit) | Wiki, handover, roadmap |
+| 11 | 75695d3 | Wiki, handover, roadmap |
+| Final fix wave | 7c2b9e7, a9d53f6, 39c66b6, ef49c39, 65791db, bde2cb1, 19ac136, ce6abe1, 5c8a3f0, ada3b89, eefea03 + docs | See "Final review fix wave" below |
 
-## Gates (at the docs commit)
+## Gates (final fix wave, at eefea03)
+
+| Gate | Result |
+|---|---|
+| `pnpm test` | 294 files, **2984 passed / 1 skipped** |
+| `pnpm test:db` (full) | 73 files, **780 passed**; dev DB row counts identical before and after |
+| `pnpm typecheck` | clean |
+| `pnpm build` | green |
+
+## Gates (at the docs commit, before the fix wave)
 
 | Gate | Result |
 |---|---|
@@ -73,6 +84,18 @@ How it works today: [wiki/self-improvement.md](../wiki/self-improvement.md).
 | `pnpm test:db` (full) | 73 files, **768 passed**; the dev DB matches the baseline afterwards |
 | `pnpm typecheck` | clean |
 | `pnpm build` | green |
+
+## Eval after the fix wave (`pnpm reflect:eval`, one real run, 23 rows)
+
+This run came after the I1 change (6000 tokens, 120 s) and the worked two-proposal example.
+`skill.create` is scored on kind only, and the 3 new mixed rows are scored on "both kinds present".
+
+- precision on "none" rows: **10/10**;
+- hit rate on single-expectation rows: **9/10**. The miss, row 10 (restart prod via ssh and
+  `pct exec`), was a reply with no `proposals` array, not a wrong proposal. Plausibly the model
+  declined, since the procedure is a shell command and the prompt says never to propose
+  commands. Not re-run (one run, per the ruling);
+- mixed rows, both kinds present: **3/3**. The procedure/preference split held on every mixed row.
 
 ## Eval (`pnpm reflect:eval`, one real run, before Task 11a's prompt change)
 
@@ -259,17 +282,59 @@ prod once merged: the first `reflect-threads` tick reflects over every thread ac
   below).
 - `tsx` is a devDependency, so `pnpm reflect:eval` runs in any checkout.
 
+## Final review fix wave
+
+The final review came back **ready with fixes**: 0 critical, 3 important, about 10 minor
+(`.superpowers/sdd/2026-09-30-bridget-self-improvement/final-review.md`). The rulings and what
+shipped:
+
+| Item | Ruling | Commit | What changed |
+|---|---|---|---|
+| **I1** output cap | fix | 7c2b9e7, a9d53f6 | Reflector `maxTokens` goes from 1500 to **6000**. `chat()` takes `timeoutMs` (default 60 s), and the reflector passes **120 s**. The two 11a prompt lines become one rule plus a worked example: a receipts procedure → `skill.create`, a bullet-points preference → `profile.edit`. The eval gains 3 mixed rows, scores `skill.create` on kind only, and `scripts/data/reflect-eval.jsonl` gets a `.gitignore` carve-out. Residual merging is accepted as a known limit. |
+| **I2** jobs pass can't see ignored or tapback signals | fix | 39c66b6 | Each job gets a code-written line, `[signals] <slug>: 9 ignored, 0 replied, 1 tapback_negative in 14 days`. It is shown in the prompt and counts as evidence. An ignored-only job can now produce a proposal, which goes to review. |
+| **I3** evidence doesn't have to be Tony's words | fix (security) | 39c66b6 | (1) `auto` needs one evidence quote inside one of Tony's own messages (`[user]` blocks, or reply texts in the jobs pass); otherwise review, reason `not_from_tony`. (2) Thread candidates need at least one new `user` row. (3) A skill that names any registered agent tool goes to review (`names_tool`). |
+| m1 iMessage prompt | fix | bde2cb1 | `decide_review` texts "Approve review decision: <choice> — <summary>?". Exec is unchanged. Other dangerous tools text "Allow <tool>: …?". |
+| m2 no pending claim | fix | 65791db | A `pending_review` or `conflict` improvement is claimed (→ `deciding`) before apply, and reject only acts while it is pending. The losing decider gets `not_pending` (the handlers throw 410, which `decideReview` maps). |
+| m4 noisy digest | fix | ada3b89, eefea03 | The digest seed replies `NO_REPLY` unless something was applied or raised today. The dev DB's already-installed row keeps the old wording, because seeds are never rewritten. |
+| M4 job authorship is last-writer | fix | ce6abe1 | An agent write never takes a job from Tony (`sourceFor`). |
+| m5 wiki names a flag that doesn't exist | fix | docs | `--as-on` is replaced by the scripted mode flip. |
+| m6 signals scan has no time floor | fix (14 days) | 5c8a3f0 | `noteUserReply` scans only runs created in the last 14 days. |
+| m9 transcript reads every branch | fix (active branch) | ef49c39 | The thread pass reads the active branch (`loadActivePath`). The watermark still advances over every branch. The `/clear` epoch is still ignored. |
+| 11a: cap the approval-card args | fix | 19ac136 | `ws.ts` caps the `approval-request` args with `capArgs` (4 KB). |
+| m3 card shows the id after a restart | parked | — | |
+| m8 auto cap can overshoot by one | accepted | — | |
+| M5 MCP-created skills are `source: agent` | accepted | — | Documented in the wiki. |
+
+Every behaviour fix has a test that was mutation-checked red: 20 mutations, one file at a time,
+each restored with `git checkout --` and followed by a clean `git diff`.
+
+**Left as they were, because the binding rulings don't include them** (the review suggested
+them):
+- the exec-approvals settings save still stores inert rules for non-allowlistable tools;
+- the T7 test coupling to the global mode is unchanged. The DB tests set the mode themselves and
+  restore it, so a dev DB left in `off` doesn't break them;
+- `finish_reason: length` is not logged separately;
+- `SENSITIVE` doesn't gain job, approve or email words;
+- the T3 starter template still re-inserts after an intentional empty save.
+
+**One deviation from the review's I3 wording.** The candidate rule and `userInput` count every
+`user` row, not only rows with `origin is null`. In this codebase an iMessage from Tony is a
+`user` row with `origin = 'imessage:…'` (allowlisted handles only), and wake prompts are `event`
+rows. Filtering on `origin is null` would have excluded Tony's own iMessages.
+
 ## Follow-ups (every deferred or parked item)
 
-**Final wave (named):**
-- **The iMessage approval prompt reads "Run …?" for `decide_review`.** It should read as a review
-  decision.
-- The exec-approvals settings save stores inert rules for any tool.
-- The audit event logs the client-supplied pattern.
-- `.gitignore` carve-out for `scripts/data/reflect-eval.jsonl`.
-- Cap the approval-card args with `capArgs` in `ws.ts` (11a).
-- A reused tool-call id drops the second `tool-start` (11a).
-- The new prompt line partly repeats `prompt.ts:69` (11a).
+**Final wave (named), status after the fix wave:**
+- ~~The iMessage approval prompt reads "Run …?" for `decide_review`~~: fixed (bde2cb1).
+- The exec-approvals settings save stores inert rules for any tool: not in the rulings, still
+  open.
+- The audit event logs the client-supplied pattern: accepted.
+- ~~`.gitignore` carve-out for `scripts/data/reflect-eval.jsonl`~~: done (a9d53f6).
+- ~~Cap the approval-card args with `capArgs` in `ws.ts`~~: done (19ac136).
+- A reused tool-call id drops the second `tool-start` (11a): accepted.
+- ~~The new prompt line partly repeats `prompt.ts:69`~~: folded into the two-proposal example.
+- **Parked:** m3. The `decide_review` card shows the bare id when the summary cache misses
+  (after a restart, or when Bridget didn't call `list_reviews` first).
 
 **Deferred minors:**
 - Task 2: the CAS/revert shape is duplicated from skills (codebase precedent).
@@ -287,23 +352,34 @@ prod once merged: the first `reflect-threads` tick reflects over every thread ac
 - Task 10: document that `pendingReview` is live (not scoped by `since`). Now done in the wiki.
 
 **Found at acceptance:**
-- **The reflector merges lessons.** A receipts *procedure* and a formatting *preference* came
-  back as one `profile.edit` in both real runs, before and after 11a's prompt line. It is safe,
-  because the profile always goes to review, but procedures don't become skills. Next step: add
-  eval rows that mix a procedure with a preference and score the split, then consider a stronger
-  prompt or a split step in code.
-- **The eval hasn't been re-run since the prompt change,** and exact-slug matching undercounts.
-  Consider scoring on kind only, or accepting any slug for `skill.create`.
+- **The reflector merged lessons** in both real acceptance runs. After the fix wave (6000 tokens
+  and the worked example), the eval's 3 mixed rows split 3/3. Residual merging is accepted as a
+  known limit. It is safe, because the profile always goes to review, and there is no code-level
+  split.
+- ~~The eval hasn't been re-run since the prompt change~~: re-run in the fix wave, with
+  `skill.create` scored on kind only.
 - **Out of scope (spec §12):** Jev threshold calibration, which needs this cycle's review labels;
   and reflection over Claude Code sessions.
 
 ## Deploying (when merged)
 
+0. **Before deploying, set prod to `review_only`** (ruling). The settings table already exists
+   on prod, so this can be done ahead of the deploy. Tony switches it to `on` himself later:
+
+   ```sql
+   insert into settings(key, value, updated_at) values ('self_improvement_mode', '"review_only"', now())
+     on conflict (key) do update set value = excluded.value, updated_at = now();
+   ```
+
+   Otherwise the first `reflect-threads` ticks reflect over every prod thread active in the last
+   7 days (5 per tick, only threads with a new message from Tony). A new agent skill quoted from
+   his words in a week-old thread could then auto-apply.
 1. Take a DB backup to `/root/db-backups` (gzipped). CD migrates **0063** (additive).
-2. **Decide the mode before the first tick.** With the default `on`, the first `reflect-threads`
-   tick reflects over every prod thread active in the last 7 days (5 per tick). Nothing
-   auto-applies to the profile or to Tony's skills and jobs, but new agent skills can. Setting
-   `review_only` for the first days sends everything through `/review`.
+2. With `review_only`, nothing auto-applies anywhere. Once Tony sets `on`:
+   - nothing auto-applies to the profile, to Tony's skills, or to Tony's jobs (an agent edit
+     never makes his job agent-authored);
+   - a new agent skill auto-applies only if one quote is his own words, it names no registered
+     tool and nothing sensitive, Jev is clean, and the caps allow.
 3. The seeds stay disabled. Enable `self-improvement-digest` on `/jobs` if wanted.
 4. Signals start at the first `closeObservations` (`signals_started_at`). Job tuning needs 5 or
    more signals per job in 14 days, so the first job proposals come later.
@@ -312,7 +388,7 @@ prod once merged: the first `reflect-threads` tick reflects over every thread ac
 
 ## Where cycle 77 starts
 
-Merge after the final review wave (the follow-ups above). Watch the first week of
+The final review wave is done. Merge when Tony accepts it, and run deploy step 0 before the deploy. Watch the first week of
 `agent_improvements`: the drop reasons (is the reflector quoting badly?), the review-versus-auto
 ratio, and whether any skill is auto-applied. Then calibrate the Jev thresholds from the rejected
 versus approved labels.

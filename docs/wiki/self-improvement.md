@@ -1,6 +1,6 @@
 ---
 title: Bridget self-improvement (reflector, gate, About Tony profile, job tuning, review tools)
-status: built  # cycle 76, on feat/bridget-self-improvement; not merged, not deployed (migration 0063 dev only)
+status: built  # cycle 76 + final-review fix wave, on feat/bridget-self-improvement; not merged, not deployed (migration 0063 dev only)
 cycle: 76
 updated: 2026-09-30
 ---
@@ -28,14 +28,15 @@ Handover: [2026-09-30-bridget-self-improvement.md](../handovers/2026-09-30-bridg
 
 ```
 settled thread (every 15 min)        nightly jobs pass (hourly tick, once/day from 03:00 local)
-  messages since reflected_through     closeObservations → `ignored`; jobs with ≥ 5 signals / 14 d
-            │                                   │  (file + counts + ≤ 5 snippets each)
+  active-branch messages since         closeObservations → `ignored`; jobs with ≥ 5 signals / 14 d
+  reflected_through (≥ 1 from Tony)             │  (file + [signals] line + ≤ 5 snippets each)
             └──────────── reflector: ONE chat('reasoning') call, no tools ───────────┘
                                    │  JSON → zod → ≤ 3 proposals
                                    ▼
                      processProposal (reflect/apply.ts)
                   gate: mode → evidence → rejection memory → validity → tier
-                        → sensitive → Jev (one-way) → caps → review_only
+                        → Tony's words → sensitive / names a tool → Jev (one-way)
+                        → caps → review_only
                                    │
             ┌──────────────────────┼─────────────────────────┐
           auto                  review                     dropped
@@ -53,16 +54,16 @@ Every proposal gets an `agent_improvements` row, whatever happens to it, and pub
 | File | Job |
 |---|---|
 | `candidates.ts` | `threadCandidates({ now?, limit? = 5, onlyConversationIds? })`, `markReflected` |
-| `transcript.ts` | renders messages (tool calls summarised) as `[user]` / `[bridget]` / `[tool name → …]`, keeping the newest 24k chars |
+| `transcript.ts` | renders messages (tool calls summarised) as `[user]` / `[bridget]` / `[tool name → …]`, keeping the newest 24k chars; `tonyMessages` = the `[user]` blocks alone (the gate's `userInput`) |
 | `prompt.ts` | `THREAD_SYSTEM_PROMPT`, `threadReflectionMessages`, `jobsReflectionMessages`, `skillFilesForPrompt` (each skill file ≤ 2 KB, 16 KB total) |
-| `call.ts` | `callReflector(messages, allowedKinds)`: never throws; returns `ok:false` on a model failure |
+| `call.ts` | `callReflector(messages, allowedKinds)`: `chat('reasoning')` at temperature 0.2 with **6000 output tokens** and a **120 s** per-attempt timeout (`REFLECT_MAX_TOKENS`, `REFLECT_TIMEOUT_MS`; `chat()` takes `timeoutMs`, default 60 s). Never throws; returns `ok:false` on a model failure |
 | `schema.ts` | `Proposal`, `parseReflectorOutput`: tolerant parsing. It strips fences, tries successive `{`/`[` starts, repairs trailing commas outside strings and runs zod. A reply starting "None" means no proposals |
 | `gate.ts` | the pure gate (below) |
 | `jev.ts` | `jevCheck(p)`: observable questions, one-way |
 | `similarity.ts` | `contentDelta`, `similarity` (Jaccard over word 3-shingles) |
 | `apply.ts` | `processProposal`, `applyImprovement`, `rejectImprovement`, `countAutoAppliedToday` |
-| `thread-pass.ts` | `runThreadPass({ now?, onlyConversationIds?, chatFn?, jev? })` |
-| `jobs-pass.ts` | `runJobsPass({ now?, onlyJobSlugs?, chatFn?, jev? })` |
+| `thread-pass.ts` | `runThreadPass({ now?, onlyConversationIds?, chatFn?, jev? })`. Reads the thread's **active branch** (`loadActivePath`) since the watermark; the watermark advances to the newest message on **any** branch |
+| `jobs-pass.ts` | `runJobsPass({ now?, onlyJobSlugs?, chatFn?, jev? })`, `signalLine(slug, counts)` |
 
 `onlyConversationIds` and `onlyJobSlugs` are the **test and acceptance seams**. The dev DB is
 shared, so anything run by hand should always be scoped with them.
@@ -71,7 +72,7 @@ shared, so anything run by hand should always be scoped with them.
 
 | Task | Cron (UTC) | Does work when |
 |---|---|---|
-| `reflect-threads` (`server/tasks/reflect-threads.ts`) | `*/15 * * * *` | mode ≠ `off`. Candidates need **≥ 4** new user/assistant rows since `reflected_through`, last activity **≥ 30 min** ago, not reflected in the last **2 h**, a last message within **7 days**, and at most **5** threads per tick. Main is included. |
+| `reflect-threads` (`server/tasks/reflect-threads.ts`) | `*/15 * * * *` | mode ≠ `off`. Candidates need **≥ 4** new user/assistant rows since `reflected_through`, **at least one of them a `user` row (Tony)**, last activity **≥ 30 min** ago, not reflected in the last **2 h**, a last message within **7 days**, and at most **5** threads per tick. Main is included; job and heartbeat output alone never makes it a candidate. |
 | `reflect-jobs` (`server/tasks/reflect-jobs.ts`) | `40 * * * *` | mode ≠ `off`, **agent-timezone hour ≥ 3**, and `reflect_jobs_last_date` ≠ today. The setting is written only after a completed pass, so the pass normally lands at 03:40 local, and a missed tick runs later the same day. |
 
 The spec said 03:30. Nitro cron is UTC-only and the agent timezone is a runtime setting, so the
@@ -84,7 +85,9 @@ so a thread never blocks. The watermark also advances on zero proposals.
 ⚠️ **A dev server on this branch reflects over the whole dev DB every 15 minutes** unless
 `self_improvement_mode` is `off`. That includes real threads and main. It happened once during
 the build: improvement `fc6947d5` came from real dev threads. For acceptance, set the mode to
-`off` and call the pass through its seam with `--as-on` for just that call (see the handover).
+`off`, then call the pass through its seam (`onlyConversationIds`) from a one-off `tsx` script
+that sets the mode to `on` just before the call and back to `off` right after (see the handover's
+acceptance setup). There is no CLI flag for this.
 
 ## Signals (evidence for the jobs pass)
 
@@ -94,8 +97,8 @@ paths write the signals, fire-and-forget, never the model.
 - A job run's assistant message opens a **2 h observation window**. The window is derived from
   `created_at` (`openObservation` from `jobs/outcome.ts`).
 - Tony's next message on main within the window gives `replied` (`noteUserReply`, hooked on every
-  `trigger:'user'` enqueue in `runtime/queue.ts`). Its text can add `said_stop` and/or
-  `said_thanks`:
+  `trigger:'user'` enqueue in `runtime/queue.ts`; it scans only runs created in the last 14 days).
+  Its text can add `said_stop` and/or `said_thanks`:
   - stop words: stop, not useful, don't send, dont send, unsubscribe, too many;
   - thanks words: thanks, thank you, helpful, perfect, nice;
   - matching is whole-word, and a negation guard means "don't stop" and "non-stop" don't count.
@@ -113,9 +116,12 @@ paths write the signals, fire-and-forget, never the model.
 1. **Mode.** `off` → dropped (`mode_off`).
 2. **Evidence.** Every quote must be **≥ 12 chars** (else `evidence_too_short`) and a
    whitespace-normalised **verbatim substring** of the pass input (else `evidence`). There is no
-   fuzzy matching. The input is the **transcript only** for the thread pass, and **that job's
-   signal snippets only** for the jobs pass. It never includes the skills, profile or job file
-   that were also in the prompt.
+   fuzzy matching. The input is the **transcript only** for the thread pass, and for the jobs
+   pass **that job's code-written signal line plus its snippets** — e.g.
+   `[signals] morning-brief: 9 ignored, 0 replied, 1 tapback_negative in 14 days` (ignored and
+   replied always, other kinds when present). The line lets a job Tony only ignores or taps back
+   on produce a proposal. The input never includes the skills, profile or job file that were also
+   in the prompt.
 3. **Rejection memory.** It compares the proposal's **delta** (lines added or changed against the
    target at pass time) with the deltas of rejections of the same kind family and target within
    the last **30 days**. Similarity **≥ 0.8** → `rejected_recently`. `skill.create` and
@@ -128,9 +134,22 @@ paths write the signals, fire-and-forget, never the model.
    **agent-authored** target. Everything else goes to `review` (reason `tier`): the profile,
    anything Tony wrote, and `job.disable`. A `skill.create` over an existing slug is tiered as an
    edit. A `job.edit` that changes `enabled` in either direction always goes to review
-   (`changes_enabled`).
+   (`changes_enabled`). A job is agent-authored only if Bridget created it: an agent edit never
+   takes a job from Tony (see [agent-jobs.md](agent-jobs.md) `source`).
+   - **Tony's words** (`not_from_tony`): `auto` needs at least one evidence quote inside one of
+     Tony's own messages (`GateContext.userInput`): a `[user]` block of the thread transcript,
+     or a reply text (`replied` / `said_*` detail) in the jobs pass. The evidence check alone
+     proves a quote is in the transcript, not that Tony said it, and `[bridget]`,
+     `[tool … → summary]` and `[event]` lines can carry third-party text (a web page title, a
+     quoted email). A quote spanning two of his messages is inside neither. The `[signals]` line
+     is code-written, not his words, so a proposal quoting only it goes to review. Every `user`
+     row counts as Tony (app, or an iMessage from an allowlisted handle); wake prompts are
+     `event` rows.
 6. **Sensitive** skill content (`SENSITIVE`: exec*, shell, command(s), terminal, sudo, rm -rf,
-   password, secret, token, api key, credential, delet*, drop table) → review.
+   password, secret, token, api key, credential, delet*, drop table) → review. A skill whose
+   content **names any registered agent tool** (whole word, case-insensitive, from Bridget's
+   profile: `edit_job`, `send_message`, `search_docs`, …) → review (`names_tool`): a skill's
+   description sits in every prompt and could steer her free headless tools.
 7. **Jev** (one-way, `JEV_BUMP = 0.6`): any unwanted answer ≥ 0.6 → review. If Jev is
    unavailable, the proposal also goes to review (fail closed). Jev reads the proposal and its
    own evidence quotes, not the transcript. The raw answers are stored in
@@ -152,6 +171,14 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
 
 - The **CAS hash and diff base are read before the model call**. An edit Tony makes while the pass
   runs is therefore a conflict, never a silent revert.
+- **Claim first** (final review m2): `applyImprovement` moves the improvement
+  `pending_review | conflict → deciding` under a status guard before writing, and
+  `rejectImprovement` rejects only a row still in one of those two states. Of two concurrent
+  deciders (the page and Bridget's approved card, or a double click) the loser gets
+  `not_pending` (the handlers throw 410, `decideReview` maps it) and nothing is written: an
+  applied change can't become a phantom `conflict` or be recorded as `rejected`. A non-conflict
+  apply failure puts the prior status back. `deciding` is transient; a crash mid-apply would
+  leave it (the item then reads not pending).
 - `applyImprovement(id, actor)` writes through the target's own store (`saveSkillSource`,
   `saveJob`/`setJobEnabled`, `saveProfileSource`) and tags the revision with **`improvement_id`**.
   Actor values stay `human | agent | system`. What the spec called `agent:reflection` is
@@ -224,13 +251,19 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
   - It is **never allowlistable**. The allowlist is opt-in per tool (`AgentTool.allowlistable`,
     true only for `exec`). `approvalFor` ignores saved patterns for other tools, `ws.ts` refuses
     to save an "always allow" for them, and the card hides the checkbox.
-  - The card text is `<choice> — <item summary>`.
+  - The card text is `<choice> — <item summary>`; over iMessage the question reads
+    "Approve review decision: <choice> — <summary>?" ([channels.md](channels.md)). The card's
+    args are capped like tool-start args (`capArgs`, 4 KB).
+  - The summary comes from a cache `list_reviews` fills. After a restart, or when Bridget didn't
+    list first, the card shows the bare id (m3, parked).
 - **`list_improvements({ since? })`** is a read tool. It returns the day's `agent_improvements`
   (default since the start of today in the agent timezone) with links. `pendingReview` is a
   **live** count (`pending_review` and `conflict`), not scoped by `since`.
 - **Digest seed job** `self-improvement-digest`: `cron 30 21 * * *`, `context: light`,
   `deliver: [auto]`, installed **disabled**. It uses `list_improvements` and replies `NO_REPLY`
-  when there were none.
+  unless something was applied or raised **today**; proposals still waiting from earlier days
+  (`pendingReview`) are not a reason to write. An install from before the fix wave keeps its old
+  wording (an installed seed is never rewritten; the dev DB's row still has it).
 
 ## Schema: migration 0063 (additive)
 
@@ -243,7 +276,8 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
 - `agent_improvements`:
   - columns: `id`, `pass` (`thread`/`jobs`), `source_conversation_id`, `source_run_ids uuid[]`,
     `kind`, `target`, `proposal` jsonb, `jev` jsonb, `route` (`auto`/`review`/`dropped`),
-    `drop_reason`, `status` (`applied`/`pending_review`/`rejected`/`dropped`/`conflict`),
+    `drop_reason`, `status` (`applied`/`pending_review`/`rejected`/`dropped`/`conflict`, and the
+    transient claim `deciding`),
     `revision_id`, `review_item_id`, `created_at`, `decided_at`;
   - `proposal` holds the `StoredProposal`: the reflector's fields plus `expectedHash`,
     `currentContent`, `reasons` and, once rejected, `delta`;
@@ -256,13 +290,24 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
 
 ## Eval
 
-`pnpm reflect:eval` (`scripts/reflect-eval.ts`, data in `scripts/data/reflect-eval.jsonl`) makes
-20 real reflector calls on hand-written transcripts, with no gate and no DB writes. Run it by
-hand; it always exits 0. First run (2026-09-30):
+`pnpm reflect:eval` (`scripts/reflect-eval.ts`, data in `scripts/data/reflect-eval.jsonl`, now
+tracked through a `.gitignore` carve-out) makes 23 real reflector calls on hand-written
+transcripts, with no gate and no DB writes (the script never imports `processProposal` or a
+store). Run it by hand; it always exits 0. Scoring:
 
-- precision on "none" rows: **10/10**;
-- kind-level hit rate: **10/10**;
-- exact kind + slug: **5/10**. Every miss was a `skill.create` with a different free-form slug.
+- **null rows** (10): precision = proposed nothing;
+- **single rows** (10): hit = a proposal of the expected kind (and target, for `profile.edit`).
+  `skill.create` is scored on kind only — the slug is the model's choice;
+- **mixed rows** (3, a procedure and a preference in one thread): hit = both kinds present.
+
+| Run | null precision | single hit | mixed both kinds |
+|---|---|---|---|
+| 2026-09-30, Task 8 prompt, 1,500 tokens | 10/10 | 10/10 by kind (5/10 exact slug) | — |
+| 2026-09-30, final fix wave (6000 tokens + two-proposal example) | **10/10** | **9/10** | **3/3** |
+
+The one miss in the fix-wave run was row 10 (restart prod via ssh / `pct exec`): the reply had no
+`proposals` array (a parse failure, not a wrong proposal). Plausibly the model declined, since the
+procedure is a shell command and the prompt says never to propose commands; not re-run.
 
 ## Operational SQL
 
@@ -304,11 +349,22 @@ select created_at, actor, improvement_id from agent_config_revisions where targe
 
 ## Known limits
 
-- The reflector **merges two lessons into one profile edit** in real runs, despite the Task 11a
-  prompt line "a procedure is a skill, a preference is a profile edit". A receipts procedure plus
-  a formatting preference came back as one `profile.edit` twice. It is safe, because the profile
-  always goes to review, but the skill path wasn't exercised by a real run. Re-check with
-  `reflect:eval` after any prompt change.
+- **Lesson merging.** In both real acceptance runs (before the fix wave) the reflector merged a
+  receipts procedure and a formatting preference into one `profile.edit`. After the fix wave
+  (6000-token budget, worked two-proposal example) the eval's 3 mixed rows split correctly 3/3.
+  Any residual merge is accepted: it is safe (the profile always goes to review), and there is
+  no code-level split.
+- **Most learned skills will go to review now.** A skill auto-applies only when one quote is
+  Tony's own words, it names no registered tool and nothing sensitive, Jev is clean and the caps
+  allow. Procedures that say "use `search_docs` …" land on `/review` by design.
+- The `names_tool` check is whole-word on exact tool names; "edit job" in prose does not match.
+  A skill can still steer Bridget in words that name no tool; `review_only` mode is the backstop.
 - The retry-once marker is in memory. A restart grants another retry.
+- The auto cap can overshoot by one: `reflect-threads` and `reflect-jobs` are separate tasks and
+  can overlap around :40 (m8, accepted).
+- The `decide_review` card shows the bare id when the summary cache misses (m3, parked).
+- Skills Claude Code creates through MCP `create_skill` are `source: agent`, so the reflector may
+  auto-edit them (M5, accepted).
+- The transcript ignores the `/clear` epoch (it reads the active branch since the watermark).
 - The Jev thresholds are uncalibrated (spec §12). The raw answers are stored for calibration.
 - Reflection over Claude Code sessions, and cross-thread pattern mining, are out of scope.
