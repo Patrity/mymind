@@ -21,6 +21,8 @@ type Result = { ok: true; externalId?: string; unconfirmed?: boolean } | { ok: f
 const script = vi.hoisted(() => ({
   calls: [] as Send[],
   next: [] as Result[],
+  /** A result chosen by the payload text — for concurrent sends, where call order is not fixed. */
+  byText: {} as Record<string, Result>,
   delayMs: 0
 }))
 vi.mock('../server/lib/channels/registry', () => ({
@@ -30,7 +32,7 @@ vi.mock('../server/lib/channels/registry', () => ({
     async send(d: Send): Promise<Result> {
       script.calls.push(structuredClone(d))
       if (script.delayMs) await new Promise(r => setTimeout(r, script.delayMs))
-      return script.next.shift() ?? { ok: true, externalId: `ext-${d.id}` }
+      return script.byText[d.payload.text] ?? script.next.shift() ?? { ok: true, externalId: `ext-${d.id}` }
     }
   })
 }))
@@ -41,6 +43,7 @@ import { channelDeliveries, conversationMessages, conversations } from '../serve
 import { createConversation } from '../server/services/conversations'
 import { insertDeliveries, deliveriesTick, SENDING_RECLAIM_MS, type NewDelivery } from '../server/lib/channels/outbox'
 import { MAX_ATTEMPTS } from '../server/lib/channels/backoff'
+import { workerTick, _deliveriesSettled } from '../server/lib/agent/runtime/queue'
 
 const db = () => useDb()
 const T0 = new Date('2100-01-01T00:00:00Z')
@@ -66,6 +69,7 @@ beforeEach(async () => {
   script.calls.length = 0
   script.next.length = 0
   script.delayMs = 0
+  script.byText = {}
   await db().delete(conversationMessages).where(eq(conversationMessages.conversationId, scratchMain))
   await db().update(conversations).set({ activeLeafId: null, messageCount: 0 }).where(eq(conversations.id, scratchMain))
 })
@@ -307,5 +311,65 @@ describe('deliveriesTick', () => {
     await tick([mine!], T0)
     expect((await row(other!)).status).toBe('pending')
     expect(script.calls.map(c => c.id)).toEqual([mine])
+  })
+})
+
+// Reliability pass, Task 2: the outbox never blocks the worker tick. The tick is called in its
+// scoped test form — `onlyConversations: []` recovers and pumps nothing, and the `deliveries`
+// seam scopes the outbox to this file's 2100-dated rows.
+describe('the worker tick and the outbox', () => {
+  const workerTickFor = (ids: string[]) =>
+    workerTick({ onlyConversations: [], deliveries: { onlyIds: ids, mainConversationId: scratchMain, now: T0 } })
+
+  async function until(check: () => Promise<boolean> | boolean): Promise<void> {
+    for (let i = 0; i < 200; i++) {
+      if (await check()) return
+      await new Promise(r => setTimeout(r, 10))
+    }
+    throw new Error('condition never met')
+  }
+
+  it('a slow send does not hold up the tick; a tick while one is in flight starts no second deliveriesTick', async () => {
+    const [a] = await insert([one('slow a')])
+    script.delayMs = 1_500
+    const t0 = Date.now()
+    expect(await workerTickFor([a!])).toBe(true)
+    await until(() => script.calls.length === 1) // a's send is in flight
+    expect(Date.now() - t0).toBeLessThan(1_000)
+    expect((await row(a!)).status).toBe('sending')
+
+    // A second tick runs (the tick is not held by the send) but finds the outbox busy: the row
+    // queued since is not claimed, let alone sent, until the in-flight tick has finished.
+    const [b] = await insert([one('queued b')])
+    const t1 = Date.now()
+    expect(await workerTickFor([a!, b!])).toBe(true)
+    expect(Date.now() - t1).toBeLessThan(1_000)
+    await _deliveriesSettled()
+    expect((await row(a!)).status).toBe('sent')
+    expect((await row(b!)).status).toBe('pending')
+    expect(script.calls.map(c => c.id)).toEqual([a])
+
+    // The guard is released: the next tick sends b.
+    script.delayMs = 0
+    expect(await workerTickFor([b!])).toBe(true)
+    await _deliveriesSettled()
+    expect((await row(b!)).status).toBe('sent')
+  })
+
+  it('claimed rows are sent concurrently and each one gets its own outcome', async () => {
+    const [ok, retry, fail] = await insert([one('c ok'), one('c retry'), one('c fail')])
+    script.byText = {
+      'c retry': { ok: false, error: 'hiccup', retryable: true },
+      'c fail': { ok: false, error: 'bad address', retryable: false }
+    }
+    script.delayMs = 600
+    const t0 = Date.now()
+    expect(await tick([ok!, retry!, fail!], T0)).toEqual({ sent: 1, retried: 1, failed: 1 })
+    // One after another would take >= 1.8 s.
+    expect(Date.now() - t0).toBeLessThan(1_500)
+    expect(await row(ok!)).toMatchObject({ status: 'sent', attempts: 1, externalId: `ext-${ok}` })
+    expect(await row(retry!)).toMatchObject({ status: 'pending', attempts: 1, lastError: 'hiccup' })
+    expect(await row(fail!)).toMatchObject({ status: 'failed', attempts: 1, lastError: 'bad address' })
+    expect((await notes()).map(n => n.content)).toEqual(["Couldn't deliver to iMessage: bad address"])
   })
 })

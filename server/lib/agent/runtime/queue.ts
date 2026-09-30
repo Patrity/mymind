@@ -204,6 +204,28 @@ function kick(run?: RunFn): void {
 // once, which would just be duplicate work, not a race.
 let ticking = false
 
+// The outbox's single-flight guard: the deliveries tick in flight, or null. A slow channel
+// (BlueBubbles timing out, Resend hanging) must never hold up the worker tick — recovery, the
+// jobs and the pump all run behind it — so the tick STARTS deliveriesTick and moves on; a tick
+// that finds one still in flight skips it (the rows it would claim are the in-flight one's, or
+// wait 5 s for the next tick).
+let delivering: Promise<void> | null = null
+type DeliveriesOpts = Parameters<typeof deliveriesTick>[0]
+
+/** Start a deliveries tick unless one is still in flight. Never awaited; true when it started. */
+function startDeliveries(opts?: DeliveriesOpts): boolean {
+  if (delivering) return false
+  delivering = deliveriesTick(opts)
+    .then(() => {}, err => console.error('[runtime] deliveries tick failed:', err))
+    .finally(() => { delivering = null })
+  return true
+}
+
+/** Test seam: resolves once the deliveries tick in flight (if any) has finished. */
+export async function _deliveriesSettled(): Promise<void> {
+  await delivering
+}
+
 /**
  * The worker's periodic unit of work: recover anything the previous process left dangling in
  * `onlyConversations`'s scope, then pump. Controller ruling (Task 2 review): boot recovery
@@ -216,13 +238,19 @@ let ticking = false
  * form the follow-up pump is also scoped (`pumpOnce({ onlyConversations, rekick: false })`),
  * never the unscoped `kick()` the production (no-args) tick uses.
  */
-export async function workerTick(opts: { onlyConversations?: string[] } = {}): Promise<boolean> {
+export async function workerTick(opts: {
+  onlyConversations?: string[]
+  /** Test seam (scoped ticks only): also start the outbox, scoped by deliveriesTick's own seams. */
+  deliveries?: DeliveriesOpts
+} = {}): Promise<boolean> {
   if (ticking) return false
   ticking = true
   try {
     await recoverStale({ onlyConversations: opts.onlyConversations, excludeRunIds: [...executing] })
-    if (opts.onlyConversations) await pumpOnce({ onlyConversations: opts.onlyConversations, rekick: false })
-    else {
+    if (opts.onlyConversations) {
+      await pumpOnce({ onlyConversations: opts.onlyConversations, rekick: false })
+      if (opts.deliveries) startDeliveries(opts.deliveries)
+    } else {
       // Cycle 74 jobs — production (unscoped) ticks only: a scoped test tick must never claim or
       // fire a real job on the shared dev DB. Each guarded alone so one failing never starves
       // the other, nor the pump below. Fires go through wake(), which kicks the pump itself.
@@ -231,7 +259,8 @@ export async function workerTick(opts: { onlyConversations?: string[] } = {}): P
       try { await jobsTick() } catch (err) { console.error('[runtime] jobs tick failed:', err) }
       try { await dueTaskEvents() } catch (err) { console.error('[runtime] task.due events failed:', err) }
       // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).
-      try { await deliveriesTick() } catch (err) { console.error('[runtime] deliveries tick failed:', err) }
+      // Started, not awaited (single-flight): a slow send never delays this tick.
+      startDeliveries()
       // Cycle 75 inbound catch-up + BlueBubbles health (self-throttled to every 2 min).
       // Imported lazily: inbound.ts imports enqueue from this file, and a static import back would
       // make the two modules' load order matter (a load-order hazard, not a bug today).

@@ -158,7 +158,9 @@ export async function deliveriesTick(opts: { onlyIds?: string[]; mainConversatio
   const rows = await claim(now, opts.onlyIds)
   for (const row of rows) publishChange({ resource: 'channelDelivery', action: 'updated', id: row.id })
 
-  for (const row of rows) {
+  // Sent concurrently (the claim limit bounds how many): one slow chat must not hold up the
+  // rest of the batch. Each row's result is still written under its own claim guard (record).
+  await Promise.all(rows.map(async (row) => {
     // Only a reclaim can bring a row here with its sends used up (its last send was interrupted
     // and counted at claim time): give up rather than make a send past MAX_ATTEMPTS.
     const exhausted = row.attempts >= MAX_ATTEMPTS
@@ -167,7 +169,7 @@ export async function deliveriesTick(opts: { onlyIds?: string[]; mainConversatio
       : await sendRow(row)
     try {
       const outcome = await record(row, result, now, !exhausted)
-      if (!outcome) continue
+      if (!outcome) return
       counts[outcome]++
       if (outcome === 'failed' && !result.ok && row.source !== 'note') {
         await noteFailure(row, result.error, opts.mainConversationId)
@@ -176,6 +178,6 @@ export async function deliveriesTick(opts: { onlyIds?: string[]; mainConversatio
     } catch (err) {
       console.error(`[channels] recording delivery ${row.id} failed:`, err)
     }
-  }
+  }))
   return counts
 }
