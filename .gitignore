@@ -49,4 +49,6 @@ searxng/uwsgi.ini
 # These carry raw memory CONTENTS — personal data, and in one case a live API
 # key that GitHub push protection caught on the way to this PUBLIC repo.
 # Keep them local; never commit them.
-scripts/data/
+scripts/data/*
+# …except the reflector eval set (cycle 76): synthetic transcripts, no personal data.
+!scripts/data/reflect-eval.jsonl
