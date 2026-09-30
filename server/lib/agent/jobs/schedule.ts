@@ -289,6 +289,21 @@ export function nextFireTimes(spec: JobSpec, n: number, from: Date = new Date(),
   }
 }
 
+/**
+ * The write-time error for a cron/every job whose schedule never fires inside its active_hours
+ * within SCAN_HORIZON_MS of `from`, or null. Such a job could never run (next_run_at would stay
+ * null), so writeJob rejects it, enabled or not. `at` and event jobs are exempt (an `at` outside
+ * the hours is retired by the tick with a note). A schedule with no fire time in the horizon
+ * even without the hours (e.g. every 29 Feb) is not the window's fault, so it isn't blamed.
+ */
+export function activeHoursNeverMatchError(spec: JobSpec, from: Date = new Date()): string | null {
+  if (!spec.activeHours) return null
+  if (spec.trigger.kind !== 'cron' && spec.trigger.kind !== 'every') return null
+  if (nextFireTimes(spec, 1, from).length) return null
+  if (!nextFireTimes({ ...spec, activeHours: null }, 1, from).length) return null
+  return `active_hours: the schedule never fires inside ${spec.activeHours.start}-${spec.activeHours.end}`
+}
+
 function describeCron(expr: string): string {
   const parts = expr.trim().split(/\s+/)
   if (parts.length !== 5) return `cron ${expr}`

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { parseJob } from '../server/lib/agent/jobs/parse'
-import { nextRunAt, nextFireTimes, describeTrigger, inActiveHours, fireTimesAnchor } from '../server/lib/agent/jobs/schedule'
+import { nextRunAt, nextFireTimes, describeTrigger, inActiveHours, fireTimesAnchor, activeHoursNeverMatchError } from '../server/lib/agent/jobs/schedule'
+import { SEED_JOBS } from '../server/lib/agent/jobs/seeds'
+import { JOB_TEMPLATES } from '../app/lib/jobs/templates'
 const spec = (fm: string) => { const r = parseJob(`---\n${fm}\n---\nx\n`, { defaultTimezone: 'America/New_York' }); if (!r.ok) throw new Error(r.error); return r.spec }
 
 describe('schedule', () => {
@@ -171,5 +173,40 @@ describe('fireTimesAnchor', () => {
     expect(fireTimesAnchor({ enabled: true, nextRunAt: '2026-10-02T12:07:00.000Z' })?.toISOString()).toBe('2026-10-02T12:07:00.000Z')
     expect(fireTimesAnchor({ enabled: false, nextRunAt: '2026-10-02T12:07:00.000Z' })).toBeNull()
     expect(fireTimesAnchor({ enabled: true, nextRunAt: null })).toBeNull()
+  })
+})
+
+describe('activeHoursNeverMatchError', () => {
+  const from = new Date('2026-10-03T01:30:00Z')
+  it('names the window when a cron or every schedule never fires inside it', () => {
+    expect(activeHoursNeverMatchError(spec('trigger: cron 0 3 * * *\nactive_hours: 08:00-22:00'), from))
+      .toBe('active_hours: the schedule never fires inside 08:00-22:00')
+    expect(activeHoursNeverMatchError(spec('trigger: cron 0 3 1 * *\nactive_hours: 08:00-22:00'), from))
+      .toBe('active_hours: the schedule never fires inside 08:00-22:00')
+    expect(activeHoursNeverMatchError(spec('trigger: every 5m\nactive_hours: 08:00-08:00'), from))
+      .toBe('active_hours: the schedule never fires inside 08:00-08:00')
+  })
+  it('passes a schedule that fires inside the window at least once', () => {
+    expect(activeHoursNeverMatchError(spec('trigger: cron 0 3 * * *\nactive_hours: 22:00-04:00'), from)).toBeNull()
+    expect(activeHoursNeverMatchError(spec('trigger: every 30m\nactive_hours: 08:00-22:00'), from)).toBeNull()
+    expect(activeHoursNeverMatchError(spec('trigger: cron 0 * * * *\nactive_hours: 08:00-09:00'), from)).toBeNull()
+    expect(activeHoursNeverMatchError(spec('trigger: cron 0 3 * * *'), from)).toBeNull()
+  })
+  it('exempts at and event jobs', () => {
+    expect(activeHoursNeverMatchError(spec('trigger: at 2026-10-03T03:00:00\nactive_hours: 08:00-22:00'), from)).toBeNull()
+    expect(activeHoursNeverMatchError(spec('trigger: event task.due\nactive_hours: 08:00-08:00'), from)).toBeNull()
+  })
+  it('does not blame active_hours for a cron with no fire time in the horizon at all', () => {
+    // Every 29 Feb: none within a year of 2026-10-03, whatever the hours.
+    expect(activeHoursNeverMatchError(spec('trigger: cron 0 9 29 2 *\nactive_hours: 08:00-22:00'), from)).toBeNull()
+  })
+  it('none of the seed jobs or the /jobs templates trip it', () => {
+    const contents = [...Object.values(SEED_JOBS), ...JOB_TEMPLATES.map(t => t.content)]
+    expect(contents.length).toBe(8)
+    for (const c of contents) {
+      const r = parseJob(c, { defaultTimezone: 'America/New_York' })
+      if (!r.ok) throw new Error(r.error)
+      expect(activeHoursNeverMatchError(r.spec, from)).toBeNull()
+    }
   })
 })

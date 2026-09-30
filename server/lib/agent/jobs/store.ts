@@ -13,7 +13,7 @@ import { publishChange } from '../../../utils/live-bus'
 import { recordRevision, getRevision, type RevisionActor } from '../config/revisions'
 import { setFrontmatterKey } from '../../../../shared/utils/frontmatter'
 import { parseJob, JOB_BODY_MAX, MIN_INTERVAL_MS, type JobSpec, type TriggerKind } from './parse'
-import { nextRunAt as computeNextRunAt, describeTrigger } from './schedule'
+import { nextRunAt as computeNextRunAt, describeTrigger, activeHoursNeverMatchError } from './schedule'
 import { loadConfig } from '../../ai/registry/store'
 import { getOrCreateMain } from '../runtime/sessions'
 import { appendEvent } from '../../../services/conversations'
@@ -186,7 +186,8 @@ export async function getJob(slug: string): Promise<JobDTO | null> {
 }
 
 // ---- writes ---------------------------------------------------------------------------------
-// Every write, in order (Task 4 brief): parse -> JobValidationError on failure -> derive columns
+// Every write, in order (Task 4 brief): parse -> JobValidationError on failure (including a
+// cron/every schedule that never fires inside active_hours) -> derive columns
 // (nextRunAt only when enabled) -> enforce MAX_ENABLED_JOBS -> CAS on content_hash inside the
 // UPDATE's WHERE (zero rows => ConflictError) -> recordRevision -> publishChange. The count-check
 // + insert/update + revision run in ONE transaction (review fix round 1, items 3-4): an advisory
@@ -280,6 +281,10 @@ async function writeJob(
   if (!result.ok) throw new JobValidationError(result.error)
   const spec = result.spec
   const isAt = spec.trigger.kind === 'at'
+  // A cron/every job whose schedule never lands inside its active_hours could never run. Rejected
+  // enabled or not, on writes only — revalidateAll never re-checks it (a stored job stays valid).
+  const hoursError = activeHoursNeverMatchError(spec)
+  if (hoursError) throw new JobValidationError(hoursError)
 
   const derived = {
     content,

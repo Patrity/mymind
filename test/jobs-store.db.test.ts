@@ -565,3 +565,31 @@ describe('job store — deliver channels must be set up (cycle 75 ruling 4)', ()
     expect(after.enabled).toBe(true)
   })
 })
+
+describe('job store — a schedule that never fires inside active_hours is rejected', () => {
+  const never = (en: boolean) => md(`trigger: cron 0 3 * * *\nenabled: ${en}\ntimezone: UTC\nactive_hours: 08:00-22:00`, 'Night owl.')
+  const msg = 'active_hours: the schedule never fires inside 08:00-22:00'
+
+  it('rejects create, enabled or disabled, and writes nothing', async () => {
+    for (const en of [true, false]) {
+      const slug = `${PREFIX}hours-never-${en}`
+      await expect(createJob({ slug, content: never(en), actor: 'agent' })).rejects.toThrow(new JobValidationError(msg))
+      expect(await getJob(slug)).toBeNull()
+    }
+  })
+
+  it('rejects a save that makes the hours unsatisfiable and keeps the stored content', async () => {
+    const slug = `${PREFIX}hours-save`
+    const job = await createJob({ slug, content: md('trigger: cron 0 9 * * *\nenabled: false\ntimezone: UTC\nactive_hours: 08:00-22:00', 'Morning.'), actor: 'human' })
+    await expect(saveJob(slug, never(false), job.contentHash, 'human')).rejects.toThrow(new JobValidationError(msg))
+    expect((await getJob(slug))!.contentHash).toBe(job.contentHash)
+  })
+
+  it('accepts an `at` job whose instant falls outside the hours', async () => {
+    const slug = `${PREFIX}hours-at`
+    const at = new Date(Date.now() + 7 * 24 * 3600_000)
+    at.setUTCHours(3, 0, 0, 0)
+    const job = await createJob({ slug, content: md(`trigger: at ${at.toISOString()}\nenabled: false\ntimezone: UTC\nactive_hours: 08:00-22:00`, 'Late.'), actor: 'human' })
+    expect(job.slug).toBe(slug)
+  })
+})
