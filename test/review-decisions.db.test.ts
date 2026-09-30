@@ -362,7 +362,44 @@ describe('decideReview — self-improvement', () => {
     expect((r as { message: string }).message).toMatch(/^Could not apply: /)
     expect((await getSkillSource(i.slug))!.content).toBe(i.skill.content)
     expect(await status(i.row.id)).toBe('pending')
+    // The claim is released: the improvement is decidable again, not stuck in `deciding`.
+    expect(await improvementStatus(i.improvementId)).toBe('pending_review')
     expect(await callRoute(approveRoute, i.row.id)).toMatchObject({ thrown: { statusCode: 422 } })
+  })
+
+  // Final review m2. Two deciders that both read the review row as pending (the page and
+  // Bridget's approved card, or a double click) are replayed deterministically: the first decides,
+  // then the review row is put back to pending — what the second decider read.
+  const secondDecider = async (reviewId: string) => {
+    await db().update(reviewQueue).set({ status: 'pending', resolvedAt: null }).where(eq(reviewQueue.id, reviewId))
+  }
+
+  it('approve + approve: the second gets not_pending; the applied improvement is not turned into a phantom conflict', async () => {
+    const i = await improvement('double-approve')
+    expect(await decideReview(i.row.id, 'approve')).toMatchObject({ ok: true })
+    await secondDecider(i.row.id)
+    expect(await decideReview(i.row.id, 'approve')).toMatchObject({ ok: false, reason: 'not_pending' })
+    expect(await improvementStatus(i.improvementId)).toBe('applied')
+    expect((await getSkillSource(i.slug))!.content).toContain('Proposed body.')
+  })
+
+  it('approve + reject: the reject gets not_pending; an applied change is never recorded as rejected', async () => {
+    const i = await improvement('approve-reject')
+    expect(await decideReview(i.row.id, 'approve')).toMatchObject({ ok: true })
+    await secondDecider(i.row.id)
+    expect(await decideReview(i.row.id, 'reject')).toMatchObject({ ok: false, reason: 'not_pending' })
+    const [imp] = await db().select().from(agentImprovements).where(eq(agentImprovements.id, i.improvementId))
+    expect(imp!.status).toBe('applied')
+    expect((imp!.proposal as { delta?: string }).delta).toBeUndefined()
+  })
+
+  it('an improvement another decider is applying right now (deciding) cannot be decided', async () => {
+    const i = await improvement('in-flight')
+    await db().update(agentImprovements).set({ status: 'deciding' }).where(eq(agentImprovements.id, i.improvementId))
+    expect(await decideReview(i.row.id, 'approve')).toMatchObject({ ok: false, reason: 'not_pending' })
+    expect(await decideReview(i.row.id, 'reject')).toMatchObject({ ok: false, reason: 'not_pending' })
+    expect((await getSkillSource(i.slug))!.content).toBe(i.skill.content)
+    expect(await status(i.row.id)).toBe('pending')
   })
 })
 

@@ -200,6 +200,13 @@ async function rejectTriage(item: ReviewItem): Promise<void> {
 
 export const SELF_IMPROVEMENT_CONFLICT = 'Changed since proposed — reload the review'
 
+/** Another decider got there first (final review m2): nothing was written. decideReview maps the
+ *  410 to `not_pending`. */
+function alreadyDecided(): Error {
+  const summary = 'This improvement was already decided.'
+  return createError({ statusCode: 410, message: summary, data: { summary } })
+}
+
 async function approveSelfImprovement(item: ReviewItem): Promise<HandlerResult> {
   const db = useDb()
   let res: Awaited<ReturnType<typeof applyImprovement>>
@@ -211,6 +218,7 @@ async function approveSelfImprovement(item: ReviewItem): Promise<HandlerResult> 
     const summary = `Could not apply: ${(err as Error)?.message ?? String(err)}`
     throw createError({ statusCode: 422, message: summary, data: { summary } })
   }
+  if (!res.ok && res.notPending) throw alreadyDecided()
   if (!res.ok) {
     const prev = item.proposed as Record<string, unknown> & { proposal?: Record<string, unknown> }
     const proposed = { ...prev, currentContent: res.conflict.content, proposal: { ...prev.proposal, content: res.content } }
@@ -230,7 +238,7 @@ async function approveSelfImprovement(item: ReviewItem): Promise<HandlerResult> 
 }
 
 async function rejectSelfImprovement(item: ReviewItem): Promise<void> {
-  await rejectImprovement(item.targetId)
+  if (!await rejectImprovement(item.targetId)) throw alreadyDecided()
   await useDb().update(reviewQueue)
     .set({ status: 'rejected', resolvedAt: new Date() })
     .where(eq(reviewQueue.id, item.id))

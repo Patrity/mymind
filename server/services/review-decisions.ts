@@ -101,6 +101,8 @@ async function runHandler(item: ReviewItem, choice: 'approve' | 'reject'): Promi
     // A self-improvement approve whose target changed since the proposal (preflight Ruling 1):
     // nothing was written and the item stays pending with the fresh content.
     if (status === 409) return { ok: false, reason: 'conflict', kind: item.kind, message, current: data?.current }
+    // Another decider claimed the self-improvement first (final review m2): nothing written.
+    if (status === 410) return notPending(item.id)
     // Applying failed for another reason (target gone, content no longer valid): nothing written.
     if (status === 422) return { ok: false, reason: 'apply_failed', kind: item.kind, message }
     throw err

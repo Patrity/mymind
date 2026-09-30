@@ -290,30 +290,56 @@ export async function processProposal(
     return { improvementId, status: 'dropped' }
   }
   if (applied.ok) return { improvementId, status: 'applied' }
+  // Just recorded as pending_review by this call: nothing else can have decided it.
+  if (applied.notPending) return { improvementId, status: 'dropped' }
   // CAS conflict: applyImprovement refreshed currentContent/expectedHash; Tony decides with the fresh content.
   const [row] = await useDb().select().from(agentImprovements).where(eq(agentImprovements.id, improvementId)).limit(1)
   await enqueueReview(improvementId, row!.proposal as StoredProposal, src, jev ?? 'unavailable')
   return { improvementId, status: 'conflict' }
 }
 
+/** An improvement a decision may still act on: awaiting review, or a CAS conflict (still pending on /review). */
+const DECIDABLE = ['pending_review', 'conflict']
+
+/**
+ * Claim an improvement for one decider: `pending_review | conflict → deciding`, guarded on the
+ * status read here, so of two concurrent decisions (the page and Bridget's approved card, or a
+ * double click) exactly one proceeds (final review m2). Null when it was not decidable, or a
+ * concurrent decider claimed it first. Returns the row as read and its prior status.
+ */
+async function claimImprovement(improvementId: string): Promise<{ row: typeof agentImprovements.$inferSelect; prior: string } | null> {
+  const db = useDb()
+  const [row] = await db.select().from(agentImprovements).where(eq(agentImprovements.id, improvementId)).limit(1)
+  if (!row) throw new Error(`no improvement ${improvementId}`)
+  if (!DECIDABLE.includes(row.status)) return null
+  const claimed = await db.update(agentImprovements).set({ status: 'deciding' })
+    .where(and(eq(agentImprovements.id, improvementId), eq(agentImprovements.status, row.status)))
+    .returning({ id: agentImprovements.id })
+  return claimed.length ? { row, prior: row.status } : null
+}
+
 /**
  * Write an improvement through the target's own store (CAS on the stored expectedHash), tagging
- * the revision with `improvementId`. On success the row becomes `applied` with its revision id.
+ * the revision with `improvementId`. The improvement is claimed first (claimImprovement): one
+ * that is no longer pending — already applied, rejected, or being decided right now — returns
+ * `notPending` and nothing is written. On success the row becomes `applied` with its revision id.
  * On a CAS conflict nothing is written; the row becomes `conflict` with expectedHash/currentContent
- * refreshed to what is there now, and the fresh content is returned.
+ * refreshed to what is there now, and the fresh content is returned. Any other failure puts the
+ * row back to its prior status and rethrows.
  */
 export async function applyImprovement(
   improvementId: string,
   actor: 'agent' | 'human'
 ): Promise<
   | { ok: true; revisionId: string | null }
+  | { ok: false; notPending: true }
   // `content` is the proposal's content after the refresh (its `source:` line may have changed).
-  | { ok: false; conflict: { content: string; contentHash: string }; content: string | undefined }
+  | { ok: false; notPending?: undefined; conflict: { content: string; contentHash: string }; content: string | undefined }
 > {
   const db = useDb()
-  const [row] = await db.select().from(agentImprovements).where(eq(agentImprovements.id, improvementId)).limit(1)
-  if (!row) throw new Error(`no improvement ${improvementId}`)
-  const sp = row.proposal as StoredProposal
+  const claim = await claimImprovement(improvementId)
+  if (!claim) return { ok: false, notPending: true }
+  const sp = claim.row.proposal as StoredProposal
   const content = sp.content ?? ''
   const revActor: RevisionActor = actor
   const opts = { improvementId }
@@ -335,7 +361,10 @@ export async function applyImprovement(
         break
     }
   } catch (err) {
-    if (!(err instanceof ConflictError)) throw err
+    if (!(err instanceof ConflictError)) {
+      await db.update(agentImprovements).set({ status: claim.prior }).where(eq(agentImprovements.id, improvementId))
+      throw err
+    }
     // A skill's author may have changed underneath (Tony created the slug, or relabelled his file):
     // re-derive the `source:` line from the CURRENT file, so approving can't relabel his skill.
     const refreshedContent = (sp.kind === 'skill.create' || sp.kind === 'skill.edit') && sp.content
@@ -356,14 +385,21 @@ export async function applyImprovement(
   return { ok: true, revisionId }
 }
 
-/** Tony rejected it on /review: remember the change he said no to (StoredProposal.delta) for 30 days. */
-export async function rejectImprovement(improvementId: string): Promise<void> {
+/**
+ * Tony rejected it on /review: remember the change he said no to (StoredProposal.delta) for 30
+ * days. Guarded like applyImprovement: false (nothing written) when the improvement is no longer
+ * pending — an applied change is never recorded as rejected.
+ */
+export async function rejectImprovement(improvementId: string): Promise<boolean> {
   const db = useDb()
   const [row] = await db.select().from(agentImprovements).where(eq(agentImprovements.id, improvementId)).limit(1)
   if (!row) throw new Error(`no improvement ${improvementId}`)
   const sp = row.proposal as StoredProposal
   const delta = contentDelta(sp.content ?? '', sp.currentContent ?? '')
-  await db.update(agentImprovements).set({ status: 'rejected', decidedAt: new Date(), proposal: { ...sp, delta } })
-    .where(eq(agentImprovements.id, improvementId))
+  const done = await db.update(agentImprovements).set({ status: 'rejected', decidedAt: new Date(), proposal: { ...sp, delta } })
+    .where(and(eq(agentImprovements.id, improvementId), inArray(agentImprovements.status, DECIDABLE)))
+    .returning({ id: agentImprovements.id })
+  if (!done.length) return false
   publishChange({ resource: 'agentImprovement', action: 'updated', id: improvementId })
+  return true
 }

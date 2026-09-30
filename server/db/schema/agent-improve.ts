@@ -49,7 +49,7 @@ export const agentImprovements = pgTable('agent_improvements', {
   jev: jsonb('jev'),                                 // raw Jev answers, nullable
   route: text('route').notNull(),                    // 'auto' | 'review' | 'dropped'
   dropReason: text('drop_reason'),
-  status: text('status').notNull(),                  // 'applied' | 'pending_review' | 'rejected' | 'dropped' | 'conflict'
+  status: text('status').notNull(),                  // 'applied' | 'pending_review' | 'rejected' | 'dropped' | 'conflict' | 'deciding' (claimed, transient)
   revisionId: uuid('revision_id'),
   reviewItemId: uuid('review_item_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
