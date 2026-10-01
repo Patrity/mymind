@@ -19,6 +19,7 @@ import { askJev, nouls, jevConfig, type JevConfig } from '../lib/ai/jev'
 import type { chatWithModel } from '../lib/ai/chat'
 import { JEV_QUESTIONS, jevKeepScore, type JevAnswers } from '../lib/memory/jev-score'
 import { AUDIT_PROMPT_VERSION, auditMemory } from '../lib/memory/extract-v3'
+import { publishChange } from '../utils/live-bus'
 
 /** 8 has hit 429s before on the Jev API; stay under it. */
 export const JEV_CONCURRENCY = 6
@@ -84,6 +85,7 @@ async function scoreJevPart(id: string, cfg: JevConfig | null, deps: ScoreDeps):
         jevModel: res.model
       })
       .where(and(eq(memories.id, id), live()))
+    publishChange({ resource: 'memory', action: 'updated', id })
     return 'scored'
   } catch (err) {
     console.warn(`[memory-scoring] jev on ${id} failed:`, err)
@@ -123,6 +125,7 @@ async function scoreAuditPart(id: string, deps: ScoreDeps): Promise<PartOutcome>
       auditedAt: now
     })
     .where(and(eq(memories.id, id), live()))
+  publishChange({ resource: 'memory', action: 'updated', id })
   return 'scored'
 }
 

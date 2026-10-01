@@ -12,6 +12,8 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+const publishChange = vi.hoisted(() => vi.fn())
+vi.mock('../server/utils/live-bus', () => ({ publishChange }))
 
 import { createHash } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
@@ -65,9 +67,13 @@ describe('scoreMemory', () => {
     const id = await seed()
     const ask = okAsk()
     const chatFn = okChat()
+    publishChange.mockClear()
     const res = await scoreMemory(id, { ask: ask as never, cfg: CFG, chatFn: chatFn as never })
 
     expect(res).toEqual({ id, jev: 'scored', audit: 'scored' })
+    // Live-data rule: a background writer emits per item, so /memories and /review refresh.
+    expect(publishChange).toHaveBeenCalledWith({ resource: 'memory', action: 'updated', id })
+    expect(publishChange).toHaveBeenCalledTimes(2)
     expect(ask).toHaveBeenCalledTimes(1)
     expect(chatFn).toHaveBeenCalledTimes(1)
 
@@ -130,8 +136,9 @@ describe('scoreMemory', () => {
     expect(row.jevFailures).toBe(3)
     expect(row.auditFailures).toBe(3)
 
-    ask.mockClear(); chatFn.mockClear()
+    ask.mockClear(); chatFn.mockClear(); publishChange.mockClear()
     expect(await scoreMemory(id, deps)).toEqual({ id, jev: 'skipped', audit: 'skipped' })
+    expect(publishChange).not.toHaveBeenCalled()
     expect(ask).not.toHaveBeenCalled()
     expect(chatFn).not.toHaveBeenCalled()
     row = await load(id)
