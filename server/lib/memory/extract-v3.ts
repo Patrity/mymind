@@ -1,13 +1,14 @@
 /**
  * extract-v3 — the single definition of "a good memory" (cycle 77).
  *
- * Used by enrichment to extract memories from a transcript, and (Task 3) by the audit that
+ * Used by enrichment to extract memories from a transcript, and by the audit (below) that
  * re-judges an existing memory against the same criteria. Bump EXTRACT_PROMPT_VERSION whenever
  * the criteria change: every memory created by this prompt is stamped with it
  * (`memories.extract_prompt_version`), so scores can be compared per prompt generation.
  */
-import { chat } from '../ai/chat'
-import { parseExtractV3, type DocCandidate, type MemoryCandidate } from '../ai/memory-extract'
+import { chat, type ChatMessage } from '../ai/chat'
+import { parseExtractV3, extractBalanced, type DocCandidate, type MemoryCandidate } from '../ai/memory-extract'
+import type { AuditVerdict } from '../../../shared/types/memory'
 
 export { parseExtractV3, type DocCandidate }
 
@@ -71,4 +72,107 @@ export async function extractV3(transcript: string, deps: { chatFn?: typeof chat
     { temperature: 0.2, maxTokens: 1600 }
   )
   return parseExtractV3(raw)
+}
+
+// ---------------------------------------------------------------------------
+// The audit — re-judges an EXISTING memory against the extract-v3 criteria.
+// ---------------------------------------------------------------------------
+
+/** Bump whenever the audit prompt changes; stamped per-row as `memories.audit_prompt_version`. */
+export const AUDIT_PROMPT_VERSION = 'audit-v1'
+
+export const AUDIT_VERDICTS = ['keep', 'transient', 'redundant', 'wrong_scope', 'belongs_in_doc'] as const
+
+export const AUDIT_SYSTEM_PROMPT = `You are re-auditing an EXISTING memory in a long-term memory store for Tony, a software engineer, against the SAME durability criteria used to extract it in the first place.
+
+${EXTRACT_V3_CRITERIA}
+
+You will be given one existing memory: its content, scope, project, and age in days. Ask: would this memory pass these criteria if extracted today, and how durable is it?
+
+Verdicts:
+- "keep": still passes the criteria — durable and useful.
+- "transient": was true but is no longer durable — it has gone stale or passed its moment.
+- "redundant": duplicates a more general fact that is better captured elsewhere.
+- "wrong_scope": filed under the wrong scope (user/agent/world) for what it actually says.
+- "belongs_in_doc": architecture/how-to/spec detail that should have been routed to a document, not kept as a memory.
+
+Output STRICT JSON ONLY: {"keep": 0.0-1.0, "verdict": "keep|transient|redundant|wrong_scope|belongs_in_doc", "reason": "one short sentence, <=200 chars"}. No prose.`
+
+/** The chat messages for one audit call. */
+export function auditMessages(m: { content: string, project: string | null, ageDays: number, scope: string }): ChatMessage[] {
+  return [
+    { role: 'system', content: AUDIT_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: `Memory to audit:\nscope: ${m.scope}\nproject: ${m.project ?? 'none'}\nage: ${m.ageDays} day${m.ageDays === 1 ? '' : 's'}\ncontent: "${m.content}"`
+    }
+  ]
+}
+
+export type ParsedAudit =
+  | { ok: true, keep: number, verdict: AuditVerdict, reason: string }
+  | { ok: false, error: string }
+
+/**
+ * Tolerant JSON parse of an audit reply (fence/prose-tolerant, string-aware brace matching —
+ * see `extractBalanced`). Never throws. `keep` is clamped to [0,1]; an unknown/missing verdict
+ * or a non-numeric `keep` is a parse failure (ok:false) — those are the two fields the caller
+ * acts on, so a bad reply there must count as a failure (bumps `audit_failures`) rather than
+ * silently defaulting. `reason` is optional prose: missing/non-string becomes '', and any value
+ * is trimmed to 200 chars.
+ */
+export function parseAudit(raw: string): ParsedAudit {
+  if (!raw || !raw.trim()) return { ok: false, error: 'empty reply' }
+
+  try {
+    const text = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '')
+    const start = text.indexOf('{')
+    if (start === -1) return { ok: false, error: 'no JSON object found' }
+
+    const jsonStr = extractBalanced(text, start, '{', '}')
+    if (!jsonStr) return { ok: false, error: 'unbalanced JSON object' }
+
+    const parsed = JSON.parse(jsonStr) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: 'not a JSON object' }
+    }
+    const obj = parsed as Record<string, unknown>
+
+    const verdictRaw = obj.verdict
+    if (typeof verdictRaw !== 'string' || !(AUDIT_VERDICTS as readonly string[]).includes(verdictRaw)) {
+      return { ok: false, error: `unknown verdict: ${String(verdictRaw)}` }
+    }
+
+    const keepRaw = obj.keep
+    if (typeof keepRaw !== 'number' || Number.isNaN(keepRaw)) {
+      return { ok: false, error: 'missing or invalid keep' }
+    }
+    const keep = Math.min(1, Math.max(0, keepRaw))
+
+    const reason = typeof obj.reason === 'string' ? obj.reason.trim().slice(0, 200) : ''
+
+    return { ok: true, keep, verdict: verdictRaw as AuditVerdict, reason }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'parse error' }
+  }
+}
+
+/**
+ * Audit one existing memory against the extract-v3 criteria. 'bulk' = same no-think chain the
+ * extractor uses — see extractV3's comment on why (the reasoning alias's think-blocks blow the
+ * token cap and chat() throws). A thrown error (network, timeout, failover exhausted) is caught
+ * here and reported as ok:false so the caller never has to special-case a rejected promise: both
+ * "bad reply" and "call failed" land on the same audit_failures counter.
+ */
+export async function auditMemory(
+  m: { content: string, project: string | null, ageDays: number, scope: string },
+  deps: { chatFn?: typeof chat } = {}
+): Promise<ParsedAudit & { model?: string }> {
+  const chatFn = deps.chatFn ?? chat
+  try {
+    const raw = await chatFn('bulk', auditMessages(m), { temperature: 0, maxTokens: 300 })
+    return parseAudit(raw)
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }

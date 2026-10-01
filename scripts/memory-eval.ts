@@ -28,7 +28,13 @@
  *                           on rows that expected none (reported, not scored)
  * Merge bar (Task 8): keep rate >= 90%, stale-rejection rate >= 80%.
  *
- * (The audit-vs-labels part is added by cycle 77 Task 3.)
+ * AUDIT part — runs the extract-v3 audit (Task 3) over the 45 rows hand-labelled in
+ * scripts/data/memory-labels-2026-09-22.jsonl ({ id, value, durable, selfContained, verdict }),
+ * loading each row's content/project/created_at from scripts/data/memory-sample-2026-09-22.jsonl
+ * by id. Reports agreement of the audit verdict against the human label, under the mapping
+ * keep<->keep, stale<->transient, noise<->redundant|wrong_scope. A `belongs_in_doc` verdict has
+ * no label counterpart, so it is reported separately rather than scored as agree/disagree.
+ * No merge bar for this part — it is a quality read, same as the rest of the script.
  *
  * Always exits 0 — a quality read, not a gate.
  */
@@ -52,10 +58,13 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { extractV3, EXTRACT_PROMPT_VERSION } from '../server/lib/memory/extract-v3'
+import { extractV3, EXTRACT_PROMPT_VERSION, auditMemory, AUDIT_PROMPT_VERSION } from '../server/lib/memory/extract-v3'
+import type { AuditVerdict } from '../shared/types/memory'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const EXTRACT_DATA = resolve(HERE, 'data/memory-eval-v3.jsonl')
+const AUDIT_LABELS = resolve(HERE, 'data/memory-labels-2026-09-22.jsonl')
+const AUDIT_SAMPLE = resolve(HERE, 'data/memory-sample-2026-09-22.jsonl')
 
 interface ExtractRow {
   transcript: string
@@ -63,6 +72,24 @@ interface ExtractRow {
   expectReject: string[]
   expectDoc: boolean
   note?: string
+}
+
+interface LabelRow {
+  id: string
+  value: number
+  durable: boolean
+  selfContained: boolean
+  verdict: 'keep' | 'stale' | 'noise'
+  labelledAt?: string
+}
+
+interface SampleRow {
+  id: string
+  content: string
+  project: string | null
+  created_at: string
+  scope?: string
+  [key: string]: unknown
 }
 
 function pct(n: number, d: number): string {
@@ -173,8 +200,75 @@ async function evalExtraction() {
   if (failed) console.log(`failed calls          : ${failed} (their expectations count as misses)`)
 }
 
+/**
+ * keep<->keep, stale<->transient, noise<->redundant|wrong_scope. `belongs_in_doc` has no label
+ * counterpart and is never "agreement" — callers report it separately.
+ */
+function agreesWithLabel(verdict: AuditVerdict, label: LabelRow['verdict']): boolean {
+  if (verdict === 'belongs_in_doc') return false
+  if (label === 'keep') return verdict === 'keep'
+  if (label === 'stale') return verdict === 'transient'
+  return verdict === 'redundant' || verdict === 'wrong_scope' // label === 'noise'
+}
+
+async function evalAudit() {
+  if (!existsSync(AUDIT_LABELS) || !existsSync(AUDIT_SAMPLE)) {
+    console.error(`No audit label/sample data at ${AUDIT_LABELS} / ${AUDIT_SAMPLE} — skipping audit eval`)
+    return
+  }
+  const labels: LabelRow[] = readFileSync(AUDIT_LABELS, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l) as LabelRow)
+  const sample: SampleRow[] = readFileSync(AUDIT_SAMPLE, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l) as SampleRow)
+  const byId = new Map(sample.map(r => [r.id, r]))
+
+  console.log('')
+  console.log(`== audit (${AUDIT_PROMPT_VERSION}) over ${labels.length} labelled rows ==`)
+
+  const now = Date.now()
+  let agreeTotal = 0
+  let agreeHit = 0
+  let docVerdicts = 0
+  let missingSample = 0
+  let failed = 0
+
+  for (const label of labels) {
+    const row = byId.get(label.id)
+    if (!row) {
+      missingSample++
+      console.log(`  [${label.id}] no sample row for this id — skipped`)
+      continue
+    }
+    const ageDays = Math.max(0, Math.round((now - new Date(row.created_at).getTime()) / 86_400_000))
+    const scope = typeof row.scope === 'string' ? row.scope : 'agent'
+
+    const res = await auditMemory({ content: row.content, project: row.project, ageDays, scope })
+    if (!res.ok) {
+      failed++
+      console.log(`  [${label.id}] audit failed: ${res.error}`)
+      continue
+    }
+    if (res.verdict === 'belongs_in_doc') {
+      docVerdicts++
+      console.log(`  [${label.id}] belongs_in_doc (label was "${label.verdict}") — reported separately, not scored`)
+      continue
+    }
+    agreeTotal++
+    if (agreesWithLabel(res.verdict, label.verdict)) {
+      agreeHit++
+    } else {
+      console.log(`  [${label.id}] DISAGREE label=${label.verdict} audit=${res.verdict} keep=${res.keep.toFixed(2)} reason="${res.reason}"`)
+    }
+  }
+
+  console.log('')
+  console.log(`audit-vs-label agreement : ${agreeHit}/${agreeTotal} (${pct(agreeHit, agreeTotal)})`)
+  console.log(`belongs_in_doc verdicts  : ${docVerdicts}/${labels.length} (reported separately, not scored as agree/disagree)`)
+  if (missingSample) console.log(`rows with no sample match : ${missingSample}`)
+  if (failed) console.log(`failed audit calls        : ${failed} (excluded from the agreement total)`)
+}
+
 async function main() {
   await evalExtraction()
+  await evalAudit()
 }
 
 main()

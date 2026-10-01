@@ -161,8 +161,11 @@ export function parseMemories(raw: string): MemoryCandidate[] {
 /**
  * Extract a balanced bracket sequence starting at `from`. String-aware: brackets inside JSON
  * string literals (e.g. a memory that quotes `{ a, b }`) don't count toward the depth.
+ *
+ * Exported so other tolerant-JSON parsers (e.g. the extract-v3 audit's `parseAudit`) can reuse
+ * the same string-aware extraction instead of re-implementing it.
  */
-function extractBalanced(text: string, from: number, open: string, close: string): string | null {
+export function extractBalanced(text: string, from: number, open: string, close: string): string | null {
   let depth = 0
   let end = -1
   let inString = false
