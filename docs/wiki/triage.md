@@ -1,8 +1,8 @@
 ---
 title: Capture Triage
 status: shipped
-cycle: 57
-updated: 2026-08-17
+cycle: 77
+updated: 2026-10-01
 mymind_id: 323bbf97-f177-429b-beea-675ff0388799
 mymind_hash: 09bffc61baa5d3e391fc51628e33727a220c9c6edb0ce80b8eb16c33b3297379
 ---
@@ -46,6 +46,16 @@ One entry point, `triageCapture(docId)` (`server/services/triage.ts`), fired fro
    `POST /api/documents` under `/input/...` — see [quick-capture.md](quick-capture.md)'s "What
    else lands in /input"). Those other inlets rely on the sweeper entirely; nothing calls
    `triageCapture` immediately for them.
+
+**Memory doc candidates (cycle 77).** Enrichment's `extract-v3` prompt routes doc-worthy detail
+(architecture, spec/handover content, multi-step how-tos) out of memory as `doc_candidates`.
+`fileDocCandidate` (`server/services/memory-doc-candidates.ts`) files each one as an `/input/`
+capture through `createDoc` (the `quick_capture` path) and fires `triageCapture` on it right away.
+The body is the candidate's text plus `— From memory extraction (project: <slug or "(no
+project)">; suggested doc: <hint or "none">)`. Triage then proposes an append, note or task as
+for any capture, through `/review`. Nothing writes a document directly, and the repo-mirror guard
+below keeps an append out of mirrored docs. A failure is logged and never blocks enrichment. See
+[memory.md](memory.md#doc-candidates--triage).
 
 **Idempotency.** Both paths can race, so `documents.triaged_at` is a conditional-UPDATE claim
 (`WHERE triaged_at IS NULL`) taken **before** the model call. Losing the claim returns
@@ -213,9 +223,19 @@ error rather than silently duplicating the other action's output as a second, st
   [document-spine.md](document-spine.md)) but `chunks.embedding` joined to `documents`,
   matching `searchDocIds`'s vector lane. It excludes skill documents (`notSkill()`) and
   anything still under `/input/`.
+  - **Repo-mirror guard (cycle 77).** A document under `/projects/<slug>/wiki/` or
+    `/projects/<slug>/handovers/` is a mirror of a repo file, and the next sync overwrites it, so
+    an append there would be silently lost. `isRepoMirrorPath(path)`
+    (`server/services/memory-doc-candidates.ts`, regex `^/projects/[^/]+/(wiki|handovers)/`) is
+    checked in **both** `resolveAppendTarget` (a mirror as the best match counts as "nothing
+    cleared the floor"; it does not fall through to the second-best chunk) and
+    `isValidAppendTarget`. A mirror target therefore degrades the append to a Note, like any
+    other failed guardrail. The `documents` table has no mirror marker, so this is the mirror
+    convention's path rule. It applies to **every** triage append, not only the memory doc
+    candidates below.
   - If no candidate clears `triageAppendSimilarityFloor` (0.75 cosine), or an explicitly
     supplied `targetDocId` fails the same guardrails (`isValidAppendTarget` — not a skill, not
-    under `/input/`), the action **degrades to a Note** rather than guessing. Today the model
+    under `/input/`, not a repo mirror), the action **degrades to a Note** rather than guessing. Today the model
     never actually emits `targetDocId` (`parseAction` strips it), so this re-validation branch
     is currently reachable only via a direct actuator call, not the classifier — kept as
     structural defense-in-depth rather than "safe because an upstream step cooperates."
