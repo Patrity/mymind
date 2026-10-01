@@ -11,7 +11,7 @@ import { publishChange } from '../utils/live-bus'
 import { classify } from '../lib/ai/triage'
 import { route } from '../lib/triage/route'
 import { PROJECTS_ROOT } from '../lib/projects/doc-path'
-import { isRepoMirrorPath } from './memory-doc-candidates'
+import { isRepoMirrorPath } from '../lib/documents/mirror'
 import { slugify } from '../../shared/utils/slugify'
 import type { TriageAction, TriageOutcome } from '../../shared/types/triage'
 import type { DocumentDTO } from '../../shared/types/documents'
@@ -294,7 +294,7 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
  * that guard are deliberately redundant rather than the only line of defense.
  *
  * Mirror guard: a repo-mirrored doc (/projects/*\/wiki/, /projects/*\/handovers/ —
- * isRepoMirrorPath, memory-doc-candidates.ts) is overwritten whole on its next sync, so an
+ * isRepoMirrorPath, server/lib/documents/mirror.ts) is overwritten whole on its next sync, so an
  * append into it is silently lost. Rather than skip it and fall through to the next-best
  * chunk (which could easily be a WORSE semantic match), a resolved mirror target is treated
  * exactly like "no candidate cleared the floor" — applyAppend's existing null branch already

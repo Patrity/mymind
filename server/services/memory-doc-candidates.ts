@@ -5,10 +5,8 @@
  * routeDocCandidates — the only caller — which fires this once per candidate, fire-and-forget,
  * after extraction.
  *
- * isRepoMirrorPath also lives here: it is the mirror-guard predicate server/services/triage.ts
- * applies to EVERY triage append, not just doc candidates. A repo-mirrored doc (wiki/handover,
- * synced one-way from the git repo by the wiki-mirror flow) is overwritten whole on its next
- * sync, so an append into it is silently lost — see global-constraints.md's "Mirror guard".
+ * The mirror guard (no append into a repo-mirrored wiki/handover doc) lives in triage itself,
+ * via isRepoMirrorPath (server/lib/documents/mirror.ts), and applies to EVERY triage append.
  */
 import { nanoid } from 'nanoid'
 import { createDoc } from './documents'
@@ -17,9 +15,16 @@ import { publishChange } from '../utils/live-bus'
 import { slugify } from '../../shared/utils/slugify'
 import type { DocCandidate } from '../lib/memory/extract-v3'
 
-/** /projects/<slug>/wiki/... or /projects/<slug>/handovers/... — the repo-mirror convention. */
-export function isRepoMirrorPath(path: string): boolean {
-  return /^\/projects\/[^/]+\/(wiki|handovers)\//.test(path)
+/** True for a Postgres unique-violation (23505), from either node-postgres shape. */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string, cause?: { code?: string } } | null
+  return e?.code === '23505' || e?.cause?.code === '23505'
+}
+
+/** The capture's title: the first line of the candidate's text (a hint like "handover" is too generic). */
+function captureTitle(text: string): string | null {
+  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? ''
+  return line ? (line.length > 80 ? `${line.slice(0, 79)}…` : line) : null
 }
 
 /**
@@ -31,10 +36,13 @@ export function isRepoMirrorPath(path: string): boolean {
  *
  * Slug derivation mirrors quick_capture's (server/lib/agent/tools.ts): a hint-derived slug when
  * there's a targetDocHint to work with, else a random one — targetDocHint is the closest thing
- * a DocCandidate has to quick_capture's optional title.
+ * a DocCandidate has to quick_capture's optional title. Hints are generic ("handover") and an
+ * untriaged capture stays live in /input/ until Tony acts, so the hint slug often collides
+ * (documents_path_live_uidx): on a collision the slug gets a short random suffix and the capture
+ * is filed anyway — never dropped (final review I3).
  *
  * Never throws — enrichment must never fail because a doc candidate couldn't be filed. A null
- * return means the capture itself failed (createDoc threw, e.g. a slug collision); the
+ * return means the capture itself failed (createDoc threw for another reason); the
  * fire-and-forget triageCapture call below has its own, separately-logged failure path.
  */
 export async function fileDocCandidate(
@@ -48,7 +56,12 @@ export async function fileDocCandidate(
       : nanoid(10)
     const body = `${c.text}\n\n— From memory extraction (project: ${c.project ?? '(no project)'}; suggested doc: ${c.targetDocHint ?? 'none'})`
 
-    const doc = await createDoc({ path: `/input/${slug}.md`, title: c.targetDocHint ?? null, content: body })
+    const title = captureTitle(c.text)
+    const doc = await createDoc({ path: `/input/${slug}.md`, title, content: body })
+      .catch((err) => {
+        if (!isUniqueViolation(err)) throw err
+        return createDoc({ path: `/input/${slug.slice(0, 57)}-${nanoid(6)}.md`, title, content: body })
+      })
     publishChange({ resource: 'document', action: 'created', id: doc.id })
 
     // Fire-and-forget, same convention as quick_capture / POST /api/capture/note: filing must

@@ -58,7 +58,8 @@ vi.mock('../server/lib/ai/triage', async (orig) => ({
   }))
 }))
 
-const { isRepoMirrorPath, fileDocCandidate } = await import('../server/services/memory-doc-candidates')
+const { fileDocCandidate } = await import('../server/services/memory-doc-candidates')
+const { isRepoMirrorPath } = await import('../server/lib/documents/mirror')
 const { triageCapture } = await import('../server/services/triage')
 const { classify } = await import('../server/lib/ai/triage')
 
@@ -122,7 +123,8 @@ describe('fileDocCandidate', () => {
       expect(doc!.content).toBe(
         `ingest skips poisoned rows one at a time (${t})\n\n— From memory extraction (project: mymind; suggested doc: wiki: ingest pipeline ${t})`
       )
-      expect(doc!.title).toBe(`wiki: ingest pipeline ${t}`)
+      // Titled by the text's first line, not the (often generic) hint.
+      expect(doc!.title).toBe(`ingest skips poisoned rows one at a time (${t})`)
     } finally {
       await deleteDoc(r!.docId)
     }
@@ -147,6 +149,27 @@ describe('fileDocCandidate', () => {
       expect(doc!.path).toMatch(/^\/input\/[\w-]+\.md$/)
     } finally {
       await deleteDoc(r!.docId)
+    }
+  })
+
+  // Final review I3: hints are generic ("handover") and an untriaged capture stays live in
+  // /input/, so a second candidate with the same hint hits documents_path_live_uidx. It must
+  // still be filed (suffixed slug), never silently dropped.
+  it('a second candidate with the same hint is still filed, under a suffixed slug', async () => {
+    const hint = `handover ${tag()}`
+    const a = await fileDocCandidate({ text: 'first detail', project: null, targetDocHint: hint }, {})
+    const b = await fileDocCandidate({ text: 'second detail', project: null, targetDocHint: hint }, {})
+    try {
+      expect(a).not.toBeNull()
+      expect(b).not.toBeNull()
+      const [docA, docB] = await Promise.all([getDoc(a!.docId), getDoc(b!.docId)])
+      expect(docA!.path).toBe(`/input/${hint.replace(' ', '-')}.md`)
+      expect(docB!.path).toMatch(new RegExp(`^/input/${hint.replace(' ', '-')}-[\\w-]{6}\\.md$`))
+      expect(docB!.content.startsWith('second detail')).toBe(true)
+      expect(triageCapture).toHaveBeenCalledWith(b!.docId)
+    } finally {
+      if (a) await deleteDoc(a.docId)
+      if (b) await deleteDoc(b.docId)
     }
   })
 
