@@ -25,6 +25,7 @@ import { clampPaging, buildPage } from './paging'
 import { docReceipt, docNotFound, docNotFoundAtPath, divergenceReport } from './receipt'
 import { decideSync, hashBody } from './sync'
 import type { DocumentDTO } from '../../../shared/types/documents'
+import type { MemoryDTO } from '../../../shared/types/memory'
 import type { TaskStatus } from '../../../shared/types/tasks'
 
 /**
@@ -40,6 +41,21 @@ import type { TaskStatus } from '../../../shared/types/tasks'
  * those callers decides for itself whether/how to emit, using `changed` to avoid emitting
  * twice (or emitting on a true no-op) for a single handler invocation.
  */
+/**
+ * A memory as the agent/MCP recall tools return it: the cycle-77 score fields (Jev, the audit,
+ * prompt versions) are dropped. They are for the /memories UI and the analysis, not for recall:
+ * ~250 chars per memory across every result, and an agent that reads "transient: …" beside a fact
+ * discounts it (and copies whatever fields it sees) — final review M3.
+ */
+export function toRecallMemory(m: MemoryDTO) {
+  const {
+    jevScore: _jevScore, jevAnswers: _jevAnswers, auditKeep: _auditKeep, auditVerdict: _auditVerdict,
+    auditReason: _auditReason, auditPromptVersion: _auditPromptVersion, extractPromptVersion: _extractPromptVersion,
+    ...recall
+  } = m
+  return recall
+}
+
 async function applySyncMeta(
   doc: DocumentDTO, a: Record<string, unknown>
 ): Promise<{ doc: DocumentDTO, changed: boolean }> {
@@ -75,7 +91,7 @@ export const agentTools: AgentTool[] = [
         limit: a.limit as undefined,
         reviewed: (a.includeUnreviewed as boolean | undefined) ? undefined : true
       })
-      return { result: res, summary: `searched memories (${res.length})` }
+      return { result: res.map(toRecallMemory), summary: `searched memories (${res.length})` }
     }
   },
   {
@@ -94,7 +110,7 @@ export const agentTools: AgentTool[] = [
         limit: (a.limit as number) ?? 20,
         reviewed: (a.includeUnreviewed as boolean | undefined) ? undefined : true
       })
-      return { result: res, summary: `recent memories (${res.length})` }
+      return { result: res.map(toRecallMemory), summary: `recent memories (${res.length})` }
     }
   },
   {
