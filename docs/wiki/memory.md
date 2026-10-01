@@ -278,8 +278,9 @@ transport, so a row that deterministically gets one would stall the Jev part of 
 (`server/lib/memory/backfill-setting.ts`; a missing or malformed value reads as `off`).
 
 - `runBackfillBatch({ limit = 40 })` does nothing unless `running`. It selects per part
-  (`selectUnscoredPerPart`: up to 40 needing the audit and up to 40 needing Jev, so 40–80 rows
-  and at most 40 calls of each kind) and scores them in one call. When selection comes back empty it flips the switch to `done`, after re-reading the
+  (`selectUnscoredPerPart`: up to 40 needing the audit and up to 40 needing Jev, so 40–80 rows;
+  both parts run on every selected row that lacks them, so up to 80 calls of one kind right after
+  that part's outage ends — bounded at 2 × limit) and scores them in one call. When selection comes back empty it flips the switch to `done`, after re-reading the
   state so a pause made during selection never becomes `done`. There is no cursor: a crash, restart
   or pause loses nothing.
 - `setBackfillSwitch('running' | 'off')`: a repeat of the current state is a no-op, so pressing

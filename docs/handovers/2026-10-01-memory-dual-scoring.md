@@ -217,6 +217,12 @@ no-op then because the switch was absent.
   `audit_prompt_version`, the failure counters, `jev_model` and a `disagreement` column, beyond
   the spec §7 list.
 
+### Final re-review residue (parked)
+- N1: a backfill run can make up to 2 × limit calls of one part right after that part's outage ends (both parts run on every selected row lacking them). Bounded; docs corrected.
+- N2: `list_reviews` (MCP) and `save_memory`'s dedupe return still carry the new score fields — recall paths (`search_memories`, `get_recent_memories`) and context assembly are clean.
+- N3: the score-memories cron uses combined selection, so a Jev outage can stall its audit progress (the backfill uses per-part selection).
+- audit-v2 trade-off: stale 8/12 (was 2/12) but keepers 17/28 (was 22/28) — errors now balanced; judge in the post-backfill analysis.
+
 ## Follow-ups (every deferred or parked item)
 
 **Deferred to the final wave** (all triaged there; see [Final review fix wave](#final-review-fix-wave)):
