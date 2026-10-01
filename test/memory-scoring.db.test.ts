@@ -147,6 +147,34 @@ describe('scoreMemory', () => {
     expect(row.auditFailures).toBe(3)
   })
 
+  it('a row archived mid-call is neither stamped nor charged', async () => {
+    const failId = await seed()
+    const archive = (id: string) => useDb().update(memories).set({ archivedAt: new Date() }).where(eq(memories.id, id))
+    // Content failures land after the row was archived: the counters stay put.
+    await scoreMemory(failId, {
+      ask: vi.fn(async () => { await archive(failId); return { model: 'j', answers: {} } }) as never,
+      chatFn: vi.fn(async () => { await archive(failId); return { text: 'prose', model: 'm' } }) as never,
+      cfg: CFG
+    })
+    let row = await load(failId)
+    expect(row.jevFailures).toBe(0)
+    expect(row.auditFailures).toBe(0)
+
+    // Successes land after the row was archived: nothing is stamped, nothing published.
+    const okId = await seed()
+    publishChange.mockClear()
+    const res = await scoreMemory(okId, {
+      ask: vi.fn(async () => { await archive(okId); return JEV_REPLY }) as never,
+      chatFn: vi.fn(async () => { await archive(okId); return AUDIT_REPLY }) as never,
+      cfg: CFG
+    })
+    expect(res).toEqual({ id: okId, jev: 'skipped', audit: 'skipped' })
+    row = await load(okId)
+    expect(row.jevScoredAt).toBeNull()
+    expect(row.auditedAt).toBeNull()
+    expect(publishChange).not.toHaveBeenCalled()
+  })
+
   it('never scores an archived row', async () => {
     const id = await seed({ archivedAt: new Date() })
     const ask = okAsk()
