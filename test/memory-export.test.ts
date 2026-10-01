@@ -101,3 +101,14 @@ describe('csv', () => {
     expect(toJsonl([])).toBe('')
   })
 })
+
+// Final review M4: prod is native with no .env (CD wipes /opt/mymind), and a plain --env-file is
+// fatal when the file is missing — so the export must only load .env when it exists.
+describe('pnpm memory:export', () => {
+  it('loads .env only if present', async () => {
+    const { readFileSync } = await import('node:fs')
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts['memory:export']).toContain('--env-file-if-exists=.env')
+    expect(pkg.scripts['memory:export']).not.toMatch(/--env-file=/)
+  })
+})

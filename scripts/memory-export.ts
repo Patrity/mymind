@@ -11,7 +11,9 @@
  * from every scripts/data/memory-labels-*.jsonl (`pnpm label`), joined by memory id — a later
  * file / later line wins for a re-labelled id.
  *
- * Against prod: run with DATABASE_URL pointed at prod (it only reads).
+ * Against prod: run with DATABASE_URL pointed at prod (it only reads). `.env` is loaded only if it
+ * exists (--env-file-if-exists), so on the prod box — native, no .env, NUXT_DATABASE_URL in the
+ * service env — `NUXT_DATABASE_URL=… pnpm memory:export` works; the process env always wins.
  */
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
@@ -32,8 +34,8 @@ const QUERY = `
    order by created_at asc, id asc`
 
 async function main() {
-  const url = process.env.DATABASE_URL
-  if (!url) throw new Error('DATABASE_URL is not set (run through `pnpm memory:export`, which loads .env)')
+  const url = process.env.DATABASE_URL ?? process.env.NUXT_DATABASE_URL
+  if (!url) throw new Error('DATABASE_URL (or NUXT_DATABASE_URL) is not set — `pnpm memory:export` loads .env when present')
 
   mkdirSync(DATA, { recursive: true })
   const labelFiles = readdirSync(DATA).filter(f => /^memory-labels-.*\.jsonl$/.test(f)).sort()
