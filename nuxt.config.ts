@@ -145,7 +145,8 @@ export default defineNuxtConfig({
     ],
     serverAssets: [{ baseName: 'setup', dir: 'server/assets/setup' }],
     scheduledTasks: {
-      '*/5 * * * *': ['embed-documents', 'summarize-sessions'],
+      // memory-backfill self-gates: a no-op unless Tony flipped the switch to `running` (cycle 77).
+      '*/5 * * * *': ['embed-documents', 'summarize-sessions', 'memory-backfill'],
       '*/10 * * * *': ['triage-input', 'summarize-threads'],
       '*/7 * * * *': ['enrich-images'],
       // sync-model-prices runs often, but self-gates: it only hits the network when a model

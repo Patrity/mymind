@@ -94,7 +94,10 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
   agentRun: (c) => c.invalidateQueries({ queryKey: ['agentRun'] }),
   // Cycle 75: a channel delivery (iMessage/email send) is shown inline in the conversation
   // it replied to — invalidate the ['conversation'] prefix so any open thread view refreshes.
-  channelDelivery: (c) => c.invalidateQueries({ queryKey: ['conversation'] })
+  channelDelivery: (c) => c.invalidateQueries({ queryKey: ['conversation'] }),
+  // Cycle 77: the backfill switch flipped, or a backfill run finished — the Settings card reads
+  // its progress under ['memory-backfill'] (one singleton, so the event id carries no meaning).
+  memoryBackfill: (c) => c.invalidateQueries({ queryKey: ['memory-backfill'] })
 }
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {
