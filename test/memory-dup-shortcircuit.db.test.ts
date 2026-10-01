@@ -71,6 +71,21 @@ describe('resolveEnrichedMemory — mechanical duplicate short-circuit', () => {
     }
   })
 
+  it('stamps extractPromptVersion on the inserted row (enrichment path, cycle 77)', async () => {
+    const tag = `dupsc-${uniq()}`
+    try {
+      const plan = await resolveEnrichedMemory({
+        content: `${tag} stamped fact`, scope: 'agent', project: PROJECT, extractPromptVersion: 'extract-v3'
+      })
+      expect(plan.action).toBe('insert')
+      const [row] = await useDb().select({ v: memories.extractPromptVersion }).from(memories)
+        .where(sql`${memories.content} like ${tag + '%'}`)
+      expect(row!.v).toBe('extract-v3')
+    } finally {
+      await purge(tag)
+    }
+  })
+
   it('still routes a below-bar neighbour to the LLM judge', async () => {
     const tag = `dupsc-${uniq()}`
     try {
