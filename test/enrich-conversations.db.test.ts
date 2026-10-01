@@ -15,6 +15,14 @@ vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 const scoreMemories = vi.hoisted(() => vi.fn(async (_ids: string[]) => []))
 vi.mock('../server/services/memory-scoring', () => ({ scoreMemories }))
 
+// cycle 77 Task 6: routeDocCandidates (memory-enrich.ts) now actually files a doc candidate
+// via fileDocCandidate — a real /input/ document plus a fire-and-forget triageCapture that
+// would reach the real classify() model call. This suite is about memory extraction, not
+// doc-candidate filing (that is test/memory-doc-candidates.db.test.ts's job), so stub it out
+// rather than leaking an unfiled document and a real model call into the dev DB.
+const fileDocCandidate = vi.hoisted(() => vi.fn(async () => null))
+vi.mock('../server/services/memory-doc-candidates', () => ({ fileDocCandidate }))
+
 import { useDb } from '../server/db'
 import { conversations, conversationMessages, memEnrichmentState, memories } from '../server/db/schema'
 import { enrichConversations } from '../server/services/memory-enrich'
@@ -80,6 +88,13 @@ describe('enrichConversations', () => {
     expect(res.conversationsProcessed).toBe(1)
     expect(res.memoriesCreated).toBe(1)
     expect(extract).toHaveBeenCalledTimes(1)
+    // routeDocCandidates (memory-enrich.ts) hands each extracted doc_candidate to
+    // fileDocCandidate, stubbed above — this is the wiring check for the conversation path;
+    // fileDocCandidate's own behavior is covered by test/memory-doc-candidates.db.test.ts.
+    expect(fileDocCandidate).toHaveBeenCalledWith(
+      { text: 'A doc-worthy note', project: null, targetDocHint: null },
+      { conversationId: id }
+    )
     const [row] = await useDb().select().from(memories).where(eq(memories.source, `conversation:${id}`)).limit(1)
     expect(row!.extractPromptVersion).toBe('extract-v3')
     // The new memory is handed to the shared scoring path.
