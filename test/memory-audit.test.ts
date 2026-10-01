@@ -114,14 +114,15 @@ describe('auditMessages', () => {
 
 describe('auditMemory', () => {
   it('calls the bulk chain with the audit messages and parses the reply', async () => {
-    const chatFn = vi.fn(async () => JSON.stringify({ keep: 0.9, verdict: 'keep', reason: 'Still durable.' }))
+    const chatFn = vi.fn(async () => ({ text: JSON.stringify({ keep: 0.9, verdict: 'keep', reason: 'Still durable.' }), model: 'bulk-model-b' }))
     const out = await auditMemory({ content: 'A fact.', project: 'mymind', ageDays: 10, scope: 'agent' }, { chatFn: chatFn as never })
     expect(chatFn).toHaveBeenCalledTimes(1)
     const [alias, messages, opts] = chatFn.mock.calls[0] as unknown as [string, { role: string, content: string }[], { temperature?: number, maxTokens?: number }]
     expect(alias).toBe('bulk')
     expect(messages).toEqual(auditMessages({ content: 'A fact.', project: 'mymind', ageDays: 10, scope: 'agent' }))
     expect(opts).toEqual({ temperature: 0, maxTokens: 300 })
-    expect(out).toEqual({ ok: true, keep: 0.9, verdict: 'keep', reason: 'Still durable.' })
+    // `model` is whichever chain member answered (chatWithModel), recorded as audit_model.
+    expect(out).toEqual({ ok: true, keep: 0.9, verdict: 'keep', reason: 'Still durable.', model: 'bulk-model-b' })
   })
 
   it('returns ok:false when the stubbed chatFn throws', async () => {

@@ -78,9 +78,11 @@ describe('resolveEnrichedMemory — mechanical duplicate short-circuit', () => {
         content: `${tag} stamped fact`, scope: 'agent', project: PROJECT, extractPromptVersion: 'extract-v3'
       })
       expect(plan.action).toBe('insert')
-      const [row] = await useDb().select({ v: memories.extractPromptVersion }).from(memories)
+      const [row] = await useDb().select({ id: memories.id, v: memories.extractPromptVersion }).from(memories)
         .where(sql`${memories.content} like ${tag + '%'}`)
       expect(row!.v).toBe('extract-v3')
+      // The inserted row's id rides back on the plan so enrichment can score it (cycle 77 Task 4).
+      expect(plan.newId).toBe(row!.id)
     } finally {
       await purge(tag)
     }
@@ -101,6 +103,7 @@ describe('resolveEnrichedMemory — mechanical duplicate short-circuit', () => {
 
       expect(judgeRelations).toHaveBeenCalled()       // judge still owns the grey zone
       expect(second.action).toBe('insert')            // per the stub's 'unrelated' verdict
+      expect(second.newId).toBeTruthy()               // judge-path insert also reports its row
       expect(await liveCountLike(tag)).toBe(2)
     } finally {
       ;(globalThis as { $fetch?: unknown }).$fetch = vi.fn().mockResolvedValue([Array(2560).fill(0.02)])
@@ -116,6 +119,7 @@ describe('resolveEnrichedMemory — mechanical duplicate short-circuit', () => {
       judgeRelations.mockClear()
       const again = await resolveEnrichedMemory({ content, scope: 'agent', project: PROJECT })
       expect(again.action).toBe('duplicate')
+      expect(again.newId).toBeUndefined()             // nothing inserted, nothing to score
       expect(judgeRelations).not.toHaveBeenCalled()
       expect(await liveCountLike(tag)).toBe(1)
     } finally {

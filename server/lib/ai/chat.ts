@@ -1,6 +1,6 @@
 // server/lib/ai/chat.ts
 import { withFailover } from './registry/resolve'
-import type { Usage } from './registry/types'
+import type { ResolvedModel, Usage } from './registry/types'
 
 export interface TextPart { type: 'text', text: string }
 export interface ImageUrlPart { type: 'image_url', image_url: { url: string } }
@@ -32,24 +32,34 @@ export function extractContent(res: unknown): string {
 /** Per-attempt request timeout when the caller names none. */
 export const CHAT_TIMEOUT_MS = 60_000
 
+type ChatOpts = { temperature?: number, maxTokens?: number, timeoutMs?: number }
+
+/** One chat-completions POST against one resolved model. Throws on a bad shape (see extractContent). */
+async function completeOn(m: ResolvedModel, messages: ChatMessage[], opts: ChatOpts): Promise<string> {
+  const res = await $fetch<unknown>(
+    `${(m.baseURL ?? '').replace(/\/$/, '')}/chat/completions`,
+    {
+      method: 'POST',
+      headers: m.apiKey ? { authorization: `Bearer ${m.apiKey}` } : undefined,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? CHAT_TIMEOUT_MS),
+      body: { model: m.modelId, messages, temperature: opts.temperature ?? 0.2, max_tokens: opts.maxTokens ?? 600 }
+    }
+  )
+  return extractContent(res)
+}
+
 // `role` here is a registry Usage (e.g. 'bulk', 'vision').
 // `timeoutMs` bounds each attempt of the failover chain (default CHAT_TIMEOUT_MS): a caller that
 // asks for a long output (the reflector's full skill/profile files) needs more than a minute.
-export async function chat(
-  role: Usage,
-  messages: ChatMessage[],
-  opts: { temperature?: number, maxTokens?: number, timeoutMs?: number } = {}
-): Promise<string> {
-  return withFailover(role, async (m) => {
-    const res = await $fetch<unknown>(
-      `${(m.baseURL ?? '').replace(/\/$/, '')}/chat/completions`,
-      {
-        method: 'POST',
-        headers: m.apiKey ? { authorization: `Bearer ${m.apiKey}` } : undefined,
-        signal: AbortSignal.timeout(opts.timeoutMs ?? CHAT_TIMEOUT_MS),
-        body: { model: m.modelId, messages, temperature: opts.temperature ?? 0.2, max_tokens: opts.maxTokens ?? 600 }
-      }
-    )
-    return extractContent(res)
-  })
+export async function chat(role: Usage, messages: ChatMessage[], opts: ChatOpts = {}): Promise<string> {
+  return withFailover(role, m => completeOn(m, messages, opts))
+}
+
+/**
+ * `chat()` that also reports WHICH model answered — the chain member that succeeded, not the
+ * chain head, since a failover can land the call anywhere in the chain. For callers that store
+ * provenance per row (the memory audit's `audit_model`).
+ */
+export async function chatWithModel(role: Usage, messages: ChatMessage[], opts: ChatOpts = {}): Promise<{ text: string, model: string }> {
+  return withFailover(role, async m => ({ text: await completeOn(m, messages, opts), model: m.modelId }))
 }

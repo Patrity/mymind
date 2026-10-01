@@ -4,7 +4,7 @@ import { withSpan, recordJobSummary } from '../lib/observability/record'
 export default defineTask({
   meta: {
     name: 'score-memories',
-    description: 'Score unreviewed memories with Jev so the review queue surfaces likely junk first'
+    description: 'Score live memories (Jev + audit) so the review queue surfaces likely junk first'
   },
   async run() {
     const result = await withSpan({ kind: 'job', name: 'score-memories' }, async () => {

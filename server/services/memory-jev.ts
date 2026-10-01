@@ -1,87 +1,54 @@
-// Score unreviewed memories with Jev so the review queue can put the likely junk first.
+// The queue scorer (the `score-memories` task): every run scores a batch of live memories so the
+// review queue can put the likely junk first and /memories can show both scores.
 //
-// Deliberately narrow: this ONLY reads memories and writes four jev_* columns. It never
-// archives, never marks anything reviewed, and never touches `confidence`. The calibration
-// behind it supports an ORDERING, not a decision — see server/lib/memory/jev-score.ts.
+// Deliberately narrow: this ONLY reads memories and writes the jev_* and audit_* columns, through
+// the one shared scoring path (server/services/memory-scoring.ts). It never archives, never marks
+// anything reviewed, and never touches `confidence`. The Jev calibration supports an ORDERING,
+// not a decision — see server/lib/memory/jev-score.ts.
 
-import { and, isNull, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { memories } from '../db/schema'
-import { askJev, nouls, jevConfig } from '../lib/ai/jev'
-import { JEV_QUESTIONS, jevKeepScore, type JevAnswers } from '../lib/memory/jev-score'
-
-/** 8 has hit 429s before on this API; stay under it. */
-const CONCURRENCY = 6
+import { jevConfig } from '../lib/ai/jev'
+import { scoreMemories, selectUnscored, type ScoreDeps } from './memory-scoring'
 
 export interface JevScoreRunResult {
   considered: number
   scored: number
   failed: number
+  /** The audit runs on the same rows (one scoring path); counted separately. */
+  audited?: number
+  auditFailed?: number
   skipped?: 'not-configured'
 }
 
 /**
- * Score up to `limit` unreviewed, unscored, live memories.
+ * Score up to `limit` live memories missing a Jev score or a current audit.
  *
- * Targets UNREVIEWED memories only — the score exists to order the review queue, and
- * re-scoring the 2,500 already-reviewed ones would spend money to sort a list nobody opens.
- * Already-scored rows are skipped via `jev_scored_at IS NULL`, so repeated runs walk
- * forward through the backlog instead of redoing it.
+ * Spec D2 (cycle 77): every live memory gets both scores, REVIEWED ones included — /memories
+ * sorts and filters by them, not just the review queue. Unreviewed rows still go first (they are
+ * what the queue orders), then oldest. Already-scored parts are skipped and a part that failed 3
+ * times is left alone, so repeated runs walk forward through the backlog instead of redoing it.
+ *
+ * `onlyIds` / `deps` are test seams (shared dev DB, no real Jev or model calls in tests).
  */
-export async function runJevScoring(opts: { limit?: number } = {}): Promise<JevScoreRunResult> {
+export async function runJevScoring(
+  opts: { limit?: number, onlyIds?: string[], deps?: ScoreDeps } = {}
+): Promise<JevScoreRunResult> {
   const limit = opts.limit ?? 50
   // Assigned in Settings → AI → Assignments, like every other model. Unassigned is a normal
   // state, not an error: Jev is an optional second opinion and the queue renders an unscored
   // memory as "unknown".
-  const resolved = await jevConfig()
-  if (!resolved) return { considered: 0, scored: 0, failed: 0, skipped: 'not-configured' }
-  // Bound to a non-nullable local: the worker below closes over it, and a closure does not
-  // keep the narrowing from the guard above.
-  const cfg = resolved
+  const cfg = opts.deps?.cfg !== undefined ? opts.deps.cfg : await jevConfig()
+  if (!cfg) return { considered: 0, scored: 0, failed: 0, skipped: 'not-configured' }
 
-  const db = useDb()
-  const rows = await db.select({ id: memories.id, content: memories.content })
-    .from(memories)
-    .where(and(
-      isNull(memories.reviewedAt),
-      isNull(memories.archivedAt),
-      isNull(memories.jevScoredAt)
-    ))
-    .orderBy(sql`${memories.createdAt} desc`)
-    .limit(limit)
+  const ids = await selectUnscored(limit, { onlyIds: opts.onlyIds })
+  if (!ids.length) return { considered: 0, scored: 0, failed: 0, audited: 0, auditFailed: 0 }
 
-  if (!rows.length) return { considered: 0, scored: 0, failed: 0 }
-
-  let scored = 0
-  let failed = 0
-  const queue = [...rows]
-
-  async function worker() {
-    for (;;) {
-      const row = queue.shift()
-      if (!row) return
-      try {
-        const res = await askJev(row.content, JEV_QUESTIONS, cfg)
-        const answers = nouls(res.answers)
-        const score = jevKeepScore(answers as Partial<JevAnswers>)
-        // A partial response scores null. Still stamp jevScoredAt so the row is not retried
-        // forever — the raw answers are kept either way, so a later weighting can revisit it.
-        //
-        // jevModel is the version that ANSWERED, not the one requested: the config asks for
-        // `jev-latest`, so this is the only record of which model produced this score.
-        await db.update(memories)
-          .set({ jevScore: score, jevAnswers: answers, jevScoredAt: new Date(), jevModel: res.model })
-          .where(sql`${memories.id} = ${row.id}`)
-        scored++
-      } catch (err) {
-        // Leave the row UNSTAMPED so the next run retries it. An unreachable Jev must not
-        // permanently mark 50 memories as "scored, no score".
-        console.warn(`[jev] scoring ${row.id} failed:`, err)
-        failed++
-      }
-    }
+  const results = await scoreMemories(ids, { ...opts.deps, cfg })
+  const count = (pred: (r: (typeof results)[number]) => boolean) => results.filter(pred).length
+  return {
+    considered: ids.length,
+    scored: count(r => r.jev === 'scored'),
+    failed: count(r => r.jev === 'failed'),
+    audited: count(r => r.audit === 'scored'),
+    auditFailed: count(r => r.audit === 'failed')
   }
-
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker))
-  return { considered: rows.length, scored, failed }
 }

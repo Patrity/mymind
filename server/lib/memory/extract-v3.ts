@@ -6,7 +6,7 @@
  * the criteria change: every memory created by this prompt is stamped with it
  * (`memories.extract_prompt_version`), so scores can be compared per prompt generation.
  */
-import { chat, type ChatMessage } from '../ai/chat'
+import { chat, chatWithModel, type ChatMessage } from '../ai/chat'
 import { parseExtractV3, extractBalanced, type DocCandidate, type MemoryCandidate } from '../ai/memory-extract'
 import type { AuditVerdict } from '../../../shared/types/memory'
 
@@ -163,15 +163,19 @@ export function parseAudit(raw: string): ParsedAudit {
  * token cap and chat() throws). A thrown error (network, timeout, failover exhausted) is caught
  * here and reported as ok:false so the caller never has to special-case a rejected promise: both
  * "bad reply" and "call failed" land on the same audit_failures counter.
+ *
+ * `model` is the chain member that ANSWERED (chatWithModel), so `audit_model` records provenance
+ * even when the call failed over off the chain head.
  */
 export async function auditMemory(
   m: { content: string, project: string | null, ageDays: number, scope: string },
-  deps: { chatFn?: typeof chat } = {}
+  deps: { chatFn?: typeof chatWithModel } = {}
 ): Promise<ParsedAudit & { model?: string }> {
-  const chatFn = deps.chatFn ?? chat
+  const chatFn = deps.chatFn ?? chatWithModel
   try {
-    const raw = await chatFn('bulk', auditMessages(m), { temperature: 0, maxTokens: 300 })
-    return parseAudit(raw)
+    const { text, model } = await chatFn('bulk', auditMessages(m), { temperature: 0, maxTokens: 300 })
+    const parsed = parseAudit(text)
+    return parsed.ok ? { ...parsed, model } : parsed
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

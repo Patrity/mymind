@@ -10,6 +10,10 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // exists inside the Nuxt/Nitro runtime (see test/memory-applicability.db.test.ts for the
 // same note). Stub it to a fixed vector so this suite never depends on a homelab embeddings rig.
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
+// New memories are scored (Jev + audit) fire-and-forget after creation. Left real, that would
+// resolve the dev DB's Jev config and call the real Jev API — stub the scoring path out.
+const scoreMemories = vi.hoisted(() => vi.fn(async (_ids: string[]) => []))
+vi.mock('../server/services/memory-scoring', () => ({ scoreMemories }))
 
 import { useDb } from '../server/db'
 import { conversations, conversationMessages, memEnrichmentState, memories } from '../server/db/schema'
@@ -78,6 +82,15 @@ describe('enrichConversations', () => {
     expect(extract).toHaveBeenCalledTimes(1)
     const [row] = await useDb().select().from(memories).where(eq(memories.source, `conversation:${id}`)).limit(1)
     expect(row!.extractPromptVersion).toBe('extract-v3')
+    // The new memory is handed to the shared scoring path.
+    expect(scoreMemories).toHaveBeenCalledWith([row!.id])
+  })
+
+  it('does not call the scorer when nothing was extracted', async () => {
+    const id = await seedConversation('nothing durable here')
+    scoreMemories.mockClear()
+    await enrichConversations({ limit: 5, only: [id], deps: { extract: async () => ({ memories: [], docCandidates: [] }) } })
+    expect(scoreMemories).not.toHaveBeenCalled()
   })
 
   it('records state under source_kind=conversation', async () => {

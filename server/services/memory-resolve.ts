@@ -24,7 +24,11 @@ export interface ResolveInput {
 }
 export type ResolveAction =
   'duplicate' | 'insert' | 'supersede' | 'review-supersede' | 'contradict' | 'review-contradict'
-export interface ResolvePlan { action: ResolveAction, targetId?: string, confidence?: number, reasoning?: string }
+export interface ResolvePlan {
+  action: ResolveAction, targetId?: string, confidence?: number, reasoning?: string
+  /** The row this call inserted, if any (insert / supersede / contradict paths) — enrichment scores it. */
+  newId?: string
+}
 
 export interface ChooseResolutionOpts {
   threshold: number
@@ -154,7 +158,7 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   }).from(memories)
     .where(and(live, eq(memories.scope, scope), projectFilter, isNotNull(memories.embedding)))
     .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`).limit(8)
-  if (!near.length) { await insertFresh(input, vec, contentHash, threshold); return { action: 'insert' } }
+  if (!near.length) { const newId = await insertFresh(input, vec, contentHash, threshold); return { action: 'insert', newId } }
 
   // Mechanical duplicate short-circuit — task f80622b9.
   //
@@ -187,7 +191,7 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const existing = plan.targetId ? near.find(n => n.id === plan.targetId) : undefined
 
   if (plan.action === 'duplicate') { await mergeEvidence(plan.targetId!, input.evidence ?? [], input.sourceDate ?? null); return plan }
-  if (plan.action === 'insert') { await insertFresh(input, vec, contentHash, threshold); return plan }
+  if (plan.action === 'insert') { const newId = await insertFresh(input, vec, contentHash, threshold); return { ...plan, newId } }
 
   const newId = await insertFresh(input, vec, contentHash, threshold)
   const proposed = { newId, existingId: plan.targetId, confidence: plan.confidence, reasoning: plan.reasoning, newContent: input.content, existingContent: existing?.content }
@@ -211,5 +215,5 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
     // decides. An unresolved contradiction is preferable to a silently wrong resolution.
     publishChange({ resource: 'review', action: 'created', id: plan.targetId! })
   }
-  return plan
+  return { ...plan, newId }
 }

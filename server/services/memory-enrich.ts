@@ -6,6 +6,7 @@ import { resolveEnrichedMemory } from './memory-resolve'
 import { createMemory } from './memory'
 import { projectIdForScope } from '../lib/projects/memory-project'
 import { publishChange } from '../utils/live-bus'
+import { scoreMemories } from './memory-scoring'
 
 export interface EnrichMemoryResult {
   enriched: number
@@ -71,6 +72,15 @@ export async function extractMemoriesFromTranscript(transcript: string): Promise
  * anyway so a rejection can never surface as an unhandled rejection in Nitro.
  */
 async function routeDocCandidates(_candidates: DocCandidate[], _src: { sessionId?: string, conversationId?: string }): Promise<void> {}
+
+/**
+ * Score freshly created memories (Jev + audit) without holding up enrichment. Fire-and-forget:
+ * a failure leaves the rows for the backfill / queue scorer, which retry unscored rows anyway.
+ */
+function scoreNewMemories(ids: string[]): void {
+  if (!ids.length) return
+  void scoreMemories(ids).catch(err => console.warn('[memory-enrich] scoring new memories failed:', err))
+}
 
 /**
  * Run memory enrichment over sessions that have new messages since last enrichment.
@@ -160,6 +170,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
       void routeDocCandidates(docCandidates, { sessionId: session.id }).catch(err => console.warn('[memory-enrich] doc candidate routing failed:', err))
 
       // Store each candidate with rich provenance via resolution orchestrator
+      const newIds: string[] = []
       for (const candidate of extracted) {
         try {
           const plan = await resolveEnrichedMemory({
@@ -183,6 +194,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
             }]
           })
           enriched++
+          if (plan.newId) newIds.push(plan.newId)
           if (plan.action === 'insert') actions.inserted++
           else if (plan.action === 'supersede') actions.superseded++
           else if (plan.action === 'contradict') { actions.contradicted++; actions.reviewQueued++ }
@@ -193,6 +205,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
           console.warn(`[memory-enrich] failed to store candidate for session ${session.id}:`, memErr)
         }
       }
+      scoreNewMemories(newIds)
 
       // Upsert enrichment state
       await db
@@ -323,6 +336,7 @@ export async function enrichConversations(
     try {
       const { memories: extracted, docCandidates } = await extract(transcript)
       void routeDocCandidates(docCandidates, { conversationId: c.id }).catch(err => console.warn('[memory-enrich] doc candidate routing failed:', err))
+      const newIds: string[] = []
       for (const e of extracted) {
         const memory = await createMemory({
           scope: e.scope,
@@ -332,8 +346,10 @@ export async function enrichConversations(
           extractPromptVersion: EXTRACT_PROMPT_VERSION
         })
         publishChange({ resource: 'memory', action: 'created', id: memory.id })
+        newIds.push(memory.id)
         memoriesCreated++
       }
+      scoreNewMemories(newIds)
       await db.insert(memEnrichmentState)
         .values({ sourceKind: 'conversation', sourceId: c.id, lastEnrichedMessageCount: rows.length, lastRun: new Date(), status: 'ok' })
         .onConflictDoUpdate({

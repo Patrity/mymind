@@ -10,6 +10,7 @@ import { getSearchConfig } from '../lib/search/config'
 import { resolveChain } from '../lib/ai/registry/resolve'
 import { dedupDecision, type DedupCandidate } from './memory-dedup'
 import { publishChange } from '../utils/live-bus'
+import { AUDIT_VERDICTS } from '../lib/memory/extract-v3'
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -51,8 +52,6 @@ export function reviewedCondition(reviewed?: boolean) {
 // ---------------------------------------------------------------------------
 
 const live = () => isNull(memories.archivedAt)
-
-const AUDIT_VERDICTS: readonly AuditVerdict[] = ['keep', 'transient', 'redundant', 'wrong_scope', 'belongs_in_doc']
 
 function toDTO(r: typeof memories.$inferSelect, relations?: MemoryRelationDTO[]): MemoryDTO {
   const evidenceRaw = Array.isArray(r.evidence) ? (r.evidence as unknown[]) : []
