@@ -160,9 +160,10 @@ export function parseAudit(raw: string): ParsedAudit {
 /**
  * Audit one existing memory against the extract-v3 criteria. 'bulk' = same no-think chain the
  * extractor uses — see extractV3's comment on why (the reasoning alias's think-blocks blow the
- * token cap and chat() throws). A thrown error (network, timeout, failover exhausted) is caught
- * here and reported as ok:false so the caller never has to special-case a rejected promise: both
- * "bad reply" and "call failed" land on the same audit_failures counter.
+ * token cap and chat() throws). Never throws: a thrown call (network, timeout, 429/5xx, failover
+ * exhausted) comes back as ok:false with `transport: true`, so the caller can tell an
+ * infrastructure outage (retry later, never counted against the row) from a bad reply (content
+ * failure, counted toward `audit_failures`).
  *
  * `model` is the chain member that ANSWERED (chatWithModel), so `audit_model` records provenance
  * even when the call failed over off the chain head.
@@ -170,13 +171,14 @@ export function parseAudit(raw: string): ParsedAudit {
 export async function auditMemory(
   m: { content: string, project: string | null, ageDays: number, scope: string },
   deps: { chatFn?: typeof chatWithModel } = {}
-): Promise<ParsedAudit & { model?: string }> {
+): Promise<(ParsedAudit & { model?: string }) | { ok: false, error: string, transport: true }> {
   const chatFn = deps.chatFn ?? chatWithModel
+  let reply: { text: string, model: string }
   try {
-    const { text, model } = await chatFn('bulk', auditMessages(m), { temperature: 0, maxTokens: 300 })
-    const parsed = parseAudit(text)
-    return parsed.ok ? { ...parsed, model } : parsed
+    reply = await chatFn('bulk', auditMessages(m), { temperature: 0, maxTokens: 300 })
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    return { ok: false, error: err instanceof Error ? err.message : String(err), transport: true }
   }
+  const parsed = parseAudit(reply.text)
+  return parsed.ok ? { ...parsed, model: reply.model } : parsed
 }

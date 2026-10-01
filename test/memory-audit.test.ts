@@ -130,6 +130,15 @@ describe('auditMemory', () => {
     const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
     expect(out.ok).toBe(false)
     expect(out.ok === false && out.error).toBe('chat: model returned no usable content')
+    // A thrown call is a TRANSPORT failure: the scorer must not count it against the row.
+    expect('transport' in out && out.transport).toBe(true)
+  })
+
+  it('a bad reply is a content failure, not a transport one', async () => {
+    const chatFn = vi.fn(async () => ({ text: 'Looks durable to me.', model: 'm' }))
+    const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
+    expect(out.ok).toBe(false)
+    expect('transport' in out).toBe(false)
   })
 })
 

@@ -72,8 +72,9 @@ describe('scoreMemory', () => {
 
     expect(res).toEqual({ id, jev: 'scored', audit: 'scored' })
     // Live-data rule: a background writer emits per item, so /memories and /review refresh.
+    // Once per row per call, after both parts settle — not once per part.
     expect(publishChange).toHaveBeenCalledWith({ resource: 'memory', action: 'updated', id })
-    expect(publishChange).toHaveBeenCalledTimes(2)
+    expect(publishChange).toHaveBeenCalledTimes(1)
     expect(ask).toHaveBeenCalledTimes(1)
     expect(chatFn).toHaveBeenCalledTimes(1)
 
@@ -117,10 +118,10 @@ describe('scoreMemory', () => {
     expect((await load(id)).auditPromptVersion).toBe(AUDIT_PROMPT_VERSION)
   })
 
-  it('a failure increments its counter and the 3rd failure skips that part', async () => {
+  it('a CONTENT failure increments its counter and the 3rd one skips that part', async () => {
     const id = await seed({ jevFailures: 1, auditFailures: 1 })
-    const ask = vi.fn(async () => { throw new Error('Jev 500: down') })
-    // Prose, not JSON — parseAudit fails it.
+    // Jev answered, but with nothing usable; the audit answered in prose, not JSON.
+    const ask = vi.fn(async () => ({ model: 'jev-1.13.0', answers: {} }))
     const chatFn = vi.fn(async () => ({ text: 'I think this memory is fine.', model: 'm' }))
     const deps = { ask: ask as never, cfg: CFG, chatFn: chatFn as never }
 
@@ -168,48 +169,85 @@ describe('scoreMemory', () => {
     expect((await load(id)).jevFailures).toBe(0)
   })
 
-  it('Review Focus 2: two concurrent calls on one row leave a consistent final state', async () => {
+  it('Review Focus 2: two racers on one row — the first writer wins each part, nothing is double-stamped', async () => {
     const id = await seed()
-    const deps = { ask: okAsk() as never, cfg: CFG, chatFn: okChat() as never }
-    const [a, b] = await Promise.all([scoreMemory(id, deps), scoreMemory(id, deps)])
-    for (const r of [a, b]) {
-      expect(r.jev === 'scored' || r.jev === 'skipped').toBe(true)
-      expect(r.audit === 'scored' || r.audit === 'skipped').toBe(true)
-    }
+    // Different answers per racer, and a delay so both load the row before either stamps.
+    const racer = (tag: string, keep: number) => ({
+      ask: vi.fn(async () => { await new Promise(r => setTimeout(r, 20)); return { ...JEV_REPLY, model: `jev-${tag}` } }) as never,
+      chatFn: vi.fn(async () => {
+        await new Promise(r => setTimeout(r, 20))
+        return { text: JSON.stringify({ keep, verdict: 'keep', reason: tag }), model: `audit-${tag}` }
+      }) as never,
+      cfg: CFG
+    })
+    publishChange.mockClear()
+    const [a, b] = await Promise.all([scoreMemory(id, racer('A', 0.81)), scoreMemory(id, racer('B', 0.62))])
+
+    // Exactly one racer stamped each part; the other's guarded write was a no-op.
+    expect([a.jev, b.jev].filter(o => o === 'scored')).toHaveLength(1)
+    expect([a.audit, b.audit].filter(o => o === 'scored')).toHaveLength(1)
+    const jevWinner = a.jev === 'scored' ? 'A' : 'B'
+    const auditWinner = a.audit === 'scored' ? 'A' : 'B'
+
     const row = await load(id)
-    expect(row.jevModel).toBe('jev-1.13.0')
-    expect(row.jevAnswers).toEqual({ transient: 0.2, rederivable: 0.3, states_reason: 0.8, names_specific: 0.7 })
-    expect(row.auditVerdict).toBe('keep')
-    expect(row.auditKeep).toBe(0.85)
-    expect(row.auditModel).toBe('audit-model-x')
-    expect(row.auditPromptVersion).toBe(AUDIT_PROMPT_VERSION)
+    expect(row.jevModel).toBe(`jev-${jevWinner}`)
+    expect(row.auditModel).toBe(`audit-${auditWinner}`)
+    expect(row.auditReason).toBe(auditWinner)
+    expect(row.auditKeep).toBe(auditWinner === 'A' ? 0.81 : 0.62)
     expect(row.jevFailures).toBe(0)
     expect(row.auditFailures).toBe(0)
+    // One publish per call that stamped something: 1 or 2, never one per write (4).
+    const publishers = new Set([a, b].filter(r => r.jev === 'scored' || r.audit === 'scored'))
+    expect(publishChange).toHaveBeenCalledTimes(publishers.size)
   })
 })
 
 describe('scoreMemories', () => {
   it('scores every id, Jev at most 6 in flight and the audit at most 2', async () => {
     const ids = await Promise.all(Array.from({ length: 10 }, () => seed()))
-    let jevInFlight = 0, jevPeak = 0, auditInFlight = 0, auditPeak = 0
-    const ask = vi.fn(async () => {
-      jevPeak = Math.max(jevPeak, ++jevInFlight)
-      await new Promise(r => setTimeout(r, 15))
-      jevInFlight--
-      return JEV_REPLY
-    })
-    const chatFn = vi.fn(async () => {
-      auditPeak = Math.max(auditPeak, ++auditInFlight)
-      await new Promise(r => setTimeout(r, 15))
-      auditInFlight--
-      return AUDIT_REPLY
-    })
+    const { ask, chatFn, peaks } = meteredStubs()
     const results = await scoreMemories(ids, { ask: ask as never, cfg: CFG, chatFn: chatFn as never })
 
     expect(results.map(r => r.id)).toEqual(ids)
     expect(results.every(r => r.jev === 'scored' && r.audit === 'scored')).toBe(true)
-    expect(jevPeak).toBe(6)
-    expect(auditPeak).toBe(2)
+    expect(peaks.jev).toBe(6)
+    expect(peaks.audit).toBe(2)
+  })
+
+  it('the limiters are shared: two concurrent batches together stay at 6 Jev / 2 audit', async () => {
+    const idsA = await Promise.all(Array.from({ length: 6 }, () => seed()))
+    const idsB = await Promise.all(Array.from({ length: 6 }, () => seed()))
+    const { ask, chatFn, peaks } = meteredStubs()
+    const deps = { ask: ask as never, cfg: CFG, chatFn: chatFn as never }
+    const [ra, rb] = await Promise.all([scoreMemories(idsA, deps), scoreMemories(idsB, deps)])
+
+    expect([...ra, ...rb].every(r => r.jev === 'scored' && r.audit === 'scored')).toBe(true)
+    expect(peaks.jev).toBe(6)
+    expect(peaks.audit).toBe(2)
+  })
+
+  it('a Jev TRANSPORT failure charges no row and stops the batch', async () => {
+    const ids = await Promise.all(Array.from({ length: 10 }, () => seed()))
+    const ask = vi.fn(async () => { throw new Error('Jev 503: upstream unavailable') })
+    const results = await scoreMemories(ids, { ask: ask as never, cfg: CFG, chatFn: okChat() as never })
+
+    expect(results.some(r => r.jev === 'unavailable')).toBe(true)
+    expect(results.some(r => r.jev === 'skipped')).toBe(true)   // never started: the batch stopped
+    expect(results.some(r => r.jev === 'failed')).toBe(false)
+    expect(ask.mock.calls.length).toBeLessThan(ids.length)
+    for (const id of ids) expect((await load(id)).jevFailures).toBe(0)
+  })
+
+  it('an audit TRANSPORT failure (chain exhausted) charges no row and stops the batch', async () => {
+    const ids = await Promise.all(Array.from({ length: 10 }, () => seed()))
+    const chatFn = vi.fn(async () => { throw new Error('all models failed for usage bulk') })
+    const results = await scoreMemories(ids, { ask: okAsk() as never, cfg: null, chatFn: chatFn as never })
+
+    expect(results.some(r => r.audit === 'unavailable')).toBe(true)
+    expect(results.some(r => r.audit === 'skipped')).toBe(true)
+    expect(results.some(r => r.audit === 'failed')).toBe(false)
+    expect(chatFn.mock.calls.length).toBeLessThan(ids.length)
+    for (const id of ids) expect((await load(id)).auditFailures).toBe(0)
   })
 })
 
@@ -226,33 +264,78 @@ describe('selectUnscored', () => {
     const notInScope = await seed({ createdAt: t(1) })
 
     const onlyIds = [reviewedOld, unreviewedNew, unreviewedOld, auditOnlyMissing, fullyScored, exhausted, archived]
-    expect(await selectUnscored(10, { onlyIds })).toEqual([unreviewedOld, auditOnlyMissing, unreviewedNew, reviewedOld])
-    expect(await selectUnscored(2, { onlyIds })).toEqual([unreviewedOld, auditOnlyMissing])
-    expect(await selectUnscored(10, { onlyIds: [] })).toEqual([])
-    expect(await selectUnscored(10, { onlyIds })).not.toContain(notInScope)
+    const all = { onlyIds, jevConfigured: true }
+    // unreviewedOnly: false (the backfill) includes reviewed rows (spec D2).
+    expect(await selectUnscored(10, { ...all, unreviewedOnly: false })).toEqual([unreviewedOld, auditOnlyMissing, unreviewedNew, reviewedOld])
+    expect(await selectUnscored(10, all)).toEqual([unreviewedOld, auditOnlyMissing, unreviewedNew, reviewedOld])
+    expect(await selectUnscored(2, all)).toEqual([unreviewedOld, auditOnlyMissing])
+    // unreviewedOnly: true (the cron) drops the reviewed row.
+    expect(await selectUnscored(10, { ...all, unreviewedOnly: true })).toEqual([unreviewedOld, auditOnlyMissing, unreviewedNew])
+    expect(await selectUnscored(10, { onlyIds: [], jevConfigured: true })).toEqual([])
+    expect(await selectUnscored(10, all)).not.toContain(notInScope)
+  })
+
+  it('with Jev unconfigured, a missing Jev score alone does not select a row', async () => {
+    const audited = await seed({ auditPromptVersion: AUDIT_PROMPT_VERSION })   // only Jev missing
+    const unaudited = await seed()
+    const onlyIds = [audited, unaudited]
+    expect(await selectUnscored(10, { onlyIds, jevConfigured: false })).toEqual([unaudited])
+    expect(await selectUnscored(10, { onlyIds, jevConfigured: true })).toEqual(expect.arrayContaining([audited, unaudited]))
   })
 })
 
 describe('runJevScoring (the queue scorer) on the shared path', () => {
-  it('scores a REVIEWED memory too (spec D2) and counts jev failures', async () => {
+  it('scores UNREVIEWED memories only — reviewed rows wait for the backfill', async () => {
     const reviewed = await seed({ reviewedAt: new Date() })
-    const failing = await seed()
-    const ask = vi.fn(async (state: string) => {
-      if (state === (await load(failing)).content) throw new Error('Jev 503')
-      return JEV_REPLY
-    })
+    const unreviewed = await seed()
+    const ask = okAsk()
     const res = await runJevScoring({
-      limit: 50, onlyIds: [reviewed, failing],
+      limit: 50, onlyIds: [reviewed, unreviewed],
       deps: { ask: ask as never, cfg: CFG, chatFn: okChat() as never }
     })
-    expect(res).toMatchObject({ considered: 2, scored: 1, failed: 1, audited: 2, auditFailed: 0 })
-    expect((await load(reviewed)).jevModel).toBe('jev-1.13.0')
+    expect(res).toMatchObject({ considered: 1, scored: 1, failed: 0, audited: 1, auditFailed: 0, stoppedEarly: false })
+    expect((await load(unreviewed)).jevModel).toBe('jev-1.13.0')
+    const r = await load(reviewed)
+    expect(r.jevScoredAt).toBeNull()
+    expect(r.auditedAt).toBeNull()
+  })
+
+  it('counts a Jev content failure against the row', async () => {
+    const failing = await seed()
+    const ask = vi.fn(async () => ({ model: 'jev-1.13.0', answers: {} }))
+    const res = await runJevScoring({ onlyIds: [failing], deps: { ask: ask as never, cfg: CFG, chatFn: okChat() as never } })
+    expect(res).toMatchObject({ considered: 1, scored: 0, failed: 1, audited: 1 })
     expect((await load(failing)).jevFailures).toBe(1)
   })
 
-  it('reports not-configured when Jev has no config', async () => {
-    const id = await seed()
-    const res = await runJevScoring({ onlyIds: [id], deps: { ask: okAsk() as never, cfg: null, chatFn: okChat() as never } })
-    expect(res).toEqual({ considered: 0, scored: 0, failed: 0, skipped: 'not-configured' })
+  it('with Jev unconfigured, still audits rows lacking an audit and skips rows that have one', async () => {
+    const audited = await seed({ auditPromptVersion: AUDIT_PROMPT_VERSION })
+    const unaudited = await seed()
+    const ask = okAsk()
+    const chatFn = okChat()
+    const res = await runJevScoring({ onlyIds: [audited, unaudited], deps: { ask: ask as never, cfg: null, chatFn: chatFn as never } })
+    expect(res).toMatchObject({ considered: 1, scored: 0, failed: 0, audited: 1, jev: 'not-configured' })
+    expect(ask).not.toHaveBeenCalled()
+    expect(chatFn).toHaveBeenCalledTimes(1)
+    expect((await load(unaudited)).auditPromptVersion).toBe(AUDIT_PROMPT_VERSION)
   })
 })
+
+/** Stubs that record their peak in-flight count. */
+function meteredStubs() {
+  const peaks = { jev: 0, audit: 0 }
+  let jevIn = 0, auditIn = 0
+  const ask = vi.fn(async () => {
+    peaks.jev = Math.max(peaks.jev, ++jevIn)
+    await new Promise(r => setTimeout(r, 15))
+    jevIn--
+    return JEV_REPLY
+  })
+  const chatFn = vi.fn(async () => {
+    peaks.audit = Math.max(peaks.audit, ++auditIn)
+    await new Promise(r => setTimeout(r, 15))
+    auditIn--
+    return AUDIT_REPLY
+  })
+  return { ask, chatFn, peaks }
+}

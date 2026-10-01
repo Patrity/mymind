@@ -8,9 +8,18 @@
 //
 // Each part is independent: a row can be Jev-scored and not audited, or the reverse. A part runs
 // only while it is missing (jev_scored_at null / audit_prompt_version not the current one) and has
-// failed fewer than MAX_FAILURES times; a failure bumps that part's counter and leaves it unstamped
-// so a later run retries it. Stamping writes the same values whoever wins a race, so two callers
-// scoring one row at once (queue scorer + backfill) end in the same state.
+// failed fewer than MAX_FAILURES times.
+//
+// Two kinds of failure, treated differently:
+// - CONTENT failure (Jev answered with no usable answers; the audit reply is unparsable/invalid):
+//   the row itself is the problem, so its counter goes up and after 3 the part is skipped.
+// - TRANSPORT failure (thrown fetch error, 429 after retries, 5xx, timeout, failover exhausted):
+//   the infrastructure is the problem, so the row is NOT charged. The batch stops at the first one
+//   (circuit breaker) and leaves the rest for the next run — an outage must never burn the cap.
+//
+// Stamps are guarded by "still missing", so when two callers race on one row (enrichment's
+// fire-and-forget + the cron, or the cron + the backfill) the FIRST writer wins and the other's
+// write is a no-op. Both may still spend one call; only a claim column would prevent that.
 
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
@@ -25,12 +34,13 @@ import { publishChange } from '../utils/live-bus'
 export const JEV_CONCURRENCY = 6
 /** The audit runs on the bulk chat chain, shared with enrichment — keep it gentle. */
 export const AUDIT_CONCURRENCY = 2
-/** A part that has failed this many times on a row is skipped from then on. */
+/** A part that has failed (on CONTENT) this many times on a row is skipped from then on. */
 export const MAX_FAILURES = 3
 
 const DAY_MS = 86_400_000
 
-export type PartOutcome = 'scored' | 'failed' | 'skipped'
+/** `unavailable` = a transport failure: not charged to the row, retried on a later run. */
+export type PartOutcome = 'scored' | 'failed' | 'skipped' | 'unavailable'
 export interface ScoreResult { id: string, jev: PartOutcome, audit: PartOutcome }
 
 export interface ScoreDeps {
@@ -41,13 +51,34 @@ export interface ScoreDeps {
   now?: Date
 }
 
+/**
+ * A FIFO concurrency limiter. Module-level instances below are shared by EVERY caller — the cron,
+ * the backfill, and each enrichment fire-and-forget — so the caps hold process-wide, not per call
+ * (per-call pools stacked up past Jev's 429 threshold).
+ */
+export function createLimiter(max: number) {
+  let active = 0
+  const waiting: (() => void)[] = []
+  return async function limit<T>(fn: () => Promise<T>): Promise<T> {
+    if (active >= max) await new Promise<void>(resolve => waiting.push(resolve))
+    else active++
+    try {
+      return await fn()
+    } finally {
+      const next = waiting.shift()
+      if (next) next()   // hand the slot straight over; `active` is unchanged
+      else active--
+    }
+  }
+}
+
+const jevLimit = createLimiter(JEV_CONCURRENCY)
+const auditLimit = createLimiter(AUDIT_CONCURRENCY)
+
 const live = () => isNull(memories.archivedAt)
 
-const needsJev = () => and(isNull(memories.jevScoredAt), lt(memories.jevFailures, MAX_FAILURES))
-const needsAudit = () => and(
-  sql`${memories.auditPromptVersion} is distinct from ${AUDIT_PROMPT_VERSION}`,
-  lt(memories.auditFailures, MAX_FAILURES)
-)
+const jevMissing = () => isNull(memories.jevScoredAt)
+const auditMissing = () => sql`${memories.auditPromptVersion} is distinct from ${AUDIT_PROMPT_VERSION}`
 
 async function loadRow(id: string) {
   const [row] = await useDb().select({
@@ -64,40 +95,52 @@ async function loadRow(id: string) {
   return row ?? null
 }
 
+/** Per-batch state: set once a transport failure is seen; parts not yet started then skip. */
+interface Batch { stopped: boolean }
+
 /** Jev part for one row. Reads the row fresh, so a memory archived mid-run is skipped. */
-async function scoreJevPart(id: string, cfg: JevConfig | null, deps: ScoreDeps): Promise<PartOutcome> {
-  if (!cfg) return 'skipped'
+async function scoreJevPart(id: string, cfg: JevConfig | null, deps: ScoreDeps, batch: Batch): Promise<PartOutcome> {
+  if (!cfg || batch.stopped) return 'skipped'
   const row = await loadRow(id)
   if (!row || row.jevScoredAt || row.jevFailures >= MAX_FAILURES) return 'skipped'
 
   const db = useDb()
+  let res
   try {
-    const res = await (deps.ask ?? askJev)(row.content, JEV_QUESTIONS, cfg)
-    const answers = nouls(res.answers)
-    // A partial response scores null. Still stamped, so the row is not retried forever — the
-    // raw answers are kept either way, so a later weighting can revisit it. jevModel is the
-    // version that ANSWERED (the config asks for `jev-latest`).
-    await db.update(memories)
-      .set({
-        jevScore: jevKeepScore(answers as Partial<JevAnswers>),
-        jevAnswers: answers,
-        jevScoredAt: deps.now ?? new Date(),
-        jevModel: res.model
-      })
-      .where(and(eq(memories.id, id), live()))
-    publishChange({ resource: 'memory', action: 'updated', id })
-    return 'scored'
+    res = await (deps.ask ?? askJev)(row.content, JEV_QUESTIONS, cfg)
   } catch (err) {
-    console.warn(`[memory-scoring] jev on ${id} failed:`, err)
+    batch.stopped = true
+    console.warn(`[memory-scoring] jev unavailable on ${id}, stopping the batch:`, err)
+    return 'unavailable'
+  }
+
+  const answers = nouls(res.answers)
+  if (!Object.keys(answers).length) {
+    console.warn(`[memory-scoring] jev returned no usable answers for ${id}`)
     await db.update(memories)
       .set({ jevFailures: sql`${memories.jevFailures} + 1` })
-      .where(eq(memories.id, id))
+      .where(and(eq(memories.id, id), live()))
     return 'failed'
   }
+
+  // A partial response scores null. Still stamped, so the row is not retried forever — the raw
+  // answers are kept either way, so a later weighting can revisit it. jevModel is the version
+  // that ANSWERED (the config asks for `jev-latest`).
+  const stamped = await db.update(memories)
+    .set({
+      jevScore: jevKeepScore(answers as Partial<JevAnswers>),
+      jevAnswers: answers,
+      jevScoredAt: deps.now ?? new Date(),
+      jevModel: res.model
+    })
+    .where(and(eq(memories.id, id), live(), jevMissing()))
+    .returning({ id: memories.id })
+  return stamped.length ? 'scored' : 'skipped'
 }
 
-/** Audit part for one row. auditMemory never throws: a bad reply and a failed call both land here as ok:false. */
-async function scoreAuditPart(id: string, deps: ScoreDeps): Promise<PartOutcome> {
+/** Audit part for one row. */
+async function scoreAuditPart(id: string, deps: ScoreDeps, batch: Batch): Promise<PartOutcome> {
+  if (batch.stopped) return 'skipped'
   const row = await loadRow(id)
   if (!row || row.auditPromptVersion === AUDIT_PROMPT_VERSION || row.auditFailures >= MAX_FAILURES) return 'skipped'
 
@@ -109,13 +152,18 @@ async function scoreAuditPart(id: string, deps: ScoreDeps): Promise<PartOutcome>
     deps.chatFn ? { chatFn: deps.chatFn } : {}
   )
   if (!res.ok) {
+    if ('transport' in res) {
+      batch.stopped = true
+      console.warn(`[memory-scoring] audit unavailable on ${id}, stopping the batch: ${res.error}`)
+      return 'unavailable'
+    }
     console.warn(`[memory-scoring] audit on ${id} failed: ${res.error}`)
     await db.update(memories)
       .set({ auditFailures: sql`${memories.auditFailures} + 1` })
-      .where(eq(memories.id, id))
+      .where(and(eq(memories.id, id), live()))
     return 'failed'
   }
-  await db.update(memories)
+  const stamped = await db.update(memories)
     .set({
       auditKeep: res.keep,
       auditVerdict: res.verdict,
@@ -124,62 +172,67 @@ async function scoreAuditPart(id: string, deps: ScoreDeps): Promise<PartOutcome>
       auditPromptVersion: AUDIT_PROMPT_VERSION,
       auditedAt: now
     })
-    .where(and(eq(memories.id, id), live()))
-  publishChange({ resource: 'memory', action: 'updated', id })
-  return 'scored'
+    .where(and(eq(memories.id, id), live(), auditMissing()))
+    .returning({ id: memories.id })
+  return stamped.length ? 'scored' : 'skipped'
 }
 
-async function resolveCfg(deps: ScoreDeps): Promise<JevConfig | null> {
+/** Jev's config for a run: the injected one (null = off), else resolved from the AI config. */
+export async function resolveJevCfg(deps: ScoreDeps = {}): Promise<JevConfig | null> {
   return deps.cfg !== undefined ? deps.cfg : await jevConfig()
 }
 
-/** Score one memory: Jev and the audit, each only if that part is still missing. */
-export async function scoreMemory(id: string, deps: ScoreDeps = {}): Promise<ScoreResult> {
-  const cfg = await resolveCfg(deps)
-  const [jev, audit] = await Promise.all([scoreJevPart(id, cfg, deps), scoreAuditPart(id, deps)])
-  return { id, jev, audit }
-}
-
-/** Run `fn` over `items` with at most `limit` in flight; results keep the input order. */
-async function pool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length)
-  let next = 0
-  async function worker() {
-    while (next < items.length) {
-      const i = next++
-      out[i] = await fn(items[i]!)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return out
-}
-
 /**
- * Score many memories. The two parts run as separate pools (Jev 6 in flight, audit 2) side by
- * side, so the slow audit never throttles Jev. Results are in `ids` order.
+ * Score many memories: Jev and the audit, each only if that part is still missing, through the
+ * shared limiters (Jev 6, audit 2 process-wide). One `memory` live update per row that had
+ * anything stamped, sent once both its parts settle. Stops at the first transport failure; parts
+ * not started by then come back `skipped`. Results are in `ids` order.
  */
 export async function scoreMemories(ids: string[], deps: ScoreDeps = {}): Promise<ScoreResult[]> {
   if (!ids.length) return []
-  const cfg = await resolveCfg(deps)
-  const [jev, audit] = await Promise.all([
-    pool(ids, JEV_CONCURRENCY, id => scoreJevPart(id, cfg, deps)),
-    pool(ids, AUDIT_CONCURRENCY, id => scoreAuditPart(id, deps))
-  ])
-  return ids.map((id, i) => ({ id, jev: jev[i]!, audit: audit[i]! }))
+  const cfg = await resolveJevCfg(deps)
+  const batch: Batch = { stopped: false }
+  return Promise.all(ids.map(async (id) => {
+    const [jev, audit] = await Promise.all([
+      jevLimit(() => scoreJevPart(id, cfg, deps, batch)),
+      auditLimit(() => scoreAuditPart(id, deps, batch))
+    ])
+    if (jev === 'scored' || audit === 'scored') publishChange({ resource: 'memory', action: 'updated', id })
+    return { id, jev, audit }
+  }))
+}
+
+/** Score one memory — `scoreMemories` for a single id. */
+export async function scoreMemory(id: string, deps: ScoreDeps = {}): Promise<ScoreResult> {
+  const [res] = await scoreMemories([id], deps)
+  return res!
+}
+
+export interface SelectUnscoredOpts {
+  /** Scoping seam (tests run against a shared dev DB). */
+  onlyIds?: string[]
+  /** The cron passes true (it orders the review queue); the backfill walks everything (false). */
+  unreviewedOnly?: boolean
+  /** False when Jev is unconfigured: a missing Jev score then doesn't make a row "unscored", so
+   *  selection can empty and the backfill can finish. */
+  jevConfigured: boolean
 }
 
 /**
- * Live memories still missing either score (with that part under the failure cap), unreviewed
- * first, then oldest. Spec D2: reviewed memories are included — every live memory gets both scores.
- * `onlyIds` is the scoping seam (tests run against a shared dev DB).
+ * Live memories still missing a score (with that part under the failure cap), unreviewed first,
+ * then oldest. Spec D2: every live memory gets both scores, so reviewed rows are included unless
+ * `unreviewedOnly`.
  */
-export async function selectUnscored(limit: number, opts: { onlyIds?: string[] } = {}): Promise<string[]> {
+export async function selectUnscored(limit: number, opts: SelectUnscoredOpts): Promise<string[]> {
   if (opts.onlyIds && !opts.onlyIds.length) return []
+  const needsAudit = and(auditMissing(), lt(memories.auditFailures, MAX_FAILURES))
+  const needsJev = and(jevMissing(), lt(memories.jevFailures, MAX_FAILURES))
   const rows = await useDb().select({ id: memories.id })
     .from(memories)
     .where(and(
       live(),
-      or(needsJev(), needsAudit()),
+      opts.jevConfigured ? or(needsJev, needsAudit) : needsAudit,
+      ...(opts.unreviewedOnly ? [isNull(memories.reviewedAt)] : []),
       ...(opts.onlyIds ? [inArray(memories.id, opts.onlyIds)] : [])
     ))
     .orderBy(sql`(${memories.reviewedAt} is null) desc`, memories.createdAt, memories.id)
