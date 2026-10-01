@@ -83,6 +83,13 @@ describe('dispatchLiveEvent', () => {
     expect(c.calls).toContainEqual([{ queryKey: ['profile'] }])
   })
 
+  // Cycle 77: Settings -> Memory's backfill card reads its progress under ['memory-backfill'].
+  it('memoryBackfill events invalidate the ["memory-backfill"] key', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'memoryBackfill', id: 'memory_backfill' }))
+    expect(c.calls).toContainEqual([{ queryKey: ['memory-backfill'] }])
+  })
+
   // Cycle 76 (Task 7): a pending improvement is a /review card.
   it('agentImprovement events invalidate the ["review"] and ["agentImprovement"] prefixes', () => {
     const c = fakeClient()

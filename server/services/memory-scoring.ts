@@ -28,7 +28,7 @@
 // fire-and-forget + the cron, or the cron + the backfill) the FIRST writer wins and the other's
 // write is a no-op. Both may still spend one call; only a claim column would prevent that.
 
-import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { memories } from '../db/schema'
 import { askJev, nouls, jevConfig, JevHttpError, type JevConfig } from '../lib/ai/jev'
@@ -88,8 +88,12 @@ const auditLimit = createLimiter(AUDIT_CONCURRENCY)
 
 const live = () => isNull(memories.archivedAt)
 
-const jevMissing = () => isNull(memories.jevScoredAt)
-const auditMissing = () => sql`${memories.auditPromptVersion} is distinct from ${AUDIT_PROMPT_VERSION}`
+/** Shared with backfillProgress, so `remaining` can never drift from what selection picks. */
+export const jevMissing = () => isNull(memories.jevScoredAt)
+export const auditMissing = () => sql`${memories.auditPromptVersion} is distinct from ${AUDIT_PROMPT_VERSION}`
+/** A part still missing AND under the failure cap — the rows selection will pick for that part. */
+export const needsJev = () => and(jevMissing(), lt(memories.jevFailures, MAX_FAILURES))
+export const needsAudit = () => and(auditMissing(), lt(memories.auditFailures, MAX_FAILURES))
 
 async function loadRow(id: string) {
   const [row] = await useDb().select({
@@ -212,6 +216,9 @@ export async function resolveJevCfg(deps: ScoreDeps = {}): Promise<JevConfig | n
  * anything stamped, sent once both its parts settle. A transport failure stops THAT part for the
  * rest of the batch (its not-yet-started rows come back `skipped`); the other part carries on.
  * Results are in `ids` order.
+ *
+ * Every id's closure is queued at once (the limiters cap what is IN FLIGHT, not what is queued):
+ * fine at the callers' 40–80 ids, but chunk the ids first before ever passing thousands.
  */
 export async function scoreMemories(ids: string[], deps: ScoreDeps = {}): Promise<ScoreResult[]> {
   if (!ids.length) return []
@@ -238,9 +245,15 @@ export interface SelectUnscoredOpts {
   onlyIds?: string[]
   /** The cron passes true (it orders the review queue); the backfill walks everything (false). */
   unreviewedOnly?: boolean
+  /** With `unreviewedOnly`: ALSO select rows created at/after this, whatever their review state.
+   *  The cron passes "7 days ago", so a new auto-reviewed memory whose fire-and-forget scoring hit
+   *  an outage is retried even after the backfill is `done` (final review M1). */
+  orCreatedSince?: Date
   /** False when Jev is unconfigured: a missing Jev score then doesn't make a row "unscored", so
    *  selection can empty and the backfill can finish. */
   jevConfigured: boolean
+  /** Select only rows missing THIS part (default: either part). */
+  part?: 'jev' | 'audit'
 }
 
 /**
@@ -250,17 +263,37 @@ export interface SelectUnscoredOpts {
  */
 export async function selectUnscored(limit: number, opts: SelectUnscoredOpts): Promise<string[]> {
   if (opts.onlyIds && !opts.onlyIds.length) return []
-  const needsAudit = and(auditMissing(), lt(memories.auditFailures, MAX_FAILURES))
-  const needsJev = and(jevMissing(), lt(memories.jevFailures, MAX_FAILURES))
+  if (opts.part === 'jev' && !opts.jevConfigured) return []
+  const need = opts.part === 'jev'
+    ? needsJev()
+    : opts.part === 'audit' || !opts.jevConfigured ? needsAudit() : or(needsJev(), needsAudit())
+  const queueScope = opts.orCreatedSince
+    ? or(isNull(memories.reviewedAt), gte(memories.createdAt, opts.orCreatedSince))
+    : isNull(memories.reviewedAt)
   const rows = await useDb().select({ id: memories.id })
     .from(memories)
     .where(and(
       live(),
-      opts.jevConfigured ? or(needsJev, needsAudit) : needsAudit,
-      ...(opts.unreviewedOnly ? [isNull(memories.reviewedAt)] : []),
+      need,
+      ...(opts.unreviewedOnly ? [queueScope] : []),
       ...(opts.onlyIds ? [inArray(memories.id, opts.onlyIds)] : [])
     ))
     .orderBy(sql`(${memories.reviewedAt} is null) desc`, memories.createdAt, memories.id)
     .limit(limit)
   return rows.map(r => r.id)
+}
+
+/**
+ * Up to `limit` rows needing the audit PLUS up to `limit` needing Jev, deduped (audit picks
+ * first), for one scoring call (final review I2). Selecting per part keeps the parts independent
+ * ACROSS batches: with one combined selection, a Jev outage re-selected the same rows every run
+ * (they still need Jev) and the audit, already done on them, made no progress — and the reverse.
+ * Empty only when BOTH parts have nothing left.
+ */
+export async function selectUnscoredPerPart(limit: number, opts: Omit<SelectUnscoredOpts, 'part'>): Promise<string[]> {
+  const [audit, jev] = await Promise.all([
+    selectUnscored(limit, { ...opts, part: 'audit' }),
+    selectUnscored(limit, { ...opts, part: 'jev' })
+  ])
+  return [...new Set([...audit, ...jev])]
 }

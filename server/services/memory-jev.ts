@@ -8,6 +8,9 @@
 
 import { resolveJevCfg, scoreMemories, selectUnscored, type ScoreDeps } from './memory-scoring'
 
+/** Rows this new are scored by the cron whatever their review state (final review M1). */
+export const RECENT_MEMORY_DAYS = 7
+
 export interface JevScoreRunResult {
   considered: number
   scored: number
@@ -23,11 +26,14 @@ export interface JevScoreRunResult {
 }
 
 /**
- * Score up to `limit` UNREVIEWED live memories missing a Jev score or a current audit.
+ * Score up to `limit` live memories missing a Jev score or a current audit that are UNREVIEWED or
+ * were created in the last RECENT_MEMORY_DAYS days.
  *
- * Unreviewed only: this cron exists to order the review queue. The full-population walk (spec D2,
- * reviewed rows included) runs ONLY through the switch-gated backfill, so that spend starts when
- * Tony turns it on. Already-scored parts are skipped and a part with 3 content failures is left
+ * Unreviewed: this cron exists to order the review queue. Recent: most new memories auto-review,
+ * and their scoring is a fire-and-forget right after creation — when that hits an outage, the cron
+ * retries them (otherwise, once the backfill is `done`, nothing would). The full-population walk
+ * (spec D2, older reviewed rows included) runs ONLY through the switch-gated backfill, so that
+ * spend starts when Tony turns it on. Already-scored parts are skipped and a part with 3 content failures is left
  * alone, so repeated runs walk forward through the backlog instead of redoing it.
  *
  * Jev unassigned (Settings → AI → Assignments) is a normal state: the audit still runs and a
@@ -40,7 +46,13 @@ export async function runJevScoring(
 ): Promise<JevScoreRunResult> {
   const limit = opts.limit ?? 50
   const cfg = await resolveJevCfg(opts.deps)
-  const ids = await selectUnscored(limit, { onlyIds: opts.onlyIds, unreviewedOnly: true, jevConfigured: cfg !== null })
+  const now = opts.deps?.now ?? new Date()
+  const ids = await selectUnscored(limit, {
+    onlyIds: opts.onlyIds,
+    unreviewedOnly: true,
+    orCreatedSince: new Date(now.getTime() - RECENT_MEMORY_DAYS * 86_400_000),
+    jevConfigured: cfg !== null
+  })
 
   const results = await scoreMemories(ids, { ...opts.deps, cfg })
   const count = (pred: (r: (typeof results)[number]) => boolean) => results.filter(pred).length

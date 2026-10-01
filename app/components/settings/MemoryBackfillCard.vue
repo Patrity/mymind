@@ -85,7 +85,7 @@ const eta = computed(() => {
       </div>
 
       <p v-if="progress.state === 'done'" class="text-sm text-success">
-        All memories scored
+        All memories scored<template v-if="progress.skipped > 0"> ({{ progress.skipped }} skipped)</template>
       </p>
       <p v-else class="text-xs text-muted">
         ETA: {{ eta ?? '—' }}

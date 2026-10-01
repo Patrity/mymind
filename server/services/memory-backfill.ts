@@ -4,7 +4,7 @@
 // runs from the `memory-backfill` task every 5 minutes after that.
 //
 // Resumable by construction: there is no cursor. Each run asks the DB which live rows still miss a
-// part (selectUnscored), so a crash, a restart or a pause loses nothing. Completion is read ONLY
+// part (selectUnscoredPerPart: up to 40 per part), so a crash, a restart or a pause loses nothing. Completion is read ONLY
 // from the DB state — `done` means selection came back empty — never from per-row outcomes (a
 // transport failure leaves its rows selected for the next run).
 //
@@ -12,17 +12,21 @@
 // (server/services/memory-scoring.ts) and its process-wide limiters, shared with the queue cron and
 // new-memory scoring. No automatic action on memories (spec D5).
 
-import { and, count, gte, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm'
+import { and, count, gte, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm'
 import { useDb } from '../db'
 import { memories } from '../db/schema'
 import { AUDIT_PROMPT_VERSION } from '../lib/memory/extract-v3'
 import {
   MEMORY_BACKFILL_KEY, getBackfillSetting, setBackfillState, type BackfillSetting
 } from '../lib/memory/backfill-setting'
-import { MAX_FAILURES, resolveJevCfg, scoreMemories, selectUnscored, type ScoreDeps } from './memory-scoring'
+import {
+  MAX_FAILURES, auditMissing, jevMissing, needsAudit, needsJev, resolveJevCfg, scoreMemories, selectUnscoredPerPart,
+  type ScoreDeps
+} from './memory-scoring'
 import { publishChange } from '../utils/live-bus'
 
-/** Memories per run (spec §4: 40 every 5 minutes). */
+/** Memories per run PER PART (spec §4: 40 every 5 minutes; selected per part since final review I2,
+ *  so a run touches 40–80 rows — the audit/Jev call counts stay ≤ 40 each). */
 export const BACKFILL_BATCH = 40
 
 export interface BackfillProgress {
@@ -38,7 +42,8 @@ export interface BackfillProgress {
   /** Live memories the backfill would still select (same rule as selectUnscored). */
   remaining: number
   startedAt: string | null
-  /** remaining ÷ the average rows/min scored since `startedAt`; null unless running with data. */
+  /** remaining ÷ the backfill's OWN recent rate (rows it finished per minute over its last runs);
+   *  null unless running with ≥ 2 runs recorded by this server process. */
   etaMinutes: number | null
   lastError: string | null
 }
@@ -50,18 +55,31 @@ export interface BackfillProgress {
  */
 let lastError: string | null = null
 
+/**
+ * The backfill's own recent runs, for the ETA: when each finished and how many of its rows it
+ * finished (rows that no longer need either part afterwards). Process memory like lastError; cleared
+ * on every switch change, so a pause/resume never stretches the window. Last RATE_WINDOW runs only.
+ */
+export interface BackfillRun { at: number, completed: number }
+const RATE_WINDOW = 6
+let recentRuns: BackfillRun[] = []
+
+/** Test seam: forget this process's recorded runs and last error (as a restart would). */
+export function resetBackfillProcessState() { recentRuns = []; lastError = null }
+
 function publishBackfill() {
   publishChange({ resource: 'memoryBackfill', action: 'updated', id: MEMORY_BACKFILL_KEY })
 }
 
 /**
  * Flip the switch from the control API. A repeat of the current state is a no-op — re-pressing
- * Start must not re-stamp `startedAt`, which anchors the ETA. Publishes `memoryBackfill` on a change.
+ * Start must not re-stamp `startedAt` or reset the ETA's recorded runs. Publishes `memoryBackfill` on a change.
  */
 export async function setBackfillSwitch(state: 'running' | 'off'): Promise<BackfillSetting> {
   const current = await getBackfillSetting()
   if (current.state === state) return current
   const next = await setBackfillState(state)
+  recentRuns = []
   publishBackfill()
   return next
 }
@@ -81,7 +99,8 @@ export async function runBackfillBatch(
 
   try {
     const cfg = await resolveJevCfg(opts.deps)
-    const ids = await selectUnscored(opts.limit ?? BACKFILL_BATCH, {
+    // Per part (up to `limit` each), so one part's outage never freezes the other across runs.
+    const ids = await selectUnscoredPerPart(opts.limit ?? BACKFILL_BATCH, {
       onlyIds: opts.onlyIds, unreviewedOnly: false, jevConfigured: cfg !== null
     })
 
@@ -96,6 +115,9 @@ export async function runBackfillBatch(
     }
 
     const results = await scoreMemories(ids, { ...opts.deps, cfg })
+    const [still] = await useDb().select({ n: count() }).from(memories)
+      .where(and(inArray(memories.id, ids), isNull(memories.archivedAt), cfg ? or(needsJev(), needsAudit()) : needsAudit()))
+    recentRuns = [...recentRuns, { at: Date.now(), completed: ids.length - (still?.n ?? 0) }].slice(-RATE_WINDOW)
     const down = [
       results.some(r => r.jev === 'unavailable') && 'Jev',
       results.some(r => r.audit === 'unavailable') && 'the audit model chain'
@@ -118,16 +140,11 @@ export async function runBackfillBatch(
  * it does for selection.
  */
 export async function backfillProgress(
-  opts: { onlyIds?: string[], deps?: ScoreDeps, now?: Date } = {}
+  opts: { onlyIds?: string[], deps?: ScoreDeps } = {}
 ): Promise<BackfillProgress> {
   const setting = await getBackfillSetting()
   const jevConfigured = (await resolveJevCfg(opts.deps)) !== null
-  const startedAt = setting.startedAt ? new Date(setting.startedAt) : null
 
-  const jevMissing = isNull(memories.jevScoredAt)
-  const auditMissing = sql`${memories.auditPromptVersion} is distinct from ${AUDIT_PROMPT_VERSION}`
-  const needsJev = and(jevMissing, lt(memories.jevFailures, MAX_FAILURES))
-  const needsAudit = and(auditMissing, lt(memories.auditFailures, MAX_FAILURES))
   const where = (pred: SQL | undefined) => sql`count(*) filter (where ${pred ?? sql`true`})`.mapWith(Number)
 
   const scope = opts.onlyIds ? (opts.onlyIds.length ? inArray(memories.id, opts.onlyIds) : sql`false`) : undefined
@@ -136,13 +153,10 @@ export async function backfillProgress(
     jevDone: where(isNotNull(memories.jevScoredAt)),
     auditDone: where(sql`${memories.auditPromptVersion} = ${AUDIT_PROMPT_VERSION}`),
     skipped: where(or(
-      and(jevMissing, gte(memories.jevFailures, MAX_FAILURES)),
-      and(auditMissing, gte(memories.auditFailures, MAX_FAILURES))
+      and(jevMissing(), gte(memories.jevFailures, MAX_FAILURES)),
+      and(auditMissing(), gte(memories.auditFailures, MAX_FAILURES))
     )),
-    remaining: where(jevConfigured ? or(needsJev, needsAudit) : needsAudit),
-    scoredSinceStart: startedAt
-      ? where(or(gte(memories.jevScoredAt, startedAt), gte(memories.auditedAt, startedAt)))
-      : sql`0`.mapWith(Number)
+    remaining: where(jevConfigured ? or(needsJev(), needsAudit()) : needsAudit())
   })
     .from(memories)
     .where(and(isNull(memories.archivedAt), scope))
@@ -156,15 +170,22 @@ export async function backfillProgress(
     skipped: r.skipped,
     remaining: r.remaining,
     startedAt: setting.startedAt,
-    etaMinutes: eta(setting.state, startedAt, r.scoredSinceStart, r.remaining, opts.now ?? new Date()),
+    etaMinutes: setting.state === 'running' ? etaFromRuns(recentRuns, r.remaining) : null,
     lastError
   }
 }
 
-function eta(state: BackfillSetting['state'], startedAt: Date | null, scored: number, remaining: number, now: Date): number | null {
-  if (state !== 'running' || !startedAt) return null
+/**
+ * Minutes left at the backfill's own recent pace: rows finished by runs 2..n over the time from
+ * run 1 to run n (run 1 only opens the window). null with < 2 runs or no progress — a single run
+ * says nothing about the 5-minute cadence (the old since-startedAt average read "14 min" for a
+ * 3.3 h job after one batch). 0 once nothing remains.
+ */
+export function etaFromRuns(runs: BackfillRun[], remaining: number): number | null {
   if (remaining === 0) return 0
-  const minutes = (now.getTime() - startedAt.getTime()) / 60_000
-  if (scored <= 0 || minutes <= 0) return null
-  return Math.ceil(remaining / (scored / minutes))
+  if (runs.length < 2) return null
+  const minutes = (runs[runs.length - 1]!.at - runs[0]!.at) / 60_000
+  const done = runs.slice(1).reduce((n, r) => n + r.completed, 0)
+  if (done <= 0 || minutes <= 0) return null
+  return Math.ceil(remaining / (done / minutes))
 }

@@ -23,10 +23,11 @@ import { eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { memories, settings, type SettingRow } from '../server/db/schema'
 import { MEMORY_BACKFILL_KEY, getBackfillSetting, setBackfillState } from '../server/lib/memory/backfill-setting'
-import { backfillProgress, runBackfillBatch, setBackfillSwitch } from '../server/services/memory-backfill'
+import { backfillProgress, etaFromRuns, resetBackfillProcessState, runBackfillBatch, setBackfillSwitch } from '../server/services/memory-backfill'
 import { runJevScoring } from '../server/services/memory-jev'
 import { AUDIT_PROMPT_VERSION } from '../server/lib/memory/extract-v3'
-import type { JevConfig, JevResponse } from '../server/lib/ai/jev'
+import { JevHttpError, type JevConfig, type JevResponse } from '../server/lib/ai/jev'
+import { AiAllFailedError } from '../server/lib/ai/registry/errors'
 
 const TAG = `BACKFILL-TEST-${Date.now().toString(36)}`
 const CFG: JevConfig = { baseURL: 'http://jev.invalid', apiKey: 'k', model: 'jev-latest' }
@@ -41,6 +42,7 @@ beforeAll(async () => {
 afterEach(async () => {
   // Never leave the switch `running` on the shared dev DB between tests.
   await setBackfillState('off')
+  resetBackfillProcessState()
 })
 
 afterAll(async () => {
@@ -236,6 +238,39 @@ describe('runBackfillBatch', () => {
   })
 })
 
+describe('one part down across batches (final review I2)', () => {
+  it('Jev down for two runs: the audit still advances to new rows each run', async () => {
+    await setBackfillState('running')
+    const ids = [await seed(), await seed(), await seed(), await seed()]
+    const ask = vi.fn(async () => { throw new JevHttpError(503, 'unavailable') })
+    const chatFn = vi.fn(async () => AUDIT_REPLY)
+    const deps = { ask: ask as never, chatFn: chatFn as never, cfg: CFG }
+
+    await runBackfillBatch({ limit: 2, onlyIds: ids, deps })
+    await runBackfillBatch({ limit: 2, onlyIds: ids, deps })
+
+    const rows = await Promise.all(ids.map(load))
+    expect(rows.every(r => r.auditPromptVersion === AUDIT_PROMPT_VERSION)).toBe(true)
+    expect(rows.every(r => r.jevScoredAt === null && r.jevFailures === 0)).toBe(true)
+    expect((await getBackfillSetting()).state).toBe('running')
+  })
+
+  it('the audit chain down for two runs: Jev still advances to new rows each run', async () => {
+    await setBackfillState('running')
+    const ids = [await seed(), await seed(), await seed(), await seed()]
+    const ask = vi.fn(async () => JEV_REPLY)
+    const chatFn = vi.fn(async () => { throw new AiAllFailedError('bulk', [{ label: 'a', error: '[POST] 503', status: 503 }]) })
+    const deps = { ask: ask as never, chatFn: chatFn as never, cfg: CFG }
+
+    await runBackfillBatch({ limit: 2, onlyIds: ids, deps })
+    await runBackfillBatch({ limit: 2, onlyIds: ids, deps })
+
+    const rows = await Promise.all(ids.map(load))
+    expect(rows.every(r => r.jevScoredAt !== null)).toBe(true)
+    expect(rows.every(r => r.auditPromptVersion === null && r.auditFailures === 0)).toBe(true)
+  })
+})
+
 describe('setBackfillSwitch', () => {
   it('sets the state and publishes memoryBackfill on a change; a repeat is a silent no-op', async () => {
     await setBackfillState('off')
@@ -291,22 +326,40 @@ describe('backfillProgress', () => {
     expect((await backfillProgress({ onlyIds: ids, deps: { cfg: null } })).remaining).toBe(2)
   })
 
-  it('ETA = remaining ÷ (rows scored per minute since startedAt); null before any data', async () => {
-    const started = await setBackfillState('running')
-    const t0 = new Date(started.startedAt!)
+  it('ETA comes from the backfill\'s own runs: null after one run, a number after two', async () => {
+    await setBackfillState('running')
+    resetBackfillProcessState()
     const ids = [await seed(), await seed(), await seed(), await seed()]
+    const { deps } = stubs()
+    expect((await backfillProgress({ onlyIds: ids, deps: { cfg: CFG } })).etaMinutes).toBeNull()
 
-    // No rows scored since the start yet → no rate → null.
-    expect((await backfillProgress({ onlyIds: ids, deps: { cfg: CFG }, now: new Date(t0.getTime() + 60_000) })).etaMinutes).toBeNull()
+    await runBackfillBatch({ limit: 1, onlyIds: ids, deps })
+    expect((await backfillProgress({ onlyIds: ids, deps: { cfg: CFG } })).etaMinutes).toBeNull()
 
-    // Two rows fully scored 1 s after the start; 10 min in → 0.2 rows/min; 2 remaining → 10 min.
-    const at = new Date(t0.getTime() + 1000)
-    await useDb().update(memories)
-      .set({ jevScoredAt: at, jevScore: 0.5, auditPromptVersion: AUDIT_PROMPT_VERSION, auditedAt: at })
-      .where(inArray(memories.id, ids.slice(0, 2)))
-    const p = await backfillProgress({ onlyIds: ids, deps: { cfg: CFG }, now: new Date(t0.getTime() + 10 * 60_000) })
-    expect(p.state).toBe('running')
+    await runBackfillBatch({ limit: 1, onlyIds: ids, deps })
+    const p = await backfillProgress({ onlyIds: ids, deps: { cfg: CFG } })
     expect(p.remaining).toBe(2)
-    expect(p.etaMinutes).toBe(10)
+    expect(p.etaMinutes).toEqual(expect.any(Number))
+    expect(p.etaMinutes).toBeGreaterThan(0)
+
+    // A switch change forgets the runs (a pause/resume never stretches the window).
+    await setBackfillSwitch('off')
+    await setBackfillSwitch('running')
+    expect((await backfillProgress({ onlyIds: ids, deps: { cfg: CFG } })).etaMinutes).toBeNull()
+  })
+})
+
+describe('etaFromRuns', () => {
+  const min = 60_000
+  it('rows finished by runs 2..n over the time since run 1', () => {
+    // One 40-row run every 5 min → 8 rows/min; 1563 left → 196 min (the old average said 14).
+    expect(etaFromRuns([{ at: 0, completed: 40 }, { at: 5 * min, completed: 40 }], 1563)).toBe(196)
+    expect(etaFromRuns([{ at: 0, completed: 40 }, { at: 5 * min, completed: 40 }, { at: 10 * min, completed: 20 }], 60)).toBe(10)
+  })
+  it('null with fewer than 2 runs or no progress; 0 when nothing remains', () => {
+    expect(etaFromRuns([], 10)).toBeNull()
+    expect(etaFromRuns([{ at: 0, completed: 40 }], 10)).toBeNull()
+    expect(etaFromRuns([{ at: 0, completed: 40 }, { at: 5 * min, completed: 0 }], 10)).toBeNull()
+    expect(etaFromRuns([{ at: 0, completed: 40 }], 0)).toBe(0)
   })
 })

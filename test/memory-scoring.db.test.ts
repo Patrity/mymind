@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
 import { useDb } from '../server/db'
 import { memories } from '../server/db/schema'
-import { scoreMemory, scoreMemories, selectUnscored } from '../server/services/memory-scoring'
+import { scoreMemory, scoreMemories, selectUnscored, selectUnscoredPerPart } from '../server/services/memory-scoring'
 import { runJevScoring } from '../server/services/memory-jev'
 import { AUDIT_PROMPT_VERSION } from '../server/lib/memory/extract-v3'
 import { JevHttpError, type JevConfig, type JevResponse } from '../server/lib/ai/jev'
@@ -412,6 +412,18 @@ describe('selectUnscored', () => {
     expect(await selectUnscored(10, all)).not.toContain(notInScope)
   })
 
+  it('selectUnscoredPerPart: up to `limit` per part, deduped, empty only when both parts are', async () => {
+    const t = (d: number) => new Date(Date.UTC(2020, 0, d))
+    const jevOnly = [await seed({ createdAt: t(1), auditPromptVersion: AUDIT_PROMPT_VERSION }), await seed({ createdAt: t(2), auditPromptVersion: AUDIT_PROMPT_VERSION })]
+    const auditOnly = [await seed({ createdAt: t(3), jevScoredAt: t(9) }), await seed({ createdAt: t(4), jevScoredAt: t(9) })]
+    const both = await seed({ createdAt: t(5) })
+    const onlyIds = [...jevOnly, ...auditOnly, both]
+    const picked = await selectUnscoredPerPart(2, { onlyIds, jevConfigured: true })
+    expect(picked).toEqual([...auditOnly, ...jevOnly])
+    expect(await selectUnscoredPerPart(10, { onlyIds, jevConfigured: false })).toEqual([...auditOnly, both])
+    expect(await selectUnscoredPerPart(10, { onlyIds: [], jevConfigured: true })).toEqual([])
+  })
+
   it('with Jev unconfigured, a missing Jev score alone does not select a row', async () => {
     const audited = await seed({ auditPromptVersion: AUDIT_PROMPT_VERSION })   // only Jev missing
     const unaudited = await seed()
@@ -422,8 +434,8 @@ describe('selectUnscored', () => {
 })
 
 describe('runJevScoring (the queue scorer) on the shared path', () => {
-  it('scores UNREVIEWED memories only — reviewed rows wait for the backfill', async () => {
-    const reviewed = await seed({ reviewedAt: new Date() })
+  it('scores UNREVIEWED memories only — older reviewed rows wait for the backfill', async () => {
+    const reviewed = await seed({ reviewedAt: new Date(), createdAt: new Date(Date.now() - 30 * 86_400_000) })
     const unreviewed = await seed()
     const ask = okAsk()
     const res = await runJevScoring({
@@ -435,6 +447,22 @@ describe('runJevScoring (the queue scorer) on the shared path', () => {
     const r = await load(reviewed)
     expect(r.jevScoredAt).toBeNull()
     expect(r.auditedAt).toBeNull()
+  })
+
+  // Final review M1: most new memories auto-review; when their fire-and-forget scoring hit an
+  // outage, the cron must still retry them (the backfill is a no-op once `done`).
+  it('also scores REVIEWED rows created in the last 7 days', async () => {
+    const day = 86_400_000
+    const now = new Date()
+    const recentReviewed = await seed({ reviewedAt: now, createdAt: new Date(now.getTime() - 6 * day) })
+    const oldReviewed = await seed({ reviewedAt: now, createdAt: new Date(now.getTime() - 8 * day) })
+    const res = await runJevScoring({
+      onlyIds: [recentReviewed, oldReviewed],
+      deps: { ask: okAsk() as never, cfg: CFG, chatFn: okChat() as never, now }
+    })
+    expect(res).toMatchObject({ considered: 1, scored: 1, audited: 1 })
+    expect((await load(recentReviewed)).auditPromptVersion).toBe(AUDIT_PROMPT_VERSION)
+    expect((await load(oldReviewed)).auditedAt).toBeNull()
   })
 
   it('counts a Jev content failure against the row', async () => {
