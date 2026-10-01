@@ -22,7 +22,9 @@ import { memories } from '../server/db/schema'
 import { scoreMemory, scoreMemories, selectUnscored } from '../server/services/memory-scoring'
 import { runJevScoring } from '../server/services/memory-jev'
 import { AUDIT_PROMPT_VERSION } from '../server/lib/memory/extract-v3'
-import type { JevConfig, JevResponse } from '../server/lib/ai/jev'
+import { JevHttpError, type JevConfig, type JevResponse } from '../server/lib/ai/jev'
+import { AiAllFailedError } from '../server/lib/ai/registry/errors'
+import { EMPTY_REPLY_ERROR } from '../server/lib/ai/chat'
 
 const TAG = `SCORING-TEST-${Date.now().toString(36)}`
 const CFG: JevConfig = { baseURL: 'http://jev.invalid', apiKey: 'k', model: 'jev-latest' }
@@ -276,6 +278,83 @@ describe('scoreMemories', () => {
     expect(results.some(r => r.audit === 'failed')).toBe(false)
     expect(chatFn.mock.calls.length).toBeLessThan(ids.length)
     for (const id of ids) expect((await load(id)).auditFailures).toBe(0)
+  })
+})
+
+describe('failure classification (fix round 2)', () => {
+  it('a Jev 404 on one row is a CONTENT failure: charged, and the batch carries on', async () => {
+    const ids = await Promise.all(Array.from({ length: 4 }, () => seed()))
+    const poisoned = (await load(ids[0]!)).content
+    const ask = vi.fn(async (state: string) => {
+      if (state === poisoned) throw new JevHttpError(404, 'not found')
+      return JEV_REPLY
+    })
+    const results = await scoreMemories(ids, { ask: ask as never, cfg: CFG, chatFn: okChat() as never })
+    expect(results[0]!.jev).toBe('failed')
+    expect((await load(ids[0]!)).jevFailures).toBe(1)
+    expect(results.slice(1).every(r => r.jev === 'scored')).toBe(true)
+    expect(ask).toHaveBeenCalledTimes(4)
+  })
+
+  it.each([400, 413, 422])('Jev %i is a content failure', async (status) => {
+    const id = await seed()
+    const ask = vi.fn(async () => { throw new JevHttpError(status, 'bad') })
+    expect((await scoreMemory(id, { ask: ask as never, cfg: CFG, chatFn: okChat() as never })).jev).toBe('failed')
+    expect((await load(id)).jevFailures).toBe(1)
+  })
+
+  it('a Jev 401 stops only the Jev part — uncharged — and the audit scores the whole batch', async () => {
+    const ids = await Promise.all(Array.from({ length: 10 }, () => seed()))
+    const ask = vi.fn(async () => { throw new JevHttpError(401, 'invalid key') })
+    const results = await scoreMemories(ids, { ask: ask as never, cfg: CFG, chatFn: okChat() as never })
+    expect(results.some(r => r.jev === 'unavailable')).toBe(true)
+    expect(results.some(r => r.jev === 'skipped')).toBe(true)
+    expect(results.some(r => r.jev === 'failed')).toBe(false)
+    expect(ask.mock.calls.length).toBeLessThan(ids.length)
+    expect(results.every(r => r.audit === 'scored')).toBe(true)
+    for (const id of ids) expect((await load(id)).jevFailures).toBe(0)
+  })
+
+  it('N2: Jev down with 503 never slows the audit — every row is audited', async () => {
+    const ids = await Promise.all(Array.from({ length: 10 }, () => seed()))
+    const ask = vi.fn(async () => { throw new JevHttpError(503, 'unavailable') })
+    const chatFn = okChat()
+    const results = await scoreMemories(ids, { ask: ask as never, cfg: CFG, chatFn: chatFn as never })
+    expect(results.every(r => r.audit === 'scored')).toBe(true)
+    expect(chatFn).toHaveBeenCalledTimes(10)
+    expect(results.some(r => r.jev === 'unavailable')).toBe(true)
+    for (const id of ids) expect((await load(id)).jevFailures).toBe(0)
+  })
+
+  it('an audit outage never slows Jev — every row is Jev-scored', async () => {
+    const ids = await Promise.all(Array.from({ length: 10 }, () => seed()))
+    const chatFn = vi.fn(async () => { throw new AiAllFailedError('bulk', [{ label: 'a', error: '[POST] 502 Bad Gateway' }]) })
+    const results = await scoreMemories(ids, { ask: okAsk() as never, cfg: CFG, chatFn: chatFn as never })
+    expect(results.every(r => r.jev === 'scored')).toBe(true)
+    expect(results.some(r => r.audit === 'unavailable')).toBe(true)
+    expect(chatFn.mock.calls.length).toBeLessThan(ids.length)
+  })
+
+  it('a Jev timeout is transport: uncharged', async () => {
+    const id = await seed()
+    const ask = vi.fn(async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError') })
+    expect((await scoreMemory(id, { ask: ask as never, cfg: CFG, chatFn: okChat() as never })).jev).toBe('unavailable')
+    expect((await load(id)).jevFailures).toBe(0)
+  })
+
+  it('an empty audit reply from every chain member is a CONTENT failure: charged, the audit carries on', async () => {
+    const ids = await Promise.all(Array.from({ length: 4 }, () => seed()))
+    const poisoned = (await load(ids[0]!)).content
+    const chatFn = vi.fn(async (_role: string, messages: { content: string }[]) => {
+      if (messages[1]!.content.includes(poisoned)) {
+        throw new AiAllFailedError('bulk', [{ label: 'a', error: EMPTY_REPLY_ERROR }, { label: 'b', error: EMPTY_REPLY_ERROR }])
+      }
+      return AUDIT_REPLY
+    })
+    const results = await scoreMemories(ids, { ask: okAsk() as never, cfg: CFG, chatFn: chatFn as never })
+    expect(results[0]!.audit).toBe('failed')
+    expect((await load(ids[0]!)).auditFailures).toBe(1)
+    expect(results.slice(1).every(r => r.audit === 'scored')).toBe(true)
   })
 })
 

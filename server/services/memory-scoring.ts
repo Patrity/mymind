@@ -11,11 +11,18 @@
 // failed fewer than MAX_FAILURES times.
 //
 // Two kinds of failure, treated differently:
-// - CONTENT failure (Jev answered with no usable answers; the audit reply is unparsable/invalid):
-//   the row itself is the problem, so its counter goes up and after 3 the part is skipped.
-// - TRANSPORT failure (thrown fetch error, 429 after retries, 5xx, timeout, failover exhausted):
-//   the infrastructure is the problem, so the row is NOT charged. The batch stops at the first one
-//   (circuit breaker) and leaves the rest for the next run — an outage must never burn the cap.
+// - CONTENT failure — something about THIS row: Jev answered with no usable answers, or rejected
+//   the request with a 4xx other than 401/403/408/429 (400/404/413/422…: retrying repeats it); the
+//   audit reply is unparsable/invalid, or every chain member answered blank. The row's counter
+//   goes up, after 3 the part is skipped, and the batch carries on.
+// - TRANSPORT failure — the infrastructure: network error, timeout, 408/429/5xx, failover chain
+//   exhausted, and Jev 401/403 (a bad/revoked key is an outage of the Jev part, not a bad row).
+//   The row is NOT charged, and THAT PART stops for the rest of the batch (circuit breaker); the
+//   other part keeps going — a Jev outage never slows the audit, nor the reverse.
+//
+// Outcomes are about THIS call only: `skipped` means "not stamped by this call" (nothing to do,
+// capped, Jev off, its part stopped, lost a race, or archived mid-call). Completion must be read
+// from the DB state (selectUnscored), never inferred from outcomes.
 //
 // Stamps are guarded by "still missing", so when two callers race on one row (enrichment's
 // fire-and-forget + the cron, or the cron + the backfill) the FIRST writer wins and the other's
@@ -24,7 +31,7 @@
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { memories } from '../db/schema'
-import { askJev, nouls, jevConfig, type JevConfig } from '../lib/ai/jev'
+import { askJev, nouls, jevConfig, JevHttpError, type JevConfig } from '../lib/ai/jev'
 import type { chatWithModel } from '../lib/ai/chat'
 import { JEV_QUESTIONS, jevKeepScore, type JevAnswers } from '../lib/memory/jev-score'
 import { AUDIT_PROMPT_VERSION, auditMemory } from '../lib/memory/extract-v3'
@@ -39,7 +46,11 @@ export const MAX_FAILURES = 3
 
 const DAY_MS = 86_400_000
 
-/** `unavailable` = a transport failure: not charged to the row, retried on a later run. */
+/**
+ * Per part, for THIS call: `scored` = stamped now; `failed` = content failure, charged;
+ * `unavailable` = transport failure, not charged, that part stopped for the batch;
+ * `skipped` = not stamped by this call (see the header). Never read completion from these.
+ */
 export type PartOutcome = 'scored' | 'failed' | 'skipped' | 'unavailable'
 export interface ScoreResult { id: string, jev: PartOutcome, audit: PartOutcome }
 
@@ -95,32 +106,46 @@ async function loadRow(id: string) {
   return row ?? null
 }
 
-/** Per-batch state: set once a transport failure is seen; parts not yet started then skip. */
-interface Batch { stopped: boolean }
+/** Per-batch breaker, one per part: once set, that part's not-yet-started rows skip. */
+interface Batch { jevStopped: boolean, auditStopped: boolean }
+
+/** Is a thrown Jev error about this row (content) rather than Jev being unreachable/unauthorised? */
+export function isJevContentError(err: unknown): boolean {
+  if (!(err instanceof JevHttpError)) return false   // network, timeout/abort, … → transport
+  const s = err.status
+  return s >= 400 && s < 500 && ![401, 403, 408, 429].includes(s)
+}
 
 /** Jev part for one row. Reads the row fresh, so a memory archived mid-run is skipped. */
 async function scoreJevPart(id: string, cfg: JevConfig | null, deps: ScoreDeps, batch: Batch): Promise<PartOutcome> {
-  if (!cfg || batch.stopped) return 'skipped'
+  if (!cfg || batch.jevStopped) return 'skipped'
   const row = await loadRow(id)
   if (!row || row.jevScoredAt || row.jevFailures >= MAX_FAILURES) return 'skipped'
 
   const db = useDb()
+  const chargeJev = async () => {
+    await db.update(memories)
+      .set({ jevFailures: sql`${memories.jevFailures} + 1` })
+      .where(and(eq(memories.id, id), live()))
+    return 'failed' as const
+  }
   let res
   try {
     res = await (deps.ask ?? askJev)(row.content, JEV_QUESTIONS, cfg)
   } catch (err) {
-    batch.stopped = true
-    console.warn(`[memory-scoring] jev unavailable on ${id}, stopping the batch:`, err)
+    if (isJevContentError(err)) {
+      console.warn(`[memory-scoring] jev rejected ${id}:`, err)
+      return chargeJev()
+    }
+    batch.jevStopped = true
+    console.warn(`[memory-scoring] jev unavailable on ${id}, stopping jev for this batch:`, err)
     return 'unavailable'
   }
 
   const answers = nouls(res.answers)
   if (!Object.keys(answers).length) {
     console.warn(`[memory-scoring] jev returned no usable answers for ${id}`)
-    await db.update(memories)
-      .set({ jevFailures: sql`${memories.jevFailures} + 1` })
-      .where(and(eq(memories.id, id), live()))
-    return 'failed'
+    return chargeJev()
   }
 
   // A partial response scores null. Still stamped, so the row is not retried forever — the raw
@@ -140,7 +165,7 @@ async function scoreJevPart(id: string, cfg: JevConfig | null, deps: ScoreDeps, 
 
 /** Audit part for one row. */
 async function scoreAuditPart(id: string, deps: ScoreDeps, batch: Batch): Promise<PartOutcome> {
-  if (batch.stopped) return 'skipped'
+  if (batch.auditStopped) return 'skipped'
   const row = await loadRow(id)
   if (!row || row.auditPromptVersion === AUDIT_PROMPT_VERSION || row.auditFailures >= MAX_FAILURES) return 'skipped'
 
@@ -153,8 +178,8 @@ async function scoreAuditPart(id: string, deps: ScoreDeps, batch: Batch): Promis
   )
   if (!res.ok) {
     if ('transport' in res) {
-      batch.stopped = true
-      console.warn(`[memory-scoring] audit unavailable on ${id}, stopping the batch: ${res.error}`)
+      batch.auditStopped = true
+      console.warn(`[memory-scoring] audit unavailable on ${id}, stopping the audit for this batch: ${res.error}`)
       return 'unavailable'
     }
     console.warn(`[memory-scoring] audit on ${id} failed: ${res.error}`)
@@ -185,13 +210,14 @@ export async function resolveJevCfg(deps: ScoreDeps = {}): Promise<JevConfig | n
 /**
  * Score many memories: Jev and the audit, each only if that part is still missing, through the
  * shared limiters (Jev 6, audit 2 process-wide). One `memory` live update per row that had
- * anything stamped, sent once both its parts settle. Stops at the first transport failure; parts
- * not started by then come back `skipped`. Results are in `ids` order.
+ * anything stamped, sent once both its parts settle. A transport failure stops THAT part for the
+ * rest of the batch (its not-yet-started rows come back `skipped`); the other part carries on.
+ * Results are in `ids` order.
  */
 export async function scoreMemories(ids: string[], deps: ScoreDeps = {}): Promise<ScoreResult[]> {
   if (!ids.length) return []
   const cfg = await resolveJevCfg(deps)
-  const batch: Batch = { stopped: false }
+  const batch: Batch = { jevStopped: false, auditStopped: false }
   return Promise.all(ids.map(async (id) => {
     const [jev, audit] = await Promise.all([
       jevLimit(() => scoreJevPart(id, cfg, deps, batch)),

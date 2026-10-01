@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
+import { AiAllFailedError } from '../server/lib/ai/registry/errors'
+import { EMPTY_REPLY_ERROR } from '../server/lib/ai/chat'
 import {
   parseAudit,
   auditMessages,
@@ -126,11 +128,28 @@ describe('auditMemory', () => {
   })
 
   it('returns ok:false when the stubbed chatFn throws', async () => {
-    const chatFn = vi.fn(async () => { throw new Error('chat: model returned no usable content') })
+    const chatFn = vi.fn(async () => { throw new Error('fetch failed') })
     const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
     expect(out.ok).toBe(false)
-    expect(out.ok === false && out.error).toBe('chat: model returned no usable content')
+    expect(out.ok === false && out.error).toBe('fetch failed')
     // A thrown call is a TRANSPORT failure: the scorer must not count it against the row.
+    expect('transport' in out && out.transport).toBe(true)
+  })
+
+  it('an empty reply from every chain member is a content failure', async () => {
+    const chatFn = vi.fn(async () => {
+      throw new AiAllFailedError('bulk', [{ label: 'a', error: EMPTY_REPLY_ERROR }, { label: 'b', error: EMPTY_REPLY_ERROR }])
+    })
+    const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
+    expect(out.ok).toBe(false)
+    expect('transport' in out).toBe(false)
+  })
+
+  it('a chain where any member failed for another reason stays transport', async () => {
+    const chatFn = vi.fn(async () => {
+      throw new AiAllFailedError('bulk', [{ label: 'a', error: EMPTY_REPLY_ERROR }, { label: 'b', error: '[POST] 503' }])
+    })
+    const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
     expect('transport' in out && out.transport).toBe(true)
   })
 

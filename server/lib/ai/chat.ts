@@ -1,5 +1,6 @@
 // server/lib/ai/chat.ts
 import { withFailover } from './registry/resolve'
+import { AiAllFailedError } from './registry/errors'
 import type { ResolvedModel, Usage } from './registry/types'
 
 export interface TextPart { type: 'text', text: string }
@@ -24,9 +25,24 @@ interface ChatCompletion { choices?: { message?: { content?: string } }[] }
 export function extractContent(res: unknown): string {
   const content = (res as ChatCompletion)?.choices?.[0]?.message?.content
   if (typeof content !== 'string' || content.trim() === '') {
-    throw new Error('chat: model returned no usable content')
+    throw new Error(EMPTY_REPLY_ERROR)
   }
   return content
+}
+
+export const EMPTY_REPLY_ERROR = 'chat: model returned no usable content'
+
+/**
+ * True when a chat call failed ONLY because the model(s) answered with empty/blank content —
+ * i.e. every attempt in the failover chain got through and replied with nothing. That is a reply
+ * about THIS input (a content failure), not an outage. If any attempt failed some other way
+ * (5xx, timeout, network), the chain may simply have been down: not this.
+ */
+export function isEmptyReplyError(err: unknown): boolean {
+  if (err instanceof AiAllFailedError) {
+    return err.attempts.length > 0 && err.attempts.every(a => a.error === EMPTY_REPLY_ERROR)
+  }
+  return err instanceof Error && err.message === EMPTY_REPLY_ERROR
 }
 
 /** Per-attempt request timeout when the caller names none. */

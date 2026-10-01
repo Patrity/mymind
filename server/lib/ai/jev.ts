@@ -37,6 +37,17 @@ export interface JevResponse {
 
 export interface JevConfig { baseURL: string, apiKey: string, model: string }
 
+/** Per-request timeout. A hung connection would otherwise hold a shared Jev permit for minutes. */
+export const JEV_TIMEOUT_MS = 60_000
+
+/** A non-OK HTTP reply from Jev; `status` lets callers tell a bad request from an outage. */
+export class JevHttpError extends Error {
+  constructor(public status: number, body: string) {
+    super(`Jev ${status}: ${body.slice(0, 200)}`)
+    this.name = 'JevHttpError'
+  }
+}
+
 export class JevNotConfiguredError extends Error {
   constructor() { super('No `jev` model is assigned in the AI config') }
 }
@@ -66,7 +77,8 @@ export async function jevConfig(): Promise<JevConfig | null> {
  *
  * Retries only on 429, honouring `retry-after` when present and otherwise backing off
  * exponentially. Every other failure throws — a 4xx means the request shape is wrong and
- * retrying would just repeat it.
+ * retrying would just repeat it. Non-OK replies throw `JevHttpError` (carries `status`); each
+ * attempt is bounded by JEV_TIMEOUT_MS (a timeout throws the AbortSignal's TimeoutError).
  */
 export async function askJev(
   state: string,
@@ -77,7 +89,8 @@ export async function askJev(
   const res = await fetch(`${cfg.baseURL}/systemone`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ state, model: cfg.model, questions })
+    body: JSON.stringify({ state, model: cfg.model, questions }),
+    signal: AbortSignal.timeout(JEV_TIMEOUT_MS)
   })
 
   if (res.status === 429 && attempt < 5) {
@@ -85,7 +98,7 @@ export async function askJev(
     await new Promise(r => setTimeout(r, retryAfter || 2 ** attempt * 500))
     return askJev(state, questions, cfg, attempt + 1)
   }
-  if (!res.ok) throw new Error(`Jev ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  if (!res.ok) throw new JevHttpError(res.status, await res.text())
 
   const body = await res.json() as { model?: string, answers?: Record<string, NoulAnswer> }
   // Fall back to what we ASKED for only if the API omits it — storing the literal
