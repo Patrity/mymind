@@ -163,12 +163,18 @@ describe('auditMemory', () => {
 
 describe('audit prompt constants', () => {
   it('is versioned and lists exactly the spec verdicts', () => {
-    expect(AUDIT_PROMPT_VERSION).toBe('audit-v1')
+    expect(AUDIT_PROMPT_VERSION).toBe('audit-v2')
     expect(AUDIT_VERDICTS).toEqual(['keep', 'transient', 'redundant', 'wrong_scope', 'belongs_in_doc'])
   })
 
   it('restates the extract-v3 criteria verbatim', () => {
     expect(AUDIT_SYSTEM_PROMPT).toContain('JUDGE THE FACT, NOT ITS WORDING')
     expect(AUDIT_SYSTEM_PROMPT).toContain('Below 0.6 = do not extract')
+  })
+
+  it('audit-v2: judges durability not plausibility, and calls point-in-time state transient', () => {
+    expect(AUDIT_SYSTEM_PROMPT).toContain('JUDGE DURABILITY, NOT PLAUSIBILITY')
+    expect(AUDIT_SYSTEM_PROMPT).toContain('POINT-IN-TIME STATE IS "transient"')
+    expect(AUDIT_SYSTEM_PROMPT).toMatch(/project, plan, task, schedule or dataset/)
   })
 })

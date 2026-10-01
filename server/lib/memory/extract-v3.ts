@@ -78,8 +78,12 @@ export async function extractV3(transcript: string, deps: { chatFn?: typeof chat
 // The audit — re-judges an EXISTING memory against the extract-v3 criteria.
 // ---------------------------------------------------------------------------
 
-/** Bump whenever the audit prompt changes; stamped per-row as `memories.audit_prompt_version`. */
-export const AUDIT_PROMPT_VERSION = 'audit-v1'
+/**
+ * Bump whenever the audit prompt changes; stamped per-row as `memories.audit_prompt_version`, and
+ * a row stamped with an older version is re-selected (the backfill re-audits it).
+ * audit-v2 (final review I4): point-in-time state → transient; judge durability, not plausibility.
+ */
+export const AUDIT_PROMPT_VERSION = 'audit-v2'
 
 export const AUDIT_VERDICTS = ['keep', 'transient', 'redundant', 'wrong_scope', 'belongs_in_doc'] as const
 
@@ -89,12 +93,23 @@ ${EXTRACT_V3_CRITERIA}
 
 You will be given one existing memory: its content, scope, project, and age in days. Ask: would this memory pass these criteria if extracted today, and how durable is it?
 
+JUDGE DURABILITY, NOT PLAUSIBILITY. Being true, specific, well-reasoned or technically useful does NOT make a memory durable. The only question is: "Will this exact statement still be true AND worth reading in six months?" Most memories that fail record a STATE, not a rule.
+
+POINT-IN-TIME STATE IS "transient", however confidently it is worded:
+- the state of a project, plan, task, schedule or dataset: what it currently contains or lacks, how its dates/milestones/values currently fall, which logic "changed from X to Y", what is merged, deployed, pending or in a given phase;
+- a known bug or defect in a system (bugs get fixed; only a general lesson outlives one);
+- pinned versions and the current stack: "uses library X vN", "the migration uses package ^2", "runs model X on GPU Y", which release supports what — these change with the next upgrade;
+- anything that is only true while the system stays exactly as it was the day it was written. The older the memory, the more likely such a snapshot is already stale.
+A general rule, a stable invariant with its reason, a non-obvious gotcha about how an external system behaves, or a fact about Tony is "keep" even when it mentions a project, version or date in passing.
+
 Verdicts:
-- "keep": still passes the criteria — durable and useful.
-- "transient": was true but is no longer durable — it has gone stale or passed its moment.
+- "keep": still passes the criteria — a durable rule/fact that will hold in six months.
+- "transient": point-in-time state (above), or was true but has gone stale or passed its moment.
 - "redundant": duplicates a more general fact that is better captured elsewhere.
 - "wrong_scope": filed under the wrong scope (user/agent/world) for what it actually says.
 - "belongs_in_doc": architecture/how-to/spec detail that should have been routed to a document, not kept as a memory.
+
+"keep" (the number) is how likely the memory is to still be true and worth keeping in six months.
 
 Output STRICT JSON ONLY: {"keep": 0.0-1.0, "verdict": "keep|transient|redundant|wrong_scope|belongs_in_doc", "reason": "one short sentence, <=200 chars"}. No prose.`
 

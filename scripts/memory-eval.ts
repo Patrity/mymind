@@ -2,7 +2,8 @@
  * Quality check of the extract-v3 memory prompt (cycle 77). Makes REAL model calls through the
  * app's configured 'bulk' chain — run it by hand, never in CI/tests:
  *
- *   pnpm memory:eval
+ *   pnpm memory:eval                 # both parts
+ *   pnpm memory:eval --audit-only    # the audit part only
  *
  * No memory/store writes: it calls extractV3() (prompt + chat + parser) directly and never
  * imports the enrichment service, createMemory, or any store. The only DB writes are the
@@ -201,11 +202,10 @@ async function evalExtraction() {
 }
 
 /**
- * keep<->keep, stale<->transient, noise<->redundant|wrong_scope. `belongs_in_doc` has no label
- * counterpart and is never "agreement" — callers report it separately.
+ * keep<->keep, stale<->transient, noise<->redundant|wrong_scope. The caller reports a
+ * `belongs_in_doc` verdict separately (it has no label counterpart) and never passes it here.
  */
-function agreesWithLabel(verdict: AuditVerdict, label: LabelRow['verdict']): boolean {
-  if (verdict === 'belongs_in_doc') return false
+function agreesWithLabel(verdict: Exclude<AuditVerdict, 'belongs_in_doc'>, label: LabelRow['verdict']): boolean {
   if (label === 'keep') return verdict === 'keep'
   if (label === 'stale') return verdict === 'transient'
   return verdict === 'redundant' || verdict === 'wrong_scope' // label === 'noise'
@@ -229,6 +229,11 @@ async function evalAudit() {
   let docVerdicts = 0
   let missingSample = 0
   let failed = 0
+  const perLabel: Record<LabelRow['verdict'], { hit: number, total: number, verdicts: Record<string, number> }> = {
+    keep: { hit: 0, total: 0, verdicts: {} },
+    stale: { hit: 0, total: 0, verdicts: {} },
+    noise: { hit: 0, total: 0, verdicts: {} }
+  }
 
   for (const label of labels) {
     const row = byId.get(label.id)
@@ -246,28 +251,37 @@ async function evalAudit() {
       console.log(`  [${label.id}] audit failed: ${res.error}`)
       continue
     }
+    const bucket = perLabel[label.verdict]
+    bucket.verdicts[res.verdict] = (bucket.verdicts[res.verdict] ?? 0) + 1
     if (res.verdict === 'belongs_in_doc') {
       docVerdicts++
       console.log(`  [${label.id}] belongs_in_doc (label was "${label.verdict}") — reported separately, not scored`)
       continue
     }
     agreeTotal++
+    bucket.total++
     if (agreesWithLabel(res.verdict, label.verdict)) {
       agreeHit++
+      bucket.hit++
     } else {
-      console.log(`  [${label.id}] DISAGREE label=${label.verdict} audit=${res.verdict} keep=${res.keep.toFixed(2)} reason="${res.reason}"`)
+      console.log(`  [${label.id}] DISAGREE label=${label.verdict} audit=${res.verdict} keep=${res.keep.toFixed(2)} reason="${res.reason}" :: ${row.content.slice(0, 100)}`)
     }
   }
 
   console.log('')
   console.log(`audit-vs-label agreement : ${agreeHit}/${agreeTotal} (${pct(agreeHit, agreeTotal)})`)
+  for (const [label, b] of Object.entries(perLabel)) {
+    const spread = Object.entries(b.verdicts).map(([v, n]) => `${v} ${n}`).join(', ')
+    console.log(`  label ${label.padEnd(5)} : ${b.hit}/${b.total} (${pct(b.hit, b.total)})   verdicts: ${spread || '-'}`)
+  }
   console.log(`belongs_in_doc verdicts  : ${docVerdicts}/${labels.length} (reported separately, not scored as agree/disagree)`)
   if (missingSample) console.log(`rows with no sample match : ${missingSample}`)
   if (failed) console.log(`failed audit calls        : ${failed} (excluded from the agreement total)`)
 }
 
+/** `--audit-only` skips the extraction part (e.g. to re-read the audit alone after a prompt edit). */
 async function main() {
-  await evalExtraction()
+  if (!process.argv.includes('--audit-only')) await evalExtraction()
   await evalAudit()
 }
 
