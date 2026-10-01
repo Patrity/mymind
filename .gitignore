@@ -52,3 +52,5 @@ searxng/uwsgi.ini
 scripts/data/*
 # …except the reflector eval set (cycle 76): synthetic transcripts, no personal data.
 !scripts/data/reflect-eval.jsonl
+# …and the extract-v3 memory eval set (cycle 77): hand-written synthetic transcripts.
+!scripts/data/memory-eval-v3.jsonl

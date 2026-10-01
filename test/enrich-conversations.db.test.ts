@@ -65,16 +65,24 @@ afterAll(async () => {
 describe('enrichConversations', () => {
   it('extracts a memory from a conversation', async () => {
     const id = await seedConversation('Remember I always deploy on Fridays')
-    const extract = vi.fn(async () => [{ scope: 'user' as const, content: 'Tony deploys on Fridays', confidence: 0.9 }])
+    // Unique content per run: createMemory dedups on content hash, and a hit on a pre-existing
+    // row would return that row instead of inserting (and stamping) a fresh one.
+    const content = `Tony deploys on Fridays ${crypto.randomUUID()}`
+    const extract = vi.fn(async () => ({
+      memories: [{ scope: 'user' as const, content, confidence: 0.9 }],
+      docCandidates: [{ text: 'A doc-worthy note', project: null, targetDocHint: null }]
+    }))
     const res = await enrichConversations({ limit: 5, only: [id], deps: { extract } })
     expect(res.conversationsProcessed).toBe(1)
     expect(res.memoriesCreated).toBe(1)
     expect(extract).toHaveBeenCalledTimes(1)
+    const [row] = await useDb().select().from(memories).where(eq(memories.source, `conversation:${id}`)).limit(1)
+    expect(row!.extractPromptVersion).toBe('extract-v3')
   })
 
   it('records state under source_kind=conversation', async () => {
     const id = await seedConversation('another thing worth remembering')
-    await enrichConversations({ limit: 5, only: [id], deps: { extract: async () => [] } })
+    await enrichConversations({ limit: 5, only: [id], deps: { extract: async () => ({ memories: [], docCandidates: [] }) } })
     const [row] = await useDb().select().from(memEnrichmentState)
       .where(and(eq(memEnrichmentState.sourceKind, 'conversation'), eq(memEnrichmentState.sourceId, id))).limit(1)
     expect(row).toBeTruthy()
@@ -82,7 +90,7 @@ describe('enrichConversations', () => {
 
   it('does not reprocess a conversation with no new messages', async () => {
     const id = await seedConversation('processed once')
-    const extract = vi.fn(async () => [])
+    const extract = vi.fn(async () => ({ memories: [], docCandidates: [] }))
     await enrichConversations({ limit: 5, only: [id], deps: { extract } })
     expect(extract.mock.calls.length).toBe(1)
     await enrichConversations({ limit: 5, only: [id], deps: { extract } })
@@ -96,7 +104,7 @@ describe('enrichConversations', () => {
     await db.insert(memEnrichmentState)
       .values({ sourceKind: 'session', sourceId: sessionId, lastEnrichedMessageCount: 7 })
     const id = await seedConversation('unrelated')
-    await enrichConversations({ limit: 5, only: [id], deps: { extract: async () => [] } })
+    await enrichConversations({ limit: 5, only: [id], deps: { extract: async () => ({ memories: [], docCandidates: [] }) } })
     const [row] = await db.select().from(memEnrichmentState)
       .where(and(eq(memEnrichmentState.sourceKind, 'session'), eq(memEnrichmentState.sourceId, sessionId))).limit(1)
     expect(row!.lastEnrichedMessageCount).toBe(7)
@@ -113,7 +121,7 @@ describe('enrichConversations', () => {
     await useDb().insert(memEnrichmentState).values({
       sourceKind: 'conversation', sourceId: id, lastEnrichedMessageCount: 1, lastRun: new Date(), status: 'ok'
     })
-    const extract = vi.fn(async () => [])
+    const extract = vi.fn(async () => ({ memories: [], docCandidates: [] }))
     const res = await enrichConversations({ limit: 5, only: [id], deps: { extract } })
     expect(res.conversationsProcessed).toBe(0)
     expect(extract).not.toHaveBeenCalled()

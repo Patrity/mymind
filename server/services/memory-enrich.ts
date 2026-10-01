@@ -1,8 +1,7 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { sessions, messages, memEnrichmentState, toolEvents, projects, conversations, conversationMessages } from '../db/schema'
-import { chat } from '../lib/ai/chat'
-import { parseMemories, type MemoryCandidate } from '../lib/ai/memory-extract'
+import { extractV3, EXTRACT_PROMPT_VERSION, type DocCandidate, type ExtractV3Result } from '../lib/memory/extract-v3'
 import { resolveEnrichedMemory } from './memory-resolve'
 import { createMemory } from './memory'
 import { projectIdForScope } from '../lib/projects/memory-project'
@@ -18,26 +17,6 @@ export interface EnrichMemoryResult {
 
 const TRANSCRIPT_CHAR_LIMIT = 12000
 const HEAD_CHARS = 2000
-
-const SYSTEM_PROMPT = `You extract a SMALL number of DURABLE, HIGH-SIGNAL memories from an AI work-session transcript, for a long-term memory store serving Tony, a software engineer. Be RUTHLESSLY selective: most sessions yield 0-3 memories. If nothing is durably significant, return an empty list — that is a correct and common answer.
-
-Each memory is a single atomic fact, present tense ("X is Y", not "we decided/shipped X"), <=240 chars, that a future session MONTHS from now would benefit from. The test for every candidate: "Will this still be true AND useful in 6 months, independent of this session?" If not, DROP it.
-
-EXTRACT (high signal): durable architecture/design decisions + their rationale; stable project conventions, constraints, and invariants; non-obvious gotchas/footguns and how to avoid them; durable service/host/path/config facts; durable facts about Tony (preferences, identity, how he likes to work); non-obvious reusable facts about external systems (libraries/APIs/Postgres).
-
-DO NOT EXTRACT (these are the most common mistakes — reject them):
-- Transient state: test counts ("98 tests pass"), build/CI status, coverage numbers, "currently/now/the current X", what is in-progress, TODOs, what was "just shipped/built/fixed".
-- In-progress bug details that get fixed within the session. (A durable LESSON from the fix can qualify; the bug-of-the-moment does not.)
-- Anything about the AI's OWN process or tooling: skills (e.g. "superpowers:X", "the debugging skill"), the agent's workflow, "Tony uses the X skill", the agent's own review/commit/TDD conventions.
-- Session narration: "Tony asked…", "we explored…", "the task is…", "this session…".
-- Volatile specifics that churn: exact file paths, line numbers, commit SHAs, in-flux version numbers.
-
-CONFIDENCE = DURABILITY + reusability, NOT how clearly you observed it. A precisely-observed fact that won't matter next month is LOW confidence. Bands: 0.85-1.0 = durable and clearly reusable; 0.6-0.84 = likely durable; below 0.6 DO NOT EMIT.
-
-SCOPES: 'user' = durable facts about Tony (be conservative, never fabricate). 'agent' = the project/environment (most common). 'world' = external systems (only non-obvious, reusable).
-
-For each memory: cite the transcript message ids that justify it (evidence_msg_ids), a short verbatim quote (<=240 chars), and one-line reasoning that states WHY it is durable (not just true).
-Output STRICT JSON ONLY: {"memories":[{"scope":"user|agent|world","content":"...","tags":["kebab"],"confidence":0.0-1.0,"evidence_msg_ids":["..."],"quote":"...","reasoning":"..."}]}. No prose.`
 
 /**
  * Build a transcript for memory enrichment. Pure, exported for tests.
@@ -77,26 +56,20 @@ export function buildEnrichTranscript(
 }
 
 /**
- * Call the model to extract durable memory candidates from a transcript. Shared by both
- * enrichment sources (session + conversation) so the extraction prompt never diverges
- * between them — a divergent prompt is how the two sources start producing incompatible
- * memories.
+ * Call the model to extract durable memory candidates (and doc-worthy detail) from a transcript.
+ * Shared by both enrichment sources (session + conversation) so the extraction prompt never
+ * diverges between them — a divergent prompt is how the two sources start producing
+ * incompatible memories. The prompt itself is extract-v3 (server/lib/memory/extract-v3.ts).
  */
-export async function extractMemoriesFromTranscript(transcript: string): Promise<MemoryCandidate[]> {
-  // Call the LLM. 'bulk' = no-think model: a capped, single-shot structured
-  // extraction. The reasoning alias emits <think>/reasoning_content and returns
-  // null content under the token cap, which chat() throws on (failover-rescued).
-  const raw = await chat(
-    'bulk',
-    [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: transcript }
-    ],
-    { temperature: 0.2, maxTokens: 1200 }
-  )
-
-  return parseMemories(raw)
+export async function extractMemoriesFromTranscript(transcript: string): Promise<ExtractV3Result> {
+  return extractV3(transcript)
 }
+
+/**
+ * Hand doc-worthy extractions on for filing. No-op for now: cycle 77 Task 6 replaces this body
+ * with fileDocCandidate() (a triage capture per candidate, fire-and-forget). Never throws.
+ */
+async function routeDocCandidates(_candidates: DocCandidate[], _src: { sessionId?: string, conversationId?: string }): Promise<void> {}
 
 /**
  * Run memory enrichment over sessions that have new messages since last enrichment.
@@ -181,8 +154,9 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
 
       const transcript = buildEnrichTranscript(msgs, tools)
 
-      const extracted = await extractMemoriesFromTranscript(transcript)
+      const { memories: extracted, docCandidates } = await extractMemoriesFromTranscript(transcript)
       candidates += extracted.length
+      void routeDocCandidates(docCandidates, { sessionId: session.id })
 
       // Store each candidate with rich provenance via resolution orchestrator
       for (const candidate of extracted) {
@@ -197,6 +171,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
             sourceDate: session.startedAt ?? null,
             sessionId: session.id,
             confidence: candidate.confidence ?? null,
+            extractPromptVersion: EXTRACT_PROMPT_VERSION,
             evidence: [{
               sessionId: session.id,
               sessionDate: session.startedAt?.toISOString() ?? null,
@@ -288,7 +263,7 @@ export interface EnrichConversationsOptions {
    * conversations "checked, zero memories" under a fake result.
    */
   only?: string[]
-  deps?: { extract?: (transcript: string) => Promise<MemoryCandidate[]> }
+  deps?: { extract?: (transcript: string) => Promise<ExtractV3Result> }
 }
 
 /**
@@ -345,13 +320,15 @@ export async function enrichConversations(
     )
 
     try {
-      const extracted = await extract(transcript)
+      const { memories: extracted, docCandidates } = await extract(transcript)
+      void routeDocCandidates(docCandidates, { conversationId: c.id })
       for (const e of extracted) {
         const memory = await createMemory({
           scope: e.scope,
           content: e.content,
           confidence: e.confidence,
-          source: `conversation:${c.id}`
+          source: `conversation:${c.id}`,
+          extractPromptVersion: EXTRACT_PROMPT_VERSION
         })
         publishChange({ resource: 'memory', action: 'created', id: memory.id })
         memoriesCreated++

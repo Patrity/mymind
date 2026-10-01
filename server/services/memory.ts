@@ -227,6 +227,8 @@ export interface CreateMemoryInput {
   confidence?: number | null
   evidence?: unknown[]
   reviewed?: boolean
+  /** Extraction prompt that produced this memory (e.g. 'extract-v3'); stamped on insert only. */
+  extractPromptVersion?: string | null
 }
 
 export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO> {
@@ -290,7 +292,8 @@ export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO>
       project: input.project ?? null,
       sessionId: input.sessionId ?? null,
       enrichedAt: null,
-      reviewedAt: finalReviewedAt
+      reviewedAt: finalReviewedAt,
+      extractPromptVersion: input.extractPromptVersion ?? null
     }).returning()
 
     return toDTO(inserted!)

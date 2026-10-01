@@ -158,17 +158,81 @@ export function parseMemories(raw: string): MemoryCandidate[] {
   }
 }
 
-/** Extract a balanced bracket sequence starting at `from`. */
+/**
+ * Extract a balanced bracket sequence starting at `from`. String-aware: brackets inside JSON
+ * string literals (e.g. a memory that quotes `{ a, b }`) don't count toward the depth.
+ */
 function extractBalanced(text: string, from: number, open: string, close: string): string | null {
   let depth = 0
   let end = -1
+  let inString = false
   for (let i = from; i < text.length; i++) {
-    if (text[i] === open) depth++
-    else if (text[i] === close) {
+    const ch = text[i]
+    if (inString) {
+      if (ch === '\\') i++
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === open) depth++
+    else if (ch === close) {
       depth--
       if (depth === 0) { end = i; break }
     }
   }
   if (end === -1) return null
   return text.slice(from, end + 1)
+}
+
+// ---------------------------------------------------------------------------
+// extract-v3 envelope: { memories: [...], doc_candidates: [...] }
+// ---------------------------------------------------------------------------
+
+/** Doc-worthy detail the extractor routed away from the memory store (architecture, how-tos…). */
+export interface DocCandidate { text: string, project: string | null, targetDocHint: string | null }
+
+const MAX_DOC_CANDIDATES = 5
+
+function optionalString(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const t = v.trim()
+  return t || null
+}
+
+/** Pull `doc_candidates` out of the reply's JSON object. Tolerant: [] on any failure. */
+function parseDocCandidates(raw: string): DocCandidate[] {
+  try {
+    const text = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '')
+    const start = text.indexOf('{')
+    if (start === -1) return []
+    const jsonStr = extractBalanced(text, start, '{', '}')
+    if (!jsonStr) return []
+    const parsed = JSON.parse(jsonStr) as Record<string, unknown>
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.doc_candidates)) return []
+    const out: DocCandidate[] = []
+    for (const item of parsed.doc_candidates as unknown[]) {
+      if (out.length >= MAX_DOC_CANDIDATES) break
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const obj = item as Record<string, unknown>
+      const text = optionalString(obj.text)
+      if (!text) continue
+      out.push({
+        text,
+        project: optionalString(obj.project),
+        targetDocHint: optionalString(obj.targetDocHint ?? obj.target_doc_hint)
+      })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Parse an extract-v3 reply. `memories` goes through parseMemories unchanged (same 0.6 floor);
+ * `doc_candidates` is optional — missing or malformed means none. Never throws.
+ */
+export function parseExtractV3(raw: string): { memories: MemoryCandidate[], docCandidates: DocCandidate[] } {
+  if (!raw || !raw.trim()) return { memories: [], docCandidates: [] }
+  return { memories: parseMemories(raw), docCandidates: parseDocCandidates(raw) }
 }

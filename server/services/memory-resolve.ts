@@ -19,6 +19,8 @@ export interface ResolveInput {
   sessionId?: string | null
   confidence?: number | null
   evidence?: unknown[]
+  /** Extraction prompt that produced this memory (e.g. 'extract-v3'); stamped on insert only. */
+  extractPromptVersion?: string | null
 }
 export type ResolveAction =
   'duplicate' | 'insert' | 'supersede' | 'review-supersede' | 'contradict' | 'review-contradict'
@@ -109,7 +111,8 @@ async function insertFresh(input: ResolveInput, vec: number[], contentHash: stri
     evidence: (input.evidence ?? []) as unknown as string, project: input.project ?? null,
     projectId: input.projectId ?? null,
     sourceDate: input.sourceDate ?? null,
-    sessionId: input.sessionId ?? null, enrichedAt: new Date(), reviewedAt: autoReview ? new Date() : null
+    sessionId: input.sessionId ?? null, enrichedAt: new Date(), reviewedAt: autoReview ? new Date() : null,
+    extractPromptVersion: input.extractPromptVersion ?? null
   }).returning({ id: memories.id })
   publishChange({ resource: 'memory', action: 'created', id: row!.id })
   return row!.id
