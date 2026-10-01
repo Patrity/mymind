@@ -26,6 +26,12 @@ describe('parseAudit', () => {
     expect(parseAudit(raw)).toEqual({ ok: true, keep: 0.75, verdict: 'redundant', reason: 'Duplicates another memory.' })
   })
 
+  // Review Focus 1 / deferred T3: a reply cut off by the token cap must be a failure, not a guess.
+  it('a truncated JSON reply is a parse failure', () => {
+    expect(parseAudit('{"keep": 0.8, "verdict": "keep", "reason": "Durable bec').ok).toBe(false)
+    expect(parseAudit('```json\n{"keep": 0.8, "verdict": "ke').ok).toBe(false)
+  })
+
   it('clamps keep 1.4 to 1', () => {
     const raw = JSON.stringify({ keep: 1.4, verdict: 'keep', reason: 'Fine.' })
     const out = parseAudit(raw)
