@@ -70,6 +70,7 @@ const settingsChildren = computed<NavigationMenuItem[]>(() => [
   { label: 'Profile', icon: 'i-lucide-user-round', to: '/settings/profile' },
   { label: 'Voice', icon: 'i-lucide-mic-vocal', to: '/settings/voice' },
   { label: 'Search', icon: 'i-lucide-search', to: '/settings/search' },
+  { label: 'Memory', icon: 'i-lucide-brain', to: '/settings/memory' },
   { label: 'Agent Tools', icon: 'i-lucide-terminal', to: '/settings/agent-tools' },
   { label: 'Secrets', icon: 'i-lucide-key-square', to: '/settings/secrets' },
   { label: 'Image Gen', icon: 'i-lucide-image', to: '/settings/image-gen' },

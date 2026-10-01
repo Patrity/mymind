@@ -1,7 +1,7 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { MemoryDTO, MemoryScope } from '~~/shared/types/memory'
+import type { AuditVerdict, MemoryDTO, MemoryScope } from '~~/shared/types/memory'
 
 export interface CreateMemoryBody {
   content: string
@@ -10,19 +10,32 @@ export interface CreateMemoryBody {
   tags?: string[]
 }
 
-export interface MemoryListParams {
+/** Score filters (cycle 77). They apply to list AND search. */
+export interface MemoryScoreParams {
+  verdict?: AuditVerdict
+  /** 'yes' = both audit and Jev present; 'no' = either missing. */
+  scored?: 'yes' | 'no'
+  /** '1' = both scores present and |audit − Jev| ≥ 0.4. */
+  disagree?: '1'
+}
+
+/** List-only: search keeps its relevance order. Scores sort worst-first, disagreement largest-first. */
+export type MemorySort = 'created' | 'audit' | 'jev' | 'disagreement'
+
+export interface MemoryListParams extends MemoryScoreParams {
   q?: string
   scope?: MemoryScope
   reviewed?: boolean
   project?: string
   limit?: number
+  sort?: MemorySort
 }
 
 export function useMemories() {
-  const list = (params?: { scope?: MemoryScope, reviewed?: boolean, project?: string, limit?: number }) =>
+  const list = (params?: Omit<MemoryListParams, 'q'>) =>
     ofetch<MemoryDTO[]>('/api/memories', { query: params })
 
-  const search = (q: string, params?: { scope?: MemoryScope, project?: string, limit?: number }) =>
+  const search = (q: string, params?: { scope?: MemoryScope, project?: string, limit?: number } & MemoryScoreParams) =>
     ofetch<MemoryDTO[]>('/api/memories', { query: { q, ...params } })
 
   const get = (id: string) =>
@@ -56,10 +69,11 @@ export function useMemories() {
       queryFn: () => {
         const p = key.value
         const q = p?.q?.trim()
+        const scores = { verdict: p?.verdict, scored: p?.scored, disagree: p?.disagree }
         if (q) {
-          return search(q, { scope: p?.scope, project: p?.project, limit: p?.limit })
+          return search(q, { scope: p?.scope, project: p?.project, limit: p?.limit, ...scores })
         }
-        return list({ scope: p?.scope, reviewed: p?.reviewed, project: p?.project, limit: p?.limit })
+        return list({ scope: p?.scope, reviewed: p?.reviewed, project: p?.project, limit: p?.limit, sort: p?.sort, ...scores })
       }
     })
   }

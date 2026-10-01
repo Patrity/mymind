@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import type { MemoryDTO, MemoryRelationDTO, MemoryScope } from '~~/shared/types/memory'
+import type { AuditVerdict, MemoryDTO, MemoryRelationDTO, MemoryScope } from '~~/shared/types/memory'
+import type { MemorySort } from '~/composables/useMemories'
+import { VERDICT_LABELS } from '~/lib/memory/scores'
 
 definePageMeta({ title: 'Memories' })
 
@@ -15,12 +17,36 @@ const scopeFilter = ref<MemoryScope | 'all'>('all')
 const unreviewedOnly = ref(false)
 const tagFilter = ref<string[]>([])
 const projectFilter = ref<string | undefined>(undefined)
+// Score filters + sort (cycle 77). 'all'/'any' are sentinels: a select item value is never ''.
+const verdictFilter = ref<AuditVerdict | 'all'>('all')
+const scoredFilter = ref<'yes' | 'no' | 'any'>('any')
+const disagreeOnly = ref(false)
+const sortBy = ref<MemorySort>('created')
 
 const scopeItems = [
   { label: 'All scopes', value: 'all' },
   { label: 'User', value: 'user' },
   { label: 'Agent', value: 'agent' },
   { label: 'World', value: 'world' }
+]
+
+const verdictItems = [
+  { label: 'Any verdict', value: 'all' },
+  ...(Object.keys(VERDICT_LABELS) as AuditVerdict[]).map(v => ({ label: VERDICT_LABELS[v], value: v }))
+]
+
+const scoredItems = [
+  { label: 'Scored or not', value: 'any' },
+  { label: 'Both scores', value: 'yes' },
+  { label: 'Not yet scored', value: 'no' }
+]
+
+// Scores sort worst-first, like /review's queue: the likely junk is on top.
+const sortItems = [
+  { label: 'Newest first', value: 'created' },
+  { label: 'Audit (lowest first)', value: 'audit' },
+  { label: 'Jev (lowest first)', value: 'jev' },
+  { label: 'Disagreement (largest first)', value: 'disagreement' }
 ]
 
 // ── Debounced search query ────────────────────────────────────────────────────
@@ -38,7 +64,12 @@ const listParams = computed(() => ({
   q: debouncedQ.value.trim() || undefined,
   scope: scopeFilter.value !== 'all' ? (scopeFilter.value as MemoryScope) : undefined,
   reviewed: (!debouncedQ.value.trim() && unreviewedOnly.value) ? false : undefined,
-  project: projectFilter.value || undefined
+  project: projectFilter.value || undefined,
+  verdict: verdictFilter.value !== 'all' ? verdictFilter.value : undefined,
+  scored: scoredFilter.value !== 'any' ? scoredFilter.value : undefined,
+  disagree: disagreeOnly.value ? '1' as const : undefined,
+  // Search keeps its relevance order, so the sort only applies to the list.
+  sort: sortBy.value
 }))
 
 const { data, refetch, isPending, error } = useMemoryList(listParams)
@@ -248,6 +279,45 @@ function firstEvidence(mem: MemoryDTO) {
           </div>
         </div>
 
+        <!-- Score filters + sort (cycle 77) -->
+        <div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center w-full flex-wrap">
+          <USelect
+            v-model="verdictFilter"
+            :items="verdictItems"
+            value-key="value"
+            aria-label="Audit verdict"
+            class="w-44 shrink-0"
+          />
+          <USelect
+            v-model="scoredFilter"
+            :items="scoredItems"
+            value-key="value"
+            aria-label="Scored"
+            class="w-40 shrink-0"
+          />
+          <UTooltip text="Both scores present and the audit and Jev differ by 40% or more">
+            <USwitch
+              v-model="disagreeOnly"
+              label="Disagree only"
+              size="sm"
+            />
+          </UTooltip>
+          <UTooltip
+            :text="isSearching ? 'Search results keep their relevance order' : 'Sort the list'"
+            class="sm:ml-auto"
+          >
+            <USelect
+              v-model="sortBy"
+              :items="sortItems"
+              value-key="value"
+              aria-label="Sort"
+              :disabled="isSearching"
+              icon="i-lucide-arrow-down-wide-narrow"
+              class="w-60 shrink-0"
+            />
+          </UTooltip>
+        </div>
+
         <!-- Loading skeletons -->
         <div
           v-if="isPending"
@@ -311,12 +381,15 @@ function firstEvidence(mem: MemoryDTO) {
                   variant="outline"
                   size="xs"
                 />
-                <UBadge
-                  v-else-if="!isSearching && mem.confidence !== null"
-                  :label="`${Math.round(mem.confidence * 100)}% confidence`"
-                  color="neutral"
-                  variant="outline"
-                  size="xs"
+                <MemoryScoreBadges
+                  :confidence="mem.confidence"
+                  confidence-label="at extraction"
+                  :jev-score="mem.jevScore"
+                  :jev-answers="mem.jevAnswers"
+                  :audit-keep="mem.auditKeep"
+                  :audit-verdict="mem.auditVerdict"
+                  :audit-reason="mem.auditReason"
+                  show-missing
                 />
               </div>
               <div class="text-right shrink-0">

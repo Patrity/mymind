@@ -1,4 +1,4 @@
-import { and, eq, isNull, isNotNull, ne, ilike, or, sql, inArray, arrayContains, count } from 'drizzle-orm'
+import { and, eq, isNull, isNotNull, ne, ilike, or, sql, inArray, arrayContains, count, type SQL } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { useDb } from '../db'
 import { memories, memoryRelations } from '../db/schema'
@@ -406,10 +406,62 @@ export async function dedupMemoriesAfterMerge(memoryIds: string[]): Promise<{ co
 }
 
 // ---------------------------------------------------------------------------
+// Score filters / sorts (cycle 77) — shared by listMemories and searchMemories
+// ---------------------------------------------------------------------------
+
+/** |audit − Jev| at or above this is a "disagree". Mirrors app/lib/memory/scores.ts. */
+export const DISAGREE_THRESHOLD = 0.4
+
+export type MemoryScoredFilter = 'yes' | 'no'
+export type MemorySort = 'created' | 'audit' | 'jev' | 'disagreement'
+
+export interface MemoryScoreFilters {
+  /** Only memories whose audit returned this verdict. */
+  verdict?: AuditVerdict
+  /** 'yes' = both the audit and Jev scores are present; 'no' = at least one is missing. */
+  scored?: MemoryScoredFilter
+  /** Only memories with BOTH scores whose gap is ≥ DISAGREE_THRESHOLD. A single score never counts. */
+  disagree?: boolean
+}
+
+/**
+ * The gap between the two scores, null when either is null (SQL arithmetic on null is null).
+ * The float4 columns are cast to numeric first so 0.7 vs 0.3 is exactly 0.4, not 0.39999998.
+ */
+const disagreementExpr = () =>
+  sql`abs(${memories.auditKeep}::numeric - ${memories.jevScore}::numeric)`
+
+function scoreFilterConditions(f: MemoryScoreFilters): SQL[] {
+  const out: SQL[] = []
+  if (f.verdict) out.push(eq(memories.auditVerdict, f.verdict))
+  if (f.scored === 'yes') out.push(and(isNotNull(memories.auditKeep), isNotNull(memories.jevScore))!)
+  if (f.scored === 'no') out.push(or(isNull(memories.auditKeep), isNull(memories.jevScore))!)
+  if (f.disagree) {
+    out.push(isNotNull(memories.auditKeep), isNotNull(memories.jevScore),
+      sql`${disagreementExpr()} >= ${DISAGREE_THRESHOLD}`)
+  }
+  return out
+}
+
+/**
+ * ORDER BY for a list sort. Scores sort worst-first (ascending, like /review's queue) so likely
+ * junk is on top; disagreement sorts largest gap first. Unscored rows always go last, and
+ * newest-first breaks ties.
+ */
+function sortOrder(sort: MemorySort | undefined): SQL[] {
+  const newest = sql`${memories.createdAt} desc`
+  if (sort === 'audit') return [sql`${memories.auditKeep} asc nulls last`, newest]
+  if (sort === 'jev') return [sql`${memories.jevScore} asc nulls last`, newest]
+  if (sort === 'disagreement') return [sql`${disagreementExpr()} desc nulls last`, newest]
+  return [newest]
+}
+
+// ---------------------------------------------------------------------------
 // Search (hybrid trigram + vector RRF, mirrors searchDocs)
 // ---------------------------------------------------------------------------
 
-export interface SearchMemoriesOptions {
+/** Score filters apply to search too; sorts do not — search keeps its relevance order. */
+export interface SearchMemoriesOptions extends MemoryScoreFilters {
   scope?: MemoryScope
   project?: string | null
   tags?: string[]
@@ -443,6 +495,7 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
   if (opts.tags?.length) baseConditions.push(arrayContains(memories.tags, opts.tags))
   const reviewedCond = reviewedCondition(opts.reviewed)
   if (reviewedCond) baseConditions.push(reviewedCond)
+  baseConditions.push(...scoreFilterConditions(opts))
 
   const baseWhere = and(...baseConditions)
 
@@ -526,11 +579,15 @@ export async function searchMemories(q: string, opts: SearchMemoriesOptions = {}
 // List / Get
 // ---------------------------------------------------------------------------
 
-export interface ListMemoriesOptions {
+export interface ListMemoriesOptions extends MemoryScoreFilters {
   scope?: MemoryScope
   reviewed?: boolean
   project?: string | null
   limit?: number
+  /** Default 'created' (newest first). See sortOrder. */
+  sort?: MemorySort
+  /** Test seam: restrict to these ids (the dev DB is shared with real rows). Not exposed over HTTP. */
+  onlyIds?: string[]
 }
 
 export async function listMemories(opts: ListMemoriesOptions = {}): Promise<MemoryDTO[]> {
@@ -545,10 +602,12 @@ export async function listMemories(opts: ListMemoriesOptions = {}): Promise<Memo
     // learned in. Only project-bound memories are filtered by provenance.
     else conditions.push(or(eq(memories.applicability, 'global'), eq(memories.project, opts.project))!)
   }
+  conditions.push(...scoreFilterConditions(opts))
+  if (opts.onlyIds) conditions.push(opts.onlyIds.length ? inArray(memories.id, opts.onlyIds) : sql`false`)
 
   const rows = await db.select().from(memories)
     .where(and(...conditions))
-    .orderBy(sql`${memories.createdAt} desc`)
+    .orderBy(...sortOrder(opts.sort))
     .limit(opts.limit ?? 100)
 
   const ids = rows.map(r => r.id)
