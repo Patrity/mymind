@@ -4,6 +4,7 @@ import { sessions, messages, memEnrichmentState, toolEvents, projects, conversat
 import { extractV3, EXTRACT_PROMPT_VERSION, type DocCandidate, type ExtractV3Result } from '../lib/memory/extract-v3'
 import { resolveEnrichedMemory } from './memory-resolve'
 import { createMemory } from './memory'
+import { fileDocCandidate } from './memory-doc-candidates'
 import { projectIdForScope } from '../lib/projects/memory-project'
 import { publishChange } from '../utils/live-bus'
 import { scoreMemories } from './memory-scoring'
@@ -67,11 +68,16 @@ export async function extractMemoriesFromTranscript(transcript: string): Promise
 }
 
 /**
- * Hand doc-worthy extractions on for filing. No-op for now: cycle 77 Task 6 replaces this body
- * with fileDocCandidate() (a triage capture per candidate, fire-and-forget). Callers .catch it
- * anyway so a rejection can never surface as an unhandled rejection in Nitro.
+ * File each doc-worthy extraction as a triage capture (memory-doc-candidates.ts). Sequential,
+ * not Promise.all — at most 5 candidates per transcript (extract-v3's cap), and each one
+ * already never throws, so there is no concurrency win worth the extra complexity. Callers
+ * .catch this anyway so a rejection can never surface as an unhandled rejection in Nitro.
  */
-async function routeDocCandidates(_candidates: DocCandidate[], _src: { sessionId?: string, conversationId?: string }): Promise<void> {}
+async function routeDocCandidates(candidates: DocCandidate[], src: { sessionId?: string, conversationId?: string }): Promise<void> {
+  for (const candidate of candidates) {
+    await fileDocCandidate(candidate, src)
+  }
+}
 
 /**
  * Score freshly created memories (Jev + audit) without holding up enrichment. Fire-and-forget:

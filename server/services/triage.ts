@@ -11,6 +11,7 @@ import { publishChange } from '../utils/live-bus'
 import { classify } from '../lib/ai/triage'
 import { route } from '../lib/triage/route'
 import { PROJECTS_ROOT } from '../lib/projects/doc-path'
+import { isRepoMirrorPath } from './memory-doc-candidates'
 import { slugify } from '../../shared/utils/slugify'
 import type { TriageAction, TriageOutcome } from '../../shared/types/triage'
 import type { DocumentDTO } from '../../shared/types/documents'
@@ -291,6 +292,13 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
  * Exported for direct unit testing — mirrors documents.ts's toSummaryDTO convention. Its
  * output still passes through isValidAppendTarget in applyAppend, so this SQL guard and
  * that guard are deliberately redundant rather than the only line of defense.
+ *
+ * Mirror guard: a repo-mirrored doc (/projects/*\/wiki/, /projects/*\/handovers/ —
+ * isRepoMirrorPath, memory-doc-candidates.ts) is overwritten whole on its next sync, so an
+ * append into it is silently lost. Rather than skip it and fall through to the next-best
+ * chunk (which could easily be a WORSE semantic match), a resolved mirror target is treated
+ * exactly like "no candidate cleared the floor" — applyAppend's existing null branch already
+ * degrades that to a note, which is the correct, conservative outcome here too.
  */
 export async function resolveAppendTarget(content: string): Promise<string | null> {
   const floor = useRuntimeConfig().triageAppendSimilarityFloor as number
@@ -299,6 +307,7 @@ export async function resolveAppendTarget(content: string): Promise<string | nul
   const [best] = await useDb()
     .select({
       sourceId: chunks.sourceId,
+      path: documents.path,
       distance: sql<number>`${chunks.embedding} <=> ${lit}::halfvec`
     })
     .from(chunks)
@@ -312,17 +321,22 @@ export async function resolveAppendTarget(content: string): Promise<string | nul
     .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
     .limit(1)
 
-  return best && (1 - best.distance) >= floor ? best.sourceId : null
+  if (!best || (1 - best.distance) < floor) return null
+  if (isRepoMirrorPath(best.path)) return null
+  return best.sourceId
 }
 
 /**
- * The same guardrails resolveAppendTarget enforces in SQL (not /input/, not a skill),
- * re-checked against a resolved document. Applied to EVERY targetId applyAppend acts on,
- * not just the auto-resolved one — see the call site's comment for why an explicitly
- * supplied targetDocId can't skip this.
+ * The same guardrails resolveAppendTarget enforces (not /input/, not a skill, not a repo
+ * mirror), re-checked against a resolved document. Applied to EVERY targetId applyAppend
+ * acts on, not just the auto-resolved one — see the call site's comment for why an
+ * explicitly supplied targetDocId can't skip this. The mirror check here is what makes the
+ * guard apply to ALL triage appends, not only the ones that go through resolveAppendTarget's
+ * own vector search — see that function's doc comment for why a mirror target degrades to a
+ * note rather than searching for a next-best match.
  */
 function isValidAppendTarget(doc: DocumentDTO): boolean {
-  return doc.type !== 'skill' && !doc.path.startsWith('/input/')
+  return doc.type !== 'skill' && !doc.path.startsWith('/input/') && !isRepoMirrorPath(doc.path)
 }
 
 /** First non-empty line, heading markers/bullets stripped, clipped — a readable fallback title. */
