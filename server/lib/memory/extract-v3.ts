@@ -6,7 +6,7 @@
  * the criteria change: every memory created by this prompt is stamped with it
  * (`memories.extract_prompt_version`), so scores can be compared per prompt generation.
  */
-import { chat, chatWithModel, isEmptyReplyError, type ChatMessage } from '../ai/chat'
+import { chat, chatWithModel, isRejectedRequestError, type ChatMessage } from '../ai/chat'
 import { parseExtractV3, extractBalanced, type DocCandidate, type MemoryCandidate } from '../ai/memory-extract'
 import type { AuditVerdict } from '../../../shared/types/memory'
 
@@ -178,9 +178,10 @@ export function parseAudit(raw: string): ParsedAudit {
  * token cap and chat() throws). Never throws. A thrown call (network, timeout, 429/5xx, failover
  * exhausted) comes back as ok:false with `transport: true`, so the caller can tell an
  * infrastructure outage (retry later, never counted against the row) from a bad reply (content
- * failure, counted toward `audit_failures`). An empty/blank reply from every chain member is a
- * reply about this memory, so it is a CONTENT failure (no transport flag) — otherwise a row the
- * model always answers blank would never be capped.
+ * failure, counted toward `audit_failures`). When every chain member answered blank or refused
+ * the request with a 4xx other than 401/403/408/429 (isRejectedRequestError), the failure is about
+ * this memory, so it is a CONTENT failure (no transport flag) — otherwise a poison row would never
+ * be capped and would trip the audit's breaker at the front of every batch (final review I1).
  *
  * `model` is the chain member that ANSWERED (chatWithModel), so `audit_model` records provenance
  * even when the call failed over off the chain head.
@@ -195,7 +196,7 @@ export async function auditMemory(
     reply = await chatFn('bulk', auditMessages(m), { temperature: 0, maxTokens: 300 })
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
-    if (isEmptyReplyError(err)) return { ok: false, error }
+    if (isRejectedRequestError(err)) return { ok: false, error }
     return { ok: false, error, transport: true }
   }
   const parsed = parseAudit(reply.text)

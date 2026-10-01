@@ -45,6 +45,27 @@ export function isEmptyReplyError(err: unknown): boolean {
   return err instanceof Error && err.message === EMPTY_REPLY_ERROR
 }
 
+/** A 4xx a retry would only repeat: the request itself was refused (400/404/413/422…). 401/403
+ *  (key/auth), 408 (timeout) and 429 (rate limit) are about the provider, not the request. */
+export function isRequestRejectionStatus(status: number | undefined): boolean {
+  return status !== undefined && status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status)
+}
+
+/**
+ * True when every chain member got the request and refused it on its CONTENT: each attempt either
+ * answered blank (see isEmptyReplyError) or rejected it with a request-rejection 4xx. That is a
+ * failure about THIS input — a poison row (a lone surrogate, a content filter, an oversized body)
+ * — not an outage, so a caller that caps per-row failures should charge it. A single attempt that
+ * failed any other way (5xx, timeout, network, 401/429) means the chain may just be down: not this.
+ */
+export function isRejectedRequestError(err: unknown): boolean {
+  if (err instanceof AiAllFailedError) {
+    return err.attempts.length > 0
+      && err.attempts.every(a => a.error === EMPTY_REPLY_ERROR || isRequestRejectionStatus(a.status))
+  }
+  return isEmptyReplyError(err)
+}
+
 /** Per-attempt request timeout when the caller names none. */
 export const CHAT_TIMEOUT_MS = 60_000
 

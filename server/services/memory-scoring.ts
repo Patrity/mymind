@@ -13,8 +13,8 @@
 // Two kinds of failure, treated differently:
 // - CONTENT failure — something about THIS row: Jev answered with no usable answers, or rejected
 //   the request with a 4xx other than 401/403/408/429 (400/404/413/422…: retrying repeats it); the
-//   audit reply is unparsable/invalid, or every chain member answered blank. The row's counter
-//   goes up, after 3 the part is skipped, and the batch carries on.
+//   audit reply is unparsable/invalid, or every chain member answered blank or refused the request
+//   with such a 4xx. The row's counter goes up, after 3 the part is skipped, and the batch carries on.
 // - TRANSPORT failure — the infrastructure: network error, timeout, 408/429/5xx, failover chain
 //   exhausted, and Jev 401/403 (a bad/revoked key is an outage of the Jev part, not a bad row).
 //   The row is NOT charged, and THAT PART stops for the rest of the batch (circuit breaker); the
@@ -32,7 +32,7 @@ import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { useDb } from '../db'
 import { memories } from '../db/schema'
 import { askJev, nouls, jevConfig, JevHttpError, type JevConfig } from '../lib/ai/jev'
-import type { chatWithModel } from '../lib/ai/chat'
+import { isRequestRejectionStatus, type chatWithModel } from '../lib/ai/chat'
 import { JEV_QUESTIONS, jevKeepScore, type JevAnswers } from '../lib/memory/jev-score'
 import { AUDIT_PROMPT_VERSION, auditMemory } from '../lib/memory/extract-v3'
 import { publishChange } from '../utils/live-bus'
@@ -112,8 +112,7 @@ interface Batch { jevStopped: boolean, auditStopped: boolean }
 /** Is a thrown Jev error about this row (content) rather than Jev being unreachable/unauthorised? */
 export function isJevContentError(err: unknown): boolean {
   if (!(err instanceof JevHttpError)) return false   // network, timeout/abort, … → transport
-  const s = err.status
-  return s >= 400 && s < 500 && ![401, 403, 408, 429].includes(s)
+  return isRequestRejectionStatus(err.status)
 }
 
 /** Jev part for one row. Reads the row fresh, so a memory archived mid-run is skipped. */

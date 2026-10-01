@@ -358,6 +358,36 @@ describe('failure classification (fix round 2)', () => {
   })
 })
 
+describe('audit poison rows (final review I1)', () => {
+  it('a row every chain member refuses with 400 is CONTENT: charged, and the audit carries on', async () => {
+    const ids = await Promise.all(Array.from({ length: 4 }, () => seed()))
+    const poisoned = (await load(ids[0]!)).content
+    const chatFn = vi.fn(async (_role: string, messages: { content: string }[]) => {
+      if (messages[1]!.content.includes(poisoned)) {
+        throw new AiAllFailedError('bulk', [{ label: 'a', error: '[POST] 400', status: 400 }, { label: 'b', error: '[POST] 400', status: 400 }])
+      }
+      return AUDIT_REPLY
+    })
+    const results = await scoreMemories(ids, { ask: okAsk() as never, cfg: CFG, chatFn: chatFn as never })
+    expect(results[0]!.audit).toBe('failed')
+    expect((await load(ids[0]!)).auditFailures).toBe(1)
+    expect(results.slice(1).every(r => r.audit === 'scored')).toBe(true)
+    expect(chatFn).toHaveBeenCalledTimes(4)
+  })
+
+  it('every chain member answering 503 stays TRANSPORT: nobody charged, the audit stops', async () => {
+    const ids = await Promise.all(Array.from({ length: 10 }, () => seed()))
+    const chatFn = vi.fn(async () => {
+      throw new AiAllFailedError('bulk', [{ label: 'a', error: '[POST] 503', status: 503 }, { label: 'b', error: '[POST] 503', status: 503 }])
+    })
+    const results = await scoreMemories(ids, { ask: okAsk() as never, cfg: CFG, chatFn: chatFn as never })
+    expect(results.some(r => r.audit === 'unavailable')).toBe(true)
+    expect(results.some(r => r.audit === 'failed')).toBe(false)
+    expect(chatFn.mock.calls.length).toBeLessThan(ids.length)
+    for (const id of ids) expect((await load(id)).auditFailures).toBe(0)
+  })
+})
+
 describe('selectUnscored', () => {
   it('orders unreviewed first, then oldest; excludes scored, exhausted and archived rows; respects onlyIds', async () => {
     const t = (d: number) => new Date(Date.UTC(2020, 0, d))

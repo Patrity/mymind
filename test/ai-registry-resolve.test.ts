@@ -99,4 +99,17 @@ describe('withFailoverOver', () => {
     await expect(withFailoverOver('bulk', chain, async () => { throw new Error('boom') }))
       .rejects.toBeInstanceOf(AiAllFailedError)
   })
+
+  it('records each attempt\'s HTTP status when the fetch error carries one (ofetch statusCode/status)', async () => {
+    const noObs = { recordEvent: () => {} } as never
+    const err = await withFailoverOver('bulk', chain, async (m) => {
+      if (m.modelId === 'a') throw Object.assign(new Error('[POST] 400 Bad Request'), { statusCode: 400 })
+      throw new Error('fetch failed')   // no status: a network error
+    }, noObs).catch(e => e as AiAllFailedError)
+    expect(err).toBeInstanceOf(AiAllFailedError)
+    expect(err.attempts).toEqual([
+      { label: 'A', error: '[POST] 400 Bad Request', status: 400 },
+      { label: 'B', error: 'fetch failed' }
+    ])
+  })
 })

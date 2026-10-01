@@ -153,6 +153,44 @@ describe('auditMemory', () => {
     expect('transport' in out && out.transport).toBe(true)
   })
 
+  // Final review I1: a poison row every chain member refuses (400/413/422) must be charged, or it
+  // stays at the front of every batch and trips the audit breaker each time.
+  it.each([400, 413, 422])('every chain member refusing with %i is a content failure', async (status) => {
+    const chatFn = vi.fn(async () => {
+      throw new AiAllFailedError('bulk', [{ label: 'a', error: `[POST] ${status}`, status }, { label: 'b', error: `[POST] ${status}`, status }])
+    })
+    const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
+    expect(out.ok).toBe(false)
+    expect('transport' in out).toBe(false)
+  })
+
+  it('a blank reply plus a 400 refusal is still a content failure', async () => {
+    const chatFn = vi.fn(async () => {
+      throw new AiAllFailedError('bulk', [{ label: 'a', error: EMPTY_REPLY_ERROR }, { label: 'b', error: '[POST] 400', status: 400 }])
+    })
+    const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
+    expect('transport' in out).toBe(false)
+  })
+
+  it.each([
+    ['a 400 plus a 503', [400, 503]],
+    ['401 everywhere (bad key)', [401, 401]],
+    ['429 everywhere (rate limit)', [429, 429]],
+    ['408 everywhere', [408, 408]]
+  ])('%s stays transport', async (_name, statuses) => {
+    const chatFn = vi.fn(async () => {
+      throw new AiAllFailedError('bulk', statuses.map((status, i) => ({ label: `m${i}`, error: `[POST] ${status}`, status })))
+    })
+    const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
+    expect('transport' in out && out.transport).toBe(true)
+  })
+
+  it('a 4xx attempt with no status recorded stays transport (never guess from the message)', async () => {
+    const chatFn = vi.fn(async () => { throw new AiAllFailedError('bulk', [{ label: 'a', error: '[POST] 400 Bad Request' }]) })
+    const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })
+    expect('transport' in out && out.transport).toBe(true)
+  })
+
   it('a bad reply is a content failure, not a transport one', async () => {
     const chatFn = vi.fn(async () => ({ text: 'Looks durable to me.', model: 'm' }))
     const out = await auditMemory({ content: 'A fact.', project: null, ageDays: 0, scope: 'agent' }, { chatFn: chatFn as never })

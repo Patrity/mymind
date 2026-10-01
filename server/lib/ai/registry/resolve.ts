@@ -2,7 +2,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { LanguageModel } from 'ai'
 import { decryptSecret } from './crypto'
-import { AiNotConfiguredError, AiAllFailedError } from './errors'
+import { AiNotConfiguredError, AiAllFailedError, type FailedAttempt } from './errors'
 import { EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel, type Usage } from './types'
 import { recordEvent as defaultRecord } from '../../observability/record'
 import type { SpanInput } from '../../observability/types'
@@ -57,6 +57,13 @@ export function reorderChain(chain: ResolvedModel[], modelDefId?: string | null)
   return [chain[idx]!, ...chain.slice(0, idx), ...chain.slice(idx + 1)]
 }
 
+/** The HTTP status carried by a thrown fetch error (ofetch's FetchError: statusCode/status), if any. */
+export function httpStatusOf(err: unknown): number | undefined {
+  const e = err as { statusCode?: unknown, status?: unknown, response?: { status?: unknown } } | null
+  const s = e?.statusCode ?? e?.status ?? e?.response?.status
+  return typeof s === 'number' && s >= 100 && s < 600 ? s : undefined
+}
+
 /** Pure: run fn against each model in order until one succeeds. */
 export async function withFailoverOver<T>(
   usage: Usage,
@@ -64,7 +71,7 @@ export async function withFailoverOver<T>(
   fn: (m: ResolvedModel) => Promise<T>,
   obs: ObsSeam = realObs
 ): Promise<T> {
-  const attempts: { label: string; error: string }[] = []
+  const attempts: FailedAttempt[] = []
   for (let i = 0; i < chain.length; i++) {
     const m = chain[i]!
     const started = Date.now()
@@ -90,7 +97,8 @@ export async function withFailoverOver<T>(
         })
         throw err
       }
-      attempts.push({ label: m.label, error: message })
+      const status = httpStatusOf(err)
+      attempts.push({ label: m.label, error: message, ...(status ? { status } : {}) })
       obs.recordEvent({
         kind: 'attempt', name: `${usage}:${m.label}`, status: 'error', severity: 'warn',
         usage, provider: `${m.label}@${providerHost(m.baseURL)}`, modelId: m.modelId,
