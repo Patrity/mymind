@@ -33,6 +33,27 @@ export const memories = pgTable('memories', {
    *  `jev-latest` and the API reports back which version resolved to. Stored per row so a
    *  later calibration can segment by version instead of assuming one. */
   jevModel: text('jev_model'),
+  /** How many times Jev scoring has failed (bad response, timeout) on this row. Skipped by the
+   *  backfill after 3 — see server/services/memory-scoring.ts. */
+  jevFailures: integer('jev_failures').notNull().default(0),
+  /** The LLM audit's independent read, using the same `extract-v3` criteria the extractor
+   *  applies — a THIRD opinion beside `confidence` and `jevScore`, re-run as the prompt
+   *  evolves (see `auditPromptVersion`). 0–1 durability; same orientation (higher = keep). */
+  auditKeep: real('audit_keep'),
+  /** keep | transient | redundant | wrong_scope | belongs_in_doc — see shared/types/memory.ts AuditVerdict. */
+  auditVerdict: text('audit_verdict'),
+  /** The audit's one-line justification, <=200 chars. */
+  auditReason: text('audit_reason'),
+  /** The model that answered the audit, not merely the one requested — mirrors `jevModel`. */
+  auditModel: text('audit_model'),
+  /** Which revision of the audit criteria produced this verdict (see AUDIT_PROMPT_VERSION). */
+  auditPromptVersion: text('audit_prompt_version'),
+  auditedAt: timestamp('audited_at', { withTimezone: true }),
+  /** How many times the audit has failed (prose/truncated JSON) on this row. Skipped after 3. */
+  auditFailures: integer('audit_failures').notNull().default(0),
+  /** Which revision of the extraction prompt produced this row (e.g. 'extract-v3'). Null for
+   *  memories written before this cycle. */
+  extractPromptVersion: text('extract_prompt_version'),
   evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
   project: text('project'),
   projectId: uuid('project_id'),

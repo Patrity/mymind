@@ -2,7 +2,7 @@ import { and, eq, isNull, isNotNull, ne, ilike, or, sql, inArray, arrayContains,
 import { createHash } from 'node:crypto'
 import { useDb } from '../db'
 import { memories, memoryRelations } from '../db/schema'
-import type { MemoryApplicability, MemoryDTO, MemoryEvidenceEntry, MemoryRelationDTO, MemoryScope } from '../../shared/types/memory'
+import type { AuditVerdict, MemoryApplicability, MemoryDTO, MemoryEvidenceEntry, MemoryRelationDTO, MemoryScope } from '../../shared/types/memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
@@ -52,6 +52,8 @@ export function reviewedCondition(reviewed?: boolean) {
 
 const live = () => isNull(memories.archivedAt)
 
+const AUDIT_VERDICTS: readonly AuditVerdict[] = ['keep', 'transient', 'redundant', 'wrong_scope', 'belongs_in_doc']
+
 function toDTO(r: typeof memories.$inferSelect, relations?: MemoryRelationDTO[]): MemoryDTO {
   const evidenceRaw = Array.isArray(r.evidence) ? (r.evidence as unknown[]) : []
   const evidence: MemoryEvidenceEntry[] = evidenceRaw.map((e) => {
@@ -71,6 +73,17 @@ function toDTO(r: typeof memories.$inferSelect, relations?: MemoryRelationDTO[])
     tags: r.tags,
     source: r.source,
     confidence: r.confidence,
+    jevScore: r.jevScore,
+    jevAnswers: (r.jevAnswers && typeof r.jevAnswers === 'object' && !Array.isArray(r.jevAnswers))
+      ? r.jevAnswers as Record<string, number>
+      : null,
+    auditKeep: r.auditKeep,
+    auditVerdict: (AUDIT_VERDICTS as readonly string[]).includes(r.auditVerdict ?? '')
+      ? (r.auditVerdict as AuditVerdict)
+      : null,
+    auditReason: r.auditReason,
+    auditPromptVersion: r.auditPromptVersion,
+    extractPromptVersion: r.extractPromptVersion,
     project: r.project,
     applicability: (r.applicability === 'global' ? 'global' : 'project') as MemoryApplicability,
     resident: r.resident,
