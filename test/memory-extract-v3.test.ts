@@ -52,6 +52,16 @@ describe('parseExtractV3', () => {
     expect(out.docCandidates).toEqual([{ text: 'Shape: { a: 1 } then } stray', project: null, targetDocHint: null }])
   })
 
+  it('handles escaped quotes inside strings (a "}" inside a quoted string does not end the object)', () => {
+    const obj = {
+      memories: [mem('Tony says "}" is not a closing brace.')],
+      doc_candidates: [{ text: 'say "}" now, then \\ a backslash', project: 'mymind' }]
+    }
+    const out = parseExtractV3(JSON.stringify(obj))
+    expect(out.memories.map(m => m.content)).toEqual(['Tony says "}" is not a closing brace.'])
+    expect(out.docCandidates).toEqual([{ text: 'say "}" now, then \\ a backslash', project: 'mymind', targetDocHint: null }])
+  })
+
   it('gives empty lists for garbage', () => {
     for (const raw of ['', '   ', 'no json here', '{ broken', '[1,2', 'null', '42']) {
       expect(parseExtractV3(raw)).toEqual({ memories: [], docCandidates: [] })
@@ -76,5 +86,8 @@ describe('extractV3', () => {
     expect(EXTRACT_PROMPT_VERSION).toBe('extract-v3')
     expect(EXTRACT_SYSTEM_PROMPT).toContain('doc_candidates')
     expect(EXTRACT_SYSTEM_PROMPT).toContain('six months')
+    expect(EXTRACT_SYSTEM_PROMPT).toContain('JUDGE THE FACT, NOT ITS WORDING')
+    expect(EXTRACT_SYSTEM_PROMPT).toContain('Below 0.6 = do not extract')
+    expect(EXTRACT_SYSTEM_PROMPT).toContain('precisely-observed fact')
   })
 })

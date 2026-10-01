@@ -67,7 +67,8 @@ export async function extractMemoriesFromTranscript(transcript: string): Promise
 
 /**
  * Hand doc-worthy extractions on for filing. No-op for now: cycle 77 Task 6 replaces this body
- * with fileDocCandidate() (a triage capture per candidate, fire-and-forget). Never throws.
+ * with fileDocCandidate() (a triage capture per candidate, fire-and-forget). Callers .catch it
+ * anyway so a rejection can never surface as an unhandled rejection in Nitro.
  */
 async function routeDocCandidates(_candidates: DocCandidate[], _src: { sessionId?: string, conversationId?: string }): Promise<void> {}
 
@@ -156,7 +157,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
 
       const { memories: extracted, docCandidates } = await extractMemoriesFromTranscript(transcript)
       candidates += extracted.length
-      void routeDocCandidates(docCandidates, { sessionId: session.id })
+      void routeDocCandidates(docCandidates, { sessionId: session.id }).catch(err => console.warn('[memory-enrich] doc candidate routing failed:', err))
 
       // Store each candidate with rich provenance via resolution orchestrator
       for (const candidate of extracted) {
@@ -321,7 +322,7 @@ export async function enrichConversations(
 
     try {
       const { memories: extracted, docCandidates } = await extract(transcript)
-      void routeDocCandidates(docCandidates, { conversationId: c.id })
+      void routeDocCandidates(docCandidates, { conversationId: c.id }).catch(err => console.warn('[memory-enrich] doc candidate routing failed:', err))
       for (const e of extracted) {
         const memory = await createMemory({
           scope: e.scope,
