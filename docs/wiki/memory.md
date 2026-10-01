@@ -149,8 +149,8 @@ priced out **at or below the 43% base rate** — it would discard more keepers t
   unknown is not bad; newest-first on a tie).
 - `server/lib/ai/jev.ts` — `jevConfig()` resolves through `resolveChain('jev')`, `askJev()` POSTs
   `{state, model, questions}` to `${baseURL}/systemone` and retries only on 429.
-- `server/services/memory-jev.ts` — `runJevScoring({limit})` targets **unreviewed + live** rows
-  missing a part. Since cycle 77 it goes through the shared scoring path
+- `server/services/memory-jev.ts` — `runJevScoring({limit})` targets live rows missing a part that
+  are **unreviewed or created in the last 7 days** (`RECENT_MEMORY_DAYS`, final review M1). Since cycle 77 it goes through the shared scoring path
   (`server/services/memory-scoring.ts`), so the same run also **audits** those rows, and failures
   are counted per row (see [Failure handling](#failure-handling)).
 - `server/tasks/score-memories.ts` — cron `5-59/15`, i.e. *after* `enrich-memories` on the quarter
@@ -215,9 +215,14 @@ null unless both scores exist. A memory with only one score is never counted as 
 
 ### The audit
 
-Same file: `AUDIT_PROMPT_VERSION = 'audit-v1'`, `AUDIT_VERDICTS` = `keep | transient | redundant |
+Same file: `AUDIT_PROMPT_VERSION = 'audit-v2'`, `AUDIT_VERDICTS` = `keep | transient | redundant |
 wrong_scope | belongs_in_doc`, and `AUDIT_SYSTEM_PROMPT`, which restates `EXTRACT_V3_CRITERIA`
-verbatim. `auditMemory(m)` sends the memory's content, scope, project and age in days on the
+verbatim and adds two audit-only rules (audit-v2, final review I4): **judge durability, not
+plausibility** (true, specific or useful is not durable), and **point-in-time state is
+`transient`**: the state of a project, plan, task, schedule or dataset, a known bug or defect,
+pinned versions and the current stack. A general rule, stable invariant, non-obvious gotcha about
+an external system or fact about Tony stays `keep` even when it names a version or project in
+passing. `audit-v1` rows are re-selected and re-audited. `auditMemory(m)` sends the memory's content, scope, project and age in days on the
 `bulk` chain (temperature 0, maxTokens 300) through `chatWithModel`, which also returns the model
 that **answered**, stored as `audit_model`. `parseAudit` clamps `keep` to [0, 1]. A missing
 `keep` or an unknown verdict is a failure. `reason` is optional, defaults to `''` and is trimmed
@@ -229,23 +234,31 @@ One function scores a memory, used by all three callers: enrichment (new rows, f
 the `score-memories` cron, and the backfill. It only writes the `jev_*` and `audit_*` columns.
 
 - **Each part is independent.** A part runs while it is missing (`jev_scored_at` null /
-  `audit_prompt_version` ≠ `audit-v1`) and has fewer than `MAX_FAILURES = 3` failures. A new
+  `audit_prompt_version` ≠ `audit-v2`) and has fewer than `MAX_FAILURES = 3` failures. A new
   audit prompt version therefore re-selects every row for re-audit.
 - **Process-wide limiters:** Jev concurrency 6 and audit concurrency 2, shared by every caller.
   `askJev` has a 60 s timeout.
 - **Stamps are guarded** ("still missing", `.returning()`), so when two callers race on one row
   the first writer wins and the second write is a no-op. Both may still spend one call. One
   `memory` live event is published per stamped row.
-- `selectUnscored(limit, { jevConfigured, unreviewedOnly?, onlyIds? })`: live rows only
-  (`archived_at is null`, so a row archived mid-backfill drops out), unreviewed first, then oldest.
-  With Jev unassigned, a missing Jev score does not keep a row selected.
+- `selectUnscored(limit, { jevConfigured, unreviewedOnly?, orCreatedSince?, part?, onlyIds? })`:
+  live rows only (`archived_at is null`, so a row archived mid-backfill drops out), unreviewed
+  first, then oldest. With Jev unassigned, a missing Jev score does not keep a row selected.
+  `part` limits it to rows missing that one part. `orCreatedSince` (with `unreviewedOnly`) also
+  takes rows created since then, whatever their review state.
+- `selectUnscoredPerPart(limit, opts)`: up to `limit` rows needing the audit **plus** up to
+  `limit` needing Jev, deduped (final review I2). One combined selection used to re-pick the
+  same rows during a one-part outage (they still needed the down part), so the other part made no
+  progress across batches. Empty only when both parts are.
+- The predicates `jevMissing` / `auditMissing` / `needsJev` / `needsAudit` are exported and reused
+  by `backfillProgress`, so `remaining` cannot drift from selection.
 
 #### Failure handling
 
 | Kind | Examples | Effect |
 |---|---|---|
-| **Content** (this row) | audit reply unparsable or invalid; every chain model answered blank; Jev 200 with no usable answers; Jev 4xx other than 401/403/408/429 | the row's `audit_failures` / `jev_failures` goes up; after 3 that part is skipped for good; the batch carries on |
-| **Transport** (infrastructure) | network error, timeout, 408/429/5xx, failover chain exhausted; Jev 401/403 (a bad key is an outage of the Jev part) | the row is **not** charged; that part stops for the rest of the batch (circuit breaker), the other part keeps going; the rows are retried next run |
+| **Content** (this row) | audit reply unparsable or invalid; every chain model answered blank **or refused the request with a 4xx other than 401/403/408/429** (`isRejectedRequestError`; `withFailover` records each attempt's HTTP `status`, final review I1); Jev 200 with no usable answers; Jev 4xx other than 401/403/408/429 | the row's `audit_failures` / `jev_failures` goes up; after 3 that part is skipped for good; the batch carries on |
+| **Transport** (infrastructure) | network error, timeout, 408/429/5xx, a failover chain where any member failed that way (or with no recorded status); Jev 401/403 (a bad key is an outage of the Jev part) | the row is **not** charged; that part stops for the rest of the batch (circuit breaker), the other part keeps going; the rows are retried next run |
 
 Nothing throws out of a batch. **Known gap:** a Jev 200 with an unparseable body is classed as
 transport, so a row that deterministically gets one would stall the Jev part of each batch.
@@ -255,8 +268,8 @@ transport, so a row that deterministically gets one would stall the Jev part of 
 | Caller | Rows | When |
 |---|---|---|
 | enrichment | the memories it just inserted | right after creation, fire-and-forget |
-| `score-memories` cron | **unreviewed** live rows missing a part, 50 per run | `5-59/15`, always on. Since cycle 77 it **also audits** them, so audit spend starts at deploy for that small set |
-| `memory-backfill` task | **all** live rows (reviewed included) missing a part, 40 per run | `*/5`, only while the switch is `running` |
+| `score-memories` cron | live rows missing a part that are **unreviewed or created in the last 7 days**, 50 per run | `5-59/15`, always on. Since cycle 77 it **also audits** them, so audit spend starts at deploy for that small set. The 7-day window retries an auto-reviewed new row whose fire-and-forget scoring hit an outage, even after the backfill is `done` |
+| `memory-backfill` task | **all** live rows (reviewed included) missing a part, up to 40 per part per run | `*/5`, only while the switch is `running` |
 
 ### The backfill
 
@@ -264,25 +277,30 @@ transport, so a row that deterministically gets one would stall the Jev part of 
 `memory_backfill` = `{ state: 'off' | 'running' | 'done', startedAt, finishedAt }`
 (`server/lib/memory/backfill-setting.ts`; a missing or malformed value reads as `off`).
 
-- `runBackfillBatch({ limit = 40 })` does nothing unless `running`. It selects up to 40 rows and
-  scores them. When selection comes back empty it flips the switch to `done`, after re-reading the
+- `runBackfillBatch({ limit = 40 })` does nothing unless `running`. It selects per part
+  (`selectUnscoredPerPart`: up to 40 needing the audit and up to 40 needing Jev, so 40–80 rows
+  and at most 40 calls of each kind) and scores them in one call. When selection comes back empty it flips the switch to `done`, after re-reading the
   state so a pause made during selection never becomes `done`. There is no cursor: a crash, restart
   or pause loses nothing.
 - `setBackfillSwitch('running' | 'off')`: a repeat of the current state is a no-op, so pressing
-  Start again does not re-stamp `startedAt`.
+  Start again does not re-stamp `startedAt` or reset the ETA. A real change clears the recorded runs.
 - `backfillProgress()`: one aggregate over live rows: `total`, `jevDone`, `auditDone`
-  (`audit-v1`), `skipped` (a missing part at the failure cap), `remaining` (the selection rule),
-  `etaMinutes` (remaining ÷ rows scored per minute since `startedAt`, by any scorer) and
-  `lastError`. `lastError` lives in process memory: a clean run or a restart clears it.
+  (`audit-v2`), `skipped` (a missing part at the failure cap), `remaining` (the selection rule),
+  `etaMinutes` and `lastError`. **ETA** (`etaFromRuns`, final review I4): the backfill's own
+  recent pace. Each run records how many of its rows it finished (no longer needing either part);
+  the rate is the rows finished by runs 2..n of the last 6 over the time since run 1. It is null
+  until 2 runs, and only shown while `running`. Rows other scorers finish never feed it. The runs
+  and `lastError` live in process memory: a restart (or, for the runs, a switch change) clears them.
   `skipped` and `remaining` can overlap (Jev capped but audit pending).
 - API: `GET /api/memories/backfill` (progress) and `PUT /api/memories/backfill { state: 'running' |
   'off' }`. Both are session-only. `done` cannot be PUT. A change publishes `memoryBackfill`.
 - **Settings → Memory** (`app/pages/settings/memory.vue`, `MemoryBackfillCard.vue`): state badge
   (`off` shows as "paused"), progress bar, Jev and audit counts, remaining, skipped, ETA, last
-  error, and Start / Pause (Re-run when done).
+  error, and Start / Pause (Re-run when done). When done it reads "All memories scored", plus
+  "(N skipped)" when rows hit the failure cap.
 - **Throughput:** 40 rows every 5 minutes, about 480 an hour. One dev batch of 40 took 20.5 s.
-  About 2,450 prod memories take roughly 5 hours. The ETA is optimistic for the first few
-  minutes, because it averages over wall time since Start and a fresh batch has no idle gap yet.
+  About 2,450 prod memories take roughly 5 hours. The ETA appears from the second run (about
+  5 minutes after Start).
 
 ### `/memories`
 
@@ -304,10 +322,15 @@ a sort select.
 `server/services/memory-doc-candidates.ts` `fileDocCandidate(candidate, { sessionId |
 conversationId })` files each `doc_candidate` as an `/input/` capture through `createDoc` (the
 `quick_capture` path) and fires `triageCapture` on it. The body is the text plus `— From memory
-extraction (project: <slug or "(no project)">; suggested doc: <hint or "none">)`. Triage proposes
-an append, note or task through `/review`. **No document is written directly.** An append into a
-repo-mirrored doc (`/projects/<slug>/wiki/` or `/handovers/`) is refused and becomes a note; see
-[triage.md](triage.md). Failures are logged and never block enrichment. The backfill only
+extraction (project: <slug or "(no project)">; suggested doc: <hint or "none">)`; the title is the
+text's first line (≤ 80 chars). The slug comes from the hint; hints are generic ("handover") and
+an untriaged capture stays live in `/input/`, so on a path collision the slug gets a 6-char random
+suffix and the capture is filed anyway (final review I3). Triage then treats it like any capture:
+note, memory and append go to `/review` as proposals (their thresholds are 1.1), but **a task is
+auto-applied at ≥ 0.70** (`triageThresholds.task`), the existing triage behaviour, accepted for
+doc candidates (final review M2). **No document is written directly.** An append into a
+repo-mirrored doc (`/projects/<slug>/wiki/` or `/handovers/`, `isRepoMirrorPath` in
+`server/lib/documents/mirror.ts`) is refused and becomes a note; see [triage.md](triage.md). Failures are logged and never block enrichment. The backfill only
 *labels* old memories `belongs_in_doc`; it moves nothing.
 
 ### Measurement tools
@@ -317,10 +340,19 @@ repo-mirrored doc (`/projects/<slug>/wiki/` or `/handovers/`) is refused and bec
   synthetic). The bar is ≥ 90% of durable facts kept and ≥ 80% of stale facts rejected. A
   pure-stale row counts as rejected only if it yields zero memories. Part 2 runs the audit over
   the 45 labelled rows and reports agreement under keep↔keep, stale↔transient,
-  noise↔redundant|wrong_scope. Run on 2026-10-01: keep **11/11**, stale rejected **12/12**, doc
-  routing 3/4. **Audit-vs-label agreement was 24/45 (53%)**: keep 22/28, stale 2/12 (the audit
-  called 10 labelled-stale rows `keep`), noise 0/5 (3 `transient`, 2 `keep`). The audit is
-  lenient on what Tony called stale; read its verdicts with that in mind.
+  noise↔redundant|wrong_scope, per label with the verdict spread. `--audit-only` skips part 1.
+
+  | Run (2026-10-01) | extraction keep | stale rejected | doc routing | audit agreement | keep | stale | noise |
+  |---|---|---|---|---|---|---|---|
+  | `audit-v1` (Task 8; re-read before tuning gave identical numbers) | 11/11 | 12/12 | 3/4, 0 unexpected | 24/45 (53%) | 22/28 | 2/12 | 0/5 |
+  | `audit-v2` (one tuning pass, final review I4) | 11/11 | 12/12 | 3/4, 1 unexpected | 25/45 (56%) | 17/28 | 8/12 | 0/5 |
+
+  audit-v2 fixed the leniency on stale (6 more stale rows called `transient`) but now over-calls
+  `transient` on 11 labelled-keep rows, mostly durable gotchas worded as bugs or tied to a
+  version ("SitePro does not support STRING_AGG", the vLLM fp8 KV-cache issue). Keep vs not-keep
+  agreement went 27/45 → 30/45. Noise is still 0/5: the audit calls it `transient`, never
+  `redundant`/`wrong_scope`, which it cannot judge from one memory alone. This was one pass by
+  ruling, not a loop on the labels. Read the verdicts with both biases in mind.
 - **`pnpm memory:export`** (`scripts/memory-export.ts`, helpers `scripts/lib/memory-export.ts`):
   read-only, one `SELECT` in a read-only transaction. It writes
   `scripts/data/memory-scores-<date>.{csv,jsonl}` (gitignored), one row per memory, archived
@@ -328,7 +360,9 @@ repo-mirrored doc (`/projects/<slug>/wiki/` or `/handovers/`) is refused and bec
   prompt version, audit keep/verdict/reason/model/prompt version/failures, Jev keep/raw
   answers/model/failures, disagreement, archived, reviewed, and Tony's labels from every
   `scripts/data/memory-labels-*.jsonl`, joined by id (a later file or line wins). The labels are
-  prod ids, so they join only against prod. Point `DATABASE_URL` at prod to export there.
+  prod ids, so they join only against prod. `.env` is loaded only if present
+  (`--env-file-if-exists`) and `NUXT_DATABASE_URL` is accepted, so on the native prod box
+  `NUXT_DATABASE_URL=… pnpm memory:export` works (or point `DATABASE_URL` at prod from the laptop).
 
 ## Review surface — `app/pages/review.vue` (cycle 72)
 
@@ -390,6 +424,11 @@ established fact. All three agent recall paths now filter it out:
 - **`search_memories`** and **`get_recent_memories`** (MCP + in-process agent tools) pass
   `reviewed: true` unless the caller sets **`includeUnreviewed: true`** — an explicit opt-in,
   useful when triaging the queue itself.
+  **Cycle 77 (final review M3):** both return each memory through `toRecallMemory`
+  (`server/lib/agent/tools.ts`), which drops the score fields (`jevScore`, `jevAnswers`, the
+  `audit*` fields, the prompt versions). The scores are for `/memories`, the API and the export:
+  on recall they cost ~250 chars per memory and an agent reading "transient: …" beside a fact
+  would discount it.
 - **The automatic per-turn injection** (`buildMemoryContext`, `server/lib/agent/context.ts`)
   calls `searchMemories(q, { limit: 5, reviewed: true })`. This one fires on **every** voice
   turn (`server/api/voice/ws.ts`) with no agent decision behind it, so it has **no opt-out** —

@@ -52,8 +52,13 @@ One entry point, `triageCapture(docId)` (`server/services/triage.ts`), fired fro
 `fileDocCandidate` (`server/services/memory-doc-candidates.ts`) files each one as an `/input/`
 capture through `createDoc` (the `quick_capture` path) and fires `triageCapture` on it right away.
 The body is the candidate's text plus `— From memory extraction (project: <slug or "(no
-project)">; suggested doc: <hint or "none">)`. Triage then proposes an append, note or task as
-for any capture, through `/review`. Nothing writes a document directly, and the repo-mirror guard
+project)">; suggested doc: <hint or "none">)`; the title is the text's first line. The slug comes
+from the hint, and on a live-path collision (`documents_path_live_uidx`; hints like "handover"
+repeat and untriaged captures stay in `/input/`) it gets a 6-char random suffix, so a candidate is
+never dropped. Triage then handles it like any capture, **with today's thresholds**: note, memory
+and append are proposals in `/review` (1.1), but a **task is auto-applied at ≥ 0.70**, so a doc
+candidate can become a live task without review. That is existing triage behaviour, accepted for
+doc candidates (cycle 77 final review M2). Nothing writes a document directly, and the repo-mirror guard
 below keeps an append out of mirrored docs. A failure is logged and never blocks enrichment. See
 [memory.md](memory.md#doc-candidates--triage).
 
@@ -226,7 +231,7 @@ error rather than silently duplicating the other action's output as a second, st
   - **Repo-mirror guard (cycle 77).** A document under `/projects/<slug>/wiki/` or
     `/projects/<slug>/handovers/` is a mirror of a repo file, and the next sync overwrites it, so
     an append there would be silently lost. `isRepoMirrorPath(path)`
-    (`server/services/memory-doc-candidates.ts`, regex `^/projects/[^/]+/(wiki|handovers)/`) is
+    (`server/lib/documents/mirror.ts`, a leaf module, regex `^/projects/[^/]+/(wiki|handovers)/`) is
     checked in **both** `resolveAppendTarget` (a mirror as the best match counts as "nothing
     cleared the floor"; it does not fall through to the second-best chunk) and
     `isValidAppendTarget`. A mirror target therefore degrades the append to a Note, like any
