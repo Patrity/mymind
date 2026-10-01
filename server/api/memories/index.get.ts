@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { searchMemories, listMemories } from '../../services/memory'
 import { AUDIT_VERDICTS } from '../../lib/memory/extract-v3'
-import type { MemoryScope } from '../../../shared/types/memory'
+import { MEMORY_SORTS, type MemoryScope } from '../../../shared/types/memory'
 
 // Score filters and sorts (cycle 77). An unknown value is a 400 rather than ignored: an ignored
 // typo would silently return the unfiltered list.
@@ -9,7 +9,7 @@ const ScoreQuery = z.object({
   verdict: z.enum(AUDIT_VERDICTS).optional(),
   scored: z.enum(['yes', 'no']).optional(),
   disagree: z.enum(['1']).optional(),
-  sort: z.enum(['created', 'audit', 'jev', 'disagreement']).optional()
+  sort: z.enum(MEMORY_SORTS).optional()
 })
 
 export default defineEventHandler(async (event) => {

@@ -137,6 +137,36 @@ describe('listReviewFeed / countReviewPending (the single /review surface)', () 
     }
   })
 
+  // Cycle 77: /review shows the audit next to Jev, so the feed must carry both scores.
+  it('a memory-unreviewed item carries the audit and Jev fields (null until scored)', async () => {
+    const db = useDb()
+    const scored = await insertUnreviewedMemory(`${MARK} scored ${Date.now()}`)
+    const bare = await insertUnreviewedMemory(`${MARK} bare ${Date.now()}`)
+    await db.update(memories).set({
+      jevScore: 0.2,
+      jevAnswers: { transient: 0.8, rederivable: 0.6 },
+      auditKeep: 0.9,
+      auditVerdict: 'belongs_in_doc',
+      auditReason: 'Detail of one system; better in its wiki.'
+    }).where(eq(memories.id, scored.id))
+
+    try {
+      const feed = await listReviewFeed()
+      const p = (id: string) => (feed.find(i => i.id === id) as { proposed: Record<string, unknown> } | undefined)?.proposed
+      expect(p(scored.id)).toMatchObject({
+        jevScore: 0.2,
+        jevAnswers: { transient: 0.8, rederivable: 0.6 },
+        auditKeep: 0.9,
+        auditVerdict: 'belongs_in_doc',
+        auditReason: 'Detail of one system; better in its wiki.'
+      })
+      expect(p(bare.id)).toMatchObject({ jevScore: null, jevAnswers: null, auditKeep: null, auditVerdict: null, auditReason: null })
+    } finally {
+      await db.delete(memories).where(eq(memories.id, scored.id))
+      await db.delete(memories).where(eq(memories.id, bare.id))
+    }
+  })
+
   it('never surfaces an archived-but-unreviewed memory (not live)', async () => {
     const db = useDb()
     const memRow = await insertUnreviewedMemory(`${MARK} archived ${Date.now()}`)

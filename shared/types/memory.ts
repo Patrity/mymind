@@ -3,6 +3,16 @@ export type MemoryApplicability = 'global' | 'project'
 /** The LLM audit's verdict, using the extract-v3 criteria. */
 export type AuditVerdict = 'keep' | 'transient' | 'redundant' | 'wrong_scope' | 'belongs_in_doc'
 
+/**
+ * |audit − Jev| at or above this is a "disagree" (cycle 77, spec D4). The one definition: the SQL
+ * filter in listMemories and the client badge (app/lib/memory/scores.ts) both read it.
+ */
+export const DISAGREE_THRESHOLD = 0.4
+
+/** `/memories` list sorts. Scores sort worst-first, disagreement largest-first; search ignores them. */
+export const MEMORY_SORTS = ['created', 'audit', 'jev', 'disagreement'] as const
+export type MemorySort = typeof MEMORY_SORTS[number]
+
 export interface MemoryRelationDTO {
   /** Relation type: 'supersedes' | 'contradicts' | 'duplicate-of' */
   type: string

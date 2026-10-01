@@ -2,7 +2,7 @@ import { and, eq, isNull, isNotNull, ne, ilike, or, sql, inArray, arrayContains,
 import { createHash } from 'node:crypto'
 import { useDb } from '../db'
 import { memories, memoryRelations } from '../db/schema'
-import type { AuditVerdict, MemoryApplicability, MemoryDTO, MemoryEvidenceEntry, MemoryRelationDTO, MemoryScope } from '../../shared/types/memory'
+import { DISAGREE_THRESHOLD, type AuditVerdict, type MemoryApplicability, type MemoryDTO, type MemoryEvidenceEntry, type MemoryRelationDTO, type MemoryScope, type MemorySort } from '../../shared/types/memory'
 import { embedOne } from '../lib/ai/embeddings'
 import { rrfFuse } from '../lib/ai/rrf'
 import { rerank } from '../lib/ai/rerank'
@@ -409,11 +409,7 @@ export async function dedupMemoriesAfterMerge(memoryIds: string[]): Promise<{ co
 // Score filters / sorts (cycle 77) — shared by listMemories and searchMemories
 // ---------------------------------------------------------------------------
 
-/** |audit − Jev| at or above this is a "disagree". Mirrors app/lib/memory/scores.ts. */
-export const DISAGREE_THRESHOLD = 0.4
-
 export type MemoryScoredFilter = 'yes' | 'no'
-export type MemorySort = 'created' | 'audit' | 'jev' | 'disagreement'
 
 export interface MemoryScoreFilters {
   /** Only memories whose audit returned this verdict. */

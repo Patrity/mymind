@@ -2,7 +2,7 @@ import { eq, and, isNull, count, sql, inArray } from 'drizzle-orm'
 import { useDb } from '../db'
 import { reviewQueue, documents, memories } from '../db/schema'
 import { publishChange } from '../utils/live-bus'
-import type { MemoryScope } from '../../shared/types/memory'
+import type { AuditVerdict, MemoryScope } from '../../shared/types/memory'
 import { compareByJev } from '../lib/memory/jev-score'
 
 export type ReviewTargetKind = 'document' | 'memory' | 'agent_run'
@@ -43,6 +43,12 @@ export interface MemoryUnreviewedProposed {
   /** Jev's independent read, same orientation as `confidence` — higher means more likely
    *  worth keeping. Null when not scored yet (unknown, not bad). */
   jevScore: number | null
+  /** Jev's raw answers behind `jevScore` (shown in its tooltip). */
+  jevAnswers: Record<string, number> | null
+  /** The extract-v3 LLM audit (cycle 77): durability 0–1, verdict, one-line reason. Null until audited. */
+  auditKeep: number | null
+  auditVerdict: AuditVerdict | null
+  auditReason: string | null
 }
 
 export interface MemoryUnreviewedFeedItem {
@@ -144,6 +150,10 @@ export async function listReviewFeed(): Promise<ReviewFeedItem[]> {
     project: memories.project,
     confidence: memories.confidence,
     jevScore: memories.jevScore,
+    jevAnswers: memories.jevAnswers,
+    auditKeep: memories.auditKeep,
+    auditVerdict: memories.auditVerdict,
+    auditReason: memories.auditReason,
     createdAt: memories.createdAt
   }).from(memories)
     .where(unreviewedLive())
@@ -158,7 +168,11 @@ export async function listReviewFeed(): Promise<ReviewFeedItem[]> {
       tags: m.tags,
       project: m.project,
       confidence: m.confidence,
-      jevScore: m.jevScore
+      jevScore: m.jevScore,
+      jevAnswers: (m.jevAnswers as Record<string, number> | null) ?? null,
+      auditKeep: m.auditKeep,
+      auditVerdict: (m.auditVerdict as AuditVerdict | null) ?? null,
+      auditReason: m.auditReason
     },
     createdAt: m.createdAt,
     docPath: null

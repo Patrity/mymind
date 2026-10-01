@@ -84,7 +84,10 @@ const eta = computed(() => {
         <div><p class="text-xs text-muted">Skipped (3 failures)</p><p class="text-highlighted font-medium">{{ progress.skipped }}</p></div>
       </div>
 
-      <p class="text-xs text-muted">
+      <p v-if="progress.state === 'done'" class="text-sm text-success">
+        All memories scored
+      </p>
+      <p v-else class="text-xs text-muted">
         ETA: {{ eta ?? '—' }}
       </p>
 
@@ -101,8 +104,18 @@ const eta = computed(() => {
 
     <template #footer>
       <div class="flex items-center gap-3">
+        <!-- `done` is set only by the backfill itself; Re-run is the same PUT `running`, which
+             picks up anything new or still missing (e.g. after an audit prompt bump). -->
         <UButton
-          v-if="progress?.state !== 'running'"
+          v-if="progress?.state === 'done'"
+          label="Re-run"
+          icon="i-lucide-rotate-cw"
+          color="primary"
+          :loading="saving"
+          @click="setState('running')"
+        />
+        <UButton
+          v-else-if="progress?.state !== 'running'"
           label="Start"
           icon="i-lucide-play"
           color="primary"

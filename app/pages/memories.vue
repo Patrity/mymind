@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import type { AuditVerdict, MemoryDTO, MemoryRelationDTO, MemoryScope } from '~~/shared/types/memory'
-import type { MemorySort } from '~/composables/useMemories'
+import type { AuditVerdict, MemoryDTO, MemoryRelationDTO, MemoryScope, MemorySort } from '~~/shared/types/memory'
 import { VERDICT_LABELS } from '~/lib/memory/scores'
 
 definePageMeta({ title: 'Memories' })

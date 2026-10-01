@@ -2,6 +2,7 @@
 import { useQuery } from '@tanstack/vue-query'
 import { useTimeAgo } from '@vueuse/core'
 import { reviewChoices, CONFLICT_TOAST, MEMORY_CONFLICT_KINDS, type ConflictChoiceId, type ReviewChoice } from '~~/shared/review/choices'
+import type { AuditVerdict } from '~~/shared/types/memory'
 
 definePageMeta({ title: 'Review' })
 
@@ -38,6 +39,11 @@ interface MemoryUnreviewedProposed {
   /** Jev's second opinion, same orientation as confidence. Null until the scoring task
    *  has reached this memory. */
   jevScore?: number | null
+  jevAnswers?: Record<string, number> | null
+  /** The extract-v3 LLM audit (cycle 77). Null until the backfill or queue scorer reaches it. */
+  auditKeep?: number | null
+  auditVerdict?: AuditVerdict | null
+  auditReason?: string | null
 }
 
 // Mirrors shared/types/triage.ts TriageAction — a DESTINATION, not a doc classification.
@@ -712,11 +718,15 @@ async function undoDiscard(undoToken: string) {
                     size="xs"
                     :icon="(item.proposed as MemoryUnreviewedProposed).project ? 'i-lucide-folder' : undefined"
                   />
-                  <!-- confidence is enrichment grading its own work; Jev reads the same
-                       text cold (cycle 77: the shared score display). Advisory only. -->
+                  <!-- confidence is enrichment grading its own work; Jev and the audit read
+                       the same text cold (cycle 77: the shared score display). Advisory only. -->
                   <MemoryScoreBadges
                     :confidence="(item.proposed as MemoryUnreviewedProposed).confidence"
                     :jev-score="(item.proposed as MemoryUnreviewedProposed).jevScore"
+                    :jev-answers="(item.proposed as MemoryUnreviewedProposed).jevAnswers"
+                    :audit-keep="(item.proposed as MemoryUnreviewedProposed).auditKeep"
+                    :audit-verdict="(item.proposed as MemoryUnreviewedProposed).auditVerdict"
+                    :audit-reason="(item.proposed as MemoryUnreviewedProposed).auditReason"
                   />
                 </div>
                 <p class="text-xs text-dimmed shrink-0">

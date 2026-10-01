@@ -6,10 +6,7 @@
  * Colour is a nudge, not a verdict — Jev's calibration (n=28) supports ORDERING, not deciding,
  * so the bands are deliberately coarse and never red/green "right/wrong".
  */
-import type { AuditVerdict } from '~~/shared/types/memory'
-
-/** |audit − Jev| at or above this is a "disagree" (spec D4). Mirrors the SQL filter in listMemories. */
-export const DISAGREE_THRESHOLD = 0.4
+import { DISAGREE_THRESHOLD, type AuditVerdict } from '~~/shared/types/memory'
 
 type Score = number | null | undefined
 

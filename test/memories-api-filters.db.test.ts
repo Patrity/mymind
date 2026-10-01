@@ -28,6 +28,16 @@ import type { AuditVerdict } from '../shared/types/memory'
 
 const TAG = `MEM-FILTERS-TEST-${Date.now().toString(36)}`
 
+// The mocked embedOne throws, so searchMemories takes its documented trigram-only fallback and
+// warns once per call. Swallow exactly that warning (any other warn still prints) and count it,
+// so the output stays clean and the fallback is asserted rather than hidden.
+const realWarn = console.warn
+const vectorLaneWarns: unknown[][] = []
+vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+  if (typeof args[0] === 'string' && args[0].startsWith('[searchMemories] vector lane failed')) vectorLaneWarns.push(args)
+  else realWarn(...args)
+})
+
 // name → (audit, verdict, jev). Gaps: A 0.7, B exactly 0.4 (float4 0.7 − 0.3), C 0.1;
 // D and E carry ONE score each (Review Focus 5: never a disagreement); F carries none.
 const FIXTURES: Array<{ name: string, audit: number | null, verdict: AuditVerdict | null, jev: number | null }> = [
@@ -123,6 +133,10 @@ describe('listMemories score sorts (SQL)', () => {
 describe('searchMemories applies the score filters (relevance order kept)', () => {
   it('without filters it finds all six scoped rows', async () => {
     expect((await searchMemories(TAG, { limit: 50 }).then(names)).sort()).toEqual(['A', 'B', 'C', 'D', 'E', 'F'])
+  })
+
+  it('ran on the trigram lane only (the vector lane is stubbed off)', () => {
+    expect(vectorLaneWarns.length).toBeGreaterThan(0)
   })
 
   it('verdict, scored and disagree narrow the hits', async () => {

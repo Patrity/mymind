@@ -1,7 +1,7 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { AuditVerdict, MemoryDTO, MemoryScope } from '~~/shared/types/memory'
+import type { AuditVerdict, MemoryDTO, MemoryScope, MemorySort } from '~~/shared/types/memory'
 
 export interface CreateMemoryBody {
   content: string
@@ -18,9 +18,6 @@ export interface MemoryScoreParams {
   /** '1' = both scores present and |audit − Jev| ≥ 0.4. */
   disagree?: '1'
 }
-
-/** List-only: search keeps its relevance order. Scores sort worst-first, disagreement largest-first. */
-export type MemorySort = 'created' | 'audit' | 'jev' | 'disagreement'
 
 export interface MemoryListParams extends MemoryScoreParams {
   q?: string
