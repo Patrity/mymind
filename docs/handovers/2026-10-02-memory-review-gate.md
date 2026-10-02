@@ -17,7 +17,7 @@ prod_data_changes:
 labels: scripts/data/memory-quick-labels-2026-10-02.jsonl (30 rows, gitignored)
 mymind_task: 992149a1-eed7-44f6-9c2f-a5a1ae5a3d7c
 mymind_id: 20779321-9e6a-4a65-9547-f9261c0d153f
-mymind_hash: 59b52fc648cfe60232e24bc6fecdb2507fdef44baccbcfc89d48d37aa0f129d5
+mymind_hash: 6e01804564fc3250868716442dd112d7159f498f14123ab0b8ed8e3f3c5c97a1
 ---
 
 # Memory review gate (2026-10-02)

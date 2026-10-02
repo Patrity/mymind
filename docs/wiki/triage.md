@@ -4,7 +4,7 @@ status: shipped
 cycle: 77
 updated: 2026-10-02
 mymind_id: 323bbf97-f177-429b-beea-675ff0388799
-mymind_hash: 09bffc61baa5d3e391fc51628e33727a220c9c6edb0ce80b8eb16c33b3297379
+mymind_hash: 3cd85be70f1cf220c0bd33e5748080c3b2bd81b5d5dbf22b9250cd08e69d39d6
 ---
 
 # Capture Triage
@@ -62,8 +62,8 @@ doc candidates (cycle 77 final review M2). Nothing writes a document directly, a
 below keeps an append out of mirrored docs. A failure is logged and never blocks enrichment. See
 [memory.md](memory.md#doc-candidates--triage).
 
-**Duplicate guards (2026-10-02).** Doc candidates were mostly re-tellings of docs the session had
-just written (on prod, 2 of the first 8 restated a mirrored handover). Two guards now run first:
+**Duplicate guards (2026-10-02).** Doc candidates can restate docs that already exist or that the session
+just wrote (on prod, 2 of the first 8 restated a mirrored handover). Two guards now run first:
 1. **The session documented itself** — `routeSessionDocCandidates` (`memory-enrich.ts`) drops all of
    a session's candidates when its `tool_events` show a `Write`/`Edit`/`MultiEdit` to
    `docs/(wiki|handovers|superpowers/(specs|plans))/` or a MyMind document tool
