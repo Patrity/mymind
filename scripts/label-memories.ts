@@ -1,7 +1,7 @@
 /**
  * Hand-label memories to build the ground truth every Jev threshold gets fitted against.
  *
- *   pnpm label
+ *   pnpm label [set]     (set defaults to 2026-09-22; e.g. `pnpm label 2026-10-02`)
  *
  * Reads a sample pulled from prod, shows each memory BLINDED (no stored confidence,
  * no `kind:` tag, no `review:*` flag — those are what we're validating), and asks for
@@ -27,9 +27,11 @@ import {
 } from './lib/labelling'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SAMPLE = resolve(HERE, 'data/memory-sample-2026-09-22.jsonl')
-const LABELS = resolve(HERE, 'data/memory-labels-2026-09-22.jsonl')
-const QUEUE = resolve(HERE, 'data/label-queue-2026-09-22.json')
+// `pnpm label [set]` — the set names the sample/labels/queue trio; the original 2026-09-22 set stays the default.
+const SET = process.argv[2] ?? '2026-09-22'
+const SAMPLE = resolve(HERE, `data/memory-sample-${SET}.jsonl`)
+const LABELS = resolve(HERE, `data/memory-labels-${SET}.jsonl`)
+const QUEUE = resolve(HERE, `data/label-queue-${SET}.json`)
 
 const B = '\x1B[1m', D = '\x1B[2m', R = '\x1B[0m'
 const CY = '\x1B[36m', YE = '\x1B[33m', GR = '\x1B[32m', RD = '\x1B[31m'
