@@ -4,7 +4,7 @@ status: shipped  # cycle 77 dual scoring + the 2026-10-02 review gate deployed (
 cycle: 77
 updated: 2026-10-02
 mymind_id: c17a75f7-52f5-4024-8e2d-c0e173245096
-mymind_hash: d4ea96997da904ab23477600de75a585a82d29a5a5fac0cc1b515bda45aea925
+mymind_hash: 898c9b635db8ea9c0e8a741b279f080ba1831520d952da623269533581df9d17
 ---
 
 # Memory System

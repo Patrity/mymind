@@ -12,9 +12,11 @@ wiki:
 migrations:
   - 0065 memories gains review_gate_pending boolean not null default false (additive; existing rows false)
 prod_data_changes:
-  - 260 memories soft-archived, marker archived_at = '2026-10-02 00:00:07.77+00' (ids in gitignored scripts/data/both-flag-ids-2026-10-02.txt and /root/db-backups/ on LXC 114)
+  - 260 memories soft-archived, marker archived_at = '2026-10-02 00:00:07.77+00' (ids in gitignored scripts/data/both-flag-ids-2026-10-02.txt on Tony's Mac; prod pre-gate dump /root/db-backups/pre-review-gate-20261002T0324.sql.gz)
 labels: scripts/data/memory-quick-labels-2026-10-02.jsonl (30 rows, gitignored)
 mymind_task: 992149a1-eed7-44f6-9c2f-a5a1ae5a3d7c
+mymind_id: 20779321-9e6a-4a65-9547-f9261c0d153f
+mymind_hash: 59b52fc648cfe60232e24bc6fecdb2507fdef44baccbcfc89d48d37aa0f129d5
 ---
 
 # Memory review gate (2026-10-02)
