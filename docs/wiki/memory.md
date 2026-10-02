@@ -1,15 +1,15 @@
 ---
 title: Memory System
-status: shipped  # cycle 77 dual scoring is built on feat/memory-dual-scoring; not merged/deployed (migration 0064 dev only)
+status: shipped  # cycle 77 dual scoring + the 2026-10-02 review gate deployed (migrations 0064, 0065)
 cycle: 77
-updated: 2026-10-01
+updated: 2026-10-02
 mymind_id: c17a75f7-52f5-4024-8e2d-c0e173245096
 mymind_hash: d4ea96997da904ab23477600de75a585a82d29a5a5fac0cc1b515bda45aea925
 ---
 
 # Memory System
 
-Reimplements the bridget memory service in TS: ingest AI-session transcripts, enrich into durable memories, search semantically. Nothing auto-trusted — enrichment memories are `unreviewed` until the human marks them reviewed.
+Reimplements the bridget memory service in TS: ingest AI-session transcripts, enrich into durable memories, search semantically. Enrichment memories are auto-reviewed on insert; once scored, the review gate sends one back to `/review` only when both Jev and the LLM audit flag it as stale (see *Review gate*).
 
 ## Data model
 - `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 23), `source_date` (last-observed, = source session `started_at`, cycle 23), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`, plus **cycle 70**: `applicability` (`global`|`project`, default `project`), `resident` (boolean, DB CHECK `resident => applicability='global'`), `retrieval_count`, `last_retrieved_at`; plus **cycle 72**: `jev_score` (real, Jev's second opinion — see [Jev scoring](#jev-scoring-a-second-opinion-cycle-72)), `jev_answers` (jsonb, the raw Noul answers), `jev_scored_at`, `jev_model` (the version that *answered*); plus **cycle 77** (migration 0064, see [Dual scoring](#dual-scoring--extract-v3-the-llm-audit-and-the-backfill-cycle-77)): `jev_failures`, `audit_keep` (0–1), `audit_verdict`, `audit_reason` (≤ 200 chars), `audit_model` (the model that *answered*), `audit_prompt_version`, `audited_at`, `audit_failures`, `extract_prompt_version` (stamped on new rows, null before cycle 77). Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
@@ -25,7 +25,7 @@ Reimplements the bridget memory service in TS: ingest AI-session transcripts, en
 
 Memories enter via exactly two paths, both going through `createMemory` (shared dedup via `dedupDecision` + `buildDedupCandidates`):
 
-1. **Enrichment loop** (`enrich-memories` cron → `server/services/memory-enrich.ts`): distills concise, **confidence-scored**, **session-linked** (`sessionId` + evidence) memories from session transcripts. Auto-reviews when `confidence >= memoryAutoReviewThreshold` (~0.75). This is the primary source of agent-scoped memories.
+1. **Enrichment loop** (`enrich-memories` cron → `server/services/memory-enrich.ts`): distills concise, **confidence-scored**, **session-linked** (`sessionId` + evidence) memories from session transcripts. Auto-reviews every new insert, then the post-scoring **review gate** (2026-10-02) un-reviews it if both scorers flag it. This is the primary source of agent-scoped memories.
 
 2. **Direct `save_memory`** (MCP tool / `POST /api/memories`): saves raw content. Accepts an optional **`confidence`** (0–1) — a value ≥ 0.75 auto-reviews the memory; `null` (omitted) leaves it for manual review. `shouldAutoReview(confidence, threshold)` returns `false` for `null` — no-confidence saves always require human review. The tool description nudges callers toward ONE concise durable sentence; architecture detail belongs in handovers/wiki, not memory. Manual saves created via `POST /api/memories` (cycle 10) set `source: 'manual', reviewed: true` and skip the unreviewed state entirely.
 
@@ -166,14 +166,13 @@ durable-sounding fact that is simply wrong or redundant. Those still sit mid-pac
 
 ## Dual scoring — extract-v3, the LLM audit and the backfill (cycle 77)
 
-Built on `feat/memory-dual-scoring`; not merged or deployed (migration 0064 on dev only).
+Deployed 2026-10-01; the prod backfill finished 2026-10-02 01:00Z. The analysis led to the review gate below.
 
 On prod (2026-10-01), 94% of enrichment memories were extracted at confidence ≥ 0.75 and
 auto-reviewed, so the extraction confidence barely discriminates, and Jev had only scored the 98
 queued memories. Cycle 77 is **measurement, not policy**: a better extraction prompt, two current
 scores on every memory, a backfill, and an export for analysis. **Nothing acts on the scores.**
-They do not archive, do not change auto-review (still the extraction confidence threshold), and
-never edit content. Gating is decided after the prod backfill is analysed.
+They never archive or edit content. (Superseded for enrichment inserts: see *Review gate*.)
 
 ### Three numbers per memory
 
@@ -364,6 +363,23 @@ repo-mirrored doc (`/projects/<slug>/wiki/` or `/handovers/`, `isRepoMirrorPath`
   prod ids, so they join only against prod. `.env` is loaded only if present
   (`--env-file-if-exists`) and `NUXT_DATABASE_URL` is accepted, so on the native prod box
   `NUXT_DATABASE_URL=… pnpm memory:export` works (or point `DATABASE_URL` at prod from the laptop).
+
+## Review gate — both scorers must flag (2026-10-02)
+
+Decided from the prod backfill analysis (2,416 live memories) and Tony's labels:
+
+- Extraction confidence correlated r=0.13 with the audit and r=0.08 with Jev — it does not gate anything any more for enrichment inserts.
+- The audit flags 32% (bimodal: 0.1 or ~0.9); Jev's `transient ≥ 0.6` flags 17%; they agree on 259 (11%) — those read as genuinely stale and only 4 were ever retrieved. **260 were soft-archived** on prod with the marker `archived_at = '2026-10-02 00:00:07.77+00'` (undo: `update memories set archived_at = null where archived_at = '2026-10-02 00:00:07.77+00'`).
+- On 30 blinded disagreement rows (`pnpm label:quick`), Tony kept 12/15 the audit alone flagged and 14/15 Jev alone flagged. A single flag is noise; the conjunction is the signal. The audit's lone flags that were right were dated event logs ("SHIPPED 2026-07-26", "rewritten 2026-08-11").
+- Only 69/2,416 memories had ever been retrieved.
+
+**Mechanics** (`server/lib/memory/review-gate.ts`, applied in `scoreMemories` → `applyReviewGate`):
+
+- `insertFresh` (enrichment + triage inserts) sets `reviewed_at = now()` and `review_gate_pending = true` (migration 0065; every other row, including all pre-gate ones, is `false` and never touched).
+- After each scoring call the gate decides a pending row: **hold** when Jev `transient ≥ 0.6` AND the audit verdict is `transient`/`redundant`/`wrong_scope` → `reviewed_at = null` + `unreviewed` tag, so it shows in `/review` with both scores; **pass** as soon as either settled part does not flag, or a part is permanently missing (Jev off / 3-strike cap) → clears the flag; **wait** otherwise (the score-memories cron's 7-day window retries).
+- `belongs_in_doc` never holds. `save_memory` / `createMemory` keep the confidence threshold.
+
+Revisit: if Tony drops nearly every held memory for a few weeks, switch `hold` to archive.
 
 ## Review surface — `app/pages/review.vue` (cycle 72)
 

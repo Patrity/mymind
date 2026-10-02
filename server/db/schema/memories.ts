@@ -36,6 +36,11 @@ export const memories = pgTable('memories', {
   /** How many times Jev scoring has failed (bad response, timeout) on this row. Skipped by the
    *  backfill after 3 — see server/services/memory-scoring.ts. */
   jevFailures: integer('jev_failures').notNull().default(0),
+  /** The post-scoring review gate (2026-10-02) has yet to decide this row. Only enrichment sets
+   *  it (true on insert); everything else — including every row that predates the gate — is false,
+   *  so the gate can never un-review a memory a human or an older rule already settled. See
+   *  server/lib/memory/review-gate.ts. */
+  reviewGatePending: boolean('review_gate_pending').notNull().default(false),
   /** The LLM audit's independent read, using the same `extract-v3` criteria the extractor
    *  applies — a THIRD opinion beside `confidence` and `jevScore`, re-run as the prompt
    *  evolves (see `auditPromptVersion`). 0–1 durability; same orientation (higher = keep). */

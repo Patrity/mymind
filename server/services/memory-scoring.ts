@@ -2,9 +2,10 @@
 // Shared by the queue scorer (server/services/memory-jev.ts → the score-memories task), the
 // backfill, and enrichment (new memories are scored right after creation, fire-and-forget).
 //
-// Deliberately narrow, like the Jev scorer it grew out of: it ONLY writes the jev_* and audit_*
-// columns. It never archives, never marks anything reviewed, never touches `confidence` or the
-// content (spec D5 — no automatic action on memories).
+// Deliberately narrow, like the Jev scorer it grew out of: it writes the jev_* and audit_* columns,
+// and — once a row's parts settle — applies the review gate to rows enrichment marked
+// `review_gate_pending` (server/lib/memory/review-gate.ts): both scorers flag → the row goes back to
+// /review. It never archives and never touches `confidence` or the content.
 //
 // Each part is independent: a row can be Jev-scored and not audited, or the reverse. A part runs
 // only while it is missing (jev_scored_at null / audit_prompt_version not the current one) and has
@@ -35,6 +36,7 @@ import { askJev, nouls, jevConfig, JevHttpError, type JevConfig } from '../lib/a
 import { isRequestRejectionStatus, type chatWithModel } from '../lib/ai/chat'
 import { JEV_QUESTIONS, jevKeepScore, type JevAnswers } from '../lib/memory/jev-score'
 import { AUDIT_PROMPT_VERSION, auditMemory } from '../lib/memory/extract-v3'
+import { reviewGateDecision, type GateDecision } from '../lib/memory/review-gate'
 import { publishChange } from '../utils/live-bus'
 
 /** 8 has hit 429s before on the Jev API; stay under it. */
@@ -229,9 +231,46 @@ export async function scoreMemories(ids: string[], deps: ScoreDeps = {}): Promis
       jevLimit(() => scoreJevPart(id, cfg, deps, batch)),
       auditLimit(() => scoreAuditPart(id, deps, batch))
     ])
-    if (jev === 'scored' || audit === 'scored') publishChange({ resource: 'memory', action: 'updated', id })
+    const gate = await applyReviewGate(id, cfg != null).catch((err) => {
+      console.warn(`[memory-scoring] review gate on ${id} failed:`, err)
+      return null
+    })
+    if (jev === 'scored' || audit === 'scored' || gate === 'hold') publishChange({ resource: 'memory', action: 'updated', id })
     return { id, jev, audit }
   }))
+}
+
+/**
+ * Decide a `review_gate_pending` row once its scores allow it: `hold` un-reviews it (back to
+ * /review, tagged `unreviewed`), `pass` just clears the flag, `wait` leaves it for a later scoring
+ * call. Rows without the flag are untouched (returns null). Guarded on the flag, so a race between
+ * two scorers decides once.
+ */
+export async function applyReviewGate(id: string, jevConfigured: boolean): Promise<GateDecision | null> {
+  const db = useDb()
+  const [row] = await db.select({
+    jevScoredAt: memories.jevScoredAt,
+    jevAnswers: memories.jevAnswers,
+    jevFailures: memories.jevFailures,
+    auditPromptVersion: memories.auditPromptVersion,
+    auditVerdict: memories.auditVerdict,
+    auditFailures: memories.auditFailures
+  }).from(memories).where(and(eq(memories.id, id), live(), eq(memories.reviewGatePending, true))).limit(1)
+  if (!row) return null
+  const decision = reviewGateDecision(row, { jevConfigured, maxFailures: MAX_FAILURES })
+  if (decision === 'wait') return decision
+  const guard = and(eq(memories.id, id), live(), eq(memories.reviewGatePending, true))
+  if (decision === 'pass') {
+    await db.update(memories).set({ reviewGatePending: false }).where(guard)
+  } else {
+    await db.update(memories).set({
+      reviewGatePending: false,
+      reviewedAt: null,
+      tags: sql`case when 'unreviewed' = any(${memories.tags}) then ${memories.tags} else array_append(${memories.tags}, 'unreviewed') end`,
+      updatedAt: new Date()
+    }).where(guard)
+  }
+  return decision
 }
 
 /** Score one memory — `scoreMemories` for a single id. */

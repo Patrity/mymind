@@ -2,10 +2,10 @@
 title: Memory dual scoring — extract-v3, an LLM audit and Jev on every memory, a switch-gated backfill, doc routing, and an analysis export (cycle 77)
 cycle: 77
 date: 2026-10-01
-status: built
+status: deployed
 branch: feat/memory-dual-scoring (worktree .claude/worktrees/memory-dual-scoring, base 9766132)
-merged: false
-deployed: false
+merged: true
+deployed: true  # prod backfill ran 2026-10-01T20:30Z → 2026-10-02T01:00Z (done)
 specs:
   - ../superpowers/specs/2026-10-01-memory-dual-scoring-design.md
 plans:
@@ -15,14 +15,14 @@ wiki:
   - ../wiki/triage.md
 migrations:
   - 0064 memories gains audit_keep, audit_verdict, audit_reason, audit_model, audit_prompt_version, audited_at, audit_failures, extract_prompt_version, jev_failures (additive)
-migrations_run_on_prod: false  # 0064 applied on dev only; prod runs through 0063 (cycle 76 deployed)
-backfill_switch_on_prod: off  # the memory_backfill setting stays absent/off; Tony starts it from Settings → Memory
+migrations_run_on_prod: true  # 0064
+backfill_switch_on_prod: done  # analysis + follow-on review gate: 2026-10-02-memory-review-gate.md
 eval:
   audit_v1: { keep_rate: "11/11", stale_rejection: "12/12", doc_routing: "3/4", audit_vs_label: "24/45 (53%)", keep: "22/28", stale: "2/12", noise: "0/5", run: "Task 8, 2026-10-01" }
   audit_v2: { keep_rate: "11/11", stale_rejection: "12/12", doc_routing: "3/4 (1 unexpected)", audit_vs_label: "25/45 (56%)", keep: "17/28", stale: "8/12", noise: "0/5", run: "final fix wave, 2026-10-01, one real run" }
 acceptance: passed  # one real runBackfillBatch({limit:40}) on dev: 40/40 audited, 26 new Jev scores (14 already had one), 0 content failures, 0 transport stops, 20.5 s
 final_review: ready with fixes (0 C / 4 I / 6 M); fix wave done 2b7b5e7..HEAD — awaiting the controller's re-review
-mymind_task: null  # not mirrored — no MCP/prod writes this session
+mymind_task: 992149a1-eed7-44f6-9c2f-a5a1ae5a3d7c
 ---
 
 # Cycle 77: Memory dual scoring
@@ -370,6 +370,10 @@ Typecheck and build cover it; check it at the smoke test after the prod backfill
    hide them from recall, which defaults to reviewed only).
 
 ## Where cycle 78 starts
+
+> **Resolved 2026-10-02** — the backfill ran, the analysis is in
+> [`2026-10-02-memory-review-gate.md`](2026-10-02-memory-review-gate.md), and its outcome (a
+> both-scorers review gate) shipped. The text below is the pre-analysis state.
 
 The final review fix wave is done; after the controller's re-review, merge and deploy (steps
 above). Tony starts the

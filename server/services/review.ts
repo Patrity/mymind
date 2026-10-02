@@ -68,9 +68,9 @@ export type ReviewFeedItem = ReviewQueueFeedItem | MemoryUnreviewedFeedItem
  *
  * A conflict row's `proposed.newId` (server/services/memory-resolve.ts's `review-supersede`/
  * `review-contradict` branches) points at the newly-inserted memory — that memory's OWN
- * `reviewed_at` comes from a DIFFERENT gate (`shouldAutoReview(confidence, threshold)` in
- * `insertFresh`), so a low-confidence new memory (routine at cycle 24's 0.6 parse floor,
- * below the 0.75 auto-review threshold) can have `reviewed_at IS NULL` even though its
+ * `reviewed_at` comes from a DIFFERENT gate (the post-scoring review gate, which un-reviews a
+ * new memory both Jev and the audit flag — server/lib/memory/review-gate.ts), so a new memory
+ * can have `reviewed_at IS NULL` even though its
  * conflict is already a real, separately-actionable review_queue row. Without this
  * exclusion the same memory surfaces TWICE in /review — once as the conflict card, once as
  * a synthetic memory-unreviewed card keyed on the same memories.id — double-counting the

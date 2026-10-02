@@ -1,0 +1,1 @@
+ALTER TABLE "memories" ADD COLUMN "review_gate_pending" boolean DEFAULT false NOT NULL;

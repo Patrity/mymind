@@ -4,7 +4,7 @@ import { useDb } from '../db'
 import { memories, memoryRelations, reviewQueue } from '../db/schema'
 import { embedOne } from '../lib/ai/embeddings'
 import { judgeRelations, type Verdict } from '../lib/ai/memory-judge'
-import { shouldAutoReview, stripUnreviewed } from './memory'
+import { stripUnreviewed } from './memory'
 import { publishChange } from '../utils/live-bus'
 import type { MemoryScope } from '../../shared/types/memory'
 
@@ -103,11 +103,15 @@ export function chooseResolution(verdicts: Verdict[], opts: ChooseResolutionOpts
   return { action: 'insert' }
 }
 
-async function insertFresh(input: ResolveInput, vec: number[], contentHash: string, threshold: number): Promise<string> {
+/**
+ * Enrichment inserts are auto-reviewed and marked `reviewGatePending`: once scored, the review gate
+ * (server/lib/memory/review-gate.ts) sends one back to /review only if BOTH Jev and the audit flag
+ * it. The extraction confidence no longer gates review (it barely discriminated on prod).
+ */
+async function insertFresh(input: ResolveInput, vec: number[], contentHash: string): Promise<string> {
   const db = useDb()
   const scope = input.scope ?? 'agent'
-  const autoReview = shouldAutoReview(input.confidence, threshold)
-  const finalTags = autoReview ? stripUnreviewed(input.tags ?? []) : (input.tags ?? [])
+  const finalTags = stripUnreviewed(input.tags ?? [])
   const [row] = await db.insert(memories).values({
     scope, content: input.content, tags: finalTags, source: input.source ?? null,
     embedding: vec,
@@ -115,7 +119,7 @@ async function insertFresh(input: ResolveInput, vec: number[], contentHash: stri
     evidence: (input.evidence ?? []) as unknown as string, project: input.project ?? null,
     projectId: input.projectId ?? null,
     sourceDate: input.sourceDate ?? null,
-    sessionId: input.sessionId ?? null, enrichedAt: new Date(), reviewedAt: autoReview ? new Date() : null,
+    sessionId: input.sessionId ?? null, enrichedAt: new Date(), reviewedAt: new Date(), reviewGatePending: true,
     extractPromptVersion: input.extractPromptVersion ?? null
   }).returning({ id: memories.id })
   publishChange({ resource: 'memory', action: 'created', id: row!.id })
@@ -158,7 +162,7 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   }).from(memories)
     .where(and(live, eq(memories.scope, scope), projectFilter, isNotNull(memories.embedding)))
     .orderBy(sql`${memories.embedding} <=> ${lit}::halfvec`).limit(8)
-  if (!near.length) { const newId = await insertFresh(input, vec, contentHash, threshold); return { action: 'insert', newId } }
+  if (!near.length) { const newId = await insertFresh(input, vec, contentHash); return { action: 'insert', newId } }
 
   // Mechanical duplicate short-circuit — task f80622b9.
   //
@@ -191,9 +195,9 @@ export async function resolveEnrichedMemory(input: ResolveInput): Promise<Resolv
   const existing = plan.targetId ? near.find(n => n.id === plan.targetId) : undefined
 
   if (plan.action === 'duplicate') { await mergeEvidence(plan.targetId!, input.evidence ?? [], input.sourceDate ?? null); return plan }
-  if (plan.action === 'insert') { const newId = await insertFresh(input, vec, contentHash, threshold); return { ...plan, newId } }
+  if (plan.action === 'insert') { const newId = await insertFresh(input, vec, contentHash); return { ...plan, newId } }
 
-  const newId = await insertFresh(input, vec, contentHash, threshold)
+  const newId = await insertFresh(input, vec, contentHash)
   const proposed = { newId, existingId: plan.targetId, confidence: plan.confidence, reasoning: plan.reasoning, newContent: input.content, existingContent: existing?.content }
 
   if (plan.action === 'supersede') {

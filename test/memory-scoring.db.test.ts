@@ -504,3 +504,48 @@ function meteredStubs() {
   })
   return { ask, chatFn, peaks }
 }
+
+describe('review gate (post-scoring)', () => {
+  const STALE_JEV: JevResponse = { ...JEV_REPLY, answers: { ...JEV_REPLY.answers, transient: { type: 'noul', noul: 0.8 } } }
+  const STALE_AUDIT = { text: JSON.stringify({ keep: 0.1, verdict: 'transient', reason: 'Pending work.' }), model: 'audit-model-x' }
+  const reviewedPending = { reviewedAt: new Date(), reviewGatePending: true, tags: ['kind:fact'] }
+
+  it('un-reviews a gated row both scorers flag, and tags it unreviewed', async () => {
+    const id = await seed(reviewedPending)
+    publishChange.mockClear()
+    await scoreMemory(id, { ask: vi.fn(async () => STALE_JEV) as never, cfg: CFG, chatFn: vi.fn(async () => STALE_AUDIT) as never })
+    const row = await load(id)
+    expect(row.reviewedAt).toBeNull()
+    expect(row.reviewGatePending).toBe(false)
+    expect(row.tags).toEqual(['kind:fact', 'unreviewed'])
+    expect(publishChange).toHaveBeenCalledWith({ resource: 'memory', action: 'updated', id })
+  })
+
+  it('keeps a gated row reviewed when only one scorer flags', async () => {
+    const id = await seed(reviewedPending)
+    await scoreMemory(id, { ask: vi.fn(async () => STALE_JEV) as never, cfg: CFG, chatFn: okChat() as never })
+    const row = await load(id)
+    expect(row.reviewedAt).toBeInstanceOf(Date)
+    expect(row.reviewGatePending).toBe(false)
+  })
+
+  it('never touches a row without the pending flag (pre-gate or human-reviewed)', async () => {
+    const id = await seed({ reviewedAt: new Date() })
+    await scoreMemory(id, { ask: vi.fn(async () => STALE_JEV) as never, cfg: CFG, chatFn: vi.fn(async () => STALE_AUDIT) as never })
+    expect((await load(id)).reviewedAt).toBeInstanceOf(Date)
+  })
+
+  it('waits (stays reviewed + pending) while a flagged part awaits an unavailable scorer', async () => {
+    const id = await seed(reviewedPending)
+    const down = vi.fn(async () => { throw new Error('ECONNREFUSED') })
+    await scoreMemory(id, { ask: down as never, cfg: CFG, chatFn: vi.fn(async () => STALE_AUDIT) as never })
+    let row = await load(id)
+    expect(row.reviewedAt).toBeInstanceOf(Date)
+    expect(row.reviewGatePending).toBe(true)
+    // The retry (cron) completes Jev and the gate then decides.
+    await scoreMemory(id, { ask: vi.fn(async () => STALE_JEV) as never, cfg: CFG })
+    row = await load(id)
+    expect(row.reviewedAt).toBeNull()
+    expect(row.reviewGatePending).toBe(false)
+  })
+})
