@@ -302,6 +302,19 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
  */
 export async function resolveAppendTarget(content: string): Promise<string | null> {
   const floor = useRuntimeConfig().triageAppendSimilarityFloor as number
+  const best = await nearestDocument(content)
+  if (!best || best.similarity < floor) return null
+  if (isRepoMirrorPath(best.path)) return null
+  return best.id
+}
+
+/**
+ * The live, non-skill, non-/input document whose best chunk is closest to `content`, with its
+ * cosine similarity — or null when nothing is indexed. Shared by resolveAppendTarget (append
+ * floor) and the doc-candidate duplicate guard (server/services/memory-doc-candidates.ts).
+ * See resolveAppendTarget's comment for why this is its own vector query, not searchDocs.
+ */
+export async function nearestDocument(content: string): Promise<{ id: string, path: string, similarity: number } | null> {
   const qv = await embedOne(content)
   const lit = `[${qv.join(',')}]`
   const [best] = await useDb()
@@ -320,10 +333,7 @@ export async function resolveAppendTarget(content: string): Promise<string | nul
     ))
     .orderBy(sql`${chunks.embedding} <=> ${lit}::halfvec`)
     .limit(1)
-
-  if (!best || (1 - best.distance) < floor) return null
-  if (isRepoMirrorPath(best.path)) return null
-  return best.sourceId
+  return best ? { id: best.sourceId, path: best.path, similarity: 1 - best.distance } : null
 }
 
 /**
@@ -462,6 +472,15 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
   }
 
   if (queued.length > 0) {
+    // Pick an append's target NOW, so the review card can name it and Approve appends to exactly
+    // the document Tony was shown (applyAppend honours a supplied targetDocId and re-validates
+    // it). No target clearing the floor → left unset; the card says it will become a note.
+    for (const [i, action] of queued.entries()) {
+      if (action.kind !== 'append' || action.targetDocId) continue
+      const targetDocId = await resolveAppendTarget(action.content ?? doc.content).catch(() => null)
+      if (targetDocId) queued[i] = { ...action, targetDocId }
+    }
+
     // ONE row per (document, kind) — review_queue_one_pending_per_target is a partial unique
     // index on (target_kind, target_id, kind) as of migration 0051. hasPendingReview above is
     // the primary defense against colliding with an existing pending row of a DIFFERENT kind;

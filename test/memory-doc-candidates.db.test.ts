@@ -37,10 +37,14 @@ vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 // tests only care about the document it creates. The mirror-guard test flips it on to drive
 // the REAL triageCapture (and therefore the real applyAppend / resolveAppendTarget) directly.
 const { triageGate } = vi.hoisted(() => ({ triageGate: { real: false } }))
+// The duplicate guard's nearest-document lookup. Default: nothing similar (null), so every other
+// test files its capture; the duplicate tests set it per test.
+const { nearestGate } = vi.hoisted(() => ({ nearestGate: { value: null as null | { id: string, path: string, similarity: number } } }))
 vi.mock('../server/services/triage', async (orig) => {
   const actual = await orig<typeof import('../server/services/triage')>()
   return {
     ...actual,
+    nearestDocument: vi.fn(async () => nearestGate.value),
     triageCapture: vi.fn((docId: string) =>
       triageGate.real
         ? actual.triageCapture(docId)
@@ -58,20 +62,21 @@ vi.mock('../server/lib/ai/triage', async (orig) => ({
   }))
 }))
 
-const { fileDocCandidate } = await import('../server/services/memory-doc-candidates')
+const { fileDocCandidate, sessionWroteDocs, isDocWriteToolCall, DOC_CANDIDATE_DUP_FLOOR } = await import('../server/services/memory-doc-candidates')
 const { isRepoMirrorPath } = await import('../server/lib/documents/mirror')
 const { triageCapture } = await import('../server/services/triage')
 const { classify } = await import('../server/lib/ai/triage')
 
 import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
 import { useDb } from '../server/db'
-import { chunks } from '../server/db/schema'
-import { eq } from 'drizzle-orm'
+import { chunks, toolEvents } from '../server/db/schema'
+import { eq, inArray } from 'drizzle-orm'
 
 const tag = () => Math.random().toString(36).slice(2, 10)
 
 afterEach(() => {
   triageGate.real = false
+  nearestGate.value = null
   triageThresholds = { task: 1.1, note: 1.1, memory: 1.1, append: 1.1 }
   vi.clearAllMocks()
 })
@@ -241,6 +246,96 @@ describe('mirror guard — a triage append resolving to a repo-mirrored doc beco
       ])
       const leftoverCourier = await getDoc(captureDoc.id)
       if (leftoverCourier) await deleteDoc(leftoverCourier.id)
+    }
+  })
+})
+
+describe('doc-candidate duplicate guards (2026-10-02)', () => {
+  it('skips a candidate an existing document already covers, and files nothing', async () => {
+    const t = tag()
+    nearestGate.value = { id: 'd1', path: '/projects/mymind/handovers/x.md', similarity: DOC_CANDIDATE_DUP_FLOOR }
+    const r = await fileDocCandidate({ text: `restated handover (${t})`, project: 'mymind', targetDocHint: `dup ${t}` }, { sessionId: `s-${t}` })
+    const { documents } = await import('../server/db/schema')
+    const { like } = await import('drizzle-orm')
+    const rows = await useDb().select({ id: documents.id }).from(documents).where(like(documents.content, `%restated handover (${t})%`))
+    // Clean up before asserting: a regression files a real capture into the shared dev DB.
+    for (const row of rows) await useDb().delete(documents).where(eq(documents.id, row.id))
+    expect(r).toEqual({ skipped: 'duplicate', nearestPath: '/projects/mymind/handovers/x.md', similarity: DOC_CANDIDATE_DUP_FLOOR })
+    expect(rows).toHaveLength(0)
+  })
+
+  it('files a candidate just below the floor', async () => {
+    const t = tag()
+    nearestGate.value = { id: 'd1', path: '/projects/mymind/notes/y.md', similarity: DOC_CANDIDATE_DUP_FLOOR - 0.01 }
+    const r = await fileDocCandidate({ text: `genuinely new detail (${t})`, project: null, targetDocHint: null }, { sessionId: `s-${t}` })
+    expect(r && 'docId' in r).toBe(true)
+    await deleteDoc((r as { docId: string }).docId)
+  })
+
+  it('isDocWriteToolCall: repo docs + MyMind doc tools only', () => {
+    expect(isDocWriteToolCall('Write', { file_path: '/Users/t/repo/docs/handovers/2026-10-02-x.md' })).toBe(true)
+    expect(isDocWriteToolCall('Edit', { file_path: 'docs/wiki/memory.md' })).toBe(true)
+    expect(isDocWriteToolCall('MultiEdit', { file_path: '/r/docs/superpowers/specs/a.md' })).toBe(true)
+    expect(isDocWriteToolCall('mcp__mymind__sync_document', {})).toBe(true)
+    expect(isDocWriteToolCall('mcp__mymind__edit_section', {})).toBe(true)
+    expect(isDocWriteToolCall('Edit', { file_path: '/r/server/services/x.ts' })).toBe(false)
+    expect(isDocWriteToolCall('Read', { file_path: '/r/docs/wiki/memory.md' })).toBe(false)
+    expect(isDocWriteToolCall('Write', { file_path: '/r/docs/BACKLOG.md' })).toBe(false)
+    expect(isDocWriteToolCall('mcp__mymind__read_document', {})).toBe(false)
+  })
+
+  it('sessionWroteDocs agrees with isDocWriteToolCall against real tool_events rows', async () => {
+    const db = useDb()
+    const wrote = crypto.randomUUID()
+    const mcp = crypto.randomUUID()
+    const codeOnly = crypto.randomUUID()
+    try {
+      await db.insert(toolEvents).values([
+        { sessionId: wrote, toolName: 'Edit', args: { file_path: '/r/docs/wiki/memory.md' }, toolUseId: `a-${wrote}` },
+        { sessionId: mcp, toolName: 'mcp__mymind__save_document', args: {}, toolUseId: `b-${mcp}` },
+        { sessionId: codeOnly, toolName: 'Edit', args: { file_path: '/r/server/x.ts' }, toolUseId: `c-${codeOnly}` },
+        { sessionId: codeOnly, toolName: 'Read', args: { file_path: '/r/docs/wiki/memory.md' }, toolUseId: `d-${codeOnly}` }
+      ])
+      expect(await sessionWroteDocs(wrote)).toBe(true)
+      expect(await sessionWroteDocs(mcp)).toBe(true)
+      expect(await sessionWroteDocs(codeOnly)).toBe(false)
+    } finally {
+      await db.delete(toolEvents).where(inArray(toolEvents.sessionId, [wrote, mcp, codeOnly]))
+    }
+  })
+})
+
+describe('queued append — target picked at queue time, shown in the review feed (2026-10-02)', () => {
+  const EXACT_MATCH_VECTOR = Array(2560).fill(0.01)
+
+  it('stores targetDocId on the queued append, and listReviewFeed carries source + target', async () => {
+    triageGate.real = true
+    triageThresholds = { task: 1.1, note: 1.1, memory: 1.1, append: 1.1 } // force queueing
+    const t = tag()
+    const target = await createDoc({ path: `/projects/mdc-scratch-${t}/notes/target.md`, title: `Target ${t}`, content: '# Target\n\nExisting.' })
+    await useDb().insert(chunks).values({ sourceType: 'document', sourceId: target.id, ord: 0, content: 'probe', embedding: EXACT_MATCH_VECTOR })
+    vi.mocked(classify).mockResolvedValueOnce({
+      primary: { kind: 'append' as const, confidence: 0.5, content: `a related fact (${t})` }, secondary: [], reasoning: 'stub append'
+    })
+    const capture = await createDoc({ path: `/input/queued-append-${t}.md`, title: `Capture ${t}`, content: `a related fact (${t})` })
+    const { reviewQueue } = await import('../server/db/schema')
+    try {
+      const out = await triageCapture(capture.id)
+      expect(out.queued).toBe(true)
+      const [row] = await useDb().select().from(reviewQueue).where(eq(reviewQueue.targetId, capture.id))
+      const queued = (row!.proposed as { queued: { kind: string, targetDocId?: string }[] }).queued
+      expect(queued[0]).toMatchObject({ kind: 'append', targetDocId: target.id })
+
+      const { listReviewFeed } = await import('../server/services/review')
+      const item = (await listReviewFeed()).find(i => i.id === row!.id)!
+      const p = item.proposed as { source: { title: string, content: string }, queued: { target?: { id: string, path: string, title: string } }[] }
+      expect(p.source).toMatchObject({ title: `Capture ${t}`, content: `a related fact (${t})` })
+      expect(p.queued[0]!.target).toEqual({ id: target.id, path: target.path, title: `Target ${t}` })
+      // Nothing was appended yet — only proposed.
+      expect((await getDoc(target.id))!.content).toBe('# Target\n\nExisting.')
+    } finally {
+      await useDb().delete(reviewQueue).where(eq(reviewQueue.targetId, capture.id))
+      await Promise.all([deleteDoc(target.id), deleteDoc(capture.id), useDb().delete(chunks).where(eq(chunks.sourceId, target.id))])
     }
   })
 })

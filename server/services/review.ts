@@ -34,6 +34,61 @@ export interface ReviewQueueFeedItem {
   docPath: string | null
 }
 
+/** The capture a triage proposal would file — what Tony is actually judging. */
+export interface TriageSource {
+  title: string | null
+  path: string
+  content: string
+}
+
+/** An append's chosen target (picked when the proposal was queued — see triageCapture). */
+export interface TriageAppendTarget {
+  id: string
+  path: string
+  title: string | null
+}
+
+/**
+ * Widen triage rows for display: `source` (the capture's title/path/text) and, on each append
+ * action with a `targetDocId`, `target` (its path/title). One batched read for all rows.
+ * Exported for tests.
+ */
+export async function withTriageContext(items: ReviewQueueFeedItem[]): Promise<ReviewQueueFeedItem[]> {
+  const triage = items.filter(i => i.kind === 'triage' && i.docId)
+  if (!triage.length) return items
+  type Action = { kind?: string, targetDocId?: string | null }
+  const actionsOf = (p: unknown): Action[] => {
+    const prop = p as { queued?: Action[], applied?: Action[] } | null
+    return [...(prop?.queued ?? []), ...(prop?.applied ?? [])]
+  }
+  const ids = new Set<string>()
+  for (const i of triage) {
+    ids.add(i.docId!)
+    for (const a of actionsOf(i.proposed)) if (a.kind === 'append' && a.targetDocId) ids.add(a.targetDocId)
+  }
+  const rows = await useDb().select({ id: documents.id, path: documents.path, title: documents.title, content: documents.content })
+    .from(documents).where(inArray(documents.id, [...ids]))
+  const byId = new Map(rows.map(r => [r.id, r]))
+  const withTarget = (a: Action) => {
+    const t = a.kind === 'append' && a.targetDocId ? byId.get(a.targetDocId) : undefined
+    return t ? { ...a, target: { id: t.id, path: t.path, title: t.title } satisfies TriageAppendTarget } : a
+  }
+  return items.map((i) => {
+    if (i.kind !== 'triage' || !i.docId) return i
+    const p = (i.proposed ?? {}) as { queued?: Action[], applied?: Action[] }
+    const src = byId.get(i.docId)
+    return {
+      ...i,
+      proposed: {
+        ...p,
+        queued: (p.queued ?? []).map(withTarget),
+        applied: (p.applied ?? []).map(withTarget),
+        source: src ? { title: src.title, path: src.path, content: src.content } satisfies TriageSource : null
+      }
+    }
+  })
+}
+
 export interface MemoryUnreviewedProposed {
   content: string
   scope: MemoryScope
@@ -182,7 +237,7 @@ export async function listReviewFeed(): Promise<ReviewFeedItem[]> {
   // decision with no quality score to rank by. Unreviewed MEMORIES sort worst-first, so the
   // likely junk is the first thing on screen and clearing it is a burst rather than a
   // scroll. Ordering only: nothing here decides anything (see lib/memory/jev-score.ts).
-  const sortedQueue = [...queueItems].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+  const sortedQueue = [...await withTriageContext(queueItems)].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
   const sortedMemories = [...memoryItems].sort((a, b) =>
     compareByJev(
       { jevScore: a.proposed.jevScore, createdAt: a.createdAt },

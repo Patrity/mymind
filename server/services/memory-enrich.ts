@@ -4,7 +4,7 @@ import { sessions, messages, memEnrichmentState, toolEvents, projects, conversat
 import { extractV3, EXTRACT_PROMPT_VERSION, type DocCandidate, type ExtractV3Result } from '../lib/memory/extract-v3'
 import { resolveEnrichedMemory } from './memory-resolve'
 import { createMemory } from './memory'
-import { fileDocCandidate } from './memory-doc-candidates'
+import { fileDocCandidate, sessionWroteDocs } from './memory-doc-candidates'
 import { projectIdForScope } from '../lib/projects/memory-project'
 import { publishChange } from '../utils/live-bus'
 import { scoreMemories } from './memory-scoring'
@@ -77,6 +77,32 @@ async function routeDocCandidates(candidates: DocCandidate[], src: { sessionId?:
   for (const candidate of candidates) {
     await fileDocCandidate(candidate, src)
   }
+}
+
+/**
+ * A session's doc candidates: dropped when the session wrote its own docs (a repo
+ * wiki/handover/spec, or a MyMind document) — it already documented itself, and its candidates
+ * would only be second copies. Otherwise filed fire-and-forget. Never throws. Exported for tests.
+ */
+export async function routeSessionDocCandidates(
+  sessionId: string,
+  candidates: DocCandidate[],
+  deps: { wroteDocs?: typeof sessionWroteDocs, file?: typeof fileDocCandidate } = {}
+): Promise<'none' | 'skipped' | 'routed'> {
+  if (!candidates.length) return 'none'
+  const wroteDocs = await (deps.wroteDocs ?? sessionWroteDocs)(sessionId).catch((err) => {
+    console.warn('[memory-enrich] doc-write check failed, routing candidates anyway:', err)
+    return false
+  })
+  if (wroteDocs) {
+    console.info(`[memory-enrich] session ${sessionId} wrote its own docs — skipping ${candidates.length} doc candidate(s)`)
+    return 'skipped'
+  }
+  const file = deps.file ?? fileDocCandidate
+  void (async () => {
+    for (const c of candidates) await file(c, { sessionId })
+  })().catch(err => console.warn('[memory-enrich] doc candidate routing failed:', err))
+  return 'routed'
 }
 
 /**
@@ -173,7 +199,7 @@ export async function runMemoryEnrichment({ limit = 10 }: { limit?: number } = {
 
       const { memories: extracted, docCandidates } = await extractMemoriesFromTranscript(transcript)
       candidates += extracted.length
-      void routeDocCandidates(docCandidates, { sessionId: session.id }).catch(err => console.warn('[memory-enrich] doc candidate routing failed:', err))
+      await routeSessionDocCandidates(session.id, docCandidates)
 
       // Store each candidate with rich provenance via resolution orchestrator
       const newIds: string[] = []

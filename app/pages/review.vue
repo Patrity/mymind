@@ -61,6 +61,8 @@ interface TriageActionDTO {
   targetDocId?: string | null
   tags?: string[] | null
   path?: string | null
+  /** An append's chosen target (feed-resolved from targetDocId). */
+  target?: { id: string, path: string, title: string | null } | null
 }
 
 interface TriageProposed {
@@ -69,6 +71,8 @@ interface TriageProposed {
   reasoning: string
   queued: TriageActionDTO[]
   applied: TriageActionDTO[]
+  /** The capture being filed (added by the feed — server/services/review.ts withTriageContext). */
+  source?: { title: string | null, path: string, content: string } | null
 }
 
 interface AgentActionProposed {
@@ -143,13 +147,6 @@ const TRIAGE_KIND_LABEL: Record<TriageActionKind, string> = {
   append: 'Append'
 }
 
-const TRIAGE_KIND_COLOR: Record<TriageActionKind, 'info' | 'neutral' | 'primary' | 'warning'> = {
-  task: 'info',
-  note: 'neutral',
-  memory: 'primary',
-  append: 'warning'
-}
-
 // Mirrors the scopeColor map in app/pages/memories.vue.
 const MEMORY_SCOPE_COLOR: Record<'user' | 'agent' | 'world', 'primary' | 'info' | 'warning'> = {
   user: 'primary',
@@ -157,19 +154,19 @@ const MEMORY_SCOPE_COLOR: Record<'user' | 'agent' | 'world', 'primary' | 'info' 
   world: 'warning'
 }
 
-/** Human-readable destination for a proposed triage action. */
-function triageDestination(action: TriageActionDTO): string {
-  switch (action.kind) {
-    case 'task':
-      return action.project ? `“${action.title ?? 'Untitled task'}” → ${action.project}` : `“${action.title ?? 'Untitled task'}”`
-    case 'note':
-      return action.path ?? action.title ?? 'New note'
-    case 'memory':
-      return action.scope ? `Memory (${action.scope})` : 'Memory'
-    case 'append':
-      return 'Append to closest matching document'
-    default:
-      return action.kind
+// fileDocCandidate (server/services/memory-doc-candidates.ts) ends every doc-candidate capture
+// with this provenance line — shown as a badge, not as part of the captured text.
+const EXTRACTION_FOOTER = /\n*— From memory extraction \(project: (.*?); suggested doc: (.*?)\)\s*$/
+
+/** The capture's text without the provenance footer, plus where it came from. */
+function triageSource(p: TriageProposed): { text: string, fromExtraction: boolean, path: string | null, title: string | null } {
+  const content = p.source?.content ?? ''
+  const m = content.match(EXTRACTION_FOOTER)
+  return {
+    text: m ? content.slice(0, m.index).trim() : content.trim(),
+    fromExtraction: !!m,
+    path: p.source?.path ?? null,
+    title: p.source?.title ?? null
   }
 }
 
@@ -214,7 +211,7 @@ const recentItems = computed(() => recentData.value ?? [])
 function rel(iso: string) { return useTimeAgo(new Date(iso)).value }
 
 /**
- * Applied-context destination text. Deliberately separate from triageDestination
+ * Applied-context destination text. Deliberately separate from ReviewTriageAction's proposal wording
  * (above) rather than reused: that one renders a PROPOSAL, where an append's real
  * target is not resolved yet ("Append to closest matching document" is the best it can
  * say). Here the action already ran, so payload.content is worth previewing instead.
@@ -588,8 +585,16 @@ async function undoDiscard(undoToken: string) {
                     variant="outline"
                     size="xs"
                   />
-                  <p class="text-xs text-muted font-mono truncate">
-                    {{ item.docPath ?? item.docId }}
+                  <UBadge
+                    v-if="triageSource(item.proposed).fromExtraction"
+                    label="from memory extraction"
+                    color="neutral"
+                    variant="soft"
+                    size="xs"
+                    icon="i-lucide-sparkles"
+                  />
+                  <p class="text-sm font-medium text-highlighted truncate">
+                    {{ triageSource(item.proposed).title ?? item.docPath ?? item.docId }}
                   </p>
                 </div>
                 <p class="text-xs text-dimmed shrink-0">
@@ -599,34 +604,42 @@ async function undoDiscard(undoToken: string) {
             </template>
 
             <div class="space-y-4">
+              <!-- What was captured — the thing actually being filed -->
+              <div class="space-y-1">
+                <p class="text-xs font-semibold text-dimmed uppercase tracking-wide">
+                  Captured
+                  <span class="font-mono normal-case font-normal">{{ triageSource(item.proposed).path ?? item.docPath }}</span>
+                </p>
+                <div
+                  v-if="triageSource(item.proposed).text"
+                  class="p-3 rounded-md border border-default max-h-72 overflow-auto"
+                >
+                  <MdView :source="triageSource(item.proposed).text" />
+                </div>
+                <p
+                  v-else
+                  class="text-xs text-dimmed italic"
+                >
+                  The capture is no longer available.
+                </p>
+              </div>
+
               <!-- Actions awaiting a human decision -->
               <div class="space-y-2">
                 <p class="text-xs font-semibold text-highlighted uppercase tracking-wide">
-                  {{ pluralize(item.proposed.queued.length, 'action') }} awaiting review
+                  If you approve
                 </p>
-                <div
+                <ReviewTriageAction
                   v-for="(action, i) in item.proposed.queued"
                   :key="`queued-${i}`"
-                  class="p-3 rounded-md bg-muted space-y-1"
-                >
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <UBadge
-                      :label="TRIAGE_KIND_LABEL[action.kind]"
-                      :color="TRIAGE_KIND_COLOR[action.kind]"
-                      variant="subtle"
-                      size="xs"
-                    />
-                    <span class="text-xs text-muted">{{ Math.round(action.confidence * 100) }}% confidence</span>
-                  </div>
-                  <p class="text-sm text-default">
-                    {{ triageDestination(action) }}
-                  </p>
-                </div>
+                  :action="action"
+                  :source-text="triageSource(item.proposed).text"
+                />
               </div>
 
               <!-- Reasoning -->
               <div class="p-3 rounded-md bg-elevated text-xs text-muted leading-relaxed">
-                <span class="font-semibold text-default">Reasoning: </span>{{ item.proposed.reasoning }}
+                <span class="font-semibold text-default">Why: </span>{{ item.proposed.reasoning }}
               </div>
 
               <!-- Already auto-applied actions — read-only context -->
@@ -638,31 +651,18 @@ async function undoDiscard(undoToken: string) {
                 <p class="text-xs font-semibold text-dimmed uppercase tracking-wide">
                   {{ pluralize(item.proposed.applied.length, 'action') }} already applied automatically
                 </p>
-                <div
+                <ReviewTriageAction
                   v-for="(action, i) in item.proposed.applied"
                   :key="`applied-${i}`"
-                  class="p-3 rounded-md bg-muted/50 space-y-1"
-                >
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <UBadge
-                      :label="TRIAGE_KIND_LABEL[action.kind]"
-                      color="neutral"
-                      variant="subtle"
-                      size="xs"
-                    />
-                    <UBadge
-                      label="auto-applied"
-                      color="success"
-                      variant="subtle"
-                      size="xs"
-                    />
-                    <span class="text-xs text-dimmed">{{ Math.round(action.confidence * 100) }}% confidence</span>
-                  </div>
-                  <p class="text-sm text-muted">
-                    {{ triageDestination(action) }}
-                  </p>
-                </div>
+                  :action="action"
+                  :source-text="triageSource(item.proposed).text"
+                  applied
+                />
               </div>
+
+              <p class="text-xs text-dimmed">
+                Reject leaves the capture in /input untouched.
+              </p>
             </div>
 
             <template #footer>

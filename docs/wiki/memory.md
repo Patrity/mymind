@@ -331,7 +331,7 @@ auto-applied at ≥ 0.70** (`triageThresholds.task`), the existing triage behavi
 doc candidates (final review M2). **No document is written directly.** An append into a
 repo-mirrored doc (`/projects/<slug>/wiki/` or `/handovers/`, `isRepoMirrorPath` in
 `server/lib/documents/mirror.ts`) is refused and becomes a note; see [triage.md](triage.md). Failures are logged and never block enrichment. The backfill only
-*labels* old memories `belongs_in_doc`; it moves nothing.
+*labels* old memories `belongs_in_doc`; it moves nothing. Since 2026-10-02 two duplicate guards drop candidates first (the session wrote its own docs, or an existing doc scores ≥ 0.65 similarity) — see [triage.md](triage.md).
 
 ### Measurement tools
 

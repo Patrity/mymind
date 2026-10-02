@@ -2,7 +2,7 @@
 title: Capture Triage
 status: shipped
 cycle: 77
-updated: 2026-10-01
+updated: 2026-10-02
 mymind_id: 323bbf97-f177-429b-beea-675ff0388799
 mymind_hash: 09bffc61baa5d3e391fc51628e33727a220c9c6edb0ce80b8eb16c33b3297379
 ---
@@ -61,6 +61,18 @@ candidate can become a live task without review. That is existing triage behavio
 doc candidates (cycle 77 final review M2). Nothing writes a document directly, and the repo-mirror guard
 below keeps an append out of mirrored docs. A failure is logged and never blocks enrichment. See
 [memory.md](memory.md#doc-candidates--triage).
+
+**Duplicate guards (2026-10-02).** Doc candidates were mostly re-tellings of docs the session had
+just written (on prod, 2 of the first 8 restated a mirrored handover). Two guards now run first:
+1. **The session documented itself** — `routeSessionDocCandidates` (`memory-enrich.ts`) drops all of
+   a session's candidates when its `tool_events` show a `Write`/`Edit`/`MultiEdit` to
+   `docs/(wiki|handovers|superpowers/(specs|plans))/` or a MyMind document tool
+   (`save/sync/update/edit_document`, `edit_section`) — `sessionWroteDocs` /
+   `isDocWriteToolCall` in `memory-doc-candidates.ts`. A failed check routes anyway.
+2. **An existing doc already covers it** — `fileDocCandidate` skips a candidate whose nearest live
+   non-`/input` document (`nearestDocument`, `triage.ts`) scores ≥ `DOC_CANDIDATE_DUP_FLOOR` = 0.65
+   (prod calibration: duplicates 0.71 / 0.78, new detail ≤ 0.59). Returns `{ skipped: 'duplicate' }`;
+   a failed lookup files anyway.
 
 **Idempotency.** Both paths can race, so `documents.triaged_at` is a conditional-UPDATE claim
 (`WHERE triaged_at IS NULL`) taken **before** the model call. Losing the claim returns
@@ -259,9 +271,19 @@ error rather than silently duplicating the other action's output as a second, st
 
 `/review` (`app/pages/review.vue`) renders `kind: 'triage'` as a fourth card type alongside
 `enrichment`, `memory-supersede`, `memory-contradict`, and the synthetic `memory-unreviewed`
-items (see [memory.md](memory.md) and [enrichment.md](enrichment.md)). A triage card shows the
-queued action(s) awaiting a decision, the model's one-sentence reasoning, and — read-only,
-for context — any sibling actions from the same proposal that already auto-applied.
+items (see [memory.md](memory.md) and [enrichment.md](enrichment.md)). A triage card (reworked
+2026-10-02) shows **the captured text** (rendered markdown, provenance footer stripped into a
+"from memory extraction" badge), then **"If you approve"** — each queued action as a plain sentence
+(`app/components/review/TriageAction.vue`): *Create document* title → path; *Append to* the named
+target with the exact block it adds; *Create task* with project/priority/due; *Save memory* with its
+text — plus what is removed (the `/input` capture, except for a note). Then the reasoning ("Why"),
+and read-only any sibling actions that already auto-applied. The feed widens triage rows with
+`source` and each append's `target` (`withTriageContext`, `server/services/review.ts`).
+
+**An append's target is chosen at queue time** (`triageCapture` stores `targetDocId` on the queued
+action), so Approve appends to exactly the document the card named — `applyAppend` honours a supplied
+`targetDocId` and re-validates it. No target clearing the floor → the card says it will be filed as a
+new note.
 
 **Approve/reject dispatch through a per-kind handler map** (`server/api/review/kinds.ts`,
 `approveHandlers`/`rejectHandlers` keyed by `kind`), replacing what used to be a growing
