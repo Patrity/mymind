@@ -19,6 +19,7 @@
     "memory:eval": "node_modules/.bin/tsx --env-file=.env scripts/memory-eval.ts",
     "memory:export": "node_modules/.bin/tsx --env-file-if-exists=.env scripts/memory-export.ts",
     "label": "node_modules/.bin/tsx scripts/label-memories.ts",
+    "label:quick": "node_modules/.bin/tsx scripts/label-quick.ts",
     "fake:bluebubbles": "node --experimental-strip-types --no-warnings=ExperimentalWarning test/fixtures/fake-bluebubbles.ts --port 4455"
   },
   "dependencies": {
