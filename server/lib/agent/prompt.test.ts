@@ -90,6 +90,30 @@ describe('skills index (Tier-1)', () => {
   })
 })
 
+describe('composePrompt — on-demand toolsets wording (final review I1)', () => {
+  // Regression guard: a fresh thread hides generate_image/edit_image/search_projects/etc until
+  // loaded. The old "If you lack a tool or capability… say so plainly and stop" line, read
+  // literally by a small model, produced a confident refusal instead of a `load_toolsets` call —
+  // nothing in logs flagged it. Pin that the lack-a-tool rule now sends the model to the
+  // directory first.
+  for (const speak of [true, false]) {
+    it(`the lack-a-tool rule points at TOOLSETS and load_toolsets before giving up (speak=${speak})`, () => {
+      const p = composePrompt({ ...base, speak })
+      expect(p).toMatch(/check TOOLSETS/)
+      expect(p).toMatch(/load_toolsets/)
+      expect(p).toMatch(/only if no toolset covers it, say so plainly and stop/i)
+    })
+
+    it(`the IMAGES rule names the images toolset (speak=${speak})`, () => {
+      const p = composePrompt({ ...base, speak })
+      const imagesLine = p.split('\n').find(l => l.startsWith('- IMAGES'))
+      expect(imagesLine).toBeTruthy()
+      expect(imagesLine).toMatch(/`images` toolset/)
+      expect(imagesLine).toMatch(/load_toolsets/)
+    })
+  }
+})
+
 describe('composePrompt — toolset directory', () => {
   it('renders the toolset directory after the tool rules and before skills', () => {
     const p = composePrompt({ persona: 'P', speak: false, toneLine: 't', toolsetDirectory: 'TOOLSETS — x', skillsIndex: 'SKILLS — y' })
