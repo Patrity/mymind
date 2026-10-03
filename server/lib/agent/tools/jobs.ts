@@ -99,7 +99,7 @@ export const jobTools: AgentTool[] = [
   },
   {
     name: 'create_job',
-    description: 'Create a new scheduled job from markdown (frontmatter + body — see an existing job with get_job for the shape: trigger, timezone, active_hours, model, thread, context, deliver, enabled). Goes live immediately if enabled:true. On failure returns ok:false with a validation or conflict error; nothing is written.',
+    description: 'Create a new scheduled job from markdown (frontmatter + body — see an existing job with get_job for the shape: trigger, timezone, active_hours, model, thread, context, deliver, toolsets (on-demand toolsets the job needs, e.g. [images]), enabled). Goes live immediately if enabled:true. On failure returns ok:false with a validation or conflict error; nothing is written.',
     kind: 'create',
     toolset: 'jobs',
     schema: {

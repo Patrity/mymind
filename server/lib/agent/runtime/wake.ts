@@ -9,6 +9,8 @@ export interface WakeRequest {
   jobId?: string | null
   /** History depth for the run (RunInput.context); omitted = full. */
   context?: 'light' | 'full'
+  /** Cycle 78: toolsets a job declared; loaded at run start. */
+  toolsets?: string[]
 }
 
 export async function wake(req: WakeRequest, deps: { kick?: boolean } = {}): Promise<{ runId: string; conversationId: string }> {
@@ -19,7 +21,7 @@ export async function wake(req: WakeRequest, deps: { kick?: boolean } = {}): Pro
   const r = await enqueue({
     sessionKey: req.sessionKey ?? 'main', trigger: 'wake', profile: 'headless', wakeReason: reason,
     modelDefId: req.model ?? null, jobId: req.jobId ?? null,
-    input: { text: prompt, modality: 'text', ...(req.context ? { context: req.context } : {}) }
+    input: { text: prompt, modality: 'text', ...(req.context ? { context: req.context } : {}), ...(req.toolsets?.length ? { toolsets: req.toolsets } : {}) }
   }, { kick: deps.kick })
   return { runId: r.runId, conversationId: r.conversationId }
 }

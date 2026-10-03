@@ -25,10 +25,12 @@ import { publishChange } from '../utils/live-bus'
  *
  * Memories already graduated out of this conversation are untouched — that is the forgetting
  * ladder working as designed, not a leak.
+ *
+ * Loaded toolsets (cycle 78) reset too — a cleared thread starts with only the core tools visible.
  */
 export async function clearConversationContext(conversationId: string): Promise<void> {
   await useDb().update(conversations)
-    .set({ contextEpochAt: sql`now()`, summary: null, summaryEmbedding: null, updatedAt: new Date() })
+    .set({ contextEpochAt: sql`now()`, summary: null, summaryEmbedding: null, updatedAt: new Date(), activeToolsets: [] })
     .where(eq(conversations.id, conversationId))
   publishChange({ resource: 'conversation', action: 'updated', id: conversationId })
 }

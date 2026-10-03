@@ -5,6 +5,7 @@
 import { Cron } from 'croner'
 import { splitFrontmatter } from '../../../../shared/utils/frontmatter'
 import { parseEveryExpr, resolveAtInstant, minCronGapMs } from './schedule'
+import { ON_DEMAND_TOOLSETS, parseToolsetIds, type ToolsetId } from '../toolsets'
 
 export type TriggerKind = 'cron' | 'every' | 'at' | 'event'
 
@@ -18,13 +19,15 @@ export interface JobSpec {
   deliver: string[]
   enabled: boolean
   filter: Record<string, string> | null
+  /** Cycle 78: on-demand toolsets this job needs loaded at run start (e.g. ['images']). */
+  toolsets: ToolsetId[]
   body: string
 }
 
 export const JOB_BODY_MAX = 20_000
 export const MIN_INTERVAL_MS = 5 * 60_000
 
-const ACCEPTED_KEYS = new Set(['trigger', 'timezone', 'active_hours', 'model', 'thread', 'context', 'deliver', 'enabled', 'filter'])
+const ACCEPTED_KEYS = new Set(['trigger', 'timezone', 'active_hours', 'model', 'thread', 'context', 'deliver', 'enabled', 'filter', 'toolsets'])
 const KNOWN_EVENTS = ['cc.session_end', 'task.due']
 export const DELIVER_VALUES = ['app', 'auto', 'imessage', 'email'] as const
 const ACTIVE_HOURS_RE = /^\d{2}:\d{2}-\d{2}:\d{2}$/
@@ -164,6 +167,15 @@ export function parseJob(
     filter = coerced
   }
 
+  let toolsets: ToolsetId[] = []
+  if (data.toolsets !== undefined) {
+    const allowed = ON_DEMAND_TOOLSETS.join(', ')
+    if (!Array.isArray(data.toolsets) || !data.toolsets.every(x => typeof x === 'string')) return { ok: false, error: `invalid toolsets: ${String(data.toolsets)} (allowed: ${allowed})` }
+    const bad = data.toolsets.find(x => !parseToolsetIds([x]).length)
+    if (bad !== undefined) return { ok: false, error: `invalid toolsets: ${bad} (allowed: ${allowed})` }
+    toolsets = parseToolsetIds(data.toolsets)
+  }
+
   let model = 'default'
   if (data.model !== undefined) {
     if (typeof data.model !== 'string') return { ok: false, error: `invalid model: ${String(data.model)}` }
@@ -189,6 +201,7 @@ export function parseJob(
       deliver,
       enabled,
       filter,
+      toolsets,
       body: trimmedBody
     }
   }

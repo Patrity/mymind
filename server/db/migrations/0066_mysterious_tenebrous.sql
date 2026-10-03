@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "active_toolsets" text[] DEFAULT '{}'::text[] NOT NULL;

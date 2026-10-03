@@ -53,6 +53,7 @@ vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
 
 import { useDb } from '../server/db'
 import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelApprovals, channelDeliveries } from '../server/db/schema'
+import type { ToolsetId } from '../server/lib/agent/toolsets'
 import { startFakeBlueBubbles } from './fixtures/fake-bluebubbles'
 import { FAILURE_NOTE } from '../server/lib/channels/deliver'
 import { createJob } from '../server/lib/agent/jobs/store'
@@ -147,6 +148,28 @@ describe('runTurn', () => {
     // The ids must name the RIGHT rows, not merely two rows.
     expect(r.find(x => x.id === out.userMessageId)?.role).toBe('user')
     expect(r.find(x => x.id === out.assistantMessageId)?.role).toBe('assistant')
+  })
+
+  // Cycle 78: on-demand toolsets. The runner merges the conversation's stored active_toolsets
+  // with the run's own input.toolsets (dropping unknown ids) into ctx.toolsets.initial, and
+  // persists whatever runAgent's onChange reports as a union (never an overwrite — see toolsets.ts).
+  it('passes stored + run-input toolsets to runAgent and persists onChange', async () => {
+    const { run, conversationId } = await queued('toolsets turn', { input: { text: 'toolsets turn', modality: 'text', toolsets: ['images', 'bogus'] } })
+    await useDb().update(conversations).set({ activeToolsets: ['history'] }).where(eq(conversations.id, conversationId))
+
+    let capturedInitial: ToolsetId[] | undefined
+    const capture = async function* (_m: unknown, ctx: { toolsets?: { initial: ToolsetId[]; onChange?: (l: ToolsetId[]) => Promise<void> } }) {
+      capturedInitial = ctx.toolsets?.initial
+      await ctx.toolsets?.onChange?.(['history', 'images', 'jobs'])
+      yield { type: 'text-delta', text: 'loaded ' } as const
+      yield { type: 'done' } as const
+    }
+    const out = await runTurn(run, { runAgent: capture as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(out.status).toBe('done')
+    expect(capturedInitial).toEqual(['history', 'images']) // 'bogus' dropped, stored + declared merged
+
+    const [row] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, conversationId)).limit(1)
+    expect(row!.activeToolsets).toEqual(['history', 'images', 'jobs'])
   })
 
   it('drops the run\'s approval channel when the run ends (no leak until socket close)', async () => {

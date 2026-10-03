@@ -148,6 +148,7 @@ function describeRow(row: AgentJobRow): string | null {
     deliver: [],
     enabled: row.enabled,
     filter: null,
+    toolsets: [],
     body: ''
   }
   return describeTrigger(spec)

@@ -70,4 +70,12 @@ describe('/clear', () => {
       .where(eq(conversationMessages.conversationId, id))
     expect(after[0]!.n).toBe(before[0]!.n)
   })
+
+  it('/clear resets active_toolsets', async () => {
+    const id = await seed('toolsets')
+    await useDb().update(conversations).set({ activeToolsets: ['images'] }).where(eq(conversations.id, id))
+    await clearConversationContext(id)
+    const [row] = await useDb().select().from(conversations).where(eq(conversations.id, id)).limit(1)
+    expect(row!.activeToolsets).toEqual([])
+  })
 })

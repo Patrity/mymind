@@ -17,6 +17,8 @@ export interface RunInput {
   /** Cycle 75: where the message came from (e.g. `imessage:<chatGuid>`), stamped on the persisted
    *  user row so the UI can mark it. Absent for app-typed messages. */
   origin?: string
+  /** Cycle 78: toolsets a job declared; loaded at run start. */
+  toolsets?: string[]
 }
 
 /** Cycle 75: where to send this run's reply besides the web UI — set when the run was

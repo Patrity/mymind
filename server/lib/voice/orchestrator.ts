@@ -10,6 +10,7 @@ import { getImageBytes } from '../../services/images'
 import { getFileBytes } from '../../services/files'
 import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
 import { capResult, capArgs, WRITE_RESULT_CAP, ARGS_WRITE_CAP, type AgentToolRecord } from '../agent/tool-history'
+import type { ToolsetId } from '../agent/toolsets'
 import type { VoicePresetDTO } from '../../../shared/types/voice-presets'
 import type { SubagentStep, AgentToolKind } from '../../../shared/types/agent-ui'
 import { toolOutcome } from '../../../shared/utils/agent-ui'
@@ -60,7 +61,11 @@ export interface TurnDeps {
   /** The agent_runs row of this turn (runtime runner) — forwarded into runAgent's ctx so tools
    *  see it as ToolContext.runId. */
   runId?: string
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string }) => AsyncGenerator<AgentEvent>
+  /** Cycle 78: on-demand toolsets for this turn — the initial set (stored + job-declared) and
+   *  the runner's persistence callback, fired when runAgent loads something new mid-turn.
+   *  Absent for subagents/legacy chat.post, same as runAgent's own ctx.toolsets. */
+  toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void> }
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void> } }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -154,7 +159,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const subagentSteps = new Map<string, SubagentStep[]>()
 
   let sawText = false
-  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId })) {
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId, toolsets: deps.toolsets })) {
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {
       deps.emit({ type: 'reasoning', text: ev.text })   // display only — never chunked/spoken/persisted here

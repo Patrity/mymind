@@ -75,4 +75,22 @@ describe('parseJob', () => {
   it('accepts a normal weekday cron (5-day-apart minimum well over 5 minutes)', () => {
     expect(p('trigger: cron 30 7 * * 1-5').ok).toBe(true)
   })
+
+  describe('toolsets key', () => {
+    const base = '---\ntrigger: every 1h\n'
+    it('defaults to []', () => {
+      const r = parseJob(`${base}---\nbody`, { defaultTimezone: 'UTC' })
+      expect(r.ok && r.spec.toolsets).toEqual([])
+    })
+    it('accepts on-demand ids', () => {
+      const r = parseJob(`${base}toolsets: [images, jobs]\n---\nbody`, { defaultTimezone: 'UTC' })
+      expect(r.ok && r.spec.toolsets).toEqual(['images', 'jobs'])
+    })
+    it('rejects unknown or core ids with the allowed list', () => {
+      const r = parseJob(`${base}toolsets: [gmail]\n---\nbody`, { defaultTimezone: 'UTC' })
+      expect(r).toMatchObject({ ok: false })
+      expect(!r.ok && r.error).toMatch(/invalid toolsets: gmail \(allowed: history, projects/)
+      expect(parseJob(`${base}toolsets: [memory]\n---\nbody`, { defaultTimezone: 'UTC' }).ok).toBe(false)
+    })
+  })
 })

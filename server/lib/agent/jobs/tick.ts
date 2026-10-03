@@ -65,7 +65,10 @@ export function wakeRequestFor(slug: string, jobId: string, spec: JobSpec, promp
     sessionKey: spec.thread === 'main' ? 'main' as const : `isolated:${slug}` as const,
     model: spec.model === 'default' ? null : spec.model,
     jobId,
-    context: spec.context
+    context: spec.context,
+    // Cycle 78: a job's declared toolsets load at run start; omitted (not []) when none —
+    // wake()/RunInput treat an absent key and an empty array differently.
+    ...(spec.toolsets.length ? { toolsets: spec.toolsets } : {})
   }
 }
 

@@ -19,6 +19,7 @@ import { assembleContext } from '../assemble'
 import { messageText } from '../run'
 import type { AgentMessage } from '../run'
 import { bridgetProfile, type AgentProfile } from '../profile'
+import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { hub as defaultHub, type StreamHub } from './stream'
 import { registerAbort, releaseAbort } from './aborts'
 import { approvalFor, hasApprovalChannel, registerApprovalChannel, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
@@ -183,7 +184,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
 
     // Setup that the ws.ts closure did inside `exec` — inside this `try`, so a failure here
     // takes the same rescue path as a failing model (the question still persists).
-    const [conv] = await useDb().select({ kind: conversations.kind, title: conversations.title })
+    const [conv] = await useDb().select({ kind: conversations.kind, title: conversations.title, activeToolsets: conversations.activeToolsets })
       .from(conversations).where(eq(conversations.id, conversationId)).limit(1)
     const fullHistory = await getAgentHistory(conversationId)
     // A light-context run (a job's `context: light`) keeps only the last few turns — sliced here,
@@ -204,6 +205,22 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     const { preset, refAudio } = await resolveTurnVoice(input.presetId ?? null, speak)
     const profile = run.profile === 'headless' ? headlessProfile(run) : undefined
 
+    // Cycle 78: on-demand toolsets — what this conversation already loaded + what a job declared.
+    const initialToolsets = parseToolsetIds([...(conv?.activeToolsets ?? []), ...(input.toolsets ?? [])])
+    const toolsets = {
+      initial: initialToolsets,
+      onChange: async (loaded: ToolsetId[]) => {
+        // A UNION, never an overwrite: runAgent fires onChange fire-and-forget, so two writes
+        // from one step can land out of order and an overwrite could persist the smaller set.
+        await useDb().update(conversations).set({
+          activeToolsets: sql`(select coalesce(array_agg(distinct x order by x), '{}'::text[]) from unnest(${conversations.activeToolsets} || ${sql.param(loaded)}::text[]) as x)`
+        }).where(eq(conversations.id, conversationId))
+      }
+    }
+    // Job-declared sets persist for later turns of an isolated job thread even when runAgent's
+    // onChange never fires this turn (nothing new loaded mid-turn).
+    if (initialToolsets.join() !== parseToolsetIds(conv?.activeToolsets ?? []).join()) await toolsets.onChange(initialToolsets).catch(() => {})
+
     const result = await handleTurn(userText, history, {
       tts, preset, refAudio, speak, context: assembled.context || undefined, modelDefId: run.modelDefId,
       profile, requestApproval: run.profile === 'interactive' ? approvalFor(run.id) : undefined,
@@ -213,7 +230,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         drainedSteers.push(...fresh)
         return fresh
       }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined,
-      runId: run.id
+      runId: run.id, toolsets
     })
     // Finalize the timing ONCE, here, and use the same object for the live chunk below and
     // for the persist further down — so the duration and tok/s the user watches appear are
