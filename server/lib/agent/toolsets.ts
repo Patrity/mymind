@@ -21,7 +21,12 @@ export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }>
   images: { core: false, description: 'generate a new image or edit the last one' },
   jobs: { core: false, description: 'create, edit, run or schedule background jobs and wake-ups' },
   'skill-admin': { core: false, description: 'create, edit or delete skills' },
-  reviews: { core: false, description: "list or decide items in Tony's /review queue" },
+  // Neutral on purpose (M5, final review): decide_review is excluded from the headless ToolSet
+  // (dangerous — see gate.ts), so a line that promises "decide" is a lie on a wake/job turn. The
+  // directory is built from the same gated registry either way (directoryText only lists sets
+  // with a tool actually present), so wording here must hold for both the interactive and
+  // headless reader.
+  reviews: { core: false, description: "when Tony asks about items in his /review queue" },
   improvements: { core: false, description: 'when Tony asks what Bridget has learned or changed about herself' },
   channels: { core: false, description: 'send Tony a message over iMessage or email' }
 }
