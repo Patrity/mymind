@@ -238,17 +238,69 @@ describe('runTurn', () => {
       yield { type: 'text-delta', text: 'NO_REPLY' } as const
       yield { type: 'done' } as const
     }
-    const out = await runTurn(run!, { runAgent: capture as never, assemble: noAssemble as never, hub: new StreamHub() })
-    // Free the one-running slot on main immediately — before any assertion can throw — so a
-    // leftover 'running' row never blocks a real turn on main while this test is still executing.
-    await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run!.id))
+    // Fix round 2 (ledger T3): runTurn, the run-row release, AND the assertions all live inside
+    // ONE try, so the `finally` restore of active_toolsets (and the belt-and-suspenders run-row
+    // release) fires even if runTurn itself throws unexpectedly — not only when an assertion
+    // below it does. The dev DB holds real data on this row; a restore that only a passing
+    // assertion reaches is not a restore.
     try {
+      const out = await runTurn(run!, { runAgent: capture as never, assemble: noAssemble as never, hub: new StreamHub() })
+      // Free the one-running slot on main immediately — before any assertion can throw — so a
+      // leftover 'running' row never blocks a real turn on main while this test is still executing.
+      await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run!.id))
       expect(out).toMatchObject({ status: 'done', suppressed: true }) // silent wake — persists nothing
       expect(capturedInitial).toEqual(parseToolsetIds([...(storedBefore ?? []), 'images']))
       expect(capturedInitial).toContain('images') // sees it for this run...
       const [after] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, mainId!)).limit(1)
       expect(after!.activeToolsets).toEqual(storedBefore) // ...but it is never written back on main
     } finally {
+      await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run!.id)).catch(() => {})
+      await useDb().update(conversations).set({ activeToolsets: storedBefore }).where(eq(conversations.id, mainId!))
+    }
+  })
+
+  // M1 (final review, fix round 2): the guard above stops a job's OWN declared sets from
+  // sticking to main at turn START (via `initial`), but `onChange` — fired from inside
+  // handleTurn/runAgent whenever Bridget loads something mid-turn — used to union the WHOLE
+  // `loaded` set it was handed, main or not (run.ts's `loaded` snapshot always includes
+  // `initial`). So a main-thread job that declares `images` and the model separately loads
+  // `jobs` mid-turn persisted BOTH onto main, when only `jobs` was ever meant to survive the
+  // turn. Same main-row footprint/cleanup pattern as the test above: one directly-inserted
+  // already-'running' agent_runs row, freed and deleted by its own id, NO_REPLY so nothing
+  // persists to conversation_messages, and an unconditional restore of active_toolsets in
+  // `finally` wrapping runTurn itself (not just the assertions).
+  it('a main-thread run\'s onChange persists ids it loaded itself but drops the job-declared one (M1)', async () => {
+    const mainId = await findMain()
+    expect(mainId).toBeTruthy()
+    const [before] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, mainId!)).limit(1)
+    const storedBefore = before!.activeToolsets
+    // Deterministic baseline — 'images' and 'jobs' both absent going in — so "gains jobs, not
+    // images" is unambiguous no matter what the real main row already held.
+    await useDb().update(conversations).set({ activeToolsets: ['history'] }).where(eq(conversations.id, mainId!))
+
+    const [run] = await useDb().insert(agentRuns).values({
+      conversationId: mainId!, sessionKey: 'main', trigger: 'wake', profile: 'headless', wakeReason: 'rtest-main-toolsets-onchange',
+      status: 'running', claimedAt: new Date(), aliveAt: new Date(), owner: 'runner-test',
+      input: { text: 'main toolsets onChange check', modality: 'text', toolsets: ['images'] }
+    }).returning()
+    mainRunIds.push(run!.id)
+
+    const capture = async function* (_m: unknown, ctx: { toolsets?: { onChange?: (l: ToolsetId[]) => Promise<void> } }) {
+      // The fake runAgent stands in for run.ts: it reports the FULL loaded snapshot (initial ∪
+      // what it loaded itself), which is exactly what makes this bug reachable — 'images' rides
+      // along even though only 'jobs' was ever loaded mid-turn.
+      await ctx.toolsets?.onChange?.(['images', 'jobs'])
+      yield { type: 'text-delta', text: 'NO_REPLY' } as const
+      yield { type: 'done' } as const
+    }
+    try {
+      const out = await runTurn(run!, { runAgent: capture as never, assemble: noAssemble as never, hub: new StreamHub() })
+      await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run!.id))
+      expect(out).toMatchObject({ status: 'done', suppressed: true })
+      const [after] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, mainId!)).limit(1)
+      expect(after!.activeToolsets).toEqual(['history', 'jobs']) // gains 'jobs'; never the job-declared 'images'
+    } finally {
+      await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run!.id)).catch(() => {})
       await useDb().update(conversations).set({ activeToolsets: storedBefore }).where(eq(conversations.id, mainId!))
     }
   })

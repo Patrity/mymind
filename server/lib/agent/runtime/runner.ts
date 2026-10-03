@@ -206,14 +206,26 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     const profile = run.profile === 'headless' ? headlessProfile(run) : undefined
 
     // Cycle 78: on-demand toolsets — what this conversation already loaded + what a job declared.
-    const initialToolsets = parseToolsetIds([...(conv?.activeToolsets ?? []), ...(input.toolsets ?? [])])
+    const storedToolsets = parseToolsetIds(conv?.activeToolsets ?? [])
+    const jobDeclaredToolsets = parseToolsetIds(input.toolsets ?? [])
+    const initialToolsets = parseToolsetIds([...storedToolsets, ...jobDeclaredToolsets])
+    // M1 (final review, fix round 2): ids declared ONLY by this run's job (not already in the
+    // stored column before the turn started). run.ts's `loaded` snapshot is always the FULL
+    // current set — initial ∪ anything loaded mid-turn — so onChange's `loaded` argument carries
+    // these ids on EVERY fire, not just the first. On a main-thread job run that must never stick
+    // (controller ruling), so onChange below drops them from what it unions in. A set Bridget
+    // explicitly loads mid-turn that happens to equal one of these is acceptable collateral: the
+    // write can't tell "Bridget loaded it" apart from "it's in `loaded` only because the job
+    // declared it" — only `storedBefore`/`jobDeclared`, fixed for the whole turn, are known here.
+    const mainOnlyJobDeclared = conv?.kind === 'main' ? jobDeclaredToolsets.filter(id => !storedToolsets.includes(id)) : []
     const toolsets = {
       initial: initialToolsets,
       onChange: async (loaded: ToolsetId[]) => {
+        const persistable = mainOnlyJobDeclared.length ? loaded.filter(id => !mainOnlyJobDeclared.includes(id)) : loaded
         // A UNION, never an overwrite: runAgent fires onChange fire-and-forget, so two writes
         // from one step can land out of order and an overwrite could persist the smaller set.
         await useDb().update(conversations).set({
-          activeToolsets: sql`(select coalesce(array_agg(distinct x order by x), '{}'::text[]) from unnest(${conversations.activeToolsets} || ${sql.param(loaded)}::text[]) as x)`
+          activeToolsets: sql`(select coalesce(array_agg(distinct x order by x), '{}'::text[]) from unnest(${conversations.activeToolsets} || ${sql.param(persistable)}::text[]) as x)`
         }).where(eq(conversations.id, conversationId))
       }
     }
@@ -221,9 +233,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // onChange never fires this turn (nothing new loaded mid-turn). Skipped on the main thread
     // (controller ruling): a main-thread job's declared toolsets must NOT persist onto Bridget's
     // one permanent home thread — they still reach this run via `initial` above, just not written
-    // back. onChange (Bridget loading something herself mid-turn) still persists on main — that
-    // write happens inside handleTurn/runAgent below, untouched by this guard.
-    if (conv?.kind !== 'main' && initialToolsets.join() !== parseToolsetIds(conv?.activeToolsets ?? []).join()) {
+    // back. onChange (Bridget loading something herself mid-turn) still persists on main too, but
+    // (M1) with `persistable` above stripping the job's own declared-only ids back out first.
+    if (conv?.kind !== 'main' && initialToolsets.join() !== storedToolsets.join()) {
       // A failed persist must not fail the turn — logged (spec §6), same shape run.ts uses for
       // its own onChange failures, and then dropped.
       await toolsets.onChange(initialToolsets).catch((err: unknown) =>
