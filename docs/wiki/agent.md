@@ -4,7 +4,7 @@ status: shipped
 cycle: 73 (toolsets: cycle 78)
 updated: 2026-10-03
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
-mymind_hash: 27dc5f74025cb094fb9a85db154107988dde31de36fc54c88adec477344f629e
+mymind_hash: 2d4bcfeb80b212272d9cfc3e59302f27a91dc4cd1215cf79df211505eb7d6b65
 ---
 
 # Agent Surface (`/agent`)

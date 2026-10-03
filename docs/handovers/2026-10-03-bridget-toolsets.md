@@ -2,10 +2,10 @@
 title: Bridget toolsets — ~26 core tool schemas always visible, the rest loaded on demand and persisted per conversation (cycle 78)
 cycle: 78
 date: 2026-10-03
-status: built  # updated to deployed after CD
+status: deployed  # CD 37104787215 (6b21af8), 2026-10-03
 branch: feat/bridget-toolsets (worktree .claude/worktrees/feat+bridget-toolsets, base 18d015c)
-merged: false
-deployed: false
+merged: true
+deployed: true
 specs:
   - ../superpowers/specs/2026-10-03-bridget-toolsets-design.md
 plans:
@@ -16,7 +16,7 @@ wiki:
   - ../wiki/agent-runtime.md
 migrations:
   - 0066 conversations gains active_toolsets text[] not null default '{}' (additive)
-migrations_run_on_prod: false
+migrations_run_on_prod: true  # 0066 verified in information_schema
 next: cycle 79 — connections + Google mail/calendar (better-auth linkSocial, multi-account)
 ---
 
@@ -49,7 +49,7 @@ schema, approval or headless classification changed.
 - Gates on the branch: typecheck 0; `pnpm test` 3127 passed / 1 skipped; `pnpm test:db` 872 passed (after the final-review fix wave).
 - Mutation checks: prepareStep scan, execute-hook auto-load (maxSteps:1 case), `/clear` reset, union-vs-overwrite, main-thread job persistence — each went red when broken.
 - Live (dev, port 3011, real model): new thread "What did I work on in Claude Code in the last two days?" → `load_toolsets(history)` → `search_sessions`/`search_messages`; `active_toolsets = ['history']`; run done.
-- Live images pair (dev): new thread "Generate an image of a lighthouse at dusk" → `load_toolsets(images)` → `generate_image`; follow-up "make it night" → `edit_image` directly, **no second load**; `active_toolsets = ['images']`. Generation itself failed on dev (`image generation not configured` — dev has no ComfyUI URL); render is checked on prod after deploy.
+- Live images pair (dev): new thread "Generate an image of a lighthouse at dusk" → `load_toolsets(images)` → `generate_image`; follow-up "make it night" → `edit_image` directly, **no second load**; `active_toolsets = ['images']`. Generation itself failed on dev (`image generation not configured` — dev has no ComfyUI URL); render to be confirmed with Tony's first prod image request (owed).
 - Live core-only regression (dev): new thread "what are my open tasks…" → only `search_tasks`, `active_toolsets = []`, answer rendered (screenshot checked).
 
 ## Known limits / follow-ups
@@ -59,3 +59,8 @@ schema, approval or headless classification changed.
 - `self-improvement-digest` seed calls `list_improvements` (on demand) — auto-loads on first use.
 - The dev reasoning head (rig :8004) was down during validation (existing task); dev failed over.
 - Deferred minors (SDD ledger): stored order alphabetical vs load order; `ctx.toolsets` type repeated inline in 3–4 places; the maxSteps:1 test duplicates the `run()` helper; forced-final no-marker follow-up still sends all schemas with `toolChoice: 'none'`.
+
+## Deploy (2026-10-03)
+- CD 37104787215 on 6b21af8: success. Prod `/api/health` 200 (in-LXC and external), bundle contains `load_toolsets`, `conversations.active_toolsets` present with default `'{}'::text[]`, 0 journal errors in the 10 minutes after cutover.
+- Owed: one real prod turn that loads a toolset (e.g. an image request) — check `select active_toolsets from conversations order by updated_at desc limit 1`.
+- Wiki mirrored: `agent.md` (hash 2d4bcfeb…). `agent-jobs.md` / `agent-runtime.md` have no MyMind mirror yet (standing backlog task 4dcac88d).
