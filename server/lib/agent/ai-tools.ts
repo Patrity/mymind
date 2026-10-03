@@ -5,6 +5,7 @@ import type { AgentTool, ToolContext, ApprovalRequest, ToolStartEvent, ToolResul
 import { publishActivity } from './bus'
 import { registerUndo } from './undo'
 import { withSpan } from '../observability/record'
+import type { ToolsetId } from './toolsets'
 
 export interface RunHooks {
   signal: AbortSignal
@@ -12,6 +13,10 @@ export interface RunHooks {
   attachmentImageIds?: string[]
   runId?: string
   onEvent: (e: ToolStartEvent | ToolResultEvent | SubagentEvent) => void
+  /** Cycle 78: fires first thing on every call — run.ts auto-loads the tool's toolset. */
+  onToolCalled?: (name: string) => void
+  /** Cycle 78: handed to tools as ctx.loadToolsets (load_toolsets uses it). */
+  loadToolsets?: (ids: ToolsetId[]) => ToolsetId[]
 }
 
 function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
@@ -24,13 +29,16 @@ function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): Appro
 
 /** Adapt the agent tool registry into an AI SDK ToolSet (execute = gate + handler + bus + undo). */
 export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
-  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId }
+  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets }
   const set: ToolSet = {}
   for (const t of registry) {
     set[t.name] = tool({
       description: t.description,
       inputSchema: z.object(t.schema),
       execute: async (input: Record<string, unknown>, opts?: { toolCallId?: string }) => {
+        // FIRST, before redaction/approval: the call happened, so its toolset becomes visible
+        // even if the call is then denied — the model evidently wants that set.
+        hooks.onToolCalled?.(t.name)
         const callId = opts?.toolCallId ?? ''
         // Per-call context: a subagent's nested calls are keyed to THIS call's id, which
         // only exists here — the shared `ctx` above is built once for the whole toolset.

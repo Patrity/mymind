@@ -89,3 +89,12 @@ describe('skills index (Tier-1)', () => {
     expect(renderSkillsIndex([])).toBe('')
   })
 })
+
+describe('composePrompt — toolset directory', () => {
+  it('renders the toolset directory after the tool rules and before skills', () => {
+    const p = composePrompt({ persona: 'P', speak: false, toneLine: 't', toolsetDirectory: 'TOOLSETS — x', skillsIndex: 'SKILLS — y' })
+    expect(p).toContain('TOOLSETS — x')
+    expect(p.indexOf('TOOLSETS — x')).toBeLessThan(p.indexOf('SKILLS — y'))
+    expect(p.indexOf('SHELL —')).toBeLessThan(p.indexOf('TOOLSETS — x'))
+  })
+})

@@ -11,6 +11,7 @@ import { recordEvent } from '../observability/record'
 import { redactImageUrlsForModel } from './image-embed'
 import { applyHistoryPolicy, toolBlocksFor } from './tool-history'
 import { spliceSteers, type SteerMark } from './runtime/steer'
+import { activeToolNames, directoryText, parseToolsetIds, type ToolsetId } from './toolsets'
 
 export type { AgentContentPart } from './types'
 import type { AgentContentPart } from './types'
@@ -155,31 +156,50 @@ type StreamTextFn = (args: never) => { fullStream: AsyncIterable<unknown> }
 export interface RunDeps {
   streamText?: StreamTextFn
   tools?: AgentTool[]
-  buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; wake?: { reason: string } }) => Promise<string>
+  buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; wake?: { reason: string }; toolsetDirectory?: string }) => Promise<string>
   /** Test-only override for the reasoning chain (model + registry modelDefId pairs), used
    *  in place of reasoningChain() when present. */
   chain?: { model: unknown; modelDefId: string }[]
 }
 
-// The agent is ALWAYS fully armed: the whole profile toolset (incl. exec) is
-// exposed every turn. Safety lives in the approval gate (dangerous tools pause
-// for allowlist-or-approval; no approval channel → auto-deny), not in tool
-// stripping — the old dual-enable lever (powerful profile + exec cookie) is gone.
+// Every tool in the profile is always AVAILABLE (the full ToolSet is built each run).
+// Cycle 78: only core + loaded toolsets are VISIBLE per step (prepareStep → activeTools);
+// a call to a hidden tool still runs and loads its set. Safety lives in the approval gate
+// (dangerous tools pause for allowlist-or-approval; no approval channel → auto-deny), not in
+// tool stripping.
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void> } },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
   const profile = ctx.profile ?? bridgetProfile
   const registry = deps.tools ?? profile.tools
   const buildPrompt = deps.buildSystemPrompt ?? realBuildSystemPrompt
+
+  // Cycle 78: on-demand toolsets. Absent ctx.toolsets (subagents, legacy chat.post) = every tool visible.
+  const loaded = new Set<ToolsetId>(parseToolsetIds(ctx.toolsets?.initial ?? []))
+  const setOf = new Map(registry.map(t => [t.name, t.toolset]))
+  const loadToolsets = (ids: ToolsetId[]): ToolsetId[] => {
+    const added = parseToolsetIds(ids).filter(id => !loaded.has(id))
+    if (!added.length) return []
+    for (const id of added) loaded.add(id)
+    const snapshot = [...loaded]
+    // Fire-and-forget: losing one write only costs a reload next turn (spec §6).
+    Promise.resolve().then(() => ctx.toolsets?.onChange?.(snapshot)).catch((err: unknown) =>
+      recordEvent({ kind: 'tool', name: 'toolsets:persist', status: 'error', severity: 'warn', error: { message: (err as Error).message } }))
+    return added
+  }
+  const loadForTool = (name: string) => { const id = setOf.get(name); if (id) loadToolsets([id]) }
+  const visibleTools = (): string[] | undefined => ctx.toolsets ? activeToolNames(registry, loaded) : undefined
+
   let channel = createChannel()
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }) })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
-  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context, wake: ctx.wake })
+  // The toolset directory is a turn-start snapshot; sets loaded mid-turn show up as tools, not lines.
+  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context, wake: ctx.wake, toolsetDirectory: ctx.toolsets ? directoryText(registry, loaded) : undefined })
   const maxSteps = ctx.maxSteps ?? VOICE_TUNING.agent.maxSteps
 
   publishActivity({ type: 'state', state: 'thinking' })
@@ -225,7 +245,7 @@ export async function* runAgent(
         // running are drained at each step boundary and spliced in at the point they arrived.
         // (Live failure this final-step guarantee still covers: research_web burned all 10
         // steps on searches → stream ended → "no report".)
-        prepareStep: async ({ stepNumber, messages }: { stepNumber: number; messages: unknown[] }) => {
+        prepareStep: async ({ stepNumber, messages, steps }: { stepNumber: number; messages: unknown[]; steps?: Array<{ content?: Array<{ type?: string; toolName?: string }> }> }) => {
           if (ctx.drainSteer) {
             // Task 7's drainSteer hits Postgres — a rejection here must not fail the whole
             // running turn. Treat it as "no steers this step" and keep going; the next step
@@ -237,9 +257,13 @@ export async function* runAgent(
               console.warn('[runAgent] drainSteer failed — continuing without steers:', err)
             }
           }
-          const out: { toolChoice?: 'none'; messages?: never } = {}
+          // An invalid call never reaches execute(); load its set here so the model sees the schema next step.
+          for (const p of steps?.at(-1)?.content ?? []) if ((p.type === 'tool-call' || p.type === 'tool-error') && p.toolName) loadForTool(p.toolName)
+          const out: { toolChoice?: 'none'; messages?: never; activeTools?: string[] } = {}
           if (stepNumber >= maxSteps - 1) out.toolChoice = 'none'
           if (steerMarks.length) out.messages = spliceSteers(messages, steerMarks) as never
+          const vis = visibleTools()
+          if (vis) out.activeTools = vis
           return Object.keys(out).length ? out : undefined
         },
         abortSignal: ctx.signal
@@ -308,6 +332,7 @@ export async function* runAgent(
         messages: [...spliceSteers([...modelMessages, ...prior], steerMarks), ...nudge] as never,
         tools,
         ...(sawTextToolCallMarker ? {} : { toolChoice: 'none' as const }),
+        ...(sawTextToolCallMarker && visibleTools() ? { activeTools: visibleTools() } : {}),
         temperature: VOICE_TUNING.agent.temperature,
         abortSignal: ctx.signal
       })

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { classifyForHeadless, headlessTools } from '../server/lib/agent/runtime/gate'
 import { bridgetProfile } from '../server/lib/agent/profile'
+import { loadToolsetsTool } from '../server/lib/agent/tools/load-toolsets'
 import type { AgentTool } from '../server/lib/agent/types'
 import type { HeadlessClass } from '../server/lib/agent/runtime/gate'
 
@@ -15,6 +16,10 @@ describe('headless gate', () => {
   })
   it.each(['search_memories', 'read_document', 'web_fetch', 'use_skill', 'research_web'])('%s runs', (n) => {
     expect(classifyForHeadless(bridgetProfile.tools.find(t => t.name === n)!)).toBe('run')
+  })
+  it('load_toolsets (cycle 78) runs headless — it is a read', () => {
+    expect(classifyForHeadless(loadToolsetsTool)).toBe('run')
+    expect(bridgetProfile.tools.map(t => t.name)).toContain('load_toolsets')
   })
   it.each(['save_memory', 'create_task', 'quick_capture', 'save_document'])('%s (append) runs', (n) => {
     expect(classifyForHeadless(bridgetProfile.tools.find(t => t.name === n)!)).toBe('run')
@@ -52,6 +57,8 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   list_jobs: 'run', get_job: 'run',
   list_reviews: 'run',
   list_improvements: 'run',
+  // load_toolsets (cycle 78): changes which tools the model sees this run — touches no data
+  load_toolsets: 'run',
   // create-kind, but pure append (nothing existing is touched) — safe to run headless
   save_memory: 'run', create_task: 'run', create_project: 'run', quick_capture: 'run',
   generate_image: 'run', save_document: 'run',

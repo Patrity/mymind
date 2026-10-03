@@ -8,4 +8,8 @@ describe('MCP ↔ agent registry parity', () => {
     const safeTools = agentTools.filter(t => !t.dangerous).map(t => t.name).sort()
     expect(mcpToolNames().sort()).toEqual(safeTools)
   })
+  it('never exposes load_toolsets (cycle 78) — MCP clients already see every tool', () => {
+    expect(agentTools.map(t => t.name)).not.toContain('load_toolsets')
+    expect(mcpToolNames()).not.toContain('load_toolsets')
+  })
 })

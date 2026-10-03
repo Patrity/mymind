@@ -35,6 +35,8 @@ export interface ToolContext {
   /** A tool that runs its own agent loop (a subagent) reports each nested call here; ai-tools
    *  re-emits it as a `subagent-event` keyed to THIS call's toolCallId. */
   onNestedEvent?: (e: NestedToolEvent) => void
+  /** Cycle 78: load on-demand toolsets for the rest of this run (+ persisted by the runner). Absent on MCP. */
+  loadToolsets?: (ids: import('./toolsets').ToolsetId[]) => import('./toolsets').ToolsetId[]
 }
 
 export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }

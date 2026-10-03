@@ -15,14 +15,14 @@ export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }>
   tasks: { core: true, description: 'tasks and quick capture' },
   web: { core: true, description: 'web search and research subagents' },
   core: { core: true, description: 'shell, skills, toolset loading' },
-  history: { core: false, description: "Tony's Claude Code sessions and past messages: what he did, when, in which project" },
+  history: { core: false, description: 'when Tony asks what he did, worked on, or said before — Claude Code sessions and past messages' },
   projects: { core: false, description: 'look up, create or edit projects' },
   'doc-admin': { core: false, description: 'move, delete or sync documents' },
   images: { core: false, description: 'generate a new image or edit the last one' },
   jobs: { core: false, description: 'create, edit, run or schedule background jobs and wake-ups' },
   'skill-admin': { core: false, description: 'create, edit or delete skills' },
   reviews: { core: false, description: "list or decide items in Tony's /review queue" },
-  improvements: { core: false, description: 'what Bridget has learned or changed about herself' },
+  improvements: { core: false, description: 'when Tony asks what Bridget has learned or changed about herself' },
   channels: { core: false, description: 'send Tony a message over iMessage or email' }
 }
 
