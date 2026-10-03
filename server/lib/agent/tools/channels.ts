@@ -61,6 +61,7 @@ export const channelTools: AgentTool[] = [
     name: 'send_message',
     description: 'Text or email Tony — the only person this can reach (there is no address parameter; the target is whatever he configured as his default in Settings → Channels). Use to reach him outside the current conversation, e.g. from a background job or a long-running task. Limited to 20 sends per hour per channel. On failure (channel not set up, no default target, or rate limit) returns ok:false with a plain-English error — say so rather than retrying.',
     kind: 'create',
+    toolset: 'channels',
     schema: {
       channel: z.enum(['imessage', 'email']).describe('Which channel to send through'),
       text: z.string().min(1).max(4000).describe('Message body'),

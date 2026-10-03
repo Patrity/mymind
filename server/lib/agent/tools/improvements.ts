@@ -92,6 +92,7 @@ export const listImprovementsTool: AgentTool = {
   name: 'list_improvements',
   description: "List self-improvements — changes the reflector made or proposed to your own skills, jobs, or Tony's profile. Each item has id, kind (e.g. 'skill.edit', 'job.disable', 'profile.edit'), target, status ('applied' | 'pending_review' | 'rejected' | 'dropped' | 'conflict'), your stated reason, revisionId (once applied), createdAt, and a link: the target's page once applied, `/review` while pending (a conflict's review item is still pending too), or null for a rejected/dropped proposal. `pendingReview` is the live count of everything still awaiting a decision on /review, regardless of `since`. Defaults to today (agent timezone) — pass `since` (ISO datetime) to widen the window.",
   kind: 'read',
+  toolset: 'improvements',
   schema: {
     since: z.string().min(1).optional().describe('ISO datetime — only improvements created at or after this. Defaults to the start of today in the agent timezone.'),
     limit: z.number().int().min(1).max(100).default(30).describe('Max items to return (1-100, default 30)')

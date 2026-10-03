@@ -27,7 +27,7 @@ async function runWithGatedTool() {
   let release!: () => void
   const gate = new Promise<void>((r) => { release = r })
   const tool: AgentTool = {
-    name: 'slow', description: 'slow', kind: 'read', schema: {},
+    name: 'slow', description: 'slow', kind: 'read', toolset: 'core', schema: {},
     handler: async (_input, ctx) => {
       // A real subagent emits its nested events OVER TIME, after awaits, while the parent
       // tool is still running — not synchronously before its first await. Model that here:
@@ -97,7 +97,7 @@ describe('runAgent steering — real SDK step boundaries', () => {
       }
     })
     const searchDocs: AgentTool = {
-      name: 'search_docs', description: 'search', kind: 'read', schema: {},
+      name: 'search_docs', description: 'search', kind: 'read', toolset: 'docs', schema: {},
       handler: async () => ({ result: { hits: 0 }, summary: 'no results' })
     }
     // Nothing queued yet at step 0's boundary; the steer lands at the boundary AFTER step 0's

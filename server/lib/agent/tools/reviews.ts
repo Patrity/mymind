@@ -34,6 +34,7 @@ export const listReviewsTool: AgentTool = {
   name: 'list_reviews',
   description: "List Tony's pending /review items, newest decisions first (conflicts, triage, proposed actions, self-improvements), then unreviewed memories. Each item has an id, kind, a one-line summary, a kind-specific detail, and `choices`: the exact outcomes that item supports (id, label, description). Pass `kind` to narrow to one kind.",
   kind: 'read',
+  toolset: 'reviews',
   schema: {
     kind: z.string().min(1).max(60).optional().describe('Only items of this kind, e.g. "self-improvement", "memory-supersede", "memory-unreviewed"'),
     limit: z.number().int().min(1).max(50).default(20).describe('How many items to return (1–50, default 20)')
@@ -54,6 +55,7 @@ export const decideReviewTool: AgentTool = {
   description: "Decide one pending /review item for Tony. `choice` must be one of that item's `choices` ids from list_reviews (e.g. approve / reject, or keep-both / archive-old / archive-new / archive-both for a memory conflict). Tony confirms every call before it runs. Returns ok:true with a summary, or ok:false with a reason (not_pending, unknown_kind, invalid_choice, conflict, apply_failed) and a plain explanation — relay it rather than retrying blindly.",
   kind: 'destructive',
   dangerous: true,
+  toolset: 'reviews',
   schema: {
     id: z.union([z.uuid(), z.string().min(1).max(100)]).describe('The review item id from list_reviews'),
     choice: z.string().min(1).max(40).describe("One of the item's choice ids"),

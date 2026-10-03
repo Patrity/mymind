@@ -71,6 +71,7 @@ export const jobTools: AgentTool[] = [
     name: 'list_jobs',
     description: 'List all scheduled jobs: slug, enabled, a plain-English description of the trigger, next run time, and last outcome. Use get_job for the full content of one.',
     kind: 'read',
+    toolset: 'jobs',
     schema: {},
     handler: async () => {
       const jobs = await listJobs()
@@ -81,6 +82,7 @@ export const jobTools: AgentTool[] = [
     name: 'get_job',
     description: 'Get one job by slug: its full markdown content, status (enabled, parse error, last run/outcome), and its next 5 scheduled fire times. On failure returns ok:false with error "not_found".',
     kind: 'read',
+    toolset: 'jobs',
     schema: { slug: z.string().describe('Job slug') },
     handler: async (a) => {
       const slug = a.slug as string
@@ -99,6 +101,7 @@ export const jobTools: AgentTool[] = [
     name: 'create_job',
     description: 'Create a new scheduled job from markdown (frontmatter + body — see an existing job with get_job for the shape: trigger, timezone, active_hours, model, thread, context, deliver, enabled). Goes live immediately if enabled:true. On failure returns ok:false with a validation or conflict error; nothing is written.',
     kind: 'create',
+    toolset: 'jobs',
     schema: {
       slug: z.string().min(1).describe('Job slug (lowercase letters/digits/hyphens)'),
       content: z.string().min(1).describe('Full job markdown: frontmatter + body')
@@ -132,6 +135,7 @@ export const jobTools: AgentTool[] = [
     name: 'edit_job',
     description: 'Edit an existing job. Either find/replace (`old_string`/`new_string`, unique match unless `replace_all` — like edit_document) or pass full `content` to replace the whole file. Re-validated and re-scheduled on save. On failure returns ok:false with error "not_found", "no_match", "ambiguous_match", "empty_old_string", "missing_args", or a validation/conflict message; nothing is written in any case.',
     kind: 'create',
+    toolset: 'jobs',
     schema: {
       slug: z.string().min(1).describe('Job slug'),
       old_string: z.string().optional().describe('Exact text to replace (must be unique unless replace_all)'),
@@ -197,6 +201,7 @@ export const jobTools: AgentTool[] = [
     name: 'delete_job',
     description: 'Delete a job. Free to call even in a background run (spec D2) — job management is Bridget\'s own upkeep, not a change to Tony\'s data. On failure returns ok:false with error "not_found".',
     kind: 'destructive',
+    toolset: 'jobs',
     schema: { slug: z.string().describe('Job slug') },
     handler: async (a, ctx) => {
       const slug = a.slug as string
@@ -224,6 +229,7 @@ export const jobTools: AgentTool[] = [
     name: 'run_job',
     description: 'Run a job right now, outside its schedule (schedule is untouched). Not available from inside a run that a job itself started. On failure or skip returns ok:false with error "not_found", "overlap" (previous run still going), "disabled", "invalid" (doesn\'t currently parse), or "refused_in_job_run".',
     kind: 'create',
+    toolset: 'jobs',
     schema: { slug: z.string().describe('Job slug') },
     handler: async (a, ctx) => {
       const slug = a.slug as string
@@ -257,6 +263,7 @@ export const jobTools: AgentTool[] = [
     name: 'schedule_wake',
     description: 'Schedule a one-off reminder/wake for yourself: creates an `at` job that fires once and then disables itself. `when` accepts an ISO datetime (with or without an offset — offset-less is wall-clock time in the default timezone), a relative time (`in 10m`, `in 2h`, `in 1d`), or `today HH:MM` / `tomorrow HH:MM`. Must be at least 5 minutes from now; at most 10 wakes may be scheduled per hour. On failure returns ok:false with error explaining why `when` was rejected.',
     kind: 'create',
+    toolset: 'jobs',
     schema: {
       when: z.string().min(1).describe('ISO datetime, "in <n>m|h|d", or "today|tomorrow HH:MM"'),
       prompt: z.string().min(1).describe('What to do/say when it fires'),

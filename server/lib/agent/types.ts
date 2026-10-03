@@ -2,6 +2,7 @@
 import type { ZodRawShape } from 'zod'
 import type { DisplayImage } from './image-embed'
 import type { UndoFn } from './undo'
+import type { ToolsetId } from './toolsets'
 
 /** A single content part in a multimodal agent message. */
 export type AgentContentPart =
@@ -56,6 +57,8 @@ export interface AgentTool {
   description: string
   schema: ZodRawShape // → OpenAI tool JSON schema AND MCP registration
   kind: ToolKind
+  /** Cycle 78: which toolset this tool belongs to (visibility only — see toolsets.ts). */
+  toolset: ToolsetId
   dangerous?: boolean // requires human approval before the handler runs
   /** Opt-in: a persisted "always allow" pattern may approve this dangerous tool without asking.
    *  Only exec sets it — decide_review (cycle 76) must be confirmed on every call. */

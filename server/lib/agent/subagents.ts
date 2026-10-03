@@ -47,6 +47,7 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
     name: spec.name,
     description: spec.description,
     kind: 'read',
+    toolset: 'web',
     schema: {
       task: z.string().min(1).describe('A specific, self-contained task for the subagent. It cannot see this conversation — include every fact it needs.'),
       context: z.string().optional().describe('Relevant facts from the conversation the subagent needs (names, constraints, prior findings).')

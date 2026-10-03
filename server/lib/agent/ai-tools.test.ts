@@ -21,6 +21,7 @@ function makeReadTool(overrides: Partial<AgentTool> = {}): AgentTool {
     description: 'test tool',
     schema: { val: z.string() },
     kind: 'read',
+    toolset: 'core',
     dangerous: true,
     handler: async () => ({ result: { ok: true }, summary: 'done' }),
     ...overrides,
