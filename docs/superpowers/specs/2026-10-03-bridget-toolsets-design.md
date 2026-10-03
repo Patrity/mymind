@@ -2,7 +2,7 @@
 title: "Bridget toolsets — a small always-on core, everything else loaded on demand (cycle 78)"
 cycle: 78
 date: 2026-10-03
-status: spec
+status: shipped  # see handover 2026-10-03-bridget-toolsets.md for the 5 deviations
 supersedes: null
 builds_on: 2026-09-30-bridget-self-improvement-design.md
 ---

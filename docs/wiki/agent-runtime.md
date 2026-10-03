@@ -2,7 +2,7 @@
 title: Agent Runtime (server-owned turns, main thread, wake)
 status: built
 cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74; `reply_to`, iMessage approvals and channel deliveries: cycle 75)
-updated: 2026-09-30
+updated: 2026-10-03
 ---
 
 # Agent Runtime
@@ -50,6 +50,7 @@ Wiring: `server/plugins/agent-runtime.ts` runs `recoverOnBoot()`, installs/reval
 
 - `conversations.kind`: `'thread' | 'main'`. The partial unique index `conversations_one_main`
   allows at most one main.
+- `conversations.active_toolsets` (cycle 78, migration 0066): `text[]`, the on-demand toolsets loaded in this conversation. Seeds each turn's visible tools; written by a set-union from `runAgent`'s `onChange`; reset by `/clear`. See [agent.md → Toolsets](agent.md#toolsets-cycle-78).
 - `conversations.summarized_through`: the summary covers rows with `created_at` ≤ this.
   It is written from the last folded row's Postgres `created_at`, never the app clock.
 - `conversation_messages.role` gains `'event'`. The new `origin` column holds values like

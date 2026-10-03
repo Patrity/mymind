@@ -1,8 +1,8 @@
 ---
 title: Agent Surface (/agent)
 status: shipped
-cycle: 73
-updated: 2026-09-28
+cycle: 73 (toolsets: cycle 78)
+updated: 2026-10-03
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
 mymind_hash: 27dc5f74025cb094fb9a85db154107988dde31de36fc54c88adec477344f629e
 ---
@@ -33,8 +33,8 @@ The SSE `POST /api/agent/chat` still exists but has **no caller** (stateless, un
 
 ## Entry point (`runAgent`)
 
-`runAgent(messages, ctx, deps)` where `ctx = { signal, speak?, profile?, context?, maxSteps?, modelDefId? }`:
-- `profile` (`server/lib/agent/profile.ts`) — `AgentProfile = { id, tools, personaKey }`. **ONE always-armed profile since cycle 42**: `bridgetProfile` = the full `agentTools` registry **+ `execTool` + the subagent tools** (`research_web`, `search_brain`). The old `powerful` profile and the `agent-exec-enabled` cookie/switch are gone — safety is the approval gate (dangerous tools pause for allowlist-or-approval; channels without an approval UI auto-deny).
+`runAgent(messages, ctx, deps)` where `ctx = { signal, speak?, profile?, context?, maxSteps?, modelDefId?, toolsets? }`:
+- `profile` (`server/lib/agent/profile.ts`) — `AgentProfile = { id, tools, personaKey }`. **ONE profile since cycle 42**: `bridgetProfile` = the full `agentTools` registry **+ `execTool` + the subagent tools** (`research_web`, `search_brain`) **+ `decide_review` + `load_toolsets`** (cycle 78). Every tool is always *available*; since cycle 78 only core + loaded toolsets are *visible* to the model per step — see [Toolsets](#toolsets-cycle-78). The old `powerful` profile and the `agent-exec-enabled` cookie/switch are gone — safety is the approval gate (dangerous tools pause for allowlist-or-approval; channels without an approval UI auto-deny).
 - `speak` — replaces the old `voice` boolean; drives TTS + prompt mode.
 - `context` — the per-turn context block: live state (projects + open tasks, rebuilt EVERY turn since cycle 42) **plus proactive memory injection** — `buildMemoryContext(userText)` (`server/lib/agent/context.ts`) retrieves the top-5 relevant memories for the user's message (relevance floor 0.2, 1.5s timeout, never throws) and injects them as a labeled background block. Wired at the WS boundary (`ws.ts` passes it into `handleTurn`); tests omit it.
 - `maxSteps` — optional per-run override of the step cap (subagents pass their own budget).
@@ -44,6 +44,22 @@ The SSE `POST /api/agent/chat` still exists but has **no caller** (stateless, un
 
 > **Tool-call-as-text recovery (cycle 49):** if the model streams a `<tool_call>`/`<function=` marker as text with no real tool-call (vLLM streaming hermes bug, [vllm#31871](https://github.com/vllm-project/vllm/issues/31871)), `run.ts` re-runs once with tools allowed + a corrective nudge (`reasoning:agent-recovered-textcall`), distinct from the no-text `reasoning:agent-forced-final` path.
 - **Tool history across turns (cycle 43):** the model sees its own prior tool calls and results, not just the prose it produced afterward — closing the gap where `getAgentHistory` and live in-connection history dropped everything but `role`+`content`. See [Tool history](#tool-history-cycle-43) below.
+
+## Toolsets (cycle 78)
+
+Every `AgentTool` carries a required `toolset` tag (`server/lib/agent/toolsets.ts` is the registry). **Core** sets are always visible; **on-demand** sets are listed one line each in a `TOOLSETS` block of the system prompt and become visible once loaded. Visibility only: the full ToolSet is still built every run, so tool behaviour, approvals, undo and the headless gate are unchanged.
+
+| Tier | Toolsets (tools) |
+|---|---|
+| core (~26 schemas) | `memory` (search/get_recent/save/forget), `docs` (search_docs, search_passages, list, read, get, grep, save, edit, edit_section, update), `tasks` (search/create/edit/delete, quick_capture), `web` (web_search, web_fetch, research_web, search_brain), `core` (exec, use_skill, load_toolsets) |
+| on demand | `history` (search_sessions, read_session, search_messages, read_around_message), `projects` (search/get/create/edit), `doc-admin` (move/delete/sync), `images` (generate/edit), `jobs` (all 7), `skill-admin` (create/edit/delete), `reviews` (list_reviews, decide_review), `improvements` (list_improvements), `channels` (send_message) |
+
+- **Loading:** `load_toolsets({ ids })` (core, `kind: read`, not on `/api/mcp`) adds sets from the next step. `runAgent` returns `activeTools` from its `prepareStep` hook (AI SDK v6 filters only what is *sent*; tool-call parsing uses the full set).
+- **Auto-load:** a call to a hidden tool still runs and loads its set (execute hook); an *invalid* call to a hidden tool loads its set via a `prepareStep` scan of the last step, so the model sees the schema on its retry.
+- **Persistence:** `ctx.toolsets = { initial, onChange }`. The runner (`runtime/runner.ts`) seeds `initial` from `conversations.active_toolsets` + the job's `toolsets:` frontmatter, and `onChange` persists with an order-independent set **union** (fire-and-forget; a failure logs `toolsets:persist` and the turn continues). Job-declared sets are not persisted onto **main**. `/clear` resets the column.
+- **No `ctx.toolsets`** (subagents, legacy `chat.post.ts`) = every tool visible, as before.
+- **Measured:** 53 tools / 39.5k chars (~9.9k tokens) of schemas per step → 26 / 18.7k chars (~4.7k tokens).
+- **Known limits:** main accumulates loaded sets until `/clear`; a `/clear` racing a still-running turn can be re-populated by that turn's late write; rolling back below cycle 78 makes any job using `toolsets:` fail to parse.
 
 ## Tool history (cycle 43)
 
@@ -481,7 +497,7 @@ The toolbar's full-screen button (Escape to leave) covers the panels with a fixe
 
 > **Nuxt routing note:** the page lives at `pages/agent/index.vue` (not `pages/agent.vue`) so `/agent` and `/agent/history` are **sibling** routes. With `pages/agent.vue` + `pages/agent/history.vue`, Nuxt nests `/agent/history` under `agent.vue`, which has no `<NuxtPage/>` outlet, so the history route renders the agent shell. (Caught by E2E; typecheck/build pass either way.)
 
-## Tool registry (current — 20 tools)
+## Tool registry (historical — 20 tools; the live list is `bridgetProfile.tools`, grouped by toolset — see [Toolsets](#toolsets-cycle-78))
 
 | Tool | Kind | Notes |
 |---|---|---|

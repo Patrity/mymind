@@ -2,7 +2,7 @@
 title: Agent Jobs (markdown-configured schedules and triggers)
 status: shipped  # cycle 74 deployed 2026-09-29; the reliability pass (0059-0062) is built, not deployed
 cycle: 74 (`deliver` targets: cycle 75)
-updated: 2026-09-30  # cycle 76: digest seed, engagement signals, nightly tuning (built, unmerged)
+updated: 2026-10-03  # cycle 78: toolsets key; cycle 76: digest seed, engagement signals, nightly tuning (built, unmerged)
 ---
 
 # Agent Jobs
@@ -32,6 +32,7 @@ model: default                 # or a registry model id
 thread: main                   # main | isolated
 context: light                 # light | full
 deliver: [auto, imessage]      # app | auto | imessage | email (cycle 75); default [auto]
+toolsets: [projects]           # on-demand toolsets to load at run start (cycle 78); default []
 enabled: true
 filter: { project: mymind }    # event jobs only: key/value match on the event payload
 ---
@@ -49,6 +50,7 @@ If nothing matters, reply NO_REPLY.
 | `thread` | `main` | `isolated` wakes into **one side thread per slug**, titled `wake: <slug>` and reused fire after fire (see [Scheduling](#scheduling)). |
 | `context` | `full` | `light` = the last **4** turns of history (after the summary tier). |
 | `deliver` | `[auto]` (cycle 75; was `[app]`) | A non-empty list of `app`, `auto`, `imessage`, `email`. Anything else is a parse error. See [Delivery](#delivery-cycle-75). An **enabled** job may name `imessage`/`email` only while that channel is enabled in Settings → Channels (checked on create, save and enable, not at boot). |
+| `toolsets` | `[]` (cycle 78) | On-demand toolset ids (`history`, `projects`, `doc-admin`, `images`, `jobs`, `skill-admin`, `reviews`, `improvements`, `channels`) loaded at the start of each run, so the job need not discover them. Unknown or core ids are a parse error listing the allowed ids. Carried job → `wakeRequestFor` → `RunInput.toolsets` → runner. Not persisted onto the main thread. |
 | `enabled` | `false` | Boolean. The UI switch rewrites just this line. |
 | `filter` | none | A flat map; values are coerced to strings. |
 
