@@ -53,13 +53,13 @@ vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
 
 import { useDb } from '../server/db'
 import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelApprovals, channelDeliveries } from '../server/db/schema'
-import type { ToolsetId } from '../server/lib/agent/toolsets'
+import { parseToolsetIds, type ToolsetId } from '../server/lib/agent/toolsets'
 import { startFakeBlueBubbles } from './fixtures/fake-bluebubbles'
 import { FAILURE_NOTE } from '../server/lib/channels/deliver'
 import { createJob } from '../server/lib/agent/jobs/store'
 import { channelPresence } from '../server/lib/channels/presence'
 import { createRun, claimNextRun } from '../server/lib/agent/runtime/runs'
-import { resolveSession } from '../server/lib/agent/runtime/sessions'
+import { resolveSession, findMain } from '../server/lib/agent/runtime/sessions'
 import { runTurn } from '../server/lib/agent/runtime/runner'
 import { StreamHub } from '../server/lib/agent/runtime/stream'
 import { abortRun } from '../server/lib/agent/runtime/aborts'
@@ -70,6 +70,12 @@ import { jobOutcomeOf } from '../server/lib/agent/jobs/outcome'
 import { and, eq, inArray, like } from 'drizzle-orm'
 
 const convIds: string[] = []
+// Fix round 1, controller ruling 3: there is at most one `kind: 'main'` conversation in this DB
+// (conversations_one_main), so the main-thread guard test below necessarily runs against the
+// REAL main row rather than a throwaway one. Its one agent_runs row is tracked HERE — by id,
+// never by conversationId — and deleted by id only; conversations.id is never in this list and
+// the real main row is never deleted or bulk-touched.
+const mainRunIds: string[] = []
 // Runs here are never finished (runTurn leaves that to its caller), so a headless run stays
 // 'running' and would block the next wake claim at the real 1-slot limit.
 const HEADLESS_TEST_SLOTS = 1000
@@ -81,6 +87,7 @@ afterAll(async () => {
     await db.delete(agentConfigRevisions).where(and(eq(agentConfigRevisions.targetKind, 'job'), inArray(agentConfigRevisions.targetId, jobs.map(j => j.id))))
     await db.delete(agentJobs).where(inArray(agentJobs.id, jobs.map(j => j.id)))
   }
+  if (mainRunIds.length) await db.delete(agentRuns).where(inArray(agentRuns.id, mainRunIds))
   await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
   await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
   await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
@@ -170,6 +177,80 @@ describe('runTurn', () => {
 
     const [row] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, conversationId)).limit(1)
     expect(row!.activeToolsets).toEqual(['history', 'images', 'jobs'])
+  })
+
+  // Fix round 1, controller ruling 1: the test above writes a superset THEN a stale subset in
+  // one call (and the previous round's test wrote a strict superset second) — an OVERWRITE
+  // (`set({ activeToolsets: loaded })`) would also pass both of those, because the last write
+  // in each case already contains everything expected. This test is the one that can actually
+  // tell a union from an overwrite: conversation A writes big-then-stale (the LAST write is the
+  // smaller set — an overwrite would lose 'jobs'), conversation B writes the reverse order (the
+  // LAST write is the bigger set — passes either way, included for the "either order" half of
+  // the ruling). See the mutation-check evidence in task-3-report.md: reverting runner.ts's
+  // union SQL to a plain overwrite turns conversation A's assertion red.
+  it('onChange persists an order-independent UNION — a stale write after a fuller one does not shrink the stored set', async () => {
+    const sequence = (writes: ToolsetId[][]) => async function* (_m: unknown, ctx: { toolsets?: { onChange?: (l: ToolsetId[]) => Promise<void> } }) {
+      for (const w of writes) await ctx.toolsets?.onChange?.(w)
+      yield { type: 'text-delta', text: 'ok ' } as const
+      yield { type: 'done' } as const
+    }
+    const storedOf = async (id: string) => {
+      const [row] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, id)).limit(1)
+      return row!.activeToolsets
+    }
+
+    const a = await queued('toolsets union big-then-stale')
+    await runTurn(a.run, { runAgent: sequence([['history', 'images', 'jobs'], ['history', 'images']]) as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(await storedOf(a.conversationId)).toEqual(['history', 'images', 'jobs'])
+
+    const b = await queued('toolsets union stale-then-big')
+    await runTurn(b.run, { runAgent: sequence([['history', 'images'], ['history', 'images', 'jobs']]) as never, assemble: noAssemble as never, hub: new StreamHub() })
+    expect(await storedOf(b.conversationId)).toEqual(['history', 'images', 'jobs'])
+  })
+
+  // Fix round 1, controller ruling 3: a job's declared toolsets must not persist onto the main
+  // thread (Bridget's one permanent home) — they still reach `ctx.toolsets.initial` for this
+  // run, just never get written back. conversations_one_main means there is exactly one
+  // `kind: 'main'` row in this whole DB, so this test necessarily runs against the REAL main
+  // conversation rather than a throwaway one. Footprint kept to a minimum: one directly-inserted
+  // (already 'running', so it can never claim/steal a real queued turn) agent_runs row, freed
+  // and deleted by its own id right away (never by conversationId); a NO_REPLY reply so zero
+  // conversation_messages rows are ever persisted and nothing is published; and an unconditional
+  // restore of active_toolsets to its pre-test value in a `finally` — the property under test
+  // IS that this column doesn't change, so if a regression reintroduces the bug, this cleans up
+  // after it too rather than leaving 'images' stuck on Tony's real home thread.
+  it('a main-thread run gets job-declared toolsets in `initial` but does not persist them', async () => {
+    const mainId = await findMain()
+    expect(mainId).toBeTruthy() // this dev DB always has one — nothing to guard against otherwise
+    const [before] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, mainId!)).limit(1)
+    const storedBefore = before!.activeToolsets
+
+    const [run] = await useDb().insert(agentRuns).values({
+      conversationId: mainId!, sessionKey: 'main', trigger: 'wake', profile: 'headless', wakeReason: 'rtest-main-toolsets',
+      status: 'running', claimedAt: new Date(), aliveAt: new Date(), owner: 'runner-test',
+      input: { text: 'main toolsets check', modality: 'text', toolsets: ['images'] }
+    }).returning()
+    mainRunIds.push(run!.id)
+
+    let capturedInitial: ToolsetId[] | undefined
+    const capture = async function* (_m: unknown, ctx: { toolsets?: { initial: ToolsetId[] } }) {
+      capturedInitial = ctx.toolsets?.initial
+      yield { type: 'text-delta', text: 'NO_REPLY' } as const
+      yield { type: 'done' } as const
+    }
+    const out = await runTurn(run!, { runAgent: capture as never, assemble: noAssemble as never, hub: new StreamHub() })
+    // Free the one-running slot on main immediately — before any assertion can throw — so a
+    // leftover 'running' row never blocks a real turn on main while this test is still executing.
+    await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run!.id))
+    try {
+      expect(out).toMatchObject({ status: 'done', suppressed: true }) // silent wake — persists nothing
+      expect(capturedInitial).toEqual(parseToolsetIds([...(storedBefore ?? []), 'images']))
+      expect(capturedInitial).toContain('images') // sees it for this run...
+      const [after] = await useDb().select({ activeToolsets: conversations.activeToolsets }).from(conversations).where(eq(conversations.id, mainId!)).limit(1)
+      expect(after!.activeToolsets).toEqual(storedBefore) // ...but it is never written back on main
+    } finally {
+      await useDb().update(conversations).set({ activeToolsets: storedBefore }).where(eq(conversations.id, mainId!))
+    }
   })
 
   it('drops the run\'s approval channel when the run ends (no leak until socket close)', async () => {

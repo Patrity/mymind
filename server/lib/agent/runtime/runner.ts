@@ -218,8 +218,17 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       }
     }
     // Job-declared sets persist for later turns of an isolated job thread even when runAgent's
-    // onChange never fires this turn (nothing new loaded mid-turn).
-    if (initialToolsets.join() !== parseToolsetIds(conv?.activeToolsets ?? []).join()) await toolsets.onChange(initialToolsets).catch(() => {})
+    // onChange never fires this turn (nothing new loaded mid-turn). Skipped on the main thread
+    // (controller ruling): a main-thread job's declared toolsets must NOT persist onto Bridget's
+    // one permanent home thread — they still reach this run via `initial` above, just not written
+    // back. onChange (Bridget loading something herself mid-turn) still persists on main — that
+    // write happens inside handleTurn/runAgent below, untouched by this guard.
+    if (conv?.kind !== 'main' && initialToolsets.join() !== parseToolsetIds(conv?.activeToolsets ?? []).join()) {
+      // A failed persist must not fail the turn — logged (spec §6), same shape run.ts uses for
+      // its own onChange failures, and then dropped.
+      await toolsets.onChange(initialToolsets).catch((err: unknown) =>
+        recordEvent({ kind: 'tool', name: 'toolsets:persist', status: 'error', severity: 'warn', error: { message: (err as Error).message } }))
+    }
 
     const result = await handleTurn(userText, history, {
       tts, preset, refAudio, speak, context: assembled.context || undefined, modelDefId: run.modelDefId,
