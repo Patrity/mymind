@@ -107,11 +107,17 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
     `send_message` (Tony-only target) is unaffected.
   - **Consequence:** a main-thread headless job/wake that fires while a mail read is still in the
     window gets every web/exec/job call auto-denied (`{ denied: true }`).
-- **Reply markdown never loads off-origin images** (`app/lib/agent/markdown-harden.ts`, used by
-  `MessageResponse` and `ReasoningContent`): images only from `/api/images/…`; off-origin,
-  protocol-relative, reference-style, raw `<img>` and `data:` images lose their `src` (rendered as
-  an empty placeholder, no request); link favicons off. Links stay clickable (the library confirms
-  external links). No app-wide CSP yet (follow-up).
+- **Model-written markdown is sanitized** (`app/lib/agent/markdown-harden.ts` →
+  `agentMarkdownProps`, bound by `MessageResponse` and `ReasoningContent`; the full-bleed voice
+  caption also renders through `MessageResponse`). A comark `post` plugin allowlists the parsed
+  tree: only plain-markdown tags survive (raw-HTML/MDC tags like `style`, `link`, `video`,
+  `picture`, `svg`, `iframe` are dropped with their content; `div`/`span`/MDC components are
+  unwrapped to their text), each tag keeps only the attributes markdown produces (no `style`
+  except table `text-align`, no `ping`/`poster`/`srcset`/`on*`), and an image renders only from
+  `/api/images/…` (anything else becomes its alt text). Link favicons are off; links stay
+  clickable (the library confirms external links). **Not covered:** `MdView`/MDC renders of data
+  at rest — documents (incl. `save_document` output), review triage captures, shared docs — still
+  load off-origin images/HTML; no app-wide CSP yet (both follow-ups).
 - **Per-call headless proposals (79b).** `AgentTool.proposeWhen?(args)`: in `headlessTools`
   (`runtime/gate.ts`) a tool classified `run` whose `proposeWhen(args)` is true is proposed to
   /review for that call (handler not called). `gmail_draft` sets `proposeWhen: a => !!a.draftId` —

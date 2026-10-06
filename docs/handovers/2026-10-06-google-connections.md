@@ -55,14 +55,14 @@ Current-state reference: [wiki/google-connections.md](../wiki/google-connections
 - Pre-merge smoke (dev, no Google env): password login 200; `/sign-in/social` 403; `/get-access-token` 404; `/api/connections` `configured:false`; `/api/mcp` 401 + `WWW-Authenticate`; OAuth metadata 200; DCR register ok; authorize 302.
 
 ## Known limits / follow-ups
-1. ~~Blocking before connecting Google (taint hardening)~~ — **closed by 79b + fix round 1** (below); the remaining residuals are listed there under "Known residuals after 79b".
+1. ~~Blocking before connecting Google (taint hardening)~~ — **closed by 79b + fix rounds 1–2** (below); the remaining residuals are listed there under "Known residuals after 79b".
 2. Per-calendar event lists cap at 100 (`truncated` flag); free-time window clamps to 62 days (warned).
 3. Approval pins are in-process — a restart between approval and send fails closed.
 4. First-link race can leave an account without a connection row (re-link fixes).
 5. Deferred minors from the SDD ledger: label edge cases (`co.uk`), scope-badge granularity, label drafts not refreshed on remote rename, shared linking spinner, `manage.ts` not scoped by session user (single-user app), impossible offset dates roll over, 1970 fallback for missing `internalDate`.
 
 ## 79b — taint hardening (2026-10-06, branch `fix/taint-hardening`)
-Closes Known limits §1. Nothing blocks connecting Google; the accepted residuals are listed below.
+Closes Known limits §1 for the agent UI (chat, reasoning, voice caption). Connecting is unblocked only by accepting the residuals below — notably #6, data at rest rendered by MdView.
 - **(a) Cross-turn taint.** `runAgent` seeds the run's taint from the model-visible history: tainted
   at start iff, after `applyHistoryPolicy`, an in-window record of a `taints` tool still carries a
   content result (`historyCarriesTaint`, `tool-history.ts`; same `producedContent` rule as the live
@@ -81,10 +81,10 @@ Closes Known limits §1. Nothing blocks connecting Google; the accepted residual
   returns true. `gmail_draft`: `a => !!a.draftId` (new drafts still run headless). Replay executes
   the real handler.
 - **Fix round 1** (review `.superpowers/sdd/79b/review.md`):
-  - C1: reply/reasoning markdown loads images only from `/api/images/…`; off-origin images
-    (inline, reference, raw `<img>`, protocol-relative, `data:`) lose their `src`; link favicons
-    off. Browser-validated on :3015 with a request-logging listener: old renderer → 4 hits
-    (inline, ref, raw-html, favicon); fixed → 0 hits, the `/api/images` `<img>` still rendered.
+  - C1 (round 1, partial): markdown images restricted to `/api/images/…`, link favicons off.
+    Round 1's claim "no request" was **wrong**: the parser's security pass only rewrites
+    `src`/`href`, and the renderer copied every other attribute/tag — `<style>url()`, `<link>`,
+    `style=`, `<video poster>`, `<source srcset>`, `<a ping>`, MDC `{style=…}` all still fetched.
   - I1: the seed recognises records by the global `TAINTING_TOOL_NAMES`, so headless runs see
     calendar_rsvp / calendar_guest_event results.
   - I2: exec skips its allowlist fast path in a tainted run ("Command after reading your mail",
@@ -94,6 +94,22 @@ Closes Known limits §1. Nothing blocks connecting Google; the accepted residual
   - Gates on the fix round: typecheck 0; `pnpm test` 3400 passed / 1 skipped; `pnpm test:db` 882
     passed; `pnpm build` ok. Mutations (each red, restored via git): C1 prefixes → `['*']` 5 red;
     I1 seed from registry only → 1 red; I2 autoApprove not skipped → 2 red.
+
+- **Fix round 2** (re-review `.superpowers/sdd/79b/rereview-1.md`):
+  - C1: an allowlist sanitizer (comark `post` plugin in `markdown-harden.ts`) turns raw HTML and
+    MDC attributes off for model text — disallowed tags dropped or unwrapped, attributes
+    allowlisted per tag, images only from `/api/images/…` (else alt text, so no spinner either).
+    Tested by rendering the REAL `<Markdown>` in happy-dom with the bound props for 16 vectors
+    (static + streaming) plus a not-vacuous check that round-1 props still leak.
+  - Voice caption (`pages/agent/index.vue`) moved from `MdView` to `MessageResponse`.
+  - Browser (:3015 + request-logging listener on :3016, one fixture reply with 8 vectors + a
+    freshly uploaded `/api/images` image): pre-fix caption → 8 distinct hits (inline, raw img,
+    style, link, div style, poster, srcset, MDC style); fixed chat + caption → 0 hits, bold /
+    list / code block / the uploaded image (naturalWidth 64) all render. The browser also caught a
+    duplicate `v-bind` in `MessageResponse.vue` that typecheck and unit tests passed (b4e28bc).
+  - Gates: typecheck 0; `pnpm test` 3437 passed / 1 skipped; `pnpm test:db` 882 passed; `pnpm build`
+    ok. Mutation: sanitizer plugin removed (`plugins: []`) → 21 red (every raw-HTML/MDC vector,
+    static + streaming, + the alt-text test); restored via git.
 
 ### Known residuals after 79b (accepted — none blocks connecting, but know them)
 1. **Prose outlives the taint.** The taint clears once the tool record leaves the 3-tool-turn
@@ -110,11 +126,17 @@ Closes Known limits §1. Nothing blocks connecting Google; the accepted residual
    others, a tainted run can copy mail text into a title/description they can see.
 5. **iMessage `allowedHandles` must be Tony's own identities only** — any allowed handle gets an
    interactive Bridget with free Gmail reads, answered in that person's chat.
-6. **No app-wide CSP `img-src`** backstop yet (would also cover MDC/MdView documents) — follow-up.
+6. **MdView renders data at rest unhardened.** Documents (incl. `save_document` output), review
+   triage captures (memory extraction, `quick_capture` text) and shared docs render through
+   MdView/MDC with no image/HTML restriction — mail text a tainted run saved into one of them
+   could exfiltrate (off-origin image, `style=url()`) when Tony opens it. Follow-up: a CSP
+   `img-src`/`style-src` backstop, or the same sanitizer for agent-authored docs. No app-wide
+   CSP in this change.
 7. A job created before any Google read runs headless later; if it reads mail it is tainted
    in-run and its own outbound calls auto-deny.
-8. Off-origin images in replies render as an empty loading placeholder (the parser strips `src`);
-   cosmetic. The sessions transcript view (`TranscriptRow`, also `MessageResponse`) is hardened too.
+8. Model text loses raw HTML entirely (e.g. a `<details>` or `<div>` Bridget writes renders as its
+   text) and blocked images show as alt text. The sessions transcript view (`TranscriptRow`, also
+   `MessageResponse`) gets the same treatment — Claude Code transcripts with raw HTML render as text.
 
 - Evidence: TDD — 26 new/renamed assertions red before the change; gates typecheck 0, `pnpm test`
   3376 passed / 1 skipped, `pnpm test:db` 882 passed, `pnpm build` ok. Mutation checks (each red,
