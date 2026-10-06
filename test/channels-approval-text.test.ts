@@ -2,7 +2,7 @@
 // The iMessage approval question, worded per tool (cycle 76 final review m1; gmail_send branch
 // added cycle 79 review I3).
 import { describe, it, expect } from 'vitest'
-import { approvalPromptText, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX, CALENDAR_PROMPT_MAX } from '../server/lib/channels/approvals'
+import { approvalPromptText, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX, CALENDAR_PROMPT_MAX, TITLED_PROMPT_MAX } from '../server/lib/channels/approvals'
 
 const FOOT = '\n👍 to approve · 👎 to deny'
 
@@ -34,10 +34,16 @@ describe('approvalPromptText', () => {
     expect(text).not.toContain('Allow gmail_send')
   })
 
-  it('gmail_send: a command past GMAIL_SEND_PROMPT_MAX is cut with a "how many more chars" note, pointing at Gmail', () => {
-    const command = 'x'.repeat(GMAIL_SEND_PROMPT_MAX + 230)
+  it('gmail_send (fix wave I2): a command past GMAIL_SEND_PROMPT_MAX is cut and says "showing N of M chars — open the draft"', () => {
+    const command = 'x'.repeat(GMAIL_SEND_PROMPT_MAX + 2410)
     const text = approvalPromptText({ tool: 'gmail_send', command, proposedPattern: '' })
-    expect(text).toContain(`${'x'.repeat(GMAIL_SEND_PROMPT_MAX)}… [230 more chars — open the draft in Gmail]`)
+    expect(text).toContain(`${'x'.repeat(GMAIL_SEND_PROMPT_MAX)}…\n[showing 1,800 of 4,210 chars — open the draft in Gmail before approving]`)
+    expect(text).not.toContain('x'.repeat(GMAIL_SEND_PROMPT_MAX + 1))
+  })
+
+  it('gmail_send: a command within the cap carries no truncation notice', () => {
+    const text = approvalPromptText({ tool: 'gmail_send', command: 'x'.repeat(GMAIL_SEND_PROMPT_MAX), proposedPattern: '' })
+    expect(text).not.toContain('showing')
   })
 
   it('calendar_guest_event / calendar_rsvp (Task 5): their own card title over the multi-line card, no backticks, exempt from PROMPT_COMMAND_MAX', () => {
@@ -51,8 +57,20 @@ describe('approvalPromptText', () => {
     expect(rsvp.startsWith('Send RSVP?\n\nRSVP "declined"')).toBe(true)
   })
 
-  it('calendar: a command past CALENDAR_PROMPT_MAX is cut with a "how many more chars" note', () => {
+  it('calendar (fix wave I2): a command past CALENDAR_PROMPT_MAX is cut and says "showing N of M chars"', () => {
     const text = approvalPromptText({ tool: 'calendar_guest_event', title: 'Invite guests?', command: 'x'.repeat(CALENDAR_PROMPT_MAX + 40), proposedPattern: '' })
-    expect(text).toContain(`${'x'.repeat(CALENDAR_PROMPT_MAX)}… [40 more chars — open the event in Google Calendar]`)
+    expect(text).toContain(`${'x'.repeat(CALENDAR_PROMPT_MAX)}…\n[showing 1,500 of 1,540 chars — open the event in Google Calendar before approving]`)
+  })
+
+  it('fix wave I3: a titled egress card (web_fetch after a Google read) texts its heading + the exact URL, no backticks', () => {
+    const command = 'web_fetch — Bridget read your Google mail…\n\nurl: https://x.example/?d=1'
+    const text = approvalPromptText({ tool: 'web_fetch', title: 'Web request after reading your mail', command, proposedPattern: '', allowlistable: false })
+    expect(text).toBe(`Web request after reading your mail?\n\n${command}\n\n👍 to approve · 👎 to deny`)
+    expect(text).not.toContain('`')
+  })
+
+  it('fix wave I3: a long egress card is cut with the "showing N of M chars" notice', () => {
+    const text = approvalPromptText({ tool: 'research_web', title: 'Web request after reading your mail', command: 'y'.repeat(TITLED_PROMPT_MAX + 10), proposedPattern: '' })
+    expect(text).toContain(`[showing 1,500 of 1,510 chars — deny unless you can see the whole request]`)
   })
 })

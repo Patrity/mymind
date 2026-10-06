@@ -586,17 +586,18 @@ describe('gmail_send', () => {
     expect(req.command).toContain('[2 attachments: report.pdf, photo.jpg]')
   })
 
-  it('caps the body at 1,500 chars (robust to a blank line inside the body — m6)', async () => {
+  it('shows the WHOLE body — no truncation, even past 1,500 chars (fix wave I2; robust to a blank line inside the body — m6)', async () => {
+    const body = `${'x'.repeat(4000)}\n\nTAIL-OF-THE-BODY`
     useRoutes(draftRoute('d-long', [
       { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Long' }
-    ], 'x'.repeat(2000)))
+    ], body))
     const req = await describeSend({ account: 'work', draftId: 'd-long' })
     const prefix = 'Subject: Long\n\n'
     const idx = req.command.indexOf(prefix)
     expect(idx).toBeGreaterThanOrEqual(0)
     const bodyPart = req.command.slice(idx + prefix.length)
-    expect(bodyPart.length).toBeLessThanOrEqual(1500 + '… [truncated]'.length)
-    expect(bodyPart).toContain('[truncated]')
+    expect(bodyPart).toBe(body)
+    expect(bodyPart).not.toContain('[truncated]')
   })
 
   it('a failed draft fetch (404) says the draft could not be loaded — deny', async () => {

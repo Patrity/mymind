@@ -89,6 +89,15 @@ export interface AgentTool {
   /** Cycle 78: which toolset this tool belongs to (visibility only — see toolsets.ts). */
   toolset: ToolsetId
   dangerous?: boolean // requires human approval before the handler runs
+  /** Cycle 79 fix wave I3 (run-level taint): this tool's result carries third-party Google
+   *  content (mail, contacts, events) into the model's context. Once one has returned in a run,
+   *  every `egress` tool in that run needs approval — a prompt-injected email must not be able to
+   *  ship the mailbox out through a URL or a search query. */
+  taints?: true
+  /** Cycle 79 fix wave I3: this tool sends model-chosen text off the box (a URL, a search query,
+   *  a research brief). Runs freely until a `taints` tool has returned in the same run; after
+   *  that it goes through the approval gate (never allowlistable; headless → auto-deny). */
+  egress?: true
   /** Opt-in: a persisted "always allow" pattern may approve this dangerous tool without asking.
    *  Only exec sets it — decide_review (cycle 76) must be confirmed on every call. */
   allowlistable?: boolean

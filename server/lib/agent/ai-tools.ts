@@ -28,8 +28,46 @@ async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, 
   return { ...req, allowlistable: t.allowlistable === true }
 }
 
+/** The card heading for an egress call in a tainted run (fix wave I3). */
+export const EGRESS_APPROVAL_TITLE = 'Web request after reading your mail'
+
+/** An egress tool's approval card: the exact URL / query / brief that would leave the box, one
+ *  `key: value` line per arg, never truncated (the web card scrolls; iMessage states its cut).
+ *  `logSummary` is body-free — the args may be exactly the exfiltrated content. */
+function egressApprovalRequest(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
+  const lines = Object.entries(input)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+  const chars = lines.reduce((n, l) => n + l.length, 0)
+  return {
+    tool: t.name,
+    title: EGRESS_APPROVAL_TITLE,
+    command: [
+      `${t.name} — Bridget read your Google mail, calendar or contacts earlier in this run, and this request sends the text below to the internet. Approve only if you expected it.`,
+      '',
+      ...lines
+    ].join('\n'),
+    proposedPattern: '',
+    allowlistable: false,
+    logSummary: `${t.name}: egress after a Google read (${chars} arg chars)`
+  }
+}
+
+/** A `taints` call that produced data (not an `{ error }` result) has put Google content in the
+ *  model's context. */
+function producedContent(result: unknown): boolean {
+  return !(result && typeof result === 'object' && 'error' in result)
+}
+
 /** Adapt the agent tool registry into an AI SDK ToolSet (execute = gate + handler + bus + undo). */
 export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
+  // Run-level taint (cycle 79 fix wave I3): one ToolSet is built per run, so this flag lives
+  // exactly as long as the run. It flips the first time a `taints` tool (gmail_search,
+  // gmail_read_thread, contacts_search, calendar_list_events) returns content, and NEVER resets
+  // within the run: from then on every `egress` tool (web_fetch, web_search, research_web) is
+  // gated like a dangerous tool — not allowlistable, and auto-denied where there's no approval
+  // channel (headless). Before any Google read, egress runs freely as always.
+  let tainted = false
   const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets }
   const set: ToolSet = {}
   for (const t of registry) {
@@ -70,12 +108,15 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         }
         hooks.onEvent({ type: 'tool-start', name: t.name, args: safeArgs, callId })
         // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
-        // autoApprove fast-path clears it (allowlist-first).
-        if (t.dangerous) {
-          const auto = t.autoApprove ? await t.autoApprove(input, callCtx) : false
+        // autoApprove fast-path clears it (allowlist-first). An egress tool in a tainted run
+        // (fix wave I3) is gated the same way, but never auto-approved and never allowlistable.
+        const egressGated = t.egress === true && tainted
+        if (t.dangerous || egressGated) {
+          const auto = !egressGated && t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
+            const req = egressGated ? egressApprovalRequest(t, input) : await approvalRequestFor(t, input, approvalNonce)
             const decision = ctx.requestApproval
-              ? await ctx.requestApproval({ ...(await approvalRequestFor(t, input, approvalNonce)), callId, args: safeArgs })
+              ? await ctx.requestApproval({ ...req, callId, args: safeArgs })
               : { approved: false } // fail-safe: no channel → auto-deny
             if (decision.approved !== true) {
               const summary = `denied: ${t.name}`
@@ -91,6 +132,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
             { kind: 'tool', name: t.name, request: safeArgs },
             () => t.handler(input, callCtx)
           )
+          if (t.taints && producedContent(exec.result)) tainted = true
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
           hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: safeArgs, result: exec.result, kind: t.kind })

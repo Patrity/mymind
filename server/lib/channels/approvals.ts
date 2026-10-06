@@ -44,32 +44,38 @@ const waiters = new Map<string, (status: ApprovalStatus) => void>()
 /** The command as texted: at most PROMPT_COMMAND_MAX chars (a long heredoc is not texted in full). */
 export const PROMPT_COMMAND_MAX = 300
 
-/** gmail_send's command is a multi-line From/To/Cc/Bcc/Subject + body block, already capped by
- *  the tool itself at a 1,500-char BODY (gmail.ts's APPROVAL_BODY_CHARS) — PROMPT_COMMAND_MAX
- *  (300, meant for a one-line shell command) would cut it off after the headers and leave Tony
- *  approving a body he never saw (cycle 79 review I3). This is a defensive ceiling on the WHOLE
- *  rendered command (headers + body), not a second truncation of the body on top of the tool's
- *  own: a pathological header (e.g. a huge To: list) still can't produce unbounded iMessage text. */
+/** gmail_send's command is a multi-line From/To/Cc/Bcc/Subject + the FULL draft body (the tool no
+ *  longer caps it — cycle 79 fix wave I2, so the web card shows everything). A text message can't
+ *  carry an arbitrarily long email, so the iMessage prompt keeps a ceiling on the WHOLE rendered
+ *  command — but whenever it cuts, it says so explicitly ("showing N of M chars") and tells Tony
+ *  to open the draft before approving, so he never approves text he thinks he has read in full. */
 export const GMAIL_SEND_PROMPT_MAX = 1800
 
-function gmailSendPromptBody(command: string): string {
-  if (command.length <= GMAIL_SEND_PROMPT_MAX) return command
-  const more = command.length - GMAIL_SEND_PROMPT_MAX
-  return `${command.slice(0, GMAIL_SEND_PROMPT_MAX)}… [${more} more chars — open the draft in Gmail]`
+/** The cut-off notice shared by the gmail and calendar prompts. */
+function truncatedPrompt(command: string, max: number, advice: string): string {
+  if (command.length <= max) return command
+  return `${command.slice(0, max)}…\n[showing ${max.toLocaleString('en-US')} of ${command.length.toLocaleString('en-US')} chars — ${advice}]`
 }
 
-/** calendar_guest_event / calendar_rsvp (cycle 79, Task 5): the command is a short multi-line
- *  card (op, title, when in Tony's zone, guests, the change; a description/note capped at 500 by
- *  the tool) — like gmail_send it must not be cut at PROMPT_COMMAND_MAX (a long guest list would
- *  lose the change Tony is approving). Defensive ceiling on the whole rendered command. */
+function gmailSendPromptBody(command: string): string {
+  return truncatedPrompt(command, GMAIL_SEND_PROMPT_MAX, 'open the draft in Gmail before approving')
+}
+
+/** calendar_guest_event / calendar_rsvp (cycle 79, Task 5): the command is a multi-line card (op,
+ *  title, when in Tony's zone, guests, the change, and the FULL description/note — fix wave I2).
+ *  Like gmail_send it must not be cut at PROMPT_COMMAND_MAX (a long guest list would lose the
+ *  change Tony is approving); a ceiling on the whole command, with the same explicit notice. */
 export const CALENDAR_PROMPT_MAX = 1500
 const CALENDAR_APPROVAL_TOOLS: ReadonlySet<string> = new Set(['calendar_guest_event', 'calendar_rsvp'])
 
 function calendarPromptBody(command: string): string {
-  if (command.length <= CALENDAR_PROMPT_MAX) return command
-  const more = command.length - CALENDAR_PROMPT_MAX
-  return `${command.slice(0, CALENDAR_PROMPT_MAX)}… [${more} more chars — open the event in Google Calendar]`
+  return truncatedPrompt(command, CALENDAR_PROMPT_MAX, 'open the event in Google Calendar before approving')
 }
+
+/** Any other TITLED card (fix wave I3: an egress call — web_fetch / web_search / research_web —
+ *  after a Google read in the same run) carries its own heading and a multi-line body showing the
+ *  exact URL/query; same ceiling-with-notice treatment, since there is nothing to "open". */
+export const TITLED_PROMPT_MAX = 1500
 
 /**
  * The texted question, worded per tool (final review m1): exec asks to run a command; a review
@@ -79,7 +85,9 @@ function calendarPromptBody(command: string): string {
  * render them, and a closing backtick-question-mark after a long body reads badly) — and is
  * EXEMPT from PROMPT_COMMAND_MAX, using GMAIL_SEND_PROMPT_MAX instead. calendar_guest_event /
  * calendar_rsvp (cycle 79, Task 5) likewise: their own card title ("Invite guests?", "Send
- * RSVP?") over the multi-line event card, no backticks, CALENDAR_PROMPT_MAX.
+ * RSVP?") over the multi-line event card, no backticks, CALENDAR_PROMPT_MAX. Any other titled
+ * card (fix wave I3's egress-after-a-Google-read) gets its title + body under TITLED_PROMPT_MAX.
+ * Every cut states "showing N of M chars" (fix wave I2).
  */
 export function approvalPromptText(req: ApprovalRequest): string {
   if (req.tool === 'gmail_send') {
@@ -87,6 +95,9 @@ export function approvalPromptText(req: ApprovalRequest): string {
   }
   if (CALENDAR_APPROVAL_TOOLS.has(req.tool)) {
     return `${req.title ?? 'Change this calendar event?'}\n\n${calendarPromptBody(req.command)}\n\n👍 to approve · 👎 to deny`
+  }
+  if (req.title && req.tool !== 'exec' && req.tool !== 'decide_review') {
+    return `${req.title}?\n\n${truncatedPrompt(req.command, TITLED_PROMPT_MAX, 'deny unless you can see the whole request')}\n\n👍 to approve · 👎 to deny`
   }
   const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
   const ask = req.tool === 'exec' ? `Run \`${cmd}\`?`

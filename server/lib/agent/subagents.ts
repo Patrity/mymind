@@ -48,6 +48,10 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
     description: spec.description,
     kind: 'read',
     toolset: 'web',
+    // Fix wave I3: a subagent with web tools (research_web) sends its brief out through its own
+    // nested web calls — which run in a separate, untainted run — so the subagent tool ITSELF is
+    // the egress point the parent run gates. The librarian (search_brain) stays on the box.
+    ...(spec.toolNames.some(n => n === 'web_search' || n === 'web_fetch') ? { egress: true as const } : {}),
     schema: {
       task: z.string().min(1).describe('A specific, self-contained task for the subagent. It cannot see this conversation — include every fact it needs.'),
       context: z.string().optional().describe('Relevant facts from the conversation the subagent needs (names, constraints, prior findings).')

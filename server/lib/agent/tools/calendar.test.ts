@@ -520,6 +520,22 @@ describe('calendar_guest_event', () => {
     expect(out.undo).toBeUndefined()
   })
 
+  it('fix wave I2: the card shows the WHOLE description that goes to guests — no 500-char cap', async () => {
+    useRoutes({})
+    const description = `${'d'.repeat(3000)} END-OF-DESCRIPTION`
+    const req = await describe_({ account: 'work', op: 'create', title: 'Lunch', start: '2026-10-08T12:00', attendees: ['ann@a.com'], description })
+    expect(req.command).toContain(`Description: ${description}`)
+    expect(req.command).not.toContain('[truncated]')
+  })
+
+  it('fix wave I2: an update card shows the whole new description', async () => {
+    useRoutes({ [`GET ${calPath('primary')}/events/g1`]: () => ({ json: existing('"e1"') }) })
+    const description = `${'u'.repeat(2000)} END-OF-UPDATE`
+    const req = await describe_({ account: 'work', op: 'update', eventId: 'g1', description })
+    expect(req.command).toContain(`- Description: ${description}`)
+    expect(req.command).not.toContain('[truncated]')
+  })
+
   it('create requires at least one attendee — the card says deny, writes no pin, and nothing is posted', async () => {
     const fetch = useRoutes({})
     const args = { account: 'work', op: 'create', title: 'Lunch', start: '2026-10-08T12:00' }
@@ -706,6 +722,14 @@ describe('calendar_rsvp', () => {
       invite.attendees[2]
     ])
     expect(out.undo).toBeUndefined()
+  })
+
+  it('fix wave I2: the card shows the WHOLE RSVP note — no 500-char cap', async () => {
+    useRoutes({ [`GET ${calPath('tony@work.com')}/events/inv1`]: () => ({ json: invite }) })
+    const note = `${'n'.repeat(1200)} END-OF-NOTE`
+    const req = await describe_({ account: 'work', calendarId: 'tony@work.com', eventId: 'inv1', response: 'declined', note })
+    expect(req.command).toContain(`Note: ${note}`)
+    expect(req.command).not.toContain('[truncated]')
   })
 
   it('Tony is not an attendee → error, no PATCH', async () => {
