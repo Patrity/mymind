@@ -2,7 +2,7 @@
 title: "Google connections — Gmail, Calendar and Contacts for Bridget across work + personal accounts (cycle 79)"
 cycle: 79
 date: 2026-10-05
-status: spec
+status: built  # see handover 2026-10-06-google-connections.md for deviations
 supersedes: null
 builds_on: 2026-10-03-bridget-toolsets-design.md
 ---
