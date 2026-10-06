@@ -4,6 +4,31 @@ import { mcp } from 'better-auth/plugins'
 import { useDb } from '../db'
 import { user, session, account, verification, oauthApplication, oauthAccessToken, oauthConsent } from '../db/schema/auth'
 import { oauthOrigin } from './oauth-metadata'
+import { eq } from 'drizzle-orm'
+import { googleConfigured } from '../lib/google/scopes'
+import { googleSocialProviders, GOOGLE_ACCOUNT_OPTIONS } from '../lib/google/auth-options'
+import { upsertConnectionForAccount } from '../lib/google/connections'
+
+type AccountHookRow = { id: string, providerId?: string, accountId?: string, userId?: string, idToken?: string | null, accessToken?: string | null }
+
+/** Cycle 79: keep `connections` in step with Google account rows. better-auth 1.6.13 hands the
+ *  hook the full row (create: the inserted row; update: the adapter's RETURNING row), with the
+ *  access token already ENCRYPTED and idToken plaintext. If a future adapter ever returns a
+ *  partial row, re-read it by id. Never throws — a connection bookkeeping failure must not
+ *  break the OAuth link itself. */
+async function syncConnection(kind: string, acc: AccountHookRow | null) {
+  try {
+    if (!acc?.id) return
+    let row: AccountHookRow | undefined = acc
+    if (!acc.providerId || !acc.accountId) {
+      row = (await useDb().select().from(account).where(eq(account.id, acc.id)))[0]
+    }
+    if (!row?.providerId || !row.accountId || row.providerId !== 'google') return
+    await upsertConnectionForAccount({ ...row, providerId: row.providerId, accountId: row.accountId })
+  } catch (err) {
+    console.warn(`[connections] ${kind} hook`, err)
+  }
+}
 
 function buildAuth() {
   const cfg = useRuntimeConfig()
@@ -23,6 +48,18 @@ function buildAuth() {
     // String() so this works whether allowSignup is the raw string 'true' (baked at
     // build time) or a boolean true (Nuxt coerces NUXT_ALLOW_SIGNUP=true via destr at runtime).
     emailAndPassword: { enabled: true, disableSignUp: String(cfg.allowSignup) !== 'true' },
+    // Cycle 79: Google is link-only (Settings → Connections) — see server/lib/google/auth-options.ts
+    // for why sign-up/ID-token sign-in are closed there. Absent entirely when unconfigured.
+    socialProviders: googleConfigured()
+      ? googleSocialProviders(cfg.googleClientId as string, cfg.googleClientSecret as string)
+      : undefined,
+    account: GOOGLE_ACCOUNT_OPTIONS,
+    databaseHooks: {
+      account: {
+        create: { after: async acc => syncConnection('create', acc as AccountHookRow) },
+        update: { after: async acc => syncConnection('update', acc as AccountHookRow | null) }
+      }
+    },
     plugins: [
       mcp({
         loginPage: '/login',

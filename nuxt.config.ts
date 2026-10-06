@@ -79,6 +79,10 @@ export default defineNuxtConfig({
     betterAuthSecret: process.env.BETTER_AUTH_SECRET,
     betterAuthUrl: process.env.BETTER_AUTH_URL,
     allowSignup: process.env.ALLOW_SIGNUP,
+    // Cycle 79: Google OAuth client (server-only). Overridden at runtime by
+    // NUXT_GOOGLE_CLIENT_ID / NUXT_GOOGLE_CLIENT_SECRET; empty ⇒ Google linking disabled.
+    googleClientId: '',
+    googleClientSecret: '',
     maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 52428800),
     public: {
       // Whether the /login page surfaces a "create account" toggle. Mirrors the

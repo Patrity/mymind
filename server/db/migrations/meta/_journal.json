@@ -470,6 +470,13 @@
       "when": 1791006999487,
       "tag": "0066_mysterious_tenebrous",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1791257837748,
+      "tag": "0067_confused_thanos",
+      "breakpoints": true
     }
   ]
 }

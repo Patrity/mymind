@@ -22,6 +22,7 @@ export type ResourceName =
   | 'agentImprovement'
   | 'channelDelivery'
   | 'memoryBackfill'
+  | 'connection'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 
