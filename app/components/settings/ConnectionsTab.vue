@@ -93,7 +93,7 @@ async function disconnect() {
 }
 
 const menuItems = (c: ConnectionDTO): DropdownMenuItem[] => [
-  { label: 'Reconnect', icon: 'i-lucide-refresh-cw', onSelect: () => { void link() } },
+  { label: 'Reconnect', icon: 'i-lucide-refresh-cw', disabled: !configured.value, onSelect: () => { void link() } },
   { label: 'Disconnect', icon: 'i-lucide-unplug', color: 'error', onSelect: () => { pendingDisconnect.value = c } }
 ]
 
