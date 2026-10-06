@@ -83,23 +83,35 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
   `gmail_draft`, `contacts_search`, `calendar_list_events`, `calendar_write_event`,
   `calendar_guest_event`, `calendar_rsvp`; `calendar_find_free_time` does not) — and `outbound`
   (was `egress`) — the call sends model-chosen text where Tony isn't watching: `web_fetch`,
-  `web_search`, `research_web`, and the job/wake tools `create_job`, `edit_job`, `run_job`,
-  `schedule_wake`. `buildAiTools` keeps one flag per run (`server/lib/agent/ai-tools.ts`):
+  `web_search`, `research_web`, the job/wake tools `create_job`, `edit_job`, `run_job`,
+  `schedule_wake`, and the skill writers `create_skill`, `edit_skill` (jobs follow skills unwatched). `buildAiTools` keeps one flag per run (`server/lib/agent/ai-tools.ts`):
   - **Seeded across turns.** `runAgent` (`run.ts`) starts the run tainted iff the history the model
     will actually see — after `applyHistoryPolicy`, the same policed list the prompt is built from —
     holds a `taints` record whose result is still present and produced content
-    (`historyCarriesTaint` in `tool-history.ts`). Elided (out of the 3-tool-turn window), `{ error }`,
+    (`historyCarriesTaint` in `tool-history.ts`). Records are recognised by the fixed global
+    `TAINTING_TOOL_NAMES` (`profile.ts`, every `taints` tool incl. the dangerous calendar ones) —
+    never by the run's registry, which in a headless run lacks the dangerous tools. Elided (out of the 3-tool-turn window), `{ error }`,
     `{ denied }`, `{ proposed }` and callId-less legacy records don't count; a capped preview does.
     So the taint persists while mail text is in context and clears after `/clear` (epoch) or once
     it scrolls out of the window.
   - **Flips in-run** the first time a `taints` tool returns content (`producedContent`), and never
     resets within the run.
   - **While tainted, every `outbound` call goes through the approval gate** — never allowlistable,
-    body-free `logSummary`, headless (no approval channel) auto-denies. Card title: web tools
-    "Web request after reading your mail" (exact URL / query / brief); job/wake tools
-    (`toolset: 'jobs'`) "Background work after reading your mail" (the job markdown, or the wake
-    `when` + `prompt`; `run_job` adds the stored job markdown via `outboundDetail`). Untainted,
-    outbound tools run freely. `exec` and `send_message` are unaffected.
+    body-free `logSummary`, headless (no approval channel) auto-denies. Card title: web reads
+    "Web request after reading your mail" (exact URL / query / brief); non-read outbound tools
+    "Background work after reading your mail" (the job markdown / wake `when` + `prompt` / skill
+    body; `run_job` adds the stored job and `edit_job` the job as it would be saved, via
+    `outboundDetail`). Untainted, outbound tools run freely.
+  - **exec while tainted** skips its allowlist/LAN `autoApprove` fast path and always asks —
+    card "Command after reading your mail", not allowlistable; headless auto-denies.
+    `send_message` (Tony-only target) is unaffected.
+  - **Consequence:** a main-thread headless job/wake that fires while a mail read is still in the
+    window gets every web/exec/job call auto-denied (`{ denied: true }`).
+- **Reply markdown never loads off-origin images** (`app/lib/agent/markdown-harden.ts`, used by
+  `MessageResponse` and `ReasoningContent`): images only from `/api/images/…`; off-origin,
+  protocol-relative, reference-style, raw `<img>` and `data:` images lose their `src` (rendered as
+  an empty placeholder, no request); link favicons off. Links stay clickable (the library confirms
+  external links). No app-wide CSP yet (follow-up).
 - **Per-call headless proposals (79b).** `AgentTool.proposeWhen?(args)`: in `headlessTools`
   (`runtime/gate.ts`) a tool classified `run` whose `proposeWhen(args)` is true is proposed to
   /review for that call (handler not called). `gmail_draft` sets `proposeWhen: a => !!a.draftId` —

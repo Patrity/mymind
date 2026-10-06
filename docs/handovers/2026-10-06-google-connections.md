@@ -55,14 +55,14 @@ Current-state reference: [wiki/google-connections.md](../wiki/google-connections
 - Pre-merge smoke (dev, no Google env): password login 200; `/sign-in/social` 403; `/get-access-token` 404; `/api/connections` `configured:false`; `/api/mcp` 401 + `WWW-Authenticate`; OAuth metadata 200; DCR register ok; authorize 302.
 
 ## Known limits / follow-ups
-1. ~~Blocking before connecting Google (taint hardening)~~ — **closed by 79b** (below). Residual: a job created *before* any Google read (untainted) still runs headless later and may read mail itself; that run is tainted in-run, so its own outbound calls auto-deny.
+1. ~~Blocking before connecting Google (taint hardening)~~ — **closed by 79b + fix round 1** (below); the remaining residuals are listed there under "Known residuals after 79b".
 2. Per-calendar event lists cap at 100 (`truncated` flag); free-time window clamps to 62 days (warned).
 3. Approval pins are in-process — a restart between approval and send fails closed.
 4. First-link race can leave an account without a connection row (re-link fixes).
 5. Deferred minors from the SDD ledger: label edge cases (`co.uk`), scope-badge granularity, label drafts not refreshed on remote rename, shared linking spinner, `manage.ts` not scoped by session user (single-user app), impossible offset dates roll over, 1970 fallback for missing `internalDate`.
 
 ## 79b — taint hardening (2026-10-06, branch `fix/taint-hardening`)
-Closes Known limits §1; nothing else blocks connecting Google.
+Closes Known limits §1. Nothing blocks connecting Google; the accepted residuals are listed below.
 - **(a) Cross-turn taint.** `runAgent` seeds the run's taint from the model-visible history: tainted
   at start iff, after `applyHistoryPolicy`, an in-window record of a `taints` tool still carries a
   content result (`historyCarriesTaint`, `tool-history.ts`; same `producedContent` rule as the live
@@ -80,6 +80,42 @@ Closes Known limits §1; nothing else blocks connecting Google.
 - **(d) `proposeWhen?(args)`** on `AgentTool`; `headlessTools` proposes a `run`-class call when it
   returns true. `gmail_draft`: `a => !!a.draftId` (new drafts still run headless). Replay executes
   the real handler.
+- **Fix round 1** (review `.superpowers/sdd/79b/review.md`):
+  - C1: reply/reasoning markdown loads images only from `/api/images/…`; off-origin images
+    (inline, reference, raw `<img>`, protocol-relative, `data:`) lose their `src`; link favicons
+    off. Browser-validated on :3015 with a request-logging listener: old renderer → 4 hits
+    (inline, ref, raw-html, favicon); fixed → 0 hits, the `/api/images` `<img>` still rendered.
+  - I1: the seed recognises records by the global `TAINTING_TOOL_NAMES`, so headless runs see
+    calendar_rsvp / calendar_guest_event results.
+  - I2: exec skips its allowlist fast path in a tainted run ("Command after reading your mail",
+    not allowlistable; headless auto-denies).
+  - I2b: `create_skill` / `edit_skill` are `outbound`. M1: edit_job's card shows the post-edit job.
+    M3: tests for `{denied}` / `{proposed}` not tainting and capped previews tainting.
+  - Gates on the fix round: typecheck 0; `pnpm test` 3400 passed / 1 skipped; `pnpm test:db` 882
+    passed; `pnpm build` ok. Mutations (each red, restored via git): C1 prefixes → `['*']` 5 red;
+    I1 seed from registry only → 1 red; I2 autoApprove not skipped → 2 red.
+
+### Known residuals after 79b (accepted — none blocks connecting, but know them)
+1. **Prose outlives the taint.** The taint clears once the tool record leaves the 3-tool-turn
+   window, after `/clear`, or when the summary fold drops the turn — but mail text Bridget quoted
+   in her own reply, her reasoning, or the thread summary (prose only) stays in context untainted.
+2. **Carry-over into later untainted runs.** `save_memory` (memories are injected into every run,
+   headless jobs included), memory enrichment (extracts from conversation content/reasoning),
+   `save_document`, `create_task`/`edit_task`, `quick_capture` can store mail text that a later
+   run reads without being tainted. Follow-up: tag memories saved in a tainted run and keep them
+   out of proactive injection into headless runs.
+3. **Headless availability.** A main-thread job/wake that fires while a mail read is still in the
+   window has every web/exec/job call auto-denied (`{ denied: true }`), with no other feedback.
+4. **`calendar_write_event`** (no guests) runs freely interactively — on a calendar shared with
+   others, a tainted run can copy mail text into a title/description they can see.
+5. **iMessage `allowedHandles` must be Tony's own identities only** — any allowed handle gets an
+   interactive Bridget with free Gmail reads, answered in that person's chat.
+6. **No app-wide CSP `img-src`** backstop yet (would also cover MDC/MdView documents) — follow-up.
+7. A job created before any Google read runs headless later; if it reads mail it is tainted
+   in-run and its own outbound calls auto-deny.
+8. Off-origin images in replies render as an empty loading placeholder (the parser strips `src`);
+   cosmetic. The sessions transcript view (`TranscriptRow`, also `MessageResponse`) is hardened too.
+
 - Evidence: TDD — 26 new/renamed assertions red before the change; gates typecheck 0, `pnpm test`
   3376 passed / 1 skipped, `pnpm test:db` 882 passed, `pnpm build` ok. Mutation checks (each red,
   restored via `git checkout`): seed removed → 2 red in `run-taint.test.ts`; `outbound` dropped on
