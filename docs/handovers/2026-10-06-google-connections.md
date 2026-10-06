@@ -55,7 +55,7 @@ Current-state reference: [wiki/google-connections.md](../wiki/google-connections
 - Pre-merge smoke (dev, no Google env): password login 200; `/sign-in/social` 403; `/get-access-token` 404; `/api/connections` `configured:false`; `/api/mcp` 401 + `WWW-Authenticate`; OAuth metadata 200; DCR register ok; authorize 302.
 
 ## Known limits / follow-ups
-1. ~~Blocking before connecting Google (taint hardening)~~ — **closed by 79b + fix rounds 1–2** (below); the remaining residuals are listed there under "Known residuals after 79b".
+1. ~~Blocking before connecting Google (taint hardening)~~ — **closed by 79b + fix rounds 1–3** (below); the remaining residuals are listed there under "Known residuals after 79b".
 2. Per-calendar event lists cap at 100 (`truncated` flag); free-time window clamps to 62 days (warned).
 3. Approval pins are in-process — a restart between approval and send fails closed.
 4. First-link race can leave an account without a connection row (re-link fixes).
