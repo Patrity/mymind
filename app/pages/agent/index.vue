@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/vue-query'
 import type { AttachmentRef, MessageDeliveryDTO } from '~~/shared/types/conversation'
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { uiMessageText } from '~/lib/agent/render'
+import { MessageResponse } from '@/components/ai-elements/message'
 import { contextMeterData } from '~/lib/agent/context-meter'
 import { siblingTarget, precedingUserMessage, restorableLeafId } from '~/lib/agent/branching'
 
@@ -575,11 +576,13 @@ onMounted(() => {
 
     <!-- Full-bleed voice mode: her, the band, and the current line, with the two-column
          chrome kept mounted underneath (just covered) so the conversation's scroll position
-         survives the round trip. The caption goes through MdView, never raw interpolation —
+         survives the round trip. The caption is rendered markdown, never raw interpolation —
          the old page printed `{{ caption.text }}` as plain text, so the most prominent text
          on the screen showed literal `#`/`**`, the visible twin of the TTS-pronounces-
-         asterisks bug. cache-key is per-message: a shared first delta otherwise collides on
-         MDC's hash-of-value key and renders another message's content. -->
+         asterisks bug. It goes through MessageResponse (79b fix round 2), NOT MdView: model
+         text must take the hardened path (no raw HTML/MDC attributes, /api/images-only
+         images — app/lib/agent/markdown-harden.ts). Keyed per message so one reply's parser
+         state never renders another's. -->
     <div
       v-if="fullBleed"
       class="fixed inset-0 z-50 flex flex-col bg-elevated"
@@ -618,9 +621,9 @@ onMounted(() => {
         v-if="caption"
         class="mx-auto mb-4 max-h-40 max-w-2xl shrink-0 overflow-y-auto px-6 text-center"
       >
-        <MdView
-          :source="caption.text"
-          :cache-key="`caption-${caption.id}`"
+        <MessageResponse
+          :key="`caption-${caption.id}`"
+          :content="caption.text"
           class="text-sm text-highlighted"
         />
       </div>

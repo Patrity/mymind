@@ -4,8 +4,8 @@ import { cn } from '@/lib/utils'
 import { computed, useSlots } from 'vue'
 import { Markdown } from 'vue-stream-markdown'
 import 'vue-stream-markdown/index.css'
-// C1 (79b): model text must not load off-origin images (zero-click exfiltration) or link favicons.
-import { agentMarkdownHarden, agentMarkdownLinkOptions } from '~/lib/agent/markdown-harden'
+// C1 (79b): model text renders through the hardened props — no raw HTML/MDC attributes, same-origin images only, no favicons.
+import { agentMarkdownProps } from '~/lib/agent/markdown-harden'
 
 interface Props {
   content?: string
@@ -38,8 +38,7 @@ const md = computed(() => (slotContent.value ?? props.content ?? '') as string)
   <Markdown
     :content="md"
     :mode="props.streaming ? 'streaming' : 'static'"
-    :harden-options="agentMarkdownHarden"
-    :link-options="agentMarkdownLinkOptions"
+    v-bind="agentMarkdownProps"
     :class="
       cn(
         'size-full [&>*:first-child]:mt-0! [&>*:last-child]:mb-0!',
