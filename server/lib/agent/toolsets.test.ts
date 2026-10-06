@@ -61,4 +61,25 @@ describe('directoryText', () => {
     expect(txt).not.toContain('- history')
   })
   it('empty when nothing on demand', () => expect(directoryText([t('a', 'memory')], new Set())).toBe(''))
+  it('omits unavailable sets (cycle 79: gmail/calendar until a Google account is connected)', () => {
+    const g = [...reg, t('gmail_search', 'gmail'), t('calendar_list_events', 'calendar')]
+    expect(directoryText(g, new Set())).toMatch(/- gmail — /)
+    const txt = directoryText(g, new Set(), new Set(['gmail', 'calendar']))
+    expect(txt).not.toContain('- gmail')
+    expect(txt).not.toContain('- calendar')
+    expect(txt).toMatch(/- jobs — /)
+    expect(directoryText([t('a', 'memory'), t('gmail_search', 'gmail')], new Set(), new Set(['gmail']))).toBe('')
+  })
+})
+
+describe('unavailableGoogleToolsets', () => {
+  const conn = { id: 'c', accountId: 'a', userId: 'u', googleSub: 's', provider: 'google' as const, label: 'x', email: 'x@y', status: 'ok' as const, lastError: null }
+  it('hides gmail + calendar with no ok connection, shows them with one, hides on lookup failure', async () => {
+    const { unavailableGoogleToolsets } = await import('../google/connections')
+    const seen: unknown[] = []
+    expect(await unavailableGoogleToolsets(async (o) => { seen.push(o); return [] })).toEqual(['gmail', 'calendar'])
+    expect(seen).toEqual([{ status: 'ok' }])
+    expect(await unavailableGoogleToolsets(async () => [conn])).toEqual([])
+    expect(await unavailableGoogleToolsets(async () => { throw new Error('db down') })).toEqual(['gmail', 'calendar'])
+  })
 })

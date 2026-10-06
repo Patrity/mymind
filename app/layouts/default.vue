@@ -52,6 +52,11 @@ const { data: channelsStatus } = useQuery({
 })
 const channelsDot = computed(() => channelsDotColor(channelsStatus.value?.imessage))
 
+// Cycle 79: an amber chip on Connections while any linked Google account needs reconnecting.
+// Same live key as the Connections page (['connection','list']), so it clears on reconnect.
+const { data: connectionsData } = useConnectionsList()
+const connectionsNeedReconnect = computed(() => (connectionsData.value?.connections ?? []).some(c => c.status === 'needs_reconnect'))
+
 const route = useRoute()
 
 const settingsChildren = computed<NavigationMenuItem[]>(() => [
@@ -65,6 +70,12 @@ const settingsChildren = computed<NavigationMenuItem[]>(() => [
     icon: 'i-lucide-message-circle',
     to: '/settings/channels',
     ...(channelsDot.value ? { chip: { color: channelsDot.value } } : {})
+  },
+  {
+    label: 'Connections',
+    icon: 'i-lucide-plug',
+    to: '/settings/connections',
+    ...(connectionsNeedReconnect.value ? { chip: { color: 'warning' as const } } : {})
   },
   { label: 'Bridget', icon: 'i-lucide-bot', to: '/settings/bridget' },
   { label: 'Profile', icon: 'i-lucide-user-round', to: '/settings/profile' },
@@ -110,8 +121,10 @@ const mainItems = computed<NavigationMenuItem[]>(() => [
     icon: 'i-lucide-settings',
     // A red/amber Channels dot is repeated here: the group is collapsed outside /settings, which
     // would hide it on the child item everywhere else in the app. Green and neutral (not checked
-    // yet) stay on Channels only.
-    ...(channelsDot.value === 'error' || channelsDot.value === 'warning' ? { chip: { color: channelsDot.value } } : {}),
+    // yet) stay on Channels only. An amber Connections chip (needs_reconnect) is repeated the same way.
+    ...(channelsDot.value === 'error' || channelsDot.value === 'warning'
+      ? { chip: { color: channelsDot.value } }
+      : connectionsNeedReconnect.value ? { chip: { color: 'warning' as const } } : {}),
     defaultOpen: route.path.startsWith('/settings'),
     children: settingsChildren.value
   }

@@ -98,6 +98,27 @@ describe('runAgent toolsets', () => {
     expect(ran).toContain('gen')
   })
 
+  it('unavailable sets are left out of the prompt directory, but their tools still run when called (cycle 79)', async () => {
+    const gmailSearch: AgentTool = { name: 'gmail_search', toolset: 'gmail', description: 'gmail_search', kind: 'read', schema: { query: z.string() },
+      handler: async () => { ran.push('gmail_search'); return { result: { error: 'No Google account connected — connect one in Settings → Connections.' }, summary: 'gmail_search' } } }
+    const tools = [...registry, gmailSearch]
+    const dirs: Array<string | undefined> = []
+    const { model } = scripted([[call('c1', 'gmail_search', { query: 'x' }), finish('tool-calls')], [...text('ok'), finish('stop')]])
+    ran.length = 0
+    for await (const _ of runAgent([{ role: 'user', content: 'hi' }], { signal: new AbortController().signal, maxSteps: 5, toolsets: { initial: [], unavailable: ['gmail'] } },
+      { streamText: ((a: Parameters<typeof streamText>[0]) => streamText({ ...a, model })) as never, tools, buildSystemPrompt: async (o) => { dirs.push(o.toolsetDirectory); return 's' } })) { /* drain */ }
+    expect(dirs[0]).toMatch(/- images — /)
+    expect(dirs[0]).not.toContain('gmail')
+    expect(ran).toContain('gmail_search')
+
+    // Control: without `unavailable` the gmail line is present.
+    const dirs2: Array<string | undefined> = []
+    const { model: m2 } = scripted([[...text('hi'), finish('stop')]])
+    for await (const _ of runAgent([{ role: 'user', content: 'hi' }], { signal: new AbortController().signal, maxSteps: 5, toolsets: { initial: [] } },
+      { streamText: ((a: Parameters<typeof streamText>[0]) => streamText({ ...a, model: m2 })) as never, tools, buildSystemPrompt: async (o) => { dirs2.push(o.toolsetDirectory); return 's' } })) { /* drain */ }
+    expect(dirs2[0]).toMatch(/- gmail — /)
+  })
+
   it('a tool absent from the registry (headless-excluded) is never offered even if its set is loaded', async () => {
     const { model, offered } = scripted([[...text('hi'), finish('stop')]])
     await run(model, { initial: ['jobs'] }, registry.filter(t => t.name !== 'jobby'))

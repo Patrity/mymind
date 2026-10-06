@@ -169,7 +169,7 @@ export interface RunDeps {
 // tool stripping.
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void> } },
+  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] } },
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
@@ -199,7 +199,7 @@ export async function* runAgent(
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
   // The toolset directory is a turn-start snapshot; sets loaded mid-turn show up as tools, not lines.
-  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context, wake: ctx.wake, toolsetDirectory: ctx.toolsets ? directoryText(registry, loaded) : undefined })
+  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context, wake: ctx.wake, toolsetDirectory: ctx.toolsets ? directoryText(registry, loaded, new Set(ctx.toolsets.unavailable ?? [])) : undefined })
   const maxSteps = ctx.maxSteps ?? VOICE_TUNING.agent.maxSteps
 
   publishActivity({ type: 'state', state: 'thinking' })

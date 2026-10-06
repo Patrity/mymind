@@ -33,12 +33,16 @@ import { planDeliveries, queueFailureNote } from '../../channels/deliver'
 import { insertDeliveries } from '../../channels/outbox'
 import { channelPresence } from '../../channels/presence'
 import { replyToApprovalChannel } from '../../channels/approvals'
+import { unavailableGoogleToolsets } from '../../google/connections'
 
 export interface RunnerDeps {
   runAgent?: TurnDeps['runAgent']
   assemble?: typeof assembleContext
   hub?: StreamHub
   afterPersist?: (conversationId: string) => void
+  /** Cycle 79: on-demand sets to leave out of the directory this turn (default: gmail/calendar
+   *  while no Google account is connected). */
+  unavailableToolsets?: () => Promise<ToolsetId[]>
 }
 
 let turnSeq = Date.now()
@@ -218,8 +222,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // write can't tell "Bridget loaded it" apart from "it's in `loaded` only because the job
     // declared it" — only `storedBefore`/`jobDeclared`, fixed for the whole turn, are known here.
     const mainOnlyJobDeclared = conv?.kind === 'main' ? jobDeclaredToolsets.filter(id => !storedToolsets.includes(id)) : []
+    const unavailable = await (deps.unavailableToolsets ?? (() => unavailableGoogleToolsets()))().catch((): ToolsetId[] => ['gmail', 'calendar'])
     const toolsets = {
       initial: initialToolsets,
+      unavailable,
       onChange: async (loaded: ToolsetId[]) => {
         const persistable = mainOnlyJobDeclared.length ? loaded.filter(id => !mainOnlyJobDeclared.includes(id)) : loaded
         // A UNION, never an overwrite: runAgent fires onChange fire-and-forget, so two writes

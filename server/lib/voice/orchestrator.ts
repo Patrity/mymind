@@ -64,8 +64,8 @@ export interface TurnDeps {
   /** Cycle 78: on-demand toolsets for this turn — the initial set (stored + job-declared) and
    *  the runner's persistence callback, fired when runAgent loads something new mid-turn.
    *  Absent for subagents/legacy chat.post, same as runAgent's own ctx.toolsets. */
-  toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void> }
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void> } }) => AsyncGenerator<AgentEvent>
+  toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] }
+  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] } }) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {

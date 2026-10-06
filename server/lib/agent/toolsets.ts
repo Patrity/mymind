@@ -51,8 +51,11 @@ export function activeToolNames(registry: AgentTool[], loaded: ReadonlySet<Tools
   return registry.filter(t => TOOLSETS[t.toolset].core || loaded.has(t.toolset)).map(t => t.name)
 }
 
-export function directoryText(registry: AgentTool[], loaded: ReadonlySet<ToolsetId>): string {
-  const present = ON_DEMAND_TOOLSETS.filter(id => registry.some(t => t.toolset === id))
+/** `unavailable` (cycle 79): sets whose backing service isn't set up (gmail/calendar with no Google
+ *  account connected) are left out of the directory — visibility only; their tools still run if
+ *  called and answer with their own "not connected" error. */
+export function directoryText(registry: AgentTool[], loaded: ReadonlySet<ToolsetId>, unavailable: ReadonlySet<ToolsetId> = new Set()): string {
+  const present = ON_DEMAND_TOOLSETS.filter(id => !unavailable.has(id) && registry.some(t => t.toolset === id))
   if (!present.length) return ''
   return [
     'TOOLSETS — more tools are available on demand. Call `load_toolsets` with the ids you need before using them (calling one of their tools directly also loads it):',

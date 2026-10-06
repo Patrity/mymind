@@ -2,6 +2,7 @@ import { and, asc, eq, ne, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { account, connections } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
+import type { ToolsetId } from '../agent/toolsets'
 
 /** A linked Google account as the tools see it. `accountId` is the better-auth `account` row id
  *  (connections.account_id); `googleSub` is that row's `account_id` (the Google subject). */
@@ -135,4 +136,15 @@ export async function touchConnection(connectionId: string): Promise<void> {
   await useDb().update(connections)
     .set({ lastUsedAt: sql`now()` })
     .where(eq(connections.id, connectionId))
+}
+
+/** Toolsets hidden from Bridget's directory while no Google account is usable (no `ok`
+ *  connection). A lookup failure counts as "none" — hiding a line is cheap, and the tools still
+ *  answer "not connected" themselves if called. */
+export async function unavailableGoogleToolsets(list: typeof listConnections = listConnections): Promise<ToolsetId[]> {
+  try {
+    return (await list({ status: 'ok' })).length ? [] : ['gmail', 'calendar']
+  } catch {
+    return ['gmail', 'calendar']
+  }
 }
