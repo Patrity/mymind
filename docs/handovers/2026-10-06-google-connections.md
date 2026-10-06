@@ -18,8 +18,8 @@ migrations:
 migrations_run_on_prod: true  # 0067 verified (to_regclass)
 google_configured_on_prod: false
 acceptance: owed  # spec §7 live list, after Tony's GCP/Workspace setup + env
-blocking_before_connect: "taint hardening follow-up (see Known limits §1) must land before Tony sets NUXT_GOOGLE_CLIENT_ID/SECRET"
-next: taint hardening follow-up → Tony's Google setup → live acceptance → cycle 80 (proactive)
+blocking_before_connect: none  # 79b taint hardening landed (branch fix/taint-hardening) — see "79b" section
+next: merge + deploy 79b → Tony's Google setup → live acceptance → cycle 80 (proactive)
 ---
 
 # Google connections (cycle 79)
@@ -55,11 +55,36 @@ Current-state reference: [wiki/google-connections.md](../wiki/google-connections
 - Pre-merge smoke (dev, no Google env): password login 200; `/sign-in/social` 403; `/get-access-token` 404; `/api/connections` `configured:false`; `/api/mcp` 401 + `WWW-Authenticate`; OAuth metadata 200; DCR register ok; authorize 302.
 
 ## Known limits / follow-ups
-1. **Blocking before connecting Google** (taint hardening): (a) taint resets each turn while mail stays in history — seed it from history tool records; (b) `run_job`/`create_job`/`edit_job`/`schedule_wake` let a tainted run spawn an untainted headless run — gate them after taint (or carry taint); (c) mark `calendar_write_event`/`calendar_find_free_time` as `taints`; (d) headless `gmail_draft` with `draftId` can overwrite a draft Tony wrote.
+1. ~~Blocking before connecting Google (taint hardening)~~ — **closed by 79b** (below). Residual: a job created *before* any Google read (untainted) still runs headless later and may read mail itself; that run is tainted in-run, so its own outbound calls auto-deny.
 2. Per-calendar event lists cap at 100 (`truncated` flag); free-time window clamps to 62 days (warned).
 3. Approval pins are in-process — a restart between approval and send fails closed.
 4. First-link race can leave an account without a connection row (re-link fixes).
 5. Deferred minors from the SDD ledger: label edge cases (`co.uk`), scope-badge granularity, label drafts not refreshed on remote rename, shared linking spinner, `manage.ts` not scoped by session user (single-user app), impossible offset dates roll over, 1970 fallback for missing `internalDate`.
+
+## 79b — taint hardening (2026-10-06, branch `fix/taint-hardening`)
+Closes Known limits §1; nothing else blocks connecting Google.
+- **(a) Cross-turn taint.** `runAgent` seeds the run's taint from the model-visible history: tainted
+  at start iff, after `applyHistoryPolicy`, an in-window record of a `taints` tool still carries a
+  content result (`historyCarriesTaint`, `tool-history.ts`; same `producedContent` rule as the live
+  flip, now also excluding `{ denied }` / `{ proposed }`). Elided (out-of-window), `{ error }` and
+  callId-less records don't count. Passed to `buildAiTools` as `initiallyTainted`. Clears after
+  `/clear` or once the record scrolls out of the 3-tool-turn window.
+- **(b) `egress` → `outbound`,** now also on `create_job`, `edit_job`, `run_job`, `schedule_wake`.
+  Cards: web tools keep "Web request after reading your mail"; job/wake tools get "Background work
+  after reading your mail" with the job markdown / wake `when` + `prompt` (`run_job` adds the stored
+  job markdown via the new `outboundDetail` hook). Headless + tainted → auto-denied. `exec` and
+  `send_message` unchanged.
+- **(c) `taints`** added to `gmail_draft`, `calendar_write_event`, `calendar_guest_event`,
+  `calendar_rsvp`. `calendar_find_free_time` stays untainted (busy blocks only — a deliberate
+  deviation from the original §1(c) wording).
+- **(d) `proposeWhen?(args)`** on `AgentTool`; `headlessTools` proposes a `run`-class call when it
+  returns true. `gmail_draft`: `a => !!a.draftId` (new drafts still run headless). Replay executes
+  the real handler.
+- Evidence: TDD — 26 new/renamed assertions red before the change; gates typecheck 0, `pnpm test`
+  3376 passed / 1 skipped, `pnpm test:db` 882 passed, `pnpm build` ok. Mutation checks (each red,
+  restored via `git checkout`): seed removed → 2 red in `run-taint.test.ts`; `outbound` dropped on
+  `create_job` → 4 red in `ai-tools-taint.test.ts`; `proposeWhen` ignored → 2 red in
+  `test/agent-propose-when.test.ts`.
 
 ## Tony's setup (DEPLOYMENT.md §20)
 GCP project → enable Gmail/Calendar/People APIs → Google Auth Platform (Branding, Audience = External → **Publish app**, Data Access = the 8 scopes, Clients = Web with both redirect URIs) → Workspace admin console: trust the client id **before** the first link → set `NUXT_GOOGLE_CLIENT_ID/SECRET` in `/opt/mymind/.env.native` → restart → Settings → Connections → connect both accounts → acceptance (spec §7).

@@ -78,13 +78,33 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
 - Web client keeps approval details **per request** (`app/lib/agent/approvals.ts`, keyed by
   requestId = the tool part's `approval.id`): concurrent dangerous calls in one step each keep their
   own card. A non-`exec` card with no details offers **Deny only** ("Details unavailable — deny").
-- **Run-level taint (exfiltration guard).** `taints` tools (`gmail_search`, `gmail_read_thread`,
-  `contacts_search`, `calendar_list_events`) and `egress` tools (`web_fetch`, `web_search`,
-  `research_web`) are flags on `AgentTool`. `buildAiTools` keeps one flag per run: once a `taints`
-  tool returns content (not an `{ error }`), every later `egress` call in that run goes through the
-  approval gate — card "Web request after reading your mail" showing the exact URL/query, never
-  allowlistable, body-free `logSummary`; headless runs (no approval channel) auto-deny it. The flag
-  never resets within a run; a new run (next turn) starts clean. `exec` is unaffected.
+- **Run-level taint (exfiltration guard; cycle 79 I3, hardened 79b).** Two flags on `AgentTool`:
+  `taints` — the result carries third-party Google text (`gmail_search`, `gmail_read_thread`,
+  `gmail_draft`, `contacts_search`, `calendar_list_events`, `calendar_write_event`,
+  `calendar_guest_event`, `calendar_rsvp`; `calendar_find_free_time` does not) — and `outbound`
+  (was `egress`) — the call sends model-chosen text where Tony isn't watching: `web_fetch`,
+  `web_search`, `research_web`, and the job/wake tools `create_job`, `edit_job`, `run_job`,
+  `schedule_wake`. `buildAiTools` keeps one flag per run (`server/lib/agent/ai-tools.ts`):
+  - **Seeded across turns.** `runAgent` (`run.ts`) starts the run tainted iff the history the model
+    will actually see — after `applyHistoryPolicy`, the same policed list the prompt is built from —
+    holds a `taints` record whose result is still present and produced content
+    (`historyCarriesTaint` in `tool-history.ts`). Elided (out of the 3-tool-turn window), `{ error }`,
+    `{ denied }`, `{ proposed }` and callId-less legacy records don't count; a capped preview does.
+    So the taint persists while mail text is in context and clears after `/clear` (epoch) or once
+    it scrolls out of the window.
+  - **Flips in-run** the first time a `taints` tool returns content (`producedContent`), and never
+    resets within the run.
+  - **While tainted, every `outbound` call goes through the approval gate** — never allowlistable,
+    body-free `logSummary`, headless (no approval channel) auto-denies. Card title: web tools
+    "Web request after reading your mail" (exact URL / query / brief); job/wake tools
+    (`toolset: 'jobs'`) "Background work after reading your mail" (the job markdown, or the wake
+    `when` + `prompt`; `run_job` adds the stored job markdown via `outboundDetail`). Untainted,
+    outbound tools run freely. `exec` and `send_message` are unaffected.
+- **Per-call headless proposals (79b).** `AgentTool.proposeWhen?(args)`: in `headlessTools`
+  (`runtime/gate.ts`) a tool classified `run` whose `proposeWhen(args)` is true is proposed to
+  /review for that call (handler not called). `gmail_draft` sets `proposeWhen: a => !!a.draftId` —
+  a background run may create drafts but not overwrite an existing one unattended. Approving the
+  proposal (`runtime/replay.ts`) runs the real registry handler; interactive runs ignore `proposeWhen`.
 - The `gmail` / `calendar` lines are omitted from Bridget's TOOLSETS directory while no connection is `ok`.
 - Times: shown in `agent_timezone`; inputs must be ISO with offset, naive ISO (agent-tz local) or a bare date.
 
