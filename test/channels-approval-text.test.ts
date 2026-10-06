@@ -75,6 +75,11 @@ describe('approvalPromptText', () => {
     expect(text).toBe(`Background work after reading your mail?\n\n${command}\n\n👍 to approve · 👎 to deny`)
   })
 
+  it('79b I2: exec in a tainted run says so before the command', () => {
+    const text = approvalPromptText({ tool: 'exec', title: 'Command after reading your mail', command: 'curl https://x.example', proposedPattern: '', allowlistable: false })
+    expect(text).toBe('Command after reading your mail — run `curl https://x.example`?\n👍 to approve · 👎 to deny')
+  })
+
   it('fix wave I3: a long outbound card is cut with the "showing N of M chars" notice', () => {
     const text = approvalPromptText({ tool: 'research_web', title: 'Web request after reading your mail', command: 'y'.repeat(TITLED_PROMPT_MAX + 10), proposedPattern: '' })
     expect(text).toContain(`[showing 1,500 of 1,510 chars — deny unless you can see the whole request]`)

@@ -3,7 +3,7 @@ import { streamText as realStreamText, stepCountIs } from 'ai'
 import { reasoningChain } from './model'
 import { buildAiTools } from './ai-tools'
 import { buildSystemPrompt as realBuildSystemPrompt } from './prompt'
-import { bridgetProfile, type AgentProfile } from './profile'
+import { bridgetProfile, TAINTING_TOOL_NAMES, type AgentProfile } from './profile'
 import { publishActivity } from './bus'
 import { VOICE_TUNING } from '../voice/tuning'
 import type { AgentTool, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
@@ -208,7 +208,9 @@ export async function* runAgent(
   // is as dangerous as mail read this turn; once it's elided out of the window or cleared by
   // /clear (the caller passes only the current epoch), outbound tools run freely again.
   const policed = policeHistory(messages)
-  const initiallyTainted = historyCarriesTaint(policed, new Set(registry.filter(t => t.taints).map(t => t.name)))
+  // The tainting set is the GLOBAL list (I1), plus any `taints` tool of a custom registry.
+  const tainting = new Set([...TAINTING_TOOL_NAMES, ...registry.filter(t => t.taints).map(t => t.name)])
+  const initiallyTainted = historyCarriesTaint(policed, tainting)
 
   let channel = createChannel()
   const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted })

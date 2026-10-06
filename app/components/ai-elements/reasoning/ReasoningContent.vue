@@ -5,6 +5,8 @@ import { cn } from '@/lib/utils'
 import { computed, useSlots } from 'vue'
 import { Markdown } from 'vue-stream-markdown'
 import 'vue-stream-markdown/index.css'
+// C1 (79b): model text must not load off-origin images (zero-click exfiltration) or link favicons.
+import { agentMarkdownHarden, agentMarkdownLinkOptions } from '~/lib/agent/markdown-harden'
 
 interface Props {
   class?: HTMLAttributes['class']
@@ -43,6 +45,6 @@ const md = computed(() => (slotContent.value ?? props.content ?? '') as string)
       props.class,
     )"
   >
-    <Markdown :content="md" :mode="props.streaming ? 'streaming' : 'static'" />
+    <Markdown :content="md" :mode="props.streaming ? 'streaming' : 'static'" :harden-options="agentMarkdownHarden" :link-options="agentMarkdownLinkOptions" />
   </CollapsibleContent>
 </template>

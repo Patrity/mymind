@@ -137,6 +137,15 @@ export const jobTools: AgentTool[] = [
     name: 'edit_job',
     // 79b (b): outbound — a job/wake runs later, unwatched, carrying whatever this run read.
     outbound: true,
+    // 79b fix round 1 (M1): the card shows the job AS IT WOULD BE SAVED — a small find/replace
+    // can quietly change trigger/deliver/thread.
+    outboundDetail: async (a) => {
+      if (a.content !== undefined) return undefined // full content is already on the card
+      const job = await getJob(a.slug as string)
+      if (!job) return undefined
+      const res = applyReplace(job.content, (a.old_string as string | undefined) ?? '', (a.new_string as string | undefined) ?? '', a.replace_all as boolean | undefined)
+      return 'error' in res ? `(the edit would fail: ${res.error})` : `Job after this edit:\n${res.content}`
+    },
     description: 'Edit an existing job. Either find/replace (`old_string`/`new_string`, unique match unless `replace_all` — like edit_document) or pass full `content` to replace the whole file. Re-validated and re-scheduled on save. On failure returns ok:false with error "not_found", "no_match", "ambiguous_match", "empty_old_string", "missing_args", or a validation/conflict message; nothing is written in any case.',
     kind: 'create',
     toolset: 'jobs',

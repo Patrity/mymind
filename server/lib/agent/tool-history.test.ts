@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  capResult, capArgs, applyHistoryPolicy, toolBlocksFor,
+  capResult, capArgs, applyHistoryPolicy, toolBlocksFor, historyCarriesTaint, producedContent,
   READ_RESULT_CAP, ARGS_REPLAY_CAP, type AgentToolRecord
 } from './tool-history'
 
@@ -159,5 +159,34 @@ describe('toolBlocksFor ignores subagent steps', () => {
     const base = { callId: 'c1', name: 'research_web', kind: 'read' as const, args: { task: 't' }, result: { report: 'r' }, summary: 's', textOffset: 0 }
     const withSteps = { ...base, steps: [{ callId: 'n1', name: 'web_search', summary: 'searched', state: 'done' as const }] }
     expect(toolBlocksFor([withSteps])).toEqual(toolBlocksFor([base]))
+  })
+})
+
+// Cycle 79b fix round 1 (M3): what counts as "Google content still in context" for the seed.
+describe('historyCarriesTaint / producedContent (79b)', () => {
+  const G = new Set(['gmail_read_thread'])
+  const r = (result: unknown, callId = 'c1'): AgentToolRecord => ({ callId, name: 'gmail_read_thread', kind: 'read', args: {}, result, summary: 's', textOffset: 0 })
+  const seeded = (result: unknown) => historyCarriesTaint(applyHistoryPolicy([{ role: 'assistant', toolRecords: [r(result)] }]), G)
+
+  it('a denial does not taint', () => {
+    expect(producedContent({ denied: true })).toBe(false)
+    expect(seeded({ denied: true })).toBe(false)
+  })
+  it('a headless proposal receipt does not taint', () => {
+    expect(producedContent({ proposed: true, reviewId: 'r', note: 'n' })).toBe(false)
+    expect(seeded({ proposed: true, reviewId: 'r' })).toBe(false)
+  })
+  it('an error does not taint; real content does', () => {
+    expect(seeded({ error: 'nope' })).toBe(false)
+    expect(seeded({ messages: [{ body: 'hi' }] })).toBe(true)
+  })
+  it('a result capped to a { truncated, preview } still taints — the preview is mail text', () => {
+    const big = { messages: [{ body: 'x'.repeat(READ_RESULT_CAP * 2) }] }
+    const policed = applyHistoryPolicy([{ role: 'assistant', toolRecords: [r(big)] }])
+    expect((policed[0]!.toolRecords![0]!.result as { truncated?: boolean }).truncated).toBe(true)
+    expect(historyCarriesTaint(policed, G)).toBe(true)
+  })
+  it('a non-tainting tool name never seeds', () => {
+    expect(historyCarriesTaint([{ role: 'assistant', toolRecords: [r({ messages: [] })] }], new Set(['other']))).toBe(false)
   })
 })

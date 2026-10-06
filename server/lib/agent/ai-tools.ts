@@ -35,14 +35,18 @@ async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, 
 /** Card headings for an `outbound` call in a tainted run (fix wave I3; 79b adds background work). */
 export const OUTBOUND_WEB_TITLE = 'Web request after reading your mail'
 export const OUTBOUND_BACKGROUND_TITLE = 'Background work after reading your mail'
+/** 79b fix round 1 (I2): an allowlistable dangerous tool (exec) in a tainted run. */
+export const TAINTED_COMMAND_TITLE = 'Command after reading your mail'
 
 /** An outbound tool's approval card: exactly what would leave Tony's sight — the URL / query /
  *  brief, or the job markdown / wake time + reason — one `key: value` line per arg, never
- *  truncated (the web card scrolls; iMessage states its cut). Job/wake tools (toolset `jobs`) get
- *  the background-work wording; everything else the web wording. `logSummary` is body-free —
+ *  truncated (the web card scrolls; iMessage states its cut). Non-read outbound tools (jobs,
+ *  wakes, skills) get the background-work wording; web reads the web wording. `logSummary` is body-free —
  *  the args may be exactly the exfiltrated content. */
 async function outboundApprovalRequest(t: AgentTool, input: Record<string, unknown>): Promise<ApprovalRequest> {
-  const background = t.toolset === 'jobs'
+  // Web tools are reads that leave the box; every other outbound tool (jobs, wakes, skills)
+  // writes something a later, unwatched run acts on.
+  const background = t.kind !== 'read'
   const lines = Object.entries(input)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
@@ -117,10 +121,19 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         // autoApprove fast-path clears it (allowlist-first). An outbound tool in a tainted run
         // (fix wave I3) is gated the same way, but never auto-approved and never allowlistable.
         const outboundGated = t.outbound === true && tainted
+        // 79b fix round 1 (I2): exec's allowlist/LAN fast-path is skipped in a tainted run — an
+        // allowlisted `curl`/`python3 *`/`git push *` is a network path too. Every exec then asks,
+        // titled for it and NOT allowlistable (no "always allow" off an injected command);
+        // headless has no channel → auto-deny.
+        const taintedAllowlistable = tainted && t.dangerous === true && t.allowlistable === true
         if (t.dangerous || outboundGated) {
-          const auto = !outboundGated && t.autoApprove ? await t.autoApprove(input, callCtx) : false
+          const auto = !outboundGated && !taintedAllowlistable && t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
-            const req = outboundGated ? await outboundApprovalRequest(t, input) : await approvalRequestFor(t, input, approvalNonce)
+            const req = outboundGated
+              ? await outboundApprovalRequest(t, input)
+              : taintedAllowlistable
+                ? { ...await approvalRequestFor(t, input, approvalNonce), title: TAINTED_COMMAND_TITLE, allowlistable: false }
+                : await approvalRequestFor(t, input, approvalNonce)
             const decision = ctx.requestApproval
               ? await ctx.requestApproval({ ...req, callId, args: safeArgs })
               : { approved: false } // fail-safe: no channel → auto-deny

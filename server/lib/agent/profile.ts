@@ -28,3 +28,9 @@ export const bridgetProfile: AgentProfile = {
   tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool],
   personaKey: 'agent_persona'
 }
+
+/** Cycle 79b fix round 1 (I1): every `taints` tool Bridget has, dangerous ones included. The
+ *  cross-turn taint seed (run.ts) recognises history records by THIS fixed list, never by the
+ *  run's own registry — a headless registry (runtime/gate.ts headlessTools) drops the dangerous
+ *  tools, so calendar_rsvp / calendar_guest_event results in history would otherwise go unseen. */
+export const TAINTING_TOOL_NAMES: ReadonlySet<string> = new Set(bridgetProfile.tools.filter(t => t.taints).map(t => t.name))

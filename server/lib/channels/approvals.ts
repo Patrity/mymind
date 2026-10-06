@@ -100,7 +100,8 @@ export function approvalPromptText(req: ApprovalRequest): string {
     return `${req.title}?\n\n${truncatedPrompt(req.command, TITLED_PROMPT_MAX, 'deny unless you can see the whole request')}\n\n👍 to approve · 👎 to deny`
   }
   const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
-  const ask = req.tool === 'exec' ? `Run \`${cmd}\`?`
+  // 79b (I2): exec in a tainted run carries a title — say so before the command.
+  const ask = req.tool === 'exec' ? `${req.title ? `${req.title} — run` : 'Run'} \`${cmd}\`?`
     : req.tool === 'decide_review' ? `Approve review decision: ${cmd}?`
       : `Allow ${req.tool}: \`${cmd}\`?`
   return `${ask}\n👍 to approve · 👎 to deny`

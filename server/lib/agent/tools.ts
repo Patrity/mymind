@@ -1195,6 +1195,8 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'create_skill',
+    // 79b fix round 1 (I2b): outbound — a skill is instructions a later, unwatched job run follows.
+    outbound: true,
     description: 'Write a NEW skill — a durable how-to guide for your future self. Use this when you learn a procedure worth keeping (topology, a recipe, a gotcha). It goes live immediately. Keep the body focused; reference documents for long detail.',
     kind: 'create',
     toolset: 'skill-admin',
@@ -1221,6 +1223,8 @@ export const agentTools: AgentTool[] = [
   },
   {
     name: 'edit_skill',
+    // 79b fix round 1 (I2b): outbound — a skill is instructions a later, unwatched job run follows.
+    outbound: true,
     description: 'Revise one of your own skills — fix a wrong step, add what you just learned, or set active:false to retire it. Changes go live immediately. Audit and improve your skills whenever you find them lacking.',
     kind: 'create',
     toolset: 'skill-admin',
