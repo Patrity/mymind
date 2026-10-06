@@ -28,9 +28,9 @@ import type { AgentTool, ToolExecution } from '../types'
 import type { UndoResult } from '../undo'
 import type { GoogleDeps } from '../../google/client'
 import { googleErrorMessage } from '../../google/client'
-import { resolveAccounts, fanOut } from '../../google/accounts'
+import { resolveAccounts, resolveOneAccount as oneAccount, fanOut } from '../../google/accounts'
+import { createNoncePinStore } from '../../google/approval-pins'
 import type { Connection } from '../../google/connections'
-import { GoogleReconnectError } from '../../google/token'
 import { buildRawMessage, header, parseMessagePayload, rawMessageHeaders } from '../../google/mime'
 import {
   searchThreads, getThread, createDraft, updateDraft, deleteDraft, getDraft, sendDraft, listLabels, modifyThread, batchModifyMessages
@@ -66,18 +66,6 @@ function errorOf(err: unknown, c?: Connection): string {
   return googleErrorMessage(err, c?.label ?? 'Google')
 }
 
-/** A write (or a thread-scoped read) targets exactly one named account. A connection already
- *  marked needs_reconnect is refused up front with the same wording a mid-flight reconnect gets. */
-async function oneAccount(account: unknown): Promise<{ ok: true, c: Connection } | { ok: false, error: string }> {
-  const r = await resolveAccounts(typeof account === 'string' ? account : undefined, { write: true })
-  if (!r.ok) return r
-  const c = r.connections[0]!
-  if (c.status !== 'ok') {
-    return { ok: false, error: errorOf(new GoogleReconnectError(c, c.lastError ?? 'needs reconnecting'), c) }
-  }
-  return { ok: true, c }
-}
-
 function draftLink(c: Connection, messageId: string | undefined): string {
   const base = `https://mail.google.com/mail/u/${c.email}/#drafts`
   return messageId ? `${base}?compose=${messageId}` : base
@@ -104,32 +92,11 @@ function withRe(subject: string): string {
 // carry a short TTL (long enough to outlast the iMessage approval wait, APPROVAL_TIMEOUT_MS in
 // channels/approvals.ts) and are swept on access so an approval nobody ever decides doesn't leak
 // memory forever.
-const SEND_PIN_TTL_MS = 15 * 60 * 1000 // 15 minutes (the iMessage wait is 10)
-interface SendPin { messageId: string, expiresAt: number }
-const sendPins = new Map<string, SendPin>()
-
-function sweepSendPins(now: number): void {
-  for (const [key, pin] of sendPins) {
-    if (pin.expiresAt <= now) sendPins.delete(key)
-  }
-}
-
-function rememberPin(nonce: string, messageId: string): void {
-  const now = Date.now()
-  sweepSendPins(now)
-  sendPins.set(nonce, { messageId, expiresAt: now + SEND_PIN_TTL_MS })
-}
-
-/** Looks up THIS nonce's pin and consumes it (one-shot) regardless of outcome — a second lookup
- *  for the same nonce always misses, whether or not the first one matched. */
-function takePin(nonce: string): string | undefined {
-  const now = Date.now()
-  sweepSendPins(now)
-  const pin = sendPins.get(nonce)
-  sendPins.delete(nonce)
-  if (!pin || pin.expiresAt <= now) return undefined
-  return pin.messageId
-}
+// The store itself (TTL, sweep, one-shot take, empty-nonce guard) is shared with the calendar
+// tools: server/lib/google/approval-pins.ts. Its value here is the draft's message id.
+const sendPins = createNoncePinStore<string>()
+const rememberPin = (nonce: string, messageId: string): void => sendPins.remember(nonce, messageId)
+const takePin = (nonce: string): string | undefined => sendPins.take(nonce)
 
 /** Test seam: forget every pin, as a restart would. */
 export function _resetSendPins(): void {

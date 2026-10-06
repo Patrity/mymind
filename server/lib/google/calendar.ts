@@ -50,6 +50,8 @@ export interface CalendarEvent {
   conferenceData?: { entryPoints?: { entryPointType?: string, uri?: string }[] }
   organizer?: { email?: string, displayName?: string, self?: boolean }
   attendees?: EventAttendee[]
+  /** Google withheld the guest list (e.g. too many guests, or Tony can't see them). */
+  attendeesOmitted?: boolean
   recurringEventId?: string
   colorId?: string
   transparency?: string
@@ -67,15 +69,16 @@ export async function listCalendars(c: Connection, deps: GoogleDeps = {}): Promi
   return (res?.items ?? []).filter(e => e.selected !== false)
 }
 
-/** Single instances (recurring events expanded), ordered by start. */
+/** Single instances (recurring events expanded), ordered by start. `truncated` when Google has
+ *  more than MAX_EVENTS_PER_CALENDAR in the window (a nextPageToken we don't follow). */
 export async function listEvents(
   c: Connection, calendarId: string, opts: { timeMin: string, timeMax: string, q?: string }, deps: GoogleDeps = {}
-): Promise<CalendarEvent[]> {
-  const res = await google(c, deps).get<{ items?: CalendarEvent[] }>(`${cal(calendarId)}/events`, {
+): Promise<{ items: CalendarEvent[], truncated: boolean }> {
+  const res = await google(c, deps).get<{ items?: CalendarEvent[], nextPageToken?: string }>(`${cal(calendarId)}/events`, {
     timeMin: opts.timeMin, timeMax: opts.timeMax, singleEvents: true, orderBy: 'startTime',
     q: opts.q, maxResults: MAX_EVENTS_PER_CALENDAR
   })
-  return (res?.items ?? []).filter(e => e.status !== 'cancelled')
+  return { items: (res?.items ?? []).filter(e => e.status !== 'cancelled'), truncated: !!res?.nextPageToken }
 }
 
 export async function getEvent(c: Connection, calendarId: string, eventId: string, deps: GoogleDeps = {}): Promise<CalendarEvent> {

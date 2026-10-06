@@ -87,3 +87,18 @@ export async function fanOut<T>(
 
   return { items, warnings }
 }
+
+/**
+ * A write (or a single-thread/event read) targets exactly one NAMED account. A connection already
+ * marked needs_reconnect is refused up front with the same §6 wording a mid-flight reconnect gets.
+ * Shared by the gmail and calendar toolsets.
+ */
+export async function resolveOneAccount(account: unknown): Promise<{ ok: true, c: Connection } | { ok: false, error: string }> {
+  const r = await resolveAccounts(typeof account === 'string' ? account : undefined, { write: true })
+  if (!r.ok) return r
+  const c = r.connections[0]!
+  if (c.status !== 'ok') {
+    return { ok: false, error: googleErrorMessage(new GoogleReconnectError(c, c.lastError ?? 'needs reconnecting'), c.label) }
+  }
+  return { ok: true, c }
+}

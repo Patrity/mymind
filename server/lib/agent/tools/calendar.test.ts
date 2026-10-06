@@ -33,6 +33,7 @@ import { UNTRUSTED_NOTE } from '../../google/untrusted'
 import { listConnections, type Connection } from '../../google/connections'
 import { GoogleReconnectError } from '../../google/token'
 import { fakeFetch, type FakeFetchRequest, type FakeFetchResponse } from '../../google/fake-fetch'
+import { parseAgentTime } from '../../google/time'
 import type { AgentTool } from '../types'
 
 function conn(overrides: Partial<Connection>): Connection {
@@ -191,6 +192,42 @@ describe('calendar_list_events', () => {
     expect(errOf(await run('calendar_list_events', { from: '2026-10-09', to: '2026-10-08' }))).toMatch(/after/)
   })
 
+  it('I2: "2026-10-08 14:00" (space, not T) is agent-tz wall clock even when the SERVER zone is UTC; non-ISO input is rejected', async () => {
+    const prevTz = process.env.TZ
+    process.env.TZ = 'UTC' // prod's zone — the old Date.parse fallback read this string as 14:00Z
+    try {
+      let seen: URLSearchParams | undefined
+      useRoutes({
+        [`GET ${C}/users/me/calendarList`]: () => ({ json: { items: [{ id: 'primary' }] } }),
+        [`GET ${calPath('primary')}/events`]: (req) => { seen = req.url.searchParams; return { json: { items: [] } } }
+      })
+      vi.mocked(listConnections).mockResolvedValue([work])
+      expect(errOf(await run('calendar_list_events', { from: '2026-10-08 14:00', to: '2026-10-08 15:30:00' }))).toBeUndefined()
+      expect(seen!.get('timeMin')).toBe('2026-10-08T19:00:00.000Z')
+      expect(seen!.get('timeMax')).toBe('2026-10-08T20:30:00.000Z')
+      expect(parseAgentTime('2026-10-08 14:00', 'America/Chicago')!.toISOString()).toBe('2026-10-08T19:00:00.000Z')
+      expect(parseAgentTime('2026-10-08', 'America/Chicago')!.toISOString()).toBe('2026-10-08T05:00:00.000Z')
+      for (const bad of ['Oct 8, 2026 2:00 PM', 'next tuesday', '2026/10/08 14:00', '10/08/2026', '2026-02-30', '2026-10-08T25:00', '']) {
+        expect(parseAgentTime(bad, 'America/Chicago'), bad).toBeNull()
+      }
+      expect(errOf(await run('calendar_list_events', { from: 'Oct 8, 2026 2:00 PM', to: '2026-10-09' }))).toBe('from: unrecognized time — use ISO like 2026-10-08T14:00')
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ
+      else process.env.TZ = prevTz
+    }
+  })
+
+  it('m4: a calendar with more than 100 events in the window → truncated: true and a warning', async () => {
+    vi.mocked(listConnections).mockResolvedValue([work])
+    useRoutes({
+      [`GET ${C}/users/me/calendarList`]: () => ({ json: { items: [{ id: 'primary' }] } }),
+      [`GET ${calPath('primary')}/events`]: () => ({ json: { items: [{ id: 'a', start: { dateTime: '2026-10-08T14:00:00Z' }, end: { dateTime: '2026-10-08T15:00:00Z' } }], nextPageToken: 'more' } })
+    })
+    const r = (await run('calendar_list_events', { from: '2026-10-08', to: '2026-10-09' })).result as { truncated?: boolean, warnings?: string[] }
+    expect(r.truncated).toBe(true)
+    expect(r.warnings?.[0]).toMatch(/work: calendar primary has more than 100 events/)
+  })
+
   it('one account failing is a warning, not a failure', async () => {
     useRoutes({
       [`GET ${C}/users/me/calendarList`]: req => acct(req) === 'work' ? { status: 404, json: { error: { message: 'nope' } } } : { json: { items: [{ id: 'primary' }] } },
@@ -240,6 +277,29 @@ describe('calendar_find_free_time', () => {
     expect(r.slots.map(s => s.start.slice(0, 16))).toEqual(['2026-10-10T08:00', '2026-10-10T08:30'])
     const many = await run('calendar_find_free_time', { from: '2026-10-01', to: '2026-10-31', durationMinutes: 15 })
     expect((many.result as { slots: unknown[] }).slots).toHaveLength(20)
+  })
+
+  it('across the DST change (Sun 2026-11-01, CDT → CST) each day\'s 09:00 stays 09:00 local', async () => {
+    vi.mocked(listConnections).mockResolvedValue([work])
+    useRoutes({
+      [`GET ${C}/users/me/calendarList`]: () => ({ json: { items: [{ id: 'primary' }] } }),
+      [`POST ${C}/freeBusy`]: () => ({ json: { calendars: { primary: { busy: [] } } } })
+    })
+    const out = await run('calendar_find_free_time', { from: '2026-10-31', to: '2026-11-02', durationMinutes: 60, workingHours: '09:00-10:00' })
+    const r = out.result as { slots: Array<{ start: string, end: string }> }
+    expect(r.slots.map(s => s.start.slice(0, 25))).toEqual(['2026-10-31T09:00:00-05:00', '2026-11-01T09:00:00-06:00', '2026-11-02T09:00:00-06:00'])
+    expect(r.slots[1]!.end.slice(0, 25)).toBe('2026-11-01T10:00:00-06:00')
+  })
+
+  it('m5: a window longer than 62 days is searched only for its first 62 days — with a warning', async () => {
+    vi.mocked(listConnections).mockResolvedValue([work])
+    useRoutes({
+      [`GET ${C}/users/me/calendarList`]: () => ({ json: { items: [{ id: 'primary' }] } }),
+      [`POST ${C}/freeBusy`]: () => ({ json: { calendars: { primary: { busy: [{ start: '2026-01-01T00:00:00Z', end: '2026-03-04T00:00:00Z' }] } } } })
+    })
+    const r = (await run('calendar_find_free_time', { from: '2026-01-01', to: '2026-06-30', durationMinutes: 60 })).result as { slots: unknown[], warnings?: string[] }
+    expect(r.warnings).toContain('only the first 62 days were searched')
+    expect(r.slots).toEqual([]) // the first 62 days are fully busy; nothing beyond them is offered
   })
 
   it('when no account could report busy times it errors instead of claiming everything is free', async () => {
@@ -298,6 +358,8 @@ describe('calendar_write_event', () => {
         posted = { body: req.body as Record<string, unknown>, sendUpdates: req.url.searchParams.get('sendUpdates'), account: acct(req) }
         return { json: { id: 'new1', ...(req.body as object) } }
       },
+      // undo re-checks the event first (review m3): still Tony's, still guest-free
+      [`GET ${calPath('primary')}/events/new1`]: () => ({ json: { id: 'new1', organizer: { email: 'tony@costanzoclan.com', self: true } } }),
       [`DELETE ${calPath('primary')}/events/new1`]: (req) => { deleted = req.url.searchParams; return { status: 204 } }
     })
     const out = await run('calendar_write_event', { account: 'personal', op: 'create', title: 'Dentist', start: '2026-10-08T14:00', description: 'secret' })
@@ -311,7 +373,7 @@ describe('calendar_write_event', () => {
     })
     expect(posted!.body).not.toHaveProperty('attendees')
     expect(out.undo).toBeDefined()
-    await out.undo!()
+    expect(await out.undo!()).toEqual({ ok: true })
     expect(fetch.calls).toContain(`DELETE ${calPath('primary')}/events/new1`)
     expect(deleted!.get('sendUpdates')).toBe('none')
   })
@@ -368,6 +430,57 @@ describe('calendar_write_event', () => {
     expect(errOf(await run('calendar_write_event', { account: 'work', op: 'delete' }))).toMatch(/eventId/)
   })
 
+  it('I1: an invite Tony did NOT organize (only his own attendee entry visible) → refused, no PATCH/DELETE', async () => {
+    const invite = {
+      id: 'e-inv', etag: '"1"', summary: 'Their meeting', start: { dateTime: '2026-10-08T15:00:00Z' }, end: { dateTime: '2026-10-08T16:00:00Z' },
+      organizer: { email: 'boss@work.com', self: false },
+      attendees: [{ email: 'tony@work.com', self: true, responseStatus: 'accepted' }]
+    }
+    const fetch = useRoutes({ [`GET ${calPath('primary')}/events/e-inv`]: () => ({ json: invite }) })
+    for (const op of ['delete', 'update'] as const) {
+      const out = await run('calendar_write_event', { account: 'work', op, eventId: 'e-inv', title: 'Mine now' })
+      expect(errOf(out)).toBe('you\'re not the organizer of this event — use calendar_rsvp to decline')
+    }
+    expect(fetch.calls).toEqual([`GET ${calPath('primary')}/events/e-inv`, `GET ${calPath('primary')}/events/e-inv`])
+  })
+
+  it('I1: attendeesOmitted (Google withheld the guest list) → refused as a guest event, no PATCH/DELETE', async () => {
+    const omitted = { ...soloEvent, id: 'e-omit', attendees: [], attendeesOmitted: true }
+    const fetch = useRoutes({ [`GET ${calPath('primary')}/events/e-omit`]: () => ({ json: omitted }) })
+    for (const op of ['delete', 'update'] as const) {
+      expect(errOf(await run('calendar_write_event', { account: 'work', op, eventId: 'e-omit', title: 'x' }))).toBe('this event has guests — use calendar_guest_event')
+    }
+    expect(fetch.calls.every(c => c.startsWith('GET'))).toBe(true)
+  })
+
+  it('m3: undo re-checks — if guests were added since, it refuses and does not PATCH', async () => {
+    let withGuests = false
+    const patches: unknown[] = []
+    useRoutes({
+      [`GET ${calPath('primary')}/events/e-solo`]: () => ({ json: withGuests ? { ...soloEvent, attendees: [...soloEvent.attendees, { email: 'ann@a.com' }] } : soloEvent }),
+      [`PATCH ${calPath('primary')}/events/e-solo`]: (req) => { patches.push(req.body); return { json: soloEvent } }
+    })
+    const out = await run('calendar_write_event', { account: 'work', op: 'update', eventId: 'e-solo', title: 'Deep work' })
+    expect(patches).toHaveLength(1)
+    withGuests = true
+    expect(await out.undo!()).toEqual({ ok: false, reason: 'not reverted — the event now has guests' })
+    expect(patches).toHaveLength(1)
+  })
+
+  it('m8: an update passing only allDay is an explicit error, not silently ignored', async () => {
+    const fetch = useRoutes({ [`GET ${calPath('primary')}/events/e-solo`]: () => ({ json: soloEvent }) })
+    const out = await run('calendar_write_event', { account: 'work', op: 'update', eventId: 'e-solo', allDay: true })
+    expect(errOf(out)).toBe('to make it all-day, also pass start (a date) and optionally end')
+    expect(fetch.calls.filter(c => c.startsWith('PATCH'))).toEqual([])
+  })
+
+  it('I2: a non-ISO start is rejected — nothing is posted', async () => {
+    const fetch = useRoutes({})
+    const out = await run('calendar_write_event', { account: 'work', op: 'create', title: 'X', start: 'Oct 8, 2026 2:00 PM' })
+    expect(errOf(out)).toBe('start: unrecognized time — use ISO like 2026-10-08T14:00')
+    expect(fetch.calls).toEqual([])
+  })
+
   it('redactForLog masks description', async () => {
     const masked = await tool('calendar_write_event').redactForLog!({ account: 'work', op: 'create', description: 'hello there' })
     expect(masked.description).toBe('<11 chars>')
@@ -407,11 +520,48 @@ describe('calendar_guest_event', () => {
     expect(out.undo).toBeUndefined()
   })
 
-  it('create requires at least one attendee — nothing is posted', async () => {
+  it('create requires at least one attendee — the card says deny, writes no pin, and nothing is posted', async () => {
     const fetch = useRoutes({})
-    const out = await run_({ account: 'work', op: 'create', title: 'Lunch', start: '2026-10-08T12:00' })
-    expect(errOf(out)).toMatch(/attendee/)
+    const args = { account: 'work', op: 'create', title: 'Lunch', start: '2026-10-08T12:00' }
+    const req = await describe_(args)
+    expect(req.command).toMatch(/at least one attendee.*— deny/)
+    const out = await run_(args)
+    expect(errOf(out)).toBe('the invite could not be shown for approval — nothing was sent')
     expect(fetch.calls).toEqual([])
+  })
+
+  it('m6: a create whose card failed to load (no pin for this nonce) sends NOTHING even if approved', async () => {
+    const fetch = useRoutes({ [`POST ${calPath('primary')}/events`]: () => ({ json: { id: 'x' } }) })
+    vi.mocked(listConnections).mockRejectedValueOnce(new Error('db down')) // describeApproval's lookup fails
+    const args = { account: 'work', op: 'create', title: 'Lunch', start: '2026-10-08T12:00', attendees: ['ann@a.com'] }
+    const req = await describe_(args)
+    expect(req.command).toMatch(/could not be loaded — deny/)
+    const out = await run_(args)
+    expect(errOf(out)).toBe('the invite could not be shown for approval — nothing was sent')
+    expect(fetch.calls).toEqual([])
+  })
+
+  it('m6: a create pin is bound to the exact planned request — different args under that nonce are refused', async () => {
+    const fetch = useRoutes({ [`POST ${calPath('primary')}/events`]: () => ({ json: { id: 'x' } }) })
+    await describe_({ account: 'work', op: 'create', title: 'Lunch', start: '2026-10-08T12:00', attendees: ['ann@a.com'] })
+    const out = await run_({ account: 'work', op: 'create', title: 'Lunch', start: '2026-10-08T12:00', attendees: ['eve@evil.com'] })
+    expect(errOf(out)).toBe('the invite differs from the one you approved — ask again')
+    expect(fetch.calls).toEqual([])
+  })
+
+  it('m1: update/cancel of an event Tony did not organize is refused — card says deny, no PATCH/DELETE', async () => {
+    const invite = { ...existing('"e1"'), organizer: { email: 'boss@work.com' } }
+    const fetch = useRoutes({
+      [`GET ${calPath('primary')}/events/g1`]: () => ({ json: invite }),
+      [`PATCH ${calPath('primary')}/events/g1`]: () => ({ json: { id: 'g1' } }),
+      [`DELETE ${calPath('primary')}/events/g1`]: () => ({ status: 204 })
+    })
+    for (const args of [{ account: 'work', op: 'cancel', eventId: 'g1' }, { account: 'work', op: 'update', eventId: 'g1', title: 'X' }]) {
+      const req = await describe_(args)
+      expect(req.command).toBe('you\'re not the organizer — use calendar_rsvp to decline — deny')
+      expect(errOf(await run_(args))).toBe('the event could not be loaded — nothing was changed')
+    }
+    expect(fetch.calls.filter(c => !c.startsWith('GET'))).toEqual([])
   })
 
   it('update: card shows the fetched event and the change; PATCH sendUpdates=all when the etag is unchanged', async () => {
@@ -566,6 +716,16 @@ describe('calendar_rsvp', () => {
     expect(req.command).toMatch(/not an attendee/)
     const out = await run_(args)
     expect(errOf(out)).toBe('you are not an attendee of this event')
+    expect(fetch.calls.filter(c => c.startsWith('PATCH'))).toEqual([])
+  })
+
+  it('m2: Tony organizes the event → RSVP refused (an organizer attendees PATCH would email every guest)', async () => {
+    const mine = { ...invite, organizer: { email: 'tony@work.com', self: true } }
+    const fetch = useRoutes({ [`GET ${calPath('primary')}/events/inv1`]: () => ({ json: mine }), [`PATCH ${calPath('primary')}/events/inv1`]: () => ({ json: {} }) })
+    const args = { account: 'work', calendarId: 'primary', eventId: 'inv1', response: 'accepted' }
+    const req = await describe_(args)
+    expect(req.command).toMatch(/^you organize this event — change it with calendar_guest_event .* — deny$/)
+    expect(errOf(await run_(args))).toBe('the event could not be loaded — nothing was changed')
     expect(fetch.calls.filter(c => c.startsWith('PATCH'))).toEqual([])
   })
 
