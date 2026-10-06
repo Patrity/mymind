@@ -1,23 +1,15 @@
 <!-- app/components/agent/ApprovalConfirmation.vue -->
 <!-- Elements Confirmation rendered ON the exec tool part awaiting approval — replaces the old
      detached ApprovalPrompt.vue banner. `details` (tool/command/proposedPattern) come from
-     voice.pendingApproval, matched by the caller on part.approval.id; when absent this still
-     works with just the input JSON and the tool name. -->
+     voice.pendingApprovals (one entry PER request, cycle 79 fix wave I1), looked up by the caller
+     on part.approval.id. When absent, an exec card still works from its input JSON (exec's args
+     are the command); any other tool's card offers Deny only — its args don't show what would
+     actually be sent. -->
 <script setup lang="ts">
 import type { AgentUIPart } from '~~/shared/types/agent-ui'
+import { canApprove, type PendingApprovalDetails } from '~/lib/agent/approvals'
 import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationRequest, ConfirmationTitle } from '@/components/ai-elements/confirmation'
 
-export interface PendingApprovalDetails {
-  requestId: string
-  tool: string
-  command: string
-  proposedPattern: string
-  /** False for tools Tony must confirm every time (decide_review): no "always allow". */
-  allowlistable?: boolean
-  /** Per-tool card heading (cycle 79 review m1) — e.g. gmail_send's "Send this email?". Falls
-   *  back to the generic "Run this?" when absent. */
-  title?: string
-}
 
 type ApprovalPart = Extract<AgentUIPart, { type: 'dynamic-tool'; state: 'approval-requested' }>
 
@@ -42,6 +34,8 @@ watch(
 
 const inputJson = computed(() => JSON.stringify(props.part.input, null, 2))
 
+const approvable = computed(() => canApprove(props.part.toolName, props.details))
+
 const canRemember = computed(() => props.details?.allowlistable === true)
 
 // exec commands are one-liners whose long unbroken tokens (paths, flags) are better clipped
@@ -50,6 +44,7 @@ const canRemember = computed(() => props.details?.allowlistable === true)
 const wrapClass = computed(() => (props.details?.tool ?? props.part.toolName) === 'exec' ? 'break-all' : 'break-words')
 
 function approve() {
+  if (!approvable.value) return
   emit('approve', props.part.approval.id, { remember: canRemember.value && remember.value, pattern: pattern.value })
 }
 function deny() {
@@ -70,9 +65,12 @@ function deny() {
       <div class="flex flex-col gap-3">
         <ConfirmationTitle>
           <span v-if="details">{{ details.title ?? 'Run this?' }}</span>
-          <span v-else>Approve <code class="font-mono">{{ part.toolName }}</code>?</span>
+          <span v-else-if="approvable">Approve <code class="font-mono">{{ part.toolName }}</code>?</span>
+          <span v-else data-testid="approval-details-unavailable">Details unavailable — deny <code class="font-mono">{{ part.toolName }}</code></span>
         </ConfirmationTitle>
-        <pre class="overflow-x-auto whitespace-pre-wrap rounded bg-elevated/60 p-2 text-xs font-mono" :class="wrapClass">{{ details ? details.command : inputJson }}</pre>
+        <!-- Never truncated (review I2): the card shows the WHOLE email body / description / note
+             that will be sent, scrolling instead of cutting it off. -->
+        <pre class="max-h-96 overflow-auto whitespace-pre-wrap rounded bg-elevated/60 p-2 text-xs font-mono" :class="wrapClass" data-testid="approval-command">{{ details ? details.command : inputJson }}</pre>
         <div v-if="details && canRemember" class="flex flex-wrap items-center gap-2" data-testid="approval-always-allow">
           <UCheckbox v-model="remember" />
           <span class="text-sm text-muted">Always allow commands matching</span>
@@ -82,7 +80,7 @@ function deny() {
           <ConfirmationAction variant="outline" @click="deny">
             Deny
           </ConfirmationAction>
-          <ConfirmationAction @click="approve">
+          <ConfirmationAction v-if="approvable" @click="approve">
             Approve
           </ConfirmationAction>
         </ConfirmationActions>

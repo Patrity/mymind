@@ -4,6 +4,7 @@ import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
 import { framesOnOpen } from '../lib/voice/reconnect'
 import { createClientTurns } from '../lib/agent/turn-stream'
 import { epochDividers } from '../lib/agent/dividers'
+import { addApproval, removeApproval, type PendingApprovals } from '../lib/agent/approvals'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
 
@@ -30,7 +31,10 @@ export function useVoice() {
   const error = ref<string | null>(null)
   /** Live Silero speech probability (0..1) — feeds the settings tuning meter. */
   const speechProb = ref(0)
-  const pendingApproval = ref<{ requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean; title?: string } | null>(null)
+  /** Every pending approval's details, keyed by requestId (cycle 79 fix wave I1): concurrent
+   *  dangerous calls in one step each keep their own card — a single slot let the newest frame
+   *  overwrite an older card's details while its Approve still worked. */
+  const pendingApprovals = ref<PendingApprovals>({})
   /**
    * The thread this connection is in. Written from three places and nowhere else:
    * the server's `conversation` frame (first turn of a NEW thread — the only way the
@@ -308,7 +312,9 @@ export function useVoice() {
     const socket = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
     socket.binaryType = 'arraybuffer'
     ws = socket
-    socket.onclose = () => { connected.value = false; state.value = 'idle'; turns.disconnect() }
+    // The server denies every approval this socket was asked when it closes (denyPendingApprovals),
+    // so no card from it can be answered any more — drop them all.
+    socket.onclose = () => { connected.value = false; state.value = 'idle'; turns.disconnect(); pendingApprovals.value = {} }
     socket.onerror = () => { error.value = 'WebSocket error' }
     socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
@@ -336,8 +342,8 @@ export function useVoice() {
         }
         if (fx.state) state.value = fx.state
         if (fx.error) error.value = fx.error
-        if (fx.approval) pendingApproval.value = fx.approval
-        if (fx.approvalResolved && pendingApproval.value?.requestId === fx.approvalResolved) pendingApproval.value = null
+        if (fx.approval) pendingApprovals.value = addApproval(pendingApprovals.value, fx.approval)
+        if (fx.approvalResolved) pendingApprovals.value = removeApproval(pendingApprovals.value, fx.approvalResolved)
         if (fx.conversation) {
           conversationId.value = fx.conversation.id
           conversationTitle.value = fx.conversation.title
@@ -727,12 +733,12 @@ export function useVoice() {
     // signal chain below — playback routes through it — but its only reader was the retired
     // avatar's jaw envelope, so there is no accessor for it any more. MicBand reads mic only.
     micAnalyser: () => micAnalyser,
-    pendingApproval,
+    pendingApprovals,
     sendApproval: (requestId: string, approved: boolean, opts?: { remember?: boolean; pattern?: string }) => {
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: approved ? 'approve' : 'deny', requestId, remember: opts?.remember, pattern: opts?.pattern }))
       }
-      if (pendingApproval.value?.requestId === requestId) pendingApproval.value = null
+      pendingApprovals.value = removeApproval(pendingApprovals.value, requestId)
     },
   }
 }

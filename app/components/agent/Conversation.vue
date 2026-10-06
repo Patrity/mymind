@@ -5,7 +5,7 @@
 // now come from Elements instead of hand-rolled ResizeObserver/MDC-cache-key plumbing.
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
 import type { VoiceState } from '~/composables/useVoice'
-import type { PendingApprovalDetails } from './ApprovalConfirmation.vue'
+import type { PendingApprovals } from '~/lib/agent/approvals'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
@@ -17,8 +17,9 @@ import { deliveryBadge, summarizeDeliveries } from '~/lib/channels/delivery-badg
 const props = defineProps<{
   messages: AgentUIMessage[]
   undone?: ReadonlySet<string>
-  /** The pending approval's details, or null — forwarded to whichever tool part it belongs to. */
-  approval?: PendingApprovalDetails | null
+  /** Every pending approval's details keyed by requestId (cycle 79 fix wave I1) — each tool
+   *  part looks up its own entry by its approval.id. */
+  approvals?: PendingApprovals | null
   /** Forwarded to AgentEmptyState for the hero Persona. */
   state: VoiceState
   connected: boolean
@@ -221,7 +222,7 @@ function eventLabel(m: AgentUIMessage): string {
                   :part="p"
                   :steps="subagentSteps(m, p.toolCallId)"
                   :undone="undone?.has(p.toolCallId)"
-                  :approval="approval"
+                  :approvals="approvals"
                   @undo="(t: string) => emit('undo', p.toolCallId, t)"
                   @approve="(id: string, opts) => emit('approve', id, opts)"
                   @deny="(id: string) => emit('deny', id)"

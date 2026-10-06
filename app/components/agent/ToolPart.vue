@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentUIPart, SubagentStep, ToolEnvelope } from '~~/shared/types/agent-ui'
-import type { PendingApprovalDetails } from './ApprovalConfirmation.vue'
+import { approvalFor, type PendingApprovals } from '~/lib/agent/approvals'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { toolTitle, isRunning } from '~/lib/agent/render'
 
@@ -8,7 +8,8 @@ const props = defineProps<{
   part: Extract<AgentUIPart, { type: 'dynamic-tool' }>
   steps: SubagentStep[] | null
   undone?: boolean
-  approval?: PendingApprovalDetails | null
+  /** Every pending approval's details, by requestId — this part renders only its OWN entry. */
+  approvals?: PendingApprovals | null
 }>()
 const emit = defineEmits<{
   undo: [undoToken: string]
@@ -20,7 +21,7 @@ const envelope = computed(() => (props.part.state === 'output-available' ? props
 const running = computed(() => isRunning(props.part))
 const pendingPart = computed(() => (props.part.state === 'approval-requested' ? props.part : null))
 const approvalDetails = computed(() => (
-  pendingPart.value && props.approval?.requestId === pendingPart.value.approval.id ? props.approval : null
+  pendingPart.value ? approvalFor(props.approvals, pendingPart.value.approval.id) : null
 ))
 </script>
 

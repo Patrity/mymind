@@ -5,7 +5,8 @@ import type { LanguageModelUsage } from 'ai'
 import type { AgentUIMessage } from '~~/shared/types/agent-ui'
 import type { AttachmentRef } from '~~/shared/types/conversation'
 import type { VoiceState } from '~/composables/useVoice'
-import type { PendingApprovalDetails } from '@/components/agent/ApprovalConfirmation.vue'
+import { addApproval, type PendingApprovalDetails, type PendingApprovals } from '~/lib/agent/approvals'
+import { mapServerMessage } from '~/lib/voice/messages'
 import type { ContextMeterData } from '~/lib/agent/context-meter'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
@@ -156,23 +157,24 @@ const agentPersonaConnected = ref(true)
 const contextKnownWindow: ContextMeterData = { usedTokens: 42000, maxTokens: 200000, modelDefId: 'demo' }
 const contextUnknownWindow: ContextMeterData = { usedTokens: 1800, maxTokens: null, modelDefId: 'demo' }
 
-// Only 'r1' has details (voice.pendingApproval); 'r2' proves the minimal (no details) path —
-// AgentToolPart only forwards `details` to the part whose approval.id matches.
-const approvalDetails = ref<PendingApprovalDetails | null>({
+// Only 'r1' has details (voice.pendingApprovals); 'r2' (a non-exec tool) proves the no-details
+// path offers Deny only — AgentToolPart forwards each part only its OWN entry (by approval.id).
+const one = (d: PendingApprovalDetails): PendingApprovals => addApproval({}, d)
+const approvalDetails = ref<PendingApprovals>(one({
   requestId: 'r1',
   tool: 'exec',
   command: 'rm -rf /tmp/scratch',
   proposedPattern: 'rm -rf /tmp/*',
   allowlistable: true
-})
+}))
 // decide_review (cycle 76) is not allowlistable: its card must offer no "always allow".
-const decideApprovalDetails = ref<PendingApprovalDetails | null>({
+const decideApprovalDetails = ref<PendingApprovals>(one({
   requestId: 'r3',
   tool: 'decide_review',
   command: 'approve — skill.edit weekly-report: Tony asked for bullets',
   proposedPattern: '',
   allowlistable: false
-})
+}))
 const decideApprovalMessages: AgentUIMessage[] = [{
   id: 'approval-3', role: 'assistant',
   parts: [{
@@ -183,7 +185,7 @@ const decideApprovalMessages: AgentUIMessage[] = [{
 // gmail_send (cycle 79 review m1): per-tool title ("Send this email?" instead of the generic
 // "Run this?") and a multi-line draft card — a long prose line must wrap on WORD boundaries, not
 // mid-word (the fix changed the <pre>'s break-all to break-words for every tool except exec).
-const gmailSendApprovalDetails = ref<PendingApprovalDetails | null>({
+const gmailSendApprovalDetails = ref<PendingApprovals>(one({
   requestId: 'r4',
   tool: 'gmail_send',
   title: 'Send this email?',
@@ -202,13 +204,34 @@ const gmailSendApprovalDetails = ref<PendingApprovalDetails | null>({
   ].join('\n'),
   proposedPattern: '',
   allowlistable: false
-})
+}))
 const gmailSendApprovalMessages: AgentUIMessage[] = [{
   id: 'approval-4', role: 'assistant',
   parts: [{
     type: 'dynamic-tool', toolName: 'gmail_send', toolCallId: 't-send', state: 'approval-requested',
     input: { account: 'work', draftId: 'd1' }, approval: { id: 'r4' }
   }]
+}]
+// Cycle 79 fix wave I1: two dangerous calls in ONE step (the AI SDK runs them concurrently) —
+// two server `approval` frames, fed through the SAME client path useVoice uses
+// (mapServerMessage → addApproval), so each card must keep its own email. A third call
+// (calendar_rsvp) has no frame at all: its card must offer Deny only.
+const longBody = Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of a long email body that must be shown in full, never truncated.`).join('\n')
+const concurrentFrames = [
+  { type: 'approval', requestId: 'r5', tool: 'gmail_send', title: 'Send this email?', command: `From: tony@work.com\nTo: ann@example.com\nSubject: First email (r5)\n\nHi Ann — this is the FIRST draft.\n${longBody}\nEND-OF-FIRST-BODY`, proposedPattern: '', allowlistable: false },
+  { type: 'approval', requestId: 'r6', tool: 'gmail_send', title: 'Send this email?', command: 'From: tony@work.com\nTo: bo@example.com\nSubject: Second email (r6)\n\nHi Bo — this is the SECOND draft.', proposedPattern: '', allowlistable: false }
+]
+const concurrentApprovals = ref<PendingApprovals>(concurrentFrames.reduce<PendingApprovals>((acc, f) => {
+  const fx = mapServerMessage(f as never, false, null)
+  return fx.approval ? addApproval(acc, fx.approval) : acc
+}, {}))
+const concurrentApprovalMessages: AgentUIMessage[] = [{
+  id: 'approval-5', role: 'assistant',
+  parts: [
+    { type: 'dynamic-tool', toolName: 'gmail_send', toolCallId: 't-send-1', state: 'approval-requested', input: { account: 'work', draftId: 'd1' }, approval: { id: 'r5' } },
+    { type: 'dynamic-tool', toolName: 'gmail_send', toolCallId: 't-send-2', state: 'approval-requested', input: { account: 'work', draftId: 'd2' }, approval: { id: 'r6' } },
+    { type: 'dynamic-tool', toolName: 'calendar_rsvp', toolCallId: 't-rsvp', state: 'approval-requested', input: { account: 'work', eventId: 'e1', response: 'accepted' }, approval: { id: 'r7' } }
+  ]
 }]
 const approvalFixtureMessages: AgentUIMessage[] = [
   {
@@ -597,13 +620,13 @@ function onBranchPagerGo(which: string, dir: -1 | 1) {
           Inline approval — AgentConversation → AgentToolPart → AgentApprovalConfirmation
         </h2>
         <p class="text-xs text-muted-foreground">
-          't-approve' (approval.id 'r1') has matching details from "voice.pendingApproval";
-          't-approve-minimal' (approval.id 'r2') has none — the minimal (input-JSON) variant.
+          't-approve' (approval.id 'r1') has matching details from "voice.pendingApprovals";
+          't-approve-minimal' (approval.id 'r2', a non-exec tool) has none — Deny only.
         </p>
         <AgentConversation
           class="h-96"
           :messages="approvalFixtureMessages"
-          :approval="approvalDetails"
+          :approvals="approvalDetails"
           state="tool"
           :connected="true"
           :hero="true"
@@ -620,7 +643,7 @@ function onBranchPagerGo(which: string, dir: -1 | 1) {
           class="h-72"
           data-testid="decide-approval-fixture"
           :messages="decideApprovalMessages"
-          :approval="decideApprovalDetails"
+          :approvals="decideApprovalDetails"
           state="tool"
           :connected="true"
           :hero="true"
@@ -634,7 +657,22 @@ function onBranchPagerGo(which: string, dir: -1 | 1) {
           class="h-96"
           data-testid="gmail-send-approval-fixture"
           :messages="gmailSendApprovalMessages"
-          :approval="gmailSendApprovalDetails"
+          :approvals="gmailSendApprovalDetails"
+          state="tool"
+          :connected="true"
+          :hero="true"
+          @approve="onApprovalApprove"
+          @deny="onApprovalDeny"
+        />
+        <p class="text-xs text-muted-foreground">
+          Concurrent approvals (cycle 79 fix wave I1) — two gmail_send frames in one step keep their
+          own cards; calendar_rsvp with no frame offers Deny only.
+        </p>
+        <AgentConversation
+          class="h-[40rem]"
+          data-testid="concurrent-approval-fixture"
+          :messages="concurrentApprovalMessages"
+          :approvals="concurrentApprovals"
           state="tool"
           :connected="true"
           :hero="true"
