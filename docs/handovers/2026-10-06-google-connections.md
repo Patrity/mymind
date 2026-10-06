@@ -2,10 +2,10 @@
 title: Google connections — Gmail, Calendar and Contacts for Bridget across work + personal accounts (cycle 79)
 cycle: 79
 date: 2026-10-06
-status: built  # updated to deployed after CD; acceptance owed (needs Tony's Google setup)
+status: deployed  # CD 37430349947 (07d0c4b), 2026-10-06; inert until Google env set; acceptance owed
 branch: feat/google-connections (worktree .claude/worktrees/feat+google-connections, base 4eff8bf)
-merged: false
-deployed: false
+merged: true
+deployed: true
 specs:
   - ../superpowers/specs/2026-10-05-google-connections-design.md
 plans:
@@ -15,7 +15,7 @@ wiki:
   - ../wiki/agent.md
 migrations:
   - 0067 connections (additive; FK account.id on delete cascade)
-migrations_run_on_prod: false
+migrations_run_on_prod: true  # 0067 verified (to_regclass)
 google_configured_on_prod: false
 acceptance: owed  # spec §7 live list, after Tony's GCP/Workspace setup + env
 blocking_before_connect: "taint hardening follow-up (see Known limits §1) must land before Tony sets NUXT_GOOGLE_CLIENT_ID/SECRET"
@@ -63,3 +63,6 @@ Current-state reference: [wiki/google-connections.md](../wiki/google-connections
 
 ## Tony's setup (DEPLOYMENT.md §20)
 GCP project → enable Gmail/Calendar/People APIs → Google Auth Platform (Branding, Audience = External → **Publish app**, Data Access = the 8 scopes, Clients = Web with both redirect URIs) → Workspace admin console: trust the client id **before** the first link → set `NUXT_GOOGLE_CLIENT_ID/SECRET` in `/opt/mymind/.env.native` → restart → Settings → Connections → connect both accounts → acceptance (spec §7).
+
+## Deploy (2026-10-06)
+CD 37430349947 on 07d0c4b: success. Prod `/api/health` 200 (in-LXC + external), bundle contains `gmail_send`, `connections` table present, `/sign-in/social` 403, 0 journal errors after cutover, authed MCP canary ok. Wiki mirrored: `agent.md`, `google-connections.md` (new, id abfd2326).
