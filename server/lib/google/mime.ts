@@ -26,6 +26,19 @@ function encodeHeaderValue(value: string): string {
   return `=?UTF-8?B?${Buffer.from(value, 'utf8').toString('base64')}?=`
 }
 
+const CRLF = /[\r\n]/
+
+/** Every header value is tool-written and so reachable from prompt-injected email content — a
+ *  bare CR or LF would let `"hi\r\nBcc: attacker@x.com"` inject a new header line into the raw
+ *  RFC 2822 message. Reject outright (the Gmail tool wrapping this turns the throw into
+ *  `{ error }`) rather than strip, since stripping could silently produce a different-looking
+ *  message than the model intended. */
+function assertNoHeaderInjection(label: string, value: string): void {
+  if (CRLF.test(value)) {
+    throw new Error(`invalid ${label}: contains a line break`)
+  }
+}
+
 export function buildRawMessage(m: {
   from: string
   to: string[]
@@ -35,6 +48,13 @@ export function buildRawMessage(m: {
   inReplyTo?: string
   references?: string
 }): string {
+  assertNoHeaderInjection('from', m.from)
+  for (const addr of m.to) assertNoHeaderInjection('to', addr)
+  for (const addr of m.cc ?? []) assertNoHeaderInjection('cc', addr)
+  assertNoHeaderInjection('subject', m.subject)
+  if (m.inReplyTo) assertNoHeaderInjection('in-reply-to', m.inReplyTo)
+  if (m.references) assertNoHeaderInjection('references', m.references)
+
   const lines: string[] = [
     `From: ${m.from}`,
     `To: ${m.to.join(', ')}`
@@ -47,7 +67,9 @@ export function buildRawMessage(m: {
   lines.push('Content-Type: text/plain; charset="UTF-8"')
   lines.push('Content-Transfer-Encoding: 8bit')
   lines.push('')
-  lines.push(m.body)
+  // The body is free text, not a header — newlines are expected. Normalize whatever line
+  // endings it arrived with to CRLF so the message is CRLF-consistent end to end.
+  lines.push(m.body.replace(/\r\n|\r|\n/g, '\r\n'))
 
   const message = lines.join('\r\n')
   return Buffer.from(message, 'utf8').toString('base64url')

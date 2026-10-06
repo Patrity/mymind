@@ -49,51 +49,69 @@ describe('google() client', () => {
     expect(touchConnection).toHaveBeenCalledWith('conn-1')
   })
 
-  it('401 once → calls token again → retries with the new token → returns body', async () => {
+  it('401 → forces a refresh → retries with the new token → returns body', async () => {
     let calls = 0
     const fetch = fakeFetch({
       'GET /thing': ({ headers }) => {
         calls++
-        if (calls === 1) return { status: 401 }
+        if (calls === 1) {
+          expect(headers.get('authorization')).toBe('Bearer tok1')
+          return { status: 401 }
+        }
         expect(headers.get('authorization')).toBe('Bearer tok2')
         return { json: { done: true } }
       }
     })
-    const token = vi.fn()
-      .mockResolvedValueOnce('tok1')
-      .mockResolvedValueOnce('tok2')
-    const result = await google(conn, { fetch, token }).get('https://gmail.googleapis.com/thing')
+    const token = vi.fn(async () => 'tok1')
+    const refresh = vi.fn(async () => 'tok2')
+    const result = await google(conn, { fetch, token, refresh }).get('https://gmail.googleapis.com/thing')
     expect(result).toEqual({ done: true })
-    expect(token).toHaveBeenCalledTimes(2)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(refresh).toHaveBeenCalledWith(conn)
     expect(fetch.calls).toEqual(['GET /thing', 'GET /thing'])
     expect(markReconnect).not.toHaveBeenCalled()
   })
 
-  it('401 twice (different tokens) → throws GoogleApiError(401)', async () => {
+  it('401 → refresh succeeds → still 401 → throws GoogleApiError(401), not marked', async () => {
     const fetch = fakeFetch({
       'GET /thing': () => ({ status: 401, json: { error: { message: 'still unauthorized' } } })
     })
-    const token = vi.fn()
-      .mockResolvedValueOnce('tok1')
-      .mockResolvedValueOnce('tok2')
-    const err = await google(conn, { fetch, token }).get('https://gmail.googleapis.com/thing').catch(e => e)
+    const token = vi.fn(async () => 'tok1')
+    const refresh = vi.fn(async () => 'tok2')
+    const err = await google(conn, { fetch, token, refresh }).get('https://gmail.googleapis.com/thing').catch(e => e)
     expect(err).toBeInstanceOf(GoogleApiError)
     expect((err as GoogleApiError).status).toBe(401)
+    expect(refresh).toHaveBeenCalledTimes(1)
     expect(fetch.calls).toEqual(['GET /thing', 'GET /thing'])
     expect(markReconnect).not.toHaveBeenCalled()
   })
 
-  it('401 with an unchanged token on retry → reconnect condition (markReconnect + GoogleReconnectError), no second request', async () => {
+  it('401 → refresh fails with invalid_grant (GoogleReconnectError) → propagates, no retry request', async () => {
     const fetch = fakeFetch({
       'GET /thing': () => ({ status: 401 })
     })
-    const token = vi.fn(async () => 'same-token')
-    const err = await google(conn, { fetch, token }).get('https://gmail.googleapis.com/thing').catch(e => e)
+    const token = vi.fn(async () => 'tok1')
+    const refresh = vi.fn(async () => { throw new GoogleReconnectError(conn, 'revoked') })
+    const err = await google(conn, { fetch, token, refresh }).get('https://gmail.googleapis.com/thing').catch(e => e)
     expect(err).toBeInstanceOf(GoogleReconnectError)
-    expect(markReconnect).toHaveBeenCalledWith('conn-1', expect.any(String))
-    // only the first request actually hit the network — no retry with an identical token
+    // markReconnect is forceRefresh's responsibility (token.ts), not the client's — the client
+    // just lets the error the refresh seam threw propagate.
+    expect(markReconnect).not.toHaveBeenCalled()
+    expect(refresh).toHaveBeenCalledTimes(1)
+    // only the first request actually hit the network — the refresh path never touches `fetch`
     expect(fetch.calls).toEqual(['GET /thing'])
-    expect(token).toHaveBeenCalledTimes(2)
+  })
+
+  it('401 → refresh fails with a network error → propagates, not marked', async () => {
+    const fetch = fakeFetch({
+      'GET /thing': () => ({ status: 401 })
+    })
+    const token = vi.fn(async () => 'tok1')
+    const boom = new Error('ECONNRESET')
+    const refresh = vi.fn(async () => { throw boom })
+    await expect(google(conn, { fetch, token, refresh }).get('https://gmail.googleapis.com/thing')).rejects.toBe(boom)
+    expect(markReconnect).not.toHaveBeenCalled()
+    expect(fetch.calls).toEqual(['GET /thing'])
   })
 
   it('429 then 200 → sleeps ~1000ms once, then succeeds', async () => {
@@ -170,6 +188,15 @@ describe('google() client', () => {
     })
     const result = await google(conn, { fetch, token: async () => 'tok' }).post('https://gmail.googleapis.com/thing', { hello: 'world' })
     expect(result).toEqual({ created: true })
+  })
+
+  it('a touchConnection failure does not fail an otherwise-successful call', async () => {
+    vi.mocked(touchConnection).mockRejectedValueOnce(new Error('db down'))
+    const fetch = fakeFetch({
+      'GET /thing': () => ({ json: { ok: true } })
+    })
+    const result = await google(conn, { fetch, token: async () => 'tok' }).get('https://gmail.googleapis.com/thing')
+    expect(result).toEqual({ ok: true })
   })
 })
 

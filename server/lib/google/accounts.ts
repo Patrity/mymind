@@ -5,14 +5,18 @@
 // with a warning instead of failing the whole request.
 
 import { listConnections, type Connection } from './connections'
+import { googleErrorMessage } from './client'
 import { GoogleReconnectError } from './token'
 
 export type ResolveAccountsResult =
   | { ok: true; connections: Connection[] }
   | { ok: false; error: string }
 
-function needsReconnectWarning(label: string): string {
-  return `${label}: needs reconnecting in Settings → Connections`
+/** Every fanOut warning — a connection skipped by status, or one whose `fn` call threw — is
+ *  worded through `googleErrorMessage` so a 404 or a reconnect reads the same §6 user-facing
+ *  string everywhere else in the app uses it, instead of a one-off string here. */
+function warningFor(label: string, err: unknown): string {
+  return `${label}: ${googleErrorMessage(err, label)}`
 }
 
 /**
@@ -65,7 +69,7 @@ export async function fanOut<T>(
     if (c.status === 'ok') {
       runnable.push(c)
     } else {
-      warnings.push(needsReconnectWarning(c.label))
+      warnings.push(warningFor(c.label, new GoogleReconnectError(c, c.lastError ?? 'needs reconnecting')))
     }
   }
 
@@ -76,11 +80,8 @@ export async function fanOut<T>(
       for (const item of result.value) {
         items.push({ ...item, account: c.label })
       }
-    } else if (result.reason instanceof GoogleReconnectError) {
-      warnings.push(needsReconnectWarning(c.label))
     } else {
-      const reason = result.reason
-      warnings.push(`${c.label}: ${reason instanceof Error ? reason.message : String(reason)}`)
+      warnings.push(warningFor(c.label, result.reason))
     }
   })
 

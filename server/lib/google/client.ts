@@ -5,11 +5,14 @@
 // directly (never `$fetch`) so tests can fully control the transport via fakeFetch.
 
 import { markReconnect, touchConnection, type Connection } from './connections'
-import { googleToken, GoogleReconnectError } from './token'
+import { googleToken, forceRefresh, GoogleReconnectError } from './token'
 
 export interface GoogleDeps {
   fetch?: typeof globalThis.fetch
   token?: (c: Connection) => Promise<string>
+  /** Forces a fresh token on a 401 (see token.ts's forceRefresh) — not the same seam as `token`,
+   *  which may just hand back the same stored token better-auth saw no reason to refresh. */
+  refresh?: (c: Connection) => Promise<string>
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -28,7 +31,6 @@ export class GoogleApiError extends Error {
 }
 
 const RATE_LIMIT_SLEEP_MS = 1000
-const SAME_TOKEN_REASON = 'Google rejected the stored access token and a refresh did not change it'
 const INSUFFICIENT_PERMISSIONS_REASON = 'Google reported insufficient permissions for this scope'
 
 function buildUrl(url: string, query?: GoogleQuery): string {
@@ -87,6 +89,7 @@ function isInsufficientPermissions(reason: string | undefined): boolean {
 export function google(c: Connection, deps: GoogleDeps = {}) {
   const doFetch = deps.fetch ?? globalThis.fetch
   const getToken = deps.token ?? ((conn: Connection) => googleToken(conn))
+  const forceTokenRefresh = deps.refresh ?? ((conn: Connection) => forceRefresh(conn))
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
 
   async function call(method: string, url: string, opts: { query?: GoogleQuery; body?: unknown } = {}): Promise<unknown> {
@@ -110,13 +113,12 @@ export function google(c: Connection, deps: GoogleDeps = {}) {
           const body = await safeJson(res)
           throw new GoogleApiError(401, errorMessage(body, 401), errorReason(body))
         }
-        const newToken = await getToken(c)
-        if (newToken === token) {
-          await markReconnect(c.id, SAME_TOKEN_REASON)
-          throw new GoogleReconnectError(c, SAME_TOKEN_REASON)
-        }
-        token = newToken
         retried401 = true
+        // Force a refresh through the unconditional /refresh-token path (not `getToken`, which
+        // may just hand back the same stored token better-auth saw no reason to touch). A
+        // revoked refresh token surfaces as GoogleReconnectError from forceRefresh itself — let
+        // it propagate; any other failure (network blip) also propagates unchanged.
+        token = await forceTokenRefresh(c)
         continue
       }
 
@@ -145,7 +147,10 @@ export function google(c: Connection, deps: GoogleDeps = {}) {
         throw new GoogleApiError(res.status, errorMessage(body, res.status), errorReason(body))
       }
 
-      await touchConnection(c.id)
+      // Fire-and-forget: a bookkeeping UPDATE (or a DB hiccup touching it) must never turn an
+      // already-successful Google response into a thrown error, and must never add latency
+      // (Gmail search makes one of these per message).
+      touchConnection(c.id).catch(err => console.warn(`[google] touchConnection failed for ${c.id}`, err))
       if (res.status === 204) return undefined
       return await safeJson(res)
     }

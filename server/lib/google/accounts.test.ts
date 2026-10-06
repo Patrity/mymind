@@ -10,6 +10,7 @@ vi.mock('./connections', async (importOriginal) => {
 
 import { resolveAccounts, fanOut } from './accounts'
 import { listConnections, type Connection } from './connections'
+import { GoogleApiError } from './client'
 import { GoogleReconnectError } from './token'
 
 function conn(overrides: Partial<Connection>): Connection {
@@ -85,7 +86,8 @@ describe('fanOut', () => {
     expect(fn).toHaveBeenCalledTimes(1)
     expect(fn).toHaveBeenCalledWith(work)
     expect(items).toEqual([{ id: 'work-1', account: 'work' }])
-    expect(warnings).toEqual(['broken: needs reconnecting in Settings → Connections'])
+    // Worded through googleErrorMessage (controller ruling #3) — same §6 string everywhere.
+    expect(warnings).toEqual(['broken: the broken Google account needs reconnecting in Settings → Connections'])
   })
 
   it('one connection throwing GoogleReconnectError mid-call is downgraded to a warning, others still return', async () => {
@@ -95,7 +97,7 @@ describe('fanOut', () => {
     })
     const { items, warnings } = await fanOut([work, personal], fn)
     expect(items).toEqual([{ id: 'personal-1', account: 'personal' }])
-    expect(warnings).toEqual(['work: needs reconnecting in Settings → Connections'])
+    expect(warnings).toEqual(['work: the work Google account needs reconnecting in Settings → Connections'])
   })
 
   it('tags every item with its account label', async () => {
@@ -104,7 +106,7 @@ describe('fanOut', () => {
     expect(items).toEqual([{ id: 'a', account: 'work' }, { id: 'b', account: 'work' }])
   })
 
-  it('a non-reconnect error from one connection is reported as a warning, not thrown', async () => {
+  it('a non-reconnect, non-API error from one connection is reported with its own message, not thrown', async () => {
     const fn = vi.fn(async (c: Connection) => {
       if (c.label === 'work') throw new Error('boom')
       return [{ id: `${c.label}-1` }]
@@ -112,5 +114,14 @@ describe('fanOut', () => {
     const { items, warnings } = await fanOut([work, personal], fn)
     expect(items).toEqual([{ id: 'personal-1', account: 'personal' }])
     expect(warnings).toEqual(['work: boom'])
+  })
+
+  it('a GoogleApiError(404) rejection reads as the §6 "no longer exists" string, not a raw status', async () => {
+    const fn = vi.fn(async (c: Connection) => {
+      if (c.label === 'work') throw new GoogleApiError(404, 'Not Found')
+      return [{ id: `${c.label}-1` }]
+    })
+    const { warnings } = await fanOut([work, personal], fn)
+    expect(warnings).toContain('work: that thread/event no longer exists')
   })
 })

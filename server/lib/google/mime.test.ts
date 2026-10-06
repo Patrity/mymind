@@ -74,6 +74,56 @@ describe('buildRawMessage', () => {
     const decoded = Buffer.from(raw, 'base64url').toString('utf8')
     expect(decoded).toContain('Cc: c@z.com, d@w.com')
   })
+
+  it('normalizes bare-LF and CR-only body line endings to CRLF', () => {
+    const raw = buildRawMessage({
+      from: 'me@costanzoclan.com',
+      to: ['a@x.com'],
+      subject: 'Hello',
+      body: 'line one\nline two\r\nline three\rline four'
+    })
+    const decoded = Buffer.from(raw, 'base64url').toString('utf8')
+    const bodyPart = decoded.split('\r\n\r\n')[1]
+    expect(bodyPart).toBe('line one\r\nline two\r\nline three\r\nline four')
+  })
+
+  it('rejects a subject containing CR/LF (header injection — e.g. an injected Bcc)', () => {
+    let raw: string | undefined
+    let thrown: unknown
+    try {
+      raw = buildRawMessage({
+        from: 'me@costanzoclan.com',
+        to: ['a@x.com'],
+        subject: 'hi\r\nBcc: attacker@evil.com',
+        body: 'body'
+      })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    // no message was ever produced, so no injected Bcc header can possibly appear
+    expect(raw).toBeUndefined()
+  })
+
+  it('rejects CR/LF in to/cc/from/inReplyTo/references as well', () => {
+    const base = { from: 'me@costanzoclan.com', to: ['a@x.com'], subject: 'ok', body: 'body' }
+    expect(() => buildRawMessage({ ...base, to: ['a@x.com\r\nBcc: attacker@evil.com'] })).toThrow()
+    expect(() => buildRawMessage({ ...base, cc: ['c@x.com\nBcc: attacker@evil.com'] })).toThrow()
+    expect(() => buildRawMessage({ ...base, from: 'me@x.com\r\nBcc: attacker@evil.com' })).toThrow()
+    expect(() => buildRawMessage({ ...base, inReplyTo: '<id>\r\nBcc: attacker@evil.com' })).toThrow()
+    expect(() => buildRawMessage({ ...base, references: '<id>\r\nBcc: attacker@evil.com' })).toThrow()
+  })
+
+  it('a clean message never contains a Bcc header (sanity check on the happy path)', () => {
+    const raw = buildRawMessage({
+      from: 'me@costanzoclan.com',
+      to: ['a@x.com'],
+      subject: 'Hello',
+      body: 'body'
+    })
+    const decoded = Buffer.from(raw, 'base64url').toString('utf8')
+    expect(decoded).not.toContain('Bcc')
+  })
 })
 
 describe('header', () => {
