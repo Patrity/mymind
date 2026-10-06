@@ -48,12 +48,22 @@ export interface ToolContext {
   onNestedEvent?: (e: NestedToolEvent) => void
   /** Cycle 78: load on-demand toolsets for the rest of this run (+ persisted by the runner). Absent on MCP. */
   loadToolsets?: (ids: import('./toolsets').ToolsetId[]) => import('./toolsets').ToolsetId[]
-  /** The SDK's toolCallId for THIS call (cycle 79 review round 2). Lets a dangerous tool's
-   *  handler bind a side effect to the exact approval request that authorized it — e.g.
-   *  gmail_send's TOCTOU pin is keyed by callId, not by the draft, so two different approval
-   *  requests for the same draft (a denied one and a later one) can never be confused with each
-   *  other. Absent outside the interactive runner path (e.g. MCP), same as runId. */
+  /** The SDK's toolCallId for THIS call. UI CORRELATION ONLY (matching an approval card to its
+   *  tool-call part) — never use it to bind a security-sensitive side effect to one specific
+   *  approval request. It comes from the model/provider and is not guaranteed unique or even
+   *  non-empty: some openai-compatible backends return `id: ""`, or reuse a deterministic id
+   *  (e.g. `call_0`) across different calls in the same turn (cycle 79 review round 3, N1) — both
+   *  would collapse two different approval requests onto the same key. Use `approvalNonce` for
+   *  that instead. Absent outside the interactive runner path (e.g. MCP), same as runId; `''`
+   *  (not `undefined`) when the SDK supplies no id. */
   callId?: string
+  /** A fresh, server-minted v4 UUID buildAiTools generates for THIS execution — never empty,
+   *  never reused across calls, independent of whatever (or nothing) the SDK's own `callId`
+   *  supplied (cycle 79 review round 3, N1 — see `callId`'s doc for why that one can't be
+   *  trusted for this). This is what a tool binds a side effect to the EXACT approval request
+   *  that authorized it with — e.g. gmail_send's TOCTOU pin. Absent outside the interactive
+   *  runner path, same as runId. */
+  approvalNonce?: string
 }
 
 export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }
@@ -86,12 +96,14 @@ export interface AgentTool {
   // to a JSON-of-args command + `<name> *` pattern when omitted. May be async: a tool whose
   // card needs to show live state (gmail_send fetches the real draft rather than trusting args)
   // returns a Promise; buildAiTools awaits it before the human ever sees the request.
-  // `meta.callId` is the SDK's toolCallId for THIS specific call (cycle 79 review round 2) — a
-  // tool whose card content can go stale before approval (gmail_send re-fetching a draft that
-  // might be edited again in the meantime) binds its fingerprint to THIS callId, not to the
-  // draft, so a denied approval's state can never leak into a different, later approval of the
-  // same draft. Tools that don't need it (exec, decide_review) simply ignore the parameter.
-  describeApproval?: (args: Record<string, unknown>, meta: { callId: string }) => ApprovalRequest | Promise<ApprovalRequest>
+  // `meta.approvalNonce` is a fresh, server-minted id for THIS specific call (cycle 79 review
+  // round 3) — deliberately NOT the SDK's toolCallId, which may be empty or reused across
+  // different calls (see ToolContext.callId's doc). A tool whose card content can go stale
+  // before approval (gmail_send re-fetching a draft that might be edited again in the meantime)
+  // binds its fingerprint to THIS nonce, not to the draft and not to the SDK's own id, so a
+  // denied approval's state can never leak into a different, later approval of the same draft.
+  // Tools that don't need it (exec, decide_review) simply ignore the parameter.
+  describeApproval?: (args: Record<string, unknown>, meta: { approvalNonce: string }) => ApprovalRequest | Promise<ApprovalRequest>
   /** Optional per-tool fast-path: return true to run WITHOUT a human prompt (gate still applies to false). */
   autoApprove?: (input: Record<string, unknown>, ctx: ToolContext) => boolean | Promise<boolean>
   /**

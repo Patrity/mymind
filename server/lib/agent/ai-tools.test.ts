@@ -91,31 +91,58 @@ describe('buildAiTools gate — autoApprove fast-path', () => {
     expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ command: 'resolved:x', proposedPattern: '' }))
   })
 
-  it('passes the SDK toolCallId to describeApproval as meta.callId (cycle 79 review round 2 — gmail_send\'s TOCTOU pin keys on this)', async () => {
+  it('passes a fresh, server-minted approvalNonce to describeApproval — NOT the SDK toolCallId (cycle 79 review round 3, N1: gmail_send\'s TOCTOU pin keys on this, never on the SDK id)', async () => {
     const requestApproval = vi.fn().mockResolvedValue({ approved: true })
     const hooks = makeHooks(requestApproval)
-    let seenCallId: string | undefined
+    let seenNonce: string | undefined
     const tool = makeReadTool({
       describeApproval: async (_a, meta) => {
-        seenCallId = meta.callId
+        seenNonce = meta.approvalNonce
         return { tool: 'my_tool', command: 'cmd', proposedPattern: '' }
       },
     })
     const set = buildAiTools([tool], hooks)
     await (set['my_tool']!.execute as Function)({ val: 'x' }, { toolCallId: 'call_xyz' })
-    expect(seenCallId).toBe('call_xyz')
+    expect(seenNonce).toBeTruthy()
+    expect(seenNonce).not.toBe('call_xyz') // never the SDK's own id
   })
 
-  it('also exposes callId on the handler\'s ToolContext — a handler can bind a side effect to the exact approval request that authorized it', async () => {
+  it('mints a DISTINCT approvalNonce for every execution, even when the SDK toolCallId is identical or empty across calls (cycle 79 review round 3, N1)', async () => {
     const requestApproval = vi.fn().mockResolvedValue({ approved: true })
     const hooks = makeHooks(requestApproval)
-    let seenCallId: string | undefined
+    const seenNonces: string[] = []
     const tool = makeReadTool({
-      handler: async (_a, ctx) => { seenCallId = ctx.callId; return { result: { ok: true }, summary: 'done' } },
+      describeApproval: async (_a, meta) => {
+        seenNonces.push(meta.approvalNonce)
+        return { tool: 'my_tool', command: 'cmd', proposedPattern: '' }
+      },
+    })
+    const set = buildAiTools([tool], hooks)
+    // Both calls carry the SAME (empty) SDK toolCallId — a degenerate/buggy provider
+    // (openai-compatible backends have been observed to send `id: ""` or a reused id).
+    await (set['my_tool']!.execute as Function)({ val: 'x' }, { toolCallId: '' })
+    await (set['my_tool']!.execute as Function)({ val: 'y' }, { toolCallId: '' })
+    expect(seenNonces).toHaveLength(2)
+    expect(seenNonces[0]).toBeTruthy()
+    expect(seenNonces[1]).toBeTruthy()
+    expect(seenNonces[0]).not.toBe(seenNonces[1])
+  })
+
+  it('also exposes approvalNonce on the handler\'s ToolContext (matching what describeApproval saw), while callId keeps its SDK/UI-correlation role unchanged', async () => {
+    const requestApproval = vi.fn().mockResolvedValue({ approved: true })
+    const hooks = makeHooks(requestApproval)
+    let describedNonce: string | undefined
+    let handlerNonce: string | undefined
+    let handlerCallId: string | undefined
+    const tool = makeReadTool({
+      describeApproval: async (_a, meta) => { describedNonce = meta.approvalNonce; return { tool: 'my_tool', command: 'cmd', proposedPattern: '' } },
+      handler: async (_a, ctx) => { handlerNonce = ctx.approvalNonce; handlerCallId = ctx.callId; return { result: { ok: true }, summary: 'done' } },
     })
     const set = buildAiTools([tool], hooks)
     await (set['my_tool']!.execute as Function)({ val: 'x' }, { toolCallId: 'call_abc' })
-    expect(seenCallId).toBe('call_abc')
+    expect(handlerCallId).toBe('call_abc') // unchanged: the SDK id, for UI correlation only
+    expect(handlerNonce).toBeTruthy()
+    expect(handlerNonce).toBe(describedNonce) // the SAME nonce describeApproval saw for this call
   })
 
   it('non-dangerous tools bypass the gate entirely', async () => {

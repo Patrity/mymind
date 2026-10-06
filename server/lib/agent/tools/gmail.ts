@@ -13,13 +13,16 @@
 // the shared `agentTools` registry, so MCP/replay/subagents/toolByName never have to remember a
 // `dangerous` check. Its `describeApproval` is async: it re-fetches the draft from Google so the
 // card shows what will actually be sent, and pins the draft's current message id (Gmail mints a
-// new one on every `drafts.update`) to the SDK's toolCallId for THIS approval request — not to
-// the draft (review round 2, I2/I5): a draft id is shared by every approval request ever built
-// for that draft, so keying on it let one approval's pin be overwritten or reused by another
-// (a denied card's fingerprint answering for a different, later card). The handler looks up its
-// OWN callId's pin, consumes it (one-shot) whether it matches or not, and refuses outright when
-// that pin is absent (never set, already consumed, expired, or belongs to a load that failed) —
-// so approving a stale or unreadable card still cannot send anything.
+// new one on every `drafts.update`) to `meta.approvalNonce` — a fresh id buildAiTools mints for
+// THIS approval request — not to the draft (review round 2, I2/I5) and NOT to the SDK's own
+// toolCallId (review round 3, N1): a draft id is shared by every approval request ever built for
+// that draft, so keying on it let one approval's pin be overwritten or reused by another (a
+// denied card's fingerprint answering for a different, later card); the SDK's toolCallId has the
+// same problem on some providers, which may send `""` or a repeated id for different calls in one
+// turn. The handler looks up its own `ctx.approvalNonce`'s pin, consumes it (one-shot) whether it
+// matches or not, and refuses outright when that pin is absent (never set, already consumed,
+// expired, or belongs to a load that failed, or `approvalNonce` itself is missing) — so approving
+// a stale or unreadable card still cannot send anything.
 import { z } from 'zod'
 import type { AgentTool, ToolExecution } from '../types'
 import type { UndoResult } from '../undo'
@@ -84,18 +87,23 @@ function withRe(subject: string): string {
   return /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`
 }
 
-// --- gmail_send's approve → send pin (cycle 79 review I2/I5, re-bound to callId in round 2) ---
+// --- gmail_send's approve → send pin (cycle 79 review I2/I5; re-bound to approvalNonce, not the
+//     SDK's toolCallId, in round 3 — N1) -------------------------------------------------------
 // describeApproval records the draft's CURRENT message id (Gmail mints a new one on every
-// drafts.update, so the id is a content fingerprint) keyed by the SDK's toolCallId for THIS
-// approval request — never by the draft. Two approval requests for the same draft (e.g. one
-// Tony denies and a later one he approves) get two independent keys, so denying one can never
-// leave behind a pin that answers for the other, and a describeApproval that fails to load simply
-// never writes ITS callId's entry — it cannot see (let alone clear) anyone else's. The handler
-// looks up its own callId's pin and DELETES it immediately on lookup (one-shot: a retried or
-// duplicated send attempt with the same callId always refuses), independent of whether the
-// subsequent re-fetch ends up matching. Entries carry a short TTL (long enough to outlast the
-// iMessage approval wait, APPROVAL_TIMEOUT_MS in channels/approvals.ts) and are swept on access
-// so an approval nobody ever decides doesn't leak memory forever.
+// drafts.update, so the id is a content fingerprint) keyed by `meta.approvalNonce` — a fresh v4
+// UUID buildAiTools mints for THIS execution — never by the draft (round 2) and never by the
+// SDK's own toolCallId (round 3): some openai-compatible backends return `id: ""` or reuse a
+// deterministic id (e.g. `call_0`) for different calls in the same turn, which would collapse two
+// different approval requests back onto one shared key — exactly the bug keying by draft id had.
+// Two approval requests for the same draft (e.g. one Tony denies and a later one he approves) get
+// two independent nonces, so denying one can never leave behind a pin that answers for the other,
+// and a describeApproval that fails to load simply never writes ITS nonce's entry — it cannot see
+// (let alone clear) anyone else's. The handler looks up its own `ctx.approvalNonce`'s pin and
+// DELETES it immediately on lookup (one-shot: a retried or duplicated send attempt with the same
+// nonce always refuses), independent of whether the subsequent re-fetch ends up matching. Entries
+// carry a short TTL (long enough to outlast the iMessage approval wait, APPROVAL_TIMEOUT_MS in
+// channels/approvals.ts) and are swept on access so an approval nobody ever decides doesn't leak
+// memory forever.
 const SEND_PIN_TTL_MS = 15 * 60 * 1000 // 15 minutes (the iMessage wait is 10)
 interface SendPin { messageId: string, expiresAt: number }
 const sendPins = new Map<string, SendPin>()
@@ -106,19 +114,19 @@ function sweepSendPins(now: number): void {
   }
 }
 
-function rememberPin(callId: string, messageId: string): void {
+function rememberPin(nonce: string, messageId: string): void {
   const now = Date.now()
   sweepSendPins(now)
-  sendPins.set(callId, { messageId, expiresAt: now + SEND_PIN_TTL_MS })
+  sendPins.set(nonce, { messageId, expiresAt: now + SEND_PIN_TTL_MS })
 }
 
-/** Looks up THIS callId's pin and consumes it (one-shot) regardless of outcome — a second lookup
- *  for the same callId always misses, whether or not the first one matched. */
-function takePin(callId: string): string | undefined {
+/** Looks up THIS nonce's pin and consumes it (one-shot) regardless of outcome — a second lookup
+ *  for the same nonce always misses, whether or not the first one matched. */
+function takePin(nonce: string): string | undefined {
   const now = Date.now()
   sweepSendPins(now)
-  const pin = sendPins.get(callId)
-  sendPins.delete(callId)
+  const pin = sendPins.get(nonce)
+  sendPins.delete(nonce)
   if (!pin || pin.expiresAt <= now) return undefined
   return pin.messageId
 }
@@ -151,11 +159,12 @@ async function fetchDraftForApproval(c: Connection, draftId: string): Promise<{ 
 }
 
 /** The approval card's wording when the real draft can't be shown: Tony cannot review what he
- *  can't see, so the only sane default is to deny. (review I5, re-verified in round 2: a failed
- *  lookup here never calls rememberPin for THIS callId, so the handler's takePin finds nothing
- *  and refuses on its own — independent of any other callId's pin, including one from an earlier,
- *  already-denied approval of the very same draft — so approving this card anyway still can't
- *  send anything.) */
+ *  can't see, so the only sane default is to deny. (review I5, re-verified in rounds 2 and 3: a
+ *  failed lookup here never calls rememberPin for THIS approvalNonce, so the handler's takePin
+ *  finds nothing and refuses on its own — independent of any other nonce's pin, including one
+ *  from an earlier, already-denied approval of the very same draft, EVEN IF the SDK happened to
+ *  reuse the same toolCallId for both calls — so approving this card anyway still can't send
+ *  anything.) */
 function draftUnavailableCommand(draftId: string, reason: string): string {
   return `draft ${draftId} could not be loaded — deny (${reason})`
 }
@@ -497,11 +506,12 @@ export const gmailSendTool: AgentTool = {
   },
   // Async (types.ts, cycle 79 Task 4): re-fetches the draft from Google so the approval card
   // shows what will actually be sent — never the call args, which don't even carry to/body/
-  // subject (see schema above) — and pins the draft's current message id to `meta.callId`, THIS
-  // approval request's own SDK toolCallId (round 2, I2/I5) — never to the draft, which a
-  // different approval request for the same draft would share. A draft that can't be loaded (or
-  // whose account can't be resolved) reads as "could not be loaded — deny" and leaves no pin for
-  // this callId; the handler below does its OWN independent re-check, keyed to its own callId,
+  // subject (see schema above) — and pins the draft's current message id to `meta.approvalNonce`,
+  // the fresh id buildAiTools minted for THIS approval request (round 3, N1) — never to the draft
+  // (round 2) and never to the SDK's own toolCallId (round 3), either of which a different
+  // approval request for the same draft could share. A draft that can't be loaded (or whose
+  // account can't be resolved) reads as "could not be loaded — deny" and leaves no pin for this
+  // nonce; the handler below does its OWN independent re-check, keyed to its own `ctx.approvalNonce`,
   // right before sending — so approving this card is necessary but not sufficient on its own.
   describeApproval: async (a, meta) => {
     const draftId = a.draftId as string
@@ -511,7 +521,7 @@ export const gmailSendTool: AgentTool = {
       if (!acc.ok) return { tool: 'gmail_send', title: SEND_TITLE, command: draftUnavailableCommand(draftId, acc.error), proposedPattern: '' }
       c = acc.c
       const { command, logSummary, messageId } = await fetchDraftForApproval(c, draftId)
-      if (messageId) rememberPin(meta.callId, messageId)
+      if (messageId && meta.approvalNonce) rememberPin(meta.approvalNonce, messageId)
       return { tool: 'gmail_send', title: SEND_TITLE, command, proposedPattern: '', logSummary }
     } catch (err) {
       return { tool: 'gmail_send', title: SEND_TITLE, command: draftUnavailableCommand(draftId, errorOf(err, c)), proposedPattern: '' }
@@ -528,7 +538,9 @@ export const gmailSendTool: AgentTool = {
       // headless gmail_draft replacing this very draftId, or with a SECOND gmail_send approval
       // request for the same draft — never trust the card: re-check RIGHT NOW, against ONLY the
       // pin THIS call's own describeApproval set (takePin consumes it either way — one-shot).
-      const pinned = ctx.callId !== undefined ? takePin(ctx.callId) : undefined
+      // `ctx.approvalNonce`, NOT `ctx.callId`: the SDK's own id may be empty or reused across
+      // different calls (round 3, N1), which would let an unrelated call's pin answer here.
+      const pinned = ctx.approvalNonce ? takePin(ctx.approvalNonce) : undefined
       if (!pinned) return fail('gmail_send', 'the draft could not be loaded — nothing was sent')
       let current: { message?: { id?: string } }
       try {

@@ -1,4 +1,5 @@
 // server/lib/agent/ai-tools.ts
+import { randomUUID } from 'node:crypto'
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import type { AgentTool, ToolContext, ApprovalRequest, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
@@ -19,9 +20,9 @@ export interface RunHooks {
   loadToolsets?: (ids: ToolsetId[]) => ToolsetId[]
 }
 
-async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, callId: string): Promise<ApprovalRequest> {
+async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, approvalNonce: string): Promise<ApprovalRequest> {
   const req = t.describeApproval
-    ? await t.describeApproval(input, { callId })
+    ? await t.describeApproval(input, { approvalNonce })
     : { tool: t.name, command: JSON.stringify(input), proposedPattern: `${t.name} *` }
   // From the tool definition, overriding anything describeApproval returned.
   return { ...req, allowlistable: t.allowlistable === true }
@@ -40,14 +41,19 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         // even if the call is then denied — the model evidently wants that set.
         hooks.onToolCalled?.(t.name)
         const callId = opts?.toolCallId ?? ''
-        // Per-call context: a subagent's nested calls are keyed to THIS call's id, which
-        // only exists here — the shared `ctx` above is built once for the whole toolset. `callId`
-        // also lets a handler bind a side effect to THIS exact approval request (cycle 79 review
-        // round 2's gmail_send TOCTOU pin) rather than to something coarser two different calls
-        // could collide on.
+        // A fresh, server-minted id for THIS execution — unlike `callId` above (the SDK's own
+        // toolCallId, kept for UI correlation only), this is never empty and never reused: some
+        // openai-compatible backends emit `id: ""` or a deterministic id like `call_0` per turn,
+        // which would collapse two different approval requests onto one key (cycle 79 review
+        // round 3, N1). A tool that binds a side effect to ONE specific approval request
+        // (gmail_send's TOCTOU pin) must key on THIS, never on `callId`.
+        const approvalNonce = randomUUID()
+        // Per-call context: a subagent's nested calls are keyed to THIS call's SDK id, which
+        // only exists here — the shared `ctx` above is built once for the whole toolset.
         const callCtx: ToolContext = {
           ...ctx,
           callId,
+          approvalNonce,
           onNestedEvent: e => hooks.onEvent({ type: 'subagent-event', parentCallId: callId, event: e })
         }
         // Mask ONCE, up front, and use the masked copy for every RECORDED/EMITTED args field
@@ -69,7 +75,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           const auto = t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
             const decision = ctx.requestApproval
-              ? await ctx.requestApproval({ ...(await approvalRequestFor(t, input, callId)), callId, args: safeArgs })
+              ? await ctx.requestApproval({ ...(await approvalRequestFor(t, input, approvalNonce)), callId, args: safeArgs })
               : { approved: false } // fail-safe: no channel → auto-deny
             if (decision.approved !== true) {
               const summary = `denied: ${t.name}`
