@@ -91,6 +91,33 @@ describe('buildAiTools gate — autoApprove fast-path', () => {
     expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ command: 'resolved:x', proposedPattern: '' }))
   })
 
+  it('passes the SDK toolCallId to describeApproval as meta.callId (cycle 79 review round 2 — gmail_send\'s TOCTOU pin keys on this)', async () => {
+    const requestApproval = vi.fn().mockResolvedValue({ approved: true })
+    const hooks = makeHooks(requestApproval)
+    let seenCallId: string | undefined
+    const tool = makeReadTool({
+      describeApproval: async (_a, meta) => {
+        seenCallId = meta.callId
+        return { tool: 'my_tool', command: 'cmd', proposedPattern: '' }
+      },
+    })
+    const set = buildAiTools([tool], hooks)
+    await (set['my_tool']!.execute as Function)({ val: 'x' }, { toolCallId: 'call_xyz' })
+    expect(seenCallId).toBe('call_xyz')
+  })
+
+  it('also exposes callId on the handler\'s ToolContext — a handler can bind a side effect to the exact approval request that authorized it', async () => {
+    const requestApproval = vi.fn().mockResolvedValue({ approved: true })
+    const hooks = makeHooks(requestApproval)
+    let seenCallId: string | undefined
+    const tool = makeReadTool({
+      handler: async (_a, ctx) => { seenCallId = ctx.callId; return { result: { ok: true }, summary: 'done' } },
+    })
+    const set = buildAiTools([tool], hooks)
+    await (set['my_tool']!.execute as Function)({ val: 'x' }, { toolCallId: 'call_abc' })
+    expect(seenCallId).toBe('call_abc')
+  })
+
   it('non-dangerous tools bypass the gate entirely', async () => {
     const requestApproval = vi.fn()
     const hooks = makeHooks(requestApproval)

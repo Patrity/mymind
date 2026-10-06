@@ -470,10 +470,14 @@ describe('gmail_modify', () => {
 
 describe('gmail_send', () => {
   // gmail_send is dangerous — it lives on bridgetProfile (profile.test.ts / mcp-dangerous.test.ts
-  // cover that), NOT in gmailTools/the `tool()`/`run()` helpers above. Its own helpers:
+  // cover that), NOT in gmailTools/the `tool()`/`run()` helpers above. Its own helpers: the pin
+  // (round 2) is keyed by the SDK's toolCallId, so describeSend/runSend take one — defaulted to
+  // the SAME id for tests that only care about one card/one send; tests proving callId isolation
+  // (I2/I5) pass explicit, DIFFERENT ids for each "approval request".
   const sendTool = gmailSendTool
-  const describeSend = (args: Record<string, unknown>) => sendTool.describeApproval!(args)
-  const runSend = (args: Record<string, unknown>) => sendTool.handler(args, { signal: new AbortController().signal })
+  const DEFAULT_CALL = 'call-1'
+  const describeSend = (args: Record<string, unknown>, callId: string = DEFAULT_CALL) => sendTool.describeApproval!(args, { callId })
+  const runSend = (args: Record<string, unknown>, callId: string = DEFAULT_CALL) => sendTool.handler(args, { signal: new AbortController().signal, callId })
 
   beforeEach(() => { _resetSendPins() })
 
@@ -676,6 +680,114 @@ describe('gmail_send', () => {
     const out = await runSend({ account: 'work', draftId: 'd-flaky' }) // the handler's re-GET (2nd) fails
     expect(out.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
     expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
+  })
+
+  // --- Round 2: the pin is bound to ONE callId, not to the draft -------------------------------
+  it('(a) two approval requests for the SAME draft are isolated by callId: denying B never touches A\'s own pin, and A refuses on its own merits (the draft moved since A\'s card)', async () => {
+    let edited = false
+    const fetch = useRoutes({
+      [`GET ${G}/drafts/d-two`]: () => ({
+        json: {
+          id: 'd-two',
+          message: {
+            id: edited ? 'm2' : 'm1',
+            payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64(edited ? 'C2' : 'C1') } }
+          }
+        }
+      }),
+      [`POST ${G}/drafts/send`]: () => ({ json: { id: 'msg-sent', threadId: 'thr-sent' } })
+    })
+
+    // Card A built while the draft is C1 (message id m1) — pinned under callId 'call-A'.
+    const cardA = await describeSend({ account: 'work', draftId: 'd-two' }, 'call-A')
+    expect(cardA.command).toContain('C1')
+
+    // The draft is edited to C2 (m2) — e.g. a concurrent gmail_draft replacing it.
+    edited = true
+
+    // Card B is built on the now-current C2 (m2) — pinned under a DIFFERENT callId, 'call-B'.
+    // Tony denies B: a denial never even calls the handler, so 'call-B' is simply never consumed.
+    const cardB = await describeSend({ account: 'work', draftId: 'd-two' }, 'call-B')
+    expect(cardB.command).toContain('C2')
+
+    // Tony approves A. A's OWN pin (m1, from 'call-A') must be exactly what it was when A's card
+    // was built — untouched by B's build or B's denial. The draft has since moved to m2, so A
+    // correctly refuses on a MISMATCH (not "no pin" — proving the pin itself survived B's whole
+    // lifecycle) and never sends. Before the round-2 fix, the shared draft-keyed pin would have
+    // been overwritten to m2 by B's card, making A's check falsely "match" and send C2 — content
+    // Tony denied.
+    const outA = await runSend({ account: 'work', draftId: 'd-two' }, 'call-A')
+    expect(outA.result).toEqual({ error: 'the draft changed after you approved it — ask again' })
+    expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
+
+    // B, evaluated independently on its own merits (nothing changed between B's card and this
+    // check), still succeeds — proving B's pin was never touched by A's check above either.
+    const outB = await runSend({ account: 'work', draftId: 'd-two' }, 'call-B')
+    expect(outB.result).toMatchObject({ sent: true })
+  })
+
+  it('(b) a stale pin from an earlier (denied, unconsumed) call never answers for a LATER call whose own describeApproval failed to load', async () => {
+    let shouldFail = false
+    const fetch = useRoutes({
+      [`GET ${G}/drafts/d-stale`]: () => shouldFail
+        ? { status: 503 }
+        : { json: { id: 'd-stale', message: { id: 'm1', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64('hi') } } } } }
+    })
+    // An earlier call ('call-old') builds a card and pins m1 — imagine Tony denies it, so its
+    // pin is never consumed by a handler call.
+    await describeSend({ account: 'work', draftId: 'd-stale' }, 'call-old')
+
+    // A LATER call ('call-new') has its own describeApproval fail to load the draft.
+    shouldFail = true
+    const laterCard = await describeSend({ account: 'work', draftId: 'd-stale' }, 'call-new')
+    expect(laterCard.command).toMatch(/could not be loaded/)
+
+    // Tony approves the "could not be loaded — deny" card anyway. The handler looks up ITS OWN
+    // callId ('call-new'), which never got a pin — 'call-old's lingering, unrelated pin must not
+    // leak in and let this send through.
+    const out = await runSend({ account: 'work', draftId: 'd-stale' }, 'call-new')
+    expect(out.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
+    expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
+  })
+
+  it('(c) a pin is single-use: a second send attempt reusing the SAME callId is refused even though the first succeeded', async () => {
+    const fetch = useRoutes({
+      ...draftRoute('d-oneshot', [
+        { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }
+      ], 'hi'),
+      [`POST ${G}/drafts/send`]: () => ({ json: { id: 'msg1', threadId: 'thr1' } })
+    })
+    await describeSend({ account: 'work', draftId: 'd-oneshot' }, 'call-once')
+    const first = await runSend({ account: 'work', draftId: 'd-oneshot' }, 'call-once')
+    expect(first.result).toMatchObject({ sent: true })
+
+    const second = await runSend({ account: 'work', draftId: 'd-oneshot' }, 'call-once')
+    expect(second.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
+    expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toHaveLength(1)
+  })
+
+  it('a pin expires after its TTL — defense in depth beyond the one-shot consume', async () => {
+    vi.useFakeTimers()
+    try {
+      useRoutes(draftRoute('d-ttl', [
+        { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }
+      ], 'hi'))
+      await describeSend({ account: 'work', draftId: 'd-ttl' }, 'call-ttl')
+      vi.advanceTimersByTime(16 * 60 * 1000) // past the 15-minute TTL
+      const out = await runSend({ account: 'work', draftId: 'd-ttl' }, 'call-ttl')
+      expect(out.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('no callId on the handler ctx (e.g. a direct call outside the runner) always refuses — never trusts a pin it cannot look up', async () => {
+    useRoutes(draftRoute('d-noctx', [
+      { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }
+    ], 'hi'))
+    await describeSend({ account: 'work', draftId: 'd-noctx' }, 'call-real')
+    const out = await sendTool.handler({ account: 'work', draftId: 'd-noctx' }, { signal: new AbortController().signal })
+    expect(out.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
   })
 
   it('a send failure comes back as { error }, never thrown', async () => {

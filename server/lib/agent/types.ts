@@ -48,6 +48,12 @@ export interface ToolContext {
   onNestedEvent?: (e: NestedToolEvent) => void
   /** Cycle 78: load on-demand toolsets for the rest of this run (+ persisted by the runner). Absent on MCP. */
   loadToolsets?: (ids: import('./toolsets').ToolsetId[]) => import('./toolsets').ToolsetId[]
+  /** The SDK's toolCallId for THIS call (cycle 79 review round 2). Lets a dangerous tool's
+   *  handler bind a side effect to the exact approval request that authorized it — e.g.
+   *  gmail_send's TOCTOU pin is keyed by callId, not by the draft, so two different approval
+   *  requests for the same draft (a denied one and a later one) can never be confused with each
+   *  other. Absent outside the interactive runner path (e.g. MCP), same as runId. */
+  callId?: string
 }
 
 export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }
@@ -80,7 +86,12 @@ export interface AgentTool {
   // to a JSON-of-args command + `<name> *` pattern when omitted. May be async: a tool whose
   // card needs to show live state (gmail_send fetches the real draft rather than trusting args)
   // returns a Promise; buildAiTools awaits it before the human ever sees the request.
-  describeApproval?: (args: Record<string, unknown>) => ApprovalRequest | Promise<ApprovalRequest>
+  // `meta.callId` is the SDK's toolCallId for THIS specific call (cycle 79 review round 2) — a
+  // tool whose card content can go stale before approval (gmail_send re-fetching a draft that
+  // might be edited again in the meantime) binds its fingerprint to THIS callId, not to the
+  // draft, so a denied approval's state can never leak into a different, later approval of the
+  // same draft. Tools that don't need it (exec, decide_review) simply ignore the parameter.
+  describeApproval?: (args: Record<string, unknown>, meta: { callId: string }) => ApprovalRequest | Promise<ApprovalRequest>
   /** Optional per-tool fast-path: return true to run WITHOUT a human prompt (gate still applies to false). */
   autoApprove?: (input: Record<string, unknown>, ctx: ToolContext) => boolean | Promise<boolean>
   /**
