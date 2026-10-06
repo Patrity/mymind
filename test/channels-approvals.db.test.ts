@@ -293,6 +293,22 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     expect(await rowsFor(run)).toHaveLength(0)
   })
 
+  it('I4 (cycle 79 review): a gmail_send approval outcome logs the body-free logSummary, never the draft body', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    ac.abort()
+    const req: ApprovalRequest = {
+      tool: 'gmail_send',
+      command: 'From: tony@work.com\nTo: ann@a.com\n\nthe real secret draft body text',
+      proposedPattern: '',
+      logSummary: 'gmail_send: account=work draftId=d1 to=ann@a.com subjectChars=5'
+    }
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST, signal: ac.signal })(req)).toEqual({ approved: false })
+    const ev = events.find(e => e.name === 'exec:approval' && e.meta?.runId === run)
+    expect(ev?.meta?.command).toBe(req.logSummary)
+    expect(JSON.stringify(ev?.meta)).not.toContain('secret draft body')
+  })
+
   it('replyToApprovalChannel forwards the signal', async () => {
     const run = await newRun()
     const ac = new AbortController()

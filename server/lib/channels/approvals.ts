@@ -44,12 +44,32 @@ const waiters = new Map<string, (status: ApprovalStatus) => void>()
 /** The command as texted: at most PROMPT_COMMAND_MAX chars (a long heredoc is not texted in full). */
 export const PROMPT_COMMAND_MAX = 300
 
+/** gmail_send's command is a multi-line From/To/Cc/Bcc/Subject + body block, already capped by
+ *  the tool itself at a 1,500-char BODY (gmail.ts's APPROVAL_BODY_CHARS) — PROMPT_COMMAND_MAX
+ *  (300, meant for a one-line shell command) would cut it off after the headers and leave Tony
+ *  approving a body he never saw (cycle 79 review I3). This is a defensive ceiling on the WHOLE
+ *  rendered command (headers + body), not a second truncation of the body on top of the tool's
+ *  own: a pathological header (e.g. a huge To: list) still can't produce unbounded iMessage text. */
+export const GMAIL_SEND_PROMPT_MAX = 1800
+
+function gmailSendPromptBody(command: string): string {
+  if (command.length <= GMAIL_SEND_PROMPT_MAX) return command
+  const more = command.length - GMAIL_SEND_PROMPT_MAX
+  return `${command.slice(0, GMAIL_SEND_PROMPT_MAX)}… [${more} more chars — open the draft in Gmail]`
+}
+
 /**
  * The texted question, worded per tool (final review m1): exec asks to run a command; a review
  * decision is not a command, so it reads as one (`command` is "<choice> — <summary>"); any other
- * dangerous tool names itself.
+ * dangerous tool names itself. gmail_send (cycle 79 review I3) gets its own format — "Send this
+ * email?" over the real From/To/Cc/Bcc/Subject + body, no backtick wrapping (iMessage doesn't
+ * render them, and a closing backtick-question-mark after a long body reads badly) — and is
+ * EXEMPT from PROMPT_COMMAND_MAX, using GMAIL_SEND_PROMPT_MAX instead.
  */
 export function approvalPromptText(req: ApprovalRequest): string {
+  if (req.tool === 'gmail_send') {
+    return `Send this email?\n\n${gmailSendPromptBody(req.command)}\n\n👍 to send · 👎 to deny`
+  }
   const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
   const ask = req.tool === 'exec' ? `Run \`${cmd}\`?`
     : req.tool === 'decide_review' ? `Approve review decision: ${cmd}?`
@@ -80,10 +100,14 @@ async function statusOf(id: string): Promise<ApprovalStatus | null> {
   return (row?.status as ApprovalStatus | undefined) ?? null
 }
 
-function logOutcome(runId: string, command: string, outcome: string, reason?: string): void {
+// Takes the whole request (not just a command string) so it can prefer `req.logSummary` over
+// `req.command` — gmail_send's `command` is the exact draft body, which the global constraint
+// forbids writing to activity_log (cycle 79 review I4). Every OTHER tool has no `logSummary`, so
+// this is a no-op fallback to the same `command` it always logged.
+function logOutcome(runId: string, req: ApprovalRequest, outcome: string, reason?: string): void {
   recordEvent({
     kind: 'tool', name: 'exec:approval', severity: outcome === 'approved' ? 'info' : 'warn',
-    meta: { channel: 'imessage', runId, outcome, command, ...(reason ? { reason } : {}) }
+    meta: { channel: 'imessage', runId, outcome, command: req.logSummary ?? req.command, ...(reason ? { reason } : {}) }
   })
 }
 
@@ -144,7 +168,7 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
   return async (req) => {
     // Stopped before it could even ask: nothing to record, nothing to text.
     if (deps.signal?.aborted) {
-      logOutcome(runId, req.command, 'denied', 'aborted')
+      logOutcome(runId, req, 'denied', 'aborted')
       return { approved: false }
     }
     const db = useDb()
@@ -157,7 +181,7 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
     }).returning({ id: channelApprovals.id })
     const id = row!.id
     if (unavailable || !client) {
-      logOutcome(runId, req.command, 'denied', unavailable ?? undefined)
+      logOutcome(runId, req, 'denied', unavailable ?? undefined)
       return { approved: false }
     }
 
@@ -170,13 +194,13 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
     // No guid (a failed or unconfirmed send) → no message a tapback could point at.
     if (!promptGuid) {
       await settle(id, 'denied')
-      logOutcome(runId, req.command, 'denied', 'prompt-send-failed')
+      logOutcome(runId, req, 'denied', 'prompt-send-failed')
       return { approved: false }
     }
     await db.update(channelApprovals).set({ promptGuid }).where(eq(channelApprovals.id, id))
 
     const status = await waitFor(id, pollMs, timeoutMs, deps.signal)
-    logOutcome(runId, req.command, status, deps.signal?.aborted ? 'aborted' : undefined)
+    logOutcome(runId, req, status, deps.signal?.aborted ? 'aborted' : undefined)
     return { approved: status === 'approved' }
   }
 }

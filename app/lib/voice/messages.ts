@@ -55,7 +55,7 @@ export interface MsgEffect {
   /** A `chunk` or `user-message` frame — handed to lib/agent/turn-stream.ts as-is. */
   messageFrame?: AgentMessageFrame
   error?: string
-  approval?: { requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean }
+  approval?: { requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean; title?: string }
   approvalResolved?: string // requestId that was settled server-side (timeout)
   /** The server lazily created a thread on this turn — id + its derived title. */
   conversation?: { id: string; title: string | null }
@@ -128,7 +128,12 @@ export function mapServerMessage(
     return isPlaying ? {} : { state: 'idle' }
   }
   if (m.type === 'approval' && m.requestId && m.command) {
-    return { approval: { requestId: m.requestId, tool: m.tool ?? 'exec', command: m.command, proposedPattern: m.proposedPattern ?? '', allowlistable: m.allowlistable === true } }
+    return {
+      approval: {
+        requestId: m.requestId, tool: m.tool ?? 'exec', command: m.command, proposedPattern: m.proposedPattern ?? '',
+        allowlistable: m.allowlistable === true, ...(typeof m.title === 'string' ? { title: m.title } : {})
+      }
+    }
   }
   if (m.type === 'approval-resolved' && m.requestId) {
     return { approvalResolved: m.requestId }

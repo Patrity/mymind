@@ -23,7 +23,7 @@ vi.mock('../jobs/timezone', () => ({
   serverTimezone: () => 'UTC'
 }))
 
-import { gmailTools, gmailDeps } from './gmail'
+import { gmailTools, gmailDeps, gmailSendTool, _resetSendPins } from './gmail'
 import { buildAiTools } from '../ai-tools'
 import { withSpan } from '../../observability/record'
 import { resetPeopleWarmup } from '../../google/people'
@@ -87,9 +87,9 @@ beforeEach(() => {
 })
 
 describe('gmail toolset registry', () => {
-  it('ships exactly the six Task 3/4 tools, all in the gmail toolset', () => {
+  it('ships exactly the five Task 3 tools, all in the gmail toolset (gmail_send is dangerous — it lives on bridgetProfile, see mcp-dangerous.test.ts / I1)', () => {
     expect(gmailTools.map(t => t.name).sort()).toEqual(
-      ['contacts_search', 'gmail_draft', 'gmail_modify', 'gmail_read_thread', 'gmail_search', 'gmail_send'])
+      ['contacts_search', 'gmail_draft', 'gmail_modify', 'gmail_read_thread', 'gmail_search'])
     for (const t of gmailTools) expect(t.toolset, t.name).toBe('gmail')
   })
   it('gmail_search description ends with the untrusted-content line', () => {
@@ -469,10 +469,20 @@ describe('gmail_modify', () => {
 })
 
 describe('gmail_send', () => {
+  // gmail_send is dangerous — it lives on bridgetProfile (profile.test.ts / mcp-dangerous.test.ts
+  // cover that), NOT in gmailTools/the `tool()`/`run()` helpers above. Its own helpers:
+  const sendTool = gmailSendTool
+  const describeSend = (args: Record<string, unknown>) => sendTool.describeApproval!(args)
+  const runSend = (args: Record<string, unknown>) => sendTool.handler(args, { signal: new AbortController().signal })
+
+  beforeEach(() => { _resetSendPins() })
+
+  /** A draft whose GET returns the SAME message id for both describeApproval's `format=full`
+   *  fetch and the handler's `format=minimal` re-check — i.e. "nothing changed". */
   function draftRoute(id: string, headers: Array<{ name: string, value: string }>, bodyText: string): Record<string, Route> {
     return {
       [`GET ${G}/drafts/${id}`]: (req) => {
-        expect(req.url.searchParams.get('format')).toBe('full')
+        expect(['full', 'minimal']).toContain(req.url.searchParams.get('format'))
         return {
           json: {
             id,
@@ -487,23 +497,25 @@ describe('gmail_send', () => {
   }
 
   it('schema carries only account + draftId — no to/body/subject (send only from an existing draft)', () => {
-    expect(Object.keys(tool('gmail_send').schema).sort()).toEqual(['account', 'draftId'])
+    expect(Object.keys(sendTool.schema).sort()).toEqual(['account', 'draftId'])
   })
 
-  it('is dangerous and NOT allowlistable', () => {
-    expect(tool('gmail_send').dangerous).toBe(true)
-    expect(tool('gmail_send').allowlistable).toBeFalsy()
+  it('is dangerous, kind create (m4), NOT allowlistable, and lives OUTSIDE gmailTools (I1)', () => {
+    expect(sendTool.dangerous).toBe(true)
+    expect(sendTool.allowlistable).toBeFalsy()
+    expect(sendTool.kind).toBe('create')
+    expect(gmailTools.find(t => t.name === 'gmail_send')).toBeUndefined()
   })
 
   it('requires an account, never touching Google', async () => {
     const fetch = useRoutes({})
-    const out = await run('gmail_send', { draftId: 'd1' })
+    const out = await runSend({ draftId: 'd-noacct' })
     expect((out.result as { error: string }).error).toBe('name an account: work, personal')
     expect(fetch.calls).toEqual([])
   })
 
-  it('describeApproval GETs the real draft and renders From/To/Cc/Subject/body — not the call args', async () => {
-    useRoutes(draftRoute('d1', [
+  it('describeApproval GETs the real draft and renders From/To/Cc/Subject/body — not the call args; sets a title and a body-free logSummary (m1/I4)', async () => {
+    useRoutes(draftRoute('d-card', [
       { name: 'From', value: 'tony@work.com' },
       { name: 'To', value: 'ann@a.com' },
       { name: 'Cc', value: 'bo@b.com' },
@@ -512,8 +524,9 @@ describe('gmail_send', () => {
     // A caller-supplied `body`/`to` (not in the schema, but nothing stops a test from handing
     // the handler/describeApproval extra keys directly) must be ignored — the card is built
     // from Google's draft, never from whatever the model passed in.
-    const req = await tool('gmail_send').describeApproval!({ account: 'work', draftId: 'd1', body: 'FORGED', to: 'evil@x.com' })
+    const req = await describeSend({ account: 'work', draftId: 'd-card', body: 'FORGED', to: 'evil@x.com' })
     expect(req.proposedPattern).toBe('')
+    expect(req.title).toBe('Send this email?')
     expect(req.command).toContain('From: tony@work.com')
     expect(req.command).toContain('To: ann@a.com')
     expect(req.command).toContain('Cc: bo@b.com')
@@ -521,60 +534,159 @@ describe('gmail_send', () => {
     expect(req.command).toContain('See you at noon')
     expect(req.command).not.toContain('FORGED')
     expect(req.command).not.toContain('evil@x.com')
+    // logSummary (I4): body-free — tool/account/draftId/to/subject LENGTH only, never the body.
+    expect(req.logSummary).toContain('draftId=d-card')
+    expect(req.logSummary).toContain('to=ann@a.com')
+    expect(req.logSummary).toContain('subjectChars=5') // 'Lunch'.length
+    expect(req.logSummary).not.toContain('See you at noon')
   })
 
   it('omits the Cc line when the draft has none', async () => {
-    useRoutes(draftRoute('d2', [
+    useRoutes(draftRoute('d-nocc', [
       { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }
     ], 'hello'))
-    const req = await tool('gmail_send').describeApproval!({ account: 'work', draftId: 'd2' })
+    const req = await describeSend({ account: 'work', draftId: 'd-nocc' })
     expect(req.command).not.toContain('Cc:')
   })
 
-  it('caps the body at 1,500 chars', async () => {
-    useRoutes(draftRoute('d3', [
+  it('shows Bcc and lists attachment filenames when the draft has them (m2)', async () => {
+    useRoutes({
+      [`GET ${G}/drafts/d-attach`]: (req) => {
+        expect(req.url.searchParams.get('format')).toBe('full')
+        return {
+          json: {
+            id: 'd-attach',
+            message: {
+              id: 'd-attach-m',
+              payload: {
+                mimeType: 'multipart/mixed',
+                headers: [
+                  { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' },
+                  { name: 'Bcc', value: 'secret@b.com' }, { name: 'Subject', value: 'Files' }
+                ],
+                parts: [
+                  { mimeType: 'text/plain', body: { data: b64('see attached') } },
+                  { filename: 'report.pdf', mimeType: 'application/pdf', body: {} },
+                  { filename: 'photo.jpg', mimeType: 'image/jpeg', body: {} }
+                ]
+              }
+            }
+          }
+        }
+      }
+    })
+    const req = await describeSend({ account: 'work', draftId: 'd-attach' })
+    expect(req.command).toContain('Bcc: secret@b.com')
+    expect(req.command).toContain('[2 attachments: report.pdf, photo.jpg]')
+  })
+
+  it('caps the body at 1,500 chars (robust to a blank line inside the body — m6)', async () => {
+    useRoutes(draftRoute('d-long', [
       { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Long' }
     ], 'x'.repeat(2000)))
-    const req = await tool('gmail_send').describeApproval!({ account: 'work', draftId: 'd3' })
-    const bodyPart = req.command.split('\n\n')[1]!
+    const req = await describeSend({ account: 'work', draftId: 'd-long' })
+    const prefix = 'Subject: Long\n\n'
+    const idx = req.command.indexOf(prefix)
+    expect(idx).toBeGreaterThanOrEqual(0)
+    const bodyPart = req.command.slice(idx + prefix.length)
     expect(bodyPart.length).toBeLessThanOrEqual(1500 + '… [truncated]'.length)
     expect(bodyPart).toContain('[truncated]')
   })
 
   it('a failed draft fetch (404) says the draft could not be loaded — deny', async () => {
-    useRoutes({ [`GET ${G}/drafts/gone`]: () => ({ status: 404, json: { error: { message: 'Not Found' } } }) })
-    const req = await tool('gmail_send').describeApproval!({ account: 'work', draftId: 'gone' })
-    expect(req.command).toMatch(/draft gone could not be loaded/)
+    useRoutes({ [`GET ${G}/drafts/d-gone`]: () => ({ status: 404, json: { error: { message: 'Not Found' } } }) })
+    const req = await describeSend({ account: 'work', draftId: 'd-gone' })
+    expect(req.command).toMatch(/draft d-gone could not be loaded/)
     expect(req.command).toMatch(/deny/)
   })
 
   it('a missing account also reads as "could not be loaded" — no network call', async () => {
     const fetch = useRoutes({})
-    const req = await tool('gmail_send').describeApproval!({ draftId: 'd1' })
-    expect(req.command).toMatch(/draft d1 could not be loaded/)
+    const req = await describeSend({ draftId: 'd-missing-acct' })
+    expect(req.command).toMatch(/draft d-missing-acct could not be loaded/)
     expect(req.command).toMatch(/deny/)
     expect(fetch.calls).toEqual([])
   })
 
-  it('handler POSTs /drafts/send {id} in the named account → { sent, messageId, threadId }, no undo', async () => {
+  it('m3: a DB error resolving the account is caught, not thrown — still reads "could not be loaded"', async () => {
+    vi.mocked(listConnections).mockRejectedValueOnce(new Error('db down'))
+    const req = await describeSend({ account: 'work', draftId: 'd-db-err' })
+    expect(req.command).toMatch(/draft d-db-err could not be loaded/)
+    expect(req.command).toContain('db down')
+  })
+
+  it('happy path: describeApproval pins the draft, the handler sends when its OWN re-fetch still matches it', async () => {
     let posted: unknown
     const fetch = useRoutes({
-      [`POST ${G}/drafts/send`]: (req) => {
-        expect(acct(req)).toBe('personal')
-        posted = req.body
-        return { json: { id: 'msg1', threadId: 'thr1' } }
+      ...draftRoute('d-happy', [
+        { name: 'From', value: 'tony@costanzoclan.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }
+      ], 'hello'),
+      [`POST ${G}/drafts/send`]: (req) => { expect(acct(req)).toBe('personal'); posted = req.body; return { json: { id: 'msg1', threadId: 'thr1' } } }
+    })
+    await describeSend({ account: 'personal', draftId: 'd-happy' })
+    const out = await runSend({ account: 'personal', draftId: 'd-happy' })
+    expect(out.result).toEqual({ sent: true, messageId: 'msg1', threadId: 'thr1' })
+    expect(posted).toEqual({ id: 'd-happy' })
+    expect(out.undo).toBeUndefined()
+    expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([`POST ${G}/drafts/send`])
+  })
+
+  it('I2: a draft edited after approval is refused — the handler never sends', async () => {
+    const fetch = useRoutes({
+      [`GET ${G}/drafts/d-toctou`]: (req) => {
+        const format = req.url.searchParams.get('format')
+        return {
+          json: {
+            id: 'd-toctou',
+            message: {
+              id: format === 'minimal' ? 'm-edited' : 'm-original',
+              payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64('hello') } }
+            }
+          }
+        }
       }
     })
-    const out = await run('gmail_send', { account: 'personal', draftId: 'd9' })
-    expect(out.result).toEqual({ sent: true, messageId: 'msg1', threadId: 'thr1' })
-    expect(posted).toEqual({ id: 'd9' })
-    expect(out.undo).toBeUndefined()
-    expect(fetch.calls).toEqual([`POST ${G}/drafts/send`])
+    await describeSend({ account: 'work', draftId: 'd-toctou' }) // pins 'm-original'
+    const out = await runSend({ account: 'work', draftId: 'd-toctou' }) // re-fetch now sees 'm-edited'
+    expect(out.result).toEqual({ error: 'the draft changed after you approved it — ask again' })
+    expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
+  })
+
+  it('I5: a describeApproval fetch failure leaves no pin — the handler refuses even if "approved" anyway, with no re-fetch or POST', async () => {
+    const fetch = useRoutes({ [`GET ${G}/drafts/d-nopin`]: () => ({ status: 503 }) })
+    const req = await describeSend({ account: 'work', draftId: 'd-nopin' })
+    expect(req.command).toMatch(/could not be loaded/)
+    fetch.calls.length = 0 // isolate what the HANDLER itself does from here
+    const out = await runSend({ account: 'work', draftId: 'd-nopin' })
+    expect(out.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
+    expect(fetch.calls).toEqual([]) // no pin existed to compare against — no network call needed
+  })
+
+  it('I5: a pin exists, but the handler\'s OWN re-fetch fails transiently — refused, never sent', async () => {
+    let gets = 0
+    const fetch = useRoutes({
+      [`GET ${G}/drafts/d-flaky`]: () => {
+        gets++
+        return gets === 1
+          ? { json: { id: 'd-flaky', message: { id: 'm1', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64('hi') } } } } }
+          : { status: 503 }
+      }
+    })
+    await describeSend({ account: 'work', draftId: 'd-flaky' }) // pins m1 on the 1st GET
+    const out = await runSend({ account: 'work', draftId: 'd-flaky' }) // the handler's re-GET (2nd) fails
+    expect(out.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
+    expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
   })
 
   it('a send failure comes back as { error }, never thrown', async () => {
-    useRoutes({ [`POST ${G}/drafts/send`]: () => ({ status: 404, json: { error: { message: 'Not Found' } } }) })
-    const out = await run('gmail_send', { account: 'work', draftId: 'gone' })
+    useRoutes({
+      ...draftRoute('d-sendfail', [
+        { name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }
+      ], 'hi'),
+      [`POST ${G}/drafts/send`]: () => ({ status: 404, json: { error: { message: 'Not Found' } } })
+    })
+    await describeSend({ account: 'work', draftId: 'd-sendfail' })
+    const out = await runSend({ account: 'work', draftId: 'd-sendfail' })
     expect(out.result).toEqual({ error: 'that thread/event no longer exists' })
   })
 })

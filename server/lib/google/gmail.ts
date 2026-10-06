@@ -112,8 +112,10 @@ export async function deleteDraft(c: Connection, draftId: string, deps: GoogleDe
 }
 
 /** `format: 'full'` gives a parseable payload (what an approval card shows); `'raw'` gives the
- *  exact RFC 2822 bytes (what an update's undo restores). */
-export async function getDraft(c: Connection, draftId: string, deps: GoogleDeps = {}, format: 'full' | 'raw' = 'full'): Promise<GmailDraft> {
+ *  exact RFC 2822 bytes (what an update's undo restores); `'minimal'` gives just the message id
+ *  (and labels) — cheap enough to re-check, right before sending, that a draft's content still
+ *  matches what was approved (gmail_send's TOCTOU guard, cycle 79 review I2/I5). */
+export async function getDraft(c: Connection, draftId: string, deps: GoogleDeps = {}, format: 'full' | 'raw' | 'minimal' = 'full'): Promise<GmailDraft> {
   return google(c, deps).get<GmailDraft>(`${BASE}/drafts/${encodeURIComponent(draftId)}`, { format })
 }
 

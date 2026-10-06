@@ -180,6 +180,36 @@ const decideApprovalMessages: AgentUIMessage[] = [{
     input: { id: '22222222-2222-4222-8222-222222222222', choice: 'approve' }, approval: { id: 'r3' }
   }]
 }]
+// gmail_send (cycle 79 review m1): per-tool title ("Send this email?" instead of the generic
+// "Run this?") and a multi-line draft card — a long prose line must wrap on WORD boundaries, not
+// mid-word (the fix changed the <pre>'s break-all to break-words for every tool except exec).
+const gmailSendApprovalDetails = ref<PendingApprovalDetails | null>({
+  requestId: 'r4',
+  tool: 'gmail_send',
+  title: 'Send this email?',
+  command: [
+    'From: tony@work.com',
+    'To: ann@example.com',
+    'Cc: bo@example.com',
+    'Subject: Quarterly numbers and a deliberately long subject line meant to exercise word-wrapping in the approval card',
+    '',
+    'Hi Ann,',
+    '',
+    'Here is the quarterly report you asked about last week during our sync — let me know if anything looks off before I forward it to finance. This paragraph is long on purpose so the card has to wrap it across several lines without breaking any single word in half.',
+    '',
+    'Thanks,',
+    'Tony'
+  ].join('\n'),
+  proposedPattern: '',
+  allowlistable: false
+})
+const gmailSendApprovalMessages: AgentUIMessage[] = [{
+  id: 'approval-4', role: 'assistant',
+  parts: [{
+    type: 'dynamic-tool', toolName: 'gmail_send', toolCallId: 't-send', state: 'approval-requested',
+    input: { account: 'work', draftId: 'd1' }, approval: { id: 'r4' }
+  }]
+}]
 const approvalFixtureMessages: AgentUIMessage[] = [
   {
     id: 'approval-1', role: 'assistant',
@@ -591,6 +621,20 @@ function onBranchPagerGo(which: string, dir: -1 | 1) {
           data-testid="decide-approval-fixture"
           :messages="decideApprovalMessages"
           :approval="decideApprovalDetails"
+          state="tool"
+          :connected="true"
+          :hero="true"
+          @approve="onApprovalApprove"
+          @deny="onApprovalDeny"
+        />
+        <p class="text-xs text-muted-foreground">
+          gmail_send (cycle 79 review m1) — "Send this email?" title, word-wrapped prose body.
+        </p>
+        <AgentConversation
+          class="h-96"
+          data-testid="gmail-send-approval-fixture"
+          :messages="gmailSendApprovalMessages"
+          :approval="gmailSendApprovalDetails"
           state="tool"
           :connected="true"
           :hero="true"

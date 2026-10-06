@@ -188,6 +188,11 @@ describe('mapServerMessage — cid guard (belt-and-braces against a stray frame 
       .toEqual({ approval: { requestId: 'r', tool: 'exec', command: 'ls', proposedPattern: '', allowlistable: false } })
   })
 
+  it('carries a per-tool title through when the server sends one (cycle 79 review m1)', () => {
+    expect(mapServerMessage({ type: 'approval', requestId: 'r', tool: 'gmail_send', command: 'From: a@b.com', title: 'Send this email?' } as never, false, null))
+      .toEqual({ approval: { requestId: 'r', tool: 'gmail_send', command: 'From: a@b.com', proposedPattern: '', allowlistable: false, title: 'Send this email?' } })
+  })
+
   describe('viewing nothing (after `new`) — the left view', () => {
     const delta = { type: 'chunk', turnId: 45, cid: 'thread-A', chunk: { type: 'text-delta', id: 't', delta: 'ghost' } }
     const leftA = { ids: new Set(['thread-A']), submitted: true }

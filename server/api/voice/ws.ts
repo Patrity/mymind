@@ -151,13 +151,16 @@ export default defineWebSocketHandler({
       return await new Promise<{ approved: boolean }>((resolve) => {
         const timer = setTimeout(() => {
           if (s.pendingApprovals.delete(requestId)) {
-            recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'timeout', command: req.command } })
+            // logSummary (cycle 79 review I4): a body-free stand-in a tool sets when `command`
+            // itself may carry sensitive/untrusted content (gmail_send's exact draft body) that
+            // must never reach activity_log — falls back to `command` for every other tool.
+            recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'timeout', command: req.logSummary ?? req.command } })
             peer.send(JSON.stringify({ type: 'approval-resolved', requestId }))
             resolve({ approved: false })
           }
         }, Number(process.env.APPROVAL_TIMEOUT_MS ?? 120_000))
         s.pendingApprovals.set(requestId, { resolve, timer, req, runId, conversationId })
-        peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern, allowlistable: req.allowlistable === true }))
+        peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern, allowlistable: req.allowlistable === true, title: req.title }))
         // Capped like the tool-start frame's args (orchestrator.ts): the card must not ship a
         // whole document to the browser.
         if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool, args: req.args && capArgs(req.args, ARGS_WRITE_CAP) })
@@ -295,7 +298,7 @@ export default defineWebSocketHandler({
           } else if (outcome.persist) {
             recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'remember-refused', tool: pending.req.tool, pattern: outcome.pattern } })
           }
-          recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: a.kind, command: pending.req.command, pattern: remember ? outcome.pattern : null, remembered: remember } })
+          recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: a.kind, command: pending.req.logSummary ?? pending.req.command, pattern: remember ? outcome.pattern : null, remembered: remember } })
           pending.resolve({ approved: outcome.approved })
         }
         return

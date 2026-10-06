@@ -4,11 +4,26 @@ import { describe, it, expect } from 'vitest'
 import { agentTools } from '../server/lib/agent/tools'
 import { mcpToolNames } from '../server/lib/mcp/server'
 import { execTool } from '../server/lib/agent/tools/exec'
+import { bridgetProfile } from '../server/lib/agent/profile'
+import { gmailSendTool } from '../server/lib/agent/tools/gmail'
 
 describe('MCP dangerous-tool defense', () => {
-  it('agentTools has exactly one dangerous tool today — gmail_send (cycle 79, Task 4): unlike exec/decide_review (profile-only), it lives in the shared registry via gmailTools, so isMcpExposed must exclude it by BOTH its dangerous flag and its gmail toolset', () => {
+  it('agentTools contains no dangerous tools today (exec/decide_review/gmail_send all live on the profile, not the registry)', () => {
     const dangerous = agentTools.filter(t => t.dangerous)
-    expect(dangerous.map(t => t.name)).toEqual(['gmail_send'])
+    expect(dangerous).toHaveLength(0)
+  })
+
+  // I1 (cycle 79 review, fix round 1): gmail_send must NOT live in the shared agentTools
+  // registry — every agentTools consumer (MCP, replay, subagents, toolByName) would otherwise
+  // be one forgotten `dangerous` check away from a gateless send. It lives on bridgetProfile
+  // instead, next to exec/decide_review, the same way those two already do.
+  it('gmail_send lives on bridgetProfile (dangerous, gmail toolset), never in agentTools', () => {
+    expect(agentTools.find(t => t.name === 'gmail_send')).toBeUndefined()
+    const onProfile = bridgetProfile.tools.find(t => t.name === 'gmail_send')
+    expect(onProfile).toBeDefined()
+    expect(onProfile).toBe(gmailSendTool)
+    expect(onProfile!.dangerous).toBe(true)
+    expect(onProfile!.toolset).toBe('gmail')
   })
 
   it('subagent tools live on the profile, not in agentTools → absent from MCP', () => {

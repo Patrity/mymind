@@ -170,6 +170,49 @@ describe('ws runtime socket', () => {
     await h.message(p, frame({ type: 'deny', requestId }))
   })
 
+  it('I4 (cycle 79 review): approve/deny logs the body-free logSummary when a tool sets one, never the raw command', async () => {
+    const p = peer(); h.open(p)
+    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
+    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
+    await h.message(p, frame({ type: 'text', text: 'a' }))
+    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
+    const req = {
+      tool: 'gmail_send', command: 'From: a@b.com\n\nsecret draft body', proposedPattern: '',
+      logSummary: 'gmail_send: account=work draftId=d1 to=a@b.com subjectChars=3'
+    }
+    void ch(req)
+    const requestId = types(p).filter(f => f.type === 'approval').at(-1)!.requestId
+    await h.message(p, frame({ type: 'approve', requestId }))
+    const { recordEvent } = await import('../server/lib/observability/record')
+    const call = vi.mocked(recordEvent).mock.calls.find(c => (c[0] as { meta?: Record<string, unknown> }).meta?.outcome === 'approve')
+    expect(call?.[0]).toMatchObject({ meta: { command: req.logSummary } })
+    expect(JSON.stringify(call)).not.toContain('secret draft body')
+  })
+
+  it('I4: an approval TIMEOUT also logs the body-free logSummary, never the raw command', async () => {
+    vi.useFakeTimers()
+    try {
+      const p = peer(); h.open(p)
+      m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
+      await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
+      await h.message(p, frame({ type: 'text', text: 'a' }))
+      const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
+      const req = {
+        tool: 'gmail_send', command: 'From: a@b.com\n\nsecret draft body', proposedPattern: '',
+        logSummary: 'gmail_send: account=work draftId=d1 to=a@b.com subjectChars=3'
+      }
+      const pending = ch(req)
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(await pending).toEqual({ approved: false })
+      const { recordEvent } = await import('../server/lib/observability/record')
+      const call = vi.mocked(recordEvent).mock.calls.find(c => (c[0] as { meta?: Record<string, unknown> }).meta?.outcome === 'timeout')
+      expect(call?.[0]).toMatchObject({ meta: { command: req.logSummary } })
+      expect(JSON.stringify(call)).not.toContain('secret draft body')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('"always allow" is saved only for an allowlistable tool — a crafted remember for decide_review is refused', async () => {
     const p = peer(); h.open(p)
     m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result(`run-${req.sessionKey}`, req.sessionKey.slice(7)))

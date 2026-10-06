@@ -6,10 +6,16 @@
 // reach activity_log (redactForLog). Every handler honours the never-throw contract: any failure
 // (Google error, reconnect, CR/LF header refusal) comes back as { result: { error } }.
 //
-// gmail_send (Task 4) is the one dangerous tool here: it sends an EXISTING draft (no to/body/
-// subject in its schema — the model cannot smuggle different content past the human) and its
-// describeApproval is async, re-fetching that draft from Google so the approval card shows what
-// will actually be sent, never trusting the call args.
+// gmail_send (Task 4; TOCTOU-hardened in the cycle 79 review fix round) sends an EXISTING draft
+// (no to/body/subject in its schema — the model cannot smuggle different content past the
+// human). It is NOT in `gmailTools` below — like exec/decide_review, a dangerous tool lives on
+// bridgetProfile (see `gmailSendTool` / `googleDangerousTools` at the end of this file), never in
+// the shared `agentTools` registry, so MCP/replay/subagents/toolByName never have to remember a
+// `dangerous` check. Its `describeApproval` is async: it re-fetches the draft from Google so the
+// card shows what will actually be sent, and PINS the draft's current message id (Gmail mints a
+// new one on every `drafts.update`); the handler refuses to send unless its OWN re-fetch,
+// immediately before the real send, still matches that pin — a card Tony approved is otherwise
+// not provably the content that goes out (review I2/I5).
 import { z } from 'zod'
 import type { AgentTool, ToolExecution } from '../types'
 import type { UndoResult } from '../undo'
@@ -38,6 +44,8 @@ const DEFAULT_SEARCH_LIMIT = 10
 /** gmail_send's approval card caps the draft body it shows Tony — a long draft is still fully
  *  reviewable without texting (or rendering) megabytes of it. */
 const APPROVAL_BODY_CHARS = 1500
+/** The card's heading (web + iMessage, cycle 79 review m1) — "Run this?" is wrong for a send. */
+const SEND_TITLE = 'Send this email?'
 
 async function agentTz(): Promise<string> {
   try { return await getDefaultTimezone() } catch { return serverTimezone() }
@@ -72,22 +80,57 @@ function withRe(subject: string): string {
   return /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`
 }
 
-/** Renders the actual Google draft (never the call args) into the text an approval card shows:
- *  From/To/[Cc]/Subject headers, a blank line, then the body capped at APPROVAL_BODY_CHARS. */
-async function draftApprovalText(c: Connection, draftId: string): Promise<string> {
+// --- gmail_send's approve → send pin (cycle 79 review I2/I5) ----------------------------------
+// describeApproval records the draft's CURRENT message id (Gmail mints a new one on every
+// drafts.update, so the id is a content fingerprint); the handler refuses to send unless its own
+// re-fetch, right before the real POST, still matches it. Keyed by connection id + draftId, and
+// bounded like reviews.ts's summaryCache — a run that never reaches gmail_send would otherwise
+// leak an entry forever. A pin is consumed (deleted) on its first use either way: a second
+// approval of the same draft must re-fetch and re-pin, not reuse a stale fingerprint.
+const SEND_PIN_MAX = 500
+const sendPins = new Map<string, string>()
+
+function pinKey(connectionId: string, draftId: string): string {
+  return `${connectionId}:${draftId}`
+}
+
+function rememberPin(key: string, messageId: string): void {
+  sendPins.delete(key)
+  sendPins.set(key, messageId)
+  while (sendPins.size > SEND_PIN_MAX) sendPins.delete(sendPins.keys().next().value!)
+}
+
+/** Test seam: forget every pin, as a restart would. */
+export function _resetSendPins(): void {
+  sendPins.clear()
+}
+
+/** Fetches the real draft and renders it into the text an approval card shows — never built
+ *  from the call args, which don't even carry to/body/subject. From/To/[Cc]/[Bcc]/Subject
+ *  headers, a blank line, the body capped at APPROVAL_BODY_CHARS, and (review m2) an
+ *  attachment-name line when the draft has any. `logSummary` is the body-free line activity_log
+ *  records instead (review I4); `messageId` is the fingerprint describeApproval pins. */
+async function fetchDraftForApproval(c: Connection, draftId: string): Promise<{ command: string, logSummary: string, messageId: string | undefined }> {
   const draft = await getDraft(c, draftId, deps(), 'full')
   const p = draft.message?.payload ?? {}
-  const { text } = parseMessagePayload(p, APPROVAL_BODY_CHARS)
-  const lines = [`From: ${header(p, 'From') ?? c.email}`, `To: ${header(p, 'To') ?? ''}`]
+  const { text, attachments } = parseMessagePayload(p, APPROVAL_BODY_CHARS)
+  const to = header(p, 'To') ?? ''
+  const subject = header(p, 'Subject') ?? ''
+  const lines = [`From: ${header(p, 'From') ?? c.email}`, `To: ${to}`]
   const cc = header(p, 'Cc')
   if (cc) lines.push(`Cc: ${cc}`)
-  lines.push(`Subject: ${header(p, 'Subject') ?? ''}`, '', text)
-  return lines.join('\n')
+  const bcc = header(p, 'Bcc')
+  if (bcc) lines.push(`Bcc: ${bcc}`)
+  lines.push(`Subject: ${subject}`, '', text)
+  if (attachments.length) lines.push('', `[${attachments.length} attachment${attachments.length === 1 ? '' : 's'}: ${attachments.join(', ')}]`)
+  const logSummary = `gmail_send: account=${c.label} draftId=${draftId} to=${to || '(none)'} subjectChars=${subject.length}`
+  return { command: lines.join('\n'), logSummary, messageId: draft.message?.id }
 }
 
 /** The approval card's wording when the real draft can't be shown: Tony cannot review what he
- *  can't see, so the only sane default is to deny — the handler re-does the same lookup and
- *  will fail the same way, so the send never actually goes out either. */
+ *  can't see, so the only sane default is to deny. (review I5: the handler does NOT simply trust
+ *  an approval of this card — it re-fetches and refuses on its own, independent of whether this
+ *  lookup here failed, so approving it anyway still can't send anything.) */
 function draftUnavailableCommand(draftId: string, reason: string): string {
   return `draft ${draftId} could not be loaded — deny (${reason})`
 }
@@ -375,49 +418,6 @@ export const gmailTools: AgentTool[] = [
     }
   },
   {
-    name: 'gmail_send',
-    description: 'Send an EXISTING Gmail draft (from gmail_draft) in ONE named account — this is the only way mail actually leaves the mailbox. Tony reviews the real draft content before approving; there is no undo once it is sent.',
-    kind: 'destructive',
-    dangerous: true,
-    toolset: 'gmail',
-    schema: {
-      account: z.string().describe('Account label or email the draft lives in (required)'),
-      draftId: z.string().min(1).describe('Draft id from gmail_draft')
-    },
-    // Async (types.ts, cycle 79 Task 4): re-fetches the draft from Google so the approval card
-    // shows what will actually be sent — never the call args, which don't even carry to/body/
-    // subject (see schema above). A draft that can't be loaded reads as "could not be loaded —
-    // deny"; the handler below re-does the same lookup and fails the same way, so approving it
-    // anyway still can't send anything.
-    describeApproval: async (a) => {
-      const draftId = a.draftId as string
-      const acc = await oneAccount(a.account)
-      if (!acc.ok) return { tool: 'gmail_send', command: draftUnavailableCommand(draftId, acc.error), proposedPattern: '' }
-      try {
-        const command = await draftApprovalText(acc.c, draftId)
-        return { tool: 'gmail_send', command, proposedPattern: '' }
-      } catch (err) {
-        return { tool: 'gmail_send', command: draftUnavailableCommand(draftId, errorOf(err, acc.c)), proposedPattern: '' }
-      }
-    },
-    handler: async (a) => {
-      let c: Connection | undefined
-      try {
-        const acc = await oneAccount(a.account)
-        if (!acc.ok) return fail('gmail_send', acc.error)
-        c = acc.c
-        const draftId = a.draftId as string
-        const sent = await sendDraft(c, draftId, deps())
-        return {
-          result: { sent: true, messageId: sent.id, threadId: sent.threadId },
-          summary: `sent draft in ${c.label}`
-        }
-      } catch (err) {
-        return fail('gmail_send', errorOf(err, c))
-      }
-    }
-  },
-  {
     name: 'contacts_search',
     description: 'Look up a person\'s email address or phone number in Tony\'s Google contacts — both saved contacts and "other contacts" (people he has emailed) — across every connected account (or one, via `account`). Returns name, emails, phones, account and source (saved | other), de-duplicated by email.',
     kind: 'read',
@@ -456,3 +456,73 @@ export const gmailTools: AgentTool[] = [
     }
   }
 ]
+
+// gmail_send (cycle 79 review I1): dangerous — lives on bridgetProfile (next to exec/
+// decide_review), NOT in `gmailTools`/`agentTools` above. `googleDangerousTools` is what
+// profile.ts spreads in; Task 5's calendar_guest_event/calendar_rsvp append to it the same way.
+export const gmailSendTool: AgentTool = {
+  name: 'gmail_send',
+  description: 'Send an EXISTING Gmail draft (from gmail_draft) in ONE named account — this is the only way mail actually leaves the mailbox. Tony reviews the real draft content before approving; there is no undo once it is sent.',
+  kind: 'create',
+  dangerous: true,
+  toolset: 'gmail',
+  schema: {
+    account: z.string().describe('Account label or email the draft lives in (required)'),
+    draftId: z.string().min(1).describe('Draft id from gmail_draft')
+  },
+  // Async (types.ts, cycle 79 Task 4): re-fetches the draft from Google so the approval card
+  // shows what will actually be sent — never the call args, which don't even carry to/body/
+  // subject (see schema above) — and pins the draft's current message id (I2/I5). A draft that
+  // can't be loaded (or whose account can't be resolved) reads as "could not be loaded — deny";
+  // the handler below does its OWN independent re-check right before sending, so approving this
+  // card is necessary but not sufficient — see the handler's comment for why.
+  describeApproval: async (a) => {
+    const draftId = a.draftId as string
+    let c: Connection | undefined
+    try {
+      const acc = await oneAccount(a.account)
+      if (!acc.ok) return { tool: 'gmail_send', title: SEND_TITLE, command: draftUnavailableCommand(draftId, acc.error), proposedPattern: '' }
+      c = acc.c
+      const { command, logSummary, messageId } = await fetchDraftForApproval(c, draftId)
+      if (messageId) rememberPin(pinKey(c.id, draftId), messageId)
+      return { tool: 'gmail_send', title: SEND_TITLE, command, proposedPattern: '', logSummary }
+    } catch (err) {
+      return { tool: 'gmail_send', title: SEND_TITLE, command: draftUnavailableCommand(draftId, errorOf(err, c)), proposedPattern: '' }
+    }
+  },
+  handler: async (a) => {
+    let c: Connection | undefined
+    try {
+      const acc = await oneAccount(a.account)
+      if (!acc.ok) return fail('gmail_send', acc.error)
+      c = acc.c
+      const draftId = a.draftId as string
+      // The approve step may be up to 10 minutes ago (iMessage) and run in parallel with a
+      // headless gmail_draft replacing this very draftId — never trust that card: re-check
+      // RIGHT NOW, independent of whatever describeApproval saw.
+      const key = pinKey(c.id, draftId)
+      const pinned = sendPins.get(key)
+      if (!pinned) return fail('gmail_send', 'the draft could not be loaded — nothing was sent')
+      let current: { message?: { id?: string } }
+      try {
+        current = await getDraft(c, draftId, deps(), 'minimal')
+      } catch {
+        return fail('gmail_send', 'the draft could not be loaded — nothing was sent')
+      }
+      if (current.message?.id !== pinned) {
+        sendPins.delete(key)
+        return fail('gmail_send', 'the draft changed after you approved it — ask again')
+      }
+      sendPins.delete(key) // one pin, one send attempt
+      const sent = await sendDraft(c, draftId, deps())
+      return {
+        result: { sent: true, messageId: sent.id, threadId: sent.threadId },
+        summary: `sent draft in ${c.label}`
+      }
+    } catch (err) {
+      return fail('gmail_send', errorOf(err, c))
+    }
+  }
+}
+
+export const googleDangerousTools: AgentTool[] = [gmailSendTool]

@@ -14,6 +14,9 @@ export interface PendingApprovalDetails {
   proposedPattern: string
   /** False for tools Tony must confirm every time (decide_review): no "always allow". */
   allowlistable?: boolean
+  /** Per-tool card heading (cycle 79 review m1) — e.g. gmail_send's "Send this email?". Falls
+   *  back to the generic "Run this?" when absent. */
+  title?: string
 }
 
 type ApprovalPart = Extract<AgentUIPart, { type: 'dynamic-tool'; state: 'approval-requested' }>
@@ -41,6 +44,11 @@ const inputJson = computed(() => JSON.stringify(props.part.input, null, 2))
 
 const canRemember = computed(() => props.details?.allowlistable === true)
 
+// exec commands are one-liners whose long unbroken tokens (paths, flags) are better clipped
+// mid-token than left to overflow; every other tool's command (e.g. gmail_send's From/To/Cc/
+// Subject + prose body) reads as text, where breaking mid-word is wrong (cycle 79 review m1).
+const wrapClass = computed(() => (props.details?.tool ?? props.part.toolName) === 'exec' ? 'break-all' : 'break-words')
+
 function approve() {
   emit('approve', props.part.approval.id, { remember: canRemember.value && remember.value, pattern: pattern.value })
 }
@@ -61,10 +69,10 @@ function deny() {
     <ConfirmationRequest>
       <div class="flex flex-col gap-3">
         <ConfirmationTitle>
-          <span v-if="details">Run this?</span>
+          <span v-if="details">{{ details.title ?? 'Run this?' }}</span>
           <span v-else>Approve <code class="font-mono">{{ part.toolName }}</code>?</span>
         </ConfirmationTitle>
-        <pre class="overflow-x-auto whitespace-pre-wrap break-all rounded bg-elevated/60 p-2 text-xs font-mono">{{ details ? details.command : inputJson }}</pre>
+        <pre class="overflow-x-auto whitespace-pre-wrap rounded bg-elevated/60 p-2 text-xs font-mono" :class="wrapClass">{{ details ? details.command : inputJson }}</pre>
         <div v-if="details && canRemember" class="flex flex-wrap items-center gap-2" data-testid="approval-always-allow">
           <UCheckbox v-model="remember" />
           <span class="text-sm text-muted">Always allow commands matching</span>

@@ -30,7 +30,7 @@ export function useVoice() {
   const error = ref<string | null>(null)
   /** Live Silero speech probability (0..1) — feeds the settings tuning meter. */
   const speechProb = ref(0)
-  const pendingApproval = ref<{ requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean } | null>(null)
+  const pendingApproval = ref<{ requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean; title?: string } | null>(null)
   /**
    * The thread this connection is in. Written from three places and nowhere else:
    * the server's `conversation` frame (first turn of a NEW thread — the only way the

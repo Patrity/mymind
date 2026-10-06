@@ -21,6 +21,17 @@ export interface ApprovalRequest {
   /** Set by buildAiTools from the TOOL (never from describeApproval): only then may a persisted
    *  allowlist pattern auto-approve it, or an "always allow" be saved for it. */
   allowlistable?: boolean
+  /** Per-tool card heading, shown instead of the generic "Run this?" (cycle 79 review m1) — e.g.
+   *  gmail_send's "Send this email?". Omit to keep the generic wording. */
+  title?: string
+  /** A body-free stand-in for `command`, logged to activity_log INSTEAD OF it when present
+   *  (cycle 79 review I4). `command` itself may carry sensitive/untrusted content (gmail_send's
+   *  exact draft body) that the global constraint forbids writing to activity_log — every
+   *  recorder of an approval OUTCOME (server/api/voice/ws.ts, server/lib/channels/approvals.ts's
+   *  logOutcome) must log `logSummary ?? command`, never `command` unconditionally. This does
+   *  NOT apply to the text actually SHOWN to the human approving it (the web card, the iMessage
+   *  prompt) — those still render the real `command` so the approval is informed. */
+  logSummary?: string
 }
 
 /** Per-call context handed to every tool handler. */
