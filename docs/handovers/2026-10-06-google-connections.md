@@ -62,7 +62,7 @@ Current-state reference: [wiki/google-connections.md](../wiki/google-connections
 5. Deferred minors from the SDD ledger: label edge cases (`co.uk`), scope-badge granularity, label drafts not refreshed on remote rename, shared linking spinner, `manage.ts` not scoped by session user (single-user app), impossible offset dates roll over, 1970 fallback for missing `internalDate`.
 
 ## 79b — taint hardening (2026-10-06, branch `fix/taint-hardening`)
-Closes Known limits §1 for the agent UI (chat, reasoning, voice caption). Connecting is unblocked only by accepting the residuals below — notably #6, data at rest rendered by MdView.
+Closes Known limits §1 for model text in the agent UI (chat, reasoning, voice caption, sessions transcripts) as of fix round 3 — rounds 1 and 2 each claimed this and were each wrong (below). Connecting is unblocked only by accepting the residuals below — notably #6, data at rest rendered by MdView.
 - **(a) Cross-turn taint.** `runAgent` seeds the run's taint from the model-visible history: tainted
   at start iff, after `applyHistoryPolicy`, an in-window record of a `taints` tool still carries a
   content result (`historyCarriesTaint`, `tool-history.ts`; same `producedContent` rule as the live
@@ -111,6 +111,16 @@ Closes Known limits §1 for the agent UI (chat, reasoning, voice caption). Conne
     ok. Mutation: sanitizer plugin removed (`plugins: []`) → 21 red (every raw-HTML/MDC vector,
     static + streaming, + the alt-text test); restored via git.
 
+- **Fix round 3** (re-review `.superpowers/sdd/79b/rereview-2.md`): round 2 was still bypassable —
+  a ```` ```html ```` fence auto-switched to vue-stream-markdown's HTML previewer
+  (`<iframe srcdoc=… sandbox="allow-scripts">`, sub-resources + fetch, zero clicks); the sanitizer
+  allowed `pre` and the HTML is code text. `agentMarkdownProps.previewers = false` (the only
+  built-in previewers are html and mermaid; no extensions are configured). Six fence vectors
+  added (html, HTML, unclosed html, html+style url, svg, mermaid) in static + streaming, a
+  not-vacuous check that round-2 props leak through the fence, and "the fence shows as code".
+  Mutation previewers back on → 4 red; restored via git. Gates: typecheck 0; `pnpm test` 3451 passed / 1
+  skipped; `pnpm test:db` 882 passed; `pnpm build` ok.
+
 ### Known residuals after 79b (accepted — none blocks connecting, but know them)
 1. **Prose outlives the taint.** The taint clears once the tool record leaves the 3-tool-turn
    window, after `/clear`, or when the summary fold drops the turn — but mail text Bridget quoted
@@ -127,7 +137,9 @@ Closes Known limits §1 for the agent UI (chat, reasoning, voice caption). Conne
 5. **iMessage `allowedHandles` must be Tony's own identities only** — any allowed handle gets an
    interactive Bridget with free Gmail reads, answered in that person's chat.
 6. **MdView renders data at rest unhardened.** Documents (incl. `save_document` output), review
-   triage captures (memory extraction, `quick_capture` text) and shared docs render through
+   triage captures (memory extraction, `quick_capture` text), shared docs, and job/skill/config
+   markdown (`MarkdownConfigEditor.vue:146` preview — content a tainted run can write after
+   approval) render through
    MdView/MDC with no image/HTML restriction — mail text a tainted run saved into one of them
    could exfiltrate (off-origin image, `style=url()`) when Tony opens it. Follow-up: a CSP
    `img-src`/`style-src` backstop, or the same sanitizer for agent-authored docs. No app-wide

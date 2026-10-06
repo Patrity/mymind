@@ -114,9 +114,12 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
   `picture`, `svg`, `iframe` are dropped with their content; `div`/`span`/MDC components are
   unwrapped to their text), each tag keeps only the attributes markdown produces (no `style`
   except table `text-align`, no `ping`/`poster`/`srcset`/`on*`), and an image renders only from
-  `/api/images/…` (anything else becomes its alt text). Link favicons are off; links stay
-  clickable (the library confirms external links). **Not covered:** `MdView`/MDC renders of data
-  at rest — documents (incl. `save_document` output), review triage captures, shared docs — still
+  `/api/images/…` (anything else becomes its alt text). Code-block previewers are off
+  (`previewers: false` — a ```` ```html ```` fence otherwise auto-renders in an
+  `allow-scripts` iframe the tree pass can't see; fences now show as code). Link favicons are
+  off; links stay clickable (the library confirms external links). **Not covered:** `MdView`/MDC renders of data
+  at rest — documents (incl. `save_document` output), review triage captures, shared docs, and
+  job/skill/config markdown in `MarkdownConfigEditor.vue` — still
   load off-origin images/HTML; no app-wide CSP yet (both follow-ups).
 - **Per-call headless proposals (79b).** `AgentTool.proposeWhen?(args)`: in `headlessTools`
   (`runtime/gate.ts`) a tool classified `run` whose `proposeWhen(args)` is true is proposed to
