@@ -38,13 +38,12 @@ const md = computed(() => (slotContent.value ?? props.content ?? '') as string)
   <Markdown
     :content="md"
     :mode="props.streaming ? 'streaming' : 'static'"
-    v-bind="agentMarkdownProps"
     :class="
       cn(
         'size-full [&>*:first-child]:mt-0! [&>*:last-child]:mb-0!',
         props.class,
       )
     "
-    v-bind="$attrs"
+    v-bind="{ ...$attrs, ...agentMarkdownProps }"
   />
 </template>
