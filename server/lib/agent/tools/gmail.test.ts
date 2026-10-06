@@ -358,7 +358,8 @@ describe('gmail_draft', () => {
 })
 
 describe('gmail_modify', () => {
-  /** Routes for a modify: minimal snapshots per thread, recorded modify + batchModify bodies. */
+  /** Routes for a modify, STATEFUL like Gmail: a thread modify really changes the stored labels,
+   *  so a snapshot taken after the modify (instead of before) sees the wrong state. */
   function modifyRoutes(threads: Record<string, Array<{ id: string, labelIds: string[] }>>) {
     const modifies: Array<{ thread: string, acct: string, body: unknown }> = []
     const batches: Array<{ acct: string, body: unknown }> = []
@@ -368,9 +369,14 @@ describe('gmail_modify', () => {
     for (const [id, messages] of Object.entries(threads)) {
       routes[`GET ${G}/threads/${id}`] = (req) => {
         expect(req.url.searchParams.get('format')).toBe('minimal')
-        return { json: { id, messages } }
+        return { json: { id, messages: messages.map(m => ({ id: m.id, labelIds: [...m.labelIds] })) } }
       }
-      routes[`POST ${G}/threads/${id}/modify`] = (req) => { modifies.push({ thread: id, acct: acct(req), body: req.body }); return { json: { id } } }
+      routes[`POST ${G}/threads/${id}/modify`] = (req) => {
+        modifies.push({ thread: id, acct: acct(req), body: req.body })
+        const { addLabelIds, removeLabelIds } = req.body as { addLabelIds: string[], removeLabelIds: string[] }
+        for (const m of messages) m.labelIds = [...new Set([...m.labelIds.filter(l => !removeLabelIds.includes(l)), ...addLabelIds])]
+        return { json: { id } }
+      }
     }
     useRoutes(routes)
     return { modifies, batches }
