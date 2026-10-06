@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { googleToken, forceRefresh, GoogleReconnectError } from './token'
+import { googleToken, forceRefresh, GoogleReconnectError, UNDECRYPTABLE_REASON } from './token'
 import { connectionDeps, defaultLabel, type Connection } from './connections'
 import { googleRefreshAccessToken } from './refresh-probe'
 
@@ -17,13 +17,16 @@ const conn: Connection = {
 
 let markSpy: ReturnType<typeof vi.fn>
 const realMark = connectionDeps.markReconnect
+const realUndecryptable = connectionDeps.tokensUndecryptable
 
 beforeEach(() => {
   markSpy = vi.fn(async () => {})
   connectionDeps.markReconnect = markSpy as unknown as typeof connectionDeps.markReconnect
+  connectionDeps.tokensUndecryptable = async () => false
 })
 afterEach(() => {
   connectionDeps.markReconnect = realMark
+  connectionDeps.tokensUndecryptable = realUndecryptable
   vi.unstubAllGlobals()
 })
 
@@ -89,6 +92,35 @@ describe('googleToken', () => {
       return { accessToken: 'never' }
     })
     await expect(googleToken(conn, { getAccessToken })).rejects.toBe(generic)
+    expect(markSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('M1: stored tokens that no longer decrypt (BETTER_AUTH_SECRET changed)', () => {
+  // better-auth's getAccessToken / refreshToken swallow the decrypt failure into a generic error
+  // that never reaches Google, so the invalid_grant probe can't fire; the decrypt check does.
+  it('googleToken: generic failure + undecryptable tokens → needs_reconnect + GoogleReconnectError', async () => {
+    const undecryptable = vi.fn(async () => true)
+    connectionDeps.tokensUndecryptable = undecryptable
+    const getAccessToken = vi.fn(async () => { throw new Error('Failed to get a valid access token') })
+    const err = await googleToken(conn, { getAccessToken }).catch(e => e)
+    expect(err).toBeInstanceOf(GoogleReconnectError)
+    expect(undecryptable).toHaveBeenCalledWith(conn)
+    expect(markSpy).toHaveBeenCalledWith('conn-1', UNDECRYPTABLE_REASON)
+  })
+
+  it('forceRefresh: same detection', async () => {
+    connectionDeps.tokensUndecryptable = async () => true
+    const refreshToken = vi.fn(async () => { throw new Error('Failed to refresh access token') })
+    const err = await forceRefresh(conn, { refreshToken }).catch(e => e)
+    expect(err).toBeInstanceOf(GoogleReconnectError)
+    expect(markSpy).toHaveBeenCalledWith('conn-1', UNDECRYPTABLE_REASON)
+  })
+
+  it('tokens that DO decrypt → the original error propagates, nothing marked', async () => {
+    connectionDeps.tokensUndecryptable = async () => false
+    const boom = new Error('Failed to get a valid access token')
+    await expect(googleToken(conn, { getAccessToken: async () => { throw boom } })).rejects.toBe(boom)
     expect(markSpy).not.toHaveBeenCalled()
   })
 })

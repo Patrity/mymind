@@ -9,7 +9,7 @@ vi.mock('./connections', async (importOriginal) => {
   }
 })
 
-import { google, googleErrorMessage, GoogleApiError } from './client'
+import { google, googleErrorMessage, GoogleApiError, GoogleScopeError, serviceOf } from './client'
 import { markReconnect, touchConnection, type Connection } from './connections'
 import { GoogleReconnectError } from './token'
 import { fakeFetch } from './fake-fetch'
@@ -142,21 +142,41 @@ describe('google() client', () => {
     expect(fetch.calls).toHaveLength(2)
   })
 
-  it('403 insufficientPermissions (errors[].reason) → markReconnect + GoogleReconnectError', async () => {
+  it('M2: 403 insufficientPermissions (errors[].reason) → GoogleScopeError for THAT service, account NOT marked needs_reconnect', async () => {
     const fetch = fakeFetch({
       'GET /thing': () => ({ status: 403, json: { error: { errors: [{ reason: 'insufficientPermissions' }], message: 'nope' } } })
     })
     const err = await google(conn, { fetch, token: async () => 'tok' }).get('https://gmail.googleapis.com/thing').catch(e => e)
-    expect(err).toBeInstanceOf(GoogleReconnectError)
-    expect(markReconnect).toHaveBeenCalledWith('conn-1', expect.any(String))
+    expect(err).toBeInstanceOf(GoogleScopeError)
+    expect((err as GoogleScopeError).service).toBe('Gmail')
+    expect(markReconnect).not.toHaveBeenCalled()
+    expect(googleErrorMessage(err, 'work')).toBe("your work account didn't grant Gmail access — reconnect it in Settings → Connections and allow it")
   })
 
-  it('403 PERMISSION_DENIED (error.status) → markReconnect + GoogleReconnectError', async () => {
+  it('M2: People-style 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT (details[].reason) → GoogleScopeError("Contacts"), no reconnect', async () => {
     const fetch = fakeFetch({
-      'GET /thing': () => ({ status: 403, json: { error: { status: 'PERMISSION_DENIED', message: 'nope' } } })
+      'GET /v1/people:searchContacts': () => ({ status: 403, json: { error: { code: 403, status: 'PERMISSION_DENIED', message: 'insufficient scopes', details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }] } } })
     })
-    const err = await google(conn, { fetch, token: async () => 'tok' }).get('https://gmail.googleapis.com/thing').catch(e => e)
-    expect(err).toBeInstanceOf(GoogleReconnectError)
+    const err = await google(conn, { fetch, token: async () => 'tok' }).get('https://people.googleapis.com/v1/people:searchContacts').catch(e => e)
+    expect(err).toBeInstanceOf(GoogleScopeError)
+    expect((err as GoogleScopeError).service).toBe('Contacts')
+    expect(markReconnect).not.toHaveBeenCalled()
+  })
+
+  it('M2: a bare 403 PERMISSION_DENIED (API not enabled / policy) → plain GoogleApiError(403), no reconnect', async () => {
+    const fetch = fakeFetch({
+      'GET /thing': () => ({ status: 403, json: { error: { status: 'PERMISSION_DENIED', message: 'People API has not been used', details: [{ reason: 'SERVICE_DISABLED' }] } } })
+    })
+    const err = await google(conn, { fetch, token: async () => 'tok' }).get('https://people.googleapis.com/thing').catch(e => e)
+    expect(err).toBeInstanceOf(GoogleApiError)
+    expect(err).not.toBeInstanceOf(GoogleReconnectError)
+    expect((err as GoogleApiError).status).toBe(403)
+    expect(markReconnect).not.toHaveBeenCalled()
+  })
+
+  it('serviceOf names the Calendar API', () => {
+    expect(serviceOf('https://www.googleapis.com/calendar/v3/calendars/primary/events')).toBe('Calendar')
+    expect(serviceOf('not a url')).toBe('this Google service')
   })
 
   it('403 with an unrelated reason → GoogleApiError(403), not a reconnect', async () => {

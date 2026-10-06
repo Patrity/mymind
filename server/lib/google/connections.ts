@@ -1,4 +1,5 @@
 import { and, asc, eq, ne, sql } from 'drizzle-orm'
+import { decryptOAuthToken } from 'better-auth/oauth2'
 import { useDb } from '../../db'
 import { account, connections } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
@@ -30,7 +31,30 @@ export const connectionDeps = {
   markReconnect: (connectionId: string, reason: string) => markReconnect(connectionId, reason),
   fetch: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
   getAccessToken: async (b: { providerId: 'google', accountId: string, userId: string }): Promise<{ accessToken: string }> =>
-    useAuth().api.getAccessToken({ body: b })
+    useAuth().api.getAccessToken({ body: b }),
+  /** Fix wave M1: true when this connection's stored tokens can no longer be decrypted (e.g.
+   *  BETTER_AUTH_SECRET changed). better-auth's getAccessToken swallows that failure into a
+   *  generic "Failed to get a valid access token", so token.ts asks this on any non-invalid_grant
+   *  failure to tell "re-link needed" apart from a network blip. */
+  tokensUndecryptable: (c: Connection): Promise<boolean> => tokensUndecryptable(c)
+}
+
+/** Never throws: a lookup failure (DB down, no auth context) answers false — "can't tell". */
+async function tokensUndecryptable(c: Connection): Promise<boolean> {
+  let row: { refreshToken: string | null, accessToken: string | null } | undefined
+  let ctx: Parameters<typeof decryptOAuthToken>[1]
+  try {
+    [row] = await useDb().select({ refreshToken: account.refreshToken, accessToken: account.accessToken })
+      .from(account).where(eq(account.id, c.accountId))
+    ctx = (await useAuth().$context) as unknown as Parameters<typeof decryptOAuthToken>[1]
+  } catch {
+    return false
+  }
+  for (const token of [row?.refreshToken, row?.accessToken]) {
+    if (!token) continue
+    try { await decryptOAuthToken(token, ctx) } catch { return true }
+  }
+  return false
 }
 
 /** 'tony@costanzoclan.com' → 'costanzoclan'; 'x@gmail.com' → 'gmail'; 'a@mail.example.com' →

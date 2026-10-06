@@ -99,13 +99,21 @@ describe('connections API (DB)', () => {
 
   it('DELETE revokes the refresh token at Google, then deletes the account (connection cascades), credential untouched', async () => {
     const f = await fixture()
-    const calls: Array<{ url: string, method?: string }> = []
+    const calls: Array<{ url: string, method?: string, contentType?: string, body?: string }> = []
     connectionsApiDeps.decrypt = async t => `plain:${t}`
-    connectionsApiDeps.fetch = async (url, init) => { calls.push({ url, method: init?.method }); return new Response('', { status: 200 }) }
+    connectionsApiDeps.fetch = async (url, init) => {
+      calls.push({ url, method: init?.method, contentType: (init?.headers as Record<string, string> | undefined)?.['content-type'], body: init?.body as string | undefined })
+      return new Response('', { status: 200 })
+    }
     try {
       const res = await del(evt(session, { id: f.a.id })) as { revoked: boolean }
       expect(res.revoked).toBe(true)
-      expect(calls).toEqual([{ url: `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(`plain:rt-a-${f.rand}`)}`, method: 'POST' }])
+      // M3: the token travels in the form body, never the URL.
+      expect(calls).toEqual([{
+        url: 'https://oauth2.googleapis.com/revoke', method: 'POST',
+        contentType: 'application/x-www-form-urlencoded',
+        body: new URLSearchParams({ token: `plain:rt-a-${f.rand}` }).toString()
+      }])
       const db = useDb()
       expect(await db.select().from(account).where(eq(account.id, f.accA))).toHaveLength(0)
       expect(await db.select().from(connections).where(eq(connections.id, f.a.id))).toHaveLength(0)
@@ -120,11 +128,11 @@ describe('connections API (DB)', () => {
     const calls: string[] = []
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     connectionsApiDeps.decrypt = async t => t
-    connectionsApiDeps.fetch = async (url) => { calls.push(url); throw new Error('network down') }
+    connectionsApiDeps.fetch = async (url, init) => { calls.push(`${url} ${init?.body as string}`); throw new Error('network down') }
     try {
       const res = await del(evt(session, { id: f.b.id })) as { revoked: boolean }
       expect(res.revoked).toBe(false)
-      expect(calls).toEqual([`https://oauth2.googleapis.com/revoke?token=at-b-${f.rand}`])
+      expect(calls).toEqual([`https://oauth2.googleapis.com/revoke token=at-b-${f.rand}`])
       expect(warn).toHaveBeenCalled()
       expect(await useDb().select().from(account).where(eq(account.id, f.accB))).toHaveLength(0)
       expect(await useDb().select().from(account).where(eq(account.id, f.credId))).toHaveLength(1)

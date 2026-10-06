@@ -97,9 +97,12 @@ export async function deleteConnection(id: string): Promise<{ revoked: boolean }
   if (stored) {
     try {
       const token = await connectionsApiDeps.decrypt(stored)
-      const res = await connectionsApiDeps.fetch(`${REVOKE_URL}?token=${encodeURIComponent(token)}`, {
+      // The token travels in the form body, never the URL (fix wave M3): URLs end up in proxy
+      // and client logs; Google's revoke endpoint accepts `token=` as a form field.
+      const res = await connectionsApiDeps.fetch(REVOKE_URL, {
         method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' }
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token }).toString()
       })
       revoked = res.ok
       if (!res.ok) console.warn(`[connections] Google revoke for ${id} returned ${res.status}; deleting locally anyway`)

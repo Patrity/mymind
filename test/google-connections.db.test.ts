@@ -73,4 +73,35 @@ describe('connections (DB)', () => {
       await db.delete(user).where(eq(user.id, userId))
     }
   })
+
+  it('M1: tokensUndecryptable is true only when the stored tokens fail to decrypt under the current secret', async () => {
+    const { setTokenUtil } = await import('better-auth/oauth2')
+    const { connectionDeps } = await import('../server/lib/google/connections')
+    const ctxFor = (secret: string) => ({ options: { account: { encryptOAuthTokens: true } }, secretConfig: secret })
+    const OLD = 'old-secret-old-secret-old-secret-0001'
+    const NEW = 'new-secret-new-secret-new-secret-0002'
+    const db = useDb()
+    const rand = randomUUID().slice(0, 8)
+    const userId = `test-user-m1-${rand}`
+    const accId = `test-acc-m1-${rand}`
+    const conn = { id: 'unused', accountId: accId, userId, googleSub: `sub-m1-${rand}`, provider: 'google' as const, label: 'x', email: 'x@x.example', status: 'ok' as const, lastError: null }
+    try {
+      await db.insert(user).values({ id: userId, name: 'M1 Test', email: `m1-${rand}@test.invalid` })
+      await db.insert(account).values({
+        id: accId, accountId: conn.googleSub, providerId: 'google', userId,
+        refreshToken: await setTokenUtil('1//refresh', ctxFor(OLD) as never), accessToken: await setTokenUtil('ya29.at', ctxFor(OLD) as never)
+      })
+      vi.stubGlobal('useAuth', () => ({ $context: Promise.resolve(ctxFor(OLD)) }))
+      expect(await connectionDeps.tokensUndecryptable(conn)).toBe(false)
+      vi.stubGlobal('useAuth', () => ({ $context: Promise.resolve(ctxFor(NEW)) }))
+      expect(await connectionDeps.tokensUndecryptable(conn)).toBe(true)
+      // A missing account row (or a lookup failure) is "can't tell" → false.
+      expect(await connectionDeps.tokensUndecryptable({ ...conn, accountId: `missing-${rand}` })).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+      await db.delete(account).where(eq(account.id, accId))
+      await db.delete(user).where(eq(user.id, userId))
+    }
+  })
 })

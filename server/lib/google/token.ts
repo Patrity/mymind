@@ -17,11 +17,26 @@ export interface RefreshDeps {
 }
 
 const RECONNECT_REASON = 'Google access was revoked or expired'
+/** Fix wave M1: the stored tokens no longer decrypt — BETTER_AUTH_SECRET changed. Reconnecting
+ *  writes fresh tokens under the current secret. */
+export const UNDECRYPTABLE_REASON = 'stored Google tokens can no longer be decrypted (was BETTER_AUTH_SECRET changed?)'
+
+/** invalid_grant, or tokens that no longer decrypt → mark needs_reconnect and return the error to
+ *  throw; anything else (network blip, Google 5xx) → undefined, the caller rethrows unchanged. */
+async function reconnectErrorFor(c: Connection, probe: RefreshProbe, err: unknown): Promise<GoogleReconnectError | undefined> {
+  const reason = probe.invalidGrant || mentionsInvalidGrant(err)
+    ? RECONNECT_REASON
+    : await connectionDeps.tokensUndecryptable(c) ? UNDECRYPTABLE_REASON : undefined
+  if (!reason) return undefined
+  await connectionDeps.markReconnect(c.id, reason)
+  return new GoogleReconnectError(c, reason)
+}
 
 /**
  * A valid access token for `c`, refreshed by better-auth when expired. A revoked/expired refresh
- * token (`invalid_grant`) marks the connection needs_reconnect and throws GoogleReconnectError;
- * every other failure propagates unchanged (a network blip must not force a re-link).
+ * token (`invalid_grant`) — or stored tokens that no longer decrypt (fix wave M1) — marks the
+ * connection needs_reconnect and throws GoogleReconnectError; every other failure propagates
+ * unchanged (a network blip must not force a re-link).
  */
 export async function googleToken(c: Connection, deps: TokenDeps = {}): Promise<string> {
   const get = deps.getAccessToken ?? connectionDeps.getAccessToken
@@ -31,11 +46,7 @@ export async function googleToken(c: Connection, deps: TokenDeps = {}): Promise<
       get({ providerId: 'google', accountId: c.googleSub, userId: c.userId }))
     return accessToken
   } catch (err) {
-    if (probe.invalidGrant || mentionsInvalidGrant(err)) {
-      await connectionDeps.markReconnect(c.id, RECONNECT_REASON)
-      throw new GoogleReconnectError(c, RECONNECT_REASON)
-    }
-    throw err
+    throw (await reconnectErrorFor(c, probe, err)) ?? err
   }
 }
 
@@ -62,10 +73,6 @@ export async function forceRefresh(c: Connection, deps: RefreshDeps = {}): Promi
       refresh({ providerId: 'google', accountId: c.googleSub, userId: c.userId }))
     return accessToken
   } catch (err) {
-    if (probe.invalidGrant || mentionsInvalidGrant(err)) {
-      await connectionDeps.markReconnect(c.id, RECONNECT_REASON)
-      throw new GoogleReconnectError(c, RECONNECT_REASON)
-    }
-    throw err
+    throw (await reconnectErrorFor(c, probe, err)) ?? err
   }
 }
