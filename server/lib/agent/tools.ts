@@ -17,6 +17,7 @@ import { listSkills, getSkill, createSkill, updateSkill, deleteSkill, validateSk
 import { skillsEnabled } from './skills-config'
 import { jobTools } from './tools/jobs'
 import { channelTools } from './tools/channels'
+import { gmailTools } from './tools/gmail'
 import { listReviewsTool } from './tools/reviews'
 import { improvementTools } from './tools/improvements'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
@@ -1269,6 +1270,8 @@ export const agentTools: AgentTool[] = [
   ...jobTools,
   // ---- channels (cycle 75, Task 10) ----
   ...channelTools,
+  // ---- gmail (cycle 79) ----
+  ...gmailTools,
   // ---- review (cycle 76, Task 9): list only — decide_review is profile-only (profile.ts) ----
   listReviewsTool,
   // ---- self-improvement log (cycle 76, Task 10) ----

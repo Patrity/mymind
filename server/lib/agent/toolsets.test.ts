@@ -30,7 +30,7 @@ describe('toolset registry', () => {
       search_sessions: 'history', read_around_message: 'history', search_projects: 'projects',
       move_document: 'doc-admin', generate_image: 'images', schedule_wake: 'jobs', create_skill: 'skill-admin',
       decide_review: 'reviews', list_improvements: 'improvements', send_message: 'channels',
-      research_web: 'web', search_brain: 'web', exec: 'core', use_skill: 'core', quick_capture: 'tasks'
+      research_web: 'web', gmail_search: 'gmail', gmail_draft: 'gmail', contacts_search: 'gmail', search_brain: 'web', exec: 'core', use_skill: 'core', quick_capture: 'tasks'
     })
   })
 })

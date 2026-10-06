@@ -87,9 +87,9 @@ describe('parseJob', () => {
       expect(r.ok && r.spec.toolsets).toEqual(['images', 'jobs'])
     })
     it('rejects unknown or core ids with the allowed list', () => {
-      const r = parseJob(`${base}toolsets: [gmail]\n---\nbody`, { defaultTimezone: 'UTC' })
+      const r = parseJob(`${base}toolsets: [nopeset]\n---\nbody`, { defaultTimezone: 'UTC' })
       expect(r).toMatchObject({ ok: false })
-      expect(!r.ok && r.error).toMatch(/invalid toolsets: gmail \(allowed: history, projects/)
+      expect(!r.ok && r.error).toMatch(/invalid toolsets: nopeset \(allowed: history, projects/)
       expect(parseJob(`${base}toolsets: [memory]\n---\nbody`, { defaultTimezone: 'UTC' }).ok).toBe(false)
     })
   })

@@ -67,6 +67,10 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   // send_message (cycle 75, Task 10): Tony-only, rate-limited outbound note — an append, not a
   // change to his data, so it runs headless like the other append tools.
   send_message: 'run',
+  // gmail (cycle 79): reads run; gmail_draft is an append (a draft is not sent and is undoable)
+  gmail_search: 'run', gmail_read_thread: 'run', contacts_search: 'run', gmail_draft: 'run',
+  // gmail_modify changes existing mail (archive/read/labels) — proposed, not run
+  gmail_modify: 'propose',
   // create-kind that edits/moves something that already exists — proposed, not run
   edit_document: 'propose', edit_section: 'propose', update_document: 'propose',
   move_document: 'propose', sync_document: 'propose', edit_image: 'propose',

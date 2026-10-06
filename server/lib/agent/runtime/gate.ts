@@ -20,9 +20,14 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   'create_job', 'edit_job', 'run_job', 'schedule_wake',
   // send_message (cycle 75, Task 10): Tony-only, rate-limited, never rethrows — an outbound
   // note to Tony, not a change to his data, so it runs headless like the other append tools.
-  'send_message'
+  'send_message',
+  // gmail_draft (cycle 79): creates an unsent draft (undo deletes it) — nothing leaves the
+  // mailbox, so it runs headless; sending is gmail_send, which is dangerous and excluded.
+  'gmail_draft'
 ])
-export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill'])
+export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
+  // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run
+  'gmail_modify'])
 
 // Tools that run headless DESPITE being `destructive`-kind — checked BEFORE the destructive rule
 // below, so they never fall into 'propose'. Currently just delete_job: spec D2 says job

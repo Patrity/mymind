@@ -6,7 +6,7 @@
 import type { AgentTool } from './types'
 
 export type ToolsetId = 'memory' | 'docs' | 'tasks' | 'web' | 'core'
-  | 'history' | 'projects' | 'doc-admin' | 'images' | 'jobs' | 'skill-admin' | 'reviews' | 'improvements' | 'channels'
+  | 'history' | 'projects' | 'doc-admin' | 'images' | 'jobs' | 'skill-admin' | 'reviews' | 'improvements' | 'channels' | 'gmail'
 
 // Directory lines say WHEN to load the set, not only what is in it (spec §3).
 export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }> = {
@@ -28,7 +28,8 @@ export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }>
   // headless reader.
   reviews: { core: false, description: "when Tony asks about items in his /review queue" },
   improvements: { core: false, description: 'when Tony asks what Bridget has learned or changed about herself' },
-  channels: { core: false, description: 'send Tony a message over iMessage or email' }
+  channels: { core: false, description: 'send Tony a message over iMessage or email' },
+  gmail: { core: false, description: "when Tony asks about email — search, read, draft, send, triage — or a contact's address" }
 }
 
 export const ON_DEMAND_TOOLSETS = (Object.keys(TOOLSETS) as ToolsetId[]).filter(id => !TOOLSETS[id].core)
