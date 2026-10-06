@@ -77,6 +77,20 @@ describe('buildAiTools gate — autoApprove fast-path', () => {
     expect(result).toMatchObject({ denied: true })
   })
 
+  it('awaits an async describeApproval before requestApproval sees the resolved command (cycle 79, Task 4)', async () => {
+    const requestApproval = vi.fn().mockResolvedValue({ approved: true })
+    const hooks = makeHooks(requestApproval)
+    const tool = makeReadTool({
+      describeApproval: async (a) => {
+        await Promise.resolve() // force a real microtask hop, not just a sync-resolved Promise
+        return { tool: 'my_tool', command: `resolved:${a.val}`, proposedPattern: '' }
+      },
+    })
+    const set = buildAiTools([tool], hooks)
+    await (set['my_tool']!.execute as Function)({ val: 'x' }, {})
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ command: 'resolved:x', proposedPattern: '' }))
+  })
+
   it('non-dangerous tools bypass the gate entirely', async () => {
     const requestApproval = vi.fn()
     const hooks = makeHooks(requestApproval)

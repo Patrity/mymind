@@ -19,9 +19,9 @@ export interface RunHooks {
   loadToolsets?: (ids: ToolsetId[]) => ToolsetId[]
 }
 
-function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
+async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>): Promise<ApprovalRequest> {
   const req = t.describeApproval
-    ? t.describeApproval(input)
+    ? await t.describeApproval(input)
     : { tool: t.name, command: JSON.stringify(input), proposedPattern: `${t.name} *` }
   // From the tool definition, overriding anything describeApproval returned.
   return { ...req, allowlistable: t.allowlistable === true }
@@ -65,7 +65,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           const auto = t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
             const decision = ctx.requestApproval
-              ? await ctx.requestApproval({ ...approvalRequestFor(t, input), callId, args: safeArgs })
+              ? await ctx.requestApproval({ ...(await approvalRequestFor(t, input)), callId, args: safeArgs })
               : { approved: false } // fail-safe: no channel → auto-deny
             if (decision.approved !== true) {
               const summary = `denied: ${t.name}`

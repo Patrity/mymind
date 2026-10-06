@@ -1,10 +1,15 @@
 // server/lib/agent/tools/gmail.ts
-// Bridget's `gmail` toolset (cycle 79): search, read, draft, modify mail and look up contacts
-// across every connected Google account. Reads fan out over all accounts (fanOut: a broken
-// account becomes a warning, not a failure); writes must name exactly one account. Mail content
-// is third-party and untrusted — results carry UNTRUSTED_NOTE and mail bodies never reach
-// activity_log (redactForLog). Every handler honours the never-throw contract: any failure
+// Bridget's `gmail` toolset (cycle 79): search, read, draft, modify, send mail and look up
+// contacts across every connected Google account. Reads fan out over all accounts (fanOut: a
+// broken account becomes a warning, not a failure); writes must name exactly one account. Mail
+// content is third-party and untrusted — results carry UNTRUSTED_NOTE and mail bodies never
+// reach activity_log (redactForLog). Every handler honours the never-throw contract: any failure
 // (Google error, reconnect, CR/LF header refusal) comes back as { result: { error } }.
+//
+// gmail_send (Task 4) is the one dangerous tool here: it sends an EXISTING draft (no to/body/
+// subject in its schema — the model cannot smuggle different content past the human) and its
+// describeApproval is async, re-fetching that draft from Google so the approval card shows what
+// will actually be sent, never trusting the call args.
 import { z } from 'zod'
 import type { AgentTool, ToolExecution } from '../types'
 import type { UndoResult } from '../undo'
@@ -15,7 +20,7 @@ import type { Connection } from '../../google/connections'
 import { GoogleReconnectError } from '../../google/token'
 import { buildRawMessage, header, parseMessagePayload, rawMessageHeaders } from '../../google/mime'
 import {
-  searchThreads, getThread, createDraft, updateDraft, deleteDraft, getDraft, listLabels, modifyThread, batchModifyMessages
+  searchThreads, getThread, createDraft, updateDraft, deleteDraft, getDraft, sendDraft, listLabels, modifyThread, batchModifyMessages
 } from '../../google/gmail'
 import { searchPeople } from '../../google/people'
 import { UNTRUSTED_NOTE } from '../../google/untrusted'
@@ -30,6 +35,9 @@ const PER_MESSAGE_CHARS = 4000
 const PER_THREAD_CHARS = 12_000
 const TRUNCATED = '… [truncated]'
 const DEFAULT_SEARCH_LIMIT = 10
+/** gmail_send's approval card caps the draft body it shows Tony — a long draft is still fully
+ *  reviewable without texting (or rendering) megabytes of it. */
+const APPROVAL_BODY_CHARS = 1500
 
 async function agentTz(): Promise<string> {
   try { return await getDefaultTimezone() } catch { return serverTimezone() }
@@ -62,6 +70,26 @@ function draftLink(c: Connection, messageId: string | undefined): string {
 
 function withRe(subject: string): string {
   return /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`
+}
+
+/** Renders the actual Google draft (never the call args) into the text an approval card shows:
+ *  From/To/[Cc]/Subject headers, a blank line, then the body capped at APPROVAL_BODY_CHARS. */
+async function draftApprovalText(c: Connection, draftId: string): Promise<string> {
+  const draft = await getDraft(c, draftId, deps(), 'full')
+  const p = draft.message?.payload ?? {}
+  const { text } = parseMessagePayload(p, APPROVAL_BODY_CHARS)
+  const lines = [`From: ${header(p, 'From') ?? c.email}`, `To: ${header(p, 'To') ?? ''}`]
+  const cc = header(p, 'Cc')
+  if (cc) lines.push(`Cc: ${cc}`)
+  lines.push(`Subject: ${header(p, 'Subject') ?? ''}`, '', text)
+  return lines.join('\n')
+}
+
+/** The approval card's wording when the real draft can't be shown: Tony cannot review what he
+ *  can't see, so the only sane default is to deny — the handler re-does the same lookup and
+ *  will fail the same way, so the send never actually goes out either. */
+function draftUnavailableCommand(draftId: string, reason: string): string {
+  return `draft ${draftId} could not be loaded — deny (${reason})`
 }
 
 export const gmailTools: AgentTool[] = [
@@ -343,6 +371,49 @@ export const gmailTools: AgentTool[] = [
         }
       } catch (err) {
         return fail('gmail_modify', errorOf(err, c))
+      }
+    }
+  },
+  {
+    name: 'gmail_send',
+    description: 'Send an EXISTING Gmail draft (from gmail_draft) in ONE named account — this is the only way mail actually leaves the mailbox. Tony reviews the real draft content before approving; there is no undo once it is sent.',
+    kind: 'destructive',
+    dangerous: true,
+    toolset: 'gmail',
+    schema: {
+      account: z.string().describe('Account label or email the draft lives in (required)'),
+      draftId: z.string().min(1).describe('Draft id from gmail_draft')
+    },
+    // Async (types.ts, cycle 79 Task 4): re-fetches the draft from Google so the approval card
+    // shows what will actually be sent — never the call args, which don't even carry to/body/
+    // subject (see schema above). A draft that can't be loaded reads as "could not be loaded —
+    // deny"; the handler below re-does the same lookup and fails the same way, so approving it
+    // anyway still can't send anything.
+    describeApproval: async (a) => {
+      const draftId = a.draftId as string
+      const acc = await oneAccount(a.account)
+      if (!acc.ok) return { tool: 'gmail_send', command: draftUnavailableCommand(draftId, acc.error), proposedPattern: '' }
+      try {
+        const command = await draftApprovalText(acc.c, draftId)
+        return { tool: 'gmail_send', command, proposedPattern: '' }
+      } catch (err) {
+        return { tool: 'gmail_send', command: draftUnavailableCommand(draftId, errorOf(err, acc.c)), proposedPattern: '' }
+      }
+    },
+    handler: async (a) => {
+      let c: Connection | undefined
+      try {
+        const acc = await oneAccount(a.account)
+        if (!acc.ok) return fail('gmail_send', acc.error)
+        c = acc.c
+        const draftId = a.draftId as string
+        const sent = await sendDraft(c, draftId, deps())
+        return {
+          result: { sent: true, messageId: sent.id, threadId: sent.threadId },
+          summary: `sent draft in ${c.label}`
+        }
+      } catch (err) {
+        return fail('gmail_send', errorOf(err, c))
       }
     }
   },

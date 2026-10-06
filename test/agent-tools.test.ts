@@ -4,7 +4,7 @@ import { agentTools, toolByName } from '../server/lib/agent/tools'
 import { MCP_INSTRUCTIONS } from '../server/lib/mcp/server'
 
 describe('agent tool registry', () => {
-  it('exposes the expected 53 tools', () => {
+  it('exposes the expected 54 tools', () => {
     const names = agentTools.map(t => t.name).sort()
     expect(names).toEqual([
       'contacts_search',
@@ -14,7 +14,7 @@ describe('agent tool registry', () => {
       'forget_memory',
       'generate_image',
       'get_document', 'get_job', 'get_project', 'get_recent_memories',
-      'gmail_draft', 'gmail_modify', 'gmail_read_thread', 'gmail_search',
+      'gmail_draft', 'gmail_modify', 'gmail_read_thread', 'gmail_search', 'gmail_send',
       'grep_document',
       'list_documents', 'list_improvements', 'list_jobs', 'list_reviews',
       'move_document',

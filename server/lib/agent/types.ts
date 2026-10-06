@@ -66,8 +66,10 @@ export interface AgentTool {
    *  Only exec sets it — decide_review (cycle 76) must be confirmed on every call. */
   allowlistable?: boolean
   // Derive the approval request from the call args (tool-agnostic gate). Defaults
-  // to a JSON-of-args command + `<name> *` pattern when omitted.
-  describeApproval?: (args: Record<string, unknown>) => ApprovalRequest
+  // to a JSON-of-args command + `<name> *` pattern when omitted. May be async: a tool whose
+  // card needs to show live state (gmail_send fetches the real draft rather than trusting args)
+  // returns a Promise; buildAiTools awaits it before the human ever sees the request.
+  describeApproval?: (args: Record<string, unknown>) => ApprovalRequest | Promise<ApprovalRequest>
   /** Optional per-tool fast-path: return true to run WITHOUT a human prompt (gate still applies to false). */
   autoApprove?: (input: Record<string, unknown>, ctx: ToolContext) => boolean | Promise<boolean>
   /**

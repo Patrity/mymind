@@ -71,6 +71,9 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   gmail_search: 'run', gmail_read_thread: 'run', contacts_search: 'run', gmail_draft: 'run',
   // gmail_modify changes existing mail (archive/read/labels) — proposed, not run
   gmail_modify: 'propose',
+  // gmail_send (cycle 79, Task 4): dangerous — classifyForHeadless excludes it outright before
+  // ever reaching the APPEND/PROPOSE tables, same as exec and decide_review below.
+  gmail_send: 'exclude',
   // create-kind that edits/moves something that already exists — proposed, not run
   edit_document: 'propose', edit_section: 'propose', update_document: 'propose',
   move_document: 'propose', sync_document: 'propose', edit_image: 'propose',

@@ -6,9 +6,9 @@ import { mcpToolNames } from '../server/lib/mcp/server'
 import { execTool } from '../server/lib/agent/tools/exec'
 
 describe('MCP dangerous-tool defense', () => {
-  it('agentTools contains no dangerous tools today (exec lives on the profile, not the registry)', () => {
+  it('agentTools has exactly one dangerous tool today — gmail_send (cycle 79, Task 4): unlike exec/decide_review (profile-only), it lives in the shared registry via gmailTools, so isMcpExposed must exclude it by BOTH its dangerous flag and its gmail toolset', () => {
     const dangerous = agentTools.filter(t => t.dangerous)
-    expect(dangerous).toHaveLength(0)
+    expect(dangerous.map(t => t.name)).toEqual(['gmail_send'])
   })
 
   it('subagent tools live on the profile, not in agentTools → absent from MCP', () => {
