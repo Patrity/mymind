@@ -5,17 +5,24 @@
 //     disableImplicitSignUp on its own) — and the ID-token sign-in path is closed outright.
 //  2. encryptOAuthTokens: true does not break email/password login (credential accounts carry
 //     no OAuth tokens).
+//  3. Google is never a sign-IN path either (D1): `/sign-in/social` is refused even for an
+//     already-linked account (GOOGLE_AUTH_HOOKS).
+//  4. Decrypted Google tokens can't be pulled over HTTP (DISABLED_AUTH_PATHS), while the
+//     in-process auth.api.getAccessToken that googleToken uses keeps working.
+// makeAuth() is the production-faithful instance; `unguarded: true` drops ONLY the sign-in hook
+// so the provider flags can be proven independently (defense in depth).
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { betterAuth } from 'better-auth'
 import { memoryAdapter } from 'better-auth/adapters/memory'
-import { googleSocialProviders, GOOGLE_ACCOUNT_OPTIONS } from './auth-options'
+import { googleSocialProviders, GOOGLE_ACCOUNT_OPTIONS, GOOGLE_AUTH_HOOKS, DISABLED_AUTH_PATHS } from './auth-options'
 import { GOOGLE_SCOPES } from './scopes'
+import { googleToken } from './token'
 
 const BASE = 'http://localhost:3000'
 
 type HookCall = { kind: 'create' | 'update', row: Record<string, unknown> | null }
 
-function makeAuth(opts: { emailSignUp?: boolean, googleOverrides?: Record<string, unknown>, hookCalls?: HookCall[] } = {}) {
+function makeAuth(opts: { emailSignUp?: boolean, googleOverrides?: Record<string, unknown>, hookCalls?: HookCall[], unguarded?: boolean } = {}) {
   const providers = googleSocialProviders('cid.apps.googleusercontent.com', 'csecret')
   type Row = Record<string, unknown>
   const db: { user: Row[], session: Row[], account: Row[], verification: Row[] } = { user: [], session: [], account: [], verification: [] }
@@ -27,6 +34,8 @@ function makeAuth(opts: { emailSignUp?: boolean, googleOverrides?: Record<string
     emailAndPassword: { enabled: true, disableSignUp: !opts.emailSignUp },
     socialProviders: { google: { ...providers.google, ...opts.googleOverrides } },
     account: GOOGLE_ACCOUNT_OPTIONS,
+    hooks: opts.unguarded ? undefined : GOOGLE_AUTH_HOOKS,
+    disabledPaths: DISABLED_AUTH_PATHS,
     databaseHooks: opts.hookCalls
       ? { account: {
           create: { after: async (row) => { opts.hookCalls!.push({ kind: 'create', row: { ...row } }) } },
@@ -44,14 +53,58 @@ function unsignedJwt(payload: Record<string, unknown>) {
 
 afterEach(() => vi.unstubAllGlobals())
 
+function cookiesOf(res: Response, prev = '') {
+  const jar = new Map(prev.split('; ').filter(Boolean).map(c => [c.split('=')[0]!, c] as const))
+  for (const c of res.headers.getSetCookie()) { const kv = c.split(';')[0]!; jar.set(kv.split('=')[0]!, kv) }
+  return [...jar.values()].join('; ')
+}
+
+async function linkOnce(auth: ReturnType<typeof makeAuth>['auth'], sessionCookie: string, email: string, accessToken: string) {
+  const start = await auth.handler(new Request(`${BASE}/api/auth/link-social`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: BASE, cookie: sessionCookie },
+    body: JSON.stringify({ provider: 'google', callbackURL: '/settings/connections' })
+  }))
+  expect(start.status).toBe(200)
+  const { url } = await start.json() as { url: string }
+  const state = new URL(url).searchParams.get('state')!
+  const cookie = cookiesOf(start, sessionCookie)
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    access_token: accessToken,
+    refresh_token: '1//refresh-' + accessToken,
+    expires_in: 3600,
+    token_type: 'Bearer',
+    scope: GOOGLE_SCOPES.join(' '),
+    id_token: unsignedJwt({ sub: 'g-sub-1', email, email_verified: true })
+  }), { status: 200, headers: { 'content-type': 'application/json' } })))
+  const cb = await auth.handler(new Request(`${BASE}/api/auth/callback/google?code=abc&state=${encodeURIComponent(state)}`, { headers: { cookie } }))
+  expect(cb.status).toBe(302)
+  expect(cb.headers.get('location')).not.toContain('error')
+  vi.unstubAllGlobals()
+}
+
+
+async function signUpTony(auth: ReturnType<typeof makeAuth>['auth']) {
+  const signUp = await auth.handler(new Request(`${BASE}/api/auth/sign-up/email`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: BASE },
+    body: JSON.stringify({ email: 'tony@example.com', password: 'correct-horse-battery', name: 'Tony' })
+  }))
+  expect(signUp.status).toBe(200)
+  return cookiesOf(signUp)
+}
+
+
 describe('google provider config', () => {
   it('requests offline access, forced consent, and exactly GOOGLE_SCOPES (no duplicated defaults)', async () => {
-    const { auth } = makeAuth()
-    const res = await auth.handler(new Request(`${BASE}/api/auth/sign-in/social`, {
+    const { auth } = makeAuth({ emailSignUp: true })
+    const sessionCookie = await signUpTony(auth)
+    const res = await auth.handler(new Request(`${BASE}/api/auth/link-social`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: BASE },
+      headers: { 'content-type': 'application/json', origin: BASE, cookie: sessionCookie },
       body: JSON.stringify({ provider: 'google', callbackURL: '/' })
     }))
+    expect(res.status).toBe(200)
     const { url } = await res.json() as { url: string }
     const u = new URL(url)
     expect(u.searchParams.get('access_type')).toBe('offline')
@@ -60,9 +113,9 @@ describe('google provider config', () => {
   })
 })
 
-describe('no Google sign-up', () => {
+describe('no Google sign-up (provider flags, proven with the sign-in hook removed)', () => {
   it('OAuth callback for an unknown Google user (requestSignUp:true) creates no user and no session', async () => {
-    const { auth, db } = makeAuth()
+    const { auth, db } = makeAuth({ unguarded: true })
     const start = await auth.handler(new Request(`${BASE}/api/auth/sign-in/social`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: BASE },
@@ -98,7 +151,7 @@ describe('no Google sign-up', () => {
   it('ID-token sign-in is disabled outright (that path ignores provider disableSignUp)', async () => {
     // verifyIdToken always accepts, so ONLY disableIdTokenSignIn can stop this (it short-circuits
     // before the custom verifier in 1.6.13). Without it, this request creates the stranger.
-    const { auth, db } = makeAuth({ googleOverrides: { verifyIdToken: async () => true } })
+    const { auth, db } = makeAuth({ unguarded: true, googleOverrides: { verifyIdToken: async () => true } })
     const res = await auth.handler(new Request(`${BASE}/api/auth/sign-in/social`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: BASE },
@@ -126,45 +179,10 @@ describe('encryptOAuthTokens vs email/password', () => {
 })
 
 describe('account hooks during a real link (what Task 2+ can rely on)', () => {
-  function cookiesOf(res: Response, prev = '') {
-    const jar = new Map(prev.split('; ').filter(Boolean).map(c => [c.split('=')[0]!, c] as const))
-    for (const c of res.headers.getSetCookie()) { const kv = c.split(';')[0]!; jar.set(kv.split('=')[0]!, kv) }
-    return [...jar.values()].join('; ')
-  }
-
-  async function linkOnce(auth: ReturnType<typeof makeAuth>['auth'], sessionCookie: string, email: string, accessToken: string) {
-    const start = await auth.handler(new Request(`${BASE}/api/auth/link-social`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: BASE, cookie: sessionCookie },
-      body: JSON.stringify({ provider: 'google', callbackURL: '/settings/connections' })
-    }))
-    expect(start.status).toBe(200)
-    const { url } = await start.json() as { url: string }
-    const state = new URL(url).searchParams.get('state')!
-    const cookie = cookiesOf(start, sessionCookie)
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
-      access_token: accessToken,
-      refresh_token: '1//refresh-' + accessToken,
-      expires_in: 3600,
-      token_type: 'Bearer',
-      scope: GOOGLE_SCOPES.join(' '),
-      id_token: unsignedJwt({ sub: 'g-sub-1', email, email_verified: true })
-    }), { status: 200, headers: { 'content-type': 'application/json' } })))
-    const cb = await auth.handler(new Request(`${BASE}/api/auth/callback/google?code=abc&state=${encodeURIComponent(state)}`, { headers: { cookie } }))
-    expect(cb.status).toBe(302)
-    expect(cb.headers.get('location')).not.toContain('error')
-    vi.unstubAllGlobals()
-  }
-
   it('link (different email) fires create.after with the full row: idToken plaintext, access/refresh tokens encrypted; re-link fires update.after with the full row', async () => {
     const hookCalls: HookCall[] = []
     const { auth, db } = makeAuth({ emailSignUp: true, hookCalls })
-    const signUp = await auth.handler(new Request(`${BASE}/api/auth/sign-up/email`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: BASE },
-      body: JSON.stringify({ email: 'tony@example.com', password: 'correct-horse-battery', name: 'Tony' })
-    }))
-    const sessionCookie = cookiesOf(signUp)
+    const sessionCookie = await signUpTony(auth)
     hookCalls.length = 0 // drop the credential account's create
 
     const googleEmail = 'tony@costanzoclan.com' // != MyMind login email → allowDifferentEmails
@@ -190,5 +208,61 @@ describe('account hooks during a real link (what Task 2+ can rely on)', () => {
     expect(updated.row).toMatchObject({ id: created.row!.id, providerId: 'google', accountId: 'g-sub-1', userId: db.user[0]!.id })
     expect(updated.row!.idToken).toBeTruthy()
     expect(updated.row!.accessToken).not.toBe('ya29.second')
+  })
+})
+
+describe('no Google sign-in (D1)', () => {
+  it('an already-linked Google account cannot sign in via /sign-in/social; no session is created', async () => {
+    const { auth, db } = makeAuth({ emailSignUp: true })
+    const sessionCookie = await signUpTony(auth)
+    await linkOnce(auth, sessionCookie, 'tony@costanzoclan.com', 'ya29.linked')
+    expect(db.account.some(a => a.providerId === 'google')).toBe(true)
+
+    const out = await auth.handler(new Request(`${BASE}/api/auth/sign-out`, {
+      method: 'POST', headers: { origin: BASE, cookie: sessionCookie }
+    }))
+    expect(out.status).toBe(200)
+    const sessionsBefore = db.session.length
+
+    const res = await auth.handler(new Request(`${BASE}/api/auth/sign-in/social`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: BASE },
+      body: JSON.stringify({ provider: 'google', callbackURL: '/' })
+    }))
+    expect(res.status).toBe(403)
+    expect(res.headers.getSetCookie().some(c => c.includes('session_token=') && !c.includes('Max-Age=0'))).toBe(false)
+    expect(db.session.length).toBe(sessionsBefore)
+    // In-process calls are refused too (the hook runs for auth.api.* as well).
+    await expect(auth.api.signInSocial({ body: { provider: 'google', callbackURL: '/' } })).rejects.toThrow(/disabled/i)
+  })
+})
+
+describe('decrypted Google tokens are not reachable over HTTP', () => {
+  it('get-access-token / refresh-token / account-info → 404 for a session holder; in-process googleToken path still works', async () => {
+    const { auth, db } = makeAuth({ emailSignUp: true })
+    const sessionCookie = await signUpTony(auth)
+    await linkOnce(auth, sessionCookie, 'tony@costanzoclan.com', 'ya29.secret')
+    const google = db.account.find(a => a.providerId === 'google')!
+
+    for (const path of ['/get-access-token', '/refresh-token']) {
+      const res = await auth.handler(new Request(`${BASE}/api/auth${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: BASE, cookie: sessionCookie },
+        body: JSON.stringify({ providerId: 'google', accountId: 'g-sub-1' })
+      }))
+      expect(res.status, path).toBe(404)
+      expect(await res.text()).not.toContain('ya29.secret')
+    }
+    const info = await auth.handler(new Request(`${BASE}/api/auth/account-info?accountId=${encodeURIComponent(String(google.id))}`, {
+      headers: { origin: BASE, cookie: sessionCookie }
+    }))
+    expect(info.status).toBe(404)
+
+    // The exact call shape connectionDeps.getAccessToken makes, through googleToken.
+    const token = await googleToken({
+      id: 'c1', accountId: String(google.id), userId: String(google.userId), googleSub: 'g-sub-1',
+      provider: 'google', label: 'costanzoclan', email: 'tony@costanzoclan.com', status: 'ok', lastError: null
+    }, { getAccessToken: b => auth.api.getAccessToken({ body: b }) })
+    expect(token).toBe('ya29.secret')
   })
 })

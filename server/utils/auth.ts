@@ -6,7 +6,7 @@ import { user, session, account, verification, oauthApplication, oauthAccessToke
 import { oauthOrigin } from './oauth-metadata'
 import { eq } from 'drizzle-orm'
 import { googleConfigured } from '../lib/google/scopes'
-import { googleSocialProviders, GOOGLE_ACCOUNT_OPTIONS } from '../lib/google/auth-options'
+import { googleSocialProviders, GOOGLE_ACCOUNT_OPTIONS, GOOGLE_AUTH_HOOKS, DISABLED_AUTH_PATHS } from '../lib/google/auth-options'
 import { upsertConnectionForAccount } from '../lib/google/connections'
 
 type AccountHookRow = { id: string, providerId?: string, accountId?: string, userId?: string, idToken?: string | null, accessToken?: string | null }
@@ -54,6 +54,8 @@ function buildAuth() {
       ? googleSocialProviders(cfg.googleClientId as string, cfg.googleClientSecret as string)
       : undefined,
     account: GOOGLE_ACCOUNT_OPTIONS,
+    hooks: GOOGLE_AUTH_HOOKS,
+    disabledPaths: DISABLED_AUTH_PATHS,
     databaseHooks: {
       account: {
         create: { after: async acc => syncConnection('create', acc as AccountHookRow) },

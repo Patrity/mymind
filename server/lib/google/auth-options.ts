@@ -1,3 +1,4 @@
+import { APIError, createAuthMiddleware } from 'better-auth/api'
 import { GOOGLE_SCOPES } from '../../../shared/utils/google-scopes'
 import { googleRefreshAccessToken } from './refresh-probe'
 
@@ -41,3 +42,26 @@ export const GOOGLE_ACCOUNT_OPTIONS = {
     disableImplicitLinking: true
   }
 }
+
+/**
+ * D1: Google is never a login method. Sign-UP is closed by the provider flags above, but an
+ * already-LINKED Google account would still sign in through `/sign-in/social` (link-account.mjs's
+ * `linkedAccount` branch issues a session). MyMind has no other social provider, so the endpoint is
+ * refused outright. `/link-social` (session-required) and `/callback/:id` are untouched — the
+ * callback is unreachable without state minted by one of the two, and only link-social remains.
+ * (`/sign-in/oauth2` exists only in the generic-oauth plugin, which MyMind doesn't load.)
+ */
+export const GOOGLE_AUTH_HOOKS = {
+  before: createAuthMiddleware(async (ctx) => {
+    if (ctx.path === '/sign-in/social') {
+      throw new APIError('FORBIDDEN', { message: 'Social sign-in is disabled; link Google from Settings → Connections.' })
+    }
+  })
+}
+
+/**
+ * A session holder must not be able to pull decrypted Google tokens over HTTP. better-auth 1.6.13
+ * applies `disabledPaths` only in the HTTP router's onRequest (api/index.mjs) — in-process
+ * `auth.api.getAccessToken(...)` (what googleToken uses) is unaffected.
+ */
+export const DISABLED_AUTH_PATHS = ['/get-access-token', '/refresh-token', '/account-info']
