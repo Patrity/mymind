@@ -90,14 +90,23 @@ export interface AgentTool {
   toolset: ToolsetId
   dangerous?: boolean // requires human approval before the handler runs
   /** Cycle 79 fix wave I3 (run-level taint): this tool's result carries third-party Google
-   *  content (mail, contacts, events) into the model's context. Once one has returned in a run,
-   *  every `egress` tool in that run needs approval — a prompt-injected email must not be able to
-   *  ship the mailbox out through a URL or a search query. */
+   *  content (mail, contacts, events) into the model's context. Once one has returned content in
+   *  a run — or (79b) one's result is still in the model-visible history at run start — every
+   *  `outbound` tool in that run needs approval: a prompt-injected email must not be able to ship
+   *  the mailbox out through a URL, a search query or a background job. */
   taints?: true
-  /** Cycle 79 fix wave I3: this tool sends model-chosen text off the box (a URL, a search query,
-   *  a research brief). Runs freely until a `taints` tool has returned in the same run; after
-   *  that it goes through the approval gate (never allowlistable; headless → auto-deny). */
-  egress?: true
+  /** Cycle 79b (was `egress`): this tool sends model-chosen text somewhere Tony is not watching —
+   *  off the box (a URL, a search query, a research brief) or into later unattended work (a job,
+   *  a wake). Runs freely until the run is tainted; after that it goes through the approval gate
+   *  (never allowlistable; headless → auto-deny). */
+  outbound?: true
+  /** Cycle 79b: extra text for a tainted-run outbound card when the args alone don't show what
+   *  would happen (run_job: the job's markdown). A throw/undefined just omits it. */
+  outboundDetail?: (args: Record<string, unknown>) => Promise<string | undefined>
+  /** Cycle 79b (d): headless gate only. A tool classified `run` whose proposeWhen(args) is true
+   *  is proposed to /review for THAT call instead of running (gmail_draft with a draftId replaces
+   *  an existing draft). Ignored interactively and on proposal replay. */
+  proposeWhen?: (args: Record<string, unknown>) => boolean
   /** Opt-in: a persisted "always allow" pattern may approve this dangerous tool without asking.
    *  Only exec sets it — decide_review (cycle 76) must be confirmed on every call. */
   allowlistable?: boolean

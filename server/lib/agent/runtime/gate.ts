@@ -59,22 +59,29 @@ export async function proposeAction(p: AgentActionProposal): Promise<string> {
 }
 
 export function headlessTools(registry: AgentTool[], run: { id: string; conversationId: string }, propose: ProposeFn = proposeAction): AgentTool[] {
+  const proposeCall = async (t: AgentTool, args: Record<string, unknown>) => {
+    const reviewId = await propose({ runId: run.id, conversationId: run.conversationId, tool: t.name, args })
+    return {
+      result: { proposed: true, reviewId, note: "Queued for Tony's approval in /review." },
+      summary: `proposed ${t.name} for approval`
+    }
+  }
   const out: AgentTool[] = []
   for (const t of registry) {
     const c = classifyForHeadless(t)
     if (c === 'exclude') continue
-    if (c === 'run') { out.push(t); continue }
-    out.push({
-      ...t,
-      dangerous: false,
-      handler: async (args) => {
-        const reviewId = await propose({ runId: run.id, conversationId: run.conversationId, tool: t.name, args })
-        return {
-          result: { proposed: true, reviewId, note: "Queued for Tony's approval in /review." },
-          summary: `proposed ${t.name} for approval`
-        }
-      }
-    })
+    if (c === 'run') {
+      // 79b (d): a `run` tool may still need Tony for SOME calls (gmail_draft replacing an
+      // existing draft). Those calls take the propose path; every other call runs as before.
+      // Replay (runtime/replay.ts) resolves the ORIGINAL registry tool, so an approved proposal
+      // executes the real handler.
+      const when = t.proposeWhen
+      out.push(when
+        ? { ...t, handler: async (args, ctx) => when(args) ? proposeCall(t, args) : t.handler(args, ctx) }
+        : t)
+      continue
+    }
+    out.push({ ...t, dangerous: false, handler: async args => proposeCall(t, args) })
   }
   return out
 }

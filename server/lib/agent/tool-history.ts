@@ -168,3 +168,41 @@ export function toolBlocksFor(
   flush()
   return blocks
 }
+
+/**
+ * Did a call's result put real data in the model's context? Not for an `{ error }`, a denial
+ * (`{ denied: true }`) or a headless proposal receipt (`{ proposed: true }`) — none of those
+ * carry the tool's payload. Shared by the live taint flip (ai-tools.ts) and the history seed
+ * below, so the two can't disagree about what "produced content" means.
+ */
+export function producedContent(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return true
+  const r = result as Record<string, unknown>
+  return !('error' in r) && r.denied !== true && r.proposed !== true
+}
+
+/** applyHistoryPolicy's out-of-window marker: the result is gone from the prompt. */
+function isElided(result: unknown): boolean {
+  return !!result && typeof result === 'object' && (result as Record<string, unknown>).elided === true
+}
+
+/**
+ * Cycle 79b (a) cross-turn taint: does the history the model will ACTUALLY see still carry a
+ * `taints` tool's content? Takes the POLICED messages (applyHistoryPolicy output) so "in context"
+ * means exactly what the prompt holds: an out-of-window (elided) result, an error/denial, or a
+ * legacy record with no callId (toolBlocksFor drops it) does not count; a capped preview does.
+ */
+export function historyCarriesTaint(
+  policed: { role: string; toolRecords?: AgentToolRecord[] }[],
+  tainting: ReadonlySet<string>
+): boolean {
+  for (const m of policed) {
+    if (m.role !== 'assistant') continue
+    for (const r of m.toolRecords ?? []) {
+      if (!r || typeof r !== 'object' || !r.callId || !tainting.has(r.name)) continue
+      if (isElided(r.result) || !producedContent(r.result)) continue
+      return true
+    }
+  }
+  return false
+}

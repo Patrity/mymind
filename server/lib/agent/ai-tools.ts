@@ -7,6 +7,7 @@ import { publishActivity } from './bus'
 import { registerUndo } from './undo'
 import { withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
+import { producedContent } from './tool-history'
 
 export interface RunHooks {
   signal: AbortSignal
@@ -18,6 +19,9 @@ export interface RunHooks {
   onToolCalled?: (name: string) => void
   /** Cycle 78: handed to tools as ctx.loadToolsets (load_toolsets uses it). */
   loadToolsets?: (ids: ToolsetId[]) => ToolsetId[]
+  /** Cycle 79b (a): the run starts tainted — run.ts sets this when the model-visible history
+   *  still carries a `taints` tool's content from an earlier turn. */
+  initiallyTainted?: boolean
 }
 
 async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, approvalNonce: string): Promise<ApprovalRequest> {
@@ -28,46 +32,48 @@ async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, 
   return { ...req, allowlistable: t.allowlistable === true }
 }
 
-/** The card heading for an egress call in a tainted run (fix wave I3). */
-export const EGRESS_APPROVAL_TITLE = 'Web request after reading your mail'
+/** Card headings for an `outbound` call in a tainted run (fix wave I3; 79b adds background work). */
+export const OUTBOUND_WEB_TITLE = 'Web request after reading your mail'
+export const OUTBOUND_BACKGROUND_TITLE = 'Background work after reading your mail'
 
-/** An egress tool's approval card: the exact URL / query / brief that would leave the box, one
- *  `key: value` line per arg, never truncated (the web card scrolls; iMessage states its cut).
- *  `logSummary` is body-free — the args may be exactly the exfiltrated content. */
-function egressApprovalRequest(t: AgentTool, input: Record<string, unknown>): ApprovalRequest {
+/** An outbound tool's approval card: exactly what would leave Tony's sight — the URL / query /
+ *  brief, or the job markdown / wake time + reason — one `key: value` line per arg, never
+ *  truncated (the web card scrolls; iMessage states its cut). Job/wake tools (toolset `jobs`) get
+ *  the background-work wording; everything else the web wording. `logSummary` is body-free —
+ *  the args may be exactly the exfiltrated content. */
+async function outboundApprovalRequest(t: AgentTool, input: Record<string, unknown>): Promise<ApprovalRequest> {
+  const background = t.toolset === 'jobs'
   const lines = Object.entries(input)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-  const chars = lines.reduce((n, l) => n + l.length, 0)
+  let detail: string | undefined
+  if (t.outboundDetail) {
+    try { detail = await t.outboundDetail(input) } catch { detail = undefined }
+  }
+  const chars = lines.reduce((n, l) => n + l.length, 0) + (detail?.length ?? 0)
+  const lead = background
+    ? `${t.name} — Bridget read your Google mail, calendar or contacts recently, and this sets up work that runs later without you watching (it can carry what she read). Approve only if you expected it.`
+    : `${t.name} — Bridget read your Google mail, calendar or contacts recently, and this request sends the text below to the internet. Approve only if you expected it.`
   return {
     tool: t.name,
-    title: EGRESS_APPROVAL_TITLE,
-    command: [
-      `${t.name} — Bridget read your Google mail, calendar or contacts earlier in this run, and this request sends the text below to the internet. Approve only if you expected it.`,
-      '',
-      ...lines
-    ].join('\n'),
+    title: background ? OUTBOUND_BACKGROUND_TITLE : OUTBOUND_WEB_TITLE,
+    command: [lead, '', ...lines, ...(detail ? ['', detail] : [])].join('\n'),
     proposedPattern: '',
     allowlistable: false,
-    logSummary: `${t.name}: egress after a Google read (${chars} arg chars)`
+    logSummary: `${t.name}: outbound after a Google read (${chars} chars)`
   }
-}
-
-/** A `taints` call that produced data (not an `{ error }` result) has put Google content in the
- *  model's context. */
-function producedContent(result: unknown): boolean {
-  return !(result && typeof result === 'object' && 'error' in result)
 }
 
 /** Adapt the agent tool registry into an AI SDK ToolSet (execute = gate + handler + bus + undo). */
 export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
-  // Run-level taint (cycle 79 fix wave I3): one ToolSet is built per run, so this flag lives
-  // exactly as long as the run. It flips the first time a `taints` tool (gmail_search,
-  // gmail_read_thread, contacts_search, calendar_list_events) returns content, and NEVER resets
-  // within the run: from then on every `egress` tool (web_fetch, web_search, research_web) is
-  // gated like a dangerous tool — not allowlistable, and auto-denied where there's no approval
-  // channel (headless). Before any Google read, egress runs freely as always.
-  let tainted = false
+  // Run-level taint (cycle 79 fix wave I3, 79b): one ToolSet is built per run, so this flag lives
+  // exactly as long as the run. It starts true when the model-visible history still carries a
+  // `taints` tool's content (79b cross-turn seed, computed by run.ts), flips the first time a
+  // `taints` tool returns content in this run, and NEVER resets within the run: from then on every
+  // `outbound` tool (web_fetch, web_search, research_web, create_job, edit_job, run_job,
+  // schedule_wake) is gated like a dangerous tool — not allowlistable, and auto-denied where
+  // there's no approval channel (headless). Untainted, outbound tools run freely as always.
+  let tainted = hooks.initiallyTainted === true
   const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets }
   const set: ToolSet = {}
   for (const t of registry) {
@@ -108,13 +114,13 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         }
         hooks.onEvent({ type: 'tool-start', name: t.name, args: safeArgs, callId })
         // Dangerous tools pause for human approval BEFORE the handler runs — unless the tool's
-        // autoApprove fast-path clears it (allowlist-first). An egress tool in a tainted run
+        // autoApprove fast-path clears it (allowlist-first). An outbound tool in a tainted run
         // (fix wave I3) is gated the same way, but never auto-approved and never allowlistable.
-        const egressGated = t.egress === true && tainted
-        if (t.dangerous || egressGated) {
-          const auto = !egressGated && t.autoApprove ? await t.autoApprove(input, callCtx) : false
+        const outboundGated = t.outbound === true && tainted
+        if (t.dangerous || outboundGated) {
+          const auto = !outboundGated && t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
-            const req = egressGated ? egressApprovalRequest(t, input) : await approvalRequestFor(t, input, approvalNonce)
+            const req = outboundGated ? await outboundApprovalRequest(t, input) : await approvalRequestFor(t, input, approvalNonce)
             const decision = ctx.requestApproval
               ? await ctx.requestApproval({ ...req, callId, args: safeArgs })
               : { approved: false } // fail-safe: no channel → auto-deny

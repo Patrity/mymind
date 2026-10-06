@@ -9,7 +9,7 @@ import { VOICE_TUNING } from '../voice/tuning'
 import type { AgentTool, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
 import { recordEvent } from '../observability/record'
 import { redactImageUrlsForModel } from './image-embed'
-import { applyHistoryPolicy, toolBlocksFor } from './tool-history'
+import { applyHistoryPolicy, historyCarriesTaint, toolBlocksFor } from './tool-history'
 import { spliceSteers, type SteerMark } from './runtime/steer'
 import { activeToolNames, directoryText, parseToolsetIds, type ToolsetId } from './toolsets'
 
@@ -41,7 +41,16 @@ export function toModelContent(role: AgentMessage['role'], content: string | Age
  * cannot drift apart — a future edit to either physically cannot skip this.
  */
 export function buildModelMessages(messages: AgentMessage[]): unknown[] {
-  const policed = applyHistoryPolicy(messages.filter(m => m.role !== 'system'))
+  return expandPoliced(policeHistory(messages))
+}
+
+/** Step 1 of buildModelMessages: the tool-history policy over the non-system turns. Exposed so
+ *  runAgent can seed the run's taint from EXACTLY what the model will see (79b). */
+function policeHistory(messages: AgentMessage[]): AgentMessage[] {
+  return applyHistoryPolicy(messages.filter(m => m.role !== 'system'))
+}
+
+function expandPoliced(policed: AgentMessage[]): unknown[] {
   return policed.flatMap(m => {
     const text = { role: m.role, content: toModelContent(m.role, m.content) }
     const records = m.role === 'assistant' ? m.toolRecords : undefined
@@ -193,8 +202,16 @@ export async function* runAgent(
   const loadForTool = (name: string) => { const id = setOf.get(name); if (id) loadToolsets([id]) }
   const visibleTools = (): string[] | undefined => ctx.toolsets ? activeToolNames(registry, loaded) : undefined
 
+  // Cycle 79b (a) cross-turn taint: the run starts tainted iff the history the model will
+  // actually see (after the tool-history policy — the SAME policed list modelMessages is built
+  // from below) still holds a `taints` tool's content. Mail text in context from an earlier turn
+  // is as dangerous as mail read this turn; once it's elided out of the window or cleared by
+  // /clear (the caller passes only the current epoch), outbound tools run freely again.
+  const policed = policeHistory(messages)
+  const initiallyTainted = historyCarriesTaint(policed, new Set(registry.filter(t => t.taints).map(t => t.name)))
+
   let channel = createChannel()
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets })
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
@@ -204,8 +221,9 @@ export async function* runAgent(
 
   publishActivity({ type: 'state', state: 'thinking' })
 
-  // THE single seam where our history becomes model messages. This one line applies all
-  // three transforms, and deliberately nothing else in the codebase may apply them:
+  // THE single seam where our history becomes model messages. This line (plus the
+  // policeHistory call above, whose output it expands — split only so the taint seed reads the
+  // exact same policed list) applies all three transforms, and nothing else may apply them:
   //   1. image redaction — strips /api/images URLs from prior assistant turns so the model
   //      can't copy a real URL into a new reply (see image-embed.ts);
   //   2. tool-history POLICY (applyHistoryPolicy) — the call survives forever, args/results
@@ -215,7 +233,7 @@ export async function* runAgent(
   // Both callers (the orchestrator's live history, getAgentHistory on resume) reach the model
   // through here; a future edit to either physically cannot skip the policy.
   // Reused verbatim by the forced-final follow-up below.
-  const modelMessages = buildModelMessages(messages)
+  const modelMessages = expandPoliced(policed)
 
   // Build the stream, trying each reasoning model in priority order. If stream
   // creation throws (bad baseURL, adapter construction), fall over to the next.

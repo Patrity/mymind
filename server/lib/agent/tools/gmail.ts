@@ -228,6 +228,11 @@ export const gmailTools: AgentTool[] = [
   },
   {
     name: 'gmail_draft',
+    // 79b (c): a reply/update result carries thread text (subject, the prior draft) back into context.
+    taints: true,
+    // 79b (d): replacing an EXISTING draft overwrites something Tony may have written or already
+    // reviewed — in a headless run that call becomes a /review proposal (a new draft still runs).
+    proposeWhen: a => !!a.draftId,
     description: 'Create (or, with `draftId`, replace) an email draft in ONE named account — it is NOT sent; Tony can review it in Gmail. From is always that account\'s address. To reply in a thread pass `replyToThreadId` (threading headers and a "Re:" subject are set for you; `subject` defaults to the thread\'s). Plain-text body. Returns draftId + a Gmail link. Undo deletes a new draft or restores the previous version of an updated one.',
     kind: 'create',
     toolset: 'gmail',

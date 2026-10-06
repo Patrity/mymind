@@ -72,8 +72,8 @@ function calendarPromptBody(command: string): string {
   return truncatedPrompt(command, CALENDAR_PROMPT_MAX, 'open the event in Google Calendar before approving')
 }
 
-/** Any other TITLED card (fix wave I3: an egress call — web_fetch / web_search / research_web —
- *  after a Google read in the same run) carries its own heading and a multi-line body showing the
+/** Any other TITLED card (fix wave I3 / 79b: an outbound call — web_fetch / web_search / research_web, or a job/wake tool —
+ *  after a Google read still in the model context) carries its own heading and a multi-line body showing the
  *  exact URL/query; same ceiling-with-notice treatment, since there is nothing to "open". */
 export const TITLED_PROMPT_MAX = 1500
 
@@ -86,7 +86,7 @@ export const TITLED_PROMPT_MAX = 1500
  * EXEMPT from PROMPT_COMMAND_MAX, using GMAIL_SEND_PROMPT_MAX instead. calendar_guest_event /
  * calendar_rsvp (cycle 79, Task 5) likewise: their own card title ("Invite guests?", "Send
  * RSVP?") over the multi-line event card, no backticks, CALENDAR_PROMPT_MAX. Any other titled
- * card (fix wave I3's egress-after-a-Google-read) gets its title + body under TITLED_PROMPT_MAX.
+ * card (fix wave I3 / 79b outbound-after-a-Google-read) gets its title + body under TITLED_PROMPT_MAX.
  * Every cut states "showing N of M chars" (fix wave I2).
  */
 export function approvalPromptText(req: ApprovalRequest): string {

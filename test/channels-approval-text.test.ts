@@ -62,14 +62,20 @@ describe('approvalPromptText', () => {
     expect(text).toContain(`${'x'.repeat(CALENDAR_PROMPT_MAX)}…\n[showing 1,500 of 1,540 chars — open the event in Google Calendar before approving]`)
   })
 
-  it('fix wave I3: a titled egress card (web_fetch after a Google read) texts its heading + the exact URL, no backticks', () => {
+  it('fix wave I3: a titled outbound card (web_fetch after a Google read) texts its heading + the exact URL, no backticks', () => {
     const command = 'web_fetch — Bridget read your Google mail…\n\nurl: https://x.example/?d=1'
     const text = approvalPromptText({ tool: 'web_fetch', title: 'Web request after reading your mail', command, proposedPattern: '', allowlistable: false })
     expect(text).toBe(`Web request after reading your mail?\n\n${command}\n\n👍 to approve · 👎 to deny`)
     expect(text).not.toContain('`')
   })
 
-  it('fix wave I3: a long egress card is cut with the "showing N of M chars" notice', () => {
+  it('79b: a background-work card (create_job after a Google read) texts its own heading + the job markdown', () => {
+    const command = 'create_job — Bridget read your Google mail…\n\nslug: x\ncontent: ---\ntrigger: every 1h\n---\nbody'
+    const text = approvalPromptText({ tool: 'create_job', title: 'Background work after reading your mail', command, proposedPattern: '', allowlistable: false })
+    expect(text).toBe(`Background work after reading your mail?\n\n${command}\n\n👍 to approve · 👎 to deny`)
+  })
+
+  it('fix wave I3: a long outbound card is cut with the "showing N of M chars" notice', () => {
     const text = approvalPromptText({ tool: 'research_web', title: 'Web request after reading your mail', command: 'y'.repeat(TITLED_PROMPT_MAX + 10), proposedPattern: '' })
     expect(text).toContain(`[showing 1,500 of 1,510 chars — deny unless you can see the whole request]`)
   })
