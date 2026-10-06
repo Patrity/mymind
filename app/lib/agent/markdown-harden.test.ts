@@ -49,7 +49,13 @@ const VECTORS: Record<string, string> = {
   'MDC attributes on markdown': `**s**{style="background:url(${E}/mdc.png)" ping="${E}/p"}`,
   'MDC component with style': `::callout{style="background:url(${E}/c.png)"}\nhi\n::`,
   '<svg><image href>': `<svg><image href="${E}/svg.png"></image></svg>`,
-  '<iframe>': `<iframe src="${E}/frame"></iframe>`
+  '<iframe>': `<iframe src="${E}/frame"></iframe>`,
+  '```html fence (previewer iframe)': '```html\n<img src="' + E + '/fence.png?d=secret">\n```',
+  '```HTML fence, uppercase': '```HTML\n<img src="' + E + '/fence2.png?d=secret">\n```',
+  '```html fence never closed': '```html\n<img src="' + E + '/open.png?d=secret">',
+  '```html fence with a style url': '```html\n<div style="background:url(' + E + '/fs.png)">x</div>\n```',
+  '```svg fence': '```svg\n<svg><image href="' + E + '/svgfence.png"/></svg>\n```',
+  '```mermaid fence': '```mermaid\ngraph TD; A-->B; click A "' + E + '/m"\n```'
 }
 
 describe('agent markdown hardening — real renderer (C1)', () => {
@@ -68,6 +74,17 @@ describe('agent markdown hardening — real renderer (C1)', () => {
       if (leaks(await render(VECTORS[k]!, round1)).length) leaked.push(k)
     }
     expect(leaked.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('NOT vacuous: the round-2 props (sanitizer, but previewers on) still leak through a ```html fence', async () => {
+    const { previewers: _pv, ...round2 } = agentMarkdownProps
+    expect(leaks(await render(VECTORS['```html fence (previewer iframe)']!, round2))).not.toEqual([])
+  })
+
+  it('a ```html fence still shows its code as text', async () => {
+    const el = await render(VECTORS['```html fence (previewer iframe)']!)
+    expect(el.querySelector('iframe')).toBeNull()
+    expect(el.textContent).toContain('<img src=')
   })
 
   it('normal markdown still renders: bold, list, code, table alignment, link, task list, /api/images image', async () => {

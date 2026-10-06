@@ -15,7 +15,7 @@
 //     table text-align, no ping/poster/srcset/on*);
 //   - an image renders only from same-origin `/api/images/…` (server-authored embeds,
 //     image-embed.ts); any other image becomes its alt text.
-// Link favicons are OFF (fetched without a click). Links stay clickable — a click is Tony's
+// Code-block previewers are OFF (```html would render in an iframe). Link favicons are OFF (fetched without a click). Links stay clickable — a click is Tony's
 // choice and the library confirms external links.
 //
 // Not done here (follow-up): an app-wide CSP `img-src`/`style-src` backstop, and the same
@@ -106,8 +106,14 @@ export const agentMarkdownProps: {
   hardenOptions: { allowedImagePrefixes: string[], allowDataImages: boolean }
   linkOptions: LinkOptions
   parserOptions: { plugins: ComarkPlugin[] }
+  previewers: false
 } = {
   hardenOptions: { allowedImagePrefixes: [AGENT_IMAGE_PREFIX], allowDataImages: false },
   linkOptions: { favicon: false },
-  parserOptions: { plugins: [agentSanitizePlugin] }
+  parserOptions: { plugins: [agentSanitizePlugin] },
+  // 79b fix round 3: code-block previewers OFF. On by default, they auto-switch a ```html fence
+  // into an `<iframe srcdoc sandbox="allow-scripts">` (and ```mermaid into a rendered diagram once
+  // a mermaid extension exists) — the HTML lives in the code TEXT, so the tree sanitizer above
+  // never sees it, and the iframe loads its sub-resources / runs fetch() with zero clicks.
+  previewers: false
 }
