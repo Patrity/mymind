@@ -727,24 +727,31 @@ describe('gmail_send', () => {
   })
 
   it('(b) a stale pin from an earlier (denied, unconsumed) call never answers for a LATER call whose own describeApproval failed to load', async () => {
-    let shouldFail = false
+    // The failure is TRANSIENT: by the time Tony approves the "could not be loaded" card, the
+    // draft is fetchable again and — critically — still unchanged (still m1). That is exactly
+    // the condition under which a pin shared across calls (keyed by draft, not by callId) would
+    // wrongly look like a match and let the send through.
+    let cardBuildFailing = false
     const fetch = useRoutes({
-      [`GET ${G}/drafts/d-stale`]: () => shouldFail
+      [`GET ${G}/drafts/d-stale`]: () => cardBuildFailing
         ? { status: 503 }
-        : { json: { id: 'd-stale', message: { id: 'm1', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64('hi') } } } } }
+        : { json: { id: 'd-stale', message: { id: 'm1', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64('hi') } } } } },
+      [`POST ${G}/drafts/send`]: () => ({ json: { id: 'msg-x', threadId: 'thr-x' } })
     })
     // An earlier call ('call-old') builds a card and pins m1 — imagine Tony denies it, so its
     // pin is never consumed by a handler call.
     await describeSend({ account: 'work', draftId: 'd-stale' }, 'call-old')
 
     // A LATER call ('call-new') has its own describeApproval fail to load the draft.
-    shouldFail = true
+    cardBuildFailing = true
     const laterCard = await describeSend({ account: 'work', draftId: 'd-stale' }, 'call-new')
     expect(laterCard.command).toMatch(/could not be loaded/)
 
-    // Tony approves the "could not be loaded — deny" card anyway. The handler looks up ITS OWN
-    // callId ('call-new'), which never got a pin — 'call-old's lingering, unrelated pin must not
-    // leak in and let this send through.
+    // The transient failure clears; the draft is fetchable again and still m1. Tony approves the
+    // "could not be loaded — deny" card anyway. The handler looks up ITS OWN callId ('call-new'),
+    // which never got a pin — 'call-old's lingering, unrelated (and now content-matching!) pin
+    // must not leak in and let this send through.
+    cardBuildFailing = false
     const out = await runSend({ account: 'work', draftId: 'd-stale' }, 'call-new')
     expect(out.result).toEqual({ error: 'the draft could not be loaded — nothing was sent' })
     expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
