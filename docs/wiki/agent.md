@@ -2,7 +2,7 @@
 title: Agent Surface (/agent)
 status: shipped
 cycle: 73 (toolsets: cycle 78)
-updated: 2026-10-03
+updated: 2026-10-06
 mymind_id: b780bc2c-df0e-465f-acc0-ed83da00da0f
 mymind_hash: 2d4bcfeb80b212272d9cfc3e59302f27a91dc4cd1215cf79df211505eb7d6b65
 ---
@@ -52,7 +52,7 @@ Every `AgentTool` carries a required `toolset` tag (`server/lib/agent/toolsets.t
 | Tier | Toolsets (tools) |
 |---|---|
 | core (~26 schemas) | `memory` (search/get_recent/save/forget), `docs` (search_docs, search_passages, list, read, get, grep, save, edit, edit_section, update), `tasks` (search/create/edit/delete, quick_capture), `web` (web_search, web_fetch, research_web, search_brain), `core` (exec, use_skill, load_toolsets) |
-| on demand | `history` (search_sessions, read_session, search_messages, read_around_message), `projects` (search/get/create/edit), `doc-admin` (move/delete/sync), `images` (generate/edit), `jobs` (all 7), `skill-admin` (create/edit/delete), `reviews` (list_reviews, decide_review), `improvements` (list_improvements), `channels` (send_message) |
+| on demand | `history` (search_sessions, read_session, search_messages, read_around_message), `projects` (search/get/create/edit), `doc-admin` (move/delete/sync), `images` (generate/edit), `jobs` (all 7), `skill-admin` (create/edit/delete), `reviews` (list_reviews, decide_review), `improvements` (list_improvements), `channels` (send_message), `gmail` (gmail_search, gmail_read_thread, gmail_draft, gmail_modify, contacts_search, gmail_send — cycle 79), `calendar` (calendar_list_events, calendar_find_free_time, calendar_write_event, calendar_guest_event, calendar_rsvp — cycle 79). `gmail`/`calendar` are hidden from the directory until a Google account is connected — see [google-connections.md](google-connections.md). |
 
 - **Loading:** `load_toolsets({ ids })` (core, `kind: read`, not on `/api/mcp`) adds sets from the next step. `runAgent` returns `activeTools` from its `prepareStep` hook (AI SDK v6 filters only what is *sent*; tool-call parsing uses the full set).
 - **Auto-load:** a call to a hidden tool still runs and loads its set (execute hook); an *invalid* call to a hidden tool loads its set via a `prepareStep` scan of the last step, so the model sees the schema on its retry.
