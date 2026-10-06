@@ -25,7 +25,10 @@ Setup: [`DEPLOYMENT.md` §20](../DEPLOYMENT.md).
   never log anyone in. `disabledPaths` removes `/get-access-token`, `/refresh-token`, `/account-info`
   from HTTP (server code still calls `auth.api.*` in-process).
 - Tokens live in better-auth's `account` table, encrypted (`account.encryptOAuthTokens`, key derived
-  from `BETTER_AUTH_SECRET` — rotating it makes every connection `needs_reconnect`).
+  from `BETTER_AUTH_SECRET`). After a rotation the old tokens no longer decrypt; better-auth hides
+  that behind a generic "Failed to get a valid access token", so `token.ts` checks
+  `connectionDeps.tokensUndecryptable` on any non-`invalid_grant` token failure and marks the
+  connection `needs_reconnect` on its first call after the rotation. Reconnect re-stores the tokens.
 - Scopes: `openid email profile`, `gmail.modify`, `calendar.events`, `calendar.readonly`,
   `contacts.readonly`, `contacts.other.readonly`.
 
@@ -40,15 +43,15 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
 
 | module | job |
 |---|---|
-| `connections.ts` | list/upsert/markReconnect/touch connections |
-| `token.ts` | `googleToken` (in-process `getAccessToken`), `forceRefresh` (in-process `refreshToken`), `GoogleReconnectError` on `invalid_grant` |
-| `client.ts` | `google(c)` REST client: 401 → forced refresh + one retry (reconnect only on `invalid_grant`); 429/5xx → one backoff retry; 403 insufficient scope → reconnect; `googleErrorMessage` |
+| `connections.ts` | list/upsert/markReconnect/touch connections; `tokensUndecryptable` (stored tokens fail to decrypt under the current secret) |
+| `token.ts` | `googleToken` (in-process `getAccessToken`), `forceRefresh` (in-process `refreshToken`); `GoogleReconnectError` + `needs_reconnect` on `invalid_grant` **or** undecryptable stored tokens |
+| `client.ts` | `google(c)` REST client: 401 → forced refresh + one retry (reconnect only on `invalid_grant`); 429/503 → one backoff retry; 403 **missing scope** (`insufficientPermissions` / `ACCESS_TOKEN_SCOPE_INSUFFICIENT`) → `GoogleScopeError` for that one service ("your <label> account didn't grant <service> access — reconnect it …"), the account stays `ok`; any other 403 (API not enabled, policy) → plain `GoogleApiError`; `googleErrorMessage` |
 | `accounts.ts` | `resolveAccounts(account, { write })` (writes must name an account), `fanOut` (parallel reads across accounts; a failing account becomes a warning) |
 | `mime.ts` | RFC 2822 build (rejects CR/LF in headers, CRLF bodies, RFC 2047 subjects) / parse (text/plain preferred, HTML → text) |
 | `gmail.ts`, `calendar.ts`, `people.ts` | thin endpoint wrappers |
 | `approval-pins.ts` | nonce-keyed, one-shot, 15-min pins binding an approval card to exactly what gets sent |
 | `time.ts`, `untrusted.ts` | agent-tz rendering + strict time parsing; the untrusted-content note |
-| `manage.ts` | the Settings API (list / rename / disconnect = revoke at Google + delete the google `account` row) |
+| `manage.ts` | the Settings API (list / rename / disconnect = revoke at Google — token in the form body, not the URL — + delete the google `account` row) |
 
 ## Tools (on-demand toolsets)
 
@@ -66,7 +69,20 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
 - Approval: `describeApproval(args, { approvalNonce })` — `ai-tools.ts` mints a fresh nonce per
   execution (provider tool-call ids are never trusted for this). Cards carry `title` and a body-free
   `logSummary`; recorders log `logSummary`, so draft bodies / event descriptions never reach
-  `activity_log`. iMessage approvals get dedicated "Send this email?" / calendar formats.
+  `activity_log`. Cards show the **whole** outgoing text (email body, guest-event description, RSVP
+  note — no cap; the web card scrolls). iMessage approvals get dedicated "Send this email?" /
+  calendar / titled formats with a ceiling, and any cut says "showing N of M chars — open the
+  draft/event before approving".
+- Web client keeps approval details **per request** (`app/lib/agent/approvals.ts`, keyed by
+  requestId = the tool part's `approval.id`): concurrent dangerous calls in one step each keep their
+  own card. A non-`exec` card with no details offers **Deny only** ("Details unavailable — deny").
+- **Run-level taint (exfiltration guard).** `taints` tools (`gmail_search`, `gmail_read_thread`,
+  `contacts_search`, `calendar_list_events`) and `egress` tools (`web_fetch`, `web_search`,
+  `research_web`) are flags on `AgentTool`. `buildAiTools` keeps one flag per run: once a `taints`
+  tool returns content (not an `{ error }`), every later `egress` call in that run goes through the
+  approval gate — card "Web request after reading your mail" showing the exact URL/query, never
+  allowlistable, body-free `logSummary`; headless runs (no approval channel) auto-deny it. The flag
+  never resets within a run; a new run (next turn) starts clean. `exec` is unaffected.
 - The `gmail` / `calendar` lines are omitted from Bridget's TOOLSETS directory while no connection is `ok`.
 - Times: shown in `agent_timezone`; inputs must be ISO with offset, naive ISO (agent-tz local) or a bare date.
 

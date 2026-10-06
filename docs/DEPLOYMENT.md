@@ -64,7 +64,7 @@ Extensions are created automatically on **first** DB boot via `db/init/01-extens
 |---|---|---|
 | `POSTGRES_PASSWORD` | ✅ | compose-only; sets the db password + is interpolated into `DATABASE_URL`. |
 | `DATABASE_URL` | ✅ | set by compose to `postgres://mymind:<pw>@db:5432/mymind`. For manual migrate use the real host/port. |
-| `BETTER_AUTH_SECRET` | ✅ | 32+ bytes. `openssl rand -base64 48`. **Rotating it** makes every stored Google token undecryptable — every Google connection goes `needs_reconnect` (see §20). |
+| `BETTER_AUTH_SECRET` | ✅ | 32+ bytes. `openssl rand -base64 48`. **Rotating it** makes every stored Google token undecryptable — each Google connection goes `needs_reconnect` on its first call after the rotation; Reconnect each account (see §20). |
 | `BETTER_AUTH_URL` | ✅ | **public origin**, must match how users reach it (proxy origin). Mismatch → sign-in/sign-up 403 (CSRF/origin check). |
 | `ALLOW_SIGNUP` | bootstrap | `true` to enable account creation; **unset after** creating your account. |
 | `CONFIG_ENC_KEY` | optional | Key used to encrypt provider API keys at rest in the AI config registry (AES-256-GCM). Raw 32-byte **base64** (`openssl rand -base64 32`). **If unset, the key is derived from `BETTER_AUTH_SECRET` via HKDF** — so you do not need to set this. Set it only if you want the config-secret key independent of the auth secret. A non-32-byte value throws on first AI-config write. |
@@ -568,46 +568,61 @@ Design: [`docs/superpowers/specs/2026-10-05-google-connections-design.md`](super
 configured on this server" and Bridget's `gmail` / `calendar` toolsets are left out of her directory.
 Google is a **linked** account only — never a sign-in method.
 
-**One-time setup checklist (Tony):**
-1. **GCP project** (console.cloud.google.com) → create or pick a project → **APIs & Services →
-   Library** → enable **Gmail API**, **Google Calendar API** and **People API**.
-2. **OAuth consent screen** → User type **External** → app name + support email → add the scopes:
+**One-time setup checklist (Tony).** Google's console calls the OAuth area **Google Auth Platform**
+(console.cloud.google.com → ☰ → *Google Auth Platform*); its left nav is **Overview / Branding /
+Audience / Clients / Data Access / Verification Center**. The older "APIs & Services → OAuth consent
+screen / Credentials" pages redirect there.
+1. **GCP project** → create or pick a project → **APIs & Services → Library** → enable **Gmail API**,
+   **Google Calendar API** and **People API**. (People not enabled shows up as a plain Google 403 on
+   `contacts_search`, not as a reconnect.)
+2. **Google Auth Platform → Branding** → app name + user support email + developer contact email.
+3. **Audience** → User type **External**. Then **Publish app** (status *In production*) and leave it
+   **unverified**. In *Testing* status Google expires refresh tokens after **7 days**, and every
+   connection would go `needs_reconnect` weekly; unverified-in-production has no such expiry.
+   An unverified app requesting sensitive/restricted scopes is capped at **100 users** (lifetime) and
+   shows the "Google hasn't verified this app" warning, which the personal account clicks through
+   once (Advanced → Go to …) when linking. Two accounts are nowhere near the cap.
+4. **Data Access → Add or remove scopes** → add:
    `openid`, `email`, `profile`, `https://www.googleapis.com/auth/gmail.modify`,
    `https://www.googleapis.com/auth/calendar.events`,
    `https://www.googleapis.com/auth/calendar.readonly`,
    `https://www.googleapis.com/auth/contacts.readonly`,
-   `https://www.googleapis.com/auth/contacts.other.readonly`.
-3. **Publish the app to production** (Audience → Publish app). Leave it **unverified**. In *Testing*
-   mode Google expires refresh tokens after **7 days**, and every connection would go
-   `needs_reconnect` weekly. Unverified-in-production has no such expiry. The personal account
-   clicks through Google's "unverified app" warning once when linking.
-4. **Credentials → Create credentials → OAuth client ID → Web application**, with both
-   **Authorized redirect URIs**:
+   `https://www.googleapis.com/auth/contacts.other.readonly` → Save.
+5. **Clients → Create client → Web application**, with both **Authorized redirect URIs**:
    - `https://brain.costanzoclan.com/api/auth/callback/google`
    - `http://localhost:3000/api/auth/callback/google`
    (The callback is built from `BETTER_AUTH_URL`; a dev server on another port needs its own URI
-   added here.)
-5. **Workspace admin console** (admin.google.com, for the work account) → **Security → Access and
-   data control → API controls → Manage third-party app access** → add the OAuth **client id** and
-   mark it **Trusted**. Without this the Workspace account may be blocked from granting the
-   restricted Gmail scope.
-6. On prod, add to `/opt/mymind/.env.native` and restart:
+   added here.) Copy the client id and secret (the secret is only shown in full at creation).
+6. **Before linking the work account — Workspace admin trust.** admin.google.com → **Security →
+   Access and data control → API controls → Manage Third-Party App Access → Configure new app** →
+   search for the OAuth **client id** → scope: all of the org (or Tony's OU) → **Trusted**. Do this
+   BEFORE the first link: without it Workspace blocks the restricted Gmail scope ("Access blocked"
+   or a consent screen missing Gmail), and an account linked that way must be disconnected and
+   re-linked after trusting.
+7. On prod, add to `/opt/mymind/.env.native` and restart:
    ```bash
    NUXT_GOOGLE_CLIENT_ID=<client id>
    NUXT_GOOGLE_CLIENT_SECRET=<client secret>
    ```
    `pct exec 114 -- systemctl restart mymind`. (The `NUXT_` prefix is required — these are
    `runtimeConfig.googleClientId/googleClientSecret`; see the runtimeConfig gotcha in §18.)
-7. **Settings → Connections → Connect Google account** for each account (work Workspace, then
+8. **Settings → Connections → Connect Google account** for each account (work Workspace, then
    personal). Grant **every** permission on the consent screen. A card whose scope badges show a
-   missing service was linked with a box unticked: Disconnect and connect again. Rename the labels
-   if you like; the label is the `account` name Bridget's tools use.
-8. Acceptance: ask Bridget for today's calendar and for a recent email from each account.
+   missing service was linked with a box unticked — Bridget's tools then answer "your <label>
+   account didn't grant <service> access — reconnect it …" for that service only (the others keep
+   working): Disconnect and connect again, ticking every box. Rename the labels if you like; the
+   label is the `account` name Bridget's tools use.
+9. Acceptance: ask Bridget for today's calendar and for a recent email from each account.
 
 **Rotating `BETTER_AUTH_SECRET`** re-keys the at-rest encryption of the stored Google access and
-refresh tokens (`encryptOAuthTokens`). Old tokens can no longer be decrypted, so **every Google
-connection goes `needs_reconnect`** on first use. Reconnect each account from Settings → Connections
-after a rotation.
+refresh tokens (`encryptOAuthTokens`), so the old tokens no longer decrypt. better-auth swallows that
+failure into a generic "Failed to get a valid access token", so MyMind checks for it itself
+(`connectionDeps.tokensUndecryptable` in `server/lib/google/connections.ts`): the **first Google
+call for each account after a rotation** marks that connection `needs_reconnect` (last error
+"stored Google tokens can no longer be decrypted …") and the tool reports the account needs
+reconnecting. Connections not yet used since the rotation still show `ok` until their first call.
+Fix: **Settings → Connections → Reconnect** each account (re-linking stores fresh tokens under the
+new secret). Reconnecting proactively right after a rotation avoids the failed first call.
 
 **Disconnect** revokes the token at Google (`POST https://oauth2.googleapis.com/revoke`, best effort,
 logged as `[connections] Google revoke …` on failure) and then deletes the linked account row (the

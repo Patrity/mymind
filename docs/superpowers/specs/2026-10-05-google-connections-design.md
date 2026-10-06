@@ -57,7 +57,9 @@ databaseHooks: { account: { create: { after: createConnectionRow } } }
   Google callback for an unknown user cannot create a user.
 - `encryptOAuthTokens` uses a key derived from `BETTER_AUTH_SECRET`: rotating that secret makes
   stored Google tokens unreadable → every connection goes `needs_reconnect`. Documented in
-  `DEPLOYMENT.md`.
+  `DEPLOYMENT.md`. *(Fix wave, 2026-10-06: better-auth swallows the decrypt failure into a generic
+  "Failed to get a valid access token", so this only holds because `token.ts` now checks
+  `tokensUndecryptable` itself — each connection flips on its first call after the rotation.)*
 
 ## 3. Data model — migration 0067 (additive)
 
