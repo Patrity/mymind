@@ -161,3 +161,6 @@ GCP project → enable Gmail/Calendar/People APIs → Google Auth Platform (Bran
 
 ## Deploy (2026-10-06)
 CD 37430349947 on 07d0c4b: success. Prod `/api/health` 200 (in-LXC + external), bundle contains `gmail_send`, `connections` table present, `/sign-in/social` 403, 0 journal errors after cutover, authed MCP canary ok. Wiki mirrored: `agent.md`, `google-connections.md` (new, id abfd2326).
+
+## 79b deploy (2026-10-06)
+CD 37465408568 on c1e4fbc: success. Prod health 200 (in-LXC + external), bundle contains the outbound background card, 0 journal errors. Wiki `google-connections.md` re-mirrored.
