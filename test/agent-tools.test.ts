@@ -4,9 +4,10 @@ import { agentTools, toolByName } from '../server/lib/agent/tools'
 import { MCP_INSTRUCTIONS } from '../server/lib/mcp/server'
 
 describe('agent tool registry', () => {
-  it('exposes the expected 53 tools', () => {
+  it('exposes the expected 56 tools', () => {
     const names = agentTools.map(t => t.name).sort()
     expect(names).toEqual([
+      'calendar_find_free_time', 'calendar_list_events', 'calendar_write_event',
       'contacts_search',
       'create_job', 'create_project', 'create_skill', 'create_task',
       'delete_document', 'delete_job', 'delete_skill', 'delete_task',

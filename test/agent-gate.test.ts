@@ -74,6 +74,11 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   // gmail_send (cycle 79, Task 4): dangerous — classifyForHeadless excludes it outright before
   // ever reaching the APPEND/PROPOSE tables, same as exec and decide_review below.
   gmail_send: 'exclude',
+  // calendar (cycle 79, Task 5): reads run; calendar_write_event edits Tony's own events —
+  // proposed; guest events and RSVPs notify other people — dangerous, excluded outright
+  calendar_list_events: 'run', calendar_find_free_time: 'run',
+  calendar_write_event: 'propose',
+  calendar_guest_event: 'exclude', calendar_rsvp: 'exclude',
   // create-kind that edits/moves something that already exists — proposed, not run
   edit_document: 'propose', edit_section: 'propose', update_document: 'propose',
   move_document: 'propose', sync_document: 'propose', edit_image: 'propose',

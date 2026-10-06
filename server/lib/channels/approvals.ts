@@ -58,17 +58,35 @@ function gmailSendPromptBody(command: string): string {
   return `${command.slice(0, GMAIL_SEND_PROMPT_MAX)}… [${more} more chars — open the draft in Gmail]`
 }
 
+/** calendar_guest_event / calendar_rsvp (cycle 79, Task 5): the command is a short multi-line
+ *  card (op, title, when in Tony's zone, guests, the change; a description/note capped at 500 by
+ *  the tool) — like gmail_send it must not be cut at PROMPT_COMMAND_MAX (a long guest list would
+ *  lose the change Tony is approving). Defensive ceiling on the whole rendered command. */
+export const CALENDAR_PROMPT_MAX = 1500
+const CALENDAR_APPROVAL_TOOLS: ReadonlySet<string> = new Set(['calendar_guest_event', 'calendar_rsvp'])
+
+function calendarPromptBody(command: string): string {
+  if (command.length <= CALENDAR_PROMPT_MAX) return command
+  const more = command.length - CALENDAR_PROMPT_MAX
+  return `${command.slice(0, CALENDAR_PROMPT_MAX)}… [${more} more chars — open the event in Google Calendar]`
+}
+
 /**
  * The texted question, worded per tool (final review m1): exec asks to run a command; a review
  * decision is not a command, so it reads as one (`command` is "<choice> — <summary>"); any other
  * dangerous tool names itself. gmail_send (cycle 79 review I3) gets its own format — "Send this
  * email?" over the real From/To/Cc/Bcc/Subject + body, no backtick wrapping (iMessage doesn't
  * render them, and a closing backtick-question-mark after a long body reads badly) — and is
- * EXEMPT from PROMPT_COMMAND_MAX, using GMAIL_SEND_PROMPT_MAX instead.
+ * EXEMPT from PROMPT_COMMAND_MAX, using GMAIL_SEND_PROMPT_MAX instead. calendar_guest_event /
+ * calendar_rsvp (cycle 79, Task 5) likewise: their own card title ("Invite guests?", "Send
+ * RSVP?") over the multi-line event card, no backticks, CALENDAR_PROMPT_MAX.
  */
 export function approvalPromptText(req: ApprovalRequest): string {
   if (req.tool === 'gmail_send') {
     return `Send this email?\n\n${gmailSendPromptBody(req.command)}\n\n👍 to send · 👎 to deny`
+  }
+  if (CALENDAR_APPROVAL_TOOLS.has(req.tool)) {
+    return `${req.title ?? 'Change this calendar event?'}\n\n${calendarPromptBody(req.command)}\n\n👍 to approve · 👎 to deny`
   }
   const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
   const ask = req.tool === 'exec' ? `Run \`${cmd}\`?`

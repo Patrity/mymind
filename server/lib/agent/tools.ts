@@ -18,6 +18,7 @@ import { skillsEnabled } from './skills-config'
 import { jobTools } from './tools/jobs'
 import { channelTools } from './tools/channels'
 import { gmailTools } from './tools/gmail'
+import { calendarTools } from './tools/calendar'
 import { listReviewsTool } from './tools/reviews'
 import { improvementTools } from './tools/improvements'
 import { readAroundMessage, readSessionPage } from '../../services/session-read'
@@ -1272,6 +1273,8 @@ export const agentTools: AgentTool[] = [
   ...channelTools,
   // ---- gmail (cycle 79) ----
   ...gmailTools,
+  // ---- calendar (cycle 79) — guest events / RSVP are dangerous and live on bridgetProfile ----
+  ...calendarTools,
   // ---- review (cycle 76, Task 9): list only — decide_review is profile-only (profile.ts) ----
   listReviewsTool,
   // ---- self-improvement log (cycle 76, Task 10) ----

@@ -27,7 +27,10 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
   // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run
-  'gmail_modify'])
+  'gmail_modify',
+  // calendar_write_event (cycle 79): edits/deletes Tony's own events (no guests, nobody notified)
+  // — in a headless run Tony approves it as a proposal
+  'calendar_write_event'])
 
 // Tools that run headless DESPITE being `destructive`-kind — checked BEFORE the destructive rule
 // below, so they never fall into 'propose'. Currently just delete_job: spec D2 says job

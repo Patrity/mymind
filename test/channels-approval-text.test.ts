@@ -2,7 +2,7 @@
 // The iMessage approval question, worded per tool (cycle 76 final review m1; gmail_send branch
 // added cycle 79 review I3).
 import { describe, it, expect } from 'vitest'
-import { approvalPromptText, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX } from '../server/lib/channels/approvals'
+import { approvalPromptText, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX, CALENDAR_PROMPT_MAX } from '../server/lib/channels/approvals'
 
 const FOOT = '\n👍 to approve · 👎 to deny'
 
@@ -38,5 +38,21 @@ describe('approvalPromptText', () => {
     const command = 'x'.repeat(GMAIL_SEND_PROMPT_MAX + 230)
     const text = approvalPromptText({ tool: 'gmail_send', command, proposedPattern: '' })
     expect(text).toContain(`${'x'.repeat(GMAIL_SEND_PROMPT_MAX)}… [230 more chars — open the draft in Gmail]`)
+  })
+
+  it('calendar_guest_event / calendar_rsvp (Task 5): their own card title over the multi-line card, no backticks, exempt from PROMPT_COMMAND_MAX', () => {
+    const command = 'Create an event in work — Google emails the invites\nTitle: Lunch\nWhen: Thu, Oct 8, 12:00 PM CDT – Thu, Oct 8, 1:00 PM CDT\nGuests: ' + 'a@b.com, '.repeat(60)
+    const guest = approvalPromptText({ tool: 'calendar_guest_event', title: 'Invite guests?', command, proposedPattern: '' })
+    expect(guest).toBe(`Invite guests?\n\n${command}\n\n👍 to approve · 👎 to deny`)
+    expect(command.length).toBeGreaterThan(PROMPT_COMMAND_MAX)
+    expect(guest).not.toContain('`')
+    expect(guest).not.toContain('Allow calendar_guest_event')
+    const rsvp = approvalPromptText({ tool: 'calendar_rsvp', title: 'Send RSVP?', command: 'RSVP "declined" to "Offsite" (work)', proposedPattern: '' })
+    expect(rsvp.startsWith('Send RSVP?\n\nRSVP "declined"')).toBe(true)
+  })
+
+  it('calendar: a command past CALENDAR_PROMPT_MAX is cut with a "how many more chars" note', () => {
+    const text = approvalPromptText({ tool: 'calendar_guest_event', title: 'Invite guests?', command: 'x'.repeat(CALENDAR_PROMPT_MAX + 40), proposedPattern: '' })
+    expect(text).toContain(`${'x'.repeat(CALENDAR_PROMPT_MAX)}… [40 more chars — open the event in Google Calendar]`)
   })
 })
