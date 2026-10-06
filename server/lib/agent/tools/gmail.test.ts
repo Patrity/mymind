@@ -865,9 +865,58 @@ describe('gmail_send through buildAiTools (round 3, N1): approvalNonce isolation
     const [outA, outB] = await Promise.all([pA, pB])
 
     // A refuses on a content MISMATCH — its own nonce's pin (m1) no longer matches the current
-    // draft (m2). Before round 3, both executions sharing SDK toolCallId '' would have shared
-    // ONE pin key, so B's card would have silently overwritten A's pin and A's approval would
-    // have sent B's (denied) content C2 — exactly the round-1 I2 bypass, reopened by N1.
+    // draft (m2) — proving A's pin is independent of B's, even though both executions shared the
+    // identical (empty) SDK toolCallId. (If gmail_send keyed on the SDK id directly, '' would
+    // collide AND be caught by its own "falsy id" guard, refusing both calls outright — see the
+    // next test for the sharper case, a REPEATED NON-EMPTY id, where that guard doesn't help and
+    // the collision would silently send B's denied content under A's approval instead.)
+    expect(outA).toEqual({ error: 'the draft changed after you approved it — ask again' })
+    expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
+    expect(outB).toEqual({ denied: true })
+  })
+
+  it('two executions sharing the SAME NON-EMPTY (repeated) SDK toolCallId still get independent pins — approving A sends A\'s own (matching) content, never B\'s denied content', async () => {
+    let edited = false
+    const fetch = useRoutes({
+      [`GET ${G}/drafts/d-sdkid2`]: () => ({
+        json: {
+          id: 'd-sdkid2',
+          message: {
+            id: edited ? 'm2' : 'm1',
+            payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64(edited ? 'C2' : 'C1') } }
+          }
+        }
+      }),
+      [`POST ${G}/drafts/send`]: () => ({ json: { id: 'msg-y', threadId: 'thr-y' } })
+    })
+
+    const approvals: Array<(d: { approved: boolean }) => void> = []
+    const requestApproval = () => new Promise<{ approved: boolean }>((resolve) => { approvals.push(resolve) })
+    const set = buildAiTools([gmailSendTool], { signal: new AbortController().signal, requestApproval, onEvent: () => {} })
+    const execute = set.gmail_send!.execute as (input: unknown, opts: { toolCallId: string }) => Promise<unknown>
+
+    // Both executions carry the SAME non-empty, deterministic id (e.g. a backend that reuses
+    // `call_0` per turn instead of minting unique ids) — unlike `''`, this is NOT caught by a
+    // falsy-id guard, so it exercises the actual nonce-uniqueness guarantee, not the fallback.
+    const pA = execute({ account: 'work', draftId: 'd-sdkid2' }, { toolCallId: 'call_0' })
+    await new Promise(r => setTimeout(r, 5))
+    expect(approvals).toHaveLength(1)
+
+    edited = true // the draft is edited between A's card and B's card
+
+    const pB = execute({ account: 'work', draftId: 'd-sdkid2' }, { toolCallId: 'call_0' })
+    await new Promise(r => setTimeout(r, 5))
+    expect(approvals).toHaveLength(2)
+
+    // Tony denies B, approves A.
+    approvals[1]!({ approved: false })
+    approvals[0]!({ approved: true })
+    const [outA, outB] = await Promise.all([pA, pB])
+
+    // A refuses on a content mismatch (m1 ≠ the now-current m2) — NOT because the id was falsy,
+    // but because A's own approvalNonce is genuinely distinct from B's. Before round 3, 'call_0'
+    // repeated across both calls would have been the shared pin key itself, so B's card would
+    // have silently overwritten A's pin and A's approval would have sent B's (denied) content C2.
     expect(outA).toEqual({ error: 'the draft changed after you approved it — ask again' })
     expect(fetch.calls.filter(c => c.includes('/drafts/send'))).toEqual([])
     expect(outB).toEqual({ denied: true })
