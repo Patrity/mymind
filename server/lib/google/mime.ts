@@ -127,3 +127,33 @@ export function parseMessagePayload(payload: GmailPayload, maxChars: number): { 
   const text = raw.length > maxChars ? raw.slice(0, maxChars) + TRUNCATION_MARKER : raw
   return { text, attachments: collected.attachments }
 }
+
+/** RFC 2047 encoded-words (`=?UTF-8?B?…?=` / `?Q?`) → text. Adjacent words separated only by
+ *  whitespace are joined, per the RFC. Charsets other than UTF-8 are decoded as UTF-8 best effort. */
+function decodeEncodedWords(v: string): string {
+  return v
+    .replace(/(\?=)\s+(=\?)/g, '$1$2')
+    .replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (whole: string, _cs: string, enc: string, txt: string) => {
+      try {
+        if (enc.toUpperCase() === 'B') return Buffer.from(txt, 'base64').toString('utf8')
+        const bytes = txt.replace(/_/g, ' ').replace(/=([0-9A-Fa-f]{2})/g, (_m: string, h: string) => String.fromCharCode(parseInt(h, 16)))
+        return Buffer.from(bytes, 'latin1').toString('utf8')
+      } catch {
+        return whole
+      }
+    })
+}
+
+/** The header block of a base64url `raw` RFC 2822 message (e.g. a draft fetched with
+ *  format=raw) as a GmailPayload — unfolded and encoded-word-decoded — so `header()` works on it. */
+export function rawMessageHeaders(raw: string): GmailPayload {
+  const text = Buffer.from(raw, 'base64url').toString('utf8')
+  const end = text.search(/\r?\n\r?\n/)
+  const block = (end === -1 ? text : text.slice(0, end)).replace(/\r?\n[ \t]+/g, ' ')
+  const headers = block.split(/\r?\n/).flatMap((line) => {
+    const i = line.indexOf(':')
+    if (i <= 0) return []
+    return [{ name: line.slice(0, i).trim(), value: decodeEncodedWords(line.slice(i + 1).trim()) }]
+  })
+  return { headers }
+}

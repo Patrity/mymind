@@ -56,12 +56,24 @@ function toHits(res: PeopleSearchResponse, source: PersonHit['source']): PersonH
   })
 }
 
-/** Saved contacts first, then other contacts. Either endpoint failing fails the call (fanOut
- *  turns that into a per-account warning). */
-export async function searchPeople(c: Connection, q: string, deps: GoogleDeps = {}): Promise<PersonHit[]> {
+const SOURCE_NAME = { saved: 'saved contacts', other: 'other contacts' } as const
+
+/** Saved contacts first, then other contacts. One source failing (e.g. an older connection
+ *  without the contacts.other.readonly scope) keeps the other's hits and reports the failure via
+ *  `onWarning`; only BOTH failing throws (fanOut turns that into a per-account warning). */
+export async function searchPeople(
+  c: Connection, q: string, deps: GoogleDeps = {}, onWarning?: (source: string, err: unknown) => void
+): Promise<PersonHit[]> {
   await warmUp(c, deps)
   const g = google(c, deps)
-  const [saved, other] = await Promise.all((['saved', 'other'] as const).map(src =>
+  const sources = ['saved', 'other'] as const
+  const settled = await Promise.allSettled(sources.map(src =>
     g.get<PeopleSearchResponse>(ENDPOINT[src], { query: q, readMask: READ_MASK, pageSize: PAGE_SIZE })))
-  return [...toHits(saved!, 'saved'), ...toHits(other!, 'other')]
+  if (settled.every(s => s.status === 'rejected')) throw (settled[0] as PromiseRejectedResult).reason
+  return settled.flatMap((s, i) => {
+    const src = sources[i]!
+    if (s.status === 'fulfilled') return toHits(s.value, src)
+    onWarning?.(SOURCE_NAME[src], s.reason)
+    return []
+  })
 }

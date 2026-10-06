@@ -14,12 +14,18 @@ vi.mock('../../google/connections', async (importOriginal) => {
     markReconnect: vi.fn(async () => {})
   }
 })
+vi.mock('../../observability/record', () => ({
+  withSpan: vi.fn(async (_input: unknown, fn: () => Promise<unknown>) => fn()),
+  recordEvent: vi.fn()
+}))
 vi.mock('../jobs/timezone', () => ({
   getDefaultTimezone: vi.fn(async () => 'America/Chicago'),
   serverTimezone: () => 'UTC'
 }))
 
 import { gmailTools, gmailDeps } from './gmail'
+import { buildAiTools } from '../ai-tools'
+import { withSpan } from '../../observability/record'
 import { resetPeopleWarmup } from '../../google/people'
 import { UNTRUSTED_NOTE } from '../../google/untrusted'
 import { listConnections, type Connection } from '../../google/connections'
@@ -227,7 +233,9 @@ describe('gmail_draft', () => {
     const out = await run('gmail_draft', { account: 'personal', to: ['a@b.com'], cc: ['c@d.com'], subject: 'Hi', body: 'hello\nthere' })
     expect(out.result).toEqual({
       draftId: 'd1', threadId: 'thr1',
-      link: 'https://mail.google.com/mail/u/tony@costanzoclan.com/#drafts?compose=msg1'
+      link: 'https://mail.google.com/mail/u/tony@costanzoclan.com/#drafts?compose=msg1',
+      // the drafted content comes back so Bridget can see (and revise) what she wrote
+      from: 'tony@costanzoclan.com', to: ['a@b.com'], cc: ['c@d.com'], subject: 'Hi', body: 'hello\nthere'
     })
     const raw = decodeRaw(posted!.message.raw)
     expect(raw).toContain('From: tony@costanzoclan.com\r\n')
@@ -249,7 +257,9 @@ describe('gmail_draft', () => {
           id: 'th9',
           messages: [
             { id: 'a', payload: { headers: [{ name: 'Message-ID', value: '<first@x>' }, { name: 'Subject', value: 'Lunch' }] } },
-            { id: 'b', payload: { headers: [{ name: 'Message-Id', value: '<last@x>' }, { name: 'References', value: '<first@x>' }, { name: 'Subject', value: 'Re: Lunch' }] } }
+            { id: 'b', payload: { headers: [{ name: 'Message-Id', value: '<last@x>' }, { name: 'References', value: '<first@x>' }, { name: 'Subject', value: 'Re: Lunch' }] } },
+            // Tony's own unsent draft in the thread — never the reply target
+            { id: 'c', labelIds: ['DRAFT'], payload: { headers: [{ name: 'Message-ID', value: '<draft@x>' }, { name: 'References', value: '<first@x> <last@x>' }] } }
           ]
         }
       }),
@@ -293,7 +303,7 @@ describe('gmail_draft', () => {
       }
     })
     const out = await run('gmail_draft', { account: 'work', draftId: 'd1', to: ['a@b.com'], subject: 'v2', body: 'new' })
-    expect(out.result).toMatchObject({ draftId: 'd1', threadId: 't0' })
+    expect(out.result).toMatchObject({ draftId: 'd1', threadId: 't0', subject: 'v2', body: 'new' })
     expect(puts[0]!.id).toBe('d1')
     expect(decodeRaw(puts[0]!.message.raw)).toContain('Subject: v2')
     expect(puts[0]!.message.threadId).toBe('t0')
@@ -308,6 +318,39 @@ describe('gmail_draft', () => {
     expect(fetch.calls).toEqual([])
   })
 
+  it('update with only draftId keeps the reply threaded: In-Reply-To, References and Subject carried from the previous raw', async () => {
+    const prevRaw = Buffer.from([
+      'From: tony@work.com', 'To: ann@a.com', `Subject: =?UTF-8?B?${Buffer.from('Re: Lunch ☕').toString('base64')}?=`,
+      'In-Reply-To: <last@x>', 'References: <first@x>', ' <last@x>', 'MIME-Version: 1.0', '', 'old body'
+    ].join('\r\n')).toString('base64url')
+    let put: { message: { raw: string, threadId?: string } } | undefined
+    useRoutes({
+      [`GET ${G}/drafts/d7`]: () => ({ json: { id: 'd7', message: { id: 'm7', threadId: 'th9', raw: prevRaw } } }),
+      [`PUT ${G}/drafts/d7`]: (req) => { put = req.body as typeof put; return { json: { id: 'd7', message: { id: 'm8', threadId: 'th9' } } } }
+    })
+    const out = await run('gmail_draft', { account: 'work', draftId: 'd7', to: ['ann@a.com'], body: 'shorter' })
+    expect(out.result).toMatchObject({ draftId: 'd7', threadId: 'th9', subject: 'Re: Lunch ☕', body: 'shorter' })
+    const raw = decodeRaw(put!.message.raw)
+    expect(raw).toContain('In-Reply-To: <last@x>\r\n')
+    expect(raw).toContain('References: <first@x> <last@x>\r\n')
+    expect(raw).toContain(`Subject: =?UTF-8?B?${Buffer.from('Re: Lunch ☕').toString('base64')}?=\r\n`)
+    expect(put!.message.threadId).toBe('th9')
+  })
+
+  it('activity_log gets the masked args only, while the result carries the body', async () => {
+    vi.mocked(withSpan).mockClear()
+    useRoutes({ [`POST ${G}/drafts`]: () => ({ json: { id: 'd1', message: { id: 'm1', threadId: 't1' } } }) })
+    const events: Array<Record<string, unknown>> = []
+    const set = buildAiTools([tool('gmail_draft')], { signal: new AbortController().signal, onEvent: e => events.push(e as Record<string, unknown>) })
+    const result = await (set.gmail_draft!.execute as (i: unknown, o: unknown) => Promise<unknown>)(
+      { account: 'work', to: ['a@b.com'], subject: 's', body: 'top secret words' }, { toolCallId: 'c1' })
+    expect(result).toMatchObject({ body: 'top secret words' })
+    const spanInput = vi.mocked(withSpan).mock.calls[0]![0] as { request: Record<string, unknown>, response?: unknown }
+    expect(spanInput.request.body).toBe('<16 chars>')
+    expect(spanInput.response).toBeUndefined()
+    expect(JSON.stringify(vi.mocked(withSpan).mock.calls[0]![0])).not.toContain('top secret')
+  })
+
   it('redactForLog masks the body to its length', async () => {
     const masked = await tool('gmail_draft').redactForLog!({ account: 'work', body: 'secret', subject: 's' })
     expect(masked).toEqual({ account: 'work', body: '<6 chars>', subject: 's' })
@@ -315,31 +358,88 @@ describe('gmail_draft', () => {
 })
 
 describe('gmail_modify', () => {
-  it('archive+read → removeLabelIds [INBOX, UNREAD] per thread; undo posts the inverse', async () => {
-    const bodies: Array<{ thread: string, acct: string, body: unknown }> = []
-    const route: Route = (req) => {
-      bodies.push({ thread: req.url.pathname.split('/')[6]!, acct: acct(req), body: req.body })
-      return { json: { id: 'x' } }
+  /** Routes for a modify: minimal snapshots per thread, recorded modify + batchModify bodies. */
+  function modifyRoutes(threads: Record<string, Array<{ id: string, labelIds: string[] }>>) {
+    const modifies: Array<{ thread: string, acct: string, body: unknown }> = []
+    const batches: Array<{ acct: string, body: unknown }> = []
+    const routes: Record<string, Route> = {
+      [`POST ${G}/messages/batchModify`]: (req) => { batches.push({ acct: acct(req), body: req.body }); return { status: 204 } }
     }
-    useRoutes({ [`POST ${G}/threads/a/modify`]: route, [`POST ${G}/threads/b/modify`]: route })
+    for (const [id, messages] of Object.entries(threads)) {
+      routes[`GET ${G}/threads/${id}`] = (req) => {
+        expect(req.url.searchParams.get('format')).toBe('minimal')
+        return { json: { id, messages } }
+      }
+      routes[`POST ${G}/threads/${id}/modify`] = (req) => { modifies.push({ thread: id, acct: acct(req), body: req.body }); return { json: { id } } }
+    }
+    useRoutes(routes)
+    return { modifies, batches }
+  }
+
+  it('archive+read → removeLabelIds [INBOX, UNREAD] per thread in the named account; undo restores per message', async () => {
+    const { modifies, batches } = modifyRoutes({
+      a: [{ id: 'a1', labelIds: ['INBOX', 'UNREAD'] }],
+      b: [{ id: 'b1', labelIds: ['INBOX', 'UNREAD'] }]
+    })
     const out = await run('gmail_modify', { account: 'personal', threadIds: ['a', 'b'], archive: true, read: true })
     expect(out.result).toEqual({ changed: 2 })
-    expect(bodies).toEqual([
+    expect(modifies).toEqual([
       { thread: 'a', acct: 'personal', body: { addLabelIds: [], removeLabelIds: ['INBOX', 'UNREAD'] } },
       { thread: 'b', acct: 'personal', body: { addLabelIds: [], removeLabelIds: ['INBOX', 'UNREAD'] } }
     ])
-    bodies.length = 0
+    expect(await out.undo!()).toEqual({ ok: true })
+    expect(batches).toEqual([{ acct: 'personal', body: { ids: ['a1', 'b1'], addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: [] } }])
+  })
+
+  it('undo of archive on an already-archived thread does NOT put it in the Inbox', async () => {
+    const { batches } = modifyRoutes({ a: [{ id: 'a1', labelIds: ['IMPORTANT'] }] })
+    const out = await run('gmail_modify', { account: 'work', threadIds: ['a'], archive: true })
+    expect(out.result).toEqual({ changed: 1 })
     await out.undo!()
-    expect(bodies).toEqual([
-      { thread: 'a', acct: 'personal', body: { addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: [] } },
-      { thread: 'b', acct: 'personal', body: { addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: [] } }
-    ])
+    expect(batches).toEqual([])
+  })
+
+  it('undo of read:true on an already-read thread marks nothing unread', async () => {
+    const { batches } = modifyRoutes({ a: [{ id: 'a1', labelIds: ['INBOX'] }, { id: 'a2', labelIds: ['INBOX'] }] })
+    const out = await run('gmail_modify', { account: 'work', threadIds: ['a'], read: true })
+    await out.undo!()
+    expect(batches).toEqual([])
+  })
+
+  it('a mixed thread is restored message by message', async () => {
+    const { batches } = modifyRoutes({
+      a: [{ id: 'a1', labelIds: ['INBOX', 'UNREAD'] }, { id: 'a2', labelIds: ['INBOX'] }, { id: 'a3', labelIds: ['STARRED'] }]
+    })
+    const out = await run('gmail_modify', { account: 'work', threadIds: ['a'], archive: true, read: true, starred: true })
+    await out.undo!()
+    expect(batches.map(b => b.body)).toEqual(expect.arrayContaining([
+      { ids: ['a1'], addLabelIds: ['INBOX', 'UNREAD'], removeLabelIds: ['STARRED'] },
+      { ids: ['a2'], addLabelIds: ['INBOX'], removeLabelIds: ['STARRED'] }
+    ]))
+    expect(batches).toHaveLength(2) // a3 was already starred and not in the Inbox: nothing to restore
+  })
+
+  it('a thread whose snapshot fails is not modified and is reported', async () => {
+    const { modifies } = modifyRoutes({ a: [{ id: 'a1', labelIds: ['INBOX'] }] })
+    const out = await run('gmail_modify', { account: 'work', threadIds: ['a', 'gone'], archive: true })
+    expect(out.result).toMatchObject({ changed: 1, failed: [{ threadId: 'gone' }] })
+    expect(modifies.map(m => m.thread)).toEqual(['a'])
+  })
+
+  it('a label both added and removed is refused before any call', async () => {
+    const fetch = useRoutes({
+      [`GET ${G}/labels`]: () => ({ json: { labels: [{ id: 'INBOX', name: 'INBOX', type: 'system' }] } })
+    })
+    const out = await run('gmail_modify', { account: 'work', threadIds: ['a'], archive: true, addLabels: ['inbox'] })
+    expect((out.result as { error: string }).error).toMatch(/inbox is both added and removed/)
+    expect(fetch.calls).toEqual([`GET ${G}/labels`])
   })
 
   it('label names resolve case-insensitively via listLabels; starred adds STARRED', async () => {
     let body: unknown
     useRoutes({
       [`GET ${G}/labels`]: () => ({ json: { labels: [{ id: 'INBOX', name: 'INBOX', type: 'system' }, { id: 'Label_1', name: 'Receipts', type: 'user' }] } }),
+      [`GET ${G}/threads/a`]: () => ({ json: { id: 'a', messages: [{ id: 'a1', labelIds: [] }] } }),
       [`POST ${G}/threads/a/modify`]: (req) => { body = req.body; return { json: {} } }
     })
     const out = await run('gmail_modify', { account: 'work', threadIds: ['a'], starred: true, addLabels: ['receipts'] })
@@ -392,6 +492,7 @@ describe('contacts_search', () => {
       { name: 'Carol', emails: ['carol@x.com'], phones: [], account: 'personal', source: 'saved' }
     ]))
     expect(r.contacts).toHaveLength(3)
+    expect((out.result as { note: string }).note).toBe(UNTRUSTED_NOTE)
     expect(warmups.sort()).toEqual(['other:personal', 'other:work', 'saved:personal', 'saved:work'])
 
     await run('contacts_search', { query: 'b' })
@@ -409,6 +510,19 @@ describe('contacts_search', () => {
         : { json: {} }
     })
     const out = await run('contacts_search', { query: 'a', account: 'work' })
-    expect(out.result).toEqual({ contacts: [{ name: 'Alice', emails: ['alice@x.com'], phones: [], account: 'work', source: 'saved' }] })
+    expect(out.result).toEqual({ contacts: [{ name: 'Alice', emails: ['alice@x.com'], phones: [], account: 'work', source: 'saved' }], note: UNTRUSTED_NOTE })
+  })
+
+  it('one failing source keeps the other source\'s hits and warns', async () => {
+    useRoutes({
+      'GET /v1/people:searchContacts': () => ({ json: { results: [person('Alice', ['alice@x.com'])] } }),
+      'GET /v1/otherContacts:search': req => req.url.searchParams.get('query') === ''
+        ? { json: {} }
+        : { status: 400, json: { error: { message: 'scope missing' } } }
+    })
+    const out = await run('contacts_search', { query: 'a', account: 'work' })
+    const r = out.result as { contacts: unknown[], warnings?: string[] }
+    expect(r.contacts).toEqual([{ name: 'Alice', emails: ['alice@x.com'], phones: [], account: 'work', source: 'saved' }])
+    expect(r.warnings).toEqual(['work: other contacts unavailable — Google error 400: scope missing'])
   })
 })

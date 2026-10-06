@@ -90,7 +90,7 @@ export async function searchThreads(c: Connection, q: string, limit: number, dep
 
 export async function getThread(
   c: Connection, id: string, deps: GoogleDeps = {},
-  opts: { format?: 'full' | 'metadata', metadataHeaders?: string[] } = {}
+  opts: { format?: 'full' | 'metadata' | 'minimal', metadataHeaders?: string[] } = {}
 ): Promise<GmailThread> {
   return google(c, deps).get<GmailThread>(`${BASE}/threads/${encodeURIComponent(id)}`, {
     format: opts.format ?? 'full', metadataHeaders: opts.metadataHeaders
@@ -124,6 +124,12 @@ export async function sendDraft(c: Connection, draftId: string, deps: GoogleDeps
 export async function listLabels(c: Connection, deps: GoogleDeps = {}): Promise<GmailLabel[]> {
   const res = await google(c, deps).get<{ labels?: GmailLabel[] }>(`${BASE}/labels`)
   return res.labels ?? []
+}
+
+/** Per-message label change (Gmail has no thread-level batch). Used by gmail_modify's undo to
+ *  put each message back exactly as it was. */
+export async function batchModifyMessages(c: Connection, ids: string[], add: string[], remove: string[], deps: GoogleDeps = {}): Promise<void> {
+  await google(c, deps).post(`${BASE}/messages/batchModify`, { ids, addLabelIds: add, removeLabelIds: remove })
 }
 
 export async function modifyThread(c: Connection, id: string, add: string[], remove: string[], deps: GoogleDeps = {}): Promise<void> {

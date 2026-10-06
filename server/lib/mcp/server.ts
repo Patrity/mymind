@@ -1,8 +1,20 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import { agentTools } from '../agent/tools'
+import type { AgentTool } from '../agent/types'
+
+/** Toolsets never exposed on /api/mcp (cycle 79 ruling): Tony's Google mail, contacts and
+ *  calendar are reachable only through Bridget, behind her approval gate and headless proposals —
+ *  never from an external MCP session that has neither. `string` (not ToolsetId) so an id can be
+ *  listed before its toolset exists ('calendar' lands in a later task). */
+export const MCP_EXCLUDED_TOOLSETS: ReadonlySet<string> = new Set(['gmail', 'calendar'])
+
+/** The one filter both mcpToolNames and buildMcpServer use. */
+export function isMcpExposed(t: AgentTool): boolean {
+  return !t.dangerous && !MCP_EXCLUDED_TOOLSETS.has(t.toolset)
+}
 
 export function mcpToolNames(): string[] {
-  return agentTools.filter(t => !t.dangerous).map(t => t.name)
+  return agentTools.filter(isMcpExposed).map(t => t.name)
 }
 
 export const MCP_INSTRUCTIONS = `MyMind is Tony's second brain — a persistent, cross-session store of his documents, memories, tasks, and projects.
@@ -27,7 +39,8 @@ Records here outlive this conversation — keep them accurate and well-filed.`
 export function buildMcpServer() {
   const server = new McpServer({ name: 'mymind', version: '1.0.0' }, { instructions: MCP_INSTRUCTIONS })
   for (const tool of agentTools) {
-    if (tool.dangerous) continue // MCP has no approval channel — never expose a gated tool here
+    // MCP has no approval channel — never expose a gated tool here — and never Google tools.
+    if (!isMcpExposed(tool)) continue
     // `tool.schema` is a bare ZodRawShape and is passed as-is: registerTool carries a ZodRawShape
     // overload alongside the StandardSchema one, so no z.object() wrapper is needed (and adding one
     // would fork the shape shared with the OpenAI/agent tool path).

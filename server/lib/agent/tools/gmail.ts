@@ -13,9 +13,9 @@ import { googleErrorMessage } from '../../google/client'
 import { resolveAccounts, fanOut } from '../../google/accounts'
 import type { Connection } from '../../google/connections'
 import { GoogleReconnectError } from '../../google/token'
-import { buildRawMessage, header, parseMessagePayload } from '../../google/mime'
+import { buildRawMessage, header, parseMessagePayload, rawMessageHeaders } from '../../google/mime'
 import {
-  searchThreads, getThread, createDraft, updateDraft, deleteDraft, getDraft, listLabels, modifyThread
+  searchThreads, getThread, createDraft, updateDraft, deleteDraft, getDraft, listLabels, modifyThread, batchModifyMessages
 } from '../../google/gmail'
 import { searchPeople } from '../../google/people'
 import { UNTRUSTED_NOTE } from '../../google/untrusted'
@@ -175,44 +175,58 @@ export const gmailTools: AgentTool[] = [
         const acc = await oneAccount(a.account)
         if (!acc.ok) return fail('gmail_draft', acc.error)
         c = acc.c
+        const conn = c
         const replyTo = a.replyToThreadId as string | undefined
         const draftId = a.draftId as string | undefined
         let subject = (a.subject as string | undefined)?.trim() ? a.subject as string : undefined
         let inReplyTo: string | undefined
         let references: string | undefined
 
+        // An update fetches the current draft FIRST: its raw is the undo, and — when the caller
+        // only passed draftId ("make that reply shorter") — its threading headers and subject
+        // are carried over so the reply stays in its thread.
+        const prev = draftId ? await getDraft(conn, draftId, deps(), 'raw') : undefined
+        const prevRaw = prev?.message?.raw
+        const prevThreadId = prev?.message?.threadId
+
         if (replyTo) {
-          const thread = await getThread(c, replyTo, deps(), {
+          const thread = await getThread(conn, replyTo, deps(), {
             format: 'metadata', metadataHeaders: ['Message-ID', 'References', 'Subject']
           })
           const msgs = thread.messages ?? []
-          const last = msgs[msgs.length - 1]?.payload ?? {}
+          // Reply to the last SENT/received message — never to an unsent draft sitting in the
+          // thread (its Message-ID was never delivered to anyone).
+          const sent = msgs.filter(m => !(m.labelIds ?? []).includes('DRAFT'))
+          const target = (sent.length ? sent : msgs)
+          const last = target[target.length - 1]?.payload ?? {}
           inReplyTo = header(last, 'Message-ID')
           const prevRefs = header(last, 'References')
           references = [prevRefs, inReplyTo].filter(Boolean).join(' ') || undefined
           const threadSubject = (msgs[0]?.payload && header(msgs[0].payload, 'Subject')) ?? header(last, 'Subject') ?? ''
           subject = withRe(subject ?? threadSubject)
+        } else if (prevRaw) {
+          const h = rawMessageHeaders(prevRaw)
+          inReplyTo = header(h, 'In-Reply-To')
+          references = header(h, 'References')
+          const prevSubject = header(h, 'Subject')
+          if (subject === undefined) subject = prevSubject
+          else if (inReplyTo) subject = withRe(subject)
         }
         if (subject === undefined) return fail('gmail_draft', 'a subject is required for a new email (omit it only when replying)')
 
-        const raw = buildRawMessage({
-          from: c.email,
-          to: a.to as string[],
-          cc: a.cc as string[] | undefined,
-          subject,
-          body: a.body as string,
-          inReplyTo,
-          references
-        })
+        const to = a.to as string[]
+        const cc = a.cc as string[] | undefined
+        const body = a.body as string
+        const raw = buildRawMessage({ from: conn.email, to, cc, subject, body, inReplyTo, references })
+        // The drafted content goes back in the RESULT so Bridget can see (and revise) what she
+        // wrote: the recorded args mask `body` (redactForLog), and tool results are never
+        // written to activity_log (withSpan records only the masked request).
+        const content = { from: conn.email, to, ...(cc?.length ? { cc } : {}), subject, body }
 
-        const conn = c
         if (draftId) {
-          const prev = await getDraft(conn, draftId, deps(), 'raw')
-          const prevRaw = prev.message?.raw
-          const prevThreadId = prev.message?.threadId
           const updated = await updateDraft(conn, draftId, raw, replyTo ?? prevThreadId, deps())
           return {
-            result: { draftId: updated.id ?? draftId, threadId: updated.message?.threadId, link: draftLink(conn, updated.message?.id) },
+            result: { draftId: updated.id ?? draftId, threadId: updated.message?.threadId, link: draftLink(conn, updated.message?.id), ...content },
             summary: `updated draft "${subject}" in ${conn.label}`,
             ...(prevRaw
               ? { undo: async () => { await updateDraft(conn, draftId, prevRaw, prevThreadId, deps()) } }
@@ -222,7 +236,7 @@ export const gmailTools: AgentTool[] = [
 
         const created = await createDraft(conn, raw, replyTo, deps())
         return {
-          result: { draftId: created.id, threadId: created.message?.threadId, link: draftLink(conn, created.message?.id) },
+          result: { draftId: created.id, threadId: created.message?.threadId, link: draftLink(conn, created.message?.id), ...content },
           summary: `drafted "${subject}" in ${conn.label}`,
           undo: async () => { await deleteDraft(conn, created.id, deps()) }
         }
@@ -233,7 +247,7 @@ export const gmailTools: AgentTool[] = [
   },
   {
     name: 'gmail_modify',
-    description: 'Triage email threads in ONE named account: archive (remove from Inbox), mark read/unread, star/unstar, add or remove labels by name. Pass the threadIds from gmail_search (up to 50). Returns how many threads changed; undo applies the inverse change.',
+    description: 'Triage email threads in ONE named account: archive (remove from Inbox), mark read/unread, star/unstar, add or remove labels by name. Pass the threadIds from gmail_search (up to 50). Returns how many threads changed; undo restores each message\'s previous labels.',
     kind: 'create',
     toolset: 'gmail',
     schema: {
@@ -263,6 +277,7 @@ export const gmailTools: AgentTool[] = [
 
         const addNames = (a.addLabels as string[] | undefined) ?? []
         const removeNames = (a.removeLabels as string[] | undefined) ?? []
+        const display = new Map<string, string>([['INBOX', 'INBOX'], ['UNREAD', 'UNREAD'], ['STARRED', 'STARRED']])
         if (addNames.length || removeNames.length) {
           const labels = await listLabels(conn, deps())
           const byName = new Map(labels.map(l => [l.name.toLowerCase(), l.id]))
@@ -273,30 +288,57 @@ export const gmailTools: AgentTool[] = [
                 const have = labels.filter(l => l.type !== 'system').map(l => l.name).join(', ')
                 return fail('gmail_modify', `unknown label: ${name} (have: ${have})`)
               }
-              into.push(id)
+              display.set(id, name)
+              if (!into.includes(id)) into.push(id)
             }
           }
+        }
+        const both = add.filter(id => remove.includes(id))
+        if (both.length) {
+          return fail('gmail_modify', `conflicting change: ${both.map(id => display.get(id) ?? id).join(', ')} is both added and removed (archive/read/starred map to INBOX/UNREAD/STARRED)`)
         }
         if (add.length === 0 && remove.length === 0) {
           return fail('gmail_modify', 'nothing to change — pass archive, read, starred, addLabels or removeLabels')
         }
 
+        // Snapshot every message's labels BEFORE changing anything: undo restores exactly this
+        // prior state per message (an already-archived thread is not put back in the Inbox; an
+        // already-read message is not marked unread). A thread whose snapshot fails is left
+        // untouched and reported, since it could not be undone.
         const threadIds = a.threadIds as string[]
-        const settled = await Promise.allSettled(threadIds.map(id => modifyThread(conn, id, add, remove, deps())))
-        const changedIds = threadIds.filter((_, i) => settled[i]!.status === 'fulfilled')
-        const failed = threadIds.flatMap((id, i) => {
-          const s = settled[i]!
-          return s.status === 'rejected' ? [{ threadId: id, error: errorOf(s.reason, conn) }] : []
+        const settled = await Promise.allSettled(threadIds.map(async (id) => {
+          const before = await getThread(conn, id, deps(), { format: 'minimal' })
+          await modifyThread(conn, id, add, remove, deps())
+          return (before.messages ?? []).map(m => ({ id: m.id, labels: m.labelIds ?? [] }))
+        }))
+        const snapshots: { id: string, labels: string[] }[] = []
+        let changed = 0
+        const failed: { threadId: string, error: string }[] = []
+        settled.forEach((s, i) => {
+          if (s.status === 'fulfilled') { changed++; snapshots.push(...s.value) } else failed.push({ threadId: threadIds[i]!, error: errorOf(s.reason, conn) })
         })
-        if (changedIds.length === 0) return fail('gmail_modify', failed[0]?.error ?? 'no threads changed')
+        if (changed === 0) return fail('gmail_modify', failed[0]?.error ?? 'no threads changed')
+
+        // Per message: labels we added that it lacked → remove on undo; labels we removed that it
+        // had → add back. Messages needing the same reversal share one batchModify call.
+        const groups = new Map<string, { ids: string[], add: string[], remove: string[] }>()
+        for (const m of snapshots) {
+          const addBack = remove.filter(l => m.labels.includes(l))
+          const removeBack = add.filter(l => !m.labels.includes(l))
+          if (!addBack.length && !removeBack.length) continue
+          const key = JSON.stringify([addBack, removeBack])
+          const g = groups.get(key) ?? { ids: [], add: addBack, remove: removeBack }
+          g.ids.push(m.id)
+          groups.set(key, g)
+        }
 
         return {
-          result: { changed: changedIds.length, ...(failed.length ? { failed } : {}) },
-          summary: `updated ${changedIds.length} thread${changedIds.length === 1 ? '' : 's'} in ${conn.label}`,
+          result: { changed, ...(failed.length ? { failed } : {}) },
+          summary: `updated ${changed} thread${changed === 1 ? '' : 's'} in ${conn.label}`,
           undo: async (): Promise<UndoResult> => {
-            const back = await Promise.allSettled(changedIds.map(id => modifyThread(conn, id, remove, add, deps())))
+            const back = await Promise.allSettled([...groups.values()].map(g => batchModifyMessages(conn, g.ids, g.add, g.remove, deps())))
             const bad = back.filter(b => b.status === 'rejected').length
-            return bad ? { ok: false, reason: `${bad} of ${changedIds.length} threads could not be reverted` } : { ok: true }
+            return bad ? { ok: false, reason: `${bad} of ${back.length} label restores failed` } : { ok: true }
           }
         }
       } catch (err) {
@@ -318,7 +360,10 @@ export const gmailTools: AgentTool[] = [
         const r = await resolveAccounts(a.account as string | undefined, { write: false })
         if (!r.ok) return fail('contacts_search', r.error)
         const query = a.query as string
-        const { items, warnings } = await fanOut(r.connections, c => searchPeople(c, query, deps()))
+        const partial: string[] = []
+        const { items, warnings } = await fanOut(r.connections, c => searchPeople(c, query, deps(),
+          (source, err) => { partial.push(`${c.label}: ${source} unavailable — ${errorOf(err, c)}`) }))
+        warnings.push(...partial)
         // Saved contacts win a tie with an "other contact" carrying the same address.
         const ordered = [...items.filter(i => i.source === 'saved'), ...items.filter(i => i.source === 'other')]
         const seen = new Set<string>()
@@ -330,7 +375,8 @@ export const gmailTools: AgentTool[] = [
           contacts.push({ name: h.name, emails: h.emails, phones: h.phones, account: h.account, source: h.source })
         }
         return {
-          result: { contacts, ...(warnings.length ? { warnings } : {}) },
+          // Other-contact display names come from whoever emailed Tony — attacker-controllable.
+          result: { contacts, ...(warnings.length ? { warnings } : {}), note: UNTRUSTED_NOTE },
           summary: `found ${contacts.length} contact${contacts.length === 1 ? '' : 's'}`
         }
       } catch (err) {
