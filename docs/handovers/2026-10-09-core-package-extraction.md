@@ -2,10 +2,10 @@
 title: Core package extraction — @mymind/core as a source-only pnpm workspace package (cycle 80, harness step 1)
 cycle: 80
 date: 2026-10-09
-status: built  # → deployed after CD
+status: deployed  # CD 38023629547 (aa8366e), 2026-10-10
 branch: feat/core-package (worktree .claude/worktrees/feat+core-package, base 48bfca4)
-merged: false
-deployed: false
+merged: true
+deployed: true
 wiki:
   - ../wiki/core-package.md
   - ../wiki/auth.md
@@ -64,3 +64,6 @@ runs without Nuxt. The app behaves exactly as before.
 - Deferred minors (SDD ledger): closure `--check` post-move detection, guard misses aliased globals
   (core tsc covers), single-instance test vs index exports, `.dockerignore` `**/node_modules`,
   smoke test tsx path.
+
+## Deploy (2026-10-10)
+CD 38023629547 on aa8366e: success. Prod health 200 (in-LXC + external); `packages/core/src` present on the box; 0 journal errors (incl. 'not initialised') after the 04:32 UTC cutover; background jobs (embed-messages/documents, memory-backfill, summarize-sessions, enrich-images) ran ok through core; MCP + Claude Code hooks ok; authed MCP canary ok. Owed: one real prod Bridget turn (no agent run since cutover yet). Wiki mirrored: 13 pages + new `core-package.md`; `voice-studio.md` skipped — MyMind copy diverged (edited in MyMind), left for the wiki-mirror backlog task.

@@ -3,6 +3,8 @@ title: "@mymind/core (shared server package)"
 status: shipped
 cycle: 80
 updated: 2026-10-09
+mymind_id: 4c23fd31-c5f1-4648-868a-b584ffa5f308
+mymind_hash: fda84f582689e397bdad403e9774addbf47700a8ec8b894114fe93debd6d9c66
 ---
 
 # `@mymind/core`
