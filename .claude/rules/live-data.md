@@ -5,6 +5,8 @@ paths:
   - "server/api/**"
   - "server/services/**"
   - "server/tasks/**"
+  - "packages/core/src/services/**"
+  - "packages/core/src/lib/**"
 ---
 
 # Live data conventions
@@ -21,13 +23,13 @@ parallel hand-rolled `ref` + `loadX()` + manual refetch-after-action (that patte
 removed). Surface load errors by watching the query's `error` ref, not `isFetching`.
 
 **Server (writes):** Every successful mutation — HTTP handler under `server/api/**` AND
-background task/service under `server/services|tasks/**` — MUST call
-`publishChange({ resource, action, id })` (`server/utils/live-bus.ts`) after the DB commit.
+background task/service under `server/services/**`, `server/tasks/**` or `packages/core/src/{services,lib}/**` — MUST call
+`publishChange({ resource, action, id })` (`packages/core/src/utils/live-bus.ts`) after the DB commit.
 `action` is `created | updated | deleted`. Background loops emit per item, not once per
 batch. Don't double-emit (if a handler calls a service that already emits, emit in one
 place only).
 
-`resource` must be a member of `ResourceName` (`shared/types/live.ts`). The client dispatch
+`resource` must be a member of `ResourceName` (`packages/core/src/shared/types/live.ts`). The client dispatch
 registry (`app/utils/live-dispatch.ts`) is keyed by that union, so a new resource that
 isn't wired up is a **type error** — keep the union, the emit sites, and the registry in
 sync.

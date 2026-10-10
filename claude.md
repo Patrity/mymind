@@ -1,6 +1,8 @@
 # MyMind
 A personal tool to centralize Tony's document management, memories, project and task tracking, and provide a centralized entry point to all of it.
 
+`packages/core` (`@mymind/core`) holds worker-shared server code (DB schema, agent/lib/services) — source-only (no build step, imported straight from `src/`); call `initCore()` before using it outside the Nuxt app (workers, scripts).
+
 ## Read first
 
 Before starting any work, read [`docs/superpowers/plans/00-roadmap.md`](docs/superpowers/plans/00-roadmap.md) (the cross-cycle master roadmap: sub-projects, status, and locked global decisions) and [`docs/BACKLOG.md`](docs/BACKLOG.md) (the reconciled "what's left" — spec coverage, planned features, open items), then read all of the handover frontmatter and the most recent handover in [`docs/handovers/`](docs/handovers/) — that's the source of truth for what shipped, what was deferred, and where the next seam is. Per-cycle specs live in [`docs/superpowers/specs/`](docs/superpowers/specs/) and per-cycle plans in [`docs/superpowers/plans/`](docs/superpowers/plans/).

@@ -10,14 +10,14 @@ updated: 2026-07-29
 
 Canonical project entities that sessions and (agent) memories hang off of. A project is matched primarily by its **git remote** — the same repo cloned to many machines/paths still resolves to one project — so the agent's work, memories, and (later) docs/tasks all roll up to a single durable identity. Phase 1 ships the data model + resolution + ingest wiring + backfill; richer project features are deferred (see end).
 
-## Data model (`server/db/schema/projects.ts`)
+## Data model (`packages/core/src/db/schema/projects.ts`)
 - `projects`: uuid `id` PK (`gen_random_uuid()`), `slug` (unique, `projects_slug_uidx`), `name`, `description` (default `''`), `active` (default `true`), `git_remote_key` (**canonical match key**, `host/owner/repo` lowercased — see below), `repository_url` / `production_url` / `staging_url`, `aliases text[]` (extra remote keys that resolve here), `local_paths text[]` (observed `cwd`s, passively accumulated — never used for routing; since cycle 51 a `cwd` already covered by a `path_prefixes` entry or a shorter `local_paths` entry is **not** appended — see below), **`path_prefixes text[]`** (migration `0027_bumpy_virginia_dare.sql`, cycle 46 — **routing roots**, distinct from `local_paths`; see below), `details jsonb` (free-form KV, default `{}`), `last_activity_at`, `created_at` / `updated_at`. Indexes: unique slug, plain index on `git_remote_key`, and a **partial unique** index `projects_git_remote_key_uidx ON (git_remote_key) WHERE git_remote_key IS NOT NULL` (so many rows may have a null key, but a non-null key is unique).
 - The seeded **`uncategorized`** row (migration 0019): the fallback bucket for sessions with no parseable git remote. Never auto-created twice.
 - `sessions.project_id` (uuid FK, indexed `sessions_project_id_idx`) — set on ingest. The legacy `sessions.project` text slug is kept in sync alongside it.
 - `memories.project_id` (uuid FK, indexed `memories_project_id_idx`) — **null means global / project-agnostic** (user/world memories). Only `agent`-scope memories carry a project.
 - `memories.source_date` (timestamptz) — "last observed" date for the memory, sourced from its session's `started_at`.
 
-## Resolution — `findOrCreateProject` (`server/services/projects.ts`)
+## Resolution — `findOrCreateProject` (`packages/core/src/services/projects.ts`)
 Given `{ gitRemote, cwd, gitRoot }`:
 1. `normalizeGitRemote(gitRemote)` → canonical key, or `null`.
 2. **With a key:** match an existing project by `git_remote_key`, else by `aliases` (`@>` array contains the key); on a hit, append `cwd` to `local_paths` if new + bump `last_activity_at`. Else **create**: slug = `nextUniqueSlug(slugify(repoNameFromKey(key)))`, `name` = repo name, `git_remote_key` = key, `repository_url` = raw remote, `local_paths` = `[cwd]`. A unique-race on `git_remote_key` (another concurrent ingest won) is caught and falls back to re-selecting the winner — **race-safe**.
@@ -27,7 +27,7 @@ Given `{ gitRemote, cwd, gitRoot }`:
    3. **Auto-create**: if `cwd` passes the `isAutoCreatable` stoplist, create a new project named for the `cwd` leaf, seeding `path_prefixes = [cwd]`.
    4. **Uncategorized fallback** (seeded row, unchanged since cycle 23).
 
-The pure key helpers live in `server/lib/projects/git-remote.ts`:
+The pure key helpers live in `packages/core/src/lib/projects/git-remote.ts`:
 - `normalizeGitRemote(remote)` — strips scheme/credentials/port/`.git`, handles scp-style `git@host:owner/repo`, lowercases → `host/owner/repo` (or `null`).
 - `repoNameFromKey(key)` — last path segment.
 - `nextUniqueSlug(base, taken)` — `base`, `base-2`, `base-3`, … first free.
@@ -81,12 +81,12 @@ Surfaces that use `<ProjectBadge>`: memories list (deep-links to the dashboard) 
 
 ### Expanded `ProjectDTO` and list API
 
-`ProjectDTO` (`shared/types/tasks.ts`) now exposes the full project model:
+`ProjectDTO` (`packages/core/src/shared/types/tasks.ts`) now exposes the full project model:
 - Core: `id`, `slug`, `name`, `description`, `active`, `color`
 - Git: `gitRemoteKey`, `repositoryUrl`, `productionUrl`, `stagingUrl`, `aliases`, `localPaths`, `lastActivityAt`
 - Counters (computed in SQL): `sessionCount`, `memoryCount`, `taskCount`
 
-`listProjects` and `getProject` (`server/services/projects.ts`) share a `COUNT_COLUMNS` set of count subqueries so both return session/memory/task counts in a single round-trip with no N+1. **All three count by the denormalized `project` slug string** (`where x.project = projects.slug`), NOT the canonical `project_id` — this is the same key the dashboard tabs and every `?project=` filter use, so the header counts always match what the tabs display even when a row's slug and `project_id` have drifted (legacy vs canonical projects coexist until phase-3 merge).
+`listProjects` and `getProject` (`packages/core/src/services/projects.ts`) share a `COUNT_COLUMNS` set of count subqueries so both return session/memory/task counts in a single round-trip with no N+1. **All three count by the denormalized `project` slug string** (`where x.project = projects.slug`), NOT the canonical `project_id` — this is the same key the dashboard tabs and every `?project=` filter use, so the header counts always match what the tabs display even when a row's slug and `project_id` have drifted (legacy vs canonical projects coexist until phase-3 merge).
 
 ### `/projects` page
 
@@ -134,9 +134,9 @@ Documents associate with projects by **filing**, not by a creation-time signal (
 The **path is the single source of truth**; the row stores the resolved `project_id` (uuid FK, migration 0021) + the denormalized `project` slug, both **derived from the path on every write** and kept in lock-step with it.
 
 ### The resolver + choke point
-- Pure `projectFromPath(path)` (`server/lib/projects/doc-path.ts`) → the `<seg>` from `^/projects/<seg>/` (trailing-slash boundary required), else null.
-- `matchProjectByLabel(label)` (`server/services/projects.ts`) → matches an existing project by slug/alias/slugified-name; **match-only, never creates** (creation stays git-remote-only). Extracted from `findOrCreateProject`'s no-git branch.
-- `createDoc`/`updateDoc` (`server/services/documents.ts`) funnel every path/project change through `resolveDocProjectFromPath(finalPath)`. Precedence: if the input carries a `project` slug and the path isn't already under `/projects/<slug>/`, the doc is **relocated** to `/projects/<slug>/<basename>` (assign-project files it); then `project_id`+`project` are derived from the final path. **The path always wins** — passing `project` only relocates; to un-associate, move the doc out of `/projects/`.
+- Pure `projectFromPath(path)` (`packages/core/src/lib/projects/doc-path.ts`) → the `<seg>` from `^/projects/<seg>/` (trailing-slash boundary required), else null.
+- `matchProjectByLabel(label)` (`packages/core/src/services/projects.ts`) → matches an existing project by slug/alias/slugified-name; **match-only, never creates** (creation stays git-remote-only). Extracted from `findOrCreateProject`'s no-git branch.
+- `createDoc`/`updateDoc` (`packages/core/src/services/documents.ts`) funnel every path/project change through `resolveDocProjectFromPath(finalPath)`. Precedence: if the input carries a `project` slug and the path isn't already under `/projects/<slug>/`, the doc is **relocated** to `/projects/<slug>/<basename>` (assign-project files it); then `project_id`+`project` are derived from the final path. **The path always wins** — passing `project` only relocates; to un-associate, move the doc out of `/projects/`.
 
 ### Three triggers (all enforce the invariant)
 1. **Manual move** — moving a doc into/out of `/projects/<x>/` associates/clears it.
@@ -175,7 +175,7 @@ One `db.transaction`:
 
 Returns `{ winner, repointedMemoryIds }`. Emits (in the endpoint): `project` deleted (L) + `project` updated (W) + `session`/`task`/`memory`/`document` updated.
 
-### Post-merge memory dedup (`dedupMemoriesAfterMerge`, `server/services/memory.ts`)
+### Post-merge memory dedup (`dedupMemoriesAfterMerge`, `packages/core/src/services/memory.ts`)
 After the transaction, the loser's repointed memories may duplicate the winner's. **Reuses the existing `createMemory` dedup machinery** — the extracted `buildDedupCandidates({contentHash, embedding, scope, project, excludeId})` (exact-hash global + near-vector scoped to `(scope, project)`) + `dedupDecision`. For each repointed memory, processed **sequentially** (so an earlier archive is `live()`-invisible to a later candidate build, avoiding mutual-archive): `skip`/`merge` → archive it (`archivedAt`, `supersededBy`) + append its evidence to the survivor. (The deterministic near-neighbor/hash dedup; the LLM relationship-judge layer is a deferred enhancement.)
 
 ### Endpoint + UI
@@ -193,10 +193,10 @@ The three `project_id` FK constraints exist in **prod** (raw SQL in migrations 0
 - **Auto-create** (`findOrCreateProject`, no-remote branch, step 3) seeds it with the single `cwd` that triggered the new project.
 - **Session reassignment** (below) can optionally register an additional prefix when a human moves a session to a project.
 
-This is deliberately **separate from `local_paths`** (every `cwd` a project has ever been seen at — passive history, not used for routing). `path_prefixes` entries are ancestor-matched: `longestPrefixMatch(cwd, candidates)` (`server/lib/projects/path-routing.ts`) picks the candidate whose registered prefix is the longest ancestor-or-equal of the session's `cwd`, so registering `…/Projects/Terawulf` also routes `…/Projects/Terawulf/subdir`. `ProjectDTO.pathPrefixes` exposes the field.
+This is deliberately **separate from `local_paths`** (every `cwd` a project has ever been seen at — passive history, not used for routing). `path_prefixes` entries are ancestor-matched: `longestPrefixMatch(cwd, candidates)` (`packages/core/src/lib/projects/path-routing.ts`) picks the candidate whose registered prefix is the longest ancestor-or-equal of the session's `cwd`, so registering `…/Projects/Terawulf` also routes `…/Projects/Terawulf/subdir`. `ProjectDTO.pathPrefixes` exposes the field.
 
 ### `local_paths` no longer accumulates covered subfolders (cycle 51)
-`local_paths` used to append on a bare `!localPaths.includes(cwd)` — an **exact**-match check — so every subfolder a session ran in was recorded even when a registered `path_prefixes` entry already covered the whole tree. Terawulf grew ~50 entries this way. `findOrCreateProject`'s `touch` closure (`server/services/projects.ts`) now calls **`shouldRecordLocalPath(cwd, localPaths, pathPrefixes)`** (`server/lib/projects/path-routing.ts`), which returns `false` when `cwd` is under an existing `path_prefixes` entry **or** under a shorter `local_paths` entry already stored. Both checks are ancestor matches via the cycle-46 `normalizePrefix`/`isUnderPrefix` helpers, so this is a routing-consistent notion of "already covered", not a string compare.
+`local_paths` used to append on a bare `!localPaths.includes(cwd)` — an **exact**-match check — so every subfolder a session ran in was recorded even when a registered `path_prefixes` entry already covered the whole tree. Terawulf grew ~50 entries this way. `findOrCreateProject`'s `touch` closure (`packages/core/src/services/projects.ts`) now calls **`shouldRecordLocalPath(cwd, localPaths, pathPrefixes)`** (`packages/core/src/lib/projects/path-routing.ts`), which returns `false` when `cwd` is under an existing `path_prefixes` entry **or** under a shorter `local_paths` entry already stored. Both checks are ancestor matches via the cycle-46 `normalizePrefix`/`isUnderPrefix` helpers, so this is a routing-consistent notion of "already covered", not a string compare.
 
 Existing bloat is cleaned up by the one-time **`scripts/collapse-local-paths.ts`**, which applies the sibling helper `collapseLocalPaths(localPaths, pathPrefixes)` (idempotent: drops entries covered by a prefix or by a shorter sibling, keeping the shortest of each chain) to every project row:
 

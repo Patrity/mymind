@@ -17,7 +17,7 @@ recolour, reorder, delete — while the *meaning* code depends on stays fixed to
 
 ## Data model
 
-- **`task_columns`** (`server/db/schema/task-columns.ts`) — the board's columns:
+- **`task_columns`** (`packages/core/src/db/schema/task-columns.ts`) — the board's columns:
   - `id` uuid pk
   - `name` text — user-facing, editable. **Code never reads this.** A `switch`/comparison on a
     column's name is a defect.
@@ -29,7 +29,7 @@ recolour, reorder, delete — while the *meaning* code depends on stays fixed to
     Changing a column's kind after the fact would silently reclassify every card in it — flipping a
     "Done" column to `open` would un-complete every task in it and clear `completedAt`.
   - `color` text — one of the app's semantic aliases: `primary | secondary | success | info |
-    warning | error | neutral` (`TASK_COLUMN_COLORS`, `shared/types/task-columns.ts`). Never a hex
+    warning | error | neutral` (`TASK_COLUMN_COLORS`, `packages/core/src/shared/types/task-columns.ts`). Never a hex
     value, never a raw Tailwind palette name — see **Colour** below.
   - `position` integer — left-to-right board order.
   - `is_default` boolean — **exactly one `true` row per `kind`**, enforced by a partial unique
@@ -37,7 +37,7 @@ recolour, reorder, delete — while the *meaning* code depends on stays fixed to
     care. This is the compat mapping's resolution target (below) — if a kind ever lost its default,
     `create_task(status=...)` would have nothing to resolve to and fail at runtime.
   - `created_at` timestamptz.
-- **`tasks`** (`server/db/schema/tasks.ts`): `id`, `title`, `description` (md), **`column_id`** (uuid,
+- **`tasks`** (`packages/core/src/db/schema/tasks.ts`): `id`, `title`, `description` (md), **`column_id`** (uuid,
   FK → `task_columns.id`, `NOT NULL`, indexed by `tasks_column_idx`), `priority`
   (low|medium|high), `due_date`, `project` (soft ref slug — links to `projects.slug`), `order`,
   `created_at`, `updated_at`, `completed_at`, `deleted_at`.
@@ -54,12 +54,12 @@ recolour, reorder, delete — while the *meaning* code depends on stays fixed to
 
 ## The compatibility seam — `TaskStatus` is an alias vocabulary, not storage
 
-`TaskStatus` (`shared/types/tasks.ts`) is still exactly `'todo' | 'in_progress' | 'completed' |
+`TaskStatus` (`packages/core/src/shared/types/tasks.ts`) is still exactly `'todo' | 'in_progress' | 'completed' |
 'blocked'`, and every pre-existing surface — the three task API routes, the three `create_task`/
-`edit_task`/`search_tasks` MCP tools, `server/lib/agent/context.ts`'s live-context injection —
+`edit_task`/`search_tasks` MCP tools, `packages/core/src/lib/agent/context.ts`'s live-context injection —
 still accepts and returns those four values, unchanged. **What changed is what they mean.** They
 are no longer a column in the database; they are a fixed **alias vocabulary** that resolves through
-`server/lib/tasks/status-kind.ts` (pure, no I/O — the hinge the whole seam turns on):
+`packages/core/src/lib/tasks/status-kind.ts` (pure, no I/O — the hinge the whole seam turns on):
 
 ```ts
 kindForStatus('todo')        // -> 'open'
@@ -73,7 +73,7 @@ Both directions **throw on an unrecognised value** rather than silently defaulti
 fallback would file a task into the wrong column, or read a task as the wrong status, forever.
 
 - **Writes** — `create_task`, `edit_task`, `POST /api/tasks`, `PATCH /api/tasks/[id]`,
-  `POST /api/tasks/[id]/move` keep accepting bare `status`. `server/services/tasks.ts`'s
+  `POST /api/tasks/[id]/move` keep accepting bare `status`. `packages/core/src/services/tasks.ts`'s
   `resolveColumn()` turns it into **the default column of the matching kind**
   (`defaultColumnFor(kindForStatus(status))`) unless an explicit `columnId` is also given, in which
   case `columnId` wins. An agent calling `create_task(status='todo')` lands in whichever column
@@ -85,7 +85,7 @@ fallback would file a task into the wrong column, or read a task as the wrong st
   correctly counts as `in_progress` everywhere, with no per-surface changes. Every DTO's `status`
   field (`TaskDTO`, `TaskSummaryDTO`) is likewise **derived** at read time via `statusForKind`, not
   stored.
-- **`completedAtFor(kind, now)`** (`server/services/tasks.ts`) stamps `completed_at` on transition
+- **`completedAtFor(kind, now)`** (`packages/core/src/services/tasks.ts`) stamps `completed_at` on transition
   into **any** `kind='done'` column — not on the literal string `'completed'`, and not only the
   column named "Completed". Moving a card into a custom done-kind column (however it's named)
   stamps it; moving out of one clears it.
@@ -141,7 +141,7 @@ hardcoded switch on status.
 ## Deleting a column
 
 Deleting a column (`DELETE /api/task-columns/[id]`, `deleteColumn()` in
-`server/services/task-columns.ts`) always requires a choice for its existing cards, made in
+`packages/core/src/services/task-columns.ts`) always requires a choice for its existing cards, made in
 `DeleteColumnModal.vue`:
 
 1. **Delete the cards** — soft-delete via the same `deleteTask()` every other delete in this app
@@ -181,16 +181,16 @@ successful write, the same pattern `useTasks.ts`'s mutations already use.
 
 ## Services
 
-- `server/services/tasks.ts`: `listTasks({status?, project?, columnId?})`, `getTask`, `createTask`,
+- `packages/core/src/services/tasks.ts`: `listTasks({status?, project?, columnId?})`, `getTask`, `createTask`,
   `updateTask`, `moveTask`, `deleteTask` (soft), `restoreTask`. `resolveColumn()` is the private
   compat-seam resolver described above. Pure `completedAtFor(kind, now)` → sets `completed_at`
   only when transitioning into a `kind='done'` column, clears otherwise. `updated_at` bumps on
   every change. `listTasksSummary`/`countTasks`/`toTaskSummaryDTO` back the MCP `search_tasks` tool
   and, like every other reader here, join `task_columns` and never read a stored status.
-- `server/services/task-columns.ts`: `listColumns()` (ordered by `position`), `defaultColumnFor(kind)`
+- `packages/core/src/services/task-columns.ts`: `listColumns()` (ordered by `position`), `defaultColumnFor(kind)`
   (throws if a kind has no default), `createColumn`, `updateColumn` (name/color only), `reorderColumns`,
   `deleteColumn` (the delete-with-cards flow above).
-- `server/services/projects.ts`: see [projects.md](projects.md) for the full service description.
+- `packages/core/src/services/projects.ts`: see [projects.md](projects.md) for the full service description.
 
 ## API
 
@@ -202,7 +202,7 @@ successful write, the same pattern `useTasks.ts`'s mutations already use.
   `name`, `kind`, `color`, `position?`), `PATCH /[id]` (name/color only — no `kind` key in the
   schema, so a client can't smuggle one through), `DELETE /[id]` (body `{ mode, targetColumnId? }`,
   409 on refusal), `POST /reorder` (body `{ ids: string[] }`, full reorder in one call). All are
-  thin wrappers over `server/services/task-columns.ts`.
+  thin wrappers over `packages/core/src/services/task-columns.ts`.
 - Projects API: see [projects.md](projects.md).
 
 ## UI

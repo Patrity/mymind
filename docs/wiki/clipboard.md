@@ -9,7 +9,7 @@ updated: 2026-06-03
 
 A copipasta-style device-sync clipboard: paste text/HTML/images/files on one device, retrieve live on another, with rich copy. Ported into MyMind reusing its auth + storage + DB.
 
-## Data model (`server/db/schema/clipboard.ts`)
+## Data model (`packages/core/src/db/schema/clipboard.ts`)
 - `clip_threads` (id, user_id, title, timestamps), `clip_messages` (id, thread_id, device_id, kind text|file, body_text, body_html, created_at; index (thread_id, created_at)), `clip_attachments` (id, message_id, storage_key, sha256, size, mime, original_name, width, height), `clip_devices` (id, label, last_seen_at, created_at).
 
 ## Service + API (`server/services/clipboard.ts`, `server/api/clipboard/*`)

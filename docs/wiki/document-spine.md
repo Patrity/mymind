@@ -11,7 +11,7 @@ mymind_hash: bcde0a33768de3ec52efa250acb2412b5ff15513d81fcdc4d9a3231e1667ccdb
 
 The shared content core every feature is a view over: documents stored in Postgres with a hybrid path-tree + frontmatter model, browsed/edited in a split file-tree/editor UI, keyword-searchable, and publicly shareable.
 
-## Data model — `documents` (`server/db/schema/documents.ts`)
+## Data model — `documents` (`packages/core/src/db/schema/documents.ts`)
 `id` uuid PK · `path` text (canonical tree location, e.g. `/input/x.md`; unique where `deleted_at is null`) · `title` · `content` · `language` (from `getLanguageFromPath`) · `frontmatter` jsonb · **promoted queryable columns** `project` text (denormalized slug) / `project_id` uuid FK → `projects.id` (nullable, indexed; migration 0021) / `domain` / `type` / `tags` text[] / `topic` ltree · `content_hash` · `is_public` + `public_slug` (unique) · `embedding` halfvec(2560) — **vestigial, see correction below** · `created_at` / `updated_at` / `deleted_at` (soft delete) · `triaged_at` (cycle 57, capture triage's idempotency claim — see [triage.md](triage.md)).
 Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `project`, btree `project_id`, GIN trigram on `title` and `content`, GiST on `topic`, btree `triaged_at`.
 
@@ -19,12 +19,12 @@ Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `p
 > has never been written to.** This page previously said the column went "NULL until cycle 2"
 > and described it as the vector this table's rows carry. Both were wrong. The column's own
 > schema comment has read `// schema only in cycle 1; stays null` since cycle 1
-> (`server/db/schema/documents.ts:28`), no writer in this codebase has ever populated it, and a
+> (`packages/core/src/db/schema/documents.ts:28`), no writer in this codebase has ever populated it, and a
 > live count on this dev box shows only a handful of legacy rows non-null out of thousands —
 > noise, not signal. **The real per-document vector lane lives in `chunks`**
 > (`sourceType = 'document'`, cycle 31's chunking work), joined back to `documents` by
-> `sourceId` — see `searchDocIds`'s vector lane in `server/services/documents.ts` and
-> `resolveAppendTarget` in `server/services/triage.ts`, which copies that exact join rather
+> `sourceId` — see `searchDocIds`'s vector lane in `packages/core/src/services/documents.ts` and
+> `resolveAppendTarget` in `packages/core/src/services/triage.ts`, which copies that exact join rather
 > than querying `documents.embedding`. This mistake was not cosmetic: cycle 57's own
 > implementation plan sketched a resolver against `documents.embedding` on the strength of this
 > page's old wording, which would have compiled, run, and silently degraded every append-target
@@ -36,11 +36,11 @@ Indexes: partial unique on `path`, unique `public_slug`, GIN on `tags`, btree `p
 
 See [projects.md](projects.md) for the canonical `projects` table schema (git-keyed, full URL/alias/local-paths model).
 
-## Data model — `folders` (`server/db/schema/folders.ts`, cycle 59)
+## Data model — `folders` (`packages/core/src/db/schema/folders.ts`, cycle 59)
 Folders used to be nothing but a shared `documents.path` prefix — no row, no id, no properties,
 and gone the instant the last document under them left. Cycle 59 gave them a registry: `id` uuid
 PK · `path` text, absolute and unique, no trailing slash, the root is never a row (`folders_path_uidx`)
-· `color` text, nullable hex from `FOLDER_PALETTE` (`shared/types/folders.ts` — the same 14-hue list
+· `color` text, nullable hex from `FOLDER_PALETTE` (`packages/core/src/shared/types/folders.ts` — the same 14-hue list
 `projects.color` draws from) or `null` to inherit · `created_at` / `updated_at`. No `deleted_at` — a
 folder row is metadata, not content; its documents carry their own soft delete.
 
@@ -50,23 +50,23 @@ made (cycle 58): several writers touch this table (`ensureFolders`, `createFolde
 and trusting every one of them to normalize independently is how `/projects//mymind` or
 `/projects/` slips in and corrupts the tree everywhere it's read.
 
-**Materialization.** A row is created (`ensureFolders(docPath)`, `server/services/folders.ts`) the
+**Materialization.** A row is created (`ensureFolders(docPath)`, `packages/core/src/services/folders.ts`) the
 first time any writer puts a document under that path — called from `createDoc`/`updateDoc` in
-`server/services/documents.ts` (the service, not the HTTP route), which is the one choke point
+`packages/core/src/services/documents.ts` (the service, not the HTTP route), which is the one choke point
 every writer shares: the documents UI, MCP (`save_document`/`sync_document`/`move_document`/
 `edit_document`), capture triage's `/input` sweep, and ShareX transcriptions all funnel through
 those two functions. Idempotent (`onConflictDoNothing`), so a race between two writers just leaves
 one winner. `moveFolder` and `createFolder` also insert ancestor rows directly so a folder created
 or moved several levels deep is reachable from the root.
 
-**Colour precedence** (`applyFolderColors` in `server/services/tree.ts`, resolved server-side, top-down):
+**Colour precedence** (`applyFolderColors` in `packages/core/src/services/tree.ts`, resolved server-side, top-down):
 own colour, else — if the folder IS a project root (`/projects/<slug>` exactly two levels deep) —
 the owning project's colour, else whatever cascaded from an ancestor, else nothing. An override at
-any level cascades to everything below it; `colorSource` (`'own' | 'project' | 'inherited'`, `shared/types/folders.ts`)
+any level cascades to everything below it; `colorSource` (`'own' | 'project' | 'inherited'`, `packages/core/src/shared/types/folders.ts`)
 tells the picker where the rendered colour came from so it can show an "inheriting…" hint instead
 of a false positive.
 
-**Folder operations** (`server/services/folders.ts`) — `createFolder`, `moveFolder`, `deleteFolder`,
+**Folder operations** (`packages/core/src/services/folders.ts`) — `createFolder`, `moveFolder`, `deleteFolder`,
 `setFolderColor`, `folderImpact`, all path-prefix-safe:
 - Every prefix predicate goes through `escapeLikeLiteral` before hitting `LIKE '<path>/%' ESCAPE E'\\'` —
   `_` and `%` are SQL LIKE wildcards and both occur naturally in real paths (`/projects/my_project`);
@@ -96,14 +96,14 @@ of a false positive.
   With `toPath`, also returns `projectChanges` — which documents would switch project and to what.
 
 ## The seam
-All document access goes through `server/services/documents.ts`: `listTree`, `getDoc`, `createDoc`, `updateDoc`, `moveDoc`, `deleteDoc` (soft), `searchDocs`, `setPublic`, `getByPublicSlug`. Nothing else touches the `documents` table. Folder operations go through `server/services/folders.ts` exclusively — see above.
+All document access goes through `packages/core/src/services/documents.ts`: `listTree`, `getDoc`, `createDoc`, `updateDoc`, `moveDoc`, `deleteDoc` (soft), `searchDocs`, `setPublic`, `getByPublicSlug`. Nothing else touches the `documents` table. Folder operations go through `packages/core/src/services/folders.ts` exclusively — see above.
 
-**Tree shaping** — `server/services/tree.ts` `buildTree(docs, folderRows)`: the tree is the union
+**Tree shaping** — `packages/core/src/services/tree.ts` `buildTree(docs, folderRows)`: the tree is the union
 of path-derived folders (so a folder with documents always renders, registry row or not) and
 `folders` registry rows (so an *empty* folder — no documents at all — still renders, which is the
 whole reason the table exists: the old prefix-only tree made an emptied folder vanish). A registry
 row's real `id` is attached to whichever node its path resolves to. `TreeNode`'s only consumers
-are `server/services/documents.ts`, the `GET tree` route (`tree.get.ts`), and the client — there
+are `packages/core/src/services/documents.ts`, the `GET tree` route (`tree.get.ts`), and the client — there
 are no MCP tree tools. `TreeNode` carries: `name`, `path`, `type: 'file' | 'folder'`,
 `id?` (a **document id for files**, the **`folders` registry id for folders** — not the same kind
 of thing, and not the same as a folder's tree key, which is its `path`), `title?`, `children?`,
@@ -120,7 +120,7 @@ Every mutating route maps a service-level `FolderOpFailure.reason` onto a status
 shared function (`server/utils/folder-http.ts` `folderOpError`, `never`-guarded so a fourth reason
 added to the service is a compile error here, not a silent 409): `'not-found'` → 404, `'invalid'`
 → 400, `'collision'` → 409 (`"Path already taken: <path>"`). Every successful mutation publishes
-`{ resource: 'folder', action, id }` (`server/utils/live-bus.ts`); the client dispatch
+`{ resource: 'folder', action, id }` (`packages/core/src/utils/live-bus.ts`); the client dispatch
 (`app/utils/live-dispatch.ts`) invalidates `['document','list']` on it — a folder mutation rewrites
 document paths, so the tree query itself has to refetch, not just a folder-scoped cache entry.
 Client wrapper: `app/composables/useFolders.ts` (`create`/`patch`/`remove`/`impact`).

@@ -57,7 +57,7 @@ A crafted transcript (thinking + Bash tool_use + tool_result + SessionEnd w/ git
 
 ## Summaries + search (cycle 13 phase 4, shipped 2026-06-16)
 - **Summarization** — `summarize-sessions` task (`*/5`, `server/services/session-summarize.ts`): selects new/stale/grown sessions (real-message floor 6, refresh-delta 50, stale 24h; mirrors bridget `sess_summarize`), builds a transcript (text + `<thinking>` + tool one-liners, head/tail elide at 60k chars), `chat('reasoning')` → strict-JSON `{title, summary}`, writes `title` (COALESCE — never clobbers an existing title), `summary`, and a `title‖summary` `summary_embedding`. State + retry tracked in `sess_summary_state`. Validated: 203 sessions summarized, 100% ok.
-- **Search** — `searchSessions`/`searchMessages` (`server/services/session-search.ts`): hybrid trigram (`ilike`/`similarity` on title+summary / content) + vector (`summary_embedding` / `messages.embedding`, `<=>` halfvec cosine, try/catch trigram-only fallback), RRF-fused (`rrfFuse`). Wired into `searchAll` + the command palette (`AppSearch.client.vue`) as **Sessions** + **Messages** groups (message hits deep-link to the parent session). `messages.embedding` backfilled by the `embed-messages` task (`*/4`).
+- **Search** — `searchSessions`/`searchMessages` (`packages/core/src/services/session-search.ts`): hybrid trigram (`ilike`/`similarity` on title+summary / content) + vector (`summary_embedding` / `messages.embedding`, `<=>` halfvec cosine, try/catch trigram-only fallback), RRF-fused (`rrfFuse`). Wired into `searchAll` + the command palette (`AppSearch.client.vue`) as **Sessions** + **Messages** groups (message hits deep-link to the parent session). `messages.embedding` backfilled by the `embed-messages` task (`*/4`).
 
 ## Cycle-24 changes (Sessions UX)
 
@@ -78,15 +78,15 @@ The sessions list now shows a small **pinging dot** (`bg-primary animate-ping`) 
 ## Cycle 46 — reassignment + path-based auto-routing + hostname
 
 ### Ingest resolver order (no-git-remote sessions)
-`findOrCreateProject({ gitRemote, cwd, gitRoot })` (`server/services/projects.ts`) resolves a session's project. With a git remote, the remote-key branch is unchanged (match `git_remote_key`/`aliases`, else race-safe create). **Without** a git remote, the order is:
-1. **Longest registered `path_prefixes` match** — the candidate project whose registered prefix is the longest ancestor-or-equal of `cwd` wins (`longestPrefixMatch`, `server/lib/projects/path-routing.ts`).
+`findOrCreateProject({ gitRemote, cwd, gitRoot })` (`packages/core/src/services/projects.ts`) resolves a session's project. With a git remote, the remote-key branch is unchanged (match `git_remote_key`/`aliases`, else race-safe create). **Without** a git remote, the order is:
+1. **Longest registered `path_prefixes` match** — the candidate project whose registered prefix is the longest ancestor-or-equal of `cwd` wins (`longestPrefixMatch`, `packages/core/src/lib/projects/path-routing.ts`).
 2. **Label match** — `cwd` basename, then (if no `cwd` hit) `gitRoot` basename, matched against existing `slug`/`aliases` (`matchProjectByLabel`; match-only, never creates).
 3. **Auto-create** — if the `cwd` passes `isAutoCreatable` (see stoplist below), create a new project named for the `cwd` leaf folder, seeding `path_prefixes = [cwd]` so every future session under that folder resolves instantly via step 1.
 4. **Uncategorized fallback** — the seeded bucket, unchanged from cycle 23.
 
 `path_prefixes text[]` (migration `0027_bumpy_virginia_dare.sql`) is the routing-roots column — distinct from the passively-accumulated `local_paths` (every observed `cwd`, never used for routing). See [projects.md](projects.md#path_prefixes--routing-roots-distinct-from-local_paths).
 
-**Stoplist** (`isAutoCreatable`, `server/lib/projects/path-routing.ts`) refuses to auto-create from bare/scratch cwds: home roots (`/Users/<x>`, `/home/<x>`, `/mnt/<d>/Users/<x>`), temp dirs (`/tmp`, `/private/tmp`, `/var/tmp` + descendants), and generic leaf names (`documents`, `github`, `downloads`, `desktop`, `src`, `projects`, `code`, `repos`, `dev`, `tmp`, `temp`). These fall through to Uncategorized instead. Pure helpers (`normalizePrefix`, `basenameOf`, `isUnderPrefix`, `longestPrefixMatch`, `isAutoCreatable`) are unit-tested in `test/path-routing.test.ts`.
+**Stoplist** (`isAutoCreatable`, `packages/core/src/lib/projects/path-routing.ts`) refuses to auto-create from bare/scratch cwds: home roots (`/Users/<x>`, `/home/<x>`, `/mnt/<d>/Users/<x>`), temp dirs (`/tmp`, `/private/tmp`, `/var/tmp` + descendants), and generic leaf names (`documents`, `github`, `downloads`, `desktop`, `src`, `projects`, `code`, `repos`, `dev`, `tmp`, `temp`). These fall through to Uncategorized instead. Pure helpers (`normalizePrefix`, `basenameOf`, `isUnderPrefix`, `longestPrefixMatch`, `isAutoCreatable`) are unit-tested in `test/path-routing.test.ts`.
 
 `git_root` (`git rev-parse --show-toplevel`, sent by `cc-hook.sh` on the `[event]` hook) is a **transient** label-match candidate only — it is never persisted as a session column beyond the label check.
 

@@ -12,11 +12,11 @@ mymind_hash: 7e9199e2fbdc8767e33ca429164484f0df1b34c530595254e174eb95a5c11192
 Reimplements the bridget memory service in TS: ingest AI-session transcripts, enrich into durable memories, search semantically. Enrichment memories are auto-reviewed on insert; once scored, the review gate sends one back to `/review` only when both Jev and the LLM audit flag it as stale (see *Review gate*).
 
 ## Data model
-- `memories` (`server/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 23), `source_date` (last-observed, = source session `started_at`, cycle 23), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`, plus **cycle 70**: `applicability` (`global`|`project`, default `project`), `resident` (boolean, DB CHECK `resident => applicability='global'`), `retrieval_count`, `last_retrieved_at`; plus **cycle 72**: `jev_score` (real, Jev's second opinion — see [Jev scoring](#jev-scoring-a-second-opinion-cycle-72)), `jev_answers` (jsonb, the raw Noul answers), `jev_scored_at`, `jev_model` (the version that *answered*); plus **cycle 77** (migration 0064, see [Dual scoring](#dual-scoring--extract-v3-the-llm-audit-and-the-backfill-cycle-77)): `jev_failures`, `audit_keep` (0–1), `audit_verdict`, `audit_reason` (≤ 200 chars), `audit_model` (the model that *answered*), `audit_prompt_version`, `audited_at`, `audit_failures`, `extract_prompt_version` (stamped on new rows, null before cycle 77). Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
+- `memories` (`packages/core/src/db/schema/memories.ts`): `scope` (user|agent|world), `content`, `tags[]`, `source`, `embedding halfvec(2560)`, `content_hash` (sha256), `confidence`, `evidence` jsonb, `project`, `project_id` (FK → projects; **null = global / agnostic**, cycle 23), `source_date` (last-observed, = source session `started_at`, cycle 23), `session_id`, `superseded_by` (→ the memory that replaced this one, cycle 13), `enriched_at`, `reviewed_at`, `created/updated/archived_at`, plus **cycle 70**: `applicability` (`global`|`project`, default `project`), `resident` (boolean, DB CHECK `resident => applicability='global'`), `retrieval_count`, `last_retrieved_at`; plus **cycle 72**: `jev_score` (real, Jev's second opinion — see [Jev scoring](#jev-scoring-a-second-opinion-cycle-72)), `jev_answers` (jsonb, the raw Noul answers), `jev_scored_at`, `jev_model` (the version that *answered*); plus **cycle 77** (migration 0064, see [Dual scoring](#dual-scoring--extract-v3-the-llm-audit-and-the-backfill-cycle-77)): `jev_failures`, `audit_keep` (0–1), `audit_verdict`, `audit_reason` (≤ 200 chars), `audit_model` (the model that *answered*), `audit_prompt_version`, `audited_at`, `audit_failures`, `extract_prompt_version` (stamped on new rows, null before cycle 77). Indexes: scope, tags GIN, content trigram GIN, embedding HNSW cosine, partial-unique content_hash WHERE archived_at IS NULL. `evidence` entries (cycle 13) are `{ sessionId, msgIds, quote, reasoning, mergedAt }`.
 - `memory_relations` (cycle 13, `memory-relations.ts`): `from_id`→`to_id`, `type` (supersedes|contradicts|duplicate-of), `confidence`, `status` (active|resolved), `reason`. The lineage/conflict graph; unique edge `(from,to,type)`.
 - `sessions` (source, external_id unique, project, cwd, title, summary, message_count, started_at, last_active, metadata) + `messages` (session_id, role, content, external_uuid unique-per-session) + `mem_enrichment_state` (enrichment progress; **cycle 70** re-keyed `(source_kind, source_id)` where `source_kind` is `session`|`conversation`).
 
-## Service — `server/services/memory.ts` (+ `memory-dedup.ts`)
+## Service — `packages/core/src/services/memory.ts` (+ `memory-dedup.ts`)
 - `createMemory` embeds content, then **two-stage dedup** (`dedupDecision`): exact `content_hash` → skip; semantic cosine ≥ 0.85 in same scope/project → merge evidence; else insert.
 - `searchMemories(q, {scope,project,tags,limit,reviewed})` — hybrid trigram + vector cosine RRF (same pattern as `searchDocs`), trigram fallback. `reviewed` (cycle 51): `true` → reviewed only, `false` → unreviewed only, `undefined` → no filter; built by the shared `reviewedCondition(reviewed?)` that `listMemories` also uses.
 - `listMemories`, `getMemory`, `updateMemory` (re-embed on content change), `reviewMemory`, `archiveMemory`, `countUnreviewedMemories`.
@@ -144,10 +144,10 @@ to guess Tony's judgement instead of reading the text. It is not asked at all, a
 (0.81 clears that); a drop threshold needs calibration, and with 4 noise examples every cutoff
 priced out **at or below the 43% base rate** — it would discard more keepers than junk.
 
-- `server/lib/memory/jev-score.ts` — the four pinned questions + `jevKeepScore` (pure; weighting
+- `packages/core/src/lib/memory/jev-score.ts` — the four pinned questions + `jevKeepScore` (pure; weighting
   dominated by `transient`) + `compareByJev` (worst-first; **unscored sorts last**, because
   unknown is not bad; newest-first on a tie).
-- `server/lib/ai/jev.ts` — `jevConfig()` resolves through `resolveChain('jev')`, `askJev()` POSTs
+- `packages/core/src/lib/ai/jev.ts` — `jevConfig()` resolves through `resolveChain('jev')`, `askJev()` POSTs
   `{state, model, questions}` to `${baseURL}/systemone` and retries only on 429.
 - `server/services/memory-jev.ts` — `runJevScoring({limit})` targets live rows missing a part that
   are **unreviewed or created in the last 7 days** (`RECENT_MEMORY_DAYS`, final review M1). Since cycle 77 it goes through the shared scoring path
@@ -189,7 +189,7 @@ null unless both scores exist. A memory with only one score is never counted as 
 
 ### extract-v3 — the extraction prompt
 
-`server/lib/memory/extract-v3.ts`: `EXTRACT_PROMPT_VERSION = 'extract-v3'`, `EXTRACT_V3_CRITERIA`
+`packages/core/src/lib/memory/extract-v3.ts`: `EXTRACT_PROMPT_VERSION = 'extract-v3'`, `EXTRACT_V3_CRITERIA`
 (the single definition of "a good memory", shared with the audit), `EXTRACT_SYSTEM_PROMPT`,
 `extractV3(transcript)`. It makes one `chat('bulk', …)` call at temperature 0.2 with maxTokens
 1600. The `reasoning` alias emits think blocks that `chat()` rejects, so the call uses `bulk`.
@@ -330,7 +330,7 @@ note, memory and append go to `/review` as proposals (their thresholds are 1.1),
 auto-applied at ≥ 0.70** (`triageThresholds.task`), the existing triage behaviour, accepted for
 doc candidates (final review M2). **No document is written directly.** An append into a
 repo-mirrored doc (`/projects/<slug>/wiki/` or `/handovers/`, `isRepoMirrorPath` in
-`server/lib/documents/mirror.ts`) is refused and becomes a note; see [triage.md](triage.md). Failures are logged and never block enrichment. The backfill only
+`packages/core/src/lib/documents/mirror.ts`) is refused and becomes a note; see [triage.md](triage.md). Failures are logged and never block enrichment. The backfill only
 *labels* old memories `belongs_in_doc`; it moves nothing. Since 2026-10-02 two duplicate guards drop candidates first (the session wrote its own docs, or an existing doc scores ≥ 0.65 similarity) — see [triage.md](triage.md).
 
 ### Measurement tools
@@ -395,7 +395,7 @@ one.
   `reviewed: true` — marking reviewed is exactly what lets Bridget see a memory, so with only one
   exit the queue could promote junk into her context but never shed it.
 - **Conflicts** resolve four ways via `POST /api/review/[id]/resolve`: `keep-both`, `archive-old`,
-  `archive-new`, `archive-both`. `archivalPlan` (`server/lib/review/conflict-resolution.ts`) is a
+  `archive-new`, `archive-both`. `archivalPlan` (`packages/core/src/lib/review/conflict-resolution.ts`) is a
   pure, tested function deciding which rows to archive — inverting it would silently archive the
   memory the user chose to keep. Every branch archives; nothing here deletes.
 
@@ -407,7 +407,7 @@ page renders its buttons from it:
 - other kinds: approve and reject.
 
 The approve, reject and resolve routes are thin wrappers over
-`server/services/review-decisions.ts` `decideReview`. Bridget's **`list_reviews`** (read, also
+`packages/core/src/services/review-decisions.ts` `decideReview`. Bridget's **`list_reviews`** (read, also
 on MCP) lists pending items with their `choices`. **`decide_review`** calls the same service, so
 undo tokens and live events are identical. It is dangerous and **confirmed by Tony on every
 call** (app card or iMessage 👍). It is never allowlistable, refused in headless runs, and absent
@@ -442,11 +442,11 @@ established fact. All three agent recall paths now filter it out:
   `reviewed: true` unless the caller sets **`includeUnreviewed: true`** — an explicit opt-in,
   useful when triaging the queue itself.
   **Cycle 77 (final review M3):** both return each memory through `toRecallMemory`
-  (`server/lib/agent/tools.ts`), which drops the score fields (`jevScore`, `jevAnswers`, the
+  (`packages/core/src/lib/agent/tools.ts`), which drops the score fields (`jevScore`, `jevAnswers`, the
   `audit*` fields, the prompt versions). The scores are for `/memories`, the API and the export:
   on recall they cost ~250 chars per memory and an agent reading "transient: …" beside a fact
   would discount it.
-- **The automatic per-turn injection** (`buildMemoryContext`, `server/lib/agent/context.ts`)
+- **The automatic per-turn injection** (`buildMemoryContext`, `packages/core/src/lib/agent/context.ts`)
   calls `searchMemories(q, { limit: 5, reviewed: true })`. This one fires on **every** voice
   turn (`server/api/voice/ws.ts`) with no agent decision behind it, so it has **no opt-out** —
   the `includeUnreviewed` flag covers only tools an agent explicitly chooses to call, and this

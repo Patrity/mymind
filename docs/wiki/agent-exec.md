@@ -11,7 +11,7 @@ Cycles B2 and B3.1 added the approval gate harness and moved the app to a native
 
 ## What must be true for exec to run (always-armed since cycle 42)
 
-**The old dual-enable lever is GONE** (Tony's decision, 2026-07-01): there is no `powerful` profile toggle and no `agent-exec-enabled` cookie. `server/lib/agent/profile.ts` defines ONE profile (`bridgetProfile` = `agentTools` + `execTool` + subagent tools) and the exec tool is exposed on every turn. Old `{type:'profile'}` / `{type:'execEnabled'}` WS frames are silently ignored.
+**The old dual-enable lever is GONE** (Tony's decision, 2026-07-01): there is no `powerful` profile toggle and no `agent-exec-enabled` cookie. `packages/core/src/lib/agent/profile.ts` defines ONE profile (`bridgetProfile` = `agentTools` + `execTool` + subagent tools) and the exec tool is exposed on every turn. Old `{type:'profile'}` / `{type:'execEnabled'}` WS frames are silently ignored.
 
 What still stands between the model and a running command:
 
@@ -21,7 +21,7 @@ What still stands between the model and a running command:
 
 ## `runConstrained` — the exec runner
 
-`server/lib/exec/run.ts`. Every exec goes through this function; it is fail-closed by design.
+`packages/core/src/lib/exec/run.ts`. Every exec goes through this function; it is fail-closed by design.
 
 ### Privilege model — `native-root`
 
@@ -51,7 +51,7 @@ The child environment is **constructed from scratch** (allowlist-by-construction
 
 ## Credential store — `exec_secrets`
 
-`server/lib/exec/secrets.ts`. Secrets are stored in the `settings` table under key `exec_secrets` as a JSON doc `{ version: 1, secrets: Record<name, encryptedBase64> }`, encrypted with the same key derivation as the AI config registry (`CONFIG_ENC_KEY` / `BETTER_AUTH_SECRET` via HKDF).
+`packages/core/src/lib/exec/secrets.ts`. Secrets are stored in the `settings` table under key `exec_secrets` as a JSON doc `{ version: 1, secrets: Record<name, encryptedBase64> }`, encrypted with the same key derivation as the AI config registry (`CONFIG_ENC_KEY` / `BETTER_AUTH_SECRET` via HKDF).
 
 - Secret names must match `/^[A-Z_][A-Z0-9_]*$/` (valid env var names, shell-safe).
 - `listSecretNames()` returns name + last-4 chars of the decrypted value (write-only display).
@@ -62,7 +62,7 @@ The child environment is **constructed from scratch** (allowlist-by-construction
 
 ## Gate — allowlist-first + outbound policy + catastrophic hard-block
 
-`server/lib/exec/approvals.ts` + `server/lib/exec/outbound.ts`.
+`packages/core/src/lib/exec/approvals.ts` + `packages/core/src/lib/exec/outbound.ts`.
 
 ### Catastrophic hard-block (`isCatastrophic`)
 
@@ -78,7 +78,7 @@ These commands are **refused unconditionally** — they can never be run even if
 
 This is a **two-layer defense**:
 
-1. **Gate layer** — `execAutoApproveDecision` (`server/lib/exec/approvals.ts`) returns `{ allow: false, reason: 'catastrophic' }` for catastrophic commands. This means the gate does **not** auto-approve them; instead they fall through to the normal human-approval prompt (the same approval channel as any other unlisted command). A catastrophic command reaching this layer is treated like an unknown command — Tony is asked.
+1. **Gate layer** — `execAutoApproveDecision` (`packages/core/src/lib/exec/approvals.ts`) returns `{ allow: false, reason: 'catastrophic' }` for catastrophic commands. This means the gate does **not** auto-approve them; instead they fall through to the normal human-approval prompt (the same approval channel as any other unlisted command). A catastrophic command reaching this layer is treated like an unknown command — Tony is asked.
 
 2. **Handler layer** — even if Tony approves, `tools/exec.ts` checks `isCatastrophic` again in the handler **before** calling `runConstrained`. It returns `{ blocked: true, error: 'refused: catastrophic command' }` to the model and never spawns the process. Approval cannot override this hard-block.
 
@@ -128,7 +128,7 @@ When `execAutoApproveDecision` returns `allow: false`, the gate prompts via the 
 
 ## The `exec` tool
 
-`server/lib/agent/tools/exec.ts`:
+`packages/core/src/lib/agent/tools/exec.ts`:
 - `kind: 'destructive'`, `dangerous: true`
 - Schema: `{ command: string, cwd?: string }`
 - `autoApprove` loads patterns from `exec_approvals` and calls `execAutoApproveDecision` — returns `true` (allow silently) or `false` (prompt). This replaces B2's always-prompt-for-dangerous-tool behaviour.
@@ -139,7 +139,7 @@ When `execAutoApproveDecision` returns `allow: false`, the gate prompts via the 
 ## Audit + secret redaction
 
 - Every exec tool call is wrapped in a `withSpan({ kind: 'tool', … })` span in `buildAiTools` → logged to `activity_log` → visible at `/activity`.
-- `maskSecrets(text, values)` (`server/lib/observability/redact.ts`) replaces every stored secret value appearing in the command string or its stdout/stderr with `[REDACTED]` before the result is logged or returned to the model.
+- `maskSecrets(text, values)` (`packages/core/src/lib/observability/redact.ts`) replaces every stored secret value appearing in the command string or its stdout/stderr with `[REDACTED]` before the result is logged or returned to the model.
 - The result payload includes `secretsInjected: [names]` (not values) for the audit trail.
 - Approval decisions (`allowlisted`, `approve`, `deny`, `timeout`) are logged via `recordEvent`.
 

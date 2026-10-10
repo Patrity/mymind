@@ -15,14 +15,14 @@ mymind_hash: 1827c6b1…     # sha256 of the BODY as MyMind last stored it
 ## The hash is checkable locally
 
 `documents.content_hash` is a **Postgres generated column**
-(`server/db/schema/documents.ts` → `doc_content_hash(content)`, migration 0030):
+(`packages/core/src/db/schema/documents.ts` → `doc_content_hash(content)`, migration 0030):
 
 ```sql
 encode(sha256(convert_to(t,'UTF8')),'hex')
 ```
 
 So it is a plain `sha256` of the stored `content` — nothing normalized, frontmatter excluded
-(`hashBody` in `server/lib/agent/sync.ts`). Any route that writes `content` updates it; you cannot
+(`hashBody` in `packages/core/src/lib/agent/sync.ts`). Any route that writes `content` updates it; you cannot
 write a stale hash.
 
 That means you can predict the post-write hash locally:

@@ -31,7 +31,7 @@ All entities share one model — **`qwen3-embedding-4b`, 2560-dim `halfvec`, HNS
 
 ## Schema — `graph_layout` (migration 0028)
 
-`server/db/schema/graph-layout.ts` — coordinate + degree cache:
+`packages/core/src/db/schema/graph-layout.ts` — coordinate + degree cache:
 
 | column | type | notes |
 |---|---|---|
@@ -63,7 +63,7 @@ PK `(source_type, source_id)`; index on `source_type`. **Empty until the job run
 
 ## Live reactivity
 
-`graph` is a `ResourceName` (`shared/types/live.ts`). The layout job + relation writes `publishChange('graph')`; the client dispatch map (`app/utils/live-dispatch.ts`) invalidates `['graph']` on `graph|memory|document|image|session|project` events, **debounced 700 ms** so an enrichment-cron burst collapses to one refetch. Mutations from the detail pane refresh the galaxy through this path (no manual refetch).
+`graph` is a `ResourceName` (`packages/core/src/shared/types/live.ts`). The layout job + relation writes `publishChange('graph')`; the client dispatch map (`app/utils/live-dispatch.ts`) invalidates `['graph']` on `graph|memory|document|image|session|project` events, **debounced 700 ms** so an enrichment-cron burst collapses to one refetch. Mutations from the detail pane refresh the galaxy through this path (no manual refetch).
 
 ## Not included (v1)
 

@@ -32,7 +32,7 @@ iPhone ──iMessage──▶ Mac (BlueBubbles, Private API)
                          │  webhook: POST /api/channels/bluebubbles/webhook?token=…
                          │  catch-up: POST /api/v1/message/query every 2 min (5-min overlap)
                          ▼
-               handleInbound (server/lib/channels/inbound.ts)
+               handleInbound (packages/core/src/lib/channels/inbound.ts)
                  tapback → approvals · filters · photo/voice memo → input
                  channel_inbound PK insert (dedupe) → enqueue on MAIN with origin + reply_to
                          ▼
@@ -44,12 +44,12 @@ iPhone ──iMessage──▶ Mac (BlueBubbles, Private API)
 ```
 
 Both the outbox tick and the catch-up ride the runtime's existing 5-second `workerTick`
-(`server/lib/agent/runtime/queue.ts`). There is no separate scheduler. The outbox is started
+(`packages/core/src/lib/agent/runtime/queue.ts`). There is no separate scheduler. The outbox is started
 **off** the tick (`startDeliveries()`, single-flight): the tick does not wait for sends, so a
 blackholed BlueBubbles host no longer delays `recoverStale`, `jobsTick` or `dueTaskEvents`, and a
 tick that finds a batch still sending starts nothing.
 
-| File (`server/lib/channels/`) | Role |
+| File (`packages/core/src/lib/channels/`) | Role |
 |---|---|
 | `types.ts` | The `Channel` interface (`id`, `isEnabled()`, `send(delivery)`), `SendResult`, the inbound event shapes. |
 | `registry.ts` | `channelFor('imessage' \| 'email')`. |
@@ -66,7 +66,7 @@ tick that finds a batch still sending starts nothing.
 | `deliver.ts` | `resolveDeliverChannels` (pure), `planDeliveries` (what a finished reply sends) and `queueFailureNote` (the "sorry" text for a failed iMessage turn). |
 | `approvals.ts` | Exec approvals by tapback. |
 
-The agent tool `send_message` lives in `server/lib/agent/tools/channels.ts`.
+The agent tool `send_message` lives in `packages/core/src/lib/agent/tools/channels.ts`.
 
 ## Settings
 

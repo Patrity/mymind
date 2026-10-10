@@ -10,7 +10,7 @@ a `@tanstack/vue-query` cache invalidation. No manual refresh; no Redis; no poll
 
 ```
 any Nitro write (HTTP handler OR background task)
-  → publishChange({ resource, action, id })            server/utils/live-bus.ts
+  → publishChange({ resource, action, id })            packages/core/src/utils/live-bus.ts
   → in-process EventEmitter (one global channel)
   → GET /api/events (SSE, auth-gated, 25s heartbeat)    server/api/events.get.ts
   → app/plugins/live.client.ts (one EventSource/tab, session-gated)
@@ -20,11 +20,11 @@ any Nitro write (HTTP handler OR background task)
 
 ## Server
 
-- **`server/utils/live-bus.ts`** — `publishChange(e: {resource, action, id})` stamps
+- **`packages/core/src/utils/live-bus.ts`** — `publishChange(e: {resource, action, id})` stamps
   `{v:1, at}` and emits a `LiveEvent` on one global channel (`live-change`) via a module
   `EventEmitter` (`setMaxListeners(0)`). `subscribeChanges(cb)` returns an unsubscribe.
   Single instance, no broker (correct for this homelab deploy).
-- **`shared/types/live.ts`** — `ResourceName` (closed union:
+- **`packages/core/src/shared/types/live.ts`** — `ResourceName` (closed union:
   `document | image | memory | review | project | task | session | clipboard | activity | apiToken`),
   `LiveAction` (`created | updated | deleted`), `LiveEvent` (`{v:1, resource, action, id, at}`).
 - **`server/api/events.get.ts`** — one SSE connection per tab. `text/event-stream`, 25s
@@ -42,7 +42,7 @@ any Nitro write (HTTP handler OR background task)
 | task | `tasks/index.post`, `[id].patch\|delete`, `[id]/move` | — |
 | session | — | `services/sessions.ts` `ingestTranscript` + `api/hooks/cc/[event].post` `upsertSession` (one emit per write; not double-emitted) |
 
-Also emitting (writes outside the CRUD endpoints): `api/capture/note.post.ts` (document created) and the **agent/MCP tool surface** `server/lib/agent/tools.ts` — `save_memory`, `create_project`/`edit_project`, `create_task`/`edit_task`, `quick_capture` all `publishChange` after their write (and in their undo lambdas), so voice/MCP/chat actions update the UI live too. These emit in the tool handler, not the shared service (the HTTP handlers already emit there — no double-emit).
+Also emitting (writes outside the CRUD endpoints): `api/capture/note.post.ts` (document created) and the **agent/MCP tool surface** `packages/core/src/lib/agent/tools.ts` — `save_memory`, `create_project`/`edit_project`, `create_task`/`edit_task`, `quick_capture` all `publishChange` after their write (and in their undo lambdas), so voice/MCP/chat actions update the UI live too. These emit in the tool handler, not the shared service (the HTTP handlers already emit there — no double-emit).
 
 ## Client
 

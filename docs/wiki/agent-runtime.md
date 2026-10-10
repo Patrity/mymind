@@ -8,7 +8,7 @@ updated: 2026-10-03
 # Agent Runtime
 
 Since cycle 73 a Bridget turn runs **on the server**, not inside a browser WebSocket.
-`server/lib/agent/runtime/` is the only way a turn runs. A turn is an `agent_runs` row that a
+`packages/core/src/lib/agent/runtime/` is the only way a turn runs. A turn is an `agent_runs` row that a
 worker claims and executes. Sockets are **viewers**: closing the tab unsubscribes and never
 aborts. A reply keeps streaming, finishes and persists with nobody watching.
 
@@ -305,7 +305,7 @@ Both tiers are fixed tiers in `assembleContext`, capped at the source.
 ## Rollback
 
 Cycle 74 deleted the cycle-73 rollback lever (`server/lib/voice/ws-legacy.ts`, the
-`agent_runtime` settings flag, and every branch that read it) — `server/lib/agent/runtime/` is
+`agent_runtime` settings flag, and every branch that read it) — `packages/core/src/lib/agent/runtime/` is
 now the only way a turn runs, unconditionally. Roll back by redeploying a cycle-73 build (revert
 the cycle-74 merge); the `agent_runtime` setting no longer exists.
 

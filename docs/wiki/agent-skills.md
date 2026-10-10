@@ -65,7 +65,7 @@ project docs (spec D7).
   rebuilding markdown from jsonb frontmatter plus body is fragile in SQL. Nitro does not await
   plugins, so on the very first boot there is a window of a few milliseconds with an empty skills
   index.
-- `server/services/skills.ts` is the only module that knows this mapping. `listSkills`,
+- `packages/core/src/services/skills.ts` is the only module that knows this mapping. `listSkills`,
   `getSkill`, the prompt's Tier-1 index, `use_skill`, the slash-command skill tier and MCP all read
   `agent_skills`.
 
@@ -81,7 +81,7 @@ project docs (spec D7).
 
 **Agent-authored skills are active immediately.** There is no approval/review gate — the speed of self-improvement is the point. Safety is structural:
 
-- **Validation** (`validateSkill` in `server/services/skills.ts`): kebab-case name, non-empty description/whenToUse/body, body ≤20,000 chars. Structural only — nothing about content.
+- **Validation** (`validateSkill` in `packages/core/src/services/skills.ts`): kebab-case name, non-empty description/whenToUse/body, body ≤20,000 chars. Structural only — nothing about content.
 - **Undo**: `create_skill`, `edit_skill`, `delete_skill` all carry undo via the tool handler.
 - **Revisions**: every write is a revision you can diff and revert on `/skills/[slug]`.
 - **Live events**: every write publishes `publishChange({ resource: 'agentSkill', … })`, which invalidates `['skills']` and the slash-command list.
@@ -181,7 +181,7 @@ See `docs/DEPLOYMENT.md` for the post-deploy step that runs the prod form of thi
 
 These are installed with `source: 'human'` (so you can decide whether to delete them) and `active: true`. Updating a seed rewrites the whole skill (idempotent) and records a `system` revision. Environments that already had the seeds as documents get them moved into `agent_skills` by the boot plugin, so re-seeding is not required.
 
-## Prompt integration (`server/lib/agent/prompt.ts`)
+## Prompt integration (`packages/core/src/lib/agent/prompt.ts`)
 
 `buildSystemPrompt` checks `skillsEnabled()` and conditionally includes the Tier-1 index:
 

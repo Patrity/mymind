@@ -34,7 +34,7 @@ answer weeks later.
 
 ## Pipeline
 
-One entry point, `triageCapture(docId)` (`server/services/triage.ts`), fired from two places:
+One entry point, `triageCapture(docId)` (`packages/core/src/services/triage.ts`), fired from two places:
 
 1. **Immediately** after `POST /api/capture/note` creates the document — fire-and-forget
    (`void triageCapture(doc.id).catch(...)`), so capture returns at write speed and a triage
@@ -131,7 +131,7 @@ minutes, so that re-proposes the same jot immediately, and once a bar sits below
 becomes an apply → undo → re-apply loop on a timer. A rejection or an undo is the user saying
 the proposal was wrong. So re-eligibility is an explicit action:
 
-- `retriageDocument(docId)` (`server/services/triage.ts`) clears `triaged_at`. It reads with the
+- `retriageDocument(docId)` (`packages/core/src/services/triage.ts`) clears `triaged_at`. It reads with the
   live-only `getDoc`, so it can never resurrect a soft-deleted courier.
 - `POST /api/documents/[id]/retriage` exposes it.
 - The documents-tree context menu shows **Re-triage** for `/input` files only — it is
@@ -144,7 +144,7 @@ both a live entity and the original note.
 
 ## The classifier contract
 
-`server/lib/ai/triage.ts`:
+`packages/core/src/lib/ai/triage.ts`:
 
 - **`buildTriageMessages(doc, projects)`** — a system prompt naming all four destinations plus
   the active project list (slug — name — description, injected the same way
@@ -186,7 +186,7 @@ interface TriageProposal {
 (`note|reference|meeting|idea|task`) — the two overlap on the words "note" and "task" while
 meaning different things (a destination vs. a document classification).
 
-## Routing policy (`server/lib/triage/route.ts`, pure)
+## Routing policy (`packages/core/src/lib/triage/route.ts`, pure)
 
 `route(proposal, thresholds)` decides, independently for the primary and each secondary action,
 whether it auto-applies (`confidence >= thresholds[kind]`, so a bar is a floor — exactly-at
@@ -207,7 +207,7 @@ guardrail. Because a clamped confidence tops out at `1.0` and every bar is `1.1`
 auto-apply under the shipped config, including a perfect `1.0`** — this is intentional and
 covered by its own test (`test/triage-route.test.ts`).
 
-## The four actuators (`server/services/triage.ts`)
+## The four actuators (`packages/core/src/services/triage.ts`)
 
 Each actuator returns `{ actionRowId, entityType, entityId, undoToken }`, records one
 `triage_actions` row, and publishes on the live bus (`publishChange`, singular `resource`).
@@ -243,7 +243,7 @@ error rather than silently duplicating the other action's output as a second, st
   - **Repo-mirror guard (cycle 77).** A document under `/projects/<slug>/wiki/` or
     `/projects/<slug>/handovers/` is a mirror of a repo file, and the next sync overwrites it, so
     an append there would be silently lost. `isRepoMirrorPath(path)`
-    (`server/lib/documents/mirror.ts`, a leaf module, regex `^/projects/[^/]+/(wiki|handovers)/`) is
+    (`packages/core/src/lib/documents/mirror.ts`, a leaf module, regex `^/projects/[^/]+/(wiki|handovers)/`) is
     checked in **both** `resolveAppendTarget` (a mirror as the best match counts as "nothing
     cleared the floor"; it does not fall through to the second-best chunk) and
     `isValidAppendTarget`. A mirror target therefore degrades the append to a Note, like any
@@ -278,7 +278,7 @@ items (see [memory.md](memory.md) and [enrichment.md](enrichment.md)). A triage 
 target with the exact block it adds; *Create task* with project/priority/due; *Save memory* with its
 text — plus what is removed (the `/input` capture, except for a note). Then the reasoning ("Why"),
 and read-only any sibling actions that already auto-applied. The feed widens triage rows with
-`source` and each append's `target` (`withTriageContext`, `server/services/review.ts`).
+`source` and each append's `target` (`withTriageContext`, `packages/core/src/services/review.ts`).
 
 **An append's target is chosen at queue time** (`triageCapture` stores `targetDocId` on the queued
 action), so Approve appends to exactly the document the card named — `applyAppend` honours a supplied

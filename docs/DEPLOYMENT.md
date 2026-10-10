@@ -89,7 +89,7 @@ Embeddings stay fixed at **2560-dim** (`qwen3-embedding-4b`, TEI `:8882`, keyles
 **This is a hard prerequisite, not a note. Skip it and voice is dead on arrival — both surfaces.**
 
 Cycle 61 replaced the whole TTS stack with a single engine, **Breeze TTS 2** at `:8880`, and
-**deleted the TTS failover chain**. `speakWithPreset` (`server/lib/voice/speak.ts`) resolves
+**deleted the TTS failover chain**. `speakWithPreset` (`packages/core/src/lib/voice/speak.ts`) resolves
 `chain[0]` of the registry's `tts` assignment and **stops** — there is nothing behind it to fall
 back to. Both callers go through it:
 
@@ -617,7 +617,7 @@ screen / Credentials" pages redirect there.
 **Rotating `BETTER_AUTH_SECRET`** re-keys the at-rest encryption of the stored Google access and
 refresh tokens (`encryptOAuthTokens`), so the old tokens no longer decrypt. better-auth swallows that
 failure into a generic "Failed to get a valid access token", so MyMind checks for it itself
-(`connectionDeps.tokensUndecryptable` in `server/lib/google/connections.ts`): the **first Google
+(`connectionDeps.tokensUndecryptable` in `packages/core/src/lib/google/connections.ts`): the **first Google
 call for each account after a rotation** marks that connection `needs_reconnect` (last error
 "stored Google tokens can no longer be decrypted …") and the tool reports the account needs
 reconnecting. Connections not yet used since the rotation still show `ok` until their first call.

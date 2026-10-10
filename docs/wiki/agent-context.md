@@ -16,11 +16,11 @@ what does not fit is evicted in a defined order.
 
 ## The seam
 
-`server/lib/agent/assemble.ts` → `assembleContext({ userText, conversationId, conversationKind?, projectSlug, turns?, budget? })`
+`packages/core/src/lib/agent/assemble.ts` → `assembleContext({ userText, conversationId, conversationKind?, projectSlug, turns?, budget? })`
 
 It replaced the ad-hoc pair (`buildLiveContext` + `buildMemoryContext`) that `server/api/voice/ws.ts`
 used to pass separately. **Since cycle 73 its caller is the runtime runner**
-(`server/lib/agent/runtime/runner.ts`, see [agent-runtime.md](agent-runtime.md)), which passes
+(`packages/core/src/lib/agent/runtime/runner.ts`, see [agent-runtime.md](agent-runtime.md)), which passes
 `turns` and `budget: RUNTIME_CONTEXT_BUDGET` (**20000**) and hands the result to `handleTurn` as the
 `context` string for `buildSystemPrompt`. (Cycle 74 deleted the legacy in-socket path,
 `server/lib/voice/ws-legacy.ts`, which had called it the cycle-70 way — no turns, default budget
@@ -41,7 +41,7 @@ deleted; nothing calls it.
 | retrieved memories | elastic | **first** |
 | recent turns | elastic, floor **and** ceiling | only below its floor |
 
-`server/lib/agent/budget.ts` owns the arithmetic:
+`packages/core/src/lib/agent/budget.ts` owns the arithmetic:
 
 ```
 available    = budget - fixedTokens          // throws ResidentOverflowError if fixed alone > budget
@@ -68,7 +68,7 @@ thread still degrades to live state alone.
 
 ## Ranking
 
-`server/lib/agent/salience.ts` re-ranks search results before they compete for budget. Semantic
+`packages/core/src/lib/agent/salience.ts` re-ranks search results before they compete for budget. Semantic
 relevance alone knows nothing about contradictions, recency or trust.
 
 `WEIGHTS` are **explicit constants, not a fitted model** — with 45 hand labels a learned ranker would
@@ -117,7 +117,7 @@ closed. The runner:
 1. reads history with `getAgentHistory`, which walks the active path with `sinceEpoch` **and**
    `sinceSummary` (rows at or before `conversations.summarized_through` reach the model only as the
    summary tier; `getConversation`, the UI read, still returns everything);
-2. groups it into turns (`groupTurns`, `server/lib/agent/runtime/history.ts` — a turn starts at a
+2. groups it into turns (`groupTurns`, `packages/core/src/lib/agent/runtime/history.ts` — a turn starts at a
    user-role row that follows a non-user row, so an assistant's tool blocks never split from it
    and a steer joins the turn it was typed into) and costs each with `turnTier`;
 3. passes `turns.map(turnTier)` + `budget: 20000` (turn floor 40% = 8000);
@@ -128,7 +128,7 @@ The `memory:assemble` activity row now carries a real `droppedTurns`, plus `runI
 
 ## Summaries and the two flow-up tiers (cycle 73)
 
-- **Writer:** `maybeSummarize` (`server/lib/agent/runtime/summarize.ts`). Skips threads with ≤ 6
+- **Writer:** `maybeSummarize` (`packages/core/src/lib/agent/runtime/summarize.ts`). Skips threads with ≤ 6
   turns, and (unless forced) tails ≤ 12 000 tokens. Otherwise folds all but the last 6 turns into
   `summary` via `chat('bulk')` (incremental: previous summary + new turns), sets
   `summarized_through` to the last folded row's Postgres `created_at`, re-embeds

@@ -12,7 +12,7 @@ How documents (and long image OCR) are split, contextualized, embedded, and retr
 ## The shared `chunks` primitive
 One generic table, 1-row-per-chunk, used by any text-bearing source:
 
-`chunks` (`server/db/schema/chunks.ts`, migration `0023_sticky_ego.sql`):
+`chunks` (`packages/core/src/db/schema/chunks.ts`, migration `0023_sticky_ego.sql`):
 | column | note |
 |---|---|
 | `source_type` | `'document' \| 'image'` |
@@ -28,18 +28,18 @@ One generic table, 1-row-per-chunk, used by any text-bearing source:
 Indexes: `unique(source_type, source_id, ord)`, btree `(source_type, source_id)`, HNSW on `embedding`. `documents.chunked_hash` records the `content_hash` last chunked (the re-chunk gate). The legacy `documents.embedding` / `documents.embedded_hash` columns are now **dead** (kept nullable for rollback; drop in a later cleanup).
 
 ## The pipeline (write path)
-1. **Chunker** — `server/lib/chunking/chunk-markdown.ts` (pure, deterministic, unit-tested). `chunkMarkdown(text, opts)` splits on markdown heading hierarchy (fence-aware: `#` inside ``` is not a heading); oversized sections fall back to recursive paragraph→sentence→word splitting; fenced code blocks and tables stay atomic when they fit. ~300-token target, 512 hard cap, ~10% overlap **only on recursive sub-splits**. Char-based token estimate (~3.8 chars/tok). Emits sequential `ord` + monotonic `char_start/end`.
+1. **Chunker** — `packages/core/src/lib/chunking/chunk-markdown.ts` (pure, deterministic, unit-tested). `chunkMarkdown(text, opts)` splits on markdown heading hierarchy (fence-aware: `#` inside ``` is not a heading); oversized sections fall back to recursive paragraph→sentence→word splitting; fenced code blocks and tables stay atomic when they fit. ~300-token target, 512 hard cap, ~10% overlap **only on recursive sub-splits**. Char-based token estimate (~3.8 chars/tok). Emits sequential `ord` + monotonic `char_start/end`.
 2. **Contextualize** — `server/lib/chunking/contextualize.ts`. `contextualizeChunk()` asks the `bulk` model for a one-sentence situating context per chunk (Anthropic-style contextual retrieval). **Resilient**: a model failure or empty reply falls back to the `heading_path` breadcrumb — context generation never blocks embedding. Flag-gated via `getChunkingConfig().contextual`.
 3. **Embed + upsert** — `server/lib/chunking/embed-source.ts`. `chunkAndEmbedSource({sourceType, sourceId, title, body})` chunks → contextualizes each chunk sequentially (keeps the doc prefix warm for prefix-caching inference servers) → embeds `context + "\n\n" + content` in `embedBatch`-sized batches → in one transaction deletes the source's old chunk rows and inserts the new ones. Throws if the provider under-returns vectors (no silent NULL embeddings).
 4. **Worker** — `server/services/embedding.ts` `runEmbedding()` (cron `embed-documents`, `*/5`). Selects live docs where `coalesce(chunked_hash,'') IS DISTINCT FROM coalesce(content_hash,'')`, calls `chunkAndEmbedSource` per doc, sets `chunked_hash := content_hash`, `publishChange` per doc. Per-doc failure isolation (a bad doc is retried next run; the 16k failure mode is gone since chunks are ≤512 tok). **The `coalesce` is load-bearing**: the gate sets `chunked_hash := content_hash`, so a row with `content_hash = NULL` under a bare `chunked_hash IS NULL` branch would re-embed *every tick forever*; `coalesce` makes `NULL` vs `NULL` read as "not stale" and converge. A `NULL` `chunked_hash` with a real `content_hash` is still eligible, so first-time backfill is intact.
 
 ## Retrieval (read path)
-`server/services/documents.ts`:
-- **`searchDocs(q)` → `DocumentDTO[]`** (contract unchanged). Trigram lane unchanged; the **vector lane now queries `chunks`** (`source_type='document'`, joined to live docs, project-filtered), takes the top 100 chunk hits by cosine distance, and **collapses to best-chunk-per-doc** (`server/lib/chunking/collapse.ts` `collapseChunksToSources`) before RRF-fusing with trigram. Soft-deleted docs are excluded via the join.
-- **`searchPassages(q, {project?, limit?})` → `ChunkHit[]`** (new). Returns chunk-level passages (`content`, `heading_path`, `context`, parent `docTitle`/`docPath`, `distance`) for precise RAG context. Exposed to agents/MCP as the **`search_passages`** tool (`server/lib/agent/tools.ts`).
+`packages/core/src/services/documents.ts`:
+- **`searchDocs(q)` → `DocumentDTO[]`** (contract unchanged). Trigram lane unchanged; the **vector lane now queries `chunks`** (`source_type='document'`, joined to live docs, project-filtered), takes the top 100 chunk hits by cosine distance, and **collapses to best-chunk-per-doc** (`packages/core/src/lib/chunking/collapse.ts` `collapseChunksToSources`) before RRF-fusing with trigram. Soft-deleted docs are excluded via the join.
+- **`searchPassages(q, {project?, limit?})` → `ChunkHit[]`** (new). Returns chunk-level passages (`content`, `heading_path`, `context`, parent `docTitle`/`docPath`, `distance`) for precise RAG context. Exposed to agents/MCP as the **`search_passages`** tool (`packages/core/src/lib/agent/tools.ts`).
 
 ## Images
-`server/services/image-enrich.ts`: short OCR stays summary-only (existing `images.embedding`). **Long OCR (>512 tok)** is routed through `chunkAndEmbedSource` with `source_type='image'`; on re-enrich where OCR shrinks, stale image chunks are cleared. `searchImages` (`server/services/images.ts`) fuses a third RRF lane over image-OCR chunks (reusing the single query embedding) alongside lexical + summary-vector.
+`server/services/image-enrich.ts`: short OCR stays summary-only (existing `images.embedding`). **Long OCR (>512 tok)** is routed through `chunkAndEmbedSource` with `source_type='image'`; on re-enrich where OCR shrinks, stale image chunks are cleared. `searchImages` (`packages/core/src/services/images.ts`) fuses a third RRF lane over image-OCR chunks (reusing the single query embedding) alongside lexical + summary-vector.
 
 ## Config — `server/lib/chunking/config.ts`
 `getChunkingConfig()` reads the `chunking` settings key (JSONB) over defaults: `{ contextual: true, targetTokens: 300, maxTokens: 512, overlapTokens: 32, embedBatch: 32 }`. `embedBatch` should be ≤ the rig's TEI `max_client_batch_size`; `contextual: false` disables the LLM step (breadcrumb prefix only).

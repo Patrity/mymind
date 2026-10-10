@@ -44,12 +44,12 @@ searchAll(q):
 | projects | `listProjects` | name/slug ILIKE (always `lexicalExact`) |
 
 `GET /api/search?q=` (auth-gated; blank / over-200-char `q` → `{ hits: [], reranked: false }`)
-returns `SearchResults = { hits: SearchHit[]; reranked: boolean }` (`shared/types/search.ts`).
+returns `SearchResults = { hits: SearchHit[]; reranked: boolean }` (`packages/core/src/shared/types/search.ts`).
 `SearchHit = { type, id, title, snippet, score, to, icon, meta }`. All ILIKE queries are
 drizzle-parameterized; the embedding literal is a bound `::halfvec` param (no injection).
 
 ### Relevance pieces (cycle 32)
-- **Reranker** (`server/lib/ai/rerank.ts`): a `/rerank` cross-encoder client. Returns **raw**
+- **Reranker** (`packages/core/src/lib/ai/rerank.ts`): a `/rerank` cross-encoder client. Returns **raw**
   scores (the legacy `/rerank` field is `score`; the Cohere `/v1`–`/v2` routes return the same
   numbers as `relevance_score` — both parsed; the `model` field is ignored by the rig shim).
   No min-max — the raw scores feed the **per-query relative band** (cycle 33). Resolved from the
@@ -65,7 +65,7 @@ drizzle-parameterized; the embedding literal is a bound `::halfvec` param (no in
   returned nothing (we don't score-gate emptiness; gibberish queries score high).
 - **Cosine floor** (per vector lane): drops nearest-neighbours past `cosineFloor` cosine
   distance before fusion — the always-on noise trim when the reranker is off/down.
-- **Config** — `server/lib/search/config.ts`, `search_relevance` settings key (JSONB) over
+- **Config** — `packages/core/src/lib/search/config.ts`, `search_relevance` settings key (JSONB) over
   defaults `{ rerankTopK: 12, rerankRelBand: 0.6, cosineFloor: 1.0, candidatesPerLane: 8,
   maxCandidates: 50 }`. Tunable without redeploy. `rerankRelBand 0.6` keeps hits within 60% of
   the top score (relevant lands ~1.0 on the current model); `cosineFloor 1.0` is permissive

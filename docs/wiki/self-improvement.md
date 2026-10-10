@@ -49,7 +49,7 @@ settled thread (every 15 min)        nightly jobs pass (hourly tick, once/day fr
 Every proposal gets an `agent_improvements` row, whatever happens to it, and publishes the
 `agentImprovement` live event.
 
-## Modules: `server/lib/agent/reflect/`
+## Modules: `packages/core/src/lib/agent/reflect/`
 
 | File | Job |
 |---|---|
@@ -91,7 +91,7 @@ acceptance setup). There is no CLI flag for this.
 
 ## Signals (evidence for the jobs pass)
 
-`server/lib/agent/signals/`. `classify.ts` is pure; `write.ts` does the DB writes. Existing code
+`packages/core/src/lib/agent/signals/`. `classify.ts` is pure; `write.ts` does the DB writes. Existing code
 paths write the signals, fire-and-forget, never the model.
 
 - A job run's assistant message opens a **2 h observation window**. The window is derived from
@@ -197,7 +197,7 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
 - Table `agent_profile`: a single row, **created lazily** under `pg_advisory_xact_lock` (reads
   take the oldest row). Columns are `content`, `content_hash`, `updated_by`, `updated_at`.
   Revisions live in `agent_config_revisions` with `target_kind = 'profile'`.
-- Service `server/services/profile.ts`: `getProfileSource`, `saveProfileSource` (CAS),
+- Service `packages/core/src/services/profile.ts`: `getProfileSource`, `saveProfileSource` (CAS),
   `listProfileRevisions`, `revertProfile`.
 - API: `GET /api/profile/source` (with tokens and budget), `PUT /api/profile/source`
   `{ content, expectedHash }` (409 `{ current }` on a stale hash), `GET /api/profile/revisions`,
@@ -234,7 +234,7 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
   - Most kinds: `approve` / `reject`.
   - `memory-unreviewed`: `approve` "Mark reviewed" / `reject` "Discard".
   - Memory conflicts: `keep-both`, `archive-old`, `archive-new`, `archive-both`.
-- **One decision service:** `server/services/review-decisions.ts` `decideReview(id, choice)`. The
+- **One decision service:** `packages/core/src/services/review-decisions.ts` `decideReview(id, choice)`. The
   approve, reject and resolve routes are thin wrappers over it, so undo tokens, revisions,
   rejection memory and live events are identical whoever decides. A not-pending item, unknown
   kind or invalid choice returns `ok:false` with a plain reason and changes nothing. A 409 maps to
@@ -243,7 +243,7 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
   It returns pending items with `id`, `kind`, `summary`, `createdAt`, a kind-specific `detail`
   and `choices`.
 - **`decide_review({ id, choice, note? })`**: the confirmation rule.
-  - It is `dangerous: true` and **profile-only** (`server/lib/agent/profile.ts`): it is not in
+  - It is `dangerous: true` and **profile-only** (`packages/core/src/lib/agent/profile.ts`): it is not in
     `agentTools`, so **MCP never sees it**.
   - Headless runs never get it (`classifyForHeadless` → exclude).
   - **Every call pauses for Tony's confirmation**: the inline card in the app, or a 👍 over

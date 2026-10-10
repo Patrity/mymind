@@ -33,7 +33,7 @@ A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and
 │  barge-in: stops playback + sends {type:'interrupt'} on WS   │
 └──────────────────┬───────────────────────────────────────────┘
                    │ ONE WebSocket  /api/voice/ws
-┌ Nitro: Voice Orchestrator  server/lib/voice/orchestrator.ts ─┐
+┌ Nitro: Voice Orchestrator  packages/core/src/lib/voice/orchestrator.ts ─┐
 │  utterance audio ──► STT provider ──► transcript text        │
 │         ▲                                    │               │
 │  (abort on barge-in)                         ▼               │
@@ -46,15 +46,15 @@ A `/voice` (now `/agent`) page where Tony talks to MyMind with full barge-in and
 ```
 
 1. **Client voice UI** (`app/composables/useVoice.ts`) — mic capture, Silero VAD, WAV encoding, WebSocket, PCM playback + barge-in. Owns when the user is speaking.
-2. **Voice orchestrator** (`server/lib/voice/orchestrator.ts`) — STT → `runAgent` → segmented, sanitized TTS (see [Speech pipeline](#speech-pipeline-cycle-60)); AbortSignal propagation on barge-in; streams audio + transcript + tool/reasoning/usage messages back. Owns the pipeline.
-3. **Providers** (`server/lib/voice/providers/`) — the `SttProvider` interface over an OpenAI-spec local endpoint. Owns which STT model. TTS no longer lives here: it is `speakWithPreset` in `server/lib/voice/speak.ts`, resolved from the registry's `tts` assignment. Swapping either is a registry edit, not an env change.
-4. **Agent core** (`server/lib/agent/`) — `runAgent` (AI SDK `streamText`), tool registry, prompt, bus, undo. Owns the brain. Voice and text turns run through the runtime (see [agent-runtime.md](agent-runtime.md)); STT happens in the socket before the run; TTS is per-subscriber and only reaches the socket that asked. (This line used to say the loop was "shared by voice + chat + cron" — false: `/api/agent/chat` has no caller and no cron ran the agent. Since cycle 73 the only non-typed caller is `wake()`.)
+2. **Voice orchestrator** (`packages/core/src/lib/voice/orchestrator.ts`) — STT → `runAgent` → segmented, sanitized TTS (see [Speech pipeline](#speech-pipeline-cycle-60)); AbortSignal propagation on barge-in; streams audio + transcript + tool/reasoning/usage messages back. Owns the pipeline.
+3. **Providers** (`packages/core/src/lib/voice/providers/`) — the `SttProvider` interface over an OpenAI-spec local endpoint. Owns which STT model. TTS no longer lives here: it is `speakWithPreset` in `packages/core/src/lib/voice/speak.ts`, resolved from the registry's `tts` assignment. Swapping either is a registry edit, not an env change.
+4. **Agent core** (`packages/core/src/lib/agent/`) — `runAgent` (AI SDK `streamText`), tool registry, prompt, bus, undo. Owns the brain. Voice and text turns run through the runtime (see [agent-runtime.md](agent-runtime.md)); STT happens in the socket before the run; TTS is per-subscriber and only reaches the socket that asked. (This line used to say the loop was "shared by voice + chat + cron" — false: `/api/agent/chat` has no caller and no cron ran the agent. Since cycle 73 the only non-typed caller is `wake()`.)
 
 ## Agent core — `runAgent`
 
 > **Superseded — read [agent.md](agent.md#entry-point-runagent) instead.** This section describes the cycle-18 shape of `runAgent`. The signature, the step budget (16, not 6), the tool registry (20 tools plus `exec` and the subagents, not 11), the profile/context/failover behaviour and the `usage` event have all moved on. Kept for the four-layer framing only.
 
-`server/lib/agent/run.ts` is the single entry point for all AI reasoning surfaces:
+`packages/core/src/lib/agent/run.ts` is the single entry point for all AI reasoning surfaces:
 
 ```ts
 export async function* runAgent(
@@ -65,7 +65,7 @@ export async function* runAgent(
 
 Wraps Vercel AI SDK `streamText` with:
 - `@ai-sdk/openai-compatible` model pointed at the local `reasoning` env (qwen via vLLM).
-- `server/lib/agent/tools.ts` registry adapted to AI SDK `tool()` via `toAiSdkTools()`.
+- `packages/core/src/lib/agent/tools.ts` registry adapted to AI SDK `tool()` via `toAiSdkTools()`.
 - `stopWhen: stepCountIs(VOICE_TUNING.agent.maxSteps)` (default 6).
 - Full `AbortSignal` support (barge-in propagates to the model stream).
 
@@ -115,7 +115,7 @@ deltas → raw buffer → segment(raw) → toSpeakable(segment) → SpeechPipeli
 
 **The sanitizer must never leak into the transcript.** `assistantText` — what is persisted to `conversation_messages.content` and rendered by `<MdView>` — stays raw markdown. `toSpeakable` output is consumed **only** by the synth. Same display/model split the `reasoning` channel already makes. Verified end to end and mutation-tested both directions.
 
-### `server/lib/voice/speakable.ts` — `toSpeakable(text): string`
+### `packages/core/src/lib/voice/speakable.ts` — `toSpeakable(text): string`
 
 Pure, no I/O, unit-tested. The system prompt *asks* the model not to emit markdown in speak mode; this is what **enforces** it (the cycle-37 precedent: never trust the model with a formatting invariant). It strips or rewrites emphasis (`**`, `__`, `*`, `_`), headings, blockquotes, rules, list bullets (ordered items keep their number), links → their label, inline code, fenced code blocks (never read aloud), and tables; and it expands dotted identifiers rather than spelling them — `192.168.2.25` → "one ninety two dot one sixty eight dot two dot twenty five", `v1.2` → "version one point two".
 
@@ -123,7 +123,7 @@ Pure, no I/O, unit-tested. The system prompt *asks* the model not to emit markdo
 - The IPv4 rule is ordered **before** the version rule; the version regex would otherwise mangle a 3+-part dotted number.
 - **Known limit:** a 4-part dotted number that is not a real address (`1.2.3.4`) is still matched by the IPv4 rule and spoken as one — there is no 0–255 validation. Deliberate for this app's domain.
 
-### `server/lib/voice/segment.ts` — `segment()` + `SpeechChunker`
+### `packages/core/src/lib/voice/segment.ts` — `segment()` + `SpeechChunker`
 
 Pure, unit-tested. Replaces `SentenceChunker`'s `/[^.!?]*[.!?]+(\s|$)/g`, which split on **every** period — so `192.168.2.25` became four separate TTS calls with a seam and a network round-trip between each, in an app whose agent talks about IPs, versions and dotted filenames constantly. That regex was the audible "unnatural pause".
 
@@ -138,7 +138,7 @@ Pure, unit-tested. Replaces `SentenceChunker`'s `/[^.!?]*[.!?]+(\s|$)/g`, which 
 
 `SpeechChunker` keeps `SentenceChunker`'s exact `push(delta): string[]` / `flush(): string[]` signature, which is why the orchestrator's call sites were untouched. It accumulates raw deltas, segments the **raw** buffer, and maps each completed segment through `toSpeakable`. Its constructor is now `(minChars = 140, maxChars = 200, firstMaxChars = 60)`.
 
-### `server/lib/voice/pipeline.ts` — `SpeechPipeline` (2026-08-28)
+### `packages/core/src/lib/voice/pipeline.ts` — `SpeechPipeline` (2026-08-28)
 
 `orchestrator.ts` used to `await speak(chunk)` per segment — strictly sequential, each full network round trip completing before the next began. `SpeechPipeline` instead starts synthesis for up to `concurrency` segments **concurrently**, while still **emitting audio strictly in segment order** (out-of-order emission would scramble the sentence — only the *starting* of synthesis is concurrent, draining is a strict serial queue).
 
@@ -166,7 +166,7 @@ Synthesis is `POST /v1/audio/speech`, **multipart**, with `text` (not `input`), 
 `ref_audio` + `ref_text`. The response is **headerless PCM, s16le mono**, streamed, with the rate in
 the `x-sample-rate` header — never assume a constant.
 
-`server/lib/voice/breeze.ts` is the only module that knows this wire format.
+`packages/core/src/lib/voice/breeze.ts` is the only module that knows this wire format.
 
 ### Facts that are not recoverable from a response
 
@@ -193,7 +193,7 @@ These are enforced before dispatch because the rig cannot tell you about them:
 ### One request at a time
 
 Breeze serves a single inference and answers **409** to anything concurrent.
-`server/lib/voice/breeze-queue.ts` is the app-wide gate: every caller holds a slot for the whole
+`packages/core/src/lib/voice/breeze-queue.ts` is the app-wide gate: every caller holds a slot for the whole
 lifetime of its stream, with `agent` priority jumping ahead of `studio` and FIFO within a priority.
 
 This is also why `VOICE_TUNING.tts.pipelineConcurrency` is **pinned at 1** and `SpeechPipeline`
@@ -241,7 +241,7 @@ it a real clip) in the studio and the agent inherits the consistency. A locked p
 **pure clone** — instruction dropped, cfg 1 — which is decided in `presetToRequest` by
 `ref_source`, not by the agent. See [Locking a designed voice](voice-studio.md#locking-a-designed-voice).
 
-## Tuning (`server/lib/voice/tuning.ts`)
+## Tuning (`packages/core/src/lib/voice/tuning.ts`)
 
 Server-side runtime knobs live here — no SSH, no rebuild-to-tune. As of 2026-08-28 this holds only the groups something actually reads; `vad`, `turn`, `bargeIn`, `tts.provider` and `tts.playbackRate` used to live here too but had **zero server-side readers** and were removed rather than left looking authoritative (that VAD/barge-in/playback tuning is genuinely client-side — see below):
 

@@ -23,7 +23,7 @@ The low-friction inbox: anything captured lands in `/input` and is organized aft
 
 ## What else lands in `/input`
 Capture is not the only inlet, which is why triage has a sweeper and not just a post-capture hook:
-- MCP `quick_capture` → `/input/<slug>.md` (`server/lib/agent/tools.ts`).
+- MCP `quick_capture` → `/input/<slug>.md` (`packages/core/src/lib/agent/tools.ts`).
 - MCP `save_document` with no `project` → falls through to `/input`.
 - Any direct `POST /api/documents` with an `/input/…` path.
 

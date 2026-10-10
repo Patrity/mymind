@@ -12,7 +12,7 @@ How machine clients authenticate to MyMind, how to mint/revoke their tokens, and
 
 ## Token model
 
-`api_tokens` (`server/db/schema/api-tokens.ts`): `id`, `name`, `token_hash` (sha256 hex, unique), `last_four` (non-secret display hint — last 4 chars of the minted token; **null** for legacy hand-inserted rows, which render as `mm_…????`), `last_used_at`, `created_at`, `revoked_at`.
+`api_tokens` (`packages/core/src/db/schema/api-tokens.ts`): `id`, `name`, `token_hash` (sha256 hex, unique), `last_four` (non-secret display hint — last 4 chars of the minted token; **null** for legacy hand-inserted rows, which render as `mm_…????`), `last_used_at`, `created_at`, `revoked_at`.
 
 Tokens are `mm_<base64url>` (`generateToken()`), stored only as their sha256 hash. The plaintext is shown **once** at mint and never persisted or logged.
 

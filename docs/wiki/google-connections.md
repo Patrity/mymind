@@ -20,8 +20,8 @@ Setup: [`DEPLOYMENT.md` §20](../DEPLOYMENT.md).
 
 - better-auth `socialProviders.google` (only when `NUXT_GOOGLE_CLIENT_ID` / `NUXT_GOOGLE_CLIENT_SECRET`
   are set), used **only via `linkSocial`** from Settings → Connections. Options live in
-  `server/lib/google/auth-options.ts`: `accessType: 'offline'`, `prompt: 'consent'`, the scope list
-  from `shared/utils/google-scopes.ts`, `disableSignUp`, `disableIdTokenSignIn`, `disableImplicitLinking`,
+  `packages/core/src/lib/google/auth-options.ts`: `accessType: 'offline'`, `prompt: 'consent'`, the scope list
+  from `packages/core/src/shared/utils/google-scopes.ts`, `disableSignUp`, `disableIdTokenSignIn`, `disableImplicitLinking`,
   `disableDefaultScope`, plus a `refreshAccessToken` override that detects `invalid_grant`.
 - **No Google sign-in:** a `hooks.before` rejects `/sign-in/social` (403) — a linked Google account can
   never log anyone in. `disabledPaths` removes `/get-access-token`, `/refresh-token`, `/account-info`
@@ -41,7 +41,7 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
 `last_error`, `last_used_at`, timestamps. Written by better-auth `databaseHooks.account.create/update.after`
 (a re-link updates the account row → status back to `ok`).
 
-## Server modules (`server/lib/google/`)
+## Server modules (`packages/core/src/lib/google/`)
 
 | module | job |
 |---|---|
@@ -84,7 +84,7 @@ provider; default from the email domain, editable), `email`, `status` (`ok` / `n
   `calendar_guest_event`, `calendar_rsvp`; `calendar_find_free_time` does not) — and `outbound`
   (was `egress`) — the call sends model-chosen text where Tony isn't watching: `web_fetch`,
   `web_search`, `research_web`, the job/wake tools `create_job`, `edit_job`, `run_job`,
-  `schedule_wake`, and the skill writers `create_skill`, `edit_skill` (jobs follow skills unwatched). `buildAiTools` keeps one flag per run (`server/lib/agent/ai-tools.ts`):
+  `schedule_wake`, and the skill writers `create_skill`, `edit_skill` (jobs follow skills unwatched). `buildAiTools` keeps one flag per run (`packages/core/src/lib/agent/ai-tools.ts`):
   - **Seeded across turns.** `runAgent` (`run.ts`) starts the run tainted iff the history the model
     will actually see — after `applyHistoryPolicy`, the same policed list the prompt is built from —
     holds a `taints` record whose result is still present and produced content

@@ -117,7 +117,7 @@ To close that, a Nitro global middleware (`oauth-consent-guard.ts`) intercepts `
 
 ### Data model — migration 0029
 
-Three better-auth-managed tables in `server/db/schema/auth.ts`, alongside the existing `user`/`session`/`account`/`verification`:
+Three better-auth-managed tables in `packages/core/src/db/schema/auth.ts`, alongside the existing `user`/`session`/`account`/`verification`:
 
 - `oauth_application` — DCR-registered clients (`client_id`/`client_secret`, `redirect_urls`, `type`, `disabled`).
 - `oauth_access_token` — access + refresh tokens (`access_token_expires_at`, `refresh_token_expires_at`, `client_id` → `oauth_application.client_id`, `user_id`, `scopes`); cascade-deletes with the owning client/user.
@@ -138,12 +138,12 @@ curl -si -X POST https://brain.costanzoclan.com/api/mcp | rg -i 'www-authenticat
 ## Server `instructions` preamble
 Added in cycle 40: `new McpServer(info, { instructions: MCP_INSTRUCTIONS })` passes a server-level preamble (verified supported by the SDK's `ServerOptions.instructions`; exported as `MCP_INSTRUCTIONS` from `server/lib/mcp/server.ts` so `test/agent-tools.test.ts` can assert on it). The preamble establishes the second-brain workflow — search before answering, persist durable facts, file under projects, `sync_document` when the agent holds the file (probe with `local_hash` first to skip the transfer when nothing changed) or surgical `edit_document`/`edit_section` otherwise — so agents reliably reach for MyMind tools rather than answering from their own recollection. On undo it says one thing, and it is the thing true for its reader: **"There is no undo tool here — get writes right the first time."** Cycle 53 shipped an earlier line ("most writes are undoable; an undo can decline, so check the result") and the final whole-branch review cut it: `MCP_INSTRUCTIONS` is consumed only by `buildMcpServer`, and an MCP client cannot invoke undo at all (next paragraph), so that line described a result its only audience can never obtain. Two tests hold the line honest (`test/agent-tools.test.ts`): the preamble must not contain `undoable`/`reversible`, must contain "no undo tool", and must stay ≤ 998 chars — it is prepended to every MCP session, so it earns its tokens or it goes. The undo *guards* below are real; they are real for the in-app agent surface, which is where they are documented.
 
-**Undo does not exist on the MCP surface at all.** `buildMcpServer` (`server/lib/mcp/server.ts`) registers each tool's handler and returns only `{ content: [{ type: 'text', text: JSON.stringify(exec.result) }] }` — it never calls `registerUndo(exec.undo)`, so no undo token is ever handed to an MCP client. There is no `undo` tool anywhere in `agentTools`, and the only way to redeem a token, `runUndo` via `POST /api/agent/undo`, is a plain REST route an MCP session has no way to call. So every CAS/`updatedAt` guard described in this page is real for the **in-app agent surface only** (`server/lib/agent/ai-tools.ts` registers the token on every mutating call; `app/pages/agent/index.vue` and `app/pages/galaxy.vue` redeem it through `useUndo()`/`app/composables/useUndo.ts`, which POSTs that same route from inside the app). An MCP client — Claude Code, the MCP Inspector, claude.ai's connector — can call `edit_document` and get back a receipt, but it structurally cannot ever call undo on it. This is pre-existing (the gap predates cycle 53), not something that cycle introduced or closed. If an `undo` tool is ever exposed over MCP, the preamble line above is the first thing to revisit (there's a comment on `buildMcpServer` saying so).
+**Undo does not exist on the MCP surface at all.** `buildMcpServer` (`server/lib/mcp/server.ts`) registers each tool's handler and returns only `{ content: [{ type: 'text', text: JSON.stringify(exec.result) }] }` — it never calls `registerUndo(exec.undo)`, so no undo token is ever handed to an MCP client. There is no `undo` tool anywhere in `agentTools`, and the only way to redeem a token, `runUndo` via `POST /api/agent/undo`, is a plain REST route an MCP session has no way to call. So every CAS/`updatedAt` guard described in this page is real for the **in-app agent surface only** (`packages/core/src/lib/agent/ai-tools.ts` registers the token on every mutating call; `app/pages/agent/index.vue` and `app/pages/galaxy.vue` redeem it through `useUndo()`/`app/composables/useUndo.ts`, which POSTs that same route from inside the app). An MCP client — Claude Code, the MCP Inspector, claude.ai's connector — can call `edit_document` and get back a receipt, but it structurally cannot ever call undo on it. This is pre-existing (the gap predates cycle 53), not something that cycle introduced or closed. If an `undo` tool is ever exposed over MCP, the preamble line above is the first thing to revisit (there's a comment on `buildMcpServer` saying so).
 
-**Where the guards live** (in-app surface): `edit_document`/`edit_section`/`update_document` and `sync_document`'s update branch CAS the content restore against the generated `content_hash` column (`casUpdateContent`); `move_document`, `update_document`'s metadata fields, and `sync_document`'s adopt/unchanged **and** update branches read-then-compare on `updatedAt`/`path` — an accepted TOCTOU, per the code's own comments, since no CAS primitive exists for those fields; `sync_document`'s create branch and the three retire tools (`delete_document`/`delete_task`/`forget_memory`) have no changed-since guard at all — their undo restores unconditionally once past the token check. `runUndo` (`server/lib/agent/undo.ts`) itself refuses outright on an expired/spent token, and wraps the closure invocation in a `try/catch` so a throwing undo answers `{ ok: false, reason }` instead of a raw 500 — a throw consumes the token (unlike a refusal, which stays retryable), because a thrown error is not something the caller can reconcile and retry into success. It is concretely reachable: `documents_path_live_uidx` is a unique index on live paths, so a `move_document`/`update_document` undo that writes the old path back throws a unique violation if something else has since taken that path. Both client call sites (`app/pages/agent/index.vue`, `app/pages/galaxy.vue`) also `try/catch` the redeem so a transport failure surfaces as a toast rather than an unhandled rejection.
+**Where the guards live** (in-app surface): `edit_document`/`edit_section`/`update_document` and `sync_document`'s update branch CAS the content restore against the generated `content_hash` column (`casUpdateContent`); `move_document`, `update_document`'s metadata fields, and `sync_document`'s adopt/unchanged **and** update branches read-then-compare on `updatedAt`/`path` — an accepted TOCTOU, per the code's own comments, since no CAS primitive exists for those fields; `sync_document`'s create branch and the three retire tools (`delete_document`/`delete_task`/`forget_memory`) have no changed-since guard at all — their undo restores unconditionally once past the token check. `runUndo` (`packages/core/src/lib/agent/undo.ts`) itself refuses outright on an expired/spent token, and wraps the closure invocation in a `try/catch` so a throwing undo answers `{ ok: false, reason }` instead of a raw 500 — a throw consumes the token (unlike a refusal, which stays retryable), because a thrown error is not something the caller can reconcile and retry into success. It is concretely reachable: `documents_path_live_uidx` is a unique index on live paths, so a `move_document`/`update_document` undo that writes the old path back throws a unique violation if something else has since taken that path. Both client call sites (`app/pages/agent/index.vue`, `app/pages/galaxy.vue`) also `try/catch` the redeem so a transport failure surfaces as a toast rather than an unhandled rejection.
 
 ## Tools (`server/lib/mcp/server.ts`)
-The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`server/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. The table below is not exhaustive — the live registry is 38 tools (`test/agent-tools.test.ts` pins the full name list); it also includes the `use_skill`/`create_skill`/`edit_skill`/`delete_skill` progressive-disclosure tools documented in [`agent-skills.md`](agent-skills.md). All of them are currently non-dangerous.
+The MCP surface is **auto-derived**: `server.ts` iterates `agentTools` (`packages/core/src/lib/agent/tools.ts`) and registers every **non-`dangerous`** tool — no per-tool MCP wiring. `test/mcp-parity.test.ts` asserts the MCP set == the non-dangerous agent set. The table below is not exhaustive — the live registry is 38 tools (`test/agent-tools.test.ts` pins the full name list); it also includes the `use_skill`/`create_skill`/`edit_skill`/`delete_skill` progressive-disclosure tools documented in [`agent-skills.md`](agent-skills.md). All of them are currently non-dangerous.
 
 ### `kind` policy
 Each tool carries a `kind` field that controls gating + description copy:
@@ -199,7 +199,7 @@ reorder/delete — see [`tasks-projects.md`](tasks-projects.md)), so `tasks.stat
 as a stored value. The `status` param on all three tools is unchanged — same closed
 `z.enum(['todo','in_progress','completed','blocked'])`, same required/optional shape, nothing
 removed or renamed — but it is now a **fixed alias vocabulary** resolved through
-`server/lib/tasks/status-kind.ts`, not a column read/write:
+`packages/core/src/lib/tasks/status-kind.ts`, not a column read/write:
 `create_task(status: 'todo')`/`edit_task(id, { status: 'todo' })` file the task into **the default
 column of the matching kind** (`todo`→`open`, `in_progress`→`started`, `completed`→`done`,
 `blocked`→`blocked`); `search_tasks(status: 'in_progress')` matches every task whose column's
@@ -215,12 +215,12 @@ needed for the four-value contract to hold.)
 
 **Long-doc agent workflow (cycle 40)** — agents should not round-trip the whole document body to make a small change. Instead: `read_document(id)` with no selector → outline + line/char counts; `read_document(id, { heading })` → just that section; `grep_document(id, pattern)` → locate the exact unique string; `edit_document(id, old, new)` → surgical patch. `edit_section` handles structure-aware append/replace. All mutations call `publishChange` (live-data rule) and return an `undo`.
 
-**Pure `edit-ops.ts` module** (`server/lib/documents/edit-ops.ts`) — zero-DB string helpers underlying the cycle-40 edit tools: `outline`, `findSection`, `readSection`, `documentStats`, `grepContent`, `applyReplace`, `applyEditSection`. Unit-tested; tool handlers do DB I/O around them.
+**Pure `edit-ops.ts` module** (`packages/core/src/lib/documents/edit-ops.ts`) — zero-DB string helpers underlying the cycle-40 edit tools: `outline`, `findSection`, `readSection`, `documentStats`, `grepContent`, `applyReplace`, `applyEditSection`. Unit-tested; tool handlers do DB I/O around them.
 
 ### Write receipts + typed edit failures
 
 Document writes answer with a **body-free receipt**, never an echo of the document
-(`server/lib/agent/receipt.ts`):
+(`packages/core/src/lib/agent/receipt.ts`):
 
 ```jsonc
 { "ok": true, "id": "…", "path": "/projects/x/y.md", "title": "…", "project": "x",
@@ -250,10 +250,10 @@ Every document tool that can fail — `read_document`, `grep_document`, `edit_do
 a failure with the **same shape**: `{ ok: false, error: <stable code> }` plus human-readable prose
 and whatever extra fields that particular code carries. The prose field is `message` everywhere
 **except** `sync_document`'s three divergence errors (`adopt_conflict`, `hash_mismatch`,
-`expected_hash_required`), whose `divergenceReport` (`server/lib/agent/receipt.ts`) carries `hint`
+`expected_hash_required`), whose `divergenceReport` (`packages/core/src/lib/agent/receipt.ts`) carries `hint`
 — a next-action instruction — and no `message` at all. An agent branches on `error`, never on the
 prose (it is for a human/log, not a spelling to pattern-match). The codes
-`edit-ops.ts` produces (`server/lib/documents/edit-ops.ts`) are passed through verbatim by the
+`edit-ops.ts` produces (`packages/core/src/lib/documents/edit-ops.ts`) are passed through verbatim by the
 tool handler that calls it (`{ ok: false, ...res }`); the codes with no `edit-ops.ts` equivalent
 (`not_found`, `no_fields`, and `sync_document`'s own `path_required`/`content_required`/
 `adopt_conflict`/`hash_mismatch`/`expected_hash_required`) are owned by `tools.ts` directly. No
@@ -288,7 +288,7 @@ candidate from a single 100 KB line would reintroduce the very overflow receipts
 can immediately retry with a real heading instead of a second `read_document` round-trip — but an
 unclipped outline on a document with hundreds of headings would reinflate the failure payload back
 toward document size, the exact overflow receipts exist to prevent. `clipOutline`
-(`server/lib/documents/edit-ops.ts`) caps it at `MAX_ERROR_OUTLINE` (50) and sets
+(`packages/core/src/lib/documents/edit-ops.ts`) caps it at `MAX_ERROR_OUTLINE` (50) and sets
 `outlineTruncated: true` when the real outline is longer.
 
 **`get_document` is the one remaining unconverted outlier.** It still returns the raw document (or
@@ -356,7 +356,7 @@ the old path no longer resolves, but a probe and a sync react to that differentl
 **sync** (`content`, no `id`) against the vacated path does NOT return `not_found` — `decideSync`'s
 `!target && !input.id → { kind: 'create' }` falls through and it silently creates a SECOND
 document at the old path, forking the doc (this is the frozen spec's intended create-on-no-match
-behaviour, asserted by `server/lib/agent/sync.test.ts`, not a bug). This is exactly why a file
+behaviour, asserted by `packages/core/src/lib/agent/sync.test.ts`, not a bug). This is exactly why a file
 should carry `mymind_id` in its frontmatter after its first sync: passing `id` is what makes a
 later rename relocate the existing document instead of forking a new one at whatever path the
 file used to live at.
@@ -379,7 +379,7 @@ via a raw `db.update()` that bypasses `updateDoc`.
 
 ### Session search + transcript read (cycle 50)
 
-MyMind ingests every Claude Code session (transcript messages + tool events, project-associated) and already ran hybrid search over sessions/messages for the web UI (`server/services/session-search.ts`) — cycle 50 wraps that as four `kind:read` MCP tools, plus a new bounded-read service (`server/services/session-read.ts`) so an agent can actually consume a hit instead of just locating it. Zero migration, zero new UI — the web still has global session search + `/sessions/[id]`.
+MyMind ingests every Claude Code session (transcript messages + tool events, project-associated) and already ran hybrid search over sessions/messages for the web UI (`packages/core/src/services/session-search.ts`) — cycle 50 wraps that as four `kind:read` MCP tools, plus a new bounded-read service (`packages/core/src/services/session-read.ts`) so an agent can actually consume a hit instead of just locating it. Zero migration, zero new UI — the web still has global session search + `/sessions/[id]`.
 
 - **`search_messages(query, project?, session?, limit?)`** — the primary "find a keyword or topic in past sessions" tool. Same hybrid (trigram + vector, RRF-fused) ranking as the web search, filtered to `project` slug and/or one `session` id. **Always excludes sidechain (subagent/Task) messages** — there is no `includeSidechain` param here, unlike the read tools. Each hit's `snippet` is **match-centered**: `snippetAround()` (`session-read.ts`) finds the first case-insensitive occurrence of `query` in the message and returns a ~240-char window (±120 chars) around it with `…` elision, falling back to a head-slice when the hit came from the vector lane with no literal substring match. Returns `{ results: [{ messageId, sessionId, role, snippet, createdAt, sessionTitle, project }] }` — feed a `messageId` into `read_around_message` to see the surrounding conversation.
 - **`search_sessions(query, project?, limit?)`** — session-level topic search (hybrid over `title` + `summary`) for "which session was this in" when there's no exact keyword to grep for. Returns `{ results: [{ sessionId, title, snippet, project, startedAt, messageCount }] }` — feed a `sessionId` into `read_session` to page the transcript.
@@ -400,7 +400,7 @@ Registered via `server.registerTool(name, { description, inputSchema }, handler)
 
 `list_documents`, `search_docs`, `search_tasks`, and `search_projects` return **summaries**, never full bodies: `list_documents`/`search_docs` items omit `content`; `search_tasks` items omit `description`; `search_projects` items omit `aliases`/`localPaths`/`pathPrefixes`. Document bodies come from the by-id readers — `get_document`, `read_document` (outline/section/window), `grep_document` — never from a list/search result. Each tool's `description` states this explicitly so an agent doesn't conclude a document is empty.
 
-All four take `limit`/`offset` and return an envelope: `{ items, total, hasMore }`. Default page size is **25**, max **100** (`server/lib/agent/paging.ts`, `clampPaging`/`buildPage`).
+All four take `limit`/`offset` and return an envelope: `{ items, total, hasMore }`. Default page size is **25**, max **100** (`packages/core/src/lib/agent/paging.ts`, `clampPaging`/`buildPage`).
 
 - For `search_docs`, `total` counts **candidate matches considered** (the fused trigram+vector RRF candidate pool, capped ~50 per lane) — it is not the size of the document corpus, and it is not guaranteed to equal the true number of matching documents.
 - For `list_documents`/`search_tasks`/`search_projects`, `total` is an exact `count(*)` over the same filter as the returned rows (built from the identical conditions array), so it can never disagree with a full page-through.

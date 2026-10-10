@@ -23,7 +23,7 @@ attempt#1 → ok`. See [`ai-providers.md`](ai-providers.md).
 
 ```
 inbound request ─┐
-  cron job  ──────┤  withSpan(input, fn)  /  recordEvent(input)     server/lib/observability/record.ts
+  cron job  ──────┤  withSpan(input, fn)  /  recordEvent(input)     packages/core/src/lib/observability/record.ts
   agent turn ─────┤    → AsyncLocalStorage carries the active span (trace_id + parent_id)
   model attempt ──┤    → buffered, flushed every ~1s, FIRE-AND-FORGET (never throws into the caller)
   tool call ──────┘    → request/response sanitized at the choke point (redact.ts)
@@ -36,7 +36,7 @@ inbound request ─┐
    sidebar Activity ●N badge   ·   new-error toast   (both gated by settings flags)
 ```
 
-## Storage — `activity_log` (`server/db/schema/activity-log.ts`, migration `0014_groovy_darwin`)
+## Storage — `activity_log` (`packages/core/src/db/schema/activity-log.ts`, migration `0014_groovy_darwin`)
 
 One row per captured span. Key columns: `id`, `trace_id` (the root operation), `parent_id`
 (self-ref nesting), `kind` (`inbound|job|model|attempt|tool`), `name`, `status`
@@ -47,7 +47,7 @@ One row per captured span. Key columns: `id`, `trace_id` (the root operation), `
 `activity_unacked_error_idx` on `(acked_at) WHERE status='error' AND acked_at IS NULL` (the
 badge-count hot path).
 
-## The recorder — `server/lib/observability/`
+## The recorder — `packages/core/src/lib/observability/`
 
 - **`record.ts`** — `createRecorder(deps)` (pure, dependency-injected: `sink`/`publish`/`notify`/
   `now`/`newId`) returns `{ recordEvent, withSpan, flush }`. `withSpan(input, fn)` opens a span,
@@ -74,8 +74,8 @@ badge-count hot path).
 | Seam | Where | Rows |
 |---|---|---|
 | Model failover | `withFailoverOver` (`ai/registry/resolve.ts`) | one `attempt` row per model tried (ok=info / fail=`status:error`+`severity:warn`); a `model` `:all-failed` (`severity:error`) when the chain is exhausted. **A cancelled call is not a failure**: an `AbortError` records a single `status:warn` / `severity:info` attempt row (`meta.cancelled`), emits **no** `:all-failed`, stops the chain, and rethrows the original error |
-| Agent reasoning | `server/lib/agent/run.ts` loop | one `attempt` row per reasoning model tried; `model` `:agent-all-failed` on exhaustion |
-| Agent tools | `server/lib/agent/ai-tools.ts` (`buildAiTools` handler wrap) | one `tool` row per call (name + sanitized args), nested under the turn |
+| Agent reasoning | `packages/core/src/lib/agent/run.ts` loop | one `attempt` row per reasoning model tried; `model` `:agent-all-failed` on exhaustion |
+| Agent tools | `packages/core/src/lib/agent/ai-tools.ts` (`buildAiTools` handler wrap) | one `tool` row per call (name + sanitized args), nested under the turn |
 | Cron jobs | the `server/tasks/*.ts` crons | one `job` row per run (liveness, always) + a `:summary` child carrying the service's return (`{proposed,skipped,…}`) **only when the run did real work** (`recordJobSummary` → `jobDidWork`: any non-`remaining` counter > 0). All-zero no-op ticks are suppressed so the feed doesn't read as constant re-embedding/churn |
 | Enrichment | `server/services/enrichment.ts` | `enrich-input:parse-failed` (warn), `:queued` (info), `:doc-error` (error) — the old swallowed `console.warn` is now a visible row |
 | Inbound | `server/plugins/observe-requests.ts` (Nitro `request`/`afterResponse`) | one flat `inbound` row per authed `/api/**` request (method/path/status/who/duration, **metadata only**). Skips `/api/auth|share|i|events|activity` (no self-logging loop) |
@@ -89,7 +89,7 @@ live in settings.
 
 ## UI + live
 
-- `activity` is a `ResourceName` (`shared/types/live.ts`); the recorder's `publishChange` rides
+- `activity` is a `ResourceName` (`packages/core/src/shared/types/live.ts`); the recorder's `publishChange` rides
   the existing `/api/events` SSE. `app/utils/live-dispatch.ts` invalidates `['activity','list']`
   + `['activity','count']`.
 - **`/activity`** (`app/pages/activity/index.vue`) — live list (time · kind · name · status ·

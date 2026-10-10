@@ -152,7 +152,7 @@ granted track's label read back as **MacBook Pro Microphone (Built-in)**.
 ## The four modes are derived, never stored
 
 Breeze picks its prompt template from **which fields are populated**. `presetMode()` in
-`shared/types/voice-presets.ts` mirrors that exactly, and there is deliberately no `mode` column —
+`packages/core/src/shared/types/voice-presets.ts` mirrors that exactly, and there is deliberately no `mode` column —
 a stored mode can contradict its fields, a derived one cannot.
 
 | Mode | Instruction | Reference clip | What it is |
@@ -277,7 +277,7 @@ A reference clip consumes the same prompt budget as the text, so a clone-backed 
 assumed safe at the agent's 200-character segment cap. And an overrun is invisible — the rig answers
 `200 OK` before generation begins and then produces nothing — so it has to be *measured*.
 
-`calibrateMaxSegmentChars()` (`server/services/voice-presets.ts`) runs on save:
+`calibrateMaxSegmentChars()` (`packages/core/src/services/voice-presets.ts`) runs on save:
 
 - **Reference-free presets skip the probe entirely** — they run ~40-token prompts and cannot
   approach the ceiling, so there is no point burning a rig slot to confirm the obvious. They keep
@@ -294,7 +294,7 @@ a clone can wait behind a live conversation. That is intended.
 `max_segment_chars` is `NOT NULL DEFAULT 200`, so it cannot say whether 200 was *measured* or merely
 *never touched*. `calibrated_ref_key` answers that: it holds the `ref_storage_key` the cap was
 measured against, or `NULL` for "never measured". `isCalibrated()`
-(`shared/types/voice-presets.ts`) is just `!refStorageKey || calibratedRefKey === refStorageKey`.
+(`packages/core/src/shared/types/voice-presets.ts`) is just `!refStorageKey || calibratedRefKey === refStorageKey`.
 
 `ensureCalibrated()` is the single save-path entry point, used by both `POST` and `PATCH`:
 
@@ -332,7 +332,7 @@ it.
 ## Queue priorities
 
 Breeze serves **one inference at a time** and answers 409 to anything concurrent, so every caller
-holds a slot for the whole lifetime of its stream (`server/lib/voice/breeze-queue.ts`).
+holds a slot for the whole lifetime of its stream (`packages/core/src/lib/voice/breeze-queue.ts`).
 
 | Priority | Who | Behaviour |
 |---|---|---|
@@ -591,7 +591,7 @@ Every preset mutation calls `publishChange`, and `app/utils/live-dispatch.ts` in
 | `server/api/voice/presets/[id]/lock.post.ts` | Freeze a designed voice into a render of itself; holds `LOCK_PASSAGE`. |
 | `server/api/voice/presets/[id]/unlock.post.ts` | Return a locked voice to being a description. |
 | `server/lib/voice/plan-segments.ts` | Quality vs realtime segmentation and the prompt ceiling. |
-| `server/services/voice-presets.ts` | CRUD, defaults, calibration, reference loading. |
+| `packages/core/src/services/voice-presets.ts` | CRUD, defaults, calibration, reference loading. |
 
 ### The preset-switch guard
 

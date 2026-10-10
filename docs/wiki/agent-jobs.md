@@ -41,7 +41,7 @@ captures waiting in triage, anything stale for 3+ days. Under 10 lines.
 If nothing matters, reply NO_REPLY.
 ```
 
-| Key | Default | Rules (`server/lib/agent/jobs/parse.ts`) |
+| Key | Default | Rules (`packages/core/src/lib/agent/jobs/parse.ts`) |
 |---|---|---|
 | `trigger` | required | `cron <5-field expr>` (croner), `every <n>m` / `every <n>h`, `at <ISO datetime>`, `event cc.session_end` / `event task.due`. |
 | `timezone` | `agent_timezone` setting (Settings → Bridget → **Agent timezone**), else `Intl` server zone | Must be a valid IANA zone. Stored resolved on the row; changing the setting re-derives every job without its own `timezone:` line (see [Timezone](#timezone)). |
@@ -90,7 +90,7 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 
 ## Storage (migration 0056)
 
-`server/db/schema/agent-config.ts`:
+`packages/core/src/db/schema/agent-config.ts`:
 
 | Table | Columns |
 |---|---|
@@ -101,7 +101,7 @@ a pinned model leaves the registry), and only that path posts "Job X is invalid:
 
 `agent_skills` is in the same migration; see [agent-skills.md](agent-skills.md).
 
-## Modules — `server/lib/agent/jobs/`
+## Modules — `packages/core/src/lib/agent/jobs/`
 
 | File | Responsibility |
 |---|---|
@@ -127,7 +127,7 @@ relabels it `human`. **An `agent` write never takes a job from Tony** (cycle 76 
 an `edit_job` he asked for, or a reflector edit, leaves his job `human`, so the jobs pass can
 never auto-edit it afterwards.
 
-**`setJobEnabled`** rewrites only the `enabled:` line (`shared/utils/frontmatter.ts`
+**`setJobEnabled`** rewrites only the `enabled:` line (`packages/core/src/shared/utils/frontmatter.ts`
 `setFrontmatterKey`, a targeted line replace). Every other byte is unchanged, so enabling and then
 disabling a job returns its exact original `content_hash`. Enabling goes through the full write
 path. **Disabling always succeeds**: it skips re-validation (a job pinned to a model that has
@@ -350,7 +350,7 @@ See [self-improvement.md](self-improvement.md).
 ## Delivery (cycle 75)
 
 A job's reply always lands in its thread in the app. `deliver` says where **else** it goes. This
-is resolved when the run finishes (`server/lib/channels/deliver.ts` `resolveDeliverChannels` and
+is resolved when the run finishes (`packages/core/src/lib/channels/deliver.ts` `resolveDeliverChannels` and
 `planDeliveries`), in the same transaction as the reply:
 
 | Value | Effect |
@@ -374,7 +374,7 @@ is resolved when the run finishes (`server/lib/channels/deliver.ts` `resolveDeli
 
 ## Agent tools
 
-In `server/lib/agent/tools/jobs.ts`, registered in `agentTools`, so they are also exposed on MCP
+In `packages/core/src/lib/agent/tools/jobs.ts`, registered in `agentTools`, so they are also exposed on MCP
 (`/api/mcp`, which skips only `dangerous` tools).
 
 | Tool | Kind | Headless class | Notes |
@@ -435,7 +435,7 @@ the skill-source routes).
 - **Live:** `publishChange` resource `agentJob` invalidates `['jobs']`. A job-fired run finishing
   publishes it too, so outcomes appear without a reload.
 - In the transcript a fired job shows as the wake divider, **"woken · job:<slug>: …"**, followed
-  by her reply. The origin is split on its first colon only (`shared/utils/event-origin.ts`
+  by her reply. The origin is split on its first colon only (`packages/core/src/shared/utils/event-origin.ts`
   `splitOrigin`, shared with the server's `eventModelText`, which reads "Background wake
   (job:<slug>): …" to the model). Only `state` frames stream live during a wake.
 - **Settings → Bridget** carries the **Agent timezone** field (see [Timezone](#timezone)).

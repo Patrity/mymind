@@ -9,7 +9,7 @@ MyMind is live by default: a change on one device/tab shows on another with no r
 This is the end-to-end recipe. The transport already exists — you only wire the resource in.
 
 ## How it works (the moving parts)
-- `server/utils/live-bus.ts` — `publishChange({resource, action, id})` emits a thin signal
+- `packages/core/src/utils/live-bus.ts` (`@mymind/core/utils/live-bus`) — `publishChange({resource, action, id})` emits a thin signal
   on one in-process channel.
 - `server/api/events.get.ts` — one SSE stream per tab (auth-gated).
 - `app/plugins/live.client.ts` — opens the stream (gated on `authClient.getSession()`),
@@ -21,7 +21,7 @@ This is the end-to-end recipe. The transport already exists — you only wire th
 
 ## Steps
 
-1. **Type.** Add the name to `ResourceName` in `shared/types/live.ts` (closed union).
+1. **Type.** Add the name to `ResourceName` in `packages/core/src/shared/types/live.ts` (closed union).
 
 2. **Reads.** In the resource's composable, add `useXList` (key `[resource,'list',params]`)
    and, if there's a detail view, `useXDetail(id)` (key `[resource, id]`, with
@@ -33,11 +33,13 @@ This is the end-to-end recipe. The transport already exists — you only wire th
    any in-place patching with `await refetch()`. Watch `error` (not `isFetching`) for toasts.
 
 4. **Writes.** In EVERY mutation — HTTP handlers under `server/api/**` AND background
-   services/tasks under `server/services|tasks/**` — call
+   services/tasks under `server/services/**`, `packages/core/src/services/**` or `server/tasks/**` — call
    `publishChange({ resource, action, id })` after the DB commit. `action` is
    `created | updated | deleted`. Background loops emit per item. Emit once per logical
-   write (don't double-emit across a handler + the service it calls). Import path is
-   relative to `server/utils/live-bus` — count the `../` from the file's location.
+   write (don't double-emit across a handler + the service it calls). Import path: from
+   `server/**` (outside core) import the package specifier `@mymind/core/utils/live-bus`;
+   from inside `packages/core/src/**` use a relative import — count the `../` from the
+   file's location.
 
 5. **Dispatch (only if needed).** The default invalidation covers most resources. Add an
    `OVERRIDES` entry in `app/utils/live-dispatch.ts` only for extra keys (e.g. a sidebar
