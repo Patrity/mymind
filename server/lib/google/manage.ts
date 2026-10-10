@@ -5,6 +5,7 @@ import { decryptOAuthToken } from 'better-auth/oauth2'
 import { useDb } from '../../db'
 import { account, connections } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
+import { useAuth } from '../auth'
 import type { ConnectionDTO } from '../../../shared/types/connection'
 
 export type { ConnectionDTO }

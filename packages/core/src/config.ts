@@ -1,8 +1,40 @@
 // @mymind/core config: the one piece of host-provided state core code reads instead of
 // reaching into Nuxt/Nitro runtime config directly (see global-constraints: core must never
 // import Nuxt/Nitro runtime). The app calls initCore() once at startup; core modules call
-// coreConfig() to read it. Task 2 fills CoreConfig with the exact fields core needs.
-export interface CoreConfig {}
+// coreConfig() to read it.
+//
+// CoreConfig is exactly the union of the runtime-config fields the core closure reads — no
+// speculative fields. Each field is named after the Nuxt runtimeConfig key it replaces (see
+// server/utils/core-config.ts fromRuntimeConfig, whose table test pins every source key), and is
+// typed as the old call site cast it: values pass through untouched, no coercion or defaults.
+export interface CoreConfig {
+  /** server/db/index.ts — the Postgres connection string. */
+  databaseUrl: string | undefined
+  /** server/lib/auth — better-auth signing secret. */
+  betterAuthSecret: string | undefined
+  /** server/lib/auth + lib/channels/email — the app's public origin. */
+  betterAuthUrl: string | undefined
+  /** server/lib/auth — raw value; compared via String(x) === 'true' (string at build, boolean at runtime). */
+  allowSignup: string | boolean | undefined
+  /** server/lib/google/scopes + lib/auth — Google OAuth client ('' ⇒ Google disabled). */
+  googleClientId: string
+  googleClientSecret: string
+  /** server/utils/storage — 'local' | 's3'. */
+  storageDriver: string
+  storageLocalDir: string
+  storageS3: {
+    endpoint?: string
+    region?: string
+    bucket?: string
+    accessKeyId?: string
+    secretAccessKey?: string
+  }
+  /** server/services/memory.ts createMemory. */
+  memoryAutoReviewThreshold: number
+  /** server/services/triage.ts — per-destination auto-apply bars. */
+  triageThresholds: Record<string, number>
+  triageAppendSimilarityFloor: number
+}
 
 let config: CoreConfig | undefined
 

@@ -7,6 +7,10 @@ import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+// Cycle 80: connections.ts imports useAuth explicitly (server/lib/auth), so the old
+// vi.stubGlobal('useAuth', ...) no longer reaches it — swap the impl through a module mock.
+const authStub = vi.hoisted(() => ({ impl: (): unknown => { throw new Error('useAuth not stubbed') } }))
+vi.mock('../server/lib/auth', () => ({ useAuth: () => authStub.impl() }))
 
 import { eq } from 'drizzle-orm'
 import { useDb } from '../server/db'
@@ -91,9 +95,9 @@ describe('connections (DB)', () => {
         id: accId, accountId: conn.googleSub, providerId: 'google', userId,
         refreshToken: await setTokenUtil('1//refresh', ctxFor(OLD) as never), accessToken: await setTokenUtil('ya29.at', ctxFor(OLD) as never)
       })
-      vi.stubGlobal('useAuth', () => ({ $context: Promise.resolve(ctxFor(OLD)) }))
+      authStub.impl = () => ({ $context: Promise.resolve(ctxFor(OLD)) })
       expect(await connectionDeps.tokensUndecryptable(conn)).toBe(false)
-      vi.stubGlobal('useAuth', () => ({ $context: Promise.resolve(ctxFor(NEW)) }))
+      authStub.impl = () => ({ $context: Promise.resolve(ctxFor(NEW)) })
       expect(await connectionDeps.tokensUndecryptable(conn)).toBe(true)
       // A missing account row (or a lookup failure) is "can't tell" → false.
       expect(await connectionDeps.tokensUndecryptable({ ...conn, accountId: `missing-${rand}` })).toBe(false)

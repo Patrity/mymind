@@ -3,6 +3,7 @@ import { decryptOAuthToken } from 'better-auth/oauth2'
 import { useDb } from '../../db'
 import { account, connections } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
+import { useAuth } from '../auth'
 import type { ToolsetId } from '../agent/toolsets'
 
 /** A linked Google account as the tools see it. `accountId` is the better-auth `account` row id

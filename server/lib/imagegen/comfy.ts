@@ -1,13 +1,15 @@
 // server/lib/imagegen/comfy.ts
 // ComfyUI client: POST /prompt -> poll /history -> GET /view. Never throws on an
 // expected backend failure — returns { ok:false, error } (the web_fetch convention).
+import { ofetch } from 'ofetch'
 import { buildComfyGraph, buildQwenEditGraph } from './graph'
 import { loadImageConfig } from './store'
 import type { GenerateParams, GenerateResult, ImageGenConfig } from './types'
 
-// `$fetch` is Nitro's ambient global (ofetch) — used bare here exactly like
-// server/lib/ai/embeddings.ts. Do NOT `declare const $fetch` (clashes with the
-// ambient global type). Tests stub it via vi.stubGlobal('$fetch', ...).
+// HTTP via an explicit `ofetch` import (cycle 80: no Nitro ambient `$fetch` in core). Every
+// URL is absolute (`base` is the configured ComfyUI origin), so this is exactly what Nitro's
+// `$fetch` did for these calls. Tests still stub `vi.stubGlobal('$fetch', ...)`: the vitest
+// setup file (test/setup/core-bridge.ts) routes `ofetch` to that stub.
 
 const MIME_BY_EXT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }
 function mimeFromName(name: string): string {
@@ -58,7 +60,7 @@ export async function generateImage(
     const maxWaitMs = opts.maxWaitMs ?? 180_000
 
     const graph = buildComfyGraph(resolved, config)
-    const submit = await $fetch<{ prompt_id?: string }>(`${base}/prompt`, {
+    const submit = await ofetch<{ prompt_id?: string }>(`${base}/prompt`, {
       method: 'POST', body: { prompt: graph, client_id: clientId }, signal: opts.signal
     })
     const promptId = submit?.prompt_id
@@ -69,11 +71,11 @@ export async function generateImage(
     while (true) {
       if (opts.signal?.aborted) return { ok: false, error: 'aborted' }
       if (Date.now() - start > maxWaitMs) return { ok: false, error: `image generation timed out after ${Math.round(maxWaitMs / 1000)}s` }
-      const history = await $fetch(`${base}/history/${promptId}`, { signal: opts.signal })
+      const history = await ofetch(`${base}/history/${promptId}`, { signal: opts.signal })
       const out = extractOutputImage(history, promptId)
       if (out) {
         const q = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder, type: out.type })
-        const ab = await $fetch<ArrayBuffer>(`${base}/view?${q.toString()}`, { responseType: 'arrayBuffer', signal: opts.signal })
+        const ab = await ofetch<ArrayBuffer, 'arrayBuffer'>(`${base}/view?${q.toString()}`, { responseType: 'arrayBuffer', signal: opts.signal })
         return { ok: true, buffer: Buffer.from(ab), mime: mimeFromName(out.filename), meta: { seed, width, height, steps, cfg } }
       }
       await sleep(pollIntervalMs)
@@ -102,7 +104,7 @@ export async function uploadSourceImage(
     const fd = new FormData()
     fd.append('image', new Blob([new Uint8Array(bytes)]), filename)
     fd.append('overwrite', 'true')
-    const r = await $fetch<{ name?: string; subfolder?: string }>(`${base}/upload/image`, { method: 'POST', body: fd, signal: opts.signal })
+    const r = await ofetch<{ name?: string; subfolder?: string }>(`${base}/upload/image`, { method: 'POST', body: fd, signal: opts.signal })
     if (!r?.name) return { ok: false, error: 'ComfyUI upload returned no filename' }
     return { ok: true, name: r.subfolder ? `${r.subfolder}/${r.name}` : r.name }
   } catch (err) {
@@ -132,7 +134,7 @@ export async function editImage(
     if (!up.ok) return up
 
     const graph = buildQwenEditGraph({ prompt: params.prompt, negativePrompt: params.negativePrompt, seed }, config, up.name, { quality })
-    const submit = await $fetch<{ prompt_id?: string }>(`${base}/prompt`, { method: 'POST', body: { prompt: graph, client_id: clientId }, signal: opts.signal })
+    const submit = await ofetch<{ prompt_id?: string }>(`${base}/prompt`, { method: 'POST', body: { prompt: graph, client_id: clientId }, signal: opts.signal })
     const promptId = submit?.prompt_id
     if (!promptId) return { ok: false, error: 'ComfyUI did not return a prompt_id' }
 
@@ -141,11 +143,11 @@ export async function editImage(
     while (true) {
       if (opts.signal?.aborted) return { ok: false, error: 'aborted' }
       if (Date.now() - start > maxWaitMs) return { ok: false, error: `image edit timed out after ${Math.round(maxWaitMs / 1000)}s` }
-      const history = await $fetch(`${base}/history/${promptId}`, { signal: opts.signal })
+      const history = await ofetch(`${base}/history/${promptId}`, { signal: opts.signal })
       const out = extractOutputImage(history, promptId)
       if (out) {
         const q = new URLSearchParams({ filename: out.filename, subfolder: out.subfolder, type: out.type })
-        const ab = await $fetch<ArrayBuffer>(`${base}/view?${q.toString()}`, { responseType: 'arrayBuffer', signal: opts.signal })
+        const ab = await ofetch<ArrayBuffer, 'arrayBuffer'>(`${base}/view?${q.toString()}`, { responseType: 'arrayBuffer', signal: opts.signal })
         return { ok: true, buffer: Buffer.from(ab), mime: mimeFromName(out.filename), meta: { seed, width: 0, height: 0, steps, cfg } }
       }
       await sleep(pollIntervalMs)

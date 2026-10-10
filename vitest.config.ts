@@ -20,6 +20,8 @@ export default defineConfig({
     }
   },
   test: {
+    // Cycle 80: routes legacy useRuntimeConfig/$fetch stubs to coreConfig()/ofetch — see the file.
+    setupFiles: ['test/setup/core-bridge.ts'],
     exclude: [
       '**/node_modules/**',
       '**/dist/**',

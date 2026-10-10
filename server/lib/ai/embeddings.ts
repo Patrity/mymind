@@ -10,6 +10,7 @@
  * will catch the dim-mismatch error and the normalization below can be adjusted.
  */
 
+import { ofetch } from 'ofetch'
 import { withFailover } from './registry/resolve'
 
 const DIM = 2560
@@ -30,7 +31,7 @@ export async function embed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
 
   const vectors = await withFailover('embeddings', async (m) => {
-    const raw = await $fetch(`${(m.baseURL ?? '').replace(/\/$/, '')}/embed`, {
+    const raw = await ofetch(`${(m.baseURL ?? '').replace(/\/$/, '')}/embed`, {
       method: 'POST',
       headers: m.apiKey ? { authorization: `Bearer ${m.apiKey}` } : undefined,
       body: { inputs: texts, normalize: true }

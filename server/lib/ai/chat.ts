@@ -1,4 +1,5 @@
 // server/lib/ai/chat.ts
+import { ofetch } from 'ofetch'
 import { withFailover } from './registry/resolve'
 import { AiAllFailedError } from './registry/errors'
 import type { ResolvedModel, Usage } from './registry/types'
@@ -73,7 +74,7 @@ type ChatOpts = { temperature?: number, maxTokens?: number, timeoutMs?: number }
 
 /** One chat-completions POST against one resolved model. Throws on a bad shape (see extractContent). */
 async function completeOn(m: ResolvedModel, messages: ChatMessage[], opts: ChatOpts): Promise<string> {
-  const res = await $fetch<unknown>(
+  const res = await ofetch<unknown>(
     `${(m.baseURL ?? '').replace(/\/$/, '')}/chat/completions`,
     {
       method: 'POST',

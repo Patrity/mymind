@@ -15,6 +15,7 @@ import { isRepoMirrorPath } from '../lib/documents/mirror'
 import { slugify } from '../../shared/utils/slugify'
 import type { TriageAction, TriageOutcome } from '../../shared/types/triage'
 import type { DocumentDTO } from '../../shared/types/documents'
+import { coreConfig } from '@mymind/core/config'
 
 export interface AppliedAction {
   actionRowId: string
@@ -301,7 +302,7 @@ export async function applyAppend(docId: string, action: TriageAction, autoAppli
  * degrades that to a note, which is the correct, conservative outcome here too.
  */
 export async function resolveAppendTarget(content: string): Promise<string | null> {
-  const floor = useRuntimeConfig().triageAppendSimilarityFloor as number
+  const floor = coreConfig().triageAppendSimilarityFloor as number
   const best = await nearestDocument(content)
   if (!best || best.similarity < floor) return null
   if (isRepoMirrorPath(best.path)) return null
@@ -449,7 +450,7 @@ export async function triageCapture(docId: string): Promise<TriageOutcome> {
   // sweep would burn tokens forever. The sweeper's job is coverage, not retry-until-success.
   if (!proposal) return { docId, applied: [], queued: false, skipped: 'parse-failed' }
 
-  const thresholds = useRuntimeConfig().triageThresholds as Record<TriageAction['kind'], number>
+  const thresholds = coreConfig().triageThresholds as Record<TriageAction['kind'], number>
   const routed = route(proposal, thresholds)
 
   const applied: TriageAction[] = []

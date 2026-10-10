@@ -11,6 +11,7 @@ import { resolveChain } from '../lib/ai/registry/resolve'
 import { dedupDecision, type DedupCandidate } from './memory-dedup'
 import { publishChange } from '../utils/live-bus'
 import { AUDIT_VERDICTS } from '../lib/memory/extract-v3'
+import { coreConfig } from '@mymind/core/config'
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -232,7 +233,7 @@ export interface CreateMemoryInput {
 
 export async function createMemory(input: CreateMemoryInput): Promise<MemoryDTO> {
   const db = useDb()
-  const config = useRuntimeConfig()
+  const config = coreConfig()
   const threshold = config.memoryAutoReviewThreshold as number ?? 0.75
   const scope = input.scope ?? 'user'
   const contentHash = createHash('sha256').update(input.content).digest('hex')

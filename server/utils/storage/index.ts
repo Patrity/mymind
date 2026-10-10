@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream'
 import { LocalDriver } from './local'
 import { S3Driver } from './s3'
+import { coreConfig } from '@mymind/core/config'
 
 export interface StorageDriver {
   put(stream: Readable, hint?: { contentType?: string }): Promise<{ key: string, sha256: string, size: number }>
@@ -24,7 +25,7 @@ let _driver: StorageDriver | null = null
  */
 export function storage(): StorageDriver {
   if (_driver) return _driver
-  const cfg = useRuntimeConfig()
+  const cfg = coreConfig()
   if (cfg.storageDriver === 's3') {
     const s3 = cfg.storageS3 as {
       endpoint?: string

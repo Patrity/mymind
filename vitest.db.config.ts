@@ -17,6 +17,8 @@ export default defineConfig({
     // assertions with the sweeper's stub outcome instead of theirs). Serializing file execution
     // removes the race at its root; the whole suite still runs in ~1.5s, so the cost is nil.
     fileParallelism: false,
+    // Cycle 80: routes legacy useRuntimeConfig/$fetch stubs to coreConfig()/ofetch — see the file.
+    setupFiles: ['test/setup/core-bridge.ts'],
     include: ['**/*.db.test.ts'],
     exclude: [
       '**/node_modules/**',

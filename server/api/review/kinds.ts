@@ -1,264 +1,35 @@
-import { and, eq } from 'drizzle-orm'
-import { useDb } from '../../db'
-import { reviewQueue, memories, memoryRelations, documents } from '../../db/schema'
+// The review-kind handlers live in server/lib/review/kinds.ts (cycle 80: they move into
+// @mymind/core and must not depend on h3). This module keeps the historical HTTP surface for
+// its importers: the same handler maps, with a lib ReviewKindError re-thrown as createError
+// carrying the identical statusCode/message/data. Anything else passes through untouched.
 import type { ReviewItem } from '../../db/schema'
-import { getDoc, updateDoc, moveDoc } from '../../services/documents'
-import { applyTask, applyNote, applyMemory, applyAppend } from '../../services/triage'
-import { publishChange } from '../../utils/live-bus'
-import type { TriageAction } from '../../../shared/types/triage'
-import { approveAgentAction, rejectAgentAction } from '../../lib/agent/runtime/replay'
-import { applyImprovement, rejectImprovement } from '../../lib/agent/reflect/apply'
+import {
+  approveHandlers as libApproveHandlers,
+  rejectHandlers as libRejectHandlers,
+  ReviewKindError,
+  type HandlerResult
+} from '../../lib/review/kinds'
 
-/**
- * Most handlers have nothing to report beyond success. approveTriage is the exception:
- * the caller (the approve endpoint, then the UI toast) needs to know how many of the
- * QUEUED actions actually applied — after task-11b, that should be all of them, but the
- * count must come from what really happened, not from the pre-request queue length.
- *
- * approveAgentAction is the other exception: `undoToken`/`summary` carry the replayed tool
- * call's own result back to the UI toast (undo offer + a real description instead of a generic
- * "Document updated.").
- */
-export interface HandlerResult { applied?: TriageAction[]; undoToken?: string; summary?: string }
+export { SELF_IMPROVEMENT_CONFLICT, type HandlerResult } from '../../lib/review/kinds'
 
 type Handler = (item: ReviewItem) => Promise<HandlerResult | void>
 
-interface TriageProposedRow {
-  primary: TriageAction
-  secondary: TriageAction[]
-  reasoning: string
-  queued: TriageAction[]
-  applied: TriageAction[]
-}
-
-const APPLY: Record<TriageAction['kind'], (docId: string, action: TriageAction, autoApplied?: boolean) => Promise<unknown>> = {
-  task: applyTask,
-  note: applyNote,
-  memory: applyMemory,
-  append: applyAppend
-}
-
-// ── Memory conflict kinds (memory-supersede / memory-contradict) ────────────
-
-async function approveMemoryConflict(item: ReviewItem): Promise<void> {
-  const db = useDb()
-  const p = item.proposed as {
-    newId: string
-    existingId: string
-    confidence?: number | null
-    reasoning?: string | null
-    newContent?: string | null
-    existingContent?: string | null
-  }
-
-  // accept → archive the existing (old) memory
-  await db.update(memories)
-    .set({ archivedAt: new Date(), supersededBy: p.newId, updatedAt: new Date() })
-    .where(eq(memories.id, p.existingId))
-
-  // mark the relation resolved
-  await db.update(memoryRelations)
-    .set({ status: 'resolved', resolvedAt: new Date() })
-    .where(and(eq(memoryRelations.toId, p.existingId), eq(memoryRelations.fromId, p.newId)))
-
-  await db.update(reviewQueue)
-    .set({ status: 'approved', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
-  publishChange({ resource: 'memory', action: 'updated', id: p.existingId })
-}
-
-async function rejectMemoryConflict(item: ReviewItem): Promise<void> {
-  const db = useDb()
-  const p = item.proposed as { newId: string, existingId: string }
-
-  // mark the relation resolved (archive nothing)
-  await db.update(memoryRelations)
-    .set({ status: 'resolved', resolvedAt: new Date() })
-    .where(and(eq(memoryRelations.toId, p.existingId), eq(memoryRelations.fromId, p.newId)))
-
-  await db.update(reviewQueue)
-    .set({ status: 'rejected', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
-}
-
-// ── Enrichment-doc kind (original behaviour) ─────────────────────────────────
-
-async function approveEnrichment(item: ReviewItem): Promise<void> {
-  const db = useDb()
-  const p = item.proposed as {
-    title?: string | null
-    project?: string | null
-    domain?: string | null
-    type?: string | null
-    tags?: string[] | null
-    path?: string | null
-    reasoning?: string | null
-  }
-
-  // kind='enrichment' rows are always targetKind='document' — targetId IS the document id.
-  const doc = await getDoc(item.targetId)
-  if (doc) {
-    await updateDoc(item.targetId, {
-      title: p.title ?? doc.title,
-      project: p.project ?? doc.project,
-      domain: p.domain ?? doc.domain,
-      type: p.type ?? doc.type,
-      tags: p.tags ?? doc.tags
-    })
-    if (p.path && p.path !== doc.path) {
-      try {
-        await moveDoc(item.targetId, p.path)
-      } catch {
-        // path taken — leave in place
-      }
-    }
-  }
-
-  await db.update(reviewQueue)
-    .set({ status: 'approved', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
-  publishChange({ resource: 'document', action: 'updated', id: item.targetId })
-}
-
-async function rejectEnrichment(item: ReviewItem): Promise<void> {
-  const db = useDb()
-  await db.update(reviewQueue)
-    .set({ status: 'rejected', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
-}
-
-// ── Triage kind ───────────────────────────────────────────────────────────
-//
-// One review_queue row per document; `proposed.queued` holds the action(s) that fell
-// below their auto-apply confidence threshold. Approve runs each queued action through
-// its actuator with autoApplied=false (a human decided, not the classifier). Reject
-// re-stamps documents.triaged_at — it is already set from triageCapture's claim(), but
-// stamping it again here keeps the sweeper's "don't immediately re-propose" guarantee
-// intact even if that invariant ever changes upstream.
-
-async function approveTriage(item: ReviewItem): Promise<HandlerResult> {
-  const db = useDb()
-  const p = item.proposed as TriageProposedRow
-  const applied: TriageAction[] = []
-
-  for (const action of p.queued ?? []) {
+function toHttp(handler: Handler): Handler {
+  return async (item) => {
     try {
-      // kind='triage' rows are always targetKind='document' — targetId IS the document id.
-      await APPLY[action.kind](item.targetId, action, false)
-      applied.push(action)
+      return await handler(item)
     } catch (err) {
-      // Since task-11b, task/memory/append all read the courier via getDocIncludingDeleted,
-      // so a sibling queued action having already consumed it is no longer a reason for
-      // this to throw — a throw here means a genuine actuator failure (bad payload,
-      // downstream write error). A human already approved this proposal; one action
-      // failing must not roll back the ones that succeeded or leave the row stuck pending
-      // forever, but it also must NOT be counted as applied — that's exactly the silent
-      // "approved but did nothing" failure task-11b exists to close.
-      console.warn(`[review] triage actuator ${action.kind} failed for ${item.targetId}:`, err)
+      if (err instanceof ReviewKindError) {
+        throw createError({ statusCode: err.statusCode, message: err.message, data: err.data })
+      }
+      throw err
     }
   }
-
-  await db.update(reviewQueue)
-    .set({ status: 'approved', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
-
-  return { applied }
 }
 
-async function rejectTriage(item: ReviewItem): Promise<void> {
-  const db = useDb()
-
-  // kind='triage' rows are always targetKind='document' — targetId IS the document id.
-  await db.update(documents)
-    .set({ triagedAt: new Date() })
-    .where(eq(documents.id, item.targetId))
-
-  await db.update(reviewQueue)
-    .set({ status: 'rejected', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
+function wrapAll(handlers: Record<string, Handler>): Record<string, Handler> {
+  return Object.fromEntries(Object.entries(handlers).map(([kind, h]) => [kind, toHttp(h)]))
 }
 
-// ── Self-improvement kind (cycle 76) ──────────────────────────────────────
-//
-// targetKind 'improvement', targetId = the agent_improvements row. Approve applies it through the
-// target's store as actor 'human' (CAS on the hash stored with the proposal). A CAS conflict —
-// Tony edited the target since the proposal — writes nothing: the item stays pending with its
-// `currentContent` refreshed (applyImprovement refreshed the improvement's expectedHash too), and
-// the handler throws a 409 carrying the current content (preflight Ruling 1).
-
-export const SELF_IMPROVEMENT_CONFLICT = 'Changed since proposed — reload the review'
-
-/** Another decider got there first (final review m2): nothing was written. decideReview maps the
- *  410 to `not_pending`. */
-function alreadyDecided(): Error {
-  const summary = 'This improvement was already decided.'
-  return createError({ statusCode: 410, message: summary, data: { summary } })
-}
-
-async function approveSelfImprovement(item: ReviewItem): Promise<HandlerResult> {
-  const db = useDb()
-  let res: Awaited<ReturnType<typeof applyImprovement>>
-  try {
-    res = await applyImprovement(item.targetId, 'human')
-  } catch (err) {
-    // Not a CAS conflict: the target was deleted, or the content no longer validates. Nothing was
-    // written and the item stays pending (Tony can reject it); say why instead of a bare 500.
-    const summary = `Could not apply: ${(err as Error)?.message ?? String(err)}`
-    throw createError({ statusCode: 422, message: summary, data: { summary } })
-  }
-  if (!res.ok && res.notPending) throw alreadyDecided()
-  if (!res.ok) {
-    const prev = item.proposed as Record<string, unknown> & { proposal?: Record<string, unknown> }
-    const proposed = { ...prev, currentContent: res.conflict.content, proposal: { ...prev.proposal, content: res.content } }
-    await db.update(reviewQueue).set({ proposed }).where(eq(reviewQueue.id, item.id))
-    publishChange({ resource: 'review', action: 'updated', id: item.id })
-    throw createError({
-      statusCode: 409,
-      message: SELF_IMPROVEMENT_CONFLICT,
-      data: { current: res.conflict, summary: SELF_IMPROVEMENT_CONFLICT }
-    })
-  }
-  await db.update(reviewQueue)
-    .set({ status: 'approved', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
-  return { summary: 'Improvement applied.' }
-}
-
-async function rejectSelfImprovement(item: ReviewItem): Promise<void> {
-  if (!await rejectImprovement(item.targetId)) throw alreadyDecided()
-  await useDb().update(reviewQueue)
-    .set({ status: 'rejected', resolvedAt: new Date() })
-    .where(eq(reviewQueue.id, item.id))
-  publishChange({ resource: 'review', action: 'updated', id: item.id })
-}
-
-export const approveHandlers: Record<string, Handler> = {
-  enrichment: approveEnrichment,
-  'memory-supersede': approveMemoryConflict,
-  'memory-contradict': approveMemoryConflict,
-  triage: approveTriage,
-  'agent-action': item => approveAgentAction(item),
-  'self-improvement': approveSelfImprovement
-}
-
-export const rejectHandlers: Record<string, Handler> = {
-  enrichment: rejectEnrichment,
-  'memory-supersede': rejectMemoryConflict,
-  'memory-contradict': rejectMemoryConflict,
-  triage: rejectTriage,
-  'agent-action': rejectAgentAction,
-  'self-improvement': rejectSelfImprovement
-}
+export const approveHandlers: Record<string, Handler> = wrapAll(libApproveHandlers)
+export const rejectHandlers: Record<string, Handler> = wrapAll(libRejectHandlers)

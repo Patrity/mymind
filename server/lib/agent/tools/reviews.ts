@@ -14,7 +14,7 @@ import type { AgentTool } from '../types'
 import { runUndo } from '../undo'
 import type { DecisionResult } from '../../../services/review-decisions'
 
-// Loaded on first call, not at module load: review-decisions → api/review/kinds → runtime/replay
+// Loaded on first call, not at module load: review-decisions → lib/review/kinds → runtime/replay
 // imports agentTools (tools.ts), which spreads THIS module's listReviewsTool — a static import
 // here closes that cycle and leaves listReviewsTool undefined inside agentTools.
 const decisions = () => import('../../../services/review-decisions')

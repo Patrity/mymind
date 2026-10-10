@@ -1,5 +1,6 @@
 import { connectionDeps, type Connection } from './connections'
 import { mentionsInvalidGrant, runWithRefreshProbe, type RefreshProbe } from './refresh-probe'
+import { useAuth } from '../auth'
 
 export class GoogleReconnectError extends Error {
   constructor(public connection: Connection, reason: string) {

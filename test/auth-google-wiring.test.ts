@@ -1,5 +1,5 @@
 // Cycle 79: the security options proven in server/lib/google/auth-options.test.ts only protect
-// production if server/utils/auth.ts actually wires them into the REAL useAuth() instance.
+// production if server/lib/auth (re-exported by server/utils/auth.ts) actually wires them into the REAL useAuth() instance.
 // Builds the real instance (no DB connection is opened at construction) and checks the wiring.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -8,6 +8,11 @@ vi.stubGlobal('useRuntimeConfig', () => cfg)
 
 async function freshAuth() {
   vi.resetModules()
+  // Cycle 80: resetModules also drops the core config module the setup bridge initialised, so
+  // re-init the fresh one from the same runtimeConfig (via the real mapper, as 00.core does).
+  const { initCore } = await import('@mymind/core/config')
+  const { fromRuntimeConfig } = await import('../server/utils/core-config')
+  initCore(fromRuntimeConfig(cfg))
   const mod = await import('../server/utils/auth')
   return mod.useAuth()
 }

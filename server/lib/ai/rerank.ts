@@ -9,6 +9,7 @@
  * absolute cutoff. THROWS on network/parse failure — callers choose the fallback.
  */
 
+import { ofetch } from 'ofetch'
 export interface RerankDoc { id: string; text: string }
 export interface RerankResult { id: string; score: number }
 
@@ -40,7 +41,7 @@ export async function rerank(
   model = 'Qwen3-Reranker-0.6B'
 ): Promise<RerankResult[]> {
   if (!docs.length) return []
-  const raw = await $fetch(`${baseUrl}/rerank`, {
+  const raw = await ofetch(`${baseUrl}/rerank`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: { model, query, documents: docs.map(d => d.text), return_documents: false },

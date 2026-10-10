@@ -9,11 +9,12 @@ import { loadObsConfig } from '../../observability/config'
 import { decryptSecret } from '../../ai/registry/crypto'
 import { sendResendEmail } from '../../observability/email'
 import { renderEmail, emailSubject } from './render'
+import { coreConfig } from '@mymind/core/config'
 
 /** The app's public origin (BETTER_AUTH_URL), for app-relative links in the email (M4). */
 function appOrigin(): string | undefined {
   try {
-    const url = useRuntimeConfig().betterAuthUrl as string | undefined
+    const url = coreConfig().betterAuthUrl as string | undefined
     return url ? new URL(url).origin : undefined
   } catch {
     return undefined
