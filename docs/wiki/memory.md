@@ -400,7 +400,7 @@ one.
   memory the user chose to keep. Every branch archives; nothing here deletes.
 
 **Deciding from an agent session (cycle 76, built on `feat/bridget-self-improvement`).** The
-choices each item offers come from ONE registry, `shared/review/choices.ts` `reviewChoices`. The
+choices each item offers come from ONE registry, `packages/core/src/shared/review/choices.ts` `reviewChoices`. The
 page renders its buttons from it:
 - unreviewed memories: `approve` "Mark reviewed" and `reject` "Discard";
 - conflicts: the four resolutions above;

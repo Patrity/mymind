@@ -229,7 +229,7 @@ The mode is **re-read after the Jev call**, just before applying. Drops never ca
   - the evidence quotes, with a "View the source thread" link;
   - review-reason chips (`tier`, `sensitive`, `jev_*`, `cap`, …) and Jev answers;
   - Approve and Reject.
-- **One registry of choices:** `shared/review/choices.ts` `reviewChoices(item)`. The page renders
+- **One registry of choices:** `packages/core/src/shared/review/choices.ts` `reviewChoices(item)`. The page renders
   its buttons from it, and the tools list and validate against it.
   - Most kinds: `approve` / `reject`.
   - `memory-unreviewed`: `approve` "Mark reviewed" / `reject` "Discard".
