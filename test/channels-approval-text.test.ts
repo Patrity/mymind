@@ -2,7 +2,7 @@
 // The iMessage approval question, worded per tool (cycle 76 final review m1; gmail_send branch
 // added cycle 79 review I3).
 import { describe, it, expect } from 'vitest'
-import { approvalPromptText, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX, CALENDAR_PROMPT_MAX, TITLED_PROMPT_MAX } from '../server/lib/channels/approvals'
+import { approvalPromptText, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX, CALENDAR_PROMPT_MAX, TITLED_PROMPT_MAX } from '@mymind/core/lib/channels/approvals'
 
 const FOOT = '\n👍 to approve · 👎 to deny'
 

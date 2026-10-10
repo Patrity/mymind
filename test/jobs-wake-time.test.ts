@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveWakeWhen } from '../server/lib/agent/jobs/wake-time'
+import { resolveWakeWhen } from '@mymind/core/lib/agent/jobs/wake-time'
 
 const TZ = 'America/New_York'
 const NOW = new Date('2026-10-02T12:00:00Z') // 08:00 EDT

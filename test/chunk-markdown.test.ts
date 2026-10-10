@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { chunkMarkdown, estimateTokens } from '../server/lib/chunking/chunk-markdown'
+import { chunkMarkdown, estimateTokens } from '@mymind/core/lib/chunking/chunk-markdown'
 
 const long = (word: string, tokens: number) => Array(Math.ceil(tokens)).fill(word).join(' ')
 

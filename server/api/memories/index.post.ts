@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { createMemory } from '../../services/memory'
-import { publishChange } from '../../utils/live-bus'
+import { createMemory } from '@mymind/core/services/memory'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const Body = z.object({
   content: z.string().min(1).max(2000),

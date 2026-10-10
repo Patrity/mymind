@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mergeSearchConfig } from '../server/lib/search/config'
+import { mergeSearchConfig } from '@mymind/core/lib/search/config'
 
 describe('mergeSearchConfig', () => {
   it('returns defaults for empty/null input', () => {

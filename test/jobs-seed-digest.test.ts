@@ -2,8 +2,8 @@
 // The self-improvement digest seed stays quiet unless something happened TODAY (cycle 76 final
 // review m4): one proposal left undecided must not produce a digest every night.
 import { describe, it, expect } from 'vitest'
-import { SEED_JOBS } from '../server/lib/agent/jobs/seeds'
-import { parseJob } from '../server/lib/agent/jobs/parse'
+import { SEED_JOBS } from '@mymind/core/lib/agent/jobs/seeds'
+import { parseJob } from '@mymind/core/lib/agent/jobs/parse'
 
 const digest = SEED_JOBS['self-improvement-digest']
 

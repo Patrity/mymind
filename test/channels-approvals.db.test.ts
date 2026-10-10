@@ -18,8 +18,8 @@ const ALLOWED = '+15551234567'
 const CHAT = `iMessage;-;${ALLOWED}`
 const events = vi.hoisted(() => [] as { name: string; meta?: Record<string, unknown> }[])
 
-vi.mock('../server/lib/channels/config', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/channels/config')>()
+vi.mock('@mymind/core/lib/channels/config', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/channels/config')>()
   return {
     ...actual,
     loadChannelsConfig: async () => ({
@@ -29,8 +29,8 @@ vi.mock('../server/lib/channels/config', async (orig) => {
     })
   }
 })
-vi.mock('../server/lib/observability/record', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/observability/record')>()
+vi.mock('@mymind/core/lib/observability/record', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/observability/record')>()
   return {
     ...actual,
     recordEvent: (e: { name: string; meta?: Record<string, unknown> }) => { events.push(e) },
@@ -42,17 +42,17 @@ vi.mock('../server/lib/observability/record', async (orig) => {
 import { Client } from 'pg'
 import { z } from 'zod'
 import { eq, inArray, count } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentRuns, channelApprovals, conversations } from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { blueBubblesClient, type BlueBubblesClient } from '../server/lib/channels/bluebubbles/client'
+import { useDb } from '@mymind/core/db'
+import { agentRuns, channelApprovals, conversations } from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { blueBubblesClient, type BlueBubblesClient } from '@mymind/core/lib/channels/bluebubbles/client'
 import {
   imessageApprovalChannel, replyToApprovalChannel, resolveTapback, expireApprovals, _dropWaiters, APPROVAL_TIMEOUT_MS
-} from '../server/lib/channels/approvals'
-import { catchUpTick, lastHealth, _resetCatchUp } from '../server/lib/channels/inbound'
-import type { AgentTool, ApprovalRequest } from '../server/lib/agent/types'
-import { buildAiTools } from '../server/lib/agent/ai-tools'
-import type { TapbackEvent } from '../server/lib/channels/types'
+} from '@mymind/core/lib/channels/approvals'
+import { catchUpTick, lastHealth, _resetCatchUp } from '@mymind/core/lib/channels/inbound'
+import type { AgentTool, ApprovalRequest } from '@mymind/core/lib/agent/types'
+import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
+import type { TapbackEvent } from '@mymind/core/lib/channels/types'
 import { startFakeBlueBubbles, type FakeBlueBubbles } from './fixtures/fake-bluebubbles'
 
 const db = () => useDb()

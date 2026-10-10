@@ -1,9 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { sessions, messages, toolEvents, sessSummaryState } from '../db/schema'
-import { chat } from '../lib/ai/chat'
-import { embedOne } from '../lib/ai/embeddings'
-import { publishChange } from '../utils/live-bus'
+import { useDb } from '@mymind/core/db'
+import { sessions, messages, toolEvents, sessSummaryState } from '@mymind/core/db/schema'
+import { chat } from '@mymind/core/lib/ai/chat'
+import { embedOne } from '@mymind/core/lib/ai/embeddings'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export interface SummaryResult { enriched: number, processed: number, skipped: number }
 

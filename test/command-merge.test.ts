@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { mergeCommands } from '../server/lib/commands/merge'
-import type { CommandEntry } from '../shared/types/commands'
+import type { CommandEntry } from '@mymind/core/shared/types/commands'
 
 const e = (name: string, kind: CommandEntry['kind'], over: Partial<CommandEntry> = {}): CommandEntry =>
   ({ name, description: `${name} desc`, kind, ...over })

@@ -1,12 +1,12 @@
 // server/api/voice/speak.post.ts
 // Studio synthesis. Separate from the agent socket so an audition never rides the
 // conversation's channel, and queued at STUDIO priority so it yields to a live turn.
-import { speakSegments, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../lib/voice/speak'
-import { resolvePreset, loadReferenceBytes } from '../../services/voice-presets'
-import { BreezeError, validateBreezeRequest } from '../../lib/voice/breeze'
+import { speakSegments, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '@mymind/core/lib/voice/speak'
+import { resolvePreset, loadReferenceBytes } from '@mymind/core/services/voice-presets'
+import { BreezeError, validateBreezeRequest } from '@mymind/core/lib/voice/breeze'
 import { planSegments, type SpeakMode } from '../../lib/voice/plan-segments'
-import { VOICE_TUNING } from '../../lib/voice/tuning'
-import type { SpeakOverrides } from '../../../shared/types/voice-presets'
+import { VOICE_TUNING } from '@mymind/core/lib/voice/tuning'
+import type { SpeakOverrides } from '@mymind/core/shared/types/voice-presets'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{

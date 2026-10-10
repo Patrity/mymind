@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { TreeNode } from '~~/server/services/tree'
-import type { DocumentDTO } from '~~/shared/types/documents'
+import type { TreeNode } from '@mymind/core/services/tree'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
 import { dirnameOf } from '~/lib/documents/folder-list'
 
 definePageMeta({ title: 'Documents' })

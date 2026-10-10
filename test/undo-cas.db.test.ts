@@ -12,14 +12,14 @@
 // unique path and is cleaned up in a try/finally so cleanup runs even when an assertion throws.
 process.loadEnvFile('.env')
 import { describe, it, expect, vi } from 'vitest'
-import type { ToolContext } from '../server/lib/agent/types'
+import type { ToolContext } from '@mymind/core/lib/agent/types'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { createDoc, getDoc, updateDoc, deleteDoc } from '../server/services/documents'
-import * as documentsService from '../server/services/documents'
-import { toolByName } from '../server/lib/agent/tools'
-import { registerUndo, runUndo } from '../server/lib/agent/undo'
+import { createDoc, getDoc, updateDoc, deleteDoc } from '@mymind/core/services/documents'
+import * as documentsService from '@mymind/core/services/documents'
+import { toolByName } from '@mymind/core/lib/agent/tools'
+import { registerUndo, runUndo } from '@mymind/core/lib/agent/undo'
 
 const tool = (n: string) => toolByName(n)!
 const ctx: ToolContext = { signal: new AbortController().signal }

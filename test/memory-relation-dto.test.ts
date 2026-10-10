@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { MemoryRelationDTO } from '../shared/types/memory'
+import type { MemoryRelationDTO } from '@mymind/core/shared/types/memory'
 
 // Pure logic extracted from app/pages/memories.vue
 function relationLabel(rel: MemoryRelationDTO): string {

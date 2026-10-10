@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ActivityDTO } from '~~/shared/types/activity'
+import type { ActivityDTO } from '@mymind/core/shared/types/activity'
 
 const route = useRoute()
 const { useActivityDetail } = useActivityLog()

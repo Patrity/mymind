@@ -1,8 +1,8 @@
 // test/orchestrator.test.ts
 import { describe, it, expect, vi } from 'vitest'
-import { handleUtterance, handleTurn } from '../server/lib/voice/orchestrator'
-import { resolveTurnVoice, FALLBACK_PRESET } from '../server/services/voice-presets'
-import type { VoicePresetDTO } from '../shared/types/voice-presets'
+import { handleUtterance, handleTurn } from '@mymind/core/lib/voice/orchestrator'
+import { resolveTurnVoice, FALLBACK_PRESET } from '@mymind/core/services/voice-presets'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 
 const preset: VoicePresetDTO = {
   id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,

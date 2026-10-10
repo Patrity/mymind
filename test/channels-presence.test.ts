@@ -1,11 +1,11 @@
 // Cycle 75, Task 3: in-memory presence — away until a ping, active for presenceAwayMinutes.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-vi.mock('../server/lib/channels/config', () => ({
+vi.mock('@mymind/core/lib/channels/config', () => ({
   loadChannelsConfig: vi.fn(async () => ({ presenceAwayMinutes: 10 }))
 }))
 
-import { markActive, isAway, _resetPresence, channelPresence } from '../server/lib/channels/presence'
+import { markActive, isAway, _resetPresence, channelPresence } from '@mymind/core/lib/channels/presence'
 
 const MIN = 60_000
 

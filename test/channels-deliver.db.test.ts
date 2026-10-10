@@ -17,8 +17,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 // `guard.on`: any useDb() call throws — proves a read went through the given transaction.
 const guard = vi.hoisted(() => ({ on: false }))
-vi.mock('../server/db', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../server/db')>()
+vi.mock('@mymind/core/db', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mymind/core/db')>()
   return { ...real, useDb: () => { if (guard.on) throw new Error('planDeliveries used a second pooled connection'); return real.useDb() } }
 })
 
@@ -27,8 +27,8 @@ const cfg = vi.hoisted(() => ({
   imessage: { enabled: true, defaultHandle: '+15550000081' as string | null, defaultChatGuid: 'iMessage;-;+15550000081' as string | null },
   email: { enabled: true, to: 'tony@example.test' as string | null }
 }))
-vi.mock('../server/lib/channels/config', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../server/lib/channels/config')>()
+vi.mock('@mymind/core/lib/channels/config', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mymind/core/lib/channels/config')>()
   return {
   ...real,
   // cfg.real: the real loader (used only inside a rolled-back transaction, below).
@@ -40,20 +40,20 @@ vi.mock('../server/lib/channels/config', async (importOriginal) => {
   }
 })
 const events = vi.hoisted(() => ({ calls: [] as unknown[] }))
-vi.mock('../server/lib/observability/record', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../server/lib/observability/record')>()),
+vi.mock('@mymind/core/lib/observability/record', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mymind/core/lib/observability/record')>()),
   recordEvent: (e: unknown) => { events.calls.push(e) }
 }))
 
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentConfigRevisions, agentJobs, agentRuns, conversations, settings, type AgentRun } from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { createJob } from '../server/lib/agent/jobs/store'
-import { planDeliveries, stripImageEmbeds } from '../server/lib/channels/deliver'
-import { invalidateChannelsConfig } from '../server/lib/channels/config'
-import type { NewDelivery } from '../server/lib/channels/outbox'
-import { markActive, _resetPresence } from '../server/lib/channels/presence'
+import { useDb } from '@mymind/core/db'
+import { agentConfigRevisions, agentJobs, agentRuns, conversations, settings, type AgentRun } from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { createJob } from '@mymind/core/lib/agent/jobs/store'
+import { planDeliveries, stripImageEmbeds } from '@mymind/core/lib/channels/deliver'
+import { invalidateChannelsConfig } from '@mymind/core/lib/channels/config'
+import type { NewDelivery } from '@mymind/core/lib/channels/outbox'
+import { markActive, _resetPresence } from '@mymind/core/lib/channels/presence'
 
 const PREFIX = 'chdeltest-'
 const CHAT = 'iMessage;-;+15550000082'

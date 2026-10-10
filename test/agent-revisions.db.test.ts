@@ -4,9 +4,9 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 import { randomUUID } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentConfigRevisions } from '../server/db/schema'
-import { recordRevision, listRevisions, getRevision, REVISIONS_KEPT } from '../server/lib/agent/config/revisions'
+import { useDb } from '@mymind/core/db'
+import { agentConfigRevisions } from '@mymind/core/db/schema'
+import { recordRevision, listRevisions, getRevision, REVISIONS_KEPT } from '@mymind/core/lib/agent/config/revisions'
 
 // A target id no real skill/job has — revisions carry no FK, so a random uuid scopes the test.
 const TARGET = randomUUID()

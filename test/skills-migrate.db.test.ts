@@ -3,10 +3,10 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { inArray, like, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { documents, agentSkills, agentConfigRevisions } from '../server/db/schema'
-import { migrateSkillsFromDocuments } from '../server/services/skills'
-import { splitFrontmatter } from '../shared/utils/frontmatter'
+import { useDb } from '@mymind/core/db'
+import { documents, agentSkills, agentConfigRevisions } from '@mymind/core/db/schema'
+import { migrateSkillsFromDocuments } from '@mymind/core/services/skills'
+import { splitFrontmatter } from '@mymind/core/shared/utils/frontmatter'
 
 // The dev DB is shared and holds REAL skill documents: every call here passes `onlyPaths`
 // so the move touches the fixtures alone.

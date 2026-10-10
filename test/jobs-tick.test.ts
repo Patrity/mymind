@@ -1,8 +1,8 @@
 // Pure unit test — no DB. wakeRequestFor is a pure function of (slug, jobId, spec, prompt);
 // the DB-backed scheduling behaviour around it lives in test/jobs-tick.db.test.ts.
 import { describe, it, expect } from 'vitest'
-import { wakeRequestFor } from '../server/lib/agent/jobs/tick'
-import type { JobSpec } from '../server/lib/agent/jobs/parse'
+import { wakeRequestFor } from '@mymind/core/lib/agent/jobs/tick'
+import type { JobSpec } from '@mymind/core/lib/agent/jobs/parse'
 
 const spec: JobSpec = {
   trigger: { kind: 'every', expr: '30m' },

@@ -27,7 +27,7 @@ const script = vi.hoisted(() => ({
   events: [] as { target: string; event: string }[],
   delayMs: 0
 }))
-vi.mock('../server/lib/channels/registry', () => ({
+vi.mock('@mymind/core/lib/channels/registry', () => ({
   channelFor: (id: string) => ({
     id,
     isEnabled: async () => true,
@@ -43,12 +43,12 @@ vi.mock('../server/lib/channels/registry', () => ({
 }))
 
 import { and, asc, eq, inArray } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { channelDeliveries, conversationMessages, conversations } from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { insertDeliveries, deliveriesTick, SENDING_RECLAIM_MS, type NewDelivery } from '../server/lib/channels/outbox'
-import { MAX_ATTEMPTS } from '../server/lib/channels/backoff'
-import { workerTick, _deliveriesSettled } from '../server/lib/agent/runtime/queue'
+import { useDb } from '@mymind/core/db'
+import { channelDeliveries, conversationMessages, conversations } from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { insertDeliveries, deliveriesTick, SENDING_RECLAIM_MS, type NewDelivery } from '@mymind/core/lib/channels/outbox'
+import { MAX_ATTEMPTS } from '@mymind/core/lib/channels/backoff'
+import { workerTick, _deliveriesSettled } from '@mymind/core/lib/agent/runtime/queue'
 
 const db = () => useDb()
 const T0 = new Date('2100-01-01T00:00:00Z')

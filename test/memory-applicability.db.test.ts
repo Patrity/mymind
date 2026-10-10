@@ -11,9 +11,9 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // note). Stub it to a fixed vector so this suite never depends on a homelab embeddings rig.
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
-import { useDb } from '../server/db'
-import { memories } from '../server/db/schema'
-import { createMemory, listMemories } from '../server/services/memory'
+import { useDb } from '@mymind/core/db'
+import { memories } from '@mymind/core/db/schema'
+import { createMemory, listMemories } from '@mymind/core/services/memory'
 import { sql } from 'drizzle-orm'
 
 describe('memory applicability', () => {

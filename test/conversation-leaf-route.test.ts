@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const setActiveLeaf = vi.fn()
 const setBranchLeaf = vi.fn()
 const conversationHasMessage = vi.fn()
-vi.mock('../server/services/conversations', () => ({ setActiveLeaf, setBranchLeaf, conversationHasMessage }))
+vi.mock('@mymind/core/services/conversations', () => ({ setActiveLeaf, setBranchLeaf, conversationHasMessage }))
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 vi.stubGlobal('getRouterParam', (e: { ctx: Record<string, string> }, k: string) => e.ctx[k])

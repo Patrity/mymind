@@ -1,6 +1,6 @@
 import { and, isNull, ne } from 'drizzle-orm'
-import { useDb } from '../../db'
-import { images } from '../../db/schema'
+import { useDb } from '@mymind/core/db'
+import { images } from '@mymind/core/db/schema'
 
 // Mark images for (re)enrichment. ?all=1 re-enriches everything; default only non-done.
 export default defineEventHandler(async (event) => {

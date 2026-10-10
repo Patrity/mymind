@@ -13,9 +13,9 @@
 // new-memory scoring. No automatic action on memories (spec D5).
 
 import { and, count, gte, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm'
-import { useDb } from '../db'
-import { memories } from '../db/schema'
-import { AUDIT_PROMPT_VERSION } from '../lib/memory/extract-v3'
+import { useDb } from '@mymind/core/db'
+import { memories } from '@mymind/core/db/schema'
+import { AUDIT_PROMPT_VERSION } from '@mymind/core/lib/memory/extract-v3'
 import {
   MEMORY_BACKFILL_KEY, getBackfillSetting, setBackfillState, type BackfillSetting
 } from '../lib/memory/backfill-setting'
@@ -23,7 +23,7 @@ import {
   MAX_FAILURES, auditMissing, jevMissing, needsAudit, needsJev, resolveJevCfg, scoreMemories, selectUnscoredPerPart,
   type ScoreDeps
 } from './memory-scoring'
-import { publishChange } from '../utils/live-bus'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 /** Memories per run PER PART (spec §4: 40 every 5 minutes; selected per part since final review I2,
  *  so a run touches 40–80 rows — the audit/Jev call counts stay ≤ 40 each). */

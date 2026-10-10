@@ -23,8 +23,8 @@ vi.mock('../server/services/memory-scoring', () => ({ scoreMemories }))
 const fileDocCandidate = vi.hoisted(() => vi.fn(async () => null))
 vi.mock('../server/services/memory-doc-candidates', () => ({ fileDocCandidate }))
 
-import { useDb } from '../server/db'
-import { conversations, conversationMessages, memEnrichmentState, memories } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages, memEnrichmentState, memories } from '@mymind/core/db/schema'
 import { enrichConversations } from '../server/services/memory-enrich'
 import { and, eq, inArray } from 'drizzle-orm'
 

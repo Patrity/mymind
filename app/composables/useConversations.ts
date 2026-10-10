@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { ConversationListItem, ConversationDTO, ConversationMessageDTO } from '~~/shared/types/conversation'
+import type { ConversationListItem, ConversationDTO, ConversationMessageDTO } from '@mymind/core/shared/types/conversation'
 
 export function useConversations() {
   const list = (params?: { q?: string }) => $fetch<ConversationListItem[]>('/api/conversations', { query: params })

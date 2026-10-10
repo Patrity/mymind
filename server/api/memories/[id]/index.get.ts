@@ -1,4 +1,4 @@
-import { getMemory } from '../../../services/memory'
+import { getMemory } from '@mymind/core/services/memory'
 
 // Single memory (full content/tags/scope) for the Galaxy detail pane's edit
 // form — the graph payload only carries a truncated label/preview, so the pane

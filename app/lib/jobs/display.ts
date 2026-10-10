@@ -2,7 +2,7 @@
  * Pure display helpers for the /jobs pages (cycle 74): outcome → badge colour, a run's outcome
  * from its status, times in the job's own timezone, and the Run-now toast text.
  */
-import { splitFrontmatter } from '~~/shared/utils/frontmatter'
+import { splitFrontmatter } from '@mymind/core/shared/utils/frontmatter'
 
 export type BadgeColor = 'success' | 'neutral' | 'error' | 'warning' | 'info'
 

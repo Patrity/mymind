@@ -1,7 +1,7 @@
 <!-- app/components/voice/SpeakPane.vue -->
 <script setup lang="ts">
-import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
-import type { ConversationDTO, ConversationMessageDTO } from '~~/shared/types/conversation'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
+import type { ConversationDTO, ConversationMessageDTO } from '@mymind/core/shared/types/conversation'
 import { InputGroup, InputGroupTextarea } from '@/components/ui/input-group'
 import { PromptInputFooter, PromptInputTools } from '@/components/ai-elements/prompt-input'
 import {

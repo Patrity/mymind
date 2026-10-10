@@ -1,4 +1,4 @@
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 export interface ContextMeterData {
   usedTokens: number

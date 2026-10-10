@@ -2,7 +2,7 @@
  * Pure pieces of the Skills/Jobs editor's explicit-save flow (cycle 74), split out of
  * app/composables/useConfigSource.ts so they are unit-testable without Vue or a network.
  */
-import { joinFrontmatter } from '~~/shared/utils/frontmatter'
+import { joinFrontmatter } from '@mymind/core/shared/utils/frontmatter'
 
 export type ConfigKind = 'skill' | 'job' | 'profile'
 

@@ -1,4 +1,4 @@
-import type { CommandEntry, CommandKind } from '../../../shared/types/commands'
+import type { CommandEntry, CommandKind } from '@mymind/core/shared/types/commands'
 
 const PRECEDENCE: CommandKind[] = ['client', 'prompt', 'skill']
 

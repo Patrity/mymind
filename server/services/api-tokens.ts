@@ -1,8 +1,8 @@
 import { desc, eq, isNull, and } from 'drizzle-orm'
-import { useDb } from '../db'
-import { apiTokens } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { apiTokens } from '@mymind/core/db/schema'
 import { generateToken, hashToken, tokenLastFour } from '../utils/api-token'
-import { publishChange } from '../utils/live-bus'
+import { publishChange } from '@mymind/core/utils/live-bus'
 import type { ApiTokenDTO } from '../../shared/types/api-token'
 
 function toDTO(r: typeof apiTokens.$inferSelect): ApiTokenDTO {

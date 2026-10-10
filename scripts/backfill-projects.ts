@@ -2,8 +2,8 @@
 // memory project_id (scope-based) + source_date from each memory's session.
 // Run: node_modules/.bin/tsx --env-file=.env scripts/backfill-projects.ts
 import { Client } from 'pg'
-import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../server/lib/projects/git-remote'
-import { slugify } from '../shared/utils/slugify'
+import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '@mymind/core/lib/projects/git-remote'
+import { slugify } from '@mymind/core/shared/utils/slugify'
 
 if (!process.env.DATABASE_URL) throw new Error('set DATABASE_URL')
 const db = new Client({ connectionString: process.env.DATABASE_URL })

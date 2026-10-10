@@ -8,7 +8,7 @@
 //
 // Pure: the caller loads the row and writes the outcome (server/services/memory-scoring.ts).
 
-import { AUDIT_PROMPT_VERSION } from './extract-v3'
+import { AUDIT_PROMPT_VERSION } from '@mymind/core/lib/memory/extract-v3'
 
 /** Jev's `transient` answer at or above this flags the memory (its only validated question). */
 export const GATE_JEV_TRANSIENT = 0.6

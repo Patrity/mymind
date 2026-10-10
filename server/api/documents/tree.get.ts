@@ -1,2 +1,2 @@
-import { listTree } from '../../services/documents'
+import { listTree } from '@mymind/core/services/documents'
 export default defineEventHandler(() => listTree())

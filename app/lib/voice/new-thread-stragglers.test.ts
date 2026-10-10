@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import { createLeftThreads, mapServerMessage, type ServerMsg } from './messages'
 import { createClientTurns } from '../agent/turn-stream'
-import type { AgentUIChunk, AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIChunk, AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 function client() {
   const messages: AgentUIMessage[] = []

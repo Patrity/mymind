@@ -16,12 +16,12 @@ const getProfileSource = vi.fn()
 const saveProfileSource = vi.fn()
 const listProfileRevisions = vi.fn()
 const revertProfile = vi.fn()
-vi.mock('../server/services/profile', () => ({ getProfileSource, saveProfileSource, listProfileRevisions, revertProfile }))
+vi.mock('@mymind/core/services/profile', () => ({ getProfileSource, saveProfileSource, listProfileRevisions, revertProfile }))
 
 // The real ConflictError — server/utils/agent-config-http.ts's throwAgentConfigWriteError
 // checks `instanceof ConflictError` against this exact class, and saveProfileSource/revertProfile
 // throw it for real, so the mock above must not shadow it.
-const { ConflictError } = await import('../server/services/skills')
+const { ConflictError } = await import('@mymind/core/services/skills')
 
 type H = (e: unknown) => Promise<unknown>
 const sourceGet = (await import('../server/api/profile/source.get')).default as H

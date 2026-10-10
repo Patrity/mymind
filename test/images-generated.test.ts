@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildGeneratedImageValues } from '../server/services/images'
+import { buildGeneratedImageValues } from '@mymind/core/services/images'
 
 describe('buildGeneratedImageValues', () => {
   const base = { storageKey: 'k', mime: 'image/png', ext: 'png', kind: 'image', width: 1024, height: 1024, size: 999 }

@@ -32,7 +32,7 @@
 // complete body. The break is between 900 and 1000 characters of TEXT, on top of an 80-char
 // instruction, so what actually matters is the combined prompt.
 
-import { maxCallChars, MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET } from '../../../shared/types/voice-presets'
+import { maxCallChars, MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET } from '@mymind/core/shared/types/voice-presets'
 
 export { maxCallChars, MIN_SEGMENT_CHARS, DESIGN_PROMPT_BUDGET }
 

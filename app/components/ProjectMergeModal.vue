@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ProjectDTO } from '~~/shared/types/tasks'
+import type { ProjectDTO } from '@mymind/core/shared/types/tasks'
 
 // ── Props / model / emits ────────────────────────────────────────────────────
 const props = defineProps<{

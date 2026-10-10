@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { TASK_COLUMN_KINDS, TASK_COLUMN_COLORS } from '~~/shared/types/task-columns'
-import type { TaskColumnDTO, TaskColumnKind, TaskColumnColor } from '~~/shared/types/task-columns'
+import { TASK_COLUMN_KINDS, TASK_COLUMN_COLORS } from '@mymind/core/shared/types/task-columns'
+import type { TaskColumnDTO, TaskColumnKind, TaskColumnColor } from '@mymind/core/shared/types/task-columns'
 
 // Create/edit a column. `column` present = edit (name + colour only); absent = create
 // (name + kind + colour). `kind` is deliberately NOT offered in edit mode — changing a

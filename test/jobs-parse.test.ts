@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseJob } from '../server/lib/agent/jobs/parse'
+import { parseJob } from '@mymind/core/lib/agent/jobs/parse'
 const md = (fm: string, body = 'Do the thing.') => `---\n${fm}\n---\n${body}\n`
 const p = (fm: string, body?: string) => parseJob(md(fm, body), { defaultTimezone: 'America/New_York' })
 

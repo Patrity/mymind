@@ -16,7 +16,7 @@ const state = vi.hoisted(() => ({ imessage: {} as Record<string, unknown>, dbDow
 const mocks = vi.hoisted(() => ({ handleInbound: vi.fn() }))
 
 // The settings read loadChannelsConfig makes: select().from(settings).where(...) → rows.
-vi.mock('../server/db', () => ({
+vi.mock('@mymind/core/db', () => ({
   useDb: () => ({
     select: () => ({ from: () => ({ where: async () => {
       if (state.dbDown) throw new Error('connection refused')
@@ -24,9 +24,9 @@ vi.mock('../server/db', () => ({
     } }) })
   })
 }))
-vi.mock('../server/lib/channels/inbound', () => ({ handleInbound: mocks.handleInbound }))
+vi.mock('@mymind/core/lib/channels/inbound', () => ({ handleInbound: mocks.handleInbound }))
 
-const { invalidateChannelsConfig } = await import('../server/lib/channels/config')
+const { invalidateChannelsConfig } = await import('@mymind/core/lib/channels/config')
 type H = (e: unknown) => Promise<unknown>
 const handler = (await import('../server/api/channels/bluebubbles/webhook.post')).default as unknown as H
 

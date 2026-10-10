@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/vue-query'
 import { computed } from 'vue'
-import { CLIENT_COMMANDS, type CommandEntry } from '~~/shared/types/commands'
+import { CLIENT_COMMANDS, type CommandEntry } from '@mymind/core/shared/types/commands'
 
 /** Pure so the fallback rule is testable without vue-query. */
 export function commandsOrFallback(fetched: CommandEntry[] | undefined, isError: boolean): CommandEntry[] {

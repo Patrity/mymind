@@ -15,9 +15,9 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 import { createHash } from 'node:crypto'
 import { eq, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { memories, settings, type SettingRow } from '../server/db/schema'
-import { getMemory } from '../server/services/memory'
+import { useDb } from '@mymind/core/db'
+import { memories, settings, type SettingRow } from '@mymind/core/db/schema'
+import { getMemory } from '@mymind/core/services/memory'
 import {
   MEMORY_BACKFILL_KEY, getBackfillSetting, setBackfillState, type BackfillSetting
 } from '../server/lib/memory/backfill-setting'

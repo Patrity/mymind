@@ -1,8 +1,8 @@
 // test/ai-tools.test.ts
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { buildAiTools } from '../server/lib/agent/ai-tools'
-import type { AgentTool } from '../server/lib/agent/types'
+import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
+import type { AgentTool } from '@mymind/core/lib/agent/types'
 
 const fake: AgentTool = {
   name: 'create_task', description: 'x', kind: 'create',

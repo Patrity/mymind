@@ -1,4 +1,4 @@
-import type { MessageUsage } from '~~/shared/types/conversation'
+import type { MessageUsage } from '@mymind/core/shared/types/conversation'
 
 /**
  * Output tokens per second over the GENERATING window — duration minus the wait for the

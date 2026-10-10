@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { createDoc } from '../../services/documents'
-import { publishChange } from '../../utils/live-bus'
+import { createDoc } from '@mymind/core/services/documents'
+import { publishChange } from '@mymind/core/utils/live-bus'
 const Body = z.object({
   path: z.string().min(1).regex(/^\//, 'path must start with /'),
   title: z.string().nullish(), content: z.string().optional(),

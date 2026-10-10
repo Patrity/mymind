@@ -3,7 +3,7 @@
 // whatever is currently stored (the lazily-created empty row's hash on a first-ever save).
 import { z } from 'zod'
 import { requireSession } from '../../utils/auth-guard'
-import { saveProfileSource } from '../../services/profile'
+import { saveProfileSource } from '@mymind/core/services/profile'
 import { throwAgentConfigWriteError } from '../../utils/agent-config-http'
 
 const Body = z.object({ content: z.string(), expectedHash: z.string() })

@@ -1,5 +1,5 @@
-import { googleConfigured } from '../../lib/google/scopes'
-import { listConnectionDTOs } from '../../lib/google/manage'
+import { googleConfigured } from '@mymind/core/lib/google/scopes'
+import { listConnectionDTOs } from '@mymind/core/lib/google/manage'
 import { requireSession } from '../../utils/auth-guard'
 
 // Cycle 79: Settings → Connections. Web session only — a machine token must never see or

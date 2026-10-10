@@ -11,8 +11,8 @@ import { sql } from 'drizzle-orm'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
-const { getConversation, deliveriesByMessage, conversationDeliveries } = await import('../server/services/conversations')
+const { useDb } = await import('@mymind/core/db')
+const { getConversation, deliveriesByMessage, conversationDeliveries } = await import('@mymind/core/services/conversations')
 
 const rows = <T>(r: unknown) => (r as { rows: T[] }).rows
 const TAG = `${Date.now().toString(16)}${Math.floor(Math.random() * 1e6).toString(16)}`

@@ -4,7 +4,7 @@
  * Deliberately narrow: `/` only means "open the menu" as the FIRST character, and
  * only until the name is settled. Anything looser fires on file paths and dates.
  */
-import type { CommandEntry } from '~~/shared/types/commands'
+import type { CommandEntry } from '@mymind/core/shared/types/commands'
 
 /** The menu is open while the input is a slash followed by a partial name. */
 export function shouldOpenMenu(text: string): boolean {

@@ -13,8 +13,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 const chan = vi.hoisted(() => ({ deliveryIds: [] as string[], failInsert: false, failPlan: false }))
 // chan.failPlan: planning runs a query that FAILS on the db it was handed (which aborts a plain
 // transaction), then throws — the reply must still commit.
-vi.mock('../server/lib/channels/deliver', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../server/lib/channels/deliver')>()
+vi.mock('@mymind/core/lib/channels/deliver', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mymind/core/lib/channels/deliver')>()
   const { sql } = await import('drizzle-orm')
   return {
     ...real,
@@ -27,17 +27,17 @@ vi.mock('../server/lib/channels/deliver', async (importOriginal) => {
     }
   }
 })
-vi.mock('../server/lib/channels/config', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../server/lib/channels/config')>()),
+vi.mock('@mymind/core/lib/channels/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mymind/core/lib/channels/config')>()),
   loadChannelsConfig: async () => ({
     imessage: { enabled: true, serverUrl: '', passwordEnc: null, webhookToken: 'x', allowedHandles: [], defaultHandle: '+15550000091', defaultChatGuid: 'iMessage;-;+15550000091' },
     email: { enabled: true, to: 'tony@example.test' },
     presenceAwayMinutes: 10
   })
 }))
-vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../server/lib/channels/outbox')>()
-  const { channelDeliveries } = await import('../server/db/schema')
+vi.mock('@mymind/core/lib/channels/outbox', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mymind/core/lib/channels/outbox')>()
+  const { channelDeliveries } = await import('@mymind/core/db/schema')
   const { inArray } = await import('drizzle-orm')
   return {
     ...real,
@@ -51,22 +51,22 @@ vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
   }
 })
 
-import { useDb } from '../server/db'
-import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelApprovals, channelDeliveries } from '../server/db/schema'
-import { parseToolsetIds, type ToolsetId } from '../server/lib/agent/toolsets'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages, agentRuns, agentInbox, agentJobs, agentConfigRevisions, channelApprovals, channelDeliveries } from '@mymind/core/db/schema'
+import { parseToolsetIds, type ToolsetId } from '@mymind/core/lib/agent/toolsets'
 import { startFakeBlueBubbles } from './fixtures/fake-bluebubbles'
-import { FAILURE_NOTE } from '../server/lib/channels/deliver'
-import { createJob } from '../server/lib/agent/jobs/store'
-import { channelPresence } from '../server/lib/channels/presence'
-import { createRun, claimNextRun } from '../server/lib/agent/runtime/runs'
-import { resolveSession, findMain } from '../server/lib/agent/runtime/sessions'
-import { runTurn } from '../server/lib/agent/runtime/runner'
-import { StreamHub } from '../server/lib/agent/runtime/stream'
-import { abortRun } from '../server/lib/agent/runtime/aborts'
-import { registerApprovalChannel, hasApprovalChannel, approvalFor } from '../server/lib/agent/runtime/approvals'
-import { appendMessages } from '../server/services/conversations'
-import { pushSteer } from '../server/lib/agent/runtime/inbox'
-import { jobOutcomeOf } from '../server/lib/agent/jobs/outcome'
+import { FAILURE_NOTE } from '@mymind/core/lib/channels/deliver'
+import { createJob } from '@mymind/core/lib/agent/jobs/store'
+import { channelPresence } from '@mymind/core/lib/channels/presence'
+import { createRun, claimNextRun } from '@mymind/core/lib/agent/runtime/runs'
+import { resolveSession, findMain } from '@mymind/core/lib/agent/runtime/sessions'
+import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
+import { StreamHub } from '@mymind/core/lib/agent/runtime/stream'
+import { abortRun } from '@mymind/core/lib/agent/runtime/aborts'
+import { registerApprovalChannel, hasApprovalChannel, approvalFor } from '@mymind/core/lib/agent/runtime/approvals'
+import { appendMessages } from '@mymind/core/services/conversations'
+import { pushSteer } from '@mymind/core/lib/agent/runtime/inbox'
+import { jobOutcomeOf } from '@mymind/core/lib/agent/jobs/outcome'
 import { and, eq, inArray, like } from 'drizzle-orm'
 
 const convIds: string[] = []

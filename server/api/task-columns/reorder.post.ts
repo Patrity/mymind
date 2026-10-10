@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { reorderColumns } from '../../services/task-columns'
+import { reorderColumns } from '@mymind/core/services/task-columns'
 
 const Body = z.object({ ids: z.array(z.uuid()).min(1) })
 

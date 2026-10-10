@@ -21,7 +21,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   targetPathForAssign,
   computeFinalPath,
-} from '../server/services/documents'
+} from '@mymind/core/services/documents'
 
 // ---------------------------------------------------------------------------
 // targetPathForAssign
@@ -76,8 +76,8 @@ describe('computeFinalPath', () => {
 // ---------------------------------------------------------------------------
 // resolveDocProjectFromPath — unit-tested with a mocked matchProjectByLabel
 // ---------------------------------------------------------------------------
-import { resolveDocProjectFromPath } from '../server/services/documents'
-import * as projectsService from '../server/services/projects'
+import { resolveDocProjectFromPath } from '@mymind/core/services/documents'
+import * as projectsService from '@mymind/core/services/projects'
 
 // ---------------------------------------------------------------------------
 // Approve-proposal path: verify no double-move regression

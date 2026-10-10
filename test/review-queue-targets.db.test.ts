@@ -15,9 +15,9 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { useDb } from '../server/db'
-import { reviewQueue } from '../server/db/schema'
-import { enqueueReview } from '../server/services/review'
+import { useDb } from '@mymind/core/db'
+import { reviewQueue } from '@mymind/core/db/schema'
+import { enqueueReview } from '@mymind/core/services/review'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 
 const seededTargetIds: string[] = []

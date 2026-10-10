@@ -1,7 +1,7 @@
 import type { QueryClient } from '@tanstack/vue-query'
 import { authClient } from '../lib/auth-client'
 import { dispatchLiveEvent } from '../utils/live-dispatch'
-import type { LiveEvent } from '../../shared/types/live'
+import type { LiveEvent } from '@mymind/core/shared/types/live'
 
 // dependsOn guarantees the vue-query plugin has run and provided `$queryClient`
 // before this plugin opens the SSE stream. Without it, this plugin (filename sorts

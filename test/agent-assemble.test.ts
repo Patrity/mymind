@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { assembleContext, synthesiseQuery, RETRIEVAL_RELEVANCE_FLOOR } from '../server/lib/agent/assemble'
-import { tier } from '../server/lib/agent/budget'
-import type { MemoryDTO } from '../shared/types/memory'
+import { assembleContext, synthesiseQuery, RETRIEVAL_RELEVANCE_FLOOR } from '@mymind/core/lib/agent/assemble'
+import { tier } from '@mymind/core/lib/agent/budget'
+import type { MemoryDTO } from '@mymind/core/shared/types/memory'
 
 // relevance defaults comfortably above RETRIEVAL_RELEVANCE_FLOOR (0.2, see below) — most tests
 // here aren't about relevance at all, and a search-returned memory the assembler is going to

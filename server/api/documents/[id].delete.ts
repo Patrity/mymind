@@ -1,5 +1,5 @@
-import { deleteDoc } from '../../services/documents'
-import { publishChange } from '../../utils/live-bus'
+import { deleteDoc } from '@mymind/core/services/documents'
+import { publishChange } from '@mymind/core/utils/live-bus'
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
   const ok = await deleteDoc(id)

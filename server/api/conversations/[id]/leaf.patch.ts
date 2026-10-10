@@ -1,5 +1,5 @@
-import { setActiveLeaf, setBranchLeaf, conversationHasMessage } from '../../../services/conversations'
-import { publishChange } from '../../../utils/live-bus'
+import { setActiveLeaf, setBranchLeaf, conversationHasMessage } from '@mymind/core/services/conversations'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const OPS = ['fork', 'edit', 'regenerate'] as const

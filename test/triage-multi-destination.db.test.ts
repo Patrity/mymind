@@ -28,8 +28,8 @@ vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
 // Stub the model — this file is about actuator orchestration across a shared docId, not
 // classification quality. Mirrors test/triage-idempotency.db.test.ts's mocking pattern.
-vi.mock('../server/lib/ai/triage', async (orig) => ({
-  ...(await orig<typeof import('../server/lib/ai/triage')>()),
+vi.mock('@mymind/core/lib/ai/triage', async (orig) => ({
+  ...(await orig<typeof import('@mymind/core/lib/ai/triage')>()),
   classify: vi.fn(async () => ({
     primary: { kind: 'task' as const, confidence: 0.9, title: 'Stubbed multi-intent task' },
     secondary: [{ kind: 'memory' as const, confidence: 0.9, content: 'Stubbed multi-intent memory.' }],
@@ -37,16 +37,16 @@ vi.mock('../server/lib/ai/triage', async (orig) => ({
   }))
 }))
 
-const { triageCapture } = await import('../server/services/triage')
+const { triageCapture } = await import('@mymind/core/services/triage')
 
-import { createDoc, deleteDoc } from '../server/services/documents'
-import { deleteTask } from '../server/services/tasks'
-import { useDb } from '../server/db'
-import { reviewQueue, triageActions, memories, tasks } from '../server/db/schema'
-import type { ReviewItem } from '../server/db/schema'
+import { createDoc, deleteDoc } from '@mymind/core/services/documents'
+import { deleteTask } from '@mymind/core/services/tasks'
+import { useDb } from '@mymind/core/db'
+import { reviewQueue, triageActions, memories, tasks } from '@mymind/core/db/schema'
+import type { ReviewItem } from '@mymind/core/db/schema'
 import { and, eq } from 'drizzle-orm'
 import { approveHandlers } from '../server/api/review/kinds'
-import type { TriageAction } from '../shared/types/triage'
+import type { TriageAction } from '@mymind/core/shared/types/triage'
 
 const jot = () =>
   createDoc({ path: `/input/multi-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.md`, content: 'finish the report; office wifi is hunter2' })

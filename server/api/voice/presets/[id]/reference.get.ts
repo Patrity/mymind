@@ -8,8 +8,8 @@
 // Addressed by PRESET, not by storage key. The key is a content hash, so a key-addressed
 // route would serve any blob in the bucket to anyone who could name one; going through the
 // row means the only clips reachable are the ones a preset actually references.
-import { getPreset } from '../../../../services/voice-presets'
-import { storage } from '../../../../utils/storage'
+import { getPreset } from '@mymind/core/services/voice-presets'
+import { storage } from '@mymind/core/utils/storage'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

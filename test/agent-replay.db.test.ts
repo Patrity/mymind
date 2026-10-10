@@ -9,13 +9,13 @@ import { vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { z } from 'zod'
-import { useDb } from '../server/db'
-import { conversations, conversationMessages, reviewQueue } from '../server/db/schema'
-import { approveAgentAction, rejectAgentAction, replayAgentAction } from '../server/lib/agent/runtime/replay'
-import { createConversation } from '../server/services/conversations'
-import { hasUndo } from '../server/lib/agent/undo'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages, reviewQueue } from '@mymind/core/db/schema'
+import { approveAgentAction, rejectAgentAction, replayAgentAction } from '@mymind/core/lib/agent/runtime/replay'
+import { createConversation } from '@mymind/core/services/conversations'
+import { hasUndo } from '@mymind/core/lib/agent/undo'
 import { eq, inArray } from 'drizzle-orm'
-import type { AgentTool } from '../server/lib/agent/types'
+import type { AgentTool } from '@mymind/core/lib/agent/types'
 
 const convIds: string[] = []
 const reviewIds: string[] = []

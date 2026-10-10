@@ -1,6 +1,6 @@
 <!-- app/components/voice/PresetRail.vue -->
 <script setup lang="ts">
-import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 import { modeBadge } from '~/lib/voice/studio'
 
 const props = defineProps<{

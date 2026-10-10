@@ -14,7 +14,7 @@
      The pane is `absolute` within the galaxy stage (the content panel), not `fixed`. -->
 <script setup lang="ts">
 import type { GraphEdgeKind, GraphNode, GraphNodeType } from '~~/shared/types/graph'
-import type { MemoryDTO, MemoryScope } from '~~/shared/types/memory'
+import type { MemoryDTO, MemoryScope } from '@mymind/core/shared/types/memory'
 import type { MemoryRelationType } from '~/composables/useGalaxy'
 
 export interface GalaxyRelationRow {

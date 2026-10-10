@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { uiMessageText, subagentSteps, tokenLabel, toolTitle, isRunning } from './render'
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 const m: AgentUIMessage = {
   id: 'a', role: 'assistant',

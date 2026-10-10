@@ -2,8 +2,8 @@
 // Dev-only fixture for the AI Elements spike and for Task 9's component work. Not in production
 // builds at all (nuxt.config `$production.ignore`); the guard below is belt and braces.
 import type { LanguageModelUsage } from 'ai'
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
-import type { AttachmentRef } from '~~/shared/types/conversation'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
+import type { AttachmentRef } from '@mymind/core/shared/types/conversation'
 import type { VoiceState } from '~/composables/useVoice'
 import { addApproval, type PendingApprovalDetails, type PendingApprovals } from '~/lib/agent/approvals'
 import { mapServerMessage } from '~/lib/voice/messages'

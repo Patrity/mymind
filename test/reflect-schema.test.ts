@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { parseReflectorOutput, type Proposal } from '../server/lib/agent/reflect/schema'
-import { callReflector } from '../server/lib/agent/reflect/call'
-import { threadReflectionMessages, jobsReflectionMessages, skillFilesForPrompt, SKILL_FILE_SHOWN_MAX, SKILL_FILES_TOTAL_MAX } from '../server/lib/agent/reflect/prompt'
+import { parseReflectorOutput, type Proposal } from '@mymind/core/lib/agent/reflect/schema'
+import { callReflector } from '@mymind/core/lib/agent/reflect/call'
+import { threadReflectionMessages, jobsReflectionMessages, skillFilesForPrompt, SKILL_FILE_SHOWN_MAX, SKILL_FILES_TOTAL_MAX } from '@mymind/core/lib/agent/reflect/prompt'
 
 const THREAD: Proposal['kind'][] = ['skill.create', 'skill.edit', 'profile.edit']
 

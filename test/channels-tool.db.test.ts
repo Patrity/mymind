@@ -26,9 +26,9 @@ const cfg = vi.hoisted(() => ({
   email: { enabled: true, to: 'tony@example.test' as string | null }
 }))
 const FAR_FUTURE = vi.hoisted(() => new Date('2100-01-01T00:00:00Z'))
-vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../server/lib/channels/outbox')>()
-  const { channelDeliveries } = await import('../server/db/schema')
+vi.mock('@mymind/core/lib/channels/outbox', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mymind/core/lib/channels/outbox')>()
+  const { channelDeliveries } = await import('@mymind/core/db/schema')
   const { inArray } = await import('drizzle-orm')
   return {
     ...real,
@@ -39,8 +39,8 @@ vi.mock('../server/lib/channels/outbox', async (importOriginal) => {
     }
   }
 })
-vi.mock('../server/lib/channels/config', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../server/lib/channels/config')>()
+vi.mock('@mymind/core/lib/channels/config', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mymind/core/lib/channels/config')>()
   return {
     ...real,
     loadChannelsConfig: async () => ({
@@ -52,12 +52,12 @@ vi.mock('../server/lib/channels/config', async (importOriginal) => {
 })
 
 import { and, eq, gte, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { channelDeliveries, conversationMessages, conversations } from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { agentTools } from '../server/lib/agent/tools'
-import { channelToolDeps, SEND_MESSAGE_RATE_LIMIT } from '../server/lib/agent/tools/channels'
-import { classifyForHeadless } from '../server/lib/agent/runtime/gate'
+import { useDb } from '@mymind/core/db'
+import { channelDeliveries, conversationMessages, conversations } from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { agentTools } from '@mymind/core/lib/agent/tools'
+import { channelToolDeps, SEND_MESSAGE_RATE_LIMIT } from '@mymind/core/lib/agent/tools/channels'
+import { classifyForHeadless } from '@mymind/core/lib/agent/runtime/gate'
 
 const tool = agentTools.find(t => t.name === 'send_message')!
 const ctx = { signal: new AbortController().signal }

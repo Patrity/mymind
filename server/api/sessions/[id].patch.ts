@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { reassignSession } from '../../services/sessions'
-import { publishChange } from '../../utils/live-bus'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const Body = z.object({ project: z.string().min(1), pathPrefix: z.string().nullish() })
 

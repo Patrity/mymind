@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { completedAtFor } from '../server/services/tasks'
+import { completedAtFor } from '@mymind/core/services/tasks'
 
 // completedAtFor keys on a column's KIND, not the legacy status string — a task moved into
 // ANY done-kind column (whatever it's named) must get stamped. See task-columns.db.test.ts

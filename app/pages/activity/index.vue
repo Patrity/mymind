@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import type { ActivityListParams, ActivityDTO } from '~~/shared/types/activity'
+import type { ActivityListParams, ActivityDTO } from '@mymind/core/shared/types/activity'
 
 definePageMeta({ title: 'Activity' })
 const toast = useToast()

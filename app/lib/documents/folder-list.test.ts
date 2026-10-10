@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { collectFolderPaths, dirnameOf } from './folder-list'
-import type { TreeNode } from '~~/server/services/tree'
+import type { TreeNode } from '@mymind/core/services/tree'
 
 const f = (name: string, path: string, children: TreeNode[] = []): TreeNode =>
   ({ name, path, type: 'folder', children })

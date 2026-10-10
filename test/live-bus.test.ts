@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { publishChange, subscribeChanges } from '../server/utils/live-bus'
-import type { LiveEvent } from '../shared/types/live'
+import { publishChange, subscribeChanges } from '@mymind/core/utils/live-bus'
+import type { LiveEvent } from '@mymind/core/shared/types/live'
 
 describe('live-bus', () => {
   it('delivers a published change to a subscriber as a versioned, timestamped event', () => {

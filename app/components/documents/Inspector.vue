@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DocumentDTO } from '~~/shared/types/documents'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
 
 const props = defineProps<{
   documentId: string | null

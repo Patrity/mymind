@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
-import { useDb } from '../../../db'
-import { oauthApplication } from '../../../db/schema'
+import { useDb } from '@mymind/core/db'
+import { oauthApplication } from '@mymind/core/db/schema'
 import { clientDisplayName, redirectHosts } from '../../../utils/oauth-client'
 
 /**

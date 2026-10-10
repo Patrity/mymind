@@ -13,7 +13,7 @@ vi.stubGlobal('readBody', async (e: { body?: unknown }) => e.body)
 let stored: 'on' | 'review_only' | 'off' = 'on'
 const getSelfImprovementMode = vi.fn(async () => stored)
 const setSelfImprovementMode = vi.fn(async (m: typeof stored) => { stored = m })
-vi.mock('../server/lib/agent/self-improvement-mode', () => ({ getSelfImprovementMode, setSelfImprovementMode }))
+vi.mock('@mymind/core/lib/agent/self-improvement-mode', () => ({ getSelfImprovementMode, setSelfImprovementMode }))
 
 type H = (e: unknown) => Promise<unknown>
 const get = (await import('../server/api/settings/self-improvement.get')).default as H

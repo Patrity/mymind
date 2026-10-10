@@ -14,8 +14,8 @@
 //     since it has no dedicated class) -> 400. Matches the existing server/api/skills/[name].put.ts
 //     default.
 import type { H3Event } from 'h3'
-import { JOB_SLUG_RE, JobValidationError, JobNotFoundError } from '../lib/agent/jobs/store'
-import { ConflictError, SKILL_NAME_RE } from '../services/skills'
+import { JOB_SLUG_RE, JobValidationError, JobNotFoundError } from '@mymind/core/lib/agent/jobs/store'
+import { ConflictError, SKILL_NAME_RE } from '@mymind/core/services/skills'
 
 export function requireJobSlug(event: H3Event): string {
   const slug = getRouterParam(event, 'slug')

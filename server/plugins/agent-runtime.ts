@@ -1,6 +1,6 @@
-import { recoverOnBoot } from '../lib/agent/runtime/recover'
-import { startWorker, stopWorker } from '../lib/agent/runtime/queue'
-import { installSeedJobs, upgradeSeedJobs, revalidateAll } from '../lib/agent/jobs/store'
+import { recoverOnBoot } from '@mymind/core/lib/agent/runtime/recover'
+import { startWorker, stopWorker } from '@mymind/core/lib/agent/runtime/queue'
+import { installSeedJobs, upgradeSeedJobs, revalidateAll } from '@mymind/core/lib/agent/jobs/store'
 
 // Boot order: recover runs orphaned by the previous process, then start the worker. Recovery
 // before the worker so a stale 'running' row cannot block its conversation's queue for the 60s

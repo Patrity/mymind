@@ -11,7 +11,7 @@ import { sql } from 'drizzle-orm'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { useDb } from '../server/db'
+import { useDb } from '@mymind/core/db'
 
 const SHA = (t: string) => sql`encode(sha256(convert_to(${t}, 'UTF8')), 'hex')`
 

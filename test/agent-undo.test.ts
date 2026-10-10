@@ -1,6 +1,6 @@
 // test/agent-undo.test.ts
 import { describe, it, expect, vi } from 'vitest'
-import { registerUndo, runUndo, hasUndo } from '../server/lib/agent/undo'
+import { registerUndo, runUndo, hasUndo } from '@mymind/core/lib/agent/undo'
 
 describe('undo store', () => {
   it('registers, runs once, then forgets the token', async () => {

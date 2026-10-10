@@ -13,8 +13,8 @@ import { describe, it, expect, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { createDoc, casUpdateContent, findDocByPath, deleteDoc } from '../server/services/documents'
-import { hashBody } from '../server/lib/agent/sync'
+import { createDoc, casUpdateContent, findDocByPath, deleteDoc } from '@mymind/core/services/documents'
+import { hashBody } from '@mymind/core/lib/agent/sync'
 
 const uniquePath = (tag: string) => `/input/cas-${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}.md`
 

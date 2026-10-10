@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pcmToWav } from '../../lib/voice/speak'
+import { pcmToWav } from '@mymind/core/lib/voice/speak'
 import { wavDurationMs } from '../../lib/voice/wav'
 
 function u32le(n: number): Buffer { const b = Buffer.alloc(4); b.writeUInt32LE(n, 0); return b }

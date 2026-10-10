@@ -10,7 +10,7 @@ vi.stubGlobal('getQuery', (e: { query: Record<string, string> }) => e.query)
 
 const listMemories = vi.fn(async (_o: unknown) => [])
 const searchMemories = vi.fn(async (_q: string, _o: unknown) => [])
-vi.mock('../server/services/memory', () => ({ listMemories, searchMemories }))
+vi.mock('@mymind/core/services/memory', () => ({ listMemories, searchMemories }))
 
 type H = (e: unknown) => Promise<unknown>
 const handler = (await import('../server/api/memories/index.get')).default as H

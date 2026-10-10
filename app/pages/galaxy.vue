@@ -8,7 +8,7 @@
 import { createGalaxyScene, type GalaxyScene } from '~/lib/galaxy/scene'
 import type { GalaxyRelationRow } from '~/components/galaxy/GalaxyDetail.vue'
 import type { MemoryRelationType } from '~/composables/useGalaxy'
-import type { MemoryScope } from '~~/shared/types/memory'
+import type { MemoryScope } from '@mymind/core/shared/types/memory'
 import type { GraphNode } from '~~/shared/types/graph'
 import ReassignProjectModal from '~/components/sessions/ReassignProjectModal.vue'
 

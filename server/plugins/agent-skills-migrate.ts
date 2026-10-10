@@ -2,7 +2,7 @@
 // already in agent_skills is skipped and moved documents are soft-deleted — so it is safe on
 // every start. A data move, not a SQL migration, because rebuilding markdown from the jsonb
 // frontmatter + body is fragile in SQL (see the cycle-74 plan's planning rulings).
-import { migrateSkillsFromDocuments } from '../services/skills'
+import { migrateSkillsFromDocuments } from '@mymind/core/services/skills'
 
 export default defineNitroPlugin(async () => {
   // No DB at prerender time (same guard as agent-runtime.ts).

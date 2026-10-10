@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
-import { useDb } from '../../../db'
-import { clipAttachments } from '../../../db/schema'
-import { storage } from '../../../utils/storage'
+import { useDb } from '@mymind/core/db'
+import { clipAttachments } from '@mymind/core/db/schema'
+import { storage } from '@mymind/core/utils/storage'
 
 // Allowlist of MIME types that are safe to serve with their declared content-type.
 // Anything not on this list is forced to application/octet-stream to prevent

@@ -1,6 +1,6 @@
 // Final review M7: iMessage text is converted from markdown to plain text.
 import { describe, it, expect } from 'vitest'
-import { markdownToPlainText as plain } from '../server/lib/channels/plain-text'
+import { markdownToPlainText as plain } from '@mymind/core/lib/channels/plain-text'
 
 describe('markdownToPlainText', () => {
   it('strips heading markers', () => {

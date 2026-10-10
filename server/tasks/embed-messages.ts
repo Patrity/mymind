@@ -1,5 +1,5 @@
 import { runMessageEmbedding } from '../services/message-embedding'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
 
 export default defineTask({
   meta: { name: 'embed-messages', description: 'Embed session messages that lack an embedding' },

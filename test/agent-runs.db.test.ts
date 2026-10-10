@@ -2,9 +2,9 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { useDb } from '../server/db'
-import { conversations, agentRuns } from '../server/db/schema'
-import { createRun, claimNextRun, finishRun, activeRunFor, recoverOrphans, touchRun } from '../server/lib/agent/runtime/runs'
+import { useDb } from '@mymind/core/db'
+import { conversations, agentRuns } from '@mymind/core/db/schema'
+import { createRun, claimNextRun, finishRun, activeRunFor, recoverOrphans, touchRun } from '@mymind/core/lib/agent/runtime/runs'
 import { eq, inArray, sql } from 'drizzle-orm'
 
 const convIds: string[] = []

@@ -15,7 +15,7 @@
 //   --project terawulf  restrict to one project (inspect or apply in isolation)
 //   --apply             actually write; run the dry run FIRST and read the drop list
 import { Client } from 'pg'
-import { collapseLocalPaths, normalizePrefix } from '../server/lib/projects/path-routing'
+import { collapseLocalPaths, normalizePrefix } from '@mymind/core/lib/projects/path-routing'
 
 const APPLY = process.argv.includes('--apply')
 let ONLY_PROJECT: string | null = null

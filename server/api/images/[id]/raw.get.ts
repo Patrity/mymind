@@ -1,5 +1,5 @@
-import { getImage } from '../../../services/images'
-import { storage } from '../../../utils/storage'
+import { getImage } from '@mymind/core/services/images'
+import { storage } from '@mymind/core/utils/storage'
 
 /** Derive a safe content-type from kind/ext instead of trusting the stored MIME directly. */
 function safeContentType(kind: string, ext: string): string {

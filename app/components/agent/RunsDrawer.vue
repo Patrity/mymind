@@ -5,7 +5,7 @@
 // when, and whether a wake was suppressed.
 import { useQuery } from '@tanstack/vue-query'
 import { useTimeAgo } from '@vueuse/core'
-import type { RunStatus, RunTrigger, RunProfile } from '~~/server/lib/agent/runtime/types'
+import type { RunStatus, RunTrigger, RunProfile } from '@mymind/core/lib/agent/runtime/types'
 
 export interface RunRow {
   id: string

@@ -1,5 +1,5 @@
 import { runSessionSummarize } from '../services/session-summarize'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
 
 export default defineTask({
   meta: { name: 'summarize-sessions', description: 'Generate titles + summaries for new/stale sessions' },

@@ -24,21 +24,21 @@ vi.stubGlobal('useRuntimeConfig', () => ({
 }))
 
 // Stub the model — this test is about orchestration, not classification quality.
-vi.mock('../server/lib/ai/triage', async (orig) => ({
-  ...(await orig<typeof import('../server/lib/ai/triage')>()),
+vi.mock('@mymind/core/lib/ai/triage', async (orig) => ({
+  ...(await orig<typeof import('@mymind/core/lib/ai/triage')>()),
   classify: vi.fn(async () => ({
     primary: { kind: 'task' as const, confidence: 0.95, title: 'Stubbed task' },
     secondary: [], reasoning: 'stub'
   }))
 }))
 
-const { triageCapture } = await import('../server/services/triage')
-const { classify } = await import('../server/lib/ai/triage')
+const { triageCapture } = await import('@mymind/core/services/triage')
+const { classify } = await import('@mymind/core/lib/ai/triage')
 
-import { createDoc, deleteDoc } from '../server/services/documents'
-import { deleteTask } from '../server/services/tasks'
-import { useDb } from '../server/db'
-import { reviewQueue, triageActions, documents } from '../server/db/schema'
+import { createDoc, deleteDoc } from '@mymind/core/services/documents'
+import { deleteTask } from '@mymind/core/services/tasks'
+import { useDb } from '@mymind/core/db'
+import { reviewQueue, triageActions, documents } from '@mymind/core/db/schema'
 import { eq, and } from 'drizzle-orm'
 
 const jot = () => createDoc({ path: `/input/i-${Math.random().toString(36).slice(2, 10)}.md`, content: 'do a thing' })

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { AiAllFailedError } from '../server/lib/ai/registry/errors'
-import { EMPTY_REPLY_ERROR } from '../server/lib/ai/chat'
+import { AiAllFailedError } from '@mymind/core/lib/ai/registry/errors'
+import { EMPTY_REPLY_ERROR } from '@mymind/core/lib/ai/chat'
 import {
   parseAudit,
   auditMessages,
@@ -8,7 +8,7 @@ import {
   AUDIT_PROMPT_VERSION,
   AUDIT_VERDICTS,
   AUDIT_SYSTEM_PROMPT
-} from '../server/lib/memory/extract-v3'
+} from '@mymind/core/lib/memory/extract-v3'
 
 describe('parseAudit', () => {
   it('parses a clean reply', () => {

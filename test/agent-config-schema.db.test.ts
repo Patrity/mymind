@@ -1,8 +1,8 @@
 process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
-import { useDb } from '../server/db'
-import { agentSkills, agentJobs, agentJobFires } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import { agentSkills, agentJobs, agentJobFires } from '@mymind/core/db/schema'
 import { inArray } from 'drizzle-orm'
 
 const violates = (name: string) => (e: unknown) => {

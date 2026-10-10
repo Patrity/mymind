@@ -24,30 +24,30 @@ const setJobEnabled = vi.fn()
 const deleteJob = vi.fn()
 const revertJob = vi.fn()
 const getDefaultTimezone = vi.fn(async () => 'America/Chicago')
-vi.mock('../server/lib/agent/jobs/store', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../server/lib/agent/jobs/store')>()
+vi.mock('@mymind/core/lib/agent/jobs/store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mymind/core/lib/agent/jobs/store')>()
   return { ...actual, listJobs, getJob, createJob, saveJob, setJobEnabled, deleteJob, revertJob, getDefaultTimezone }
 })
 
 const runJobNow = vi.fn()
-vi.mock('../server/lib/agent/jobs/tick', () => ({ runJobNow }))
+vi.mock('@mymind/core/lib/agent/jobs/tick', () => ({ runJobNow }))
 
 const listRevisions = vi.fn()
-vi.mock('../server/lib/agent/config/revisions', () => ({ listRevisions }))
+vi.mock('@mymind/core/lib/agent/config/revisions', () => ({ listRevisions }))
 
 const listRuns = vi.fn()
-vi.mock('../server/lib/agent/runtime/runs', () => ({ listRuns }))
+vi.mock('@mymind/core/lib/agent/runtime/runs', () => ({ listRuns }))
 
 const getSkillSource = vi.fn()
 const saveSkillSource = vi.fn()
 const listSkillRevisions = vi.fn()
 const revertSkill = vi.fn()
-vi.mock('../server/services/skills', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../server/services/skills')>()
+vi.mock('@mymind/core/services/skills', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mymind/core/services/skills')>()
   return { ...actual, getSkillSource, saveSkillSource, listSkillRevisions, revertSkill }
 })
 
-const { ConflictError, JobValidationError, JobNotFoundError } = await import('../server/lib/agent/jobs/store')
+const { ConflictError, JobValidationError, JobNotFoundError } = await import('@mymind/core/lib/agent/jobs/store')
 
 const jobsIndexGet = (await import('../server/api/jobs/index.get')).default as (e: unknown) => Promise<unknown>
 const jobsIndexPost = (await import('../server/api/jobs/index.post')).default as (e: unknown) => Promise<unknown>

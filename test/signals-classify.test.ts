@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { classifyReplyText, tapbackSignal, OBSERVATION_WINDOW_MS } from '../server/lib/agent/signals/classify'
-import type { Tapback } from '../server/lib/channels/types'
+import { classifyReplyText, tapbackSignal, OBSERVATION_WINDOW_MS } from '@mymind/core/lib/agent/signals/classify'
+import type { Tapback } from '@mymind/core/lib/channels/types'
 
 describe('classifyReplyText', () => {
   it('a stop phrase at the start of a sentence → said_stop', () => {

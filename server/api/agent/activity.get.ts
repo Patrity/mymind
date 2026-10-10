@@ -1,5 +1,5 @@
 // server/api/agent/activity.get.ts
-import { subscribeActivity } from '../../lib/agent/bus'
+import { subscribeActivity } from '@mymind/core/lib/agent/bus'
 
 export default defineEventHandler(async (event) => {
   const res = event.node.res

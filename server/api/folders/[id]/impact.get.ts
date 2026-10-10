@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { folderImpact } from '../../../services/folders'
+import { folderImpact } from '@mymind/core/services/folders'
 import { requireFolderId } from '../../../utils/folder-http'
 
 const Query = z.object({ to: z.string().optional() })

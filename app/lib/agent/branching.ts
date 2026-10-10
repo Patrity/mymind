@@ -7,7 +7,7 @@
 // app/pages/agent/index.vue, where nothing could test them — a whole-branch review broke the
 // sibling pick by one index and typecheck, 1933 unit tests and 246 DB tests all stayed green.
 // They live here so a break reddens something.
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 /**
  * The sibling the ‹ n/N › pager should switch to.

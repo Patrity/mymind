@@ -4,7 +4,7 @@
 // act through. Live: reads ['connection','list'], which every `connection` event invalidates.
 // Connect/Reconnect go through better-auth's linkSocial (session-gated; Google is never a login).
 import type { DropdownMenuItem } from '@nuxt/ui'
-import { GOOGLE_SCOPES } from '~~/shared/utils/google-scopes'
+import { GOOGLE_SCOPES } from '@mymind/core/shared/utils/google-scopes'
 import { authClient } from '~/lib/auth-client'
 import type { ConnectionDTO } from '~/composables/useConnections'
 

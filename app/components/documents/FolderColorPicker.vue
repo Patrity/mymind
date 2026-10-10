@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FOLDER_PALETTE, type FolderColorSource } from '~~/shared/types/folders'
+import { FOLDER_PALETTE, type FolderColorSource } from '@mymind/core/shared/types/folders'
 
 const props = defineProps<{
   open: boolean

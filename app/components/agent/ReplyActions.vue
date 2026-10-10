@@ -1,6 +1,6 @@
 <!-- app/components/agent/ReplyActions.vue -->
 <script setup lang="ts">
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 import { uiMessageText, tokenLabel } from '~/lib/agent/render'
 import { rateLabel, durationLabel } from '~/lib/agent/metrics'
 

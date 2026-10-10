@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createApp, effectScope, type App, type EffectScope } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { useOptimisticTreeMutation, TREE_KEY } from './useDocumentTree'
-import type { TreeNode } from '~~/server/services/tree'
+import type { TreeNode } from '@mymind/core/services/tree'
 
 /**
  * `useOptimisticTreeMutation` calls `useQueryClient()`/`useMutation()`, both of which need a

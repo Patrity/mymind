@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TreeNode } from '~~/server/services/tree'
+import type { TreeNode } from '@mymind/core/services/tree'
 import { collectFolderPaths } from '~/lib/documents/folder-list'
 
 const props = defineProps<{

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseJudgement } from '../server/lib/ai/memory-judge'
+import { parseJudgement } from '@mymind/core/lib/ai/memory-judge'
 
 describe('parseJudgement', () => {
   const ids = ['m1', 'm2']

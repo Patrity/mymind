@@ -1,4 +1,4 @@
-import { retriageDocument } from '../../../services/triage'
+import { retriageDocument } from '@mymind/core/services/triage'
 
 /**
  * Put a document back in the triage sweeper's candidate pool.

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { assembleContext, SKILL_TIER_MAX_CHARS } from '../server/lib/agent/assemble'
-import type { MemoryDTO } from '../shared/types/memory'
+import { assembleContext, SKILL_TIER_MAX_CHARS } from '@mymind/core/lib/agent/assemble'
+import type { MemoryDTO } from '@mymind/core/shared/types/memory'
 
 const deps = (over: Record<string, unknown> = {}) => ({
   listResident: async () => [] as MemoryDTO[],

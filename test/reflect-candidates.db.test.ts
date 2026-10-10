@@ -10,10 +10,10 @@ import { vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq, inArray } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { conversations, conversationMessages } from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { threadCandidates, markReflected } from '../server/lib/agent/reflect/candidates'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages } from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { threadCandidates, markReflected } from '@mymind/core/lib/agent/reflect/candidates'
 
 const convIds: string[] = []
 afterAll(async () => {

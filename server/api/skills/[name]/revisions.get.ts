@@ -1,4 +1,4 @@
-import { getSkillSource, listSkillRevisions } from '../../../services/skills'
+import { getSkillSource, listSkillRevisions } from '@mymind/core/services/skills'
 import { requireSkillName } from '../../../utils/agent-config-http'
 
 export default defineEventHandler(async (event) => {

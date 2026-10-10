@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseTriage } from '../server/lib/ai/triage'
+import { parseTriage } from '@mymind/core/lib/ai/triage'
 
 const ok = JSON.stringify({
   primary: { kind: 'task', confidence: 0.9, title: 'Fix the loan link', project: 'finances' },

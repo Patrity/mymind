@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildTriageMessages } from '../server/lib/ai/triage'
+import { buildTriageMessages } from '@mymind/core/lib/ai/triage'
 
 const doc = { path: '/input/abc123.md', content: 'remind me to fix the yukon loan link' }
 const projects = [

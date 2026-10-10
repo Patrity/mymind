@@ -1,4 +1,4 @@
-import { parseImageConfigInput, saveImageConfig } from '../../lib/imagegen/store'
+import { parseImageConfigInput, saveImageConfig } from '@mymind/core/lib/imagegen/store'
 
 export default defineEventHandler(async (event) => {
   let input

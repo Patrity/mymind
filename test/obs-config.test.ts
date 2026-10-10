@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { parseObsConfig, redactObsConfig } from '../server/lib/observability/config'
-import { DEFAULT_CONFIG } from '../server/lib/observability/types'
+import { parseObsConfig, redactObsConfig } from '@mymind/core/lib/observability/config'
+import { DEFAULT_CONFIG } from '@mymind/core/lib/observability/types'
 
 beforeAll(() => { process.env.BETTER_AUTH_SECRET ||= 'test-secret-test-secret-test-secret' })
 

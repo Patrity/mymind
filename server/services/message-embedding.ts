@@ -1,7 +1,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { messages } from '../db/schema'
-import { embed } from '../lib/ai/embeddings'
+import { useDb } from '@mymind/core/db'
+import { messages } from '@mymind/core/db/schema'
+import { embed } from '@mymind/core/lib/ai/embeddings'
 
 const MIN_CHARS = 16
 

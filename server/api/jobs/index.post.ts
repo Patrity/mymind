@@ -3,7 +3,7 @@
 // JobValidationError -> 400; a slug that already exists throws ConflictError -> 409
 // (expectedHash:null is create-only, mirrors saveSkillSource).
 import { z } from 'zod'
-import { createJob } from '../../lib/agent/jobs/store'
+import { createJob } from '@mymind/core/lib/agent/jobs/store'
 import { throwAgentConfigWriteError } from '../../utils/agent-config-http'
 
 const Body = z.object({ slug: z.string(), content: z.string() })

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { mergeProjects } from '../../../services/project-merge'
-import { dedupMemoriesAfterMerge } from '../../../services/memory'
-import { publishChange } from '../../../utils/live-bus'
+import { dedupMemoriesAfterMerge } from '@mymind/core/services/memory'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const Body = z.object({ targetSlug: z.string().min(1) })
 

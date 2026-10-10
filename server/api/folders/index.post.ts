@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { createFolder } from '../../services/folders'
-import { publishChange } from '../../utils/live-bus'
+import { createFolder } from '@mymind/core/services/folders'
+import { publishChange } from '@mymind/core/utils/live-bus'
 import { folderOpError, FOLDER_PATH_SCHEMA } from '../../utils/folder-http'
 
 const Body = z.object({

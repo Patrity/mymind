@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
 import type { NavigationMenuItem } from '@nuxt/ui'
-import type { ActivityCount } from '~~/shared/types/activity'
+import type { ActivityCount } from '@mymind/core/shared/types/activity'
 import { channelsDotColor } from '~/lib/channels/status-dot'
 import type { ChannelsStatus } from '~/composables/useChannelsConfig'
 

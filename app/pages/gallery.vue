@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watchDebounced } from '@vueuse/core'
-import type { ImageDTO } from '~~/shared/types/images'
+import type { ImageDTO } from '@mymind/core/shared/types/images'
 import type { ListImagesParams } from '~/composables/useImages'
 
 definePageMeta({ title: 'Gallery' })

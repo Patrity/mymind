@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TaskColumnDTO } from '~~/shared/types/task-columns'
+import type { TaskColumnDTO } from '@mymind/core/shared/types/task-columns'
 
 // Column header: name + card count + an actions menu (Rename, Change colour, Delete).
 // "Rename" and "Change colour" both open the same edit form (TasksColumnFormModal already

@@ -10,13 +10,13 @@
  */
 import { nanoid } from 'nanoid'
 import { and, eq, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { toolEvents } from '../db/schema'
-import { createDoc } from './documents'
-import { nearestDocument, triageCapture } from './triage'
-import { publishChange } from '../utils/live-bus'
-import { slugify } from '../../shared/utils/slugify'
-import type { DocCandidate } from '../lib/memory/extract-v3'
+import { useDb } from '@mymind/core/db'
+import { toolEvents } from '@mymind/core/db/schema'
+import { createDoc } from '@mymind/core/services/documents'
+import { nearestDocument, triageCapture } from '@mymind/core/services/triage'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import { slugify } from '@mymind/core/shared/utils/slugify'
+import type { DocCandidate } from '@mymind/core/lib/memory/extract-v3'
 
 /**
  * A candidate whose nearest existing document is at least this similar is already documented

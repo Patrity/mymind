@@ -1,4 +1,4 @@
-import { ConnectionError, deleteConnection } from '../../lib/google/manage'
+import { ConnectionError, deleteConnection } from '@mymind/core/lib/google/manage'
 import { requireSession } from '../../utils/auth-guard'
 
 // Cycle 79: disconnect — revoke at Google (best effort), then delete the linked account row.

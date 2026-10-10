@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { createColumn } from '../../services/task-columns'
-import { TASK_COLUMN_KINDS, TASK_COLUMN_COLORS } from '../../../shared/types/task-columns'
+import { createColumn } from '@mymind/core/services/task-columns'
+import { TASK_COLUMN_KINDS, TASK_COLUMN_COLORS } from '@mymind/core/shared/types/task-columns'
 
 const Body = z.object({
   name: z.string().min(1),

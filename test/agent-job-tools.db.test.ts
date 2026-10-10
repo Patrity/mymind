@@ -18,17 +18,17 @@ import { describe, it, expect, afterAll, vi, onTestFinished } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { and, eq, inArray, like } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentJobs, agentConfigRevisions, agentRuns, conversations } from '../server/db/schema'
-import { listRevisions } from '../server/lib/agent/config/revisions'
+import { useDb } from '@mymind/core/db'
+import { agentJobs, agentConfigRevisions, agentRuns, conversations } from '@mymind/core/db/schema'
+import { listRevisions } from '@mymind/core/lib/agent/config/revisions'
 import {
   createJob as storeCreateJob, getJob as storeGetJob, deleteJob as storeDeleteJob,
   countAgentAtCreatesLastHour, MAX_AGENT_AT_CREATES_PER_HOUR
-} from '../server/lib/agent/jobs/store'
-import * as jobsStore from '../server/lib/agent/jobs/store'
-import { createRun } from '../server/lib/agent/runtime/runs'
-import { jobTools } from '../server/lib/agent/tools/jobs'
-import type { ToolContext } from '../server/lib/agent/types'
+} from '@mymind/core/lib/agent/jobs/store'
+import * as jobsStore from '@mymind/core/lib/agent/jobs/store'
+import { createRun } from '@mymind/core/lib/agent/runtime/runs'
+import { jobTools } from '@mymind/core/lib/agent/tools/jobs'
+import type { ToolContext } from '@mymind/core/lib/agent/types'
 
 const PREFIX = 'jstools-'
 const ctx: ToolContext = { signal: new AbortController().signal }

@@ -1,4 +1,4 @@
-import type { AttachmentRef } from '~~/shared/types/conversation'
+import type { AttachmentRef } from '@mymind/core/shared/types/conversation'
 
 export const ATTACHMENT_ACCEPT = 'image/*,text/*,application/pdf,application/json,application/xml,application/csv'
 export const MAX_ATTACHMENTS = 4

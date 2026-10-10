@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TaskColumnDTO } from '~~/shared/types/task-columns'
+import type { TaskColumnDTO } from '@mymind/core/shared/types/task-columns'
 
 // Delete (or reassign-then-delete) a column. `taskCount` is passed in from tasks.vue's own
 // already-loaded board state (columnsTasks[col.id]?.length) rather than re-fetched here —

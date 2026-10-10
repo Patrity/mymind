@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { conversationDeliveries } from '../../../services/conversations'
+import { conversationDeliveries } from '@mymind/core/services/conversations'
 import { requireSession } from '../../../utils/auth-guard'
 
 // GET /api/conversations/:id/deliveries → [{ messageId, channel, status }] (cycle 75). Web session

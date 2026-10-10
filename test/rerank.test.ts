@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseRerankResponse } from '../server/lib/ai/rerank'
+import { parseRerankResponse } from '@mymind/core/lib/ai/rerank'
 
 describe('parseRerankResponse', () => {
   const ids = ['a', 'b', 'c']

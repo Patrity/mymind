@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { deleteColumn } from '../../services/task-columns'
+import { deleteColumn } from '@mymind/core/services/task-columns'
 
 const Body = z.object({
   mode: z.enum(['delete', 'reassign']),

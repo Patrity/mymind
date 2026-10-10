@@ -1,8 +1,8 @@
 import { eq } from 'drizzle-orm'
-import { useDb } from '../db'
-import { memoryRelations } from '../db/schema'
-import { publishChange } from '../utils/live-bus'
-import { registerUndo } from '../lib/agent/undo'
+import { useDb } from '@mymind/core/db'
+import { memoryRelations } from '@mymind/core/db/schema'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import { registerUndo } from '@mymind/core/lib/agent/undo'
 
 /** Relation types a user can manually draw between two memories. */
 export type MemoryRelationType = 'supersedes' | 'contradicts'

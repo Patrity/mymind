@@ -1,4 +1,4 @@
-import { saveFile } from '../../services/files'
+import { saveFile } from '@mymind/core/services/files'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()

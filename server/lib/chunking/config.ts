@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
-import { useDb } from '../../db'
-import { settings } from '../../db/schema'
+import { useDb } from '@mymind/core/db'
+import { settings } from '@mymind/core/db/schema'
 
 export interface ChunkingConfig {
   contextual: boolean   // run the LLM contextualization step

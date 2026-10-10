@@ -1,6 +1,6 @@
 // test/run-agent.test.ts
 import { describe, it, expect, vi } from 'vitest'
-import { runAgent } from '../server/lib/agent/run'
+import { runAgent } from '@mymind/core/lib/agent/run'
 
 function fakeFullStream(parts: any[]) {
   return { fullStream: (async function* () { for (const p of parts) yield p })() }

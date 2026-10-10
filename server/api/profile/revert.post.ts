@@ -2,7 +2,7 @@
 // (recorded as a NEW revision).
 import { z } from 'zod'
 import { requireSession } from '../../utils/auth-guard'
-import { revertProfile } from '../../services/profile'
+import { revertProfile } from '@mymind/core/services/profile'
 import { throwAgentConfigWriteError } from '../../utils/agent-config-http'
 
 const Body = z.object({ revisionId: z.string() })

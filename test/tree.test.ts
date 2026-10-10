@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildTree, applyFolderColors, type TreeNode } from '../server/services/tree'
+import { buildTree, applyFolderColors, type TreeNode } from '@mymind/core/services/tree'
 
 const find = (nodes: TreeNode[], path: string): TreeNode | undefined => {
   for (const n of nodes) {

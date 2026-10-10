@@ -1,4 +1,4 @@
-import type { MemoryScope } from '../../../shared/types/memory'
+import type { MemoryScope } from '@mymind/core/shared/types/memory'
 
 /** Agent-scope memories inherit the session's project; user/world are global. Pure. */
 export function projectIdForScope(scope: MemoryScope, sessionProjectId: string | null): string | null {

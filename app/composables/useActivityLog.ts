@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { ActivityDTO, ActivityListParams } from '~~/shared/types/activity'
+import type { ActivityDTO, ActivityListParams } from '@mymind/core/shared/types/activity'
 
 export function useActivityLog() {
   const useActivityList = (params?: MaybeRefOrGetter<ActivityListParams | undefined>) => {

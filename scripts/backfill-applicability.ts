@@ -33,8 +33,8 @@ import { writeFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { and, eq, isNull } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { memories } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import { memories } from '@mymind/core/db/schema'
 import { decideApplicability } from './lib/applicability'
 
 const HERE = dirname(fileURLToPath(import.meta.url))

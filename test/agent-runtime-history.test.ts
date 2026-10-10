@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { groupTurns, turnTier, costTurns, keepTrailingTurns, capToTokens, RUNTIME_CONTEXT_BUDGET } from '../server/lib/agent/runtime/history'
-import { fitBudget, tier } from '../server/lib/agent/budget'
-import { estimateTokens } from '../server/lib/chunking/chunk-markdown'
-import type { AgentMessage } from '../server/lib/agent/run'
+import { groupTurns, turnTier, costTurns, keepTrailingTurns, capToTokens, RUNTIME_CONTEXT_BUDGET } from '@mymind/core/lib/agent/runtime/history'
+import { fitBudget, tier } from '@mymind/core/lib/agent/budget'
+import { estimateTokens } from '@mymind/core/lib/chunking/chunk-markdown'
+import type { AgentMessage } from '@mymind/core/lib/agent/run'
 
 const u = (c: string): AgentMessage => ({ role: 'user', content: c })
 const a = (c: string, extra: Partial<AgentMessage> = {}): AgentMessage => ({ role: 'assistant', content: c, ...extra } as AgentMessage)

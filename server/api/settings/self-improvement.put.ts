@@ -2,7 +2,7 @@
 // Only 'on' | 'review_only' | 'off' are accepted (400 otherwise). Session-only, like the GET.
 import { z } from 'zod'
 import { requireSession } from '../../utils/auth-guard'
-import { getSelfImprovementMode, setSelfImprovementMode } from '../../lib/agent/self-improvement-mode'
+import { getSelfImprovementMode, setSelfImprovementMode } from '@mymind/core/lib/agent/self-improvement-mode'
 
 const Body = z.object({ mode: z.enum(['on', 'review_only', 'off']) })
 

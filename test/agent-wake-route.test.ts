@@ -12,7 +12,7 @@ vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string })
 vi.stubGlobal('readBody', async (e: { body: unknown }) => e.body)
 
 const wake = vi.fn()
-vi.mock('../server/lib/agent/runtime/wake', () => ({ wake }))
+vi.mock('@mymind/core/lib/agent/runtime/wake', () => ({ wake }))
 
 // requireSession itself is NOT mocked — it's a pure predicate over event.context.client
 // (server/utils/auth-guard.ts) with no I/O, so exercising the real thing is what actually

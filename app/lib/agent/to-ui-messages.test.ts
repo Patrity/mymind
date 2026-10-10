@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { toUIMessages, type ResumeMessage } from './to-ui-messages'
-import { applyImageEmbeds, sanitizedOffset } from '../../../server/lib/agent/image-embed'
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import { applyImageEmbeds, sanitizedOffset } from '@mymind/core/lib/agent/image-embed'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 type ToolCall = NonNullable<ResumeMessage['toolCalls']>[number]
 const tc = (o: Partial<ToolCall> = {}): ToolCall => ({ name: 'web_search', summary: 'searched', callId: 'c1', textOffset: 0, args: { q: 'a' }, result: { hits: 1 }, kind: 'read', ...o })

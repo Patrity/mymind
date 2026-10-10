@@ -1,11 +1,11 @@
 import { sql } from 'drizzle-orm'
-import { useDb } from '../db'
+import { useDb } from '@mymind/core/db'
 import { homeRangeStart } from '../lib/home/range'
 import { buildTimeline } from '../lib/home/timeline'
 import type { RawEvent } from '../lib/home/timeline'
 import { getUsagePricingSince } from './usage'
-import { statusForKind } from '../lib/tasks/status-kind'
-import type { TaskColumnKind } from '../../shared/types/task-columns'
+import { statusForKind } from '@mymind/core/lib/tasks/status-kind'
+import type { TaskColumnKind } from '@mymind/core/shared/types/task-columns'
 import type {
   HomeRangeKey, HomeResponse, HomeMetrics, HomeAttention,
   HomeTaskRow, HomeProjectRow, HomeUsage

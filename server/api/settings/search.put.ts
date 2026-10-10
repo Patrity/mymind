@@ -1,4 +1,4 @@
-import { loadSearchConfig, saveSearchConfig } from '../../lib/search/store'
+import { loadSearchConfig, saveSearchConfig } from '@mymind/core/lib/search/store'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{ provider?: string; searxngUrl?: string; braveApiKey?: string }>(event)

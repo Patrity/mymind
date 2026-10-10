@@ -5,7 +5,7 @@
  * never loads any), each row an active switch.
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES } from '~~/shared/types/commands'
+import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES } from '@mymind/core/shared/types/commands'
 import { skillStarterMarkdown } from '~/lib/config/source'
 
 definePageMeta({ title: 'Skills' })

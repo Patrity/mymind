@@ -1,6 +1,6 @@
 // test/agent-prompt.test.ts
 import { describe, it, expect } from 'vitest'
-import { composePrompt, timeOfDayTone } from '../server/lib/agent/prompt'
+import { composePrompt, timeOfDayTone } from '@mymind/core/lib/agent/prompt'
 
 describe('timeOfDayTone', () => {
   it('buckets by hour', () => {
@@ -102,7 +102,7 @@ describe('wake mode', () => {
 
 describe('nowLine', () => {
   it('formats an exact timestamp with timezone', async () => {
-    const { nowLine } = await import('../server/lib/agent/prompt')
+    const { nowLine } = await import('@mymind/core/lib/agent/prompt')
     const line = nowLine(new Date('2026-07-01T15:04:00'))
     expect(line).toMatch(/^Current date and time: /)
     expect(line).toMatch(/2026/)

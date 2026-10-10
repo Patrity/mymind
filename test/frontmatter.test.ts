@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { splitFrontmatter, joinFrontmatter, setFrontmatterKey } from '../shared/utils/frontmatter'
+import { splitFrontmatter, joinFrontmatter, setFrontmatterKey } from '@mymind/core/shared/utils/frontmatter'
 
 describe('splitFrontmatter / joinFrontmatter', () => {
   it('round-trips a simple frontmatter document', () => {

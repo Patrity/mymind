@@ -1,6 +1,6 @@
 import { pruneActivity } from '../services/activity'
-import { loadObsConfig } from '../lib/observability/config'
-import { withSpan } from '../lib/observability/record'
+import { loadObsConfig } from '@mymind/core/lib/observability/config'
+import { withSpan } from '@mymind/core/lib/observability/record'
 
 export default defineTask({
   meta: { name: 'prune-activity-log', description: 'Tiered retention prune of the activity log' },

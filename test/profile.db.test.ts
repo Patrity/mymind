@@ -11,10 +11,10 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 import { createHash, randomUUID } from 'node:crypto'
 import { and, eq, inArray } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentProfile, agentConfigRevisions, type AgentProfileRow } from '../server/db/schema'
-import { getProfileSource, saveProfileSource, listProfileRevisions, revertProfile } from '../server/services/profile'
-import { ConflictError } from '../server/services/skills'
+import { useDb } from '@mymind/core/db'
+import { agentProfile, agentConfigRevisions, type AgentProfileRow } from '@mymind/core/db/schema'
+import { getProfileSource, saveProfileSource, listProfileRevisions, revertProfile } from '@mymind/core/services/profile'
+import { ConflictError } from '@mymind/core/services/skills'
 
 const hashOf = (s: string) => createHash('sha256').update(s).digest('hex')
 

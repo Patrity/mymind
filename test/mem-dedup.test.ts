@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { cosine, dedupDecision, type DedupCandidate } from '../server/services/memory-dedup'
+import { cosine, dedupDecision, type DedupCandidate } from '@mymind/core/services/memory-dedup'
 
 const DIM = 8 // small dimension for tests
 
@@ -128,7 +128,7 @@ describe('dedupMemoriesAfterMerge', () => {
   it('returns { collapsed: 0 } immediately when given an empty id list', async () => {
     // Dynamically import so the module-level mocks (useDb etc.) are not needed
     // for this particular code path — the function returns early before any DB call.
-    const { dedupMemoriesAfterMerge } = await import('../server/services/memory')
+    const { dedupMemoriesAfterMerge } = await import('@mymind/core/services/memory')
     const result = await dedupMemoriesAfterMerge([])
     expect(result).toEqual({ collapsed: 0 })
   }, 15_000)

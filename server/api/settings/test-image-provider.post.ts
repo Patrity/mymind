@@ -1,7 +1,7 @@
 // Ping ComfyUI to confirm it's reachable. Inline baseURL (a not-yet-saved form value)
 // or omit to use the stored config.
 import { z } from 'zod'
-import { loadImageConfig } from '../../lib/imagegen/store'
+import { loadImageConfig } from '@mymind/core/lib/imagegen/store'
 
 const Body = z.object({ baseURL: z.string().url().nullable().optional() })
 

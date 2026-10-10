@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, lt, inArray, getTableColumns } from 'drizzle-orm'
-import { useDb } from '../db'
-import { clipThreads, clipMessages, clipAttachments, clipDevices } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { clipThreads, clipMessages, clipAttachments, clipDevices } from '@mymind/core/db/schema'
 import { sanitizeHtml } from '../../shared/utils/sanitize-html'
 
 // ---------------------------------------------------------------------------

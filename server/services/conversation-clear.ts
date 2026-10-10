@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { conversations } from '../db/schema'
-import { publishChange } from '../utils/live-bus'
+import { useDb } from '@mymind/core/db'
+import { conversations } from '@mymind/core/db/schema'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 /**
  * `/clear` — make Bridget forget the transcript without deleting it.

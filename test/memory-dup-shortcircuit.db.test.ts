@@ -20,7 +20,7 @@ const { judgeRelations } = vi.hoisted(() => ({
   judgeRelations: vi.fn(async (_c: string, near: Array<{ id: string }>) =>
     (near ?? []).map(n => ({ relation: 'unrelated', confidence: 0.9, existingId: n.id, reasoning: 'stub' })))
 }))
-vi.mock('../server/lib/ai/memory-judge', () => ({ judgeRelations }))
+vi.mock('@mymind/core/lib/ai/memory-judge', () => ({ judgeRelations }))
 
 // embedOne is the real embedding call; stub $fetch so it never leaves the machine.
 // A fixed vector makes every memory's embedding identical, i.e. cosine similarity 1.0 —
@@ -28,8 +28,8 @@ vi.mock('../server/lib/ai/memory-judge', () => ({ judgeRelations }))
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.02)]))
 
 const { resolveEnrichedMemory } = await import('../server/services/memory-resolve')
-const { useDb } = await import('../server/db')
-const { memories } = await import('../server/db/schema')
+const { useDb } = await import('@mymind/core/db')
+const { memories } = await import('@mymind/core/db/schema')
 const { eq, and, isNull, sql } = await import('drizzle-orm')
 
 const uniq = () => Math.random().toString(36).slice(2, 10)

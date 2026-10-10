@@ -1,6 +1,6 @@
 // test/agent-bus.test.ts
 import { describe, it, expect } from 'vitest'
-import { publishActivity, subscribeActivity } from '../server/lib/agent/bus'
+import { publishActivity, subscribeActivity } from '@mymind/core/lib/agent/bus'
 
 describe('agent activity bus', () => {
   it('delivers events to subscribers and stops after unsubscribe', () => {

@@ -1,7 +1,7 @@
 // test/ai-registry-schema.test.ts
 import { describe, it, expect } from 'vitest'
-import { parseConfig, redactDoc } from '../server/lib/ai/registry/schema'
-import { emptyDoc } from '../server/lib/ai/registry/types'
+import { parseConfig, redactDoc } from '@mymind/core/lib/ai/registry/schema'
+import { emptyDoc } from '@mymind/core/lib/ai/registry/types'
 
 function doc() {
   return {

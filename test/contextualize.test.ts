@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const chatMock = vi.fn()
-vi.mock('../server/lib/ai/chat', () => ({ chat: (...a: unknown[]) => chatMock(...a) }))
+vi.mock('@mymind/core/lib/ai/chat', () => ({ chat: (...a: unknown[]) => chatMock(...a) }))
 
 import { contextualizeChunk } from '../server/lib/chunking/contextualize'
 

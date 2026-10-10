@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { contextMeterData } from './context-meter'
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 const a = (id: string, usage?: object): AgentUIMessage => ({ id, role: 'assistant', parts: [], metadata: usage ? { usage } : {} })
 const models = [{ id: 'haiku', contextWindow: 200000 }, { id: 'qwen', contextWindow: null }]

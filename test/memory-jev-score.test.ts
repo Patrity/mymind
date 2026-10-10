@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { jevKeepScore, compareByJev, JEV_QUESTIONS, type JevAnswers } from '../server/lib/memory/jev-score'
+import { jevKeepScore, compareByJev, JEV_QUESTIONS, type JevAnswers } from '@mymind/core/lib/memory/jev-score'
 
 const A = (over: Partial<JevAnswers> = {}): JevAnswers => ({
   transient: 0.5, rederivable: 0.5, names_specific: 0.5, states_reason: 0.5, ...over

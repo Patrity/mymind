@@ -4,7 +4,7 @@ import { Readable } from 'node:stream'
 const store = new Map<string, Buffer>()
 let lastRow: any = null
 
-vi.mock('../server/utils/storage', () => ({
+vi.mock('@mymind/core/utils/storage', () => ({
   storage: () => ({
     put: async (stream: Readable, _hint?: unknown) => {
       const chunks: Buffer[] = []
@@ -18,7 +18,7 @@ vi.mock('../server/utils/storage', () => ({
   })
 }))
 
-vi.mock('../server/db', () => ({
+vi.mock('@mymind/core/db', () => ({
   useDb: () => ({
     insert: () => ({
       values: (v: any) => ({
@@ -38,7 +38,7 @@ vi.mock('../server/db', () => ({
   })
 }))
 
-import { saveFile, getFileBytes } from '../server/services/files'
+import { saveFile, getFileBytes } from '@mymind/core/services/files'
 
 beforeEach(() => {
   store.clear()

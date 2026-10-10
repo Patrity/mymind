@@ -11,20 +11,20 @@ process.loadEnvFile('.env')
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
-vi.mock('../server/lib/ai/embeddings', () => ({
+vi.mock('@mymind/core/lib/ai/embeddings', () => ({
   embedOne: async () => { throw new Error('no embeddings in tests') },
   embed: async () => { throw new Error('no embeddings in tests') }
 }))
-vi.mock('../server/lib/ai/registry/resolve', () => ({
+vi.mock('@mymind/core/lib/ai/registry/resolve', () => ({
   resolveChain: async () => { throw new Error('no model chain in tests') }
 }))
 
 import { createHash } from 'node:crypto'
 import { sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { memories } from '../server/db/schema'
-import { listMemories, searchMemories } from '../server/services/memory'
-import type { AuditVerdict } from '../shared/types/memory'
+import { useDb } from '@mymind/core/db'
+import { memories } from '@mymind/core/db/schema'
+import { listMemories, searchMemories } from '@mymind/core/services/memory'
+import type { AuditVerdict } from '@mymind/core/shared/types/memory'
 
 const TAG = `MEM-FILTERS-TEST-${Date.now().toString(36)}`
 

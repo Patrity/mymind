@@ -33,7 +33,7 @@ describe('useAuth() google wiring', () => {
   it('always wires the sign-in block, disabled token paths, account options and account hooks', async () => {
     const auth = await freshAuth()
     // Same module registry as the freshly imported auth.ts (vi.resetModules), so identity holds.
-    const { GOOGLE_AUTH_HOOKS, DISABLED_AUTH_PATHS, GOOGLE_ACCOUNT_OPTIONS } = await import('../server/lib/google/auth-options')
+    const { GOOGLE_AUTH_HOOKS, DISABLED_AUTH_PATHS, GOOGLE_ACCOUNT_OPTIONS } = await import('@mymind/core/lib/google/auth-options')
     expect(auth.options.hooks).toBe(GOOGLE_AUTH_HOOKS)
     expect(auth.options.disabledPaths).toEqual(DISABLED_AUTH_PATHS)
     expect(auth.options.account).toBe(GOOGLE_ACCOUNT_OPTIONS)

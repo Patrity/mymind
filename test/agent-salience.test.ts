@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { extractFeatures, relevanceScore, rankForContext, WEIGHTS } from '../server/lib/agent/salience'
-import type { MemoryDTO } from '../shared/types/memory'
+import { extractFeatures, relevanceScore, rankForContext, WEIGHTS } from '@mymind/core/lib/agent/salience'
+import type { MemoryDTO } from '@mymind/core/shared/types/memory'
 
 const NOW = new Date('2026-09-23T00:00:00.000Z')
 

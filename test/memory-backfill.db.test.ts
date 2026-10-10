@@ -16,18 +16,18 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 const publishChange = vi.hoisted(() => vi.fn())
-vi.mock('../server/utils/live-bus', () => ({ publishChange }))
+vi.mock('@mymind/core/utils/live-bus', () => ({ publishChange }))
 
 import { createHash } from 'node:crypto'
 import { eq, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { memories, settings, type SettingRow } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import { memories, settings, type SettingRow } from '@mymind/core/db/schema'
 import { MEMORY_BACKFILL_KEY, getBackfillSetting, setBackfillState } from '../server/lib/memory/backfill-setting'
 import { backfillProgress, etaFromRuns, resetBackfillProcessState, runBackfillBatch, setBackfillSwitch } from '../server/services/memory-backfill'
 import { runJevScoring } from '../server/services/memory-jev'
-import { AUDIT_PROMPT_VERSION } from '../server/lib/memory/extract-v3'
-import { JevHttpError, type JevConfig, type JevResponse } from '../server/lib/ai/jev'
-import { AiAllFailedError } from '../server/lib/ai/registry/errors'
+import { AUDIT_PROMPT_VERSION } from '@mymind/core/lib/memory/extract-v3'
+import { JevHttpError, type JevConfig, type JevResponse } from '@mymind/core/lib/ai/jev'
+import { AiAllFailedError } from '@mymind/core/lib/ai/registry/errors'
 
 const TAG = `BACKFILL-TEST-${Date.now().toString(36)}`
 const CFG: JevConfig = { baseURL: 'http://jev.invalid', apiKey: 'k', model: 'jev-latest' }

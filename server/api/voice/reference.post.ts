@@ -2,11 +2,11 @@
 // A reference clip enters here by upload OR by mic recording — both arrive as a wav
 // blob. Whisper (already in the registry for STT) fills ref_text, because Breeze needs
 // the transcript to match the audio exactly and typing it by hand is error-prone.
-import { storage } from '../../utils/storage'
+import { storage } from '@mymind/core/utils/storage'
 import { Readable } from 'node:stream'
 import { Buffer } from 'node:buffer'
-import { sttFromModel } from '../../lib/voice/providers'
-import { withFailover } from '../../lib/ai/registry/resolve'
+import { sttFromModel } from '@mymind/core/lib/voice/providers'
+import { withFailover } from '@mymind/core/lib/ai/registry/resolve'
 import { wavDurationMs, REFERENCE_HARD_LIMIT_MS, REFERENCE_WARN_LIMIT_MS } from '../../lib/voice/wav'
 
 export default defineEventHandler(async (event) => {

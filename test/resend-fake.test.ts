@@ -3,7 +3,7 @@
 // env var alone must never stop a real send. The dev-side behaviour (log + resolve) is proven by
 // the Task 13 fake acceptance run, where import.meta.dev is true.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { sendResendEmail } from '../server/lib/observability/email'
+import { sendResendEmail } from '@mymind/core/lib/observability/email'
 
 const opts = { apiKey: 'k', from: 'bridget@example.com', to: 'tony@example.com', subject: 's', text: 't' }
 

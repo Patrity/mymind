@@ -2,9 +2,9 @@
 // `agent_timezone` setting, then re-derives every job that does not name its own `timezone:`
 // (their stored zone and next run), so a change reaches already-saved jobs at once.
 import { z } from 'zod'
-import { isValidTimezone } from '../../lib/agent/jobs/parse'
-import { rederiveDefaultTimezone } from '../../lib/agent/jobs/store'
-import { getAgentTimezoneSetting, getDefaultTimezone, serverTimezone, setAgentTimezoneSetting } from '../../lib/agent/jobs/timezone'
+import { isValidTimezone } from '@mymind/core/lib/agent/jobs/parse'
+import { rederiveDefaultTimezone } from '@mymind/core/lib/agent/jobs/store'
+import { getAgentTimezoneSetting, getDefaultTimezone, serverTimezone, setAgentTimezoneSetting } from '@mymind/core/lib/agent/jobs/timezone'
 
 const Body = z.object({ timezone: z.string().trim().min(1).nullable() })
 

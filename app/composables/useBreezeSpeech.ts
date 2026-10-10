@@ -5,7 +5,7 @@
 import { errorFromResponseBody } from '~/lib/voice/studio'
 import { createAudioGate, isRunawayRender, type AudioContextFactory } from '~/lib/voice/audio-context'
 import { createPeakAccumulator } from '~/lib/voice/peaks'
-import type { SpeakOverrides } from '~~/shared/types/voice-presets'
+import type { SpeakOverrides } from '@mymind/core/shared/types/voice-presets'
 
 /** The rig is 24 kHz and says so on /health. We build the context at that rate BEFORE the
  *  request so the user gesture is still live; a response that disagrees rebuilds (rare). */

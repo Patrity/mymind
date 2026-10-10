@@ -1,4 +1,4 @@
-import { markActive } from '../lib/channels/presence'
+import { markActive } from '@mymind/core/lib/channels/presence'
 import { requireSession } from '../utils/auth-guard'
 
 // Activity ping from app/plugins/presence.client.ts (throttled client-side to 1/min). Web

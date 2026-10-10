@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/vue-query'
-import type { ConnectionDTO, ConnectionsResponse } from '~~/shared/types/connection'
+import type { ConnectionDTO, ConnectionsResponse } from '@mymind/core/shared/types/connection'
 
 export type { ConnectionDTO, ConnectionsResponse }
 

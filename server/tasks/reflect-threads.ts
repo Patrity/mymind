@@ -4,9 +4,9 @@
 // HERE, before withSpan opens — runThreadPass() also short-circuits on 'off', but checking first
 // means an 'off' tick never opens a span or touches the DB at all (matches summarize-threads.ts's
 // shape, following server/tasks/summarize-threads.ts).
-import { runThreadPass } from '../lib/agent/reflect/thread-pass'
-import { getSelfImprovementMode } from '../lib/agent/self-improvement-mode'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { runThreadPass } from '@mymind/core/lib/agent/reflect/thread-pass'
+import { getSelfImprovementMode } from '@mymind/core/lib/agent/self-improvement-mode'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
 
 export default defineTask({
   meta: { name: 'reflect-threads', description: 'Per-thread self-improvement reflection pass (cycle 76)' },

@@ -6,7 +6,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
+import { useDb } from '@mymind/core/db'
 import { listPromptCommands, createPromptCommand } from '../server/services/prompt-commands'
 
 afterAll(async () => {

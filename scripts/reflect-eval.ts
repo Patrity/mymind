@@ -29,9 +29,9 @@ import './lib/core-init'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { callReflector } from '../server/lib/agent/reflect/call'
-import { threadReflectionMessages } from '../server/lib/agent/reflect/prompt'
-import type { Proposal } from '../server/lib/agent/reflect/schema'
+import { callReflector } from '@mymind/core/lib/agent/reflect/call'
+import { threadReflectionMessages } from '@mymind/core/lib/agent/reflect/prompt'
+import type { Proposal } from '@mymind/core/lib/agent/reflect/schema'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DATA = resolve(HERE, 'data/reflect-eval.jsonl')

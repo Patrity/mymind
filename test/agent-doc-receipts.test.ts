@@ -6,8 +6,8 @@
 // agent as an error.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
-import { divergenceReport } from '../server/lib/agent/receipt'
-import type { DocumentDTO } from '../shared/types/documents'
+import { divergenceReport } from '@mymind/core/lib/agent/receipt'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
 
 const BIG = 'x'.repeat(120_000)
 const hashOf = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -37,7 +37,7 @@ function docRow(content: string) {
   }
 }
 
-vi.mock('../server/services/documents', () => ({
+vi.mock('@mymind/core/services/documents', () => ({
   getDoc: async () => docRow(stored),
   createDoc: async (input: { content?: string }) => { stored = input.content ?? ''; return docRow(stored) },
   updateDoc: async (_id: string, input: { content?: string }) => {
@@ -54,9 +54,9 @@ vi.mock('../server/services/documents', () => ({
   searchDocsPage: async () => ({ items: [], total: 0 }),
 }))
 
-vi.mock('../server/utils/live-bus', () => ({ publishChange: () => {}, publishActivity: () => {} }))
+vi.mock('@mymind/core/utils/live-bus', () => ({ publishChange: () => {}, publishActivity: () => {} }))
 
-const { agentTools } = await import('../server/lib/agent/tools')
+const { agentTools } = await import('@mymind/core/lib/agent/tools')
 const tool = (n: string) => agentTools.find(t => t.name === n)!
 const run = async (n: string, args: Record<string, unknown>) =>
   (await tool(n).handler(args, { signal: new AbortController().signal })).result as Record<string, any>

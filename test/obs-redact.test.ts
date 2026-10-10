@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { truncate, sanitizeRequest, sanitizeResponse } from '../server/lib/observability/redact'
+import { truncate, sanitizeRequest, sanitizeResponse } from '@mymind/core/lib/observability/redact'
 
 describe('truncate', () => {
   it('passes through short strings unchanged', () => {

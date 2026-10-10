@@ -1,7 +1,7 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { TaskDTO, TaskStatus } from '~~/shared/types/tasks'
+import type { TaskDTO, TaskStatus } from '@mymind/core/shared/types/tasks'
 
 export function useTasks() {
   const list = (params?: { status?: TaskStatus, project?: string }) =>

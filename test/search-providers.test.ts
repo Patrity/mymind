@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { normalizeSearxng, searxngWarning, searxngProvider, resetSearxngState, cacheKey } from '../server/lib/search/providers/searxng'
-import { normalizeBrave } from '../server/lib/search/providers/brave'
+import { normalizeSearxng, searxngWarning, searxngProvider, resetSearxngState, cacheKey } from '@mymind/core/lib/search/providers/searxng'
+import { normalizeBrave } from '@mymind/core/lib/search/providers/brave'
 
 describe('normalizeSearxng', () => {
   it('maps results[].{title,url,content} → SearchResult and caps count', () => {

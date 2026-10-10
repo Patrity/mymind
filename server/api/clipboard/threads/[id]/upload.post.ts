@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import { createFileMessage } from '../../../../services/clipboard'
-import { storage } from '../../../../utils/storage'
+import { storage } from '@mymind/core/utils/storage'
 import { publish } from '../../../../utils/clip-pubsub'
 
 export default defineEventHandler(async (event) => {

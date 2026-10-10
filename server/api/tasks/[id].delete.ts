@@ -1,5 +1,5 @@
-import { deleteTask } from '../../services/tasks'
-import { publishChange } from '../../utils/live-bus'
+import { deleteTask } from '@mymind/core/services/tasks'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

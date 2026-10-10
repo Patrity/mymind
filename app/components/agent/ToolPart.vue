@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AgentUIPart, SubagentStep, ToolEnvelope } from '~~/shared/types/agent-ui'
+import type { AgentUIPart, SubagentStep, ToolEnvelope } from '@mymind/core/shared/types/agent-ui'
 import { approvalFor, type PendingApprovals } from '~/lib/agent/approvals'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { toolTitle, isRunning } from '~/lib/agent/render'

@@ -14,10 +14,10 @@ import { sql } from 'drizzle-orm'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
-const { createDoc, getDoc } = await import('../server/services/documents')
+const { useDb } = await import('@mymind/core/db')
+const { createDoc, getDoc } = await import('@mymind/core/services/documents')
 const { createFolder, moveFolder, deleteFolder, setFolderColor, folderImpact } =
-  await import('../server/services/folders')
+  await import('@mymind/core/services/folders')
 
 const TAG = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 const ROOT = `/zz-cascade-${TAG}`

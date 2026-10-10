@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import { upsertSession } from '../../../services/sessions'
 import { eq } from 'drizzle-orm'
-import { publishChange } from '../../../utils/live-bus'
-import { useDb } from '../../../db'
-import { projects, type Session } from '../../../db/schema'
-import { fireEvent } from '../../../lib/agent/jobs/events'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import { useDb } from '@mymind/core/db'
+import { projects, type Session } from '@mymind/core/db/schema'
+import { fireEvent } from '@mymind/core/lib/agent/jobs/events'
 
 const Body = z.object({
   source: z.string().default('claude_code'),

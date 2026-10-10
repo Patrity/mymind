@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { setPublic } from '../../../services/documents'
-import { publishChange } from '../../../utils/live-bus'
+import { setPublic } from '@mymind/core/services/documents'
+import { publishChange } from '@mymind/core/utils/live-bus'
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!
   const { isPublic } = z.object({ isPublic: z.boolean() }).parse(await readBody(event))

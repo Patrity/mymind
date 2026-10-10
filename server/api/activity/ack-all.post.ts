@@ -1,5 +1,5 @@
 import { ackAllErrors } from '../../services/activity'
-import { publishChange } from '../../utils/live-bus'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async () => {
   await ackAllErrors()

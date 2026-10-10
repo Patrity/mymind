@@ -1,4 +1,4 @@
-import { deleteJob } from '../../lib/agent/jobs/store'
+import { deleteJob } from '@mymind/core/lib/agent/jobs/store'
 import { requireJobSlug } from '../../utils/agent-config-http'
 
 export default defineEventHandler(async (event) => {

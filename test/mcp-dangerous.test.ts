@@ -1,11 +1,11 @@
 // test/mcp-dangerous.test.ts
 // Asserts the invariant: dangerous tools are never exposed on the gateless MCP surface.
 import { describe, it, expect } from 'vitest'
-import { agentTools } from '../server/lib/agent/tools'
+import { agentTools } from '@mymind/core/lib/agent/tools'
 import { mcpToolNames } from '../server/lib/mcp/server'
-import { execTool } from '../server/lib/agent/tools/exec'
-import { bridgetProfile } from '../server/lib/agent/profile'
-import { gmailSendTool } from '../server/lib/agent/tools/gmail'
+import { execTool } from '@mymind/core/lib/agent/tools/exec'
+import { bridgetProfile } from '@mymind/core/lib/agent/profile'
+import { gmailSendTool } from '@mymind/core/lib/agent/tools/gmail'
 
 describe('MCP dangerous-tool defense', () => {
   it('agentTools contains no dangerous tools today (exec/decide_review/gmail_send all live on the profile, not the registry)', () => {

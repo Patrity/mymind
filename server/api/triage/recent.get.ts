@@ -4,8 +4,8 @@
 // here already happened (auto-applied or human-approved), so it deliberately does NOT
 // touch review_queue and must never affect GET /api/review/count (the sidebar badge).
 import { and, desc, eq, gte, isNull } from 'drizzle-orm'
-import { useDb } from '../../db'
-import { triageActions, documents } from '../../db/schema'
+import { useDb } from '@mymind/core/db'
+import { triageActions, documents } from '@mymind/core/db/schema'
 
 const RECENT_LIMIT = 20
 const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000 // 7 days

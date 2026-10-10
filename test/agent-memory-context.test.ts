@@ -1,7 +1,7 @@
 // test/agent-memory-context.test.ts
 import { describe, it, expect } from 'vitest'
-import { handleTurn } from '../server/lib/voice/orchestrator'
-import type { VoicePresetDTO } from '../shared/types/voice-presets'
+import { handleTurn } from '@mymind/core/lib/voice/orchestrator'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 
 const preset: VoicePresetDTO = {
   id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,

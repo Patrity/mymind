@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { classifySaveError, configEndpoints, reconcileSnapshot, skillStarterMarkdown, toSnapshot } from './source'
 import { profileStarterMarkdown } from './profile-starter'
-import { splitFrontmatter } from '~~/shared/utils/frontmatter'
+import { splitFrontmatter } from '@mymind/core/shared/utils/frontmatter'
 
 describe('reconcileSnapshot', () => {
   const snap = { content: 'x', contentHash: 'h2' }

@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { loadObsConfig, saveObsConfig, invalidateObsConfig, parseObsConfig } from '../../lib/observability/config'
-import { encryptSecret } from '../../lib/ai/registry/crypto'
-import { ACTIVITY_KINDS } from '../../../shared/types/activity'
+import { loadObsConfig, saveObsConfig, invalidateObsConfig, parseObsConfig } from '@mymind/core/lib/observability/config'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
+import { ACTIVITY_KINDS } from '@mymind/core/shared/types/activity'
 
 const KeyField = z.union([z.object({ apiKey: z.string().min(1) }), z.object({ keep: z.literal(true) }), z.null()])
 const Body = z.object({

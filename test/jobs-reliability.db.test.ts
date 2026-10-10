@@ -18,10 +18,10 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 const wakeHolder = vi.hoisted(() => ({
-  impl: null as null | ((req: import('../server/lib/agent/runtime/wake').WakeRequest) => Promise<{ runId: string; conversationId: string }>)
+  impl: null as null | ((req: import('@mymind/core/lib/agent/runtime/wake').WakeRequest) => Promise<{ runId: string; conversationId: string }>)
 }))
-vi.mock('../server/lib/agent/runtime/wake', () => ({
-  wake: (req: import('../server/lib/agent/runtime/wake').WakeRequest) => {
+vi.mock('@mymind/core/lib/agent/runtime/wake', () => ({
+  wake: (req: import('@mymind/core/lib/agent/runtime/wake').WakeRequest) => {
     if (!wakeHolder.impl) throw new Error('test reached the real wake() without a fake installed')
     return wakeHolder.impl(req)
   }
@@ -29,19 +29,19 @@ vi.mock('../server/lib/agent/runtime/wake', () => ({
 
 import { Client } from 'pg'
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
+import { useDb } from '@mymind/core/db'
 import {
   agentJobs, agentJobFires, agentConfigRevisions, agentRuns, conversations, conversationMessages, tasks, taskColumns
-} from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { createRun } from '../server/lib/agent/runtime/runs'
-import type { wake, WakeRequest } from '../server/lib/agent/runtime/wake'
-import { createJob, setJobEnabled, ConflictError } from '../server/lib/agent/jobs/store'
-import { resolveAtInstant } from '../server/lib/agent/jobs/schedule'
-import { jobsTick, runJobNow, sweepCrashedFires, MAX_FIRE_FAILURES } from '../server/lib/agent/jobs/tick'
-import { fireEvent, dueTaskEvents } from '../server/lib/agent/jobs/events'
-import { jobTools } from '../server/lib/agent/tools/jobs'
-import type { ToolContext } from '../server/lib/agent/types'
+} from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { createRun } from '@mymind/core/lib/agent/runtime/runs'
+import type { wake, WakeRequest } from '@mymind/core/lib/agent/runtime/wake'
+import { createJob, setJobEnabled, ConflictError } from '@mymind/core/lib/agent/jobs/store'
+import { resolveAtInstant } from '@mymind/core/lib/agent/jobs/schedule'
+import { jobsTick, runJobNow, sweepCrashedFires, MAX_FIRE_FAILURES } from '@mymind/core/lib/agent/jobs/tick'
+import { fireEvent, dueTaskEvents } from '@mymind/core/lib/agent/jobs/events'
+import { jobTools } from '@mymind/core/lib/agent/tools/jobs'
+import type { ToolContext } from '@mymind/core/lib/agent/types'
 
 const PREFIX = 'jrel-'
 const db = () => useDb()

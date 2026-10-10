@@ -1,4 +1,4 @@
-import { countReviewPending } from '../../services/review'
+import { countReviewPending } from '@mymind/core/services/review'
 
 export default defineEventHandler(async () => {
   const pending = await countReviewPending()

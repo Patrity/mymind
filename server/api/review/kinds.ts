@@ -2,15 +2,15 @@
 // @mymind/core and must not depend on h3). This module keeps the historical HTTP surface for
 // its importers: the same handler maps, with a lib ReviewKindError re-thrown as createError
 // carrying the identical statusCode/message/data. Anything else passes through untouched.
-import type { ReviewItem } from '../../db/schema'
+import type { ReviewItem } from '@mymind/core/db/schema'
 import {
   approveHandlers as libApproveHandlers,
   rejectHandlers as libRejectHandlers,
   ReviewKindError,
   type HandlerResult
-} from '../../lib/review/kinds'
+} from '@mymind/core/lib/review/kinds'
 
-export { SELF_IMPROVEMENT_CONFLICT, type HandlerResult } from '../../lib/review/kinds'
+export { SELF_IMPROVEMENT_CONFLICT, type HandlerResult } from '@mymind/core/lib/review/kinds'
 
 type Handler = (item: ReviewItem) => Promise<HandlerResult | void>
 

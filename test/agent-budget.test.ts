@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fitBudget, tier, ResidentOverflowError, TURN_FLOOR_RATIO } from '../server/lib/agent/budget'
+import { fitBudget, tier, ResidentOverflowError, TURN_FLOOR_RATIO } from '@mymind/core/lib/agent/budget'
 
 // estimateTokens is chars/3.8 rounded up, so 38 chars ≈ 10 tokens.
 const chars = (n: number) => 'x'.repeat(n)

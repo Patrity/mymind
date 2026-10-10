@@ -6,7 +6,7 @@
      are the command); any other tool's card offers Deny only — its args don't show what would
      actually be sent. -->
 <script setup lang="ts">
-import type { AgentUIPart } from '~~/shared/types/agent-ui'
+import type { AgentUIPart } from '@mymind/core/shared/types/agent-ui'
 import { canApprove, type PendingApprovalDetails } from '~/lib/agent/approvals'
 import { Confirmation, ConfirmationAction, ConfirmationActions, ConfirmationRequest, ConfirmationTitle } from '@/components/ai-elements/confirmation'
 

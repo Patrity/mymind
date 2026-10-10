@@ -1,6 +1,6 @@
 // test/review-choices.test.ts — the shared review-choices registry (cycle 76, Task 9).
 import { describe, it, expect } from 'vitest'
-import { reviewChoices, CONFLICT_TOAST } from '../shared/review/choices'
+import { reviewChoices, CONFLICT_TOAST } from '@mymind/core/shared/review/choices'
 
 const ids = (kind: string) => reviewChoices({ kind }).map(c => c.id)
 const labels = (kind: string) => reviewChoices({ kind }).map(c => c.label)

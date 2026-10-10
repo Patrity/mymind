@@ -1,6 +1,6 @@
 // test/agent-tools.test.ts
 import { describe, it, expect } from 'vitest'
-import { agentTools, toolByName } from '../server/lib/agent/tools'
+import { agentTools, toolByName } from '@mymind/core/lib/agent/tools'
 import { MCP_INSTRUCTIONS } from '../server/lib/mcp/server'
 
 describe('agent tool registry', () => {

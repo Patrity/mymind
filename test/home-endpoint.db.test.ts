@@ -11,8 +11,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 const { getHome } = await import('../server/services/home')
 const { HOME_RANGE_KEYS } = await import('../shared/types/home')
-const { useDb } = await import('../server/db')
-const { reviewQueue } = await import('../server/db/schema')
+const { useDb } = await import('@mymind/core/db')
+const { reviewQueue } = await import('@mymind/core/db/schema')
 const { eq } = await import('drizzle-orm')
 const { randomUUID } = await import('node:crypto')
 

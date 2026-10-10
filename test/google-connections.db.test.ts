@@ -10,12 +10,12 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // Cycle 80: connections.ts imports useAuth explicitly (server/lib/auth), so the old
 // vi.stubGlobal('useAuth', ...) no longer reaches it — swap the impl through a module mock.
 const authStub = vi.hoisted(() => ({ impl: (): unknown => { throw new Error('useAuth not stubbed') } }))
-vi.mock('../server/lib/auth', () => ({ useAuth: () => authStub.impl() }))
+vi.mock('@mymind/core/lib/auth', () => ({ useAuth: () => authStub.impl() }))
 
 import { eq } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { user, account, connections } from '../server/db/schema'
-import { upsertConnectionForAccount, listConnections, markReconnect, touchConnection } from '../server/lib/google/connections'
+import { useDb } from '@mymind/core/db'
+import { user, account, connections } from '@mymind/core/db/schema'
+import { upsertConnectionForAccount, listConnections, markReconnect, touchConnection } from '@mymind/core/lib/google/connections'
 
 function unsignedJwt(payload: Record<string, unknown>) {
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
@@ -80,7 +80,7 @@ describe('connections (DB)', () => {
 
   it('M1: tokensUndecryptable is true only when the stored tokens fail to decrypt under the current secret', async () => {
     const { setTokenUtil } = await import('better-auth/oauth2')
-    const { connectionDeps } = await import('../server/lib/google/connections')
+    const { connectionDeps } = await import('@mymind/core/lib/google/connections')
     const ctxFor = (secret: string) => ({ options: { account: { encryptOAuthTokens: true } }, secretConfig: secret })
     const OLD = 'old-secret-old-secret-old-secret-0001'
     const NEW = 'new-secret-new-secret-new-secret-0002'

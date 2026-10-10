@@ -21,13 +21,13 @@ import { describe, it, expect, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { taskColumns, tasks } from '../server/db/schema'
-import { getTask, createTask } from '../server/services/tasks'
+import { useDb } from '@mymind/core/db'
+import { taskColumns, tasks } from '@mymind/core/db/schema'
+import { getTask, createTask } from '@mymind/core/services/tasks'
 import {
   listColumns, defaultColumnFor, createColumn, updateColumn, reorderColumns, deleteColumn
-} from '../server/services/task-columns'
-import type { TaskColumnKind } from '../shared/types/task-columns'
+} from '@mymind/core/services/task-columns'
+import type { TaskColumnKind } from '@mymind/core/shared/types/task-columns'
 
 // Only safe for values that are never inserted — see the file header.
 const uniqueKind = (tag: string) => `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`

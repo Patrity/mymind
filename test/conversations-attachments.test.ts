@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { msgToDTO } from '../server/services/conversations'
+import { msgToDTO } from '@mymind/core/services/conversations'
 
 const baseRow = {
   id: 'm1', conversationId: 'c1', parentId: null,

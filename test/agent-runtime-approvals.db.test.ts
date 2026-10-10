@@ -11,9 +11,9 @@ import { randomUUID } from 'node:crypto'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { execApprovals } from '../server/db/schema'
-import { approvalFor, registerApprovalChannel, unregisterApprovalChannel } from '../server/lib/agent/runtime/approvals'
+import { useDb } from '@mymind/core/db'
+import { execApprovals } from '@mymind/core/db/schema'
+import { approvalFor, registerApprovalChannel, unregisterApprovalChannel } from '@mymind/core/lib/agent/runtime/approvals'
 
 // A tool name no real row uses, so loadApprovals(tool) only ever sees this file's row.
 const TOOL = `exec-test-${randomUUID()}`

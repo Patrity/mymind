@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { updateProject } from '../../services/projects'
-import { publishChange } from '../../utils/live-bus'
+import { updateProject } from '@mymind/core/services/projects'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const Body = z.object({
   name: z.string().optional(),

@@ -1,6 +1,6 @@
 // test/ai-registry-crypto.test.ts
 import { describe, it, expect, beforeAll } from 'vitest'
-import { encryptSecret, decryptSecret } from '../server/lib/ai/registry/crypto'
+import { encryptSecret, decryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 
 beforeAll(() => { process.env.BETTER_AUTH_SECRET = 'test-secret-please-ignore-0123456789' })
 

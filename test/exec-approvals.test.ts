@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchesApproval, validatePattern, proposedPattern, approvalOutcome } from '../server/lib/exec/approvals'
+import { matchesApproval, validatePattern, proposedPattern, approvalOutcome } from '@mymind/core/lib/exec/approvals'
 
 describe('matchesApproval', () => {
   it('matches a command under an allowed prefix glob', () => {

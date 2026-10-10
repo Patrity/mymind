@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createRecorder } from '../server/lib/observability/record'
-import type { ActivityInsert } from '../server/db/schema/activity-log'
+import { createRecorder } from '@mymind/core/lib/observability/record'
+import type { ActivityInsert } from '@mymind/core/db/schema/activity-log'
 
 function harness() {
   const rows: ActivityInsert[] = []

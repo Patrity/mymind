@@ -1,8 +1,8 @@
 // test/ai-chat.test.ts
 import { describe, it, expect } from 'vitest'
-import { extractContent } from '../server/lib/ai/chat'
-import { withFailoverOver } from '../server/lib/ai/registry/resolve'
-import type { ResolvedModel } from '../server/lib/ai/registry/types'
+import { extractContent } from '@mymind/core/lib/ai/chat'
+import { withFailoverOver } from '@mymind/core/lib/ai/registry/resolve'
+import type { ResolvedModel } from '@mymind/core/lib/ai/registry/types'
 
 describe('extractContent', () => {
   it('returns the assistant content for a well-formed completion', () => {

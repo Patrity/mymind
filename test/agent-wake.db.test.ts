@@ -7,9 +7,9 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { useDb } from '../server/db'
-import { conversations, conversationMessages, agentRuns } from '../server/db/schema'
-import { wake } from '../server/lib/agent/runtime/wake'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages, agentRuns } from '@mymind/core/db/schema'
+import { wake } from '@mymind/core/lib/agent/runtime/wake'
 import { eq, inArray } from 'drizzle-orm'
 
 const convIds: string[] = []

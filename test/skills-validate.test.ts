@@ -1,8 +1,8 @@
 // validateSkill is the SOLE gate on skill creation — the agent's own `create_skill` tool
 // (server/lib/agent/tools.ts) writes skills autonomously — and it shipped with no test at all.
 import { describe, it, expect } from 'vitest'
-import { validateSkill, SKILL_BODY_MAX } from '../server/services/skills'
-import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES } from '../shared/types/commands'
+import { validateSkill, SKILL_BODY_MAX } from '@mymind/core/services/skills'
+import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES } from '@mymind/core/shared/types/commands'
 
 const ok = { name: 'browser-testing', description: 'd', whenToUse: 'w', body: 'b' }
 

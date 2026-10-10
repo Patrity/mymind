@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isPrivateIp, ssrfCheckUrl, htmlToMarkdown } from '../server/lib/search/fetch'
+import { isPrivateIp, ssrfCheckUrl, htmlToMarkdown } from '@mymind/core/lib/search/fetch'
 
 describe('isPrivateIp', () => {
   it('flags private/loopback/link-local/ULA/CGNAT/metadata', () => {

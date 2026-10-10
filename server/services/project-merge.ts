@@ -1,9 +1,9 @@
 import { eq, or, and, isNull } from 'drizzle-orm'
-import { useDb } from '../db'
-import { projects, sessions, memories, tasks, documents } from '../db/schema'
-import { rewriteProjectPathPrefix } from '../lib/projects/doc-path'
-import { getProject } from './projects'
-import type { ProjectDTO } from '../../shared/types/tasks'
+import { useDb } from '@mymind/core/db'
+import { projects, sessions, memories, tasks, documents } from '@mymind/core/db/schema'
+import { rewriteProjectPathPrefix } from '@mymind/core/lib/projects/doc-path'
+import { getProject } from '@mymind/core/services/projects'
+import type { ProjectDTO } from '@mymind/core/shared/types/tasks'
 
 /**
  * uniquifyPath: If target not in taken, return unchanged; else insert -2/-3/… before extension.

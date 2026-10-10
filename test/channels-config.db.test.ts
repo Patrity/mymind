@@ -10,14 +10,14 @@ vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 
 import { eq, inArray } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { settings, type SettingRow } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import { settings, type SettingRow } from '@mymind/core/db/schema'
 import {
   loadChannelsConfig, saveChannelsConfig, invalidateChannelsConfig, verifyWebhookToken, blueBubblesPassword,
   mergeChannelsPut, rotateWebhookToken, type ChannelsConfig
-} from '../server/lib/channels/config'
-import { isAway, markActive, _resetPresence } from '../server/lib/channels/presence'
-import { encryptSecret } from '../server/lib/ai/registry/crypto'
+} from '@mymind/core/lib/channels/config'
+import { isAway, markActive, _resetPresence } from '@mymind/core/lib/channels/presence'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 
 const KEYS = ['channel_imessage', 'channel_email', 'presence_away_minutes']
 let snapshot: SettingRow[] = []

@@ -4,7 +4,7 @@
 // plain-Error case is a validation failure (bad revisionId), not a missing-job one, so it falls
 // through throwAgentConfigWriteError's generic 400 branch rather than being mistaken for 404.
 import { z } from 'zod'
-import { getJob, revertJob } from '../../../lib/agent/jobs/store'
+import { getJob, revertJob } from '@mymind/core/lib/agent/jobs/store'
 import { requireJobSlug, throwAgentConfigWriteError } from '../../../utils/agent-config-http'
 
 const Body = z.object({ revisionId: z.string() })

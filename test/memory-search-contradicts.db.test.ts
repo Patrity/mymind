@@ -56,10 +56,10 @@ vi.stubGlobal('$fetch', vi.fn(async (_url: string, opts?: { body?: { inputs?: st
   return [VECTORS[text] ?? baseVector()]
 }))
 
-import { useDb } from '../server/db'
-import { memories, memoryRelations } from '../server/db/schema'
-import { createMemory, searchMemories } from '../server/services/memory'
-import { rankForContext } from '../server/lib/agent/salience'
+import { useDb } from '@mymind/core/db'
+import { memories, memoryRelations } from '@mymind/core/db/schema'
+import { createMemory, searchMemories } from '@mymind/core/services/memory'
+import { rankForContext } from '@mymind/core/lib/agent/salience'
 import { inArray, or, sql } from 'drizzle-orm'
 
 async function purgeRankTestRows() {

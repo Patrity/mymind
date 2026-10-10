@@ -1,9 +1,9 @@
 import { and, desc, eq, ilike, lt, isNull, count, lte, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { activityLog } from '../db/schema'
-import type { ActivityRow } from '../db/schema/activity-log'
-import type { ActivityDTO, ActivityListParams, ActivityCount, ActivitySeverity } from '../../shared/types/activity'
-import type { ObservabilityConfig } from '../lib/observability/types'
+import { useDb } from '@mymind/core/db'
+import { activityLog } from '@mymind/core/db/schema'
+import type { ActivityRow } from '@mymind/core/db/schema/activity-log'
+import type { ActivityDTO, ActivityListParams, ActivityCount, ActivitySeverity } from '@mymind/core/shared/types/activity'
+import type { ObservabilityConfig } from '@mymind/core/lib/observability/types'
 
 // Pure: describe the filters a set of params implies (unit-testable without drizzle).
 export interface FilterDesc { col: string, op: 'eq' | 'ilike', value: unknown }

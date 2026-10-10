@@ -1,4 +1,4 @@
-import { decideReview } from '../../../services/review-decisions'
+import { decideReview } from '@mymind/core/services/review-decisions'
 import { SELF_IMPROVEMENT_CONFLICT } from '../kinds'
 
 // A thin wrapper over decideReview (server/services/review-decisions.ts), the path Bridget's

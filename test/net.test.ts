@@ -1,6 +1,6 @@
 // test/net.test.ts
 import { describe, it, expect } from 'vitest'
-import { isPrivateAddress } from '../server/utils/net'
+import { isPrivateAddress } from '@mymind/core/utils/net'
 
 describe('isPrivateAddress', () => {
   it('accepts loopback and RFC1918 ranges', () => {

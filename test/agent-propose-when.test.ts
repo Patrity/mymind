@@ -4,13 +4,13 @@
 // handler — proposeWhen is a headless-gate concern only.
 import { describe, it, expect, vi } from 'vitest'
 
-vi.mock('../server/lib/observability/record', () => ({ withSpan: (_m: unknown, fn: () => unknown) => fn(), recordEvent: () => {} }))
-vi.mock('../server/lib/agent/bus', () => ({ publishActivity: () => {} }))
+vi.mock('@mymind/core/lib/observability/record', () => ({ withSpan: (_m: unknown, fn: () => unknown) => fn(), recordEvent: () => {} }))
+vi.mock('@mymind/core/lib/agent/bus', () => ({ publishActivity: () => {} }))
 
-import { classifyForHeadless, headlessTools, type AgentActionProposal } from '../server/lib/agent/runtime/gate'
-import { replayAgentAction } from '../server/lib/agent/runtime/replay'
-import { gmailTools } from '../server/lib/agent/tools/gmail'
-import type { AgentTool } from '../server/lib/agent/types'
+import { classifyForHeadless, headlessTools, type AgentActionProposal } from '@mymind/core/lib/agent/runtime/gate'
+import { replayAgentAction } from '@mymind/core/lib/agent/runtime/replay'
+import { gmailTools } from '@mymind/core/lib/agent/tools/gmail'
+import type { AgentTool } from '@mymind/core/lib/agent/types'
 
 const realDraft = gmailTools.find(t => t.name === 'gmail_draft')!
 const ARGS = { account: 'work', to: ['bob@example.com'], subject: 's', body: 'b' }

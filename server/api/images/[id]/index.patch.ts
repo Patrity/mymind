@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { getImage, patchImage, toImageDTO, setImagePublic } from '../../../services/images'
-import { publishChange } from '../../../utils/live-bus'
+import { getImage, patchImage, toImageDTO, setImagePublic } from '@mymind/core/services/images'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const Body = z.object({
   summary: z.string().nullable().optional(),

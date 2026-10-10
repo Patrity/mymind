@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { updateColumn } from '../../services/task-columns'
-import { TASK_COLUMN_COLORS } from '../../../shared/types/task-columns'
+import { updateColumn } from '@mymind/core/services/task-columns'
+import { TASK_COLUMN_COLORS } from '@mymind/core/shared/types/task-columns'
 
 // `kind` is deliberately not accepted here — it's set once at creation. Changing it after the
 // fact would let a column drift out from under is_default/kindForStatus resolution, which is

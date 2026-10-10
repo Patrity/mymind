@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQueryClient } from '@tanstack/vue-query'
-import type { DocumentDTO } from '~~/shared/types/documents'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
 
 const text = ref('')
 const saving = ref(false)

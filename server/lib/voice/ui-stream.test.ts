@@ -2,12 +2,12 @@
 // "readUIMessageStream builds this message", not "we emitted what we think the docs say".
 import { describe, it, expect } from 'vitest'
 import { readUIMessageStream } from 'ai'
-import { createUIChunkEncoder } from './ui-stream'
+import { createUIChunkEncoder } from '@mymind/core/lib/voice/ui-stream'
 // The real label helpers, so "the timing reaches the UI" is asserted as the strings the row
 // renders rather than as fields that merely survived the encoder.
 import { rateLabel, durationLabel } from '../../../app/lib/agent/metrics'
-import type { VoiceEvent } from './orchestrator'
-import type { AgentUIChunk, AgentUIMessage } from '../../../shared/types/agent-ui'
+import type { VoiceEvent } from '@mymind/core/lib/voice/orchestrator'
+import type { AgentUIChunk, AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 async function assemble(chunks: AgentUIChunk[]): Promise<{ message: AgentUIMessage; errors: string[] }> {
   const stream = new ReadableStream<AgentUIChunk>({ start(c) { for (const ch of chunks) c.enqueue(ch); c.close() } })

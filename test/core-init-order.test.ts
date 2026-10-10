@@ -4,9 +4,9 @@
 import { describe, it, expect } from 'vitest'
 import { _resetCoreForTests, initCore } from '@mymind/core/config'
 import { fromRuntimeConfig } from '../server/utils/core-config'
-import { useDb } from '../server/db'
-import { storage } from '../server/utils/storage'
-import { googleConfigured } from '../server/lib/google/scopes'
+import { useDb } from '@mymind/core/db'
+import { storage } from '@mymind/core/utils/storage'
+import { googleConfigured } from '@mymind/core/lib/google/scopes'
 
 describe('core init order', () => {
   it('useDb() before initCore() throws the not-initialised error', () => {

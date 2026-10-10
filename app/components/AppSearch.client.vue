@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { CommandPaletteGroup, CommandPaletteItem } from '@nuxt/ui'
-import type { SearchResults, SearchHit, SearchHitType } from '~~/shared/types/search'
+import type { SearchResults, SearchHit, SearchHitType } from '@mymind/core/shared/types/search'
 import { highlightTokens } from '~/utils/highlight'
 
 const { search } = useGlobalSearch()

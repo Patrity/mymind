@@ -1,4 +1,4 @@
-import { recordEvent, captureEnabled } from '../lib/observability/record'
+import { recordEvent, captureEnabled } from '@mymind/core/lib/observability/record'
 
 const SKIP_PREFIXES = ['/api/auth', '/api/share', '/api/i', '/api/events', '/api/activity']
 

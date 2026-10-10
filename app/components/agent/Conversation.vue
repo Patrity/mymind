@@ -3,15 +3,15 @@
 // The agent conversation, rendered from AI SDK UIMessages with AI Elements Vue. Replaces
 // voice/Transcript.vue: scrolling (stick-to-bottom + scroll button) and streaming markdown
 // now come from Elements instead of hand-rolled ResizeObserver/MDC-cache-key plumbing.
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 import type { VoiceState } from '~/composables/useVoice'
 import type { PendingApprovals } from '~/lib/agent/approvals'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { subagentSteps } from '~/lib/agent/render'
-import { splitOrigin } from '~~/shared/utils/event-origin'
-import type { MessageDeliveryDTO } from '~~/shared/types/conversation'
+import { splitOrigin } from '@mymind/core/shared/utils/event-origin'
+import type { MessageDeliveryDTO } from '@mymind/core/shared/types/conversation'
 import { deliveryBadge, summarizeDeliveries } from '~/lib/channels/delivery-badge'
 
 const props = defineProps<{

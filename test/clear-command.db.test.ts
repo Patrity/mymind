@@ -10,10 +10,10 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { conversations, conversationMessages } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages } from '@mymind/core/db/schema'
 import { clearConversationContext } from '../server/services/conversation-clear'
-import { getAgentHistory, getConversation } from '../server/services/conversations'
+import { getAgentHistory, getConversation } from '@mymind/core/services/conversations'
 
 const made: string[] = []
 

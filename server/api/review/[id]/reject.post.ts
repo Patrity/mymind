@@ -1,4 +1,4 @@
-import { decideReview } from '../../../services/review-decisions'
+import { decideReview } from '@mymind/core/services/review-decisions'
 
 // A thin wrapper over decideReview — see approve.post.ts.
 export default defineEventHandler(async (event) => {

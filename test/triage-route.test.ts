@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { route } from '../server/lib/triage/route'
-import type { TriageProposal, TriageAction } from '../shared/types/triage'
+import { route } from '@mymind/core/lib/triage/route'
+import type { TriageProposal, TriageAction } from '@mymind/core/shared/types/triage'
 
 const T = { task: 0.7, note: 0.7, memory: 0.8, append: 0.85 }
 const act = (o: Partial<TriageAction> = {}): TriageAction => ({ kind: 'task', confidence: 0.9, ...o })

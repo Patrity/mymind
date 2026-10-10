@@ -1,5 +1,5 @@
-import { createImage, serveUrl, setImagePublic } from '../services/images'
-import { publishChange } from '../utils/live-bus'
+import { createImage, serveUrl, setImagePublic } from '@mymind/core/services/images'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()

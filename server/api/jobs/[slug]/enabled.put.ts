@@ -1,7 +1,7 @@
 // PUT /api/jobs/:slug/enabled — flips only the `enabled:` frontmatter line (setJobEnabled),
 // going through the normal write path so derived columns + a revision stay consistent.
 import { z } from 'zod'
-import { setJobEnabled } from '../../../lib/agent/jobs/store'
+import { setJobEnabled } from '@mymind/core/lib/agent/jobs/store'
 import { requireJobSlug, throwAgentConfigWriteError } from '../../../utils/agent-config-http'
 
 const Body = z.object({ enabled: z.boolean() })

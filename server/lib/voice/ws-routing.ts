@@ -1,6 +1,6 @@
 // Pure mapping from a parsed control frame to what ws.ts should do. Kept out of the handler so
 // the protocol is testable without a socket.
-import type { AttachmentRef } from '../agent/attachments'
+import type { AttachmentRef } from '@mymind/core/lib/agent/attachments'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

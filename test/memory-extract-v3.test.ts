@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { parseExtractV3, extractV3, EXTRACT_PROMPT_VERSION, EXTRACT_SYSTEM_PROMPT } from '../server/lib/memory/extract-v3'
+import { parseExtractV3, extractV3, EXTRACT_PROMPT_VERSION, EXTRACT_SYSTEM_PROMPT } from '@mymind/core/lib/memory/extract-v3'
 
 const mem = (content: string, confidence = 0.9) => ({ scope: 'agent', content, confidence, tags: ['x'] })
 

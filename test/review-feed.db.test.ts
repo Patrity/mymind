@@ -27,10 +27,10 @@ import { randomUUID } from 'node:crypto'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
-const { reviewQueue, memories } = await import('../server/db/schema')
-const { listReviewFeed, countReviewPending } = await import('../server/services/review')
-const { reviewMemory } = await import('../server/services/memory')
+const { useDb } = await import('@mymind/core/db')
+const { reviewQueue, memories } = await import('@mymind/core/db/schema')
+const { listReviewFeed, countReviewPending } = await import('@mymind/core/services/review')
+const { reviewMemory } = await import('@mymind/core/services/memory')
 
 const MARK = 'review-feed.probe'
 

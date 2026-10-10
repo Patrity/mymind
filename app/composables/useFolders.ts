@@ -1,5 +1,5 @@
 import { $fetch as ofetch } from 'ofetch'
-import type { FolderDTO } from '~~/shared/types/folders'
+import type { FolderDTO } from '@mymind/core/shared/types/folders'
 
 export interface FolderImpact {
   documents: number

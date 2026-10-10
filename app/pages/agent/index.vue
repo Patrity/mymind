@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
-import type { AttachmentRef, MessageDeliveryDTO } from '~~/shared/types/conversation'
+import type { AttachmentRef, MessageDeliveryDTO } from '@mymind/core/shared/types/conversation'
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { uiMessageText } from '~/lib/agent/render'
 import { MessageResponse } from '@/components/ai-elements/message'

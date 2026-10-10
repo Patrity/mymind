@@ -1,5 +1,5 @@
-import { sweepUntriaged } from '../services/triage'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { sweepUntriaged } from '@mymind/core/services/triage'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
 
 export default defineTask({
   meta: { name: 'triage-input', description: 'Triage untriaged /input captures (backstop for the immediate path)' },

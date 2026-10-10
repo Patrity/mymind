@@ -1,6 +1,6 @@
 // test/agent-suppress.test.ts
 import { describe, it, expect } from 'vitest'
-import { isSuppressedReply } from '../server/lib/agent/runtime/suppress'
+import { isSuppressedReply } from '@mymind/core/lib/agent/runtime/suppress'
 
 describe('isSuppressedReply', () => {
   it.each([

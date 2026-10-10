@@ -16,8 +16,8 @@ import { sql } from 'drizzle-orm'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
-const { appendMessages, setActiveLeaf, setBranchLeaf, getConversation, captureTurnLeaf, conversationHasMessage } = await import('../server/services/conversations')
+const { useDb } = await import('@mymind/core/db')
+const { appendMessages, setActiveLeaf, setBranchLeaf, getConversation, captureTurnLeaf, conversationHasMessage } = await import('@mymind/core/services/conversations')
 
 // drizzle-orm/node-postgres's db.execute() returns a pg `Result`, not a plain array — unwrap
 // `.rows` (same correction as test/conversation-path.db.test.ts).

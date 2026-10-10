@@ -13,16 +13,16 @@ const mocks = vi.hoisted(() => ({
   load: vi.fn(), resendReady: vi.fn(), client: vi.fn(), catchUp: vi.fn(), health: vi.fn(),
   insert: vi.fn(), publish: vi.fn(), serverInfo: vi.fn(), convDeliveries: vi.fn()
 }))
-vi.mock('../server/lib/channels/config', () => ({ loadChannelsConfig: mocks.load, resendReady: mocks.resendReady }))
-vi.mock('../server/lib/channels/bluebubbles/client', () => ({
+vi.mock('@mymind/core/lib/channels/config', () => ({ loadChannelsConfig: mocks.load, resendReady: mocks.resendReady }))
+vi.mock('@mymind/core/lib/channels/bluebubbles/client', () => ({
   imessageClient: mocks.client,
   directChatGuid: (h: string) => `iMessage;-;${h}`
 }))
-vi.mock('../server/lib/channels/inbound', () => ({ catchUpTick: mocks.catchUp, lastHealth: mocks.health }))
-vi.mock('../server/lib/channels/outbox', () => ({ insertDeliveries: mocks.insert }))
-vi.mock('../server/utils/live-bus', () => ({ publishChange: mocks.publish }))
-vi.mock('../server/services/conversations', () => ({ conversationDeliveries: mocks.convDeliveries }))
-vi.mock('../server/db', () => ({ useDb: () => ({ transaction: (fn: (tx: unknown) => unknown) => fn('TX') }) }))
+vi.mock('@mymind/core/lib/channels/inbound', () => ({ catchUpTick: mocks.catchUp, lastHealth: mocks.health }))
+vi.mock('@mymind/core/lib/channels/outbox', () => ({ insertDeliveries: mocks.insert }))
+vi.mock('@mymind/core/utils/live-bus', () => ({ publishChange: mocks.publish }))
+vi.mock('@mymind/core/services/conversations', () => ({ conversationDeliveries: mocks.convDeliveries }))
+vi.mock('@mymind/core/db', () => ({ useDb: () => ({ transaction: (fn: (tx: unknown) => unknown) => fn('TX') }) }))
 
 type H = (e: unknown) => Promise<unknown>
 const testIMessage = (await import('../server/api/settings/channels/test-imessage.post')).default as H

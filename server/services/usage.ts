@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { useDb } from '../db'
+import { useDb } from '@mymind/core/db'
 import { computeValue } from '../lib/analytics/cost'
 import { USAGE_RANGE_KEYS } from '../../shared/types/usage'
 import type {

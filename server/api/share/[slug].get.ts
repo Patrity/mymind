@@ -1,4 +1,4 @@
-import { getByPublicSlug } from '../../services/documents'
+import { getByPublicSlug } from '@mymind/core/services/documents'
 export default defineEventHandler(async (event) => {
   const doc = await getByPublicSlug(getRouterParam(event, 'slug')!)
   if (!doc) throw createError({ statusCode: 404 })

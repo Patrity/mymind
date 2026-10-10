@@ -1,7 +1,7 @@
 import { mergeCommands } from '../lib/commands/merge'
 import { listPromptCommands } from './prompt-commands'
-import { listSkills } from './skills'
-import { CLIENT_COMMANDS, type CommandEntry } from '../../shared/types/commands'
+import { listSkills } from '@mymind/core/services/skills'
+import { CLIENT_COMMANDS, type CommandEntry } from '@mymind/core/shared/types/commands'
 
 /**
  * The flat `/` namespace: code constants + prompt macros + every active skill.

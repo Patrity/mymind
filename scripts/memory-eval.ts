@@ -46,8 +46,8 @@ import './lib/core-init'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { extractV3, EXTRACT_PROMPT_VERSION, auditMemory, AUDIT_PROMPT_VERSION } from '../server/lib/memory/extract-v3'
-import type { AuditVerdict } from '../shared/types/memory'
+import { extractV3, EXTRACT_PROMPT_VERSION, auditMemory, AUDIT_PROMPT_VERSION } from '@mymind/core/lib/memory/extract-v3'
+import type { AuditVerdict } from '@mymind/core/shared/types/memory'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const EXTRACT_DATA = resolve(HERE, 'data/memory-eval-v3.jsonl')

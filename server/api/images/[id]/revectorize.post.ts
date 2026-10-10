@@ -1,6 +1,6 @@
 import { revectorizeImage } from '../../../services/image-enrich'
-import { toImageDTO } from '../../../services/images'
-import { publishChange } from '../../../utils/live-bus'
+import { toImageDTO } from '@mymind/core/services/images'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

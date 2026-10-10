@@ -1,7 +1,7 @@
 // test/ai-tools-gate.test.ts
 import { describe, it, expect, vi } from 'vitest'
-import { buildAiTools } from '../server/lib/agent/ai-tools'
-import type { AgentTool } from '../server/lib/agent/types'
+import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
+import type { AgentTool } from '@mymind/core/lib/agent/types'
 import { z } from 'zod'
 
 function dangerTool(): AgentTool {

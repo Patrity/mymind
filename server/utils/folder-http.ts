@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { H3Event } from 'h3'
-import type { FolderOpFailure } from '../services/folders'
+import type { FolderOpFailure } from '@mymind/core/services/folders'
 
 /**
  * Shared by folder create (`index.post.ts`) and move (`[id].patch.ts`) — a leading slash, no

@@ -32,19 +32,19 @@ vi.stubGlobal('useRuntimeConfig', () => ({
 // prod-parked 1.1 (nuxt.config.ts) so nothing auto-applies — no real task/memory/document
 // mutation to clean up beyond the review_queue row triageCapture inserts on the queued path.
 const POISON = 'POISON_MARKER'
-vi.mock('../server/lib/ai/triage', async (orig) => ({
-  ...(await orig<typeof import('../server/lib/ai/triage')>()),
+vi.mock('@mymind/core/lib/ai/triage', async (orig) => ({
+  ...(await orig<typeof import('@mymind/core/lib/ai/triage')>()),
   classify: vi.fn(async (doc: { path: string, content: string }) => {
     if (doc.content.includes(POISON)) throw new Error('simulated classify failure')
     return { primary: { kind: 'task' as const, confidence: 0.5, title: 'Stub' }, secondary: [], reasoning: 'stub' }
   })
 }))
 
-const { sweepUntriaged } = await import('../server/services/triage')
+const { sweepUntriaged } = await import('@mymind/core/services/triage')
 
-import { createDoc, deleteDoc } from '../server/services/documents'
-import { useDb } from '../server/db'
-import { documents, reviewQueue } from '../server/db/schema'
+import { createDoc, deleteDoc } from '@mymind/core/services/documents'
+import { useDb } from '@mymind/core/db'
+import { documents, reviewQueue } from '@mymind/core/db/schema'
 import { eq, and, isNull, inArray, sql } from 'drizzle-orm'
 
 const jot = (content = 'sweep fixture') =>

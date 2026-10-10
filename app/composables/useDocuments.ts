@@ -1,8 +1,8 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { DocumentDTO } from '~~/shared/types/documents'
-import type { TreeNode } from '~~/server/services/tree'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
+import type { TreeNode } from '@mymind/core/services/tree'
 
 export function useDocuments() {
   const tree = () => ofetch<TreeNode[]>('/api/documents/tree')

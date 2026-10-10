@@ -1,8 +1,8 @@
 import { eq } from 'drizzle-orm'
-import { useDb } from '../db'
-import { promptCommands } from '../db/schema'
-import { publishChange } from '../utils/live-bus'
-import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES, type CommandEntry } from '../../shared/types/commands'
+import { useDb } from '@mymind/core/db'
+import { promptCommands } from '@mymind/core/db/schema'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import { COMMAND_NAME_RE, RESERVED_COMMAND_NAMES, type CommandEntry } from '@mymind/core/shared/types/commands'
 
 function toEntry(r: typeof promptCommands.$inferSelect): CommandEntry {
   return { name: r.name, description: r.description, template: r.template, kind: 'prompt' }

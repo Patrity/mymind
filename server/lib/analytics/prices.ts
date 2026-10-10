@@ -1,4 +1,4 @@
-import type { NewModelPrice } from '../../db/schema/model-prices'
+import type { NewModelPrice } from '@mymind/core/db/schema/model-prices'
 
 export const PRICE_MAP_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'

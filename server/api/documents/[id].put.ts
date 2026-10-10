@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { updateDoc } from '../../services/documents'
-import { publishChange } from '../../utils/live-bus'
+import { updateDoc } from '@mymind/core/services/documents'
+import { publishChange } from '@mymind/core/utils/live-bus'
 const Body = z.object({
   path: z.string().optional(), title: z.string().nullish(), content: z.string().optional(),
   frontmatter: z.record(z.string(), z.unknown()).optional(), project: z.string().nullish(),

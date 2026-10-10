@@ -14,18 +14,18 @@ vi.stubGlobal('createError', (o: { statusCode: number, message?: string }) => Ob
 
 import { randomUUID } from 'node:crypto'
 import { and, eq, inArray, like } from 'drizzle-orm'
-import { useDb } from '../server/db'
+import { useDb } from '@mymind/core/db'
 import {
   agentConfigRevisions, agentImprovements, agentJobs, agentProfile, agentSkills, reviewQueue, settings,
   type AgentProfileRow, type ReviewItem
-} from '../server/db/schema'
-import { getSkillSource, parseSkillMarkdown, saveSkillSource } from '../server/services/skills'
-import { getProfileSource } from '../server/services/profile'
-import { createJob, deleteJob, getJob } from '../server/lib/agent/jobs/store'
-import { SELF_IMPROVEMENT_MODE_KEY, setSelfImprovementMode } from '../server/lib/agent/self-improvement-mode'
-import { processProposal, countAutoAppliedToday, type ProposalSource, type StoredProposal } from '../server/lib/agent/reflect/apply'
-import type { JevVerdict } from '../server/lib/agent/reflect/jev'
-import type { Proposal } from '../server/lib/agent/reflect/schema'
+} from '@mymind/core/db/schema'
+import { getSkillSource, parseSkillMarkdown, saveSkillSource } from '@mymind/core/services/skills'
+import { getProfileSource } from '@mymind/core/services/profile'
+import { createJob, deleteJob, getJob } from '@mymind/core/lib/agent/jobs/store'
+import { SELF_IMPROVEMENT_MODE_KEY, setSelfImprovementMode } from '@mymind/core/lib/agent/self-improvement-mode'
+import { processProposal, countAutoAppliedToday, type ProposalSource, type StoredProposal } from '@mymind/core/lib/agent/reflect/apply'
+import type { JevVerdict } from '@mymind/core/lib/agent/reflect/jev'
+import type { Proposal } from '@mymind/core/lib/agent/reflect/schema'
 import { approveHandlers, rejectHandlers, SELF_IMPROVEMENT_CONFLICT } from '../server/api/review/kinds'
 
 const db = () => useDb()

@@ -26,8 +26,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 const notifyCalls: string[] = []
 let injectRaceOnce: ((noteText: string) => Promise<void>) | null = null
-vi.mock('../server/services/conversations', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../server/services/conversations')>()
+vi.mock('@mymind/core/services/conversations', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mymind/core/services/conversations')>()
   return {
     ...actual,
     appendEvent: async (_conversationId: string, content: string) => {
@@ -43,9 +43,9 @@ vi.mock('../server/services/conversations', async (importOriginal) => {
 })
 
 import { and, eq, inArray, like } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentJobs, agentConfigRevisions } from '../server/db/schema'
-import { createJob, saveJob, revalidateAll } from '../server/lib/agent/jobs/store'
+import { useDb } from '@mymind/core/db'
+import { agentJobs, agentConfigRevisions } from '@mymind/core/db/schema'
+import { createJob, saveJob, revalidateAll } from '@mymind/core/lib/agent/jobs/store'
 
 const PREFIX = 'jstest-stalehash-'
 

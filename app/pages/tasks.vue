@@ -2,8 +2,8 @@
 import { useSortable, insertNodeAt, removeNode } from '@vueuse/integrations/useSortable'
 import type Sortable from 'sortablejs'
 import type { ComponentPublicInstance } from 'vue'
-import type { TaskDTO, TaskPriority, ProjectDTO } from '~~/shared/types/tasks'
-import type { TaskColumnDTO, TaskColumnColor } from '~~/shared/types/task-columns'
+import type { TaskDTO, TaskPriority, ProjectDTO } from '@mymind/core/shared/types/tasks'
+import type { TaskColumnDTO, TaskColumnColor } from '@mymind/core/shared/types/task-columns'
 
 definePageMeta({ title: 'Tasks' })
 

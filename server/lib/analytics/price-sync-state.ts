@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { useDb } from '../../db'
+import { useDb } from '@mymind/core/db'
 
 /** Settings key holding the price-sync trigger's state. */
 export const SYNC_STATE_KEY = 'model_price_sync'

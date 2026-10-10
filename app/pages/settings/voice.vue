@@ -1,7 +1,7 @@
 <!-- app/pages/settings/voice.vue (moved from /voice in cycle 76; /voice redirects here) -->
 <script setup lang="ts">
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import type { SavedPresetDTO, VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { SavedPresetDTO, VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 import { resolveSelectedPreset } from '~/lib/voice/presets'
 import { modeBadge, uniqueName, blankDraft, type PresetDraft } from '~/lib/voice/studio'
 

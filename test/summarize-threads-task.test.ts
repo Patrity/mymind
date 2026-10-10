@@ -7,7 +7,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 
 vi.hoisted(() => { (globalThis as Record<string, unknown>).defineTask = (t: unknown) => t })
 const m = vi.hoisted(() => ({ sweep: vi.fn(async () => ({ summarized: 0, failed: 0 })) }))
-vi.mock('../server/lib/agent/runtime/summarize', () => ({ summarizeIdleThreads: m.sweep }))
+vi.mock('@mymind/core/lib/agent/runtime/summarize', () => ({ summarizeIdleThreads: m.sweep }))
 
 import task from '../server/tasks/summarize-threads'
 

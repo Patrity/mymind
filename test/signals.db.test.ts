@@ -28,8 +28,8 @@ const ALLOWED = '+15557654321'
 const CHAT = `iMessage;-;${ALLOWED}`
 const holder = vi.hoisted(() => ({ mainId: '', noMain: false }))
 
-vi.mock('../server/lib/channels/config', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/channels/config')>()
+vi.mock('@mymind/core/lib/channels/config', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/channels/config')>()
   return {
     ...actual,
     loadChannelsConfig: async () => ({
@@ -39,12 +39,12 @@ vi.mock('../server/lib/channels/config', async (orig) => {
     })
   }
 })
-vi.mock('../server/lib/agent/signals/write', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/agent/signals/write')>()
+vi.mock('@mymind/core/lib/agent/signals/write', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/agent/signals/write')>()
   return { ...actual, openObservation: vi.fn(actual.openObservation), noteTapback: vi.fn(actual.noteTapback) }
 })
-vi.mock('../server/lib/agent/runtime/sessions', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/agent/runtime/sessions')>()
+vi.mock('@mymind/core/lib/agent/runtime/sessions', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/agent/runtime/sessions')>()
   return {
     ...actual,
     findMain: async () => {
@@ -57,19 +57,19 @@ vi.mock('../server/lib/agent/runtime/sessions', async (orig) => {
 })
 
 import { and, eq, inArray, like } from 'drizzle-orm'
-import { useDb } from '../server/db'
+import { useDb } from '@mymind/core/db'
 import {
   agentConfigRevisions, agentJobs, agentRuns, agentSignals, channelApprovals, channelDeliveries, conversationMessages, conversations,
   settings, type AgentRun
-} from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { createJob } from '../server/lib/agent/jobs/store'
-import { enqueue } from '../server/lib/agent/runtime/queue'
-import { handleInbound } from '../server/lib/channels/inbound'
-import type { TapbackEvent } from '../server/lib/channels/types'
-import { OBSERVATION_WINDOW_MS } from '../server/lib/agent/signals/classify'
-import { closeObservations, noteTapback, noteUserReply, openObservation, SIGNALS_STARTED_AT_KEY, CLOSE_LOOKBACK_MS } from '../server/lib/agent/signals/write'
-import { onRunFinished } from '../server/lib/agent/jobs/outcome'
+} from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { createJob } from '@mymind/core/lib/agent/jobs/store'
+import { enqueue } from '@mymind/core/lib/agent/runtime/queue'
+import { handleInbound } from '@mymind/core/lib/channels/inbound'
+import type { TapbackEvent } from '@mymind/core/lib/channels/types'
+import { OBSERVATION_WINDOW_MS } from '@mymind/core/lib/agent/signals/classify'
+import { closeObservations, noteTapback, noteUserReply, openObservation, SIGNALS_STARTED_AT_KEY, CLOSE_LOOKBACK_MS } from '@mymind/core/lib/agent/signals/write'
+import { onRunFinished } from '@mymind/core/lib/agent/jobs/outcome'
 
 const db = () => useDb()
 const PREFIX = 'sig-'

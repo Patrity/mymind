@@ -31,13 +31,13 @@ vi.stubGlobal('useRuntimeConfig', () => ({
 // near-duplicate (cosine >= 0.85) branch.
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
-import { applyTask, applyNote, applyMemory, applyAppend, resolveAppendTarget, revertTriageAction } from '../server/services/triage'
-import { createDoc, getDoc, deleteDoc, restoreDoc, updateDoc } from '../server/services/documents'
-import { getTask, deleteTask } from '../server/services/tasks'
-import { useDb } from '../server/db'
-import { tasks, triageActions, memories, chunks, documents } from '../server/db/schema'
+import { applyTask, applyNote, applyMemory, applyAppend, resolveAppendTarget, revertTriageAction } from '@mymind/core/services/triage'
+import { createDoc, getDoc, deleteDoc, restoreDoc, updateDoc } from '@mymind/core/services/documents'
+import { getTask, deleteTask } from '@mymind/core/services/tasks'
+import { useDb } from '@mymind/core/db'
+import { tasks, triageActions, memories, chunks, documents } from '@mymind/core/db/schema'
 import { eq } from 'drizzle-orm'
-import { runUndo } from '../server/lib/agent/undo'
+import { runUndo } from '@mymind/core/lib/agent/undo'
 
 const jot = (content: string) =>
   createDoc({ path: `/input/t-${Math.random().toString(36).slice(2, 10)}.md`, content })

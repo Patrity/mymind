@@ -1,4 +1,4 @@
-import { ConnectionError, renameConnection } from '../../lib/google/manage'
+import { ConnectionError, renameConnection } from '@mymind/core/lib/google/manage'
 import { requireSession } from '../../utils/auth-guard'
 
 // Cycle 79: rename a connection's label (the name Bridget's tools take as `account`).

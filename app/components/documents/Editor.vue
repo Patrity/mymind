@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DocumentDTO } from '~~/shared/types/documents'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
 import type { CodeLanguage } from '~/components/CodeEditor.client.vue'
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { DocumentDTO } from '~~/shared/types/documents'
-import type { ImageDTO } from '~~/shared/types/images'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
+import type { ImageDTO } from '@mymind/core/shared/types/images'
 
 definePageMeta({ title: 'Capture' })
 

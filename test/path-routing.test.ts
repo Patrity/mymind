@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizePrefix, basenameOf, isUnderPrefix, longestPrefixMatch, isAutoCreatable,
   shouldRecordLocalPath, collapseLocalPaths
-} from '../server/lib/projects/path-routing'
+} from '@mymind/core/lib/projects/path-routing'
 
 describe('normalizePrefix', () => {
   it('strips trailing slashes and trims; preserves root', () => {

@@ -1,5 +1,5 @@
-import { reviewMemory } from '../../../services/memory'
-import { publishChange } from '../../../utils/live-bus'
+import { reviewMemory } from '@mymind/core/services/memory'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

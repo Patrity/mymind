@@ -1,4 +1,4 @@
-import { listImages } from '../../services/images'
+import { listImages } from '@mymind/core/services/images'
 
 export default defineEventHandler(async (event) => {
   const query = getQuery(event)

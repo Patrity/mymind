@@ -17,11 +17,11 @@ import { describe, it, expect, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { tasks, taskColumns } from '../server/db/schema'
-import { createTask, updateTask, getTask, listTasks } from '../server/services/tasks'
-import { defaultColumnFor } from '../server/services/task-columns'
-import type { TaskColumnKind } from '../shared/types/task-columns'
+import { useDb } from '@mymind/core/db'
+import { tasks, taskColumns } from '@mymind/core/db/schema'
+import { createTask, updateTask, getTask, listTasks } from '@mymind/core/services/tasks'
+import { defaultColumnFor } from '@mymind/core/services/task-columns'
+import type { TaskColumnKind } from '@mymind/core/shared/types/task-columns'
 
 async function insertRealKindColumn(kind: TaskColumnKind, name: string) {
   const [row] = await useDb().insert(taskColumns).values({

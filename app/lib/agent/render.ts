@@ -1,7 +1,7 @@
 // Pure render helpers for the agent conversation — kept out of the SFCs so they are testable
 // without mounting components.
-import type { AgentUIMessage, AgentUIPart, SubagentStep } from '~~/shared/types/agent-ui'
-import type { MessageUsage } from '~~/shared/types/conversation'
+import type { AgentUIMessage, AgentUIPart, SubagentStep } from '@mymind/core/shared/types/agent-ui'
+import type { MessageUsage } from '@mymind/core/shared/types/conversation'
 
 export function uiMessageText(m: AgentUIMessage): string {
   return m.parts.filter(p => p.type === 'text').map(p => (p as { text: string }).text).join('')

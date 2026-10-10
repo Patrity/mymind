@@ -1,4 +1,4 @@
-import type { ActivityKind } from '~~/shared/types/activity'
+import type { ActivityKind } from '@mymind/core/shared/types/activity'
 
 type KeyField = { apiKey: string } | { keep: true } | null
 interface DraftEmail { enabled: boolean, recipient: string | null, from: string | null, hasKey: boolean, key: KeyField, minSeverity: 'warn' | 'error', digestWindowMin: number }

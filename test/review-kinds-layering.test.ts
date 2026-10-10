@@ -2,17 +2,17 @@
 // ReviewKindError (no h3/Nitro); server/api/review/kinds.ts wraps them so callers of the API
 // module still get an H3 createError with the SAME statusCode/message/data as before.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { ReviewItem } from '../server/db/schema'
+import type { ReviewItem } from '@mymind/core/db/schema'
 
 const reflect = vi.hoisted(() => ({
   apply: vi.fn(),
   reject: vi.fn()
 }))
-vi.mock('../server/lib/agent/reflect/apply', () => ({
+vi.mock('@mymind/core/lib/agent/reflect/apply', () => ({
   applyImprovement: reflect.apply,
   rejectImprovement: reflect.reject
 }))
-vi.mock('../server/db', () => ({ useDb: () => ({}) }))
+vi.mock('@mymind/core/db', () => ({ useDb: () => ({}) }))
 
 // Nitro's auto-imported createError, stubbed exactly as test/reflect-apply.db.test.ts does.
 const H3 = Symbol('h3')
@@ -21,7 +21,7 @@ vi.stubGlobal('createError', (o: { statusCode: number, message?: string, data?: 
 
 // Static imports (after the hoisted mocks/stub): the module graph is large, and importing it
 // inside a test body can exceed the 5s test timeout under a full parallel run.
-import * as lib from '../server/lib/review/kinds'
+import * as lib from '@mymind/core/lib/review/kinds'
 import * as api from '../server/api/review/kinds'
 
 const item = { id: 'rq-1', kind: 'self-improvement', targetId: 'imp-1', proposed: {} } as unknown as ReviewItem

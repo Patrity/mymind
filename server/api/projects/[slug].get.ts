@@ -1,4 +1,4 @@
-import { getProject } from '../../services/projects'
+import { getProject } from '@mymind/core/services/projects'
 
 export default defineEventHandler(async (event) => {
   const project = await getProject(getRouterParam(event, 'slug')!)

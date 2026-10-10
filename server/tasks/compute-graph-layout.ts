@@ -1,10 +1,10 @@
 import { and, eq, isNull, isNotNull, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { graphLayout, memories, documents, images, sessions, chunks } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { graphLayout, memories, documents, images, sessions, chunks } from '@mymind/core/db/schema'
 import { meanPool, computeLayoutAsync, type LayoutItem, type LayoutRow } from '../lib/galaxy/layout'
 import { assembleEdges, buildEdgeSourceRows } from '../services/graph'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
-import { publishChange } from '../utils/live-bus'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 // Fixed seed so the UMAP layout is reproducible run-to-run (the same vectors
 // land in the same place, so the galaxy doesn't reshuffle every night).

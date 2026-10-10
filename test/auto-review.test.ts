@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoReview, stripUnreviewed } from '../server/services/memory'
+import { shouldAutoReview, stripUnreviewed } from '@mymind/core/services/memory'
 
 describe('shouldAutoReview', () => {
   it('returns true when confidence >= threshold', () => {

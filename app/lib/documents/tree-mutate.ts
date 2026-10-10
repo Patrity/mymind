@@ -1,4 +1,4 @@
-import type { TreeNode } from '~~/server/services/tree'
+import type { TreeNode } from '@mymind/core/services/tree'
 
 /**
  * Pure, best-effort transforms of the `['document','list']` tree shape, used ONLY to paint an

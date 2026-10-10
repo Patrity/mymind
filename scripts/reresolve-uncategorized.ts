@@ -4,9 +4,9 @@
 // memories. Idempotent.
 // Run: node_modules/.bin/tsx --env-file=.env scripts/reresolve-uncategorized.ts [--dry-run]
 import { Client } from 'pg'
-import { normalizeGitRemote } from '../server/lib/projects/git-remote'
-import { longestPrefixMatch, basenameOf } from '../server/lib/projects/path-routing'
-import { slugify } from '../shared/utils/slugify'
+import { normalizeGitRemote } from '@mymind/core/lib/projects/git-remote'
+import { longestPrefixMatch, basenameOf } from '@mymind/core/lib/projects/path-routing'
+import { slugify } from '@mymind/core/shared/utils/slugify'
 
 const DRY = process.argv.includes('--dry-run')
 if (!process.env.DATABASE_URL) throw new Error('set DATABASE_URL')

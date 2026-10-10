@@ -1,7 +1,7 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { AuditVerdict, MemoryDTO, MemoryScope, MemorySort } from '~~/shared/types/memory'
+import type { AuditVerdict, MemoryDTO, MemoryScope, MemorySort } from '@mymind/core/shared/types/memory'
 
 export interface CreateMemoryBody {
   content: string

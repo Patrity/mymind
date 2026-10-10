@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { collapseChunksToSources, collapseChunksToHits } from '../server/lib/chunking/collapse'
+import { collapseChunksToSources, collapseChunksToHits } from '@mymind/core/lib/chunking/collapse'
 
 describe('collapseChunksToSources', () => {
   it('keeps the best (first-seen) source id, deduped, order preserved', () => {

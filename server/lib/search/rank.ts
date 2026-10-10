@@ -1,4 +1,4 @@
-import type { SearchHit, SearchHitType } from '../../../shared/types/search'
+import type { SearchHit, SearchHitType } from '@mymind/core/shared/types/search'
 
 export interface Candidate {
   type: SearchHitType

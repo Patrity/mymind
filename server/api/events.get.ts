@@ -1,6 +1,6 @@
 // One SSE connection per tab. Streams every live-bus change to the client.
 // Auth-gated by server/middleware/auth.ts (only logged-in sessions/tokens reach here).
-import { subscribeChanges } from '../utils/live-bus'
+import { subscribeChanges } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const res = event.node.res

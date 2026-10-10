@@ -1,4 +1,4 @@
-import { loadApprovals } from '../../lib/exec/approvals'
+import { loadApprovals } from '@mymind/core/lib/exec/approvals'
 
 export default defineEventHandler(async () => {
   const rows = await loadApprovals()

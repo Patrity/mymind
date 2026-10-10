@@ -1,9 +1,9 @@
 import { and, eq, isNull, sql, notExists } from 'drizzle-orm'
-import { useDb } from '../db'
-import { documents, projects as projectsTable, reviewQueue } from '../db/schema'
-import { proposeFrontmatter } from '../lib/ai/enrich'
-import { publishChange } from '../utils/live-bus'
-import { recordEvent } from '../lib/observability/record'
+import { useDb } from '@mymind/core/db'
+import { documents, projects as projectsTable, reviewQueue } from '@mymind/core/db/schema'
+import { proposeFrontmatter } from '@mymind/core/lib/ai/enrich'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import { recordEvent } from '@mymind/core/lib/observability/record'
 
 export interface EnrichResult {
   proposed: number

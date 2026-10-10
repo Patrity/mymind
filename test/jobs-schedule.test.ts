@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { parseJob } from '../server/lib/agent/jobs/parse'
-import { nextRunAt, nextFireTimes, describeTrigger, inActiveHours, fireTimesAnchor, activeHoursNeverMatchError } from '../server/lib/agent/jobs/schedule'
-import { SEED_JOBS } from '../server/lib/agent/jobs/seeds'
+import { parseJob } from '@mymind/core/lib/agent/jobs/parse'
+import { nextRunAt, nextFireTimes, describeTrigger, inActiveHours, fireTimesAnchor, activeHoursNeverMatchError } from '@mymind/core/lib/agent/jobs/schedule'
+import { SEED_JOBS } from '@mymind/core/lib/agent/jobs/seeds'
 import { JOB_TEMPLATES } from '../app/lib/jobs/templates'
 const spec = (fm: string) => { const r = parseJob(`---\n${fm}\n---\nx\n`, { defaultTimezone: 'America/New_York' }); if (!r.ok) throw new Error(r.error); return r.spec }
 

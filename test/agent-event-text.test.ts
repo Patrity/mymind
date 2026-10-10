@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { eventModelText, wakeOrigin } from '../server/lib/agent/runtime/event-text'
-import { rowToAgentMessage } from '../server/services/conversations'
+import { eventModelText, wakeOrigin } from '@mymind/core/lib/agent/runtime/event-text'
+import { rowToAgentMessage } from '@mymind/core/services/conversations'
 
 describe('event rows in model history', () => {
   it('renders a wake event as a plain sentence with no bracketed marker', () => {

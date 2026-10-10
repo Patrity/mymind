@@ -11,8 +11,8 @@ import { vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
-const { createDoc, moveDoc, deleteDoc } = await import('../server/services/documents')
+const { useDb } = await import('@mymind/core/db')
+const { createDoc, moveDoc, deleteDoc } = await import('@mymind/core/services/documents')
 
 // Per-RUN unique root, matching test/folders-cascade.db.test.ts's fixture scoping: a fixed
 // prefix left behind by a crashed run would otherwise surface on the NEXT run as a

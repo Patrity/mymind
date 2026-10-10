@@ -14,9 +14,9 @@ vi.stubGlobal('readBody', async (e: { body: unknown }) => e.body)
 vi.stubGlobal('getRouterParam', (e: { params?: Record<string, string> }, k: string) => e.params?.[k])
 
 import { eq, inArray } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { user, account, connections } from '../server/db/schema'
-import { connectionsApiDeps } from '../server/lib/google/manage'
+import { useDb } from '@mymind/core/db'
+import { user, account, connections } from '@mymind/core/db/schema'
+import { connectionsApiDeps } from '@mymind/core/lib/google/manage'
 
 type H = (e: unknown) => Promise<unknown>
 const list = (await import('../server/api/connections/index.get')).default as H

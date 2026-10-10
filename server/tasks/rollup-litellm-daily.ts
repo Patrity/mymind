@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { litellmDaily } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { litellmDaily } from '@mymind/core/db/schema'
 import { promInstant } from '../lib/analytics/prom'
 import { loadAnalyticsConfig } from '../lib/analytics/store'
 

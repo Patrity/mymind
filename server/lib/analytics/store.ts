@@ -3,9 +3,9 @@
 // Mirrors server/lib/imagegen/store.ts / server/lib/search/store.ts.
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
-import { useDb } from '../../db'
-import { settings } from '../../db/schema'
-import { encryptSecret } from '../ai/registry/crypto'
+import { useDb } from '@mymind/core/db'
+import { settings } from '@mymind/core/db/schema'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import type { AnalyticsConfig } from './types'
 import { defaultRigServices } from './catalog'
 

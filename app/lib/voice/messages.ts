@@ -1,6 +1,6 @@
 // Pure mapping of server WS JSON messages onto client effects. Kept out of
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
-import type { AgentMessageFrame } from '~~/shared/types/agent-ui'
+import type { AgentMessageFrame } from '@mymind/core/shared/types/agent-ui'
 
 export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; allowlistable?: boolean; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string }
 

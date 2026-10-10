@@ -8,12 +8,12 @@ import { vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { useDb } from '../server/db'
-import { conversations, conversationMessages } from '../server/db/schema'
-import { maybeSummarize, idleThreadCandidates, SUMMARY_KEEP_TURNS } from '../server/lib/agent/runtime/summarize'
-import { appendEvent } from '../server/services/conversations'
-import { appendMessages, getAgentHistory, getConversation, createConversation } from '../server/services/conversations'
-import { messageText } from '../server/lib/agent/run'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages } from '@mymind/core/db/schema'
+import { maybeSummarize, idleThreadCandidates, SUMMARY_KEEP_TURNS } from '@mymind/core/lib/agent/runtime/summarize'
+import { appendEvent } from '@mymind/core/services/conversations'
+import { appendMessages, getAgentHistory, getConversation, createConversation } from '@mymind/core/services/conversations'
+import { messageText } from '@mymind/core/lib/agent/run'
 import { eq, inArray, sql } from 'drizzle-orm'
 
 const convIds: string[] = []

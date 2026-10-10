@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildThreadTranscript } from '../server/lib/agent/reflect/transcript'
+import { buildThreadTranscript } from '@mymind/core/lib/agent/reflect/transcript'
 
 const at = (min: number) => new Date(Date.UTC(2026, 8, 30, 12, min))
 

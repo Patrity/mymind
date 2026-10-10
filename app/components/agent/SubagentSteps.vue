@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { SubagentStep } from '~~/shared/types/agent-ui'
+import type { SubagentStep } from '@mymind/core/shared/types/agent-ui'
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtHeader, ChainOfThoughtStep } from '@/components/ai-elements/chain-of-thought'
 import { toolTitle } from '~/lib/agent/render'
 

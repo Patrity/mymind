@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { StreamHub, type Sink } from '../server/lib/agent/runtime/stream'
+import { StreamHub, type Sink } from '@mymind/core/lib/agent/runtime/stream'
 
 function sink(id: string) {
   const got: (string | Uint8Array)[] = []

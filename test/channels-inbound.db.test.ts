@@ -30,8 +30,8 @@ const ALLOWED = '+15551234567'
 const CHAT = `iMessage;-;${ALLOWED}`
 const captured = vi.hoisted(() => ({ activityIds: [] as string[], flush: null as null | (() => Promise<void>) }))
 
-vi.mock('../server/lib/channels/config', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/channels/config')>()
+vi.mock('@mymind/core/lib/channels/config', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/channels/config')>()
   return {
     ...actual,
     loadChannelsConfig: async () => ({
@@ -42,10 +42,10 @@ vi.mock('../server/lib/channels/config', async (orig) => {
   }
 })
 // The real row builder, a DB sink, and no notifier (a warn row must never trigger an alert email).
-vi.mock('../server/lib/observability/record', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/observability/record')>()
-  const { useDb } = await import('../server/db')
-  const { activityLog } = await import('../server/db/schema')
+vi.mock('@mymind/core/lib/observability/record', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/observability/record')>()
+  const { useDb } = await import('@mymind/core/db')
+  const { activityLog } = await import('@mymind/core/db/schema')
   const rec = actual.createRecorder({
     sink: async (rows) => {
       await useDb().insert(activityLog).values(rows)
@@ -57,16 +57,16 @@ vi.mock('../server/lib/observability/record', async (orig) => {
 })
 
 import { and, eq, inArray, like } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { activityLog, agentInbox, agentRuns, channelDeliveries, channelInbound, conversationMessages, conversations, images } from '../server/db/schema'
-import { storage } from '../server/utils/storage'
-import { createConversation } from '../server/services/conversations'
-import { createRun } from '../server/lib/agent/runtime/runs'
-import { enqueue, type EnqueueRequest } from '../server/lib/agent/runtime/queue'
-import { blueBubblesClient, type BlueBubblesClient } from '../server/lib/channels/bluebubbles/client'
-import { parseWebhook } from '../server/lib/channels/bluebubbles/parse'
-import { handleInbound, catchUpTick, catchUpWindowStart, lastHealth, _resetCatchUp, type InboundDeps } from '../server/lib/channels/inbound'
-import type { InboundMessage } from '../server/lib/channels/types'
+import { useDb } from '@mymind/core/db'
+import { activityLog, agentInbox, agentRuns, channelDeliveries, channelInbound, conversationMessages, conversations, images } from '@mymind/core/db/schema'
+import { storage } from '@mymind/core/utils/storage'
+import { createConversation } from '@mymind/core/services/conversations'
+import { createRun } from '@mymind/core/lib/agent/runtime/runs'
+import { enqueue, type EnqueueRequest } from '@mymind/core/lib/agent/runtime/queue'
+import { blueBubblesClient, type BlueBubblesClient } from '@mymind/core/lib/channels/bluebubbles/client'
+import { parseWebhook } from '@mymind/core/lib/channels/bluebubbles/parse'
+import { handleInbound, catchUpTick, catchUpWindowStart, lastHealth, _resetCatchUp, type InboundDeps } from '@mymind/core/lib/channels/inbound'
+import type { InboundMessage } from '@mymind/core/lib/channels/types'
 import { startFakeBlueBubbles, type FakeBlueBubbles } from './fixtures/fake-bluebubbles'
 import emoji from './fixtures/bluebubbles/emoji-reaction.json'
 

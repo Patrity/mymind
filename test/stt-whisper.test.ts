@@ -1,6 +1,6 @@
 // test/stt-whisper.test.ts
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { whisperStt } from '../server/lib/voice/providers/stt-whisper'
+import { whisperStt } from '@mymind/core/lib/voice/providers/stt-whisper'
 
 afterEach(() => vi.restoreAllMocks())
 

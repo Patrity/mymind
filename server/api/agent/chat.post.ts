@@ -1,5 +1,5 @@
 // server/api/agent/chat.post.ts
-import { runAgent, type AgentMessage } from '../../lib/agent/run'
+import { runAgent, type AgentMessage } from '@mymind/core/lib/agent/run'
 
 // Session-authed (middleware). Streams plain text deltas as SSE `data:` lines.
 // TEXT-ONLY: this headless path forwards only `text-delta`; it does NOT apply the

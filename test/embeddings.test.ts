@@ -13,7 +13,7 @@ beforeEach(() => {
 // withFailover('embeddings', fn). We mock the resolver to drive `fn` against a
 // single fake ResolvedModel; the TEI request shape + dim-gating stay under test.
 function mockResolver(model: { baseURL?: string | null; apiKey?: string | null } | null) {
-  vi.doMock('../server/lib/ai/registry/resolve', () => ({
+  vi.doMock('@mymind/core/lib/ai/registry/resolve', () => ({
     withFailover: async (_usage: string, fn: (m: unknown) => Promise<unknown>) => {
       if (!model) throw new Error('embeddings not configured')
       return fn({ baseURL: model.baseURL ?? null, apiKey: model.apiKey ?? null })
@@ -26,7 +26,7 @@ describe('embed', () => {
     mockResolver({ baseURL: 'http://tei.local', apiKey: undefined })
     vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([zeroVec]))
 
-    const { embed } = await import('../server/lib/ai/embeddings')
+    const { embed } = await import('@mymind/core/lib/ai/embeddings')
     const result = await embed(['hello'])
     expect(result).toHaveLength(1)
     expect(result[0]).toHaveLength(DIM)
@@ -37,7 +37,7 @@ describe('embed', () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('$fetch', fetchSpy)
 
-    const { embed } = await import('../server/lib/ai/embeddings')
+    const { embed } = await import('@mymind/core/lib/ai/embeddings')
     const result = await embed([])
     expect(result).toEqual([])
     expect(fetchSpy).not.toHaveBeenCalled()
@@ -47,7 +47,7 @@ describe('embed', () => {
     mockResolver(null)
     vi.stubGlobal('$fetch', vi.fn())
 
-    const { embed } = await import('../server/lib/ai/embeddings')
+    const { embed } = await import('@mymind/core/lib/ai/embeddings')
     await expect(embed(['x'])).rejects.toThrow('embeddings not configured')
   })
 
@@ -56,7 +56,7 @@ describe('embed', () => {
     // Return a vector of wrong dimension (e.g. 768)
     vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(768).fill(0)]))
 
-    const { embed } = await import('../server/lib/ai/embeddings')
+    const { embed } = await import('@mymind/core/lib/ai/embeddings')
     await expect(embed(['x'])).rejects.toThrow('embedding dim mismatch')
   })
 
@@ -65,7 +65,7 @@ describe('embed', () => {
     const fetchSpy = vi.fn().mockResolvedValue([zeroVec])
     vi.stubGlobal('$fetch', fetchSpy)
 
-    const { embed } = await import('../server/lib/ai/embeddings')
+    const { embed } = await import('@mymind/core/lib/ai/embeddings')
     await embed(['test'])
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('/embed'),
@@ -81,7 +81,7 @@ describe('embedOne', () => {
     mockResolver({ baseURL: 'http://tei.local', apiKey: undefined })
     vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([zeroVec]))
 
-    const { embedOne } = await import('../server/lib/ai/embeddings')
+    const { embedOne } = await import('@mymind/core/lib/ai/embeddings')
     const v = await embedOne('hello')
     expect(v).toHaveLength(DIM)
   })

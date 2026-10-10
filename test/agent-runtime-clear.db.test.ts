@@ -8,14 +8,14 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { conversations, conversationMessages, agentRuns, agentInbox, type AgentRun } from '../server/db/schema'
-import { enqueue, pumpOnce, abortActiveAndWait } from '../server/lib/agent/runtime/queue'
-import { activeRunFor } from '../server/lib/agent/runtime/runs'
-import { registerAbort, releaseAbort } from '../server/lib/agent/runtime/aborts'
+import { conversations, conversationMessages, agentRuns, agentInbox, type AgentRun } from '@mymind/core/db/schema'
+import { enqueue, pumpOnce, abortActiveAndWait } from '@mymind/core/lib/agent/runtime/queue'
+import { activeRunFor } from '@mymind/core/lib/agent/runtime/runs'
+import { registerAbort, releaseAbort } from '@mymind/core/lib/agent/runtime/aborts'
 import { clearConversationContext } from '../server/services/conversation-clear'
 import { eq, inArray } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import type { RunOutcome } from '../server/lib/agent/runtime/types'
+import { useDb } from '@mymind/core/db'
+import type { RunOutcome } from '@mymind/core/lib/agent/runtime/types'
 
 const convIds: string[] = []
 afterAll(async () => {

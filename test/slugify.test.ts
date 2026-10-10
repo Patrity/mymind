@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { slugify } from '../shared/utils/slugify'
+import { slugify } from '@mymind/core/shared/utils/slugify'
 
 describe('slugify', () => {
   it('"My Project!" → "my-project"', () => {

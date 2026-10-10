@@ -5,9 +5,9 @@ import { describe, it, expect, vi } from 'vitest'
 import { _resetCoreForTests } from '@mymind/core/config'
 import { fromRuntimeConfig } from '../server/utils/core-config'
 
-vi.mock('../server/db', () => ({ useDb: () => ({}) }))
+vi.mock('@mymind/core/db', () => ({ useDb: () => ({}) }))
 
-import { buildAuth } from '../server/lib/auth'
+import { buildAuth } from '@mymind/core/lib/auth'
 
 const base = {
   databaseUrl: 'postgres://unused:unused@127.0.0.1:1/unused',

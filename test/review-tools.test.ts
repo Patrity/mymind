@@ -4,22 +4,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const feed = vi.hoisted(() => ({ items: [] as unknown[] }))
-vi.mock('../server/services/review', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../server/services/review')>()),
+vi.mock('@mymind/core/services/review', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mymind/core/services/review')>()),
   listReviewFeed: vi.fn(async () => feed.items)
 }))
 const decide = vi.hoisted(() => vi.fn())
-vi.mock('../server/services/review-decisions', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../server/services/review-decisions')>()),
+vi.mock('@mymind/core/services/review-decisions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mymind/core/services/review-decisions')>()),
   decideReview: decide
 }))
 
-import { listReviewsTool, decideReviewTool } from '../server/lib/agent/tools/reviews'
-import { agentTools } from '../server/lib/agent/tools'
-import { bridgetProfile } from '../server/lib/agent/profile'
+import { listReviewsTool, decideReviewTool } from '@mymind/core/lib/agent/tools/reviews'
+import { agentTools } from '@mymind/core/lib/agent/tools'
+import { bridgetProfile } from '@mymind/core/lib/agent/profile'
 import { mcpToolNames } from '../server/lib/mcp/server'
-import { classifyForHeadless, headlessTools } from '../server/lib/agent/runtime/gate'
-import { buildAiTools } from '../server/lib/agent/ai-tools'
+import { classifyForHeadless, headlessTools } from '@mymind/core/lib/agent/runtime/gate'
+import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
 
 const ctx = { signal: new AbortController().signal }
 const at = new Date('2026-09-30T10:00:00Z')
@@ -77,7 +77,7 @@ describe('decide_review exposure', () => {
   })
 
   it('is not allowlistable (confirmed every call); exec still is', async () => {
-    const { execTool } = await import('../server/lib/agent/tools/exec')
+    const { execTool } = await import('@mymind/core/lib/agent/tools/exec')
     expect(decideReviewTool.allowlistable).not.toBe(true)
     expect(execTool.allowlistable).toBe(true)
     const requestApproval = vi.fn().mockResolvedValue({ approved: false })

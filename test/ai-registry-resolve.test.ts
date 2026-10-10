@@ -1,9 +1,9 @@
 // test/ai-registry-resolve.test.ts
 import { describe, it, expect, beforeAll } from 'vitest'
-import { resolveChainFrom, withFailoverOver, languageModel, reorderChain } from '../server/lib/ai/registry/resolve'
-import { AiNotConfiguredError, AiAllFailedError } from '../server/lib/ai/registry/errors'
-import { encryptSecret } from '../server/lib/ai/registry/crypto'
-import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel } from '../server/lib/ai/registry/types'
+import { resolveChainFrom, withFailoverOver, languageModel, reorderChain } from '@mymind/core/lib/ai/registry/resolve'
+import { AiNotConfiguredError, AiAllFailedError } from '@mymind/core/lib/ai/registry/errors'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
+import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel } from '@mymind/core/lib/ai/registry/types'
 
 beforeAll(() => { process.env.BETTER_AUTH_SECRET = 'test-secret-please-ignore-0123456789' })
 

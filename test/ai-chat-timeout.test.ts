@@ -5,12 +5,12 @@
 // chain is stubbed to one fake model, so no DB and no network.
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-vi.mock('../server/lib/ai/registry/resolve', () => ({
+vi.mock('@mymind/core/lib/ai/registry/resolve', () => ({
   withFailover: async (_usage: string, fn: (m: unknown) => Promise<unknown>) =>
     fn({ baseURL: 'http://model.test/v1', apiKey: 'k', modelId: 'm' })
 }))
 
-import { chat, CHAT_TIMEOUT_MS } from '../server/lib/ai/chat'
+import { chat, CHAT_TIMEOUT_MS } from '@mymind/core/lib/ai/chat'
 
 const fetchStub = vi.fn(async (_url: string, _opts: { body: { max_tokens: number } }) => ({ choices: [{ message: { content: 'ok' } }] }))
 vi.stubGlobal('$fetch', fetchStub)

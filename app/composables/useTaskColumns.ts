@@ -1,6 +1,6 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery } from '@tanstack/vue-query'
-import type { TaskColumnDTO, TaskColumnKind, TaskColumnColor } from '~~/shared/types/task-columns'
+import type { TaskColumnDTO, TaskColumnKind, TaskColumnColor } from '@mymind/core/shared/types/task-columns'
 
 export function useTaskColumns() {
   const list = () => ofetch<TaskColumnDTO[]>('/api/task-columns')

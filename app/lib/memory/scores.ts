@@ -6,7 +6,7 @@
  * Colour is a nudge, not a verdict — Jev's calibration (n=28) supports ORDERING, not deciding,
  * so the bands are deliberately coarse and never red/green "right/wrong".
  */
-import { DISAGREE_THRESHOLD, type AuditVerdict } from '~~/shared/types/memory'
+import { DISAGREE_THRESHOLD, type AuditVerdict } from '@mymind/core/shared/types/memory'
 
 type Score = number | null | undefined
 

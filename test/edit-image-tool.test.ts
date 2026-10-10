@@ -1,19 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../server/lib/imagegen/comfy', () => ({ editImage: vi.fn(), generateImage: vi.fn() }))
-vi.mock('../server/services/images', () => ({
+vi.mock('@mymind/core/lib/imagegen/comfy', () => ({ editImage: vi.fn(), generateImage: vi.fn() }))
+vi.mock('@mymind/core/services/images', () => ({
   resolveSourceImageId: vi.fn(),
   getImageBytes: vi.fn(),
   createGeneratedImage: vi.fn(),
   deleteImage: vi.fn(),
   serveUrl: (row: { id: string }) => `/api/images/${row.id}/raw`
 }))
-vi.mock('../server/utils/live-bus', () => ({ publishChange: vi.fn() }))
+vi.mock('@mymind/core/utils/live-bus', () => ({ publishChange: vi.fn() }))
 
-import { agentTools } from '../server/lib/agent/tools'
-import { editImage } from '../server/lib/imagegen/comfy'
-import { resolveSourceImageId, getImageBytes, createGeneratedImage, deleteImage } from '../server/services/images'
-import { publishChange } from '../server/utils/live-bus'
+import { agentTools } from '@mymind/core/lib/agent/tools'
+import { editImage } from '@mymind/core/lib/imagegen/comfy'
+import { resolveSourceImageId, getImageBytes, createGeneratedImage, deleteImage } from '@mymind/core/services/images'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const tool = agentTools.find(t => t.name === 'edit_image')!
 const ctx = { signal: new AbortController().signal }

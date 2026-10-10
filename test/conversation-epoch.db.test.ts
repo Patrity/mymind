@@ -8,11 +8,11 @@ import { vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { useDb } from '../server/db'
-import { conversations, conversationMessages } from '../server/db/schema'
-import { loadActivePath } from '../server/services/conversation-path'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages } from '@mymind/core/db/schema'
+import { loadActivePath } from '@mymind/core/services/conversation-path'
 import { clearConversationContext } from '../server/services/conversation-clear'
-import { getAgentHistory, getConversation } from '../server/services/conversations'
+import { getAgentHistory, getConversation } from '@mymind/core/services/conversations'
 import { eq } from 'drizzle-orm'
 
 const seededConversationIds: string[] = []

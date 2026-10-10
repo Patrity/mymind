@@ -1,4 +1,4 @@
-import { deleteSecret } from '../../lib/exec/secrets'
+import { deleteSecret } from '@mymind/core/lib/exec/secrets'
 
 export default defineEventHandler(async (event) => {
   const name = getQuery(event).name as string

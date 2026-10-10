@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { updateSkill } from '../../services/skills'
+import { updateSkill } from '@mymind/core/services/skills'
 
 const Body = z.object({
   description: z.string().optional(), whenToUse: z.string().optional(),

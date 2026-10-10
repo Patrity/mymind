@@ -1,4 +1,4 @@
-import { getFileBytes } from '../../../services/files'
+import { getFileBytes } from '@mymind/core/services/files'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

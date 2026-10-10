@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { classifyForHeadless, headlessTools } from '../server/lib/agent/runtime/gate'
-import { bridgetProfile } from '../server/lib/agent/profile'
-import { loadToolsetsTool } from '../server/lib/agent/tools/load-toolsets'
-import type { AgentTool } from '../server/lib/agent/types'
-import type { HeadlessClass } from '../server/lib/agent/runtime/gate'
+import { classifyForHeadless, headlessTools } from '@mymind/core/lib/agent/runtime/gate'
+import { bridgetProfile } from '@mymind/core/lib/agent/profile'
+import { loadToolsetsTool } from '@mymind/core/lib/agent/tools/load-toolsets'
+import type { AgentTool } from '@mymind/core/lib/agent/types'
+import type { HeadlessClass } from '@mymind/core/lib/agent/runtime/gate'
 
 describe('headless gate', () => {
   it('classifies every tool Bridget has — a new unclassified tool fails this test', () => {

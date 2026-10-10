@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { chooseResolution } from '../server/services/memory-resolve'
-import type { Verdict } from '../server/lib/ai/memory-judge'
+import type { Verdict } from '@mymind/core/lib/ai/memory-judge'
 const v = (existingId: string, relation: Verdict['relation'], confidence: number): Verdict => ({ existingId, relation, confidence })
 const opts = { threshold: 0.75, scope: 'agent' as const, challengerSessions: 1, sessionsFor: () => 1 }
 

@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
+const { useDb } = await import('@mymind/core/db')
 const { getUsage, getUsagePricingSince } = await import('../server/services/usage')
 
 const SESSION = '00000000-0000-4000-8000-00000000dead'

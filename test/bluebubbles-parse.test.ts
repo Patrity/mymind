@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseWebhook } from '../server/lib/channels/bluebubbles/parse'
+import { parseWebhook } from '@mymind/core/lib/channels/bluebubbles/parse'
 import text from './fixtures/bluebubbles/text.json'
 import photo from './fixtures/bluebubbles/photo.json'
 import voice from './fixtures/bluebubbles/voice-memo.json'

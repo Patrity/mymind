@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { shouldOpenMenu, menuQuery, parseCommand, applySelection, nextHighlight, shouldInterceptEnter, isMenuVisible, resolveSubmission } from '../app/lib/agent/slash'
-import type { CommandEntry } from '../shared/types/commands'
+import type { CommandEntry } from '@mymind/core/shared/types/commands'
 
 describe('shouldOpenMenu', () => {
   it('opens on a leading slash', () => {

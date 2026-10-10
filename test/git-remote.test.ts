@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '../server/lib/projects/git-remote'
+import { normalizeGitRemote, repoNameFromKey, nextUniqueSlug } from '@mymind/core/lib/projects/git-remote'
 
 describe('normalizeGitRemote', () => {
   it('normalizes scp, https, creds, ssh+port, .git, case', () => {

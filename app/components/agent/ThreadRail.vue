@@ -1,6 +1,6 @@
 <!-- app/components/agent/ThreadRail.vue -->
 <script setup lang="ts">
-import type { ConversationListItem } from '~~/shared/types/conversation'
+import type { ConversationListItem } from '@mymind/core/shared/types/conversation'
 
 const props = defineProps<{ activeId: string | null }>()
 const emit = defineEmits<{ select: [id: string]; new: [] }>()

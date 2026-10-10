@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 import {
   CFG_LOCK_REASON,
   TRUNCATION_MESSAGE,

@@ -4,7 +4,7 @@ import {
   isConflictResolution,
   queueStatusFor,
   CONFLICT_RESOLUTIONS
-} from '../server/lib/review/conflict-resolution'
+} from '@mymind/core/lib/review/conflict-resolution'
 
 const IDS = { newId: 'new-1', existingId: 'old-1' }
 

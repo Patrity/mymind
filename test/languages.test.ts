@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getLanguageFromPath } from '../shared/utils/languages'
+import { getLanguageFromPath } from '@mymind/core/shared/utils/languages'
 
 describe('getLanguageFromPath', () => {
   it('maps known extensions', () => {

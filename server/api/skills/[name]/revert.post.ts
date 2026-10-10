@@ -3,7 +3,7 @@
 // revertSkill throws a plain Error for both "no skill named ..." and "revision doesn't belong",
 // and only the pre-check can tell those apart to give the first one a real 404.
 import { z } from 'zod'
-import { getSkillSource, revertSkill } from '../../../services/skills'
+import { getSkillSource, revertSkill } from '@mymind/core/services/skills'
 import { requireSkillName, throwAgentConfigWriteError } from '../../../utils/agent-config-http'
 
 const Body = z.object({ revisionId: z.string() })

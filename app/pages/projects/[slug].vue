@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { ProjectDTO, TaskPriority } from '~~/shared/types/tasks'
+import type { ProjectDTO, TaskPriority } from '@mymind/core/shared/types/tasks'
 import type { SessionListItem } from '~~/shared/types/session'
-import type { MemoryScope } from '~~/shared/types/memory'
+import type { MemoryScope } from '@mymind/core/shared/types/memory'
 
 definePageMeta({ title: 'Project' })
 

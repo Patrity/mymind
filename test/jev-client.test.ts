@@ -1,7 +1,7 @@
 // askJev's transport contract (cycle 77 fix round 2): every request carries a timeout signal, and a
 // non-OK reply throws JevHttpError with the status, so the scorer can tell a bad row from an outage.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { askJev, JevHttpError, JEV_TIMEOUT_MS } from '../server/lib/ai/jev'
+import { askJev, JevHttpError, JEV_TIMEOUT_MS } from '@mymind/core/lib/ai/jev'
 
 const CFG = { baseURL: 'http://jev.invalid', apiKey: 'k', model: 'jev-latest' }
 

@@ -6,7 +6,7 @@ import {
   insertDocumentInTree,
   insertFolderInTree
 } from './tree-mutate'
-import type { TreeNode } from '~~/server/services/tree'
+import type { TreeNode } from '@mymind/core/services/tree'
 
 const f = (name: string, path: string, children: TreeNode[] = [], extra: Partial<TreeNode> = {}): TreeNode =>
   ({ name, path, type: 'folder', children, ...extra })

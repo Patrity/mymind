@@ -1,5 +1,5 @@
-import { deleteProject } from '../../services/projects'
-import { publishChange } from '../../utils/live-bus'
+import { deleteProject } from '@mymind/core/services/projects'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const slug = getRouterParam(event, 'slug')!

@@ -1,12 +1,12 @@
 import { and, eq, isNull, isNotNull, sql } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
-import { useDb } from '../db'
-import { memories, memoryRelations, reviewQueue } from '../db/schema'
-import { embedOne } from '../lib/ai/embeddings'
-import { judgeRelations, type Verdict } from '../lib/ai/memory-judge'
-import { stripUnreviewed } from './memory'
-import { publishChange } from '../utils/live-bus'
-import type { MemoryScope } from '../../shared/types/memory'
+import { useDb } from '@mymind/core/db'
+import { memories, memoryRelations, reviewQueue } from '@mymind/core/db/schema'
+import { embedOne } from '@mymind/core/lib/ai/embeddings'
+import { judgeRelations, type Verdict } from '@mymind/core/lib/ai/memory-judge'
+import { stripUnreviewed } from '@mymind/core/services/memory'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import type { MemoryScope } from '@mymind/core/shared/types/memory'
 
 export interface ResolveInput {
   content: string

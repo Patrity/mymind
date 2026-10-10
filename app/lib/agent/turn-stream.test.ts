@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createClientTurns, finalizeMessage } from './turn-stream'
-import type { AgentMessageFrame, AgentUIChunk, AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentMessageFrame, AgentUIChunk, AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 function harness() {
   const messages: AgentUIMessage[] = []

@@ -1,4 +1,4 @@
-import { loadChannelsConfig, rotateWebhookToken, invalidateChannelsConfig, channelsConfigDTO } from '../../../lib/channels/config'
+import { loadChannelsConfig, rotateWebhookToken, invalidateChannelsConfig, channelsConfigDTO } from '@mymind/core/lib/channels/config'
 import { requireSession } from '../../../utils/auth-guard'
 
 // Web session only. Rotates the BlueBubbles webhook token: the old URL stops working

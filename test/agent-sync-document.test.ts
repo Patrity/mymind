@@ -1,6 +1,6 @@
 // test/agent-sync-document.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { hashBody } from '../server/lib/agent/sync'
+import { hashBody } from '@mymind/core/lib/agent/sync'
 
 type Row = {
   id: string, path: string, content: string,
@@ -21,7 +21,7 @@ const toRow = (r: Row) => ({
   updatedAt: '2026-08-01T00:00:00.000Z'
 })
 
-vi.mock('../server/services/documents', () => ({
+vi.mock('@mymind/core/services/documents', () => ({
   findDocByPath: async (p: string) => {
     const r = Object.values(rows).find(x => x.path === p)
     return r ? { id: r.id, contentHash: hashBody(r.content) } : null
@@ -61,11 +61,11 @@ vi.mock('../server/services/documents', () => ({
   countDocs: async () => 0, searchDocsPage: async () => ({ items: [], total: 0 })
 }))
 
-vi.mock('../server/utils/live-bus', () => ({
+vi.mock('@mymind/core/utils/live-bus', () => ({
   publishChange: (c: { action: string }) => { changes.push(c.action) }, publishActivity: () => {}
 }))
 
-const { agentTools } = await import('../server/lib/agent/tools')
+const { agentTools } = await import('@mymind/core/lib/agent/tools')
 const tool = agentTools.find(t => t.name === 'sync_document')!
 // Full ToolExecution (result + summary + undo) — needed to exercise `undo` closures.
 const runExec = async (args: Record<string, unknown>) => tool.handler(args, { signal: new AbortController().signal })

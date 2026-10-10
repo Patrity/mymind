@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
 import { useTimeAgo } from '@vueuse/core'
-import { reviewChoices, CONFLICT_TOAST, MEMORY_CONFLICT_KINDS, type ConflictChoiceId, type ReviewChoice } from '~~/shared/review/choices'
-import type { AuditVerdict } from '~~/shared/types/memory'
+import { reviewChoices, CONFLICT_TOAST, MEMORY_CONFLICT_KINDS, type ConflictChoiceId, type ReviewChoice } from '@mymind/core/shared/review/choices'
+import type { AuditVerdict } from '@mymind/core/shared/types/memory'
 
 definePageMeta({ title: 'Review' })
 

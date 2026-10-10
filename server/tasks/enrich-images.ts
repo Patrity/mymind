@@ -1,5 +1,5 @@
 import { runImageEnrich } from '../services/image-enrich'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
 
 export default defineTask({
   meta: { name: 'enrich-images', description: 'Run the image enrichment pipeline on pending/retryable images' },

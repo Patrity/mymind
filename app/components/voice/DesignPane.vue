@@ -1,6 +1,6 @@
 <!-- app/components/voice/DesignPane.vue -->
 <script setup lang="ts">
-import type { SavedPresetDTO, VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { SavedPresetDTO, VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 import {
   CFG_LOCK_REASON,
   CFG_MAX,

@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { createTask } from '../../services/tasks'
-import { publishChange } from '../../utils/live-bus'
+import { createTask } from '@mymind/core/services/tasks'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 // Accept both ISO datetime strings and bare YYYY-MM-DD from <input type=date>
 const Body = z.object({

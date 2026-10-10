@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/vue-query'
-import type { TreeNode } from '~~/server/services/tree'
-import type { DocumentDTO } from '~~/shared/types/documents'
-import type { FolderDTO } from '~~/shared/types/folders'
+import type { TreeNode } from '@mymind/core/services/tree'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
+import type { FolderDTO } from '@mymind/core/shared/types/folders'
 import {
   moveNodeInTree,
   removeNodeFromTree,

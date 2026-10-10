@@ -1,5 +1,5 @@
-import { deleteFolder } from '../../services/folders'
-import { publishChange } from '../../utils/live-bus'
+import { deleteFolder } from '@mymind/core/services/folders'
+import { publishChange } from '@mymind/core/utils/live-bus'
 import { requireFolderId } from '../../utils/folder-http'
 
 export default defineEventHandler(async (event) => {

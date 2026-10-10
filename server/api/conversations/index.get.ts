@@ -1,4 +1,4 @@
-import { listConversations } from '../../services/conversations'
+import { listConversations } from '@mymind/core/services/conversations'
 
 export default defineEventHandler(async (event) => {
   const q = getQuery(event).q as string | undefined

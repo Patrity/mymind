@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { capTags } from '../shared/utils/cap-tags'
+import { capTags } from '@mymind/core/shared/utils/cap-tags'
 
 describe('capTags', () => {
   it('returns all tags when under the max', () => {

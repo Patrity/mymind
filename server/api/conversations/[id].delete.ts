@@ -1,5 +1,5 @@
-import { deleteConversation } from '../../services/conversations'
-import { publishChange } from '../../utils/live-bus'
+import { deleteConversation } from '@mymind/core/services/conversations'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

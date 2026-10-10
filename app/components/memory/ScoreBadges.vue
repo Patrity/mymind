@@ -6,7 +6,7 @@
   All three point the same way (higher = keep), so a big audit/Jev gap is the signal worth
   looking at. Advisory only: they sort and filter, they never decide. -->
 <script setup lang="ts">
-import type { AuditVerdict } from '~~/shared/types/memory'
+import type { AuditVerdict } from '@mymind/core/shared/types/memory'
 import {
   scoreColor, pct, jevTooltip, auditTooltip, VERDICT_LABELS, verdictColor, disagreement, isDisagreement
 } from '~/lib/memory/scores'

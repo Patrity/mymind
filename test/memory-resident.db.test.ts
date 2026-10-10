@@ -13,9 +13,9 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
 import { createHash } from 'node:crypto'
-import { useDb } from '../server/db'
-import { memories } from '../server/db/schema'
-import { createMemory, listResidentMemories, recordRetrievals, RESIDENT_MEMORY_LIMIT } from '../server/services/memory'
+import { useDb } from '@mymind/core/db'
+import { memories } from '@mymind/core/db/schema'
+import { createMemory, listResidentMemories, recordRetrievals, RESIDENT_MEMORY_LIMIT } from '@mymind/core/services/memory'
 import { sql, inArray } from 'drizzle-orm'
 
 const mk = (content: string, project = 'alpha') =>

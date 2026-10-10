@@ -14,8 +14,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 // (never written): the dev DB is shared, and enabling iMessage there — even for a moment — would
 // switch it on for every live dev server using it.
 const chan = vi.hoisted(() => ({ imessage: false, email: false, loads: 0 }))
-vi.mock('../server/lib/channels/config', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../server/lib/channels/config')>()),
+vi.mock('@mymind/core/lib/channels/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mymind/core/lib/channels/config')>()),
   loadChannelsConfig: async () => {
     chan.loads++
     return {
@@ -28,15 +28,15 @@ vi.mock('../server/lib/channels/config', async (importOriginal) => ({
 
 import { Client } from 'pg'
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentJobs, agentConfigRevisions, conversations, conversationMessages } from '../server/db/schema'
-import { listRevisions } from '../server/lib/agent/config/revisions'
-import { SEED_JOB_SLUGS } from '../server/lib/agent/jobs/seeds'
+import { useDb } from '@mymind/core/db'
+import { agentJobs, agentConfigRevisions, conversations, conversationMessages } from '@mymind/core/db/schema'
+import { listRevisions } from '@mymind/core/lib/agent/config/revisions'
+import { SEED_JOB_SLUGS } from '@mymind/core/lib/agent/jobs/seeds'
 import {
   createJob, saveJob, getJob, setJobEnabled, revertJob, revalidateAll, installSeedJobs,
   deleteJob, restoreJob, rederiveDefaultTimezone,
   JobValidationError, ConflictError, MAX_ENABLED_JOBS, MAX_ENABLED_LOCK_KEY
-} from '../server/lib/agent/jobs/store'
+} from '@mymind/core/lib/agent/jobs/store'
 
 const PREFIX = 'jstest-'
 

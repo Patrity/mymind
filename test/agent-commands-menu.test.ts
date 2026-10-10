@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { parse } from 'vue/compiler-sfc'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
-import { CLIENT_COMMANDS, type CommandEntry } from '../shared/types/commands'
+import { CLIENT_COMMANDS, type CommandEntry } from '@mymind/core/shared/types/commands'
 import { commandsOrFallback } from '../app/composables/useCommands'
 
 describe('commandsOrFallback', () => {

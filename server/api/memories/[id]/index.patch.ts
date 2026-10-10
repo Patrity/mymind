@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { updateMemory } from '../../../services/memory'
-import { publishChange } from '../../../utils/live-bus'
+import { updateMemory } from '@mymind/core/services/memory'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 // Minimal content/scope/tags/project edit for a single memory. Wraps the
 // existing `updateMemory` service (which re-embeds on a content change, so a

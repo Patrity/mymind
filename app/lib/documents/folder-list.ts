@@ -1,4 +1,4 @@
-import type { TreeNode } from '~~/server/services/tree'
+import type { TreeNode } from '@mymind/core/services/tree'
 
 /**
  * Every folder path in the tree, as options for a picker. Root first — creating at the

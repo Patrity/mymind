@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { modelPrices } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { modelPrices } from '@mymind/core/db/schema'
 import { decideSync, extractRates, PRICE_MAP_URL } from '../lib/analytics/prices'
 import { readSyncState, writeSyncState, recentModelsSince } from '../lib/analytics/price-sync-state'
 

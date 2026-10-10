@@ -1,4 +1,4 @@
-import { wake } from '../../../lib/agent/runtime/wake'
+import { wake } from '@mymind/core/lib/agent/runtime/wake'
 import { requireSession } from '../../../utils/auth-guard'
 
 /**

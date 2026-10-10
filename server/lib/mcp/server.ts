@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server'
-import { agentTools } from '../agent/tools'
-import type { AgentTool } from '../agent/types'
+import { agentTools } from '@mymind/core/lib/agent/tools'
+import type { AgentTool } from '@mymind/core/lib/agent/types'
 
 /** Toolsets never exposed on /api/mcp (cycle 79 ruling): Tony's Google mail, contacts and
  *  calendar are reachable only through Bridget, behind her approval gate and headless proposals —

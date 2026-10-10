@@ -4,13 +4,13 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 
 const mocks = vi.hoisted(() => ({ loadChannels: vi.fn(), loadObs: vi.fn() }))
-vi.mock('../server/lib/channels/config', () => ({ loadChannelsConfig: mocks.loadChannels }))
-vi.mock('../server/lib/observability/config', () => ({ loadObsConfig: mocks.loadObs }))
+vi.mock('@mymind/core/lib/channels/config', () => ({ loadChannelsConfig: mocks.loadChannels }))
+vi.mock('@mymind/core/lib/observability/config', () => ({ loadObsConfig: mocks.loadObs }))
 
-import { renderEmail, emailSubject } from '../server/lib/channels/email/render'
-import { emailChannel } from '../server/lib/channels/email/channel'
-import { sendResendEmail } from '../server/lib/observability/email'
-import { encryptSecret } from '../server/lib/ai/registry/crypto'
+import { renderEmail, emailSubject } from '@mymind/core/lib/channels/email/render'
+import { emailChannel } from '@mymind/core/lib/channels/email/channel'
+import { sendResendEmail } from '@mymind/core/lib/observability/email'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 
 // crypto.ts derives its key from BETTER_AUTH_SECRET; set here so this file doesn't depend on
 // the shell env (test/ai-registry-crypto.test.ts pattern).

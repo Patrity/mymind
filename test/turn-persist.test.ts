@@ -1,8 +1,8 @@
 // buildTurnPersistPayload's `origin` (cycle 75): an inbound iMessage's user row carries
 // `imessage:<chatGuid>` so the UI can mark it; the assistant row never does.
 import { describe, it, expect } from 'vitest'
-import { buildTurnPersistPayload, type TurnPersistContext } from '../server/lib/voice/turn-persist'
-import type { AgentMessage } from '../server/lib/agent/run'
+import { buildTurnPersistPayload, type TurnPersistContext } from '@mymind/core/lib/voice/turn-persist'
+import type { AgentMessage } from '@mymind/core/lib/agent/run'
 
 const added = [
   { role: 'user', content: 'hey bridget' },

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseMemories } from '../server/lib/ai/memory-extract'
+import { parseMemories } from '@mymind/core/lib/ai/memory-extract'
 
 describe('parseMemories', () => {
   it('parses {"memories":[...]} envelope', () => {

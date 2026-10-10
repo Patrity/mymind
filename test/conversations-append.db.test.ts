@@ -10,9 +10,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { conversations, conversationMessages } from '../server/db/schema'
-import { appendMessages, createConversation } from '../server/services/conversations'
+import { useDb } from '@mymind/core/db'
+import { conversations, conversationMessages } from '@mymind/core/db/schema'
+import { appendMessages, createConversation } from '@mymind/core/services/conversations'
 
 const convIds: string[] = []
 let conv = ''

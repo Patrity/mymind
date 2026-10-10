@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { listTasks } from '../../services/tasks'
+import { listTasks } from '@mymind/core/services/tasks'
 
 const Query = z.object({
   status: z.enum(['todo', 'in_progress', 'completed', 'blocked']).optional(),

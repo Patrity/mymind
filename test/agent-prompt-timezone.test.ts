@@ -3,17 +3,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const tzMock = vi.hoisted(() => ({ getDefaultTimezone: vi.fn(), serverTimezone: vi.fn(() => 'UTC') }))
-vi.mock('../server/lib/agent/jobs/timezone', () => tzMock)
-vi.mock('../server/lib/agent/persona', () => ({ loadPersona: vi.fn(async () => 'persona') }))
-vi.mock('../server/lib/agent/skills-config', () => ({ skillsEnabled: vi.fn(async () => false) }))
-vi.mock('../server/services/skills', () => ({ listSkills: vi.fn(async () => []) }))
+vi.mock('@mymind/core/lib/agent/jobs/timezone', () => tzMock)
+vi.mock('@mymind/core/lib/agent/persona', () => ({ loadPersona: vi.fn(async () => 'persona') }))
+vi.mock('@mymind/core/lib/agent/skills-config', () => ({ skillsEnabled: vi.fn(async () => false) }))
+vi.mock('@mymind/core/services/skills', () => ({ listSkills: vi.fn(async () => []) }))
 // Cycle 76, Task 2: the "About Tony" profile the prompt injects — mocked here so these tests
 // never hit the DB. Defaults to an empty profile (no section emitted); individual tests below
 // override it to prove the injection and the never-throws-on-failure contract.
 const getProfileSource = vi.hoisted(() => vi.fn())
-vi.mock('../server/services/profile', () => ({ getProfileSource }))
+vi.mock('@mymind/core/services/profile', () => ({ getProfileSource }))
 
-import { buildSystemPrompt, nowLine, timeOfDayTone } from '../server/lib/agent/prompt'
+import { buildSystemPrompt, nowLine, timeOfDayTone } from '@mymind/core/lib/agent/prompt'
 
 const AT = new Date('2026-09-29T01:30:00Z') // 20:30 in America/Chicago (CDT)
 
@@ -85,7 +85,7 @@ describe('buildSystemPrompt — "About Tony" profile injection (cycle 76, Task 2
 
 describe('live context date in the agent timezone', () => {
   it('is the Chicago date, not the UTC one, late in the evening', async () => {
-    const { contextDate } = await import('../server/lib/agent/context')
+    const { contextDate } = await import('@mymind/core/lib/agent/context')
     expect(contextDate(AT, 'America/Chicago')).toBe('2026-09-28')
     expect(contextDate(AT, 'UTC')).toBe('2026-09-29')
   })

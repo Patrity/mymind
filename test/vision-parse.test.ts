@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseVisionResponse } from '../server/lib/ai/vision'
+import { parseVisionResponse } from '@mymind/core/lib/ai/vision'
 
 describe('parseVisionResponse', () => {
   it('parses summary, ocrText, and tags from clean JSON', () => {

@@ -38,7 +38,7 @@ globalThis.getQuery = ((event: { node: { req: { url?: string } } }) => {
 }) as never
 
 const listRuns = vi.fn()
-vi.mock('../server/lib/agent/runtime/runs', () => ({ listRuns }))
+vi.mock('@mymind/core/lib/agent/runtime/runs', () => ({ listRuns }))
 
 const handler = (await import('../server/api/agent/runs.get')).default
 

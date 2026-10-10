@@ -4,7 +4,7 @@
      openFileDialog, setTextInput and submitForm directly; <PromptInput> below inherits that
      SAME context instead of creating its own (dual-mode — see prompt-input/context.ts). -->
 <script setup lang="ts">
-import type { AttachmentRef } from '~~/shared/types/conversation'
+import type { AttachmentRef } from '@mymind/core/shared/types/conversation'
 import type { VoiceState } from '~/composables/useVoice'
 import type { ContextMeterData } from '~/lib/agent/context-meter'
 import type { PromptInputMessage } from '@/components/ai-elements/prompt-input'

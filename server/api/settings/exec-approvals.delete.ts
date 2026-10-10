@@ -1,4 +1,4 @@
-import { deleteApproval } from '../../lib/exec/approvals'
+import { deleteApproval } from '@mymind/core/lib/exec/approvals'
 
 export default defineEventHandler(async (event) => {
   // Allowlist authoring is a human-in-the-loop action; reject non-session clients (e.g. api-token).

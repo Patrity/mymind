@@ -1,4 +1,4 @@
-import { savePersona } from '../../lib/agent/persona'
+import { savePersona } from '@mymind/core/lib/agent/persona'
 
 export default defineEventHandler(async (event) => {
   const { text } = await readBody<{ text?: string }>(event)

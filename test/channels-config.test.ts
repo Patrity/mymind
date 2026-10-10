@@ -3,8 +3,8 @@ import { describe, it, expect, beforeAll, vi, afterEach } from 'vitest'
 import {
   parseChannelsConfig, redactChannelsConfig, mergeChannelsPut, blueBubblesPassword,
   newWebhookToken, ChannelsConfigError, ChannelsPutBodySchema, type ChannelsConfig, type ChannelsPutBody
-} from '../server/lib/channels/config'
-import { encryptSecret, decryptSecret } from '../server/lib/ai/registry/crypto'
+} from '@mymind/core/lib/channels/config'
+import { encryptSecret, decryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 
 beforeAll(() => { process.env.BETTER_AUTH_SECRET ||= 'test-secret-test-secret-test-secret' })
 

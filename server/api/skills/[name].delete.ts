@@ -1,4 +1,4 @@
-import { getSkill, deleteSkill } from '../../services/skills'
+import { getSkill, deleteSkill } from '@mymind/core/services/skills'
 
 export default defineEventHandler(async (event) => {
   const name = getRouterParam(event, 'name')!

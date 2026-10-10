@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { parseJob } from '../../../server/lib/agent/jobs/parse'
+import { parseJob } from '@mymind/core/lib/agent/jobs/parse'
 import { JOB_SLUG_RE, JOB_TEMPLATES, jobTemplate } from './templates'
 
 describe('job templates', () => {

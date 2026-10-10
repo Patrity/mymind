@@ -1,6 +1,6 @@
-import { updatePreset, getPreset, ensureCalibrated, withoutCalibrationFields } from '../../../services/voice-presets'
-import type { PresetInput } from '../../../services/voice-presets'
-import type { SavedPresetDTO } from '../../../../shared/types/voice-presets'
+import { updatePreset, getPreset, ensureCalibrated, withoutCalibrationFields } from '@mymind/core/services/voice-presets'
+import type { PresetInput } from '@mymind/core/services/voice-presets'
+import type { SavedPresetDTO } from '@mymind/core/shared/types/voice-presets'
 
 export default defineEventHandler(async (event): Promise<SavedPresetDTO> => {
   const id = getRouterParam(event, 'id')!

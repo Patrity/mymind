@@ -1,4 +1,4 @@
-import { loadChannelsConfig, channelsConfigDTO } from '../../lib/channels/config'
+import { loadChannelsConfig, channelsConfigDTO } from '@mymind/core/lib/channels/config'
 import { requireSession } from '../../utils/auth-guard'
 
 // Web session only (requireSession → 403 for API-token/OAuth clients). The password is never

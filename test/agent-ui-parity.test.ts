@@ -3,14 +3,14 @@
 // Reasoning is compared by content only: live it can interleave with tools, persisted it is
 // one string (a documented asymmetry).
 import { describe, it, expect } from 'vitest'
-import { handleTurn, type VoiceEvent } from '../server/lib/voice/orchestrator'
-import { createTurnStream } from '../server/lib/voice/turn-stream'
-import { buildTurnPersistPayload } from '../server/lib/voice/turn-persist'
+import { handleTurn, type VoiceEvent } from '@mymind/core/lib/voice/orchestrator'
+import { createTurnStream } from '@mymind/core/lib/voice/turn-stream'
+import { buildTurnPersistPayload } from '@mymind/core/lib/voice/turn-persist'
 import { createClientTurns } from '../app/lib/agent/turn-stream'
 import { toUIMessages, type ResumeMessage } from '../app/lib/agent/to-ui-messages'
-import type { AgentEvent } from '../server/lib/agent/run'
-import type { AgentMessageFrame, AgentUIMessage } from '../shared/types/agent-ui'
-import type { VoicePresetDTO } from '../shared/types/voice-presets'
+import type { AgentEvent } from '@mymind/core/lib/agent/run'
+import type { AgentMessageFrame, AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 
 const preset: VoicePresetDTO = {
   id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,

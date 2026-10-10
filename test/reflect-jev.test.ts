@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { jevCheck, JEV_BUMP, REFLECT_JEV_QUESTIONS } from '../server/lib/agent/reflect/jev'
-import type { JevConfig, JevResponse } from '../server/lib/ai/jev'
-import type { Proposal } from '../server/lib/agent/reflect/schema'
+import { jevCheck, JEV_BUMP, REFLECT_JEV_QUESTIONS } from '@mymind/core/lib/agent/reflect/jev'
+import type { JevConfig, JevResponse } from '@mymind/core/lib/ai/jev'
+import type { Proposal } from '@mymind/core/lib/agent/reflect/schema'
 
 const cfg: JevConfig = { baseURL: 'http://jev.invalid', apiKey: 'k', model: 'jev-latest' }
 const skill: Proposal = { kind: 'skill.create', target: 'file-receipts', content: '# File receipts', reason: 'Tony corrected it', confidence: 0.8, evidence: ['always file receipts'] }

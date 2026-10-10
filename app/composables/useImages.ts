@@ -1,7 +1,7 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { ImageDTO } from '~~/shared/types/images'
+import type { ImageDTO } from '@mymind/core/shared/types/images'
 
 export interface ListImagesParams {
   q?: string

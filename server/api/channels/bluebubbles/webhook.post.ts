@@ -3,9 +3,9 @@
 // credential, compared in constant time. A wrong or missing token, or iMessage disabled → 404.
 // After that check it ALWAYS answers 200 — even when handling fails — so BlueBubbles never
 // retries into a loop; a message lost here is picked up by the periodic catch-up.
-import { verifyWebhookToken } from '../../../lib/channels/config'
-import { parseWebhook } from '../../../lib/channels/bluebubbles/parse'
-import { handleInbound } from '../../../lib/channels/inbound'
+import { verifyWebhookToken } from '@mymind/core/lib/channels/config'
+import { parseWebhook } from '@mymind/core/lib/channels/bluebubbles/parse'
+import { handleInbound } from '@mymind/core/lib/channels/inbound'
 
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)

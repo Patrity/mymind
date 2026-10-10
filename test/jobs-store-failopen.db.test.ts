@@ -13,8 +13,8 @@ process.loadEnvFile('.env')
 import { describe, it, expect, vi, afterAll } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
-vi.mock('../server/lib/ai/registry/store', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../server/lib/ai/registry/store')>()
+vi.mock('@mymind/core/lib/ai/registry/store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mymind/core/lib/ai/registry/store')>()
   return {
     ...actual,
     loadConfig: async () => {
@@ -24,9 +24,9 @@ vi.mock('../server/lib/ai/registry/store', async (importOriginal) => {
 })
 
 import { and, eq, inArray, like } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentJobs, agentConfigRevisions } from '../server/db/schema'
-import { createJob, revalidateAll, JobValidationError } from '../server/lib/agent/jobs/store'
+import { useDb } from '@mymind/core/db'
+import { agentJobs, agentConfigRevisions } from '@mymind/core/db/schema'
+import { createJob, revalidateAll, JobValidationError } from '@mymind/core/lib/agent/jobs/store'
 
 const PREFIX = 'jstest-failopen-'
 

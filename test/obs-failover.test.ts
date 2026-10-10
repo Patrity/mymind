@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { withFailoverOver } from '../server/lib/ai/registry/resolve'
-import type { ResolvedModel } from '../server/lib/ai/registry/types'
-import type { SpanInput } from '../server/lib/observability/types'
+import { withFailoverOver } from '@mymind/core/lib/ai/registry/resolve'
+import type { ResolvedModel } from '@mymind/core/lib/ai/registry/types'
+import type { SpanInput } from '@mymind/core/lib/observability/types'
 
 const chain: ResolvedModel[] = [
   { usage: 'reasoning', modelDefId: 'm1', providerKind: 'openai-compatible', baseURL: 'http://a', apiKey: 'k', modelId: 'broken', label: 'Broken', dim: null, contextWindow: null },

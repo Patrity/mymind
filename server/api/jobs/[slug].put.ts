@@ -2,7 +2,7 @@
 // the editor loaded; a mismatch (or a job that no longer exists while expectedHash is set)
 // throws ConflictError/JobNotFoundError, mapped below.
 import { z } from 'zod'
-import { saveJob } from '../../lib/agent/jobs/store'
+import { saveJob } from '@mymind/core/lib/agent/jobs/store'
 import { requireJobSlug, throwAgentConfigWriteError } from '../../utils/agent-config-http'
 
 const Body = z.object({ content: z.string(), expectedHash: z.string().nullable() })

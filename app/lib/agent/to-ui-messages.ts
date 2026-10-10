@@ -2,9 +2,9 @@
 // is ONE message whose parts interleave text and tools at each record's textOffset — the
 // offset is recorded server-side against the SANITIZED text (image-embed.ts sanitizedOffset),
 // so slicing the persisted content at it reproduces the live stream's order.
-import type { ConversationMessageDTO, ToolCallRecordDTO } from '~~/shared/types/conversation'
-import type { AgentUIMessage, AgentUIPart, AgentMessageMetadata } from '~~/shared/types/agent-ui'
-import { toolOutcome, toolEnvelope, attachmentToFilePart } from '~~/shared/utils/agent-ui'
+import type { ConversationMessageDTO, ToolCallRecordDTO } from '@mymind/core/shared/types/conversation'
+import type { AgentUIMessage, AgentUIPart, AgentMessageMetadata } from '@mymind/core/shared/types/agent-ui'
+import { toolOutcome, toolEnvelope, attachmentToFilePart } from '@mymind/core/shared/utils/agent-ui'
 
 // `branch`/`siblingIds` are carried through deliberately: the server has populated them on
 // ConversationMessageDTO since Task 3, but this Pick used to drop them, so the branch pager

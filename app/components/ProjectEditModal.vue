@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ProjectDTO } from '~~/shared/types/tasks'
+import type { ProjectDTO } from '@mymind/core/shared/types/tasks'
 import { PROJECT_PALETTE, NEUTRAL_COLOR } from '~/utils/project-color'
 
 // ── Props / model / emits ────────────────────────────────────────────────────

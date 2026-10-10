@@ -1,4 +1,4 @@
-import { countUnreviewedMemories } from '../../services/memory'
+import { countUnreviewedMemories } from '@mymind/core/services/memory'
 
 export default defineEventHandler(async () => {
   const unreviewed = await countUnreviewedMemories()

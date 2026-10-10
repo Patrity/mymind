@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rrfFuse } from '../server/lib/ai/rrf'
+import { rrfFuse } from '@mymind/core/lib/ai/rrf'
 
 describe('rrfFuse (used by session/message search)', () => {
   it('ranks an item appearing high in both lanes above single-lane items', () => {

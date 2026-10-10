@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { nanoid } from 'nanoid'
-import { createDoc } from '../../services/documents'
-import { publishChange } from '../../utils/live-bus'
-import { triageCapture } from '../../services/triage'
+import { createDoc } from '@mymind/core/services/documents'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import { triageCapture } from '@mymind/core/services/triage'
 
 const Body = z.object({
   text: z.string().min(1, 'text is required'),

@@ -1,4 +1,4 @@
-import { listDocs } from '../../services/documents'
+import { listDocs } from '@mymind/core/services/documents'
 
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)

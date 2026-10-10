@@ -3,7 +3,7 @@
 // "older than the newest turn seen" or "a turn we closed ourselves" (Stop / barge-in).
 // Pure (no Vue, no WebSocket) so the ordering rules are unit-testable.
 import { readUIMessageStream } from 'ai'
-import type { AgentMessageFrame, AgentUIChunk, AgentUIMessage, AgentUIPart } from '~~/shared/types/agent-ui'
+import type { AgentMessageFrame, AgentUIChunk, AgentUIMessage, AgentUIPart } from '@mymind/core/shared/types/agent-ui'
 
 type CloseMeta = { interrupted?: true; errorText?: string }
 

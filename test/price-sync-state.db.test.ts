@@ -6,7 +6,7 @@ import { sql } from 'drizzle-orm'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
+const { useDb } = await import('@mymind/core/db')
 const { readSyncState, writeSyncState, recentModelsSince, SYNC_STATE_KEY }
   = await import('../server/lib/analytics/price-sync-state')
 const { decideSync } = await import('../server/lib/analytics/prices')

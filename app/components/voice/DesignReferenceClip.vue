@@ -1,6 +1,6 @@
 <!-- app/components/voice/DesignReferenceClip.vue -->
 <script setup lang="ts">
-import type { VoicePresetDTO } from '~~/shared/types/voice-presets'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 import {
   attachedReference,
   noReference,

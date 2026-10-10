@@ -1,7 +1,7 @@
 import { $fetch as ofetch } from 'ofetch'
 import { useQuery } from '@tanstack/vue-query'
 import { computed, toValue, type MaybeRefOrGetter } from 'vue'
-import type { ProjectDTO } from '~~/shared/types/tasks'
+import type { ProjectDTO } from '@mymind/core/shared/types/tasks'
 
 export function useProjects() {
   const list = (activeOnly = false) =>

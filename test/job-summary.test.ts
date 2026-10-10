@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { jobDidWork } from '../server/lib/observability/job-summary'
+import { jobDidWork } from '@mymind/core/lib/observability/job-summary'
 
 describe('jobDidWork', () => {
   it('false for an all-zero embed result (a no-op tick)', () => {

@@ -13,11 +13,11 @@
 // instead of the timing-merged value cycle 68 added, or dropping the call to
 // buildTurnPersistPayload altogether.
 import { describe, it, expect } from 'vitest'
-import { handleTurn } from '../server/lib/voice/orchestrator'
-import type { VoiceEvent } from '../server/lib/voice/orchestrator'
-import type { AgentEvent } from '../server/lib/agent/run'
-import { buildTurnPersistPayload, type TurnPersistContext } from '../server/lib/voice/turn-persist'
-import type { VoicePresetDTO } from '../shared/types/voice-presets'
+import { handleTurn } from '@mymind/core/lib/voice/orchestrator'
+import type { VoiceEvent } from '@mymind/core/lib/voice/orchestrator'
+import type { AgentEvent } from '@mymind/core/lib/agent/run'
+import { buildTurnPersistPayload, type TurnPersistContext } from '@mymind/core/lib/voice/turn-persist'
+import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
 
 const preset: VoicePresetDTO = {
   id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,

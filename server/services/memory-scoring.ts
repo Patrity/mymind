@@ -30,14 +30,14 @@
 // write is a no-op. Both may still spend one call; only a claim column would prevent that.
 
 import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { memories } from '../db/schema'
-import { askJev, nouls, jevConfig, JevHttpError, type JevConfig } from '../lib/ai/jev'
-import { isRequestRejectionStatus, type chatWithModel } from '../lib/ai/chat'
-import { JEV_QUESTIONS, jevKeepScore, type JevAnswers } from '../lib/memory/jev-score'
-import { AUDIT_PROMPT_VERSION, auditMemory } from '../lib/memory/extract-v3'
+import { useDb } from '@mymind/core/db'
+import { memories } from '@mymind/core/db/schema'
+import { askJev, nouls, jevConfig, JevHttpError, type JevConfig } from '@mymind/core/lib/ai/jev'
+import { isRequestRejectionStatus, type chatWithModel } from '@mymind/core/lib/ai/chat'
+import { JEV_QUESTIONS, jevKeepScore, type JevAnswers } from '@mymind/core/lib/memory/jev-score'
+import { AUDIT_PROMPT_VERSION, auditMemory } from '@mymind/core/lib/memory/extract-v3'
 import { reviewGateDecision, type GateDecision } from '../lib/memory/review-gate'
-import { publishChange } from '../utils/live-bus'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 /** 8 has hit 429s before on the Jev API; stay under it. */
 export const JEV_CONCURRENCY = 6

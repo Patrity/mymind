@@ -1,6 +1,6 @@
 // test/agent-steer.test.ts
 import { describe, it, expect } from 'vitest'
-import { spliceSteers } from '../server/lib/agent/runtime/steer'
+import { spliceSteers } from '@mymind/core/lib/agent/runtime/steer'
 
 describe('spliceSteers', () => {
   it('inserts each steer at the position it arrived, and keeps it there on later steps', () => {

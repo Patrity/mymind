@@ -10,11 +10,11 @@ vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string })
 vi.stubGlobal('readBody', async (e: { body?: unknown }) => e.body)
 
 const rederiveDefaultTimezone = vi.fn(async () => 2)
-vi.mock('../server/lib/agent/jobs/store', () => ({ rederiveDefaultTimezone }))
+vi.mock('@mymind/core/lib/agent/jobs/store', () => ({ rederiveDefaultTimezone }))
 
 let stored: string | null = null
 const setAgentTimezoneSetting = vi.fn(async (tz: string | null) => { stored = tz })
-vi.mock('../server/lib/agent/jobs/timezone', () => ({
+vi.mock('@mymind/core/lib/agent/jobs/timezone', () => ({
   getAgentTimezoneSetting: async () => stored,
   getDefaultTimezone: async () => stored ?? 'Etc/UTC',
   serverTimezone: () => 'Etc/UTC',

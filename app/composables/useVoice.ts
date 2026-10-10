@@ -5,8 +5,8 @@ import { framesOnOpen } from '../lib/voice/reconnect'
 import { createClientTurns } from '../lib/agent/turn-stream'
 import { epochDividers } from '../lib/agent/dividers'
 import { addApproval, removeApproval, type PendingApprovals } from '../lib/agent/approvals'
-import type { AttachmentRef } from '~~/shared/types/conversation'
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AttachmentRef } from '@mymind/core/shared/types/conversation'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 export type VoiceState = 'connecting' | 'idle' | 'listening' | 'thinking' | 'speaking' | 'tool' | 'typing'
 

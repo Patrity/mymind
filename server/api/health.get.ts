@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { useDb } from '../db'
+import { useDb } from '@mymind/core/db'
 
 // Liveness + DB-readiness probe for the CD health check. Public (see PUBLIC_PREFIXES in
 // middleware/auth.ts) and DB-touching ON PURPOSE: a plain /login returns 200 via SSR even when

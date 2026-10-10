@@ -1,8 +1,8 @@
 import { eq, and, isNull } from 'drizzle-orm'
-import { useDb } from '../db'
-import { apiTokens } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { apiTokens } from '@mymind/core/db/schema'
 import { hashToken } from '../utils/api-token'
-import { isOauthTokenLive, mcpAuthChallengeHeader, oauthOrigin } from '../utils/oauth-metadata'
+import { isOauthTokenLive, mcpAuthChallengeHeader, oauthOrigin } from '@mymind/core/utils/oauth-metadata'
 
 // `/api/public/**` is the deliberate home for unauthenticated, read-only, curated endpoints
 // (today: /api/public/rig for techhivelabs.net). Anything under it is internet-visible by design.

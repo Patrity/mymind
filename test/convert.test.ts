@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import sharp from 'sharp'
-import { processUpload } from '../server/lib/images/convert'
+import { processUpload } from '@mymind/core/lib/images/convert'
 
 describe('processUpload', () => {
   it('converts a raster PNG to webp and reports dims', async () => {

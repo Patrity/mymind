@@ -1,6 +1,6 @@
 // server/api/agent/undo.post.ts
 import { z } from 'zod'
-import { runUndo } from '../../lib/agent/undo'
+import { runUndo } from '@mymind/core/lib/agent/undo'
 
 const Body = z.object({ token: z.string().min(1) })
 

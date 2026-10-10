@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { dispatchLiveEvent, GRAPH_DEBOUNCE_MS, HOME_DEBOUNCE_MS, REVIEW_DEBOUNCE_MS } from '../app/utils/live-dispatch'
-import type { LiveEvent } from '../shared/types/live'
+import type { LiveEvent } from '@mymind/core/shared/types/live'
 
 function fakeClient() {
   const calls: unknown[][] = []

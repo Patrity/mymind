@@ -40,8 +40,8 @@ const { triageGate } = vi.hoisted(() => ({ triageGate: { real: false } }))
 // The duplicate guard's nearest-document lookup. Default: nothing similar (null), so every other
 // test files its capture; the duplicate tests set it per test.
 const { nearestGate } = vi.hoisted(() => ({ nearestGate: { value: null as null | { id: string, path: string, similarity: number } } }))
-vi.mock('../server/services/triage', async (orig) => {
-  const actual = await orig<typeof import('../server/services/triage')>()
+vi.mock('@mymind/core/services/triage', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/services/triage')>()
   return {
     ...actual,
     nearestDocument: vi.fn(async () => nearestGate.value),
@@ -55,21 +55,21 @@ vi.mock('../server/services/triage', async (orig) => {
 // Stub the model — this file is about doc-candidate filing and the mirror guard, not
 // classification quality. Default stub never auto-applies anything; the mirror-guard test
 // overrides it once via mockResolvedValueOnce to force an 'append' proposal.
-vi.mock('../server/lib/ai/triage', async (orig) => ({
-  ...(await orig<typeof import('../server/lib/ai/triage')>()),
+vi.mock('@mymind/core/lib/ai/triage', async (orig) => ({
+  ...(await orig<typeof import('@mymind/core/lib/ai/triage')>()),
   classify: vi.fn(async () => ({
     primary: { kind: 'task' as const, confidence: 0.1, title: 'Stub' }, secondary: [], reasoning: 'stub'
   }))
 }))
 
 const { fileDocCandidate, sessionWroteDocs, isDocWriteToolCall, DOC_CANDIDATE_DUP_FLOOR } = await import('../server/services/memory-doc-candidates')
-const { isRepoMirrorPath } = await import('../server/lib/documents/mirror')
-const { triageCapture } = await import('../server/services/triage')
-const { classify } = await import('../server/lib/ai/triage')
+const { isRepoMirrorPath } = await import('@mymind/core/lib/documents/mirror')
+const { triageCapture } = await import('@mymind/core/services/triage')
+const { classify } = await import('@mymind/core/lib/ai/triage')
 
-import { createDoc, getDoc, deleteDoc } from '../server/services/documents'
-import { useDb } from '../server/db'
-import { chunks, toolEvents } from '../server/db/schema'
+import { createDoc, getDoc, deleteDoc } from '@mymind/core/services/documents'
+import { useDb } from '@mymind/core/db'
+import { chunks, toolEvents } from '@mymind/core/db/schema'
 import { eq, inArray } from 'drizzle-orm'
 
 const tag = () => Math.random().toString(36).slice(2, 10)
@@ -255,7 +255,7 @@ describe('doc-candidate duplicate guards (2026-10-02)', () => {
     const t = tag()
     nearestGate.value = { id: 'd1', path: '/projects/mymind/handovers/x.md', similarity: DOC_CANDIDATE_DUP_FLOOR }
     const r = await fileDocCandidate({ text: `restated handover (${t})`, project: 'mymind', targetDocHint: `dup ${t}` }, { sessionId: `s-${t}` })
-    const { documents } = await import('../server/db/schema')
+    const { documents } = await import('@mymind/core/db/schema')
     const { like } = await import('drizzle-orm')
     const rows = await useDb().select({ id: documents.id }).from(documents).where(like(documents.content, `%restated handover (${t})%`))
     // Clean up before asserting: a regression files a real capture into the shared dev DB.
@@ -318,7 +318,7 @@ describe('queued append — target picked at queue time, shown in the review fee
       primary: { kind: 'append' as const, confidence: 0.5, content: `a related fact (${t})` }, secondary: [], reasoning: 'stub append'
     })
     const capture = await createDoc({ path: `/input/queued-append-${t}.md`, title: `Capture ${t}`, content: `a related fact (${t})` })
-    const { reviewQueue } = await import('../server/db/schema')
+    const { reviewQueue } = await import('@mymind/core/db/schema')
     try {
       const out = await triageCapture(capture.id)
       expect(out.queued).toBe(true)
@@ -326,7 +326,7 @@ describe('queued append — target picked at queue time, shown in the review fee
       const queued = (row!.proposed as { queued: { kind: string, targetDocId?: string }[] }).queued
       expect(queued[0]).toMatchObject({ kind: 'append', targetDocId: target.id })
 
-      const { listReviewFeed } = await import('../server/services/review')
+      const { listReviewFeed } = await import('@mymind/core/services/review')
       const item = (await listReviewFeed()).find(i => i.id === row!.id)!
       const p = item.proposed as { source: { title: string, content: string }, queued: { target?: { id: string, path: string, title: string } }[] }
       expect(p.source).toMatchObject({ title: `Capture ${t}`, content: `a related fact (${t})` })

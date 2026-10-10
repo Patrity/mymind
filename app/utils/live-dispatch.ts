@@ -1,6 +1,6 @@
 import { useDebounceFn } from '@vueuse/core'
 import type { QueryClient } from '@tanstack/vue-query'
-import type { LiveEvent, ResourceName } from '../../shared/types/live'
+import type { LiveEvent, ResourceName } from '@mymind/core/shared/types/live'
 
 // Minimal surface we use — keeps the function unit-testable with a fake client.
 type Invalidator = Pick<QueryClient, 'invalidateQueries'>

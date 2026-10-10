@@ -1,5 +1,5 @@
-import { loadChannelsConfig, resendReady } from '../../lib/channels/config'
-import { lastHealth } from '../../lib/channels/inbound'
+import { loadChannelsConfig, resendReady } from '@mymind/core/lib/channels/config'
+import { lastHealth } from '@mymind/core/lib/channels/inbound'
 import { requireSession } from '../../utils/auth-guard'
 
 // GET /api/channels/status — the Settings → Channels nav dot (cycle 75). iMessage health is the

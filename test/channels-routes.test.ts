@@ -18,8 +18,8 @@ const cfg = {
 const mocks = vi.hoisted(() => ({
   load: vi.fn(), save: vi.fn(), rotate: vi.fn(), dto: vi.fn(), markActive: vi.fn(), resetHealth: vi.fn()
 }))
-vi.mock('../server/lib/channels/config', async (orig) => {
-  const actual = await orig<typeof import('../server/lib/channels/config')>()
+vi.mock('@mymind/core/lib/channels/config', async (orig) => {
+  const actual = await orig<typeof import('@mymind/core/lib/channels/config')>()
   return {
     ...actual,
     loadChannelsConfig: mocks.load,
@@ -29,8 +29,8 @@ vi.mock('../server/lib/channels/config', async (orig) => {
     channelsConfigDTO: mocks.dto
   }
 })
-vi.mock('../server/lib/channels/presence', () => ({ markActive: mocks.markActive }))
-vi.mock('../server/lib/channels/inbound', () => ({ resetHealth: mocks.resetHealth }))
+vi.mock('@mymind/core/lib/channels/presence', () => ({ markActive: mocks.markActive }))
+vi.mock('@mymind/core/lib/channels/inbound', () => ({ resetHealth: mocks.resetHealth }))
 
 type H = (e: unknown) => Promise<unknown> | unknown
 const get = (await import('../server/api/settings/channels.get')).default as H

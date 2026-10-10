@@ -1,7 +1,7 @@
 // app/lib/channels/delivery-badge.ts
 // How a channel delivery (an assistant reply sent on to iMessage or email) is badged under its
 // bubble in /agent. Pure, so the status → badge mapping is unit-tested (test/delivery-badge.test.ts).
-import type { MessageDeliveryDTO } from '~~/shared/types/conversation'
+import type { MessageDeliveryDTO } from '@mymind/core/shared/types/conversation'
 
 export interface DeliveryBadge {
   icon: string

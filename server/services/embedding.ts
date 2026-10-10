@@ -1,8 +1,8 @@
 import { and, isNull, sql, eq } from 'drizzle-orm'
-import { useDb } from '../db'
-import { documents } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { documents } from '@mymind/core/db/schema'
 import { chunkAndEmbedSource } from '../lib/chunking/embed-source'
-import { publishChange } from '../utils/live-bus'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 export async function runEmbedding({ limit = 200 } = {}): Promise<{ embedded: number, failed: number, remaining: number }> {
   const db = useDb()

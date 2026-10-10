@@ -1,7 +1,7 @@
 // server/lib/analytics/litellm.ts
 // LiteLLM admin-API client for the request log. The master key is decrypted
 // here and only ever placed in the outbound Authorization header.
-import { decryptSecret } from '../ai/registry/crypto'
+import { decryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import type { AnalyticsConfig } from './types'
 import type { RequestLogResponse, RequestLogRow } from '../../../shared/types/analytics'
 

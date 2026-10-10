@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { setSkillsEnabled } from '../../lib/agent/skills-config'
+import { setSkillsEnabled } from '@mymind/core/lib/agent/skills-config'
 
 const Body = z.object({ enabled: z.boolean() })
 

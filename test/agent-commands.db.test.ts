@@ -5,10 +5,10 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
+import { useDb } from '@mymind/core/db'
 import { listCommands } from '../server/services/commands'
 import { createPromptCommand } from '../server/services/prompt-commands'
-import { createSkill, deleteSkill, getSkill } from '../server/services/skills'
+import { createSkill, deleteSkill, getSkill } from '@mymind/core/services/skills'
 
 // Own the active skill these tests look for, rather than depend on the shared dev DB holding
 // real ones (cycle 74 moved skills into agent_skills; a fresh DB has none until the boot move).

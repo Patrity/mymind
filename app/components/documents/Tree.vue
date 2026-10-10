@@ -3,9 +3,9 @@ import { useSortable, insertNodeAt, removeNode } from '@vueuse/integrations/useS
 import { createReusableTemplate } from '@vueuse/core'
 import type Sortable from 'sortablejs'
 import type { ComponentPublicInstance } from 'vue'
-import type { TreeNode } from '~~/server/services/tree'
+import type { TreeNode } from '@mymind/core/services/tree'
 import type { ContextMenuItem } from '@nuxt/ui'
-import type { FolderColorSource } from '~~/shared/types/folders'
+import type { FolderColorSource } from '@mymind/core/shared/types/folders'
 import { collectFolderPaths, dirnameOf } from '~/lib/documents/folder-list'
 import {
   canDropInto,

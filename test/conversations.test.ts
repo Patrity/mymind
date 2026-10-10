@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveTitle } from '../server/services/conversations'
+import { deriveTitle } from '@mymind/core/services/conversations'
 
 describe('deriveTitle', () => {
   it('trims + collapses whitespace and caps length', () => {

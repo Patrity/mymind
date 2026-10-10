@@ -5,7 +5,7 @@
 // dedicated NotFoundError class), so existence is checked up front on the update path to give
 // "missing -> 404" a real signal instead of falling into the generic 400 branch.
 import { z } from 'zod'
-import { getSkillSource, saveSkillSource } from '../../../services/skills'
+import { getSkillSource, saveSkillSource } from '@mymind/core/services/skills'
 import { requireSkillName, throwAgentConfigWriteError } from '../../../utils/agent-config-http'
 
 const Body = z.object({ content: z.string(), expectedHash: z.string().nullable() })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { DISAGREE_THRESHOLD } from '~~/shared/types/memory'
+import { DISAGREE_THRESHOLD } from '@mymind/core/shared/types/memory'
 import {
   scoreColor, jevTooltip, auditTooltip, disagreement, isDisagreement,
   VERDICT_LABELS, verdictColor

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { pruneCutoffs } from '../server/services/activity'
-import { DEFAULT_CONFIG } from '../server/lib/observability/types'
+import { DEFAULT_CONFIG } from '@mymind/core/lib/observability/types'
 
 describe('pruneCutoffs', () => {
   it('computes info + error cutoffs from now and retention days', () => {

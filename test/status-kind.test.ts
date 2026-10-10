@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { kindForStatus, statusForKind } from '../server/lib/tasks/status-kind'
+import { kindForStatus, statusForKind } from '@mymind/core/lib/tasks/status-kind'
 
 describe('status <-> kind', () => {
   it('maps every status to its kind', () => {

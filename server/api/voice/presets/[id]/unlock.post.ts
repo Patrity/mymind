@@ -4,7 +4,7 @@
 // Only ever clears a reference this app RENDERED (`refSource: 'locked'`). A clip the user
 // uploaded or recorded is theirs — losing it to a misplaced click would mean re-recording,
 // and there is no undo here.
-import { getPreset, updatePreset } from '../../../../services/voice-presets'
+import { getPreset, updatePreset } from '@mymind/core/services/voice-presets'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

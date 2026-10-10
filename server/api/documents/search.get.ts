@@ -1,4 +1,4 @@
-import { searchDocs } from '../../services/documents'
+import { searchDocs } from '@mymind/core/services/documents'
 export default defineEventHandler(async (event) => {
   const q = getQuery(event).q
   if (typeof q !== 'string' || !q.trim()) return []

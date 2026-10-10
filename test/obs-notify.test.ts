@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { shouldNotify, buildDigest } from '../server/lib/observability/notify'
-import { DEFAULT_CONFIG } from '../server/lib/observability/types'
-import type { ActivityInsert } from '../server/db/schema/activity-log'
+import { shouldNotify, buildDigest } from '@mymind/core/lib/observability/notify'
+import { DEFAULT_CONFIG } from '@mymind/core/lib/observability/types'
+import type { ActivityInsert } from '@mymind/core/db/schema/activity-log'
 
 const cfg = (over: Partial<typeof DEFAULT_CONFIG.alerts.email>) => ({
   ...DEFAULT_CONFIG,

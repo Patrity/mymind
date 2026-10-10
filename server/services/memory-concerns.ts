@@ -1,7 +1,7 @@
 import { and, eq, gte, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { memories, memoryRelations } from '../db/schema'
-import { enqueueReview } from './review'
+import { useDb } from '@mymind/core/db'
+import { memories, memoryRelations } from '@mymind/core/db/schema'
+import { enqueueReview } from '@mymind/core/services/review'
 
 export interface SweepOptions {
   /** How many retrievals before a global memory is worth pinning into every prompt. */

@@ -7,16 +7,16 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { conversations, conversationMessages, agentRuns, agentInbox } from '../server/db/schema'
-import { enqueue, pumpOnce, abortActive, workerTick, checkStillRunning } from '../server/lib/agent/runtime/queue'
-import { recoverOnBoot } from '../server/lib/agent/runtime/recover'
-import { claimNextRun, createRun, BOOT_ID } from '../server/lib/agent/runtime/runs'
-import { resolveSession } from '../server/lib/agent/runtime/sessions'
-import { pushSteer, requeueUnconsumed } from '../server/lib/agent/runtime/inbox'
-import { registerAbort, releaseAbort } from '../server/lib/agent/runtime/aborts'
+import { conversations, conversationMessages, agentRuns, agentInbox } from '@mymind/core/db/schema'
+import { enqueue, pumpOnce, abortActive, workerTick, checkStillRunning } from '@mymind/core/lib/agent/runtime/queue'
+import { recoverOnBoot } from '@mymind/core/lib/agent/runtime/recover'
+import { claimNextRun, createRun, BOOT_ID } from '@mymind/core/lib/agent/runtime/runs'
+import { resolveSession } from '@mymind/core/lib/agent/runtime/sessions'
+import { pushSteer, requeueUnconsumed } from '@mymind/core/lib/agent/runtime/inbox'
+import { registerAbort, releaseAbort } from '@mymind/core/lib/agent/runtime/aborts'
 import { eq, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import type { AgentRun } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import type { AgentRun } from '@mymind/core/db/schema'
 
 // The real headless slot cap (1) is a global counter over the WHOLE shared dev DB, not scoped
 // by onlyConversations — other real processes' headless runs count against it. Tests that

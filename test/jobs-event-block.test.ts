@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: 'postgres://unused' }))
 
-const { eventBlock } = await import('../server/lib/agent/jobs/events')
+const { eventBlock } = await import('@mymind/core/lib/agent/jobs/events')
 
 describe('eventBlock', () => {
   it('M2: a summary that already ends a sentence gets no second full stop', () => {

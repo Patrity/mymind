@@ -10,7 +10,7 @@
 // Core config (databaseUrl) for a bare tsx process: see scripts/lib/core-init.ts. Must stay the
 // FIRST import so it runs before any server module.
 import './lib/core-init'
-import { createSkill, updateSkill, getSkill, type SkillInput } from '../server/services/skills'
+import { createSkill, updateSkill, getSkill, type SkillInput } from '@mymind/core/services/skills'
 
 const SEEDS: SkillInput[] = [
   {

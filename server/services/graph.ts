@@ -1,6 +1,6 @@
 import { and, eq, isNull, isNotNull, ne, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { graphLayout, memories, documents, images, sessions, projects, chunks, memoryRelations } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { graphLayout, memories, documents, images, sessions, projects, chunks, memoryRelations } from '@mymind/core/db/schema'
 import { meanPool } from '../lib/galaxy/layout'
 import type { GraphData, GraphEdge, GraphNode, GraphNodeType, GraphNeighbor } from '../../shared/types/graph'
 

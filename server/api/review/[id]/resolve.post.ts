@@ -1,5 +1,5 @@
-import { decideReview } from '../../../services/review-decisions'
-import { isConflictResolution } from '../../../lib/review/conflict-resolution'
+import { decideReview } from '@mymind/core/services/review-decisions'
+import { isConflictResolution } from '@mymind/core/lib/review/conflict-resolution'
 
 /**
  * Resolve a memory conflict one of four ways — see ConflictResolution. The resolution itself is

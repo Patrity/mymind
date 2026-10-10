@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-const { useDb } = await import('../server/db')
+const { useDb } = await import('@mymind/core/db')
 const { getSessionMessagesPage, getSessionMessages } = await import('../server/services/sessions')
 
 // hex-only (not base36): this tag is spliced into a UUID literal, which requires strict

@@ -1,4 +1,4 @@
-import { loadSearchConfig } from '../../lib/search/store'
+import { loadSearchConfig } from '@mymind/core/lib/search/store'
 
 export default defineEventHandler(async () => {
   const c = await loadSearchConfig()

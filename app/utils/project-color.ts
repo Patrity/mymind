@@ -1,6 +1,6 @@
 // The palette lives in shared/ because folders inherit project colours and both pickers
 // must offer the same values. Re-exported here so existing importers keep working.
-import { FOLDER_PALETTE } from '~~/shared/types/folders'
+import { FOLDER_PALETTE } from '@mymind/core/shared/types/folders'
 
 export const PROJECT_PALETTE = FOLDER_PALETTE
 

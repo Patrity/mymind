@@ -8,10 +8,10 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 
 import { randomUUID } from 'node:crypto'
 import { and, eq, inArray } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentProfile, agentSignals, agentConfigRevisions, settings, type SettingRow } from '../server/db/schema'
-import { recordRevision, listRevisions } from '../server/lib/agent/config/revisions'
-import { getSelfImprovementMode, setSelfImprovementMode, SELF_IMPROVEMENT_MODE_KEY } from '../server/lib/agent/self-improvement-mode'
+import { useDb } from '@mymind/core/db'
+import { agentProfile, agentSignals, agentConfigRevisions, settings, type SettingRow } from '@mymind/core/db/schema'
+import { recordRevision, listRevisions } from '@mymind/core/lib/agent/config/revisions'
+import { getSelfImprovementMode, setSelfImprovementMode, SELF_IMPROVEMENT_MODE_KEY } from '@mymind/core/lib/agent/self-improvement-mode'
 
 const profileIds: string[] = []
 const signalIds: string[] = []

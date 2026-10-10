@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { siblingTarget, precedingUserMessage, restorableLeafId } from './branching'
 import { toUIMessages, type ResumeMessage } from './to-ui-messages'
-import type { AgentUIMessage } from '~~/shared/types/agent-ui'
+import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 
 // A three-way branch as the SERVER hands it over: siblingIds in creation order, 1-based index,
 // and the invariant msgToDTO guarantees — siblingIds[index - 1] === id.

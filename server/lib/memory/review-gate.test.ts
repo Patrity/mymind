@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { reviewGateDecision, type GateRow } from './review-gate'
-import { AUDIT_PROMPT_VERSION } from './extract-v3'
+import { AUDIT_PROMPT_VERSION } from '@mymind/core/lib/memory/extract-v3'
 
 const OPTS = { jevConfigured: true, maxFailures: 3 }
 const pending: GateRow = { jevScoredAt: null, jevAnswers: null, jevFailures: 0, auditPromptVersion: null, auditVerdict: null, auditFailures: 0 }

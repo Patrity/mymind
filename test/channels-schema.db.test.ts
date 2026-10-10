@@ -13,9 +13,9 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentRuns, channelDeliveries, conversations } from '../server/db/schema'
-import { createRun } from '../server/lib/agent/runtime/runs'
+import { useDb } from '@mymind/core/db'
+import { agentRuns, channelDeliveries, conversations } from '@mymind/core/db/schema'
+import { createRun } from '@mymind/core/lib/agent/runtime/runs'
 
 const convIds: string[] = []
 const runIds: string[] = []

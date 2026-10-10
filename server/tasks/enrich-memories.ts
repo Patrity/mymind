@@ -1,5 +1,5 @@
 import { runMemoryEnrichment, enrichConversations } from '../services/memory-enrich'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
 
 export default defineTask({
   meta: { name: 'enrich-memories', description: 'Extract durable memories from sessions and conversations via LLM and store them' },

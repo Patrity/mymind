@@ -6,7 +6,7 @@
      buttons come from reviewChoices, the registry Bridget's decide_review tool also uses. -->
 <script setup lang="ts">
 import { lineDiff, type DiffLine } from '~/lib/config/line-diff'
-import { reviewChoices } from '~~/shared/review/choices'
+import { reviewChoices } from '@mymind/core/shared/review/choices'
 
 interface Proposal { kind: string, target: string, content?: string, reason: string, confidence: number, evidence: string[] }
 

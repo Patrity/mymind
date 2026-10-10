@@ -12,22 +12,22 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 vi.stubGlobal('createError', (o: { statusCode: number, message?: string }) => Object.assign(new Error(o.message ?? 'err'), o))
 
 import { and, eq, inArray, like, notInArray, or, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
+import { useDb } from '@mymind/core/db'
 import {
   agentConfigRevisions, agentImprovements, agentJobs, agentProfile, agentSignals, agentSkills, conversationMessages,
   conversations, reviewQueue, settings, type AgentProfileRow
-} from '../server/db/schema'
-import { createConversation } from '../server/services/conversations'
-import { getSkillSource, saveSkillSource } from '../server/services/skills'
-import { getProfileSource, saveProfileSource } from '../server/services/profile'
+} from '@mymind/core/db/schema'
+import { createConversation } from '@mymind/core/services/conversations'
+import { getSkillSource, saveSkillSource } from '@mymind/core/services/skills'
+import { getProfileSource, saveProfileSource } from '@mymind/core/services/profile'
 import { approveHandlers } from '../server/api/review/kinds'
-import { createJob } from '../server/lib/agent/jobs/store'
-import { SELF_IMPROVEMENT_MODE_KEY, setSelfImprovementMode } from '../server/lib/agent/self-improvement-mode'
-import { SIGNALS_STARTED_AT_KEY } from '../server/lib/agent/signals/write'
-import { runThreadPass } from '../server/lib/agent/reflect/thread-pass'
-import { runJobsPass } from '../server/lib/agent/reflect/jobs-pass'
-import type { JevVerdict } from '../server/lib/agent/reflect/jev'
-import type { ChatMessage } from '../server/lib/ai/chat'
+import { createJob } from '@mymind/core/lib/agent/jobs/store'
+import { SELF_IMPROVEMENT_MODE_KEY, setSelfImprovementMode } from '@mymind/core/lib/agent/self-improvement-mode'
+import { SIGNALS_STARTED_AT_KEY } from '@mymind/core/lib/agent/signals/write'
+import { runThreadPass } from '@mymind/core/lib/agent/reflect/thread-pass'
+import { runJobsPass } from '@mymind/core/lib/agent/reflect/jobs-pass'
+import type { JevVerdict } from '@mymind/core/lib/agent/reflect/jev'
+import type { ChatMessage } from '@mymind/core/lib/ai/chat'
 
 const db = () => useDb()
 const TAG = `simp-${Date.now().toString(36)}-`

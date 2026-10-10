@@ -5,8 +5,8 @@
 //
 // Run: node --import tsx --env-file=.env scripts/migrate-ai-config-litellm.ts
 import { Client } from 'pg'
-import { encryptSecret } from '../server/lib/ai/registry/crypto'
-import { parseConfig } from '../server/lib/ai/registry/schema'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
+import { parseConfig } from '@mymind/core/lib/ai/registry/schema'
 
 const LITELLM_BASE_URL = 'https://lite.costanzoclan.com/v1'
 const LITELLM_API_KEY = process.env.LITELLM_API_KEY

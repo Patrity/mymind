@@ -1,18 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock the heavy deps the handler calls.
-vi.mock('../server/lib/imagegen/comfy', () => ({ generateImage: vi.fn() }))
-vi.mock('../server/services/images', () => ({
+vi.mock('@mymind/core/lib/imagegen/comfy', () => ({ generateImage: vi.fn() }))
+vi.mock('@mymind/core/services/images', () => ({
   createGeneratedImage: vi.fn(),
   deleteImage: vi.fn(),
   serveUrl: (row: { id: string }) => `/api/images/${row.id}/raw`
 }))
-vi.mock('../server/utils/live-bus', () => ({ publishChange: vi.fn() }))
+vi.mock('@mymind/core/utils/live-bus', () => ({ publishChange: vi.fn() }))
 
-import { agentTools } from '../server/lib/agent/tools'
-import { generateImage } from '../server/lib/imagegen/comfy'
-import { createGeneratedImage, deleteImage } from '../server/services/images'
-import { publishChange } from '../server/utils/live-bus'
+import { agentTools } from '@mymind/core/lib/agent/tools'
+import { generateImage } from '@mymind/core/lib/imagegen/comfy'
+import { createGeneratedImage, deleteImage } from '@mymind/core/services/images'
+import { publishChange } from '@mymind/core/utils/live-bus'
 
 const tool = agentTools.find(t => t.name === 'generate_image')!
 const ctx = { signal: new AbortController().signal }

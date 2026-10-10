@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { projectFromPath, rewriteProjectPathPrefix, PROJECTS_ROOT } from '../server/lib/projects/doc-path'
+import { projectFromPath, rewriteProjectPathPrefix, PROJECTS_ROOT } from '@mymind/core/lib/projects/doc-path'
 
 describe('PROJECTS_ROOT', () => {
   it('equals /projects', () => {

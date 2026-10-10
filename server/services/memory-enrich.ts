@@ -1,12 +1,12 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { sessions, messages, memEnrichmentState, toolEvents, projects, conversations, conversationMessages } from '../db/schema'
-import { extractV3, EXTRACT_PROMPT_VERSION, type DocCandidate, type ExtractV3Result } from '../lib/memory/extract-v3'
+import { useDb } from '@mymind/core/db'
+import { sessions, messages, memEnrichmentState, toolEvents, projects, conversations, conversationMessages } from '@mymind/core/db/schema'
+import { extractV3, EXTRACT_PROMPT_VERSION, type DocCandidate, type ExtractV3Result } from '@mymind/core/lib/memory/extract-v3'
 import { resolveEnrichedMemory } from './memory-resolve'
-import { createMemory } from './memory'
+import { createMemory } from '@mymind/core/services/memory'
 import { fileDocCandidate, sessionWroteDocs } from './memory-doc-candidates'
 import { projectIdForScope } from '../lib/projects/memory-project'
-import { publishChange } from '../utils/live-bus'
+import { publishChange } from '@mymind/core/utils/live-bus'
 import { scoreMemories } from './memory-scoring'
 
 export interface EnrichMemoryResult {

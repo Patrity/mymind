@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { moveFolder, setFolderColor } from '../../services/folders'
-import { FOLDER_PALETTE } from '../../../shared/types/folders'
-import { publishChange } from '../../utils/live-bus'
+import { moveFolder, setFolderColor } from '@mymind/core/services/folders'
+import { FOLDER_PALETTE } from '@mymind/core/shared/types/folders'
+import { publishChange } from '@mymind/core/utils/live-bus'
 import { folderOpError, requireFolderId, FOLDER_PATH_SCHEMA } from '../../utils/folder-http'
 
 const Body = z.object({

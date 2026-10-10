@@ -1,6 +1,6 @@
-import { archiveMemory, unarchiveMemory } from '../../../services/memory'
-import { publishChange } from '../../../utils/live-bus'
-import { registerUndo } from '../../../lib/agent/undo'
+import { archiveMemory, unarchiveMemory } from '@mymind/core/services/memory'
+import { publishChange } from '@mymind/core/utils/live-bus'
+import { registerUndo } from '@mymind/core/lib/agent/undo'
 
 // Archiving is the memory "delete" (getGraph filters on archivedAt, so the node
 // disappears live). We register an undo entry so the detail pane can offer

@@ -25,15 +25,15 @@ import { describe, it, expect, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { tasks, taskColumns, projects } from '../server/db/schema'
-import { defaultColumnFor } from '../server/services/task-columns'
-import { createTask, getTask } from '../server/services/tasks'
-import { agentTools } from '../server/lib/agent/tools'
-import { buildLiveContext } from '../server/lib/agent/context'
+import { useDb } from '@mymind/core/db'
+import { tasks, taskColumns, projects } from '@mymind/core/db/schema'
+import { defaultColumnFor } from '@mymind/core/services/task-columns'
+import { createTask, getTask } from '@mymind/core/services/tasks'
+import { agentTools } from '@mymind/core/lib/agent/tools'
+import { buildLiveContext } from '@mymind/core/lib/agent/context'
 import { getHome } from '../server/services/home'
-import type { ToolContext } from '../server/lib/agent/types'
-import type { TaskColumnKind } from '../shared/types/task-columns'
+import type { ToolContext } from '@mymind/core/lib/agent/types'
+import type { TaskColumnKind } from '@mymind/core/shared/types/task-columns'
 
 const ctx: ToolContext = { signal: new AbortController().signal }
 const tool = (n: string) => agentTools.find(t => t.name === n)!

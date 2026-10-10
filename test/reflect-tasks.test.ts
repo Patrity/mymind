@@ -18,11 +18,11 @@ const m = vi.hoisted(() => ({
 }))
 const dbState = vi.hoisted(() => ({ lastDateRow: null as { value: string } | null, inserted: [] as { key: string, value: string }[] }))
 
-vi.mock('../server/lib/agent/self-improvement-mode', () => ({ getSelfImprovementMode: m.mode }))
-vi.mock('../server/lib/agent/reflect/thread-pass', () => ({ runThreadPass: m.runThreadPass }))
-vi.mock('../server/lib/agent/reflect/jobs-pass', () => ({ runJobsPass: m.runJobsPass }))
-vi.mock('../server/lib/agent/jobs/timezone', () => ({ getDefaultTimezone: m.tz }))
-vi.mock('../server/db', () => ({
+vi.mock('@mymind/core/lib/agent/self-improvement-mode', () => ({ getSelfImprovementMode: m.mode }))
+vi.mock('@mymind/core/lib/agent/reflect/thread-pass', () => ({ runThreadPass: m.runThreadPass }))
+vi.mock('@mymind/core/lib/agent/reflect/jobs-pass', () => ({ runJobsPass: m.runJobsPass }))
+vi.mock('@mymind/core/lib/agent/jobs/timezone', () => ({ getDefaultTimezone: m.tz }))
+vi.mock('@mymind/core/db', () => ({
   useDb: () => ({
     select: () => ({ from: () => ({ where: () => ({ limit: async () => (dbState.lastDateRow ? [dbState.lastDateRow] : []) }) }) }),
     insert: () => ({

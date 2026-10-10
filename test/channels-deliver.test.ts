@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveDeliverChannels, extractImageIds } from '../server/lib/channels/deliver'
+import { resolveDeliverChannels, extractImageIds } from '@mymind/core/lib/channels/deliver'
 const on = { imessageEnabled: true, emailEnabled: true }
 describe('resolveDeliverChannels', () => {
   it('app alone delivers nowhere extra', () => expect(resolveDeliverChannels(['app'], { ...on, away: true })).toEqual([]))

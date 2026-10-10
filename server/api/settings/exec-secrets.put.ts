@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { setSecret } from '../../lib/exec/secrets'
+import { setSecret } from '@mymind/core/lib/exec/secrets'
 
 const Body = z.object({ name: z.string().min(1), value: z.string().min(1) })
 

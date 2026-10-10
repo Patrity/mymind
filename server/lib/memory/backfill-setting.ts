@@ -4,8 +4,8 @@
 // tolerant pattern: a missing or malformed stored value falls back to the default rather than
 // throwing.
 import { eq } from 'drizzle-orm'
-import { useDb } from '../../db'
-import { settings } from '../../db/schema'
+import { useDb } from '@mymind/core/db'
+import { settings } from '@mymind/core/db/schema'
 
 export const MEMORY_BACKFILL_KEY = 'memory_backfill'
 

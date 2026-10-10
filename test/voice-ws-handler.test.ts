@@ -22,23 +22,23 @@ const m = vi.hoisted(() => ({
   turnStreamFor: vi.fn((): unknown => undefined),
   order: [] as string[]
 }))
-vi.mock('../server/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue, abortActive: m.abortActive, abortActiveAndWait: m.abortActiveAndWait }))
-vi.mock('../server/lib/agent/runtime/aborts', () => ({ abortRun: m.abortRun }))
-vi.mock('../server/lib/agent/runtime/approvals', () => ({
+vi.mock('@mymind/core/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue, abortActive: m.abortActive, abortActiveAndWait: m.abortActiveAndWait }))
+vi.mock('@mymind/core/lib/agent/runtime/aborts', () => ({ abortRun: m.abortRun }))
+vi.mock('@mymind/core/lib/agent/runtime/approvals', () => ({
   registerApprovalChannel: m.registerApprovalChannel, unregisterApprovalChannel: m.unregisterApprovalChannel,
   hasApprovalChannel: m.hasApprovalChannel, turnStreamFor: m.turnStreamFor
 }))
-vi.mock('../server/lib/ai/registry/resolve', () => ({ withFailover: (_u: string, fn: (x: unknown) => unknown) => fn({}) }))
-vi.mock('../server/lib/voice/providers', () => ({ sttFromModel: () => ({ transcribe: m.transcribe }) }))
+vi.mock('@mymind/core/lib/ai/registry/resolve', () => ({ withFailover: (_u: string, fn: (x: unknown) => unknown) => fn({}) }))
+vi.mock('@mymind/core/lib/voice/providers', () => ({ sttFromModel: () => ({ transcribe: m.transcribe }) }))
 vi.mock('../server/services/conversation-clear', () => ({ clearConversationContext: m.clear }))
-vi.mock('../server/db', () => ({ useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ at: new Date(0) }] }) }) }) }) }))
-vi.mock('../server/lib/observability/record', () => ({ recordEvent: vi.fn() }))
-vi.mock('../server/lib/exec/approvals', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../server/lib/exec/approvals')>()), addApproval: m.addApproval
+vi.mock('@mymind/core/db', () => ({ useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ at: new Date(0) }] }) }) }) }) }))
+vi.mock('@mymind/core/lib/observability/record', () => ({ recordEvent: vi.fn() }))
+vi.mock('@mymind/core/lib/exec/approvals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mymind/core/lib/exec/approvals')>()), addApproval: m.addApproval
 }))
 
 import handler from '../server/api/voice/ws'
-import { hub } from '../server/lib/agent/runtime/stream'
+import { hub } from '@mymind/core/lib/agent/runtime/stream'
 
 type H = { open: (p: unknown) => void; message: (p: unknown, msg: unknown) => Promise<void>; close: (p: unknown) => void }
 const h = handler as unknown as H
@@ -183,7 +183,7 @@ describe('ws runtime socket', () => {
     void ch(req)
     const requestId = types(p).filter(f => f.type === 'approval').at(-1)!.requestId
     await h.message(p, frame({ type: 'approve', requestId }))
-    const { recordEvent } = await import('../server/lib/observability/record')
+    const { recordEvent } = await import('@mymind/core/lib/observability/record')
     const call = vi.mocked(recordEvent).mock.calls.find(c => (c[0] as { meta?: Record<string, unknown> }).meta?.outcome === 'approve')
     expect(call?.[0]).toMatchObject({ meta: { command: req.logSummary } })
     expect(JSON.stringify(call)).not.toContain('secret draft body')
@@ -204,7 +204,7 @@ describe('ws runtime socket', () => {
       const pending = ch(req)
       await vi.advanceTimersByTimeAsync(120_000)
       expect(await pending).toEqual({ approved: false })
-      const { recordEvent } = await import('../server/lib/observability/record')
+      const { recordEvent } = await import('@mymind/core/lib/observability/record')
       const call = vi.mocked(recordEvent).mock.calls.find(c => (c[0] as { meta?: Record<string, unknown> }).meta?.outcome === 'timeout')
       expect(call?.[0]).toMatchObject({ meta: { command: req.logSummary } })
       expect(JSON.stringify(call)).not.toContain('secret draft body')

@@ -14,12 +14,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
-import { useDb } from '../../db'
-import { voicePresets } from '../../db/schema'
+import { useDb } from '@mymind/core/db'
+import { voicePresets } from '@mymind/core/db/schema'
 import { like } from 'drizzle-orm'
-import { createPreset, deletePreset, getPreset, resolvePreset, updatePreset } from '../../services/voice-presets'
-import { applyOverrides, presetToRequest } from '../../lib/voice/speak'
-import { validateBreezeRequest } from '../../lib/voice/breeze'
+import { createPreset, deletePreset, getPreset, resolvePreset, updatePreset } from '@mymind/core/services/voice-presets'
+import { applyOverrides, presetToRequest } from '@mymind/core/lib/voice/speak'
+import { validateBreezeRequest } from '@mymind/core/lib/voice/breeze'
 
 /**
  * Everything POST /api/voice/speak does to a preset before it reaches the queue. The rig

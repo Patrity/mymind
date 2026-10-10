@@ -9,15 +9,15 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { and, eq, inArray, like, sql } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentSkills, agentConfigRevisions } from '../server/db/schema'
+import { useDb } from '@mymind/core/db'
+import { agentSkills, agentConfigRevisions } from '@mymind/core/db/schema'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, listSkills,
   getSkillSource, saveSkillSource, listSkillRevisions, revertSkill, restoreSkill, ConflictError
-} from '../server/services/skills'
-import { assembleContext } from '../server/lib/agent/assemble'
-import { splitFrontmatter } from '../shared/utils/frontmatter'
-import type { MemoryDTO } from '../shared/types/memory'
+} from '@mymind/core/services/skills'
+import { assembleContext } from '@mymind/core/lib/agent/assemble'
+import { splitFrontmatter } from '@mymind/core/shared/utils/frontmatter'
+import type { MemoryDTO } from '@mymind/core/shared/types/memory'
 
 const PREFIX = 'sktest-'
 const NAME = `${PREFIX}toggle`

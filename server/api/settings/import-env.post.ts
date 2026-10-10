@@ -2,10 +2,10 @@
 // One-time onboarding helper: seed the registry from leftover AI_* env vars.
 // Reads process.env directly (runtimeConfig.ai was removed in Plan 1), encrypts
 // keys server-side, saves, and returns the redacted doc — no plaintext to client.
-import { loadConfig, saveConfig, invalidate } from '../../lib/ai/registry/store'
-import { redactDoc } from '../../lib/ai/registry/schema'
-import { encryptSecret } from '../../lib/ai/registry/crypto'
-import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ProviderDef, type ModelDef } from '../../lib/ai/registry/types'
+import { loadConfig, saveConfig, invalidate } from '@mymind/core/lib/ai/registry/store'
+import { redactDoc } from '@mymind/core/lib/ai/registry/schema'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
+import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ProviderDef, type ModelDef } from '@mymind/core/lib/ai/registry/types'
 
 interface Src { env: string; usage: keyof AiConfigDoc['assignments']; dim?: number | null }
 // Maps the old env roles → registry usages.

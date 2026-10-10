@@ -2,10 +2,10 @@
 // The spec used for nextFireTimes is re-derived from the job's own content the same way
 // tools/jobs.ts's get_job does — `isKnownModel` is deliberately omitted (fire times don't
 // depend on whether the pinned model is still registered).
-import { getJob, getDefaultTimezone } from '../../lib/agent/jobs/store'
-import { parseJob } from '../../lib/agent/jobs/parse'
-import { fireTimesAnchor, nextFireTimes } from '../../lib/agent/jobs/schedule'
-import { listRuns } from '../../lib/agent/runtime/runs'
+import { getJob, getDefaultTimezone } from '@mymind/core/lib/agent/jobs/store'
+import { parseJob } from '@mymind/core/lib/agent/jobs/parse'
+import { fireTimesAnchor, nextFireTimes } from '@mymind/core/lib/agent/jobs/schedule'
+import { listRuns } from '@mymind/core/lib/agent/runtime/runs'
 import { requireJobSlug } from '../../utils/agent-config-http'
 
 export default defineEventHandler(async (event) => {

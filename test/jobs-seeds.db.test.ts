@@ -11,12 +11,12 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { and, eq, inArray, like } from 'drizzle-orm'
-import { useDb } from '../server/db'
-import { agentJobs, agentConfigRevisions } from '../server/db/schema'
-import { listRevisions } from '../server/lib/agent/config/revisions'
-import { SEED_JOB_SLUGS, SEED_JOBS, SEED_JOBS_V1, SEED_JOBS_V1_SLUGS } from '../server/lib/agent/jobs/seeds'
-import { createJob, saveJob, getJob, setJobEnabled, upgradeSeedJobs } from '../server/lib/agent/jobs/store'
-import { setFrontmatterKey } from '../shared/utils/frontmatter'
+import { useDb } from '@mymind/core/db'
+import { agentJobs, agentConfigRevisions } from '@mymind/core/db/schema'
+import { listRevisions } from '@mymind/core/lib/agent/config/revisions'
+import { SEED_JOB_SLUGS, SEED_JOBS, SEED_JOBS_V1, SEED_JOBS_V1_SLUGS } from '@mymind/core/lib/agent/jobs/seeds'
+import { createJob, saveJob, getJob, setJobEnabled, upgradeSeedJobs } from '@mymind/core/lib/agent/jobs/store'
+import { setFrontmatterKey } from '@mymind/core/shared/utils/frontmatter'
 
 const PREFIX = 'jseedtest-'
 const md = (fm: string, body: string) => `---\n${fm}\n---\n${body}\n`

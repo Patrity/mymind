@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { gate, namesTool, AUTO_PER_DAY, SIMILARITY_REJECT, SKILL_MAX_BYTES, SENSITIVE, EVIDENCE_MIN_CHARS, type GateContext } from '../server/lib/agent/reflect/gate'
-import { similarity, normaliseText, contentDelta } from '../server/lib/agent/reflect/similarity'
-import type { Proposal } from '../server/lib/agent/reflect/schema'
+import { gate, namesTool, AUTO_PER_DAY, SIMILARITY_REJECT, SKILL_MAX_BYTES, SENSITIVE, EVIDENCE_MIN_CHARS, type GateContext } from '@mymind/core/lib/agent/reflect/gate'
+import { similarity, normaliseText, contentDelta } from '@mymind/core/lib/agent/reflect/similarity'
+import type { Proposal } from '@mymind/core/lib/agent/reflect/schema'
 
 const base: GateContext = { mode: 'on', input: 'Tony: always file receipts under /finance/receipts', userInput: ['Tony: always file receipts under /finance/receipts'], toolNames: ['edit_job', 'send_message', 'search_docs'], targetAuthor: 'missing', currentContent: '', recentRejections: [], validate: () => null, autoAppliedToday: 0, targetChangedWithin24h: false, jev: { answers: {}, risky: false, model: 'jev' } }
 const p: Proposal = { kind: 'skill.create', target: 'file-receipts', content: '# File receipts\nPut receipts in /finance/receipts.', reason: 'Tony corrected it', confidence: 0.8, evidence: ['always file receipts under /finance/receipts'] }

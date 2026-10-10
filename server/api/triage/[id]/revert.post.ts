@@ -1,5 +1,5 @@
 // server/api/triage/[id]/revert.post.ts
-import { revertTriageAction } from '../../../services/triage'
+import { revertTriageAction } from '@mymind/core/services/triage'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')!

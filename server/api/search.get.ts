@@ -1,5 +1,5 @@
 import { searchAll } from '../services/search'
-import type { SearchResults } from '../../shared/types/search'
+import type { SearchResults } from '@mymind/core/shared/types/search'
 
 const emptyResults: SearchResults = { hits: [], reranked: false }
 

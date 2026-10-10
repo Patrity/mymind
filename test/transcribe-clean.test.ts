@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock the chat module before importing transcribe
-vi.mock('../server/lib/ai/chat', () => ({
+vi.mock('@mymind/core/lib/ai/chat', () => ({
   chat: vi.fn()
 }))
 
@@ -14,8 +14,8 @@ vi.stubGlobal('useRuntimeConfig', () => ({
   }
 }))
 
-import { chat } from '../server/lib/ai/chat'
-import { cleanToMarkdown } from '../server/lib/ai/transcribe'
+import { chat } from '@mymind/core/lib/ai/chat'
+import { cleanToMarkdown } from '@mymind/core/lib/ai/transcribe'
 
 const mockChat = vi.mocked(chat)
 

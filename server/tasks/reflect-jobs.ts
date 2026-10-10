@@ -9,13 +9,13 @@
 // date, tracked in the `reflect_jobs_last_date` setting) — so a missed tick (server restart,
 // clock skew) still runs later the same day instead of waiting for tomorrow.
 import { eq } from 'drizzle-orm'
-import { useDb } from '../db'
-import { settings } from '../db/schema'
-import { runJobsPass } from '../lib/agent/reflect/jobs-pass'
-import { getSelfImprovementMode } from '../lib/agent/self-improvement-mode'
-import { getDefaultTimezone } from '../lib/agent/jobs/timezone'
-import { contextDate } from '../lib/agent/context'
-import { withSpan, recordJobSummary } from '../lib/observability/record'
+import { useDb } from '@mymind/core/db'
+import { settings } from '@mymind/core/db/schema'
+import { runJobsPass } from '@mymind/core/lib/agent/reflect/jobs-pass'
+import { getSelfImprovementMode } from '@mymind/core/lib/agent/self-improvement-mode'
+import { getDefaultTimezone } from '@mymind/core/lib/agent/jobs/timezone'
+import { contextDate } from '@mymind/core/lib/agent/context'
+import { withSpan, recordJobSummary } from '@mymind/core/lib/observability/record'
 
 export const REFLECT_JOBS_LAST_DATE_KEY = 'reflect_jobs_last_date'
 export const REFLECT_JOBS_MIN_HOUR = 3

@@ -18,11 +18,11 @@
 // available and is the better option when a specific person's voice is what you want.
 import { Readable } from 'node:stream'
 import { Buffer } from 'node:buffer'
-import { speakSegments, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '../../../../lib/voice/speak'
-import { getPreset, updatePreset, ensureCalibrated } from '../../../../services/voice-presets'
-import { BreezeError, validateBreezeRequest } from '../../../../lib/voice/breeze'
-import { storage } from '../../../../utils/storage'
-import type { SpeakOverrides } from '../../../../../shared/types/voice-presets'
+import { speakSegments, collectPcm, pcmToWav, applyOverrides, presetToRequest } from '@mymind/core/lib/voice/speak'
+import { getPreset, updatePreset, ensureCalibrated } from '@mymind/core/services/voice-presets'
+import { BreezeError, validateBreezeRequest } from '@mymind/core/lib/voice/breeze'
+import { storage } from '@mymind/core/utils/storage'
+import type { SpeakOverrides } from '@mymind/core/shared/types/voice-presets'
 
 /**
  * What the frozen clip says.

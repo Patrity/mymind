@@ -1,8 +1,8 @@
-import { useDb } from '../../../db'
-import { loadChannelsConfig, resendReady } from '../../../lib/channels/config'
-import { emailSubject } from '../../../lib/channels/email/render'
-import { insertDeliveries } from '../../../lib/channels/outbox'
-import { publishChange } from '../../../utils/live-bus'
+import { useDb } from '@mymind/core/db'
+import { loadChannelsConfig, resendReady } from '@mymind/core/lib/channels/config'
+import { emailSubject } from '@mymind/core/lib/channels/email/render'
+import { insertDeliveries } from '@mymind/core/lib/channels/outbox'
+import { publishChange } from '@mymind/core/utils/live-bus'
 import { requireSession } from '../../../utils/auth-guard'
 
 const EMAIL_TEST_TEXT = 'Test from MyMind ✅'

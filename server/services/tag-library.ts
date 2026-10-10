@@ -1,6 +1,6 @@
 import { isNull, sql } from 'drizzle-orm'
-import { useDb } from '../db'
-import { documents, images } from '../db/schema'
+import { useDb } from '@mymind/core/db'
+import { documents, images } from '@mymind/core/db/schema'
 
 // ---------------------------------------------------------------------------
 // Tag splitting utility

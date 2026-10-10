@@ -1,9 +1,9 @@
 import { z } from 'zod'
-import { loadConfig, saveConfig, invalidate } from '../../lib/ai/registry/store'
-import { parseConfig } from '../../lib/ai/registry/schema'
-import { encryptSecret } from '../../lib/ai/registry/crypto'
-import { resolveChainFrom } from '../../lib/ai/registry/resolve'
-import { EMBEDDING_DIM, USAGES, type AiConfigDoc } from '../../lib/ai/registry/types'
+import { loadConfig, saveConfig, invalidate } from '@mymind/core/lib/ai/registry/store'
+import { parseConfig } from '@mymind/core/lib/ai/registry/schema'
+import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
+import { resolveChainFrom } from '@mymind/core/lib/ai/registry/resolve'
+import { EMBEDDING_DIM, USAGES, type AiConfigDoc } from '@mymind/core/lib/ai/registry/types'
 
 const KeyField = z.union([z.object({ apiKey: z.string().min(1) }), z.object({ keep: z.literal(true) }), z.null()])
 const Body = z.object({

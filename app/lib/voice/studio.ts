@@ -3,8 +3,8 @@
 // what the user is ALLOWED to compose and what a result MEANS — kept out of the .vue
 // files so it can be tested without mounting anything (same precedent as devices.ts,
 // messages.ts and presets.ts in this directory).
-import type { VoicePresetDTO, SpeakOverrides, RefSource } from '~~/shared/types/voice-presets'
-import { presetMode, maxCallChars } from '~~/shared/types/voice-presets'
+import type { VoicePresetDTO, SpeakOverrides, RefSource } from '@mymind/core/shared/types/voice-presets'
+import { presetMode, maxCallChars } from '@mymind/core/shared/types/voice-presets'
 
 /** The live agent's conversational segment cap, mirrored from server/lib/voice/tuning.ts.
  *  Used only to DESCRIBE what realtime mode will do; the server remains the authority. */

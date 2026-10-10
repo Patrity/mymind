@@ -1,8 +1,8 @@
 import {
   ChannelsPutBodySchema, ChannelsConfigError, type ChannelsPutBody,
   loadChannelsConfig, mergeChannelsPut, saveChannelsConfig, invalidateChannelsConfig, channelsConfigDTO
-} from '../../lib/channels/config'
-import { resetHealth } from '../../lib/channels/inbound'
+} from '@mymind/core/lib/channels/config'
+import { resetHealth } from '@mymind/core/lib/channels/inbound'
 import { requireSession } from '../../utils/auth-guard'
 
 // Web session only: a machine token must not be able to change who can text the agent or

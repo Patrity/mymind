@@ -1,5 +1,5 @@
 import { listActivity } from '../../services/activity'
-import type { ActivityListParams } from '../../../shared/types/activity'
+import type { ActivityListParams } from '@mymind/core/shared/types/activity'
 
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { parseProposal, buildEnrichMessages } from '../server/lib/ai/enrich'
-import type { DocumentDTO } from '../shared/types/documents'
+import { parseProposal, buildEnrichMessages } from '@mymind/core/lib/ai/enrich'
+import type { DocumentDTO } from '@mymind/core/shared/types/documents'
 
 // Minimal DocumentDTO stub for unit tests — only the fields buildEnrichMessages reads.
 function makeDocDto(overrides: Partial<DocumentDTO> = {}): DocumentDTO {

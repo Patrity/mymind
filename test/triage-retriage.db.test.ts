@@ -14,11 +14,11 @@ vi.stubGlobal('useRuntimeConfig', () => ({
 vi.stubGlobal('$fetch', vi.fn().mockResolvedValue([Array(2560).fill(0.01)]))
 
 const { applyTask, applyMemory, revertTriageAction, retriageDocument, sweepUntriaged }
-  = await import('../server/services/triage')
-const { createDoc, getDoc, deleteDoc } = await import('../server/services/documents')
-const { getTask } = await import('../server/services/tasks')
-const { useDb } = await import('../server/db')
-const { documents, triageActions, memories } = await import('../server/db/schema')
+  = await import('@mymind/core/services/triage')
+const { createDoc, getDoc, deleteDoc } = await import('@mymind/core/services/documents')
+const { getTask } = await import('@mymind/core/services/tasks')
+const { useDb } = await import('@mymind/core/db')
+const { documents, triageActions, memories } = await import('@mymind/core/db/schema')
 const { eq } = await import('drizzle-orm')
 
 const uniq = () => Math.random().toString(36).slice(2, 10)

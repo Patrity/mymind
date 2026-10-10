@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
-import { useDb } from '../../db'
-import { chunks } from '../../db/schema'
-import { embed } from '../ai/embeddings'
-import { chunkMarkdown } from './chunk-markdown'
+import { useDb } from '@mymind/core/db'
+import { chunks } from '@mymind/core/db/schema'
+import { embed } from '@mymind/core/lib/ai/embeddings'
+import { chunkMarkdown } from '@mymind/core/lib/chunking/chunk-markdown'
 import { contextualizeChunk } from './contextualize'
 import { getChunkingConfig } from './config'
 

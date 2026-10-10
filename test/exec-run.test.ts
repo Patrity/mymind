@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildExecEnv, resolveExecCwd, selectExecMode, buildSpawnArgs, runConstrained } from '../server/lib/exec/run'
+import { buildExecEnv, resolveExecCwd, selectExecMode, buildSpawnArgs, runConstrained } from '@mymind/core/lib/exec/run'
 
 describe('buildExecEnv', () => {
   it('returns exactly PATH/HOME/LANG and nothing else (allowlist by construction)', () => {

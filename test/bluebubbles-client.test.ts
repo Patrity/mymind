@@ -8,16 +8,16 @@ const mocks = vi.hoisted(() => ({
   loadChannelsConfig: vi.fn(),
   getImageBytes: vi.fn()
 }))
-vi.mock('../server/lib/channels/config', () => ({
+vi.mock('@mymind/core/lib/channels/config', () => ({
   loadChannelsConfig: mocks.loadChannelsConfig,
   blueBubblesPassword: (c: { passwordEnc: string | null }) => c.passwordEnc
 }))
-vi.mock('../server/services/images', () => ({ getImageBytes: mocks.getImageBytes }))
+vi.mock('@mymind/core/services/images', () => ({ getImageBytes: mocks.getImageBytes }))
 
-const { blueBubblesClient, BlueBubblesError, imessageClient } = await import('../server/lib/channels/bluebubbles/client')
-const { imessageChannel } = await import('../server/lib/channels/bluebubbles/channel')
-const { emailChannel } = await import('../server/lib/channels/email/channel')
-const { channelFor } = await import('../server/lib/channels/registry')
+const { blueBubblesClient, BlueBubblesError, imessageClient } = await import('@mymind/core/lib/channels/bluebubbles/client')
+const { imessageChannel } = await import('@mymind/core/lib/channels/bluebubbles/channel')
+const { emailChannel } = await import('@mymind/core/lib/channels/email/channel')
+const { channelFor } = await import('@mymind/core/lib/channels/registry')
 
 const CHAT = 'iMessage;-;+15551234567'
 

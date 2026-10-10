@@ -1,8 +1,8 @@
 // Ping a provider to confirm it's reachable + auth works. Inline config (a
 // not-yet-saved provider from the form) or {keep:true} to reuse a stored key.
 import { z } from 'zod'
-import { loadConfig } from '../../lib/ai/registry/store'
-import { decryptSecret } from '../../lib/ai/registry/crypto'
+import { loadConfig } from '@mymind/core/lib/ai/registry/store'
+import { decryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 
 const Body = z.object({
   id: z.string().optional(),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normaliseHandle, isAllowed, isSendersDirectChat, maskHandle } from '../server/lib/channels/handles'
+import { normaliseHandle, isAllowed, isSendersDirectChat, maskHandle } from '@mymind/core/lib/channels/handles'
 
 describe('normaliseHandle', () => {
   it.each([

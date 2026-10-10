@@ -1,4 +1,4 @@
-import type { SearchResults } from '~~/shared/types/search'
+import type { SearchResults } from '@mymind/core/shared/types/search'
 
 export function useGlobalSearch() {
   const search = (q: string) =>

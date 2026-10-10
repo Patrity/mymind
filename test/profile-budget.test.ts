@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { estimateTokens, clampProfile, PROFILE_TOKEN_BUDGET } from '../server/lib/agent/profile-budget'
+import { estimateTokens, clampProfile, PROFILE_TOKEN_BUDGET } from '@mymind/core/lib/agent/profile-budget'
 
 describe('profile budget', () => {
   it('estimates tokens as ceil(chars/4)', () => { expect(estimateTokens('')).toBe(0); expect(estimateTokens('abcde')).toBe(2) })

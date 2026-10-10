@@ -1,5 +1,5 @@
-import { chat } from '../ai/chat'
-import type { ChatMessage } from '../ai/chat'
+import { chat } from '@mymind/core/lib/ai/chat'
+import type { ChatMessage } from '@mymind/core/lib/ai/chat'
 
 const SYS = 'You situate a text chunk within its document for search retrieval. Reply with ONE short sentence (max ~25 words) describing what this chunk is about and where it sits in the document. No preamble.'
 
