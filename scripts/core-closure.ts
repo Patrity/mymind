@@ -90,15 +90,22 @@ export interface Closure {
   violations: string[]
 }
 
+/**
+ * After the move (cycle 80) the seed dirs are gone: the closure is then seeded from core itself,
+ * and anything it reaches outside packages/core/src is a violation too.
+ */
 export function coreClosure(seeds: string[] = SEEDS): Closure {
   const seen = new Set<string>()
   const violations: string[] = []
-  const queue = seeds.flatMap(walk)
+  let queue = seeds.flatMap(walk)
+  const moved = queue.length === 0
+  if (moved) queue = walk('packages/core/src')
   while (queue.length) {
     const f = queue.pop()!
     if (seen.has(f)) continue
     seen.add(f)
     if (FORBIDDEN_ROOTS.some(r => f.startsWith(r))) violations.push(`(closure) ${f}`)
+    else if (moved && !f.startsWith('packages/core/src/')) violations.push(`(outside core) ${f}`)
     const src = readFileSync(join(ROOT, f), 'utf8')
     for (const spec of specifiers(src)) {
       if (FORBIDDEN_SPECIFIERS.some(re => re.test(spec))) violations.push(`${f} -> ${spec}`)
