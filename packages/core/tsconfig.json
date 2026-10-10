@@ -1,14 +1,20 @@
 {
+  // Standalone check of every core file incl. tests (`pnpm typecheck` runs `tsc -p packages/core`).
+  // Mirrors the strictness of Nuxt's generated server tsconfig (.nuxt/tsconfig.server.json) but
+  // carries NO Nuxt/Nitro auto-import or h3 types: a core file that needs them fails here.
   "compilerOptions": {
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "WebWorker", "DOM.Iterable"],
+    "types": ["node"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "noEmit": true
   },
   "include": ["src/**/*.ts"]

@@ -17,6 +17,8 @@ FROM base AS build
 ARG NUXT_PUBLIC_UNMUTE_URL=""
 ENV NUXT_PUBLIC_UNMUTE_URL=$NUXT_PUBLIC_UNMUTE_URL
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# workspace members' manifests must exist for a frozen-lockfile install (cycle 80: @mymind/core)
+COPY packages/core/package.json packages/core/
 # allow the sharp native build script (approved in pnpm-workspace.yaml)
 RUN pnpm install --frozen-lockfile
 COPY . .

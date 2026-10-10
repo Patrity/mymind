@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { _resetCoreForTests, coreConfig, initCore, type CoreConfig } from './config'
 
-// CoreConfig is intentionally empty until Task 2 fills it with the exact fields core reads.
-// These tests exercise the init/get/reset contract itself, so a couple of cases cast past
-// the empty interface to stand in for "some config object" vs. "a different config object".
+// These tests exercise the init/get/reset contract itself, so they cast `{}` past CoreConfig's
+// required fields to stand in for "some config object" vs. "a different config object".
 
 beforeEach(() => {
   _resetCoreForTests()
@@ -15,14 +14,14 @@ describe('initCore / coreConfig', () => {
   })
 
   it('coreConfig() returns the object passed to initCore()', () => {
-    const cfg: CoreConfig = {}
+    const cfg = {} as CoreConfig
     initCore(cfg)
     expect(coreConfig()).toBe(cfg)
   })
 
   it('a second initCore() call with an equal object is a no-op', () => {
-    initCore({})
-    expect(() => initCore({})).not.toThrow()
+    initCore({} as CoreConfig)
+    expect(() => initCore({} as CoreConfig)).not.toThrow()
     expect(coreConfig()).toEqual({})
   })
 
@@ -33,7 +32,7 @@ describe('initCore / coreConfig', () => {
   })
 
   it('_resetCoreForTests() clears state so coreConfig() throws again', () => {
-    initCore({})
+    initCore({} as CoreConfig)
     _resetCoreForTests()
     expect(() => coreConfig()).toThrow('core not initialised — call initCore() first')
   })

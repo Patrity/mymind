@@ -37,7 +37,7 @@ describe('job templates', () => {
   })
 
   it('JOB_SLUG_RE is the same pattern the server enforces', () => {
-    const src = readFileSync(new URL('../../../server/lib/agent/jobs/store.ts', import.meta.url), 'utf8')
+    const src = readFileSync(new URL('../../../packages/core/src/lib/agent/jobs/store.ts', import.meta.url), 'utf8')
     const m = /export const JOB_SLUG_RE = (\/.+\/)\s*$/m.exec(src)
     expect(m?.[1]).toBe(String(JOB_SLUG_RE))
   })

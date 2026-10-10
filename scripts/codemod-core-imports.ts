@@ -17,7 +17,9 @@
 //     their NEW locations (identical to before for server->server, since the tree is preserved;
 //     `~~/shared/...` and `../../../shared/...` become relative paths into src/shared)
 //   - outside files (server/, app/, test/, shared/, scripts/): a specifier naming a moved file
-//     becomes `@mymind/core/<path under src without .ts>` (index files keep their `/index`)
+//     becomes `@mymind/core/<path under src without .ts>`; a directory-style specifier (one that
+//     resolved through `<dir>/index.ts`) stays directory-style, `@mymind/core/<dir>`, which
+//     packages/core/package.json maps with one explicit `exports` entry per index dir
 //   - npm specifiers and specifiers naming files that do not move are left byte-for-byte alone
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
