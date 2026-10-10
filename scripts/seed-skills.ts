@@ -7,13 +7,9 @@
 // `system` revision. Run the app once first (its boot plugin moves any pre-cycle-74 skill
 // documents over) — a seed that lands first claims the slug and the move then skips that doc.
 //
-// `useDb()` reads `useRuntimeConfig().databaseUrl`, which is a Nuxt auto-import
-// not available to a bare tsx process. Polyfill both auto-imports as globals
-// BEFORE importing anything that calls them (matches the pattern used
-// elsewhere this cycle for the same class of problem — see task-5-report.md).
-;(globalThis as any).useRuntimeConfig = () => ({ databaseUrl: process.env.DATABASE_URL })
-;(globalThis as any).$fetch = globalThis.fetch
-
+// Core config (databaseUrl) for a bare tsx process: see scripts/lib/core-init.ts. Must stay the
+// FIRST import so it runs before any server module.
+import './lib/core-init'
 import { createSkill, updateSkill, getSkill, type SkillInput } from '../server/services/skills'
 
 const SEEDS: SkillInput[] = [

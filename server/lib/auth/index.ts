@@ -6,7 +6,6 @@ import { useDb } from '../../db'
 import { user, session, account, verification, oauthApplication, oauthAccessToken, oauthConsent } from '../../db/schema/auth'
 import { oauthOrigin } from '../../utils/oauth-metadata'
 import { eq } from 'drizzle-orm'
-import { googleConfigured } from '../google/scopes'
 import { googleSocialProviders, GOOGLE_ACCOUNT_OPTIONS, GOOGLE_AUTH_HOOKS, DISABLED_AUTH_PATHS } from '../google/auth-options'
 import { upsertConnectionForAccount } from '../google/connections'
 
@@ -50,7 +49,9 @@ export function buildAuth(cfg: CoreConfig) {
     emailAndPassword: { enabled: true, disableSignUp: String(cfg.allowSignup) !== 'true' },
     // Cycle 79: Google is link-only (Settings → Connections) — see server/lib/google/auth-options.ts
     // for why sign-up/ID-token sign-in are closed there. Absent entirely when unconfigured.
-    socialProviders: googleConfigured()
+    // Same predicate as googleConfigured() (lib/google/scopes.ts), evaluated on `cfg` so
+    // buildAuth stays a pure function of its argument.
+    socialProviders: Boolean(cfg.googleClientId) && Boolean(cfg.googleClientSecret)
       ? googleSocialProviders(cfg.googleClientId as string, cfg.googleClientSecret as string)
       : undefined,
     account: GOOGLE_ACCOUNT_OPTIONS,

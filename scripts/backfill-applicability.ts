@@ -25,18 +25,10 @@
  *   node_modules/.bin/tsx scripts/backfill-applicability.ts --dry-run   # run this FIRST
  *   node_modules/.bin/tsx scripts/backfill-applicability.ts            # then for real
  *
- * `useDb()` reads `useRuntimeConfig().databaseUrl`, a Nuxt auto-import not available to a
- * bare tsx process — polyfilled below, before importing anything that calls it (same
- * pattern as scripts/seed-skills.ts, task-5-report.md). The `declare global` gives the
- * standalone `tsc -p` check (scripts/ isn't covered by `pnpm typecheck` — see
- * `.nuxt/tsconfig.server.json`'s `include`, which has no `scripts/**` entry) a type for the
- * same symbol Nuxt would otherwise supply via its generated `.nuxt/types`.
+ * `useDb()` needs core initialised with databaseUrl, which this bare tsx process gets from
+ * scripts/lib/core-init.ts. That must stay the FIRST import (same as scripts/seed-skills.ts).
  */
-declare global {
-  function useRuntimeConfig(): { databaseUrl?: string }
-}
-globalThis.useRuntimeConfig = () => ({ databaseUrl: process.env.DATABASE_URL })
-
+import './lib/core-init'
 import { writeFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'

@@ -39,23 +39,10 @@
  *
  * Always exits 0 — a quality read, not a gate.
  */
-// `useDb()` (inside chat -> withFailover -> loadConfig) reads `useRuntimeConfig().databaseUrl`, a
-// Nuxt auto-import not available to a bare tsx process. Polyfill both auto-imports as globals
-// BEFORE importing anything that calls them (same pattern as scripts/reflect-eval.ts).
-;(globalThis as any).useRuntimeConfig = () => ({ databaseUrl: process.env.DATABASE_URL })
-// chat() calls `$fetch(url, { method, headers, body: <object> })` and expects PARSED JSON back
-// (ofetch semantics); plain fetch would send "[object Object]". Minimal self-contained shim.
-;(globalThis as any).$fetch = async (url: string, opts: { method?: string, headers?: Record<string, string>, body?: unknown, signal?: AbortSignal } = {}) => {
-  const res = await fetch(url, {
-    method: opts.method,
-    signal: opts.signal,
-    headers: { 'content-type': 'application/json', ...opts.headers },
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
-  })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.json()
-}
-
+// `useDb()` (inside chat -> withFailover -> loadConfig) needs core initialised with databaseUrl:
+// scripts/lib/core-init.ts, which must stay the FIRST import. chat() imports `ofetch` itself
+// (cycle 80), so the old globalThis.$fetch shim is gone.
+import './lib/core-init'
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
