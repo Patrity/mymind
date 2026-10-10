@@ -1,7 +1,7 @@
 // Cycle 80 guard: @mymind/core must stay runnable outside Nuxt/Nitro (the step-2 worker).
 // Fails on (a) a call to a Nitro/H3 runtime global — useRuntimeConfig, useNitroApp,
-// defineEventHandler, useStorage, createError, defineNitroPlugin — or an unimported `$fetch`
-// call, and (b) any import that resolves outside packages/core/src other than an npm package
+// defineEventHandler, useStorage, createError, defineNitroPlugin — or an unbound `$fetch`
+// reference, and (b) any import that resolves outside packages/core/src other than an npm package
 // (Nuxt aliases, relative escapes, and Nuxt/Nitro runtime modules count as escapes).
 // Parsed with the TypeScript AST, so comments and string literals never trip it.
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -52,6 +52,11 @@ export function violations(file: string, src: string): string[] {
         if (b && ts.isNamespaceImport(b)) imported.add(b.name.text)
       }
     }
+    // A local binding named `$fetch` (e.g. a test's `const $fetch = vi.fn()`) is not the Nitro
+    // global either. File-level approximation: any such declaration exempts the file.
+    if ((ts.isVariableDeclaration(n) || ts.isParameter(n) || ts.isFunctionDeclaration(n)) && n.name && ts.isIdentifier(n.name)) {
+      imported.add(n.name.text)
+    }
     if (ts.isImportTypeNode(n) && ts.isLiteralTypeNode(n.argument) && ts.isStringLiteral(n.argument.literal)) {
       checkSpec(n.argument.literal.text, n)
     }
@@ -72,14 +77,14 @@ export function violations(file: string, src: string): string[] {
   }
   visit(sf)
 
-  // `$fetch` is fine when imported (e.g. `import { $fetch } from 'ofetch'`), not as Nitro's global.
+  // `$fetch` is fine when imported (e.g. `import { $fetch } from 'ofetch'`), not as Nitro's global —
+  // any unimported reference counts (a call, `$fetch.raw(…)`, or an alias like `const f = $fetch`).
   if (!imported.has('$fetch')) {
     const findFetch = (n: ts.Node) => {
-      if (ts.isCallExpression(n)) {
-        const c = n.expression
-        const base = ts.isPropertyAccessExpression(c) ? c.expression : c
-        if (ts.isIdentifier(base) && base.text === '$fetch') out.push(`${where(n)} unimported $fetch call`)
-      }
+      const p = n.parent
+      const isMemberName = p && ((ts.isPropertyAccessExpression(p) && p.name === n) || (ts.isPropertyAssignment(p) && p.name === n))
+      const isDeclName = p && (ts.isVariableDeclaration(p) || ts.isParameter(p)) && p.name === n
+      if (ts.isIdentifier(n) && n.text === '$fetch' && !isMemberName && !isDeclName) out.push(`${where(n)} unimported $fetch`)
       ts.forEachChild(n, findFetch)
     }
     findFetch(sf)
@@ -106,6 +111,7 @@ describe('@mymind/core guard', () => {
     ['defineNitroPlugin', 'export default defineNitroPlugin(() => {})'],
     ['$fetch', 'await $fetch<string>("https://x")'],
     ['$fetch.raw', 'await $fetch.raw("https://x")'],
+    ['$fetch alias', 'const get = $fetch'],
     ['relative escape', 'import { x } from "../../../../server/utils/auth-guard"'],
     ['Nuxt alias', 'import { x } from "~~/server/utils/auth-guard"'],
     ['h3', 'import type { H3Event } from "h3"'],
@@ -116,15 +122,16 @@ describe('@mymind/core guard', () => {
     expect(violations(fake, snippet)).toHaveLength(1)
   })
 
-  it('ignores comments, strings, imported $fetch, in-tree relatives and npm packages', () => {
-    const ok = [
-      '// useRuntimeConfig() used to live here',
-      'const s = "createError(" + \'$fetch(\'',
-      'import { $fetch } from "ofetch"; await $fetch("https://x")',
-      'import { useDb } from "../../db"',
-      'import { sql } from "drizzle-orm"',
-      'vi.stubGlobal("useRuntimeConfig", () => ({}))'
-    ].join('\n')
-    expect(violations(fake, ok)).toEqual([])
+  it.each([
+    ['a comment', '// useRuntimeConfig() used to live here'],
+    ['string literals', 'const s = "createError(" + \'$fetch(\''],
+    ['imported $fetch', 'import { $fetch } from "ofetch"; await $fetch("https://x")'],
+    ['a $fetch property', 'const o = { $fetch: 1 }; o.$fetch'],
+    ['a local $fetch binding', 'const $fetch = () => 1; $fetch()'],
+    ['an in-tree relative import', 'import { useDb } from "../../db"'],
+    ['an npm package', 'import { sql } from "drizzle-orm"'],
+    ['a stubbed global name', 'vi.stubGlobal("useRuntimeConfig", () => ({}))']
+  ])('ignores %s', (_name, snippet) => {
+    expect(violations(fake, snippet)).toEqual([])
   })
 })
