@@ -2,10 +2,10 @@
 title: Agent worker + workstreams — runs move to apps/worker over a Postgres bus; long-running workstreams (cycle 81, harness step 2)
 cycle: 81
 date: 2026-10-11
-status: built  # → deployed after CD + prod acceptance
+status: deployed  # CD 38146137235 (7c3304e), 2026-10-11; prod acceptance passed
 branch: feat/worker (worktree .claude/worktrees/feat+worker, base 3e0c5e9)
-merged: false
-deployed: false
+merged: true
+deployed: true
 specs:
   - ../superpowers/specs/2026-10-11-worker-and-workstreams-design.md
 plans:
@@ -51,3 +51,9 @@ Current-state reference: [wiki/agent-runtime.md](../wiki/agent-runtime.md), [wik
 - Subagent steps/cost not counted in workstream budgets; wall clock is active time only.
 - Rollback below cycle 81: `systemctl disable --now mymind-worker` FIRST (DEPLOYMENT.md §21a); one level, no migration revert.
 - Deferred minors: see the SDD ledger (final-review M1–M4, M6, M7 and per-task minors).
+
+## Deploy (2026-10-11)
+- First CD (38145520420) failed at provisioning: `ensure_nuxt_override` under `set -euo pipefail` exited when a paired key was absent from `.env.native` (grep exit 1). Old web kept serving; nothing migrated. Fixed in 7c3304e (`|| true`, `return 0`), tested under the same shell flags.
+- CD 38146137235 (7c3304e): success. Both units active (`mymind`, `mymind-worker`); web unit no longer sets AGENT_RUNTIME_EXCLUSIVE; `/opt/mymind/.worker` staged; migrations through 0071; worker boot → executing runs → first tick; 0 journal errors; disk 62%.
+- Acceptance on prod: a silent headless wake ran `done` in 2 s owned by the worker's boot id; a workstream ("count open mymind tasks") was started, `systemctl restart mymind` 6 s in, and it finished `done` in 5 steps (56 open tasks) with health 200.
+- Owed: an interactive chat/voice/approval pass in the real UI by Tony (session-only).
