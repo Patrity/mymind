@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandHandlers } from '@mymind/core/lib/bus/commands'
 import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
-import { commandHandlers, createWorkerProcess, runWorker, type SignalName, type WorkerDeps, type WorkerTimings } from './worker'
+import { commandHandlers, crashSpan, createWorkerProcess, installCrashTraps, runWorker, type CrashEvent, type SignalName, type WorkerDeps, type WorkerTimings } from './worker'
 import { workerSettings } from './env'
 
 const T = { tickMs: 5_000, beatMs: 5_000, drainMs: 60_000 }
@@ -267,5 +267,75 @@ describe('workerSettings (env)', () => {
     expect(s.core.dev).toBe(true)
     expect(s.drainMs).toBe(1_500)
     expect(s.tickMs).toBe(5_000)
+  })
+})
+
+describe('process crash traps (final review I1)', () => {
+  function trap(deps: WorkerDeps, over: { crashDrainMs?: number } = {}) {
+    const handlers = new Map<CrashEvent, (err: unknown) => void>()
+    const exits: number[] = []
+    const reports: Array<[CrashEvent, unknown]> = []
+    const flush = vi.fn(async () => {})
+    const w = createWorkerProcess(deps, T)
+    installCrashTraps(w, { on: (e, fn) => { handlers.set(e, fn) }, exit: c => { exits.push(c) }, report: (e, err) => { reports.push([e, err]) }, flush, log: quiet, ...over })
+    return { w, handlers, exits, reports, flush }
+  }
+
+  it('an unhandled rejection is logged + recorded and the worker keeps running (no drain, no exit)', async () => {
+    const { deps, calls } = fakeDeps()
+    const { w, handlers, exits, reports } = trap(deps)
+    await w.start()
+    handlers.get('unhandledRejection')!(new Error('stray'))
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(exits).toEqual([])
+    expect(reports.map(r => r[0])).toEqual(['unhandledRejection'])
+    expect(calls).not.toContain('stop-claiming')
+    expect(deps.tick).toHaveBeenCalled()
+  })
+
+  it('a rejection storm records at most reportPerMinute rows', async () => {
+    const { deps } = fakeDeps()
+    const { handlers, reports } = trap(deps)
+    for (let i = 0; i < 50; i++) handlers.get('unhandledRejection')!(new Error(`r${i}`))
+    expect(reports).toHaveLength(20)
+  })
+
+  it('an uncaught exception records, drains, flushes, then exits 1', async () => {
+    const { deps, calls } = fakeDeps()
+    const { w, handlers, exits, reports, flush } = trap(deps)
+    await w.start()
+    handlers.get('uncaughtException')!(new Error('boom'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reports.map(r => r[0])).toEqual(['uncaughtException'])
+    expect(calls).toContain('stop-claiming')
+    expect(exits).toEqual([1])
+    expect(flush).toHaveBeenCalled()
+  })
+
+  it('the crash drain is bounded: a run that never settles still exits 1 at crashDrainMs', async () => {
+    const { deps, startRun } = fakeDeps()
+    startRun() // never finishes
+    const { w, handlers, exits } = trap(deps, { crashDrainMs: 5_000 })
+    await w.start()
+    handlers.get('uncaughtException')!(new Error('boom'))
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(exits).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(exits).toEqual([1])
+  })
+
+  it('a second uncaught exception during the drain exits at once', async () => {
+    const { deps, startRun } = fakeDeps()
+    startRun()
+    const { w, handlers, exits } = trap(deps)
+    await w.start()
+    handlers.get('uncaughtException')!(new Error('one'))
+    handlers.get('uncaughtException')!(new Error('two'))
+    expect(exits).toEqual([1])
+  })
+
+  it('crashSpan is an error-severity job row carrying the message', () => {
+    expect(crashSpan('uncaughtException', new Error('x'))).toMatchObject({ kind: 'job', name: 'worker:uncaughtException', status: 'error', severity: 'error', error: { message: 'x' } })
+    expect(crashSpan('unhandledRejection', 'plain').error.message).toBe('plain')
   })
 })

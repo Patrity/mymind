@@ -1,11 +1,12 @@
 // MyMind agent worker — entry point (cycle 81, spec §2). Runs on @mymind/core with no Nuxt/Nitro.
 //   dev:  `pnpm dev` (root) runs it under `tsx watch` next to `nuxt dev`
-//   prod: `node apps/worker/dist/worker.mjs` (esbuild bundle, build.mjs) under systemd unit
-//         `mymind-worker` (deploy/mymind-worker.service), env from /opt/mymind/.env + .env.native.
+//   prod: `node /opt/mymind/.worker/dist/worker.mjs` — the staged release (build.mjs + stage.mjs,
+//         activated by deploy/worker-release.sh) — under systemd unit `mymind-worker`
+//         (deploy/mymind-worker.service), env from /opt/mymind/.env + .env.native.
 // SIGTERM/SIGINT drain (worker.ts) then exit 0; systemd's TimeoutStopSec covers the 60s drain.
 import { initCore } from '@mymind/core/config'
 import { workerSettings } from './env'
-import { createWorkerProcess, runWorker } from './worker'
+import { createWorkerProcess, crashSpan, installCrashTraps, runWorker } from './worker'
 import { coreCommandDeps } from './command-deps'
 
 const settings = workerSettings()
@@ -61,6 +62,15 @@ const worker = createWorkerProcess({
   prune: () => prune(),
   close: async () => { await live.flushLive(); await listen.closeListener() }
 }, settings)
+
+// Process-level traps (final review I1): a stray rejection logs + records and the worker keeps
+// going (Nitro parity); an uncaught exception records, drains (bounded), and exits 1 for systemd.
+installCrashTraps(worker, {
+  on: (event, fn) => { process.on(event, fn) },
+  exit: code => process.exit(code),
+  report: (event, err) => record.recordEvent(crashSpan(event, err)),
+  flush: () => record.recorder.flush()
+})
 
 // Signal handlers go in BEFORE anything starts (runWorker), so a SIGTERM during boot drains.
 await runWorker(worker, { on: (sig, fn) => { process.on(sig, fn) }, exit: code => process.exit(code) })

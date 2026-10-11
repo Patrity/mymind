@@ -190,3 +190,72 @@ export async function runWorker(
   }
   await w.start()
 }
+
+export type CrashEvent = 'unhandledRejection' | 'uncaughtException'
+
+export interface CrashTrapIo {
+  on(event: CrashEvent, fn: (err: unknown) => void): void
+  exit(code: number): void
+  /** Record to activity_log (recorder.recordEvent). Must not throw; a throw is swallowed. */
+  report(event: CrashEvent, err: unknown): void
+  /** Flush the recorder before exiting, so the crash row lands. */
+  flush(): Promise<void>
+  /** Bounded drain after an uncaughtException (default 15s, well inside TimeoutStopSec). */
+  crashDrainMs?: number
+  /** Max activity rows per minute (a rejection storm must not flood activity_log). Default 20. */
+  reportPerMinute?: number
+  log?: Pick<Console, 'error'>
+  now?: () => number
+}
+
+/**
+ * Process-level error traps (final review I1). Under Nitro both events were trapped and only logged;
+ * the bare Node worker would otherwise die on the first stray rejection, interrupting every in-flight
+ * run. Parity with Nitro for `unhandledRejection` (log + record, keep going). An `uncaughtException`
+ * leaves the process in an unknown state, so: log + record, a BOUNDED drain (in-flight runs get a
+ * chance to finish; what doesn't is recovered as interrupted by the next boot), flush, exit 1 so
+ * systemd restarts it (the unit has StartLimitIntervalSec=0: a crash loop never parks it 'failed').
+ * A second uncaughtException during that drain exits at once.
+ */
+export function installCrashTraps(w: WorkerProcess, io: CrashTrapIo): void {
+  const log = io.log ?? console
+  const now = io.now ?? Date.now
+  const perMinute = io.reportPerMinute ?? 20
+  let windowStart = 0
+  let inWindow = 0
+  const report = (event: CrashEvent, err: unknown) => {
+    const t = now()
+    if (t - windowStart >= 60_000) { windowStart = t; inWindow = 0 }
+    if (++inWindow > perMinute) return
+    try { io.report(event, err) } catch (e) { log.error('[worker] crash report failed:', e) }
+  }
+  io.on('unhandledRejection', (err) => {
+    log.error('[worker] unhandled rejection (continuing):', err)
+    report('unhandledRejection', err)
+  })
+  let crashing = false
+  io.on('uncaughtException', (err) => {
+    log.error('[worker] uncaught exception — draining, then exiting 1:', err)
+    if (crashing) { io.exit(1); return }
+    crashing = true
+    report('uncaughtException', err)
+    const ms = io.crashDrainMs ?? 15_000
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<void>((r) => { timer = setTimeout(r, ms) })
+    void Promise.race([w.drain('uncaughtException').then(() => {}, e => log.error('[worker] crash drain failed:', e)), deadline])
+      .then(() => io.flush().catch(e => log.error('[worker] crash flush failed:', e)))
+      .finally(() => { clearTimeout(timer); io.exit(1) })
+  })
+}
+
+/** activity_log row for a trapped process error (what main.ts hands io.report). */
+export function crashSpan(event: CrashEvent, err: unknown) {
+  const e = err instanceof Error ? err : new Error(String(err))
+  return {
+    kind: 'job' as const,
+    name: `worker:${event}`,
+    status: 'error' as const,
+    severity: 'error' as const,
+    error: { message: e.message, stack: e.stack }
+  }
+}

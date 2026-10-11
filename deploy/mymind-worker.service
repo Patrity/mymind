@@ -4,6 +4,9 @@ Description=MyMind agent worker (runs, runtime tick, agent scheduled tasks)
 # worker does not need the web to be running (they talk through Postgres).
 After=network-online.target docker.service mymind.service
 Wants=network-online.target
+# Never park the unit 'failed' after a burst of crash-restarts (final review I1): the default start
+# limit (5 starts / 10s) would otherwise leave the worker down with only the offline banner as signal.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -30,8 +33,9 @@ ExecStart=/usr/bin/node /opt/mymind/.worker/dist/worker.mjs
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=90
+# A crash (uncaughtException → bounded drain → exit 1) or a dead DB restarts it every 5s, forever.
 Restart=always
-RestartSec=2
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
