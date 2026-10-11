@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 import { eq, inArray } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
+import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { documents, workspaceShells, workspaces } from '@mymind/core/db/schema'
 import { createSandboxManager, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
 import { createWorkspaceRuntime, setWorkspaceRuntime, runtimeHooks, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
@@ -20,6 +21,9 @@ import type { WorkspaceWatchRow } from '@mymind/core/lib/sandbox/watches'
 
 const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `wst-${process.pid}-${Date.now().toString(36)}`
+// Final fix wave: every workspace row of this file is in its own bus namespace — a dev worker on the
+// shared DB never scans it, and afterAll removes every row of it (no orphans).
+const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
 const LABELS = { 'mymind.test': RUN }
 const tool = (name: string) => workspaceTools.find(t => t.name === name)!
 
@@ -53,7 +57,7 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
   const call = async (name: string, args: Record<string, unknown>) => (await tool(name).handler(args, ctx())).result as Record<string, any>
 
   async function newWorkspace(): Promise<string> {
-    const [r] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning()
+    const [r] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning()
     rowIds.push(r!.id)
     return r!.id
   }
@@ -68,6 +72,7 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
   })
 
   beforeAll(async () => {
+    setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-wst-')))
     m = mkManager()
     rt = mkRuntime(m)
@@ -82,6 +87,8 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     if (ids.length) docker('rm', '-f', ...ids)
     if (docIds.length) await useDb().delete(documents).where(inArray(documents.id, docIds))
     if (rowIds.length) await useDb().delete(workspaces).where(inArray(workspaces.id, rowIds))
+    await useDb().delete(workspaces).where(eq(workspaces.ns, NS))
+    setBusNs(null)
     if (root) rmSync(root, { recursive: true, force: true })
   }, 120_000)
 
@@ -207,12 +214,20 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     expect(lost!.reason).toMatch(/went away|stopped/)
   }, 120_000)
 
-  it('the manager isBusy hook keeps a workspace with a running shell or armed watch from idle-stopping', async () => {
+  it('final review I2: a running shell protects its sandbox from eviction but not from the idle stop; the tick\'s refresh records one that exited unread', async () => {
     const hooks = runtimeHooks(rt)
     const s = await call('bash', { command: 'sleep 60', run_in_background: true })
-    expect(await hooks.isBusy(current)).toBe(true)
+    expect(await hooks.isBusy(current)).toBe(false) // shells are for jobs, not servers
+    expect(await hooks.hasLiveShell(current)).toBe(true)
     await call('kill_shell', { shellId: s.shellId })
-    expect(await hooks.isBusy(current)).toBe(false)
+    expect(await hooks.hasLiveShell(current)).toBe(false)
+    // A job that exits while nobody reads its output: the refresh (peek — no use, no start) settles it.
+    const quick = await call('bash', { command: 'echo done', run_in_background: true })
+    await new Promise(r => setTimeout(r, 1500))
+    const { dbShellStore } = await import('@mymind/core/lib/sandbox/shells')
+    expect((await dbShellStore.get(quick.shellId))!.state).toBe('running')
+    await hooks.refresh(current)
+    expect((await dbShellStore.get(quick.shellId))).toMatchObject({ state: 'exited', exitCode: 0 })
   }, 120_000)
 
   it('watch until exit0 fires when a background job finishes; until match fires on output', async () => {
@@ -298,10 +313,15 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
       expect(big.files).toBe(81)
       expect(big.largestDirs[0]).toMatchObject({ path: 'junk/' })
       expect(big.largestDirs[0].bytes).toBeGreaterThan(big.largestDirs.find((d: { path: string }) => d.path === 'keep/').bytes)
-      const d = await call('delete_files', { paths: ['junk', 'nope', '../etc', '/etc/passwd', '.', 'keep/../..'] })
+      // Final fix wave: one bad path refuses the WHOLE batch before anything is deleted.
+      const bad = await call('delete_files', { paths: ['junk', 'nope', '../etc', '/etc/passwd', '.', 'keep/../..'] })
+      expect(bad).toMatchObject({ ok: false, error: 'invalid_paths' })
+      expect(bad.message).toMatch(/nothing was deleted — 4 path\(s\) refused/)
+      expect((await call('bash', { command: 'ls' })).error).toMatch(/refused/) // still over: junk is still there
+      const d = await call('delete_files', { paths: ['junk', 'nope'] })
       expect(d.deleted).toEqual(['junk'])
       expect(d.missing).toEqual(['nope'])
-      expect(d.refused.map((r: { path: string }) => r.path)).toEqual(['../etc', '/etc/passwd', '.', 'keep/../..'])
+      expect(d.refused).toEqual([])
       await small.measure(id)
       expect((await call('write_file', { path: 'x.txt', content: 'x' })).ok).toBe(true)
       expect((await call('bash', { command: 'ls' })).stdout).toBe('keep\nx.txt\n')
@@ -313,10 +333,25 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
 
   it('delete_files never follows a symlinked parent out of the workspace; a symlink itself is removed, not its target', async () => {
     await call('bash', { command: 'mkdir -p /tmp/outside && echo keep > /tmp/outside/f && ln -sfn /tmp/outside escape && echo t > real.txt && ln -sf real.txt link.txt' })
-    const d = await call('delete_files', { paths: ['escape/f', 'link.txt'] })
-    expect(d.refused.map((r: { path: string }) => r.path)).toEqual(['escape/f'])
+    const refused = await call('delete_files', { paths: ['link.txt', 'escape/f'] })
+    expect(refused).toMatchObject({ ok: false, error: 'invalid_paths' })
+    expect(refused.message).toMatch(/escape\/f \(outside the workspace/)
+    expect((await call('bash', { command: 'ls link.txt' })).stdout).toBe('link.txt\n') // nothing was deleted
+    const d = await call('delete_files', { paths: ['link.txt'] })
     expect(d.deleted).toEqual(['link.txt'])
     expect((await call('bash', { command: 'cat /tmp/outside/f real.txt' })).stdout).toBe('keep\nt\n')
+  }, 120_000)
+
+  it('final fix wave: a NUL anywhere in the batch, or .mymind (even via a symlink), refuses the batch up front', async () => {
+    await call('bash', { command: 'mkdir -p .mymind/shells/x && echo a > a.txt && ln -sfn .mymind meta' })
+    for (const paths of [['a.txt', 'dir\0x/f'], ['a.txt', '.mymind'], ['a.txt', '.mymind/shells/x'], ['a.txt', 'meta/shells']]) {
+      const r = await call('delete_files', { paths })
+      expect(r, JSON.stringify(paths)).toMatchObject({ ok: false, error: 'invalid_paths' })
+    }
+    expect((await call('bash', { command: 'ls a.txt && ls -d .mymind/shells/x' })).stdout).toBe('a.txt\n.mymind/shells/x\n')
+    // The symlink itself (not its target) is still deletable.
+    expect((await call('delete_files', { paths: ['meta', 'a.txt'] })).deleted).toEqual(['meta', 'a.txt'])
+    expect((await call('bash', { command: 'ls -d .mymind/shells/x' })).stdout).toBe('.mymind/shells/x\n')
   }, 120_000)
 
   // LAST (it taints its own workspace for good).

@@ -661,9 +661,19 @@ export async function wakeWorkstreamForWatch(workstreamId: string): Promise<'res
  * a reply in the thread or answer_workstream continue it.
  */
 export async function pauseWorkstreamForTony(runId: string | undefined, workstreamId: string, why: string): Promise<boolean> {
-  const row = await patchWorkstream(workstreamId, { state: 'paused', attention: { kind: 'paused', text: why }, lastOutcome: 'paused' }, ['running', 'attention'])
-  if (!row) return false
   const seg = segmentForRun(runId)
+  const row = await patchWorkstream(workstreamId, { state: 'paused', attention: { kind: 'paused', text: why }, lastOutcome: 'paused' }, ['running'])
+  if (!row) {
+    // Cycle 82 final fix wave: already waiting on Tony (an ask_tony question or an approval card) —
+    // never overwrite that attention (his answer is what it waits for). The pause note goes into
+    // the thread; the segment still stops after this step.
+    const ws = await getWorkstream(workstreamId)
+    if (!ws || ws.state !== 'attention') return false
+    if (seg) seg.stop ??= 'attention'
+    const { appendEvent } = await import('../../../services/conversations')
+    await appendEvent(ws.conversationId, `⚙ Paused for you — ${why}`, `workstream:${ws.id}`)
+    return true
+  }
   if (seg) seg.stop ??= 'attention'
   await notifyTony(row, `⚙ Workstream paused — ${row.goal}\n\n${why}`)
   return true

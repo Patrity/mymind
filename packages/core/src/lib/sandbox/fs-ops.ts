@@ -320,20 +320,34 @@ export const DELETE_MAX_PATHS = 100
 export const DELETE_SCRIPT = py([
   PY_PRELUDE,
   'import subprocess',
-  'root = os.path.realpath(os.getcwd()); done = []; missing = []; refused = []',
-  'for p in a["paths"]:',
-  '    if not isinstance(p, str) or not p or p.startswith("/") or ".." in p.split("/"):',
-  '        refused.append({"path": p, "why": "must be a relative path inside the workspace, without .."}); continue',
+  `root = os.path.realpath(os.getcwd()); meta = os.path.join(root, ${JSON.stringify(META_DIR)})`,
+  // Final fix wave: EVERY path is checked before ANYTHING is deleted — one bad path (NUL, absolute,
+  // `..`, outside the workspace, the workspace itself, or MyMind's own .mymind bookkeeping) refuses
+  // the whole batch, so a refusal never leaves a half-done delete behind.
+  'def check(p):',
+  '    if not isinstance(p, str) or not p or "\\0" in p or p.startswith("/") or ".." in p.split("/"):',
+  '        return None, "must be a relative path inside the workspace, without .. or NUL"',
   '    full = os.path.normpath(os.path.join(root, p))',
   '    parent = os.path.realpath(os.path.dirname(full))',
   '    if full == root or not (parent == root or parent.startswith(root + os.sep)):',
-  '        refused.append({"path": p, "why": "outside the workspace (or the workspace itself)"}); continue',
+  '        return None, "outside the workspace (or the workspace itself)"',
   '    target = os.path.join(parent, os.path.basename(full))',
+  '    if target == meta or target.startswith(meta + os.sep):',
+  '        return None, ".mymind is MyMind\'s own bookkeeping (background shells) — it can\'t be deleted"',
+  '    return target, None',
+  'plan = []; bad = []',
+  'for p in a["paths"]:',
+  '    t, why = check(p)',
+  '    if why: bad.append({"path": p if isinstance(p, str) else repr(p), "why": why})',
+  '    else: plan.append((p, t))',
+  'if bad: out({"error": "invalid_paths", "message": "nothing was deleted — %d path(s) refused: %s" % (len(bad), "; ".join("%s (%s)" % (b["path"].replace("\\0", "\\\\0"), b["why"]) for b in bad[:5])), "refused": bad, "deleted": []})',
+  'done = []; missing = []; failed = []',
+  'for p, target in plan:',
   '    if not os.path.lexists(target): missing.append(p); continue',
   '    r = subprocess.run(["rm", "-rf", "--", target], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)',
   '    if r.returncode == 0: done.append(p)',
-  '    else: refused.append({"path": p, "why": r.stdout.decode("utf-8", "replace")[-300:]})',
-  'out({"deleted": done, "missing": missing, "refused": refused})'
+  '    else: failed.append({"path": p, "why": r.stdout.decode("utf-8", "replace")[-300:]})',
+  'out({"deleted": done, "missing": missing, "refused": failed})'
 ].join('\n'))
 
 // ── export_to_document: a whole text file ──────────────────────────────────────────────────────

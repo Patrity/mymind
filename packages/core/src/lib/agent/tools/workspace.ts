@@ -371,7 +371,7 @@ export const deleteFilesTool: AgentTool = {
   name: 'delete_files',
   toolset: 'workspace',
   kind: 'create',
-  description: `Delete files or directories (recursively) in your workspace — paths relative to /workspace, no \`..\`, at most ${DELETE_MAX_PATHS}. Works even when the workspace is over its quota (that is how you free space: find what is big with list_files({ largest: true }) first).`,
+  description: `Delete files or directories (recursively) in your workspace — paths relative to /workspace, no \`..\`, at most ${DELETE_MAX_PATHS}; .mymind (MyMind's own bookkeeping) can't be deleted, and one invalid path refuses the whole batch (nothing is deleted). Works even when the workspace is over its quota (that is how you free space: find what is big with list_files({ largest: true }) first).`,
   schema: { paths: z.array(pathArg).min(1).max(DELETE_MAX_PATHS).describe('Relative paths to delete') },
   handler: (a, ctx) => guard('delete_files', ctx, async (scope) => {
     const c = await begin(ctx, scope)
@@ -379,6 +379,9 @@ export const deleteFilesTool: AgentTool = {
     const r = await exec(c, DELETE_SCRIPT, { input: JSON.stringify({ paths: a.paths }), timeoutSec: 300 })
     const j = parseJson(r)
     if (!j) return failed('delete_files', r)
+    // One invalid path refuses the whole batch before anything is deleted (final fix wave).
+    const err = scriptError('delete_files', r, j)
+    if (err) return err
     const deleted = j.deleted as string[]
     const refused = j.refused as unknown[]
     return { result: withTaint(r, j), summary: `deleted ${deleted.length} path${deleted.length === 1 ? '' : 's'}${refused.length ? `, refused ${refused.length}` : ''}` }
