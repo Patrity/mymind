@@ -29,7 +29,7 @@ import { readWorkspaceText, workspaceRuntime, type WorkspaceRef } from '../../sa
 import { ShellError } from '../../sandbox/shells'
 import { dbWorkspaceStore } from '../../sandbox/store'
 import { WATCH_LIMITS, WatchError } from '../../sandbox/watches'
-import { maskCut, maskDeep, sandboxSecretEnv, SecretStoreUnavailableError, secretValues } from '../../sandbox/secrets'
+import { maskCut, maskDeep, maskText, sandboxSecretEnv, SecretStoreUnavailableError, secretValues } from '../../sandbox/secrets'
 import { createDoc, deleteDoc, findDocByPath, getDoc, casUpdateContent, updateDoc } from '../../../services/documents'
 import { publishChange } from '../../../utils/live-bus'
 import { docReceipt, docNotFound } from '../receipt'
@@ -48,8 +48,13 @@ function runTainted(ctx: ToolContext): boolean {
 
 interface Call { ref: WorkspaceRef; tainted: boolean; opts: ExecOptions }
 
-async function begin(ctx: ToolContext): Promise<Call> {
+/** Which workspace a tool call reached (set before any sandbox command runs) — guard() reads it to
+ *  taint an ERROR result too (final review I1). */
+interface Scope { workspaceId?: string }
+
+async function begin(ctx: ToolContext, scope: Scope): Promise<Call> {
   const ref = await workspaceRuntime().resolve(ctx.runId)
+  scope.workspaceId = ref.workspaceId
   const tainted = runTainted(ctx)
   return { ref, tainted, opts: { tainted, signal: ctx.signal } }
 }
@@ -66,10 +71,11 @@ function withTaint<T extends Record<string, unknown>>(r: { tainted: boolean }, b
 /** Known sandbox refusals become a clear tool error instead of a thrown one. Every result and
  *  summary has exec-secret VALUES masked (Task 3, spec §6: an opted-in secret is in the command's
  *  env, so `env` or a file it wrote would otherwise hand it to the model and the transcript). */
-async function guard(name: string, fn: () => Promise<ToolExecution>): Promise<ToolExecution> {
+async function guard(name: string, ctx: ToolContext, fn: (scope: Scope) => Promise<ToolExecution>): Promise<ToolExecution> {
   const withheld = (): ToolExecution => ({ result: { ok: false, error: `${name}: output withheld — the secret store is unreadable, so secret values could not be masked` }, summary: `${name}: output withheld (secret store unreadable)` })
+  const scope: Scope = {}
   let ex: ToolExecution
-  try { ex = await fn() } catch (err) {
+  try { ex = await fn(scope) } catch (err) {
     // Fix round 2: a handler (or the shell registry) that needed the values mid-call fails closed
     // the same way as the final mask below — never a raw error.
     if (err instanceof SecretStoreUnavailableError) return withheld()
@@ -77,12 +83,23 @@ async function guard(name: string, fn: () => Promise<ToolExecution>): Promise<To
       || err instanceof ShellError || err instanceof WatchError || (err as Error)?.name === 'WorkspaceFileError'
     if (!known) throw err
     const message = (err as Error).message
-    ex = { result: { ok: false, error: message }, summary: `${name}: ${clip(message, 120)}` }
+    // Final review I1: these messages can carry sandbox text (stderr, a script's message) — an
+    // error from a tainted workspace (or a tainted run) is marked exactly like a success result, so
+    // it taints the reading run (ai-tools) and seeds the next one (tool-history).
+    const tainted = scope.workspaceId !== undefined && await errorTainted(ctx, scope.workspaceId)
+    ex = { result: tainted ? { workspaceTainted: true, ok: false, error: message } : { ok: false, error: message }, summary: `${name}: ${clip(message, 120)}` }
   }
   let values: string[]
   // Fail closed: when the values can't be read, nothing they might be in is shown.
   try { values = await secretValues() } catch { return withheld() }
   return { ...ex, result: maskDeep(ex.result, values), summary: maskDeep(ex.summary, values) }
+}
+
+/** An error result from this workspace must carry the taint flag: the run is tainted, or the
+ *  workspace is (fail closed — an unreadable row counts as tainted). */
+async function errorTainted(ctx: ToolContext, workspaceId: string): Promise<boolean> {
+  if (runTainted(ctx)) return true
+  try { return (await dbWorkspaceStore.get(workspaceId))?.tainted !== false } catch { return true }
 }
 
 /** Opted-in sandbox secrets for a command — none when the run OR the workspace is tainted (the
@@ -148,8 +165,8 @@ export const readFileTool: AgentTool = {
     offset: z.number().int().min(1).optional().describe('First line to read (1-based)'),
     limit: z.number().int().min(1).max(READ_MAX_LINES).optional().describe(`Lines to read (max ${READ_MAX_LINES})`)
   },
-  handler: (a, ctx) => guard('read_file', async () => {
-    const c = await begin(ctx)
+  handler: (a, ctx) => guard('read_file', ctx, async (scope) => {
+    const c = await begin(ctx, scope)
     const path = a.path as string
     const r = await exec(c, READ_SCRIPT, { input: JSON.stringify({ path, offset: a.offset, limit: a.limit }), capBytes: READ_CAP_BYTES, timeoutSec: 60 })
     const j = parseJson(r)
@@ -174,11 +191,11 @@ export const writeFileTool: AgentTool = {
     path: pathArg.describe('File path (relative to /workspace)'),
     content: z.string().describe('The full file content')
   },
-  handler: (a, ctx) => guard('write_file', async () => {
+  handler: (a, ctx) => guard('write_file', ctx, async (scope) => {
     const path = a.path as string
     const content = a.content as string
     if (byteLen(content) > WRITE_MAX_BYTES) return { result: { ok: false, error: `content is ${byteLen(content)} bytes — the limit is ${WRITE_MAX_BYTES}; write it with bash instead` }, summary: 'write_file: too large' }
-    const c = await begin(ctx)
+    const c = await begin(ctx, scope)
     await assertQuota(c)
     const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path, content }), timeoutSec: 60 })
     const j = parseJson(r)
@@ -200,10 +217,10 @@ export const editFileTool: AgentTool = {
     new_string: z.string().describe('Replacement text'),
     replace_all: z.boolean().optional().describe('Replace every occurrence')
   },
-  handler: (a, ctx) => guard('edit_file', async () => {
+  handler: (a, ctx) => guard('edit_file', ctx, async (scope) => {
     const path = a.path as string
     if (byteLen(a.old_string as string) + byteLen(a.new_string as string) > WRITE_MAX_BYTES) return { result: { ok: false, error: 'edit too large — use write_file or bash' }, summary: 'edit_file: too large' }
-    const c = await begin(ctx)
+    const c = await begin(ctx, scope)
     await assertQuota(c)
     const r = await exec(c, EDIT_SCRIPT, { input: JSON.stringify({ path, old: a.old_string, new: a.new_string, all: a.replace_all === true }), timeoutSec: 60 })
     const j = parseJson(r)
@@ -224,8 +241,8 @@ export const listFilesTool: AgentTool = {
     path: pathArg.optional().describe('Directory (relative to /workspace)'),
     largest: z.boolean().optional().describe('Show the largest files and directories instead of a listing')
   },
-  handler: (a, ctx) => guard('list_files', async () => {
-    const c = await begin(ctx)
+  handler: (a, ctx) => guard('list_files', ctx, async (scope) => {
+    const c = await begin(ctx, scope)
     const r = await exec(c, LIST_SCRIPT, { input: JSON.stringify({ glob: a.glob ?? null, path: a.path ?? null, largest: a.largest === true }), capBytes: 256 * 1024, timeoutSec: 120 })
     const j = parseJson(r)
     if (!j) return failed('list_files', r)
@@ -246,8 +263,8 @@ export const grepTool: AgentTool = {
     path: pathArg.optional().describe('File or directory (relative to /workspace)'),
     glob: z.string().max(500).optional().describe('Only files matching this glob, e.g. *.ts')
   },
-  handler: (a, ctx) => guard('grep', async () => {
-    const c = await begin(ctx)
+  handler: (a, ctx) => guard('grep', ctx, async (scope) => {
+    const c = await begin(ctx, scope)
     const r = await exec(c, grepCommand({ pattern: a.pattern as string, path: a.path as string | undefined, glob: a.glob as string | undefined }), { capBytes: 128 * 1024, timeoutSec: 60 })
     if (r.timedOut) return failed('grep', r)
     if (r.exitCode === 1) return { result: withTaint(r, { matches: [], count: 0 }), summary: 'grep: no matches' }
@@ -265,8 +282,8 @@ export const diffTool: AgentTool = {
   kind: 'read',
   description: 'Show what changed in your workspace (`git diff`, new files included). On first use the workspace becomes a git repo with a baseline commit, so later diffs show changes since then (commit with bash to move the baseline).',
   schema: { path: pathArg.optional().describe('Only this file or directory') },
-  handler: (a, ctx) => guard('diff', async () => {
-    const c = await begin(ctx)
+  handler: (a, ctx) => guard('diff', ctx, async (scope) => {
+    const c = await begin(ctx, scope)
     // The first diff commits the whole workspace into .git — a copy of everything (quota).
     await assertQuota(c)
     const r = await exec(c, diffCommand(a.path as string | undefined), { capBytes: 128 * 1024, timeoutSec: 120 })
@@ -291,9 +308,9 @@ export const bashTool: AgentTool = {
     timeout: z.number().int().min(1).max(600).optional().describe('Foreground timeout in seconds (default 120, max 600)'),
     run_in_background: z.boolean().optional().describe('Start it in the background and return a shellId')
   },
-  handler: (a, ctx) => guard('bash', async () => {
+  handler: (a, ctx) => guard('bash', ctx, async (scope) => {
     const command = a.command as string
-    const c = await begin(ctx)
+    const c = await begin(ctx, scope)
     if (a.run_in_background === true) {
       if (c.tainted) return { result: { ok: false, error: `${TAINTED_RUN} in a throwaway container — background shells are not available. Run it in the foreground (timeout up to 600s).` }, summary: 'bash: background refused (tainted run)' }
       if ((await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return { result: { ok: false, error: `${TAINTED_WS} — background shells need it. Run it in the foreground instead.` }, summary: 'bash: background refused (workspace offline)' }
@@ -325,8 +342,8 @@ export const bashOutputTool: AgentTool = {
   kind: 'read',
   description: 'New output of a background shell since the last call (≤ 32 KB; `more: true` means call again), plus its state (running / exited with exitCode / killed / lost).',
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
-  handler: (a, ctx) => guard('bash_output', async () => {
-    const c = await begin(ctx)
+  handler: (a, ctx) => guard('bash_output', ctx, async (scope) => {
+    const c = await begin(ctx, scope)
     const o = await workspaceRuntime().shells.output(c.ref.workspaceId, a.shellId as string, c.opts)
     const { tainted: _t, ...body } = o
     return {
@@ -342,8 +359,8 @@ export const killShellTool: AgentTool = {
   kind: 'create',
   description: 'Stop a background shell (its whole process group).',
   schema: { shellId: z.string().uuid().describe('From bash with run_in_background') },
-  handler: (a, ctx) => guard('kill_shell', async () => {
-    const c = await begin(ctx)
+  handler: (a, ctx) => guard('kill_shell', ctx, async (scope) => {
+    const c = await begin(ctx, scope)
     const k = await workspaceRuntime().shells.kill(c.ref.workspaceId, a.shellId as string, c.opts)
     return { result: withTaint(k, { shellId: k.shellId, state: k.state, ...(k.alreadyEnded ? { alreadyEnded: true } : {}) }), summary: k.alreadyEnded ? `shell already ${k.state}` : `stopped shell (${k.state})` }
   })
@@ -355,8 +372,8 @@ export const deleteFilesTool: AgentTool = {
   kind: 'create',
   description: `Delete files or directories (recursively) in your workspace — paths relative to /workspace, no \`..\`, at most ${DELETE_MAX_PATHS}. Works even when the workspace is over its quota (that is how you free space: find what is big with list_files({ largest: true }) first).`,
   schema: { paths: z.array(pathArg).min(1).max(DELETE_MAX_PATHS).describe('Relative paths to delete') },
-  handler: (a, ctx) => guard('delete_files', async () => {
-    const c = await begin(ctx)
+  handler: (a, ctx) => guard('delete_files', ctx, async (scope) => {
+    const c = await begin(ctx, scope)
     // No quota check: this is the way back under it.
     const r = await exec(c, DELETE_SCRIPT, { input: JSON.stringify({ paths: a.paths }), timeoutSec: 300 })
     const j = parseJson(r)
@@ -379,11 +396,11 @@ export const watchTool: AgentTool = {
     intervalSec: z.number().int().min(WATCH_LIMITS.intervalSec.min).max(WATCH_LIMITS.intervalSec.max).optional().describe(`Seconds between polls (default ${WATCH_LIMITS.intervalSec.default})`),
     timeoutMin: z.number().int().min(WATCH_LIMITS.timeoutMin.min).max(WATCH_LIMITS.timeoutMin.max).optional().describe(`Give up after this many minutes (default ${WATCH_LIMITS.timeoutMin.default})`)
   },
-  handler: (a, ctx) => guard('watch', async () => {
+  handler: (a, ctx) => guard('watch', ctx, async (scope) => {
     const until = a.until as 'exit0' | 'match'
     const pattern = a.pattern as string | undefined
     if (until === 'match' && !pattern) return { result: { ok: false, error: 'until="match" needs a pattern' }, summary: 'watch: no pattern' }
-    const c = await begin(ctx)
+    const c = await begin(ctx, scope)
     if (c.tainted) return { result: { ok: false, error: `${TAINTED_RUN} in throwaway containers — watches are not available. Check with a foreground bash command instead.` }, summary: 'watch: refused (tainted run)' }
     if (!c.ref.workstreamId && !c.ref.conversationId) return { result: { ok: false, error: 'watch needs a conversation or workstream to report back to' }, summary: 'watch: nowhere to report' }
     // Fix round 1 (M2): a tainted workspace runs every poll in a fresh no-network container — no watches there.
@@ -437,7 +454,7 @@ export const exportToDocumentTool: AgentTool = {
   // Fix round 1 (M4): a headless proposal stores the workspace it was proposed from; the replay
   // (no run) reads from that one, never from whatever `home` resolves to.
   proposalArgs: async (args, ctx) => ({ ...args, workspaceId: (await workspaceRuntime().resolve(ctx.runId)).workspaceId }),
-  handler: (a, ctx) => guard('export_to_document', async () => {
+  handler: (a, ctx) => guard('export_to_document', ctx, async (scope) => {
     // A live call resolves from its run (a model-supplied workspaceId is ignored); a replay uses the
     // proposal's pinned one.
     let workspaceId: string
@@ -447,15 +464,23 @@ export const exportToDocumentTool: AgentTool = {
       if (!row || row.deletedAt) return { result: { ok: false, error: 'the workspace this export was proposed from no longer exists' }, summary: 'export_to_document: workspace gone' }
       workspaceId = row.id
     }
+    scope.workspaceId = workspaceId
     // Reading moves nothing off the box; the run's taint applies when there is one (replay has none).
     const f = await readWorkspaceText(workspaceId, a.path as string, { tainted: ctx.isTainted?.() ?? false, signal: ctx.signal })
+    // Ruling C3: the document must not carry an opted-in secret a command wrote into the file —
+    // values are masked before it is written. Fails closed: no readable store, no export.
+    let values: string[]
+    try { values = await secretValues() } catch {
+      return { result: { ok: false, error: 'export refused — the secret store is unreadable, so secret values could not be masked out of the document' }, summary: 'export_to_document: refused (secret store unreadable)' }
+    }
+    const content = maskText(f.content, values)
     const docPath = a.docPath as string
     const existing = await findDocByPath(docPath)
     if (existing) {
       const prior = await getDoc(existing.id)
       if (!prior) return { result: docNotFound(existing.id), summary: 'export_to_document: document vanished' }
       const before = prior.content ?? ''
-      const updated = await updateDoc(existing.id, { content: f.content })
+      const updated = await updateDoc(existing.id, { content })
       publishChange({ resource: 'document', action: 'updated', id: existing.id })
       return {
         result: updated ? withTaint(f, { ...docReceipt(updated, { before: before.length }), from: f.path, replaced: true }) : docNotFound(existing.id),
@@ -469,7 +494,7 @@ export const exportToDocumentTool: AgentTool = {
         }
       }
     }
-    const doc = await createDoc({ path: docPath, content: f.content })
+    const doc = await createDoc({ path: docPath, content })
     publishChange({ resource: 'document', action: 'created', id: doc.id })
     return {
       result: withTaint(f, { ...docReceipt(doc, { before: 0 }), from: f.path }),
@@ -488,12 +513,12 @@ export const importDocumentTool: AgentTool = {
     docId: z.string().min(1).describe('Document id'),
     path: pathArg.describe('Workspace file to write (relative to /workspace)')
   },
-  handler: (a, ctx) => guard('import_document', async () => {
+  handler: (a, ctx) => guard('import_document', ctx, async (scope) => {
     const doc = await getDoc(a.docId as string)
     if (!doc) return { result: docNotFound(a.docId as string), summary: 'import_document: not found' }
     const content = doc.content ?? ''
     if (byteLen(content) > WRITE_MAX_BYTES) return { result: { ok: false, error: 'document too large to import' }, summary: 'import_document: too large' }
-    const c = await begin(ctx)
+    const c = await begin(ctx, scope)
     await assertQuota(c)
     const r = await exec(c, WRITE_SCRIPT, { input: JSON.stringify({ path: a.path, content }), timeoutSec: 60 })
     const j = parseJson(r)
