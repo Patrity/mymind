@@ -29,6 +29,7 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     workstreamControl: vi.fn(async (p: { workstreamId: string }) => ({ id: p.workstreamId, state: 'cancelled' }) as unknown as WorkstreamDTO),
     startSchedule: vi.fn(() => { calls.push('schedule:start'); return () => { calls.push('schedule:stop') } }),
     startRecorderFlush: vi.fn(() => { calls.push('flush-loop:start'); return () => { calls.push('flush-loop:stop') } }),
+    startSandbox: vi.fn(() => { calls.push('sandbox:start'); return () => { calls.push('sandbox:stop') } }),
     flushRecorder: vi.fn(async () => { calls.push('flush') }),
     beat: vi.fn(async () => { calls.push('beat') }),
     beatStatus: vi.fn(() => ({ imessage: { ok: true, privateApi: true, checkedAt: 7 } })),
@@ -75,7 +76,7 @@ describe('worker boot', () => {
   it('beats, recovers orphans BEFORE anything can claim, then starts commands, bridge, pump, schedule, recorder flush', async () => {
     const { deps, calls } = fakeDeps()
     await startWorkerProcess(deps, T)
-    expect(calls).toEqual(['beat', 'boot', 'commands:start', 'bridge:start', 'prune', 'kick', 'schedule:start', 'flush-loop:start'])
+    expect(calls).toEqual(['beat', 'boot', 'commands:start', 'bridge:start', 'prune', 'kick', 'schedule:start', 'flush-loop:start', 'sandbox:start'])
   })
 
   it('ticks every tickMs and beats every beatMs; a slow tick is never overlapped', async () => {
@@ -183,7 +184,7 @@ describe('signals during boot (review M4)', () => {
     await running
     await vi.advanceTimersByTimeAsync(0)
     expect(exits).toEqual([0])
-    for (const c of ['commands:start', 'bridge:start', 'kick', 'schedule:start', 'flush-loop:start']) expect(calls).not.toContain(c)
+    for (const c of ['commands:start', 'bridge:start', 'kick', 'schedule:start', 'flush-loop:start', 'sandbox:start']) expect(calls).not.toContain(c)
     expect(calls).toContain('stop-claiming')
     await vi.advanceTimersByTimeAsync(30_000)
     expect(deps.tick).not.toHaveBeenCalled()
@@ -225,7 +226,7 @@ describe('worker drain (SIGTERM)', () => {
     finish()
     expect(await drained).toEqual({ settled: true })
     const tail = calls.slice(calls.indexOf('run:settled'))
-    expect(tail).toEqual(['run:settled', 'settled', 'commands:stop', 'bridge:stop', 'flush-loop:stop', 'flush', 'close'])
+    expect(tail).toEqual(['run:settled', 'settled', 'commands:stop', 'bridge:stop', 'flush-loop:stop', 'sandbox:stop', 'flush', 'close'])
     // Heartbeat stopped too.
     const beats = vi.mocked(deps.beat).mock.calls.length
     await vi.advanceTimersByTimeAsync(20_000)

@@ -66,16 +66,17 @@ jobs:
         run: |
           # Clear the tracked tree first — preserving runtime state that lives in
           # /opt/mymind (.env, .env.native, plus any .data/.output/.nuxt/node_modules/workspace/.git,
-          # and the agent worker's self-contained releases .worker/.worker-prev, which the RUNNING
-          # worker executes from) — then extract the fresh checkout so deletions propagate.
+          # the agent worker's self-contained releases .worker/.worker-prev, which the RUNNING
+          # worker executes from, and (cycle 82) the sandbox workspaces' files in .workspaces) — then
+          # extract the fresh checkout so deletions propagate.
           pct exec 114 -- bash -lc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 \
             ! -name .git ! -name .env ! -name .env.native ! -name .data ! -name .output \
             ! -name .nuxt ! -name node_modules ! -name workspace \
-            ! -name .worker ! -name .worker-prev -exec rm -rf {} +'
+            ! -name .worker ! -name .worker-prev ! -name .workspaces -exec rm -rf {} +'
           tar -C "$GITHUB_WORKSPACE" \
             --exclude=.git --exclude=node_modules --exclude=.nuxt \
             --exclude=.output --exclude=.data --exclude=.env --exclude=.env.native \
-            --exclude=.worker --exclude=.worker-prev --exclude=.worker-next \
+            --exclude=.worker --exclude=.worker-prev --exclude=.worker-next --exclude=.workspaces \
             -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
 
       - name: Ensure db + searxng up (keep the OLD app serving during the build)

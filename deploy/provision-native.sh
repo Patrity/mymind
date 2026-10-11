@@ -96,6 +96,20 @@ if [ -z "$(ls -A "$APP_DIR/.data/uploads" 2>/dev/null)" ]; then
   fi
 fi
 
+# 3b. Cycle 82: the workspace sandbox — image (Debian + toolchain, ~670 MB) and its network + egress
+#     firewall (deploy/sandbox/install-network.sh: network, DOCKER-USER/INPUT rules, the
+#     mymind-sandbox-net oneshot that re-applies them at boot, /opt/mymind/.workspaces). The rebuild is
+#     layer-cached (seconds) unless deploy/sandbox/Dockerfile changed. Disk first (the box has hit 100%
+#     before): with <3 GB free the build is skipped with a warning — the worker then refuses sandbox
+#     work ("image missing") rather than run anything unconfined.
+bash "$APP_DIR/deploy/sandbox/install-network.sh" install
+AVAIL_GB="$(df -P -BG / | awk 'NR==2 {gsub("G","",$4); print $4}' || true)"
+if [ "${AVAIL_GB:-0}" -ge 3 ]; then
+  bash "$APP_DIR/deploy/sandbox/build-image.sh" "$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo deploy)"
+else
+  echo "[provision] WARNING: only ${AVAIL_GB:-?} GB free on / — skipping the sandbox image build (docker builder prune?)"
+fi
+
 # 4. systemd units (refresh + enable; do NOT start here — the deploy restarts after build)
 #    mymind         — the Nuxt/Nitro web app
 #    mymind-worker  — the agent worker (cycle 81): runs the active release /opt/mymind/.worker

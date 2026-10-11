@@ -27,6 +27,7 @@ const [{ bootAgentRuntime, DEFAULT_BOOT_RETRY }, queue, { BOOT_ID }, { startAgen
 ])
 const { busNs } = await import('@mymind/core/lib/bus/ns')
 const { pruneRunEvents } = await import('@mymind/core/lib/bus/events')
+const { startSandboxHousekeeping } = await import('@mymind/core/lib/sandbox/manager')
 
 // Hourly: handled / long-dead claimed commands. Daily (spec §3.1): run_events of runs finished
 // > 7 days ago, a workstream's kept while it exists.
@@ -50,6 +51,8 @@ const worker = createWorkerProcess({
   ...await coreCommandDeps(),
   startSchedule: () => startAgentSchedule(),
   startRecorderFlush: () => { record.startRecorderFlushLoop(); return () => {} },
+  // Cycle 82: reconcile sandbox containers, then idle-stop / quota every minute, deletion sweep daily.
+  startSandbox: () => startSandboxHousekeeping(),
   flushRecorder: () => record.recorder.flush(),
   beat: status => commands.beatWorker(BOOT_ID, status),
   // Worker-owned state the web shows: the iMessage catch-up health (Settings → Channels nav dot).

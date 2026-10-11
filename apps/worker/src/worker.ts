@@ -2,7 +2,7 @@
 // worker.test.ts fakes them). Spec §2:
 //   start → heartbeat → recoverOrphans (+ seed jobs; retried until the DB answers) → command
 //           handling + live bridge → 5s tick + immediate pump → agent scheduled tasks → recorder
-//           flush; heartbeat every beatMs throughout (carrying worker-only status, e.g. iMessage health).
+//           flush → sandbox housekeeping (cycle 82); heartbeat every beatMs throughout (carrying worker-only status, e.g. iMessage health).
 //   drain → (SIGTERM) stop claiming + stop the tick and schedule → let the in-flight tick and runs
 //           finish within ONE drainMs budget → stop commands/bridge/heartbeat → flush → resolve. A run
 //           still going at the deadline keeps its 'running' row and is recovered as interrupted by
@@ -38,6 +38,9 @@ export interface WorkerDeps {
   workstreamControl(p: CommandPayloads['workstream-control']): Promise<WorkstreamDTO>
   startSchedule(): () => void
   startRecorderFlush(): () => void
+  /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
+   *  daily deletion sweep (lib/sandbox/manager.ts startSandboxHousekeeping). Never throws. */
+  startSandbox(): () => void
   flushRecorder(): Promise<void>
   /** Heartbeat, carrying the worker-owned status the web shows. */
   beat(status?: WorkerBeatStatus): Promise<void>
@@ -129,6 +132,7 @@ export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerP
     deps.kick()
     stopSchedule = deps.startSchedule()
     stops.push(deps.startRecorderFlush())
+    stops.push(deps.startSandbox())
     log.info('[worker] executing agent runs')
   })()
 

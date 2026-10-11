@@ -25,6 +25,8 @@ export type ResourceName =
   | 'connection'
   /** Cycle 81: a workstream's state / used budget / attention changed (lib/agent/workstreams). */
   | 'workstream'
+  /** Cycle 82: a sandboxed workspace's container state / usage changed (lib/sandbox). */
+  | 'workspace'
   /** Cycle 81: not a resource — "you may have missed changes" (the bus listener reconnected);
    *  the client refetches every active query. Emitted by lib/bus/live.ts. */
   | 'resync'
