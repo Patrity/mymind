@@ -27,8 +27,6 @@ async function load(): Promise<Doc> {
 export function invalidateExecSecrets(): void { cache = null }
 
 async function save(doc: Doc): Promise<void> {
-  // Never keep an opt-in for a secret that is gone (or re-created later under the same name).
-  if (doc.sandbox) doc = { ...doc, sandbox: doc.sandbox.filter(n => n in doc.secrets) }
   await useDb().insert(settings).values({ key: KEY, value: doc, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: doc, updatedAt: new Date() } })
   cache = doc
@@ -48,6 +46,7 @@ export async function setSecret(name: string, value: string): Promise<void> {
 export async function deleteSecret(name: string): Promise<void> {
   const doc = await load()
   const { [name]: _drop, ...rest } = doc.secrets
+  // A deleted secret's opt-in goes with it (re-created later under the same name, it starts off).
   await save({ version: 1, secrets: rest, sandbox: (doc.sandbox ?? []).filter(n => n !== name) })
 }
 export class UnknownSecretError extends Error { override name = 'UnknownSecretError' }
