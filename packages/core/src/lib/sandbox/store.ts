@@ -35,16 +35,23 @@ export const dbWorkspaceStore: WorkspaceStore = {
     const [r] = await useDb().select().from(workspaces).where(eq(workspaces.id, id)).limit(1)
     return r ?? null
   },
+  // Change-only (Task 3): ensureContainer records the container on EVERY command, and the Files /
+  // Shells UI refetches on each `workspace` event — an unconditional publish made each UI read
+  // trigger the next one (a refetch loop), and spammed the live bus during agent runs.
   async setContainer(id, containerId, state) {
-    await useDb().update(workspaces).set({ containerId, state }).where(eq(workspaces.id, id))
-    publish(id)
+    const changed = await useDb().update(workspaces).set({ containerId, state })
+      .where(and(eq(workspaces.id, id), sql`(${workspaces.containerId} is distinct from ${containerId}::text or ${workspaces.state} <> ${state}::text)`))
+      .returning({ id: workspaces.id })
+    if (changed.length) publish(id)
   },
   async touch(id) {
     await useDb().update(workspaces).set({ lastUsedAt: new Date() }).where(eq(workspaces.id, id))
   },
   async setUsage(id, bytes, inodes) {
-    await useDb().update(workspaces).set({ bytesUsed: bytes, inodesUsed: inodes }).where(eq(workspaces.id, id))
-    publish(id)
+    const changed = await useDb().update(workspaces).set({ bytesUsed: bytes, inodesUsed: inodes })
+      .where(and(eq(workspaces.id, id), sql`(${workspaces.bytesUsed} <> ${bytes}::bigint or ${workspaces.inodesUsed} <> ${inodes}::int)`))
+      .returning({ id: workspaces.id })
+    if (changed.length) publish(id)
   },
   async setTainted(id, tainted) {
     await useDb().update(workspaces).set(tainted ? { tainted: true, taintedAt: new Date() } : { tainted: false, taintedAt: null }).where(eq(workspaces.id, id))

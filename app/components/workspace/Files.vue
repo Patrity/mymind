@@ -31,6 +31,8 @@ function toItems(nodes: FileNode[]): Item[] {
     onSelect: () => { if (n.type === 'file') selected.value = n.path }
   }))
 }
+// reka's TreeRoot also calls getKey with values that are not our items (e.g. an empty selection).
+const keyOf = (i: Partial<Item> | undefined) => i?.node?.path ?? String(i?.label ?? '')
 const items = computed(() => toItems(buildTree(tree.value?.entries ?? [])))
 
 const kind = computed(() => (selected.value ? viewKind(selected.value) : { kind: 'text' as const }))
@@ -90,15 +92,15 @@ const downloadHref = computed(() => selected.value ? `/api/workspaces/${props.wo
         <UTree
           v-else
           :items="items"
-          :get-key="(i: Item) => i.node.path"
+          :get-key="keyOf"
           size="sm"
           data-testid="workspace-tree"
         >
           <template #item-trailing="{ item, expanded }">
             <span class="flex items-center gap-1 text-xs text-dimmed tabular-nums">
-              <span v-if="(item as Item).node.skipped">not listed</span>
-              <span v-else-if="(item as Item).node.type === 'link'">→ {{ (item as Item).node.target }}</span>
-              <span v-else>{{ formatBytes((item as Item).node.bytes) }}</span>
+              <span v-if="(item as Item).node?.skipped">not listed</span>
+              <span v-else-if="(item as Item).node?.type === 'link'">→ {{ (item as Item).node?.target }}</span>
+              <span v-else>{{ formatBytes((item as Item).node?.bytes) }}</span>
               <UIcon
                 v-if="(item as Item).children?.length"
                 name="i-lucide-chevron-down"

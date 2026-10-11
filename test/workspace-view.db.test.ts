@@ -19,6 +19,12 @@ vi.mock('@mymind/core/lib/exec/secrets', async orig => ({
   getDecryptedSecrets: async () => ({ MM_TEST_SECRET: 'mm-test-SECRET-value-82' })
 }))
 
+const published = vi.hoisted(() => [] as Array<{ resource: string; id?: string }>)
+vi.mock('@mymind/core/utils/live-bus', async orig => {
+  const real = await orig<typeof import('@mymind/core/utils/live-bus')>()
+  return { ...real, publishChange: (e: { resource: string; id?: string }) => { published.push(e); return real.publishChange(e as never) } }
+})
+
 import { inArray } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { workspaces, workspaceShells } from '@mymind/core/db/schema'
@@ -94,6 +100,20 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     expect(by['rootlink']).toMatchObject({ type: 'link', target: '/' })
     expect(Object.keys(by).some(p => p.startsWith('rootlink/'))).toBe(false)
     expect(t.entries.findIndex(e => e.path === 'src')).toBeLessThan(t.entries.findIndex(e => e.path === 'README.md'))
+  }, 60_000)
+
+  it('reads do not re-publish an unchanged workspace (the UI refetches on every workspace event — a publish per read looped)', async () => {
+    await viewTree(ws) // container up and recorded
+    published.length = 0
+    await viewTree(ws)
+    await viewFile(ws, 'README.md')
+    expect(published.filter(e => e.resource === 'workspace' && e.id === ws)).toEqual([])
+    const { dbWorkspaceStore } = await import('@mymind/core/lib/sandbox/store')
+    await dbWorkspaceStore.setUsage(ws, 123, 4)
+    await dbWorkspaceStore.setUsage(ws, 123, 4)
+    await dbWorkspaceStore.setContainer(ws, null, 'stopped')
+    await dbWorkspaceStore.setContainer(ws, null, 'stopped')
+    expect(published.filter(e => e.resource === 'workspace' && e.id === ws)).toHaveLength(2)
   }, 60_000)
 
   it('tree caps at 500 entries', async () => {
