@@ -2,24 +2,30 @@
 // stopClaiming() → no further claims (pumpOnce/kick), waitForInFlight() resolves only after the runs
 // already executing have fully unwound. Fake runs; scoped to conversations this file creates (the dev
 // DB is shared); claiming is resumed after each test so other files in this process are unaffected.
+// Also: the web's remote execution mode (AGENT_EXECUTOR=worker) turns a kick into a worker command.
 process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { eq, inArray } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
-import { agentInbox, agentRuns, conversationMessages, conversations, type AgentRun } from '@mymind/core/db/schema'
-import { _resumeClaimingForTests, abortRunAndWait, claimingIsStopped, enqueue, inFlightRunIds, pumpOnce, stopClaiming, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
+import { agentInbox, agentRuns, conversationMessages, conversations, workerCommands, type AgentRun } from '@mymind/core/db/schema'
+import { _resumeClaimingForTests, abortRunAndWait, claimingIsStopped, enqueue, inFlightRunIds, pumpOnce, setExecutionMode, stopClaiming, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
+import { setBusNs } from '@mymind/core/lib/bus/ns'
+import { closeListener } from '@mymind/core/lib/bus/listen'
 import type { RunOutcome } from '@mymind/core/lib/agent/runtime/types'
 
 const convIds: string[] = []
-afterEach(() => { _resumeClaimingForTests() })
+const NS = `t2-drain-${process.pid}`
+afterEach(() => { _resumeClaimingForTests(); setExecutionMode('local'); setBusNs(null) })
 afterAll(async () => {
   const db = useDb()
   await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
   await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
   await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
   await db.delete(conversations).where(inArray(conversations.id, convIds))
+  await db.delete(workerCommands).where(eq(workerCommands.ns, NS))
+  await closeListener()
 })
 
 async function queued(text: string) {
@@ -84,5 +90,22 @@ describe('worker drain seam', () => {
     await isRunning
     expect(await abortRunAndWait(a.runId, 5_000)).toEqual({ settled: true })
     expect(await statusOf(a.runId)).toBe('aborted')
+  })
+
+  it('remote execution mode (web with AGENT_EXECUTOR=worker): enqueue\'s kick is a `kick` command, nothing is claimed here', async () => {
+    setBusNs(NS)
+    setExecutionMode('remote')
+    const r = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: 'DRAIN-TEST remote', modality: 'text' } })
+    convIds.push(r.conversationId)
+    const deadline = Date.now() + 5_000
+    let cmds: Array<typeof workerCommands.$inferSelect> = []
+    while (Date.now() < deadline) {
+      cmds = await useDb().select().from(workerCommands).where(eq(workerCommands.ns, NS))
+      if (cmds.length) break
+      await new Promise(res => setTimeout(res, 50))
+    }
+    expect(cmds.map(c => c.type)).toEqual(['kick'])
+    await new Promise(res => setTimeout(res, 200))
+    expect(await statusOf(r.runId)).toBe('queued') // the web never pumped it
   })
 })
