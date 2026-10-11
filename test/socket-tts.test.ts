@@ -146,6 +146,8 @@ describe('socket TTS (web-side speech for the originating socket)', () => {
     expect(h.spoken).toEqual(['Said aloud.'])
     h.tts.frame('c1', chunk({ type: 'error', errorText: 'boom' }), { runId: 'run-1' })
     h.tts.frame('c1', delta('Too late to say this. '), { runId: 'run-1' })
+    await settle() // the error CHUNK alone ends it (not only the legacy error frame below)
+    expect(h.spoken).toEqual(['Said aloud.'])
     h.tts.frame('c1', { type: 'error', message: 'boom' }, { runId: 'run-1' })
     h.tts.frame('c1', state('idle'), { runId: 'run-1' })
     await settle()
