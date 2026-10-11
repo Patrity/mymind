@@ -4,6 +4,7 @@
 import type { MaybeRefOrGetter } from 'vue'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import type { WorkstreamBudget, WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
+import type { SandboxHealth } from '@mymind/core/shared/types/workspaces'
 
 /** The readable text of a failed workstream request (the routes put it in `data.message`; h3
  *  strips non-ASCII from statusMessage). `cap` marks the "3 already in progress" refusal. */
@@ -58,11 +59,17 @@ export function useWorkstreamActions() {
 export function useWorkerStatus() {
   const { data } = useQuery({
     queryKey: ['agent', 'worker'] as const,
-    queryFn: () => $fetch<{ online: boolean; beatAt: string | null }>('/api/agent/worker'),
+    queryFn: () => $fetch<{ online: boolean; beatAt: string | null; sandbox: SandboxHealth | null }>('/api/agent/worker'),
     refetchInterval: 10_000,
     refetchIntervalInBackground: false
   })
   const offline = computed(() => data.value?.online === false)
   const beatAt = computed(() => data.value?.beatAt ?? null)
-  return { offline, beatAt }
+  // Cycle 82 final review I6: why the worker's sandbox preflight failed (null = fine / unknown). Only
+  // from a live worker — an offline one has its own banner.
+  const sandboxProblem = computed(() => {
+    const s = data.value?.sandbox
+    return data.value?.online && s && !s.ok ? s.reason : null
+  })
+  return { offline, beatAt, sandboxProblem }
 }

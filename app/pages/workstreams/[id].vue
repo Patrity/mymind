@@ -209,6 +209,7 @@ async function send() {
         </template>
       </UDashboardNavbar>
       <AgentWorkerOfflineBanner />
+      <AgentSandboxUnavailableBanner />
       <AgentReconnectingBanner :show="voice.reconnecting.value" />
     </template>
 

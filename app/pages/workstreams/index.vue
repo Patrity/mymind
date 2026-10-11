@@ -84,6 +84,7 @@ async function create() {
         </template>
       </UDashboardNavbar>
       <AgentWorkerOfflineBanner />
+      <AgentSandboxUnavailableBanner />
     </template>
 
     <template #body>

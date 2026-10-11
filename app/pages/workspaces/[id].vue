@@ -52,6 +52,7 @@ const tabs = [
         </template>
       </UDashboardNavbar>
       <AgentWorkerOfflineBanner />
+      <AgentSandboxUnavailableBanner />
     </template>
 
     <template #body>
