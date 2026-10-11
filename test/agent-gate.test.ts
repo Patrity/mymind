@@ -94,8 +94,8 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   // start_workstream (cycle 81, review I2 ruling): a background run may not spawn hours of new
   // unattended work by itself — proposed to /review, replayed on approval
   start_workstream: 'propose',
-  // answer_workstream (cycle 81, review I3 ruling): passes Tony's own words to a waiting workstream
-  answer_workstream: 'run'
+  // answer_workstream (cycle 81, review I3; fix round 2): text into a waiting workstream — proposed headless
+  answer_workstream: 'propose'
 }
 
 // The workstream-only tools (cycle 81, spec §5.3) are not in bridgetProfile: they live only in a

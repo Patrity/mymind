@@ -121,17 +121,6 @@ export function decideBusApproval(d: CommandPayloads['approval-decision']): bool
   return true
 }
 
-/** Cycle 81 (workstreams, review I1): a card restored after a restart has no live tool call waiting
- *  on it. Registered here so the SAME decision path (decideBusApproval ← `approval-decision`, with
- *  its allowlist and logging rules) answers it; `onDecided` takes the outcome. */
-export function registerDetachedApproval(requestId: string, runId: string, req: ApprovalRequest, onDecided: (approved: boolean) => void): void {
-  pending.set(requestId, { runId, req, finish: (approved) => { pending.delete(requestId); onDecided(approved) } })
-}
-/** Forget a restored card without deciding it (withdrawn). */
-export function dropDetachedApproval(requestId: string): boolean {
-  return pending.delete(requestId)
-}
-
 /** Request ids still waiting on Tony, for `runId` or all runs (tests, diagnostics). */
 export function pendingBusApprovals(runId?: string): string[] {
   return [...pending].filter(([, p]) => !runId || p.runId === runId).map(([id]) => id)

@@ -22,7 +22,8 @@ export async function replayAgentAction(
 ): Promise<{ ok: true; summary: string; undoToken?: string } | { ok: false; error: string }> {
   // start_workstream is profile-only (never on MCP), so it is not in agentTools — but a headless run
   // proposes it (gate.ts). Imported here, at call time: the tools module sits on an import cycle.
-  const replayable = deps.tools ?? [...agentTools, (await import('../tools/workstreams')).startWorkstreamTool]
+  const ws = deps.tools ? null : await import('../tools/workstreams')
+  const replayable = deps.tools ?? [...agentTools, ws!.startWorkstreamTool, ws!.answerWorkstreamTool]
   const t = replayable.find(x => x.name === p.tool)
   if (!t) return { ok: false, error: `unknown tool ${p.tool}` }
   if (t.dangerous) return { ok: false, error: `${t.name} is not replayable` }

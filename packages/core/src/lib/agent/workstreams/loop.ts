@@ -28,8 +28,8 @@ import { publishChange } from '../../../utils/live-bus'
 import { createRun } from '../runtime/runs'
 import { abortRun } from '../runtime/aborts'
 import { drainSteerFor, pushSteer } from '../runtime/inbox'
-import { busApprovalChannel, decideBusApproval, dropDetachedApproval, pendingBusApprovals, registerDetachedApproval } from '../runtime/bus-approvals'
-import { clientApprovalFrame, createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
+import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
+import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
 import { APPROVAL_WITHDRAWN } from '../../channels/approvals'
 import { parseToolsetIds } from '../toolsets'
 import type { ApprovalRequest } from '../types'
@@ -110,7 +110,7 @@ export interface Segment {
   approvalChannel(o: { publish: (f: HubFrame) => void; signal: AbortSignal }): Channel
   /** Drain while parked on an approval card (review I1): keep the request on the workstream
    *  (attention {approval}), withdraw the iMessage prompt, and abort the run — the next worker
-   *  restores the card (restoreParkedApprovals). False when nothing is waiting. */
+   *  withdraws the card and resumes (restoreParkedApprovals). False when nothing is waiting. */
   park(): boolean
   /** Stop the clocks, persist the final `used`, close the origin mirror. Idempotent. */
   end(): Promise<void>
@@ -136,8 +136,11 @@ export function yieldAllSegments(): void {
 /** finishRun was fenced (another process recovered the row): onSegmentFinished never runs for it
  *  here, so forget the segment — otherwise the stalled sweep would skip its workstream forever. */
 export function discardSegment(runId: string): void {
+  const s = active.get(runId) ?? ended.get(runId)
   active.delete(runId)
   ended.delete(runId)
+  // Close its clocks, iMessage races and origin mirror (fix round 2) — then forget it for good.
+  if (s) void s.end().catch(err => console.error('[workstreams] ending a discarded segment failed:', err)).finally(() => ended.delete(runId))
 }
 
 /**
@@ -188,9 +191,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   let mirror: RunEventWriter | null = null
   let done = false
   let parking = false
-  // A decision Tony made on a PARKED card (restoreParkedApprovals): the same call, re-issued by the
   // model in this segment, is approved without asking twice — once.
-  let preapproved = (run.input as RunInput).preapproved ?? null
 
   const wallNow = () => base.wallMs + activeMs + (activeSince !== null ? Date.now() - activeSince : 0)
   const hardLimit = o.final ? base.wallMs + FINAL_STEP_MAX_MS : budget.maxWallMs + WALL_HARD_GRACE_MS
@@ -295,10 +296,6 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
         }
       })
       return (req) => {
-        if (preapproved && req.tool === preapproved.tool && req.command === preapproved.command) {
-          preapproved = null
-          return Promise.resolve({ approved: true })
-        }
         current = req
         return bus(req)
       }
@@ -352,11 +349,10 @@ async function startAwayApproval(runId: string, requestId: string, req: Approval
 
 /** Queue the next segment. Null when one is already queued or running (the unique index): a
  *  continuation is then redundant, and Tony's words are folded into the queued one. */
-async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOrigin?: string; attachments?: RunInput['attachments']; origin?: string; preapproved?: RunInput['preapproved'] }): Promise<string | null> {
+async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOrigin?: string; attachments?: RunInput['attachments']; origin?: string }): Promise<string | null> {
   const runInput: RunInput = {
     text: input.text, modality: 'text',
     ...(input.origin ? { origin: input.origin } : {}),
-    ...(input.preapproved ? { preapproved: input.preapproved } : {}),
     ...(input.eventOrigin ? { eventOrigin: input.eventOrigin } : {}),
     ...(input.attachments?.length ? { attachments: input.attachments } : {}),
     ...(ws.toolsets.length ? { toolsets: ws.toolsets } : {})
@@ -618,7 +614,7 @@ async function expireOrphanPrompts(runId: string): Promise<void> {
  * Re-enqueue from the persisted thread. A first interruption is free; one that follows an
  * interruption counts toward the failure streak (a segment that kills the worker every time must
  * not loop forever). A segment that died PARKED on a card is not an interruption at all (review I1):
- * the card is restored by restoreParkedApprovals.
+ * the card is withdrawn and the work resumed by restoreParkedApprovals.
  */
 export async function onSegmentInterrupted(run: AgentRun): Promise<string | null> {
   active.delete(run.id)
@@ -653,10 +649,14 @@ export async function onSegmentInterrupted(run: AgentRun): Promise<string | null
   return continueWith(row, run, 'restarted')
 }
 
-// ── Parked approval cards (review I1) ───────────────────────────────────────────────────────
-
-type Detached = { workstreamId: string; runId: string; race: AbortController }
-const detached = new Map<string, Detached>()     // requestId → a restored card this process answers
+// ── Parked approval cards (review I1; fix round 2 C1 ruling) ───────────────────────────────────
+//
+// A card waiting when the worker drains (or dies) is never carried across the restart: its tool
+// call died with the run, and an approval is only ever bound to the live call that raised it (the
+// cycle-79 nonce/fingerprint pins are minted per call). So the new worker WITHDRAWS the old card —
+// no decision path, closed in every tab, its iMessage prompt recorded expired — and resumes the
+// workstream with a note that the action did NOT run. A re-issued call goes through the normal gate
+// and raises a FRESH card rendered from live content (attention {approval} again).
 
 function storedRequest(req: ApprovalRequest): StoredApprovalRequest {
   return {
@@ -678,30 +678,20 @@ async function publishCardFrames(ws: WorkstreamRow, runId: string, frame: HubFra
   }
 }
 
-/** Withdraw a parked card this process holds (its iMessage prompt too) and close it in every tab. */
+/** Withdraw a parked card: closed in every tab, its iMessage prompt expired. Nothing can decide it. */
 async function releaseParked(ws: WorkstreamRow): Promise<void> {
   const att = attentionOf(ws)
-  if (att?.kind !== 'approval' || !att.requestId) return
-  const d = detached.get(att.requestId)
-  detached.delete(att.requestId)
-  if (d) {
-    d.race.abort(APPROVAL_WITHDRAWN)
-    dropDetachedApproval(att.requestId)
-  }
-  if (att.runId) {
-    await publishCardFrames(ws, att.runId, { type: 'approval-resolved', requestId: att.requestId })
-    await expireOrphanPrompts(att.runId).catch(() => {})
-  }
+  if (att?.kind !== 'approval' || !att.requestId || !att.runId) return
+  await publishCardFrames(ws, att.runId, { type: 'approval-resolved', requestId: att.requestId })
+  await expireOrphanPrompts(att.runId).catch(() => {})
 }
 
 /**
- * Restore approval cards parked across a drain or a crash (review I1). For every workstream in
- * attention {approval} with a stored request and no segment running: register the request with the
- * SAME decision path as a live card (bus-approvals decideBusApproval ← the `approval-decision`
- * command), re-publish the card (workstream thread + origin chat; events.ts openApprovalFrames also
- * re-sends it on attach), and — Tony away — a fresh iMessage prompt. Approve → the next segment
- * starts with that exact call pre-approved once; deny → the next segment is told so. Idempotent:
- * run at boot and on every tick. `onlyConversations` is the test seam.
+ * Resume workstreams parked on an approval card across a drain or a crash (C1 ruling): for every
+ * workstream in attention {approval} with no segment queued or running (and none executing here),
+ * withdraw the old card and queue a segment that says the action did not run and must be re-issued
+ * if still needed. Idempotent; run on every production tick (the first one after boot).
+ * `onlyConversations` is the test seam.
  */
 export async function restoreParkedApprovals(opts: { onlyConversations?: string[] } = {}): Promise<number> {
   if (opts.onlyConversations && !opts.onlyConversations.length) return 0
@@ -710,47 +700,28 @@ export async function restoreParkedApprovals(opts: { onlyConversations?: string[
     : sql``
   const res = await useDb().execute(sql`
     select w.id from workstreams w
-    where w.state = 'attention' and w.attention->>'kind' = 'approval' and w.attention ? 'request'
+    where w.state = 'attention' and w.attention->>'kind' = 'approval'
       and not exists (select 1 from agent_runs r where r.conversation_id = w.conversation_id
                       and r.kind = 'workstream' and r.status in ('queued', 'running'))
       ${scope}`)
   let n = 0
   for (const { id } of res.rows as Array<{ id: string }>) {
+    if ([...active.values(), ...ended.values()].some(s => s.workstreamId === id)) continue
     const ws = await getWorkstream(id)
     const att = ws ? attentionOf(ws) : null
-    if (!ws || !att?.requestId || !att.request || !att.runId || detached.has(att.requestId)) continue
-    if ([...active.values()].some(s => s.workstreamId === id)) continue
-    const requestId = att.requestId
-    const runId = att.runId
-    const req: ApprovalRequest = { ...att.request }
-    const race = new AbortController()
-    detached.set(requestId, { workstreamId: id, runId, race })
-    registerDetachedApproval(requestId, runId, req, (approved) => {
-      void onParkedDecision(id, requestId, req, approved).catch(err => console.error('[workstreams] parked decision failed:', err))
+    if (!ws || att?.kind !== 'approval') continue
+    await releaseParked(ws)
+    const row = await patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention'])
+    if (!row) continue
+    const what = att.request ? `${att.request.tool} — ${att.request.logSummary ?? att.request.command}` : att.text
+    const runId = await enqueueSegment(row, {
+      text: `The agent worker restarted while this was waiting for Tony's approval (${what}). That action did NOT run and its approval request is gone. If it is still needed, make the call again — Tony will be asked to approve it again.`,
+      eventOrigin: 'segment:approval-lost'
     })
-    await publishCardFrames(ws, runId, clientApprovalFrame({ requestId, ...req }))
-    void startAwayApproval(runId, requestId, req, race.signal)
-    n++
+    if (runId) n++
   }
+  if (n) await kick()
   return n
-}
-
-async function onParkedDecision(workstreamId: string, requestId: string, req: ApprovalRequest, approved: boolean): Promise<void> {
-  const d = detached.get(requestId)
-  detached.delete(requestId)
-  d?.race.abort(APPROVAL_WITHDRAWN)
-  const ws = await getWorkstream(workstreamId)
-  if (!ws) return
-  if (d) await publishCardFrames(ws, d.runId, { type: 'approval-resolved', requestId })
-  const att = attentionOf(ws)
-  if (ws.state !== 'attention' || att?.requestId !== requestId) return
-  const row = await patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention'])
-  if (!row) return
-  const what = req.logSummary ?? req.command
-  await enqueueSegment(row, approved
-    ? { text: `Tony approved: ${req.tool} — ${what}. Continue: make that call again now; it will go through without asking.`, eventOrigin: 'segment:approved', preapproved: { tool: req.tool, command: req.command } }
-    : { text: `Tony denied: ${req.tool} — ${what}. Continue without it.`, eventOrigin: 'segment:denied' })
-  await kick()
 }
 
 /**
@@ -848,7 +819,7 @@ export async function cancelWorkstream(ws: WorkstreamRow): Promise<void> {
 /** Resume: a failed/cancelled workstream starts again (a used-up budget is extended by one
  *  segment's worth of steps and 30 min, so it can actually move); an attention one continues
  *  without an answer (or with `text` as the answer); a stalled one gets its next segment. */
-export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promise<void> {
+export async function resumeWorkstream(ws: WorkstreamRow, text?: string, opts: { /** test seam */ cap?: number } = {}): Promise<void> {
   if (ws.state === 'done') throw new Error('the workstream is already done')
   if (ws.state === 'failed' || ws.state === 'cancelled') {
     const used = usedOf(ws)
@@ -857,11 +828,21 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
     const budget = exhausted(ws)
       ? clampBudget({ maxSteps: Math.max(b.maxSteps, used.steps + SEGMENT_MAX_STEPS), maxWallMs: Math.max(b.maxWallMs, used.wallMs + 30 * 60_000) })
       : b
-    const row = await patchWorkstream(ws.id, {
-      state: 'running', cancelRequested: false, failures: 0, failureReason: null, lastOutcome: null,
-      finishedAt: null, attention: null, summary: null, budget
-    }, ['failed', 'cancelled'])
+    // Reactivating counts against the cap like a start (fix round 2), under the same lock.
+    const row = await useDb().transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:workstreams:start'))`)
+      const open = await tx.select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, RUNNABLE))
+      if (open.length >= (opts.cap ?? MAX_ACTIVE_WORKSTREAMS)) {
+        throw new WorkstreamCapError(`There are already ${open.length} workstreams in progress (the limit is ${opts.cap ?? MAX_ACTIVE_WORKSTREAMS}) — finish or cancel one before resuming this one.`)
+      }
+      const [r] = await tx.update(workstreams).set({
+        state: 'running', cancelRequested: false, failures: 0, failureReason: null, lastOutcome: null,
+        finishedAt: null, attention: null, summary: null, budget, updatedAt: sql`now()`
+      }).where(and(eq(workstreams.id, ws.id), inArray(workstreams.state, ['failed', 'cancelled']))).returning()
+      return r ?? null
+    })
     if (!row) return
+    publishWorkstream(row.id)
     ws = row
   }
   if (text) { await replyToWorkstream(ws, { text, modality: 'text' }); return }

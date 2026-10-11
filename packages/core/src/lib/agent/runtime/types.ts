@@ -23,9 +23,6 @@ export interface RunInput {
    *  through eventModelText) instead of a user row — a workstream segment's own prompt ("continue",
    *  "restarted", "budget exhausted") is not something Tony said. Its user-message frame is withheld. */
   eventOrigin?: string
-  /** Cycle 81 (workstreams, review I1): Tony approved this exact call on a card restored after a
-   *  restart — the segment approves the same tool + command once without asking again. */
-  preapproved?: { tool: string; command: string }
 }
 
 export type RunKind = 'turn' | 'workstream'

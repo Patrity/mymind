@@ -25,8 +25,8 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   // mailbox, so it runs headless; sending is gmail_send, which is dangerous and excluded.
   'gmail_draft',
   // workstreams (cycle 81, spec §5.3): finish_workstream and ask_tony only report to Tony from inside
-  // a workstream; answer_workstream passes his own words on (review I3 ruling).
-  'finish_workstream', 'ask_tony', 'answer_workstream'
+  // a workstream.
+  'finish_workstream', 'ask_tony'
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
   // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run
@@ -36,7 +36,10 @@ export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edi
   'calendar_write_event',
   // start_workstream (cycle 81, review I2 ruling): a background run must not spawn hours of new
   // unattended work on its own — Tony approves it as a proposal (replay starts it).
-  'start_workstream'])
+  'start_workstream',
+  // answer_workstream (fix round 2, I-new-1): a background run must not feed a workstream text of
+  // its own choosing — proposed, replayed on approval
+  'answer_workstream'])
 
 // Tools that run headless DESPITE being `destructive`-kind — checked BEFORE the destructive rule
 // below, so they never fall into 'propose'. Currently just delete_job: spec D2 says job

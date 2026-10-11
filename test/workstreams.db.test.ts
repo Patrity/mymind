@@ -8,6 +8,13 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, beforeAll, afterEach, beforeEach } from 'vitest'
 import { vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+// gmail_send (C1 test) runs for real against a fake Gmail: one connection, no network.
+vi.mock('@mymind/core/lib/google/connections', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@mymind/core/lib/google/connections')>()),
+  listConnections: vi.fn(async () => [{ id: 'conn-work', accountId: 'acc', userId: 'u', googleSub: 's', provider: 'google', label: 'work', email: 'tony@work.com', status: 'ok', lastError: null }]),
+  touchConnection: vi.fn(async () => {}),
+  markReconnect: vi.fn(async () => {})
+}))
 
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
@@ -31,6 +38,10 @@ import { subscribeChanges } from '@mymind/core/utils/live-bus'
 import type { RunAgentCtx, AgentMessage, AgentEvent } from '@mymind/core/lib/agent/run'
 import type { ApprovalRequest } from '@mymind/core/lib/agent/types'
 import type { LiveEvent } from '@mymind/core/shared/types/live'
+import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
+import { gmailDeps, gmailSendTool } from '@mymind/core/lib/agent/tools/gmail'
+import { fakeFetch } from '@mymind/core/lib/google/fake-fetch'
+const G = '/gmail/v1/users/me'
 
 const NS = `t5-ws-${process.pid}`
 const convIds: string[] = []
@@ -472,51 +483,93 @@ async function killSegment(convId: string, runId?: string) {
 }
 
 describe('fix round 1', () => {
-  it('I1: a drain while parked on a card PARKS it (no interruption), the next worker restores the card, and the decision resumes with that exact call pre-approved', async () => {
-    let answers: Array<{ approved: boolean }> = []
-    const { seen, runFn, drive } = harness(async function* (ctx, _m, seg) {
+  it('C1: a card parked across a restart is WITHDRAWN (it can never be approved); the re-issued gmail_send raises a FRESH card from the live draft, and only that approval sends', async () => {
+    const draft = { body: 'BODY-V1', msg: 'm-v1' }
+    const sent: Array<{ body: string }> = []
+    gmailDeps.google = {
+      fetch: fakeFetch({
+        [`GET ${G}/drafts/d1`]: () => ({ json: { id: 'd1', message: { id: draft.msg, threadId: 't1', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: Buffer.from(draft.body).toString('base64url') } } } } }),
+        [`POST ${G}/drafts/send`]: () => { sent.push({ body: draft.body }); return { json: { id: 'sent-1', threadId: 't1' } } }
+      }),
+      token: async () => 't-work',
+      refresh: async () => { throw new Error('no refresh in tests') },
+      sleep: async () => {}
+    }
+    const results: unknown[] = []
+    const { runFn } = harness(async function* (ctx) {
       step(ctx)
-      if (seg === 0) {
-        answers.push(await ctx.requestApproval!(req1()))
-        for (let i = 0; i < 3 && !ctx.shouldStop?.(); i++) step(ctx) // must never be reached on park
-      } else {
-        answers.push(await ctx.requestApproval!(req1()))   // re-issued: approved at once, no card
-        await callTool(ctx, 'finish_workstream', { summary: 'done after restart' })
-      }
+      const set = buildAiTools([gmailSendTool], { signal: ctx.signal, requestApproval: ctx.requestApproval, runId: ctx.runId, onEvent: () => {} })
+      results.push(await (set.gmail_send!.execute as (i: unknown, o: { toolCallId: string }) => Promise<unknown>)({ account: 'work', draftId: 'd1' }, { toolCallId: 'c1' }))
+      yield { type: 'tool-result', name: 'gmail_send', summary: 'x' }
       yield { type: 'done' }
     })
-    const { ws, origin } = await newWorkstream('park')
+    const { ws, origin } = await newWorkstream('c1-gmail')
     await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
-    const waitingRow = await waitForApproval(ws.id)
-    const att = waitingRow.attention as { requestId: string; runId: string; request: { command: string } }
-    expect(att.request.command).toBe(req1().command)
-    expect(iApprovals).toHaveLength(1)
+    const a = (await waitForApproval(ws.id)).attention as { requestId: string }
+    const shown = await until(async () => { const f = await openApprovalFrames(origin); return f.length ? f : null })
+    expect(shown.map(f => f.frame.command)).toEqual([expect.stringContaining('BODY-V1')])
     stopClaiming()
     try { expect(await waitForInFlight(10_000)).toBe(true) } finally { _resumeClaimingForTests() }
-    expect(iApprovals[0]!.signal.reason).toBe('withdrawn')   // the old iMessage prompt is withdrawn, not denied
-    expect(answers).toEqual([{ approved: false }])            // the dead tool call; the model never saw a step after it
-    const parked = (await getWorkstream(ws.id))!
-    expect(parked).toMatchObject({ state: 'attention', lastOutcome: 'parked', failures: 0 })
-    expect((parked.attention as { requestId: string }).requestId).toBe(att.requestId)
-    expect((await segRuns(ws.conversationId)).map(r => r.status)).toEqual(['aborted'])
-    expect((parked.used as { steps: number }).steps).toBe(1)
+    expect(iApprovals[0]!.signal.reason).toBe('withdrawn')
 
-    // The next worker: the card is back, on both threads, decided through the usual path.
+    // The next worker withdraws the old card and resumes with a note — it never re-shows it.
     expect(await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })).toBe(1)
-    expect(await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })).toBe(0) // idempotent
-    expect(pendingBusApprovals()).toContain(att.requestId)
-    expect((await openApprovalFrames(ws.conversationId)).map(f => f.frame.requestId)).toEqual([att.requestId])
-    expect((await openApprovalFrames(origin)).map(f => f.frame.requestId)).toEqual([att.requestId])
-    expect(iApprovals).toHaveLength(2)                       // away: a fresh iMessage prompt
-    expect(decideBusApproval({ requestId: att.requestId, approved: true })).toBe(true)
-    const next = await until(async () => (await activeSegs(ws.conversationId))[0])
-    expect(next.input).toMatchObject({ eventOrigin: 'segment:approved', preapproved: { tool: 'exec', command: req1().command } })
-    expect(iApprovals[1]!.signal.aborted).toBe(true)
+    expect(await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })).toBe(0)
+    expect(decideBusApproval({ requestId: a.requestId, approved: true })).toBe(false)  // no decision path
+    expect(await openApprovalFrames(ws.conversationId)).toEqual([])
     expect(await openApprovalFrames(origin)).toEqual([])
-    await drive(ws.conversationId)
-    expect(answers).toEqual([{ approved: false }, { approved: true }])
-    expect(seen).toHaveLength(2)
-    expect((await getWorkstream(ws.id))!.state).toBe('done')
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', attention: null, failures: 0 })
+    const [note] = await activeSegs(ws.conversationId)
+    expect(note!.input).toMatchObject({ eventOrigin: 'segment:approval-lost', text: expect.stringMatching(/did NOT run/) })
+    expect(sent).toEqual([])
+
+    // Tony (or the model) edits the draft; the re-issued call is a NEW card with the NEW content.
+    draft.body = 'BODY-V2'
+    draft.msg = 'm-v2'
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
+    const b = await until(async () => {
+      const r = await getWorkstream(ws.id)
+      const att = r?.attention as { kind?: string; requestId?: string } | null
+      return att?.kind === 'approval' && att.requestId !== a.requestId && pendingBusApprovals().includes(att.requestId!) ? att : null
+    })
+    const cards = await until(async () => { const f = await openApprovalFrames(ws.conversationId); return f.length ? f : null })
+    expect(cards.map(c => c.frame.requestId)).toEqual([b.requestId])
+    expect(cards[0]!.frame.command).toContain('BODY-V2')
+    expect(cards[0]!.frame.command).not.toContain('BODY-V1')
+    expect(sent).toEqual([])                                   // nothing went out without the fresh approval
+    expect(decideBusApproval({ requestId: b.requestId!, approved: true })).toBe(true)
+    expect(await waitForInFlight(10_000)).toBe(true)
+    expect(sent).toEqual([{ body: 'BODY-V2' }])
+    expect(results.at(-1)).toMatchObject({ sent: true })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('C1: an exec re-issued after a restart (here with a different cwd) needs its OWN approval — nothing is carried over', async () => {
+    const answers: Array<{ approved: boolean }> = []
+    const exec = (cwd: string): ApprovalRequest => ({ tool: 'exec', command: `t5-rm-${process.pid} build`, proposedPattern: 'x', allowlistable: false, args: { command: `t5-rm-${process.pid} build`, cwd } })
+    const { runFn } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      answers.push(await ctx.requestApproval!(exec(seg === 0 ? '/tmp/project' : '/')))
+      yield { type: 'tool-result', name: 'exec', summary: 'x' }
+      yield { type: 'done' }
+    })
+    const { ws } = await newWorkstream('c1-exec')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
+    const a = (await waitForApproval(ws.id)).attention as { requestId: string }
+    stopClaiming()
+    try { expect(await waitForInFlight(10_000)).toBe(true) } finally { _resumeClaimingForTests() }
+    await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
+    const b = await until(async () => {
+      const att = (await getWorkstream(ws.id))?.attention as { kind?: string; requestId?: string } | null
+      return att?.kind === 'approval' && att.requestId !== a.requestId ? att : null
+    })
+    await sleep(200)
+    expect(answers).toEqual([{ approved: false }])            // the dead call only — the re-issue is waiting
+    expect(pendingBusApprovals()).toContain(b.requestId)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    expect(await waitForInFlight(10_000)).toBe(true)
+    expect(answers).toEqual([{ approved: false }, { approved: false }])
   })
 
   it('I1: a worker that dies while parked on a card never counts it as an interruption — four times over', async () => {
@@ -612,6 +665,26 @@ describe('fix round 1', () => {
     expect(out.result).toMatchObject({ ok: true })
     expect((await activeSegs(ws.conversationId)).map(r => (r.input as { text: string }).text)).toEqual(['the blue one'])
     expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', attention: null })
+    // Fix round 2 (I-new-1): only a QUESTION can be answered — never running work, never an approval card.
+    expect((await tool.handler({ id: ws.id, text: 'more' }, { signal: new AbortController().signal })).result).toMatchObject({ ok: false, error: /not waiting on a question/ })
+    await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.conversationId, ws.conversationId))
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'approval', text: 'run it?', requestId: '00000000-0000-4000-8000-0000000000bb', runId: q!.id } })
+    expect((await tool.handler({ id: ws.id, text: 'deny it' }, { signal: new AbortController().signal })).result).toMatchObject({ ok: false })
+    expect(await activeSegs(ws.conversationId)).toEqual([])
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'attention', attention: { kind: 'approval' } })
+    expect(tool.outbound).toBe(true)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('fix round 2: resuming a failed/cancelled workstream respects the active cap', async () => {
+    const { ws } = await newWorkstream('resume-cap')
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    const open = (await useDb().select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, ['queued', 'running', 'attention']))).length
+    const { resumeWorkstream } = await import('@mymind/core/lib/agent/workstreams/loop')
+    await expect(resumeWorkstream((await getWorkstream(ws.id))!, undefined, { cap: open })).rejects.toThrow(WorkstreamCapError)
+    expect((await getWorkstream(ws.id))!.state).toBe('cancelled')
+    await resumeWorkstream((await getWorkstream(ws.id))!, undefined, { cap: open + 1 })
+    expect((await getWorkstream(ws.id))!.state).toBe('running')
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
