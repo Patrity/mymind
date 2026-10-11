@@ -1,8 +1,8 @@
 ---
 title: Agent Runtime (server-owned turns, main thread, wake)
 status: built
-cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74; `reply_to`, iMessage approvals and channel deliveries: cycle 75)
-updated: 2026-10-03
+cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74; `reply_to`, iMessage approvals and channel deliveries: cycle 75; separate agent worker + Postgres bus: cycle 81)
+updated: 2026-10-11
 ---
 
 # Agent Runtime
@@ -21,6 +21,64 @@ Related: [agent.md](agent.md) (the `/agent` surface), [voice-agent.md](voice-age
 The code is the source of truth. Where the spec and the code disagree, this page describes the
 code. The build's deviations from the spec are listed in the handover.
 
+## Processes and the bus (cycle 81)
+
+Since cycle 81 **the web never executes a run**. The executor is the agent worker
+(`apps/worker`, systemd unit `mymind-worker`; ops in [DEPLOYMENT.md §21](../DEPLOYMENT.md)). Spec:
+[`2026-10-11-worker-and-workstreams-design.md`](../superpowers/specs/2026-10-11-worker-and-workstreams-design.md).
+
+| Process | Owns |
+|---|---|
+| **agent worker** (`apps/worker/src/{main,worker,env,command-deps}.ts`) | claiming and executing every run (chat turns, wakes, jobs, [workstream](workstreams.md) segments); boot recovery (`runtime/boot.ts`, exclusive in prod); the 5 s `workerTick`; the agent cron tasks (`lib/agent/scheduled.ts` on croner: `summarize-threads`, `reflect-threads`, `reflect-jobs`); the activity-log flush; the iMessage catch-up; undo tokens; the approval nonce and pins of the runs it executes |
+| **web** (Nuxt) | UI, API, the voice WebSocket (STT in, **TTS out**, `server/lib/voice/socket-tts.ts`), the approval UI, presence, settings. `server/plugins/agent-runtime.ts` only sets `remote` execution mode (`runtime/execution-mode.ts`), so `enqueue`'s kick becomes a `kick` command, and starts the live bridge |
+
+They talk only through Postgres (`packages/core/src/lib/bus/`, see [core-package.md](core-package.md#the-bus-cycle-81)):
+
+- **`run_events`** (worker → web). The runner's publisher (`runtime/bus-publisher.ts`) appends
+  every hub frame, without audio. Text and reasoning deltas are coalesced at about 50 ms per run.
+  Each batch is followed by a `NOTIFY run_event` pointer. The web's `relay.ts` fans the frames out to
+  the sockets viewing each conversation. A late join or a socket reconnecting to a new web process
+  re-reads the running runs from seq 1. Retention: events of runs finished more than 7 days ago are
+  pruned daily. A workstream segment's events are kept while its workstream exists.
+- **`worker_commands`** (web → worker): `kick`, `abort` (Stop and `/clear`), `approval-decision`,
+  `undo`, `presence`, `invalidate` (a settings cache), `imessage-health`, `workstream-control`. The
+  sender NOTIFYs, and the worker also polls. A command that needs an answer (`/clear`'s abort, undo,
+  workstream controls) waits up to 10 s and then fails visibly. If no worker claimed it, it fails as
+  "nothing was done"; if one claimed it, the error says it "may still happen". It never reports a
+  silent success.
+- **`live_change`**. `publishChange` and `publishActivity` cross processes (`bus/live.ts`), with
+  echoes deduped by an origin id.
+- **`worker_heartbeat`**. One row per worker boot, beaten every 5 s, carrying worker-only status
+  (iMessage health). If the newest beat is more than 30 s old, the web shows "agent worker
+  offline" (`WorkerOfflineBanner.vue`). Chat input still enqueues; runs wait.
+- Everything is scoped by the **bus namespace** (`MYMIND_BUS_NS`, default `default`). Tests and
+  worktrees pin a unique one, so a dev worker never claims test commands on the shared dev DB.
+
+**Approvals across processes** (`runtime/bus-approvals.ts`). The worker publishes only the card's
+fields as an `approval` frame, to every socket viewing the thread. On attach, the web re-sends the
+thread's still-open cards (`openApprovalFrames`). The web forwards a decision **only for a card that
+socket was shown**. The nonce, the args and "always allow" eligibility never leave the worker.
+Chat approvals keep the 120 s auto-deny; workstream approvals wait with no timeout.
+
+**Orphan approval cards** (`app/components/agent/OrphanApproval.vue`). A pending approval with no
+tool part on screen can be a workstream card mirrored into its origin chat, or a card re-sent on
+attach for a run this transcript does not show. It is rendered on its own stand-in part
+(`orphanApprovals`, `app/lib/agent/approvals.ts`), so it can always be answered. It appears only
+after **`ORPHAN_APPROVAL_DELAY_MS = 1500`**. This is a heuristic: in an ordinary turn the `approval`
+frame can land just before the tool part that carries it, and without the delay the card would
+flash up twice. If the tool part arrives later than 1.5 s, a duplicate card can briefly show.
+
+**Worker resilience.** `installCrashTraps` (`apps/worker/src/worker.ts`) logs and records an
+`unhandledRejection` (activity_log `worker:unhandledRejection`, at most 20 a minute) and keeps
+going, which matches Nitro's trap. An `uncaughtException` is recorded, triggers a drain bounded at
+15 s, and exits 1. The unit restarts the worker every 5 s with no start limit. The `useDb()` pool
+has an `'error'` listener: an idle client's dead socket is logged, not fatal. The LISTEN client
+reconnects by itself, with a half-open ping. SIGTERM drains: the worker stops claiming and gives
+in-flight runs up to 60 s.
+
+**`/api/agent/chat` is gone** (cycle 81). The callerless SSE endpoint ran `runAgent` inside the web,
+the last exception to "the worker is the only executor".
+
 ## Modules
 
 | File | Responsibility |
@@ -29,7 +87,11 @@ code. The build's deviations from the spec are listed in the handover.
 | `queue.ts` | `enqueue` (resolve the session, then either steer or `createRun`), the pump (`pumpOnce` / `kick`), `execute` (10 s liveness bump, 5 min headless wall clock, `finishRun`, requeue of unread steers), `abortActive` / `abortActiveAndWait`, and `workerTick` (every 5 s: `recoverStale`, then `sweepCrashedFires()` (reliability pass: repairs `at` claims and event fire rows a crash left behind; see agent-jobs.md), then `jobsTick()` and `dueTaskEvents()` (cycle 74), then `startDeliveries()` (the outbox, started without awaiting it, single-flight; reliability pass) and `catchUpTick()` (cycle 75), each guarded on its own, then pump). `enqueue` carries an optional `replyTo` onto the new run, and `noSteer: true` (set by channel input) makes it always create a run, never steer. `workerTick` reaches `catchUpTick` through a dynamic `import()` (inbound.ts imports `enqueue` from queue.ts, so a static import back would be a cycle). After every run `execute` calls the jobs `onRunFinished` hook. |
 | `runs.ts` | Run store: `createRun`, `claimNextRun` (one statement, `for update skip locked`, headless slot cap), fenced `touchRun`/`finishRun`, `activeRunFor`, `recoverOrphans`, `listRuns`. |
 | `sessions.ts` | `resolveSession`. `main` returns the main conversation (created lazily; at most one, enforced by an index). `thread:new` makes a new side thread. `thread:<uuid>` returns an existing thread (the id's shape is validated before querying). `isolated:<slug>` makes a fresh thread titled `wake: <slug>`. |
-| `stream.ts` | `StreamHub`: per-conversation fan-out to sinks, a replay buffer of the running turn's JSON frames, and `only:` targeting for audio. `withCid` tags frames with `cid`. |
+| `stream.ts` | `StreamHub` frame types and `withCid` (tags frames with `cid`). Since cycle 81 the runner publishes through `bus-publisher.ts` (→ `run_events`); fan-out to sockets is the web's `lib/bus/relay.ts`. |
+| `bus-publisher.ts` | The runner's default publisher: every frame → the run-event log (cycle 81). |
+| `bus-approvals.ts` | The cross-process approval channel (cycle 81): card frame out, `approval-decision` command in. |
+| `boot.ts` | The executor's boot: recover orphans before the pump, install/revalidate jobs (cycle 81, moved from the web plugin). |
+| `execution-mode.ts` | `local` (the worker, tests) vs `remote` (the web): does this process execute runs? |
 | `inbox.ts` | `pushSteer` (atomic: inserts only if the run is still `running`), `drainSteerFor`, `requeueUnconsumed`. |
 | `steer.ts` | `spliceSteers`: re-splices steers into every later step's messages. The AI SDK rebuilds each step from the initial messages. |
 | `wake.ts` | `wake({ reason, prompt, sessionKey?, model?, jobId?, context? })`, the single headless entry point. |
@@ -43,8 +105,10 @@ code. The build's deviations from the spec are listed in the handover.
 | `event-text.ts` | How an `event` row reads to the model: a plain sentence with no brackets. |
 | `suppress.ts` | `isSuppressedReply`: `NO_REPLY` alone, or opening/closing a remainder of ≤ 300 chars. |
 
-Wiring: `server/plugins/agent-runtime.ts` runs `recoverOnBoot()`, installs/revalidates jobs, then
-`startWorker()`. Boot recovery failing does not stop the worker, because the periodic tick retries.
+Wiring (cycle 81): `apps/worker/src/main.ts` runs `bootAgentRuntime()` (`boot.ts`: `recoverOnBoot()`,
+install/revalidate jobs), then commands, the live bridge, the 5 s tick, the agent cron tasks and the
+recorder flush. Boot recovery failing does not stop the worker, because the periodic tick retries.
+The web's `server/plugins/agent-runtime.ts` starts none of this.
 
 ## Data model (migration 0054, additive)
 
@@ -304,6 +368,12 @@ Both tiers are fixed tiers in `assembleContext`, capped at the source.
 
 ## Rollback
 
+**Cycle 81 (the worker).** Rolling back below cycle 81 needs a specific order. Run
+`systemctl disable --now mymind-worker` **first**; otherwise the old web's in-process executor and
+the still-running worker are two executors on one DB. The full runbook is
+[DEPLOYMENT.md §21a](../DEPLOYMENT.md#21a-rollback). Within cycle ≥ 81 the worker alone rolls back
+one level with `deploy/worker-release.sh rollback`.
+
 Cycle 74 deleted the cycle-73 rollback lever (`server/lib/voice/ws-legacy.ts`, the
 `agent_runtime` settings flag, and every branch that read it) — `packages/core/src/lib/agent/runtime/` is
 now the only way a turn runs, unconditionally. Roll back by redeploying a cycle-73 build (revert
@@ -382,7 +452,8 @@ where kind = 'agent-action' order by created_at desc;
 
 - **No retry of interrupted runs.** A half-run tool loop is not safely repeatable. Tony sees the
   `runtime:restart` event row.
-- **One headless slot**, enforced per process by a count subquery with no lock.
+- **One headless slot**, enforced by a count subquery with no lock. That is safe because only the
+  one worker process claims (cycle 81).
 - **The UMAP layout still blocks briefly.** `computeLayoutAsync` yields between epochs; the
   worst stall went from 9434 ms to 4582 ms, and the remainder is umap-js's synchronous kNN init.
 - **The restart wedge is handled only in exclusive mode.** With `AGENT_RUNTIME_EXCLUSIVE=1`
