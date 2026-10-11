@@ -271,6 +271,17 @@ every retrieval keep working and hide the outage, and `activity_log` still logs
   a text-only reply has none, so the steer becomes a follow-up run (correct fallback, but not a
   steer). Make the run do several sequential tool calls ("call search_memories four separate
   times, one after another…") and send the steer right after the question.
+- **`/` commands need TWO Enters.** Open the menu with a real `type "/cle"` (`fill` does not
+  open it); the first `press Enter` only COMPLETES the item into the textarea (`/clear`), the
+  second submits it. For `/clear` mid-turn send both back-to-back — a fast model finishes a turn
+  in ~10s, so a pause between them turns a mid-turn test into an idle one (check
+  `agent_runs.status='running'` right before).
+- **Exec on a dev Mac is disabled** ("native exec requires running as root in the LXC"): start the
+  worker with `EXEC_UNCONFINED=1 EXEC_WORKSPACE_DIR=<scratch dir>` (non-production only). Approving
+  a card still resumes the run without it — the tool just errors instead of `denied`.
+- **Cycle 81: runs execute in apps/worker** — card decisions, Stop, `/clear`, undo, presence and
+  settings invalidation are `worker_commands` rows; read them (`where ns='<your MYMIND_BUS_NS>'`,
+  with `result`) to see exactly what the web sent and what the worker answered.
 - **Assert runs from the DB / `GET /api/agent/runs?conversationId=`**, and wake via
   `fetch('/api/admin/agent/wake', …)` from a logged-in page — it requires a session, not a token.
   To test "nobody watching", `goto` another page (e.g. `/tasks`) first; `tab-close` on the last
