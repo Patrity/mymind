@@ -29,6 +29,8 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     workstreamControl: vi.fn(async (p: { workstreamId: string }) => ({ id: p.workstreamId, state: 'cancelled' }) as unknown as WorkstreamDTO),
     workspaceReenableNetwork: vi.fn(async (p: { workspaceId: string }) => ({ id: p.workspaceId, tainted: false })),
     workspaceReadText: vi.fn(async (p: { workspaceId: string; path: string }) => ({ content: 'hello', bytes: 5, path: `/workspace/${p.path}`, tainted: false })),
+    workspaceView: vi.fn(async (p: { op: string }) => ({ op: p.op })),
+    workspaceKillShell: vi.fn(async (p: { shellId: string }) => ({ shellId: p.shellId, state: 'killed', alreadyEnded: false })),
     startSchedule: vi.fn(() => { calls.push('schedule:start'); return () => { calls.push('schedule:stop') } }),
     startRecorderFlush: vi.fn(() => { calls.push('flush-loop:start'); return () => { calls.push('flush-loop:stop') } }),
     startSandbox: vi.fn(() => { calls.push('sandbox:start'); return () => { calls.push('sandbox:stop') } }),
@@ -155,6 +157,34 @@ describe('worker boot', () => {
     await h['workspace-read-text']({ workspaceId: id, path: 'a', tainted: true })
     expect(deps.workspaceReadText).toHaveBeenLastCalledWith({ workspaceId: id, path: 'a', tainted: true })
     expect(deps.workspaceReadText).toHaveBeenCalledTimes(2)
+  })
+
+  it('workspace-view / workspace-kill-shell (cycle 82 Task 3: the Files/Shells UI) refuse bad paths and ids before reaching the sandbox', async () => {
+    const { deps } = fakeDeps()
+    const h = commandHandlers(deps)
+    const id = '11111111-1111-4111-8111-111111111111'
+    const sh = '22222222-2222-4222-8222-222222222222'
+    await h['workspace-view']({ op: 'tree', workspaceId: id })
+    await h['workspace-view']({ op: 'file', workspaceId: id, path: 'src/a.py' })
+    await h['workspace-view']({ op: 'chunk', workspaceId: id, path: 'a.bin', offset: 0, length: 10 })
+    await h['workspace-view']({ op: 'shell-tail', workspaceId: id, shellId: sh })
+    expect(deps.workspaceView).toHaveBeenCalledTimes(4)
+    expect(deps.workspaceView).toHaveBeenNthCalledWith(2, { op: 'file', workspaceId: id, path: 'src/a.py' })
+    const bad: unknown[] = [
+      { op: 'tree', workspaceId: '../x' },
+      { op: 'file', workspaceId: id, path: '/etc/passwd' },
+      { op: 'file', workspaceId: id, path: 'a/../../etc' },
+      { op: 'file', workspaceId: id, path: 'a\0b' },
+      { op: 'chunk', workspaceId: id, path: 'a', offset: -1, length: 1 },
+      { op: 'chunk', workspaceId: id, path: 'a', offset: 0, length: 1.5 },
+      { op: 'shell-tail', workspaceId: id, shellId: 'x' },
+      { op: 'rm', workspaceId: id }
+    ]
+    for (const p of bad) await expect(h['workspace-view'](p as never)).rejects.toThrow(/bad payload/)
+    expect(deps.workspaceView).toHaveBeenCalledTimes(4)
+    expect(await h['workspace-kill-shell']({ workspaceId: id, shellId: sh })).toEqual({ shellId: sh, state: 'killed', alreadyEnded: false })
+    await expect(h['workspace-kill-shell']({ workspaceId: id, shellId: '../x' })).rejects.toThrow(/bad payload/)
+    expect(deps.workspaceKillShell).toHaveBeenCalledTimes(1)
   })
 
   // Cycle 81 Task 4: each command reaches its dependency with the payload's fields, and returns the

@@ -11,6 +11,7 @@
 // (commands, tick, pump, schedule) starts after the signal (Task 2 review M4).
 // This is the ONLY process that executes agent runs (cycle 81 Task 3): the web never claims.
 import type { CommandHandlers, CommandPayloads, CommandResults, InvalidateCache, WorkerBeatStatus } from '@mymind/core/lib/bus/commands'
+import { workspacePathProblem } from '@mymind/core/lib/sandbox/paths'
 import type { ImessageHealth } from '@mymind/core/lib/channels/inbound'
 import type { UndoResult } from '@mymind/core/lib/agent/undo'
 import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
@@ -40,6 +41,10 @@ export interface WorkerDeps {
   workspaceReenableNetwork(p: CommandPayloads['workspace-reenable-network']): Promise<{ id: string; tainted: boolean }>
   /** Cycle 82 Task 2: a workspace text file, read in the sandbox (export_to_document replayed in the web). */
   workspaceReadText(p: CommandPayloads['workspace-read-text']): Promise<CommandResults['workspace-read-text']>
+  /** Cycle 82 Task 3: the Files / Shells UI's reads, run in the sandbox (lib/sandbox/view.ts). */
+  workspaceView(p: CommandPayloads['workspace-view']): Promise<unknown>
+  /** Cycle 82 Task 3: Tony's Kill on the Shells tab. */
+  workspaceKillShell(p: CommandPayloads['workspace-kill-shell']): Promise<CommandResults['workspace-kill-shell']>
   startSchedule(): () => void
   startRecorderFlush(): () => void
   /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
@@ -72,7 +77,7 @@ export interface WorkerProcess {
 }
 
 /** Handlers for every command type. Each returns once its action has started (bus contract). */
-export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork' | 'workspaceReadText'>
+export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork' | 'workspaceReadText' | 'workspaceView' | 'workspaceKillShell'>
 export function commandHandlers(deps: CommandDeps): CommandHandlers {
   return {
     kick: async () => { deps.kick() },
@@ -96,9 +101,31 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
     'workspace-read-text': async (p) => {
       if (!p || typeof p.workspaceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(p.workspaceId) || typeof p.path !== 'string' || !p.path || p.path.length > 4096 || (p.tainted !== undefined && typeof p.tainted !== 'boolean')) throw new Error('workspace-read-text: bad payload')
       return deps.workspaceReadText(p)
+    },
+    'workspace-view': async (p) => {
+      if (!p || !isUuid(p.workspaceId)) throw new Error('workspace-view: bad payload')
+      switch (p.op) {
+        case 'tree': return deps.workspaceView({ op: 'tree', workspaceId: p.workspaceId })
+        case 'file':
+          if (workspacePathProblem(p.path)) throw new Error('workspace-view: bad payload')
+          return deps.workspaceView({ op: 'file', workspaceId: p.workspaceId, path: p.path })
+        case 'chunk':
+          if (workspacePathProblem(p.path) || !Number.isSafeInteger(p.offset) || p.offset < 0 || !Number.isSafeInteger(p.length) || p.length < 0) throw new Error('workspace-view: bad payload')
+          return deps.workspaceView({ op: 'chunk', workspaceId: p.workspaceId, path: p.path, offset: p.offset, length: p.length })
+        case 'shell-tail':
+          if (!isUuid(p.shellId)) throw new Error('workspace-view: bad payload')
+          return deps.workspaceView({ op: 'shell-tail', workspaceId: p.workspaceId, shellId: p.shellId })
+        default: throw new Error('workspace-view: bad payload')
+      }
+    },
+    'workspace-kill-shell': async (p) => {
+      if (!p || !isUuid(p.workspaceId) || !isUuid(p.shellId)) throw new Error('workspace-kill-shell: bad payload')
+      return deps.workspaceKillShell({ workspaceId: p.workspaceId, shellId: p.shellId })
     }
   }
 }
+
+const isUuid = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, Math.max(0, ms)))

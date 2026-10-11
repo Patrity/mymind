@@ -10,6 +10,10 @@
  * event rows the stream never sends, so the transcript is re-read after each segment commits.
  *
  * Controls go to the agent worker (it holds the running segment): Cancel / Resume / steer|answer.
+ *
+ * Cycle 82 Task 3: Files / Shells tabs show the workstream's sandboxed workspace (read through the
+ * worker), with the tainted banner when its network is off. The log stays mounted (v-show) while
+ * another tab is open; Files / Shells mount only when shown.
  */
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { MessageResponse } from '@/components/ai-elements/message'
@@ -26,6 +30,18 @@ watch(error, (err) => {
   if (err) toast.add({ color: 'error', title: 'Could not load the workstream', description: workstreamErrorOf(err).message })
 })
 const meta = computed(() => (ws.value ? STATE_META[ws.value.state] : null))
+
+// ── The workspace (Files / Shells tabs) ──────────────────────────────────
+const { data: wsRow } = useWorkstreamWorkspace(id)
+const workspaceId = computed(() => wsRow.value?.id ?? null)
+// Keyed by the workspace's own id, so taint / usage changes arrive live.
+const { data: workspace } = useWorkspace(workspaceId)
+const tab = ref('log')
+const tabs = computed(() => [
+  { label: 'Log', value: 'log', icon: 'i-lucide-scroll-text' },
+  { label: 'Files', value: 'files', icon: 'i-lucide-folder', disabled: !workspaceId.value },
+  { label: 'Shells', value: 'shells', icon: 'i-lucide-terminal', disabled: !workspaceId.value }
+])
 
 // ── The live log ────────────────────────────────────────────────────────────
 const voice = useVoice()
@@ -271,6 +287,28 @@ async function send() {
         </UCard>
       </div>
 
+      <WorkspaceNetworkBanner
+        v-if="workspace"
+        :workspace="workspace"
+      />
+      <UTabs
+        v-model="tab"
+        :items="tabs"
+        :content="false"
+        variant="link"
+        class="shrink-0 px-3"
+        data-testid="workstream-tabs"
+      />
+      <template v-if="workspaceId && tab !== 'log'">
+        <WorkspaceFiles
+          v-if="tab === 'files'"
+          :workspace-id="workspaceId"
+        />
+        <WorkspaceShells
+          v-else
+          :workspace-id="workspaceId"
+        />
+      </template>
       <UAlert
         v-if="logError"
         color="error"
@@ -280,6 +318,7 @@ async function send() {
         :description="logError"
       />
       <AgentConversation
+        v-show="tab === 'log'"
         class="flex-1 min-h-0"
         readonly
         :messages="voice.messages.value"
@@ -296,6 +335,7 @@ async function send() {
 
       <form
         v-if="ws && !isTerminal(ws.state)"
+        v-show="tab === 'log'"
         class="flex shrink-0 items-end gap-2 border-t border-default p-3"
         @submit.prevent="send"
       >

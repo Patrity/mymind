@@ -675,6 +675,24 @@ onMounted(() => {
           @full-bleed="fullBleed = true"
         >
           <template #actions>
+            <!-- Cycle 82 Task 3: the chat's sandboxed workspace (files, background shells). -->
+            <UButton
+              icon="i-lucide-folder-code"
+              variant="ghost"
+              color="neutral"
+              label="Workspace"
+              to="/workspaces/home"
+              class="hidden sm:inline-flex"
+              data-testid="agent-workspace-link"
+            />
+            <UButton
+              icon="i-lucide-folder-code"
+              variant="ghost"
+              color="neutral"
+              aria-label="Workspace"
+              to="/workspaces/home"
+              class="sm:hidden"
+            />
             <!-- Only on Bridget's home thread — side threads never have a wake/headless run. -->
             <UButton
               v-if="isMainThread"

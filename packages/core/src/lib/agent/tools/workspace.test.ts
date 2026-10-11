@@ -17,6 +17,13 @@ import type { AgentTool, ToolContext } from '../types'
 vi.mock('../../observability/record', () => ({ withSpan: (_m: unknown, fn: () => unknown) => fn(), recordEvent: () => {} }))
 vi.mock('../bus', () => ({ publishActivity: () => {} }))
 vi.mock('../../sandbox/store', async (orig) => ({ ...(await orig<typeof import('../../sandbox/store')>()), dbWorkspaceStore: { get: vi.fn(async (id: string) => ({ id, tainted: wsTainted, deletedAt: null })) } }))
+// Task 3: the secret store (exec/secrets) — `opted` is what Tony turned on for the sandbox, `all`
+// every exec secret (masking covers all of them). `storeBroken` makes reads throw.
+const secretStore = vi.hoisted(() => ({ opted: {} as Record<string, string>, all: {} as Record<string, string>, broken: false }))
+vi.mock('../../exec/secrets', () => ({
+  getSandboxOptedSecrets: vi.fn(async () => { if (secretStore.broken) throw new Error('undecryptable'); return { ...secretStore.opted } }),
+  getDecryptedSecrets: vi.fn(async () => { if (secretStore.broken) throw new Error('undecryptable'); return { ...secretStore.all } })
+}))
 const paused: Array<[string | undefined, string, string]> = []
 vi.mock('../workstreams/loop', () => ({ pauseWorkstreamForTony: vi.fn(async (runId: string | undefined, ws: string, why: string) => { paused.push([runId, ws, why]); return true }) }))
 
@@ -57,6 +64,7 @@ function install(ref: { workstreamId?: string | null; conversationId?: string | 
 }
 
 beforeEach(() => {
+  secretStore.opted = {}; secretStore.all = {}; secretStore.broken = false
   calls = []; started = []; armed = []; over = false; wsTainted = false; paused.length = 0; shellOpts.length = 0
   watchReply = () => ({ id: 'w1', createdAt: new Date(0), deadlineAt: new Date(30 * 60_000) })
   execResult = (command, o) => {
@@ -327,5 +335,61 @@ describe('verified ⚠(a): the history policy never loses workspaceTainted while
   it('a small result passes through untouched (flag first)', () => {
     const policed = applyHistoryPolicy([turn({ workspaceTainted: true, content: 'x' }, 0)])
     expect(historyCarriesTaint(policed, new Set())).toBe(true)
+  })
+})
+
+describe('Task 3: sandbox secrets (spec §6) — opted in, never tainted, values never in results', () => {
+  const VALUE = 'ghp_SuperSecretValue123'
+  beforeEach(() => {
+    secretStore.opted = { GITHUB_TOKEN: VALUE, DOCKER_HOST: 'tcp://evil:2375', HOME: '/root', LD_PRELOAD: '/x.so' }
+    secretStore.all = { GITHUB_TOKEN: VALUE, OTHER_TOKEN: 'not-opted-in-value', DOCKER_HOST: 'tcp://evil:2375', HOME: '/root', LD_PRELOAD: '/x.so' }
+  })
+  const bashCall = () => calls.find(c => c.command === 'env')!
+
+  it('an untainted run gets the opted-in secrets in env — reserved names (DOCKER_*, HOME, LD_*) stripped', async () => {
+    await run('bash', { command: 'env' }, ctx(false))
+    expect(bashCall().o.secrets).toEqual({ GITHUB_TOKEN: VALUE })
+    expect(bashCall().o.tainted).toBe(false)
+  })
+  it('a TAINTED run gets none (it runs in the one-off --network none container)', async () => {
+    await run('bash', { command: 'env' }, ctx(true))
+    expect(bashCall().o.tainted).toBe(true)
+    expect(bashCall().o.secrets).toBeUndefined()
+  })
+  it('a TAINTED WORKSPACE gets none, even in an untainted run', async () => {
+    wsTainted = true
+    await run('bash', { command: 'env' }, ctx(false))
+    expect(bashCall().o.secrets).toBeUndefined()
+  })
+  it('nothing opted in → no secrets option at all', async () => {
+    secretStore.opted = {}
+    await run('bash', { command: 'env' }, ctx(false))
+    expect(bashCall().o.secrets).toBeUndefined()
+  })
+  it('a background shell (untainted) gets the opted-in secrets too', async () => {
+    await run('bash', { command: 'env; sleep 60', run_in_background: true }, ctx(false))
+    const start = rtNow.shells.start as unknown as ReturnType<typeof vi.fn>
+    expect(start).toHaveBeenLastCalledWith(WS, 'env; sleep 60', { secrets: { GITHUB_TOKEN: VALUE } })
+  })
+  it('secret VALUES are masked in the result and summary (names stay); every exec secret, opted in or not', async () => {
+    execResult = () => res({ stdout: `GITHUB_TOKEN=${VALUE}\nOTHER=not-opted-in-value\n`, stderr: `oops ${VALUE}` })
+    const ex = await tool('bash').handler({ command: 'env' }, ctx(false))
+    const text = JSON.stringify(ex)
+    expect(text).not.toContain(VALUE)
+    expect(text).not.toContain('not-opted-in-value')
+    expect(text).toContain('GITHUB_TOKEN=«redacted»')
+  })
+  it('masking reaches every tool (read_file content) and bash_output', async () => {
+    execResult = () => res({ stdout: JSON.stringify({ content: `     1\ttoken=${VALUE}`, lines: 1, totalLines: 1, truncated: false }) })
+    expect(JSON.stringify(await run('read_file', { path: 'a' }))).not.toContain(VALUE)
+    ;(rtNow.shells.output as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ shellId: 's', state: 'running', output: `TOKEN ${VALUE}`, more: false, outputBytes: 9, tainted: false })
+    expect(JSON.stringify(await run('bash_output', { shellId: '44444444-4444-4444-8444-444444444444' }))).not.toContain(VALUE)
+  })
+  it('an unreadable secret store withholds the output (fail closed)', async () => {
+    execResult = () => res({ stdout: `GITHUB_TOKEN=${VALUE}` })
+    secretStore.broken = true
+    const ex = await tool('read_file').handler({ path: 'a' }, ctx(false))
+    expect(JSON.stringify(ex)).not.toContain(VALUE)
+    expect((ex.result as Record<string, unknown>).error).toMatch(/withheld/)
   })
 })

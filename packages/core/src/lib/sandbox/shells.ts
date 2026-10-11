@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { workspaceShells, type WorkspaceShellRow } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
-import { parseShellStatus, shellKillCommand, shellOutputCommand, shellStartCommand, shellStatusCommand, type ShellStatus } from './fs-ops'
+import { parseShellStatus, shellKillCommand, shellOutputCommand, shellStartCommand, shellStatusCommand, shellTailCommand, type ShellStatus } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
 import type { WorkspaceRow } from './store'
 
@@ -79,6 +79,8 @@ export interface ShellDeps {
 
 /** bash_output returns at most this much new output per call. */
 export const SHELL_OUTPUT_CHUNK = 32 * 1024
+/** The Shells UI shows at most this much of a shell's output (its tail). */
+export const SHELL_TAIL_BYTES = 16 * 1024
 /** Running background shells per workspace. */
 export const MAX_RUNNING_SHELLS = 8
 
@@ -153,15 +155,27 @@ export function createShellRegistry(deps: ShellDeps) {
     }
   }
 
-  async function kill(workspaceId: string, shellId: string, o: Pick<ExecOptions, 'tainted' | 'signal'> = {}) {
+  async function kill(workspaceId: string, shellId: string, o: Pick<ExecOptions, 'tainted' | 'signal'> & { reason?: string } = {}) {
+    const { reason = 'stopped with kill_shell', ...eo } = o
     const row = await own(workspaceId, shellId)
     if (row.state !== 'running') return { shellId, state: row.state, alreadyEnded: true, tainted: false }
-    const r = await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30, ...o })
+    const r = await deps.exec(workspaceId, shellKillCommand(row.id), { timeoutSec: 30, ...eo })
     const st = parseShellStatus(r.stdout)
     if (st?.status.state === 'exited') await store.end(row.id, { state: 'exited', exitCode: st.status.exitCode })
-    else await store.end(row.id, { state: 'killed', reason: 'stopped with kill_shell' })
+    else await store.end(row.id, { state: 'killed', reason })
     const after = await store.get(row.id)
     return { shellId, state: after?.state ?? 'killed', alreadyEnded: false, tainted: r.tainted }
+  }
+
+  /** The last `max` bytes of a shell's output + its state, for the Shells UI. Read-only: it never
+   *  moves bash_output's offset; a status it finds (exited/lost) is recorded like any other read. */
+  async function tail(workspaceId: string, shellId: string, max = SHELL_TAIL_BYTES) {
+    let row = await own(workspaceId, shellId)
+    const r = await deps.exec(workspaceId, shellTailCommand(row.id, max), { timeoutSec: 30, capBytes: max * 2 })
+    const st = parseShellStatus(r.stdout)
+    if (!st) throw new ShellError(`could not read the shell's output: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
+    row = await settle(row, st.status)
+    return { shellId: row.id, state: row.state, exitCode: row.exitCode, reason: row.reason, output: st.output, outputBytes: st.size, truncated: st.n < st.size }
   }
 
   /**
@@ -214,7 +228,7 @@ export function createShellRegistry(deps: ShellDeps) {
     return (await store.listRunning(workspaceId)).length > 0
   }
 
-  return { start, output, kill, killAll, reconcile, hasRunning, list: (workspaceId: string, limit?: number) => store.list(workspaceId, limit) }
+  return { start, output, tail, kill, killAll, reconcile, hasRunning, list: (workspaceId: string, limit?: number) => store.list(workspaceId, limit) }
 }
 
 export type ShellRegistry = ReturnType<typeof createShellRegistry>

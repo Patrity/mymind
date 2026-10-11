@@ -248,6 +248,17 @@ export function shellStatusCommand(id: string): string {
   return [...shellStatusLines(shellDir(id)), `printf '${SHELL_STATUS_MARK}%s:%s:0\\n' "$st" "$sz"`].join('\n')
 }
 
+/** Status + the LAST `max` bytes of the output (the Shells UI, Task 3) — never moves bash_output's offset. */
+export function shellTailCommand(id: string, max: number): string {
+  const m = Math.max(1, Math.floor(max))
+  return [
+    ...shellStatusLines(shellDir(id)),
+    `n=$sz; [ "$n" -gt ${m} ] && n=${m}`,
+    `printf '${SHELL_STATUS_MARK}%s:%s:%s\\n' "$st" "$sz" "$n"`,
+    `[ "$n" -gt 0 ] && tail -c "$n" "$d/out"; exit 0`
+  ].join('\n')
+}
+
 /** TERM the shell's process group, then KILL it after a second. */
 export function shellKillCommand(id: string): string {
   return [

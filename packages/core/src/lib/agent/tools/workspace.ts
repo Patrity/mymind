@@ -29,6 +29,7 @@ import { readWorkspaceText, workspaceRuntime, type WorkspaceRef } from '../../sa
 import { ShellError } from '../../sandbox/shells'
 import { dbWorkspaceStore } from '../../sandbox/store'
 import { WATCH_LIMITS, WatchError } from '../../sandbox/watches'
+import { maskDeep, sandboxSecretEnv, secretValues } from '../../sandbox/secrets'
 import { createDoc, deleteDoc, findDocByPath, getDoc, casUpdateContent, updateDoc } from '../../../services/documents'
 import { publishChange } from '../../../utils/live-bus'
 import { docReceipt, docNotFound } from '../receipt'
@@ -62,15 +63,32 @@ function withTaint<T extends Record<string, unknown>>(r: { tainted: boolean }, b
   return r.tainted ? { workspaceTainted: true, ...body } : body
 }
 
-/** Known sandbox refusals become a clear tool error instead of a thrown one. */
+/** Known sandbox refusals become a clear tool error instead of a thrown one. Every result and
+ *  summary has exec-secret VALUES masked (Task 3, spec §6: an opted-in secret is in the command's
+ *  env, so `env` or a file it wrote would otherwise hand it to the model and the transcript). */
 async function guard(name: string, fn: () => Promise<ToolExecution>): Promise<ToolExecution> {
-  try { return await fn() } catch (err) {
+  let ex: ToolExecution
+  try { ex = await fn() } catch (err) {
     const known = err instanceof SandboxUnavailableError || err instanceof SandboxQuotaError || err instanceof SandboxDiskLowError
       || err instanceof ShellError || err instanceof WatchError || (err as Error)?.name === 'WorkspaceFileError'
     if (!known) throw err
     const message = (err as Error).message
-    return { result: { ok: false, error: message }, summary: `${name}: ${clip(message, 120)}` }
+    ex = { result: { ok: false, error: message }, summary: `${name}: ${clip(message, 120)}` }
   }
+  let values: string[]
+  // Fail closed: when the values can't be read, nothing they might be in is shown.
+  try { values = await secretValues() } catch {
+    return { result: { ok: false, error: `${name}: output withheld — the secret store is unreadable, so secret values could not be masked` }, summary: `${name}: output withheld (secret store unreadable)` }
+  }
+  return { ...ex, result: maskDeep(ex.result, values), summary: maskDeep(ex.summary, values) }
+}
+
+/** Opted-in sandbox secrets for a command — none when the run OR the workspace is tainted (the
+ *  manager drops them for tainted commands too; this is the first gate). */
+async function secretsFor(c: Call): Promise<Pick<ExecOptions, 'secrets'>> {
+  if (c.tainted || (await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return {}
+  const secrets = await sandboxSecretEnv({ tainted: false })
+  return Object.keys(secrets).length ? { secrets } : {}
 }
 
 function parseJson(r: SandboxExecResult): Record<string, unknown> | null {
@@ -264,12 +282,12 @@ export const bashTool: AgentTool = {
       if (c.tainted) return { result: { ok: false, error: `${TAINTED_RUN} in a throwaway container — background shells are not available. Run it in the foreground (timeout up to 600s).` }, summary: 'bash: background refused (tainted run)' }
       if ((await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return { result: { ok: false, error: `${TAINTED_WS} — background shells need it. Run it in the foreground instead.` }, summary: 'bash: background refused (workspace offline)' }
       await assertQuota(c)
-      const s = await workspaceRuntime().shells.start(c.ref.workspaceId, command)
+      const s = await workspaceRuntime().shells.start(c.ref.workspaceId, command, await secretsFor(c))
       return { result: { shellId: s.shellId, pid: s.pid, state: 'running', note: 'Read its output with bash_output({shellId}); stop it with kill_shell. To wait for it without polling, use watch.' }, summary: `started in background: \`${clip(command)}\`` }
     }
     const q = await overQuota(c)
     if (q) return { result: { ok: false, error: `${q.message} — bash is refused until space is freed. Find what is big with list_files({ largest: true }), then remove it with delete_files({ paths: [...] }).` }, summary: 'bash: refused (over quota)' }
-    const r = await exec(c, command, { timeoutSec: a.timeout as number | undefined })
+    const r = await exec(c, command, { timeoutSec: a.timeout as number | undefined, ...(await secretsFor(c)) })
     return {
       result: withTaint(r, {
         exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr,

@@ -34,6 +34,9 @@ async function remove(secretName: string) {
         Secrets are injected as env vars into every agent <code>exec</code> command
         (e.g. <code>GITHUB_TOKEN</code>, <code>CLOUDFLARE_API_TOKEN</code>).
         Stored encrypted; values are never shown again.
+        Turn on <strong>Sandbox</strong> to also give a secret to commands in Bridget's workspace sandbox —
+        never while a workspace is tainted (it handled mail or calendar content). Values are masked in
+        tool output.
       </p>
     </div>
 
@@ -48,6 +51,13 @@ async function remove(secretName: string) {
       >
         <code class="flex-1 font-mono text-sm text-highlighted">{{ s.name }}</code>
         <span class="text-sm text-muted font-mono">••••{{ s.lastFour }}</span>
+        <USwitch
+          :model-value="s.sandbox"
+          label="Sandbox"
+          size="sm"
+          :data-testid="`secret-sandbox-${s.name}`"
+          @update:model-value="(v: boolean) => store.setSandbox(s.name, v)"
+        />
         <UButton
           icon="i-lucide-trash-2"
           color="error"

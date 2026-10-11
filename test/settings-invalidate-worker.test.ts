@@ -15,7 +15,7 @@ const WRITERS: Record<string, string> = {
   setSkillsEnabled: 'skills',
   saveSearchConfig: 'search',
   saveImageConfig: 'imagegen',
-  setSecret: 'exec-secrets', deleteSecret: 'exec-secrets'
+  setSecret: 'exec-secrets', deleteSecret: 'exec-secrets', setSecretSandbox: 'exec-secrets'
 }
 
 function files(dir: string): string[] {
@@ -38,7 +38,7 @@ describe('settings writes reach the worker', () => {
       'server/api/settings/observability-config.put.ts', 'server/api/settings/persona.put.ts',
       'server/api/settings/skills-enabled.put.ts', 'server/api/settings/search.put.ts',
       'server/api/settings/image-config.put.ts', 'server/api/settings/exec-secrets.put.ts',
-      'server/api/settings/exec-secrets.delete.ts'
+      'server/api/settings/exec-secrets.delete.ts', 'server/api/settings/exec-secrets/sandbox.put.ts'
     ]))
   })
 

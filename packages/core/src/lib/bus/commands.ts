@@ -56,6 +56,15 @@ export interface CommandPayloads {
   /** Cycle 82 Task 2: read a text file of a workspace (the sandbox lives in the worker) — what an
    *  approved export_to_document proposal, replayed in the web, copies into a document. */
   'workspace-read-text': { workspaceId: string; path: string; tainted?: boolean }
+  /** Cycle 82 Task 3: the Files / Shells UI reads a workspace — in the sandbox, so in the worker
+   *  (lib/sandbox/view.ts). `chunk` with length 0 = the file's size only. */
+  'workspace-view':
+    | { op: 'tree'; workspaceId: string }
+    | { op: 'file'; workspaceId: string; path: string }
+    | { op: 'chunk'; workspaceId: string; path: string; offset: number; length: number }
+    | { op: 'shell-tail'; workspaceId: string; shellId: string }
+  /** Cycle 82 Task 3: Tony stops a background shell from the Shells tab. */
+  'workspace-kill-shell': { workspaceId: string; shellId: string }
   /** Cycle 81 Task 2 fix: the iMessage catch-up (and its health/`running` guard) lives in the
    *  executing process. `check` = a forced catch-up (Settings → Test), `reset` = forget the health
    *  snapshot after the channel config changed. */
@@ -75,6 +84,8 @@ export interface CommandResults {
   'workstream-control': WorkstreamDTO
   'workspace-reenable-network': { id: string; tainted: boolean }
   'workspace-read-text': { content: string; bytes: number; path: string; tainted: boolean }
+  'workspace-view': unknown
+  'workspace-kill-shell': { shellId: string; state: string; alreadyEnded: boolean }
   'imessage-health': ImessageHealth
 }
 
@@ -122,7 +133,7 @@ const notify = (payload: string) => busNotify('worker_command', payload)
 export async function sendCommand<K extends CommandType, T = CommandResults[K]>(
   type: K,
   payload: CommandPayloads[K],
-  opts: { awaitResult?: boolean; timeoutMs?: number } = {}
+  opts: { awaitResult?: boolean; timeoutMs?: number; discardResult?: boolean } = {}
 ): Promise<T | undefined> {
   const db = useDb()
   if (!opts.awaitResult) {
@@ -148,6 +159,9 @@ export async function sendCommand<K extends CommandType, T = CommandResults[K]>(
       return cur?.handledAt ? { result: cur.result as CommandResult | null } : null
     }
     const settle = (r: CommandResult | null): T => {
+      // `discardResult` (cycle 82 Task 3: download chunks are ~1 MB of base64): the row is deleted
+      // once read — nothing else ever reads a handled command's result.
+      if (opts.discardResult) void db.delete(workerCommands).where(eq(workerCommands.id, id)).catch(() => {})
       if (r?.ok) return r.value as T
       if (r && 'timedOut' in r && r.timedOut) throw new CommandTimeoutError(type, id, timeoutMs)
       throw new CommandFailedError(type, id, r && !r.ok ? r.error : 'command failed')

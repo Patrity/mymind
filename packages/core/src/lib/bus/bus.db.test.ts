@@ -391,6 +391,8 @@ function handlersRecording(seen: string[]) {
     'workstream-control': async () => undefined,
     'workspace-reenable-network': async () => undefined,
     'workspace-read-text': async () => undefined,
+    'workspace-view': async () => undefined,
+    'workspace-kill-shell': async () => undefined,
     'imessage-health': async () => ({ ok: true, privateApi: null, checkedAt: null })
   }
 }

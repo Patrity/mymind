@@ -1,0 +1,200 @@
+// Cycle 82 Task 3 — the Files / Shells UI reads and sandbox secrets against REAL Docker + the dev DB.
+// Skipped when Docker is not running. Containers carry mymind.test=<RUN>; rows and the temp dir are
+// removed in afterAll. The secret store is faked here (the dev DB's real exec secrets are never
+// touched); everything else — the manager, the scripts, the container — is real.
+process.loadEnvFile('.env')
+import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+
+const SECRET = 'mm-test-SECRET-value-82'
+const secretStore = vi.hoisted(() => ({ opted: {} as Record<string, string> }))
+vi.mock('@mymind/core/lib/exec/secrets', async orig => ({
+  ...(await orig<typeof import('@mymind/core/lib/exec/secrets')>()),
+  getSandboxOptedSecrets: async () => ({ ...secretStore.opted }),
+  getDecryptedSecrets: async () => ({ MM_TEST_SECRET: 'mm-test-SECRET-value-82' })
+}))
+
+import { inArray } from 'drizzle-orm'
+import { useDb } from '@mymind/core/db'
+import { workspaces, workspaceShells } from '@mymind/core/db/schema'
+import { eq } from 'drizzle-orm'
+import { createSandboxManager, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
+import { createWorkspaceRuntime, setWorkspaceRuntime, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
+import { killShellFromUi, readChunk, shellTail, viewFile, viewTree, VIEW_SCRIPT, CHUNK_BYTES } from '@mymind/core/lib/sandbox/view'
+import { workspaceTools } from '@mymind/core/lib/agent/tools/workspace'
+import type { ToolContext } from '@mymind/core/lib/agent/types'
+
+const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
+const RUN = `wsv-${process.pid}-${Date.now().toString(36)}`
+
+function docker(...args: string[]): { code: number; out: string } {
+  const r = spawnSync('docker', args, { encoding: 'utf8', timeout: 120_000 })
+  return { code: r.status ?? -1, out: r.stdout ?? '' }
+}
+const dockerUp = docker('version', '--format', '{{.Server.Version}}').code === 0 && docker('image', 'inspect', IMAGE).code === 0
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)', () => {
+  const rowIds: string[] = []
+  let root = ''
+  let m: SandboxManager
+  let rt: WorkspaceRuntime
+  let ws = ''
+  let tainted = false
+  const sh = (cmd: string) => m.exec(ws, cmd, { timeoutSec: 60 })
+  const ctx = (): ToolContext => ({ signal: new AbortController().signal, isTainted: () => tainted })
+  const bash = async (command: string) => (await workspaceTools.find(t => t.name === 'bash')!.handler({ command }, ctx())).result as Record<string, any>
+
+  beforeAll(async () => {
+    root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-wsv-')))
+    m = createSandboxManager({ labels: { 'mymind.test': RUN }, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+    const [r] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning()
+    rowIds.push(r!.id)
+    ws = r!.id
+    rt = createWorkspaceRuntime(m, { resolve: async () => ({ workspaceId: ws, kind: 'home', workstreamId: null, conversationId: null }) })
+    setWorkspaceRuntime(rt)
+    const s = await sh([
+      'mkdir -p src/deep node_modules/pkg .mymind/x',
+      'printf "print(1)\\n" > src/deep/a.py',
+      'printf "# Title\\n\\nhello\\n" > README.md',
+      ': > node_modules/pkg/index.js',
+      'ln -s /etc/passwd passwd-link',
+      'ln -s / rootlink',
+      'seq 1 2500 > lines.txt',
+      // one long line per 100 KB → 1.5 MB in 15 lines: the BYTE cap bites, not the line cap
+      'python3 -c "import sys; [sys.stdout.write(\'y\' * 99999 + \'\\n\') for _ in range(15)]" > wide.txt',
+      'printf "ab\\0cd" > bin.dat',
+      'head -c 1500000 /dev/urandom > blob.bin',
+      `printf "token=${SECRET}\\n" > leaked.txt`
+    ].join(' && '))
+    expect(s.exitCode, s.stderr).toBe(0)
+  }, 180_000)
+
+  afterAll(async () => {
+    setWorkspaceRuntime(null)
+    const ids = docker('ps', '-aq', '--filter', `label=mymind.test=${RUN}`).out.split('\n').filter(Boolean)
+    if (ids.length) docker('rm', '-f', ...ids)
+    if (rowIds.length) await useDb().delete(workspaces).where(inArray(workspaces.id, rowIds))
+    if (root) rmSync(root, { recursive: true, force: true })
+  }, 120_000)
+
+  it('tree: sizes, dirs first, noise dirs listed but not entered, .mymind too, symlinks as links (not followed)', async () => {
+    const t = await viewTree(ws)
+    const by = Object.fromEntries(t.entries.map(e => [e.path, e]))
+    expect(by['src/deep/a.py']).toMatchObject({ type: 'file', bytes: 9 })
+    expect(by['node_modules']).toMatchObject({ type: 'dir', skipped: true })
+    expect(by['node_modules/pkg']).toBeUndefined()
+    expect(by['.mymind']).toMatchObject({ skipped: true })
+    expect(by['passwd-link']).toMatchObject({ type: 'link', target: '/etc/passwd' })
+    expect(by['rootlink']).toMatchObject({ type: 'link', target: '/' })
+    expect(Object.keys(by).some(p => p.startsWith('rootlink/'))).toBe(false)
+    expect(t.entries.findIndex(e => e.path === 'src')).toBeLessThan(t.entries.findIndex(e => e.path === 'README.md'))
+  }, 60_000)
+
+  it('tree caps at 500 entries', async () => {
+    await sh('mkdir -p many && cd many && for i in $(seq 1 600); do : > f$i; done')
+    const t = await viewTree(ws)
+    expect(t.count).toBe(500)
+    expect(t.truncated).toBe(true)
+    await sh('rm -rf many')
+  }, 60_000)
+
+  it('view: text, the 2000-line cap, the 1 MB cap, binary', async () => {
+    expect(await viewFile(ws, 'README.md')).toMatchObject({ binary: false, bytes: 15, lines: 3, truncated: false, content: '# Title\n\nhello\n' })
+    const l = await viewFile(ws, 'lines.txt')
+    expect(l).toMatchObject({ truncated: true, lines: 2000 })
+    expect(l.content!.split('\n').at(-2)).toBe('2000')
+    const w = await viewFile(ws, 'wide.txt')
+    expect(w.truncated).toBe(true)
+    expect(Buffer.byteLength(w.content!)).toBeLessThanOrEqual(1_000_000)
+    expect(Buffer.byteLength(w.content!)).toBeGreaterThan(900_000)
+    expect(w.bytes).toBe(1_500_000)
+    expect(await viewFile(ws, 'bin.dat')).toEqual({ path: 'bin.dat', binary: true, bytes: 5 })
+  }, 60_000)
+
+  it('path safety: the read is resolved INSIDE the container — symlinks out of /workspace are refused', async () => {
+    await expect(viewFile(ws, 'passwd-link')).rejects.toMatchObject({ code: 'outside' })
+    await expect(viewFile(ws, 'rootlink/etc/passwd')).rejects.toMatchObject({ code: 'outside' })
+    await expect(readChunk(ws, 'rootlink/etc/passwd', 0, 10)).rejects.toMatchObject({ code: 'outside' })
+    await expect(viewFile(ws, 'nope.txt')).rejects.toMatchObject({ code: 'not_found' })
+    await expect(viewFile(ws, 'src')).rejects.toMatchObject({ code: 'not_a_file' })
+    // Rejected before any exec (the JS check) …
+    for (const p of ['/etc/passwd', '../x', 'src/../../etc/passwd']) await expect(viewFile(ws, p)).rejects.toMatchObject({ code: 'bad_path' })
+    // … and the in-container check holds on its own (the script given a bad path directly).
+    for (const p of ['/etc/passwd', '../etc/passwd', 'a/../../etc/passwd']) {
+      const r = await m.exec(ws, VIEW_SCRIPT, { input: JSON.stringify({ path: p }) })
+      expect(JSON.parse(r.stdout.split('\n')[0]!)).toMatchObject({ error: 'bad_path' })
+    }
+  }, 60_000)
+
+  it('download chunks reassemble the exact file; length 0 = size only', async () => {
+    const size = (await readChunk(ws, 'blob.bin', 0, 0))
+    expect(size).toMatchObject({ size: 1_500_000, data: '' })
+    const parts: Buffer[] = []
+    for (let off = 0; off < size.size; off += CHUNK_BYTES) {
+      const c = await readChunk(ws, 'blob.bin', off, Math.min(CHUNK_BYTES, size.size - off))
+      expect(c.mtimeNs).toBe(size.mtimeNs)
+      parts.push(Buffer.from(c.data, 'base64'))
+    }
+    const got = Buffer.concat(parts)
+    const want = (await sh('sha256sum blob.bin')).stdout.split(' ')[0]
+    expect(createHash('sha256').update(got).digest('hex')).toBe(want)
+  }, 120_000)
+
+  it('secret VALUES are masked in a file view (the file holds it; the UI never shows it)', async () => {
+    const v = await viewFile(ws, 'leaked.txt')
+    expect(v.content).toBe('token=«redacted»\n')
+  }, 60_000)
+
+  it('shells: the tail never moves bash_output\'s offset; Kill stops the group and records it', async () => {
+    const s = await rt.shells.start(ws, 'i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done')
+    await sleep(1500)
+    const t = await shellTail(ws, s.shellId)
+    expect(t.state).toBe('running')
+    expect(t.output).toMatch(/tick 0\ntick 1/)
+    const [row] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, s.shellId))
+    expect(row!.readOffset).toBe(0)
+    const k = await killShellFromUi(ws, s.shellId)
+    expect(k).toMatchObject({ state: 'killed', alreadyEnded: false })
+    const [after] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, s.shellId))
+    expect(after!.reason).toMatch(/stopped by Tony/)
+    expect((await sh('ps -eo args | grep -c "[t]ick" || true')).stdout.trim()).toBe('0')
+    expect((await killShellFromUi(ws, s.shellId)).alreadyEnded).toBe(true)
+  }, 60_000)
+
+  it('secrets: an opted-in secret is in `env` of an untainted command (value masked); reserved names never; a tainted run gets none', async () => {
+    secretStore.opted = { MM_TEST_SECRET: SECRET, DOCKER_HOST: 'tcp://evil:2375', HOME: '/root' }
+    try {
+      tainted = false
+      const r = await bash('env')
+      expect(r.stdout).toContain('MM_TEST_SECRET=«redacted»')
+      expect(JSON.stringify(r)).not.toContain(SECRET)
+      expect(r.stdout).not.toContain('DOCKER_HOST')
+      expect(r.stdout).toMatch(/^HOME=\/home\/agent$/m)
+      // The value really is there (proved without printing it).
+      expect((await bash('[ "$MM_TEST_SECRET" = "' + SECRET + '" ] && echo same')).stdout.trim()).toBe('same')
+      // A background shell gets it too.
+      const bg = (await workspaceTools.find(t => t.name === 'bash')!.handler({ command: 'env | grep ^MM_TEST', run_in_background: true }, ctx())).result as Record<string, any>
+      let tl = await shellTail(ws, bg.shellId)
+      for (let i = 0; i < 40 && tl.state === 'running'; i++) { await sleep(250); tl = await shellTail(ws, bg.shellId) }
+      expect(tl.output).toBe('MM_TEST_SECRET=«redacted»\n')
+      tainted = true
+      const t = await bash('env')
+      expect(t.networkOff).toBe(true)
+      expect(t.stdout).not.toContain('MM_TEST_SECRET')
+      // The workspace is now tainted: an UNTAINTED run gets none either (and no network).
+      tainted = false
+      const u = await bash('env')
+      expect(u.stdout).not.toContain('MM_TEST_SECRET')
+      expect(u.networkOff).toBe(true)
+    } finally {
+      secretStore.opted = {}
+      tainted = false
+    }
+  }, 180_000)
+})
