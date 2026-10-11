@@ -54,9 +54,24 @@ ensure_nuxt_override() {
     echo "${nuxt}=${val}" >> "$APP_DIR/.env.native"
   fi
 }
+# Cycle 81: EVERY plain var core's config mapper reads (packages/core/src/config-env.ts
+# coreRuntimeConfig) is paired, not just the two above. The web bakes plain vars from the BUILD env
+# (.env only) and sees .env.native values only through NUXT_*; the agent worker maps its RUNTIME env
+# (.env + .env.native). Pairing makes both resolve the .env.native value. test/provision-pairs.test.ts
+# fails when the mapper reads a plain key that is missing from this list.
 if [ -f "$APP_DIR/.env.native" ]; then
   ensure_nuxt_override DATABASE_URL NUXT_DATABASE_URL
+  ensure_nuxt_override BETTER_AUTH_SECRET NUXT_BETTER_AUTH_SECRET
+  ensure_nuxt_override BETTER_AUTH_URL NUXT_BETTER_AUTH_URL
+  ensure_nuxt_override ALLOW_SIGNUP NUXT_ALLOW_SIGNUP
+  ensure_nuxt_override STORAGE_DRIVER NUXT_STORAGE_DRIVER
   ensure_nuxt_override STORAGE_LOCAL_DIR NUXT_STORAGE_LOCAL_DIR
+  ensure_nuxt_override STORAGE_S3_ENDPOINT NUXT_STORAGE_S3_ENDPOINT
+  ensure_nuxt_override STORAGE_S3_REGION NUXT_STORAGE_S3_REGION
+  ensure_nuxt_override STORAGE_S3_BUCKET NUXT_STORAGE_S3_BUCKET
+  ensure_nuxt_override STORAGE_S3_ACCESS_KEY_ID NUXT_STORAGE_S3_ACCESS_KEY_ID
+  ensure_nuxt_override STORAGE_S3_SECRET_ACCESS_KEY NUXT_STORAGE_S3_SECRET_ACCESS_KEY
+  ensure_nuxt_override MEMORY_AUTO_REVIEW_THRESHOLD NUXT_MEMORY_AUTO_REVIEW_THRESHOLD
 fi
 
 # 3. Native dirs + one-time uploads migration from the docker volume.
@@ -80,9 +95,10 @@ fi
 
 # 4. systemd units (refresh + enable; do NOT start here — the deploy restarts after build)
 #    mymind         — the Nuxt/Nitro web app
-#    mymind-worker  — the agent worker (cycle 81): apps/worker/dist/worker.mjs, built by CD after the
-#                     web. Enabled here; CD (re)starts it once its bundle exists, so a first
-#                     provision never starts it against a missing file.
+#    mymind-worker  — the agent worker (cycle 81): runs the active release /opt/mymind/.worker
+#                     (deploy/worker-release.sh stage → activate, done by CD after the web build).
+#                     Enabled here; CD (re)starts it right after `activate`, so a first provision
+#                     never starts it against a missing release.
 install -m 644 "$APP_DIR/deploy/mymind.service" /etc/systemd/system/mymind.service
 install -m 644 "$APP_DIR/deploy/mymind-worker.service" /etc/systemd/system/mymind-worker.service
 systemctl daemon-reload

@@ -54,3 +54,8 @@ scripts/data/*
 !scripts/data/reflect-eval.jsonl
 # …and the extract-v3 memory eval set (cycle 77): hand-written synthetic transcripts.
 !scripts/data/memory-eval-v3.jsonl
+
+# Cycle 81: agent worker release dirs (deploy/worker-release.sh)
+.worker
+.worker-next
+.worker-prev

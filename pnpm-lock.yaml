@@ -242,9 +242,6 @@ importers:
 
   apps/worker:
     dependencies:
-      '@mymind/core':
-        specifier: workspace:*
-        version: link:../../packages/core
       better-auth:
         specifier: ^1.6.13
         version: 1.6.13(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.29.2)(pg@8.21.0))(pg@8.21.0)(vitest@4.1.8(@opentelemetry/api@1.9.1)(@types/node@25.9.1)(happy-dom@20.9.0)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.3(@types/node@25.9.1)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.47.1)(tsx@4.23.15)(yaml@2.9.1)))(vue@3.5.34(typescript@6.0.3))
@@ -261,6 +258,9 @@ importers:
         specifier: ^0.34.5
         version: 0.34.5
     devDependencies:
+      '@mymind/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@types/node':
         specifier: 25.9.1
         version: 25.9.1

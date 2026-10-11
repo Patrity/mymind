@@ -14,6 +14,7 @@ import { onRunFinished } from '../jobs/outcome'
 import { noteUserReply } from '../signals/write'
 import { deliveriesTick } from '../../channels/outbox'
 import { sendCommand } from '../../bus/commands'
+import { executionMode } from './execution-mode'
 import type { AgentRun } from '../../../db/schema'
 import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
@@ -205,7 +206,18 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean, wallClockMs
 /** `rekick: false` + `onlyConversations` is the test seam: the dev DB is shared, and an unscoped
  *  re-pump after a test run finishes would claim (and fake-execute) other sessions' queued runs. */
 /** `wallClockMs` is a test seam for the headless wall clock (default HEADLESS_WALL_CLOCK_MS). */
-export async function pumpOnce(opts: { onlyConversations?: string[]; run?: RunFn; rekick?: boolean; wallClockMs?: number } = {}): Promise<number> {
+export function pumpOnce(opts: { onlyConversations?: string[]; run?: RunFn; rekick?: boolean; wallClockMs?: number } = {}): Promise<number> {
+  // Tracked (Task 2 review M1): a pump can be INSIDE claimNextRun when the drain starts — its claim
+  // commits after stopClaiming(), and execute() registers the run only then. waitForInFlight awaits
+  // every pump still in flight, so that run is waited for, never left 'running' at exit.
+  const p = pumpLoop(opts)
+  pumps.add(p)
+  void p.finally(() => pumps.delete(p)).catch(() => {})
+  return p
+}
+const pumps = new Set<Promise<number>>()
+
+async function pumpLoop(opts: { onlyConversations?: string[]; run?: RunFn; rekick?: boolean; wallClockMs?: number }): Promise<number> {
   const runFn = opts.run ?? ((r: AgentRun) => runTurn(r, { afterPersist: maybeSummarizeLater }))
   let started = 0
   for (;;) {
@@ -219,13 +231,10 @@ export async function pumpOnce(opts: { onlyConversations?: string[]; run?: RunFn
 }
 
 // ── Cycle 81: who executes, and draining ─────────────────────────────────────────────────────
-// 'local' (default — the worker, tests, and the web while AGENT_EXECUTOR=web): a kick pumps here.
-// 'remote' (the web when AGENT_EXECUTOR=worker): this process never claims; a kick becomes a
-// `kick` command to the worker (fire-and-forget — the worker's 5s tick is the net if it is lost).
-export type ExecutionMode = 'local' | 'remote'
-let mode: ExecutionMode = 'local'
-export function setExecutionMode(m: ExecutionMode): void { mode = m }
-export function executionMode(): ExecutionMode { return mode }
+// Execution mode (execution-mode.ts): 'local' — a kick pumps here; 'remote' (the web when
+// AGENT_EXECUTOR=worker) — this process never claims; a kick becomes a `kick` command to the worker
+// (fire-and-forget — the worker's 5s tick is the net if it is lost).
+export { setExecutionMode, executionMode, type ExecutionMode } from './execution-mode'
 
 let claimingStopped = false
 /** Drain step 1: stop the tick and never claim again in this process (pumpOnce/kick become no-ops).
@@ -247,17 +256,20 @@ export function inFlightRunIds(): string[] { return [...settles.keys()] }
 export async function waitForInFlight(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    const pending = [...settles.values()]
+    // Pumps first (a claim mid-flight becomes a run in `settles`), then the runs; loop until both
+    // are empty, since a finishing pump can add runs and a finishing run can rekick (a no-op once
+    // claiming stopped).
+    const pending: Array<Promise<unknown>> = [...pumps, ...settles.values()]
     if (!pending.length) return true
     const left = deadline - Date.now()
     if (left <= 0) return false
     let timer: ReturnType<typeof setTimeout> | undefined
     const timedOut = await Promise.race([
-      Promise.all(pending).then(() => false),
+      Promise.allSettled(pending).then(() => false),
       new Promise<boolean>((r) => { timer = setTimeout(() => r(true), left) })
     ])
     clearTimeout(timer)
-    if (timedOut) return settles.size === 0
+    if (timedOut) return settles.size === 0 && pumps.size === 0
   }
 }
 
@@ -268,7 +280,7 @@ let pumping = false
 let again = false
 function kick(run?: RunFn): void {
   if (claimingStopped) return
-  if (mode === 'remote') {
+  if (executionMode() === 'remote') {
     void sendCommand('kick', {}).catch(err => console.error('[runtime] kick command failed:', err))
     return
   }

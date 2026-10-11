@@ -1,7 +1,7 @@
 import { useDb } from '@mymind/core/db'
 import { loadChannelsConfig } from '@mymind/core/lib/channels/config'
 import { imessageClient, directChatGuid } from '@mymind/core/lib/channels/bluebubbles/client'
-import { catchUpTick } from '@mymind/core/lib/channels/inbound'
+import { checkImessageHealth } from '@mymind/core/lib/channels/health'
 import { insertDeliveries } from '@mymind/core/lib/channels/outbox'
 import { publishChange } from '@mymind/core/utils/live-bus'
 import { requireSession } from '../../../utils/auth-guard'
@@ -12,10 +12,12 @@ const IMESSAGE_TEST_TEXT = 'Test from MyMind ✅'
 // Asks the SAVED BlueBubbles server for serverInfo (Private API state, version, iCloud account).
 // With `send: true` it also queues "Test from MyMind ✅" to the default chat through the outbox
 // (source 'note'), so the test takes the same path — retries, duplicate check — as a real reply.
-// Either way it finishes with a forced catch-up tick, which refreshes lastHealth() and so the
-// Channels status dot.
+// Either way it finishes with a forced catch-up tick, which refreshes the health snapshot and so the
+// Channels status dot. Cycle 81: the catch-up runs in the process that owns it — here with
+// AGENT_EXECUTOR=web, in the worker (an `imessage-health` command) with AGENT_EXECUTOR=worker — so
+// it never runs alongside the worker's own catch-up.
 async function refreshHealth(): Promise<void> {
-  await catchUpTick({ force: true }).catch(err => console.warn('[channels] test catch-up failed:', err instanceof Error ? err.message : err))
+  await checkImessageHealth()
 }
 
 export default defineEventHandler(async (event) => {

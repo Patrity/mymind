@@ -1,7 +1,7 @@
 // Bundles the worker (src/main.ts + the @mymind/core source it reaches) into dist/worker.mjs.
 // `pnpm --filter worker build`. Pure-JS dependencies are bundled; packages with native addons,
-// runtime-resolved files or optional native peers stay EXTERNAL and are resolved at runtime from
-// apps/worker/node_modules (each one is a dependency in package.json, same range as core's):
+// runtime-resolved files or optional native peers stay EXTERNAL (externals.mjs) and are resolved at
+// runtime from the release's node_modules (stage.mjs; in dev, apps/worker/node_modules):
 //   pg            — optional `pg-native` require; keep the real driver
 //   sharp         — native addon (libvips)
 //   pdf-to-img    — pdfjs-dist worker + canvas resolved from disk at runtime
@@ -11,10 +11,9 @@
 import { build } from 'esbuild'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { EXTERNAL } from './externals.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-
-export const EXTERNAL = ['pg', 'pg-native', 'sharp', 'pdf-to-img', 'isomorphic-dompurify', 'better-auth', 'better-auth/*']
 
 const result = await build({
   entryPoints: [join(here, 'src/main.ts')],

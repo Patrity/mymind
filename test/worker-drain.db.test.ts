@@ -69,6 +69,27 @@ describe('worker drain seam', () => {
     expect(await statusOf(b.runId)).toBe('queued')
   })
 
+  it('a pump that is mid-claim when the drain starts is awaited: its run finishes, never left running', async () => {
+    const a = await queued('mid-claim')
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const fake = async (_run: AgentRun): Promise<RunOutcome> => { await gate; return { status: 'done' } }
+    // Not awaited: the pump has passed its stop check and is inside claimNextRun right now.
+    const pump = pumpOnce({ onlyConversations: [a.conversationId], run: fake, rekick: false })
+    stopClaiming()
+    expect(inFlightRunIds()).toEqual([]) // nothing registered yet — the claim hasn't returned
+    const settled = waitForInFlight(5_000)
+    let resolved = false
+    void settled.then(() => { resolved = true })
+    await new Promise(r => setTimeout(r, 300))
+    expect(resolved).toBe(false) // waits for the claimed run, not just for `settles` being empty
+    expect(inFlightRunIds()).toContain(a.runId)
+    release()
+    expect(await settled).toBe(true)
+    expect(await pump).toBe(1)
+    expect(await statusOf(a.runId)).toBe('done')
+  })
+
   it('waitForInFlight with nothing in flight resolves true at once', async () => {
     stopClaiming()
     expect(await waitForInFlight(10)).toBe(true)

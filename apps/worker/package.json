@@ -3,11 +3,14 @@
   "private": true,
   "type": "module",
   "description": "MyMind agent worker: claims and executes agent runs, the 5s runtime tick and the agent scheduled tasks (cycle 81).",
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "stage": "node stage.mjs"
   },
   "dependencies": {
-    "@mymind/core": "workspace:*",
     "better-auth": "^1.6.13",
     "isomorphic-dompurify": "^3.15.0",
     "pdf-to-img": "^6.2.0",
@@ -15,6 +18,7 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@mymind/core": "workspace:*",
     "@types/node": "25.9.1",
     "esbuild": "^0.28.0",
     "tsx": "^4.23.15",

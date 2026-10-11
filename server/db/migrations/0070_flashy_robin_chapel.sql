@@ -1,0 +1,1 @@
+ALTER TABLE "worker_heartbeat" ADD COLUMN "status" jsonb;

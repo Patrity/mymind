@@ -2,7 +2,7 @@ import {
   ChannelsPutBodySchema, ChannelsConfigError, type ChannelsPutBody,
   loadChannelsConfig, mergeChannelsPut, saveChannelsConfig, invalidateChannelsConfig, channelsConfigDTO
 } from '@mymind/core/lib/channels/config'
-import { resetHealth } from '@mymind/core/lib/channels/inbound'
+import { resetImessageHealth } from '@mymind/core/lib/channels/health'
 import { requireSession } from '../../utils/auth-guard'
 
 // Web session only: a machine token must not be able to change who can text the agent or
@@ -27,6 +27,6 @@ export default defineEventHandler(async (event) => {
   // The last health check was of a different setup (or of none): the dot goes neutral until the
   // next catch-up tick checks this one (M6).
   const p = prev.imessage, n = next.imessage
-  if ((n.enabled && !p.enabled) || n.serverUrl !== p.serverUrl || n.passwordEnc !== p.passwordEnc) resetHealth()
+  if ((n.enabled && !p.enabled) || n.serverUrl !== p.serverUrl || n.passwordEnc !== p.passwordEnc) await resetImessageHealth()
   return channelsConfigDTO(await loadChannelsConfig())
 })

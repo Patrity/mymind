@@ -48,9 +48,10 @@ jobs:
         env:
           NUXT_PUBLIC_UNMUTE_URL: ""
 
-      # Cycle 81: the agent worker's esbuild bundle (apps/worker/dist/worker.mjs).
-      - name: Build worker bundle
-        run: pnpm --filter worker build
+      # Cycle 81: the agent worker's esbuild bundle + a staged self-contained release (proves every
+      # external package loads from the release dir — what CD runs on the box).
+      - name: Build + stage worker release
+        run: pnpm --filter worker build && node apps/worker/stage.mjs "$RUNNER_TEMP/worker-release"
 
   deploy:
     needs: test
@@ -64,14 +65,17 @@ jobs:
       - name: Sync code into LXC 114
         run: |
           # Clear the tracked tree first — preserving runtime state that lives in
-          # /opt/mymind (.env, .env.native, plus any .data/.output/.nuxt/node_modules/workspace/.git)
-          # — then extract the fresh checkout so deletions propagate.
+          # /opt/mymind (.env, .env.native, plus any .data/.output/.nuxt/node_modules/workspace/.git,
+          # and the agent worker's self-contained releases .worker/.worker-prev, which the RUNNING
+          # worker executes from) — then extract the fresh checkout so deletions propagate.
           pct exec 114 -- bash -lc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 \
             ! -name .git ! -name .env ! -name .env.native ! -name .data ! -name .output \
-            ! -name .nuxt ! -name node_modules ! -name workspace -exec rm -rf {} +'
+            ! -name .nuxt ! -name node_modules ! -name workspace \
+            ! -name .worker ! -name .worker-prev -exec rm -rf {} +'
           tar -C "$GITHUB_WORKSPACE" \
             --exclude=.git --exclude=node_modules --exclude=.nuxt \
             --exclude=.output --exclude=.data --exclude=.env --exclude=.env.native \
+            --exclude=.worker --exclude=.worker-prev --exclude=.worker-next \
             -cf - . | pct exec 114 -- tar -C /opt/mymind -xf -
 
       - name: Ensure db + searxng up (keep the OLD app serving during the build)
@@ -90,8 +94,10 @@ jobs:
           # --max-old-space-size: the native nuxt/vite build needs >2GB heap; the V8 default
           # (~2GB) OOMs the server build in the LXC (the old docker build had its own limits).
           # LXC 114 must have enough physical RAM for this heap + the running db/searxng/app.
-          # The worker bundle builds after the web (cycle 81); both exist before anything restarts.
-          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && pnpm --filter worker build && set -a && . ./.env.native && set +a && pnpm db:migrate'
+          # The worker release is staged after the web build (cycle 81) into .worker-next — the running
+          # worker keeps executing from .worker, untouched by the install/build — and is swapped in only
+          # right before its restart below.
+          pct exec 114 -- bash -lc 'cd /opt/mymind && pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build && bash deploy/worker-release.sh stage && set -a && . ./.env.native && set +a && pnpm db:migrate'
 
       - name: Cut over to native (drop old app container, start native on :3000)
         run: |
@@ -117,7 +123,9 @@ jobs:
           # Cycle 81: after the web cutover + health check. `restart` sends SIGTERM: the old worker
           # stops claiming, lets in-flight runs finish (≤60s, TimeoutStopSec=90), exits; systemd
           # then starts the new bundle. Queued runs wait in the DB meanwhile, nothing is lost.
-          pct exec 114 -- bash -lc 'systemctl restart mymind-worker'
+          # Swap the staged release in (.worker → .worker-prev, .worker-next → .worker), then restart.
+          # Rollback: `bash deploy/worker-release.sh rollback && systemctl restart mymind-worker`.
+          pct exec 114 -- bash -lc 'cd /opt/mymind && bash deploy/worker-release.sh activate && systemctl restart mymind-worker'
 
       - name: Worker health (active + fresh heartbeat)
         run: |

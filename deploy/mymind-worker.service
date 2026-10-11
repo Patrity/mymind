@@ -21,7 +21,9 @@ Environment=AGENT_RUNTIME_EXCLUSIVE=1
 # AGENT_EXECUTOR, which both processes must agree on.
 EnvironmentFile=/opt/mymind/.env
 EnvironmentFile=/opt/mymind/.env.native
-ExecStart=/usr/bin/node /opt/mymind/apps/worker/dist/worker.mjs
+# The ACTIVE release (deploy/worker-release.sh): bundle + its own node_modules, outside the tree CD
+# clears and the node_modules `pnpm install` rewrites, so a restart mid-deploy still finds it whole.
+ExecStart=/usr/bin/node /opt/mymind/.worker/dist/worker.mjs
 # Graceful drain: SIGTERM goes to the worker only (KillMode=mixed) — not to exec-tool children it is
 # still waiting on — and it gets up to 60s (WORKER_DRAIN_MS) to let in-flight runs finish before it
 # exits; systemd SIGKILLs whatever is left after TimeoutStopSec.

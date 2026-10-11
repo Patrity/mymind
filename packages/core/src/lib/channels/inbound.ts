@@ -242,7 +242,8 @@ export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: Inb
 
 // ---- catch-up + health ----
 
-interface Health { ok: boolean; privateApi: boolean | null; checkedAt: number | null; error?: string }
+export interface ImessageHealth { ok: boolean; privateApi: boolean | null; checkedAt: number | null; error?: string }
+type Health = ImessageHealth
 let health: Health = { ok: false, privateApi: null, checkedAt: null }
 let lastRunAt = 0
 let running = false

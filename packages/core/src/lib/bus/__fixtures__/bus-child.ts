@@ -27,7 +27,8 @@ if (mode === 'commands') {
     undo: async ({ token }) => ({ ok: true, reason: `undone:${token}:pid=${process.pid}` }),
     presence: async () => undefined,
     invalidate: async () => undefined,
-    'workstream-control': async () => undefined
+    'workstream-control': async () => undefined,
+    'imessage-health': async () => ({ ok: true, privateApi: null, checkedAt: null })
   }, { pollMs: 200 })
   await listenReady()
   console.log('READY')

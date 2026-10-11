@@ -292,9 +292,14 @@ describe('worker_commands', () => {
     const rows = await useDb().select().from(workerHeartbeat).where(inArray(workerHeartbeat.bootId, [BOOT]))
     expect(rows).toHaveLength(1)
     expect(rows[0]!.ns).toBe(busNs())
-    expect(await workerStatus()).toMatchObject({ online: true, bootId: BOOT })
+    expect(await workerStatus()).toMatchObject({ online: true, bootId: BOOT, status: null })
+    // Worker-owned status rides the beat (Task 2 fix M2); a later beat replaces it, a bare beat keeps it.
+    await beatWorker(BOOT, { imessage: { ok: true, privateApi: true, checkedAt: 1 } })
+    await beatWorker(BOOT, { imessage: { ok: false, privateApi: null, checkedAt: 2, error: 'down' } })
+    await beatWorker(BOOT)
+    expect((await workerStatus()).status).toEqual({ imessage: { ok: false, privateApi: null, checkedAt: 2, error: 'down' } })
     setBusNs(`${busNs()}-other`)
-    expect(await workerStatus()).toEqual({ online: false, beatAt: null, bootId: null })
+    expect(await workerStatus()).toEqual({ online: false, beatAt: null, bootId: null, status: null })
   })
 
   it('namespaces isolate commands: a worker in ns A never claims ns B (notify or poll); its own ns is answered', async () => {
@@ -383,7 +388,8 @@ function handlersRecording(seen: string[]) {
     undo: async ({ token }: { token: string }) => { seen.push(`undo:${token}`); return { ok: true } },
     presence: async () => undefined,
     invalidate: async () => undefined,
-    'workstream-control': async () => undefined
+    'workstream-control': async () => undefined,
+    'imessage-health': async () => ({ ok: true, privateApi: null, checkedAt: null })
   }
 }
 

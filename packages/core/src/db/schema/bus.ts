@@ -48,7 +48,10 @@ export const workerHeartbeat = pgTable('worker_heartbeat', {
   pid: integer('pid'),
   host: text('host'),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
-  beatAt: timestamp('beat_at', { withTimezone: true }).notNull().defaultNow()
+  beatAt: timestamp('beat_at', { withTimezone: true }).notNull().defaultNow(),
+  // Cycle 81 Task 2 fix: state only the worker knows, refreshed with every beat (WorkerBeatStatus,
+  // lib/bus/commands.ts) — e.g. the iMessage catch-up health the web's Channels nav dot shows.
+  status: jsonb('status')
 }, (t) => [
   index('worker_heartbeat_ns_beat_idx').on(t.ns, t.beatAt)
 ])

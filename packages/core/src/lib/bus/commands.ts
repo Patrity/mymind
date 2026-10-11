@@ -30,6 +30,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { workerCommands, workerHeartbeat } from '../../db/schema'
 import type { UndoResult } from '../agent/undo'
+import type { ImessageHealth } from '../channels/inbound'
 import { busNotify, onListenReady, onNotify } from './listen'
 import { busNs } from './ns'
 
@@ -43,6 +44,10 @@ export interface CommandPayloads {
   presence: { lastActiveAt: number }
   invalidate: { cache: InvalidateCache }
   'workstream-control': { workstreamId: string; action: 'cancel' | 'resume' | 'steer'; text?: string }
+  /** Cycle 81 Task 2 fix: the iMessage catch-up (and its health/`running` guard) lives in the
+   *  executing process. `check` = a forced catch-up (Settings → Test), `reset` = forget the health
+   *  snapshot after the channel config changed. */
+  'imessage-health': { action: 'check' | 'reset' }
 }
 export type CommandType = keyof CommandPayloads
 
@@ -55,6 +60,12 @@ export interface CommandResults {
   presence: void
   invalidate: void
   'workstream-control': unknown
+  'imessage-health': ImessageHealth
+}
+
+/** What the worker publishes with every heartbeat (worker_heartbeat.status). */
+export interface WorkerBeatStatus {
+  imessage?: ImessageHealth
 }
 
 /** One handler per command type. Each returns once its action has STARTED (see the header): the
@@ -263,17 +274,17 @@ export function handleCommands(handlers: CommandHandlers, opts: { pollMs?: numbe
 }
 
 /** Worker: refresh this boot's heartbeat row (every tick). */
-export async function beatWorker(bootId: string): Promise<void> {
-  await useDb().insert(workerHeartbeat).values({ bootId, ns: busNs(), pid: process.pid, host: hostname() })
-    .onConflictDoUpdate({ target: workerHeartbeat.bootId, set: { beatAt: sql`now()` } })
+export async function beatWorker(bootId: string, status?: WorkerBeatStatus): Promise<void> {
+  await useDb().insert(workerHeartbeat).values({ bootId, ns: busNs(), pid: process.pid, host: hostname(), status: status ?? null })
+    .onConflictDoUpdate({ target: workerHeartbeat.bootId, set: { beatAt: sql`now()`, ...(status ? { status } : {}) } })
 }
 
 /** Web: this namespace's newest worker heartbeat, and whether it is fresh (≤ staleMs old, by the DB clock). */
-export async function workerStatus(staleMs = 30_000): Promise<{ online: boolean; beatAt: Date | null; bootId: string | null }> {
+export async function workerStatus(staleMs = 30_000): Promise<{ online: boolean; beatAt: Date | null; bootId: string | null; status: WorkerBeatStatus | null }> {
   const res = await useDb().execute(sql`
-    select boot_id, beat_at, (now() - beat_at) <= (${staleMs} * interval '1 millisecond') as fresh
+    select boot_id, beat_at, status, (now() - beat_at) <= (${staleMs} * interval '1 millisecond') as fresh
     from worker_heartbeat where ns = ${busNs()} order by beat_at desc limit 1`)
-  const r = res.rows[0] as { boot_id: string; beat_at: string | Date; fresh: boolean } | undefined
-  if (!r) return { online: false, beatAt: null, bootId: null }
-  return { online: !!r.fresh, beatAt: new Date(r.beat_at), bootId: r.boot_id }
+  const r = res.rows[0] as { boot_id: string; beat_at: string | Date; status: WorkerBeatStatus | null; fresh: boolean } | undefined
+  if (!r) return { online: false, beatAt: null, bootId: null, status: null }
+  return { online: !!r.fresh, beatAt: new Date(r.beat_at), bootId: r.boot_id, status: r.status ?? null }
 }
