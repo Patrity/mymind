@@ -16,3 +16,23 @@ describe('readWorkspaceText in the web', () => {
     expect(sent.map(s => (s as unknown[])[0])).toEqual([{ workspaceId: ws, path: 'a', tainted: true }, { workspaceId: ws, path: 'a' }])
   })
 })
+
+describe('final review I2: the manager hooks', async () => {
+  const { runtimeHooks } = await import('./runtime')
+  it('only an armed watch keeps a sandbox up past its idle time; a running shell only protects it from eviction', async () => {
+    const killed: Array<[string, string]> = []
+    let shells = true
+    let watches = false
+    const h = runtimeHooks({
+      shells: { hasRunning: async () => shells, killAll: async (id: string, why: string) => { killed.push([id, why]); return 1 }, refresh: async () => 0 },
+      watches: { hasArmed: async () => watches, cancelFor: async () => 0 }
+    } as never)
+    expect(await h.isBusy('w')).toBe(false) // a live shell does NOT pin the container
+    expect(await h.hasLiveShell('w')).toBe(true)
+    watches = true; shells = false
+    expect(await h.isBusy('w')).toBe(true)
+    expect(await h.hasLiveShell('w')).toBe(false)
+    await h.onStopped('w', 'stopped: idle')
+    expect(killed).toEqual([['w', 'stopped: idle']])
+  })
+})

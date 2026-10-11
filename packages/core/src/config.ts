@@ -46,6 +46,9 @@ export interface CoreConfig {
    *  (lib/sandbox/network.ts). From `SANDBOX_REQUIRE_FIREWALL` (true/false); unset ⇒ true on Linux,
    *  false elsewhere (dev Macs have no host firewall to check). Never derived from NODE_ENV. */
   sandboxRequireFirewall: boolean
+  /** Cycle 82 final review I4: refuse the sandbox unless its memory/pids limits are enforced. From
+   *  `SANDBOX_REQUIRE_LIMITS`; unset ⇒ true on Linux, false elsewhere. */
+  sandboxRequireLimits: boolean
 }
 
 let config: CoreConfig | undefined

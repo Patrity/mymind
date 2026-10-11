@@ -59,7 +59,7 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
   }
   const mk = (extra: Parameters<typeof createSandboxManager>[0] = {}) => createSandboxManager({
     labels: LABELS,
-    settings: { image: IMAGE, workspacesDir: root, firewall: 'off', dns: [], ...extra.settings },
+    settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [], ...extra.settings },
     onOverQuota: (id, b) => { overQuota.push([id, b]) },
     log: { info: () => {}, warn: () => {}, error: () => {} },
     ...extra
@@ -313,7 +313,7 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
   }, 120_000)
 
   it('quota: too many files → refused', async () => {
-    const q = mk({ settings: { image: IMAGE, workspacesDir: root, firewall: 'off', dns: [], quotaInodes: 500 } })
+    const q = mk({ settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [], quotaInodes: 500 } })
     const id = await newWorkspace()
     await q.exec(id, 'mkdir many && cd many && seq 1 800 | xargs touch')
     await expect(q.checkQuota(id)).rejects.toThrow(/over its 500-file quota/)
@@ -324,7 +324,7 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
   }, 120_000)
 
   it('quota: over → refused with a clear error and onOverQuota; freeing space clears it', async () => {
-    const q = mk({ settings: { image: IMAGE, workspacesDir: root, firewall: 'off', dns: [], quotaBytes: 1024 * 1024 } })
+    const q = mk({ settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [], quotaBytes: 1024 * 1024 } })
     const id = await newWorkspace()
     await q.exec(id, 'head -c 3000000 /dev/urandom > /workspace/big.bin')
     await expect(q.checkQuota(id)).rejects.toBeInstanceOf(SandboxQuotaError)

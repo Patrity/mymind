@@ -32,6 +32,7 @@ import { workerCommands, workerHeartbeat } from '../../db/schema'
 import type { UndoResult } from '../agent/undo'
 import type { ImessageHealth } from '../channels/inbound'
 import type { WorkstreamDTO } from '../../shared/types/workstreams'
+import type { SandboxHealth } from '../../shared/types/workspaces'
 import { busNotify, notifySql, onListenReady, onNotify } from './listen'
 import { busNs } from './ns'
 
@@ -58,11 +59,13 @@ export interface CommandPayloads {
   'workspace-read-text': { workspaceId: string; path: string; tainted?: boolean }
   /** Cycle 82 Task 3: the Files / Shells UI reads a workspace — in the sandbox, so in the worker
    *  (lib/sandbox/view.ts). `chunk` with length 0 = the file's size only. */
-  'workspace-view':
+  // `noStart` (final review M5): an API-token read — never start a stopped sandbox for it.
+  'workspace-view': (
     | { op: 'tree'; workspaceId: string }
     | { op: 'file'; workspaceId: string; path: string }
     | { op: 'chunk'; workspaceId: string; path: string; offset: number; length: number }
     | { op: 'shell-tail'; workspaceId: string; shellId: string }
+  ) & { noStart?: boolean }
   /** Cycle 82 Task 3: Tony stops a background shell from the Shells tab. */
   'workspace-kill-shell': { workspaceId: string; shellId: string }
   /** Cycle 81 Task 2 fix: the iMessage catch-up (and its health/`running` guard) lives in the
@@ -92,6 +95,8 @@ export interface CommandResults {
 /** What the worker publishes with every heartbeat (worker_heartbeat.status). */
 export interface WorkerBeatStatus {
   imessage?: ImessageHealth
+  /** Cycle 82 final review I6: the sandbox preflight (absent until the worker's first check). */
+  sandbox?: SandboxHealth
 }
 
 /** One handler per command type. Each returns once its action has STARTED (see the header): the

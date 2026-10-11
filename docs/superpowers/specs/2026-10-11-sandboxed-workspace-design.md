@@ -19,7 +19,7 @@ touch the app, its secrets or the LAN. Host `exec` moves to an on-demand `admin`
 | # | Decision | Rejected |
 |---|---|---|
 | D1 | **Docker sandbox container per workspace** (`mymind-sandbox` image, unprivileged user, only the workspace dir mounted, no docker socket/app/env, limits 1.5 CPU / 2 GB / 512 pids) — portable to the Mac mini | host unix user; bubblewrap/Landlock (Linux-only); status quo |
-| D2 | One workspace per workstream + one persistent chat "home" workspace; files kept until the workstream is deleted + 30 days | ephemeral per run |
+| D2 | One workspace per workstream + one persistent chat "home" workspace; files kept until the workstream finishes + 30 days (amended — §3) | ephemeral per run |
 | D3 | `workspace` toolset: `read_file`, `write_file`, `edit_file`, `list_files`, `grep`, `diff`, `bash` (+ background), `bash_output`, `kill_shell`, `watch`, `export_to_document`, `import_document` | — |
 | D4 | **No approvals inside the sandbox** | approval per command |
 | D5 | Sandbox network: internet yes; no LAN/RFC1918/link-local, no LXC loopback services. **Tainted run → commands run with no network** | approval after taint |
@@ -56,6 +56,15 @@ touch the app, its secrets or the LAN. Host `exec` moves to an on-demand `admin`
 `state` (`stopped`|`running`), `bytes_used`, `last_used_at`, `created_at`, `deleted_at`.
 A workstream gets its workspace at start; chat runs use the single `home` workspace. Deleting a
 workstream schedules its workspace for deletion after 30 days (daily sweep).
+
+> **Amendment (2026-10-11, cycle 82 final review I7):** no code path deletes a workstream (cycle 81
+> never built one), so "deleted + 30 days" could never fire and every workstream workspace was kept
+> forever. The deletion clock now starts at the workstream's **terminal state**: the daily sweep
+> removes the workspace (container, files, row) 30 days after its workstream's `finished_at`
+> (done / failed / cancelled). A resumed workstream clears `finished_at`, so it is not swept. A
+> workstream deleted outright (none today) still starts the clock via `deleted_at`. When the
+> workstream ends, its background shells are killed, its watches cancelled and its container
+> stopped at once (I2) — only the files wait out the 30 days.
 
 ## 4. Tools (`workspace` toolset; on demand for chat, pre-loaded for workstreams)
 

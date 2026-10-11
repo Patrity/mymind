@@ -78,6 +78,9 @@ export interface ShellDeps {
   log?: Pick<Console, 'info' | 'warn' | 'error'>
   /** The secret values to mask, longest first (sandbox/secrets.ts; tests inject). */
   secretValues?: () => Promise<string[]>
+  /** A housekeeping command in the RUNNING networked container — null when it isn't running. Never
+   *  starts a container and never counts as use (final review I2: the liveness refresh). */
+  peek?(workspaceId: string, command: string): Promise<SandboxExecResult | null>
 }
 
 /** Where an incomplete UTF-8 sequence starts at the end of `raw` (raw.length when it ends cleanly). */
@@ -231,10 +234,10 @@ export function createShellRegistry(deps: ShellDeps) {
 
   /** The last `max` bytes of a shell's output + its state, for the Shells UI. Read-only: it never
    *  moves bash_output's offset; a status it finds (exited/lost) is recorded like any other read. */
-  async function tail(workspaceId: string, shellId: string, max = SHELL_TAIL_BYTES) {
+  async function tail(workspaceId: string, shellId: string, max = SHELL_TAIL_BYTES, o: Pick<ExecOptions, 'noStart'> = {}) {
     let row = await own(workspaceId, shellId)
     const values = await maskValues()
-    const r = await deps.exec(workspaceId, shellTailCommand(row.id, max), { timeoutSec: 30, capBytes: max * 2 })
+    const r = await deps.exec(workspaceId, shellTailCommand(row.id, max), { timeoutSec: 30, capBytes: max * 2, ...(o.noStart ? { noStart: true } : {}) })
     const st = parseShellStatus(r.stdout)
     if (!st) throw new ShellError(`could not read the shell's output: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
     row = await settle(row, st.status)
@@ -294,7 +297,25 @@ export function createShellRegistry(deps: ShellDeps) {
     return (await store.listRunning(workspaceId)).length > 0
   }
 
-  return { start, output, tail, kill, killAll, reconcile, hasRunning, list: (workspaceId: string, limit?: number) => store.list(workspaceId, limit) }
+  /**
+   * Final review I2 (every quota tick): re-check the running rows of a workspace whose container is
+   * up — a shell that exited (or vanished) while nobody read its output is recorded, so a dead row
+   * never looks like a live job. Read-only on the sandbox (status only, no offset moved).
+   */
+  async function refresh(workspaceId: string): Promise<number> {
+    if (!deps.peek) return 0
+    let ended = 0
+    for (const row of await store.listRunning(workspaceId)) {
+      const r = await deps.peek(workspaceId, shellStatusCommand(row.id))
+      if (!r) break // the container is not running: its rows are settled by whatever stopped it
+      const st = parseShellStatus(r.stdout)
+      if (!st) continue
+      if ((await settle(row, st.status)).state !== 'running') ended++
+    }
+    return ended
+  }
+
+  return { start, output, tail, kill, killAll, reconcile, hasRunning, refresh, list: (workspaceId: string, limit?: number) => store.list(workspaceId, limit) }
 }
 
 export type ShellRegistry = ReturnType<typeof createShellRegistry>

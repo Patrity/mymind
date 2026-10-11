@@ -58,7 +58,7 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
 
   beforeAll(async () => {
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-wsv-')))
-    m = createSandboxManager({ labels: { 'mymind.test': RUN }, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+    m = createSandboxManager({ labels: { 'mymind.test': RUN }, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
     const [r] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning()
     rowIds.push(r!.id)
     ws = r!.id

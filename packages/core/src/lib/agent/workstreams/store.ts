@@ -6,7 +6,7 @@ import { useDb } from '../../../db'
 import { workstreams, type WorkstreamRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import {
-  DEFAULT_WORKSTREAM_BUDGET, ZERO_USED,
+  DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED,
   type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 
@@ -70,6 +70,11 @@ export async function insertWorkstream(v: {
 /** Patch a workstream, optionally only while it is in one of `whenStates` (a guarded transition: a
  *  late attention update must never overwrite `done`/`cancelled`). Returns the new row, or null when
  *  the guard did not match. Always bumps updated_at and publishes the live change. */
+/** Cycle 82 final review I2: called (worker only — runtime.ts installs it) when a patch moves a
+ *  workstream to done / failed / cancelled, so its sandbox is torn down. Must not throw or block. */
+let terminalHook: ((workstreamId: string) => void) | null = null
+export function setWorkstreamTerminalHook(fn: ((workstreamId: string) => void) | null): void { terminalHook = fn }
+
 export async function patchWorkstream(
   id: string,
   patch: Partial<Pick<WorkstreamRow, 'state' | 'used' | 'attention' | 'summary' | 'failureReason' | 'failures' | 'lastOutcome' | 'cancelRequested' | 'currentRunId' | 'finishedAt' | 'budget'>>,
@@ -78,5 +83,8 @@ export async function patchWorkstream(
   const where: SQL = and(eq(workstreams.id, id), whenStates?.length ? inArray(workstreams.state, whenStates) : undefined)!
   const [r] = await useDb().update(workstreams).set({ ...patch, updatedAt: sql`now()` }).where(where).returning()
   if (r) publishWorkstream(id)
+  if (r && patch.state && TERMINAL_WORKSTREAM_STATES.includes(patch.state)) {
+    try { terminalHook?.(id) } catch { /* never blocks the transition */ }
+  }
   return r ?? null
 }

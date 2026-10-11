@@ -8,15 +8,16 @@
 //   Boot: after the container reconcile, running background shells are re-attached (or marked
 //   lost/exited) and armed watches re-armed. The manager's isBusy (no idle stop while a shell runs
 //   or a watch is armed) and onOverQuota (kill shells, cancel watches) hooks are installed here.
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { agentRuns } from '../../db/schema'
+import { agentRuns, workspaces, workspaceShells, workspaceWatches, workstreams } from '../../db/schema'
 import { sandboxManager, setSandboxRuntimeHooks, type SandboxManager } from './manager'
 import { dbWorkspaceStore, ensureHomeWorkspace, ensureWorkstreamWorkspace } from './store'
 import { createShellRegistry, type ShellRegistry } from './shells'
 import { createWatchRuntime, type WatchRuntime, type WorkspaceWatchRow } from './watches'
 import { READ_TEXT_CAP_BYTES, READ_TEXT_SCRIPT } from './fs-ops'
 import { executionMode } from '../agent/runtime/execution-mode'
+import { setWorkstreamTerminalHook } from '../agent/workstreams/store'
 import type { ExecOptions } from './manager'
 
 export interface WorkspaceRef {
@@ -101,7 +102,7 @@ export function createWorkspaceRuntime(manager: SandboxManager, o: { resolve?: W
   const deps = { exec: manager.exec, workspace: (id: string) => dbWorkspaceStore.get(id) }
   return {
     manager,
-    shells: createShellRegistry(deps),
+    shells: createShellRegistry({ ...deps, peek: manager.peek }),
     watches: createWatchRuntime({ ...deps, deliver: o.deliver ?? deliverWatch, ownerGone: watchOwnerGone }),
     resolve: o.resolve ?? resolveWorkspace
   }
@@ -120,7 +121,13 @@ export function runtimeHooks(rt: Pick<WorkspaceRuntime, 'shells' | 'watches'>) {
       await rt.shells.killAll(id, `stopped: ${TAINTED_REASON}`)
       await rt.watches.cancelFor(id, TAINTED_REASON)
     },
-    isBusy: async (id: string) => (await rt.shells.hasRunning(id)) || (await rt.watches.hasArmed(id)),
+    // Final review I2 ruling: only an armed watch keeps a sandbox up past 15 idle minutes. A running
+    // background shell does not (shells are for jobs, not servers) — but it is never EVICTED for
+    // capacity while it runs (hasLiveShell, I3).
+    isBusy: (id: string) => rt.watches.hasArmed(id),
+    hasLiveShell: (id: string) => rt.shells.hasRunning(id),
+    onStopped: async (id: string, reason: string) => { await rt.shells.killAll(id, reason) },
+    refresh: async (id: string) => { await rt.shells.refresh(id) },
     onOverQuota: async (id: string) => {
       await rt.shells.killAll(id, `killed: ${OVER_QUOTA_REASON}`)
       await rt.watches.cancelFor(id, OVER_QUOTA_REASON)
@@ -128,15 +135,61 @@ export function runtimeHooks(rt: Pick<WorkspaceRuntime, 'shells' | 'watches'>) {
   }
 }
 
+export const WORKSTREAM_ENDED_REASON = 'its workstream has ended'
+
+/**
+ * Final review I2: a workstream reached done / failed / cancelled — kill its background shells,
+ * cancel its watches (nobody to tell) and stop its sandbox. Idempotent. Its files stay until the
+ * deletion sweep (30 days after it finished — store.listExpired).
+ */
+export async function teardownWorkstreamWorkspace(rt: Pick<WorkspaceRuntime, 'manager' | 'shells' | 'watches'>, workstreamId: string): Promise<boolean> {
+  const [row] = await useDb().select().from(workspaces).where(and(eq(workspaces.workstreamId, workstreamId), isNull(workspaces.deletedAt))).limit(1)
+  if (!row) return false
+  await rt.shells.killAll(row.id, `killed: ${WORKSTREAM_ENDED_REASON}`)
+  await rt.watches.cancelFor(row.id, WORKSTREAM_ENDED_REASON, { quiet: true })
+  if (row.state === 'running') await rt.manager.stopContainer(row.id, `killed: ${WORKSTREAM_ENDED_REASON}`)
+  return true
+}
+
+/** The minute tick's backstop: workspaces of FINISHED workstreams that still have something live
+ *  (a running container, a running shell row or an armed watch) — e.g. the workstream ended in the
+ *  web process, where the worker's hook isn't installed. */
+export async function finishedWorkstreamsWithLiveWorkspaces(): Promise<string[]> {
+  const rows = await useDb().select({ workstreamId: workspaces.workstreamId }).from(workspaces)
+    .innerJoin(workstreams, eq(workstreams.id, workspaces.workstreamId))
+    .where(and(
+      isNull(workspaces.deletedAt),
+      inArray(workstreams.state, ['done', 'failed', 'cancelled']),
+      or(
+        eq(workspaces.state, 'running'),
+        sql`exists (select 1 from ${workspaceShells} where ${workspaceShells.workspaceId} = ${workspaces.id} and ${workspaceShells.state} = 'running')`,
+        sql`exists (select 1 from ${workspaceWatches} where ${workspaceWatches.workspaceId} = ${workspaces.id} and ${workspaceWatches.state} = 'armed')`
+      )
+    ))
+  return rows.map(r => r.workstreamId!).filter(Boolean)
+}
+
 /**
  * Worker start: install the manager hooks now; once the container reconcile has run (housekeeping's
  * first tick calls `afterReconcile`), re-attach shells and re-arm watches. Returns stop().
  */
-export function startWorkspaceRuntime(log: Pick<Console, 'info' | 'warn' | 'error'> = console): { afterReconcile: () => Promise<void>; stop: () => void } {
+export function startWorkspaceRuntime(log: Pick<Console, 'info' | 'warn' | 'error'> = console): { afterReconcile: () => Promise<void>; onTick: () => Promise<void>; stop: () => void } {
   const rt = workspaceRuntime()
   setSandboxRuntimeHooks(runtimeHooks(rt))
   let stopped = false
+  // I2: a workstream that ends here tears its workspace down at once (fire-and-forget: the
+  // transition never waits on Docker); the minute tick catches anything this missed.
+  setWorkstreamTerminalHook((workstreamId) => {
+    if (stopped) return
+    void teardownWorkstreamWorkspace(rt, workstreamId).catch(err => log.warn(`[sandbox] teardown of workstream ${workstreamId}'s workspace failed:`, (err as Error).message))
+  })
   return {
+    onTick: async () => {
+      if (stopped) return
+      for (const id of await finishedWorkstreamsWithLiveWorkspaces()) {
+        try { await teardownWorkstreamWorkspace(rt, id) } catch (err) { log.warn(`[sandbox] teardown of workstream ${id}'s workspace failed:`, (err as Error).message) }
+      }
+    },
     afterReconcile: async () => {
       if (stopped) return
       try {
@@ -149,7 +202,7 @@ export function startWorkspaceRuntime(log: Pick<Console, 'info' | 'warn' | 'erro
         if (n) log.info(`[sandbox] re-armed ${n} watch(es)`)
       } catch (err) { log.error('[sandbox] re-arming watches failed:', err) }
     },
-    stop: () => { stopped = true; rt.watches.stop() }
+    stop: () => { stopped = true; setWorkstreamTerminalHook(null); rt.watches.stop() }
   }
 }
 

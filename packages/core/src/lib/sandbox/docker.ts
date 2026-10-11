@@ -20,6 +20,11 @@ export class SandboxUnavailableError extends Error {
   constructor(message: string) { super(message); this.name = 'SandboxUnavailableError' }
 }
 
+/** Final review M5: an API-token read found the sandbox stopped (or tainted) — reads never start one. */
+export class SandboxStoppedError extends SandboxUnavailableError {
+  constructor() { super('sandbox stopped — open it in the app'); this.name = 'SandboxStoppedError' }
+}
+
 export interface SandboxLimits {
   pids: number
   memory: string
@@ -96,6 +101,45 @@ export function flagsHash(spec: ContainerSpec): string {
 /** `docker create` for a workspace's long-lived container (idles in `sleep infinity`). */
 export function createArgs(spec: ContainerSpec): string[] {
   return [...baseCreateArgs(spec), '--label', `${LABEL_FLAGS}=${flagsHash(spec)}`, spec.image, 'sleep', 'infinity']
+}
+
+/** Reads the probe's own cgroup limits (v2 files, v1 fallback). */
+export const LIMITS_PROBE_SCRIPT = [
+  'if [ -r /sys/fs/cgroup/memory.max ]; then m=$(cat /sys/fs/cgroup/memory.max); else m=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo none); fi',
+  'if [ -r /sys/fs/cgroup/pids.max ]; then p=$(cat /sys/fs/cgroup/pids.max); else p=$(cat /sys/fs/cgroup/pids/pids.max 2>/dev/null || echo none); fi',
+  'echo "memory=$m pids=$p"'
+].join('\n')
+
+/** Final review I4: `docker create` for the limits probe — every isolation flag of a sandbox, no
+ *  network (the firewall is not what it checks), prints its own cgroup limits. */
+export function limitsProbeArgs(spec: ContainerSpec): string[] {
+  return ['create', '--name', spec.name, ...isolationFlags(spec), '--network', 'none', '--restart', 'no', spec.image, '/bin/sh', '-c', LIMITS_PROBE_SCRIPT]
+}
+
+function memoryBytes(m: string): number {
+  const x = m.trim().toLowerCase().match(/^(\d+)([kmg]?)$/)
+  if (!x) return NaN
+  return Number(x[1]) * ({ '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 } as Record<string, number>)[x[2]!]!
+}
+
+/**
+ * What is wrong with the probe's limits ([] = enforced): HostConfig must hold the spec values (a
+ * discarded flag reads 0) AND the cgroup the container really runs in must say the same (a
+ * controller that is not delegated reads `max` / is missing).
+ */
+export function limitsProblems(hostConfig: string, probe: string, limits: SandboxLimits = SANDBOX_LIMITS): string[] {
+  const problems: string[] = []
+  const wantMem = memoryBytes(limits.memory)
+  const [mem, pids] = hostConfig.trim().split(/\s+/)
+  if (Number(mem) !== wantMem) problems.push(`HostConfig.Memory is ${mem || 'unknown'} (want ${wantMem})`)
+  if (Number(pids) !== limits.pids) problems.push(`HostConfig.PidsLimit is ${pids || 'unknown'} (want ${limits.pids})`)
+  const m = probe.match(/memory=(\S+) pids=(\S+)/)
+  if (!m) problems.push(`the probe did not report its cgroup limits (${probe.trim().slice(0, 120) || 'no output'})`)
+  else {
+    if (Number(m[1]) !== wantMem) problems.push(`the container's cgroup memory limit is ${m[1]} (want ${wantMem}) — the memory controller is not enforced`)
+    if (Number(m[2]) !== limits.pids) problems.push(`the container's cgroup pids limit is ${m[2]} (want ${limits.pids}) — the pids controller is not enforced`)
+  }
+  return problems
 }
 
 /**

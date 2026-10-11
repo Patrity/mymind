@@ -58,7 +58,7 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     return r!.id
   }
   const mkManager = (settings: Parameters<typeof createSandboxManager>[0]['settings'] = {}) => createSandboxManager({
-    labels: LABELS, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', dns: [], ...settings },
+    labels: LABELS, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [], ...settings },
     log: { info: () => {}, warn: () => {}, error: () => {} }
   })
   const mkRuntime = (mgr: SandboxManager) => createWorkspaceRuntime(mgr, {

@@ -80,7 +80,8 @@ describe('worker boot', () => {
   it('beats, recovers orphans BEFORE anything can claim, then starts commands, bridge, pump, schedule, recorder flush', async () => {
     const { deps, calls } = fakeDeps()
     await startWorkerProcess(deps, T)
-    expect(calls).toEqual(['beat', 'boot', 'commands:start', 'bridge:start', 'prune', 'kick', 'schedule:start', 'flush-loop:start', 'sandbox:start'])
+    // Final review M3: the sandbox runtime's hooks are installed before commands or runs can reach it.
+    expect(calls).toEqual(['beat', 'boot', 'sandbox:start', 'commands:start', 'bridge:start', 'prune', 'kick', 'schedule:start', 'flush-loop:start'])
   })
 
   it('ticks every tickMs and beats every beatMs; a slow tick is never overlapped', async () => {
@@ -282,7 +283,7 @@ describe('worker drain (SIGTERM)', () => {
     finish()
     expect(await drained).toEqual({ settled: true })
     const tail = calls.slice(calls.indexOf('run:settled'))
-    expect(tail).toEqual(['run:settled', 'settled', 'commands:stop', 'bridge:stop', 'flush-loop:stop', 'sandbox:stop', 'flush', 'close'])
+    expect(tail).toEqual(['run:settled', 'settled', 'sandbox:stop', 'commands:stop', 'bridge:stop', 'flush-loop:stop', 'flush', 'close'])
     // Heartbeat stopped too.
     const beats = vi.mocked(deps.beat).mock.calls.length
     await vi.advanceTimersByTimeAsync(20_000)

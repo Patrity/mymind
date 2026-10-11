@@ -56,3 +56,7 @@ export interface WorkspaceShellTail {
   outputBytes: number
   truncated: boolean
 }
+
+/** Cycle 82 final review I6: the worker's sandbox preflight result, carried on its heartbeat (the
+ *  web shows "Sandbox unavailable: <reason>"; CD turns it into a deploy warning). */
+export type SandboxHealth = { ok: true; checkedAt: string } | { ok: false; reason: string; checkedAt: string }

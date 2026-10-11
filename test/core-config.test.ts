@@ -113,7 +113,9 @@ const ENV_ROWS: Array<[string, Record<string, string>, Partial<Record<string, un
     { storageDriver: 's3', storageS3: { endpoint: undefined, region: 'us-east-1', bucket: 'over', accessKeyId: 'AK', secretAccessKey: undefined } }],
   ['env-backed: MYMIND_BUS_NS', { ...BASE, MYMIND_BUS_NS: 'w2' }, { busNs: 'w2' }],
   ['env-backed: SANDBOX_REQUIRE_FIREWALL=false', { ...BASE, SANDBOX_REQUIRE_FIREWALL: 'false' }, { sandboxRequireFirewall: false }],
-  ['env-backed: SANDBOX_REQUIRE_FIREWALL=true', { ...BASE, SANDBOX_REQUIRE_FIREWALL: 'true' }, { sandboxRequireFirewall: true }]
+  ['env-backed: SANDBOX_REQUIRE_FIREWALL=true', { ...BASE, SANDBOX_REQUIRE_FIREWALL: 'true' }, { sandboxRequireFirewall: true }],
+  ['env-backed: SANDBOX_REQUIRE_LIMITS=false', { ...BASE, SANDBOX_REQUIRE_LIMITS: 'false' }, { sandboxRequireLimits: false }],
+  ['env-backed: SANDBOX_REQUIRE_LIMITS=true', { ...BASE, SANDBOX_REQUIRE_LIMITS: 'true' }, { sandboxRequireLimits: true }]
 ]
 
 describe('fromEnv (worker) ≡ fromRuntimeConfig over Nitro runtimeConfig (web)', () => {

@@ -249,3 +249,30 @@ describe('Task 3 fix round 2: bash_output over a NON-UTF-8 stream is contiguous 
     expect(offset).toBe(stream.length)
   })
 })
+
+describe('final review I2: liveness refresh (the quota tick)', () => {
+  it('a shell that exited unread is recorded as exited; a running one is left; peek never execs through the manager', async () => {
+    const store = memShells()
+    const peeks: string[] = []
+    const execs: string[] = []
+    let reply = (cmd: string) => res({ stdout: cmd.includes('A-SHELL') ? status('exit:0', 3, 0) : status('running', 3, 0) })
+    const reg = createShellRegistry({
+      exec: async (_id, command) => { execs.push(command); return res() },
+      peek: async (_id, command) => { peeks.push(command); return reply(command) },
+      workspace: async () => ({ id: WS, state: 'running', tainted: false, deletedAt: null }) as WorkspaceRow,
+      store, secretValues: async () => [], log: { info: () => {}, warn: () => {}, error: () => {} }
+    })
+    const a = (await store.create(WS, 'npm run build', 8))!
+    const b = (await store.create(WS, 'sleep 1000', 8))!
+    reply = (cmd: string) => res({ stdout: cmd.includes(a.id) ? status('exit:0', 3, 0) : status('running', 3, 0) })
+    expect(await reg.refresh(WS)).toBe(1)
+    expect(store.rows.get(a.id)).toMatchObject({ state: 'exited', exitCode: 0 })
+    expect(store.rows.get(b.id)!.state).toBe('running')
+    expect(peeks).toHaveLength(2)
+    expect(execs).toEqual([])
+    // A stopped container (peek → null) refreshes nothing.
+    const reg2 = createShellRegistry({ exec: async () => res(), peek: async () => null, workspace: async () => null, store, secretValues: async () => [] })
+    expect(await reg2.refresh(WS)).toBe(0)
+    expect(store.rows.get(b.id)!.state).toBe('running')
+  })
+})

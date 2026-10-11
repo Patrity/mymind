@@ -1,9 +1,9 @@
 // Cycle 82 (spec §3): the workspaces table. The sandbox manager talks to it through the
 // `WorkspaceStore` interface (unit tests use an in-memory one); `dbWorkspaceStore` is the real one.
 // Every write publishes the live `workspace` resource.
-import { and, eq, isNull, isNotNull, lt, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, isNotNull, lt, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { workspaces, type WorkspaceRow } from '../../db/schema'
+import { workspaces, workstreams, type WorkspaceRow } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
 
 export type { WorkspaceRow }
@@ -21,7 +21,9 @@ export interface WorkspaceStore {
   listRunning(): Promise<WorkspaceRow[]>
   /** Workstream workspaces whose workstream is gone get `deleted_at` (the 30-day clock starts). */
   stampOrphans(): Promise<number>
-  /** Rows deleted before `before` (their container + dir go, then the row). */
+  /** Rows whose 30-day clock ran out before `before` (their container + dir go, then the row):
+   *  deleted before it, or (final review I7) the workspace of a workstream that FINISHED (done /
+   *  failed / cancelled) before it. A resumed workstream has no finished_at, so it is never swept. */
   listExpired(before: Date): Promise<WorkspaceRow[]>
   remove(id: string): Promise<void>
 }
@@ -68,7 +70,12 @@ export const dbWorkspaceStore: WorkspaceStore = {
     return rows.length
   },
   async listExpired(before) {
-    return useDb().select().from(workspaces).where(and(isNotNull(workspaces.deletedAt), lt(workspaces.deletedAt, before)))
+    const finished = useDb().select({ id: workstreams.id }).from(workstreams)
+      .where(and(inArray(workstreams.state, ['done', 'failed', 'cancelled']), isNotNull(workstreams.finishedAt), lt(workstreams.finishedAt, before)))
+    return useDb().select().from(workspaces).where(or(
+      and(isNotNull(workspaces.deletedAt), lt(workspaces.deletedAt, before)),
+      and(eq(workspaces.kind, 'workstream'), inArray(workspaces.workstreamId, finished))
+    ))
   },
   async remove(id) {
     await useDb().delete(workspaces).where(eq(workspaces.id, id))

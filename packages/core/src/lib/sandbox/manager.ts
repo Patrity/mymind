@@ -24,18 +24,19 @@ import { chown, mkdir, rmdir, statfs } from 'node:fs/promises'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import {
-  LABEL_FLAGS, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxUnavailableError,
+  LABEL_FLAGS, LABEL_TAINTED, LABEL_TEST, LABEL_WORKSPACE, SANDBOX_UID, SandboxStoppedError, SandboxUnavailableError,
   assertSecretName, createArgs, createDockerCli, dockerAvailable, ensureNetwork, execArgs, flagsHash, killExecArgs,
-  parseExecStatus, taintedRunArgs, verifyNetworkIsolation,
+  limitsProbeArgs, limitsProblems, parseExecStatus, taintedRunArgs, verifyNetworkIsolation,
   type DockerResult, type DockerRunner, type ExecStatus
 } from './docker'
 import { DEFAULT_SANDBOX_DNS } from './network'
 import { DEFAULT_QUOTA_BYTES, DEFAULT_QUOTA_INODES, MEASURE_COMMAND, MEASURE_TIMEOUT_SEC, SandboxDiskLowError, SandboxQuotaError, overQuota, parseDu } from './quota'
 import { dbWorkspaceStore, type WorkspaceRow, type WorkspaceStore } from './store'
 import { coreConfig } from '../../config'
-import { sandboxRequireFirewall } from '../../config-env'
+import { sandboxRequireFirewall, sandboxRequireLimits } from '../../config-env'
+import type { SandboxHealth } from '../../shared/types/workspaces'
 
-export { SandboxUnavailableError } from './docker'
+export { SandboxStoppedError, SandboxUnavailableError } from './docker'
 export { SandboxQuotaError, SandboxDiskLowError } from './quota'
 
 export interface SandboxSettings {
@@ -45,6 +46,14 @@ export interface SandboxSettings {
   dns: string[]
   /** 'enforce': refuse to run unless the live iptables rules match network.ts. */
   firewall: 'enforce' | 'off'
+  /** 'enforce' (final review I4): refuse to run unless a probe container shows the memory + pids
+   *  limits really applied (HostConfig AND the cgroup files inside it) — an unprivileged LXC can
+   *  discard them with only a warning. */
+  limits: 'enforce' | 'off'
+  /** Final review I3: at most this many sandbox containers run at once (networked + tainted one-offs). */
+  maxRunning: number
+  /** …a start that finds no free slot (and nothing idle to stop) waits this long, then fails. */
+  slotWaitMs: number
   idleMs: number
   quotaBytes: number
   quotaInodes: number
@@ -68,8 +77,17 @@ function firewallRequired(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): bo
   try { return coreConfig().sandboxRequireFirewall } catch { return sandboxRequireFirewall(env, platform) }
 }
 
-/** Settings from the worker's env. The firewall gate is CoreConfig.sandboxRequireFirewall. */
-export function sandboxSettings(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, requireFirewall = firewallRequired(env, platform)): SandboxSettings {
+function limitsRequired(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): boolean {
+  try { return coreConfig().sandboxRequireLimits } catch { return sandboxRequireLimits(env, platform) }
+}
+
+function positiveInt(v: string | undefined, dflt: number): number {
+  const n = Number(v)
+  return Number.isSafeInteger(n) && n > 0 ? n : dflt
+}
+
+/** Settings from the worker's env. The firewall and limits gates are CoreConfig.sandboxRequire*. */
+export function sandboxSettings(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, requireFirewall = firewallRequired(env, platform), requireLimits = limitsRequired(env, platform)): SandboxSettings {
   const prod = env.NODE_ENV === 'production'
   const linux = platform === 'linux'
   return {
@@ -78,6 +96,9 @@ export function sandboxSettings(env: NodeJS.ProcessEnv = process.env, platform: 
     // Docker Desktop drops outbound UDP to public resolvers, so dev on macOS keeps Docker's own.
     dns: env.SANDBOX_DNS !== undefined ? env.SANDBOX_DNS.split(',').map(s => s.trim()).filter(Boolean) : linux ? [...DEFAULT_SANDBOX_DNS] : [],
     firewall: requireFirewall ? 'enforce' : 'off',
+    limits: requireLimits ? 'enforce' : 'off',
+    maxRunning: positiveInt(env.SANDBOX_MAX_RUNNING, 2),
+    slotWaitMs: 60_000,
     idleMs: 15 * 60_000,
     quotaBytes: DEFAULT_QUOTA_BYTES,
     quotaInodes: DEFAULT_QUOTA_INODES,
@@ -117,15 +138,28 @@ export interface ExecOptions {
   input?: string
   /** Output cap per stream (tail kept). Default settings.outputCapBytes (64 KB); at most 1 MB. */
   capBytes?: number
+  /** Final review M5: never START a container for this command (an API-token read of the Files /
+   *  Shells UI) — a stopped (or tainted) workspace refuses with SandboxStoppedError. */
+  noStart?: boolean
 }
 
 /** Hooks the workspace runtime (Task 2: background shells + watches) installs on the shared
  *  manager at worker start — set once, read at call time (no import cycle with the tools). */
 export interface SandboxRuntimeHooks {
+  /** Armed watches: the container is neither idle-stopped nor evicted for capacity. */
   isBusy?: (workspaceId: string) => boolean | Promise<boolean>
+  /** Running background shells: the container is not evicted for capacity (final review I3). They
+   *  do NOT block the idle stop (I2 ruling: 15 min with no command and no output read stops it). */
+  hasLiveShell?: (workspaceId: string) => boolean | Promise<boolean>
   onOverQuota?: (workspaceId: string, usage: { bytes: number; inodes: number }) => Promise<void> | void
   /** After a command made the workspace tainted (or ran in an already tainted one). */
   onTainted?: (workspaceId: string) => Promise<void> | void
+  /** The manager stopped the container (idle, capacity eviction, workstream ended): its background
+   *  shells died with it — record them. */
+  onStopped?: (workspaceId: string, reason: string) => Promise<void> | void
+  /** Every quota tick, per running workspace, before measuring: refresh running shell rows (one that
+   *  exited is recorded — final review I2). Must not count as use (never touches last_used_at). */
+  refresh?: (workspaceId: string) => Promise<void> | void
 }
 const runtimeHooks: SandboxRuntimeHooks = {}
 export function setSandboxRuntimeHooks(h: SandboxRuntimeHooks): void { Object.assign(runtimeHooks, h) }
@@ -161,8 +195,11 @@ export interface SandboxManagerOptions {
   iptablesS?: () => Promise<string>
   /** Free bytes + inodes on the filesystem holding `dir` (default: statfs). */
   fsStats?: (dir: string) => Promise<FsStats>
-  /** True while a workspace must not be idle-stopped (background shells / armed watches — Task 2). */
+  /** True while a workspace must not be idle-stopped or evicted (armed watches — Task 2). */
   isBusy?: (workspaceId: string) => boolean | Promise<boolean>
+  hasLiveShell?: (workspaceId: string) => boolean | Promise<boolean>
+  onStopped?: (workspaceId: string, reason: string) => Promise<void> | void
+  refresh?: (workspaceId: string) => Promise<void> | void
   /** Called when a workspace is over quota or stopped by the low-disk watchdog (Task 2 kills its
    *  background shells). */
   onOverQuota?: (workspaceId: string, usage: { bytes: number; inodes: number }) => Promise<void> | void
@@ -175,6 +212,10 @@ export interface SandboxManagerOptions {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PREFLIGHT_TTL_MS = 60_000
+export const IDLE_STOP_REASON = 'stopped: the sandbox was idle for 15 min (no command, no output read) — background shells are for jobs, not servers'
+export const EVICTED_REASON = 'stopped: another workspace needed its sandbox slot'
+
+export type { SandboxHealth }
 
 export function containerName(workspaceId: string): string {
   return `mymind-ws-${workspaceId}`
@@ -227,6 +268,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const platform = opts.platform ?? process.platform
   const fsStats = opts.fsStats ?? defaultFsStats
   const isBusy = (id: string) => (opts.isBusy ?? runtimeHooks.isBusy)?.(id) ?? false
+  const hasLiveShell = (id: string) => (opts.hasLiveShell ?? runtimeHooks.hasLiveShell)?.(id) ?? false
+  const onStopped = (id: string, reason: string) => (opts.onStopped ?? runtimeHooks.onStopped)?.(id, reason)
+  const refreshShells = (id: string) => (opts.refresh ?? runtimeHooks.refresh)?.(id)
   const onOverQuota = (id: string, usage: { bytes: number; inodes: number }) => (opts.onOverQuota ?? runtimeHooks.onOverQuota)?.(id, usage)
   const onTainted = (id: string) => (opts.onTainted ?? runtimeHooks.onTainted)?.(id)
   /** Abort handles of tainted one-offs in flight, per workspace — registered under the workspace
@@ -236,6 +280,15 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const locks = new Map<string, Promise<unknown>>()
   const measuredAt = new Map<string, number>()
   let preflightOk: { at: number; network: boolean } | null = null
+  /** Limits verified once per manager (I4); a failure is cached for PREFLIGHT_TTL_MS. */
+  let limitsOk = false
+  let limitsFailed: { at: number; message: string } | null = null
+  /** Commands in flight per workspace (networked container) — never idle-stopped or evicted (M1, I3). */
+  const inFlight = new Map<string, number>()
+  /** Tainted one-off containers in flight (they count against maxRunning — I3). */
+  let oneOffs = 0
+  /** Global capacity lock: count + start happen under it, so two starts can't both take the last slot. */
+  let capacityChain: Promise<unknown> = Promise.resolve()
   let imageId: string | null = null
   let lowDisk: { freeBytes: number; freeInodes: number; reason: 'bytes' | 'inodes' } | null = null
 
@@ -275,7 +328,108 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         }
       }
     }
+    if (s.limits === 'enforce' && !limitsOk) await verifyLimits()
     preflightOk = { at: now(), network: needNetwork || (preflightOk?.network ?? false) }
+  }
+
+  /**
+   * Final review I4: are the memory + pids limits REALLY applied? A probe container (no network, the
+   * same isolation flags as every sandbox) is created, its HostConfig inspected, then started to read
+   * its own cgroup memory.max / pids.max. Docker on an unprivileged LXC whose controllers aren't
+   * delegated accepts `--memory`/`--pids-limit` with a warning and discards them — fail closed.
+   */
+  async function verifyLimits(): Promise<void> {
+    if (limitsFailed && now() - limitsFailed.at < PREFLIGHT_TTL_MS) throw new SandboxUnavailableError(limitsFailed.message)
+    const name = `mymind-wsprobe-${randomBytes(4).toString('hex')}`
+    const dir = path.join(s.workspacesDir, '.limits-probe')
+    await mkdir(dir, { recursive: true, mode: 0o711 })
+    const fail = (why: string) => {
+      const message = `the workspace sandbox is unavailable: its resource limits are not enforced on this host (${why}) — the memory/pids cgroup controllers must be delegated to Docker (or set SANDBOX_REQUIRE_LIMITS=false to accept unbounded sandboxes)`
+      limitsFailed = { at: now(), message }
+      log.error(`[sandbox] limits check failed: ${why}`)
+      return new SandboxUnavailableError(message)
+    }
+    try {
+      const c = await docker(limitsProbeArgs({ name, image: s.image, workspaceId: 'limits-probe', hostDir: dir, labels }), { timeoutMs: 60_000 })
+      if (c.code !== 0) throw fail(`the probe container could not be created: ${c.stderr.trim().slice(0, 200)}`)
+      const hc = await docker(['container', 'inspect', '--format', '{{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}', name], { timeoutMs: 15_000 })
+      const run = await docker(['start', '-a', name], { timeoutMs: 60_000 })
+      const problems = limitsProblems(hc.stdout, run.stdout)
+      if (problems.length) throw fail(problems.join('; '))
+      limitsOk = true
+      limitsFailed = null
+    } finally {
+      await docker(['rm', '-f', name], { timeoutMs: 30_000 })
+    }
+  }
+
+  /** The worker's boot check (I6): ok, or the reason the sandbox is unavailable. Never throws. */
+  async function health(): Promise<SandboxHealth> {
+    const checkedAt = new Date(now()).toISOString()
+    if (lowDisk) return { ok: false, reason: `the server is low on disk (${(lowDisk.freeBytes / 1024 ** 3).toFixed(1)} GB free) — every sandbox is stopped until space is freed`, checkedAt }
+    try {
+      preflightOk = null // a fresh look every time
+      await preflight(true)
+      return { ok: true, checkedAt }
+    } catch (err) {
+      const msg = (err as Error).message.replace(/^the workspace sandbox is unavailable: /, '')
+      return { ok: false, reason: msg, checkedAt }
+    }
+  }
+
+  /** Serialise every capacity decision (count + start) across workspaces. */
+  function withCapacity<T>(fn: () => Promise<T>): Promise<T> {
+    const next = capacityChain.catch(() => {}).then(fn)
+    capacityChain = next.catch(() => {})
+    return next
+  }
+
+  /** Running networked workspace containers in this manager's scope (docker is the truth). */
+  async function runningNetworked(): Promise<string[]> {
+    return (await listLabelled()).filter((c) => {
+      const wid = c.Config.Labels?.[LABEL_WORKSPACE] ?? ''
+      return inScope(c) && c.State.Running && c.Config.Labels?.[LABEL_TAINTED] === undefined && UUID.test(wid) && c.Name === `/${containerName(wid)}`
+    }).map(c => c.Config.Labels![LABEL_WORKSPACE]!)
+  }
+
+  /** The least-recently-used running workspace nothing is using right now (no command in flight, no
+   *  live background shell, no armed watch, nobody holding its lock) — or null. */
+  async function pickVictim(candidates: string[]): Promise<string | null> {
+    let best: { id: string; at: number } | null = null
+    for (const id of candidates) {
+      if (locks.has(id) || (inFlight.get(id) ?? 0) > 0) continue
+      try { if (await hasLiveShell(id) || await isBusy(id)) continue } catch { continue }
+      const row = await store.get(id)
+      const at = row?.lastUsedAt.getTime() ?? 0
+      if (!best || at < best.at) best = { id, at }
+    }
+    return best?.id ?? null
+  }
+
+  /**
+   * Final review I3 (ruling: count cap): make room for one more running sandbox container — called
+   * under the capacity lock. Full → stop the LRU idle one; none → wait (≤ slotWaitMs) for a slot,
+   * then a clear error. `forId` (its own container is being (re)started) never counts.
+   */
+  async function makeRoom(forId: string): Promise<void> {
+    const deadline = Date.now() + s.slotWaitMs
+    for (;;) {
+      const running = (await runningNetworked()).filter(id => id !== forId)
+      const used = running.length + oneOffs
+      if (used < s.maxRunning) return
+      const victim = await pickVictim(running)
+      if (victim && !locks.has(victim)) {
+        log.info(`[sandbox] capacity: ${used}/${s.maxRunning} sandboxes running — stopping the least recently used one (${victim}) for ${forId}`)
+        await locked(victim, async () => {
+          // Re-checked under its lock: a command may have started since it was picked.
+          if ((inFlight.get(victim) ?? 0) > 0) return
+          await stopUnlocked(victim, EVICTED_REASON)
+        })
+        continue
+      }
+      if (Date.now() >= deadline) throw new SandboxUnavailableError(`sandbox capacity busy — ${used} workspaces active (at most ${s.maxRunning} sandboxes run at once). Try again in a few minutes.`)
+      await sleep(Math.min(1000, Math.max(10, s.slotWaitMs / 20)))
+    }
   }
 
   /** Create the host dir (0700) owned by the sandbox user. Only the dir itself — never its contents. */
@@ -319,7 +473,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return row
   }
 
-  async function ensureContainerUnlocked(id: string): Promise<{ containerId: string; name: string }> {
+  async function ensureContainerUnlocked(id: string, o: { noStart?: boolean } = {}): Promise<{ containerId: string; name: string }> {
     assertDiskOk()
     const row = await liveRow(id)
     // Re-read under the lock: a taint that just landed must never be raced by a networked start.
@@ -327,6 +481,24 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     await preflight(true)
     const name = containerName(id)
     const wantFlags = flagsHash(containerSpec(id))
+    const current = await inspect(name)
+    const fresh = (c: Inspected) => !(imageId && c.Image !== imageId) && c.Config.Labels?.[LABEL_FLAGS] === wantFlags
+    if (current?.State.Running && fresh(current)) {
+      await store.setContainer(id, current.Id, 'running')
+      await store.touch(id) // M1: inside the lock — an idle stop re-checking under it sees the use
+      return { containerId: current.Id, name }
+    }
+    if (o.noStart) throw new SandboxStoppedError()
+    // Starting (or recreating) one: count + start under the capacity lock (I3).
+    return withCapacity(async () => {
+      await makeRoom(id)
+      const r = await createOrStart(id, name, wantFlags)
+      await store.touch(id)
+      return r
+    })
+  }
+
+  async function createOrStart(id: string, name: string, wantFlags: string): Promise<{ containerId: string; name: string }> {
     for (let attempt = 0; attempt < 3; attempt++) {
       let c = await inspect(name)
       if (c && ((imageId && c.Image !== imageId) || c.Config.Labels?.[LABEL_FLAGS] !== wantFlags)) {
@@ -354,8 +526,8 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     throw new SandboxUnavailableError(`could not create the workspace sandbox for ${id} (name conflict kept recurring)`)
   }
 
-  function ensureContainer(id: string) {
-    return locked(id, () => ensureContainerUnlocked(id))
+  function ensureContainer(id: string, o: { noStart?: boolean } = {}) {
+    return locked(id, () => ensureContainerUnlocked(id, o))
   }
 
   /**
@@ -483,6 +655,12 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   async function execOneOff(id: string, command: string, timeoutSec: number, signal?: AbortSignal, io: { input?: string; capBytes?: number } = {}): Promise<DockerResult & { abortedHere: boolean }> {
     await preflight(false)
     await ensureDir(id)
+    // I3: a one-off takes a sandbox slot for as long as it runs.
+    await withCapacity(async () => { await makeRoom(id); oneOffs++ })
+    try { return await execOneOffInSlot(id, command, timeoutSec, signal, io) } finally { oneOffs-- }
+  }
+
+  async function execOneOffInSlot(id: string, command: string, timeoutSec: number, signal: AbortSignal | undefined, io: { input?: string; capBytes?: number }): Promise<DockerResult & { abortedHere: boolean }> {
     const execId = newExecId()
     const name = `mymind-wst-${id.slice(0, 8)}-${execId}`
     let aborted = false
@@ -520,6 +698,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const secrets = o.secrets ?? {}
     for (const k of Object.keys(secrets)) assertSecretName(k)
     const row = await liveRow(id)
+    if (o.noStart && (o.tainted || row.tainted)) throw new SandboxStoppedError()
     const runTainted = async () => {
       const ctrl = await taint(id)
       // Fix round 1 (M2): the workspace is offline now — its watches are cancelled and its shells
@@ -534,11 +713,29 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     }
     if (o.tainted || row.tainted) return runTainted()
 
-    let name: string
-    try { ({ name } = await ensureContainer(id)) } catch (e) {
-      if (e instanceof WorkspaceTaintedError) return runTainted()
-      throw e
+    // In flight from BEFORE the container is ensured until the command returns: an idle stop or a
+    // capacity eviction never picks a workspace a command is about to run in (M1, I3).
+    inFlight.set(id, (inFlight.get(id) ?? 0) + 1)
+    let tainted = false
+    try {
+      let name: string
+      try { ({ name } = await ensureContainer(id, { noStart: o.noStart })) } catch (e) {
+        if (!(e instanceof WorkspaceTaintedError)) throw e
+        if (o.noStart) throw new SandboxStoppedError()
+        tainted = true
+        name = ''
+      }
+      if (!tainted) return await execNetworked(id, name, command, o, { timeoutSec, capBytes, secrets })
+    } finally {
+      const n = (inFlight.get(id) ?? 1) - 1
+      if (n > 0) inFlight.set(id, n)
+      else inFlight.delete(id)
     }
+    return runTainted()
+  }
+
+  async function execNetworked(id: string, name: string, command: string, o: ExecOptions, x: { timeoutSec: number; capBytes: number; secrets: Record<string, string> }): Promise<SandboxExecResult> {
+    const { timeoutSec, capBytes, secrets } = x
     await store.touch(id)
     const execId = newExecId()
     let aborted = false
@@ -562,12 +759,42 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     }
   }
 
-  async function stopContainer(id: string): Promise<void> {
-    await locked(id, async () => {
-      const c = await inspect(containerName(id))
-      if (c?.State.Running) await docker(['stop', '-t', '3', c.Id], { timeoutMs: 30_000 })
-      await store.setContainer(id, c?.Id ?? null, 'stopped')
+  /** Stop the container (files kept). `reason` goes to its background shells' rows (onStopped). */
+  async function stopContainer(id: string, reason = 'stopped: the sandbox was stopped'): Promise<void> {
+    await locked(id, () => stopUnlocked(id, reason))
+  }
+
+  async function stopUnlocked(id: string, reason: string): Promise<void> {
+    const c = await inspect(containerName(id))
+    if (c?.State.Running) await docker(['stop', '-t', '3', c.Id], { timeoutMs: 30_000 })
+    await store.setContainer(id, c?.Id ?? null, 'stopped')
+    try { await onStopped(id, reason) } catch (err) { log.warn(`[sandbox] onStopped(${id}) failed:`, (err as Error).message) }
+  }
+
+  /** M1: the idle decision is re-made UNDER the workspace lock (a command that started since the
+   *  tick's snapshot touched last_used_at inside ensureContainer's lock, or is in flight). */
+  async function stopIfIdle(id: string): Promise<boolean> {
+    return locked(id, async () => {
+      const row = await store.get(id)
+      if (!row || row.state !== 'running') return false
+      if (now() - row.lastUsedAt.getTime() < s.idleMs || (inFlight.get(id) ?? 0) > 0) return false
+      if (await isBusy(id)) return false
+      await stopUnlocked(id, IDLE_STOP_REASON)
+      return true
     })
+  }
+
+  /**
+   * A housekeeping command in the RUNNING networked container (final review I2: the shell liveness
+   * refresh). null when the workspace is not running (or is tainted) — it never starts a container,
+   * never counts as use (no touch) and never runs with secrets.
+   */
+  async function peek(id: string, command: string): Promise<SandboxExecResult | null> {
+    const row = await store.get(id)
+    if (!row || row.state !== 'running' || row.tainted || row.deletedAt) return null
+    const r = await docker(['exec', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, '--workdir', '/workspace', containerName(id), '/bin/sh', '-c', command], { timeoutMs: 30_000, capBytes: s.outputCapBytes })
+    if (r.code !== 0 && /is not running|No such container/i.test(r.stderr)) return null
+    return result(r, false, false)
   }
 
   /** Remove the container (NOT the files) — workspace deletion. */
@@ -633,6 +860,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   async function quotaTick(): Promise<Array<{ id: string; bytes: number; inodes: number; over: boolean }>> {
     const out: Array<{ id: string; bytes: number; inodes: number; over: boolean }> = []
     for (const row of await store.listRunning()) {
+      try { await refreshShells(row.id) } catch (err) { log.warn(`[sandbox] shell refresh of ${row.id} failed:`, (err as Error).message) }
       try {
         const m = await measure(row.id)
         // Unmeasurable (du failed / timed out) = over quota: fail closed (rereview #1).
@@ -648,7 +876,8 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return out
   }
 
-  /** Stop containers idle for idleMs (no command). Returns the stopped workspace ids. */
+  /** Stop containers idle for idleMs (no command, no output read; armed watches keep one up — a
+   *  running background shell does not, I2 ruling). Returns the stopped workspace ids. */
   async function idleStop(): Promise<string[]> {
     const stopped: string[] = []
     for (const row of await store.listRunning()) {
@@ -658,8 +887,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         continue
       }
       try {
-        await stopContainer(row.id)
-        stopped.push(row.id)
+        if (await stopIfIdle(row.id)) stopped.push(row.id)
       } catch (err) { log.warn(`[sandbox] idle stop of ${row.id} failed:`, (err as Error).message) }
     }
     return stopped
@@ -770,17 +998,28 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         removed.push(c.Id)
       } else keep.set(wid, c)
     }
+    const runningRows = new Set<string>()
     for (const row of await store.listRunning()) {
+      runningRows.add(row.id)
       const c = keep.get(row.id)
       if (!c) { await store.setContainer(row.id, null, 'stopped'); repaired.push(row.id) }
       else if (c.Id !== row.containerId || !c.State.Running) {
         await store.setContainer(row.id, c.Id, c.State.Running ? 'running' : 'stopped'); repaired.push(row.id)
       }
     }
+    // M2: a container that RUNS while its row says stopped (a crash between `docker start` and the
+    // row update) would never be idle-stopped or counted — stop it.
+    for (const [wid, c] of keep) {
+      if (!c.State.Running || runningRows.has(wid) || !inScope(c)) continue
+      await docker(['stop', '-t', '3', c.Id], { timeoutMs: 30_000 })
+      if (UUID.test(wid) && await store.get(wid)) await store.setContainer(wid, c.Id, 'stopped')
+      repaired.push(wid)
+    }
     return { removed, repaired }
   }
 
-  /** Daily: start the 30-day clock for workspaces of deleted workstreams; destroy expired ones. */
+  /** Daily: start the 30-day clock for workspaces of deleted workstreams; destroy expired ones —
+   *  deleted 30 days ago, or (final review I7) their workstream finished 30 days ago. */
   async function sweep(retentionMs = 30 * 24 * 60 * 60_000): Promise<string[]> {
     await store.stampOrphans()
     const gone: string[] = []
@@ -799,6 +1038,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     taint,
     reenableNetwork,
     stopContainer,
+    peek,
     removeContainer,
     destroyWorkspace,
     checkQuota,
@@ -809,6 +1049,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     isDiskLow: () => lowDisk !== null,
     reconcile,
     sweep,
+    health,
+    /** Commands in flight / one-offs running (tests). */
+    load: () => ({ inFlight: [...inFlight.entries()], oneOffs }),
     available: () => dockerAvailable(docker)
   }
 }
@@ -830,6 +1073,12 @@ export interface HousekeepingOptions {
   onLowDisk?: (r: DiskCheckResult) => Promise<void> | void
   /** Once, after the boot reconcile (Task 2: re-attach background shells, re-arm watches). */
   afterReconcile?: () => Promise<void> | void
+  /** Every minute, before the idle stop (final review I2: tear down finished workstreams' workspaces). */
+  onTick?: () => Promise<void> | void
+  /** Final review I6: the sandbox's health — at boot (Docker down, or after the reconcile) and then
+   *  every healthMs (default 5 min). The worker puts it on its heartbeat. */
+  onHealth?: (h: SandboxHealth) => void
+  healthMs?: number
   log?: Pick<Console, 'info' | 'warn' | 'error'>
 }
 
@@ -847,10 +1096,19 @@ export function startSandboxHousekeeping(m: SandboxManager = sandboxManager(), o
   let lastSweep = 0
   let running: Promise<void> | null = null
   let diskRunning = false
+  let lastHealth = 0
+  let lastReason: string | null | undefined
+  const report = (h: SandboxHealth, how: { quiet?: boolean } = {}) => {
+    const reason = h.ok ? null : h.reason
+    if (reason !== lastReason && !how.quiet) log[h.ok ? 'info' : 'warn'](h.ok ? '[sandbox] preflight ok' : `[sandbox] unavailable: ${reason}`)
+    lastReason = reason
+    try { o.onHealth?.(h) } catch (err) { log.warn('[sandbox] health report failed:', (err as Error).message) }
+  }
   const step = async () => {
     if (!reconciled) {
       if (!await m.available()) {
         if (!warned) { warned = true; log.warn('[sandbox] Docker is not available — workspace tools are disabled until it is') }
+        report({ ok: false, reason: 'Docker is not running on this host', checkedAt: new Date().toISOString() }, { quiet: true })
         return
       }
       const r = await m.reconcile()
@@ -858,7 +1116,14 @@ export function startSandboxHousekeeping(m: SandboxManager = sandboxManager(), o
       log.info(`[sandbox] reconciled: ${r.removed.length} orphan container(s) removed, ${r.repaired.length} row(s) repaired`)
       await o.afterReconcile?.()
     }
+    if (Date.now() - lastHealth >= (o.healthMs ?? 5 * 60_000)) {
+      lastHealth = Date.now()
+      report(await m.health())
+    }
+    if (stopped) return
     if (m.isDiskLow()) return
+    try { await o.onTick?.() } catch (err) { log.warn('[sandbox] tick hook failed:', (err as Error).message) }
+    if (stopped) return
     await m.idleStop()
     if (stopped) return
     await m.quotaTick()

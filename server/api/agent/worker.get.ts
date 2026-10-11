@@ -4,5 +4,6 @@ import { workerStatus } from '@mymind/core/lib/bus/commands'
  *  The /agent and /workstreams pages poll this for the "agent worker offline" banner. */
 export default defineEventHandler(async () => {
   const s = await workerStatus(30_000)
-  return { online: s.online, beatAt: s.beatAt?.toISOString() ?? null }
+  // Cycle 82 final review I6: the worker's sandbox preflight (null until its first check).
+  return { online: s.online, beatAt: s.beatAt?.toISOString() ?? null, sandbox: s.status?.sandbox ?? null }
 })

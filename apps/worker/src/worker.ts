@@ -1,8 +1,10 @@
 // The worker process's lifecycle, with every side effect injected (main.ts wires the real ones;
 // worker.test.ts fakes them). Spec §2:
-//   start → heartbeat → recoverOrphans (+ seed jobs; retried until the DB answers) → command
-//           handling + live bridge → 5s tick + immediate pump → agent scheduled tasks → recorder
-//           flush → sandbox housekeeping (cycle 82); heartbeat every beatMs throughout (carrying worker-only status, e.g. iMessage health).
+//   start → heartbeat → recoverOrphans (+ seed jobs; retried until the DB answers) → sandbox runtime
+//           + housekeeping (cycle 82 — its hooks before anything can run a workspace command) →
+//           command handling + live bridge → 5s tick + immediate pump → agent scheduled tasks →
+//           recorder flush; heartbeat every beatMs throughout (carrying worker-only status, e.g.
+//           iMessage health and the sandbox preflight).
 //   drain → (SIGTERM) stop claiming + stop the tick and schedule → let the in-flight tick and runs
 //           finish within ONE drainMs budget → stop commands/bridge/heartbeat → flush → resolve. A run
 //           still going at the deadline keeps its 'running' row and is recovered as interrupted by
@@ -103,18 +105,19 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
       return deps.workspaceReadText(p)
     },
     'workspace-view': async (p) => {
-      if (!p || !isUuid(p.workspaceId)) throw new Error('workspace-view: bad payload')
+      if (!p || !isUuid(p.workspaceId) || (p.noStart !== undefined && typeof p.noStart !== 'boolean')) throw new Error('workspace-view: bad payload')
+      const noStart = p.noStart === true ? { noStart: true } : {}
       switch (p.op) {
-        case 'tree': return deps.workspaceView({ op: 'tree', workspaceId: p.workspaceId })
+        case 'tree': return deps.workspaceView({ op: 'tree', workspaceId: p.workspaceId, ...noStart })
         case 'file':
           if (workspacePathProblem(p.path)) throw new Error('workspace-view: bad payload')
-          return deps.workspaceView({ op: 'file', workspaceId: p.workspaceId, path: p.path })
+          return deps.workspaceView({ op: 'file', workspaceId: p.workspaceId, path: p.path, ...noStart })
         case 'chunk':
           if (workspacePathProblem(p.path) || !Number.isSafeInteger(p.offset) || p.offset < 0 || !Number.isSafeInteger(p.length) || p.length < 0) throw new Error('workspace-view: bad payload')
-          return deps.workspaceView({ op: 'chunk', workspaceId: p.workspaceId, path: p.path, offset: p.offset, length: p.length })
+          return deps.workspaceView({ op: 'chunk', workspaceId: p.workspaceId, path: p.path, offset: p.offset, length: p.length, ...noStart })
         case 'shell-tail':
           if (!isUuid(p.shellId)) throw new Error('workspace-view: bad payload')
-          return deps.workspaceView({ op: 'shell-tail', workspaceId: p.workspaceId, shellId: p.shellId })
+          return deps.workspaceView({ op: 'shell-tail', workspaceId: p.workspaceId, shellId: p.shellId, ...noStart })
         default: throw new Error('workspace-view: bad payload')
       }
     },
@@ -152,6 +155,9 @@ export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerP
     await deps.boot(() => stopping)
     // Each step re-checks: a signal during boot must not start anything that claims.
     if (stopping) return
+    // Cycle 82 final review M3: the sandbox runtime (its manager hooks) before anything that can run
+    // a workspace command — a command handler, a claimed run.
+    stops.push(deps.startSandbox())
     stops.push(deps.handleCommands(commandHandlers(deps)))
     stops.push(deps.startLiveBridge())
     const prune = () => { deps.prune().catch(err => log.error('[worker] prune failed:', err)) }
@@ -171,7 +177,6 @@ export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerP
     deps.kick()
     stopSchedule = deps.startSchedule()
     stops.push(deps.startRecorderFlush())
-    stops.push(deps.startSandbox())
     log.info('[worker] executing agent runs')
   })()
 

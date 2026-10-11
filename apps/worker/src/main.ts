@@ -43,6 +43,8 @@ async function prune(): Promise<void> {
   if (n) console.info(`[worker] pruned ${n} run event(s)`)
 }
 
+let sandboxHealth: import('@mymind/core/shared/types/workspaces').SandboxHealth | null = null
+
 console.info(`[worker] boot ${BOOT_ID} pid=${process.pid} ns=${busNs()} dev=${settings.core.dev}`)
 
 const worker = createWorkerProcess({
@@ -57,10 +59,15 @@ const worker = createWorkerProcess({
   // The 5s free-space watchdog records + texts Tony once per low-disk episode (review I2).
   // Task 2: the workspace runtime — manager hooks now; background shells re-attached and watches
   // re-armed once the container reconcile has run.
+  // Final review M3: started BEFORE the worker handles commands or claims runs (worker.ts), so the
+  // runtime hooks are in place for the very first workspace command. I6: the preflight result rides
+  // on the heartbeat (beatStatus) — the web shows it, CD warns on it.
   startSandbox: () => {
     const rt = startWorkspaceRuntime()
     const stopHousekeeping = startSandboxHousekeeping(undefined, {
       afterReconcile: rt.afterReconcile,
+      onTick: rt.onTick,
+      onHealth: (h) => { sandboxHealth = h },
       onLowDisk: async (r) => {
         const gb = (r.freeBytes / 1024 ** 3).toFixed(1)
         const msg = `MyMind server low on disk: ${gb} GB free — stopped ${r.stopped.length} workspace sandbox(es); workspace commands are refused until space is freed.`
@@ -73,7 +80,7 @@ const worker = createWorkerProcess({
   flushRecorder: () => record.recorder.flush(),
   beat: status => commands.beatWorker(BOOT_ID, status),
   // Worker-owned state the web shows: the iMessage catch-up health (Settings → Channels nav dot).
-  beatStatus: () => ({ imessage: inbound.lastHealth() }),
+  beatStatus: () => ({ imessage: inbound.lastHealth(), ...(sandboxHealth ? { sandbox: sandboxHealth } : {}) }),
   handleCommands: h => commands.handleCommands(h),
   startLiveBridge: () => live.startLiveBridge('worker'),
   stopClaiming: () => queue.stopClaiming(),

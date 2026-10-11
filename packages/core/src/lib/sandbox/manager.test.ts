@@ -68,7 +68,7 @@ const planS = ['-N DOCKER', '-A FORWARD -j DOCKER-USER', ...[...jumpRules(), ...
 function mgr(d: ReturnType<typeof fakeDocker>, store = memStore(), extra: Partial<SandboxManagerOptions> = {}) {
   return createSandboxManager({
     docker: d.run, store, iptablesS: async () => planS, uid: 1000, platform: 'darwin',
-    settings: { workspacesDir: '/tmp/mm-sbx-unit-never-created', firewall: 'off', dns: [] },
+    settings: { workspacesDir: '/tmp/mm-sbx-unit-never-created', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] },
     log: { info: () => {}, warn: () => {}, error: () => {} },
     ...extra
   })
@@ -102,18 +102,18 @@ describe('preflight fails closed', () => {
   })
   it('firewall enforce + rules missing → refuses before creating a container', async () => {
     const d = fakeDocker()
-    const m = mgr(d, memStore(), { settings: { workspacesDir: '/tmp/x', firewall: 'enforce', dns: [] }, iptablesS: async () => '-P INPUT ACCEPT' })
+    const m = mgr(d, memStore(), { settings: { workspacesDir: '/tmp/x', firewall: 'enforce', limits: 'off', maxRunning: 10, dns: [] }, iptablesS: async () => '-P INPUT ACCEPT' })
     await expect(m.ensureContainer(WS)).rejects.toBeInstanceOf(SandboxUnavailableError)
     expect(d.calls.some(c => c[0] === 'create')).toBe(false)
   })
   it('firewall enforce + network made by hand (wrong bridge) → refuses', async () => {
     const d = fakeDocker({ net: { 'com.docker.network.bridge.enable_icc': 'false' } })
-    const m = mgr(d, memStore(), { settings: { workspacesDir: '/tmp/x', firewall: 'enforce', dns: [] } })
+    const m = mgr(d, memStore(), { settings: { workspacesDir: '/tmp/x', firewall: 'enforce', limits: 'off', maxRunning: 10, dns: [] } })
     await expect(m.ensureContainer(WS)).rejects.toThrow(/firewall/)
   })
   it('firewall enforce + plan in place → creates', async () => {
     const d = fakeDocker()
-    const m = mgr(d, memStore(), { settings: { workspacesDir: '/tmp/x', firewall: 'enforce', dns: [] } })
+    const m = mgr(d, memStore(), { settings: { workspacesDir: '/tmp/x', firewall: 'enforce', limits: 'off', maxRunning: 10, dns: [] } })
     await m.ensureContainer(WS)
     expect(d.calls.filter(c => c[0] === 'create')).toHaveLength(1)
   })
@@ -200,7 +200,7 @@ describe('exec', () => {
     await m.exec(WS, 'true')
     const orig = d.run
     const stuck: typeof d.run = async (args, o) => args[0] === 'kill' ? fail('permission denied') : orig(args, o)
-    const m2 = createSandboxManager({ docker: stuck, store: memStore([{ id: WS, state: 'running' }]), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+    const m2 = createSandboxManager({ docker: stuck, store: memStore([{ id: WS, state: 'running' }]), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
     await expect(m2.exec(WS, 'cat evil', { tainted: true })).rejects.toThrow(/could not stop the networked sandbox/)
     expect(d.calls.some(c => c[0] === 'run')).toBe(false)
   })
@@ -219,7 +219,7 @@ describe('exec', () => {
     const run: typeof d.run = async (args, o) => args[0] === 'exec' && args.includes('mm-exec')
       ? { code: 137, stdout: '', stderr: 'Killed\n__mm_status__:oom\n', timedOut: false, aborted: false, truncated: false }
       : orig(args, o)
-    const r = await createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } }).exec(WS, 'big')
+    const r = await createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } }).exec(WS, 'big')
     expect(r).toMatchObject({ oom: true, timedOut: false, stderr: 'Killed', exitCode: 137 })
   })
   it('hard-kill fallback: restarts an untainted container at the pids limit, only kills a tainted one (rereview #2, #4)', async () => {
@@ -241,7 +241,7 @@ describe('exec', () => {
         }
         return orig(args, o)
       }
-      const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+      const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
       const ac = new AbortController()
       const p = m.exec(WS, ':(){ :|:& };:', { signal: ac.signal })
       await new Promise(r => setTimeout(r, 20))
@@ -272,7 +272,7 @@ describe('exec', () => {
     }
     const origSet = store.setTainted
     store.setTainted = async (id, t) => { order.push(`tainted=${t}`); return origSet(id, t) }
-    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
     const pending = m.exec(WS, 'sleep 100 && echo evil > f')
     await new Promise(r => setTimeout(r, 30))
     const row = await m.reenableNetwork(WS)
@@ -290,7 +290,7 @@ describe('exec', () => {
     const run: typeof d.run = async (args, o) => args[0] === 'rm' ? fail('device busy') : orig(args, o)
     vi.useFakeTimers()
     try {
-      const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+      const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
       const p = m.reenableNetwork(WS)
       const caught = p.catch(e => e as Error)
       await vi.advanceTimersByTimeAsync(20_000)
@@ -307,7 +307,7 @@ describe('exec', () => {
       return orig(args, o)
     }
     const ac = new AbortController()
-    const p = createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } }).exec(WS, 'sleep 100', { signal: ac.signal })
+    const p = createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } }).exec(WS, 'sleep 100', { signal: ac.signal })
     await new Promise(r => setTimeout(r, 15))
     ac.abort()
     const r = await p
@@ -465,15 +465,21 @@ describe('startSandboxHousekeeping', () => {
         quotaTick: async () => { calls.push('quota'); return [] },
         sweep: async () => { calls.push('sweep'); return [] },
         diskCheck: async () => ({ freeBytes: 1, freeInodes: 1, reason: null, low: false, entered: false, recovered: false, stopped: [] }),
-        isDiskLow: () => false
+        isDiskLow: () => false,
+        health: async () => { calls.push('health'); return { ok: true, checkedAt: 'now' } }
       } as unknown as Parameters<typeof startSandboxHousekeeping>[0]
       const warn = vi.fn()
-      const stop = startSandboxHousekeeping(fake, { tickMs: 1000, sweepMs: 3000, log: { info: () => {}, warn, error: () => {} } })
+      const health: unknown[] = []
+      const stop = startSandboxHousekeeping(fake, { tickMs: 1000, sweepMs: 3000, healthMs: 60_000, onHealth: h => health.push(h), log: { info: () => {}, warn, error: () => {} } })
       await vi.advanceTimersByTimeAsync(2500)
       expect(calls).toEqual([])
       expect(warn).toHaveBeenCalledTimes(1)
+      // I6: the heartbeat hears why — Docker down — every tick until it is up.
+      expect(health.at(-1)).toMatchObject({ ok: false, reason: 'Docker is not running on this host' })
       up = true
       await vi.advanceTimersByTimeAsync(1000)
+      expect(health.at(-1)).toEqual({ ok: true, checkedAt: 'now' })
+      calls.splice(calls.indexOf('health'), 1)
       expect(calls).toEqual(['reconcile', 'idle', 'quota', 'sweep'])
       await vi.advanceTimersByTimeAsync(1000)
       expect(calls.slice(4)).toEqual(['idle', 'quota'])
@@ -508,7 +514,7 @@ describe('startSandboxHousekeeping — disk watchdog', () => {
 
 describe('diskCheck with the real statfs', () => {
   it('reads free bytes and inodes of the workspaces filesystem (dir need not exist yet)', async () => {
-    const m = mgr(fakeDocker(), memStore(), { settings: { workspacesDir: '/tmp/mm-sbx-does-not-exist/x/y', firewall: 'off', dns: [], minFreeBytes: 1, resumeFreeBytes: 1, minFreeInodes: 1, minFreeInodesRatio: 0 } })
+    const m = mgr(fakeDocker(), memStore(), { settings: { workspacesDir: '/tmp/mm-sbx-does-not-exist/x/y', firewall: 'off', limits: 'off', maxRunning: 10, dns: [], minFreeBytes: 1, resumeFreeBytes: 1, minFreeInodes: 1, minFreeInodesRatio: 0 } })
     const r = await m.diskCheck()
     expect(r.low).toBe(false)
     expect(r.freeBytes).toBeGreaterThan(0)
@@ -543,7 +549,7 @@ describe('task 2 carry-overs', () => {
     }
     const origSet = store.setTainted
     store.setTainted = async (id, t) => { order.push(`tainted=${t}`); return origSet(id, t) }
-    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet })
+    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: quiet })
     const pending = m.exec(WS, 'sleep 1; echo evil > f')
     await new Promise(r => setTimeout(r, 10))
     const row = await m.reenableNetwork(WS)
@@ -572,7 +578,7 @@ describe('task 2 carry-overs', () => {
       }
       return orig(args, o)
     }
-    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet, ...opts })
+    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: quiet, ...opts })
     const ac = new AbortController()
     const p = m.exec(WS, ':(){ :|:& };:', { signal: ac.signal })
     await new Promise(r => setTimeout(r, 20))
@@ -622,7 +628,7 @@ describe('task 2 carry-overs', () => {
       if (args.includes('mm-exec')) seen.push({ verb: args[0]!, input: o?.input, cap: o?.capBytes })
       return orig(args, o)
     }
-    const m = createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet })
+    const m = createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: quiet })
     await m.exec(WS, 'cat > f', { input: 'BODY', capBytes: 200_000 })
     await m.exec(WS, 'cat > f', { input: 'BODY2', tainted: true, capBytes: 50 * 1024 ** 2 })
     expect(seen).toEqual([{ verb: 'exec', input: 'BODY', cap: 200_000 }, { verb: 'run', input: 'BODY2', cap: 1024 * 1024 }])
@@ -642,11 +648,182 @@ describe('fix round 1 (task 2)', () => {
   })
   it('M2: every tainted command fires onTainted (the runtime cancels watches / records shells)', async () => {
     const onTainted = vi.fn()
-    const m = createSandboxManager({ docker: fakeDocker().run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet, onTainted })
+    const m = createSandboxManager({ docker: fakeDocker().run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: quiet, onTainted })
     await m.exec(WS, 'echo', { tainted: true })
     expect(onTainted).toHaveBeenCalledWith(WS)
     onTainted.mockClear()
     await m.exec(WS, 'echo') // the workspace stays tainted: still reported
     expect(onTainted).toHaveBeenCalledWith(WS)
+  })
+})
+
+describe('final fix wave', () => {
+  const quiet = { info: () => {}, warn: () => {}, error: () => {} }
+  const W2 = '33333333-3333-3333-3333-333333333333'
+  const W3 = '44444444-4444-4444-4444-444444444444'
+  const three = () => memStore([{ id: WS }, { id: W2 }, { id: W3 }])
+  const running = (d: ReturnType<typeof fakeDocker>) => [...d.containers.values()].filter(c => c.State.Running).map(c => c.Name.replace('/mymind-ws-', ''))
+
+  it('I3: at most maxRunning sandboxes run — a third start stops the least recently used idle one', async () => {
+    const d = fakeDocker()
+    const store = three()
+    const stopped: Array<[string, string]> = []
+    const m = mgr(d, store, { settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', dns: [], maxRunning: 2 }, onStopped: (id, why) => { stopped.push([id, why]) } })
+    await m.exec(WS, 'true')
+    await m.exec(W2, 'true')
+    store.rows.get(WS)!.lastUsedAt = new Date(Date.now() - 60_000) // WS is the LRU
+    await m.exec(W3, 'true')
+    expect(running(d).sort()).toEqual([W2, W3].sort())
+    expect(store.rows.get(WS)!.state).toBe('stopped')
+    expect(stopped).toEqual([[WS, 'stopped: another workspace needed its sandbox slot']])
+  })
+  it('I3: a workspace with a live shell, an armed watch or a command in flight is never evicted; with none free the start waits, then fails clearly', async () => {
+    const d = fakeDocker()
+    const store = three()
+    const m = mgr(d, store, {
+      settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', dns: [], maxRunning: 2, slotWaitMs: 200 },
+      hasLiveShell: id => id === WS, isBusy: id => id === W2
+    })
+    await m.exec(WS, 'true')
+    await m.exec(W2, 'true')
+    await expect(m.exec(W3, 'true')).rejects.toThrow(/sandbox capacity busy — 2 workspaces active/)
+    expect(running(d).sort()).toEqual([WS, W2].sort())
+    expect(d.containers.has(`mymind-ws-${W3}`)).toBe(false)
+  })
+  it('I3: a slot freed while waiting is taken (the wait is real, not a fail-fast)', async () => {
+    const d = fakeDocker()
+    const store = three()
+    let shellLive = true
+    const m = mgr(d, store, {
+      settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', dns: [], maxRunning: 2, slotWaitMs: 5000 },
+      hasLiveShell: () => shellLive
+    })
+    await m.exec(WS, 'true')
+    await m.exec(W2, 'true')
+    const third = m.exec(W3, 'true')
+    await new Promise(r => setTimeout(r, 300))
+    expect(d.containers.has(`mymind-ws-${W3}`)).toBe(false)
+    shellLive = false
+    await expect(third).resolves.toMatchObject({ exitCode: 0 })
+    expect(running(d)).toContain(W3)
+    expect(running(d)).toHaveLength(2)
+  })
+  it('I3: tainted one-offs take a slot too', async () => {
+    const d = fakeDocker()
+    const store = three()
+    const m = mgr(d, store, { settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', dns: [], maxRunning: 1, slotWaitMs: 100 } })
+    await m.exec(WS, 'true')
+    store.rows.get(WS)!.lastUsedAt = new Date(Date.now() - 60_000)
+    // The one-off needs the only slot: the idle networked container is stopped for it.
+    await m.exec(W2, 'cat mail', { tainted: true })
+    expect(store.rows.get(WS)!.state).toBe('stopped')
+    // A one-off in flight blocks a networked start until it ends.
+    let release!: () => void
+    const slow: DockerRunner = async (args, o) => {
+      if (args[0] === 'run' && args.includes('mm-exec')) await new Promise<void>((r) => { release = r })
+      return d.run(args, o)
+    }
+    const m2 = mgr({ ...d, run: slow }, store, { settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', dns: [], maxRunning: 1, slotWaitMs: 150 } })
+    const oneOff = m2.exec(W2, 'cat mail', { tainted: true })
+    await new Promise(r => setTimeout(r, 20))
+    expect(m2.load().oneOffs).toBe(1)
+    await expect(m2.exec(W3, 'true')).rejects.toThrow(/sandbox capacity busy — 1 workspaces active/)
+    release()
+    await oneOff
+    expect(m2.load().oneOffs).toBe(0)
+  })
+  it('I4: limits enforced → the probe passes once and is cached; HostConfig discarded or cgroup "max" → refused, nothing created', async () => {
+    const mk = (hc: string, probe: string) => {
+      const d = fakeDocker()
+      const run: DockerRunner = async (args, o) => {
+        if (args[0] === 'container' && args[1] === 'inspect' && args[2] === '--format') return ok(`${hc}\n`)
+        if (args[0] === 'start' && args[1] === '-a') return ok(`${probe}\n`)
+        return d.run(args, o)
+      }
+      return { d, m: createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'linux', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'enforce', maxRunning: 10, dns: [] }, log: quiet }) }
+    }
+    const good = mk('2147483648 512', 'memory=2147483648 pids=512')
+    await good.m.exec(WS, 'true')
+    await good.m.exec(WS, 'true')
+    expect(good.d.calls.filter(c => c[0] === 'create' && c[2]?.startsWith('mymind-wsprobe-'))).toHaveLength(1)
+    expect(good.d.calls.some(c => c[0] === 'rm' && c.at(-1)!.startsWith('mymind-wsprobe-'))).toBe(true)
+    for (const [hc, probe, why] of [
+      ['0 0', 'memory=max pids=max', /HostConfig\.Memory is 0/],
+      ['2147483648 512', 'memory=max pids=512', /cgroup memory limit is max .*memory controller is not enforced/],
+      ['2147483648 512', 'memory=2147483648 pids=max', /cgroup pids limit is max .*pids controller is not enforced/]
+    ] as const) {
+      const bad = mk(hc, probe)
+      await expect(bad.m.exec(WS, 'true')).rejects.toThrow(why)
+      expect(bad.d.calls.some(c => c[0] === 'create' && c[2] === `mymind-ws-${WS}`)).toBe(false)
+      expect([...bad.d.containers.keys()].filter(k => k.startsWith('mymind-wsprobe-'))).toEqual([]) // probe removed
+      expect(await bad.m.health()).toMatchObject({ ok: false, reason: expect.stringMatching(/resource limits are not enforced/) })
+    }
+  })
+  it('I4: SANDBOX_REQUIRE_LIMITS defaults on for Linux only', () => {
+    expect(sandboxSettings({}, 'linux', false, true).limits).toBe('enforce')
+    expect(sandboxSettings({}, 'darwin', false, false).limits).toBe('off')
+    expect(sandboxSettings({ SANDBOX_MAX_RUNNING: '3' }, 'linux', false, false).maxRunning).toBe(3)
+    expect(sandboxSettings({ SANDBOX_MAX_RUNNING: 'lots' }, 'linux', false, false).maxRunning).toBe(2)
+  })
+  it('I2 + M1: idle stop records the shells it killed; a command that started after the snapshot is not stopped under it', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    const stopped: Array<[string, string]> = []
+    const m = mgr(d, store, { onStopped: (id, why) => { stopped.push([id, why]) } })
+    await m.exec(WS, 'true')
+    store.rows.get(WS)!.lastUsedAt = new Date(Date.now() - 16 * 60_000)
+    // A command arrives while the tick decides: its ensureContainer touches under the same lock.
+    const listed = store.listRunning
+    store.listRunning = async () => { const rows = await listed(); void m.exec(WS, 'true'); return rows.map(r => ({ ...r })) }
+    expect(await m.idleStop()).toEqual([])
+    expect(d.containers.get(`mymind-ws-${WS}`)!.State.Running).toBe(true)
+    store.listRunning = listed
+    await new Promise(r => setTimeout(r, 20))
+    store.rows.get(WS)!.lastUsedAt = new Date(Date.now() - 16 * 60_000)
+    expect(await m.idleStop()).toEqual([WS])
+    expect(stopped).toEqual([[WS, expect.stringMatching(/idle for 15 min .*jobs, not servers/)]])
+  })
+  it('M2: reconcile stops a container that runs while its row says stopped', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    const m = mgr(d, store)
+    await m.exec(WS, 'true')
+    store.rows.get(WS)!.state = 'stopped' // the crash window between docker start and the row update
+    const r = await m.reconcile()
+    expect(r.repaired).toContain(WS)
+    expect(d.containers.get(`mymind-ws-${WS}`)!.State.Running).toBe(false)
+  })
+  it('M5: noStart never starts a stopped (or tainted) workspace; a running one answers', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    const m = mgr(d, store)
+    await expect(m.exec(WS, 'ls', { noStart: true })).rejects.toThrow('sandbox stopped — open it in the app')
+    expect(d.calls.some(c => c[0] === 'create' || c[0] === 'start')).toBe(false)
+    await m.exec(WS, 'true')
+    await expect(m.exec(WS, 'ls', { noStart: true })).resolves.toMatchObject({ exitCode: 0 })
+    store.rows.get(WS)!.tainted = true
+    d.calls.length = 0
+    await expect(m.exec(WS, 'ls', { noStart: true })).rejects.toThrow('sandbox stopped — open it in the app')
+    expect(d.calls.some(c => c[0] === 'run')).toBe(false)
+  })
+  it('I2: peek runs only in a running untainted container and never counts as use', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    const m = mgr(d, store)
+    expect(await m.peek(WS, 'echo x')).toBeNull()
+    await m.exec(WS, 'true')
+    const before = new Date(Date.now() - 16 * 60_000)
+    store.rows.get(WS)!.lastUsedAt = before
+    d.calls.length = 0
+    expect(await m.peek(WS, 'echo x')).toMatchObject({ exitCode: 0 })
+    expect(store.rows.get(WS)!.lastUsedAt).toBe(before)
+    expect(d.calls.some(c => c[0] === 'start' || c[0] === 'create')).toBe(false)
+  })
+  it('I2: the quota tick refreshes shell liveness before measuring', async () => {
+    const refreshed: string[] = []
+    const m = mgr(fakeDocker(), memStore(), { refresh: (id) => { refreshed.push(id) } })
+    await m.exec(WS, 'true')
+    await m.quotaTick()
+    expect(refreshed).toEqual([WS])
   })
 })
