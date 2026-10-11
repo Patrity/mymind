@@ -140,6 +140,15 @@ header doesn't match that gets rejected before credentials are even checked. Fix
 (Verified 2026-08-26: plain `PORT=3010 pnpm dev` reproduced the failure; adding the matching
 `BETTER_AUTH_URL` fixed it immediately, same credentials.)
 
+## Gotcha: a "restart the web mid-turn" test can't run against `nuxt dev` (cycle 81)
+When the dev server comes back, Vite/Nuxt force a **full page reload**, so you are testing a reload,
+not a socket reconnect (blocking Vite's `vite-ping` socket doesn't stop it). To prove the client's
+auto-reconnect + resume, build once (`pnpm build`, dev server DOWN) and run the web as
+`node --env-file=.env .output/server/index.mjs` with `PORT=<p> NUXT_BETTER_AUTH_URL=http://localhost:<p>`
+and the same `MYMIND_BUS_NS` as the worker (`pnpm dev:worker`); kill/restart that node PID. Set a
+`window.__marker` first — it surviving proves the page never reloaded. Stop the worker by its OWN PID
+(`pgrep -f apps/worker/src/main.ts`): killing the `pnpm`/`tsx watch` wrapper does not forward SIGTERM.
+
 ## Gotcha: fresh dev server can 504 on first navigation ("Outdated Optimize Dep")
 Right after a cold `pnpm dev` start (especially after a `.nuxt`/Vite cache wipe), the very first
 `playwright-cli goto` can hit Vite's dep-optimizer mid-rebuild and return a blank page with console
