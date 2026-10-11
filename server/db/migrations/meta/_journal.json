@@ -512,6 +512,13 @@
       "when": 1791742238523,
       "tag": "0072_common_felicia_hardy",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1791744512468,
+      "tag": "0073_fat_the_enforcers",
+      "breakpoints": true
     }
   ]
 }

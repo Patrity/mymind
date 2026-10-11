@@ -8,7 +8,9 @@
 //   after:  LAN peer, host LAN IP, sandbox gateway, host loopback service → all refused;
 //           a public IP (1.1.1.1:443 / :53 over TCP) → reachable;
 //   and the worker's fail-closed check (verifyNetworkIsolation) is red before and green after,
-//   reading the REAL `iptables -S`.
+//   reading the REAL `iptables -S`; red again when FORWARD stops reaching DOCKER-USER or when it
+//   reads the other iptables backend (review I3);
+//   re-applying the rules under a continuous probe never lets a single packet through (review M2).
 // Skipped when Docker is down, privileged containers are not allowed, or images can't be pulled.
 // Prod acceptance (Task 4) repeats the probes in LXC 114 against the real Postgres and LAN.
 import { spawnSync } from 'node:child_process'
@@ -126,4 +128,45 @@ describe.skipIf(!dockerUp)('sandbox firewall (docker-in-docker, real iptables)',
     inDind('bash /sbx/install-network.sh apply')
     expect((await verifyNetworkIsolation(dindRunner, iptablesS)).ok).toBe(true)
   }, 120_000)
+
+  it('red when FORWARD no longer reaches DOCKER-USER, or when the check reads the other iptables backend (review I3)', async (ctx) => {
+    if (!ready) ctx.skip()
+    inDind('iptables -D FORWARD -j DOCKER-USER')
+    try {
+      const check = await verifyNetworkIsolation(dindRunner, iptablesS)
+      expect(check.ok).toBe(false)
+      expect(check.problems.join()).toContain('DOCKER-USER is never reached')
+      // …and the provisioning script refuses rather than "fixing" an unreachable chain.
+      const r = inDind('bash /sbx/install-network.sh apply')
+      expect(r.code).not.toBe(0)
+      expect(r.out + r.err).toContain('FORWARD does not jump to DOCKER-USER')
+    } finally { inDind('iptables -I FORWARD 1 -j DOCKER-USER') }
+    expect((await verifyNetworkIsolation(dindRunner, iptablesS)).ok).toBe(true)
+    // dockerd here writes through iptables-nft; reading iptables-legacy sees none of its chains.
+    const legacy = async () => inDind('iptables-legacy -S').out
+    const mismatch = await verifyNetworkIsolation(dindRunner, legacy)
+    expect(mismatch.ok).toBe(false)
+    expect(mismatch.problems.join()).toContain('backend mismatch')
+  }, 120_000)
+
+  it('re-applying the rules never opens a window (continuous probe during 15 re-applies, review M2)', async (ctx) => {
+    if (!ready) ctx.skip()
+    // A sandbox hammers the LAN peer and the host for the whole duration; every success is logged.
+    // 6 parallel probers (busybox nc waits out its -w on a reject, so one loop is too sparse).
+    const one = `end=$(( $(date +%s) + 25 )); n=0; while [ $(date +%s) -lt $end ]; do n=$((n+1)); nc -w 1 ${peerIp} 9000 </dev/null >/dev/null 2>&1 && echo LEAK-peer; nc -w 1 172.31.82.1 8088 </dev/null >/dev/null 2>&1 && echo LEAK-host; done; echo "tries=$n"`
+    const loop = `for k in 1 2 3 4 5 6; do ( ${one} ) & done; wait`
+    const name = `mm-probe-${RUN}`
+    expect(inDind(`docker run -d --name ${name} --network mymind-sandbox alpine:3.20 sh -c '${loop}'`).code).toBe(0)
+    await new Promise(r => setTimeout(r, 1500))
+    for (let i = 0; i < 15; i++) expect(inDind('bash /sbx/install-network.sh apply').code).toBe(0)
+    let out = ''
+    for (let i = 0; i < 40 && (out.match(/tries=/g) ?? []).length < 6; i++) {
+      await new Promise(r => setTimeout(r, 1000))
+      out = inDind(`docker logs ${name}`).out
+    }
+    inDind(`docker rm -f ${name}`)
+    const tries = [...out.matchAll(/tries=(\d+)/g)].reduce((a, m) => a + Number(m[1]), 0)
+    expect(tries).toBeGreaterThan(50) // > 100 connection attempts across the 15 swaps
+    expect(out).not.toContain('LEAK')
+  }, 180_000)
 })

@@ -3,6 +3,7 @@
 // minimal env: the worker's own secrets never reach the CLI, let alone the sandbox).
 // The worker is the only caller (root in the LXC on prod; Docker Desktop/colima in dev).
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { DEFAULT_SANDBOX_DNS, SANDBOX_NETWORK, checkIsolation, networkCreateArgs, type IsolationCheck } from './network'
 
 export const SANDBOX_UID = 10001
@@ -40,6 +41,10 @@ export interface ContainerSpec {
   limits?: SandboxLimits
 }
 
+/** RLIMIT_FSIZE for every sandbox process (review I2): no single file can outgrow 1 GiB. */
+export const SANDBOX_FSIZE_BYTES = 1024 ** 3
+export const LABEL_FLAGS = 'mymind.flags'
+
 /** Flags shared by the long-lived workspace container and the one-off tainted container. */
 function isolationFlags(spec: ContainerSpec): string[] {
   const l = spec.limits ?? SANDBOX_LIMITS
@@ -52,6 +57,10 @@ function isolationFlags(spec: ContainerSpec): string[] {
     '--memory', l.memory,
     '--memory-swap', l.memory, // = memory: no swap on top of the limit
     '--cpus', l.cpus,
+    '--ulimit', `fsize=${SANDBOX_FSIZE_BYTES}:${SANDBOX_FSIZE_BYTES}`,
+    // The firewall is IPv4-only: no IPv6 in the sandbox at all (review M7).
+    '--sysctl', 'net.ipv6.conf.all.disable_ipv6=1',
+    '--sysctl', 'net.ipv6.conf.default.disable_ipv6=1',
     '--read-only',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=1g',
     '--tmpfs', `/home/agent:rw,nosuid,nodev,size=512m,uid=${SANDBOX_UID},gid=${SANDBOX_UID},mode=0700`,
@@ -65,32 +74,75 @@ function isolationFlags(spec: ContainerSpec): string[] {
   ]
 }
 
-/** `docker create` for a workspace's long-lived container (idles in `sleep infinity`). */
-export function createArgs(spec: ContainerSpec): string[] {
+function baseCreateArgs(spec: ContainerSpec): string[] {
   return [
     'create', '--name', spec.name,
     ...isolationFlags(spec),
     '--network', spec.network ?? SANDBOX_NETWORK,
     ...(spec.dns ?? DEFAULT_SANDBOX_DNS).flatMap(d => ['--dns', d]),
-    '--restart', 'no',
-    spec.image, 'sleep', 'infinity'
+    '--restart', 'no'
   ]
 }
 
 /**
- * The in-container wrapper every command runs under. coreutils `timeout` bounds it and, being
- * started in the background, leads its OWN process group (it setpgid()s); its pid (= the group id)
- * is recorded so an abort can kill the group from outside (`killExecArgs`). `timeout` alone is not
- * enough: it SIGTERMs the group and only escalates if the top command survives, so anything that
- * ignores/blocks TERM (a fork bomb mid-retry) would outlive it — on a timeout the wrapper therefore
- * SIGKILLs the whole group until it is empty, using shell builtins only (no fork needed at the pids
- * limit). Positional args: `$1` = exec id, `$2` = seconds, `$3` = the command (never interpolated).
+ * Hash of every isolation-relevant flag of a workspace container (not its name or extra labels;
+ * the image is compared separately). Stamped as `mymind.flags`; a container whose label differs was
+ * created under an older policy and is recreated (files kept) — review M6.
  */
-export const EXEC_WRAPPER = 'mkdir -p /tmp/.mm-exec; timeout -k 2 "$2" /bin/bash -c "$3" & p=$!; echo "$p" > "/tmp/.mm-exec/$1"; wait "$p"; c=$?; '
-  + 'case "$c" in 124|137) i=0; while kill -9 -"$p" 2>/dev/null && [ "$i" -lt 10000 ]; do i=$((i+1)); done;; esac; rm -f "/tmp/.mm-exec/$1"; exit "$c"'
+export function flagsHash(spec: ContainerSpec): string {
+  return createHash('sha256').update(JSON.stringify(baseCreateArgs({ ...spec, name: '', labels: {} }))).digest('hex').slice(0, 16)
+}
 
-/** Exit codes `timeout` reports when it had to stop the command. */
-export const TIMEOUT_EXIT_CODES: ReadonlySet<number> = new Set([124, 137])
+/** `docker create` for a workspace's long-lived container (idles in `sleep infinity`). */
+export function createArgs(spec: ContainerSpec): string[] {
+  return [...baseCreateArgs(spec), '--label', `${LABEL_FLAGS}=${flagsHash(spec)}`, spec.image, 'sleep', 'infinity']
+}
+
+/**
+ * The in-container wrapper every command runs under (dash). Positional args: `$1` = exec id,
+ * `$2` = seconds, `$3` = the command (never interpolated).
+ *  - coreutils `timeout`, started in the background, leads its OWN process group; its pid (= the
+ *    group id) goes to /tmp/.mm-exec/<id> so an abort can kill the group from outside.
+ *  - Abort before the pid file exists (review M5): the abort first drops a tombstone
+ *    `<id>.abort`, then reads the pid file; the wrapper first writes the pid file, then checks the
+ *    tombstone — whichever comes second does the kill, so an early abort is never lost.
+ *  - `timeout` alone does not stop a fork bomb (it SIGTERMs, and escalates only if the top
+ *    command survives), so on 124/137 the wrapper SIGKILLs the group until it is empty (builtins
+ *    only: no fork needed at the pids limit).
+ *  - On 124/137 it reports WHY on stderr's last line (`__mm_status__:oom|timeout|aborted|killed`,
+ *    stripped by the manager — review M10): an OOM kill (the cgroup's oom_kill counter moved) is
+ *    not a timeout.
+ */
+export const EXEC_WRAPPER = [
+  'd=/tmp/.mm-exec; mkdir -p "$d"',
+  'o=$(sed -n "s/^oom_kill //p" /sys/fs/cgroup/memory.events 2>/dev/null); s=$(date +%s)',
+  'timeout -k 2 "$2" /bin/bash -c "$3" & p=$!',
+  'echo "$p" > "$d/$1"',
+  // The group AND the pid: right after `&`, timeout may not have setpgid()ed yet (no group to kill,
+  // but also no children yet — killing the pid is enough then).
+  '[ -e "$d/$1.abort" ] && { kill -9 -"$p" 2>/dev/null; kill -9 "$p" 2>/dev/null; }',
+  'wait "$p"; c=$?',
+  'case "$c" in 124|137)',
+  '  i=0; while kill -9 -"$p" 2>/dev/null && [ "$i" -lt 10000 ]; do i=$((i+1)); done',
+  '  n=$(sed -n "s/^oom_kill //p" /sys/fs/cgroup/memory.events 2>/dev/null)',
+  '  if [ "${n:-0}" -gt "${o:-0}" ]; then st=oom',
+  '  elif [ -e "$d/$1.abort" ]; then st=aborted',
+  '  elif [ "$c" = 124 ] || [ $(( $(date +%s) - s )) -ge "$2" ]; then st=timeout',
+  '  else st=killed; fi',
+  "  printf '\\n__mm_status__:%s\\n' \"$st\" >&2;;",
+  'esac',
+  'rm -f "$d/$1" "$d/$1.abort"; exit "$c"'
+].join('\n')
+
+export type ExecStatus = 'oom' | 'timeout' | 'aborted' | 'killed'
+const STATUS_RE = /\n?__mm_status__:(oom|timeout|aborted|killed)\n?$/
+
+/** Split the wrapper's trailing status marker off stderr. */
+export function parseExecStatus(stderr: string): { stderr: string; status: ExecStatus | null } {
+  const m = stderr.match(STATUS_RE)
+  if (!m) return { stderr, status: null }
+  return { stderr: stderr.slice(0, m.index), status: m[1] as ExecStatus }
+}
 
 const EXEC_ID = /^[a-z0-9-]{1,64}$/
 
@@ -98,7 +150,17 @@ const EXEC_ID = /^[a-z0-9-]{1,64}$/
 export function killExecArgs(container: string, execId: string): string[] {
   if (!EXEC_ID.test(execId)) throw new Error(`bad exec id ${execId}`)
   return ['exec', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, container, '/bin/sh', '-c',
-    `read p < /tmp/.mm-exec/${execId} 2>/dev/null || exit 0; i=0; while kill -9 -"$p" 2>/dev/null && [ "$i" -lt 10000 ]; do i=$((i+1)); done; exit 0`]
+    `d=/tmp/.mm-exec; mkdir -p "$d"; : > "$d/${execId}.abort"; read p < "$d/${execId}" 2>/dev/null || exit 0; kill -9 "$p" 2>/dev/null; i=0; while kill -9 -"$p" 2>/dev/null && [ "$i" -lt 10000 ]; do i=$((i+1)); done; exit 0`]
+}
+
+const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+/** Names the docker CLI (a Go program running as root on the host) or its dynamic loader reads —
+ *  a secret may never be called this, since secret values travel in the CLI's env (review M4). */
+const SECRET_DENY = /^(DOCKER_.*|BUILDKIT_.*|COMPOSE_.*|LD_.*|DYLD_.*|GCONV_PATH|NLSPATH|LOCPATH|MALLOC_.*|GODEBUG|GOGC|GOMAXPROCS|GOMEMLIMIT|GOTRACEBACK|GORACE|SSL_CERT_.*|SSLKEYLOGFILE|(HTTPS?|FTP|ALL|NO)_PROXY|TMPDIR|TMP|TEMP|XDG_.*|HOME|PATH|LANG|LANGUAGE|LC_.*|HOSTNAME|TERM|SHELL|USER|LOGNAME|IFS|ENV|BASH_ENV|PS4|NOTARY_.*)$/i
+
+/** Throws unless `name` is a safe sandbox secret name. */
+export function assertSecretName(name: string): void {
+  if (!SECRET_NAME.test(name) || SECRET_DENY.test(name)) throw new Error(`invalid sandbox secret name ${name} (reserved or not an identifier)`)
 }
 
 export interface ExecSpec {
@@ -162,12 +224,14 @@ export type DockerRunner = (args: string[], opts?: DockerRunOpts) => Promise<Doc
 
 /** The env the docker CLI itself gets: what it needs to find the daemon, nothing of the app's. */
 export function dockerCliEnv(from: NodeJS.ProcessEnv = process.env, extra: Record<string, string> = {}): Record<string, string> {
-  const env: Record<string, string> = { PATH: from.PATH || SANDBOX_PATH }
+  const base: Record<string, string> = { PATH: from.PATH || SANDBOX_PATH }
   for (const k of ['HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY']) {
     const v = from[k]
-    if (v) env[k] = v
+    if (v) base[k] = v
   }
-  return { ...env, ...extra }
+  // Secret values (`extra`) can never override or add a name the CLI itself reads (review M4).
+  const secrets = Object.fromEntries(Object.entries(extra).filter(([k]) => { try { assertSecretName(k); return true } catch { return false } }))
+  return { ...secrets, ...base }
 }
 
 /** Keep the last `cap` bytes of a stream. */
@@ -257,6 +321,15 @@ export async function verifyNetworkIsolation(run: DockerRunner, iptablesS: () =>
         ipv6: j.EnableIPv6 === true
       }
     } catch { net = null }
+  }
+  if (net) {
+    const info = await run(['info', '--format', '{{json .FirewallBackend}}'], { timeoutMs: 15_000 })
+    if (info.code === 0) {
+      try {
+        const fb = JSON.parse(info.stdout) as { Driver?: string } | null
+        if (fb?.Driver) net.firewallDriver = fb.Driver
+      } catch { /* older daemon: no FirewallBackend — the chain-visibility check still applies */ }
+    }
   }
   let rules = ''
   try { rules = await iptablesS() } catch (e) { return { ok: false, problems: [`iptables -S failed: ${(e as Error).message}`] } }

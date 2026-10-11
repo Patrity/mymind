@@ -31,7 +31,7 @@ export type CoreRuntimeKey =
 export type CoreRuntimeConfigSource = { [K in CoreRuntimeKey]?: unknown }
 
 /** CoreConfig fields read from the runtime process env (both processes), never from runtimeConfig. */
-export const ENV_BACKED_FIELDS = ['busNs'] as const
+export const ENV_BACKED_FIELDS = ['busNs', 'sandboxRequireFirewall'] as const
 
 export const BUS_NS_ENV_NAME = 'MYMIND_BUS_NS'
 
@@ -153,10 +153,20 @@ export function fromRuntimeConfig(rc: CoreRuntimeConfigSource, host: HostFacts =
 }
 
 /** The env-backed fields, from the runtime env. */
-export function envBacked(env: Env): Pick<CoreConfig, typeof ENV_BACKED_FIELDS[number]> {
+export function envBacked(env: Env, platform: NodeJS.Platform = process.platform): Pick<CoreConfig, typeof ENV_BACKED_FIELDS[number]> {
   return {
-    busNs: env[BUS_NS_ENV_NAME] || undefined
+    busNs: env[BUS_NS_ENV_NAME] || undefined,
+    sandboxRequireFirewall: sandboxRequireFirewall(env, platform)
   }
+}
+
+/** `SANDBOX_REQUIRE_FIREWALL`: true/1/yes or false/0/no; anything else ⇒ the platform default
+ *  (true on Linux — prod LXC — false elsewhere). */
+export function sandboxRequireFirewall(env: Env, platform: NodeJS.Platform = process.platform): boolean {
+  const v = env.SANDBOX_REQUIRE_FIREWALL?.trim().toLowerCase()
+  if (v === 'true' || v === '1' || v === 'yes') return true
+  if (v === 'false' || v === '0' || v === 'no') return false
+  return platform === 'linux'
 }
 
 /**

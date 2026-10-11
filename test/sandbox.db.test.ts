@@ -4,10 +4,13 @@
 // never touches a container without that label.
 //
 // What this proves on the dev Mac (Docker Desktop): exact flags on a live container, uid 10001,
-// no app env/secrets/mounts, read-only rootfs, no caps, pids limit vs a fork bomb, tainted = no
-// network, symlinks resolve inside the container only, quota, idle stop, reconcile, one container
-// under concurrency, timeout/abort/output cap. LAN/host blocking needs the Linux firewall: proven
-// in test/sandbox-firewall.db.test.ts (docker-in-docker) and in prod acceptance (Task 4).
+// no app env/secrets/mounts, read-only rootfs, no caps, no IPv6, pids limit vs a fork bomb, the
+// memory limit (reported as oom), RLIMIT_FSIZE, tainted = no network, PERSISTENT taint (kills the
+// networked container + its background processes; later runs stay offline until re-enabled through
+// the session-only API), symlinks resolve inside the container only, quota (bytes + files), idle
+// stop, reconcile, one container under concurrency, timeout/abort (incl. an abort before the
+// wrapper started)/output cap. LAN/host blocking needs the Linux firewall: proven in
+// test/sandbox-firewall.db.test.ts (docker-in-docker) and in prod acceptance (Task 4).
 process.loadEnvFile('.env')
 import { execFileSync, spawnSync } from 'node:child_process'
 import { lstatSync, mkdtempSync, readlinkSync, realpathSync, rmSync } from 'node:fs'
@@ -15,11 +18,16 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
+vi.stubGlobal('createError', (o: { statusCode: number; statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
+vi.stubGlobal('getRouterParam', (e: { params?: Record<string, string> }, k: string) => e.params?.[k])
 import { inArray } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { workspaces } from '@mymind/core/db/schema'
 import { createSandboxManager, containerName, SandboxQuotaError, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
 import { dbWorkspaceStore } from '@mymind/core/lib/sandbox/store'
+import { execArgs, killExecArgs, parseExecStatus } from '@mymind/core/lib/sandbox/docker'
+const reenable = (await import('../server/api/workspaces/[id]/reenable-network.post')).default as unknown as (e: unknown) => Promise<{ id: string; tainted: boolean }>
 
 const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `sbx-${process.pid}-${Date.now().toString(36)}`
@@ -39,7 +47,7 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
   const rowIds: string[] = []
   let root = ''
   let m: SandboxManager
-  const overQuota: Array<[string, number]> = []
+  const overQuota: Array<[string, { bytes: number; inodes: number }]> = []
 
   async function newWorkspace(): Promise<string> {
     const [r] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning()
@@ -106,6 +114,30 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
     expect(r.stdout.trim().split('\n').at(-1)).toBe('512')
   }, 120_000)
 
+  it('no IPv6 at all; RLIMIT_FSIZE stops any file at 1 GiB (sparse write past it fails)', async () => {
+    const id = await newWorkspace()
+    const r = await m.exec(id, 'cat /proc/sys/net/ipv6/conf/all/disable_ipv6; cat /proc/net/if_inet6 | grep -vc " lo$" || true; ulimit -f; dd if=/dev/zero of=/workspace/sparse bs=1 count=1 seek=1100M 2>&1; echo "dd=$?"; truncate -s 2G /workspace/t2 2>&1; echo "tr=$?"; dd if=/dev/zero of=/workspace/ok bs=1 count=1 seek=900M 2>/dev/null; echo "ok=$?"')
+    const lines = r.stdout.trim().split('\n')
+    expect(lines[0]).toBe('1') // disable_ipv6 on every interface
+    expect(lines[1]).toBe('0') // no IPv6 address except loopback
+    expect(lines[2]).toBe(String(1024 ** 3 / 1024)) // bash: ulimit -f in 1 KiB blocks
+    // 153 = 128 + SIGXFSZ: the kernel killed the writer at the limit.
+    expect(r.stdout).toContain('dd=153')
+    expect(r.stdout).toContain('tr=153')
+    expect(r.stdout).toContain('ok=0')
+  }, 120_000)
+
+  it('the 2 GB memory limit kills a hog and is reported as oom, not a timeout', async () => {
+    const id = await newWorkspace()
+    const r = await m.exec(id, 'python3 -c "a = bytearray(3 * 1024**3); print(len(a))"', { timeoutSec: 60 })
+    expect(r.exitCode).toBe(137)
+    expect(r.oom).toBe(true)
+    expect(r.timedOut).toBe(false)
+    expect(r.stderr).not.toContain('__mm_status__')
+    // The container itself survived.
+    expect((await m.exec(id, 'echo alive')).stdout.trim()).toBe('alive')
+  }, 120_000)
+
   it('/opt/mymind, the docker socket and the app env are absent; rootfs is read-only', async () => {
     const id = await newWorkspace()
     const r = await m.exec(id, 'ls -d /opt/mymind 2>&1; ls /var/run/docker.sock /run/docker.sock 2>&1; touch /etc/x 2>&1; touch /usr/local/bin/x 2>&1; echo ok > /workspace/f && echo wrote')
@@ -166,6 +198,36 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
     expect(left).toHaveLength(1)
   }, 120_000)
 
+  it('taint is persistent: kills the networked container (background processes included); later untainted runs stay offline without secrets until Tony re-enables', async () => {
+    const id = await newWorkspace()
+    // An untainted background job: a heartbeat file, detached from the exec.
+    await m.exec(id, 'setsid nohup sh -c "while true; do date +%s%N > /workspace/hb; sleep 0.2; done" >/dev/null 2>&1 &')
+    await new Promise(res => setTimeout(res, 800))
+    expect(inspect(id).State.Running).toBe(true)
+    const first = await m.exec(id, 'cat /workspace/hb', { tainted: true })
+    expect(first.tainted).toBe(true)
+    // The networked container is stopped → the heartbeat is dead (its file stops changing).
+    expect(inspect(id).State.Running).toBe(false)
+    const a = (await m.exec(id, 'cat /workspace/hb', { tainted: true })).stdout
+    await new Promise(res => setTimeout(res, 800))
+    const b = (await m.exec(id, 'cat /workspace/hb', { tainted: true })).stdout
+    expect(b).toBe(a)
+    expect(await dbWorkspaceStore.get(id)).toMatchObject({ tainted: true, state: 'stopped' })
+    // A later UNTAINTED call: still no route, no secret, and the networked container stays down.
+    const later = await m.exec(id, 'echo "routes=$(awk \'NR>1\' /proc/net/route | wc -l) v=$MM_T1_SECRET"', { secrets: { MM_T1_SECRET: 'nope' } })
+    expect(later.tainted).toBe(true)
+    expect(later.stdout.trim()).toBe('routes=0 v=')
+    expect(inspect(id).State.Running).toBe(false)
+    // The re-enable API is session-only.
+    await expect(reenable({ params: { id }, context: { client: { type: 'api-token' } } })).rejects.toMatchObject({ statusCode: 403 })
+    expect((await dbWorkspaceStore.get(id))!.tainted).toBe(true)
+    expect(await reenable({ params: { id }, context: { client: { type: 'session' } } })).toMatchObject({ id, tainted: false })
+    await expect(reenable({ params: { id: '00000000-0000-4000-8000-000000000000' }, context: { client: { type: 'session' } } })).rejects.toMatchObject({ statusCode: 404 })
+    const back = await m.exec(id, 'echo "routes=$(awk \'NR>1\' /proc/net/route | wc -l) v=$MM_T1_SECRET"', { secrets: { MM_T1_SECRET: 'yes' } })
+    expect(back.tainted).toBe(false)
+    expect(back.stdout.trim()).toMatch(/^routes=[1-9]\d* v=yes$/)
+  }, 180_000)
+
   it('a symlink to an absolute host path resolves inside the container only', async () => {
     const id = await newWorkspace()
     const r = await m.exec(id, 'ln -s /etc/passwd /workspace/pw && ln -s / /workspace/root && cat /workspace/pw | grep -c "^agent:x:10001"; ls /workspace/root/opt 2>&1; ls /workspace/root/Users 2>&1')
@@ -200,6 +262,7 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
     const t0 = Date.now()
     const slow = await m.exec(id, 'sleep 60 & sleep 60', { timeoutSec: 2 })
     expect(slow.timedOut).toBe(true)
+    expect(slow.oom).toBe(false)
     expect(Date.now() - t0).toBeLessThan(20_000)
     const ac = new AbortController()
     setTimeout(() => ac.abort(), 1500)
@@ -208,10 +271,31 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
     await new Promise(res => setTimeout(res, 1000))
     const ps = await m.exec(id, 'ps -eo args | grep -c "^sleep 12[01]" || true')
     expect(ps.stdout.trim()).toBe('0') // the whole group is gone, background child included
+    // An abort that lands before the wrapper has even written its pid file (review M5): the kill
+    // script runs FIRST (tombstone, no pid yet), then the wrapper starts — and must kill itself.
+    const name = containerName(id)
+    expect(docker(...killExecArgs(name, 'early-1')).code).toBe(0)
+    const t1 = Date.now()
+    const late = docker(...execArgs({ container: name, command: 'sleep 30', execId: 'early-1', timeoutSec: 60 }))
+    expect(Date.now() - t1).toBeLessThan(10_000)
+    expect(late.code).toBe(137)
+    expect(parseExecStatus(late.err).status).toBe('aborted')
+    expect((await m.exec(id, 'ps -eo args | grep -c "^sleep 30" || true')).stdout.trim()).toBe('0')
     const big = await m.exec(id, 'seq 1 100000; echo THE-END')
     expect(big.truncated).toBe(true)
     expect(Buffer.byteLength(big.stdout)).toBeLessThanOrEqual(64 * 1024)
     expect(big.stdout.trim().endsWith('THE-END')).toBe(true)
+  }, 120_000)
+
+  it('quota: too many files → refused', async () => {
+    const q = mk({ settings: { image: IMAGE, workspacesDir: root, firewall: 'off', dns: [], quotaInodes: 500 } })
+    const id = await newWorkspace()
+    await q.exec(id, 'mkdir many && cd many && seq 1 800 | xargs touch')
+    await expect(q.checkQuota(id)).rejects.toThrow(/over its 500-file quota/)
+    expect((await dbWorkspaceStore.get(id))!.inodesUsed).toBeGreaterThan(800)
+    await q.exec(id, 'rm -rf many')
+    await q.measure(id)
+    await expect(q.checkQuota(id)).resolves.toBeUndefined()
   }, 120_000)
 
   it('quota: over → refused with a clear error and onOverQuota; freeing space clears it', async () => {
@@ -224,6 +308,7 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
     const tick = await q.quotaTick()
     expect(tick.find(t => t.id === id)).toMatchObject({ over: true })
     expect(overQuota.map(o => o[0])).toContain(id)
+    expect(overQuota.find(o => o[0] === id)![1].bytes).toBeGreaterThan(1024 * 1024)
     expect((await dbWorkspaceStore.get(id))!.bytesUsed).toBeGreaterThan(1024 * 1024)
     await q.exec(id, 'rm /workspace/big.bin')
     await q.measure(id)

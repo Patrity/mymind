@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Sandbox network + egress firewall (cycle 82, spec §2 D5 / §9). Idempotent; run as root on the
 # Docker host (LXC 114). Mirrors packages/core/src/lib/sandbox/network.ts EXACTLY —
-# test/sandbox-network.test.ts fails on any drift, and the worker refuses to start a sandbox when
-# the live rules differ from the plan (fail closed).
+# packages/core/src/lib/sandbox/network.test.ts fails on any drift, and the worker refuses to start
+# a sandbox when the live rules differ from the plan (fail closed).
 #
 #   install-network.sh install   — network + rules + workspaces dir + systemd oneshot (provisioning)
 #   install-network.sh apply     — network + rules only (what the oneshot runs at every boot)
 #
 # Rules key on the bridge NAME (br-mymind-sbx), so they hold no matter when Docker (re)creates the
-# network. Our own chains are flushed + refilled; the parent chains (DOCKER-USER, INPUT) only ever
-# get the single jump inserted at position 1 when it is missing — nobody else's rules are touched.
+# network. No unfiltered window, ever (review M2): our two chains are replaced in ONE
+# `iptables-restore --noflush` transaction (the kernel swaps the whole table atomically, legacy and
+# nft alike), and a jump is only ever ADDED before a stale copy is deleted — never deleted first.
+# Nobody else's rules are touched. Refuses to run when dockerd's own chains are not visible to this
+# iptables (backend mismatch / docker iptables:false): rules there would never be reached (I3).
 set -euo pipefail
 
 NETWORK=mymind-sandbox
@@ -38,30 +41,42 @@ ensure_network() {
   docker network create --driver bridge --subnet "$SUBNET" \
     --opt "com.docker.network.bridge.name=$BRIDGE" \
     --opt com.docker.network.bridge.enable_icc=false \
+    --ipv6=false \
     --label mymind.sandbox=network "$NETWORK" >/dev/null
 }
 
-ensure_chain() { iptables -N "$1" 2>/dev/null || true; iptables -F "$1"; }
+die() { log "ERROR: $*"; exit 1; }
 
-ensure_jump() { # parent chain, target chain — first rule of the parent, exactly once
-  local parent="$1" target="$2"
-  while iptables -C "$parent" -i "$BRIDGE" -j "$target" 2>/dev/null; do
-    iptables -D "$parent" -i "$BRIDGE" -j "$target"
-  done
-  iptables -I "$parent" 1 -i "$BRIDGE" -j "$target"
+check_docker_chains() {
+  iptables -S DOCKER >/dev/null 2>&1 || die "dockerd's DOCKER chain is not visible to $(command -v iptables) — iptables backend mismatch (legacy vs nft) or docker runs with iptables disabled"
+  iptables -S DOCKER-USER >/dev/null 2>&1 || die "no DOCKER-USER chain — start dockerd first (it creates it)"
+  iptables -C FORWARD -j DOCKER-USER 2>/dev/null || die "FORWARD does not jump to DOCKER-USER — rules there would never be reached"
+}
+
+ensure_jump() { # parent chain, target chain — present exactly once, as the FIRST rule of the parent
+  local parent="$1" target="$2" want first nums
+  want="-A $parent -i $BRIDGE -j $target"
+  first="$(iptables -S "$parent" | sed -n 2p || true)"
+  if [ "$first" != "$want" ]; then iptables -I "$parent" 1 -i "$BRIDGE" -j "$target"; fi
+  # Now rule 1 is the jump; delete any later copies, highest number first (numbers stay valid).
+  nums="$(iptables -S "$parent" | tail -n +2 | grep -nxF -- "$want" | cut -d: -f1 | tail -n +2 | sort -rn || true)"
+  for n in $nums; do iptables -D "$parent" "$n"; done
 }
 
 apply_rules() {
-  # DOCKER-USER exists once dockerd has started; create it if we run first (dockerd keeps it).
-  iptables -N DOCKER-USER 2>/dev/null || true
-  ensure_chain "$FWD"
-  for d in $BLOCKED; do
-    iptables -A "$FWD" -d "$d" -j REJECT --reject-with icmp-net-prohibited
-  done
-  iptables -A "$FWD" -j RETURN
-  ensure_chain "$IN"
-  iptables -A "$IN" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-  iptables -A "$IN" -j REJECT --reject-with icmp-host-prohibited
+  check_docker_chains
+  {
+    echo "*filter"
+    echo ":$FWD - [0:0]"
+    echo ":$IN - [0:0]"
+    for d in $BLOCKED; do
+      echo "-A $FWD -d $d -j REJECT --reject-with icmp-net-prohibited"
+    done
+    echo "-A $FWD -j RETURN"
+    echo "-A $IN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+    echo "-A $IN -j REJECT --reject-with icmp-host-prohibited"
+    echo "COMMIT"
+  } | iptables-restore --noflush
   ensure_jump DOCKER-USER "$FWD"
   ensure_jump INPUT "$IN"
   log "rules applied ($FWD, $IN)"
@@ -94,7 +109,7 @@ case "${1:-install}" in
     apply_rules
     ;;
   install)
-    command -v iptables >/dev/null 2>&1 || { log "iptables missing — installing"; apt-get install -y iptables >/dev/null; }
+    command -v iptables-restore >/dev/null 2>&1 || { log "iptables missing — installing"; apt-get update -qq && apt-get install -y iptables >/dev/null; }
     ensure_network
     apply_rules
     mkdir -p "$WORKSPACES_DIR"

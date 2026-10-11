@@ -15,7 +15,14 @@
 // resolvers explicitly (SANDBOX_DNS).
 //
 // Single source of truth: deploy/sandbox/install-network.sh carries the same rules (it runs at
-// provisioning time, before any Node build exists); test/sandbox-network.test.ts fails on drift.
+// provisioning time, before any Node build exists); network.test.ts (next to this file) fails on
+// drift, and test/sandbox-firewall.db.test.ts proves the rules on real netfilter (docker-in-docker).
+//
+// Reachability (review I3): our DOCKER-USER rules only matter if dockerd's FORWARD chain jumps to
+// DOCKER-USER in the SAME iptables backend we inspect. The check therefore also requires dockerd's
+// own `-A FORWARD -j DOCKER-USER` (first in FORWARD) and its `-N DOCKER` chain to be visible — a
+// legacy/nft mismatch, `"iptables": false` or Docker's nftables backend all make them vanish — and
+// `docker info`'s firewall backend to be iptables.
 // The worker verifies the live rules with `verifyNetworkIsolation` before it starts a sandbox on a
 // Linux host (fail closed): a network without its firewall never runs agent code.
 
@@ -50,6 +57,7 @@ export function networkCreateArgs(): string[] {
     '--opt', `com.docker.network.bridge.name=${SANDBOX_BRIDGE}`,
     // Sandboxes can't talk to each other (icc) — and the FWD chain rejects the subnet anyway.
     '--opt', 'com.docker.network.bridge.enable_icc=false',
+    '--ipv6=false', // the rules are IPv4-only; containers also get disable_ipv6 (docker.ts)
     '--label', 'mymind.sandbox=network',
     SANDBOX_NETWORK
   ]
@@ -101,21 +109,40 @@ export interface IsolationCheck {
  * Check `iptables -S` output (all chains) and `docker network inspect` facts against the plan.
  * Pure: the caller runs the commands (docker.ts verifyNetworkIsolation).
  */
-export function checkIsolation(iptablesS: string, net: { bridgeName?: string; icc?: string; subnet?: string; ipv6?: boolean } | null): IsolationCheck {
-  const have = new Set(iptablesS.split('\n').map(norm).filter(Boolean))
+/** dockerd's own rules that prove our iptables sees the backend dockerd writes to. */
+export const DOCKER_FORWARD_JUMP = '-A FORWARD -j DOCKER-USER'
+export const DOCKER_CHAIN = '-N DOCKER'
+
+export interface NetworkFacts {
+  bridgeName?: string
+  icc?: string
+  subnet?: string
+  ipv6?: boolean
+  /** `docker info` .FirewallBackend.Driver (Docker ≥ 28); undefined when the daemon doesn't say. */
+  firewallDriver?: string
+}
+
+export function checkIsolation(iptablesS: string, net: NetworkFacts | null): IsolationCheck {
+  const lines = iptablesS.split('\n').map(norm).filter(Boolean)
+  const have = new Set(lines)
   const problems: string[] = []
+  if (!have.has(DOCKER_CHAIN)) problems.push('dockerd\'s DOCKER chain is not visible to this iptables — backend mismatch (legacy vs nft) or docker runs with iptables disabled')
+  const firstForward = lines.find(l => l.startsWith('-A FORWARD '))
+  if (!have.has(DOCKER_FORWARD_JUMP)) problems.push(`missing ${DOCKER_FORWARD_JUMP} — DOCKER-USER is never reached`)
+  else if (firstForward !== DOCKER_FORWARD_JUMP) problems.push(`${DOCKER_FORWARD_JUMP} is not the first rule of FORWARD`)
+  if (net?.firewallDriver !== undefined && !net.firewallDriver.startsWith('iptables')) problems.push(`docker's firewall backend is ${net.firewallDriver}, not iptables — these rules would not apply`)
   for (const r of [...jumpRules(), ...chainRules()]) {
     if (!have.has(ruleLine(r))) problems.push(`missing iptables rule: ${ruleLine(r)}`)
   }
   // The jumps must come FIRST in their parent chains — an earlier ACCEPT would bypass them.
   for (const j of jumpRules()) {
-    const first = [...have].find(l => l.startsWith(`-A ${j.chain} `))
+    const first = lines.find(l => l.startsWith(`-A ${j.chain} `))
     if (have.has(ruleLine(j)) && first !== ruleLine(j)) problems.push(`jump into ${j.args.at(-1)} is not the first rule of ${j.chain}`)
   }
   // Order matters inside our chains: the RETURN / REJECT terminal rules must be last.
   for (const chain of [FWD_CHAIN, IN_CHAIN]) {
     const want = chainRules().filter(r => r.chain === chain).map(ruleLine)
-    const got = [...have].filter(l => l.startsWith(`-A ${chain} `))
+    const got = lines.filter(l => l.startsWith(`-A ${chain} `))
     if (got.join('\n') !== want.join('\n')) problems.push(`chain ${chain} differs from the plan (order or extra rules)`)
   }
   if (!net) problems.push(`docker network ${SANDBOX_NETWORK} does not exist`)

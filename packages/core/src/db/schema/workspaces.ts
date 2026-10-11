@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, bigint, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, bigint, integer, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
 import { workstreams } from './workstreams'
 
 /** Cycle 82 (spec §3): a sandboxed workspace — one per workstream plus one persistent chat `home`.
@@ -16,6 +16,13 @@ export const workspaces = pgTable('workspaces', {
   state: text('state').notNull().default('stopped').$type<'stopped' | 'running'>(),
   /** Last measured size of the workspace dir (du inside the sandbox). */
   bytesUsed: bigint('bytes_used', { mode: 'number' }).notNull().default(0),
+  /** Last measured file count (inodes) of the workspace dir — quota'd too (review I2). */
+  inodesUsed: integer('inodes_used').notNull().default(0),
+  /** Persistent taint (review I1 ruling): set the first time a tainted run executes a command here.
+   *  From then on EVERY command runs `--network none` without secrets, and the networked container
+   *  stays stopped, until Tony re-enables the network (session-only API). */
+  tainted: boolean('tainted').notNull().default(false),
+  taintedAt: timestamp('tainted_at', { withTimezone: true }),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp('deleted_at', { withTimezone: true })

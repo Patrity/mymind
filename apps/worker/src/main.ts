@@ -28,6 +28,7 @@ const [{ bootAgentRuntime, DEFAULT_BOOT_RETRY }, queue, { BOOT_ID }, { startAgen
 const { busNs } = await import('@mymind/core/lib/bus/ns')
 const { pruneRunEvents } = await import('@mymind/core/lib/bus/events')
 const { startSandboxHousekeeping } = await import('@mymind/core/lib/sandbox/manager')
+const { workstreamNotifyDeps } = await import('@mymind/core/lib/agent/workstreams/notify')
 
 // Hourly: handled / long-dead claimed commands. Daily (spec §3.1): run_events of runs finished
 // > 7 days ago, a workstream's kept while it exists.
@@ -52,7 +53,15 @@ const worker = createWorkerProcess({
   startSchedule: () => startAgentSchedule(),
   startRecorderFlush: () => { record.startRecorderFlushLoop(); return () => {} },
   // Cycle 82: reconcile sandbox containers, then idle-stop / quota every minute, deletion sweep daily.
-  startSandbox: () => startSandboxHousekeeping(),
+  // The 5s free-space watchdog records + texts Tony once per low-disk episode (review I2).
+  startSandbox: () => startSandboxHousekeeping(undefined, {
+    onLowDisk: async (r) => {
+      const gb = (r.freeBytes / 1024 ** 3).toFixed(1)
+      const msg = `MyMind server low on disk: ${gb} GB free — stopped ${r.stopped.length} workspace sandbox(es); workspace commands are refused until space is freed.`
+      record.recordEvent({ kind: 'job', name: 'sandbox:low-disk', status: 'error', severity: 'error', error: { message: msg }, meta: { freeBytes: r.freeBytes, stopped: r.stopped } })
+      await workstreamNotifyDeps.text(msg, null).catch(err => console.error('[sandbox] low-disk text failed:', err))
+    }
+  }),
   flushRecorder: () => record.recorder.flush(),
   beat: status => commands.beatWorker(BOOT_ID, status),
   // Worker-owned state the web shows: the iMessage catch-up health (Settings → Channels nav dot).

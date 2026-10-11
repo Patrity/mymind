@@ -10,10 +10,12 @@
 # official images (whose ENV — NODE_VERSION, YARN_VERSION … — is left behind) rather than used as
 # the base. Layer order: slow, rarely-changing apt layer first; small COPY layers after.
 
-FROM node:22-bookworm-slim AS node
-FROM ghcr.io/astral-sh/uv:0.9.2 AS uv
+# Base images are pinned by multi-arch index DIGEST (amd64 prod, arm64 dev Mac); the tag is a comment
+# for humans. Bump deliberately: `docker buildx imagetools inspect <tag>` → new digest here.
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS node
+FROM ghcr.io/astral-sh/uv:0.9.2@sha256:6dbd7c42a9088083fa79e41431a579196a189bcee3ae68ba904ac2bf77765867 AS uv
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LANG=C.UTF-8
 
@@ -29,7 +31,7 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
- && npm install -g --no-fund --no-audit pnpm@10 \
+ && npm install -g --no-fund --no-audit pnpm@10.34.6 \
  && rm -rf /root/.npm /root/.cache
 
 # uv / uvx (static binaries).

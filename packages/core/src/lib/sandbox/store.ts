@@ -14,7 +14,9 @@ export interface WorkspaceStore {
   setContainer(id: string, containerId: string | null, state: WorkspaceRow['state']): Promise<void>
   /** last_used_at = now (every command). */
   touch(id: string): Promise<void>
-  setBytes(id: string, bytes: number): Promise<void>
+  setUsage(id: string, bytes: number, inodes: number): Promise<void>
+  /** Persistent taint on/off (review I1). */
+  setTainted(id: string, tainted: boolean): Promise<void>
   /** Live rows the DB believes are running. */
   listRunning(): Promise<WorkspaceRow[]>
   /** Workstream workspaces whose workstream is gone get `deleted_at` (the 30-day clock starts). */
@@ -40,8 +42,12 @@ export const dbWorkspaceStore: WorkspaceStore = {
   async touch(id) {
     await useDb().update(workspaces).set({ lastUsedAt: new Date() }).where(eq(workspaces.id, id))
   },
-  async setBytes(id, bytes) {
-    await useDb().update(workspaces).set({ bytesUsed: bytes }).where(eq(workspaces.id, id))
+  async setUsage(id, bytes, inodes) {
+    await useDb().update(workspaces).set({ bytesUsed: bytes, inodesUsed: inodes }).where(eq(workspaces.id, id))
+    publish(id)
+  },
+  async setTainted(id, tainted) {
+    await useDb().update(workspaces).set(tainted ? { tainted: true, taintedAt: new Date() } : { tainted: false, taintedAt: null }).where(eq(workspaces.id, id))
     publish(id)
   },
   async listRunning() {
@@ -88,4 +94,16 @@ export async function ensureWorkstreamWorkspace(workstreamId: string): Promise<W
   const [row] = await db.select().from(workspaces).where(eq(workspaces.workstreamId, workstreamId)).limit(1)
   if (!row) throw new Error(`workstream ${workstreamId}: workspace insert conflicted but no row found`)
   return row
+}
+
+/**
+ * Tony re-enables a tainted workspace's network (session-only API, review I1). Only flips the flag:
+ * the networked container is stopped while tainted and the worker starts a fresh one on the next
+ * untainted command. Returns the row, or null when there is no live workspace with that id.
+ */
+export async function reenableWorkspaceNetwork(id: string): Promise<WorkspaceRow | null> {
+  const [row] = await useDb().update(workspaces).set({ tainted: false, taintedAt: null })
+    .where(and(eq(workspaces.id, id), isNull(workspaces.deletedAt))).returning()
+  if (row) publish(id)
+  return row ?? null
 }

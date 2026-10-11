@@ -7,5 +7,6 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 TAG="${1:-$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || true)}"
 TAG="${TAG:-dev}"
-docker build --pull=false -t "mymind-sandbox:${TAG}" -t mymind-sandbox:current "$DIR"
+# --pull: re-resolve the (digest-pinned) bases every build, so a cache never hides a changed pin.
+docker build --pull -t "mymind-sandbox:${TAG}" -t mymind-sandbox:current "$DIR"
 docker image inspect mymind-sandbox:current --format '[sandbox] built mymind-sandbox:'"${TAG}"' ({{.Size}} bytes)'
