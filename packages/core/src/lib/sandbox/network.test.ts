@@ -198,29 +198,54 @@ describe('install-network.sh ↔ network.ts (simulated filter table)', () => {
 
 describe('provision-native.sh §3b (rereview #6): sandbox setup never fails the deploy', () => {
   const src = readFileSync(path.resolve('deploy/provision-native.sh'), 'utf8')
-  const block = src.slice(src.indexOf('sandbox_warn() {'), src.indexOf('# 4. systemd units'))
-  function runBlock(installExit: number, buildExit: number) {
+  const block = src.slice(src.indexOf('SANDBOX_MIN_BUILD_GB='), src.indexOf('# 4. systemd units'))
+  /** `prevImage`: what `docker image inspect mymind-sandbox:current` answers (a stub on PATH). */
+  function runBlock(installExit: number, buildExit: number, o: { prevImage?: string; freeGb?: number } = {}) {
     const app = mkdtempSync(path.join(tmpdir(), 'mm-prov-'))
     try {
       const sbx = path.join(app, 'deploy/sandbox')
-      spawnSync('mkdir', ['-p', sbx])
+      const bin = path.join(app, 'bin')
+      spawnSync('mkdir', ['-p', sbx, bin])
       writeFileSync(path.join(sbx, 'install-network.sh'), `echo "[sandbox-net] ERROR: stub"; exit ${installExit}\n`)
       writeFileSync(path.join(sbx, 'build-image.sh'), `echo built; exit ${buildExit}\n`)
+      writeFileSync(path.join(bin, 'docker'), o.prevImage ? `#!/bin/sh\necho ${o.prevImage}\n` : '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+      writeFileSync(path.join(bin, 'df'), `#!/bin/sh\necho "Filesystem 1G-blocks Used Available Use% Mounted"; echo "/dev/x 100G 10G ${o.freeGb ?? 50}G 10% /"\n`, { mode: 0o755 })
       const script = `set -euo pipefail\nAPP_DIR=${JSON.stringify(app)}\n${block}\necho REACHED-UNITS\n`
-      return spawnSync('bash', ['-c', script], { encoding: 'utf8' })
+      return spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
     } finally { rmSync(app, { recursive: true, force: true }) }
   }
-  it('a failing install-network.sh logs loudly and provisioning carries on', () => {
+  it('a failing install-network.sh warns (a ::warning:: on the deploy run) and provisioning carries on', () => {
     const r = runBlock(1, 0)
     expect(r.status).toBe(0)
-    expect(r.stdout).toContain('WARNING: SANDBOX SETUP SKIPPED')
+    expect(r.stdout).toContain('::warning title=Sandbox::install-network.sh failed')
     expect(r.stdout).toContain('REACHED-UNITS')
     expect(r.stdout).not.toContain('built')
   })
-  it('a failing image build likewise; success stays quiet', () => {
-    const fail = runBlock(0, 1)
-    expect(fail.status).toBe(0)
-    expect(fail.stdout).toMatch(/SANDBOX SETUP SKIPPED|GB free/)
-    expect(fail.stdout).toContain('REACHED-UNITS')
+  it('final review M7: a failed REBUILD names the previous image still in use; with none it says there is no image', () => {
+    const rebuild = runBlock(0, 1, { prevImage: 'sha256:0123456789abcdef0123' })
+    expect(rebuild.status).toBe(0)
+    expect(rebuild.stdout).toMatch(/::warning title=Sandbox::the sandbox image build failed — rebuild failed, previous image 0123456789ab still active/)
+    expect(rebuild.stdout).toContain('REACHED-UNITS')
+    const none = runBlock(0, 1)
+    expect(none.stdout).toMatch(/::warning title=Sandbox::the sandbox image build failed — no sandbox image: workspace tools stay DISABLED/)
+  })
+  it('final review I6: the build needs >= 6 GB free (the watchdog stops sandboxes under 4 and resumes at 5)', () => {
+    const low = runBlock(0, 0, { freeGb: 5 })
+    expect(low.stdout).toMatch(/only 5 GB free on \/ \(the build needs >= 6 GB/)
+    expect(low.stdout).not.toContain('built')
+    const ok = runBlock(0, 0, { freeGb: 6 })
+    expect(ok.stdout).toContain('built')
+    expect(ok.stdout).not.toContain('::warning')
+  })
+})
+
+describe('install-network.sh install (final review M6)', () => {
+  it('the boot oneshot runs a copy outside the CD-managed tree', () => {
+    const src = readFileSync(SCRIPT, 'utf8')
+    expect(src).toMatch(/^LIB_COPY="\$LIB_DIR\/install-network\.sh"$/m)
+    expect(src).toMatch(/^LIB_DIR=\/usr\/local\/lib\/mymind$/m)
+    expect(src).toMatch(/install -D -m 0755 "\$SELF" "\$LIB_COPY"/)
+    expect(src).toContain('ExecStart=/bin/bash $LIB_COPY apply')
+    expect(src).not.toContain('ExecStart=/bin/bash $SELF')
   })
 })
