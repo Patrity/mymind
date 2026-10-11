@@ -1,6 +1,6 @@
 ---
 name: prod-deploy
-description: Use when interacting with the MyMind PRODUCTION deployment — checking app health/logs, restarting the service, inspecting/editing prod env, running DB ops against prod, diagnosing a bad deploy, or rolling back. Prod is a native systemd app in Proxmox LXC 114, reached via SSH to the Proxmox host. Covers the access pattern, common ops, and the runtimeConfig/bind gotchas that have caused incidents.
+description: Use when interacting with the MyMind PRODUCTION deployment — checking app or agent-worker health/logs, restarting the services (mymind + mymind-worker), inspecting/editing prod env, running DB ops against prod, diagnosing a bad deploy, or rolling back. Prod is two native systemd units (web + agent worker) in Proxmox LXC 114, reached via SSH to the Proxmox host. Covers the access pattern, common ops, and the runtimeConfig/bind gotchas that have caused incidents.
 ---
 
 # Prod deployment ops (LXC 114)
@@ -73,6 +73,8 @@ say what you're about to do first — a restart is a few seconds of downtime.
 | Thing | Where |
 |---|---|
 | App | native systemd unit `mymind`, runs `node /opt/mymind/.output/server/index.mjs` as **root**, cwd `/opt/mymind`, listens `0.0.0.0:3000` |
+| Agent worker (cycle 81) | unit `mymind-worker`, runs `node /opt/mymind/.worker/dist/worker.mjs` — the ONLY process that executes agent runs (chat turns, jobs, workstreams, the 5s tick). Same `.env` + `.env.native`. Talks to the web only via Postgres |
+| Worker releases | `.worker/` (active), `.worker-prev/` (one-level rollback), `.worker-next/` (staged) — `deploy/worker-release.sh stage\|activate\|rollback`; preserved by the sync, ~620 MB at rest |
 | Code / build | `/opt/mymind` (tracked tree), build output `/opt/mymind/.output` |
 | Base env | `/opt/mymind/.env` (shared; has Docker-era values like `DATABASE_URL=…@db:5432`) |
 | Native overrides | `/opt/mymind/.env.native` (gitignored, **preserved across deploys**, loaded AFTER `.env`) |
@@ -115,6 +117,15 @@ lxc 'sed -E "s#://[^@]*@#://***@#" /opt/mymind/.env.native'
 # What env the RUNNING process actually has (the source of truth)
 lxc 'pid=$(systemctl show -p MainPID --value mymind); tr "\0" "\n" < /proc/$pid/environ | grep -E "^(NUXT_DATABASE_URL|DATABASE_URL|NITRO_HOST|NODE_ENV)=" | sed -E "s#://[^@]*@#://***@#"'
 
+# Agent worker — status / logs / heartbeat / trapped crashes / release disk
+lxc 'systemctl status mymind-worker --no-pager'
+lxc 'journalctl -u mymind-worker -n 120 --no-pager'
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select boot_id, pid, started_at, now()-beat_at as age from worker_heartbeat order by beat_at desc limit 3;"'   # age > 30s = web shows "agent worker offline"
+lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select created_at, name, error->>'"'"'message'"'"' from activity_log where name like '"'"'worker:%'"'"' order by created_at desc limit 10;"'
+lxc 'du -sh /opt/mymind/.worker*'
+# Restart = DRAIN: SIGTERM → stops claiming, in-flight runs get ≤60s, then exit; systemd restarts it
+lxc 'systemctl restart mymind-worker && sleep 3 && systemctl is-active mymind-worker'
+
 # Postgres (no host port exposed beyond loopback; go via the container)
 lxc 'docker exec -i mymind-db psql -U mymind -d mymind -c "select count(*) from documents;"'
 ```
@@ -149,14 +160,21 @@ provider *labelled* "Reasoning …" under `usage='bulk'` is just the bulk chain'
 
 - **Deploy = push to `master`.** CD: sync tree → `docker compose up -d db searxng` (old app keeps
   serving) → `provision-native.sh` → `pnpm install --frozen-lockfile` + build (`--max-old-space-size=4096`)
-  → `pnpm db:migrate` (sources `.env.native`) → cut over (`systemctl restart mymind`) → `/api/health`.
-  **Build-before-cutover**: a failed build is a no-op, not an outage.
+  + `worker-release.sh stage` → `pnpm db:migrate` (sources `.env.native`) → cut over
+  (`systemctl restart mymind`) → `/api/health` → `worker-release.sh activate && systemctl restart
+  mymind-worker` → worker heartbeat check. **Build-before-cutover**: a failed build is a no-op, not an
+  outage. Nothing executes between the two restarts (~1–2 min); queued runs wait.
 - Watch a run: `gh run watch <id> --exit-status` — **never pipe to `tail`** (the pipe returns
   tail's exit 0 and masks a failed deploy).
 - **Provisioning** is idempotent: `$H 'cd /opt/mymind && bash deploy/provision-native.sh'` re-writes
   the unit, self-heals `.env.native` (NITRO_HOST, NUXT_* overrides), re-enables the service.
-- **Rollback**: the pre-B3.1 Docker app path still exists — restore the old `docker-compose.prod.yml`
-  (with the `app` service) + `docker compose up -d --build app`, then `systemctl stop mymind`.
+- **Rollback** (full runbook: DEPLOYMENT.md §21a; migrations are never reverted):
+  - worker only, one level: `lxc 'cd /opt/mymind && bash deploy/worker-release.sh rollback && systemctl restart mymind-worker'`
+  - web+worker within cycle ≥ 81: revert on `master`, push (CD redeploys both).
+  - **below cycle 81** (no worker in that code): cancel active workstreams at `/workstreams`, then
+    `systemctl disable --now mymind-worker` **FIRST**, then deploy. Otherwise the old web
+    (`AGENT_RUNTIME_EXCLUSIVE=1`) and the still-running worker are two executors on one DB.
+  - pre-B3.1 Docker path: restore the old `docker-compose.prod.yml` (with `app`) + `docker compose up -d --build app`, then stop both units.
 
 ### When CD never fires (manual deploy)
 
@@ -185,8 +203,10 @@ exact commit you are deploying** — you are skipping the CI `test` job that nor
 
 ```bash
 # 1. clear the tracked tree, preserving runtime state
+#    (.worker/.worker-prev are the running agent worker's releases — NEVER delete them)
 lxc 'cd /opt/mymind && find . -maxdepth 1 -mindepth 1 ! -name .git ! -name .env ! -name .env.native \
-  ! -name .data ! -name .output ! -name .nuxt ! -name node_modules ! -name workspace -exec rm -rf {} +'
+  ! -name .data ! -name .output ! -name .nuxt ! -name node_modules ! -name workspace \
+  ! -name .worker ! -name .worker-prev -exec rm -rf {} +'
 
 # 2. sync — `git archive` beats `tar` here: it ships EXACTLY the tracked tree at HEAD,
 #    so local gitignored scratch (.superpowers/, .claude/worktrees/) cannot leak into prod
@@ -197,11 +217,16 @@ lxc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d db searxn
 lxc 'cd /opt/mymind && bash deploy/provision-native.sh'
 lxc 'cd /opt/mymind && pnpm install --frozen-lockfile'
 lxc 'cd /opt/mymind && NODE_OPTIONS=--max-old-space-size=4096 NUXT_PUBLIC_UNMUTE_URL="" pnpm build'
+lxc 'cd /opt/mymind && bash deploy/worker-release.sh stage'          # → .worker-next (running worker untouched)
 lxc 'cd /opt/mymind && set -a && . ./.env.native && set +a && pnpm db:migrate'
 
 # 6. cutover (the only downtime) + health
 lxc 'cd /opt/mymind && docker compose -f docker-compose.prod.yml up -d --remove-orphans db searxng && systemctl restart mymind'
 lxc 'curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health'   # expect 200
+
+# 7. worker AFTER the web is healthy: swap the staged release in, restart (drains ≤60s), check the beat
+lxc 'cd /opt/mymind && bash deploy/worker-release.sh activate && systemctl restart mymind-worker'
+lxc 'sleep 10; docker exec -i mymind-db psql -U mymind -d mymind -Atc "select count(*) from worker_heartbeat where started_at > now() - interval '"'"'3 minutes'"'"' and beat_at > now() - interval '"'"'30 seconds'"'"'"'   # expect ≥1
 ```
 
 **Then prove the NEW code is live — a restart plus a 200 does not prove the build changed.** Grep the

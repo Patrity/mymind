@@ -5,7 +5,8 @@
 
 ## 0. What you're deploying
 
-MyMind is **one Nuxt 4 service** (Nitro `node-server`) that serves:
+MyMind is **one Nuxt 4 service** (Nitro `node-server`) plus, since cycle 81, a separate **agent
+worker** process (`mymind-worker`, the only process that executes Bridget's runs — see §21). The web serves:
 - the **web app** (SPA for the authed UI; SSR only for public `/share/**` pages),
 - **HTTP endpoints** (uploads for ShareX/CleanShot, Claude Code / Hermes hook ingestion),
 - an **MCP server** at `POST /api/mcp` for agents.
@@ -183,7 +184,8 @@ Rate-limit `/api/auth`, `/api/upload`, and `/api/hooks` at the proxy.
 
 ## 7. Background scheduled tasks
 
-These run **in-process** while the app is up (Nitro `scheduledTasks`):
+These run **in-process** while the app is up (Nitro `scheduledTasks`). The agent's own tasks
+(`summarize-threads`, `reflect-threads`, `reflect-jobs`) moved to the agent worker in cycle 81 (§21):
 | Cron | Task | Does |
 |---|---|---|
 | `*/5` | `embed-documents` | embeds new/changed docs (fills `documents.embedding`) |
@@ -631,3 +633,98 @@ Third-party access.
 
 **Ops:** the Settings → Connections nav item shows an amber chip while any connection is
 `needs_reconnect`; the card shows the last error. `journalctl -u mymind | grep '\[connections\]'`.
+
+## 21. Agent worker (`mymind-worker`, cycle 81)
+
+Since cycle 81 the web **never executes an agent run**. A second native process, the agent worker
+(`apps/worker`, bundled with esbuild), claims and runs every chat turn, wake, job and workstream
+segment, and owns the 5 s runtime tick (recovery, jobs, outbox, iMessage catch-up), the agent cron
+tasks and the activity-log flush. The two processes talk only through Postgres (the bus:
+`run_events`, `worker_commands`, `worker_heartbeat`, `LISTEN/NOTIFY`). How it works:
+[`docs/wiki/agent-runtime.md`](wiki/agent-runtime.md) and [`docs/wiki/workstreams.md`](wiki/workstreams.md).
+
+**Topology (LXC 114):**
+
+| | web | worker |
+|---|---|---|
+| unit | `mymind` (`deploy/mymind.service`) | `mymind-worker` (`deploy/mymind-worker.service`) |
+| runs | `/opt/mymind/.output/server/index.mjs` | `/opt/mymind/.worker/dist/worker.mjs` |
+| env | `.env` then `.env.native` | the **same** two files, same order (`MYMIND_BUS_NS`, if set, must match) |
+| `AGENT_RUNTIME_EXCLUSIVE=1` | **no** (it never recovers or claims runs) | **yes** (exclusive boot recovery) |
+| restart policy | `Restart=always` | `Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=0` (never parked `failed`) |
+
+Both units are installed and enabled by `deploy/provision-native.sh` (idempotent).
+
+**Release dirs.** The worker runs from a self-contained release (the bundle plus its external
+packages' full dependency closure), not from the tree that CD wipes and `pnpm install` rewrites:
+`.worker/` (active), `.worker-prev/` (one level of rollback), `.worker-next/` (staged, between
+`stage` and `activate`). CD's sync preserves `.worker` and `.worker-prev`. Driven by
+`deploy/worker-release.sh stage|activate|rollback`. They take about 620 MB on disk at rest and about
+930 MB at peak during a deploy, so run `df -h /` before deploying.
+
+**Deploy order (CD, `deploy.yml`):** sync → db/searxng up → provision → install + **web build** +
+`worker-release.sh stage` + migrate → `systemctl restart mymind` → `/api/health` → `worker-release.sh
+activate && systemctl restart mymind-worker` → worker health (unit active + a fresh
+`worker_heartbeat` row from the new boot). The web is cut over first. Between the two restarts
+nothing executes (about 1–2 min); queued runs wait in the DB and nothing is lost.
+
+**Drain.** `systemctl restart|stop mymind-worker` sends SIGTERM. The worker stops claiming, lets
+in-flight runs finish for up to 60 s (`WORKER_DRAIN_MS`, inside `TimeoutStopSec=90`), then exits.
+A workstream segment yields after its current step and its successor is queued. A segment parked on
+an approval card is released, and its card is withdrawn on the next boot (the model re-issues the
+call and Tony approves a fresh card). A chat run still going at the deadline is recovered as
+`interrupted` at the next boot.
+
+**Crashes.** An unhandled promise rejection is logged and recorded in `activity_log` (`kind=job`,
+`name=worker:unhandledRejection`, at most 20 rows a minute), and the worker keeps running. An
+uncaught exception is recorded (`worker:uncaughtException`) and triggers a drain bounded at 15 s,
+then `exit 1`. systemd restarts the worker 5 s later, with no start limit. An idle pool client error
+(e.g. Postgres restarted) is logged (`[db] idle pool client error`) and never crashes the process.
+The LISTEN connection reconnects by itself.
+
+**Logs and health:**
+```bash
+journalctl -u mymind-worker -n 120 --no-pager      # boot line: "[worker] boot <id> pid=… ns=…"
+journalctl -u mymind-worker -f
+systemctl status mymind-worker --no-pager
+# heartbeat (the web's "agent worker offline" banner = newest beat > 30 s old)
+docker exec -i mymind-db psql -U mymind -d mymind -c \
+  "select boot_id, pid, started_at, beat_at, now() - beat_at as age from worker_heartbeat order by beat_at desc limit 3;"
+# trapped crashes
+docker exec -i mymind-db psql -U mymind -d mymind -c \
+  "select created_at, name, error->>'message' from activity_log where name like 'worker:%' order by created_at desc limit 20;"
+du -sh /opt/mymind/.worker /opt/mymind/.worker-prev /opt/mymind/.worker-next 2>/dev/null
+```
+
+### 21a. Rollback
+
+Migrations are **never** reverted. Every cycle-81 migration (0068–0071) is additive, and older
+code ignores the new tables and columns.
+
+- **Worker only, at cycle ≥ 81** (bad worker release, web fine). This is **one level** (`.worker-prev`):
+  ```bash
+  cd /opt/mymind && bash deploy/worker-release.sh rollback && systemctl restart mymind-worker
+  ```
+  The next CD deploy stages and activates a fresh release as usual.
+- **Web and worker, at cycle ≥ 81.** Revert on `master` and push; CD redeploys both units in the
+  usual order.
+- **Rolling back below cycle 81** (to code that has no worker). This is dangerous if done naively.
+  The old `mymind.service` brings back `AGENT_RUNTIME_EXCLUSIVE=1` and the in-process executor. A
+  still-running worker would then be a **second executor** on the same DB: each process's recovery
+  interrupts the other's runs, and the old web would run `kind='workstream'` segments as plain turns.
+  The old sync would also delete `.worker/` from under the running worker. The order is:
+  1. Cancel (or let finish) every non-terminal workstream at `/workstreams`, **while the worker is still up**.
+     Cancel goes through it.
+  2. `systemctl disable --now mymind-worker` **first**. This drains it (≤ 60 s) and keeps it from
+     starting again.
+  3. Then deploy the old commit (revert on `master` → CD, or the manual steps).
+  4. Fallback if step 1 was skipped. Old code ignores the `workstreams` table but would claim its queued segments, so clear them:
+     ```sql
+     update agent_runs set status = 'aborted', finished_at = now(), error = 'rollback below cycle 81'
+       where kind = 'workstream' and status in ('queued', 'running');
+     update workstreams set state = 'cancelled', finished_at = now(), attention = null
+       where state not in ('done', 'failed', 'cancelled');
+     ```
+  Rolling forward again: a normal deploy of cycle ≥ 81. `provision-native.sh` re-enables the unit,
+  and CD's activate and restart start it.
+
