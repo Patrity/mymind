@@ -13,16 +13,16 @@
 //   FIRST — that taints the reading run (ai-tools.ts), since the files may be mail-derived.
 //   Not on /api/mcp: these tools live on bridgetProfile only (profile.ts), and MCP excludes the toolset.
 //
-// Over quota (Task 2 decision): write_file / edit_file / import_document, background shells and
-// watches are refused; `bash` still runs commands that only inspect or delete (fs-ops.ts
-// isRecoveryCommand: rm, du, ls, find without -exec, cat…, no redirection) so Bridget can free space
-// herself. The hard limits stay underneath regardless: RLIMIT_FSIZE 1 GiB per file and the 5s
-// free-space watchdog.
+// Over quota (fix round 1, I1 ruling — deny by default): every command-running or writing tool is
+// refused, `bash` in every mode included. Recovery is `list_files({largest: true})` (where the space
+// went, with sizes) + `delete_files({paths})` (array args, `rm -rf --` inside the container), which
+// work over quota. The hard limits stay underneath regardless: RLIMIT_FSIZE 1 GiB per file and the
+// 5s free-space watchdog.
 import { z } from 'zod'
 import type { AgentTool, ToolContext, ToolExecution } from '../types'
 import {
-  EDIT_SCRIPT, LIST_SCRIPT, READ_CAP_BYTES, READ_MAX_LINES, READ_SCRIPT, WRITE_MAX_BYTES, WRITE_SCRIPT, GREP_MAX,
-  RECOVERY_COMMAND_LIST, diffCommand, grepCommand, isRecoveryCommand, parseDiff
+  DELETE_MAX_PATHS, DELETE_SCRIPT, EDIT_SCRIPT, LIST_SCRIPT, READ_CAP_BYTES, READ_MAX_LINES, READ_SCRIPT, WRITE_MAX_BYTES, WRITE_SCRIPT, GREP_MAX,
+  diffCommand, grepCommand, parseDiff
 } from '../../sandbox/fs-ops'
 import { SandboxDiskLowError, SandboxQuotaError, SandboxUnavailableError, type ExecOptions, type SandboxExecResult } from '../../sandbox/manager'
 import { readWorkspaceText, workspaceRuntime, type WorkspaceRef } from '../../sandbox/runtime'
@@ -91,7 +91,7 @@ function scriptError(name: string, r: SandboxExecResult, j: Record<string, unkno
 }
 
 async function overQuota(c: Call): Promise<SandboxQuotaError | null> {
-  try { await workspaceRuntime().manager.checkQuota(c.ref.workspaceId); return null } catch (err) {
+  try { await workspaceRuntime().manager.checkQuota(c.ref.workspaceId, { tainted: c.tainted }); return null } catch (err) {
     if (err instanceof SandboxQuotaError) return err
     throw err
   }
@@ -185,18 +185,20 @@ export const listFilesTool: AgentTool = {
   name: 'list_files',
   toolset: 'workspace',
   kind: 'read',
-  description: 'List files in your workspace: every file under `path` (default /workspace), or the matches of a glob such as `**/*.py`. At most 500 entries; .git, node_modules, .venv and caches are skipped.',
+  description: 'List files in your workspace with their sizes (bytes on disk): every file under `path` (default /workspace), or the matches of a glob such as `**/*.py`. At most 500 entries; .git, node_modules, .venv and caches are skipped. `largest: true` instead shows where the space went — total, the 50 largest files and the largest directories (everything counted, node_modules included); use it with delete_files to get back under the quota.',
   schema: {
     glob: z.string().max(500).optional().describe('Glob relative to path, e.g. **/*.ts'),
-    path: pathArg.optional().describe('Directory (relative to /workspace)')
+    path: pathArg.optional().describe('Directory (relative to /workspace)'),
+    largest: z.boolean().optional().describe('Show the largest files and directories instead of a listing')
   },
   handler: (a, ctx) => guard('list_files', async () => {
     const c = await begin(ctx)
-    const r = await exec(c, LIST_SCRIPT, { input: JSON.stringify({ glob: a.glob ?? null, path: a.path ?? null }), capBytes: 256 * 1024, timeoutSec: 60 })
+    const r = await exec(c, LIST_SCRIPT, { input: JSON.stringify({ glob: a.glob ?? null, path: a.path ?? null, largest: a.largest === true }), capBytes: 256 * 1024, timeoutSec: 120 })
     const j = parseJson(r)
     if (!j) return failed('list_files', r)
     const err = scriptError('list_files', r, j, a.path as string | undefined)
     if (err) return err
+    if (a.largest === true) return { result: withTaint(r, { ...j, note: WORKSPACE_UNTRUSTED_NOTE }), summary: `workspace uses ${j.totalBytes} bytes in ${j.files} files` }
     return { result: withTaint(r, { ...j, note: WORKSPACE_UNTRUSTED_NOTE }), summary: `listed ${j.count} file${j.count === 1 ? '' : 's'}${j.truncated ? ' (more)' : ''}` }
   })
 }
@@ -266,9 +268,7 @@ export const bashTool: AgentTool = {
       return { result: { shellId: s.shellId, pid: s.pid, state: 'running', note: 'Read its output with bash_output({shellId}); stop it with kill_shell. To wait for it without polling, use watch.' }, summary: `started in background: \`${clip(command)}\`` }
     }
     const q = await overQuota(c)
-    if (q && !isRecoveryCommand(command)) {
-      return { result: { ok: false, error: `${q.message} — until space is freed, bash only runs commands that inspect or delete (${RECOVERY_COMMAND_LIST}; no redirection or substitution). Free space, e.g. \`du -sh * | sort -h\` then \`rm -rf <dir>\`.` }, summary: 'bash: refused (over quota)' }
-    }
+    if (q) return { result: { ok: false, error: `${q.message} — bash is refused until space is freed. Find what is big with list_files({ largest: true }), then remove it with delete_files({ paths: [...] }).` }, summary: 'bash: refused (over quota)' }
     const r = await exec(c, command, { timeoutSec: a.timeout as number | undefined })
     return {
       result: withTaint(r, {
@@ -313,6 +313,24 @@ export const killShellTool: AgentTool = {
   })
 }
 
+export const deleteFilesTool: AgentTool = {
+  name: 'delete_files',
+  toolset: 'workspace',
+  kind: 'create',
+  description: `Delete files or directories (recursively) in your workspace — paths relative to /workspace, no \`..\`, at most ${DELETE_MAX_PATHS}. Works even when the workspace is over its quota (that is how you free space: find what is big with list_files({ largest: true }) first).`,
+  schema: { paths: z.array(pathArg).min(1).max(DELETE_MAX_PATHS).describe('Relative paths to delete') },
+  handler: (a, ctx) => guard('delete_files', async () => {
+    const c = await begin(ctx)
+    // No quota check: this is the way back under it.
+    const r = await exec(c, DELETE_SCRIPT, { input: JSON.stringify({ paths: a.paths }), timeoutSec: 300 })
+    const j = parseJson(r)
+    if (!j) return failed('delete_files', r)
+    const deleted = j.deleted as string[]
+    const refused = j.refused as unknown[]
+    return { result: withTaint(r, j), summary: `deleted ${deleted.length} path${deleted.length === 1 ? '' : 's'}${refused.length ? `, refused ${refused.length}` : ''}` }
+  })
+}
+
 export const watchTool: AgentTool = {
   name: 'watch',
   toolset: 'workspace',
@@ -332,6 +350,8 @@ export const watchTool: AgentTool = {
     const c = await begin(ctx)
     if (c.tainted) return { result: { ok: false, error: `${TAINTED_RUN} in throwaway containers — watches are not available. Check with a foreground bash command instead.` }, summary: 'watch: refused (tainted run)' }
     if (!c.ref.workstreamId && !c.ref.conversationId) return { result: { ok: false, error: 'watch needs a conversation or workstream to report back to' }, summary: 'watch: nowhere to report' }
+    // Fix round 1 (M2): a tainted workspace runs every poll in a fresh no-network container — no watches there.
+    if ((await dbWorkspaceStore.get(c.ref.workspaceId))?.tainted) return { result: { ok: false, error: `${TAINTED_WS} — watches need it. Check with a foreground bash command instead.` }, summary: 'watch: refused (workspace offline)' }
     await assertQuota(c)
     if (until === 'match') {
       // Python's regex dialect (the poll matches inside the sandbox) — check it compiles now.
@@ -344,9 +364,19 @@ export const watchTool: AgentTool = {
       workspaceId: c.ref.workspaceId, workstreamId: c.ref.workstreamId, conversationId: c.ref.conversationId,
       command: a.command as string, until: until === 'match' ? { kind: 'match', pattern: pattern! } : { kind: 'exit0' }, intervalSec, timeoutMin
     })
+    if ('refused' in row) {
+      if (row.refused === 'workspace' || !c.ref.workstreamId) return { result: { ok: false, error: row.message }, summary: 'watch: refused (limit)' }
+      // Fix round 1 (I2): a workstream's lifetime watch caps — Tony decides whether it goes on.
+      const why = `It reached its watch limit: ${row.message}. Watch waiting uses no budget, so this stops it from waiting indefinitely. Resume it (or reply in its thread) to continue without new watches, or cancel it.`
+      const { pauseWorkstreamForTony } = await import('../workstreams/loop')
+      await pauseWorkstreamForTony(ctx.runId, c.ref.workstreamId, why)
+      return { result: { ok: false, error: `${row.message} — the workstream is now paused for Tony. Stop here.` }, summary: 'watch: limit reached — workstream paused for Tony' }
+    }
+    const clamped = row.deadlineAt.getTime() - row.createdAt.getTime() < timeoutMin * 60_000 - 1000
     return {
       result: {
         watchId: row.id, deadline: row.deadlineAt.toISOString(),
+        ...(clamped ? { clamped: 'the timeout was shortened to what is left of this workstream\'s 48 h of watch waiting' } : {}),
         note: c.ref.workstreamId
           ? 'Armed. When it fires or times out, the result arrives in this workstream. If you have nothing else to do until then, end your turn with a short note — the workstream waits for it without using budget.'
           : 'Armed. When it fires or times out, a note is posted in this chat.'
@@ -365,12 +395,24 @@ export const exportToDocumentTool: AgentTool = {
   description: 'Copy a text file from your workspace into Tony\'s documents at docPath (creates the document, or replaces the content of the one already there). ≤ 400 KB of UTF-8 text.',
   schema: {
     path: pathArg.describe('Workspace file (relative to /workspace)'),
-    docPath: DOC_PATH.describe('Document path, e.g. /projects/<slug>/report.md')
+    docPath: DOC_PATH.describe('Document path, e.g. /projects/<slug>/report.md'),
+    workspaceId: z.string().uuid().optional().describe('Set automatically — leave it out')
   },
+  // Fix round 1 (M4): a headless proposal stores the workspace it was proposed from; the replay
+  // (no run) reads from that one, never from whatever `home` resolves to.
+  proposalArgs: async (args, ctx) => ({ ...args, workspaceId: (await workspaceRuntime().resolve(ctx.runId)).workspaceId }),
   handler: (a, ctx) => guard('export_to_document', async () => {
-    const ref = await workspaceRuntime().resolve(ctx.runId)
+    // A live call resolves from its run (a model-supplied workspaceId is ignored); a replay uses the
+    // proposal's pinned one.
+    let workspaceId: string
+    if (ctx.runId || !a.workspaceId) workspaceId = (await workspaceRuntime().resolve(ctx.runId)).workspaceId
+    else {
+      const row = await dbWorkspaceStore.get(a.workspaceId as string)
+      if (!row || row.deletedAt) return { result: { ok: false, error: 'the workspace this export was proposed from no longer exists' }, summary: 'export_to_document: workspace gone' }
+      workspaceId = row.id
+    }
     // Reading moves nothing off the box; the run's taint applies when there is one (replay has none).
-    const f = await readWorkspaceText(ref.workspaceId, a.path as string, { tainted: ctx.isTainted?.() ?? false, signal: ctx.signal })
+    const f = await readWorkspaceText(workspaceId, a.path as string, { tainted: ctx.isTainted?.() ?? false, signal: ctx.signal })
     const docPath = a.docPath as string
     const existing = await findDocByPath(docPath)
     if (existing) {
@@ -428,5 +470,5 @@ export const importDocumentTool: AgentTool = {
 
 export const workspaceTools: AgentTool[] = [
   readFileTool, writeFileTool, editFileTool, listFilesTool, grepTool, diffTool,
-  bashTool, bashOutputTool, killShellTool, watchTool, exportToDocumentTool, importDocumentTool
+  bashTool, bashOutputTool, killShellTool, deleteFilesTool, watchTool, exportToDocumentTool, importDocumentTool
 ]

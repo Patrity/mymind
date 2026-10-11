@@ -36,6 +36,6 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
       return { id: row.id, tainted: row.tainted }
     },
     // Task 2: export_to_document replayed in the web reads its file here, in the sandbox.
-    workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path)
+    workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path, { tainted: p.tainted === true })
   }
 }

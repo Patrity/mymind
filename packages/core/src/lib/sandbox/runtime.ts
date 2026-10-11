@@ -37,7 +37,10 @@ export async function resolveWorkspace(runId: string | undefined): Promise<Works
   if (conversationId) {
     const { workstreamForConversation } = await import('../agent/workstreams/store')
     const ws = await workstreamForConversation(conversationId)
-    if (ws) {
+    // Fix round 1 (M1 ruling): only while the workstream is not finished — a chat turn typed into
+    // a done/failed/cancelled workstream's thread works (and watches) in the home workspace.
+    const { TERMINAL_WORKSTREAM_STATES } = await import('../../shared/types/workstreams')
+    if (ws && !TERMINAL_WORKSTREAM_STATES.includes(ws.state)) {
       const row = await ensureWorkstreamWorkspace(ws.id)
       return { workspaceId: row.id, kind: 'workstream', workstreamId: ws.id, conversationId }
     }
@@ -104,10 +107,19 @@ export function createWorkspaceRuntime(manager: SandboxManager, o: { resolve?: W
   }
 }
 
-/** isBusy / onOverQuota for the manager (exported for tests). onOverQuota is idempotent: it only
- *  touches running shells / armed watches, so the 5s low-disk repeats find nothing to do. */
+export const TAINTED_REASON = "this workspace's network was turned off (it handled mail/calendar content)"
+
+/** isBusy / onOverQuota / onTainted for the manager (exported for tests). onOverQuota and
+ *  onTainted are idempotent: they only touch running shells / armed watches, so repeats (every 5s
+ *  in a low-disk episode; every tainted command) find nothing to do. */
 export function runtimeHooks(rt: Pick<WorkspaceRuntime, 'shells' | 'watches'>) {
   return {
+    // Fix round 1 (M2): the networked container is gone — its shells are recorded as stopped and
+    // its watches cancelled (a watch would otherwise spawn a no-network one-off every poll).
+    onTainted: async (id: string) => {
+      await rt.shells.killAll(id, `stopped: ${TAINTED_REASON}`)
+      await rt.watches.cancelFor(id, TAINTED_REASON)
+    },
     isBusy: async (id: string) => (await rt.shells.hasRunning(id)) || (await rt.watches.hasArmed(id)),
     onOverQuota: async (id: string) => {
       await rt.shells.killAll(id, `killed: ${OVER_QUOTA_REASON}`)
@@ -151,7 +163,9 @@ export class WorkspaceFileError extends Error { override name = 'WorkspaceFileEr
 export async function readWorkspaceText(workspaceId: string, path: string, o: Pick<ExecOptions, 'tainted' | 'signal'> = {}): Promise<{ content: string; bytes: number; path: string; tainted: boolean }> {
   if (executionMode() === 'remote') {
     const { sendCommand } = await import('../bus/commands')
-    const r = await sendCommand('workspace-read-text', { workspaceId, path }, { awaitResult: true, timeoutMs: 60_000 })
+    // Fix round 1 (M3): the taint travels with the command (the worker runs it no-network). The
+    // abort signal can't cross the bus: the worker's own 60s exec timeout bounds the read.
+    const r = await sendCommand('workspace-read-text', { workspaceId, path, ...(o.tainted ? { tainted: true } : {}) }, { awaitResult: true, timeoutMs: 75_000 })
     if (!r) throw new WorkspaceFileError('the agent worker returned nothing')
     return r
   }

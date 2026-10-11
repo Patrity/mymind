@@ -55,7 +55,7 @@ export interface CommandPayloads {
   'workspace-reenable-network': { workspaceId: string }
   /** Cycle 82 Task 2: read a text file of a workspace (the sandbox lives in the worker) — what an
    *  approved export_to_document proposal, replayed in the web, copies into a document. */
-  'workspace-read-text': { workspaceId: string; path: string }
+  'workspace-read-text': { workspaceId: string; path: string; tainted?: boolean }
   /** Cycle 81 Task 2 fix: the iMessage catch-up (and its health/`running` guard) lives in the
    *  executing process. `check` = a forced catch-up (Settings → Test), `reset` = forget the health
    *  snapshot after the channel config changed. */

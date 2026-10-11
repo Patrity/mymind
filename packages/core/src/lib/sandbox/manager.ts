@@ -124,6 +124,8 @@ export interface ExecOptions {
 export interface SandboxRuntimeHooks {
   isBusy?: (workspaceId: string) => boolean | Promise<boolean>
   onOverQuota?: (workspaceId: string, usage: { bytes: number; inodes: number }) => Promise<void> | void
+  /** After a command made the workspace tainted (or ran in an already tainted one). */
+  onTainted?: (workspaceId: string) => Promise<void> | void
 }
 const runtimeHooks: SandboxRuntimeHooks = {}
 export function setSandboxRuntimeHooks(h: SandboxRuntimeHooks): void { Object.assign(runtimeHooks, h) }
@@ -164,6 +166,7 @@ export interface SandboxManagerOptions {
   /** Called when a workspace is over quota or stopped by the low-disk watchdog (Task 2 kills its
    *  background shells). */
   onOverQuota?: (workspaceId: string, usage: { bytes: number; inodes: number }) => Promise<void> | void
+  onTainted?: (workspaceId: string) => Promise<void> | void
   log?: Pick<Console, 'info' | 'warn' | 'error'>
   now?: () => number
   uid?: number | undefined
@@ -225,6 +228,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const fsStats = opts.fsStats ?? defaultFsStats
   const isBusy = (id: string) => (opts.isBusy ?? runtimeHooks.isBusy)?.(id) ?? false
   const onOverQuota = (id: string, usage: { bytes: number; inodes: number }) => (opts.onOverQuota ?? runtimeHooks.onOverQuota)?.(id, usage)
+  const onTainted = (id: string) => (opts.onTainted ?? runtimeHooks.onTainted)?.(id)
   /** Abort handles of tainted one-offs in flight, per workspace — registered under the workspace
    *  lock by `taint()`, so a re-enable (same lock) always sees every one (rereview #5). */
   const taintedInFlight = new Map<string, Set<AbortController>>()
@@ -518,6 +522,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const row = await liveRow(id)
     const runTainted = async () => {
       const ctrl = await taint(id)
+      // Fix round 1 (M2): the workspace is offline now — its watches are cancelled and its shells
+      // recorded as stopped (the runtime hook; idempotent, cheap when there is nothing).
+      try { await onTainted(id) } catch (err) { log.warn(`[sandbox] onTainted(${id}) failed:`, (err as Error).message) }
       try {
         await store.touch(id)
         const signal = o.signal ? AbortSignal.any([o.signal, ctrl.signal]) : ctrl.signal
@@ -587,10 +594,10 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   /** Measure bytes + files inside the sandbox (a one-off no-network container when tainted). */
-  async function measure(id: string): Promise<{ bytes: number; inodes: number } | null> {
+  async function measure(id: string, o: { oneOff?: boolean } = {}): Promise<{ bytes: number; inodes: number } | null> {
     const row = await liveRow(id)
     let r: DockerResult
-    if (row.tainted) r = await execOneOff(id, MEASURE_COMMAND, MEASURE_TIMEOUT_SEC + 10)
+    if (row.tainted || o.oneOff) r = await execOneOff(id, MEASURE_COMMAND, MEASURE_TIMEOUT_SEC + 10)
     else r = await docker(['exec', '--user', `${SANDBOX_UID}:${SANDBOX_UID}`, containerName(id), '/bin/sh', '-c', MEASURE_COMMAND], { timeoutMs: (MEASURE_TIMEOUT_SEC + 20) * 1000 })
     const used = r.code === 0 ? parseDu(r.stdout) : null
     if (used) {
@@ -603,16 +610,19 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   /** Before a write: refuse when over quota (measured within the last minute, else now). A
    *  measurement that fails or times out counts as OVER (fail closed — rereview #1: `du` timing out
    *  is exactly what millions of files look like). */
-  async function checkQuota(id: string): Promise<void> {
+  async function checkQuota(id: string, o: { tainted?: boolean } = {}): Promise<void> {
     assertDiskOk()
     const row = await liveRow(id)
     let used = { bytes: row.bytesUsed, inodes: row.inodesUsed }
     const at = measuredAt.get(id)
     if (at === undefined || now() - at >= 60_000) {
-      if (!row.tainted) {
+      // A tainted RUN measures in a no-network one-off (fix round 1, M8): never start the networked
+      // container just to measure, right before the tainted command stops it again.
+      const oneOff = row.tainted || o.tainted === true
+      if (!oneOff) {
         try { await ensureContainer(id) } catch (e) { if (!(e instanceof WorkspaceTaintedError)) throw e }
       }
-      const m = await measure(id)
+      const m = await measure(id, { oneOff })
       if (!m) throw SandboxQuotaError.unmeasurable()
       used = m
     }

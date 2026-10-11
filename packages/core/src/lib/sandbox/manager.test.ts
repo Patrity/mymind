@@ -628,3 +628,25 @@ describe('task 2 carry-overs', () => {
     expect(seen).toEqual([{ verb: 'exec', input: 'BODY', cap: 200_000 }, { verb: 'run', input: 'BODY2', cap: 1024 * 1024 }])
   })
 })
+
+describe('fix round 1 (task 2)', () => {
+  const quiet = { info: () => {}, warn: () => {}, error: () => {} }
+  it('M8: a tainted run measures the quota in a one-off — the networked container is never created for it', async () => {
+    const d = fakeDocker()
+    const m = mgr(d, memStore([{ id: WS }, { id: '22222222-2222-2222-2222-222222222223' }]))
+    await m.checkQuota(WS, { tainted: true }).catch(() => {}) // 6 GB in the fake: over quota, fine
+    expect(d.calls.some(c => c[0] === 'create')).toBe(false)
+    expect(d.calls.some(c => c[0] === 'run' && c.includes('none') && c.some(x => x.includes('du -sx')))).toBe(true)
+    await m.checkQuota('22222222-2222-2222-2222-222222222223').catch(() => {})
+    expect(d.calls.some(c => c[0] === 'create')).toBe(true) // untainted: the networked container as before
+  })
+  it('M2: every tainted command fires onTainted (the runtime cancels watches / records shells)', async () => {
+    const onTainted = vi.fn()
+    const m = createSandboxManager({ docker: fakeDocker().run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet, onTainted })
+    await m.exec(WS, 'echo', { tainted: true })
+    expect(onTainted).toHaveBeenCalledWith(WS)
+    onTainted.mockClear()
+    await m.exec(WS, 'echo') // the workspace stays tainted: still reported
+    expect(onTainted).toHaveBeenCalledWith(WS)
+  })
+})

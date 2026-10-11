@@ -151,7 +151,10 @@ describe('worker boot', () => {
     expect(deps.workspaceReadText).toHaveBeenCalledWith({ workspaceId: id, path: 'out/report.md' })
     await expect(h['workspace-read-text']({ workspaceId: '../x', path: 'a' })).rejects.toThrow(/bad payload/)
     await expect(h['workspace-read-text']({ workspaceId: id, path: '' })).rejects.toThrow(/bad payload/)
-    expect(deps.workspaceReadText).toHaveBeenCalledTimes(1)
+    await expect(h['workspace-read-text']({ workspaceId: id, path: 'a', tainted: 'yes' as never })).rejects.toThrow(/bad payload/)
+    await h['workspace-read-text']({ workspaceId: id, path: 'a', tainted: true })
+    expect(deps.workspaceReadText).toHaveBeenLastCalledWith({ workspaceId: id, path: 'a', tainted: true })
+    expect(deps.workspaceReadText).toHaveBeenCalledTimes(2)
   })
 
   // Cycle 81 Task 4: each command reaches its dependency with the payload's fields, and returns the

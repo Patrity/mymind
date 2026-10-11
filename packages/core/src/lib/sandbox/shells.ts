@@ -19,7 +19,9 @@ import type { WorkspaceRow } from './store'
 export type { WorkspaceShellRow }
 
 export interface ShellStore {
-  create(workspaceId: string, command: string): Promise<WorkspaceShellRow>
+  /** Insert a running shell unless `cap` are already running there — count + insert under one
+   *  per-workspace lock (fix round 1, M5: parallel calls in one step can't overshoot). null = capped. */
+  create(workspaceId: string, command: string, cap: number): Promise<WorkspaceShellRow | null>
   get(id: string): Promise<WorkspaceShellRow | null>
   listRunning(workspaceId?: string): Promise<WorkspaceShellRow[]>
   list(workspaceId: string, limit?: number): Promise<WorkspaceShellRow[]>
@@ -34,10 +36,17 @@ function publish(workspaceId: string): void {
 }
 
 export const dbShellStore: ShellStore = {
-  async create(workspaceId, command) {
-    const [r] = await useDb().insert(workspaceShells).values({ workspaceId, command }).returning()
-    publish(workspaceId)
-    return r!
+  async create(workspaceId, command, cap) {
+    const r = await useDb().transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`mymind:ws-shells:${workspaceId}`}))`)
+      const [{ n }] = await tx.select({ n: sql<number>`count(*)::int` }).from(workspaceShells)
+        .where(and(eq(workspaceShells.workspaceId, workspaceId), eq(workspaceShells.state, 'running'))) as [{ n: number }]
+      if (n >= cap) return null
+      const [row] = await tx.insert(workspaceShells).values({ workspaceId, command }).returning()
+      return row!
+    })
+    if (r) publish(workspaceId)
+    return r
   },
   async get(id) {
     const [r] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, id)).limit(1)
@@ -98,9 +107,8 @@ export function createShellRegistry(deps: ShellDeps) {
   }
 
   async function start(workspaceId: string, command: string, o: Pick<ExecOptions, 'secrets'> = {}): Promise<{ shellId: string; pid: number }> {
-    const running = await store.listRunning(workspaceId)
-    if (running.length >= MAX_RUNNING_SHELLS) throw new ShellError(`${running.length} background shells are already running in this workspace (the limit is ${MAX_RUNNING_SHELLS}) — stop one with kill_shell first`)
-    const row = await store.create(workspaceId, command)
+    const row = await store.create(workspaceId, command, MAX_RUNNING_SHELLS)
+    if (!row) throw new ShellError(`${MAX_RUNNING_SHELLS} background shells are already running in this workspace (the limit) — stop one with kill_shell first`)
     let r: SandboxExecResult
     try {
       r = await deps.exec(workspaceId, shellStartCommand(row.id), { input: command, timeoutSec: 30, ...(o.secrets ? { secrets: o.secrets } : {}) })

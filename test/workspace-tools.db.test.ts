@@ -133,9 +133,9 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     expect(all.count).toBe(500)
     expect(all.truncated).toBe(true)
     const py = await call('list_files', { glob: '**/*.py' })
-    expect(py.entries).toEqual(['e.py'])
+    expect(py.entries).toEqual([{ path: 'e.py', bytes: expect.any(Number) }])
     const some = await call('list_files', { path: 'src' })
-    expect(some.entries).toEqual(['deep/a.txt'])
+    expect(some.entries).toEqual([{ path: 'deep/a.txt', bytes: 4096 }]) // allocated blocks
     const nm = await call('list_files', { glob: '**/*.js' })
     expect(nm.entries).toEqual([])
   }, 120_000)
@@ -278,7 +278,7 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     expect((await call('export_to_document', { path: 'bin.dat', docPath: `/input/wst-${RUN}-bin.md` })).ok).toBe(false)
   }, 120_000)
 
-  it('over quota: writes refused, bash only inspects/deletes, and freeing space recovers', async () => {
+  it('over quota: writes and bash refused (the review\'s bypass strings included); list_files largest + delete_files recover', async () => {
     const id = await newWorkspace()
     const prev = current
     current = id
@@ -286,21 +286,37 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
     const q = mkRuntime(small)
     setWorkspaceRuntime(q)
     try {
-      await call('bash', { command: 'mkdir junk && for i in $(seq 1 80); do : > junk/$i; done' })
+      await call('bash', { command: 'mkdir -p junk keep && for i in $(seq 1 80); do head -c 5000 /dev/zero > junk/$i; done; echo k > keep/k' })
       // The quota is measured at most once a minute: force a fresh measurement.
       await small.measure(id)
       expect((await call('write_file', { path: 'x.txt', content: 'x' })).error).toMatch(/quota/i)
-      const refused = await call('bash', { command: 'touch y.txt' })
-      expect(refused.error).toMatch(/only runs commands that inspect or delete/)
-      expect((await call('bash', { command: 'echo hi > z.txt' })).error).toMatch(/only runs/)
-      expect((await call('bash', { command: 'du -s --inodes .', timeout: 30 })).exitCode).toBe(0)
-      expect((await call('bash', { command: 'rm -rf junk' })).exitCode).toBe(0)
+      for (const command of ['touch y.txt', 'find . -fprint"" big', 'sort --o=big keep/k', 'sort -S1 --compress-program=sh keep/k', 'du -s .', 'rm -rf junk']) {
+        expect((await call('bash', { command })).error, command).toMatch(/bash is refused until space is freed/)
+      }
+      expect((await call('bash', { command: 'ls' })).error).toMatch(/refused/)
+      const big = await call('list_files', { largest: true })
+      expect(big.files).toBe(81)
+      expect(big.largestDirs[0]).toMatchObject({ path: 'junk/' })
+      expect(big.largestDirs[0].bytes).toBeGreaterThan(big.largestDirs.find((d: { path: string }) => d.path === 'keep/').bytes)
+      const d = await call('delete_files', { paths: ['junk', 'nope', '../etc', '/etc/passwd', '.', 'keep/../..'] })
+      expect(d.deleted).toEqual(['junk'])
+      expect(d.missing).toEqual(['nope'])
+      expect(d.refused.map((r: { path: string }) => r.path)).toEqual(['../etc', '/etc/passwd', '.', 'keep/../..'])
       await small.measure(id)
       expect((await call('write_file', { path: 'x.txt', content: 'x' })).ok).toBe(true)
+      expect((await call('bash', { command: 'ls' })).stdout).toBe('keep\nx.txt\n')
     } finally {
       setWorkspaceRuntime(rt)
       current = prev
     }
+  }, 120_000)
+
+  it('delete_files never follows a symlinked parent out of the workspace; a symlink itself is removed, not its target', async () => {
+    await call('bash', { command: 'mkdir -p /tmp/outside && echo keep > /tmp/outside/f && ln -sfn /tmp/outside escape && echo t > real.txt && ln -sf real.txt link.txt' })
+    const d = await call('delete_files', { paths: ['escape/f', 'link.txt'] })
+    expect(d.refused.map((r: { path: string }) => r.path)).toEqual(['escape/f'])
+    expect(d.deleted).toEqual(['link.txt'])
+    expect((await call('bash', { command: 'cat /tmp/outside/f real.txt' })).stdout).toBe('keep\nt\n')
   }, 120_000)
 
   // LAST (it taints its own workspace for good).
@@ -326,6 +342,12 @@ describe.skipIf(!dockerUp)('workspace tools (real Docker)', () => {
       const rd = await call('read_file', { path: 'pre.txt' })
       expect(rd.workspaceTainted).toBe(true)
       expect((await call('bash', { command: 'sleep 1', run_in_background: true })).error).toMatch(/network is off until Tony re-enables it/)
+      expect((await call('watch', { command: 'true', until: 'exit0' })).error).toMatch(/network is off until Tony re-enables it/)
+      // An export from it marks the result (the exporting run becomes tainted).
+      const docPath = `/input/wst-${RUN}-tainted.md`
+      const e = await call('export_to_document', { path: 'pre.txt', docPath })
+      docIds.push(e.id)
+      expect(Object.keys(e)[0]).toBe('workspaceTainted')
     } finally {
       tainted = false
       current = prev

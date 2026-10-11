@@ -16,7 +16,8 @@ function memShells(): ShellStore & { rows: Map<string, WorkspaceShellRow> } {
   let n = 0
   return {
     rows,
-    create: async (workspaceId, command) => {
+    create: async (workspaceId, command, cap) => {
+      if ([...rows.values()].filter(r => r.workspaceId === workspaceId && r.state === 'running').length >= cap) return null
       const id = `66666666-6666-4666-8666-${String(++n).padStart(12, '0')}`
       const r: WorkspaceShellRow = { id, workspaceId, command, state: 'running', exitCode: null, reason: null, readOffset: 0, startedAt: new Date(), endedAt: null }
       rows.set(id, r)

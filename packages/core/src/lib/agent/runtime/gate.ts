@@ -29,7 +29,7 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   'finish_workstream', 'ask_tony',
   // workspace (cycle 82, spec §4): everything happens inside Bridget's own sandbox — none of it
   // touches Tony's data (no approvals; network governed by taint, not by the gate).
-  'write_file', 'edit_file', 'bash', 'kill_shell', 'watch', 'import_document'
+  'write_file', 'edit_file', 'bash', 'kill_shell', 'watch', 'import_document', 'delete_files'
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
   // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run
@@ -74,7 +74,8 @@ export async function proposeAction(p: AgentActionProposal): Promise<string> {
 }
 
 export function headlessTools(registry: AgentTool[], run: { id: string; conversationId: string }, propose: ProposeFn = proposeAction): AgentTool[] {
-  const proposeCall = async (t: AgentTool, args: Record<string, unknown>) => {
+  const proposeCall = async (t: AgentTool, given: Record<string, unknown>, ctx?: Parameters<AgentTool['handler']>[1]) => {
+    const args = t.proposalArgs && ctx ? await t.proposalArgs(given, ctx) : given
     const reviewId = await propose({ runId: run.id, conversationId: run.conversationId, tool: t.name, args })
     return {
       result: { proposed: true, reviewId, note: "Queued for Tony's approval in /review." },
@@ -92,11 +93,11 @@ export function headlessTools(registry: AgentTool[], run: { id: string; conversa
       // executes the real handler.
       const when = t.proposeWhen
       out.push(when
-        ? { ...t, handler: async (args, ctx) => when(args) ? proposeCall(t, args) : t.handler(args, ctx) }
+        ? { ...t, handler: async (args, ctx) => when(args) ? proposeCall(t, args, ctx) : t.handler(args, ctx) }
         : t)
       continue
     }
-    out.push({ ...t, dangerous: false, handler: async args => proposeCall(t, args) })
+    out.push({ ...t, dangerous: false, handler: async (args, ctx) => proposeCall(t, args, ctx) })
   }
   return out
 }

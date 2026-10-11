@@ -1,7 +1,7 @@
 // Cycle 82 Task 2: the watch runtime against a fake exec + in-memory store + manual timers (the real
 // polling is in test/workspace-tools.db.test.ts, the workstream wake in test/workspace-watch.db.test.ts).
 import { describe, expect, it, vi } from 'vitest'
-import { createWatchRuntime, MAX_POLL_ERRORS, watchText, type WatchStore, type WorkspaceWatchRow } from './watches'
+import { applyWatchCaps, createWatchRuntime, MAX_POLL_ERRORS, WATCH_CAPS, watchText, type WatchStore, type WorkspaceWatchRow } from './watches'
 import { WATCH_POLL_SCRIPT } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
 import type { WorkspaceRow } from './store'
@@ -17,8 +17,17 @@ function memWatches(): WatchStore & { rows: Map<string, WorkspaceWatchRow> } {
   let n = 0
   return {
     rows,
-    create: async (v) => {
-      const r: WorkspaceWatchRow = { id: `w${++n}`, ...v, state: 'armed', polls: 0, lastExitCode: null, lastOutput: null, reason: null, resultText: null, deliveredAt: null, createdAt: new Date(), endedAt: null }
+    create: async (v, caps, now) => {
+      const all = [...rows.values()]
+      const mine = all.filter(r => v.workstreamId && r.workstreamId === v.workstreamId)
+      const verdict = applyWatchCaps(v, caps, {
+        armedInWorkspace: all.filter(r => r.workspaceId === v.workspaceId && r.state === 'armed').length,
+        workstreamWatches: mine.length,
+        workstreamWaitMs: mine.reduce((t, r) => t + ((r.endedAt ?? r.deadlineAt).getTime() - r.createdAt.getTime()), 0)
+      })
+      if ('refused' in verdict) return verdict
+      const { timeoutMs: _t, ...rest } = v
+      const r: WorkspaceWatchRow = { id: `w${++n}`, ...rest, state: 'armed', polls: 0, lastExitCode: null, lastOutput: null, reason: null, resultText: null, deliveredAt: null, createdAt: now, deadlineAt: new Date(now.getTime() + verdict.deadlineMs), endedAt: null }
       rows.set(r.id, r)
       return r
     },
@@ -50,12 +59,17 @@ function setup(o: { now?: () => number; tainted?: boolean; deliverReply?: 'deliv
   const fire = async () => { const live = timers.filter(t => !t.cleared); for (const t of live) { t.cleared = true; t.fn() } await new Promise(r => setTimeout(r, 5)) }
   return { rt, store, timers, execs, delivered, fire, setReply: (f: typeof reply) => { reply = f } }
 }
+const armed = async (rt: ReturnType<typeof createWatchRuntime>, v: Parameters<ReturnType<typeof createWatchRuntime>['create']>[0]) => {
+  const r = await rt.create(v)
+  if ('refused' in r) throw new Error(r.message)
+  return r
+}
 const base = { workspaceId: WS, workstreamId: null, conversationId: 'c1', command: 'make test', intervalSec: 30, timeoutMin: 10 }
 
 describe('watch runtime', () => {
   it('until exit0: polls (command + pattern on stdin) until it exits 0, then delivers once', async () => {
     const { rt, store, execs, delivered, timers, fire, setReply } = setup()
-    const w = await rt.create({ ...base, until: { kind: 'exit0' } })
+    const w = await armed(rt, { ...base, until: { kind: 'exit0' } })
     expect(timers[0]!.ms).toBe(0) // first poll at once
     await fire()
     expect(execs[0]!.command).toBe(WATCH_POLL_SCRIPT)
@@ -72,7 +86,7 @@ describe('watch runtime', () => {
   })
   it('until match: the regex verdict comes from the sandbox (pattern on stdin)', async () => {
     const { rt, store, execs, fire, setReply } = setup()
-    const w = await rt.create({ ...base, until: { kind: 'match', pattern: 'READY' } })
+    const w = await armed(rt, { ...base, until: { kind: 'match', pattern: 'READY' } })
     setReply(() => poll(0, false, 'starting'))
     await fire()
     expect(store.rows.get(w.id)!.state).toBe('armed') // exit 0 is not enough for a match watch
@@ -84,7 +98,7 @@ describe('watch runtime', () => {
   it('times out at its deadline (the last wait is shortened to the deadline)', async () => {
     let now = 1_000_000
     const { rt, store, timers, delivered, fire } = setup({ now: () => now })
-    const w = await rt.create({ ...base, until: { kind: 'exit0' }, intervalSec: 60, timeoutMin: 1.5 })
+    const w = await armed(rt, { ...base, until: { kind: 'exit0' }, intervalSec: 60, timeoutMin: 1.5 })
     await fire(); now += 60_000
     await fire()
     expect(timers.at(-1)!.ms).toBe(30_000)
@@ -96,7 +110,7 @@ describe('watch runtime', () => {
   it(`${MAX_POLL_ERRORS} failed polls in a row end it as failed (and are delivered)`, async () => {
     const { rt, store, delivered, fire, setReply } = setup()
     setReply(() => res({ exitCode: 2, stderr: 'SandboxUnavailable' }))
-    const w = await rt.create({ ...base, until: { kind: 'exit0' } })
+    const w = await armed(rt, { ...base, until: { kind: 'exit0' } })
     for (let i = 0; i < MAX_POLL_ERRORS; i++) await fire()
     expect(store.rows.get(w.id)).toMatchObject({ state: 'failed' })
     expect(delivered[0]!.resultText).toMatch(/failed: `make test` — 5 polls in a row failed/)
@@ -111,10 +125,10 @@ describe('watch runtime', () => {
   })
   it('re-arm after a restart: a new runtime on the same store polls armed watches and re-delivers undelivered results', async () => {
     const a = setup()
-    const armed = await a.rt.create({ ...base, until: { kind: 'exit0' } })
+    const first = await armed(a.rt, { ...base, until: { kind: 'exit0' } })
     a.rt.stop()
     // An undelivered result (crash between ending and telling).
-    const done = await a.store.create({ ...base, until: { kind: 'exit0' }, deadlineAt: new Date() })
+    const done = await a.store.create({ ...base, until: { kind: 'exit0' }, timeoutMs: 1000 }, WATCH_CAPS, new Date()) as WorkspaceWatchRow
     await a.store.end(done.id, 'met', null, () => 'done text')
     const b = createWatchRuntime({
       exec: async () => poll(0), workspace: async () => ({ id: WS, tainted: false } as WorkspaceRow),
@@ -124,12 +138,12 @@ describe('watch runtime', () => {
     const got: string[] = []
     expect(await b.start()).toBe(1)
     await new Promise(r => setTimeout(r, 20))
-    expect(got.sort()).toEqual([armed.id, done.id].sort())
-    expect(a.store.rows.get(armed.id)!.state).toBe('met')
+    expect(got.sort()).toEqual([first.id, done.id].sort())
+    expect(a.store.rows.get(first.id)!.state).toBe('met')
   })
   it('cancelFor (over quota) is idempotent; a "pending" chat delivery is retried', async () => {
     const { rt, store, delivered, timers } = setup({ deliverReply: 'pending' })
-    const w = await rt.create({ ...base, until: { kind: 'exit0' } })
+    const w = await armed(rt, { ...base, until: { kind: 'exit0' } })
     expect(await rt.cancelFor(WS, 'over quota')).toBe(1)
     expect(await rt.cancelFor(WS, 'over quota')).toBe(0)
     expect(store.rows.get(w.id)).toMatchObject({ state: 'cancelled', reason: 'over quota', deliveredAt: null })
@@ -139,5 +153,35 @@ describe('watch runtime', () => {
   it('watchText pins the wording', () => {
     const row = { command: 'x', until: { kind: 'match', pattern: 'ok' }, polls: 1, lastExitCode: 0, lastOutput: null } as unknown as WorkspaceWatchRow
     expect(watchText(row, 'met', { workspaceTainted: false })).toBe('The watch you set is done: `x` output matches /ok/ (after 1 poll).')
+  })
+})
+
+describe('watch caps (fix round 1: I2 per workstream, M5 atomic in the store)', () => {
+  const ws = { ...base, workstreamId: 'stream-1', until: { kind: 'exit0' } as const }
+  it(`a workstream may arm at most ${WATCH_CAPS.perWorkstream} watches in its life (ended ones count)`, async () => {
+    const { rt, store } = setup()
+    for (let i = 0; i < WATCH_CAPS.perWorkstream; i++) {
+      const w = await armed(rt, { ...ws, timeoutMin: 1 })
+      await store.end(w.id, 'met', null, () => 't') // ended: not armed, still counted
+    }
+    const r = await rt.create({ ...ws, timeoutMin: 1 })
+    expect(r).toMatchObject({ refused: 'workstream-count' })
+    // A chat watch (no workstream) is not subject to it.
+    expect('refused' in await rt.create({ ...base, until: { kind: 'exit0' }, timeoutMin: 1 })).toBe(false)
+  })
+  it('48 h of cumulative watch waiting: a deadline is clamped to what is left, then refused', async () => {
+    let now = 0
+    const { rt } = setup({ now: () => now })
+    const a = await armed(rt, { ...ws, timeoutMin: 24 * 60 })
+    const b = await armed(rt, { ...ws, timeoutMin: 20 * 60 })
+    const c = await armed(rt, { ...ws, timeoutMin: 24 * 60 }) // only 4 h left
+    expect([a, b, c].map(w => (w.deadlineAt.getTime() - w.createdAt.getTime()) / 3_600_000)).toEqual([24, 20, 4])
+    now = 1000
+    expect(await rt.create({ ...ws, timeoutMin: 10 })).toMatchObject({ refused: 'workstream-wait' })
+  })
+  it(`at most ${WATCH_CAPS.perWorkspace} armed per workspace`, async () => {
+    const { rt } = setup()
+    for (let i = 0; i < WATCH_CAPS.perWorkspace; i++) await armed(rt, { ...base, until: { kind: 'exit0' } })
+    expect(await rt.create({ ...base, until: { kind: 'exit0' } })).toMatchObject({ refused: 'workspace' })
   })
 })

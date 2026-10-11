@@ -35,7 +35,7 @@ describe('toolset registry', () => {
       decide_review: 'reviews', list_improvements: 'improvements', send_message: 'channels',
       research_web: 'web', gmail_search: 'gmail', gmail_draft: 'gmail', contacts_search: 'gmail', calendar_list_events: 'calendar', calendar_guest_event: 'calendar', calendar_rsvp: 'calendar', search_brain: 'web', exec: 'admin', use_skill: 'core', quick_capture: 'tasks',
       read_file: 'workspace', write_file: 'workspace', edit_file: 'workspace', list_files: 'workspace', grep: 'workspace', diff: 'workspace',
-      bash: 'workspace', bash_output: 'workspace', kill_shell: 'workspace', watch: 'workspace', export_to_document: 'workspace', import_document: 'workspace'
+      bash: 'workspace', bash_output: 'workspace', delete_files: 'workspace', kill_shell: 'workspace', watch: 'workspace', export_to_document: 'workspace', import_document: 'workspace'
     })
   })
   it('cycle 82: the admin and workspace directory lines (spec §5 wording for admin)', () => {

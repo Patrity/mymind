@@ -112,10 +112,26 @@ const NOISE = ['.git', META_DIR, 'node_modules', '__pycache__', '.venv', '.mypy_
 
 export const LIST_SCRIPT = py([
   PY_PRELUDE,
-  'import pathlib',
+  'import pathlib, heapq',
   `root = a.get("path") or "."; pat = a.get("glob"); cap = ${LIST_MAX}; noise = set(${JSON.stringify(NOISE)})`,
   'if not os.path.exists(root): out({"error": "not_found"})',
   'if not os.path.isdir(root): out({"error": "not_a_directory"})',
+  'def size(p):',
+  '    try: return os.lstat(p).st_blocks * 512',
+  '    except OSError: return 0',
+  'if a.get("largest"):',
+  // Recovery mode (fix round 1, I1): where the space went — EVERYTHING is walked (noise dirs too:
+  // node_modules is usually the culprit), the 50 largest files and directory totals 2 levels deep.
+  '    files = []; dirs = {}; total = 0',
+  '    for d, ds, fs in os.walk(root):',
+  '        for f in fs:',
+  '            fp = os.path.join(d, f); b = size(fp); total += b',
+  '            rel = os.path.relpath(fp, root); files.append((b, rel))',
+  '            parts = pathlib.PurePath(rel).parts',
+  '            for k in range(1, min(len(parts), 3)): key = "/".join(parts[:k]) + "/"; dirs[key] = dirs.get(key, 0) + b',
+  '    big = heapq.nlargest(50, files)',
+  '    bd = heapq.nlargest(50, ((v, k) for k, v in dirs.items()))',
+  '    out({"root": os.path.abspath(root), "totalBytes": total, "files": len(files), "largestFiles": [{"path": p, "bytes": b} for b, p in big], "largestDirs": [{"path": p, "bytes": b} for b, p in bd]})',
   'res = []; more = False',
   'def skip(rel): return any(part in noise for part in pathlib.PurePath(rel).parts)',
   'if pat:',
@@ -123,15 +139,17 @@ export const LIST_SCRIPT = py([
   '        rel = os.path.relpath(str(m), root)',
   '        if skip(rel): continue',
   '        if len(res) >= cap: more = True; break',
-  '        res.append(rel + ("/" if m.is_dir() else ""))',
+  '        res.append({"path": rel + "/", "bytes": None} if m.is_dir() else {"path": rel, "bytes": size(str(m))})',
   'else:',
   '    for d, dirs, files in os.walk(root):',
   '        dirs[:] = sorted(x for x in dirs if x not in noise)',
   '        for f in sorted(files):',
   '            if len(res) >= cap: more = True; break',
-  '            res.append(os.path.relpath(os.path.join(d, f), root))',
+  '            fp = os.path.join(d, f)',
+  '            res.append({"path": os.path.relpath(fp, root), "bytes": size(fp)})',
   '        if more: break',
-  'out({"root": os.path.abspath(root), "entries": sorted(res), "count": len(res), "truncated": more})'
+  'res.sort(key=lambda e: e["path"])',
+  'out({"root": os.path.abspath(root), "entries": res, "count": len(res), "truncated": more})'
 ].join('\n'))
 
 // ── grep ───────────────────────────────────────────────────────────────────────────────────────
@@ -273,38 +291,35 @@ export const WATCH_POLL_SCRIPT = py([
   `out({"exit": code, "matched": m, "tail": t[-${WATCH_TAIL_BYTES}:]})`
 ].join('\n'))
 
-// ── over quota: what `bash` may still run ──────────────────────────────────────────────────────
+// ── delete_files (works over quota) ─────────────────────────────────────────────────────────────
 
-/** Commands that only inspect or delete — what `bash` accepts while the workspace is over quota. */
-// Not `uniq` (its 2nd operand is an output file) nor `file` (-C writes a magic file).
-const RECOVERY_COMMANDS = new Set(['rm', 'rmdir', 'du', 'df', 'ls', 'find', 'cat', 'head', 'tail', 'wc', 'stat', 'pwd', 'echo', 'true', 'sort'])
-/** find actions that write or run something. */
-const FIND_UNSAFE = /^-(exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/
+export const DELETE_MAX_PATHS = 100
 
 /**
- * Over quota (cycle 82 Task 2 decision): `bash` refuses anything that could write, but a pipeline
- * of inspection / deletion commands still runs so Bridget can free space herself. Conservative by
- * construction: plain words only — no redirection, substitution, globbing into another command,
- * subshells, variables or background — and every pipeline stage must start with an allowed command
- * (find without its exec/print-to-file actions).
+ * Delete files/directories (fix round 1, I1 ruling: over quota `bash` is refused; this is how space
+ * is freed). Paths come as a JSON array on stdin and must be RELATIVE, without `..`, and inside
+ * /workspace once their parent is resolved (a symlinked parent can't redirect the delete); the
+ * workspace root itself is refused. Each path is removed with `rm -rf --` (a symlink itself is
+ * removed, never its target). Python never builds a shell string: rm gets the path as one argv word.
  */
-export function isRecoveryCommand(command: string): boolean {
-  const c = command.trim()
-  if (!c || c.length > 2000) return false
-  // Anything that can redirect, substitute, expand into code, or start a subshell/background job.
-  if (/[<>`$(){}\\&\n]/.test(c.replace(/&&/g, ''))) return false
-  for (const stage of c.split(/\|\||&&|\||;/)) {
-    const words = stage.trim().split(/\s+/).filter(Boolean)
-    if (!words.length) return false
-    const [cmd, ...rest] = words
-    if (!RECOVERY_COMMANDS.has(cmd!)) return false
-    const bare = rest.map(w => w.replace(/^['"]|['"]$/g, ''))
-    if (cmd === 'find' && bare.some(w => FIND_UNSAFE.test(w))) return false
-    if (cmd === 'sort' && bare.some(w => /^(-[a-zA-Z]*o|--output)/.test(w))) return false
-  }
-  return true
-}
-export const RECOVERY_COMMAND_LIST = [...RECOVERY_COMMANDS].join(', ')
+export const DELETE_SCRIPT = py([
+  PY_PRELUDE,
+  'import subprocess',
+  'root = os.path.realpath(os.getcwd()); done = []; missing = []; refused = []',
+  'for p in a["paths"]:',
+  '    if not isinstance(p, str) or not p or p.startswith("/") or ".." in p.split("/"):',
+  '        refused.append({"path": p, "why": "must be a relative path inside the workspace, without .."}); continue',
+  '    full = os.path.normpath(os.path.join(root, p))',
+  '    parent = os.path.realpath(os.path.dirname(full))',
+  '    if full == root or not (parent == root or parent.startswith(root + os.sep)):',
+  '        refused.append({"path": p, "why": "outside the workspace (or the workspace itself)"}); continue',
+  '    target = os.path.join(parent, os.path.basename(full))',
+  '    if not os.path.lexists(target): missing.append(p); continue',
+  '    r = subprocess.run(["rm", "-rf", "--", target], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)',
+  '    if r.returncode == 0: done.append(p)',
+  '    else: refused.append({"path": p, "why": r.stdout.decode("utf-8", "replace")[-300:]})',
+  'out({"deleted": done, "missing": missing, "refused": refused})'
+].join('\n'))
 
 // ── export_to_document: a whole text file ──────────────────────────────────────────────────────
 

@@ -55,6 +55,11 @@ export function capResult(result: unknown, max: number): unknown {
     return { unserializable: true }
   }
   if (json.length <= max) return result
+  // Cycle 82 fix round 1 (verified ⚠a): a result is capped TWICE — at capture (WRITE_RESULT_CAP)
+  // and again by the history policy (READ_RESULT_CAP) — and the second cap's preview starts with the
+  // FIRST cap's keys, so a "flag first in the preview" marker did not survive. The workspace-taint
+  // flag is therefore lifted onto every capped shape, however often it is re-capped.
+  if (carriesWorkspaceTaint(result)) return { workspaceTainted: true, truncated: true, bytes: json.length, preview: json.slice(0, max) }
   return { truncated: true, bytes: json.length, preview: json.slice(0, max) }
 }
 

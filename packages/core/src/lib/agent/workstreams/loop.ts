@@ -546,6 +546,17 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
     return next
   }
 
+  // Paused DURING the segment by one of its own tools (fix round 1, I2: a watch over the
+  // workstream's lifetime caps). It stays paused for Tony; his unread words resume it.
+  if (current.state === 'paused') {
+    const unread = await drainSteerFor(run.id)
+    await patchWorkstream(ws.id, { lastOutcome: outcome.status })
+    if (!unread.length) return null
+    const next = await enqueueSegment(current, { text: unread.join('\n\n') })
+    if (next) await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
+    return next
+  }
+
   if (outcome.status === 'failed') return countFailure(current, run, outcome.error ?? 'unknown error')
 
   if (outcome.status === 'aborted') {
@@ -642,6 +653,20 @@ export async function wakeWorkstreamForWatch(workstreamId: string): Promise<'res
   if (!runId) return runId === undefined ? 'resumed' : 'pending'
   await kick()
   return 'resumed'
+}
+
+/**
+ * A segment's own tool pauses its workstream for Tony (fix round 1, I2: watch caps). The segment
+ * stops after its current step and stays paused (onSegmentFinished); Tony is told once. Resume,
+ * a reply in the thread or answer_workstream continue it.
+ */
+export async function pauseWorkstreamForTony(runId: string | undefined, workstreamId: string, why: string): Promise<boolean> {
+  const row = await patchWorkstream(workstreamId, { state: 'paused', attention: { kind: 'paused', text: why }, lastOutcome: 'paused' }, ['running', 'attention'])
+  if (!row) return false
+  const seg = segmentForRun(runId)
+  if (seg) seg.stop ??= 'attention'
+  await notifyTony(row, `⚙ Workstream paused — ${row.goal}\n\n${why}`)
+  return true
 }
 
 /** A failed segment (or a failed transition) — retried until the 3rd in a row, then failed. */

@@ -111,6 +111,10 @@ export interface AgentTool {
    *  is proposed to /review for THAT call instead of running (gmail_draft with a draftId replaces
    *  an existing draft). Ignored interactively and on proposal replay. */
   proposeWhen?: (args: Record<string, unknown>) => boolean
+  /** Cycle 82 fix round 1 (M4): headless gate only — what a proposal of this tool STORES, from the
+   *  proposing call's context (export_to_document pins the workspace it read from: the replay has
+   *  no run to derive it from). Defaults to the call's own args. */
+  proposalArgs?: (args: Record<string, unknown>, ctx: ToolContext) => Promise<Record<string, unknown>>
   /** Opt-in: a persisted "always allow" pattern may approve this dangerous tool without asking.
    *  Only exec sets it — decide_review (cycle 76) must be confirmed on every call. */
   allowlistable?: boolean

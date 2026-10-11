@@ -17,8 +17,16 @@ import type { WorkspaceRow } from './store'
 export type { WorkspaceWatchRow, WatchUntil }
 export type WatchOutcome = 'met' | 'timeout' | 'cancelled' | 'failed'
 
+export interface NewWatch { workspaceId: string; workstreamId: string | null; conversationId: string | null; command: string; until: WatchUntil; intervalSec: number; timeoutMs: number }
+export interface WatchCaps { perWorkspace: number; perWorkstream: number; workstreamWaitMs: number }
+/** Why a watch was not armed: the workspace's armed cap, or (fix round 1, I2) the workstream's
+ *  lifetime caps — then the workstream is paused for Tony. */
+export type WatchRefusal = { refused: 'workspace' | 'workstream-count' | 'workstream-wait'; message: string }
+
 export interface WatchStore {
-  create(v: { workspaceId: string; workstreamId: string | null; conversationId: string | null; command: string; until: WatchUntil; intervalSec: number; deadlineAt: Date }): Promise<WorkspaceWatchRow>
+  /** Count + insert under one lock (fix round 1, M5), applying the caps; the deadline is clamped to
+   *  what is left of the workstream's watch-wait allowance. */
+  create(v: NewWatch, caps: WatchCaps, now: Date): Promise<WorkspaceWatchRow | WatchRefusal>
   get(id: string): Promise<WorkspaceWatchRow | null>
   listArmed(filter?: { workspaceId?: string; workstreamId?: string }): Promise<WorkspaceWatchRow[]>
   recordPoll(id: string, p: { exitCode: number | null; output: string }): Promise<void>
@@ -34,11 +42,45 @@ function publish(workspaceId: string): void {
   publishChange({ resource: 'workspace', action: 'updated', id: workspaceId })
 }
 
+/** The cap logic shared by the DB store and the tests' memory store. `existing` = the workspace's
+ *  armed count, the workstream's watches ever armed and their reserved wait (each counts its whole
+ *  armed window: ended_at, or its deadline while still armed). */
+export function applyWatchCaps(v: NewWatch, caps: WatchCaps, existing: { armedInWorkspace: number; workstreamWatches: number; workstreamWaitMs: number }): { deadlineMs: number } | WatchRefusal {
+  if (existing.armedInWorkspace >= caps.perWorkspace) return { refused: 'workspace', message: `${existing.armedInWorkspace} watches are already armed in this workspace (the limit is ${caps.perWorkspace})` }
+  if (!v.workstreamId) return { deadlineMs: v.timeoutMs }
+  if (existing.workstreamWatches >= caps.perWorkstream) {
+    return { refused: 'workstream-count', message: `this workstream has already armed ${existing.workstreamWatches} watches (the limit is ${caps.perWorkstream})` }
+  }
+  const left = caps.workstreamWaitMs - existing.workstreamWaitMs
+  if (left < 60_000) return { refused: 'workstream-wait', message: `this workstream has already spent its ${Math.round(caps.workstreamWaitMs / 3_600_000)} h of watch waiting` }
+  return { deadlineMs: Math.min(v.timeoutMs, left) }
+}
+
 export const dbWatchStore: WatchStore = {
-  async create(v) {
-    const [r] = await useDb().insert(workspaceWatches).values(v).returning()
-    publish(v.workspaceId)
-    return r!
+  async create(v, caps, now) {
+    const r = await useDb().transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`mymind:ws-watches:${v.workspaceId}`}))`)
+      if (v.workstreamId) await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`mymind:ws-watches:ws:${v.workstreamId}`}))`)
+      const [a] = await tx.select({ n: sql<number>`count(*)::int` }).from(workspaceWatches)
+        .where(and(eq(workspaceWatches.workspaceId, v.workspaceId), eq(workspaceWatches.state, 'armed')))
+      let w = { n: 0, ms: 0 }
+      if (v.workstreamId) {
+        const [x] = await tx.select({
+          n: sql<number>`count(*)::int`,
+          ms: sql<number>`coalesce(sum(extract(epoch from (coalesce(${workspaceWatches.endedAt}, ${workspaceWatches.deadlineAt}) - ${workspaceWatches.createdAt})) * 1000), 0)::float8`
+        }).from(workspaceWatches).where(eq(workspaceWatches.workstreamId, v.workstreamId))
+        w = { n: x?.n ?? 0, ms: Number(x?.ms ?? 0) }
+      }
+      const verdict = applyWatchCaps(v, caps, { armedInWorkspace: a?.n ?? 0, workstreamWatches: w.n, workstreamWaitMs: w.ms })
+      if ('refused' in verdict) return verdict
+      const [row] = await tx.insert(workspaceWatches).values({
+        workspaceId: v.workspaceId, workstreamId: v.workstreamId, conversationId: v.conversationId, command: v.command, until: v.until,
+        intervalSec: v.intervalSec, createdAt: now, deadlineAt: new Date(now.getTime() + verdict.deadlineMs)
+      }).returning()
+      return row!
+    })
+    if (!('refused' in r)) publish(v.workspaceId)
+    return r
   },
   async get(id) {
     const [r] = await useDb().select().from(workspaceWatches).where(eq(workspaceWatches.id, id)).limit(1)
@@ -102,6 +144,13 @@ export async function workstreamHasWatchResults(workstreamId: string): Promise<b
 export const WATCH_LIMITS = { intervalSec: { min: 5, max: 600, default: 30 }, timeoutMin: { min: 1, max: 24 * 60, default: 30 } } as const
 /** Armed watches per workspace. */
 export const MAX_ARMED_WATCHES = 5
+/** Fix round 1 (I2): a workstream may arm at most this many watches in its life… */
+export const MAX_WORKSTREAM_WATCHES = 10
+/** …and spend at most this much (cumulative armed windows) waiting on them. Beyond either it is
+ *  paused for Tony: watch-waiting uses no wall budget, so without these an unattended workstream
+ *  could keep re-arming for months. */
+export const MAX_WORKSTREAM_WATCH_WAIT_MS = 48 * 60 * 60_000
+export const WATCH_CAPS: WatchCaps = { perWorkspace: MAX_ARMED_WATCHES, perWorkstream: MAX_WORKSTREAM_WATCHES, workstreamWaitMs: MAX_WORKSTREAM_WATCH_WAIT_MS }
 /** A poll that keeps failing (sandbox unavailable, low disk, unreadable result) ends the watch. */
 export const MAX_POLL_ERRORS = 5
 /** A chat note waits for the conversation's running turn: retried every 10s for up to 30 min. */
@@ -119,6 +168,7 @@ export interface WatchDeps {
   /** True when the watch's owner is gone (its workstream finished/cancelled) — it stops quietly. */
   ownerGone?(row: WorkspaceWatchRow): Promise<boolean>
   store?: WatchStore
+  caps?: WatchCaps
   now?: () => number
   log?: Pick<Console, 'info' | 'warn' | 'error'>
   /** Test seam for the timers. */
@@ -231,15 +281,15 @@ export function createWatchRuntime(deps: WatchDeps) {
     }
   }
 
-  async function create(v: { workspaceId: string; workstreamId: string | null; conversationId: string | null; command: string; until: WatchUntil; intervalSec: number; timeoutMin: number }): Promise<WorkspaceWatchRow> {
-    const armed = await store.listArmed({ workspaceId: v.workspaceId })
-    if (armed.length >= MAX_ARMED_WATCHES) throw new WatchError(`${armed.length} watches are already armed in this workspace (the limit is ${MAX_ARMED_WATCHES})`)
-    const row = await store.create({
+  /** Arm a watch, or say why not (the caller pauses a workstream on its lifetime caps). */
+  async function create(v: { workspaceId: string; workstreamId: string | null; conversationId: string | null; command: string; until: WatchUntil; intervalSec: number; timeoutMin: number }): Promise<WorkspaceWatchRow | WatchRefusal> {
+    const r = await store.create({
       workspaceId: v.workspaceId, workstreamId: v.workstreamId, conversationId: v.conversationId, command: v.command, until: v.until,
-      intervalSec: v.intervalSec, deadlineAt: new Date(now() + v.timeoutMin * 60_000)
-    })
-    schedule(row.id, 0) // first poll at once: a condition that already holds fires immediately
-    return row
+      intervalSec: v.intervalSec, timeoutMs: Math.round(v.timeoutMin * 60_000)
+    }, deps.caps ?? WATCH_CAPS, new Date(now()))
+    if ('refused' in r) return r
+    schedule(r.id, 0) // first poll at once: a condition that already holds fires immediately
+    return r
   }
 
   /** Worker boot: re-arm every armed watch (an overdue one polls — and times out — at once) and
