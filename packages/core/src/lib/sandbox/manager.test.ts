@@ -274,7 +274,7 @@ describe('exec', () => {
     store.setTainted = async (id, t) => { order.push(`tainted=${t}`); return origSet(id, t) }
     const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
     const pending = m.exec(WS, 'sleep 100 && echo evil > f')
-    await new Promise(r => setTimeout(r, 30))
+    for (let i = 0; i < 200 && !release; i++) await new Promise(r => setTimeout(r, 2))
     const row = await m.reenableNetwork(WS)
     expect(row.tainted).toBe(false)
     const r = await pending
@@ -531,8 +531,10 @@ describe('task 2 carry-overs', () => {
     const store = memStore([{ id: WS, tainted: true }])
     const orig = d.run
     const order: string[] = []
+    let runStarted = false
     const run: typeof d.run = async (args, o) => {
       if (args[0] === 'run' && args.includes('mymind.tainted=1')) {
+        runStarted = true
         const name = args[args.indexOf('--name') + 1]!
         // The daemon is slow: the container exists only 80ms after the CLI started — after the abort's
         // first kill already failed with "No such container".
@@ -552,7 +554,8 @@ describe('task 2 carry-overs', () => {
     store.setTainted = async (id, t) => { order.push(`tainted=${t}`); return origSet(id, t) }
     const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: quiet })
     const pending = m.exec(WS, 'sleep 1; echo evil > f')
-    await new Promise(r => setTimeout(r, 10))
+    // Re-enable while the one-off's `docker run` is in flight (before its container exists).
+    for (let i = 0; i < 200 && !runStarted; i++) await new Promise(r => setTimeout(r, 2))
     const row = await m.reenableNetwork(WS)
     expect(row.tainted).toBe(false)
     await pending
@@ -582,7 +585,7 @@ describe('task 2 carry-overs', () => {
     const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: quiet, ...opts })
     const ac = new AbortController()
     const p = m.exec(WS, ':(){ :|:& };:', { signal: ac.signal })
-    await new Promise(r => setTimeout(r, 20))
+    for (let i = 0; i < 200 && !calls.some(c => c[0] === 'exec' && c.includes('mm-exec')); i++) await new Promise(r => setTimeout(r, 2))
     free = 1024 ** 3
     expect((await m.diskCheck()).entered).toBe(true)
     ac.abort()
