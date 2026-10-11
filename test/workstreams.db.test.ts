@@ -556,9 +556,14 @@ describe('fix round 1', () => {
   it('I2: at the cap a new workstream is refused with a clear error; a headless proposal replays into a real start', async () => {
     const open = (await useDb().select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, ['queued', 'running', 'attention']))).length
     const { ws } = await newWorkstream('cap-1')
-    await expect(startWorkstream({ goal: 'T5 cap-2' }, { kick: false, cap: open + 1 })).rejects.toThrow(WorkstreamCapError)
-    await expect(startWorkstream({ goal: 'T5 cap-2' }, { kick: false, cap: open + 1 })).rejects.toThrow(/already \d+ workstreams in progress.*T5 cap-1/)
-    expect((await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 cap-2')))).toHaveLength(0)
+    const refused = await startWorkstream({ goal: 'T5 cap-2' }, { kick: false, cap: open + 1 }).catch((e: unknown) => e)
+    const leaked0 = await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 cap-2'))
+    convIds.push(...leaked0.map(l => l.conversationId))
+    expect(refused).toBeInstanceOf(WorkstreamCapError)
+    expect((refused as Error).message).toMatch(/already \d+ workstreams in progress.*T5 cap-1/)
+    const leaked = await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 cap-2'))
+    convIds.push(...leaked.map(l => l.conversationId)) // a regression must not leave rows behind
+    expect(leaked).toHaveLength(0)
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
     // Approving the /review proposal runs the stored call (start_workstream is profile-only).
     const out = await replayAgentAction({ tool: 'start_workstream', args: { goal: 'T5 replayed' } })
