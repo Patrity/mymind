@@ -149,6 +149,17 @@ describe('ws runtime socket', () => {
     expect(sub.mock.calls[0]![2]).toEqual({ replay: true })
   })
 
+  it('a reconnect attach resumes past the client\'s last seq; run frames carry run + seq for the next one', async () => {
+    const p = peer(); h.open(p)
+    const run = '0b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b'
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'attach', after: { [run]: 12 } }))
+    expect(m.subscribe.mock.calls[0]![2]).toEqual({ replay: true, after: { [run]: 12 } })
+    const sink = m.subscribe.mock.calls[0]![1] as RelaySink
+    sink.deliver({ type: 'persisted', conversationId: 'c1' }, { runId: run, seq: 13 })
+    expect(types(p)).toEqual([{ cid: 'c1', run, seq: 13, type: 'persisted', conversationId: 'c1' }])
+  })
+
   it('bus frames reach the peer tagged with their thread; a bus approval arrives in the card\'s shape only', async () => {
     const p = peer(); h.open(p)
     await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
@@ -157,8 +168,8 @@ describe('ws runtime socket', () => {
     sink.deliver({ type: 'state', state: 'thinking' }, { runId: 'r1', seq: 1 })
     sink.deliver({ type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?', logSummary: 'secret-free', callId: 'k1', args: { a: 1 } } as HubFrame, { runId: 'r1', seq: 2 })
     expect(types(p)).toEqual([
-      { cid: 'c1', type: 'state', state: 'thinking' },
-      { cid: 'c1', type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?' }
+      { cid: 'c1', run: 'r1', seq: 1, type: 'state', state: 'thinking' },
+      { cid: 'c1', run: 'r1', seq: 2, type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?' }
     ])
   })
 

@@ -96,6 +96,20 @@ describe('createClientTurns', () => {
     expect(h.messages.find(m => m.id === 'a1')!.metadata?.errorText).toBe('Connection lost')
   })
 
+  // Cycle 81: the web restarted mid-turn; the run kept going in the worker. The auto-reconnect
+  // keeps the turn OPEN and the server resumes it past the last seq rendered.
+  it('reattach() keeps the open turn: the resumed frames continue the SAME message, no Connection lost', async () => {
+    const h = harness()
+    h.begin(7, 'a1'); h.say(7, 'a1', 'Hello ')
+    expect(h.turns.reattach()).toBe(true)
+    h.say(7, 'a1', 'again'); h.end(7, 'a1')
+    await h.turns.settled()
+    const m = h.messages.find(x => x.id === 'a1')!
+    expect(h.textOf('a1')).toBe('Hello again')
+    expect(m.metadata?.errorText).toBeUndefined()
+    expect(h.turns.shouldAttach('c1')).toBe(true) // the new socket must attach
+  })
+
   it('reset() restarts turn numbering for a new socket', async () => {
     const h = harness()
     h.user(3, 'u3', 'before reconnect')

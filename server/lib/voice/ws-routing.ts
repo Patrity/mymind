@@ -5,7 +5,7 @@ import type { AttachmentRef } from '@mymind/core/lib/agent/attachments'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type WsAction =
-  | { kind: 'abort' } | { kind: 'attach' } | { kind: 'new' } | { kind: 'clear' } | { kind: 'ignore' }
+  | { kind: 'abort' } | { kind: 'attach'; after?: Record<string, number> } | { kind: 'new' } | { kind: 'clear' } | { kind: 'ignore' }
   | { kind: 'load'; conversationId: string }
   | { kind: 'text'; text: string; speak: boolean; skill?: string; attachments: AttachmentRef[]; conversationId?: string }
   | { kind: 'preset'; presetId: string | null }
@@ -13,10 +13,25 @@ export type WsAction =
   | { kind: 'approve'; requestId: string; remember: boolean; pattern?: string }
   | { kind: 'deny'; requestId: string }
 
+const MAX_RESUME_RUNS = 20
+function parseAfter(v: unknown): Record<string, number> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const out: Record<string, number> = {}
+  for (const [runId, seq] of Object.entries(v as Record<string, unknown>).slice(0, MAX_RESUME_RUNS)) {
+    if (UUID.test(runId) && typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0) out[runId] = seq
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 export function routeFrame(msg: Record<string, unknown>): WsAction {
   switch (msg.type) {
     case 'interrupt': return { kind: 'abort' }
-    case 'attach': return { kind: 'attach' }
+    case 'attach': {
+      // Cycle 81: a client reconnecting after the web restarted names the last seq it rendered per
+      // run of this thread, so the replay resumes just past it. Only well-formed entries count.
+      const after = parseAfter(msg.after)
+      return after ? { kind: 'attach', after } : { kind: 'attach' }
+    }
     case 'new': return { kind: 'new' }
     case 'clear': return { kind: 'clear' }
     case 'load': return typeof msg.conversationId === 'string' && msg.conversationId ? { kind: 'load', conversationId: msg.conversationId } : { kind: 'ignore' }

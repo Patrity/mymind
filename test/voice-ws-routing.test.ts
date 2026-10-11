@@ -6,6 +6,9 @@ describe('routeFrame', () => {
     [{ type: 'interrupt' }, { kind: 'abort' }],
     [{ type: 'load', conversationId: 'c1' }, { kind: 'load', conversationId: 'c1' }],
     [{ type: 'attach' }, { kind: 'attach' }],
+    // Cycle 81 reconnect resume: only uuid run ids with non-negative integer seqs survive.
+    [{ type: 'attach', after: { '0b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b': 7, 'nope': 3, '1b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b': -1 } }, { kind: 'attach', after: { '0b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b': 7 } }],
+    [{ type: 'attach', after: 'x' }, { kind: 'attach' }],
     [{ type: 'new' }, { kind: 'new' }],
     [{ type: 'clear' }, { kind: 'clear' }],
     [{ type: 'text', text: '  hi  ', speak: true, skill: 'db-maintenance' }, { kind: 'text', text: 'hi', speak: true, skill: 'db-maintenance', attachments: [] }],

@@ -5,6 +5,7 @@ import { RunEventRelay, type RelayDeps, type RelaySink } from './relay'
 import type { HubFrame } from './events'
 
 interface Row { id: number; runId: string; conversationId: string; seq: number; payload: unknown; onlySink: string | null }
+type Deps = RelayDeps
 
 function fakeLog() {
   const rows: Row[] = []
@@ -164,6 +165,49 @@ describe('RunEventRelay', () => {
     log.append('c1', 'r1', d('y'))
     await flush(relay, 'c1')
     expect(a.texts()).toEqual(['x'])
+    relay.close()
+  })
+  it('a reconnecting client resumes each named run just past its last seq — even a run that finished meanwhile', async () => {
+    const log = fakeLog()
+    log.running.add('r2')
+    for (const t of ['a', 'b', 'c', 'finish']) log.append('c1', 'r1', d(t)) // r1 finished during the outage
+    for (const t of ['x', 'y', 'z']) log.append('c1', 'r2', d(t))
+    log.append('c2', 'r9', d('other-thread'))
+    const relay = new RunEventRelay(log.deps)
+    const s = sink('reconnected')
+    relay.subscribe('c1', s, { after: { r1: 2, r2: 1, r9: 0 } })
+    await flush(relay, 'c1')
+    expect(s.texts()).toEqual(['c', 'finish', 'y', 'z']) // never another thread's run (r9)
+    relay.close()
+  })
+
+  it('a failed cursor read at subscribe is retried by the next pump (review M2)', async () => {
+    const log = fakeLog()
+    let fail = true
+    const deps: Deps = { ...log.deps, maxId: async (cid) => { if (fail) { fail = false; throw new Error('db blip') } return log.deps.maxId(cid) } }
+    const err = console.error
+    console.error = () => {}
+    const relay = new RunEventRelay(deps)
+    const a = sink('a')
+    relay.subscribe('c1', a)
+    await flush(relay, 'c1')
+    console.error = err
+    log.append('c1', 'r1', d('after-the-blip'))
+    await flush(relay, 'c1')
+    expect(a.texts()).toEqual(['after-the-blip'])
+    relay.close()
+  })
+
+  it('a just-subscribed thread is polled, so its FIRST lost notify is still read (review M3)', async () => {
+    const log = fakeLog()
+    const relay = new RunEventRelay({ ...log.deps, pollMs: 20 })
+    const a = sink('a')
+    relay.subscribe('c1', a)
+    await flush(relay, 'c1')
+    log.append('c1', 'r1', d('first-and-lost'), null, { silent: true })
+    await new Promise(r => setTimeout(r, 80))
+    await flush(relay, 'c1')
+    expect(a.texts()).toEqual(['first-and-lost'])
     relay.close()
   })
 })

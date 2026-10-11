@@ -49,6 +49,8 @@ import { capArgs, ARGS_WRITE_CAP } from '@mymind/core/lib/agent/tool-history'
 //   synchronous step — so no live chunk can arrive before the replay and then be duplicated by
 //   it. The client sends this after it has committed the thread's persisted transcript; a
 //   socket that never attaches receives no live frames for a loaded thread until it sends text) |
+//   {type:'attach',after:{[runId]:seq}} (a RECONNECT: resume each named run just past the last seq
+//   the client rendered, even if it has finished since — cycle 81) |
 //   {type:'new'} (stop viewing; the next text starts a new thread. Does NOT abort) |
 //   {type:'clear'} (forget this conversation's transcript — writes an epoch, deletes
 //   nothing; a no-op if there is no conversation yet; aborts the thread's running turn and
@@ -59,6 +61,8 @@ import { capArgs, ARGS_WRITE_CAP } from '@mymind/core/lib/agent/tool-history'
 //   text JSON = {type:'audio-begin',turnId,segmentId,sampleRate} / {type:'audio-end',segmentId}
 //   (bracket each spoken segment; originating socket only) | {type:'state',state} |
 //   {type:'chunk',turnId,chunk} (an AI SDK UIMessageChunk for the turn's assistant message) |
+//   every frame of a RUN (chunk/user-message/state/conversation/persisted/error from the bus) also
+//   carries `run` + `seq` — what the client hands back in `attach.after` on a reconnect |
 //   {type:'user-message',turnId,message} (the turn's user message, once, before its chunks) |
 //   {type:'steered',text,cid} (this socket's text was spliced into the running turn, not queued;
 //   `cid` names the thread and the client's cid guard gates it; for a voice utterance it is
@@ -131,13 +135,13 @@ function select(s: ConnState, conversationId: string | null) {
  *  frame twice. Frames go out through a `withCid`-wrapped sink (tags every chunk/user-message/
  *  audio-begin frame with `conversationId`) — belt and braces for the client's own turn-id
  *  tracking; see stream.ts's `withCid` doc comment. */
-function view(s: ConnState, conversationId: string | null) {
+function view(s: ConnState, conversationId: string | null, after?: Record<string, number>) {
   select(s, conversationId)
   if (conversationId) {
     s.unsubscribe = runEventRelay().subscribe(conversationId, {
       id: s.sink.id,
       deliver: (frame, meta) => s.tts.frame(conversationId, frame, meta)
-    }, { replay: true })
+    }, { replay: true, after })
   }
 }
 
@@ -158,7 +162,10 @@ export default defineWebSocketHandler({
       viewSeq: 0, stopSeq: 0, submitLock: Promise.resolve(), lastRun: null,
       runs: new Set(), pendingApprovals: new Map(),
       tts: createSocketTts({
-        send: (conversationId, frame) => withCid(conversationId, sink).send(JSON.stringify(toClient(frame as HubFrame))),
+        // Run frames carry `run`/`seq` (cycle 81): a client that reconnects — after a web restart,
+        // a deploy — sends them back in `attach.after` and resumes just past what it rendered.
+        send: (conversationId, frame, meta) => withCid(conversationId, sink).send(JSON.stringify(
+          meta ? { run: meta.runId, seq: meta.seq, ...toClient(frame as HubFrame) } : toClient(frame as HubFrame))),
         sendBinary: bytes => sink.send(bytes),
         resolveVoice: presetId => resolveTurnVoice(presetId, true),
         synthesize: (text, o) => speakWithPreset(text, o.preset, 'agent', o.signal, o.refAudio ?? null)
@@ -235,7 +242,7 @@ export default defineWebSocketHandler({
             s.lastRun = { id: r.runId, conversationId: r.conversationId }
             // Spoken: this socket synthesizes the run's text as it streams in (spec §4). Registered
             // before this continuation yields, so it precedes the run's first frame.
-            if (o.speak) s.tts.expect(r.runId, { presetId: s.presetId })
+            if (o.speak) s.tts.expect(r.runId, { presetId: s.presetId, conversationId: r.conversationId })
             // Stop landed while the enqueue was in flight (and the socket is still on this
             // thread): the run just created is what Stop meant. abortRun's preAborted path
             // covers a run that has not started yet.
@@ -309,7 +316,7 @@ export default defineWebSocketHandler({
       // committed the persisted transcript) subscribes + replays atomically, so a live chunk can
       // never arrive before the replay and then be duplicated by it.
       case 'load': select(s, a.conversationId); return
-      case 'attach': if (s.conversationId) view(s, s.conversationId); return
+      case 'attach': if (s.conversationId) view(s, s.conversationId, a.after); return
       case 'new': select(s, null); return
       case 'text': await submit(a.text, { speak: a.speak, skill: a.skill, attachments: a.attachments, modality: 'text', conversationId: a.conversationId }); return
       // Approve/deny resolve a pending approval IMMEDIATELY (like interrupt), so the awaiting

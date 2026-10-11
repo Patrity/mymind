@@ -23,4 +23,14 @@ describe('framesOnOpen', () => {
     expect(framesOnOpen({ presetId: '', modelDefId: null, conversationId: 'c1', shouldAttach: () => false }))
       .toEqual([{ type: 'preset', presetId: '' }, { type: 'load', conversationId: 'c1' }])
   })
+
+  it('an auto-reconnect attaches with the last seq rendered per run (cycle 81)', () => {
+    expect(framesOnOpen({ presetId: '', modelDefId: null, conversationId: 'c1', shouldAttach: () => true, resume: { conversationId: 'c1', after: { r1: 7 } } }))
+      .toEqual([{ type: 'preset', presetId: '' }, { type: 'load', conversationId: 'c1' }, { type: 'attach', after: { r1: 7 } }])
+  })
+
+  it('a new thread whose id has not landed resumes the thread its turn named', () => {
+    expect(framesOnOpen({ presetId: '', modelDefId: null, conversationId: null, shouldAttach: () => true, resume: { conversationId: 'c9', after: { r1: 2 } } }))
+      .toEqual([{ type: 'preset', presetId: '' }, { type: 'load', conversationId: 'c9' }, { type: 'attach', after: { r1: 2 } }])
+  })
 })

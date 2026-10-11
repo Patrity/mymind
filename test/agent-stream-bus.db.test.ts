@@ -6,8 +6,9 @@
 //
 // Shared dev DB: everything runs in its own bus namespace (setBusNs + the child's MYMIND_BUS_NS), and
 // every conversation/run/message row is created here and deleted in afterAll (run_events cascade
-// with their conversation). The worker run is claimed by THIS process before the child starts, so no
-// other runtime on the database can pick it up; the child only executes it.
+// with their conversation). Each run is INSERTED already 'running' and owned by this process (review
+// M6): run claiming is not bus-namespace scoped, so a queued row could be claimed by a dev worker on the
+// same database — a row that is never 'queued' cannot. The child only executes it.
 process.loadEnvFile('.env')
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
@@ -17,10 +18,10 @@ import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
-import { inArray } from 'drizzle-orm'
+import { inArray, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { agentRuns, conversationMessages, conversations, runEvents } from '@mymind/core/db/schema'
-import { createRun, claimNextRun } from '@mymind/core/lib/agent/runtime/runs'
+import { BOOT_ID } from '@mymind/core/lib/agent/runtime/runs'
 import { resolveSession } from '@mymind/core/lib/agent/runtime/sessions'
 import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { StreamHub } from '@mymind/core/lib/agent/runtime/stream'
@@ -65,8 +66,11 @@ async function until<T>(fn: () => T | Promise<T>, ms = 20_000, step = 25): Promi
 async function claimedRun(_label: string) {
   const s = await resolveSession('thread:new', { titleHint: 'RUNSTREAM-TEST' })
   convIds.push(s.conversationId)
-  await createRun({ conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'user', profile: 'interactive', input: { text: 'what is open?', modality: 'text' } })
-  const run = await claimNextRun({ onlyConversations: [s.conversationId] })
+  const [run] = await useDb().insert(agentRuns).values({
+    conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'user', profile: 'interactive',
+    input: { text: 'what is open?', modality: 'text' },
+    status: 'running', owner: BOOT_ID, claimedAt: sql`now()`, aliveAt: sql`now()`
+  }).returning()
   return { run: run!, conversationId: s.conversationId }
 }
 

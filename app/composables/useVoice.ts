@@ -1,5 +1,6 @@
 // app/composables/useVoice.ts
-import { createLeftThreads, mapServerMessage, queuedEchoIndex, QUEUED_ID_PREFIX } from '../lib/voice/messages'
+import { createLeftThreads, isForeignFrame, mapServerMessage, queuedEchoIndex, QUEUED_ID_PREFIX } from '../lib/voice/messages'
+import { createResumeTracker } from '../lib/voice/resume'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
 import { framesOnOpen } from '../lib/voice/reconnect'
 import { createClientTurns } from '../lib/agent/turn-stream'
@@ -283,6 +284,28 @@ export function useVoice() {
   // connect() never races the handshake.
   let connecting: Promise<void> | null = null
 
+  // Cycle 81: runs live in the agent worker, so when THIS socket drops (a web restart, a deploy)
+  // the turn on screen keeps going server-side. Reconnect on our own with backoff and resume it
+  // just past the last frame rendered (lib/voice/resume.ts → `attach.after`) — no "Connection
+  // lost", no reload. `dropped` marks the next open as such a resume; disconnect() (a deliberate
+  // teardown) clears it and cancels the retry.
+  const resume = createResumeTracker()
+  let dropped = false
+  let reconnectAttempt = 0
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  const RECONNECT_MAX_MS = 8_000
+  function scheduleReconnect(mySession: number) {
+    if (reconnectTimer || mySession !== session) return
+    const delay = Math.min(500 * 2 ** reconnectAttempt++, RECONNECT_MAX_MS)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (mySession !== session || connected.value || connecting) return
+      connecting = connectInner(mySession)
+        .catch(() => { if (mySession === session) scheduleReconnect(mySession) })
+        .finally(() => { connecting = null })
+    }, delay)
+  }
+
   async function connect() {
     if (connected.value) return
     if (connecting) return connecting
@@ -301,12 +324,15 @@ export function useVoice() {
   }
 
   async function connectInner(mySession: number) {
-    audioCtx = new AudioContext()
-    outAnalyser = audioCtx.createAnalyser()
-    outAnalyser.fftSize = 256
-    outAnalyser.connect(audioCtx.destination)
-    micAnalyser = audioCtx.createAnalyser()
-    micAnalyser.fftSize = 256
+    // A reconnect keeps the session's AudioContext (the VAD and playback hang off it).
+    if (!audioCtx) {
+      audioCtx = new AudioContext()
+      outAnalyser = audioCtx.createAnalyser()
+      outAnalyser.fftSize = 256
+      outAnalyser.connect(audioCtx.destination)
+      micAnalyser = audioCtx.createAnalyser()
+      micAnalyser.fftSize = 256
+    }
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     const socket = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
@@ -314,7 +340,19 @@ export function useVoice() {
     ws = socket
     // The server denies every approval this socket was asked when it closes (denyPendingApprovals),
     // so no card from it can be answered any more — drop them all.
-    socket.onclose = () => { connected.value = false; state.value = 'idle'; turns.disconnect(); pendingApprovals.value = {} }
+    socket.onclose = () => {
+      connected.value = false
+      pendingApprovals.value = {}
+      // Still the live socket of a live session: it DROPPED (web restart / deploy / network).
+      // Keep the turn on screen open and reconnect — it resumes where it left off.
+      if (ws === socket && mySession === session) {
+        dropped = true
+        scheduleReconnect(mySession)
+        return
+      }
+      state.value = 'idle'
+      turns.disconnect()
+    }
     socket.onerror = () => { error.value = 'WebSocket error' }
     socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
@@ -323,6 +361,7 @@ export function useVoice() {
       } else {
         const m = JSON.parse(e.data as string)
         left.observe(m, conversationId.value)
+        if (!isForeignFrame(m, conversationId.value, left)) resume.observe(m)
         const fx = mapServerMessage(m, isPlaying(), conversationId.value, left)
         // audio-begin now names its turn: a segment from a superseded turn is rejected
         // outright (closes the barge-in window documented on onAudioBegin).
@@ -378,18 +417,25 @@ export function useVoice() {
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => {
         connected.value = true
-        state.value = 'idle'
+        const resuming = dropped
+        dropped = false
+        reconnectAttempt = 0
+        // A resume keeps the open turn (its frames continue past the last seq rendered); a turn
+        // that ended meanwhile is re-read once the page goes idle.
+        const turnOpen = resuming ? turns.reattach() : false
+        if (!turnOpen) state.value = 'idle'
         // A new socket has no server-side state: re-apply the voice choice ('' is valid and
         // means "the server's default preset" — so is an id the server no longer has), the
         // model override, and — on a reconnect — the thread on screen (load + attach), or the
         // next message would start an invisible new thread (final review C1). reset() FIRST:
         // it forgets `attachedTo`, so the attach below is recorded against the new socket.
-        turns.reset()
+        if (!resuming) turns.reset()
         for (const f of framesOnOpen({
           presetId: desiredPreset ?? settings.value.presetId,
           modelDefId: desiredModel,
           conversationId: conversationId.value,
-          shouldAttach: id => turns.shouldAttach(id)
+          shouldAttach: id => turns.shouldAttach(id),
+          resume: resuming ? resume.point(conversationId.value) : null
         })) socket.send(JSON.stringify(f))
         resolve()
       }
@@ -520,6 +566,9 @@ export function useVoice() {
    *  exposed to callers), this ends the session rather than just the running turn. */
   function disconnect() {
     session++ // invalidate any in-flight startup/restart
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    dropped = false
+    reconnectAttempt = 0
     vad?.destroy()
     stopPlayback()
     ws?.close()
@@ -667,6 +716,7 @@ export function useVoice() {
      */
     resetTurns: () => {
       turns.reset()
+      resume.clear()
       // resume() commits `conversationId` in this same synchronous tick — the plain cid
       // mismatch check covers the thread `new` left from here on.
       left.clear()
@@ -691,6 +741,7 @@ export function useVoice() {
       // including an id-less new thread whose first turn is still running (its id is known
       // only from its frames' cid; see createLeftThreads).
       left.leave(conversationId.value)
+      resume.clear()
       messages.value = []
       contextEpochAt.value = null // same reasoning as loadConversation's reset
       conversationId.value = null

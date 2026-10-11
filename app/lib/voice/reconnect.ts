@@ -17,14 +17,21 @@ export interface OpenFrameInput {
   /** turns.shouldAttach — records the attach so the page's own attach() for the same thread
    *  does not replay the running turn a second time. Call only after turns.reset(). */
   shouldAttach: (conversationId: string) => boolean
+  /** Cycle 81: an AUTO-reconnect after the socket dropped mid-session (web restart / deploy) —
+   *  where to resume (lib/voice/resume.ts). Its thread wins when nothing is viewed yet (a new
+   *  thread whose first turn is still running), and `after` rides on the attach so the server
+   *  replays each run just past what was rendered. */
+  resume?: { conversationId: string; after: Record<string, number> } | null
 }
 
 export function framesOnOpen(i: OpenFrameInput): Record<string, unknown>[] {
   const frames: Record<string, unknown>[] = [{ type: 'preset', presetId: i.presetId }]
   if (i.modelDefId) frames.push({ type: 'model', modelDefId: i.modelDefId })
-  if (i.conversationId) {
-    frames.push({ type: 'load', conversationId: i.conversationId })
-    if (i.shouldAttach(i.conversationId)) frames.push({ type: 'attach' })
+  const id = i.conversationId ?? i.resume?.conversationId ?? null
+  if (id) {
+    frames.push({ type: 'load', conversationId: id })
+    const after = i.resume?.conversationId === id && Object.keys(i.resume.after).length ? i.resume.after : null
+    if (i.shouldAttach(id)) frames.push(after ? { type: 'attach', after } : { type: 'attach' })
   }
   return frames
 }

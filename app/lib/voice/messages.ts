@@ -2,7 +2,7 @@
 // useVoice so the logic is testable without WebSocket/AudioContext mocks.
 import type { AgentMessageFrame } from '@mymind/core/shared/types/agent-ui'
 
-export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; allowlistable?: boolean; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string }
+export interface ServerMsg { type: string; role?: 'user' | 'assistant'; text?: string; state?: string; message?: string; requestId?: string; tool?: string; command?: string; proposedPattern?: string; allowlistable?: boolean; name?: string; summary?: string; undoToken?: string; conversationId?: string; title?: string | null; inputTokens?: number; outputTokens?: number; totalTokens?: number; segmentId?: number; sampleRate?: number; turnId?: number; epochAt?: string | null; cid?: string; run?: string; seq?: number }
 
 // Frame types that belong to ONE conversation and must not be applied while viewing a
 // different one. Every hub-published JSON frame carries `cid` (server/lib/agent/runtime/
@@ -40,7 +40,7 @@ export interface LeftView {
  *   (reset() on `new` has cleared the turn-id layer's `discarded` set and zeroed `current`,
  *   so nothing below this guard would catch them.)
  */
-function isForeignFrame(m: ServerMsg, viewed: string | null, left: LeftView): boolean {
+export function isForeignFrame(m: ServerMsg, viewed: string | null, left: LeftView): boolean {
   if (m.cid === undefined || !CONVERSATION_SCOPED.has(m.type)) return false
   if (viewed !== null) return m.cid !== viewed
   return !left.submitted || left.ids.has(m.cid)

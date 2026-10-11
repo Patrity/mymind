@@ -9,7 +9,10 @@
 //     subscriber arrives: a subscriber gets live frames from then on, never history.
 //   - Late join (`replay`): the conversation's RUNNING runs are re-read from seq 1 for that one
 //     subscriber — a reload, a second tab, or a socket reconnecting to a NEW web process after a
-//     deploy all see the turn so far, then live frames. Each subscriber remembers the highest seq it
+//     deploy all see the turn so far, then live frames. A reconnecting client that already rendered
+//     part of a run passes `after: { runId: lastSeq }` — those runs are replayed from just past that
+//     seq, WHETHER OR NOT they are still running (a run that finished during the outage sends its
+//     tail: the finish chunks and `persisted`, which arms the page's re-read). Each subscriber remembers the highest seq it
 //     was given per run, so the replay and the live reader overlapping never duplicates a frame.
 //   - Missed notifies: every listener (re)connect re-pumps every conversation, and a poll re-pumps
 //     the ones with recent activity every `pollMs` (default 2s).
@@ -29,7 +32,7 @@ export interface RelaySink {
   deliver(frame: HubFrame, meta: { runId: string; seq: number }): void
 }
 
-type Row = Pick<RunEventRow, 'id' | 'runId' | 'seq' | 'payload' | 'onlySink'>
+type Row = Pick<RunEventRow, 'id' | 'runId' | 'conversationId' | 'seq' | 'payload' | 'onlySink'>
 
 export interface RelayDeps {
   maxId(conversationId: string): Promise<number>
@@ -92,7 +95,7 @@ export class RunEventRelay {
 
   /** Subscribe `sink` to a conversation's live frames; `replay` first re-sends its running runs
    *  from seq 1. Returns the unsubscribe. Synchronous: delivery starts once the reads land. */
-  subscribe(conversationId: string, sink: RelaySink, opts: { replay?: boolean } = {}): () => void {
+  subscribe(conversationId: string, sink: RelaySink, opts: { replay?: boolean; after?: Record<string, number> } = {}): () => void {
     this.start()
     let c = this.convs.get(conversationId)
     if (!c) {
@@ -104,11 +107,16 @@ export class RunEventRelay {
       c = conv
     }
     const conv = c
-    const sub: Sub = { sink, seen: new Map(), pending: opts.replay ? [] : null }
+    // A new subscriber is about to see a turn: poll it for the window even if its first notify is
+    // lost (review M3).
+    conv.activeUntil = Date.now() + this.activeWindowMs
+    const after = new Map(Object.entries(opts.after ?? {}).filter(([, n]) => Number.isSafeInteger(n) && n >= 0))
+    const replay = opts.replay || after.size > 0
+    const sub: Sub = { sink, seen: new Map(after), pending: replay ? [] : null }
     conv.subs.set(sink.id, sub)
     // A pump already queued (an earlier notify) may run before the replay: its rows wait in
     // `pending`, or they would mark seqs as seen and the replay would skip the turn's start.
-    if (opts.replay) this.enqueue(conv, () => this.replay(conv, sub).finally(() => this.unpend(sub)))
+    if (replay) this.enqueue(conv, () => this.replay(conv, sub, [...after.keys()]).finally(() => this.unpend(sub)))
     this.pump(conv)
     return () => {
       if (conv.subs.get(sink.id) === sub) conv.subs.delete(sink.id)
@@ -163,7 +171,10 @@ export class RunEventRelay {
     c.pumpQueued = true
     this.enqueue(c, async () => {
       c.pumpQueued = false
-      if (!c.reader) return
+      // The cursor's first read failed (a DB blip at subscribe): retry it here, or the thread would
+      // stay silent until everyone left (review M2). Rows committed before this retry and not in a
+      // running run are missed — the same window as subscribing a moment later.
+      if (!c.reader) c.reader = this.deps.reader(c.id, await this.deps.maxId(c.id))
       for (;;) {
         const rows = await c.reader.next(PAGE)
         if (rows.length) c.activeUntil = Date.now() + this.activeWindowMs
@@ -173,14 +184,15 @@ export class RunEventRelay {
     })
   }
 
-  private async replay(c: Conv, sub: Sub) {
-    const runs = await this.deps.activeRuns(c.id)
+  private async replay(c: Conv, sub: Sub, resumed: string[] = []) {
+    const runs = [...new Set([...resumed, ...await this.deps.activeRuns(c.id)])]
     if (runs.length) c.activeUntil = Date.now() + this.activeWindowMs
     for (const runId of runs) {
-      let after = 0
+      let after = sub.seen.get(runId) ?? 0
       for (;;) {
         const rows = await this.deps.readRun(runId, after, PAGE)
-        for (const r of rows) { this.deliver(c, r, sub); after = Math.max(after, r.seq) }
+        // A client-supplied run id must not read another thread's log.
+        for (const r of rows) { if (r.conversationId === c.id) this.deliver(c, r, sub); after = Math.max(after, r.seq) }
         if (rows.length < PAGE) break
       }
     }

@@ -34,6 +34,11 @@ export interface ClientTurns {
   discard(): void
   disconnect(): void
   reset(): void
+  /** Cycle 81: the socket dropped and auto-reconnected (web restart / deploy) while the run kept
+   *  going in the agent worker. Unlike reset(), the turn on screen stays OPEN and keeps its id — the
+   *  server resumes it just past the last frame rendered. Only the attach record is forgotten (the
+   *  new socket must attach). Returns whether a turn is open. */
+  reattach(): boolean
   settled(): Promise<void>
   /**
    * Whether `attach()` should actually (re)subscribe for `conversationId` — true the first
@@ -212,6 +217,10 @@ export function createClientTurns(o: { upsert: (m: AgentUIMessage) => void }): C
       // whatever this socket was subscribed to no longer holds: the next attach() for ANY
       // conversationId, including one it already approved before, must be allowed to fire.
       attachedTo = null
+    },
+    reattach() {
+      attachedTo = null
+      return active !== null
     },
     settled: () => lastDone,
     shouldAttach(conversationId) {

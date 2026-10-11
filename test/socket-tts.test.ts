@@ -51,7 +51,7 @@ function workerTurn(): HubFrame[] {
 describe('socket TTS (web-side speech for the originating socket)', () => {
   it('speaks a sentence once its deltas complete — only for the run this socket originated with speak', async () => {
     const h = harness()
-    h.tts.expect('run-1', { presetId: 'p1' })
+    h.tts.expect('run-1', { presetId: 'p1', conversationId: 'c1' })
     h.tts.frame('c1', user(), { runId: 'run-1' })
     h.tts.frame('c1', delta('You have '), { runId: 'run-1' })
     await settle()
@@ -69,7 +69,7 @@ describe('socket TTS (web-side speech for the originating socket)', () => {
 
   it('reproduces the old origin-socket order: no typing, speaking + audio, then idle and everything after', async () => {
     const h = harness()
-    h.tts.expect('run-1', { presetId: null })
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
     for (const f of workerTurn()) h.tts.frame('c1', f, { runId: 'run-1' })
     await settle()
     expect(h.types()).toEqual([
@@ -95,7 +95,7 @@ describe('socket TTS (web-side speech for the originating socket)', () => {
   it('holds idle (and the next run\'s frames) until the audio has played out of the pipeline', async () => {
     let open!: () => void
     const h = harness({ gate: new Promise<void>((r) => { open = r }) })
-    h.tts.expect('run-1', { presetId: null })
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
     for (const f of workerTurn()) h.tts.frame('c1', f, { runId: 'run-1' })
     h.tts.frame('c1', { type: 'user-message', turnId: T + 1, message: { id: 'u2', role: 'user', parts: [] } } as HubFrame, { runId: 'run-2' })
     await settle()
@@ -111,7 +111,7 @@ describe('socket TTS (web-side speech for the originating socket)', () => {
   it('barge-in (abort) stops the synthesis at once and releases the held frames', async () => {
     let open!: () => void
     const h = harness({ gate: new Promise<void>((r) => { open = r }) })
-    h.tts.expect('run-1', { presetId: null })
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
     for (const f of workerTurn()) h.tts.frame('c1', f, { runId: 'run-1' })
     await settle()
     expect(h.types()).not.toContain('state:idle')
@@ -125,8 +125,8 @@ describe('socket TTS (web-side speech for the originating socket)', () => {
 
   it('leaving the thread (abort for that conversation) silences only that thread', async () => {
     const h = harness()
-    h.tts.expect('run-1', { presetId: null })
-    h.tts.expect('run-2', { presetId: null })
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
+    h.tts.expect('run-2', { presetId: null, conversationId: 'c2' })
     h.tts.frame('c1', user(), { runId: 'run-1' })
     h.tts.frame('c2', user(), { runId: 'run-2' })
     h.tts.abort('c1')
@@ -138,7 +138,7 @@ describe('socket TTS (web-side speech for the originating socket)', () => {
 
   it('never speaks reasoning, and an error frame ends the speech', async () => {
     const h = harness()
-    h.tts.expect('run-1', { presetId: null })
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
     h.tts.frame('c1', user(), { runId: 'run-1' })
     h.tts.frame('c1', chunk({ type: 'reasoning-delta', id: 'r0', delta: 'Thinking hard about it. ' }), { runId: 'run-1' })
     h.tts.frame('c1', delta('Said aloud. '), { runId: 'run-1' })
@@ -153,5 +153,49 @@ describe('socket TTS (web-side speech for the originating socket)', () => {
     await settle()
     expect(h.spoken).toEqual(['Said aloud.'])
     expect(h.types().slice(-2)).toEqual(['error', 'state:idle'])
+  })
+  it('Stop before the spoken run\'s first frame arrives: it is never spoken (review I1)', async () => {
+    const h = harness()
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
+    h.tts.abort()
+    h.tts.frame('c1', user(), { runId: 'run-1' })
+    h.tts.frame('c1', delta('You have two tasks. '), { runId: 'run-1' })
+    await settle()
+    expect(h.synthesize).not.toHaveBeenCalled()
+    // Leaving the thread drops that thread's pending expectation too, and only that one.
+    h.tts.expect('run-2', { presetId: null, conversationId: 'c1' })
+    h.tts.expect('run-3', { presetId: null, conversationId: 'c2' })
+    h.tts.abort('c1')
+    h.tts.frame('c1', delta('Left thread sentence here. '), { runId: 'run-2' })
+    h.tts.frame('c2', delta('Other thread sentence. '), { runId: 'run-3' })
+    await settle()
+    expect(h.spoken).toEqual(['Other thread sentence.'])
+  })
+
+  it('a replay of frames already handled (re-viewing the thread) is forwarded but never spoken twice (review M1)', async () => {
+    const h = harness()
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
+    h.tts.frame('c1', user(), { runId: 'run-1', seq: 1 })
+    h.tts.frame('c1', delta('You have two tasks. '), { runId: 'run-1', seq: 2 })
+    await settle()
+    h.tts.frame('c1', user(), { runId: 'run-1', seq: 1 })
+    h.tts.frame('c1', delta('You have two tasks. '), { runId: 'run-1', seq: 2 })
+    h.tts.frame('c1', delta('And one more thing. '), { runId: 'run-1', seq: 3 })
+    await settle()
+    expect(h.spoken).toEqual(['You have two tasks.', 'And one more thing.'])
+    expect(h.types().filter(t => t === 'chunk:text-delta')).toHaveLength(3) // still forwarded
+  })
+
+  it('approval frames go out at once even while frames are held behind audio (review M5)', async () => {
+    let open!: () => void
+    const h = harness({ gate: new Promise<void>((r) => { open = r }) })
+    h.tts.expect('run-1', { presetId: null, conversationId: 'c1' })
+    for (const f of workerTurn()) h.tts.frame('c1', f, { runId: 'run-1' })
+    h.tts.frame('c1', { type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls' } as HubFrame, { runId: 'run-2' })
+    await settle()
+    expect(h.types()).not.toContain('persisted')
+    expect(h.types()).toContain('approval')
+    open()
+    await settle()
   })
 })
