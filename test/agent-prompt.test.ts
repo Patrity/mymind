@@ -85,11 +85,15 @@ describe('composePrompt SHELL guidance (cycle 82: workspace by default, exec is 
     expect(shell).toMatch(/^SHELL — your WORKSPACE is a sandboxed Linux container/)
     expect(shell).toMatch(/`workspace` toolset/)
     expect(shell.indexOf('`workspace` toolset')).toBeLessThan(shell.indexOf('`exec` tool'))
-    expect(shell).toMatch(/`admin` toolset, the `exec` tool\): only to operate the MyMind server/)
+    expect(shell).toMatch(/`admin` toolset, the `exec` tool\): only to operate the MyMind server/i)
     expect(shell).toMatch(/approv/i) // the approval requirement
     expect(shell).toMatch(/catastrophic commands are blocked/i)
     // The old "work anywhere as root" default is gone.
     expect(p).not.toContain('you may work anywhere')
+    // Final fix wave: steer hard — workspace bash for any command; host exec only for server ops.
+    expect(shell).toMatch(/Run EVERY command with the workspace `bash`.*Never reach for host `exec` for these\./)
+    expect(shell).toMatch(/`exec` tool\): ONLY to operate the MyMind server itself \(its DB, services, logs\) — nothing else/)
+    expect(shell.indexOf('Run EVERY command')).toBeLessThan(shell.indexOf('HOST ('))
   })
 })
 
