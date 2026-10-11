@@ -11,10 +11,6 @@ const preset: VoicePresetDTO = {
 }
 
 const stt = { transcribe: vi.fn(async () => 'what are my tasks') }
-const tts = { synthesize: vi.fn(async function* () {
-  yield { kind: 'begin' as const, sampleRate: 24000 }
-  yield { kind: 'pcm' as const, bytes: new Uint8Array([9]) }
-}) }
 const runAgent = (async function* () {
   yield { type: 'text-delta', text: 'You have ' }
   yield { type: 'tool-result', name: 'search_tasks', summary: 'listed tasks (2)', undoToken: undefined }
@@ -31,15 +27,16 @@ const runAgentWithTool = (async function* () {
 }) as never
 
 describe('handleUtterance', () => {
-  it('STT -> runAgent -> chunked TTS, emitting transcript/tool/audio events', async () => {
+  // Cycle 81: no TTS in the turn any more (the web's voice socket speaks it — see
+  // test/socket-tts.test.ts and packages/core/src/lib/voice/turn-speaker.test.ts).
+  it('STT -> runAgent, emitting transcript/tool events', async () => {
     const events: any[] = []
     await handleUtterance(new Uint8Array([1]), [], {
-      stt, tts, preset, speak: true, runAgent, signal: new AbortController().signal,
+      stt, speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events.find(e => e.type === 'transcript' && e.role === 'user')?.text).toBe('what are my tasks')
     expect(events.some(e => e.type === 'tool' && e.name === 'search_tasks')).toBe(true)
-    expect(events.some(e => e.type === 'audio')).toBe(true)
     expect(stt.transcribe).toHaveBeenCalledOnce()
   })
 
@@ -52,7 +49,7 @@ describe('handleUtterance', () => {
     const coldStt = { transcribe: vi.fn(async () => 'should never run') }
     const history = [{ role: 'user' as const, content: 'earlier turn' }]
     const out = await handleUtterance(new Uint8Array([1]), history, {
-      stt: coldStt, tts, preset, speak: true, runAgent, signal: ac.signal,
+      stt: coldStt, speak: true, runAgent, signal: ac.signal,
       emit: () => {}
     })
     expect(coldStt.transcribe).not.toHaveBeenCalled()
@@ -62,7 +59,7 @@ describe('handleUtterance', () => {
   it('emits state:tool on tool-start and returns to thinking on tool-result', async () => {
     const events: any[] = []
     await handleUtterance(new Uint8Array([1]), [], {
-      stt, tts, preset, speak: true, runAgent: runAgentWithTool, signal: new AbortController().signal,
+      stt, speak: true, runAgent: runAgentWithTool, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     const states = events.filter(e => e.type === 'state').map(e => e.state)
@@ -80,94 +77,38 @@ describe('handleTurn (typed input, post-STT injection)', () => {
     const freshStt = { transcribe: vi.fn(async () => 'never') }
     void freshStt // typed turns have no stt dep at all — compile-time guarantee
     const history = await handleTurn('what are my tasks', [], {
-      tts, preset, speak: true, runAgent, signal: new AbortController().signal,
+      speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events.find(e => e.type === 'transcript' && e.role === 'user')?.text).toBe('what are my tasks')
     expect(events.filter(e => e.type === 'state').map(e => e.state)).toContain('thinking')
-    expect(events.some(e => e.type === 'audio')).toBe(true)
     expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
-  })
-
-  it('pairs audio-begin/audio-end per segment and stays silent for a segment that was dropped', async () => {
-    // A segment whose synthesis throws before yielding anything must emit NEITHER frame.
-    // SpeechPipeline fires onSegmentEnd unconditionally (it owns segment lifetimes, not
-    // frame semantics), and at that moment `segmentId` still holds the PREVIOUS segment's
-    // value — so without the orchestrator's open-segment guard, a drop closes its
-    // predecessor a SECOND time, naming an id that really did begin. That is a frame
-    // reporting an end that never happened.
-    //
-    // The ordering here is deliberate: drop, speak, drop, speak. A turn whose FIRST
-    // segment drops does NOT discriminate — at that point segmentId is still 0, so a bare
-    // `segmentId > 0` check already suppresses the frame. Only a drop that FOLLOWS a
-    // successful segment exposes the defect, so the run must contain both.
-    const events: { type: string; segmentId?: number }[] = []
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    let call = 0
-    const flakyTts = { synthesize: vi.fn(async function* () {
-      call++
-      if (call % 2 === 1) throw new Error('truncated')          // segments 1 and 3: dropped
-      yield { kind: 'begin' as const, sampleRate: 24000 }        // segments 2 and 4: speak
-      yield { kind: 'pcm' as const, bytes: new Uint8Array([7]) }
-    }) }
-    const runFourSegments = (async function* () {
-      yield { type: 'text-delta', text: 'First sentence here. ' }
-      yield { type: 'text-delta', text: 'Second sentence here. ' }
-      yield { type: 'text-delta', text: 'Third sentence here. ' }
-      yield { type: 'text-delta', text: 'Fourth sentence here. ' }
-      yield { type: 'done' }
-    }) as never
-
-    await handleTurn('hi', [], {
-      tts: flakyTts, preset, speak: true, runAgent: runFourSegments,
-      signal: new AbortController().signal, emit: e => events.push(e)
-    })
-
-    expect(flakyTts.synthesize).toHaveBeenCalledTimes(4)   // all four segments were attempted…
-    const begins = events.filter(e => e.type === 'audio-begin')
-    const ends = events.filter(e => e.type === 'audio-end')
-    expect(begins).toHaveLength(2)                         // …only the two that spoke opened…
-    expect(ends).toHaveLength(2)                           // …and exactly those two closed.
-    expect(ends.map(e => e.segmentId)).toEqual(begins.map(e => e.segmentId))
-    // Strictly alternating, so no audio-end ever precedes its audio-begin and no segment
-    // is closed twice. Drop the orchestrator's open-segment guard and segment 3's drop
-    // inserts a spurious second 'audio-end' for segment 1 right here.
-    expect(events.filter(e => e.type.startsWith('audio-')).map(e => e.type))
-      .toEqual(['audio-begin', 'audio-end', 'audio-begin', 'audio-end'])
-    errSpy.mockRestore()
   })
 
   it('empty text is a no-op', async () => {
     const events: any[] = []
     const history = await handleTurn('', [{ role: 'user', content: 'hi' }], {
-      tts, preset, speak: true, runAgent, signal: new AbortController().signal,
+      speak: true, runAgent, signal: new AbortController().signal,
       emit: e => events.push(e)
     })
     expect(events).toEqual([])
     expect(history).toEqual([{ role: 'user', content: 'hi' }])
   })
 
-  it('emits a reasoning event, keeps it out of TTS and out of the persisted answer', async () => {
+  // (That reasoning is never SPOKEN is now the web voice socket's rule — test/socket-tts.test.ts.)
+  it('emits a reasoning event and keeps it out of the persisted answer', async () => {
     const events: any[] = []
-    const reasoningTts = { synthesize: vi.fn(async function* () {
-      yield { kind: 'begin' as const, sampleRate: 24000 }
-      yield { kind: 'pcm' as const, bytes: new Uint8Array([1]) }
-    }) }
     const runReason = (async function* () {
       yield { type: 'reasoning-delta', text: 'thinking… ' }
       yield { type: 'text-delta', text: 'Final answer.' }
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts: reasoningTts, preset, speak: true, runAgent: runReason,
+      speak: true, runAgent: runReason,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
     // reasoning surfaced as its own event…
     expect(events.some(e => e.type === 'reasoning' && e.text === 'thinking… ')).toBe(true)
-    // …never spoken (TTS only ever saw the answer text)…
-    for (const call of reasoningTts.synthesize.mock.calls) {
-      expect(call[0]).not.toContain('thinking')
-    }
     // …and never merged into the persisted assistant content.
     expect(history.at(-1)).toEqual({ role: 'assistant', content: 'Final answer.' })
   })
@@ -181,7 +122,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, preset, speak: false, runAgent: runTools,
+      speak: false, runAgent: runTools,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
@@ -203,7 +144,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, preset, speak: false, runAgent: runSan,
+      speak: false, runAgent: runSan,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
@@ -221,7 +162,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, preset, speak: false, runAgent: runPlain,
+      speak: false, runAgent: runPlain,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
     expect((history.at(-1) as { toolRecords?: unknown[] }).toolRecords).toBeUndefined()
@@ -235,7 +176,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, preset, speak: false, runAgent: runBig,
+      speak: false, runAgent: runBig,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
@@ -254,7 +195,7 @@ describe('handleTurn (typed input, post-STT injection)', () => {
       yield { type: 'done' }
     }) as never
     const history = await handleTurn('hi', [], {
-      tts, preset, speak: false, runAgent: runWrite,
+      speak: false, runAgent: runWrite,
       signal: new AbortController().signal, emit: e => events.push(e)
     })
 
@@ -264,18 +205,13 @@ describe('handleTurn (typed input, post-STT injection)', () => {
   })
 })
 
-// Voice state must never cost the user their answer. ws.ts resolves the preset and its
-// reference clip INSIDE the turn closure, so anything that throws there propagates to the
-// closure's catch and the user gets {type:'error'} + idle — losing the TEXT answer over a
-// voice lookup. Before this cycle a typed turn with replies off touched no voice state at
-// all; it now can, so every path has to degrade to "no audio", never to "no turn".
-//
-// These drive `resolveTurnVoice` — the exact seam ws.ts imports and calls — and then feed
-// its output to the real handleTurn, mirroring the shipped call site rather than
-// reimplementing it locally. (ws.ts's defineWebSocketHandler needs a real crossws upgrade
-// to exercise directly; same constraint as test/conversation-usage-persist.test.ts.)
+// Voice state must never cost the user their answer — nor, since cycle 81, their audio: the web's
+// voice socket resolves the preset + reference clip when a spoken run's first frame arrives
+// (server/lib/voice/socket-tts.ts → resolveTurnVoice), and the turn itself (in the worker) never
+// touches voice state. These drive `resolveTurnVoice` — the exact seam ws.ts passes to the socket
+// TTS — so every path degrades to "the fallback voice" / "no reference", never to a throw.
 describe('turn voice resolution degrades, never fails the turn', () => {
-  it('survives a dead database: still answers, in the hardcoded fallback voice', async () => {
+  it('survives a dead database: the hardcoded fallback voice', async () => {
     // Plain vitest boots no Nuxt, so `useRuntimeConfig` is undefined and `useDb()` throws.
     // This test therefore runs against a genuinely unreachable database — the real failure
     // mode — with no mocking of the service at all. getDefaultPreset() throws on a missing
@@ -284,18 +220,10 @@ describe('turn voice resolution degrades, never fails the turn', () => {
     const { preset: got, refAudio } = await resolveTurnVoice('a-stale-cookie-id', true)
     expect(got).toEqual(FALLBACK_PRESET)
     expect(refAudio).toBeNull()   // the fallback carries no clip, so no blob read to fail
-
-    const events: any[] = []
-    const history = await handleTurn('hi', [], {
-      tts, preset: got, refAudio, speak: true, runAgent,
-      signal: new AbortController().signal, emit: e => events.push(e)
-    })
-    expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
-    expect(events.some(e => e.type === 'audio')).toBe(true)
     errSpy.mockRestore()
   })
 
-  it('survives an unreadable reference clip: speaks without it rather than losing the turn', async () => {
+  it('survives an unreadable reference clip: speaks without it rather than failing', async () => {
     // loadReferenceBytes does a bare storage().get() — a deleted or unreadable blob throws.
     // A clone preset that loses its reference speaks as a design preset: it sounds wrong,
     // which is strictly better than the user getting nothing.
@@ -308,12 +236,6 @@ describe('turn voice resolution degrades, never fails the turn', () => {
     expect(loadRef).toHaveBeenCalledOnce()
     expect(got).toBe(clonePreset)   // still the voice the user picked…
     expect(refAudio).toBeNull()     // …just without the reference it could not read
-
-    const history = await handleTurn('hi', [], {
-      tts, preset: got, refAudio, speak: true, runAgent,
-      signal: new AbortController().signal, emit: () => {}
-    })
-    expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
     errSpy.mockRestore()
   })
 
@@ -327,11 +249,6 @@ describe('turn voice resolution degrades, never fails the turn', () => {
     expect(got).toBe(FALLBACK_PRESET)        // only ever read for its maxSegmentChars
     expect(refAudio).toBeNull()
 
-    const history = await handleTurn('hi', [], {
-      tts, preset: got, refAudio, speak: false, runAgent,
-      signal: new AbortController().signal, emit: () => {}
-    })
-    expect(history.at(-1)).toEqual({ role: 'assistant', content: 'You have two tasks.' })
   })
 })
 
@@ -347,7 +264,7 @@ describe('handleTurn — steering + wake passthrough', () => {
       return (async function* () { yield { type: 'done' } })()
     }) as any
     await handleTurn('hi', [], {
-      tts, preset, speak: false, runAgent: capturingRunAgent, drainSteer, wake,
+      speak: false, runAgent: capturingRunAgent, drainSteer, wake,
       signal: new AbortController().signal, emit: () => {}
     })
     expect(capturedCtx.drainSteer).toBe(drainSteer)
@@ -360,7 +277,7 @@ describe('handleTurn — steering + wake passthrough', () => {
       return (async function* () { yield { type: 'done' } })()
     }) as any
     await handleTurn('hi', [], {
-      tts, preset, speak: false, runAgent: capturingRunAgent,
+      speak: false, runAgent: capturingRunAgent,
       signal: new AbortController().signal, emit: () => {}
     })
     expect(capturedCtx.drainSteer).toBeUndefined()

@@ -13,9 +13,8 @@ const IMESSAGE_TEST_TEXT = 'Test from MyMind ✅'
 // With `send: true` it also queues "Test from MyMind ✅" to the default chat through the outbox
 // (source 'note'), so the test takes the same path — retries, duplicate check — as a real reply.
 // Either way it finishes with a forced catch-up tick, which refreshes the health snapshot and so the
-// Channels status dot. Cycle 81: the catch-up runs in the process that owns it — here with
-// AGENT_EXECUTOR=web, in the worker (an `imessage-health` command) with AGENT_EXECUTOR=worker — so
-// it never runs alongside the worker's own catch-up.
+// Channels status dot. Cycle 81: the catch-up runs in the process that owns it — the worker (an
+// `imessage-health` command) — so it never runs alongside the worker's own catch-up.
 async function refreshHealth(): Promise<void> {
   await checkImessageHealth()
 }

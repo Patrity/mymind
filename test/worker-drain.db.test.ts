@@ -2,7 +2,7 @@
 // stopClaiming() → no further claims (pumpOnce/kick), waitForInFlight() resolves only after the runs
 // already executing have fully unwound. Fake runs; scoped to conversations this file creates (the dev
 // DB is shared); claiming is resumed after each test so other files in this process are unaffected.
-// Also: the web's remote execution mode (AGENT_EXECUTOR=worker) turns a kick into a worker command.
+// Also: the web's remote execution mode (always, since Task 3) turns a kick into a worker command.
 process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
@@ -113,7 +113,7 @@ describe('worker drain seam', () => {
     expect(await statusOf(a.runId)).toBe('aborted')
   })
 
-  it('remote execution mode (web with AGENT_EXECUTOR=worker): enqueue\'s kick is a `kick` command, nothing is claimed here', async () => {
+  it('remote execution mode (the web): enqueue\'s kick is a `kick` command, nothing is claimed here', async () => {
     setBusNs(NS)
     setExecutionMode('remote')
     const r = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: 'DRAIN-TEST remote', modality: 'text' } })

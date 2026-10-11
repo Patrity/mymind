@@ -1,13 +1,6 @@
 // test/agent-memory-context.test.ts
 import { describe, it, expect } from 'vitest'
 import { handleTurn } from '@mymind/core/lib/voice/orchestrator'
-import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
-
-const preset: VoicePresetDTO = {
-  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
-  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
-  maxSegmentChars: 200, isDefault: true
-}
 
 describe('handleTurn memory injection', () => {
   it('appends the memory block to the context passed to runAgent', async () => {
@@ -18,7 +11,7 @@ describe('handleTurn memory injection', () => {
       yield { type: 'done' }
     }) as never
     await handleTurn('what do you know about my RAM', [], {
-      tts: { synthesize: async function* () {} }, preset, speak: false,
+      speak: false,
       context: 'Current context: open tasks…',
       buildMemoryContext: async () => 'Possibly relevant memories:\n- Tony has 656GB of DDR4',
       runAgent, signal: new AbortController().signal, emit: () => {}
@@ -34,7 +27,7 @@ describe('handleTurn memory injection', () => {
       yield { type: 'done' }
     }) as never
     await handleTurn('hello', [], {
-      tts: { synthesize: async function* () {} }, preset, speak: false,
+      speak: false,
       context: 'Current context: X',
       buildMemoryContext: async () => '',
       runAgent, signal: new AbortController().signal, emit: () => {}

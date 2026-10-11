@@ -16,13 +16,6 @@
 import { describe, it, expect } from 'vitest'
 import { handleTurn, type VoiceEvent } from './orchestrator'
 import type { AgentEvent } from '../agent/run'
-import type { VoicePresetDTO } from '../../shared/types/voice-presets'
-
-const preset: VoicePresetDTO = {
-  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
-  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
-  maxSegmentChars: 200, calibratedRefKey: null, refSource: null, starredSeeds: [], isDefault: true
-}
 
 /**
  * Runs a turn whose agent stream yields `agentEvents`, optionally aborting the signal
@@ -34,7 +27,7 @@ async function run(agentEvents: AgentEvent[], abortAfter?: number) {
   const ac = new AbortController()
   const events: VoiceEvent[] = []
   const out = await handleTurn('what are my open tasks?', [], {
-    tts: { async *synthesize() {} } as never, preset, signal: ac.signal, speak: false,
+    signal: ac.signal, speak: false,
     emit: e => { events.push(e) },
     async *runAgent() {
       for (const [i, e] of agentEvents.entries()) {

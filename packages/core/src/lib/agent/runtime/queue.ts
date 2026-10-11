@@ -231,8 +231,8 @@ async function pumpLoop(opts: { onlyConversations?: string[]; run?: RunFn; rekic
 }
 
 // ── Cycle 81: who executes, and draining ─────────────────────────────────────────────────────
-// Execution mode (execution-mode.ts): 'local' — a kick pumps here; 'remote' (the web when
-// AGENT_EXECUTOR=worker) — this process never claims; a kick becomes a `kick` command to the worker
+// Execution mode (execution-mode.ts): 'local' — a kick pumps here; 'remote' (the web, always
+// since cycle 81 Task 3) — this process never claims; a kick becomes a `kick` command to the worker
 // (fire-and-forget — the worker's 5s tick is the net if it is lost).
 export { setExecutionMode, executionMode, type ExecutionMode } from './execution-mode'
 

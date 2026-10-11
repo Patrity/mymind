@@ -51,13 +51,14 @@ describe('fromRuntimeConfig', () => {
   })
 
   it('env-backed fields come from the RUNTIME env, never from runtimeConfig; dev from the host', () => {
-    const rc = { ...sentinelRuntimeConfig(), busNs: 'baked-ns', agentExecutor: 'worker' }
-    const cfg = fromRuntimeConfig(rc, { env: { MYMIND_BUS_NS: 'live-ns', AGENT_EXECUTOR: 'worker' }, dev: true })
+    const rc = { ...sentinelRuntimeConfig(), busNs: 'baked-ns' }
+    const cfg = fromRuntimeConfig(rc, { env: { MYMIND_BUS_NS: 'live-ns' }, dev: true })
     expect(cfg.busNs).toBe('live-ns')
-    expect(cfg.agentExecutor).toBe('worker')
     expect(cfg.dev).toBe(true)
-    const plain = fromRuntimeConfig(rc, { env: { AGENT_EXECUTOR: 'Worker ' } })
-    expect(plain).toMatchObject({ busNs: undefined, agentExecutor: 'web', dev: false })
+    const plain = fromRuntimeConfig(rc, { env: {} })
+    expect(plain).toMatchObject({ busNs: undefined, dev: false })
+    // Task 3 removed AGENT_EXECUTOR: the worker is the only executor, there is no flag to read.
+    expect('agentExecutor' in fromRuntimeConfig(rc, { env: { AGENT_EXECUTOR: 'web' } })).toBe(false)
   })
 })
 
@@ -93,7 +94,7 @@ const BASE = {
 
 // [case, env, spot-checks on the resulting CoreConfig — so equality can't pass vacuously]
 const ENV_ROWS: Array<[string, Record<string, string>, Partial<Record<string, unknown>>]> = [
-  ['empty env (all defaults)', {}, { storageDriver: 'local', storageLocalDir: './.data/uploads', memoryAutoReviewThreshold: 0.75, databaseUrl: undefined, agentExecutor: 'web', busNs: undefined }],
+  ['empty env (all defaults)', {}, { storageDriver: 'local', storageLocalDir: './.data/uploads', memoryAutoReviewThreshold: 0.75, databaseUrl: undefined, busNs: undefined }],
   ['plain dev .env', BASE, { databaseUrl: BASE.DATABASE_URL, betterAuthSecret: 's3cret' }],
   ['prod native: NUXT_DATABASE_URL / NUXT_STORAGE_LOCAL_DIR win over the plain vars',
     { ...BASE, NUXT_DATABASE_URL: 'postgres://u:p@127.0.0.1:5432/mymind', NUXT_STORAGE_LOCAL_DIR: '/opt/mymind/.data/uploads' },
@@ -107,8 +108,7 @@ const ENV_ROWS: Array<[string, Record<string, string>, Partial<Record<string, un
   ['S3: plain at build, NUXT_STORAGE_S3_* leaf overrides',
     { ...BASE, STORAGE_DRIVER: 's3', STORAGE_S3_REGION: 'us-east-1', STORAGE_S3_BUCKET: 'plain', NUXT_STORAGE_S3_BUCKET: 'over', NUXT_STORAGE_S3_ACCESS_KEY_ID: 'AK' },
     { storageDriver: 's3', storageS3: { endpoint: undefined, region: 'us-east-1', bucket: 'over', accessKeyId: 'AK', secretAccessKey: undefined } }],
-  ['env-backed: MYMIND_BUS_NS + AGENT_EXECUTOR=worker', { ...BASE, MYMIND_BUS_NS: 'w2', AGENT_EXECUTOR: 'worker' }, { busNs: 'w2', agentExecutor: 'worker' }],
-  ['env-backed: an unknown AGENT_EXECUTOR is web in both', { ...BASE, AGENT_EXECUTOR: 'both' }, { agentExecutor: 'web' }]
+  ['env-backed: MYMIND_BUS_NS', { ...BASE, MYMIND_BUS_NS: 'w2' }, { busNs: 'w2' }]
 ]
 
 describe('fromEnv (worker) ≡ fromRuntimeConfig over Nitro runtimeConfig (web)', () => {

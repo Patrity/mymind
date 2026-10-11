@@ -10,13 +10,6 @@ import { createClientTurns } from '../app/lib/agent/turn-stream'
 import { toUIMessages, type ResumeMessage } from '../app/lib/agent/to-ui-messages'
 import type { AgentEvent } from '@mymind/core/lib/agent/run'
 import type { AgentMessageFrame, AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
-import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
-
-const preset: VoicePresetDTO = {
-  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
-  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
-  maxSegmentChars: 200, calibratedRefKey: null, refSource: null, starredSeeds: [], isDefault: true
-}
 
 const agentEvents: AgentEvent[] = [
   { type: 'reasoning-delta', text: 'Check docs, then research.' },
@@ -55,7 +48,7 @@ describe('live ↔ resume parity', () => {
     let reasoning = ''
     let usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null = null
     const out = await handleTurn('find orpheus', [], {
-      tts: { async *synthesize() {} } as never, preset, signal: new AbortController().signal, speak: false,
+      signal: new AbortController().signal, speak: false,
       emit: (e: VoiceEvent) => {
         if (e.type === 'reasoning') reasoning += e.text
         else if (e.type === 'usage') usage = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, totalTokens: e.totalTokens }

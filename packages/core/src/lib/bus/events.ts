@@ -16,6 +16,7 @@ import { and, asc, eq, gt, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { runEvents } from '../../db/schema'
 import type { AgentMessageFrame } from '../../shared/types/agent-ui'
+import type { ApprovalRequest } from '../agent/types'
 import { notifySql } from './listen'
 import { busNs } from './ns'
 
@@ -28,8 +29,17 @@ export type HubFrame =
   | { type: 'conversation'; conversationId: string; title: string | null }
   | { type: 'persisted'; conversationId: string }
   | { type: 'error'; message: string }
-  | { type: 'approval'; requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean; title?: string }
+  // The FULL ApprovalRequest (spec §3.4): the worker's approval channel publishes it, origin-sink
+  // targeted, and the web keeps what it needs to answer it — `logSummary` for the outcome log,
+  // `callId`/`args` for the card. What reaches the browser is clientApprovalFrame's subset.
+  | ({ type: 'approval'; requestId: string } & ApprovalRequest)
   | { type: 'approval-resolved'; requestId: string }
+
+/** The browser's `approval` frame — exactly what ws.ts sent before cycle 81 (app/lib/voice/
+ *  messages.ts reads these fields). `logSummary`, `callId` and `args` stay server-side. */
+export function clientApprovalFrame(f: Extract<HubFrame, { type: 'approval' }>) {
+  return { type: 'approval' as const, requestId: f.requestId, tool: f.tool, command: f.command, proposedPattern: f.proposedPattern, allowlistable: f.allowlistable === true, title: f.title }
+}
 
 export type RunEventRow = typeof runEvents.$inferSelect
 
@@ -93,7 +103,7 @@ export const dbRunEventStore: RunEventStore = {
  *  frames; the run sees this through `onError` and from the next `flush()` / `close()`. */
 export class RunEventWriteError extends Error {
   readonly code = 'RUN_EVENT_WRITE_FAILED' as const
-  constructor(readonly runId: string, readonly frameTypes: string[], readonly cause: unknown) {
+  constructor(readonly runId: string, readonly frameTypes: string[], override readonly cause: unknown) {
     super(`run_events: lost ${frameTypes.length} frame(s) of run ${runId} (${[...new Set(frameTypes)].join(', ')}): ${cause instanceof Error ? cause.message : String(cause)}`)
     this.name = 'RunEventWriteError'
   }
@@ -221,6 +231,14 @@ export async function readRunEvents(q: { conversationId?: string; runId?: string
     q.afterSeq !== undefined ? gt(runEvents.seq, q.afterSeq) : undefined
   )
   return useDb().select().from(runEvents).where(where).orderBy(asc(runEvents.id)).limit(q.limit ?? 500)
+}
+
+/** The highest run_events id of a conversation in this namespace (0 when it has none) — where a
+ *  live reader that must not re-send history starts. */
+export async function maxRunEventId(conversationId: string): Promise<number> {
+  const [r] = await useDb().select({ max: sql<string | null>`max(${runEvents.id})` }).from(runEvents)
+    .where(and(eq(runEvents.ns, busNs()), eq(runEvents.conversationId, conversationId)))
+  return Number(r?.max ?? 0)
 }
 
 export const DEFAULT_READER_LOOKBACK_IDS = 500

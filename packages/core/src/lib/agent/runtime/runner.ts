@@ -6,12 +6,9 @@ import { eq, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { conversations, conversationMessages, type AgentRun } from '../../../db/schema'
 import { handleTurn, type TurnDeps, type VoiceEvent } from '../../voice/orchestrator'
-import type { TtsProvider } from '../../voice/providers/types'
-import { speakWithPreset } from '../../voice/speak'
 import { createTurnStream } from '../../voice/turn-stream'
 import { buildTurnPersistPayload } from '../../voice/turn-persist'
 import { partialTurnMessages } from '../../voice/turn-partial'
-import { resolveTurnVoice } from '../../../services/voice-presets'
 import { appendMessages, getAgentHistory, captureTurnLeaf, type NewConvMessage } from '../../../services/conversations'
 import { publishChange } from '../../../utils/live-bus'
 import { recordEvent } from '../../observability/record'
@@ -20,7 +17,8 @@ import { messageText } from '../run'
 import type { AgentMessage } from '../run'
 import { bridgetProfile, type AgentProfile } from '../profile'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
-import { hub as defaultHub, type StreamHub } from './stream'
+import type { RunPublisher } from './stream'
+import { busPublisher } from './bus-publisher'
 import { registerAbort, releaseAbort } from './aborts'
 import { approvalFor, hasApprovalChannel, registerApprovalChannel, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
 import { drainSteerFor } from './inbox'
@@ -38,7 +36,9 @@ import { unavailableGoogleToolsets } from '../../google/connections'
 export interface RunnerDeps {
   runAgent?: TurnDeps['runAgent']
   assemble?: typeof assembleContext
-  hub?: StreamHub
+  /** Where the run's frames go. Default: the Postgres run-event log (cycle 81) — tests pass an
+   *  in-process StreamHub to capture them. */
+  hub?: RunPublisher
   afterPersist?: (conversationId: string) => void
   /** Cycle 79: on-demand sets to leave out of the directory this turn (default: gmail/calendar
    *  while no Google account is connected). */
@@ -61,24 +61,16 @@ function headlessProfile(run: AgentRun): AgentProfile {
 }
 
 export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<RunOutcome> {
-  const hub = deps.hub ?? defaultHub
   const conversationId = run.conversationId
+  const hub = deps.hub ?? busPublisher(run.id, conversationId)
   const input = run.input as RunInput
   const isWake = run.trigger === 'wake'
   const origin = isWake ? wakeOrigin(run.wakeReason ?? 'unspecified') : null
-  // Audio + its bracket frames go ONLY to the socket that asked; everything else fans out.
-  const send = (d: string | Uint8Array) => {
-    const audio = typeof d !== 'string' || /^\{"type":"audio-(begin|end)"/.test(d)
-    hub.publish(conversationId, d, audio ? { only: run.originSinkId ?? '__none__' } : undefined)
-  }
-  // TTS only while the originating socket is attached: a closed tab degrades the turn to
-  // "no audio", never "no turn".
+  // Every frame fans out to the thread's sockets. No audio here (cycle 81, spec §4): the web's
+  // voice socket that originated a spoken run synthesizes it from these same text frames.
+  const send = (d: string) => hub.publish(conversationId, d)
+  // Reaches the model (it answers in its spoken style); a wake never speaks.
   const speak = !isWake && !!input.speak
-  const tts: TtsProvider = {
-    synthesize: (text, o) => (run.originSinkId && hub.hasSink(run.originSinkId))
-      ? speakWithPreset(text, o.preset, 'agent', o.signal, o.refAudio ?? null)
-      : (async function* () {})()
-  }
   // What the ws.ts closure read off the connection / the frame, now read off the run.
   const inputModality = input.modality
   const speakFlag = speak
@@ -203,10 +195,6 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // `usage` (the ACTUAL contextTokens) for the same conversationId. recordEvent only buffers.
     recordEvent({ kind: 'tool', name: 'memory:assemble', severity: 'info', meta: { used: assembled.used, droppedTurns: assembled.droppedTurns, retrievedCount: assembled.usedMemoryIds.length, conversationId, runId: run.id } })
     const history: AgentMessage[] = keepTrailingTurns(turns, turns.length - assembled.droppedTurns)
-    // Total by construction — a silent turn touches no voice state, and neither a
-    // DB nor a storage failure can propagate out of here. Voice degrades to "no
-    // audio"; it must never degrade to "no turn". See resolveTurnVoice.
-    const { preset, refAudio } = await resolveTurnVoice(input.presetId ?? null, speak)
     const profile = run.profile === 'headless' ? headlessProfile(run) : undefined
 
     // Cycle 78: on-demand toolsets — what this conversation already loaded + what a job declared.
@@ -249,7 +237,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     }
 
     const result = await handleTurn(userText, history, {
-      tts, preset, refAudio, speak, context: assembled.context || undefined, modelDefId: run.modelDefId,
+      speak, context: assembled.context || undefined, modelDefId: run.modelDefId,
       profile, requestApproval: run.profile === 'interactive' ? approvalFor(run.id) : undefined,
       attachments: turnAttachments, signal: ac.signal, emit, runAgent: deps.runAgent,
       drainSteer: async () => {
@@ -424,7 +412,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     unregisterApprovalChannel(run.id)
     releaseAbort(run.id)
     void channelPresence.stop(run)
-    hub.endRun(conversationId)
+    // Every frame committed before the run is reported finished (the bus writer flushes here).
+    await Promise.resolve(hub.endRun(conversationId)).catch((err: unknown) => console.error('[agent] flushing run frames failed:', err))
     if (persisted || rescued) deps.afterPersist?.(conversationId)
     // The rescue path never delivers the partial reply; a failed turn with a reply chat gets
     // one "sorry" note instead, so the phone isn't left silent (final review I3).

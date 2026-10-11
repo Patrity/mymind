@@ -1,6 +1,5 @@
-// Cycle 81: the executor's boot sequence, shared by the agent worker (apps/worker) and — while
-// AGENT_EXECUTOR=web (until Task 3) — the web's server/plugins/agent-runtime.ts. Moved verbatim from
-// that plugin.
+// Cycle 81: the executor's boot sequence — the agent worker's (apps/worker, the only executor). Moved
+// verbatim from the web's server/plugins/agent-runtime.ts.
 //
 // Order: recover runs orphaned by the previous process BEFORE the pump starts, so a stale 'running'
 // row cannot block its conversation's queue for the 60s it would take to look orphaned. Each step is

@@ -25,10 +25,9 @@ const [{ bootAgentRuntime, DEFAULT_BOOT_RETRY }, queue, { BOOT_ID }, { startAgen
 ])
 const { busNs } = await import('@mymind/core/lib/bus/ns')
 
-console.info(`[worker] boot ${BOOT_ID} pid=${process.pid} ns=${busNs()} executor=${settings.core.agentExecutor} dev=${settings.core.dev}`)
+console.info(`[worker] boot ${BOOT_ID} pid=${process.pid} ns=${busNs()} dev=${settings.core.dev}`)
 
 const worker = createWorkerProcess({
-  executor: settings.core.agentExecutor,
   boot: stopped => bootAgentRuntime(undefined, { ...DEFAULT_BOOT_RETRY, stopped }),
   tick: () => queue.workerTick(),
   kick: () => queue.kickPump(),

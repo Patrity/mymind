@@ -21,7 +21,9 @@ export interface TurnStream {
 
 export interface TurnStreamOptions {
   turnId: number
-  send: (data: string | Uint8Array) => void
+  /** One JSON frame (a hub frame — see lib/bus/events.ts's HubFrame). No audio: cycle 81 moved TTS
+   *  to the web's voice socket. */
+  send: (data: string) => void
   attachments?: AttachmentRef[]
   now?: () => Date
   newId?: () => string
@@ -43,9 +45,6 @@ export function createTurnStream(o: TurnStreamOptions): TurnStream {
     emit(e) {
       if (closed) return
       switch (e.type) {
-        case 'audio': o.send(e.bytes); return
-        case 'audio-begin': json({ ...e, turnId: o.turnId }); return
-        case 'audio-end':
         case 'state': json(e); return
         case 'transcript':
           if (e.role === 'user') {

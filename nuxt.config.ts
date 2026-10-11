@@ -121,8 +121,8 @@ export default defineNuxtConfig({
       // memory-backfill self-gates: a no-op unless Tony flipped the switch to `running` (cycle 77).
       '*/5 * * * *': ['embed-documents', 'summarize-sessions', 'memory-backfill'],
       // Cycle 81: the agent's own tasks (summarize-threads, reflect-threads, reflect-jobs) left
-      // Nitro — packages/core/src/lib/agent/scheduled.ts runs them in whichever process executes
-      // agent runs (AGENT_EXECUTOR: the worker, or this web process until Task 3).
+      // Nitro — packages/core/src/lib/agent/scheduled.ts runs them in apps/worker, the only process
+      // that executes agent runs.
       '*/10 * * * *': ['triage-input'],
       '*/7 * * * *': ['enrich-images'],
       // sync-model-prices runs often, but self-gates: it only hits the network when a model

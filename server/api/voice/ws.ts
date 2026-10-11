@@ -1,6 +1,8 @@
 // server/api/voice/ws.ts
-// Thin socket: auth, STT, voice/model choice, approvals UI, and frame routing. Turns do NOT
-// live here any more — they are runs in server/lib/agent/runtime, which outlive this socket.
+// Thin socket: auth, STT, TTS, voice/model choice, approvals UI, and frame routing. Turns do NOT
+// live here — they are runs executed by apps/worker (cycle 81), which outlive this socket and this
+// process. Their frames arrive over the Postgres bus (lib/bus/relay.ts); a spoken run this socket
+// originated is synthesized HERE (server/lib/voice/socket-tts.ts).
 // Closing the tab unsubscribes; it never aborts. Stop ('interrupt') is the only abort.
 import { randomUUID } from 'node:crypto'
 import { classifyFrame } from '../../lib/voice/frames'
@@ -11,7 +13,12 @@ import { VOICE_TUNING } from '@mymind/core/lib/voice/tuning'
 import { routeFrame } from '../../lib/voice/ws-routing'
 import { enqueue, abortActive, abortActiveAndWait } from '@mymind/core/lib/agent/runtime/queue'
 import { abortRun } from '@mymind/core/lib/agent/runtime/aborts'
-import { hub, withCid, type Sink } from '@mymind/core/lib/agent/runtime/stream'
+import { withCid, type Sink } from '@mymind/core/lib/agent/runtime/stream'
+import { runEventRelay } from '@mymind/core/lib/bus/relay'
+import { clientApprovalFrame, type HubFrame } from '@mymind/core/lib/bus/events'
+import { resolveTurnVoice } from '@mymind/core/services/voice-presets'
+import { speakWithPreset } from '@mymind/core/lib/voice/speak'
+import { createSocketTts, type SocketTts } from '../../lib/voice/socket-tts'
 import { registerApprovalChannel, unregisterApprovalChannel, hasApprovalChannel, turnStreamFor } from '@mymind/core/lib/agent/runtime/approvals'
 import { clearConversationContext } from '../../services/conversation-clear'
 import { useDb } from '@mymind/core/db'
@@ -97,25 +104,41 @@ interface ConnState {
    *  runner drops a channel when its run ends; entries whose channel is gone are pruned. */
   runs: Set<string>
   pendingApprovals: Map<string, PendingApproval>
+  /** Speaks this socket's spoken runs from their streamed text (cycle 81, spec §4). */
+  tts: SocketTts
 }
 const conns = new WeakMap<object, ConnState>()
 
-// STT resolved from the registry at call time, with per-usage failover. (TTS moved to the
-// runner, which speaks only while the originating socket is still attached.)
+// STT resolved from the registry at call time, with per-usage failover. TTS is per socket (s.tts):
+// only the socket that originated a spoken run speaks it, and only while it is attached.
 const stt: SttProvider = { transcribe: (audio, opts) => withFailover('stt', m => sttFromModel(m).transcribe(audio, opts)) }
 
+/** What a bus frame looks like on the browser's socket: unchanged, except `approval`, which
+ *  carries the full ApprovalRequest on the bus and only the card's fields here. */
+function toClient(f: HubFrame): object {
+  return f.type === 'approval' ? clientApprovalFrame(f) : f
+}
+
 function select(s: ConnState, conversationId: string | null) {
+  // Leaving a thread silences its audio (the old hub stopped delivering it to a socket that left).
+  if (s.conversationId && s.conversationId !== conversationId) s.tts.abort(s.conversationId)
   s.unsubscribe?.(); s.unsubscribe = null
   s.conversationId = conversationId
   s.viewSeq++
 }
-/** Select AND subscribe, replaying the running turn so far — one synchronous step, so no live
- *  frame can slip in between the subscribe and the replay. Subscribes with a `withCid`-wrapped
- *  sink (tags every chunk/user-message/audio-begin frame with `conversationId`) — belt and
- *  braces for the client's own turn-id tracking; see stream.ts's `withCid` doc comment. */
+/** Select AND subscribe, replaying the running turn so far — the relay runs the replay and the
+ *  live reads on one serial chain per thread, so no live frame can arrive before the replay and no
+ *  frame twice. Frames go out through a `withCid`-wrapped sink (tags every chunk/user-message/
+ *  audio-begin frame with `conversationId`) — belt and braces for the client's own turn-id
+ *  tracking; see stream.ts's `withCid` doc comment. */
 function view(s: ConnState, conversationId: string | null) {
   select(s, conversationId)
-  if (conversationId) s.unsubscribe = hub.subscribe(conversationId, withCid(conversationId, s.sink), { replay: true })
+  if (conversationId) {
+    s.unsubscribe = runEventRelay().subscribe(conversationId, {
+      id: s.sink.id,
+      deliver: (frame, meta) => s.tts.frame(conversationId, frame, meta)
+    }, { replay: true })
+  }
 }
 
 export default defineWebSocketHandler({
@@ -128,11 +151,18 @@ export default defineWebSocketHandler({
   },
   // open/close stay synchronous (crossws); only message may await.
   open(peer) {
+    const sink: Sink = { id: randomUUID(), send: d => peer.send(d) }
     conns.set(peer, {
-      sink: { id: randomUUID(), send: d => peer.send(d) },
+      sink,
       presetId: null, model: null, conversationId: null, unsubscribe: null,
       viewSeq: 0, stopSeq: 0, submitLock: Promise.resolve(), lastRun: null,
-      runs: new Set(), pendingApprovals: new Map()
+      runs: new Set(), pendingApprovals: new Map(),
+      tts: createSocketTts({
+        send: (conversationId, frame) => withCid(conversationId, sink).send(JSON.stringify(toClient(frame as HubFrame))),
+        sendBinary: bytes => sink.send(bytes),
+        resolveVoice: presetId => resolveTurnVoice(presetId, true),
+        synthesize: (text, o) => speakWithPreset(text, o.preset, 'agent', o.signal, o.refAudio ?? null)
+      })
     })
   },
   async message(peer, message) {
@@ -203,6 +233,9 @@ export default defineWebSocketHandler({
             s.runs.add(r.runId)
             registerApprovalChannel(r.runId, requestApproval(r.runId, r.conversationId))
             s.lastRun = { id: r.runId, conversationId: r.conversationId }
+            // Spoken: this socket synthesizes the run's text as it streams in (spec §4). Registered
+            // before this continuation yields, so it precedes the run's first frame.
+            if (o.speak) s.tts.expect(r.runId, { presetId: s.presetId })
             // Stop landed while the enqueue was in flight (and the socket is still on this
             // thread): the run just created is what Stop meant. abortRun's preAborted path
             // covers a run that has not started yet.
@@ -260,6 +293,8 @@ export default defineWebSocketHandler({
       case 'abort': {
         const viewing = s.conversationId
         s.stopSeq++
+        // Barge-in / Stop silences this socket at once, whatever the run does next.
+        s.tts.abort()
         // hasApprovalChannel: the runner drops the channel when the run ends, so this skips a
         // long-finished run (abortRun would only park its id in the preAborted set).
         if (s.lastRun && s.lastRun.conversationId === viewing && hasApprovalChannel(s.lastRun.id)) abortRun(s.lastRun.id)
@@ -317,6 +352,7 @@ export default defineWebSocketHandler({
         // Then wait for the aborted turn to unwind: its `finally` rescue appends the question +
         // partial reply, and those rows must land BEFORE the epoch or they stay in model history.
         denyFor(id)
+        s.tts.abort(id)
         await abortActiveAndWait(id)
         try {
           await clearConversationContext(id)
@@ -335,6 +371,7 @@ export default defineWebSocketHandler({
     const s = conns.get(peer); if (!s) return
     // Unsubscribe only — the runs this socket started keep going and persist.
     s.unsubscribe?.()
+    s.tts.abort()
     for (const id of s.runs) unregisterApprovalChannel(id)
     for (const id of denyPendingApprovals(s.pendingApprovals)) {
       // The socket is closing (or already closed) — sending is best-effort.

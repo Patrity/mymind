@@ -1,8 +1,8 @@
 // Cycle 81 (Task 2 review M2): the iMessage catch-up — and with it the BlueBubbles health snapshot
 // and its `running` guard (inbound.ts, module state) — belongs to the process that executes agent
 // runs. These are the web routes' entry points; they work in either execution mode:
-//   local  (AGENT_EXECUTOR=web): this process runs the catch-up — read/refresh/reset it in memory.
-//   remote (AGENT_EXECUTOR=worker): the worker owns it. Health = what the worker published with its
+//   local  (the worker itself, tests): this process runs the catch-up — read/refresh/reset it in memory.
+//   remote (the web, always since cycle 81 Task 3): the worker owns it. Health = what the worker published with its
 //          latest heartbeat (worker_heartbeat.status.imessage); a forced check or a reset is an
 //          `imessage-health` command to the worker, so only ONE catch-up ever runs at a time.
 import { executionMode } from '../agent/runtime/execution-mode'

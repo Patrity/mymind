@@ -9,13 +9,11 @@
 //           the next boot (AGENT_RUNTIME_EXCLUSIVE) or the 60s stale sweep — the existing semantics.
 // A drain that arrives while `start` is still booting stops it between steps: nothing that claims
 // (commands, tick, pump, schedule) starts after the signal (Task 2 review M4).
-// With AGENT_EXECUTOR=web (Task 2's default, until Task 3) the worker only heartbeats: the web
-// executes, and two executors on one database must never both claim.
+// This is the ONLY process that executes agent runs (cycle 81 Task 3): the web never claims.
 import type { CommandHandlers, CommandPayloads, WorkerBeatStatus } from '@mymind/core/lib/bus/commands'
 import type { ImessageHealth } from '@mymind/core/lib/channels/inbound'
 
 export interface WorkerDeps {
-  executor: 'web' | 'worker'
   /** recoverOrphans (+ seed jobs install/upgrade, revalidation) — bootAgentRuntime. `stopped` lets
    *  its DB-retry loop give up when a drain arrives during boot. */
   boot(stopped: () => boolean): Promise<unknown>
@@ -29,9 +27,9 @@ export interface WorkerDeps {
   startSchedule(): () => void
   startRecorderFlush(): () => void
   flushRecorder(): Promise<void>
-  /** Heartbeat; `status` is set only when this worker executes (it owns that state). */
+  /** Heartbeat, carrying the worker-owned status the web shows. */
   beat(status?: WorkerBeatStatus): Promise<void>
-  /** The status the heartbeat carries in worker mode. */
+  /** The status every heartbeat carries. */
   beatStatus(): WorkerBeatStatus
   handleCommands(h: CommandHandlers): () => void
   startLiveBridge(): () => void
@@ -72,7 +70,6 @@ function sleep(ms: number): Promise<void> {
 
 export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerProcess {
   const log = deps.log ?? console
-  const executes = deps.executor === 'worker'
   const stops: Array<() => void> = []
   let beatTimer: ReturnType<typeof setInterval> | null = null
   let tickTimer: ReturnType<typeof setInterval> | null = null
@@ -82,16 +79,12 @@ export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerP
   let starting: Promise<void> | null = null
   let draining: Promise<{ settled: boolean }> | null = null
 
-  const beatOnce = () => deps.beat(executes ? deps.beatStatus() : undefined).catch(err => log.error('[worker] heartbeat failed:', err))
+  const beatOnce = () => deps.beat(deps.beatStatus()).catch(err => log.error('[worker] heartbeat failed:', err))
 
   const start = (): Promise<void> => starting ??= (async () => {
     if (stopping) return
     await beatOnce()
     beatTimer = setInterval(() => { void beatOnce() }, t.beatMs)
-    if (!executes) {
-      log.info('[worker] AGENT_EXECUTOR=web — the web process executes agent runs; this worker only heartbeats')
-      return
-    }
     if (stopping) return
     await deps.boot(() => stopping)
     // Each step re-checks: a signal during boot must not start anything that claims.
@@ -110,7 +103,7 @@ export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerP
     deps.kick()
     stopSchedule = deps.startSchedule()
     stops.push(deps.startRecorderFlush())
-    log.info('[worker] executing agent runs (AGENT_EXECUTOR=worker)')
+    log.info('[worker] executing agent runs')
   })()
 
   const drain = (reason = 'stop'): Promise<{ settled: boolean }> => draining ??= (async () => {
@@ -135,7 +128,7 @@ export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerP
       const done = await Promise.race([tickInFlight.then(() => true), sleep(deadline - Date.now()).then(() => false)])
       if (!done) { settled = false; log.warn('[worker] drain: the in-flight tick did not finish within the budget') }
     }
-    if (executes) settled = (await deps.waitForInFlight(Math.max(0, deadline - Date.now()))) && settled
+    settled = (await deps.waitForInFlight(Math.max(0, deadline - Date.now()))) && settled
     if (!settled) log.warn(`[worker] drain deadline (${t.drainMs}ms) passed with work still in flight — runs left 'running' are recovered as interrupted`)
     // 3. Tear down.
     for (const stop of stops.splice(0)) {

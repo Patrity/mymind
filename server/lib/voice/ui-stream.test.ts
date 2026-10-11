@@ -142,13 +142,11 @@ describe('createUIChunkEncoder', () => {
     expect(visible(message)).toEqual([{ type: 'text', text: 'Here.\n\n![a cat](/api/images/i1/raw)', state: 'done' }])
   })
 
-  it('ignores user transcripts, state and audio', () => {
+  // (Audio events no longer exist on the turn's event stream — cycle 81 moved TTS to the web socket.)
+  it('ignores user transcripts and state', () => {
     const enc = createUIChunkEncoder('m1')
     expect(enc.encode({ type: 'transcript', role: 'user', text: 'hi' })).toEqual([])
     expect(enc.encode({ type: 'state', state: 'thinking' })).toEqual([])
-    expect(enc.encode({ type: 'audio-begin', segmentId: 1, sampleRate: 24000 })).toEqual([])
-    expect(enc.encode({ type: 'audio', bytes: new Uint8Array([1]) })).toEqual([])
-    expect(enc.encode({ type: 'audio-end', segmentId: 1 })).toEqual([])
   })
 
   it('an error ending keeps the partial text and reports the error', async () => {

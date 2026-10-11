@@ -34,7 +34,7 @@ function runtimeConfig(): Record<string, unknown> {
   return rc()
 }
 
-// Cycle 81: the env-backed fields (busNs, agentExecutor) and the `dev` host flag never came from
+// Cycle 81: the env-backed fields (busNs) and the `dev` host flag never came from
 // useRuntimeConfig, so they resolve without a stub: env-backed ones from process.env at each access
 // (vi.stubEnv works), `dev` false (vitest is not a dev server — as import.meta.dev was undefined).
 const envKeys: ReadonlySet<string | symbol> = new Set<string>(ENV_BACKED_FIELDS)

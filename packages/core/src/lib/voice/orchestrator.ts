@@ -1,8 +1,6 @@
 // server/lib/voice/orchestrator.ts
-import { SpeechChunker } from './segment'
-import { SpeechPipeline } from './pipeline'
 import { VOICE_TUNING } from './tuning'
-import type { SttProvider, TtsProvider } from './providers/types'
+import type { SttProvider } from './providers/types'
 import type { AgentMessage, AgentEvent } from '../agent/run'
 import { runAgent as realRunAgent } from '../agent/run'
 import { applyImageEmbeds, sanitizedOffset, type DisplayImage } from '../agent/image-embed'
@@ -11,7 +9,6 @@ import { getFileBytes } from '../../services/files'
 import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
 import { capResult, capArgs, WRITE_RESULT_CAP, ARGS_WRITE_CAP, type AgentToolRecord } from '../agent/tool-history'
 import type { ToolsetId } from '../agent/toolsets'
-import type { VoicePresetDTO } from '../../shared/types/voice-presets'
 import type { SubagentStep, AgentToolKind } from '../../shared/types/agent-ui'
 import { toolOutcome } from '../../shared/utils/agent-ui'
 
@@ -28,18 +25,12 @@ export type VoiceEvent =
   // ws.ts owns the turn clock and re-emits usage with them filled in once the turn ends, so the
   // live message-metadata chunk carries the same duration/tok-s the persisted row will.
   | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number; contextTokens?: number; modelDefId?: string; startedAt?: string; ttftMs?: number; durationMs?: number }
-  | { type: 'audio-begin'; segmentId: number; sampleRate: number }
-  | { type: 'audio'; bytes: Uint8Array }
-  | { type: 'audio-end'; segmentId: number }
   | { type: 'state'; state: 'thinking' | 'speaking' | 'typing' | 'tool' | 'idle' }
 
+// Cycle 81 (spec §4): no TTS here any more. The turn runs in the worker and streams text; the web's
+// voice socket speaks it for the originating tab (lib/voice/turn-speaker.ts via server/lib/voice/
+// socket-tts.ts). `speak` still reaches the model (it answers in its spoken style).
 export interface TurnDeps {
-  tts: TtsProvider
-  /** The voice to speak in. Resolved at the WS boundary (ws.ts) from the client's
-   *  cookie-backed preset id, falling back to the default preset. */
-  preset: VoicePresetDTO
-  /** Reference clip bytes for a clone/direction preset; null for design/plain. */
-  refAudio?: Uint8Array | null
   signal: AbortSignal
   speak: boolean
   context?: string
@@ -90,8 +81,8 @@ export async function handleUtterance(audio: Uint8Array, history: AgentMessage[]
 
 /**
  * One user turn from already-known text — STT output or typed input injected
- * post-STT. Typed messages get the identical state/transcript/audio event
- * stream, so the client animates and answers aloud either way.
+ * post-STT. Typed messages get the identical state/transcript event stream, so the
+ * client animates (and, with `speak`, the web's voice socket answers aloud) either way.
  */
 export async function handleTurn(userText: string, history: AgentMessage[], deps: TurnDeps): Promise<AgentMessage[]> {
   const run = deps.runAgent ?? realRunAgent
@@ -107,52 +98,9 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   // context block. Best-effort (returns '' on error/timeout) — never blocks a turn.
   const memoryBlock = deps.buildMemoryContext ? await deps.buildMemoryContext(userText) : ''
   const context = [deps.context, memoryBlock].filter(Boolean).join('\n\n') || undefined
-  // The segment cap is per-preset: a clone-backed preset carries its reference in every
-  // prompt, so it may not be safe at the default 200 (see calibrateMaxSegmentChars).
-  const maxChars = Math.min(VOICE_TUNING.tts.sentenceMaxChars, deps.preset.maxSegmentChars)
-  const chunker = new SpeechChunker(
-    Math.min(VOICE_TUNING.tts.sentenceMinChars, maxChars),
-    maxChars,
-    Math.min(VOICE_TUNING.tts.firstSegmentMaxChars, maxChars)
-  )
   let assistantText = ''
   const turnImages: DisplayImage[] = []
   const toolRecords: AgentToolRecord[] = []
-
-  // Segments are strictly serial (Breeze is single-request) but their chunks are emitted
-  // as the engine produces them — see pipeline.ts. Each segment is bracketed by an
-  // `audio-begin` (carrying the sample rate the client must decode at) and an
-  // `audio-end`; the raw PCM in between rides `audio` frames.
-  let segmentId = 0
-  // `audio-begin`/`audio-end` are strictly PAIRED. The pipeline fires onSegmentEnd for
-  // every segment including a dropped one (it owns lifetimes, not frame semantics), but a
-  // segment whose synthesis threw or aborted before yielding its `begin` never opened on
-  // the wire — and `segmentId` still holds its PREDECESSOR's value, so emitting anyway
-  // would close an already-closed segment, naming an id that really did begin. A frame
-  // reporting an end that never happened is a lying frame; suppress it here instead.
-  let segmentOpen = false
-  const pipeline = new SpeechPipeline({
-    synthesize: (text, opts) => deps.tts.synthesize(text, opts),
-    preset: deps.preset,
-    refAudio: deps.refAudio,
-    signal: deps.signal,
-    concurrency: VOICE_TUNING.tts.pipelineConcurrency,
-    onSpeaking: () => deps.emit({ type: 'state', state: 'speaking' }),
-    onChunk: (c) => {
-      if (c.kind === 'begin') {
-        segmentId++
-        segmentOpen = true
-        deps.emit({ type: 'audio-begin', segmentId, sampleRate: c.sampleRate })
-      } else {
-        deps.emit({ type: 'audio', bytes: c.bytes })
-      }
-    },
-    onSegmentEnd: () => {
-      if (!segmentOpen) return
-      segmentOpen = false
-      deps.emit({ type: 'audio-end', segmentId })
-    }
-  })
 
   // A subagent's nested calls, keyed by the PARENT call — emitted live as the full list and
   // persisted (terminal states only) on the parent's tool record.
@@ -170,12 +118,9 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     } else if (ev.type === 'text-delta') {
       assistantText += ev.text
       deps.emit({ type: 'transcript', role: 'assistant', text: ev.text })
-      if (deps.speak) {
-        for (const chunk of chunker.push(ev.text)) await pipeline.push(chunk)
-      } else if (!sawText) {
-        // Text-only turn: no TTS; signal the client to animate a typing state.
-        deps.emit({ type: 'state', state: 'typing' })
-      }
+      // Text is streaming: the client animates a typing state. For a spoken turn the web's voice
+      // socket withholds this from the originating tab, which shows `speaking` once audio starts.
+      if (!sawText) deps.emit({ type: 'state', state: 'typing' })
       sawText = true
     } else if (ev.type === 'tool-start') {
       deps.emit({ type: 'state', state: 'tool' })
@@ -217,10 +162,6 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
     }
   }
   if (deps.signal.aborted) return messages
-  if (deps.speak) {
-    for (const chunk of chunker.flush()) await pipeline.push(chunk)
-    await pipeline.drain()
-  }
   deps.emit({ type: 'state', state: 'idle' })
 
   // ALWAYS sanitize the assistant text (append real embeds when an image was produced; strip any

@@ -1,5 +1,5 @@
 // Cycle 81 Task 2 review M2: the iMessage catch-up health lives in the executing process. In remote
-// mode (web with AGENT_EXECUTOR=worker) the web reads the worker's heartbeat status and routes forced
+// mode (the web) the web reads the worker's heartbeat status and routes forced
 // checks / resets to the worker; in local mode it uses its own in-memory state (unchanged).
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -18,7 +18,7 @@ const WORKER = { ok: false, privateApi: null, checkedAt: 2, error: 'BlueBubbles 
 
 afterEach(() => { setExecutionMode('local'); vi.clearAllMocks() })
 
-describe('local mode (AGENT_EXECUTOR=web)', () => {
+describe('local mode (the executing process)', () => {
   it('reads, checks and resets this process\'s own state; never talks to a worker', async () => {
     m.lastHealth.mockReturnValue(LOCAL)
     expect(await currentImessageHealth()).toEqual(LOCAL)
@@ -31,7 +31,7 @@ describe('local mode (AGENT_EXECUTOR=web)', () => {
   })
 })
 
-describe('remote mode (AGENT_EXECUTOR=worker)', () => {
+describe('remote mode (the web)', () => {
   it('health = what the worker published with its latest heartbeat', async () => {
     setExecutionMode('remote')
     m.workerStatus.mockResolvedValue({ online: true, status: { imessage: WORKER } })

@@ -2,19 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { handleTurn, type VoiceEvent } from './orchestrator'
 import type { AgentEvent } from '../agent/run'
 import type { NestedToolEvent } from '../agent/types'
-import type { VoicePresetDTO } from '../../shared/types/voice-presets'
 import { ARGS_WRITE_CAP } from '../agent/tool-history'
-
-const preset: VoicePresetDTO = {
-  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
-  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
-  maxSegmentChars: 200, calibratedRefKey: null, refSource: null, starredSeeds: [], isDefault: true
-}
 
 async function run(agentEvents: AgentEvent[]) {
   const events: VoiceEvent[] = []
   const out = await handleTurn('research orpheus', [], {
-    tts: { async *synthesize() {} } as never, preset, signal: new AbortController().signal, speak: false,
+    signal: new AbortController().signal, speak: false,
     emit: e => { events.push(e) },
     async *runAgent() { for (const e of agentEvents) yield e }
   })

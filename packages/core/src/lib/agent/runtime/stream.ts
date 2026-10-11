@@ -1,11 +1,22 @@
-// In-process fan-out for a conversation's running turn. A run with ZERO subscribers still
-// completes and persists — sockets are viewers, not owners. JSON frames of the active run are
-// buffered so a socket that opens the thread mid-run (another tab, a second device, a reload)
-// can replay the turn so far: the client's turn-stream rejects a text-delta whose message
-// never started, so a late joiner without replay would see a poisoned stream.
+// Where a running turn's frames go. Cycle 81: the runner executes in apps/worker, so its default
+// publisher is the Postgres run-event log (bus-publisher.ts → lib/bus/events.ts), which the web's
+// voice sockets read through lib/bus/relay.ts. A run with ZERO subscribers still completes and
+// persists — sockets are viewers, not owners.
 export interface Sink { id: string; send(data: string | Uint8Array): void }
 
-export class StreamHub {
+/** The runner's output: JSON hub frames (lib/bus/events.ts's HubFrame, serialized), `only` targeting
+ *  one sink. `endRun` resolves once every frame published is delivered (the bus: committed). */
+export interface RunPublisher {
+  beginRun(conversationId: string): void
+  publish(conversationId: string, data: string, opts?: { only?: string }): void
+  endRun(conversationId: string): void | Promise<void>
+}
+
+/** In-process fan-out, kept for tests and in-process captures (the golden frame sequence the bus
+ *  stream is compared against). JSON frames of the active run are buffered so a subscriber that
+ *  joins mid-run can replay the turn so far: the client's turn-stream rejects a text-delta whose
+ *  message never started, so a late joiner without replay would see a poisoned stream. */
+export class StreamHub implements RunPublisher {
   private subs = new Map<string, Map<string, Sink>>()
   private buffers = new Map<string, string[]>()
   private sinkCounts = new Map<string, number>()
@@ -45,8 +56,6 @@ export class StreamHub {
     try { s.send(d) } catch { /* a closed socket must never break the run or other sinks */ }
   }
 }
-
-export const hub = new StreamHub()
 
 /**
  * Wrap a sink so every JSON string frame sent through it is tagged with `conversationId` — a

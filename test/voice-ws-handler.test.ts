@@ -20,8 +20,20 @@ const m = vi.hoisted(() => ({
   clear: vi.fn(async () => {}),
   addApproval: vi.fn(async () => ({})),
   turnStreamFor: vi.fn((): unknown => undefined),
+  // Cycle 81: the socket subscribes through the run-event relay (frames come off the bus).
+  subscribe: vi.fn((_cid: string, _sink: unknown, _o?: unknown) => () => {}),
+  synthesize: vi.fn(async function* (_text: string) {
+    yield { kind: 'begin' as const, sampleRate: 24000 }
+    yield { kind: 'pcm' as const, bytes: new Uint8Array([1, 2]) }
+  }),
   order: [] as string[]
 }))
+vi.mock('@mymind/core/lib/bus/relay', () => ({ runEventRelay: () => ({ subscribe: m.subscribe }) }))
+vi.mock('@mymind/core/lib/voice/speak', () => ({ speakWithPreset: (text: string) => m.synthesize(text) }))
+vi.mock('@mymind/core/services/voice-presets', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@mymind/core/services/voice-presets')>()
+  return { ...real, resolveTurnVoice: async () => ({ preset: real.FALLBACK_PRESET, refAudio: null }) }
+})
 vi.mock('@mymind/core/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue, abortActive: m.abortActive, abortActiveAndWait: m.abortActiveAndWait }))
 vi.mock('@mymind/core/lib/agent/runtime/aborts', () => ({ abortRun: m.abortRun }))
 vi.mock('@mymind/core/lib/agent/runtime/approvals', () => ({
@@ -38,7 +50,8 @@ vi.mock('@mymind/core/lib/exec/approvals', async (importOriginal) => ({
 }))
 
 import handler from '../server/api/voice/ws'
-import { hub } from '@mymind/core/lib/agent/runtime/stream'
+import type { RelaySink } from '@mymind/core/lib/bus/relay'
+import type { HubFrame } from '@mymind/core/lib/bus/events'
 
 type H = { open: (p: unknown) => void; message: (p: unknown, msg: unknown) => Promise<void>; close: (p: unknown) => void }
 const h = handler as unknown as H
@@ -68,12 +81,11 @@ describe('ws runtime socket', () => {
   it('a text frame carrying conversationId on a fresh socket enqueues into THAT thread and follows it', async () => {
     const cid = '0b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b'
     const p = peer(); h.open(p)
-    const sub = vi.spyOn(hub, 'subscribe')
+    const sub = m.subscribe
     m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('r1', req.sessionKey.slice(7)))
     await h.message(p, frame({ type: 'text', text: 'after the restart', conversationId: cid }))
     expect(sessionKeys()).toEqual([`thread:${cid}`])
     expect(sub.mock.calls.map(c => c[0])).toEqual([cid])
-    sub.mockRestore()
   })
 
   it('the text frame\'s conversationId wins over a stale socket view', async () => {
@@ -100,7 +112,7 @@ describe('ws runtime socket', () => {
 
   it('a load during an in-flight enqueue is not undone when the enqueue returns', async () => {
     const p = peer(); h.open(p)
-    const sub = vi.spyOn(hub, 'subscribe')
+    const sub = m.subscribe
     const first = deferred<ReturnType<typeof result>>()
     m.enqueue.mockImplementationOnce(() => first.promise).mockImplementation(async (req: { sessionKey: string }) => result('r2', req.sessionKey.slice(7)))
     const a = h.message(p, frame({ type: 'text', text: 'one' }))
@@ -111,7 +123,6 @@ describe('ws runtime socket', () => {
     expect(sub.mock.calls.map(c => c[0])).not.toContain('cNew')
     await h.message(p, frame({ type: 'text', text: 'three' }))
     expect(sessionKeys()[1]).toBe('thread:c2')
-    sub.mockRestore()
   })
 
   it('a `new` during an in-flight new-thread enqueue is not undone either', async () => {
@@ -129,14 +140,52 @@ describe('ws runtime socket', () => {
 
   it('load does not subscribe; attach subscribes + replays in one step', async () => {
     const p = peer(); h.open(p)
-    const sub = vi.spyOn(hub, 'subscribe')
+    const sub = m.subscribe
     await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
     expect(sub).not.toHaveBeenCalled()
     await h.message(p, frame({ type: 'attach' }))
     expect(sub).toHaveBeenCalledOnce()
     expect(sub.mock.calls[0]![0]).toBe('c1')
     expect(sub.mock.calls[0]![2]).toEqual({ replay: true })
-    sub.mockRestore()
+  })
+
+  it('bus frames reach the peer tagged with their thread; a bus approval arrives in the card\'s shape only', async () => {
+    const p = peer(); h.open(p)
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'attach' }))
+    const sink = m.subscribe.mock.calls[0]![1] as RelaySink
+    sink.deliver({ type: 'state', state: 'thinking' }, { runId: 'r1', seq: 1 })
+    sink.deliver({ type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?', logSummary: 'secret-free', callId: 'k1', args: { a: 1 } } as HubFrame, { runId: 'r1', seq: 2 })
+    expect(types(p)).toEqual([
+      { cid: 'c1', type: 'state', state: 'thinking' },
+      { cid: 'c1', type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?' }
+    ])
+  })
+
+  it('a spoken turn this socket started is synthesized HERE from its streamed text (spec §4); Stop silences it', async () => {
+    const p = peer(); h.open(p)
+    m.enqueue.mockImplementation(async () => result('r1', 'c1'))
+    await h.message(p, frame({ type: 'text', text: 'hi', speak: true, conversationId: 'c1' }))
+    const sink = m.subscribe.mock.calls.at(-1)![1] as RelaySink
+    const chunk = (c: Record<string, unknown>) => ({ type: 'chunk', turnId: 9, chunk: c } as unknown as HubFrame)
+    sink.deliver({ type: 'user-message', turnId: 9, message: { id: 'u', role: 'user', parts: [] } } as HubFrame, { runId: 'r1', seq: 1 })
+    sink.deliver(chunk({ type: 'text-delta', id: 't', delta: 'You have two tasks. ' }), { runId: 'r1', seq: 2 })
+    sink.deliver({ type: 'state', state: 'typing' }, { runId: 'r1', seq: 3 })
+    await new Promise(r => setTimeout(r, 20))
+    expect(m.synthesize).toHaveBeenCalledWith('You have two tasks.')
+    const out = types(p)
+    expect(out.map(f => f.type)).toEqual(['user-message', 'chunk', 'state', 'audio-begin', 'audio-end'])
+    expect(out.find(f => f.type === 'state')).toMatchObject({ state: 'speaking', cid: 'c1' }) // typing withheld
+    expect(out.find(f => f.type === 'audio-begin')).toMatchObject({ cid: 'c1', turnId: 9, segmentId: 1, sampleRate: 24000 })
+    // A run this socket did not start speaking (another tab's): text only.
+    sink.deliver(chunk({ type: 'text-delta', id: 't2', delta: 'Someone else asked this. ' }), { runId: 'r-other', seq: 1 })
+    await new Promise(r => setTimeout(r, 20))
+    expect(m.synthesize).toHaveBeenCalledTimes(1)
+    // Stop: nothing more is spoken for r1.
+    await h.message(p, frame({ type: 'interrupt' }))
+    sink.deliver(chunk({ type: 'text-delta', id: 't', delta: 'And one more sentence here. ' }), { runId: 'r1', seq: 4 })
+    await new Promise(r => setTimeout(r, 20))
+    expect(m.synthesize).toHaveBeenCalledTimes(1)
   })
 
   it('the approval request reaches the run\'s turn stream with the call\'s args (the card renders even if it beats tool-start)', async () => {

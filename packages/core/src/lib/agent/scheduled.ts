@@ -1,7 +1,6 @@
 // Cycle 81 (spec §2, D6): the agent's scheduled tasks — summarize-threads, reflect-threads,
 // reflect-jobs — moved out of Nitro `scheduledTasks` (server/tasks/*.ts) so the process that
-// executes agent runs owns them: the worker (AGENT_EXECUTOR=worker) or, until Task 3 removes the
-// flag, the web (AGENT_EXECUTOR=web; server/plugins/agent-runtime.ts starts this same schedule).
+// executes agent runs owns them: apps/worker.
 // Bodies are unchanged from the old task files; only the trigger moved (croner instead of Nitro cron,
 // same UTC expressions).
 import { Cron } from 'croner'

@@ -1,5 +1,6 @@
 // Cycle 81 Task 2 — the worker's lifecycle with every side effect faked (no DB): boot order, the
-// tick/schedule/recorder start, the `kick` command, SIGTERM drain, and the AGENT_EXECUTOR=web idle mode.
+// tick/schedule/recorder start, the `kick` command and SIGTERM drain. (Task 3 removed AGENT_EXECUTOR
+// and its web-executes idle mode: this worker is the only executor.)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandHandlers } from '@mymind/core/lib/bus/commands'
 import { commandHandlers, createWorkerProcess, runWorker, type SignalName, type WorkerDeps, type WorkerTimings } from './worker'
@@ -15,7 +16,6 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
   const inFlight = new Set<Promise<void>>()
   let claimingStopped = false
   const deps: WorkerDeps = {
-    executor: 'worker',
     boot: vi.fn(async (_stopped: () => boolean) => { calls.push('boot') }),
     tick: vi.fn(async () => { calls.push('tick') }),
     kick: vi.fn(() => { calls.push(claimingStopped ? 'kick:ignored' : 'kick') }),
@@ -64,7 +64,7 @@ async function startWorkerProcess(deps: WorkerDeps, t: WorkerTimings) {
 beforeEach(() => { vi.useFakeTimers() })
 afterEach(() => { vi.useRealTimers() })
 
-describe('worker boot (AGENT_EXECUTOR=worker)', () => {
+describe('worker boot', () => {
   it('beats, recovers orphans BEFORE anything can claim, then starts commands, bridge, pump, schedule, recorder flush', async () => {
     const { deps, calls } = fakeDeps()
     await startWorkerProcess(deps, T)
@@ -110,12 +110,6 @@ describe('worker-owned iMessage health (review M2)', () => {
     expect(deps.beat).toHaveBeenCalledWith({ imessage: { ok: true, privateApi: true, checkedAt: 7 } })
     expect(await handlers()['imessage-health']({ action: 'check' })).toEqual({ ok: true, privateApi: true, checkedAt: 7 })
     expect(deps.imessageHealth).toHaveBeenCalledWith('check')
-  })
-  it('in web mode the idle worker beats WITHOUT a status (it owns no catch-up)', async () => {
-    const { deps } = fakeDeps({ executor: 'web' })
-    await startWorkerProcess(deps, T)
-    expect(deps.beat).toHaveBeenCalledWith(undefined)
-    expect(deps.beatStatus).not.toHaveBeenCalled()
   })
 })
 
@@ -215,23 +209,10 @@ describe('worker drain (SIGTERM)', () => {
   })
 })
 
-describe('AGENT_EXECUTOR=web (Task 2 default)', () => {
-  it('only heartbeats: no recovery, commands, tick, pump or schedule — the web executes', async () => {
-    const { deps, calls } = fakeDeps({ executor: 'web' })
-    const w = await startWorkerProcess(deps, T)
-    await vi.advanceTimersByTimeAsync(12_000)
-    expect(new Set(calls)).toEqual(new Set(['beat']))
-    await w.drain()
-    expect(deps.waitForInFlight).not.toHaveBeenCalled()
-    expect(deps.boot).not.toHaveBeenCalled()
-  })
-})
-
 describe('workerSettings (env)', () => {
-  it('maps CoreConfig through core\'s fromEnv (NUXT_ overrides, executor, ns) with timing defaults', () => {
-    const s = workerSettings({ DATABASE_URL: 'postgres://plain', NUXT_DATABASE_URL: 'postgres://nuxt', AGENT_EXECUTOR: 'worker', MYMIND_BUS_NS: 'w2' })
+  it('maps CoreConfig through core\'s fromEnv (NUXT_ overrides, ns) with timing defaults', () => {
+    const s = workerSettings({ DATABASE_URL: 'postgres://plain', NUXT_DATABASE_URL: 'postgres://nuxt', MYMIND_BUS_NS: 'w2' })
     expect(s.core.databaseUrl).toBe('postgres://nuxt')
-    expect(s.core.agentExecutor).toBe('worker')
     expect(s.core.busNs).toBe('w2')
     expect(s.core.dev).toBe(false)
     expect({ tickMs: s.tickMs, beatMs: s.beatMs, drainMs: s.drainMs }).toEqual({ tickMs: 5_000, beatMs: 5_000, drainMs: 60_000 })

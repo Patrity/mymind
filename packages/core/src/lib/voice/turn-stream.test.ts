@@ -57,19 +57,12 @@ describe('createTurnStream', () => {
     expect(h.chunks()).toEqual([])
   })
 
-  it('adds turnId to audio-begin and passes PCM, audio-end and state through', () => {
+  // Cycle 81: no audio passes through the turn stream any more — the worker emits text and the
+  // web's voice socket synthesizes (server/lib/voice/socket-tts.ts adds the turnId to audio-begin).
+  it('passes state frames through unchanged', () => {
     const h = harness()
-    const pcm = new Uint8Array([1, 2])
-    h.ts.emit({ type: 'audio-begin', segmentId: 1, sampleRate: 24000 })
-    h.ts.emit({ type: 'audio', bytes: pcm })
-    h.ts.emit({ type: 'audio-end', segmentId: 1 })
-    h.ts.emit({ type: 'state', state: 'speaking' })
-    expect(h.frames).toEqual([
-      { type: 'audio-begin', segmentId: 1, sampleRate: 24000, turnId: 7 },
-      pcm,
-      { type: 'audio-end', segmentId: 1 },
-      { type: 'state', state: 'speaking' }
-    ])
+    h.ts.emit({ type: 'state', state: 'typing' })
+    expect(h.frames).toEqual([{ type: 'state', state: 'typing' }])
   })
 
   it('lands text emitted after state:idle (the image-embed append) before finish', async () => {

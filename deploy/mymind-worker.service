@@ -13,12 +13,12 @@ User=root
 WorkingDirectory=/opt/mymind
 Environment=NODE_ENV=production
 # Recovery may take over any 'running' run claimed by a previous boot, however fresh (cycle 73, I4).
-# Safe because exactly one process executes against the prod DB: whichever AGENT_EXECUTOR names
-# (the other one never runs boot recovery). Never set this where other processes share the DB.
+# Safe because this worker is the only process that executes against the prod DB (the web never
+# claims a run or runs boot recovery). Never set this where other processes share the DB.
 Environment=AGENT_RUNTIME_EXCLUSIVE=1
 # The SAME env as the web unit, in the same order — the worker maps it with core's fromEnv, which
-# applies the same NUXT_* overrides the web sees (NUXT_DATABASE_URL etc.), plus MYMIND_BUS_NS and
-# AGENT_EXECUTOR, which both processes must agree on.
+# applies the same NUXT_* overrides the web sees (NUXT_DATABASE_URL etc.), plus MYMIND_BUS_NS, which
+# both processes must agree on.
 EnvironmentFile=/opt/mymind/.env
 EnvironmentFile=/opt/mymind/.env.native
 # The ACTIVE release (deploy/worker-release.sh): bundle + its own node_modules, outside the tree CD

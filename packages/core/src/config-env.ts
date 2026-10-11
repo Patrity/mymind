@@ -11,8 +11,8 @@
 //    override). The worker has no build step: `fromEnv` evaluates the same defaults from its env and
 //    applies the same NITRO_/NUXT_ overrides (`applyRuntimeEnv`, a faithful copy of Nitro's
 //    applyEnv — test/core-config.test.ts runs both against Nitro's own implementation).
-//  - env-backed (busNs, agentExecutor): read from the RUNTIME process env by both processes, never
-//    baked at build, so `MYMIND_BUS_NS` / `AGENT_EXECUTOR` in .env.native reach the web too.
+//  - env-backed (busNs): read from the RUNTIME process env by both processes, never baked at build,
+//    so `MYMIND_BUS_NS` in .env.native reaches the web too.
 //  - `dev` is a host fact: the web passes Nitro's build-time `import.meta.dev`; the worker passes
 //    its own (false in the esbuild bundle, NODE_ENV=development under `tsx watch`).
 import { destr } from 'destr'
@@ -31,9 +31,8 @@ export type CoreRuntimeKey =
 export type CoreRuntimeConfigSource = { [K in CoreRuntimeKey]?: unknown }
 
 /** CoreConfig fields read from the runtime process env (both processes), never from runtimeConfig. */
-export const ENV_BACKED_FIELDS = ['busNs', 'agentExecutor'] as const
+export const ENV_BACKED_FIELDS = ['busNs'] as const
 
-export const AGENT_EXECUTOR_ENV = 'AGENT_EXECUTOR'
 export const BUS_NS_ENV_NAME = 'MYMIND_BUS_NS'
 
 /**
@@ -156,10 +155,7 @@ export function fromRuntimeConfig(rc: CoreRuntimeConfigSource, host: HostFacts =
 /** The env-backed fields, from the runtime env. */
 export function envBacked(env: Env): Pick<CoreConfig, typeof ENV_BACKED_FIELDS[number]> {
   return {
-    busNs: env[BUS_NS_ENV_NAME] || undefined,
-    // Anything but the literal 'worker' is 'web' (today's behaviour). Both processes run this same
-    // function over the same env files, so a typo can never make them disagree on who executes.
-    agentExecutor: env[AGENT_EXECUTOR_ENV] === 'worker' ? 'worker' : 'web'
+    busNs: env[BUS_NS_ENV_NAME] || undefined
   }
 }
 

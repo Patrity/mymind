@@ -17,18 +17,9 @@ import { handleTurn } from '@mymind/core/lib/voice/orchestrator'
 import type { VoiceEvent } from '@mymind/core/lib/voice/orchestrator'
 import type { AgentEvent } from '@mymind/core/lib/agent/run'
 import { buildTurnPersistPayload, type TurnPersistContext } from '@mymind/core/lib/voice/turn-persist'
-import type { VoicePresetDTO } from '@mymind/core/shared/types/voice-presets'
-
-const preset: VoicePresetDTO = {
-  id: 'p1', name: 'n', instruction: 'A calm man.', cfgScale: 4, seed: 11, temperature: 0.9,
-  topP: 1, topK: 50, refStorageKey: null, refText: null, refDurationMs: null,
-  maxSegmentChars: 200, isDefault: true
-}
 
 function fakeDeps(agentEvents: AgentEvent[], emit: (e: VoiceEvent) => void) {
   return {
-    tts: { async *synthesize() { /* not exercised: speak: false */ } } as never,
-    preset,
     signal: new AbortController().signal,
     speak: false,
     emit,
