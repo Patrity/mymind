@@ -16,5 +16,5 @@ describe('agent module load order', () => {
     const { bridgetProfile, workstreamProfile } = await import('./profile')
     for (const t of [...bridgetProfile.tools, ...workstreamProfile.tools]) expect(t?.name).toBeTypeOf('string')
     expect(workstreamProfile.tools.map(t => t.name)).toContain('finish_workstream')
-  })
+  }, 30_000) // the first entry transforms the whole agent graph cold (~2s alone; > 5s in a loaded full run)
 })
