@@ -244,7 +244,7 @@ describe('exec', () => {
       const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
       const ac = new AbortController()
       const p = m.exec(WS, ':(){ :|:& };:', { signal: ac.signal })
-      await new Promise(r => setTimeout(r, 20))
+      for (let i = 0; i < 200 && !calls.some(c => c[0] === 'exec' && c.includes('mm-exec')); i++) await new Promise(r => setTimeout(r, 2))
       ac.abort()
       expect((await p).aborted).toBe(true)
       await new Promise(r => setTimeout(r, 30))
@@ -308,7 +308,8 @@ describe('exec', () => {
     }
     const ac = new AbortController()
     const p = createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } }).exec(WS, 'sleep 100', { signal: ac.signal })
-    await new Promise(r => setTimeout(r, 15))
+    // Abort once the exec is really running (the capacity check before it takes a few docker calls).
+    for (let i = 0; i < 200 && !seen; i++) await new Promise(r => setTimeout(r, 2))
     ac.abort()
     const r = await p
     expect(r.aborted).toBe(true)
