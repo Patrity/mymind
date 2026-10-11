@@ -477,6 +477,13 @@
       "when": 1791257837748,
       "tag": "0067_confused_thanos",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1791696335374,
+      "tag": "0068_zippy_anthem",
+      "breakpoints": true
     }
   ]
 }

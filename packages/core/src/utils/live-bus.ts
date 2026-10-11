@@ -20,3 +20,10 @@ export function subscribeChanges(cb: (e: LiveEvent) => void): () => void {
   emitter.on(CHANNEL, cb)
   return () => emitter.off(CHANNEL, cb)
 }
+
+/** Cycle 81: emit an already-built event as-is (the cross-process bridge re-delivering a change
+ *  published in another process). Keeps object identity so the bridge can tell it from a local
+ *  publish and never forwards it back out. */
+export function deliverChange(e: LiveEvent): void {
+  emitter.emit(CHANNEL, e)
+}
