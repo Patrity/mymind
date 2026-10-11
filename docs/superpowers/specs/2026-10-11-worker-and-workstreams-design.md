@@ -2,7 +2,7 @@
 title: "Agent worker + workstreams — runs move to apps/worker over a Postgres event bus; long-running workstreams (cycle 81, harness step 2)"
 cycle: 81
 date: 2026-10-11
-status: spec
+status: built  # see handover 2026-10-11-worker-and-workstreams.md
 supersedes: null
 builds_on: 2026-10-09-core-package-extraction-design.md
 ---
