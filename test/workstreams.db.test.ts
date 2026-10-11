@@ -664,6 +664,23 @@ describe('fix round 1', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
+  it('M2: an approval attention left over when the segment ends (its card is gone) is cleared and the work continues', async () => {
+    const { seen, drive } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      yield { type: 'tool-result', name: 'search_memories', summary: 'x' }
+      if (seg === 0) {
+        // A late attention write landing after the card was already resolved.
+        const ws = await getWorkstream((await useDb().select({ id: workstreams.id }).from(workstreams).where(eq(workstreams.currentRunId, ctx.runId!)))[0]!.id)
+        await patchWorkstream(ws!.id, { state: 'attention', attention: { kind: 'approval', text: 'stale', requestId: '00000000-0000-4000-8000-0000000000aa' } })
+      } else await callTool(ctx, 'finish_workstream', { summary: 'ok' })
+      yield { type: 'done' }
+    })
+    const { ws } = await newWorkstream('stale-attention')
+    await drive(ws.conversationId)
+    expect(seen).toHaveLength(2)
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'done', attention: null })
+  })
+
   it('M8: a transition that keeps throwing counts toward the 3-failure cap', async () => {
     const { ws } = await newWorkstream('handler-fail')
     const [q] = await segRuns(ws.conversationId)

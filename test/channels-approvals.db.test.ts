@@ -47,7 +47,7 @@ import { agentRuns, channelApprovals, conversations } from '@mymind/core/db/sche
 import { createConversation } from '@mymind/core/services/conversations'
 import { blueBubblesClient, type BlueBubblesClient } from '@mymind/core/lib/channels/bluebubbles/client'
 import {
-  imessageApprovalChannel, replyToApprovalChannel, resolveTapback, expireApprovals, _dropWaiters, APPROVAL_TIMEOUT_MS
+  imessageApprovalChannel, replyToApprovalChannel, resolveTapback, expireApprovals, _dropWaiters, APPROVAL_TIMEOUT_MS, APPROVAL_WITHDRAWN
 } from '@mymind/core/lib/channels/approvals'
 import { catchUpTick, lastHealth, _resetCatchUp } from '@mymind/core/lib/channels/inbound'
 import type { AgentTool, ApprovalRequest } from '@mymind/core/lib/agent/types'
@@ -281,6 +281,18 @@ describe('abort (final review I1): Stop / /clear unwinds an iMessage approval wa
     await resolveTapback(tapback(promptGuid))
     expect((await rowsFor(run))[0]!.status).toBe('denied')
     expect(events.some(e => e.name === 'exec:approval' && e.meta?.reason === 'aborted' && e.meta?.runId === run)).toBe(true)
+  })
+
+  // Cycle 81 (workstream review I1): a prompt WITHDRAWN (the card answered first, or the worker is
+  // restarting with the card parked) is closed as expired — nothing was denied.
+  it('withdrawn (abort reason APPROVAL_WITHDRAWN) → the wait ends, the row is expired, not denied', async () => {
+    const run = await newRun()
+    const ac = new AbortController()
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 60_000, timeoutMs: 60_000, signal: ac.signal })(REQ)
+    await promptFor(run)
+    ac.abort(APPROVAL_WITHDRAWN)
+    expect(await p).toEqual({ approved: false })
+    expect(await statusOnce(run, 'expired')).toBe('expired')
   })
 
   it('already aborted → denied immediately, no prompt texted, no row', async () => {
