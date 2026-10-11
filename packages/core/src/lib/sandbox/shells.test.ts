@@ -225,7 +225,7 @@ describe('Task 3 fix round 2: bash_output over a NON-UTF-8 stream is contiguous 
     return { joined: parts.join(''), offset: store.rows.get(s)!.readOffset, reads: parts.length }
   }
   // ASCII, a 3-byte "€" straddling the 32 KB edge, a secret, a lone invalid byte, a 4-byte emoji
-  // straddling the second edge, then more text: N reads must rebuild the whole (masked) stream.
+  // near the next edge, then more text: N reads must rebuild the whole (masked) stream.
   const a = Buffer.from('A'.repeat(SHELL_OUTPUT_CHUNK - 1))
   const euro = Buffer.from('€')
   const mid = Buffer.concat([Buffer.from(' token=' + SECRET + ' '), Buffer.from([0xff]), Buffer.from(' RESTMARKER ')])
@@ -234,7 +234,7 @@ describe('Task 3 fix round 2: bash_output over a NON-UTF-8 stream is contiguous 
   const tail = Buffer.from(' the end\n')
   const stream = Buffer.concat([a, euro, mid, b, emoji, tail])
 
-  it('N reads concatenate to exactly the full masked stream (multibyte chars on both chunk edges, a secret, invalid bytes)', async () => {
+  it('N reads concatenate to exactly the full masked stream (a 3-byte char on the 32 KB edge, a secret, an invalid byte, a 4-byte char)', async () => {
     const { joined, offset, reads } = await readAll(stream, [SECRET])
     expect(reads).toBeGreaterThan(2)
     expect(joined).toBe(stream.toString('utf8').split(SECRET).join('«redacted»'))
