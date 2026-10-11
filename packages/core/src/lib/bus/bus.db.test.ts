@@ -307,7 +307,13 @@ describe('worker_commands', () => {
       const err = await sendCommand('undo', { token: `${TAG}-other-ns` }, { awaitResult: true, timeoutMs: 1_000 }).catch(e => e)
       expect(err).toBeInstanceOf(CommandTimeoutError) // the child polls every 200ms: it had 5 chances
       expect((err as CommandTimeoutError).claimed).toBe(false)
+      // A notify in A's namespace that points at B's row (forged / mis-routed) must not claim it.
+      const [rowB] = await useDb().insert(workerCommands).values({ ns: busNs(), type: 'undo', payload: { token: `${TAG}-forged` } }).returning()
       setBusNs(nsA)
+      await busNotify('worker_command', String(rowB!.id))
+      await sleep(600)
+      const [afterB] = await useDb().select().from(workerCommands).where(eq(workerCommands.id, rowB!.id))
+      expect(afterB?.claimedAt).toBeNull()
       const res = await sendCommand('undo', { token: `${TAG}-same-ns` }, { awaitResult: true, timeoutMs: 10_000 })
       expect(res?.reason).toBe(`undone:${TAG}-same-ns:pid=${c.child.pid}`)
     } finally {
