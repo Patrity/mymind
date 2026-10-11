@@ -18,7 +18,7 @@ vi.mock('@mymind/core/lib/google/connections', async (importOriginal) => ({
 
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
-import { agentInbox, agentRuns, conversationMessages, conversations, runEvents, workerCommands, workstreams, type AgentRun } from '@mymind/core/db/schema'
+import { agentInbox, agentRuns, channelApprovals, conversationMessages, conversations, runEvents, workerCommands, workstreams, type AgentRun } from '@mymind/core/db/schema'
 import { _resumeClaimingForTests, enqueue, pumpOnce, setExecutionMode, stopClaiming, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
 import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { recoverStale } from '@mymind/core/lib/agent/runtime/recover'
@@ -579,8 +579,11 @@ describe('fix round 1', () => {
     for (let i = 0; i < 4; i++) {
       const runId = await killSegment(ws.conversationId)
       await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'approval', text: 'run it?', requestId: `00000000-0000-4000-8000-00000000000${i}`, runId, request: { tool: 'exec', command: 'x', proposedPattern: 'x' } } })
+      // The dead segment's iMessage prompt: nothing will ever wait on it again.
+      const [prompt] = await useDb().insert(channelApprovals).values({ runId, request: { tool: 'exec' }, chatGuid: 'iMessage;-;+15550000000', expiresAt: new Date(Date.now() + 3_600_000) }).returning()
       await recoverStale({ onlyConversations: [ws.conversationId] })
       expect(await getWorkstream(ws.id)).toMatchObject({ state: 'attention', failures: 0, lastOutcome: 'parked' })
+      expect((await useDb().select().from(channelApprovals).where(eq(channelApprovals.id, prompt!.id)))[0]!.status).toBe('expired')
     }
     expect(await activeSegs(ws.conversationId)).toEqual([])
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
