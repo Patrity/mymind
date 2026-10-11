@@ -6,6 +6,9 @@
 // `onSegmentFinished` (queue.ts execute, after finishRun) decides what happens next:
 //   finish_workstream called → done (the tool already posted the summary + notified);
 //   ask_tony called          → attention {question}; the next segment starts on Tony's reply;
+//   Stop pressed in the thread, or two idle segments in a row
+//                            → paused (final review I3): no iMessage capture, no nudges, still
+//                              counts toward the cap; resumes from the UI or a reply in the thread;
 //   cancel                   → cancelled (the segment stopped after its current step);
 //   budget used up           → one final, tool-free summary segment, then failed (reason kept);
 //   segment failed           → retried; the 3rd consecutive failure → failed (never a loop);
@@ -51,8 +54,10 @@ import { stepCostUsd } from './cost'
 /** Non-terminal workstreams at once (review I2, controller ruling): bounds fan-out through jobs/wakes. */
 export const MAX_ACTIVE_WORKSTREAMS = 3
 export class WorkstreamCapError extends Error { override name = 'WorkstreamCapError' }
-/** A workstream still waiting on Tony is re-announced at most this often (review M1). */
+/** A workstream still waiting on Tony is re-announced at most this often (review M1)… */
 export const NUDGE_EVERY_MS = 2 * 60 * 60 * 1000
+/** …and at most this many times per attention episode (final review I3): never all night. */
+export const MAX_NUDGES = 3
 /** Two consecutive segments with no tool call and no finish_workstream → ask Tony (review M3). */
 
 /** Model steps per segment (spec §5.2). */
@@ -66,7 +71,8 @@ export const FINAL_STEP_MAX_MS = 10 * 60_000
 
 type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
 type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield' | 'park'
-const RUNNABLE: Array<WorkstreamRow['state']> = ['queued', 'running', 'attention']
+/** Non-terminal: what the cap counts and what a reply/resume may move on from. */
+const RUNNABLE: Array<WorkstreamRow['state']> = ['queued', 'running', 'attention', 'paused']
 
 function isTerminal(state: WorkstreamRow['state']): boolean { return TERMINAL_WORKSTREAM_STATES.includes(state) }
 
@@ -477,12 +483,11 @@ function attentionOf(ws: Pick<WorkstreamRow, 'attention'>): WorkstreamAttention 
   return (ws.attention as WorkstreamAttention | null) ?? null
 }
 
-/** Ask Tony: attention {question} + the usual notification ("reply to answer"). */
-async function askTony(ws: WorkstreamRow, question: string, lastOutcome?: string): Promise<void> {
-  const row = await patchWorkstream(ws.id, {
-    state: 'attention', attention: { kind: 'question', text: question, notifiedAt: Date.now() }, ...(lastOutcome ? { lastOutcome } : {})
-  }, ['running', 'attention'])
-  if (row) await notifyTony(row, questionNote(row.goal, question))
+/** Pause (final review I3): not a question — nothing to answer, so an inbound iMessage never lands
+ *  here and no nudge re-announces it. `note` is told to Tony once (the idle case); Stop is his own act. */
+async function pauseWorkstream(ws: WorkstreamRow, text: string, lastOutcome: string, note?: string): Promise<void> {
+  const row = await patchWorkstream(ws.id, { state: 'paused', attention: { kind: 'paused', text }, lastOutcome }, ['running', 'attention'])
+  if (row && note) await notifyTony(row, note)
 }
 
 export function questionNote(goal: string, question: string): string {
@@ -542,18 +547,19 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
       await patchWorkstream(ws.id, { lastOutcome: 'aborted' })
       return enqueueSegment(current, { text: unread.join('\n\n') })
     }
-    await patchWorkstream(ws.id, { state: 'attention', lastOutcome: 'aborted', attention: { kind: 'question', text: 'Stopped. Reply in this thread to continue, or cancel it.', notifiedAt: Date.now() } }, ['running'])
+    await pauseWorkstream(current, 'Stopped. Resume it, reply in this thread to continue, or cancel it.', 'aborted')
     return null
   }
 
   // Idle segments (review M3): no tool call and no finish_workstream. The first gets a nudge prompt;
-  // a second in a row means the model believes it is done (or is stuck) — ask Tony instead of
-  // burning the budget on empty segments.
+  // a second in a row means the model believes it is done (or is stuck) — pause and tell Tony once
+  // instead of burning the budget on empty segments (a pause, not a question: I3).
   const idle = stop !== 'yield' && (seg?.toolCalls ?? 1) === 0
   if (idle && current.lastOutcome === 'idle') {
     const unread = await drainSteerFor(run.id)
     if (unread.length) return enqueueSegment(current, { text: unread.join('\n\n') })
-    await askTony(current, 'The last two segments made no progress (no tool calls, no finish). Is this done? Reply with what to do next, or cancel it.', 'idle')
+    const why = 'Paused: the last two segments made no progress (no tool calls, no finish). Resume it, reply in its thread with what to do next, or cancel it.'
+    await pauseWorkstream(current, why, 'idle', `⚙ Workstream paused — ${current.goal}\n\n${why}`)
     return null
   }
   await patchWorkstream(ws.id, { failures: 0, lastOutcome: idle ? 'idle' : 'done' })
@@ -728,7 +734,9 @@ export async function restoreParkedApprovals(opts: { onlyConversations?: string[
 /**
  * The "still waiting" nudge (review M1): a workstream in attention is re-announced through the usual
  * channels (origin note; a text when Tony is away NOW) at most once per NUDGE_EVERY_MS — so a wait
- * that began while he was at the keyboard still reaches his phone once he has left.
+ * that began while he was at the keyboard still reaches his phone once he has left — and at most
+ * MAX_NUDGES times per attention episode (a new question/card starts a new episode). A paused
+ * workstream is never nudged (state 'paused', not 'attention'). (final review I3)
  */
 export async function nudgeWaitingWorkstreams(opts: { onlyConversations?: string[]; now?: number } = {}): Promise<number> {
   if (opts.onlyConversations && !opts.onlyConversations.length) return 0
@@ -740,8 +748,8 @@ export async function nudgeWaitingWorkstreams(opts: { onlyConversations?: string
   let n = 0
   for (const ws of rows) {
     const att = attentionOf(ws)
-    if (!att || now - (att.notifiedAt ?? 0) < NUDGE_EVERY_MS) continue
-    const row = await patchWorkstream(ws.id, { attention: { ...att, notifiedAt: now } }, ['attention'])
+    if (!att || att.kind === 'paused' || (att.nudges ?? 0) >= MAX_NUDGES || now - (att.notifiedAt ?? 0) < NUDGE_EVERY_MS) continue
+    const row = await patchWorkstream(ws.id, { attention: { ...att, notifiedAt: now, nudges: (att.nudges ?? 0) + 1 } }, ['attention'])
     if (!row) continue
     await notifyTony(row, `⚙ Still waiting on you — ${row.goal}\n\n${att.text}${att.kind === 'question' ? '\n\nReply to answer.' : ''}`)
     n++
@@ -818,8 +826,9 @@ export async function cancelWorkstream(ws: WorkstreamRow): Promise<void> {
 }
 
 /** Resume: a failed/cancelled workstream starts again (a used-up budget is extended by one
- *  segment's worth of steps and 30 min, so it can actually move); an attention one continues
- *  without an answer (or with `text` as the answer); a stalled one gets its next segment. */
+ *  segment's worth of steps and 30 min, so it can actually move); an attention or paused one
+ *  continues without an answer (or with `text` as the answer); a stalled one gets its next segment.
+ *  A paused one already counts toward the cap, so it is not re-checked. */
 export async function resumeWorkstream(ws: WorkstreamRow, text?: string, opts: { /** test seam */ cap?: number } = {}): Promise<void> {
   if (ws.state === 'done') throw new Error('the workstream is already done')
   if (ws.state === 'failed' || ws.state === 'cancelled') {
@@ -855,7 +864,8 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string, opts: {
 // ── Answers by iMessage (review I3, controller ruling) ──────────────────────────────────────────
 
 /**
- * An inbound iMessage while EXACTLY ONE workstream waits on a question is that question's answer:
+ * An inbound iMessage while EXACTLY ONE workstream waits on a question is that question's answer
+ * (state 'attention' AND kind 'question' — a paused workstream or an approval card never captures one):
  * it goes into the workstream (its next segment's prompt, origin `imessage:<chat>` kept) and main
  * gets a short event note. With none or several waiting it returns null — the text lands in main as
  * an ordinary turn, and Bridget can pass it on with `answer_workstream`. `onlyConversations` scopes

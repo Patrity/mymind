@@ -31,6 +31,8 @@ describe('controls', () => {
     expect(canResume('failed')).toBe(true)
     expect(canResume('cancelled')).toBe(true)
     expect(canResume('attention')).toBe(true)
+    expect(canResume('paused')).toBe(true)   // final review I3: Stop / idle → paused, resumable
+    expect(canCancel('paused')).toBe(true)
     expect(canResume('running')).toBe(false)
     expect(canResume('done')).toBe(false)
   })

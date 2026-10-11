@@ -11,7 +11,7 @@ export const workstreams = pgTable('workstreams', {
   // Where it was started from (summary + attention notes are posted there). Null once deleted.
   originConversationId: uuid('origin_conversation_id').references(() => conversations.id, { onDelete: 'set null' }),
   goal: text('goal').notNull(),
-  state: text('state').notNull().default('queued').$type<'queued' | 'running' | 'attention' | 'done' | 'failed' | 'cancelled'>(),
+  state: text('state').notNull().default('queued').$type<'queued' | 'running' | 'attention' | 'paused' | 'done' | 'failed' | 'cancelled'>(),
   toolsets: text('toolsets').array().notNull().default(sql`'{}'::text[]`),
   budget: jsonb('budget').notNull(),                 // WorkstreamBudget
   used: jsonb('used').notNull(),                     // WorkstreamUsed — persisted every step

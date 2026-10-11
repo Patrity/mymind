@@ -12,6 +12,7 @@ export const STATE_META: Record<WorkstreamState, { label: string; color: Color; 
   queued: { label: 'queued', color: 'neutral', icon: 'i-lucide-clock' },
   running: { label: 'running', color: 'info', icon: 'i-lucide-loader' },
   attention: { label: 'needs you', color: 'warning', icon: 'i-lucide-hand' },
+  paused: { label: 'paused', color: 'neutral', icon: 'i-lucide-pause' },
   done: { label: 'done', color: 'success', icon: 'i-lucide-circle-check' },
   failed: { label: 'failed', color: 'error', icon: 'i-lucide-circle-x' },
   cancelled: { label: 'cancelled', color: 'neutral', icon: 'i-lucide-ban' }
@@ -21,8 +22,8 @@ export function isTerminal(state: WorkstreamState): boolean {
   return state === 'done' || state === 'failed' || state === 'cancelled'
 }
 export function canCancel(state: WorkstreamState): boolean { return !isTerminal(state) }
-/** Resume restarts a failed/cancelled one, or continues one waiting on Tony without an answer. */
-export function canResume(state: WorkstreamState): boolean { return state === 'failed' || state === 'cancelled' || state === 'attention' }
+/** Resume restarts a failed/cancelled one, continues a paused one, or one waiting on Tony without an answer. */
+export function canResume(state: WorkstreamState): boolean { return state === 'failed' || state === 'cancelled' || state === 'attention' || state === 'paused' }
 
 /** "45s", "12m", "1h 05m" — compact, for tables and meters. */
 export function formatDuration(ms: number): string {

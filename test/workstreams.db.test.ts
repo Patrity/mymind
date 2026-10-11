@@ -30,6 +30,7 @@ import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation, appendMessages } from '@mymind/core/services/conversations'
 import { controlWorkstream, nudgeWaitingWorkstreams, onSegmentHandlerFailed, restoreParkedApprovals, routeInboundAnswer, startWorkstream, sweepStalledWorkstreams, WorkstreamCapError } from '@mymind/core/lib/agent/workstreams/loop'
 import { pushSteer } from '@mymind/core/lib/agent/runtime/inbox'
+import { abortRun } from '@mymind/core/lib/agent/runtime/aborts'
 import { replayAgentAction } from '@mymind/core/lib/agent/runtime/replay'
 import { getWorkstream, patchWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
@@ -691,7 +692,7 @@ describe('fix round 1', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
-  it('M3: two idle segments in a row (no tool call, no finish) → attention "Is this done?" instead of burning the budget', async () => {
+  it('M3 + final I3: two idle segments in a row (no tool call, no finish) → PAUSED (told once), not a question', async () => {
     const { seen, drive } = harness(async function* (ctx) {
       step(ctx)
       yield { type: 'text-delta', text: 'I think it is done.' }
@@ -702,10 +703,75 @@ describe('fix round 1', () => {
     expect(seen).toHaveLength(2)
     expect(seen[1]!.last).toMatch(/no tool calls in the last segment/)
     const row = (await getWorkstream(ws.id))!
-    expect(row.state).toBe('attention')
-    expect((row.attention as { text: string }).text).toMatch(/Is this done\?/)
-    expect(texts.join('\n')).toMatch(/Is this done\?/)
+    expect(row.state).toBe('paused')
+    expect(row.attention).toMatchObject({ kind: 'paused', text: expect.stringMatching(/made no progress/) })
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toMatch(/Workstream paused[\s\S]*made no progress/)
+    expect(texts[0]).not.toMatch(/Reply to answer/)
     expect(await activeSegs(ws.conversationId)).toEqual([])
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('final I3: Stop in the thread → paused: never captures an iMessage, never nudged, counts toward the cap, Resume continues it', async () => {
+    let stepped!: () => void
+    const stepping = new Promise<void>(r => { stepped = r })
+    const { seen, runFn, drive } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) {
+        stepped()
+        // A long step: it ends only when Tony presses Stop (the run's signal aborts).
+        await new Promise<void>(r => ctx.signal.addEventListener('abort', () => r(), { once: true }))
+        throw Object.assign(new Error('aborted'), { name: 'AbortError' })
+      }
+      await callTool(ctx, 'finish_workstream', { summary: 'resumed and done' })
+      yield { type: 'done' }
+    })
+    const { ws, origin } = await newWorkstream('stop')
+    expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })).toBe(1)
+    await stepping
+    const [seg0] = await activeSegs(ws.conversationId)
+    abortRun(seg0!.id)
+    expect(await waitForInFlight(10_000)).toBe(true)
+    let row = (await getWorkstream(ws.id))!
+    expect(row.state).toBe('paused')
+    expect(row.attention).toMatchObject({ kind: 'paused', text: expect.stringMatching(/^Stopped/) })
+    expect(row.lastOutcome).toBe('aborted')
+    expect(await activeSegs(ws.conversationId)).toEqual([])
+    expect(texts).toEqual([])                               // Stop is his own act: nobody is told
+
+    // An unrelated iMessage is NOT captured (it lands in main as an ordinary turn).
+    const main = await createConversation({ title: 'T5 stand-in main (stop)' })
+    convIds.push(main.id)
+    expect(await routeInboundAnswer({ text: "what's on my calendar tomorrow", modality: 'text' }, { mainConversationId: main.id, onlyConversations: [ws.conversationId] })).toBeNull()
+    expect(await thread(main.id)).toEqual([])
+    expect(await activeSegs(ws.conversationId)).toEqual([])
+    // Never nudged — however long it sits.
+    await patchWorkstream(ws.id, { attention: { ...(row.attention as object), kind: 'paused', text: 'Stopped.', notifiedAt: 0 } })
+    expect(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId] })).toBe(0)
+    expect(texts).toEqual([])
+    // Still counts toward the cap.
+    const open = (await useDb().select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, ['queued', 'running', 'attention', 'paused']))).length
+    await expect(startWorkstream({ goal: 'T5 one too many' }, { kick: false, cap: open })).rejects.toThrow(WorkstreamCapError)
+
+    // Resume (the UI's control) continues it.
+    const dto = await controlWorkstream({ workstreamId: ws.id, action: 'resume' })
+    expect(dto).toMatchObject({ state: 'running', attention: null })
+    await drive(ws.conversationId)
+    row = (await getWorkstream(ws.id))!
+    expect(row.state).toBe('done')
+    expect(seen).toHaveLength(2)
+    expect((await thread(origin)).some(m => m.origin === `workstream:${ws.id}` && m.content.includes('resumed and done'))).toBe(true)
+  })
+
+  it('final I3: answer_workstream resumes a PAUSED workstream with Tony\'s words (resumable via chat)', async () => {
+    const { ws } = await newWorkstream('paused-answer')
+    await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.conversationId, ws.conversationId))
+    await patchWorkstream(ws.id, { state: 'paused', attention: { kind: 'paused', text: 'Stopped.' } })
+    const { bridgetProfile } = await import('@mymind/core/lib/agent/profile')
+    const tool = bridgetProfile.tools.find(t => t.name === 'answer_workstream')!
+    expect((await tool.handler({ id: ws.id, text: 'carry on, skip the NAS part' }, { signal: new AbortController().signal })).result).toMatchObject({ ok: true })
+    expect((await activeSegs(ws.conversationId)).map(r => (r.input as { text: string }).text)).toEqual(['carry on, skip the NAS part'])
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', attention: null })
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
@@ -783,6 +849,22 @@ describe('fix round 1', () => {
     await patchWorkstream(ws.id, { attention: { kind: 'question', text: 'which?', notifiedAt: 0 } })
     expect(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId] })).toBe(1)
     expect(texts).toHaveLength(1)                            // present: the app note only
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('final I3: nudges stop after MAX_NUDGES (3) per attention episode; a new question starts a new episode', async () => {
+    const { ws } = await newWorkstream('nudge-cap')
+    const H = 2 * 60 * 60 * 1000 + 1
+    let t = Date.now()
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'which?', notifiedAt: t } })
+    const sent: number[] = []
+    for (let i = 0; i < 6; i++) { t += H; sent.push(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId], now: t })) }
+    expect(sent).toEqual([1, 1, 1, 0, 0, 0])
+    expect(texts).toHaveLength(3)
+    expect((await getWorkstream(ws.id))!.attention).toMatchObject({ nudges: 3 })
+    // A fresh question (ask_tony writes a new attention object) is a new episode.
+    await patchWorkstream(ws.id, { attention: { kind: 'question', text: 'and now?', notifiedAt: t } })
+    expect(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId], now: t + H })).toBe(1)
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 

@@ -4,7 +4,7 @@ import type { WorkstreamState } from '@mymind/core/shared/types/workstreams'
 /** Upper bound for `?limit` (a bad or huge value never becomes an unbounded scan). */
 const MAX_LIMIT = 100
 
-const STATES: readonly WorkstreamState[] = ['queued', 'running', 'attention', 'done', 'failed', 'cancelled']
+const STATES: readonly WorkstreamState[] = ['queued', 'running', 'attention', 'paused', 'done', 'failed', 'cancelled']
 
 /** /workstreams list (cycle 81 spec §5.5), newest first. `?state=running,attention` filters. */
 export default defineEventHandler(async (event) => {

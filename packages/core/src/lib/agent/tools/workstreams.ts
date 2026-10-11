@@ -122,7 +122,7 @@ export const answerWorkstreamTool: AgentTool = {
   // Fix round 2 (I-new-1): model-chosen text becomes unattended work's next prompt — gated after a
   // Google read like start_workstream, and a /review proposal in a headless run (gate.ts).
   outbound: true,
-  description: "Pass Tony's answer to a workstream that asked him a question (ask_tony) — when he answers it here instead of in its thread. The id is in the workstream's note (…/workstreams/<id>). The workstream resumes with his words.",
+  description: "Pass Tony's answer to a workstream that asked him a question (ask_tony) — when he answers it here instead of in its thread — or resume a PAUSED workstream with his instructions when he asks you to. The id is in the workstream's note (…/workstreams/<id>). The workstream resumes with his words.",
   schema: {
     id: z.string().uuid().describe('The workstream id'),
     text: z.string().min(1).max(4000).describe("Tony's answer, in his words")
@@ -133,10 +133,12 @@ export const answerWorkstreamTool: AgentTool = {
       if (segmentForRun(ctx.runId)) return { result: { ok: false, error: 'answer_workstream is for Bridget, not a workstream' }, summary: 'answer_workstream: refused' }
       const ws = await getWorkstream(a.id as string)
       if (!ws) return { result: { ok: false, error: 'no such workstream' }, summary: 'answer_workstream: not found' }
-      // Only a QUESTION can be answered — never a steer into running work, never an approval card
+      // Only a QUESTION can be answered, or a PAUSED workstream resumed with Tony's words (final
+      // review I3: "resumable via chat") — never a steer into running work, never an approval card
       // (a reply would withdraw it).
-      if (ws.state !== 'attention' || (ws.attention as { kind?: string } | null)?.kind !== 'question') {
-        return { result: { ok: false, error: 'that workstream is not waiting on a question' }, summary: 'answer_workstream: not waiting on a question' }
+      const question = ws.state === 'attention' && (ws.attention as { kind?: string } | null)?.kind === 'question'
+      if (!question && ws.state !== 'paused') {
+        return { result: { ok: false, error: 'that workstream is not waiting on a question and is not paused' }, summary: 'answer_workstream: not waiting on a question' }
       }
       const r = await replyToWorkstream(ws, { text: (a.text as string).trim(), modality: 'text' })
       if (!r) return { result: { ok: false, error: `that workstream is ${ws.state}` }, summary: `answer_workstream: ${ws.state}` }

@@ -1,5 +1,8 @@
 // Cycle 81 (spec §5): the workstream wire shapes, shared by core and the app (Task 6 UI).
-export type WorkstreamState = 'queued' | 'running' | 'attention' | 'done' | 'failed' | 'cancelled'
+/** `paused` (final review I3): Tony pressed Stop in its thread, or two idle segments in a row. Unlike
+ *  `attention` it never captures an iMessage as an answer and is never nudged; it still counts toward
+ *  the cap of 3 and resumes from the UI (Resume), a reply in its thread, or Bridget's answer_workstream. */
+export type WorkstreamState = 'queued' | 'running' | 'attention' | 'paused' | 'done' | 'failed' | 'cancelled'
 
 export interface WorkstreamBudget { maxSteps: number; maxWallMs: number }
 
@@ -12,7 +15,8 @@ export interface WorkstreamUsed { steps: number; wallMs: number; inputTokens: nu
 export interface StoredApprovalRequest { tool: string; command: string; proposedPattern: string; allowlistable?: boolean; title?: string; logSummary?: string }
 
 export interface WorkstreamAttention {
-  kind: 'question' | 'approval'
+  /** `paused` rides with state 'paused' (its text says why); the others with state 'attention'. */
+  kind: 'question' | 'approval' | 'paused'
   text: string
   requestId?: string
   /** approval: the segment run that asked, and the request (restorable). */
@@ -20,6 +24,8 @@ export interface WorkstreamAttention {
   request?: StoredApprovalRequest
   /** When Tony was last told about it (epoch ms) — the 2h "still waiting" nudge (review M1). */
   notifiedAt?: number
+  /** "Still waiting" nudges sent this episode — capped at MAX_NUDGES (final review I3). */
+  nudges?: number
 }
 
 export interface WorkstreamDTO {

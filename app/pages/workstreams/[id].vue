@@ -225,6 +225,26 @@ async function send() {
             </p>
           </template>
         </UAlert>
+        <!-- Paused (Stop, or two idle segments): why, in plain words — no question to answer. -->
+        <UAlert
+          v-if="ws.state === 'paused'"
+          color="neutral"
+          variant="subtle"
+          icon="i-lucide-pause"
+          title="Paused"
+          data-testid="workstream-paused"
+        >
+          <template #description>
+            <MessageResponse
+              :key="`paused-${ws.id}-${ws.updatedAt}`"
+              :content="ws.attention?.text ?? 'Paused.'"
+              class="text-sm text-default"
+            />
+            <p class="mt-1 text-xs text-muted">
+              Resume it, or write below to continue with new instructions.
+            </p>
+          </template>
+        </UAlert>
         <UAlert
           v-if="ws.failureReason && ws.state !== 'done'"
           :color="ws.state === 'failed' ? 'error' : 'warning'"
@@ -285,7 +305,7 @@ async function send() {
           autoresize
           :maxrows="6"
           class="flex-1"
-          :placeholder="answering ? 'Answer the question…' : 'Steer it — a note it reads at its next step…'"
+          :placeholder="answering ? 'Answer the question…' : ws.state === 'paused' ? 'Continue it with new instructions…' : 'Steer it — a note it reads at its next step…'"
           data-testid="workstream-steer"
           @keydown.enter.exact.prevent="send"
         />
