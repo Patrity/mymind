@@ -187,6 +187,16 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     expect(v.content).toBe('token=«redacted»\n')
   }, 60_000)
 
+  it('M1: a secret straddling the 1 MB view cut shows no visible half', async () => {
+    await sh(`python3 -c "import sys; sys.stdout.write('y' * 999995 + '${SECRET}' + '\\n')" > straddle.txt`)
+    try {
+      const v = await viewFile(ws, 'straddle.txt')
+      expect(v.truncated).toBe(true)
+      expect(v.content!.endsWith('y')).toBe(true)
+      expect(v.content).not.toContain(SECRET.slice(0, 3))
+    } finally { await sh('rm -f straddle.txt') }
+  }, 60_000)
+
   it('shells: the tail never moves bash_output\'s offset; Kill stops the group and records it', async () => {
     const s = await rt.shells.start(ws, 'i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done')
     await sleep(1500)
