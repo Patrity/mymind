@@ -29,7 +29,7 @@ import { readWorkspaceText, workspaceRuntime, type WorkspaceRef } from '../../sa
 import { ShellError } from '../../sandbox/shells'
 import { dbWorkspaceStore } from '../../sandbox/store'
 import { WATCH_LIMITS, WatchError } from '../../sandbox/watches'
-import { maskDeep, sandboxSecretEnv, secretValues } from '../../sandbox/secrets'
+import { maskCut, maskDeep, sandboxSecretEnv, secretValues } from '../../sandbox/secrets'
 import { createDoc, deleteDoc, findDocByPath, getDoc, casUpdateContent, updateDoc } from '../../../services/documents'
 import { publishChange } from '../../../utils/live-bus'
 import { docReceipt, docNotFound } from '../receipt'
@@ -91,6 +91,18 @@ async function secretsFor(c: Call): Promise<Pick<ExecOptions, 'secrets'>> {
   return Object.keys(secrets).length ? { secrets } : {}
 }
 
+/** Fix round 1 (M1): output that was CUT inside the sandbox — lines shortened at a marker, a capped
+ *  stream — is masked whole and has the cut edge trimmed here, before guard()'s final mask, so a
+ *  secret straddling the cut can't come out as a visible half. */
+const LINE_CUT_MARKERS = [' … [line truncated]', ' [... omitted end of long line]']
+function maskLineCuts(text: string, values: string[]): string {
+  if (!values.length) return text
+  return text.split('\n').map((line) => {
+    for (const m of LINE_CUT_MARKERS) if (line.endsWith(m)) return maskCut(line.slice(0, -m.length), values, { end: true }) + m
+    return line
+  }).join('\n')
+}
+
 function parseJson(r: SandboxExecResult): Record<string, unknown> | null {
   if (r.exitCode !== 0) return null
   try { return JSON.parse(r.stdout) as Record<string, unknown> } catch { return null }
@@ -143,6 +155,7 @@ export const readFileTool: AgentTool = {
     const err = scriptError('read_file', r, j, path)
     if (err) return err
     if (j.binary) return { result: withTaint(r, { path, binary: true, bytes: j.bytes, message: 'binary file — not shown (use bash, e.g. `file`, `xxd | head`)' }), summary: `read_file: ${clip(path, 60)} is binary` }
+    if (typeof j.content === 'string') j.content = maskLineCuts(j.content, await secretValues())
     return {
       result: withTaint(r, { path, ...j, note: WORKSPACE_UNTRUSTED_NOTE }),
       summary: `read ${clip(path, 60)} (${j.lines} line${j.lines === 1 ? '' : 's'}${j.truncated ? ', more' : ''})`
@@ -237,7 +250,7 @@ export const grepTool: AgentTool = {
     if (r.timedOut) return failed('grep', r)
     if (r.exitCode === 1) return { result: withTaint(r, { matches: [], count: 0 }), summary: 'grep: no matches' }
     if (r.exitCode !== 0 && r.exitCode !== 141) return { result: withTaint(r, { ok: false, error: r.stderr.trim().slice(0, 500) || `exit ${r.exitCode}` }), summary: 'grep failed' }
-    const lines = r.stdout.split('\n').filter(Boolean)
+    const lines = maskLineCuts(r.stdout, await secretValues()).split('\n').filter(Boolean)
     const truncated = lines.length > GREP_MAX || r.exitCode === 141
     const matches = lines.slice(0, GREP_MAX)
     return { result: withTaint(r, { matches, count: matches.length, truncated, note: WORKSPACE_UNTRUSTED_NOTE }), summary: `grep: ${matches.length}${truncated ? '+' : ''} match${matches.length === 1 ? '' : 'es'}` }
@@ -257,6 +270,7 @@ export const diffTool: AgentTool = {
     const r = await exec(c, diffCommand(a.path as string | undefined), { capBytes: 128 * 1024, timeoutSec: 120 })
     if (r.exitCode !== 0) return failed('diff', r)
     const d = parseDiff(r.stdout)
+    if (d.truncated) d.diff = maskCut(d.diff, await secretValues(), { end: true })
     const empty = !d.diff.trim()
     return {
       result: withTaint(r, { initialized: d.initialized, diff: d.diff, bytes: d.bytes, truncated: d.truncated, ...(d.initialized ? { note: `Started tracking the workspace with git (baseline commit). ${WORKSPACE_UNTRUSTED_NOTE}` } : { note: WORKSPACE_UNTRUSTED_NOTE }) }),
@@ -288,6 +302,8 @@ export const bashTool: AgentTool = {
     const q = await overQuota(c)
     if (q) return { result: { ok: false, error: `${q.message} — bash is refused until space is freed. Find what is big with list_files({ largest: true }), then remove it with delete_files({ paths: [...] }).` }, summary: 'bash: refused (over quota)' }
     const r = await exec(c, command, { timeoutSec: a.timeout as number | undefined, ...(await secretsFor(c)) })
+    // The 64 KB cap keeps the TAIL: whatever was cut came before it.
+    if (r.truncated) { const v = await secretValues(); r.stdout = maskCut(r.stdout, v, { start: true }); r.stderr = maskCut(r.stderr, v, { start: true }) }
     return {
       result: withTaint(r, {
         exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr,
@@ -373,7 +389,7 @@ export const watchTool: AgentTool = {
     await assertQuota(c)
     if (until === 'match') {
       // Python's regex dialect (the poll matches inside the sandbox) — check it compiles now.
-      const r = await exec(c, `python3 -c 'import re,sys; re.compile(sys.stdin.read())'`, { input: pattern, timeoutSec: 20 })
+      const r = await exec(c, `python3 -I -c 'import re,sys; re.compile(sys.stdin.read())'`, { input: pattern, timeoutSec: 20 })
       if (r.exitCode !== 0) return { result: { ok: false, error: `invalid pattern: ${r.stderr.trim().split('\n').pop() ?? 'does not compile'}` }, summary: 'watch: invalid pattern' }
     }
     const intervalSec = (a.intervalSec as number | undefined) ?? WATCH_LIMITS.intervalSec.default

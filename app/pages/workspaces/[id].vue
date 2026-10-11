@@ -71,6 +71,7 @@ const tabs = [
         <WorkspaceFiles
           v-if="tab === 'files'"
           :workspace-id="wsId"
+          :sandbox-state="ws?.state"
         />
         <WorkspaceShells
           v-else

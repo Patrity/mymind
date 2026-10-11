@@ -69,7 +69,7 @@ beforeEach(() => {
   watchReply = () => ({ id: 'w1', createdAt: new Date(0), deadlineAt: new Date(30 * 60_000) })
   execResult = (command, o) => {
     if (command === WRITE_SCRIPT) return res({ stdout: JSON.stringify({ ok: true, path: '/workspace/a', bytes: 1, created: true }), tainted: !!o.tainted })
-    if (command.startsWith('python3 -c')) return res({ stdout: JSON.stringify({ content: '     1\tx', lines: 1, totalLines: 1, truncated: false }), tainted: !!o.tainted })
+    if (command.startsWith('python3 -I -c')) return res({ stdout: JSON.stringify({ content: '     1\tx', lines: 1, totalLines: 1, truncated: false }), tainted: !!o.tainted })
     return res({ stdout: 'ok\n', tainted: !!o.tainted })
   }
   install()
@@ -391,5 +391,25 @@ describe('Task 3: sandbox secrets (spec §6) — opted in, never tainted, values
     const ex = await tool('read_file').handler({ path: 'a' }, ctx(false))
     expect(JSON.stringify(ex)).not.toContain(VALUE)
     expect((ex.result as Record<string, unknown>).error).toMatch(/withheld/)
+  })
+})
+
+describe('Task 3 fix round 1 (M1): output cut inside the sandbox never shows half a secret', () => {
+  const VALUE = 'ghp_SuperSecretValue123'
+  beforeEach(() => { secretStore.opted = { GITHUB_TOKEN: VALUE }; secretStore.all = { GITHUB_TOKEN: VALUE } })
+  it('bash: the 64 KB cap keeps the tail — a value cut at its start is trimmed, whole ones masked', async () => {
+    execResult = () => res({ stdout: `${VALUE.slice(6)}\nmore ${VALUE}\n`, truncated: true })
+    const r = await run('bash', { command: 'cat big.log' })
+    expect(r.stdout).toBe('\nmore «redacted»\n')
+  })
+  it('read_file: a line shortened at 2000 chars loses a value\'s visible start before the marker', async () => {
+    execResult = () => res({ stdout: JSON.stringify({ content: `     1\tkey=${VALUE.slice(0, 10)} … [line truncated]\n     2\tok ${VALUE}`, lines: 2, totalLines: 2, truncated: false }) })
+    const r = await run('read_file', { path: 'a' })
+    expect(r.content).toBe('     1\tkey= … [line truncated]\n     2\tok «redacted»')
+  })
+  it('grep: ripgrep\'s long-line preview cut is trimmed the same way', async () => {
+    execResult = () => res({ stdout: `a.env:1:TOKEN=${VALUE.slice(0, 12)} [... omitted end of long line]\n` })
+    const r = await run('grep', { pattern: 'TOKEN' })
+    expect(r.matches).toEqual(['a.env:1:TOKEN= [... omitted end of long line]'])
   })
 })

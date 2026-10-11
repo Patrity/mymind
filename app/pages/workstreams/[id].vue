@@ -32,10 +32,17 @@ watch(error, (err) => {
 const meta = computed(() => (ws.value ? STATE_META[ws.value.state] : null))
 
 // ── The workspace (Files / Shells tabs) ──────────────────────────────────
-const { data: wsRow } = useWorkstreamWorkspace(id)
+const { data: wsRow, error: wsRowError, refetch: refetchWsRow } = useWorkstreamWorkspace(id)
 const workspaceId = computed(() => wsRow.value?.id ?? null)
 // Keyed by the workspace's own id, so taint / usage changes arrive live.
-const { data: workspace } = useWorkspace(workspaceId)
+const { data: workspace, error: workspaceError } = useWorkspace(workspaceId)
+// Fix round 1 (M6): a 404 just means an older workstream without a workspace; anything else (the DB,
+// a 500) is said out loud instead of silently disabling the tabs.
+const workspaceProblem = computed(() => {
+  const e = (wsRowError.value ?? workspaceError.value) as { statusCode?: number } | null
+  if (!e || e.statusCode === 404) return null
+  return workspaceErrorOf(e)
+})
 const tab = ref('log')
 const tabs = computed(() => [
   { label: 'Log', value: 'log', icon: 'i-lucide-scroll-text' },
@@ -291,6 +298,17 @@ async function send() {
         v-if="workspace"
         :workspace="workspace"
       />
+      <UAlert
+        v-if="workspaceProblem"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-circle-alert"
+        title="Could not load this workstream's workspace"
+        :description="workspaceProblem"
+        :actions="[{ label: 'Retry', color: 'error', variant: 'outline', onClick: () => { void refetchWsRow() } }]"
+        class="rounded-none"
+        data-testid="workstream-workspace-error"
+      />
       <UTabs
         v-model="tab"
         :items="tabs"
@@ -303,6 +321,7 @@ async function send() {
         <WorkspaceFiles
           v-if="tab === 'files'"
           :workspace-id="workspaceId"
+          :sandbox-state="workspace?.state"
         />
         <WorkspaceShells
           v-else

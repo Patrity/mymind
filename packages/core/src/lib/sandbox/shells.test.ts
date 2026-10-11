@@ -1,7 +1,7 @@
 // Cycle 82 Task 2: the background-shell registry against a fake exec + in-memory store (the real
 // container behaviour is in test/workspace-tools.db.test.ts).
 import { describe, expect, it, vi } from 'vitest'
-import { createShellRegistry, MAX_RUNNING_SHELLS, type ShellStore, type WorkspaceShellRow } from './shells'
+import { createShellRegistry, MAX_RUNNING_SHELLS, safeWindowEnd, SHELL_OUTPUT_CHUNK, type ShellStore, type WorkspaceShellRow } from './shells'
 import { parseShellStatus, shellOutputCommand, shellStartCommand, SHELL_STATUS_MARK } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
 import type { WorkspaceRow } from './store'
@@ -31,7 +31,7 @@ function memShells(): ShellStore & { rows: Map<string, WorkspaceShellRow> } {
   }
 }
 
-function setup(ws: Partial<WorkspaceRow> = {}) {
+function setup(ws: Partial<WorkspaceRow> = {}, values: string[] = []) {
   const store = memShells()
   const calls: Array<{ command: string; o?: ExecOptions }> = []
   let reply: (command: string) => SandboxExecResult = () => res()
@@ -40,6 +40,7 @@ function setup(ws: Partial<WorkspaceRow> = {}) {
     exec: async (_id, command, o) => { calls.push({ command, o }); return reply(command) },
     workspace: async () => workspace,
     store,
+    secretValues: async () => values,
     log: { info: () => {}, warn: () => {}, error: () => {} }
   })
   return { reg, store, calls, workspace, setReply: (f: typeof reply) => { reply = f } }
@@ -133,5 +134,66 @@ describe('shell registry', () => {
     workspace.state = 'stopped'
     expect(await reg.reconcile()).toEqual({ reattached: 0, ended: 1 })
     expect(store.rows.get(a)!.state).toBe('lost')
+  })
+})
+
+async function startedShell(reg: ReturnType<typeof setup>['reg'], setReply: ReturnType<typeof setup>['setReply']): Promise<string> {
+  setReply(() => res({ stdout: '__mm_shell_pid__:42\n' }))
+  return (await reg.start(WS, 'job')).shellId
+}
+
+describe('Task 3 fix round 1 (M1): a secret is never split across a bash_output window or a tail cut', () => {
+  const SECRET = 'ghp_SplitMe_0123456789'
+  const C = SECRET.length
+
+  it('safeWindowEnd: a value straddling the chunk edge moves the edge back to its start', () => {
+    const text = 'a'.repeat(10) + SECRET + 'tail'
+    expect(safeWindowEnd(text, 15, [SECRET], false)).toBe(10)
+    expect(safeWindowEnd(text, 10 + C, [SECRET], false)).toBe(10 + C) // ends exactly after it: whole
+    expect(safeWindowEnd('abc ' + SECRET.slice(0, 7), 100, [SECRET], true)).toBe(4) // half-written, still running
+    expect(safeWindowEnd('abc ' + SECRET.slice(0, 7), 100, [SECRET], false)).toBe(11) // finished: nothing more will come
+  })
+
+  it('two windows over a secret straddling the 32 KB edge: neither shows any part of it unmasked', async () => {
+    const { reg, store, setReply } = setup({}, [SECRET])
+    const s = await startedShell(reg, setReply)
+    const pad = 'x'.repeat(SHELL_OUTPUT_CHUNK - 5)
+    const file = pad + SECRET + '\nend\n'
+    setReply((command) => {
+      const off = Number(command.match(/n=\$\(\(sz - (\d+)\)\)/)![1])
+      const max = Number(command.match(/\[ "\$n" -gt (\d+) \]/)![1])
+      const n = Math.min(max, file.length - off)
+      return res({ stdout: status('exit:0', file.length, n, file.slice(off, off + n)) })
+    })
+    const a = await reg.output(WS, s)
+    const b = await reg.output(WS, s)
+    const both = a.output + b.output
+    expect(both).not.toContain(SECRET.slice(0, 6))
+    expect(both).not.toContain(SECRET.slice(-6))
+    expect(both).toBe(pad + '«redacted»\nend\n')
+    expect(a.more).toBe(true)
+    expect(b.more).toBe(false)
+    expect(store.rows.get(s)!.readOffset).toBe(file.length)
+  })
+
+  it('a running shell that has written only the first half of a secret: that half is held back', async () => {
+    const { reg, store, setReply } = setup({}, [SECRET])
+    const s = await startedShell(reg, setReply)
+    const file = 'log line\nAuthorization: ' + SECRET.slice(0, 9)
+    setReply(() => res({ stdout: status('running', file.length, file.length, file) }))
+    const a = await reg.output(WS, s)
+    expect(a.output).toBe('log line\nAuthorization: ')
+    expect(a.more).toBe(false)
+    expect(store.rows.get(s)!.readOffset).toBe('log line\nAuthorization: '.length)
+  })
+
+  it('the UI tail is masked whole, then its cut start is trimmed', async () => {
+    const { reg, setReply } = setup({}, [SECRET])
+    const s = await startedShell(reg, setReply)
+    const shown = SECRET.slice(5) + '\nok ' + SECRET + '\n'
+    setReply(() => res({ stdout: status('exit:0', 99_999, shown.length, shown) }))
+    const t = await reg.tail(WS, s)
+    expect(t.output).toBe('\nok «redacted»\n')
+    expect(t.truncated).toBe(true)
   })
 })

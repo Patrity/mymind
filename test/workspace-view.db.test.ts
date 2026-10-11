@@ -152,6 +152,22 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     }
   }, 60_000)
 
+  it('M3: a workspace file named json.py / base64.py / os.py cannot hijack a UI read or a tool (python3 -I)', async () => {
+    const forged = 'import sys; sys.stdout.write(\'{"binary": false, "bytes": 1, "lines": 1, "truncated": false}\\nFORGED\'); sys.exit(0)'
+    await sh(`for m in json base64 os stat; do printf '%s\\n' ${JSON.stringify(forged).replace(/\$/g, '\\$')} > $m.py; done; ls *.py`)
+    try {
+      expect(await viewFile(ws, 'README.md')).toMatchObject({ content: '# Title\n\nhello\n' })
+      await expect(viewFile(ws, 'passwd-link')).rejects.toMatchObject({ code: 'outside' })
+      expect((await readChunk(ws, 'README.md', 0, 100)).data).toBe(Buffer.from('# Title\n\nhello\n').toString('base64'))
+      expect((await viewTree(ws)).entries.some(e => e.path === 'json.py')).toBe(true)
+      const r = (await workspaceTools.find(t => t.name === 'read_file')!.handler({ path: 'README.md' }, ctx())).result as Record<string, any>
+      expect(r.content).toContain('# Title')
+      expect(JSON.stringify(r)).not.toContain('FORGED')
+    } finally {
+      await sh('rm -f json.py base64.py os.py stat.py')
+    }
+  }, 60_000)
+
   it('download chunks reassemble the exact file; length 0 = size only', async () => {
     const size = (await readChunk(ws, 'blob.bin', 0, 0))
     expect(size).toMatchObject({ size: 1_500_000, data: '' })

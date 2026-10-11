@@ -16,7 +16,9 @@ export function shq(s: string): string {
 export const META_DIR = '.mymind'
 export const SHELLS_DIR = `${META_DIR}/shells`
 
-const py = (script: string) => `python3 -c ${shq(script)}`
+// `-I` (Task 3 fix round 1, M3): isolated mode — the cwd (/workspace) is not on sys.path, user site and
+// PYTHON* env are ignored, so a workspace file named json.py (or a usercustomize) can't hijack a tool.
+const py = (script: string) => `python3 -I -c ${shq(script)}`
 
 const PY_PRELUDE = [
   'import sys, os, json, stat',

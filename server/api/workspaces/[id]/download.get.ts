@@ -1,6 +1,8 @@
 // Cycle 82 Task 3: download a workspace file (≤ 100 MB, else 413). The web never opens the file: the
 // worker reads it inside the sandbox in ~720 KB chunks over the command bus (each chunk's row is
 // deleted once read), streamed out as they arrive. A file that changes mid-download aborts it.
+// `?check=1` (fix round 1, M4) runs only the size probe and answers JSON — the UI calls it first, so a
+// 413 / 504 / 404 shows as a toast in the app instead of a browser-level "download failed".
 import { askWorker, requirePath, requireWorkspace } from '../../../utils/workspaces-http'
 import { CHUNK_BYTES, DOWNLOAD_MAX_BYTES } from '@mymind/core/lib/sandbox/paths'
 
@@ -16,6 +18,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 413, statusMessage: 'File too large', data: { message: `${path} is ${first.size} bytes; downloads are limited to ${DOWNLOAD_MAX_BYTES} bytes (100 MB).` } })
   }
   const name = (path.split('/').pop() || 'download').replace(/[^\w.\- ]+/g, '_').slice(0, 200)
+  if (getQuery(event).check !== undefined) return { ok: true, size: first.size, name }
   setResponseHeaders(event, {
     'content-type': 'application/octet-stream',
     'content-disposition': `attachment; filename="${name}"`,

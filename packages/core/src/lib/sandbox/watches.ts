@@ -13,6 +13,22 @@ import { publishChange } from '../../utils/live-bus'
 import { WATCH_POLL_SCRIPT, WATCH_TAIL_BYTES } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
 import type { WorkspaceRow } from './store'
+import { maskCut, secretValues } from './secrets'
+
+export const WATCH_OUTPUT_WITHHELD = '(output withheld: the secret store could not be read, so secret values could not be masked)'
+
+/**
+ * Task 3 fix round 1 (I1): a poll's output tail is stored, then quoted in the wake note the model
+ * and the transcript read — so secret values are masked BEFORE it is stored (a background shell
+ * holding an opted-in secret can write it into a log the watch tails). The tail was cut at its
+ * start when longer than WATCH_TAIL_BYTES, so that edge is trimmed too. Fails closed: no values,
+ * no output.
+ */
+export async function maskWatchOutput(tail: string, values: () => Promise<string[]>): Promise<string> {
+  let v: string[]
+  try { v = await values() } catch { return WATCH_OUTPUT_WITHHELD }
+  return maskCut(tail, v, { start: tail.length >= WATCH_TAIL_BYTES })
+}
 
 export type { WorkspaceWatchRow, WatchUntil }
 export type WatchOutcome = 'met' | 'timeout' | 'cancelled' | 'failed'
@@ -171,6 +187,8 @@ export interface WatchDeps {
   caps?: WatchCaps
   now?: () => number
   log?: Pick<Console, 'info' | 'warn' | 'error'>
+  /** The secret values to mask, longest first (sandbox/secrets.ts; tests inject). */
+  secretValues?: () => Promise<string[]>
   /** Test seam for the timers. */
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (t: unknown) => void
@@ -260,7 +278,7 @@ export function createWatchRuntime(deps: WatchDeps) {
       try { res = r.exitCode === 0 ? JSON.parse(r.stdout) : null } catch { res = null }
       if (!res) throw new WatchError(r.timedOut ? 'the poll timed out' : `the poll could not run: ${r.stderr.trim().slice(0, 200) || `exit ${r.exitCode}`}`)
       errors.delete(id)
-      await store.recordPoll(id, { exitCode: res.exit, output: res.tail })
+      await store.recordPoll(id, { exitCode: res.exit, output: await maskWatchOutput(res.tail, deps.secretValues ?? secretValues) })
       const met = row.until.kind === 'exit0' ? res.exit === 0 : res.matched === true
       const fresh = (await store.get(id)) ?? row
       if (met) { await finish(fresh, 'met', null); return 'met' }

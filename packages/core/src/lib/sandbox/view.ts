@@ -13,7 +13,7 @@
 import { META_DIR, shq } from './fs-ops'
 import { CHUNK_BYTES, DOWNLOAD_MAX_BYTES, workspacePathProblem } from './paths'
 export { CHUNK_BYTES, DOWNLOAD_MAX_BYTES, workspacePathProblem }
-import { maskSecretValues } from './secrets'
+import { maskCut, maskSecretValues, secretValues } from './secrets'
 import type { SandboxExecResult } from './manager'
 import { workspaceRuntime } from './runtime'
 import type { WorkspaceFileView, WorkspaceShellTail, WorkspaceTree, WorkspaceTreeEntry } from '../../shared/types/workspaces'
@@ -27,7 +27,10 @@ export class WorkspaceViewError extends Error {
   constructor(message: string, readonly code: 'bad_path' | 'not_found' | 'not_a_file' | 'outside' | 'changed' | 'failed' = 'failed') { super(message) }
 }
 
-const py = (lines: string[]) => `python3 -c ${shq(lines.join('\n'))}`
+// `-I` (fix round 1, M3): isolated mode — the cwd (/workspace) is NOT put on sys.path and user
+// site/PYTHON* env are ignored, so a workspace file named json.py / base64.py (or a usercustomize
+// under the writable /home/agent) can't run inside a UI read and forge its answer or the path check.
+const py = (lines: string[]) => `python3 -I -c ${shq(lines.join('\n'))}`
 
 // Shared: read {..} from stdin, resolve a path INSIDE the container and refuse what leaves /workspace.
 const PRELUDE = [
@@ -157,7 +160,10 @@ export async function viewFile(workspaceId: string, path: string): Promise<Works
   const r = await exec(workspaceId, VIEW_SCRIPT, { input: JSON.stringify({ path }), capBytes: 1024 * 1024 })
   const { head, body } = headerAndBody(r, `read ${path}`)
   if (head.binary) return { path, binary: true, bytes: Number(head.bytes) }
-  return maskSecretValues({ path, binary: false, bytes: Number(head.bytes), lines: Number(head.lines), truncated: !!head.truncated || r.truncated, content: body })
+  const truncated = !!head.truncated || r.truncated
+  // M1: masked whole, then — when the view stopped before the end of the file — the cut edge is
+  // trimmed of anything that could be the first half of a value.
+  return { path, binary: false, bytes: Number(head.bytes), lines: Number(head.lines), truncated, content: maskCut(body, await secretValues(), { end: truncated }) }
 }
 
 export interface FileChunk { size: number; mtimeNs: string; data: string }
@@ -173,7 +179,8 @@ export async function readChunk(workspaceId: string, path: string, offset: numbe
 }
 
 export async function shellTail(workspaceId: string, shellId: string): Promise<WorkspaceShellTail> {
-  return maskSecretValues(await workspaceRuntime().shells.tail(workspaceId, shellId))
+  // The registry masks the tail itself (before trimming its cut edges).
+  return workspaceRuntime().shells.tail(workspaceId, shellId)
 }
 
 export async function killShellFromUi(workspaceId: string, shellId: string) {

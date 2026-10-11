@@ -10,7 +10,8 @@ import type { TreeItem } from '@nuxt/ui'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { buildTree, fenced, formatBytes, viewKind, type FileNode } from '~/lib/workspace/display'
 
-const props = defineProps<{ workspaceId: string }>()
+const props = defineProps<{ workspaceId: string; /** The sandbox's last known state (a stopped one starts on the first read). */ sandboxState?: 'stopped' | 'running' }>()
+const toast = useToast()
 
 /** Above this, markdown/code is shown as plain text (rendering a megabyte through shiki stalls the tab). */
 const RENDER_MAX = 200_000
@@ -44,6 +45,30 @@ const rendered = computed(() => {
   return null
 })
 const downloadHref = computed(() => selected.value ? `/api/workspaces/${props.workspaceId}/download?path=${encodeURIComponent(selected.value)}` : undefined)
+
+// Fix round 1 (M4): ask first (the size probe, as JSON), so a 413 / 504 / missing file is a toast
+// here rather than a browser-level "download failed"; only then hand the URL to the browser.
+const downloading = ref(false)
+async function download() {
+  const href = downloadHref.value
+  if (!href || downloading.value) return
+  downloading.value = true
+  try {
+    const r = await $fetch<{ ok: true; size: number; name: string }>(href, { query: { check: 1 } })
+    const a = document.createElement('a')
+    a.href = href
+    a.download = r.name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  } catch (e) {
+    const status = (e as { statusCode?: number }).statusCode
+    toast.add({ color: 'error', icon: 'i-lucide-download', title: status === 413 ? 'Too large to download' : 'Download failed', description: workspaceErrorOf(e) })
+  } finally {
+    downloading.value = false
+  }
+}
+const loadingText = computed(() => (props.sandboxState === 'stopped' ? 'Starting the sandbox… (the first read after it was stopped takes a few seconds)' : 'Loading…'))
 </script>
 
 <template>
@@ -75,8 +100,15 @@ const downloadHref = computed(() => selected.value ? `/api/workspaces/${props.wo
         />
       </div>
       <div class="max-h-[40vh] min-h-0 flex-1 overflow-y-auto p-2 md:max-h-none">
+        <p
+          v-if="treeLoading && !tree && !treeError"
+          class="p-2 text-sm text-muted"
+          data-testid="workspace-tree-loading"
+        >
+          {{ loadingText }}
+        </p>
         <UAlert
-          v-if="treeError"
+          v-else-if="treeError"
           color="error"
           variant="subtle"
           icon="i-lucide-circle-alert"
@@ -90,7 +122,7 @@ const downloadHref = computed(() => selected.value ? `/api/workspaces/${props.wo
           The workspace is empty.
         </p>
         <UTree
-          v-else
+          v-else-if="tree"
           :items="items"
           :get-key="keyOf"
           size="sm"
@@ -133,10 +165,9 @@ const downloadHref = computed(() => selected.value ? `/api/workspaces/${props.wo
           variant="soft"
           color="neutral"
           label="Download"
-          :to="downloadHref"
-          external
-          download
+          :loading="downloading"
           data-testid="workspace-download"
+          @click="download"
         />
       </div>
       <div class="min-h-0 flex-1 overflow-auto p-3">
@@ -158,7 +189,7 @@ const downloadHref = computed(() => selected.value ? `/api/workspaces/${props.wo
           v-else-if="fileLoading && !file"
           class="text-sm text-muted"
         >
-          Loading…
+          {{ loadingText }}
         </div>
         <template v-else-if="file">
           <UAlert

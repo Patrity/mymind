@@ -1,8 +1,8 @@
 // Cycle 82 Task 2: the watch runtime against a fake exec + in-memory store + manual timers (the real
 // polling is in test/workspace-tools.db.test.ts, the workstream wake in test/workspace-watch.db.test.ts).
 import { describe, expect, it, vi } from 'vitest'
-import { applyWatchCaps, createWatchRuntime, MAX_POLL_ERRORS, WATCH_CAPS, watchText, type WatchStore, type WorkspaceWatchRow } from './watches'
-import { WATCH_POLL_SCRIPT } from './fs-ops'
+import { applyWatchCaps, createWatchRuntime, MAX_POLL_ERRORS, WATCH_CAPS, WATCH_OUTPUT_WITHHELD, watchText, type WatchStore, type WorkspaceWatchRow } from './watches'
+import { WATCH_POLL_SCRIPT, WATCH_TAIL_BYTES } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
 import type { WorkspaceRow } from './store'
 
@@ -40,7 +40,7 @@ function memWatches(): WatchStore & { rows: Map<string, WorkspaceWatchRow> } {
   }
 }
 
-function setup(o: { now?: () => number; tainted?: boolean; deliverReply?: 'delivered' | 'pending' } = {}) {
+function setup(o: { now?: () => number; tainted?: boolean; deliverReply?: 'delivered' | 'pending'; values?: () => Promise<string[]> } = {}) {
   const store = memWatches()
   const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
   const execs: Array<{ command: string; o?: ExecOptions }> = []
@@ -52,6 +52,7 @@ function setup(o: { now?: () => number; tainted?: boolean; deliverReply?: 'deliv
     deliver: async (row) => { delivered.push(row); return o.deliverReply ?? 'delivered' },
     store,
     now: o.now,
+    secretValues: o.values ?? (async () => []),
     log: { info: () => {}, warn: () => {}, error: () => {} },
     setTimer: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t },
     clearTimer: (t) => { (t as { cleared: boolean }).cleared = true }
@@ -183,5 +184,37 @@ describe('watch caps (fix round 1: I2 per workstream, M5 atomic in the store)', 
     const { rt } = setup()
     for (let i = 0; i < WATCH_CAPS.perWorkspace; i++) await armed(rt, { ...base, until: { kind: 'exit0' } })
     expect(await rt.create({ ...base, until: { kind: 'exit0' } })).toMatchObject({ refused: 'workspace' })
+  })
+})
+
+describe('Task 3 fix round 1 (I1): watch output is masked before it is stored or quoted', () => {
+  const SECRET = 'ghp_watchSecret_123456'
+  it('a poll tail holding a secret is stored masked, and the wake note quotes the masked text', async () => {
+    const t = setup({ values: async () => [SECRET] })
+    const row = await armed(t.rt, { ...base, command: 'tail log', until: { kind: 'exit0' } })
+    t.setReply(() => poll(0, null, `> GET /x\n> Authorization: Bearer ${SECRET}\n< 200`))
+    await t.fire()
+    const stored = t.store.rows.get(row.id)!
+    expect(stored.lastOutput).toBe('> GET /x\n> Authorization: Bearer «redacted»\n< 200')
+    expect(stored.resultText).toContain('Bearer «redacted»')
+    expect(JSON.stringify([...t.store.rows.values()])).not.toContain(SECRET)
+    expect(t.delivered[0]!.resultText).not.toContain(SECRET)
+  })
+  it('a tail cut at its start loses a leading half of a secret', async () => {
+    const t = setup({ values: async () => [SECRET] })
+    const row = await armed(t.rt, { ...base, command: 'tail log', until: { kind: 'exit0' } })
+    const tail = SECRET.slice(8) + 'x'.repeat(WATCH_TAIL_BYTES - (SECRET.length - 8))
+    expect(tail.length).toBe(WATCH_TAIL_BYTES)
+    t.setReply(() => poll(0, null, tail))
+    await t.fire()
+    expect(t.store.rows.get(row.id)!.lastOutput!.startsWith('x')).toBe(true)
+  })
+  it('fails closed: no secret values → no output stored', async () => {
+    const t = setup({ values: async () => { throw new Error('undecryptable') } })
+    const row = await armed(t.rt, { ...base, command: 'tail log', until: { kind: 'exit0' } })
+    t.setReply(() => poll(0, null, `token ${SECRET}`))
+    await t.fire()
+    expect(t.store.rows.get(row.id)!.lastOutput).toBe(WATCH_OUTPUT_WITHHELD)
+    expect(t.store.rows.get(row.id)!.resultText).not.toContain(SECRET)
   })
 })

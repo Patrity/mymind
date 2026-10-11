@@ -36,7 +36,9 @@ async function remove(secretName: string) {
         Stored encrypted; values are never shown again.
         Turn on <strong>Sandbox</strong> to also give a secret to commands in Bridget's workspace sandbox —
         never while a workspace is tainted (it handled mail or calendar content). Values are masked in
-        tool output.
+        tool output; a value must be at least 4 characters. Turning it off (or deleting the secret)
+        applies to new commands — background shells already running keep it until they are stopped
+        (Workspace → Shells → Kill).
       </p>
     </div>
 

@@ -15,6 +15,7 @@ import { publishChange } from '../../utils/live-bus'
 import { parseShellStatus, shellKillCommand, shellOutputCommand, shellStartCommand, shellStatusCommand, shellTailCommand, type ShellStatus } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
 import type { WorkspaceRow } from './store'
+import { maskCut, maskText, secretValues, trailingPartial } from './secrets'
 
 export type { WorkspaceShellRow }
 
@@ -75,6 +76,40 @@ export interface ShellDeps {
   workspace(workspaceId: string): Promise<WorkspaceRow | null>
   store?: ShellStore
   log?: Pick<Console, 'info' | 'warn' | 'error'>
+  /** The secret values to mask, longest first (sandbox/secrets.ts; tests inject). */
+  secretValues?: () => Promise<string[]>
+}
+
+/** The char index where the first `bytes` UTF-8 bytes of `s` end (never inside a code point). */
+function charIndexAtByte(s: string, bytes: number): number {
+  let b = 0
+  let i = 0
+  for (const ch of s) {
+    const n = Buffer.byteLength(ch)
+    if (b + n > bytes) break
+    b += n
+    i += ch.length
+  }
+  return i
+}
+
+/**
+ * Fix round 1 (M1): where a bash_output window may END without cutting a secret in half. The window
+ * was read `maxLen` bytes past the chunk, so a value starting before the chunk edge is fully in it:
+ * the edge moves back to its start. At the end of what the shell has written so far (it still runs),
+ * a trailing piece that could be the start of a value is held back for the next call.
+ */
+export function safeWindowEnd(text: string, chunkBytes: number, values: string[], atWrittenEnd: boolean): number {
+  let end = Buffer.byteLength(text) > chunkBytes ? charIndexAtByte(text, chunkBytes) : text.length
+  for (const v of values) {
+    let i = text.indexOf(v)
+    while (i !== -1 && i < end) {
+      if (i + v.length > end) { end = i; break }
+      i = text.indexOf(v, i + 1)
+    }
+  }
+  if (atWrittenEnd) end = Math.min(end, text.length - trailingPartial(text, values))
+  return end
 }
 
 /** bash_output returns at most this much new output per call. */
@@ -91,6 +126,7 @@ const TAINT_LOST = "it was stopped when this workspace's network was turned off 
 export function createShellRegistry(deps: ShellDeps) {
   const store = deps.store ?? dbShellStore
   const log = deps.log ?? console
+  const maskValues = deps.secretValues ?? secretValues
 
   async function lostReason(workspaceId: string, fallback: string): Promise<string> {
     const ws = await deps.workspace(workspaceId)
@@ -134,22 +170,41 @@ export function createShellRegistry(deps: ShellDeps) {
     return row
   }
 
-  /** New output since the last call (≤ SHELL_OUTPUT_CHUNK) + the shell's state. */
+  /** New output since the last call (≤ SHELL_OUTPUT_CHUNK) + the shell's state. Secret values are
+   *  masked here, on a window read past the chunk edge (fix round 1, M1: a value straddling the edge
+   *  is either returned whole — masked — or left for the next call; never split in two halves). */
   async function output(workspaceId: string, shellId: string, o: Pick<ExecOptions, 'tainted' | 'signal'> = {}) {
     let row = await own(workspaceId, shellId)
-    const r = await deps.exec(workspaceId, shellOutputCommand(row.id, row.readOffset, SHELL_OUTPUT_CHUNK), { timeoutSec: 30, capBytes: SHELL_OUTPUT_CHUNK * 2, ...o })
+    const values = await maskValues()
+    const overlap = values.reduce((m, v) => Math.max(m, Buffer.byteLength(v)), 0)
+    const r = await deps.exec(workspaceId, shellOutputCommand(row.id, row.readOffset, SHELL_OUTPUT_CHUNK + overlap), { timeoutSec: 30, capBytes: (SHELL_OUTPUT_CHUNK + overlap) * 2, ...o })
     const st = parseShellStatus(r.stdout)
     if (!st) throw new ShellError(`could not read the shell's output: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
-    if (st.n > 0) await store.setOffset(row.id, row.readOffset + st.n)
+    const start = row.readOffset
+    let text = st.output
+    let advance = Math.min(st.n, SHELL_OUTPUT_CHUNK)
+    // A half-written value held back at the end is not "more": nothing new to read yet.
+    let heldBack = false
+    if (Buffer.byteLength(text) === st.n) {
+      const atWrittenEnd = st.status.state === 'running' && start + st.n >= st.size
+      heldBack = atWrittenEnd && st.n <= SHELL_OUTPUT_CHUNK
+      text = text.slice(0, safeWindowEnd(text, SHELL_OUTPUT_CHUNK, values, atWrittenEnd))
+      advance = Buffer.byteLength(text)
+    } else {
+      // Not valid UTF-8 (binary output, or a code point split at the read edge): byte offsets and
+      // chars no longer line up, so return the chunk with both cut edges trimmed instead.
+      text = maskCut(Buffer.from(text).subarray(0, SHELL_OUTPUT_CHUNK).toString('utf8'), values, { start: true, end: true })
+    }
+    if (advance > 0) await store.setOffset(row.id, start + advance)
     row = await settle(row, st.status)
     return {
       shellId: row.id,
       state: row.state,
       ...(row.exitCode !== null ? { exitCode: row.exitCode } : {}),
       ...(row.reason ? { reason: row.reason } : {}),
-      output: st.output,
+      output: maskText(text, values),
       /** More output is waiting beyond this chunk — call bash_output again. */
-      more: row.readOffset + st.n < st.size,
+      more: start + advance < st.size && !heldBack,
       outputBytes: st.size,
       tainted: r.tainted
     }
@@ -171,11 +226,15 @@ export function createShellRegistry(deps: ShellDeps) {
    *  moves bash_output's offset; a status it finds (exited/lost) is recorded like any other read. */
   async function tail(workspaceId: string, shellId: string, max = SHELL_TAIL_BYTES) {
     let row = await own(workspaceId, shellId)
+    const values = await maskValues()
     const r = await deps.exec(workspaceId, shellTailCommand(row.id, max), { timeoutSec: 30, capBytes: max * 2 })
     const st = parseShellStatus(r.stdout)
     if (!st) throw new ShellError(`could not read the shell's output: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
     row = await settle(row, st.status)
-    return { shellId: row.id, state: row.state, exitCode: row.exitCode, reason: row.reason, output: st.output, outputBytes: st.size, truncated: st.n < st.size }
+    // M1: masked whole before any cut edge is trimmed — the start when older output was dropped, the
+    // end while the shell still writes (a value may be half-written).
+    const output = maskCut(st.output, values, { start: st.n < st.size, end: st.status.state === 'running' })
+    return { shellId: row.id, state: row.state, exitCode: row.exitCode, reason: row.reason, output, outputBytes: st.size, truncated: st.n < st.size }
   }
 
   /**

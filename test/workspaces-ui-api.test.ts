@@ -14,13 +14,26 @@ vi.stubGlobal('setResponseHeaders', (_e: unknown, h: Record<string, unknown>) =>
 vi.stubGlobal('sendStream', (_e: unknown, s: ReadableStream<Uint8Array>) => s)
 
 const sendCommand = vi.fn()
-vi.mock('@mymind/core/lib/bus/commands', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/bus/commands')>()), sendCommand: (...a: unknown[]) => sendCommand(...a) }))
+const worker = { online: true }
+vi.mock('@mymind/core/lib/bus/commands', async (orig) => ({
+  ...(await orig<typeof import('@mymind/core/lib/bus/commands')>()),
+  sendCommand: (...a: unknown[]) => sendCommand(...a),
+  workerStatus: async () => ({ online: worker.online, beatAt: null, bootId: null, status: null })
+}))
 const WS = '11111111-1111-4111-8111-111111111111'
 const SHELL = '22222222-2222-4222-8222-222222222222'
 const row = { id: WS, kind: 'workstream', workstreamId: null, state: 'running', tainted: false, taintedAt: null, bytesUsed: 0, inodesUsed: 0, lastUsedAt: new Date(0), deletedAt: null }
-vi.mock('@mymind/core/db', () => ({ useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => [row] }) }) }) }) }))
+const db = { rows: [row] as unknown[] }
+vi.mock('@mymind/core/db', () => ({ useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => db.rows }) }) }) }) }))
+const ensureHome = vi.fn(async () => ({ ...row, kind: 'home' }))
+vi.mock('@mymind/core/lib/sandbox/store', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/sandbox/store')>()), ensureHomeWorkspace: () => ensureHome() }))
 const setSecretSandbox = vi.fn(async (_n: string, _s: boolean) => {})
-vi.mock('@mymind/core/lib/exec/secrets', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/exec/secrets')>()), setSecretSandbox: (n: string, s: boolean) => setSecretSandbox(n, s) }))
+const values: Record<string, string> = { GITHUB_TOKEN: 'ghp_long_enough', SHORT: 'abc', DOCKER_HOST: 'tcp://x' }
+vi.mock('@mymind/core/lib/exec/secrets', async (orig) => ({
+  ...(await orig<typeof import('@mymind/core/lib/exec/secrets')>()),
+  setSecretSandbox: (n: string, s: boolean) => setSecretSandbox(n, s),
+  getDecryptedSecrets: async () => ({ ...values })
+}))
 const invalidate = vi.fn(async (_c: string) => {})
 vi.mock('@mymind/core/lib/bus/invalidate', () => ({ invalidateWorkerCache: (c: string) => invalidate(c) }))
 
@@ -32,12 +45,13 @@ const filesRoute = await load('../server/api/workspaces/[id]/files.get')
 const tailRoute = await load('../server/api/workspaces/[id]/shells/[shellId]/output.get')
 const killRoute = await load('../server/api/workspaces/[id]/shells/[shellId]/kill.post')
 const sandboxRoute = await load('../server/api/settings/exec-secrets/sandbox.put')
+const workspaceRoute = await load('../server/api/workspaces/[id].get')
 const { DOWNLOAD_MAX_BYTES, CHUNK_BYTES } = await import('@mymind/core/lib/sandbox/paths')
 
 const ev = (type: string, o: { query?: Record<string, unknown>; body?: unknown; params?: Record<string, string> } = {}) =>
   ({ params: { id: WS, shellId: SHELL, ...o.params }, query: o.query, body: o.body, context: { client: { type } } })
 
-beforeEach(() => { sendCommand.mockReset(); setSecretSandbox.mockClear(); invalidate.mockClear(); for (const k of Object.keys(headers)) delete headers[k] })
+beforeEach(() => { worker.online = true; db.rows = [row]; ensureHome.mockClear(); sendCommand.mockReset(); setSecretSandbox.mockClear(); invalidate.mockClear(); for (const k of Object.keys(headers)) delete headers[k] })
 
 describe('writes are session-only (a bearer token is refused before anything runs)', () => {
   it('POST …/shells/:shellId/kill', async () => {
@@ -124,5 +138,48 @@ describe('download', () => {
     sendCommand.mockImplementation(async () => ({ size: CHUNK_BYTES * 2, mtimeNs: n++ === 0 ? '1' : '2', data: Buffer.alloc(10).toString('base64') }))
     const s = await downloadRoute(ev('session', { query: { path: 'f' } })) as ReadableStream<Uint8Array>
     await expect(new Response(s).arrayBuffer()).rejects.toThrow(/changed during the download/)
+  })
+})
+
+describe('fix round 1', () => {
+  it('M2: a value shorter than 4 characters cannot be opted in (clear message); opting it out is fine', async () => {
+    const e = await sandboxRoute(ev('session', { body: { name: 'SHORT', sandbox: true } })).catch(x => x)
+    expect(e).toMatchObject({ statusCode: 400 })
+    expect(e.data.message).toMatch(/shorter than 4 characters/)
+    expect(setSecretSandbox).not.toHaveBeenCalled()
+    await sandboxRoute(ev('session', { body: { name: 'SHORT', sandbox: false } }))
+    expect(setSecretSandbox).toHaveBeenCalledWith('SHORT', false)
+  })
+  it('M4: download ?check=1 runs only the size probe and answers JSON (the UI toasts its errors)', async () => {
+    sendCommand.mockResolvedValue({ size: 1234, mtimeNs: '1', data: '' })
+    expect(await downloadRoute(ev('session', { query: { path: 'out/r e%port.csv', check: '1' } }))).toEqual({ ok: true, size: 1234, name: 'r e_port.csv' })
+    expect(sendCommand).toHaveBeenCalledTimes(1)
+    sendCommand.mockResolvedValue({ size: DOWNLOAD_MAX_BYTES + 1, mtimeNs: '1', data: '' })
+    await expect(downloadRoute(ev('session', { query: { path: 'big', check: '1' } }))).rejects.toMatchObject({ statusCode: 413 })
+  })
+  it('M5: a stale worker heartbeat fails fast (503) without queueing a command', async () => {
+    worker.online = false
+    await expect(fileRoute(ev('session', { query: { path: 'a.txt' } }))).rejects.toMatchObject({ statusCode: 503 })
+    await expect(downloadRoute(ev('session', { query: { path: 'a.txt' } }))).rejects.toMatchObject({ statusCode: 503 })
+    expect(sendCommand).not.toHaveBeenCalled()
+  })
+  it('M5: a claimed command that outlives the budget says the sandbox is still starting; the budget covers a cold start', async () => {
+    const { CommandTimeoutError } = await import('@mymind/core/lib/bus/commands')
+    const { VIEW_TIMEOUT_MS } = await import('../server/utils/workspaces-http')
+    expect(VIEW_TIMEOUT_MS).toBeGreaterThanOrEqual(180_000) // create 60s + start 60s + script 60s
+    sendCommand.mockRejectedValue(new CommandTimeoutError('workspace-view', 1, VIEW_TIMEOUT_MS, true))
+    const e = await filesRoute(ev('session')).catch(x => x)
+    expect(e).toMatchObject({ statusCode: 504 })
+    expect(e.data.message).toMatch(/still starting/)
+  })
+  it('M10: GET …/home creates the home workspace only for a web session; a token reads it or gets 404', async () => {
+    db.rows = []
+    await expect(workspaceRoute(ev('api-token', { params: { id: 'home' } }))).rejects.toMatchObject({ statusCode: 404 })
+    expect(ensureHome).not.toHaveBeenCalled()
+    db.rows = [{ ...row, kind: 'home' }]
+    expect(await workspaceRoute(ev('api-token', { params: { id: 'home' } }))).toMatchObject({ id: WS, kind: 'home' })
+    expect(ensureHome).not.toHaveBeenCalled()
+    expect(await workspaceRoute(ev('session', { params: { id: 'home' } }))).toMatchObject({ kind: 'home' })
+    expect(ensureHome).toHaveBeenCalledTimes(1)
   })
 })
