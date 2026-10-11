@@ -146,7 +146,7 @@ async function send() {
             data-testid="workstream-state"
           />
           <UButton
-            v-if="ws && canResume(ws.state)"
+            v-if="ws && canResume(ws.state) && ws.attention?.kind !== 'approval'"
             size="xs"
             color="primary"
             variant="soft"
@@ -189,7 +189,7 @@ async function send() {
           class="text-xs text-muted"
           data-testid="workstream-resume-adds"
         >
-          The budget is used up. Resume adds {{ adds.steps }} steps and {{ adds.minutes }} minutes of active time.
+          The budget is used up. Resume gives it {{ [adds.steps ? `${adds.steps} more steps` : '', adds.minutes ? `${adds.minutes} more minutes of active time` : ''].filter(Boolean).join(' and ') }}.
         </p>
         <!-- What it is waiting on. The question / approval text is model-written → hardened. -->
         <UAlert
@@ -223,7 +223,7 @@ async function send() {
         <UCard
           v-if="ws.summary"
           variant="subtle"
-          :ui="{ body: 'max-h-64 overflow-y-auto p-3 sm:p-3' }"
+          :ui="{ body: 'max-h-40 overflow-y-auto p-3 sm:p-3' }"
           data-testid="workstream-summary"
         >
           <p class="mb-1 text-xs font-medium text-muted">

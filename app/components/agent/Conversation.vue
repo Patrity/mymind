@@ -5,7 +5,7 @@
 // now come from Elements instead of hand-rolled ResizeObserver/MDC-cache-key plumbing.
 import type { AgentUIMessage } from '@mymind/core/shared/types/agent-ui'
 import type { VoiceState } from '~/composables/useVoice'
-import type { PendingApprovals } from '~/lib/agent/approvals'
+import { orphanApprovals, type PendingApprovals } from '~/lib/agent/approvals'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
@@ -122,6 +122,9 @@ const eventsById = computed(() => {
   }
   return out
 })
+/** Pending approvals no tool part on screen carries — rendered at the end on their own
+ *  (lib/agent/approvals.ts orphanApprovals). */
+const orphans = computed(() => orphanApprovals(props.approvals, props.messages))
 type EventOf<K> = Extract<ReturnType<typeof eventDisplay>, { kind: K }>
 function workstreamEvent(id: string): EventOf<'workstream'> | null {
   const e = eventsById.value[id]
@@ -168,7 +171,6 @@ function dividerEvent(id: string): EventOf<'divider'> | null {
           :icon="dividerEvent(m.id)!.icon"
           :label="dividerEvent(m.id)!.label"
           class="my-3"
-          data-testid="event-divider"
         />
         <div
           v-else
@@ -313,6 +315,13 @@ function dividerEvent(id: string): EventOf<'divider'> | null {
           class="my-4"
         />
       </template>
+      <AgentOrphanApproval
+        v-for="a in orphans"
+        :key="`orphan-${a.requestId}`"
+        :details="a"
+        @approve="(id: string, o) => emit('approve', id, o)"
+        @deny="(id: string) => emit('deny', id)"
+      />
     </ConversationContent>
     <ConversationScrollButton />
   </Conversation>

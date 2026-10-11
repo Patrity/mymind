@@ -16,7 +16,7 @@ const conversations = useConversations()
 // Cycle 75: where each reply was also sent (iMessage / email), badged under it. The transcript
 // is not a vue-query read, so this small query is what the `channelDelivery` live event (it
 // invalidates the ['conversation'] prefix) refreshes — "sending" becomes "sent" without a reload.
-const { data: deliveryRows } = useQuery({
+const { data: deliveryRows, dataUpdatedAt: conversationTick } = useQuery({
   queryKey: computed(() => ['conversation', voice.conversationId.value, 'deliveries'] as const),
   queryFn: () => $fetch<({ messageId: string } & MessageDeliveryDTO)[]>(`/api/conversations/${voice.conversationId.value}/deliveries`),
   enabled: computed(() => !!voice.conversationId.value)
@@ -257,6 +257,11 @@ watch(busy, (now, was) => { if (was && !now) syncPending.value = true })
 // turn, so arming on it cannot lose that race — and because a lost race clears `syncPending`, the
 // frame re-arming it IS the retry, bounded to exactly one extra read per turn.
 watch(() => voice.turnPersisted.value, () => { syncPending.value = true })
+// Cycle 81: rows other processes append to this thread with no frame of their own — a workstream's
+// start/finish/needs-you notes (`workstream:<id>` events) — arrive as a `conversation` live change,
+// which refetches the deliveries query above (same ['conversation', id] prefix). Its refetch is the
+// cue to re-read (the guards below keep that from touching a turn in flight).
+watch(conversationTick, () => { syncPending.value = true })
 
 // `busy` is a watch SOURCE, not just a guard: with TTS on, the client stays 'speaking' until
 // playback drains, so the persisted frame can land while `busy` is still true. Without `busy`

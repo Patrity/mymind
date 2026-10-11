@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addApproval, approvalFor, canApprove, removeApproval, type PendingApprovals } from './approvals'
+import { addApproval, approvalFor, canApprove, orphanApprovals, removeApproval, type PendingApprovals } from './approvals'
 import { mapServerMessage } from '../voice/messages'
 
 const frame = (requestId: string, command: string) =>
@@ -48,5 +48,26 @@ describe('pending approvals (per request — cycle 79 fix wave I1)', () => {
     expect(canApprove('calendar_rsvp', null)).toBe(false)
     expect(canApprove('exec', null)).toBe(true)
     expect(canApprove('gmail_send', { requestId: 'r', tool: 'gmail_send', command: 'x', proposedPattern: '' })).toBe(true)
+  })
+})
+
+describe('orphanApprovals (a card with no tool part on screen — e.g. a workstream card in its origin chat)', () => {
+  const d = (requestId: string) => ({ requestId, tool: 'exec', command: 'ls', proposedPattern: 'ls *' })
+  const pending: PendingApprovals = { a: d('a'), b: d('b') }
+  const msgs = [{ parts: [
+    { type: 'text' },
+    { type: 'dynamic-tool', state: 'approval-requested', approval: { id: 'a' } },
+    { type: 'dynamic-tool', state: 'output-available', approval: { id: 'b' } }
+  ] }]
+  it('returns only the pending requests no approval-requested part carries', () => {
+    expect(orphanApprovals(pending, msgs).map(x => x.requestId)).toEqual(['b'])
+  })
+  it('none pending, or every one on a part → nothing', () => {
+    expect(orphanApprovals({}, msgs)).toEqual([])
+    expect(orphanApprovals(null, msgs)).toEqual([])
+    expect(orphanApprovals({ a: d('a') }, msgs)).toEqual([])
+  })
+  it('with no transcript at all, every pending card is an orphan', () => {
+    expect(orphanApprovals(pending, []).map(x => x.requestId)).toEqual(['a', 'b'])
   })
 })

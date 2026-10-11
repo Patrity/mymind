@@ -11,7 +11,7 @@ const meta = computed(() => (data.value ? STATE_META[data.value.state] : null))
 <template>
   <UCard
     variant="subtle"
-    class="mb-3"
+    class="mb-3 shrink-0"
     :ui="{ body: 'p-3 sm:p-3' }"
     data-testid="workstream-started-card"
     :data-workstream="id"

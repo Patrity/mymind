@@ -49,16 +49,19 @@ export function isExhausted(budget: WorkstreamBudget, used: WorkstreamUsed): boo
 }
 
 /**
- * What Resume adds to a failed/cancelled workstream whose budget is used up — the loop's own rule
+ * How much more room Resume gives a failed/cancelled workstream whose budget is used up — the loop's own rule
  * (`resumeBudget` + the BUDGET_LIMITS clamp), so the button can say it before it is pressed.
  * Null when Resume adds nothing (budget left, or a state Resume does not reactivate).
  */
 export function resumeAdds(ws: Pick<WorkstreamDTO, 'state' | 'budget' | 'used'>): { steps: number; minutes: number } | null {
   if (ws.state !== 'failed' && ws.state !== 'cancelled') return null
   if (!isExhausted(ws.budget, ws.used)) return null
+  // In what is LEFT to work with, not in the limit: the final summary step can run one past the
+  // budget, so a 2-step budget used as 3 becomes 43 — and that is 40 more steps of work.
   const next = resumeBudget(ws.budget, ws.used)
-  const steps = Math.min(next.maxSteps, BUDGET_LIMITS.maxSteps.max) - ws.budget.maxSteps
-  const wall = Math.min(next.maxWallMs, BUDGET_LIMITS.maxWallMs.max) - ws.budget.maxWallMs
+  const left = (max: number, used: number) => Math.max(0, max - used)
+  const steps = left(Math.min(next.maxSteps, BUDGET_LIMITS.maxSteps.max), ws.used.steps) - left(ws.budget.maxSteps, ws.used.steps)
+  const wall = left(Math.min(next.maxWallMs, BUDGET_LIMITS.maxWallMs.max), ws.used.wallMs) - left(ws.budget.maxWallMs, ws.used.wallMs)
   if (steps <= 0 && wall <= 0) return null
   return { steps: Math.max(0, steps), minutes: Math.max(0, Math.round(wall / 60_000)) }
 }

@@ -15,6 +15,7 @@ defineProps<{ event: Extract<EventDisplay, { kind: 'workstream' }>; messageId: s
     variant="subtle"
     :icon="event.icon"
     class="my-3"
+    :ui="{ description: 'text-default' }"
     data-testid="workstream-event"
     :data-workstream="event.workstreamId"
   >

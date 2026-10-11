@@ -58,6 +58,12 @@ describe('resumeAdds / resumeLabel — what Resume extends an exhausted budget b
     expect(resumeAdds({ state: 'attention', budget, used: { ...ZERO_USED, steps: 400 } })).toBeNull()
     expect(resumeLabel({ state: 'failed', budget, used: ZERO_USED })).toBe('Resume')
   })
+  it('counts the room to work, not the limit: a final step past the budget does not inflate it', () => {
+    // 2-step budget, 3 used (the summary step) → limit 43, i.e. 40 more steps
+    const ws = { state: 'failed' as const, budget: { maxSteps: 2, maxWallMs: 7_200_000 }, used: { ...ZERO_USED, steps: 3, wallMs: 20_000 } }
+    expect(resumeAdds(ws)).toEqual({ steps: 40, minutes: 0 })
+    expect(resumeLabel(ws)).toBe('Resume (+40 steps)')
+  })
   it('honours the BUDGET_LIMITS clamp the loop applies', () => {
     const max = BUDGET_LIMITS.maxSteps.max
     const ws = { state: 'failed' as const, budget: { maxSteps: max, maxWallMs: DEFAULT_WORKSTREAM_BUDGET.maxWallMs }, used: { ...ZERO_USED, steps: max } }

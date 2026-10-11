@@ -48,3 +48,23 @@ export function approvalFor(state: PendingApprovals | null | undefined, requestI
 export function canApprove(toolName: string, details: PendingApprovalDetails | null): boolean {
   return details !== null || toolName === 'exec'
 }
+
+/**
+ * Pending approvals that no tool part on screen carries (cycle 81 Task 6) — a workstream's card
+ * mirrored into the chat it was started from, or a card re-sent on attach for a run the transcript
+ * does not show. The conversation renders these on their own, or they could never be answered.
+ */
+export function orphanApprovals(
+  state: PendingApprovals | null | undefined,
+  messages: ReadonlyArray<{ parts: ReadonlyArray<{ type: string; state?: string; approval?: { id: string } }> }>
+): PendingApprovalDetails[] {
+  const all = Object.values(state ?? {})
+  if (!all.length) return []
+  const onParts = new Set<string>()
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (p.type === 'dynamic-tool' && p.state === 'approval-requested' && p.approval) onParts.add(p.approval.id)
+    }
+  }
+  return all.filter(a => !onParts.has(a.requestId))
+}
