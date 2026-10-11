@@ -1,6 +1,9 @@
 // enqueue → DB row; a pump claims runnable rows and executes them. Serialisation per
 // conversation is the claim's job (runs.ts); this file only moves work along.
-import { activeRunFor, claimNextRun, createRun, finishRun, touchRun } from './runs'
+import { activeRunFor, claimNextRun, createRun, finishRun, touchRun, BOOT_ID } from './runs'
+import { eq } from 'drizzle-orm'
+import { useDb } from '../../../db'
+import { agentRuns } from '../../../db/schema'
 import { resolveSession } from './sessions'
 import { pushSteer, requeueUnconsumed } from './inbox'
 import { abortRun } from './aborts'
@@ -136,6 +139,62 @@ export async function abortRunAndWait(runId: string, timeoutMs = 10_000): Promis
   return { settled: ok }
 }
 
+/** How long the worker's `abort` command waits for a run to unwind — under the sender's 10s command
+ *  timeout (DEFAULT_COMMAND_TIMEOUT_MS), so a slow unwind is reported as `settled: false` (an
+ *  answer) rather than as a lost command. */
+export const ABORT_COMMAND_WAIT_MS = 8_000
+
+/**
+ * The worker's `abort` command (cycle 81, spec §3.5): Stop/barge-in and `/clear`. Aborts `runId`
+ * (when that run is still queued or running — a finished run is left alone, never parked in the
+ * pre-abort set forever) and the conversation's running run, and waits (bounded) for every run
+ * THIS process is executing to unwind: runFn returned (the runner's rescue has appended what it
+ * salvaged), finishRun committed. `settled` is honest — `/clear` writes its epoch only on true:
+ *   - nothing to abort, or a queued run (it will start already aborted): true;
+ *   - a run executing here that unwound within `timeoutMs`: true; one that did not: false;
+ *   - a 'running' row this process is NOT executing (another boot's orphan awaiting recovery):
+ *     false — nothing here can confirm its rescue has landed.
+ */
+export async function abortForCommand(
+  p: { runId?: string; conversationId?: string },
+  timeoutMs = ABORT_COMMAND_WAIT_MS
+): Promise<{ settled: boolean }> {
+  const targets = new Map<string, { status: string; owner: string | null }>()
+  if (p.runId) {
+    const [r] = await useDb().select({ status: agentRuns.status, owner: agentRuns.owner }).from(agentRuns).where(eq(agentRuns.id, p.runId)).limit(1)
+    if (r && (r.status === 'queued' || r.status === 'running')) targets.set(p.runId, r)
+  }
+  if (p.conversationId) {
+    const a = await activeRunFor(p.conversationId)
+    if (a) targets.set(a.id, { status: a.status, owner: a.owner })
+  }
+  const deadline = Date.now() + timeoutMs
+  const results = await Promise.all([...targets].map(async ([id, r]) => {
+    abortRun(id)
+    if (r.status !== 'running') return true
+    let settle = settles.get(id)
+    // Claimed by THIS boot but execute() not registered yet (the claim's commit and the pump's
+    // continuation are a tick apart): give it a moment to appear.
+    if (!settle && r.owner === BOOT_ID) {
+      for (let i = 0; i < 25 && !settle; i++) {
+        await new Promise(res => setTimeout(res, 10))
+        settle = settles.get(id)
+      }
+    }
+    // Still nothing to wait on: settled only if the row has meanwhile stopped running.
+    if (!settle) return !(await stillRunning(id))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const ok = await Promise.race([settle.then(() => true), new Promise<boolean>((res) => { timer = setTimeout(() => res(false), Math.max(0, deadline - Date.now())) })])
+    clearTimeout(timer)
+    return ok
+  }))
+  return { settled: results.every(Boolean) }
+}
+async function stillRunning(id: string): Promise<boolean> {
+  const [r] = await useDb().select({ status: agentRuns.status }).from(agentRuns).where(eq(agentRuns.id, id)).limit(1)
+  return r?.status === 'running'
+}
+
 // Run ids this process is actively executing right now — claimed, not yet finished. This is
 // the process's own ground truth about what it owns; the periodic tick's `recoverStale` call
 // excludes these ids so it can never recover a run this same process is still running just
@@ -200,6 +259,14 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean, wallClockMs
     settles.delete(run.id)
     settle()
   }
+}
+
+/** Test seam (cycle 81 worker child fixtures): execute a run the caller has ALREADY claimed for
+ *  this boot (status 'running', owner BOOT_ID), through the same path a pump uses — so abort's
+ *  settle-wait, finishRun and steer requeue behave as in the worker — without pumping the shared
+ *  dev DB. Resolves when the run has fully unwound. */
+export function _executeClaimedForTests(run: AgentRun, runFn: RunFn): Promise<void> {
+  return execute(run, runFn, false)
 }
 
 /** Claim and START everything currently runnable; returns how many were started. */

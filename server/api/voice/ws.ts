@@ -11,25 +11,19 @@ import type { SttProvider } from '@mymind/core/lib/voice/providers/types'
 import { withFailover } from '@mymind/core/lib/ai/registry/resolve'
 import { VOICE_TUNING } from '@mymind/core/lib/voice/tuning'
 import { routeFrame } from '../../lib/voice/ws-routing'
-import { enqueue, abortActive, abortActiveAndWait } from '@mymind/core/lib/agent/runtime/queue'
-import { abortRun } from '@mymind/core/lib/agent/runtime/aborts'
+import { enqueue } from '@mymind/core/lib/agent/runtime/queue'
+import { sendCommand, CommandTimeoutError } from '@mymind/core/lib/bus/commands'
 import { withCid, type Sink } from '@mymind/core/lib/agent/runtime/stream'
 import { runEventRelay } from '@mymind/core/lib/bus/relay'
 import { clientApprovalFrame, type HubFrame } from '@mymind/core/lib/bus/events'
 import { resolveTurnVoice } from '@mymind/core/services/voice-presets'
 import { speakWithPreset } from '@mymind/core/lib/voice/speak'
 import { createSocketTts, type SocketTts } from '../../lib/voice/socket-tts'
-import { registerApprovalChannel, unregisterApprovalChannel, hasApprovalChannel, turnStreamFor } from '@mymind/core/lib/agent/runtime/approvals'
 import { clearConversationContext } from '../../services/conversation-clear'
 import { useDb } from '@mymind/core/db'
 import { conversations } from '@mymind/core/db/schema'
 import { eq } from 'drizzle-orm'
-import type { ApprovalRequest } from '@mymind/core/lib/agent/types'
 import type { AttachmentRef } from '@mymind/core/lib/agent/attachments'
-import { addApproval, approvalOutcome } from '@mymind/core/lib/exec/approvals'
-import { recordEvent } from '@mymind/core/lib/observability/record'
-import { denyPendingApprovals } from '../../lib/voice/pending-approvals'
-import { capArgs, ARGS_WRITE_CAP } from '@mymind/core/lib/agent/tool-history'
 
 // Client→server: binary frame = one WAV utterance (transcribed HERE, then run as an ordinary
 //   voice turn) | text JSON {type:'interrupt'} (Stop: abort the viewed thread's running
@@ -53,9 +47,11 @@ import { capArgs, ARGS_WRITE_CAP } from '@mymind/core/lib/agent/tool-history'
 //   the client rendered, even if it has finished since — cycle 81) |
 //   {type:'new'} (stop viewing; the next text starts a new thread. Does NOT abort) |
 //   {type:'clear'} (forget this conversation's transcript — writes an epoch, deletes
-//   nothing; a no-op if there is no conversation yet; aborts the thread's running turn and
-//   waits for it to unwind first, so its rescued rows land before the epoch) |
-//   {type:'approve'|'deny',requestId,...} (resolve a pending exec approval)
+//   nothing; a no-op if there is no conversation yet; aborts the thread's running turn in the
+//   worker and waits for its `settled` answer first, so its rescued rows land before the epoch —
+//   on no answer within 10s, or settled:false, it reports an error and clears NOTHING) |
+//   {type:'approve'|'deny',requestId,...} (answer a card this socket was shown: forwarded to the
+//   worker as an `approval-decision` command — the run that asked decides it, cycle 81 §3.4)
 // Server→client: binary = raw PCM (s16le mono) for the segment currently open — only to the
 //   socket that originated the turn |
 //   text JSON = {type:'audio-begin',turnId,segmentId,sampleRate} / {type:'audio-end',segmentId}
@@ -71,20 +67,13 @@ import { capArgs, ARGS_WRITE_CAP } from '@mymind/core/lib/agent/tool-history'
 //   running run — a headless wake, typically — so the client paints its bubble now; `cid` names
 //   the thread, and the client's cid guard gates it like any conversation-scoped frame. Followed
 //   by {type:'state',state:'idle'} for a voice utterance, same as `steered`) |
-//   {type:'approval'|'approval-resolved',...} (exec approval lifecycle) |
+//   {type:'approval'|'approval-resolved',...} (approval card lifecycle — published by the worker's
+//   run on the bus to every socket viewing the thread; see runtime/bus-approvals.ts) |
 //   {type:'conversation',conversationId,title} (emitted once, when the first turn of a new thread persists) |
 //   {type:'persisted',conversationId} (the turn's rows are committed — arms the page's re-read) |
 //   {type:'cleared',epochAt} (the /clear boundary; the UI anchors a divider here — epochAt is
 //   null when there was nothing to clear, which the UI reads as "no-op", not a failure) |
 //   {type:'error',message} (turn failure; always followed by {type:'state',state:'idle'}).
-interface PendingApproval {
-  resolve: (d: { approved: boolean }) => void
-  timer: ReturnType<typeof setTimeout>
-  req: ApprovalRequest
-  /** The run that asked, and its thread — Stop only denies approvals of the thread in view. */
-  runId: string
-  conversationId: string
-}
 interface ConnState {
   sink: Sink
   /** Voice preset the client picked (cookie-backed); null = fall back to the default row. */
@@ -104,10 +93,10 @@ interface ConnState {
   submitLock: Promise<unknown>
   /** The last run this socket queued — Stop aborts it too, even if it has not started yet. */
   lastRun: { id: string; conversationId: string } | null
-  /** Runs this socket originated that still hold an approval channel — dropped on close. The
-   *  runner drops a channel when its run ends; entries whose channel is gone are pruned. */
-  runs: Set<string>
-  pendingApprovals: Map<string, PendingApproval>
+  /** Cards this socket has been SHOWN and that are still open (requestId → thread), from the bus's
+   *  approval / approval-resolved frames. Only these are forwarded as decisions: a socket can
+   *  answer what it was asked, never a requestId it merely names. */
+  cards: Map<string, string>
   /** Speaks this socket's spoken runs from their streamed text (cycle 81, spec §4). */
   tts: SocketTts
 }
@@ -140,9 +129,21 @@ function view(s: ConnState, conversationId: string | null, after?: Record<string
   if (conversationId) {
     s.unsubscribe = runEventRelay().subscribe(conversationId, {
       id: s.sink.id,
-      deliver: (frame, meta) => s.tts.frame(conversationId, frame, meta)
+      deliver: (frame, meta) => {
+        const f = frame as HubFrame
+        if (f.type === 'approval') s.cards.set(f.requestId, conversationId)
+        else if (f.type === 'approval-resolved') s.cards.delete(f.requestId)
+        s.tts.frame(conversationId, frame, meta)
+      }
     }, { replay: true, after })
   }
+}
+
+/** Stop/barge-in → the worker's `abort` command (spec §3.5). Fire-and-forget: Stop needs no answer
+ *  (the run's own frames show it stopping); `abort` is urgent there, so it never waits behind the
+ *  thread's other commands. Aborting the run also denies its open cards (bus-approvals.ts). */
+function abortInWorker(p: { runId?: string; conversationId?: string }) {
+  sendCommand('abort', p).catch(err => console.error('[agent] sending abort to the worker failed:', err))
 }
 
 export default defineWebSocketHandler({
@@ -160,7 +161,7 @@ export default defineWebSocketHandler({
       sink,
       presetId: null, model: null, conversationId: null, unsubscribe: null,
       viewSeq: 0, stopSeq: 0, submitLock: Promise.resolve(), lastRun: null,
-      runs: new Set(), pendingApprovals: new Map(),
+      cards: new Map(),
       tts: createSocketTts({
         // Run frames carry `run`/`seq` (cycle 81): a client that reconnects — after a web restart,
         // a deploy — sends them back in `attach.after` and resumes just past what it rendered.
@@ -178,40 +179,6 @@ export default defineWebSocketHandler({
     // the isBinary flag, so JSON control frames arrive as Buffers (see frames.ts).
     const frame = classifyFrame(typeof message.rawData === 'string' ? message.rawData : message.uint8Array())
     if (frame.kind === 'ignore') return
-
-    // Interactive approval prompt for one run this socket originated. The persisted allowlist
-    // is checked BEFORE this, in runtime/approvals.ts's approvalFor, so it applies even after
-    // this socket is gone; only a command that needs Tony reaches here. Emit an approval
-    // request to the peer and await Tony's decision (120s auto-deny).
-    const requestApproval = (runId: string, conversationId: string) => async (req: ApprovalRequest): Promise<{ approved: boolean }> => {
-      const requestId = randomUUID()
-      return await new Promise<{ approved: boolean }>((resolve) => {
-        const timer = setTimeout(() => {
-          if (s.pendingApprovals.delete(requestId)) {
-            // logSummary (cycle 79 review I4): a body-free stand-in a tool sets when `command`
-            // itself may carry sensitive/untrusted content (gmail_send's exact draft body) that
-            // must never reach activity_log — falls back to `command` for every other tool.
-            recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'timeout', command: req.logSummary ?? req.command } })
-            peer.send(JSON.stringify({ type: 'approval-resolved', requestId }))
-            resolve({ approved: false })
-          }
-        }, Number(process.env.APPROVAL_TIMEOUT_MS ?? 120_000))
-        s.pendingApprovals.set(requestId, { resolve, timer, req, runId, conversationId })
-        peer.send(JSON.stringify({ type: 'approval', requestId, tool: req.tool, command: req.command, proposedPattern: req.proposedPattern, allowlistable: req.allowlistable === true, title: req.title }))
-        // Capped like the tool-start frame's args (orchestrator.ts): the card must not ship a
-        // whole document to the browser.
-        if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool, args: req.args && capArgs(req.args, ARGS_WRITE_CAP) })
-      })
-    }
-    // Deny the pending approvals of one thread's runs and tell the client each request is
-    // resolved — used whenever the turn that asked for them is abandoned (interrupt / clear) so a
-    // tool never waits out its 120s timeout on a question nobody can see. Approvals belonging to
-    // another thread's run are left alone: Stop in thread B must not deny thread A's question.
-    const denyFor = (conversationId: string | null) => {
-      const hit = new Map([...s.pendingApprovals].filter(([, p]) => p.conversationId === conversationId))
-      for (const id of hit.keys()) s.pendingApprovals.delete(id)
-      for (const id of denyPendingApprovals(hit)) peer.send(JSON.stringify({ type: 'approval-resolved', requestId: id }))
-    }
 
     const submit = (text: string, o: { speak: boolean; skill?: string; attachments: AttachmentRef[]; modality: 'text' | 'voice'; conversationId?: string }): Promise<'started' | 'steered' | 'queued' | 'error'> => {
       // Captured BEFORE queuing on the lock: a Stop pressed while this submit waits its turn
@@ -236,17 +203,14 @@ export default defineWebSocketHandler({
           })
           const stillViewing = s.viewSeq === seq
           if (!r.steered) {
-            for (const id of s.runs) if (!hasApprovalChannel(id)) s.runs.delete(id)
-            s.runs.add(r.runId)
-            registerApprovalChannel(r.runId, requestApproval(r.runId, r.conversationId))
             s.lastRun = { id: r.runId, conversationId: r.conversationId }
             // Spoken: this socket synthesizes the run's text as it streams in (spec §4). Registered
             // before this continuation yields, so it precedes the run's first frame.
             if (o.speak) s.tts.expect(r.runId, { presetId: s.presetId, conversationId: r.conversationId })
             // Stop landed while the enqueue was in flight (and the socket is still on this
-            // thread): the run just created is what Stop meant. abortRun's preAborted path
-            // covers a run that has not started yet.
-            if (s.stopSeq !== stopAt && stillViewing) abortRun(r.runId)
+            // thread): the run just created is what Stop meant. The worker's pre-abort covers a
+            // run it has not claimed yet (it starts already aborted).
+            if (s.stopSeq !== stopAt && stillViewing) abortInWorker({ runId: r.runId, conversationId: r.conversationId })
           }
           // Only follow the run if the socket has not moved on (load / new) during the await —
           // otherwise this would undo the user's navigation. Subscribe too when the socket is on
@@ -302,11 +266,11 @@ export default defineWebSocketHandler({
         s.stopSeq++
         // Barge-in / Stop silences this socket at once, whatever the run does next.
         s.tts.abort()
-        // hasApprovalChannel: the runner drops the channel when the run ends, so this skips a
-        // long-finished run (abortRun would only park its id in the preAborted set).
-        if (s.lastRun && s.lastRun.conversationId === viewing && hasApprovalChannel(s.lastRun.id)) abortRun(s.lastRun.id)
-        if (viewing) await abortActive(viewing)
-        denyFor(viewing)
+        // The viewed thread's running run, and this socket's last run on it even if still queued
+        // (the worker skips a run that already finished). Runs of other threads are left alone —
+        // and so are their cards: only an aborted run's cards are denied.
+        const runId = s.lastRun && s.lastRun.conversationId === viewing ? s.lastRun.id : undefined
+        if (viewing || runId) abortInWorker({ ...(runId ? { runId } : {}), ...(viewing ? { conversationId: viewing } : {}) })
         return
       }
       case 'preset': s.presetId = a.presetId; return
@@ -319,30 +283,19 @@ export default defineWebSocketHandler({
       case 'attach': if (s.conversationId) view(s, s.conversationId, a.after); return
       case 'new': select(s, null); return
       case 'text': await submit(a.text, { speak: a.speak, skill: a.skill, attachments: a.attachments, modality: 'text', conversationId: a.conversationId }); return
-      // Approve/deny resolve a pending approval IMMEDIATELY (like interrupt), so the awaiting
-      // turn unblocks.
+      // Approve/deny: forwarded to the worker, whose run holds the request (and decides "always
+      // allow" from it — never from this frame). Only a card this socket was shown and that is still
+      // open; `approval-decision` is urgent in the worker, so the awaiting tool unblocks at once.
       case 'approve': case 'deny': {
-        const id = a.requestId
-        const pending = s.pendingApprovals.get(id)
-        if (pending) {
-          clearTimeout(pending.timer)
-          s.pendingApprovals.delete(id)
-          const outcome = approvalOutcome(
-            a.kind === 'approve'
-              ? { kind: 'approve', remember: a.remember, pattern: a.pattern, proposedPattern: pending.req.proposedPattern }
-              : { kind: 'deny' }
-          )
-          // Never save an "always allow" for a tool that isn't allowlistable (decide_review): the
-          // client hides the option, and this refuses a crafted frame that sends it anyway.
-          const remember = outcome.persist && !!outcome.pattern && pending.req.allowlistable === true
-          if (remember) {
-            addApproval({ pattern: outcome.pattern!, tool: pending.req.tool }).catch(err => console.error('[exec] persist approval failed:', err))
-          } else if (outcome.persist) {
-            recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'remember-refused', tool: pending.req.tool, pattern: outcome.pattern } })
-          }
-          recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: a.kind, command: pending.req.logSummary ?? pending.req.command, pattern: remember ? outcome.pattern : null, remembered: remember } })
-          pending.resolve({ approved: outcome.approved })
-        }
+        if (!s.cards.has(a.requestId)) return
+        s.cards.delete(a.requestId)
+        sendCommand('approval-decision', a.kind === 'approve'
+          ? { requestId: a.requestId, approved: true, remember: a.remember, ...(a.pattern !== undefined ? { pattern: a.pattern } : {}) }
+          : { requestId: a.requestId, approved: false }
+        ).catch((err) => {
+          console.error('[agent] sending an approval decision to the worker failed:', err)
+          peer.send(JSON.stringify({ type: 'error', message: 'could not reach the agent worker — the approval was not delivered' }))
+        })
         return
       }
       // clear: `/clear` — forgets the transcript for the MODEL only (clearConversationContext
@@ -353,14 +306,30 @@ export default defineWebSocketHandler({
       case 'clear': {
         const id = s.conversationId
         if (!id) { peer.send(JSON.stringify({ type: 'cleared', epochAt: null })); return }
-        // Deny this thread's pending approvals FIRST: the exec tool's approval await does not race
-        // the abort signal, so a run parked on one would not unwind until it resolves — the wait
-        // below would time out, the epoch would be written, and the rescue would land after it.
-        // Then wait for the aborted turn to unwind: its `finally` rescue appends the question +
-        // partial reply, and those rows must land BEFORE the epoch or they stay in model history.
-        denyFor(id)
+        // Abort the thread's running turn IN THE WORKER and wait for its answer: the aborted turn's
+        // `finally` rescue appends the question + partial reply, and those rows must land BEFORE
+        // the epoch or they stay in model history (spec §3.5). The abort also denies the run's
+        // open cards (bus-approvals.ts races the abort signal), so a run parked on one unwinds.
+        // No answer within 10s, or settled:false (it did not unwind in time) → an error and NO
+        // epoch: clearing anyway would let the rescue land after it.
         s.tts.abort(id)
-        await abortActiveAndWait(id)
+        let settled = false
+        try {
+          settled = (await sendCommand('abort', { conversationId: id }, { awaitResult: true }))?.settled === true
+        } catch (err) {
+          console.error('[agent] clear: abort in the worker failed:', err)
+          peer.send(JSON.stringify({
+            type: 'error',
+            message: err instanceof CommandTimeoutError
+              ? 'Could not clear: the agent worker did not confirm the running turn stopped. Try again in a moment.'
+              : 'Could not clear: stopping the running turn failed. Try again in a moment.'
+          }))
+          return
+        }
+        if (!settled) {
+          peer.send(JSON.stringify({ type: 'error', message: 'Could not clear: the running turn has not stopped yet. Try again in a moment.' }))
+          return
+        }
         try {
           await clearConversationContext(id)
           const [row] = await useDb().select({ at: conversations.contextEpochAt }).from(conversations).where(eq(conversations.id, id)).limit(1)
@@ -379,11 +348,9 @@ export default defineWebSocketHandler({
     // Unsubscribe only — the runs this socket started keep going and persist.
     s.unsubscribe?.()
     s.tts.abort()
-    for (const id of s.runs) unregisterApprovalChannel(id)
-    for (const id of denyPendingApprovals(s.pendingApprovals)) {
-      // The socket is closing (or already closed) — sending is best-effort.
-      try { peer.send(JSON.stringify({ type: 'approval-resolved', requestId: id })) } catch { /* closing */ }
-    }
+    // Open cards are NOT denied: they belong to the run in the worker, which other tabs on the
+    // thread — or this page once it reconnects (the relay replays the card) — can still answer,
+    // and which auto-denies at 120s.
     conns.delete(peer)
   }
 })

@@ -29,9 +29,10 @@ export type HubFrame =
   | { type: 'conversation'; conversationId: string; title: string | null }
   | { type: 'persisted'; conversationId: string }
   | { type: 'error'; message: string }
-  // The FULL ApprovalRequest (spec §3.4): the worker's approval channel publishes it, origin-sink
-  // targeted, and the web keeps what it needs to answer it — `logSummary` for the outcome log,
-  // `callId`/`args` for the card. What reaches the browser is clientApprovalFrame's subset.
+  // The FULL ApprovalRequest (spec §3.4): the worker's approval channel (runtime/bus-approvals.ts)
+  // publishes it to every socket viewing the thread (not origin-sink targeted: a reconnected socket
+  // has a new sink id) and answers it itself — the web only forwards approved/denied for the
+  // requestId. What reaches the browser is clientApprovalFrame's subset.
   | ({ type: 'approval'; requestId: string } & ApprovalRequest)
   | { type: 'approval-resolved'; requestId: string }
 

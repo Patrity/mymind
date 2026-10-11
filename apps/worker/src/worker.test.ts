@@ -21,6 +21,10 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     kick: vi.fn(() => { calls.push(claimingStopped ? 'kick:ignored' : 'kick') }),
     abort: vi.fn(async () => ({ settled: true })),
     imessageHealth: vi.fn(async (action: 'check' | 'reset') => { calls.push(`imessage:${action}`); return { ok: true, privateApi: true, checkedAt: 7 } }),
+    approvalDecision: vi.fn(() => true),
+    undo: vi.fn(async () => ({ ok: true })),
+    presence: vi.fn(),
+    invalidate: vi.fn(),
     startSchedule: vi.fn(() => { calls.push('schedule:start'); return () => { calls.push('schedule:stop') } }),
     startRecorderFlush: vi.fn(() => { calls.push('flush-loop:start'); return () => { calls.push('flush-loop:stop') } }),
     flushRecorder: vi.fn(async () => { calls.push('flush') }),
@@ -96,10 +100,27 @@ describe('worker boot', () => {
   })
 
   it('commands not yet owned by the worker fail loudly, never silently succeed', async () => {
-    const h = commandHandlers({ kick: () => {}, abort: async () => ({ settled: true }), imessageHealth: async () => ({ ok: true, privateApi: null, checkedAt: null }) })
-    await expect(h.undo({ token: 't' })).rejects.toThrow(/does not handle "undo" yet/)
-    await expect(h['approval-decision']({ requestId: 'r', approved: true })).rejects.toThrow(/approval-decision/)
+    const { deps } = fakeDeps()
+    const h = commandHandlers(deps)
+    await expect(h['workstream-control']({ workstreamId: 'w', action: 'cancel' })).rejects.toThrow(/does not handle "workstream-control" yet/)
     await expect(h.abort({ runId: 'r1' })).resolves.toEqual({ settled: true })
+  })
+
+  // Cycle 81 Task 4: each command reaches its dependency with the payload's fields, and returns the
+  // dependency's real answer (an undo's UndoResult, whether an approval was still pending).
+  it('approval-decision, undo, presence and invalidate reach their dependencies', async () => {
+    const { deps } = fakeDeps({ undo: vi.fn(async () => ({ ok: false, reason: 'undo expired or already used' })), approvalDecision: vi.fn(() => false) })
+    const h = commandHandlers(deps)
+    const d = { requestId: 'q1', approved: true, remember: true, pattern: 'git *' }
+    expect(await h['approval-decision'](d)).toBe(false)
+    expect(deps.approvalDecision).toHaveBeenCalledWith(d)
+    expect(await h.undo({ token: 'tok' })).toEqual({ ok: false, reason: 'undo expired or already used' })
+    expect(deps.undo).toHaveBeenCalledWith('tok')
+    await h.presence({ lastActiveAt: 1234 })
+    expect(deps.presence).toHaveBeenCalledWith(1234)
+    await expect(h.presence({ lastActiveAt: Number.NaN })).rejects.toThrow(/timestamp/)
+    await h.invalidate({ cache: 'ai-registry' })
+    expect(deps.invalidate).toHaveBeenCalledWith('ai-registry')
   })
 })
 

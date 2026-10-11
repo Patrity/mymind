@@ -10,8 +10,9 @@
 // A drain that arrives while `start` is still booting stops it between steps: nothing that claims
 // (commands, tick, pump, schedule) starts after the signal (Task 2 review M4).
 // This is the ONLY process that executes agent runs (cycle 81 Task 3): the web never claims.
-import type { CommandHandlers, CommandPayloads, WorkerBeatStatus } from '@mymind/core/lib/bus/commands'
+import type { CommandHandlers, CommandPayloads, InvalidateCache, WorkerBeatStatus } from '@mymind/core/lib/bus/commands'
 import type { ImessageHealth } from '@mymind/core/lib/channels/inbound'
+import type { UndoResult } from '@mymind/core/lib/agent/undo'
 
 export interface WorkerDeps {
   /** recoverOrphans (+ seed jobs install/upgrade, revalidation) — bootAgentRuntime. `stopped` lets
@@ -24,6 +25,14 @@ export interface WorkerDeps {
   abort(p: CommandPayloads['abort']): Promise<{ settled: boolean }>
   /** The iMessage catch-up health this process owns: `check` = forced catch-up, `reset` = forget. */
   imessageHealth(action: CommandPayloads['imessage-health']['action']): Promise<ImessageHealth>
+  /** Resolve a pending card of a run executing here (runtime/bus-approvals.ts); false = none. */
+  approvalDecision(p: CommandPayloads['approval-decision']): boolean
+  /** Redeem an undo token minted here (undo.ts). */
+  undo(token: string): Promise<UndoResult>
+  /** Tony's last web activity (presence.ts markActive) — what isAway reads here. */
+  presence(lastActiveAt: number): void
+  /** Drop this process's copy of a settings cache (bus/invalidate.ts). */
+  invalidate(cache: InvalidateCache): void
   startSchedule(): () => void
   startRecorderFlush(): () => void
   flushRecorder(): Promise<void>
@@ -50,16 +59,20 @@ export interface WorkerProcess {
 }
 
 /** Handlers for every command type. Each returns once its action has started (bus contract). */
-export function commandHandlers(deps: Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth'>): CommandHandlers {
-  const later = (type: string) => async () => { throw new Error(`the agent worker does not handle "${type}" yet (cycle 81 Task 4/5)`) }
+export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate'>
+export function commandHandlers(deps: CommandDeps): CommandHandlers {
+  const later = (type: string) => async () => { throw new Error(`the agent worker does not handle "${type}" yet (cycle 81 Task 5)`) }
   return {
     kick: async () => { deps.kick() },
     abort: async p => deps.abort(p),
     'imessage-health': async p => deps.imessageHealth(p.action),
-    'approval-decision': later('approval-decision'),
-    undo: later('undo'),
-    presence: later('presence'),
-    invalidate: later('invalidate'),
+    'approval-decision': async p => deps.approvalDecision(p),
+    undo: async p => deps.undo(p.token),
+    presence: async (p) => {
+      if (!Number.isFinite(p.lastActiveAt)) throw new Error('presence: lastActiveAt must be a timestamp')
+      deps.presence(p.lastActiveAt)
+    },
+    invalidate: async (p) => { deps.invalidate(p.cache) },
     'workstream-control': later('workstream-control')
   }
 }

@@ -6,7 +6,11 @@ export type UndoFn = () => Promise<void | UndoResult>
 
 interface Entry { fn: UndoFn, expires: number }
 const store = new Map<string, Entry>()
-const TTL_MS = 10 * 60 * 1000 // 10 minutes
+const DEFAULT_TTL_MS = 10 * 60 * 1000 // 10 minutes
+let TTL_MS = DEFAULT_TTL_MS
+
+/** Test seam (worker child fixtures): shorten the TTL; null restores 10 minutes. */
+export function _setUndoTtlForTests(ms: number | null): void { TTL_MS = ms ?? DEFAULT_TTL_MS }
 
 function sweep() {
   const now = Date.now()

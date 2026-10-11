@@ -21,6 +21,7 @@ import type { RunPublisher } from './stream'
 import { busPublisher } from './bus-publisher'
 import { registerAbort, releaseAbort } from './aborts'
 import { approvalFor, hasApprovalChannel, registerApprovalChannel, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
+import { busApprovalChannel } from './bus-approvals'
 import { drainSteerFor } from './inbox'
 import { headlessTools } from './gate'
 import { eventModelText, wakeOrigin } from './event-text'
@@ -142,9 +143,15 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // the approval-request chunk into THIS turn's stream — keyed by run id, and a conversation
     // runs one run at a time (agent_runs_one_running), so the stream found is always this turn's.
     registerTurnStream(run.id, ts)
-    // A run with no socket channel prompts over iMessage when its reply_to (read at
-    // request time) names a chat; otherwise it denies, as before.
-    if (run.profile === 'interactive' && !hasApprovalChannel(run.id)) registerApprovalChannel(run.id, replyToApprovalChannel(run.id, { signal: ac.signal }))
+    // A run a web socket originated asks on the card (cycle 81, spec §3.4): the request goes out on
+    // this run's frame stream and the web answers with an `approval-decision` command — 120s
+    // auto-deny, denied at once on abort. Any other interactive run prompts over iMessage when its
+    // reply_to (read at request time) names a chat; otherwise it denies, as before.
+    if (run.profile === 'interactive' && !hasApprovalChannel(run.id)) {
+      registerApprovalChannel(run.id, run.originSinkId
+        ? busApprovalChannel(run.id, { signal: ac.signal, publish: f => send(JSON.stringify(f)) })
+        : replyToApprovalChannel(run.id, { signal: ac.signal }))
+    }
     const emit = (e: VoiceEvent) => {
       if (e.type === 'transcript') {
         if (e.role === 'user') liveUserText = e.text

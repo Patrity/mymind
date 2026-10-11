@@ -6,6 +6,10 @@ process.loadEnvFile('.env')
 import { describe, it, expect, beforeAll, afterAll, vi, afterEach } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+// Cycle 81: the regenerate route also tells apps/worker to drop its cached channels config — a
+// command on the SHARED dev DB's default bus namespace, which a running dev worker would claim. Not
+// what this file tests (test/channels-routes.test.ts pins it), so it is stubbed here.
+vi.mock('@mymind/core/lib/bus/invalidate', () => ({ invalidateWorkerCache: vi.fn(async () => {}) }))
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number, statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 

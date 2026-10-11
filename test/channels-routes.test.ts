@@ -16,8 +16,11 @@ const cfg = {
   presenceAwayMinutes: 10
 }
 const mocks = vi.hoisted(() => ({
-  load: vi.fn(), save: vi.fn(), rotate: vi.fn(), dto: vi.fn(), markActive: vi.fn(), resetHealth: vi.fn()
+  load: vi.fn(), save: vi.fn(), rotate: vi.fn(), dto: vi.fn(), markActive: vi.fn(), resetHealth: vi.fn(),
+  // Cycle 81: presence and the channel writes also reach apps/worker as commands.
+  sendCommand: vi.fn(async () => undefined)
 }))
+vi.mock('@mymind/core/lib/bus/commands', async orig => ({ ...(await orig<typeof import('@mymind/core/lib/bus/commands')>()), sendCommand: mocks.sendCommand }))
 vi.mock('@mymind/core/lib/channels/config', async (orig) => {
   const actual = await orig<typeof import('@mymind/core/lib/channels/config')>()
   return {
@@ -73,6 +76,7 @@ describe.each([
     expect(mocks.rotate).not.toHaveBeenCalled()
     expect(mocks.markActive).not.toHaveBeenCalled()
     expect(mocks.load).not.toHaveBeenCalled()
+    expect(mocks.sendCommand).not.toHaveBeenCalled()
   })
 })
 
@@ -94,6 +98,8 @@ describe('session callers', () => {
   it('PUT valid → saves the merged config and returns the DTO', async () => {
     expect(await put(evt(session, goodBody))).toEqual({ ok: 'dto' })
     expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ imessage: expect.objectContaining({ enabled: true, serverUrl: 'http://bb.local:1234' }) }))
+    // …and tells the worker to drop its cached copy (cycle 81, spec §3.6).
+    expect(mocks.sendCommand).toHaveBeenCalledWith('invalidate', { cache: 'channels' })
   })
   it('M6: PUT that enables iMessage (or changes its server) forgets the last health check', async () => {
     await put(evt(session, goodBody)) // cfg has it disabled → enabled
@@ -108,11 +114,23 @@ describe('session callers', () => {
   it('regenerate rotates the token and returns the DTO', async () => {
     expect(await regen(evt(session))).toEqual({ ok: 'dto' })
     expect(mocks.rotate).toHaveBeenCalledOnce()
+    expect(mocks.sendCommand).toHaveBeenCalledWith('invalidate', { cache: 'channels' })
   })
   it('presence marks active and returns 204', async () => {
     const e = evt(session)
     await presence(e)
     expect(mocks.markActive).toHaveBeenCalledOnce()
     expect(e.status).toBe(204)
+    // The same instant reaches the worker, whose isAway decides deliveries (cycle 81, spec §3.6).
+    const at = (mocks.markActive.mock.calls[0] as unknown as [number])[0]
+    expect(mocks.sendCommand).toHaveBeenCalledWith('presence', { lastActiveAt: at })
+  })
+  it('presence still answers 204 when the worker command cannot be sent', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mocks.sendCommand.mockRejectedValueOnce(new Error('db down') as never)
+    const e = evt(session)
+    await presence(e)
+    expect(e.status).toBe(204)
+    err.mockRestore()
   })
 })

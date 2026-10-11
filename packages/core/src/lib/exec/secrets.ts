@@ -21,6 +21,9 @@ async function load(): Promise<Doc> {
   cache = (row?.value as Doc) ?? { version: 1, secrets: {} }
   return cache
 }
+/** Forget the cached doc (cycle 81: the web's secret PUT/DELETE tell the worker via `invalidate`). */
+export function invalidateExecSecrets(): void { cache = null }
+
 async function save(doc: Doc): Promise<void> {
   await useDb().insert(settings).values({ key: KEY, value: doc, updatedAt: new Date() })
     .onConflictDoUpdate({ target: settings.key, set: { value: doc, updatedAt: new Date() } })

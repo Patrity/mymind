@@ -4,6 +4,7 @@ import {
 } from '@mymind/core/lib/channels/config'
 import { resetImessageHealth } from '@mymind/core/lib/channels/health'
 import { requireSession } from '../../utils/auth-guard'
+import { invalidateWorkerCache } from '@mymind/core/lib/bus/invalidate'
 
 // Web session only: a machine token must not be able to change who can text the agent or
 // where send_message goes. The webhook token is never written here (saveChannelsConfig keeps
@@ -24,6 +25,8 @@ export default defineEventHandler(async (event) => {
   }
   await saveChannelsConfig(next)
   invalidateChannelsConfig()
+  // apps/worker keeps its own copy (cycle 81, spec §3.6).
+  await invalidateWorkerCache('channels')
   // The last health check was of a different setup (or of none): the dot goes neutral until the
   // next catch-up tick checks this one (M6).
   const p = prev.imessage, n = next.imessage

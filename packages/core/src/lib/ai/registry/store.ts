@@ -28,3 +28,6 @@ export async function saveConfig(doc: AiConfigDoc): Promise<void> {
 }
 
 export function invalidate(): void { cache = null }
+/** Test seam (cycle 81 worker child): put a doc in this process's cache WITHOUT writing the shared
+ *  row, so a test can tell a cached read from a DB read. */
+export function _setConfigCacheForTests(doc: AiConfigDoc | null): void { cache = doc }

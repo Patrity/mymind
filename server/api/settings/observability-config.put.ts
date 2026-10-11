@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { loadObsConfig, saveObsConfig, invalidateObsConfig, parseObsConfig } from '@mymind/core/lib/observability/config'
 import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { ACTIVITY_KINDS } from '@mymind/core/shared/types/activity'
+import { invalidateWorkerCache } from '@mymind/core/lib/bus/invalidate'
 
 const KeyField = z.union([z.object({ apiKey: z.string().min(1) }), z.object({ keep: z.literal(true) }), z.null()])
 const Body = z.object({
@@ -57,5 +58,7 @@ export default defineEventHandler(async (event) => {
   })
   await saveObsConfig(doc)
   invalidateObsConfig()
+  // apps/worker keeps its own copy (cycle 81, spec §3.6).
+  await invalidateWorkerCache('observability')
   return { ok: true }
 })

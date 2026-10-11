@@ -1,4 +1,5 @@
 import { loadSearchConfig, saveSearchConfig } from '@mymind/core/lib/search/store'
+import { invalidateWorkerCache } from '@mymind/core/lib/bus/invalidate'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{ provider?: string; searxngUrl?: string; braveApiKey?: string }>(event)
@@ -15,6 +16,8 @@ export default defineEventHandler(async (event) => {
     searxngUrl: body.searxngUrl.trim(),
     braveApiKey: body.braveApiKey?.trim() || undefined,
   })
+  // apps/worker keeps its own copy (cycle 81, spec §3.6).
+  await invalidateWorkerCache('search')
 
   const c = await loadSearchConfig()
   return { provider: c.provider, searxngUrl: c.searxngUrl, hasBraveKey: !!c.braveApiKeyEnc }

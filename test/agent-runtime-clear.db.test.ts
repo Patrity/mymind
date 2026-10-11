@@ -9,11 +9,12 @@ import { describe, it, expect, afterAll, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { conversations, conversationMessages, agentRuns, agentInbox, type AgentRun } from '@mymind/core/db/schema'
-import { enqueue, pumpOnce, abortActiveAndWait } from '@mymind/core/lib/agent/runtime/queue'
-import { activeRunFor } from '@mymind/core/lib/agent/runtime/runs'
+import { enqueue, pumpOnce, abortActiveAndWait, abortForCommand, _executeClaimedForTests } from '@mymind/core/lib/agent/runtime/queue'
+import { activeRunFor, BOOT_ID } from '@mymind/core/lib/agent/runtime/runs'
 import { registerAbort, releaseAbort } from '@mymind/core/lib/agent/runtime/aborts'
+import { resolveSession } from '@mymind/core/lib/agent/runtime/sessions'
 import { clearConversationContext } from '../server/services/conversation-clear'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import type { RunOutcome } from '@mymind/core/lib/agent/runtime/types'
 
@@ -76,5 +77,69 @@ describe('abortActiveAndWait', () => {
     const r = await enqueue({ sessionKey: 'thread:new', trigger: 'user', profile: 'interactive', input: { text: 'CLEAR-TEST idle', modality: 'text' } }, { kick: false })
     convIds.push(r.conversationId)
     expect(await abortActiveAndWait(r.conversationId)).toBe(false)
+  })
+})
+
+// Cycle 81 Task 4: the worker's `abort` command answers `settled` HONESTLY — `/clear` writes its
+// epoch only on true. Runs are inserted already 'running' (never 'queued': no dev worker can claim
+// them) and executed through the queue's own path (_executeClaimedForTests).
+async function runningRun(owner = BOOT_ID) {
+  const s = await resolveSession('thread:new', { titleHint: 'CLEAR-TEST' })
+  convIds.push(s.conversationId)
+  const [run] = await useDb().insert(agentRuns).values({
+    conversationId: s.conversationId, sessionKey: `thread:${s.conversationId}`, trigger: 'user', profile: 'interactive',
+    input: { text: 'CLEAR-TEST go', modality: 'text' }, status: 'running', owner, claimedAt: sql`now()`, aliveAt: sql`now()`
+  }).returning()
+  return run!
+}
+/** Waits for Stop, then takes `unwindMs` to unwind. */
+function slowUnwind(unwindMs: number) {
+  return async (run: AgentRun): Promise<RunOutcome> => {
+    const ac = registerAbort(run.id)
+    try {
+      await new Promise<void>((resolve) => { ac.signal.addEventListener('abort', () => resolve(), { once: true }); setTimeout(resolve, 5_000) })
+      await sleep(unwindMs)
+      return { status: 'aborted' }
+    } finally { releaseAbort(run.id) }
+  }
+}
+
+describe('abortForCommand (the worker\'s abort command)', () => {
+  it('settled:true once the conversation\'s run has unwound and finished', async () => {
+    const run = await runningRun()
+    const exec = _executeClaimedForTests(run, slowUnwind(200))
+    expect(await abortForCommand({ conversationId: run.conversationId })).toEqual({ settled: true })
+    const [row] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, run.id))
+    expect(row!.status).toBe('aborted')
+    await exec
+  })
+
+  it('settled:false — never a false "settled" — when the run has not unwound within the wait', async () => {
+    const run = await runningRun()
+    const exec = _executeClaimedForTests(run, slowUnwind(1_000))
+    const t0 = Date.now()
+    expect(await abortForCommand({ conversationId: run.conversationId }, 200)).toEqual({ settled: false })
+    expect(Date.now() - t0).toBeLessThan(900)
+    await exec
+  })
+
+  it('settled:false for a running row this process is not executing (another boot\'s orphan)', async () => {
+    const run = await runningRun('some-other-boot')
+    try {
+      expect(await abortForCommand({ conversationId: run.conversationId }, 200)).toEqual({ settled: false })
+    } finally {
+      releaseAbort(run.id)
+      await useDb().update(agentRuns).set({ status: 'interrupted' }).where(eq(agentRuns.id, run.id))
+    }
+  })
+
+  it('a runId that already finished is left alone (settled, and not parked as pre-aborted)', async () => {
+    const run = await runningRun()
+    await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run.id))
+    expect(await abortForCommand({ runId: run.id })).toEqual({ settled: true })
+    // Not parked: a controller registered for that id now is NOT born aborted.
+    const ac = registerAbort(run.id)
+    expect(ac.signal.aborted).toBe(false)
+    releaseAbort(run.id)
   })
 })

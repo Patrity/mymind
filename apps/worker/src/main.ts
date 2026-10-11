@@ -6,6 +6,7 @@
 import { initCore } from '@mymind/core/config'
 import { workerSettings } from './env'
 import { createWorkerProcess, runWorker } from './worker'
+import { coreCommandDeps } from './command-deps'
 
 const settings = workerSettings()
 initCore(settings.core)
@@ -31,16 +32,8 @@ const worker = createWorkerProcess({
   boot: stopped => bootAgentRuntime(undefined, { ...DEFAULT_BOOT_RETRY, stopped }),
   tick: () => queue.workerTick(),
   kick: () => queue.kickPump(),
-  abort: async (p) => {
-    if (p.runId) return queue.abortRunAndWait(p.runId)
-    if (p.conversationId) { await queue.abortActiveAndWait(p.conversationId); return { settled: true } }
-    return { settled: true }
-  },
-  imessageHealth: async (action) => {
-    if (action === 'reset') inbound.resetHealth()
-    else await inbound.catchUpTick({ force: true })
-    return inbound.lastHealth()
-  },
+  // abort, approval-decision, undo, presence, invalidate, imessage-health (command-deps.ts).
+  ...await coreCommandDeps(),
   startSchedule: () => startAgentSchedule(),
   startRecorderFlush: () => { record.startRecorderFlushLoop(); return () => {} },
   flushRecorder: () => record.recorder.flush(),

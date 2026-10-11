@@ -6,6 +6,7 @@ import { loadConfig, saveConfig, invalidate } from '@mymind/core/lib/ai/registry
 import { redactDoc } from '@mymind/core/lib/ai/registry/schema'
 import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { emptyDoc, EMBEDDING_DIM, type AiConfigDoc, type ProviderDef, type ModelDef } from '@mymind/core/lib/ai/registry/types'
+import { invalidateWorkerCache } from '@mymind/core/lib/bus/invalidate'
 
 interface Src { env: string; usage: keyof AiConfigDoc['assignments']; dim?: number | null }
 // Maps the old env roles → registry usages.
@@ -48,5 +49,7 @@ export default defineEventHandler(async () => {
 
   await saveConfig(doc)
   invalidate()
+  // apps/worker keeps its own copy (cycle 81, spec §3.6).
+  await invalidateWorkerCache('ai-registry')
   return redactDoc(doc)
 })

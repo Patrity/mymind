@@ -2,7 +2,8 @@
 //
 // The runtime socket (server/api/voice/ws.ts) driven with a fake peer. The runtime itself is
 // mocked — these tests pin what the SOCKET does with frames: which thread it enqueues into,
-// what it subscribes to, what Stop aborts, which approvals Stop denies.
+// what it subscribes to, and which commands it sends the worker (cycle 81: Stop/`/clear` abort, card
+// decisions). The approval channel itself is tested in core (runtime/bus-approvals.test.ts).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Hoisted: the handler module calls this Nitro auto-import at import time.
@@ -10,16 +11,10 @@ vi.hoisted(() => { (globalThis as Record<string, unknown>).defineWebSocketHandle
 
 const m = vi.hoisted(() => ({
   enqueue: vi.fn(),
-  abortActive: vi.fn(async () => true),
-  abortActiveAndWait: vi.fn(async () => true),
-  abortRun: vi.fn(),
-  registerApprovalChannel: vi.fn(),
-  unregisterApprovalChannel: vi.fn(),
-  hasApprovalChannel: vi.fn(() => true),
+  // The worker's commands (cycle 81 Task 4). `abort` with awaitResult answers { settled }.
+  sendCommand: vi.fn(async (_type: string, _payload: unknown, _o?: unknown): Promise<unknown> => undefined),
   transcribe: vi.fn(async () => 'spoken words'),
   clear: vi.fn(async () => {}),
-  addApproval: vi.fn(async () => ({})),
-  turnStreamFor: vi.fn((): unknown => undefined),
   // Cycle 81: the socket subscribes through the run-event relay (frames come off the bus).
   subscribe: vi.fn((_cid: string, _sink: unknown, _o?: unknown) => () => {}),
   synthesize: vi.fn(async function* (_text: string) {
@@ -34,24 +29,19 @@ vi.mock('@mymind/core/services/voice-presets', async (importOriginal) => {
   const real = await importOriginal<typeof import('@mymind/core/services/voice-presets')>()
   return { ...real, resolveTurnVoice: async () => ({ preset: real.FALLBACK_PRESET, refAudio: null }) }
 })
-vi.mock('@mymind/core/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue, abortActive: m.abortActive, abortActiveAndWait: m.abortActiveAndWait }))
-vi.mock('@mymind/core/lib/agent/runtime/aborts', () => ({ abortRun: m.abortRun }))
-vi.mock('@mymind/core/lib/agent/runtime/approvals', () => ({
-  registerApprovalChannel: m.registerApprovalChannel, unregisterApprovalChannel: m.unregisterApprovalChannel,
-  hasApprovalChannel: m.hasApprovalChannel, turnStreamFor: m.turnStreamFor
+vi.mock('@mymind/core/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue }))
+vi.mock('@mymind/core/lib/bus/commands', async importOriginal => ({
+  ...(await importOriginal<typeof import('@mymind/core/lib/bus/commands')>()), sendCommand: m.sendCommand
 }))
 vi.mock('@mymind/core/lib/ai/registry/resolve', () => ({ withFailover: (_u: string, fn: (x: unknown) => unknown) => fn({}) }))
 vi.mock('@mymind/core/lib/voice/providers', () => ({ sttFromModel: () => ({ transcribe: m.transcribe }) }))
 vi.mock('../server/services/conversation-clear', () => ({ clearConversationContext: m.clear }))
 vi.mock('@mymind/core/db', () => ({ useDb: () => ({ select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ at: new Date(0) }] }) }) }) }) }))
-vi.mock('@mymind/core/lib/observability/record', () => ({ recordEvent: vi.fn() }))
-vi.mock('@mymind/core/lib/exec/approvals', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@mymind/core/lib/exec/approvals')>()), addApproval: m.addApproval
-}))
 
 import handler from '../server/api/voice/ws'
 import type { RelaySink } from '@mymind/core/lib/bus/relay'
 import type { HubFrame } from '@mymind/core/lib/bus/events'
+import { CommandTimeoutError } from '@mymind/core/lib/bus/commands'
 
 type H = { open: (p: unknown) => void; message: (p: unknown, msg: unknown) => Promise<void>; close: (p: unknown) => void }
 const h = handler as unknown as H
@@ -69,10 +59,11 @@ const result = (runId: string, conversationId: string, steered = false) => ({ ru
 const inFlight = async () => { await new Promise(r => setTimeout(r, 5)); expect(m.enqueue).toHaveBeenCalledTimes(1) }
 const types = (p: { sent: string[] }) => p.sent.map(s => JSON.parse(s) as { type: string; [k: string]: unknown })
 
+const sent = (type: string) => m.sendCommand.mock.calls.filter(c => c[0] === type).map(c => c[1])
+
 beforeEach(() => {
   vi.clearAllMocks()
-  m.hasApprovalChannel.mockReturnValue(true)
-  m.turnStreamFor.mockReturnValue(undefined)
+  m.sendCommand.mockImplementation(async () => undefined)
 })
 
 describe('ws runtime socket', () => {
@@ -199,124 +190,51 @@ describe('ws runtime socket', () => {
     expect(m.synthesize).toHaveBeenCalledTimes(1)
   })
 
-  it('the approval request reaches the run\'s turn stream with the call\'s args (the card renders even if it beats tool-start)', async () => {
+  // Cycle 81 Task 4: the card's request lives in the worker's run; the socket forwards Tony's answer.
+  it('approve/deny are forwarded to the worker — only for a card this socket was shown and that is still open', async () => {
     const p = peer(); h.open(p)
-    const emit = vi.fn()
-    m.turnStreamFor.mockReturnValue({ emit })
-    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
-    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
-    await h.message(p, frame({ type: 'text', text: 'a' }))
-    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
-    void ch({ tool: 'decide_review', command: 'approve — x', proposedPattern: '', allowlistable: false, callId: 'call-1', args: { id: 'rq-1', choice: 'approve' } })
-    const requestId = types(p).filter(f => f.type === 'approval').at(-1)!.requestId
-    expect(m.turnStreamFor).toHaveBeenCalledWith('run-1')
-    expect(emit).toHaveBeenCalledWith({ type: 'approval-request', approvalId: requestId, callId: 'call-1', name: 'decide_review', args: { id: 'rq-1', choice: 'approve' } })
-    await h.message(p, frame({ type: 'deny', requestId }))
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'attach' }))
+    const sink = m.subscribe.mock.calls[0]![1] as RelaySink
+    const card = (requestId: string, seq: number) => sink.deliver({ type: 'approval', requestId, tool: 'exec', command: 'git status', proposedPattern: 'git *', allowlistable: true } as HubFrame, { runId: 'r1', seq })
+    card('q1', 1); card('q2', 2); card('q3', 3)
+    await h.message(p, frame({ type: 'approve', requestId: 'q1', remember: true, pattern: 'git status *' }))
+    await h.message(p, frame({ type: 'deny', requestId: 'q2' }))
+    // Unknown id (never shown here), a card answered already, a card another tab resolved: dropped.
+    await h.message(p, frame({ type: 'approve', requestId: 'q-forged' }))
+    await h.message(p, frame({ type: 'approve', requestId: 'q1' }))
+    sink.deliver({ type: 'approval-resolved', requestId: 'q3' }, { runId: 'r1', seq: 4 })
+    await h.message(p, frame({ type: 'approve', requestId: 'q3' }))
+    expect(sent('approval-decision')).toEqual([
+      { requestId: 'q1', approved: true, remember: true, pattern: 'git status *' },
+      { requestId: 'q2', approved: false }
+    ])
   })
 
-  it('the approval request\'s args are capped like tool-start args (a huge argument never ships whole)', async () => {
+  it('a decision the worker cannot be sent is reported, not swallowed', async () => {
     const p = peer(); h.open(p)
-    const emit = vi.fn()
-    m.turnStreamFor.mockReturnValue({ emit })
-    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
-    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
-    await h.message(p, frame({ type: 'text', text: 'a' }))
-    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
-    void ch({ tool: 'exec', command: 'cat', proposedPattern: 'cat *', allowlistable: true, callId: 'call-big', args: { command: 'x'.repeat(20_000) } })
-    const requestId = types(p).filter(f => f.type === 'approval').at(-1)!.requestId
-    const sent = emit.mock.calls.at(-1)![0] as { args: Record<string, unknown> }
-    expect(sent.args).toMatchObject({ truncated: true })
-    expect(JSON.stringify(sent.args).length).toBeLessThan(5000)
-    await h.message(p, frame({ type: 'deny', requestId }))
+    vi.spyOn(console, 'error').mockImplementationOnce(() => {})
+    m.sendCommand.mockImplementationOnce(async () => { throw new Error('db down') })
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'attach' }))
+    const sink = m.subscribe.mock.calls[0]![1] as RelaySink
+    sink.deliver({ type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *' } as HubFrame, { runId: 'r1', seq: 1 })
+    await h.message(p, frame({ type: 'approve', requestId: 'q1' }))
+    await new Promise(r => setTimeout(r, 5))
+    expect(types(p).at(-1)).toMatchObject({ type: 'error', message: expect.stringMatching(/worker/) })
   })
 
-  it('I4 (cycle 79 review): approve/deny logs the body-free logSummary when a tool sets one, never the raw command', async () => {
-    const p = peer(); h.open(p)
-    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
-    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
-    await h.message(p, frame({ type: 'text', text: 'a' }))
-    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
-    const req = {
-      tool: 'gmail_send', command: 'From: a@b.com\n\nsecret draft body', proposedPattern: '',
-      logSummary: 'gmail_send: account=work draftId=d1 to=a@b.com subjectChars=3'
-    }
-    void ch(req)
-    const requestId = types(p).filter(f => f.type === 'approval').at(-1)!.requestId
-    await h.message(p, frame({ type: 'approve', requestId }))
-    const { recordEvent } = await import('@mymind/core/lib/observability/record')
-    const call = vi.mocked(recordEvent).mock.calls.find(c => (c[0] as { meta?: Record<string, unknown> }).meta?.outcome === 'approve')
-    expect(call?.[0]).toMatchObject({ meta: { command: req.logSummary } })
-    expect(JSON.stringify(call)).not.toContain('secret draft body')
-  })
-
-  it('I4: an approval TIMEOUT also logs the body-free logSummary, never the raw command', async () => {
-    vi.useFakeTimers()
-    try {
-      const p = peer(); h.open(p)
-      m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result('run-1', req.sessionKey.slice(7)))
-      await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
-      await h.message(p, frame({ type: 'text', text: 'a' }))
-      const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
-      const req = {
-        tool: 'gmail_send', command: 'From: a@b.com\n\nsecret draft body', proposedPattern: '',
-        logSummary: 'gmail_send: account=work draftId=d1 to=a@b.com subjectChars=3'
-      }
-      const pending = ch(req)
-      await vi.advanceTimersByTimeAsync(120_000)
-      expect(await pending).toEqual({ approved: false })
-      const { recordEvent } = await import('@mymind/core/lib/observability/record')
-      const call = vi.mocked(recordEvent).mock.calls.find(c => (c[0] as { meta?: Record<string, unknown> }).meta?.outcome === 'timeout')
-      expect(call?.[0]).toMatchObject({ meta: { command: req.logSummary } })
-      expect(JSON.stringify(call)).not.toContain('secret draft body')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('"always allow" is saved only for an allowlistable tool — a crafted remember for decide_review is refused', async () => {
-    const p = peer(); h.open(p)
-    m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result(`run-${req.sessionKey}`, req.sessionKey.slice(7)))
-    await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
-    await h.message(p, frame({ type: 'text', text: 'a' }))
-    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
-
-    const decide = ch({ tool: 'decide_review', command: 'approve — x', proposedPattern: '', allowlistable: false })
-    const decideFrame = types(p).filter(f => f.type === 'approval').at(-1)!
-    expect(decideFrame.allowlistable).toBe(false)
-    await h.message(p, frame({ type: 'approve', requestId: decideFrame.requestId, remember: true, pattern: 'approve *' }))
-    expect(await decide).toEqual({ approved: true })
-    expect(m.addApproval).not.toHaveBeenCalled()
-
-    // exec (allowlistable) still saves the pattern — regression.
-    const exec = ch({ tool: 'exec', command: 'git status', proposedPattern: 'git *', allowlistable: true })
-    const execFrame = types(p).filter(f => f.type === 'approval').at(-1)!
-    expect(execFrame.allowlistable).toBe(true)
-    await h.message(p, frame({ type: 'approve', requestId: execFrame.requestId, remember: true }))
-    expect(await exec).toEqual({ approved: true })
-    expect(m.addApproval).toHaveBeenCalledWith({ pattern: 'git *', tool: 'exec' })
-  })
-
-  it('Stop denies only the approvals of the thread in view', async () => {
+  it('Stop aborts the viewed thread in the worker — and only it (other threads, and their cards, are untouched)', async () => {
     const p = peer(); h.open(p)
     m.enqueue.mockImplementation(async (req: { sessionKey: string }) => result(`run-${req.sessionKey}`, req.sessionKey.slice(7)))
     await h.message(p, frame({ type: 'load', conversationId: 'cA' }))
     await h.message(p, frame({ type: 'text', text: 'a' }))
     await h.message(p, frame({ type: 'load', conversationId: 'cB' }))
-    await h.message(p, frame({ type: 'text', text: 'b' }))
-    const [chA, chB] = m.registerApprovalChannel.mock.calls.map(c => c[1] as (r: unknown) => Promise<{ approved: boolean }>)
-    const req = { tool: 'exec', command: 'ls', proposedPattern: 'ls *' }
-    let aDone = false
-    const pa = chA!(req).then((v) => { aDone = true; return v })
-    const pb = chB!(req)
-    const [idA, idB] = types(p).filter(f => f.type === 'approval').map(f => f.requestId)
     await h.message(p, frame({ type: 'interrupt' }))
-    expect(await pb).toEqual({ approved: false })
-    const resolved = types(p).filter(f => f.type === 'approval-resolved').map(f => f.requestId)
-    expect(resolved).toEqual([idB])
-    await new Promise(r => setTimeout(r, 5))
-    expect(aDone).toBe(false)
-    await h.message(p, frame({ type: 'deny', requestId: idA }))
-    expect(await pa).toEqual({ approved: false })
+    // No runId: this socket's last run is on cA, not the thread in view.
+    expect(sent('abort')).toEqual([{ conversationId: 'cB' }])
+    // Cards are denied by the aborted RUN (worker side), never by a blanket socket-side deny.
+    expect(sent('approval-decision')).toEqual([])
   })
 
   it('Stop aborts this socket\'s last queued run on the viewed thread', async () => {
@@ -325,8 +243,8 @@ describe('ws runtime socket', () => {
     await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
     await h.message(p, frame({ type: 'text', text: 'queued behind something' }))
     await h.message(p, frame({ type: 'interrupt' }))
-    expect(m.abortRun).toHaveBeenCalledWith('rQ')
-    expect(m.abortActive).toHaveBeenCalledWith('c1')
+    // One urgent command: the thread's running run AND this socket's last run (maybe still queued).
+    expect(sent('abort')).toEqual([{ runId: 'rQ', conversationId: 'c1' }])
   })
 
   it('Stop during an in-flight new-thread enqueue aborts the run that enqueue creates', async () => {
@@ -336,10 +254,10 @@ describe('ws runtime socket', () => {
     const a = h.message(p, frame({ type: 'text', text: 'go' }))
     await inFlight()
     await h.message(p, frame({ type: 'interrupt' }))
-    expect(m.abortRun).not.toHaveBeenCalled()
+    expect(sent('abort')).toEqual([])
     first.resolve(result('rNew', 'cNew'))
     await a
-    expect(m.abortRun).toHaveBeenCalledWith('rNew')
+    expect(sent('abort')).toEqual([{ runId: 'rNew', conversationId: 'cNew' }])
   })
 
   it('a steered voice utterance returns the client to idle', async () => {
@@ -362,8 +280,9 @@ describe('ws runtime socket', () => {
     await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
     await h.message(p, frame({ type: 'text', text: 'while she works' }))
     expect(types(p).filter(f => f.type === 'queued')).toEqual([{ type: 'queued', text: 'while she works', cid: 'c1' }])
-    // Still a run of its own: Stop and approvals follow it like any queued turn.
-    expect(m.registerApprovalChannel).toHaveBeenCalledWith('rNew', expect.any(Function))
+    // Still a run of its own: Stop follows it like any queued turn.
+    await h.message(p, frame({ type: 'interrupt' }))
+    expect(sent('abort')).toEqual([{ runId: 'rNew', conversationId: 'c1' }])
   })
 
   it('a queued voice utterance returns the client to idle', async () => {
@@ -385,50 +304,55 @@ describe('ws runtime socket', () => {
     expect(types(p).map(f => f.type)).not.toContain('queued')
   })
 
-  it('clear waits for the aborted run to unwind BEFORE writing the epoch', async () => {
+  // Spec §3.5 + carry-over: the epoch is written only after the WORKER answers settled:true.
+  it('clear waits for the worker\'s settled answer BEFORE writing the epoch', async () => {
     const p = peer(); h.open(p)
-    const unwound = deferred<boolean>()
-    m.abortActiveAndWait.mockImplementationOnce(async () => { const v = await unwound.promise; m.order.push('unwound'); return v })
+    const ack = deferred<{ settled: boolean }>()
+    m.sendCommand.mockImplementation(async (type: string) => {
+      if (type !== 'abort') return undefined
+      const v = await ack.promise; m.order.push('settled'); return v
+    })
     m.clear.mockImplementationOnce(async () => { m.order.push('epoch') })
     m.order.length = 0
     await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
     const c = h.message(p, frame({ type: 'clear' }))
     await new Promise(r => setTimeout(r, 5))
     expect(m.clear).not.toHaveBeenCalled()
-    unwound.resolve(true)
+    ack.resolve({ settled: true })
     await c
-    expect(m.order).toEqual(['unwound', 'epoch'])
-    expect(m.abortActiveAndWait).toHaveBeenCalledWith('c1')
+    expect(m.order).toEqual(['settled', 'epoch'])
+    expect(m.sendCommand).toHaveBeenCalledWith('abort', { conversationId: 'c1' }, { awaitResult: true })
+    expect(types(p).at(-1)).toEqual({ type: 'cleared', epochAt: new Date(0).toISOString() })
   })
 
-  it('clear releases the thread\'s pending approval BEFORE waiting, so a parked run can unwind', async () => {
+  it('clear does NOT write the epoch when the worker says the turn has not unwound (settled:false)', async () => {
     const p = peer(); h.open(p)
-    m.enqueue.mockImplementation(async () => result('rA', 'c1'))
+    m.sendCommand.mockImplementation(async (type: string) => (type === 'abort' ? { settled: false } : undefined))
     await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
-    await h.message(p, frame({ type: 'text', text: 'run a command' }))
-    const ch = m.registerApprovalChannel.mock.calls[0]![1] as (r: unknown) => Promise<{ approved: boolean }>
-    // The run is parked on this approval: the exec tool does not race the abort signal, so it
-    // only unwinds (and rescues) once the approval resolves.
-    const parked = ch({ tool: 'exec', command: 'ls', proposedPattern: 'ls *' })
-    m.order.length = 0
-    m.abortActiveAndWait.mockImplementationOnce(async () => {
-      const unwound = await Promise.race([parked.then(() => true), new Promise<boolean>(r => setTimeout(() => r(false), 200))])
-      m.order.push(unwound ? 'unwound' : 'timed-out')
-      return true
-    })
-    m.clear.mockImplementationOnce(async () => { m.order.push('epoch') })
-    const t0 = Date.now()
     await h.message(p, frame({ type: 'clear' }))
-    expect(m.order).toEqual(['unwound', 'epoch'])
-    expect(Date.now() - t0).toBeLessThan(150)
-    expect(await parked).toEqual({ approved: false })
+    expect(m.clear).not.toHaveBeenCalled()
+    expect(types(p)).toEqual([{ type: 'error', message: expect.stringMatching(/Could not clear/) }])
   })
 
-  it('close drops the approval channels of runs it still holds', async () => {
+  it('clear does NOT write the epoch when the worker does not answer in 10s — a visible error instead', async () => {
+    const p = peer(); h.open(p)
+    vi.spyOn(console, 'error').mockImplementationOnce(() => {})
+    m.sendCommand.mockImplementation(async (type: string) => {
+      if (type === 'abort') throw new CommandTimeoutError('abort', 7, 10_000, false)
+      return undefined
+    })
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'clear' }))
+    expect(m.clear).not.toHaveBeenCalled()
+    expect(types(p)).toEqual([{ type: 'error', message: expect.stringMatching(/worker did not confirm/) }])
+  })
+
+  it('close sends nothing to the worker: open cards stay answerable from other tabs or after a reconnect', async () => {
     const p = peer(); h.open(p)
     m.enqueue.mockImplementation(async () => result('rX', 'c1'))
     await h.message(p, frame({ type: 'text', text: 'x' }))
+    m.sendCommand.mockClear()
     h.close(p)
-    expect(m.unregisterApprovalChannel).toHaveBeenCalledWith('rX')
+    expect(m.sendCommand).not.toHaveBeenCalled()
   })
 })

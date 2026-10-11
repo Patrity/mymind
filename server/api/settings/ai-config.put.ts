@@ -4,6 +4,7 @@ import { parseConfig } from '@mymind/core/lib/ai/registry/schema'
 import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { resolveChainFrom } from '@mymind/core/lib/ai/registry/resolve'
 import { EMBEDDING_DIM, USAGES, type AiConfigDoc } from '@mymind/core/lib/ai/registry/types'
+import { invalidateWorkerCache } from '@mymind/core/lib/bus/invalidate'
 
 const KeyField = z.union([z.object({ apiKey: z.string().min(1) }), z.object({ keep: z.literal(true) }), z.null()])
 const Body = z.object({
@@ -69,5 +70,7 @@ export default defineEventHandler(async (event) => {
 
   await saveConfig(doc)
   invalidate()
+  // apps/worker keeps its own copy (cycle 81, spec §3.6).
+  await invalidateWorkerCache('ai-registry')
   return { ok: true }
 })

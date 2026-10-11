@@ -39,7 +39,9 @@ export type InvalidateCache = 'ai-registry' | 'channels' | 'observability' | 'pe
 export interface CommandPayloads {
   kick: { conversationId?: string }
   abort: { runId?: string; conversationId?: string }
-  'approval-decision': { requestId: string; approved: boolean; pattern?: string }
+  /** Tony's answer to a card (runtime/bus-approvals.ts). `remember`/`pattern` = "always allow";
+   *  the worker decides whether that may be saved (only for an allowlistable tool). */
+  'approval-decision': { requestId: string; approved: boolean; remember?: boolean; pattern?: string }
   undo: { token: string }
   presence: { lastActiveAt: number }
   invalidate: { cache: InvalidateCache }
@@ -55,7 +57,8 @@ export type CommandType = keyof CommandPayloads
 export interface CommandResults {
   kick: void
   abort: { settled: boolean }
-  'approval-decision': void
+  /** Whether the request was still pending in the worker (false: already resolved / unknown). */
+  'approval-decision': boolean
   undo: UndoResult
   presence: void
   invalidate: void
