@@ -53,6 +53,9 @@ export interface CommandPayloads {
   /** Cycle 82: Tony re-enables a tainted workspace's network. The WORKER does it (it owns the
    *  sandbox): kills the workspace's tainted runs first, then clears the flag (lib/sandbox/manager). */
   'workspace-reenable-network': { workspaceId: string }
+  /** Cycle 82 Task 2: read a text file of a workspace (the sandbox lives in the worker) — what an
+   *  approved export_to_document proposal, replayed in the web, copies into a document. */
+  'workspace-read-text': { workspaceId: string; path: string }
   /** Cycle 81 Task 2 fix: the iMessage catch-up (and its health/`running` guard) lives in the
    *  executing process. `check` = a forced catch-up (Settings → Test), `reset` = forget the health
    *  snapshot after the channel config changed. */
@@ -71,6 +74,7 @@ export interface CommandResults {
   invalidate: void
   'workstream-control': WorkstreamDTO
   'workspace-reenable-network': { id: string; tainted: boolean }
+  'workspace-read-text': { content: string; bytes: number; path: string; tainted: boolean }
   'imessage-health': ImessageHealth
 }
 

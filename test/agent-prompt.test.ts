@@ -78,12 +78,18 @@ describe('composePrompt — "About Tony" profile (cycle 76)', () => {
   })
 })
 
-describe('composePrompt always-armed exec guidance', () => {
-  it('always includes exec + approval guidance (the powerful/exec levers are gone)', () => {
+describe('composePrompt SHELL guidance (cycle 82: workspace by default, exec is admin)', () => {
+  it('points at the sandboxed workspace first, and keeps exec as the on-demand admin toolset with its approval rule', () => {
     const p = composePrompt({ persona: 'p', speak: false, toneLine: 't' })
-    expect(p).toMatch(/`exec` tool/)
-    expect(p).toMatch(/approv/i) // mentions the approval requirement
-    expect(p).toMatch(/Catastrophic commands/i)
+    const shell = p.slice(p.indexOf('SHELL —'))
+    expect(shell).toMatch(/^SHELL — your WORKSPACE is a sandboxed Linux container/)
+    expect(shell).toMatch(/`workspace` toolset/)
+    expect(shell.indexOf('`workspace` toolset')).toBeLessThan(shell.indexOf('`exec` tool'))
+    expect(shell).toMatch(/`admin` toolset, the `exec` tool\): only to operate the MyMind server/)
+    expect(shell).toMatch(/approv/i) // the approval requirement
+    expect(shell).toMatch(/catastrophic commands are blocked/i)
+    // The old "work anywhere as root" default is gone.
+    expect(p).not.toContain('you may work anywhere')
   })
 })
 

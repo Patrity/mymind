@@ -29,7 +29,7 @@ describe('POST /api/workspaces/:id/reenable-network', () => {
   it('asks the worker and waits for its answer', async () => {
     sendCommand.mockResolvedValue({ id: ID, tainted: false })
     expect(await handler(ev('session'))).toEqual({ id: ID, tainted: false })
-    expect(sendCommand).toHaveBeenCalledWith('workspace-reenable-network', { workspaceId: ID }, { awaitResult: true })
+    expect(sendCommand).toHaveBeenCalledWith('workspace-reenable-network', { workspaceId: ID }, { awaitResult: true, timeoutMs: 60_000 })
   })
   it('a dead worker is a 504 (the flag stays set); a refusal is a 409; unknown is 404', async () => {
     sendCommand.mockRejectedValue(new CommandTimeoutError('workspace-reenable-network', 1, 10_000))

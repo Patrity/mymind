@@ -28,6 +28,7 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     invalidate: vi.fn(),
     workstreamControl: vi.fn(async (p: { workstreamId: string }) => ({ id: p.workstreamId, state: 'cancelled' }) as unknown as WorkstreamDTO),
     workspaceReenableNetwork: vi.fn(async (p: { workspaceId: string }) => ({ id: p.workspaceId, tainted: false })),
+    workspaceReadText: vi.fn(async (p: { workspaceId: string; path: string }) => ({ content: 'hello', bytes: 5, path: `/workspace/${p.path}`, tainted: false })),
     startSchedule: vi.fn(() => { calls.push('schedule:start'); return () => { calls.push('schedule:stop') } }),
     startRecorderFlush: vi.fn(() => { calls.push('flush-loop:start'); return () => { calls.push('flush-loop:stop') } }),
     startSandbox: vi.fn(() => { calls.push('sandbox:start'); return () => { calls.push('sandbox:stop') } }),
@@ -140,6 +141,17 @@ describe('worker boot', () => {
     expect(deps.workspaceReenableNetwork).toHaveBeenCalledWith({ workspaceId: id })
     await expect(h['workspace-reenable-network']({ workspaceId: '../x' })).rejects.toThrow(/bad payload/)
     expect(deps.workspaceReenableNetwork).toHaveBeenCalledTimes(1)
+  })
+
+  it('workspace-read-text (cycle 82 Task 2: a replayed export reads in the sandbox) validates its payload', async () => {
+    const { deps } = fakeDeps()
+    const h = commandHandlers(deps)
+    const id = '11111111-1111-4111-8111-111111111111'
+    expect(await h['workspace-read-text']({ workspaceId: id, path: 'out/report.md' })).toEqual({ content: 'hello', bytes: 5, path: '/workspace/out/report.md', tainted: false })
+    expect(deps.workspaceReadText).toHaveBeenCalledWith({ workspaceId: id, path: 'out/report.md' })
+    await expect(h['workspace-read-text']({ workspaceId: '../x', path: 'a' })).rejects.toThrow(/bad payload/)
+    await expect(h['workspace-read-text']({ workspaceId: id, path: '' })).rejects.toThrow(/bad payload/)
+    expect(deps.workspaceReadText).toHaveBeenCalledTimes(1)
   })
 
   // Cycle 81 Task 4: each command reaches its dependency with the payload's fields, and returns the

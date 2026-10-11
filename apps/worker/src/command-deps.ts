@@ -14,6 +14,7 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     import('@mymind/core/lib/agent/workstreams/loop')
   ])
   const { sandboxManager } = await import('@mymind/core/lib/sandbox/manager')
+  const { readWorkspaceText } = await import('@mymind/core/lib/sandbox/runtime')
   return {
     // Stop / barge-in / `/clear` (spec §3.5): the answer is honest — `/clear` writes its epoch only
     // on settled:true.
@@ -33,6 +34,8 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     workspaceReenableNetwork: async (p) => {
       const row = await sandboxManager().reenableNetwork(p.workspaceId)
       return { id: row.id, tainted: row.tainted }
-    }
+    },
+    // Task 2: export_to_document replayed in the web reads its file here, in the sandbox.
+    workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path)
   }
 }

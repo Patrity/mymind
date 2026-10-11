@@ -20,8 +20,11 @@ describe('toolset registry', () => {
     const core = activeToolNames(bridgetProfile.tools, new Set())
     expect(core.length).toBeGreaterThanOrEqual(22)
     expect(core.length).toBeLessThanOrEqual(28)
-    expect(core).toEqual(expect.arrayContaining(['search_tasks', 'web_search', 'exec', 'search_memories', 'search_docs']))
+    expect(core).toEqual(expect.arrayContaining(['search_tasks', 'web_search', 'search_memories', 'search_docs']))
     expect(core).not.toContain('generate_image')
+    // Cycle 82 (spec §4/§5): host exec and the workspace are on demand.
+    expect(core).not.toContain('exec')
+    expect(core).not.toContain('bash')
     expect(core).not.toContain('search_sessions')
   })
   it('spec §3 placements', () => {
@@ -30,8 +33,15 @@ describe('toolset registry', () => {
       search_sessions: 'history', read_around_message: 'history', search_projects: 'projects',
       move_document: 'doc-admin', generate_image: 'images', schedule_wake: 'jobs', create_skill: 'skill-admin',
       decide_review: 'reviews', list_improvements: 'improvements', send_message: 'channels',
-      research_web: 'web', gmail_search: 'gmail', gmail_draft: 'gmail', contacts_search: 'gmail', calendar_list_events: 'calendar', calendar_guest_event: 'calendar', calendar_rsvp: 'calendar', search_brain: 'web', exec: 'core', use_skill: 'core', quick_capture: 'tasks'
+      research_web: 'web', gmail_search: 'gmail', gmail_draft: 'gmail', contacts_search: 'gmail', calendar_list_events: 'calendar', calendar_guest_event: 'calendar', calendar_rsvp: 'calendar', search_brain: 'web', exec: 'admin', use_skill: 'core', quick_capture: 'tasks',
+      read_file: 'workspace', write_file: 'workspace', edit_file: 'workspace', list_files: 'workspace', grep: 'workspace', diff: 'workspace',
+      bash: 'workspace', bash_output: 'workspace', kill_shell: 'workspace', watch: 'workspace', export_to_document: 'workspace', import_document: 'workspace'
     })
+  })
+  it('cycle 82: the admin and workspace directory lines (spec §5 wording for admin)', () => {
+    expect(TOOLSETS.admin).toEqual({ core: false, description: 'host operations on the MyMind server — DB, services, logs; prefer the workspace for everything else' })
+    expect(TOOLSETS.workspace.core).toBe(false)
+    expect(bridgetProfile.tools.filter(x => x.toolset === 'admin').map(x => x.name)).toEqual(['exec'])
   })
 })
 

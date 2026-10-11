@@ -7,6 +7,7 @@ import type { AgentTool } from './types'
 
 export type ToolsetId = 'memory' | 'docs' | 'tasks' | 'web' | 'core'
   | 'history' | 'projects' | 'doc-admin' | 'images' | 'jobs' | 'skill-admin' | 'reviews' | 'improvements' | 'channels' | 'gmail' | 'calendar'
+  | 'workspace' | 'admin'
 
 // Directory lines say WHEN to load the set, not only what is in it (spec §3).
 export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }> = {
@@ -14,7 +15,7 @@ export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }>
   docs: { core: true, description: 'documents' },
   tasks: { core: true, description: 'tasks and quick capture' },
   web: { core: true, description: 'web search and research subagents' },
-  core: { core: true, description: 'shell, skills, toolset loading' },
+  core: { core: true, description: 'skills, workstreams, toolset loading' },
   history: { core: false, description: 'when Tony asks what he did, worked on, or said before — Claude Code sessions and past messages' },
   projects: { core: false, description: 'look up, create or edit projects' },
   'doc-admin': { core: false, description: 'move, delete or sync documents' },
@@ -30,7 +31,10 @@ export const TOOLSETS: Record<ToolsetId, { core: boolean; description: string }>
   improvements: { core: false, description: 'when Tony asks what Bridget has learned or changed about herself' },
   channels: { core: false, description: 'send Tony a message over iMessage or email' },
   gmail: { core: false, description: "when Tony asks about email — search, read, draft, send, triage — or a contact's address" },
-  calendar: { core: false, description: 'when Tony asks about his schedule, meetings, availability or invites' }
+  calendar: { core: false, description: 'when Tony asks about his schedule, meetings, availability or invites' },
+  // Cycle 82 (spec §4/§5): the sandboxed workspace (pre-loaded for workstreams), and host exec.
+  workspace: { core: false, description: 'your sandboxed workspace — read/write/edit files, run shell commands and background jobs, watch for a condition; use it to write and run code' },
+  admin: { core: false, description: 'host operations on the MyMind server — DB, services, logs; prefer the workspace for everything else' }
 }
 
 export const ON_DEMAND_TOOLSETS = (Object.keys(TOOLSETS) as ToolsetId[]).filter(id => !TOOLSETS[id].core)

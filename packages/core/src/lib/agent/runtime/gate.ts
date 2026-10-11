@@ -26,7 +26,10 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   'gmail_draft',
   // workstreams (cycle 81, spec §5.3): finish_workstream and ask_tony only report to Tony from inside
   // a workstream.
-  'finish_workstream', 'ask_tony'
+  'finish_workstream', 'ask_tony',
+  // workspace (cycle 82, spec §4): everything happens inside Bridget's own sandbox — none of it
+  // touches Tony's data (no approvals; network governed by taint, not by the gate).
+  'write_file', 'edit_file', 'bash', 'kill_shell', 'watch', 'import_document'
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
   // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run
@@ -39,7 +42,10 @@ export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edi
   'start_workstream',
   // answer_workstream (fix round 2, I-new-1): a background run must not feed a workstream text of
   // its own choosing — proposed, replayed on approval
-  'answer_workstream'])
+  'answer_workstream',
+  // export_to_document (cycle 82, spec §4): writes workspace content into Tony's corpus (it may
+  // replace an existing document) — proposed headless, replayed on approval
+  'export_to_document'])
 
 // Tools that run headless DESPITE being `destructive`-kind — checked BEFORE the destructive rule
 // below, so they never fall into 'propose'. Currently just delete_job: spec D2 says job

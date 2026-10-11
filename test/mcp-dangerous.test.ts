@@ -50,3 +50,25 @@ describe('MCP dangerous-tool defense', () => {
     expect(mcpToolNames()).not.toContain(execTool.name)
   })
 })
+
+// Cycle 82 (spec §4/§5): the sandboxed workspace and host exec are Bridget's alone — never on
+// /api/mcp. Two layers: the tools live on bridgetProfile (not agentTools), AND the MCP filter
+// excludes the `workspace` and `admin` toolsets, so a future move into agentTools still hides them.
+describe('MCP — workspace + admin toolsets (cycle 82)', () => {
+  it('no workspace tool is in agentTools, and none reaches mcpToolNames', async () => {
+    const { workspaceTools } = await import('@mymind/core/lib/agent/tools/workspace')
+    const names = mcpToolNames()
+    for (const t of workspaceTools) {
+      expect(agentTools.find(x => x.name === t.name), t.name).toBeUndefined()
+      expect(names, t.name).not.toContain(t.name)
+      expect(bridgetProfile.tools).toContain(t)
+    }
+  })
+  it('isMcpExposed refuses the workspace and admin toolsets even for a non-dangerous tool', async () => {
+    const { isMcpExposed, MCP_EXCLUDED_TOOLSETS } = await import('../server/lib/mcp/server')
+    expect([...MCP_EXCLUDED_TOOLSETS]).toEqual(expect.arrayContaining(['workspace', 'admin']))
+    const { workspaceTools } = await import('@mymind/core/lib/agent/tools/workspace')
+    for (const t of workspaceTools) expect(isMcpExposed(t), t.name).toBe(false)
+    expect(isMcpExposed({ ...execTool, dangerous: false })).toBe(false) // admin, even ungated
+  })
+})

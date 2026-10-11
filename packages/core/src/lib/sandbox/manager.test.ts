@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DockerResult, DockerRunner } from './docker'
 import { SANDBOX_BRIDGE, chainRules, jumpRules, ruleLine } from './network'
-import { createSandboxManager, sandboxSettings, SandboxUnavailableError, type SandboxManagerOptions } from './manager'
+import { createSandboxManager, sandboxSettings, setSandboxRuntimeHooks, SandboxUnavailableError, type SandboxManagerOptions } from './manager'
 import type { WorkspaceRow, WorkspaceStore } from './store'
 
 const WS = '22222222-2222-2222-2222-222222222222'
@@ -513,5 +513,118 @@ describe('diskCheck with the real statfs', () => {
     expect(r.low).toBe(false)
     expect(r.freeBytes).toBeGreaterThan(0)
     expect(r.freeInodes).toBeGreaterThan(0)
+  })
+})
+
+// ── Task 2 carry-overs (task-1 rereview minors 1, 3, 4) + the runtime hooks ──────────────────────
+describe('task 2 carry-overs', () => {
+  const quiet = { info: () => {}, warn: () => {}, error: () => {} }
+  it('re-enable vs a tainted one-off whose creation raced the abort: the flag clears only after the docker run returned, and the command never ran', async () => {
+    const d = fakeDocker()
+    const store = memStore([{ id: WS, tainted: true }])
+    const orig = d.run
+    const order: string[] = []
+    const run: typeof d.run = async (args, o) => {
+      if (args[0] === 'run' && args.includes('mymind.tainted=1')) {
+        const name = args[args.indexOf('--name') + 1]!
+        // The daemon is slow: the container exists only 80ms after the CLI started — after the abort's
+        // first kill already failed with "No such container".
+        await new Promise(r => setTimeout(r, 80))
+        d.containers.set(name, { Id: name, Name: `/${name}`, Image: 'sha256:img', State: { Running: true }, Config: { Labels: { 'mymind.workspace': WS, 'mymind.tainted': '1' } } })
+        for (let i = 0; i < 40; i++) {
+          await new Promise(r => setTimeout(r, 25))
+          if (!d.containers.has(name)) { order.push('one-off ended (killed)'); return { code: 137, stdout: '', stderr: '', timedOut: false, aborted: false, truncated: false } }
+        }
+        order.push('EVIL RAN'); d.containers.delete(name)
+        return { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false, truncated: false }
+      }
+      if (args[0] === 'kill') { const n = args.at(-1)!; if (!d.containers.has(n)) return fail(`No such container: ${n}`); d.containers.delete(n); return ok() }
+      return orig(args, o)
+    }
+    const origSet = store.setTainted
+    store.setTainted = async (id, t) => { order.push(`tainted=${t}`); return origSet(id, t) }
+    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet })
+    const pending = m.exec(WS, 'sleep 1; echo evil > f')
+    await new Promise(r => setTimeout(r, 10))
+    const row = await m.reenableNetwork(WS)
+    expect(row.tainted).toBe(false)
+    await pending
+    expect(order).not.toContain('EVIL RAN')
+    expect(order.indexOf('one-off ended (killed)')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('one-off ended (killed)')).toBeLessThan(order.indexOf('tainted=false'))
+  })
+
+  it('hard-kill during a low-disk episode kills the container instead of restarting it', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    let free = 50 * 1024 ** 3
+    const opts = { fsStats: async () => ({ freeBytes: free, freeInodes: 10_000_000, totalInodes: 20_000_000 }) }
+    const m0 = mgr(d, store, opts)
+    await m0.ensureContainer(WS)
+    const orig = d.run
+    const calls: string[][] = []
+    const run: typeof d.run = async (args, o) => {
+      calls.push(args)
+      if (args[0] === 'exec' && args.at(-1)!.includes('.abort')) return fail('OCI runtime exec failed: resource temporarily unavailable', 126)
+      if (args[0] === 'exec' && args.includes('mm-exec')) {
+        await new Promise<void>(r => o?.signal?.addEventListener('abort', () => r(), { once: true }))
+        return { code: null, stdout: '', stderr: '', timedOut: false, aborted: true, truncated: false }
+      }
+      return orig(args, o)
+    }
+    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet, ...opts })
+    const ac = new AbortController()
+    const p = m.exec(WS, ':(){ :|:& };:', { signal: ac.signal })
+    await new Promise(r => setTimeout(r, 20))
+    free = 1024 ** 3
+    expect((await m.diskCheck()).entered).toBe(true)
+    ac.abort()
+    await p
+    await new Promise(r => setTimeout(r, 30))
+    expect(calls.some(c => c[0] === 'restart')).toBe(false)
+    expect(calls.some(c => c[0] === 'kill' && c[1] === `mymind-ws-${WS}`)).toBe(true)
+  })
+
+  it('isBusy may be async (DB-backed shells/watches); a failing busy check never stops the workspace', async () => {
+    for (const isBusy of [async () => true, async () => { throw new Error('db down') }]) {
+      const d = fakeDocker()
+      const store = memStore()
+      const m = mgr(d, store, { isBusy })
+      await m.ensureContainer(WS)
+      store.rows.get(WS)!.lastUsedAt = new Date(Date.now() - 16 * 60_000)
+      expect(await m.idleStop()).toEqual([])
+      expect(store.rows.get(WS)!.state).toBe('running')
+    }
+  })
+
+  it('the runtime hooks installed at worker start apply to a manager built without them', async () => {
+    const busy = vi.fn(async () => true)
+    const over = vi.fn()
+    setSandboxRuntimeHooks({ isBusy: busy, onOverQuota: over })
+    try {
+      const d = fakeDocker()
+      const store = memStore()
+      const m = mgr(d, store)
+      await m.ensureContainer(WS)
+      store.rows.get(WS)!.lastUsedAt = new Date(Date.now() - 16 * 60_000)
+      expect(await m.idleStop()).toEqual([])
+      expect(busy).toHaveBeenCalledWith(WS)
+      await m.quotaTick()
+      expect(over).toHaveBeenCalledWith(WS, { bytes: 6_000_000_000, inodes: 12 })
+    } finally { setSandboxRuntimeHooks({ isBusy: undefined, onOverQuota: undefined }) }
+  })
+
+  it('stdin and the output cap reach the docker CLI (networked exec and tainted one-off)', async () => {
+    const d = fakeDocker()
+    const seen: Array<{ verb: string; input?: string; cap?: number }> = []
+    const orig = d.run
+    const run: typeof d.run = async (args, o) => {
+      if (args.includes('mm-exec')) seen.push({ verb: args[0]!, input: o?.input, cap: o?.capBytes })
+      return orig(args, o)
+    }
+    const m = createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: quiet })
+    await m.exec(WS, 'cat > f', { input: 'BODY', capBytes: 200_000 })
+    await m.exec(WS, 'cat > f', { input: 'BODY2', tainted: true, capBytes: 50 * 1024 ** 2 })
+    expect(seen).toEqual([{ verb: 'exec', input: 'BODY', cap: 200_000 }, { verb: 'run', input: 'BODY2', cap: 1024 * 1024 }])
   })
 })

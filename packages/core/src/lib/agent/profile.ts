@@ -7,6 +7,7 @@ import { loadToolsetsTool } from './tools/load-toolsets'
 import { googleDangerousTools } from './tools/gmail'
 import { calendarDangerousTools } from './tools/calendar'
 import { answerWorkstreamTool, startWorkstreamTool, workstreamOnlyTools } from './tools/workstreams'
+import { workspaceTools } from './tools/workspace'
 import type { AgentTool } from './types'
 
 export interface AgentProfile { id: string; tools: AgentTool[]; personaKey: string }
@@ -26,7 +27,8 @@ export interface AgentProfile { id: string; tools: AgentTool[]; personaKey: stri
 // (run.ts), not agentTools, so on-demand loading still works from here.
 export const bridgetProfile: AgentProfile = {
   id: 'bridget',
-  tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool, answerWorkstreamTool],
+  // workspaceTools (cycle 82): Bridget's sandbox — profile-only like exec, so MCP never sees them.
+  tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool, answerWorkstreamTool, ...workspaceTools],
   personaKey: 'agent_persona'
 }
 

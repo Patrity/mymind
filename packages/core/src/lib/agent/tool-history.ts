@@ -181,6 +181,16 @@ export function producedContent(result: unknown): boolean {
   return !('error' in r) && r.denied !== true && r.proposed !== true
 }
 
+/** Cycle 82: a workspace tool result read from a TAINTED workspace (it handled mail/calendar
+ *  content) — `{ workspaceTainted: true, … }`, the flag first so a capped preview still starts with
+ *  it. Such a result taints the run like a `taints` tool's content does. */
+export function carriesWorkspaceTaint(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false
+  const r = result as Record<string, unknown>
+  if (r.workspaceTainted === true) return true
+  return r.truncated === true && typeof r.preview === 'string' && r.preview.startsWith('{"workspaceTainted":true')
+}
+
 /** applyHistoryPolicy's out-of-window marker: the result is gone from the prompt. */
 function isElided(result: unknown): boolean {
   return !!result && typeof result === 'object' && (result as Record<string, unknown>).elided === true
@@ -199,8 +209,10 @@ export function historyCarriesTaint(
   for (const m of policed) {
     if (m.role !== 'assistant') continue
     for (const r of m.toolRecords ?? []) {
-      if (!r || typeof r !== 'object' || !r.callId || !tainting.has(r.name)) continue
-      if (isElided(r.result) || !producedContent(r.result)) continue
+      if (!r || typeof r !== 'object' || !r.callId) continue
+      if (isElided(r.result)) continue
+      if (carriesWorkspaceTaint(r.result)) return true
+      if (!tainting.has(r.name) || !producedContent(r.result)) continue
       return true
     }
   }

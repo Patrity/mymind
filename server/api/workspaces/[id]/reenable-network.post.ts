@@ -10,12 +10,17 @@ import { z } from 'zod'
 import { requireSession } from '../../../utils/auth-guard'
 import { sendCommand, CommandFailedError, CommandTimeoutError } from '@mymind/core/lib/bus/commands'
 
+const REENABLE_TIMEOUT_MS = 60_000
+
 export default defineEventHandler(async (event) => {
   requireSession(event)
   const id = getRouterParam(event, 'id')
   if (!id || !z.uuid().safeParse(id).success) throw createError({ statusCode: 404, statusMessage: 'No such workspace', data: { message: 'No such workspace.' } })
   try {
-    const r = await sendCommand('workspace-reenable-network', { workspaceId: id }, { awaitResult: true })
+    // ~60s (rereview minor 2): the worker first waits for in-flight tainted commands to end and their
+    // one-off containers to go (bounded well under this), so the default 10s could report "stays off"
+    // for a re-enable that then succeeds.
+    const r = await sendCommand('workspace-reenable-network', { workspaceId: id }, { awaitResult: true, timeoutMs: REENABLE_TIMEOUT_MS })
     if (!r) throw new Error('the agent worker returned nothing')
     return r
   } catch (err) {

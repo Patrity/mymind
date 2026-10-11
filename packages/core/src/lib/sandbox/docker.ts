@@ -114,9 +114,15 @@ export function createArgs(spec: ContainerSpec): string[] {
  *    not a timeout.
  */
 export const EXEC_WRAPPER = [
+  // stdin (Task 2: file contents for write_file/edit_file arrive on it, never in argv — a single
+  // argv string is capped at 128 KB and is visible in /proc): a non-interactive shell points an
+  // async list's stdin at /dev/null BEFORE its own redirections, so it is kept on fd 3 and handed
+  // back explicitly below.
+  'exec 3<&0',
   'd=/tmp/.mm-exec; mkdir -p "$d"',
   'o=$(sed -n "s/^oom_kill //p" /sys/fs/cgroup/memory.events 2>/dev/null); s=$(date +%s)',
-  'timeout -k 2 "$2" /bin/bash -c "$3" & p=$!',
+  'timeout -k 2 "$2" /bin/bash -c "$3" 0<&3 3<&- & p=$!',
+  'exec 3<&-',
   'echo "$p" > "$d/$1"',
   // The group AND the pid: right after `&`, timeout may not have setpgid()ed yet (no group to kill,
   // but also no children yet — killing the pid is enough then).

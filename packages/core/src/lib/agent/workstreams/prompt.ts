@@ -6,7 +6,7 @@ import type { WorkstreamPromptInfo } from '../prompt'
 import type { WorkstreamRow } from './store'
 import { budgetOf, usedOf } from './store'
 
-export type SegmentWhy = 'start' | 'continue' | 'restarted' | 'retry' | 'budget' | 'idle'
+export type SegmentWhy = 'start' | 'continue' | 'restarted' | 'retry' | 'budget' | 'idle' | 'watch'
 
 export function segmentOrigin(why: SegmentWhy): string { return `segment:${why}` }
 
@@ -18,6 +18,8 @@ export function segmentText(why: SegmentWhy, ws: Pick<WorkstreamRow, 'goal'>, de
     case 'retry': return `The previous segment failed${detail ? ` (${detail})` : ''}. Continue working on the goal, taking a different approach if needed.`
     case 'idle': return 'You made no tool calls in the last segment. If the goal is complete, call finish_workstream with a summary now; otherwise continue working with your tools.'
     case 'budget': return `The workstream is stopping: ${detail ?? 'its budget is used up'}. Write the final summary now.`
+    // Cycle 82: the watch results (sandbox/watches.ts watchText) — continue from them.
+    case 'watch': return `${detail ?? 'A watch you set has ended.'}\nContinue working on the goal.`
   }
 }
 

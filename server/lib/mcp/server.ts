@@ -6,7 +6,10 @@ import type { AgentTool } from '@mymind/core/lib/agent/types'
  *  calendar are reachable only through Bridget, behind her approval gate and headless proposals —
  *  never from an external MCP session that has neither. `string` (not ToolsetId) so an id can be
  *  listed before its toolset exists ('calendar' lands in a later task). */
-export const MCP_EXCLUDED_TOOLSETS: ReadonlySet<string> = new Set(['gmail', 'calendar'])
+export const MCP_EXCLUDED_TOOLSETS: ReadonlySet<string> = new Set(['gmail', 'calendar',
+  // Cycle 82 (spec §4/§5): the sandboxed workspace and host exec are Bridget's alone (profile-only
+  // too — this is the belt to that brace).
+  'workspace', 'admin'])
 
 /** The one filter both mcpToolNames and buildMcpServer use. */
 export function isMcpExposed(t: AgentTool): boolean {

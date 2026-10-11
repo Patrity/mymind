@@ -23,7 +23,10 @@ export async function replayAgentAction(
   // start_workstream is profile-only (never on MCP), so it is not in agentTools — but a headless run
   // proposes it (gate.ts). Imported here, at call time: the tools module sits on an import cycle.
   const ws = deps.tools ? null : await import('../tools/workstreams')
-  const replayable = deps.tools ?? [...agentTools, ws!.startWorkstreamTool, ws!.answerWorkstreamTool]
+  // export_to_document (cycle 82) is profile-only too; proposed headless (gate.ts), replayed here —
+  // its read of the workspace file goes to the worker (sandbox/runtime.ts readWorkspaceText).
+  const wsp = deps.tools ? null : await import('../tools/workspace')
+  const replayable = deps.tools ?? [...agentTools, ws!.startWorkstreamTool, ws!.answerWorkstreamTool, wsp!.exportToDocumentTool]
   const t = replayable.find(x => x.name === p.tool)
   if (!t) return { ok: false, error: `unknown tool ${p.tool}` }
   if (t.dangerous) return { ok: false, error: `${t.name} is not replayable` }

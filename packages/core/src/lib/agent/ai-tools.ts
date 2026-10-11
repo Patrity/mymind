@@ -7,7 +7,7 @@ import { publishActivity } from './bus'
 import { registerUndo } from './undo'
 import { withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
-import { producedContent } from './tool-history'
+import { carriesWorkspaceTaint, producedContent } from './tool-history'
 
 export interface RunHooks {
   signal: AbortSignal
@@ -78,7 +78,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
   // schedule_wake) is gated like a dangerous tool — not allowlistable, and auto-denied where
   // there's no approval channel (headless). Untainted, outbound tools run freely as always.
   let tainted = hooks.initiallyTainted === true
-  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets }
+  const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets, isTainted: () => tainted }
   const set: ToolSet = {}
   for (const t of registry) {
     set[t.name] = tool({
@@ -151,7 +151,9 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
             { kind: 'tool', name: t.name, request: safeArgs },
             () => t.handler(input, callCtx)
           )
-          if (t.taints && producedContent(exec.result)) tainted = true
+          // Cycle 82: a workspace that handled tainted content taints every run that reads from it
+          // (its files may be mail-derived) — the result says so with `workspaceTainted`.
+          if ((t.taints && producedContent(exec.result)) || carriesWorkspaceTaint(exec.result)) tainted = true
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
           hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: safeArgs, result: exec.result, kind: t.kind })

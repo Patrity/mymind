@@ -10,7 +10,7 @@
 // A drain that arrives while `start` is still booting stops it between steps: nothing that claims
 // (commands, tick, pump, schedule) starts after the signal (Task 2 review M4).
 // This is the ONLY process that executes agent runs (cycle 81 Task 3): the web never claims.
-import type { CommandHandlers, CommandPayloads, InvalidateCache, WorkerBeatStatus } from '@mymind/core/lib/bus/commands'
+import type { CommandHandlers, CommandPayloads, CommandResults, InvalidateCache, WorkerBeatStatus } from '@mymind/core/lib/bus/commands'
 import type { ImessageHealth } from '@mymind/core/lib/channels/inbound'
 import type { UndoResult } from '@mymind/core/lib/agent/undo'
 import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
@@ -38,6 +38,8 @@ export interface WorkerDeps {
   workstreamControl(p: CommandPayloads['workstream-control']): Promise<WorkstreamDTO>
   /** Cycle 82: kill a workspace's tainted runs, then clear its taint (lib/sandbox/manager.ts). */
   workspaceReenableNetwork(p: CommandPayloads['workspace-reenable-network']): Promise<{ id: string; tainted: boolean }>
+  /** Cycle 82 Task 2: a workspace text file, read in the sandbox (export_to_document replayed in the web). */
+  workspaceReadText(p: CommandPayloads['workspace-read-text']): Promise<CommandResults['workspace-read-text']>
   startSchedule(): () => void
   startRecorderFlush(): () => void
   /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
@@ -70,7 +72,7 @@ export interface WorkerProcess {
 }
 
 /** Handlers for every command type. Each returns once its action has started (bus contract). */
-export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork'>
+export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork' | 'workspaceReadText'>
 export function commandHandlers(deps: CommandDeps): CommandHandlers {
   return {
     kick: async () => { deps.kick() },
@@ -90,6 +92,10 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
     'workspace-reenable-network': async (p) => {
       if (!p || typeof p.workspaceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(p.workspaceId)) throw new Error('workspace-reenable-network: bad payload')
       return deps.workspaceReenableNetwork(p)
+    },
+    'workspace-read-text': async (p) => {
+      if (!p || typeof p.workspaceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(p.workspaceId) || typeof p.path !== 'string' || !p.path || p.path.length > 4096) throw new Error('workspace-read-text: bad payload')
+      return deps.workspaceReadText(p)
     }
   }
 }

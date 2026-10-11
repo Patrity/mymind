@@ -230,7 +230,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // Cycle 78: on-demand toolsets — what this conversation already loaded + what a job declared.
     const storedToolsets = parseToolsetIds(conv?.activeToolsets ?? [])
     const jobDeclaredToolsets = parseToolsetIds(input.toolsets ?? [])
-    const initialToolsets = parseToolsetIds([...storedToolsets, ...jobDeclaredToolsets])
+    // Cycle 82: a workstream segment always has its workspace tools (spec §4: pre-loaded for workstreams).
+    const initialToolsets = parseToolsetIds([...storedToolsets, ...jobDeclaredToolsets, ...(seg ? ['workspace'] : [])])
     // M1 (final review, fix round 2): ids declared ONLY by this run's job (not already in the
     // stored column before the turn started). run.ts's `loaded` snapshot is always the FULL
     // current set — initial ∪ anything loaded mid-turn — so onChange's `loaded` argument carries

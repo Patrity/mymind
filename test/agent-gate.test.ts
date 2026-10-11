@@ -95,7 +95,13 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   // unattended work by itself — proposed to /review, replayed on approval
   start_workstream: 'propose',
   // answer_workstream (cycle 81, review I3; fix round 2): text into a waiting workstream — proposed headless
-  answer_workstream: 'propose'
+  answer_workstream: 'propose',
+  // workspace (cycle 82, spec §4): Bridget's own sandbox — reads and writes there run headless
+  // (nothing of Tony's is touched; network is governed by taint)…
+  read_file: 'run', list_files: 'run', grep: 'run', diff: 'run', bash_output: 'run',
+  write_file: 'run', edit_file: 'run', bash: 'run', kill_shell: 'run', watch: 'run', import_document: 'run',
+  // …except export_to_document, which writes into Tony's documents (it may replace one): proposed
+  export_to_document: 'propose'
 }
 
 // The workstream-only tools (cycle 81, spec §5.3) are not in bridgetProfile: they live only in a

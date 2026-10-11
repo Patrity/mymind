@@ -29,6 +29,7 @@ if (mode === 'commands') {
     invalidate: async () => undefined,
     'workstream-control': async () => undefined,
     'workspace-reenable-network': async () => undefined,
+    'workspace-read-text': async () => undefined,
     'imessage-health': async () => ({ ok: true, privateApi: null, checkedAt: null })
   }, { pollMs: 200 })
   await listenReady()

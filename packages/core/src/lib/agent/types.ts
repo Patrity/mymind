@@ -64,6 +64,10 @@ export interface ToolContext {
    *  that authorized it with — e.g. gmail_send's TOCTOU pin. Absent outside the interactive
    *  runner path, same as runId. */
   approvalNonce?: string
+  /** Cycle 82: has THIS run read untrusted Google content (run-level taint, ai-tools.ts)? Read at
+   *  call time — the bit can flip mid-run. The workspace tools run a tainted run's commands with no
+   *  network (spec D5). Absent outside buildAiTools; a workspace tool then fails closed (tainted). */
+  isTainted?: () => boolean
 }
 
 export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }

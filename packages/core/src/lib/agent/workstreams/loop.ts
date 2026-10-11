@@ -49,6 +49,8 @@ import {
 } from './store'
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
 import { noteOrigin, notifyTony, workstreamNotifyDeps } from './notify'
+import { ensureWorkstreamWorkspace } from '../../sandbox/store'
+import { takeWorkstreamWatchResults, untakeWatchResults, workstreamHasArmedWatch, workstreamHasWatchResults } from '../../sandbox/watches'
 import { stepCostUsd } from './cost'
 
 /** Non-terminal workstreams at once (review I2, controller ruling): bounds fan-out through jobs/wakes. */
@@ -109,6 +111,8 @@ export interface Segment {
   stop: StopReason | null
   /** Tool calls that completed in this segment (idle-segment detection). */
   toolCalls: number
+  /** Model steps this segment took (cycle 82: fewer than maxSteps = the model ended its turn itself). */
+  stepsTaken(): number
   shouldStop(): boolean
   onStep(u: StepUsage): void
   /** The run's approval channel: the card on the workstream thread, mirrored into the origin chat,
@@ -244,6 +248,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     promptInfo: promptInfo(ws, o.final ? ws.failureReason : null),
     stop: null,
     toolCalls: 0,
+    stepsTaken: () => steps,
     shouldStop() {
       if (seg.stop) return true
       if (o.final) return false
@@ -423,6 +428,9 @@ export async function startWorkstream(i: {
   })
   publishChange({ resource: 'conversation', action: 'created', id: ws.conversationId })
   publishWorkstream(ws.id, 'created')
+  // Cycle 82 (spec §3): its workspace exists from the start (the tools would create it on first use
+  // anyway — this just makes it visible in the UI at once).
+  await ensureWorkstreamWorkspace(ws.id).catch(err => console.error('[workstreams] creating the workspace failed:', err))
   await enqueueWhy(ws, 'start')
   if (deps.kick !== false) await kick()
   return toWorkstreamDTO((await getWorkstream(ws.id)) ?? ws)
@@ -551,6 +559,11 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
     return null
   }
 
+  // Cycle 82 (watches): a fired watch's result is the next segment; a segment that ENDED ITSELF with
+  // a watch still armed waits for it (paused, no budget used) instead of continuing.
+  const watchNext = await watchContinuation(current, run, seg, stop, outcome)
+  if (watchNext !== undefined) return watchNext
+
   // Idle segments (review M3): no tool call and no finish_workstream. The first gets a nudge prompt;
   // a second in a row means the model believes it is done (or is stuck) — pause and tell Tony once
   // instead of burning the budget on empty segments (a pause, not a question: I3).
@@ -564,6 +577,71 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   }
   await patchWorkstream(ws.id, { failures: 0, lastOutcome: idle ? 'idle' : 'done' })
   return continueWith(current, run, stop === 'yield' ? 'restarted' : idle ? 'idle' : 'continue')
+}
+
+/** What a segment waiting on a watch shows (its Resume continues now). */
+export const WAITING_FOR_WATCH = 'Waiting for a watch it set — the work resumes by itself when the watch fires or times out. Resume to continue now.'
+
+/**
+ * Cycle 82 (spec §4 `watch`): undefined = no watch business, carry on. Only for a segment that ended
+ * normally (not cancel / budget / drain / Stop — those paths keep their own rules, and a pending
+ * result simply waits for the next boundary). Tony's unread words always go first.
+ */
+async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment | undefined, stop: StopReason | null, outcome: RunOutcome): Promise<string | null | undefined> {
+  if (stop !== null || outcome.status !== 'done') return undefined
+  const fired = await workstreamHasWatchResults(ws.id)
+  const ownEnd = !!seg && seg.stepsTaken() < seg.maxSteps
+  const wait = !fired && ownEnd && await workstreamHasArmedWatch(ws.id)
+  if (!fired && !wait) return undefined
+  const unread = await drainSteerFor(run.id)
+  await patchWorkstream(ws.id, { failures: 0, lastOutcome: 'done' })
+  if (unread.length) return enqueueSegment(ws, { text: unread.join('\n\n') })
+  if (fired) {
+    const next = await enqueueWatchResults(ws)
+    if (next !== undefined) return next
+  }
+  if (!await workstreamHasArmedWatch(ws.id)) return continueWith(ws, run, 'continue')
+  await patchWorkstream(ws.id, { state: 'paused', attention: { kind: 'paused', text: WAITING_FOR_WATCH, waitingForWatch: true }, lastOutcome: 'watch' }, ['running'])
+  // A watch that ended between the check above and the pause found the workstream 'running' and
+  // left its result pending — take it now so it is never stranded behind the pause.
+  if (await workstreamHasWatchResults(ws.id)) {
+    const row = await getWorkstream(ws.id)
+    if (row) return (await enqueueWatchResults(row)) ?? null
+  }
+  return null
+}
+
+/** Claim the pending watch results into one `segment:watch` segment. Undefined when there were none
+ *  (someone else claimed them); null when a segment already exists (handed back for its boundary). */
+async function enqueueWatchResults(ws: WorkstreamRow): Promise<string | null | undefined> {
+  const results = await takeWorkstreamWatchResults(ws.id)
+  if (!results.length) return undefined
+  const runId = await enqueueWhy(ws, 'watch', results.map(r => r.text).join('\n\n'))
+  if (!runId) { await untakeWatchResults(results.map(r => r.id)); return null }
+  await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
+  return runId
+}
+
+/**
+ * A watch of this workstream ended (sandbox/runtime.ts). With no segment live and the work moving
+ * (running/queued) or waiting for this watch (paused {waitingForWatch}), its result starts the next
+ * segment now ('resumed'). Otherwise it stays pending: a live segment's end takes it, and work held
+ * by Tony (a question, a card, his Stop) takes it when it next moves — a watch never overrides him.
+ */
+export async function wakeWorkstreamForWatch(workstreamId: string): Promise<'resumed' | 'pending' | 'gone'> {
+  const ws = await getWorkstream(workstreamId)
+  if (!ws || isTerminal(ws.state)) return 'gone'
+  const att = attentionOf(ws)
+  const movable = ws.state === 'running' || ws.state === 'queued' || (ws.state === 'paused' && att?.waitingForWatch === true)
+  if (!movable) return 'pending'
+  if ([...active.values(), ...ended.values()].some(s => s.workstreamId === ws.id)) return 'pending'
+  const [live] = await useDb().select({ id: agentRuns.id }).from(agentRuns)
+    .where(and(eq(agentRuns.conversationId, ws.conversationId), eq(agentRuns.kind, 'workstream'), inArray(agentRuns.status, ['queued', 'running']))).limit(1)
+  if (live) return 'pending'
+  const runId = await enqueueWatchResults(ws)
+  if (!runId) return runId === undefined ? 'resumed' : 'pending'
+  await kick()
+  return 'resumed'
 }
 
 /** A failed segment (or a failed transition) — retried until the 3rd in a row, then failed. */

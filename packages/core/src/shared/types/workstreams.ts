@@ -26,6 +26,9 @@ export interface WorkstreamAttention {
   notifiedAt?: number
   /** "Still waiting" nudges sent this episode — capped at MAX_NUDGES (final review I3). */
   nudges?: number
+  /** Cycle 82: `paused` because a segment ended with a watch armed — the watch's result resumes it
+   *  (a pause by Stop / idleness is never resumed by a watch). */
+  waitingForWatch?: true
 }
 
 export interface WorkstreamDTO {

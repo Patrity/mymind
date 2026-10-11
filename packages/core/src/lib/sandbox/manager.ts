@@ -113,7 +113,21 @@ export interface ExecOptions {
   secrets?: Record<string, string>
   /** The run has read untrusted content: no network (spec D5) — and the workspace becomes tainted. */
   tainted?: boolean
+  /** Fed to the command's stdin (file contents — never in argv: 128 KB cap and visible in /proc). */
+  input?: string
+  /** Output cap per stream (tail kept). Default settings.outputCapBytes (64 KB); at most 1 MB. */
+  capBytes?: number
 }
+
+/** Hooks the workspace runtime (Task 2: background shells + watches) installs on the shared
+ *  manager at worker start — set once, read at call time (no import cycle with the tools). */
+export interface SandboxRuntimeHooks {
+  isBusy?: (workspaceId: string) => boolean | Promise<boolean>
+  onOverQuota?: (workspaceId: string, usage: { bytes: number; inodes: number }) => Promise<void> | void
+}
+const runtimeHooks: SandboxRuntimeHooks = {}
+export function setSandboxRuntimeHooks(h: SandboxRuntimeHooks): void { Object.assign(runtimeHooks, h) }
+const MAX_CAP_BYTES = 1024 * 1024
 
 export interface FsStats {
   freeBytes: number
@@ -145,8 +159,8 @@ export interface SandboxManagerOptions {
   iptablesS?: () => Promise<string>
   /** Free bytes + inodes on the filesystem holding `dir` (default: statfs). */
   fsStats?: (dir: string) => Promise<FsStats>
-  /** True while a workspace must not be idle-stopped (background shells — Task 2). */
-  isBusy?: (workspaceId: string) => boolean
+  /** True while a workspace must not be idle-stopped (background shells / armed watches — Task 2). */
+  isBusy?: (workspaceId: string) => boolean | Promise<boolean>
   /** Called when a workspace is over quota or stopped by the low-disk watchdog (Task 2 kills its
    *  background shells). */
   onOverQuota?: (workspaceId: string, usage: { bytes: number; inodes: number }) => Promise<void> | void
@@ -196,6 +210,8 @@ async function defaultFsStats(dir: string): Promise<FsStats> {
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+/** Re-enable waits at most this × 100ms for aborted tainted runs to return (well under the web's 60s). */
+const REENABLE_DRAIN_TRIES = 250
 
 export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const docker = opts.docker ?? createDockerCli()
@@ -207,6 +223,8 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const uid = 'uid' in opts ? opts.uid : process.getuid?.()
   const platform = opts.platform ?? process.platform
   const fsStats = opts.fsStats ?? defaultFsStats
+  const isBusy = (id: string) => (opts.isBusy ?? runtimeHooks.isBusy)?.(id) ?? false
+  const onOverQuota = (id: string, usage: { bytes: number; inodes: number }) => (opts.onOverQuota ?? runtimeHooks.onOverQuota)?.(id, usage)
   /** Abort handles of tainted one-offs in flight, per workspace — registered under the workspace
    *  lock by `taint()`, so a re-enable (same lock) always sees every one (rereview #5). */
   const taintedInFlight = new Map<string, Set<AbortController>>()
@@ -379,6 +397,13 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return locked(id, async () => {
       await liveRow(id)
       for (const ctrl of taintedInFlight.get(id) ?? []) ctrl.abort()
+      // Carry-over (rereview minor 1): wait until every aborted tainted run has RETURNED. A run
+      // returns only once its one-off container has exited (execOneOff keeps killing it until the
+      // `docker run` CLI comes back), so an abort that raced the container's creation can no
+      // longer slip a tainted command past the listing below. New tainted runs can't register
+      // meanwhile: taint() needs this lock.
+      for (let i = 0; taintedInFlight.get(id)?.size && i < REENABLE_DRAIN_TRIES; i++) await sleep(100)
+      if (taintedInFlight.get(id)?.size) throw new SandboxUnavailableError(`tainted command(s) of workspace ${id} did not stop — its network stays off`)
       const tainted = async () => (await listLabelled()).filter(c => inScope(c) && c.Config.Labels?.[LABEL_WORKSPACE] === id && c.Config.Labels?.[LABEL_TAINTED] !== undefined)
       for (let i = 0; i < 40; i++) {
         const left = await tainted()
@@ -434,6 +459,13 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         if (row) await store.setContainer(id, row.containerId, 'stopped')
         return
       }
+      if (lowDisk) {
+        // Carry-over (rereview minor 3): never START a container during a low-disk episode.
+        log.warn(`[sandbox] could not kill exec ${execId} in ${name} (${k.stderr.trim()}) — killing the container (low disk)`)
+        await docker(['kill', name], { timeoutMs: 30_000 })
+        await store.setContainer(id, row.containerId, 'stopped')
+        return
+      }
       log.warn(`[sandbox] could not kill exec ${execId} in ${name} (${k.stderr.trim()}) — restarting the container`)
       await docker(['restart', '-t', '0', name], { timeoutMs: 60_000 })
     })
@@ -444,26 +476,43 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   /** A command in a one-off `--network none` container (tainted run or tainted workspace). */
-  async function execOneOff(id: string, command: string, timeoutSec: number, signal?: AbortSignal): Promise<DockerResult & { abortedHere: boolean }> {
+  async function execOneOff(id: string, command: string, timeoutSec: number, signal?: AbortSignal, io: { input?: string; capBytes?: number } = {}): Promise<DockerResult & { abortedHere: boolean }> {
     await preflight(false)
     await ensureDir(id)
     const execId = newExecId()
     const name = `mymind-wst-${id.slice(0, 8)}-${execId}`
     let aborted = false
-    const onAbort = () => { aborted = true; void docker(['kill', name], { timeoutMs: 15_000 }) }
+    let returned = false
+    // An abort keeps killing the one-off until the attached `docker run` returns — i.e. until the
+    // container has EXITED (rereview minor 1: one kill that ran before the container existed used
+    // to be the only one). The CLI itself is never killed on abort, so its return proves the exit.
+    const onAbort = () => {
+      aborted = true
+      void (async () => {
+        while (!returned) {
+          await docker(['kill', name], { timeoutMs: 15_000 })
+          if (!returned) await sleep(250)
+        }
+      })()
+    }
     signal?.addEventListener('abort', onAbort, { once: true })
     try {
       if (signal?.aborted) return { code: null, stdout: '', stderr: '', timedOut: false, aborted: true, truncated: false, abortedHere: true }
       const r = await docker(taintedRunArgs({ ...containerSpec(id), name, command, execId, timeoutSec }),
-        { timeoutMs: (timeoutSec + 15) * 1000, capBytes: s.outputCapBytes })
+        { timeoutMs: (timeoutSec + 15) * 1000, capBytes: io.capBytes ?? s.outputCapBytes, ...(io.input !== undefined ? { input: io.input } : {}) })
       if (r.timedOut) await docker(['rm', '-f', name], { timeoutMs: 15_000 })
       return { ...r, abortedHere: aborted }
-    } finally { signal?.removeEventListener('abort', onAbort) }
+    } finally {
+      returned = true
+      signal?.removeEventListener('abort', onAbort)
+    }
   }
 
   async function exec(id: string, command: string, o: ExecOptions = {}): Promise<SandboxExecResult> {
     assertDiskOk()
     const timeoutSec = timeoutOf(o.timeoutSec)
+    const capBytes = Math.min(MAX_CAP_BYTES, Math.max(1024, Math.floor(o.capBytes ?? s.outputCapBytes)))
+    const io = { capBytes, ...(o.input !== undefined ? { input: o.input } : {}) }
     const secrets = o.secrets ?? {}
     for (const k of Object.keys(secrets)) assertSecretName(k)
     const row = await liveRow(id)
@@ -472,7 +521,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       try {
         await store.touch(id)
         const signal = o.signal ? AbortSignal.any([o.signal, ctrl.signal]) : ctrl.signal
-        const r = await execOneOff(id, command, timeoutSec, signal)
+        const r = await execOneOff(id, command, timeoutSec, signal, io)
         return result(r, true, r.abortedHere)
       } finally { releaseTainted(id, ctrl) }
     }
@@ -496,7 +545,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       // The signal also kills the CLI client at once (review M5); the in-container group is killed
       // by hardKill above (tombstone first, so an abort before the wrapper starts still lands).
       const r = await docker(execArgs({ container: name, command, execId, timeoutSec, secretNames: Object.keys(secrets) }),
-        { timeoutMs: (timeoutSec + 15) * 1000, env: secrets, capBytes: s.outputCapBytes, signal: o.signal })
+        { timeoutMs: (timeoutSec + 15) * 1000, env: secrets, capBytes, signal: o.signal, ...(o.input !== undefined ? { input: o.input } : {}) })
       if (!r.aborted && !r.timedOut) wrapperExited = true
       if (r.timedOut) await hardKill(id, name, execId, () => false)
       return result(r, false, aborted)
@@ -582,7 +631,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         out.push({ id: row.id, ...used, over })
         if (over) {
           log.warn(m ? `[sandbox] workspace ${row.id} over quota (${used.bytes} bytes, ${used.inodes} files)` : `[sandbox] workspace ${row.id} could not be measured — treated as over quota`)
-          await opts.onOverQuota?.(row.id, used)
+          await onOverQuota(row.id, used)
         }
       } catch (err) { log.warn(`[sandbox] quota check of ${row.id} failed:`, (err as Error).message) }
     }
@@ -594,7 +643,10 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const stopped: string[] = []
     for (const row of await store.listRunning()) {
       if (now() - row.lastUsedAt.getTime() < s.idleMs) continue
-      if (opts.isBusy?.(row.id)) continue
+      try { if (await isBusy(row.id)) continue } catch (err) {
+        log.warn(`[sandbox] busy check of ${row.id} failed — not stopping it:`, (err as Error).message)
+        continue
+      }
       try {
         await stopContainer(row.id)
         stopped.push(row.id)
@@ -636,7 +688,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       try {
         const row = await store.get(id)
         if (row?.state === 'running') await store.setContainer(id, row.containerId, 'stopped')
-        await opts.onOverQuota?.(id, { bytes: row?.bytesUsed ?? 0, inodes: row?.inodesUsed ?? 0 })
+        await onOverQuota(id, { bytes: row?.bytesUsed ?? 0, inodes: row?.inodesUsed ?? 0 })
       } catch (err) { log.warn(`[sandbox] low-disk bookkeeping of ${id} failed:`, (err as Error).message) }
     }
     return [...stopped]
@@ -766,6 +818,8 @@ export interface HousekeepingOptions {
   diskMs?: number
   /** Once per low-disk episode (activity_log + channels notification — main.ts). */
   onLowDisk?: (r: DiskCheckResult) => Promise<void> | void
+  /** Once, after the boot reconcile (Task 2: re-attach background shells, re-arm watches). */
+  afterReconcile?: () => Promise<void> | void
   log?: Pick<Console, 'info' | 'warn' | 'error'>
 }
 
@@ -792,6 +846,7 @@ export function startSandboxHousekeeping(m: SandboxManager = sandboxManager(), o
       const r = await m.reconcile()
       reconciled = true
       log.info(`[sandbox] reconciled: ${r.removed.length} orphan container(s) removed, ${r.repaired.length} row(s) repaired`)
+      await o.afterReconcile?.()
     }
     if (m.isDiskLow()) return
     await m.idleStop()
