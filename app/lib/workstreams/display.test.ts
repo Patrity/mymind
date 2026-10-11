@@ -121,6 +121,7 @@ describe('startedWorkstream', () => {
   })
   it('a refusal, another tool, or a non-uuid id → null', () => {
     expect(startedWorkstream('start_workstream', {}, { ok: false, error: 'cap' })).toBeNull()
+    expect(startedWorkstream('start_workstream', {}, { ok: false, id: ID, error: 'refused' })).toBeNull()
     expect(startedWorkstream('create_task', {}, { ok: true, id: ID })).toBeNull()
     expect(startedWorkstream('start_workstream', {}, { ok: true, id: 'javascript:x' })).toBeNull()
     expect(startedWorkstream('start_workstream', {}, 'not json')).toBeNull()
