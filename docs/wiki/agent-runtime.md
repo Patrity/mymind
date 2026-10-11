@@ -3,6 +3,8 @@ title: Agent Runtime (server-owned turns, main thread, wake)
 status: built
 cycle: 73 (jobs callers, silent runs, light context and the queued frame: cycle 74; `reply_to`, iMessage approvals and channel deliveries: cycle 75; separate agent worker + Postgres bus: cycle 81)
 updated: 2026-10-11
+mymind_id: 2a37ce21-96db-4a31-a834-47b654e6f013
+mymind_hash: dac5655ce21a48eba2554d6d356ea53028ce3972d0e361197ef3707ddd3ec6f5
 ---
 
 # Agent Runtime

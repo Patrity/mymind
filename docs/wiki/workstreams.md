@@ -3,6 +3,8 @@ title: Workstreams (long-running background agent work)
 status: built
 cycle: 81
 updated: 2026-10-11
+mymind_id: a5fa582b-9998-41b3-a9b3-53a41c8a0642
+mymind_hash: e79151b4f4b107beaa5ff40ce85ad85f516ad94367926d064254c937b6ffb751
 ---
 
 # Workstreams
