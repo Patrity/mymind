@@ -1,3 +1,4 @@
+// Auth: session OR API token, like agent/chat.post.ts (controller ruling, Task 6 fix round 1).
 import { z } from 'zod'
 import { startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
 import { BUDGET_LIMITS } from '@mymind/core/shared/types/workstreams'

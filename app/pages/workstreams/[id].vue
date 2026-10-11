@@ -78,6 +78,18 @@ watch([syncPending, busy], async () => {
   } catch { /* the log on screen stays as it is */ }
 })
 
+// ── Undo (the same path as chat: POST /api/agent/undo → the worker that minted the token) ──
+const redeem = useUndo()
+const undone = reactive(new Set<string>())
+async function undoTool(toolCallId: string, undoToken: string) {
+  try {
+    const { ok } = await redeem(undoToken)
+    if (ok) undone.add(toolCallId)
+  } catch (e) {
+    toast.add({ color: 'error', title: 'Undo failed', description: workstreamErrorOf(e).message })
+  }
+}
+
 // ── Controls ────────────────────────────────────────────────────────────────
 const { control } = useWorkstreamActions()
 const pending = ref<'cancel' | 'resume' | 'steer' | null>(null)
@@ -111,9 +123,11 @@ const answering = computed(() => ws.value?.state === 'attention' && ws.value.att
 async function send() {
   const text = draft.value.trim()
   if (!text) return
+  // Read BEFORE the round trip: its reply already shows the workstream running again.
+  const wasAnswer = answering.value
   if (await run('steer', text)) {
     draft.value = ''
-    toast.add({ title: answering.value ? 'Answer sent' : 'Sent', description: 'The workstream picks it up at its next step.' })
+    toast.add({ title: wasAnswer ? 'Answer sent' : 'Sent', description: 'The workstream picks it up at its next step.' })
   }
 }
 </script>
@@ -250,10 +264,12 @@ async function send() {
         readonly
         :messages="voice.messages.value"
         :approvals="voice.pendingApprovals.value"
+        :undone="undone"
         :state="voice.state.value"
         :connected="voice.connected.value"
         :hero="false"
         data-testid="workstream-log"
+        @undo="undoTool"
         @approve="(rid, o) => voice.sendApproval(rid, true, o)"
         @deny="rid => voice.sendApproval(rid, false)"
       />

@@ -6,12 +6,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
 vi.stubGlobal('createError', (o: { statusCode: number; statusMessage?: string; data?: unknown }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
 vi.stubGlobal('readBody', async (e: { body: unknown }) => e.body)
+vi.stubGlobal('getQuery', (e: { query?: Record<string, string> }) => e.query ?? {})
 vi.stubGlobal('getRouterParam', (e: { params?: Record<string, string> }, k: string) => e.params?.[k])
 
 const sendCommand = vi.fn()
 vi.mock('@mymind/core/lib/bus/commands', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/bus/commands')>()), sendCommand: (...a: unknown[]) => sendCommand(...a) }))
 const startWorkstream = vi.fn()
 vi.mock('@mymind/core/lib/agent/workstreams/loop', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/agent/workstreams/loop')>()), startWorkstream: (...a: unknown[]) => startWorkstream(...a) }))
+
+const listWorkstreams = vi.fn(async (_o: unknown) => [])
+vi.mock('@mymind/core/lib/agent/workstreams/store', async (orig) => ({ ...(await orig<typeof import('@mymind/core/lib/agent/workstreams/store')>()), listWorkstreams: (o: unknown) => listWorkstreams(o) }))
 
 const { CommandFailedError, CommandTimeoutError } = await import('@mymind/core/lib/bus/commands')
 const { WorkstreamCapError } = await import('@mymind/core/lib/agent/workstreams/loop')
@@ -21,6 +25,7 @@ const cancel = (await import('../server/api/workstreams/[id]/cancel.post')).defa
 const resume = (await import('../server/api/workstreams/[id]/resume.post')).default as H
 const steer = (await import('../server/api/workstreams/[id]/steer.post')).default as H
 const start = (await import('../server/api/workstreams/index.post')).default as H
+const list = (await import('../server/api/workstreams/index.get')).default as H
 
 const ID = '0b6f3c1e-5d2a-4f7b-9c8e-1a2b3c4d5e6f'
 const CAP = 'There are already 3 workstreams in progress (the limit is 3): "a", "b", "c". Tell Tony — one has to finish or be cancelled before another can start.'
@@ -93,5 +98,15 @@ describe('POST /api/workstreams (start from the UI)', () => {
     await expect(start({ body: { goal: 'x' } })).rejects.toMatchObject({ statusCode: 400 })
     await expect(start({ body: { goal: 'fine goal', budget: { maxSteps: 0 } } })).rejects.toMatchObject({ statusCode: 400 })
     expect(startWorkstream).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /api/workstreams ?limit', () => {
+  it('is clamped to 100; a bad or absent value falls back to 100', async () => {
+    for (const [q, want] of [['100000', 100], ['7', 7], ['abc', 100], [undefined, 100], ['-3', 100]] as const) {
+      listWorkstreams.mockClear()
+      await list({ query: q === undefined ? {} : { limit: q } })
+      expect(listWorkstreams).toHaveBeenCalledWith({ states: undefined, limit: want })
+    }
   })
 })

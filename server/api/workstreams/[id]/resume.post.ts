@@ -1,3 +1,4 @@
+// Auth: session OR API token, like agent/chat.post.ts (controller ruling, Task 6 fix round 1).
 import { requireWorkstreamId, sendWorkstreamControl } from '../../../utils/workstreams-http'
 
 /** Resume a failed/cancelled (or waiting) workstream. A used-up budget is extended by
