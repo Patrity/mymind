@@ -70,11 +70,17 @@ describe('auth (final review I5: the wake.post precedent)', () => {
     expect(startWorkstream).not.toHaveBeenCalled()
     expect(sendCommand).not.toHaveBeenCalled()
   })
-  it('cancel and steer stay token-capable (stopping or talking to a run never widens it)', async () => {
+  it('re-review NEW-1: steer needs a session too (it can answer or continue paused work) — a token is 403, a session works', async () => {
+    sendCommand.mockResolvedValue({ id: ID, state: 'running' })
+    await expect(steer({ params: { id: ID }, context: TOKEN, body: { text: 'carry on' } })).rejects.toMatchObject({ statusCode: 403 })
+    expect(sendCommand).not.toHaveBeenCalled()
+    await steer({ params: { id: ID }, context: SESSION, body: { text: 'carry on' } })
+    expect(sendCommand).toHaveBeenLastCalledWith('workstream-control', { workstreamId: ID, action: 'steer', text: 'carry on' }, { awaitResult: true })
+  })
+  it('cancel stays token-capable (stopping work never widens it)', async () => {
     sendCommand.mockResolvedValue({ id: ID, state: 'cancelled' })
     await cancel({ params: { id: ID }, context: TOKEN })
-    await steer({ params: { id: ID }, context: TOKEN, body: { text: 'stop at the draft' } })
-    expect(sendCommand).toHaveBeenCalledTimes(2)
+    expect(sendCommand).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -85,7 +91,7 @@ describe('control routes → workstream-control command (awaited)', () => {
     expect(sendCommand).toHaveBeenLastCalledWith('workstream-control', { workstreamId: ID, action: 'cancel' }, { awaitResult: true })
     await resume({ params: { id: ID }, context: SESSION })
     expect(sendCommand).toHaveBeenLastCalledWith('workstream-control', { workstreamId: ID, action: 'resume' }, { awaitResult: true })
-    await steer({ params: { id: ID }, body: { text: '  use the blue one ' } })
+    await steer({ params: { id: ID }, context: SESSION, body: { text: '  use the blue one ' } })
     expect(sendCommand).toHaveBeenLastCalledWith('workstream-control', { workstreamId: ID, action: 'steer', text: 'use the blue one' }, { awaitResult: true })
   })
   it('a resume refused at the cap is a 409 cap', async () => {
@@ -98,7 +104,7 @@ describe('control routes → workstream-control command (awaited)', () => {
   })
   it('a malformed id never reaches the worker; an empty steer is a 400', async () => {
     await expect(cancel({ params: { id: 'nope' } })).rejects.toMatchObject({ statusCode: 404 })
-    await expect(steer({ params: { id: ID }, body: { text: '   ' } })).rejects.toMatchObject({ statusCode: 400 })
+    await expect(steer({ params: { id: ID }, context: SESSION, body: { text: '   ' } })).rejects.toMatchObject({ statusCode: 400 })
     expect(sendCommand).not.toHaveBeenCalled()
   })
 })

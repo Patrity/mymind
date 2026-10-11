@@ -139,11 +139,12 @@ nonce and taint pins are unchanged.
 | `POST /api/workstreams` | **session only** | start (from the UI; no origin chat) |
 | `POST /api/workstreams/:id/resume` | **session only** | resume a failed, cancelled, paused or attention one |
 | `POST /api/workstreams/:id/cancel` | session or token | cancel |
-| `POST /api/workstreams/:id/steer` `{text}` | session or token | steer while running; answer a question; continue a paused one |
+| `POST /api/workstreams/:id/steer` `{text}` | **session only** | steer while running; answer a question; continue a paused one |
 
-Start and resume require a web session (final review I5). This follows the `wake.post.ts` rule:
-the auth middleware also accepts API tokens, and a leaked token must not be able to launch an
-unattended background run. Cancel and steer stay token-capable.
+Start, resume and steer require a web session (final review I5, and re-review NEW-1 for steer).
+This follows the `wake.post.ts` rule: the auth middleware also accepts API tokens, and a leaked
+token must not be able to launch an unattended background run. A steer can answer a question or
+continue a paused workstream, so it can restart work too. Only cancel stays token-capable.
 
 Controls go to the worker as a `workstream-control` command, awaited for 10 s. A worker that does
 not answer gives a visible 504.

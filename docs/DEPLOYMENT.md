@@ -717,14 +717,16 @@ code ignores the new tables and columns.
      Cancel goes through it.
   2. `systemctl disable --now mymind-worker` **first**. This drains it (≤ 60 s) and keeps it from
      starting again.
-  3. Then deploy the old commit (revert on `master` → CD, or the manual steps).
-  4. Fallback if step 1 was skipped. Old code ignores the `workstreams` table but would claim its queued segments, so clear them:
+  3. **Before** deploying old code, if any workstream is still non-terminal (step 1 skipped, or a
+     cancel did not land), clear it. Old code ignores the `workstreams` table but would claim its
+     queued segments as plain turns the moment it starts:
      ```sql
      update agent_runs set status = 'aborted', finished_at = now(), error = 'rollback below cycle 81'
        where kind = 'workstream' and status in ('queued', 'running');
      update workstreams set state = 'cancelled', finished_at = now(), attention = null
        where state not in ('done', 'failed', 'cancelled');
      ```
+  4. Then deploy the old commit (revert on `master` → CD, or the manual steps).
   Rolling forward again: a normal deploy of cycle ≥ 81. `provision-native.sh` re-enables the unit,
   and CD's activate and restart start it.
 
