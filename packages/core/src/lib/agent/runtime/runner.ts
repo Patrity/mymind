@@ -15,7 +15,8 @@ import { recordEvent } from '../../observability/record'
 import { assembleContext } from '../assemble'
 import { messageText } from '../run'
 import type { AgentMessage } from '../run'
-import { bridgetProfile, type AgentProfile } from '../profile'
+import { bridgetProfile, workstreamProfile, type AgentProfile } from '../profile'
+import { beginSegment, type Segment } from '../workstreams/loop'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import type { RunPublisher } from './stream'
 import { busPublisher } from './bus-publisher'
@@ -78,7 +79,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   const turnAttachments = input.attachments ?? []
   // The text the MODEL sees. A wake's persisted row is the raw prompt (role 'event'); the model
   // reads it through eventModelText, same as it will on every later turn's history.
-  const userText = isWake ? eventModelText(origin, input.text) : input.text
+  // Cycle 81: a workstream segment's own prompt ("continue", "restarted", …) persists as an EVENT
+  // row with this origin, like a wake's — it is not something Tony said.
+  const eventOrigin = !isWake && input.eventOrigin ? input.eventOrigin : null
+  const userText = isWake ? eventModelText(origin, input.text) : eventOrigin ? eventModelText(eventOrigin, input.text) : input.text
 
   let ts: ReturnType<typeof createTurnStream> | null = null
   // Declared out here so the `finally` rescue can still see them when the turn throws.
@@ -124,6 +128,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   let outcome: RunOutcome = { status: 'done', suppressed: false, usage: null }
   // The turn threw (not an abort): an iMessage-origin run texts a short failure note (I3).
   let failed = false
+  // Cycle 81: this run is a workstream segment (workstreams/loop.ts) — set in the try below.
+  let seg: Segment | null = null
   // Registered immediately before the try whose `finally` releases them: nothing that can throw
   // may run in between, or a run would leak its controller and its hub replay buffer.
   const ac = registerAbort(run.id)
@@ -147,6 +153,19 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // this run's frame stream and the web answers with an `approval-decision` command — 120s
     // auto-deny, denied at once on abort. Any other interactive run prompts over iMessage when its
     // reply_to (read at request time) names a chat; otherwise it denies, as before.
+    // A workstream segment (cycle 81, spec §5.4): no socket, yet interactive — its approvals wait on
+    // the card with NO timeout (attention {approval}), shown in the workstream thread, mirrored into
+    // the chat it was started from, and raced with an iMessage prompt while Tony is away.
+    if (run.kind === 'workstream') {
+      seg = await beginSegment(run)
+      if (seg.skip) {
+        // Cancelled (or finished) while this segment sat queued: nothing to run, nothing to persist.
+        silent = true
+        outcome = { status: 'aborted' }
+        return outcome
+      }
+      registerApprovalChannel(run.id, seg.approvalChannel({ publish: f => send(JSON.stringify(f)), signal: ac.signal }))
+    }
     if (run.profile === 'interactive' && !hasApprovalChannel(run.id)) {
       registerApprovalChannel(run.id, run.originSinkId
         ? busApprovalChannel(run.id, { signal: ac.signal, publish: f => send(JSON.stringify(f)) })
@@ -176,6 +195,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // never observes one frame. What she said reaches a subscriber only via the `persisted`
       // re-read below, and a silent wake shows nothing at all. Interactive runs are untouched.
       if (isWake && e.type !== 'state') return
+      // A segment's own prompt is an event row, not a bubble Tony typed: no user-message frame.
+      if (eventOrigin && e.type === 'transcript' && e.role === 'user') return
       ts!.emit(e)
     }
     // The thread this turn was SENT to is run.conversationId, fixed when the run was created
@@ -202,7 +223,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // `usage` (the ACTUAL contextTokens) for the same conversationId. recordEvent only buffers.
     recordEvent({ kind: 'tool', name: 'memory:assemble', severity: 'info', meta: { used: assembled.used, droppedTurns: assembled.droppedTurns, retrievedCount: assembled.usedMemoryIds.length, conversationId, runId: run.id } })
     const history: AgentMessage[] = keepTrailingTurns(turns, turns.length - assembled.droppedTurns)
-    const profile = run.profile === 'headless' ? headlessProfile(run) : undefined
+    const profile = run.profile === 'headless' ? headlessProfile(run) : seg ? workstreamProfile : undefined
 
     // Cycle 78: on-demand toolsets — what this conversation already loaded + what a job declared.
     const storedToolsets = parseToolsetIds(conv?.activeToolsets ?? [])
@@ -252,7 +273,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         drainedSteers.push(...fresh)
         return fresh
       }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined,
-      runId: run.id, toolsets
+      runId: run.id, toolsets,
+      ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {})
     })
     // Finalize the timing ONCE, here, and use the same object for the live chunk below and
     // for the persist further down — so the duration and tok/s the user watches appear are
@@ -304,6 +326,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         usage: finalUsage
       })
       if (isWake) payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
+      else if (eventOrigin) payload[0] = { ...payload[0]!, role: 'event', origin: eventOrigin, content: input.text }
       // Steers ride in the SAME append (one transaction, one chain), between the question and
       // the reply — the order the model saw them in, and the reply stays the leaf.
       // A reply that goes out over a channel (reply_to / a job's `deliver`) gets its
@@ -399,6 +422,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
             usage: buildUsageWithTiming()
           })
           if (isWake && payload[0]?.role === 'user') payload[0] = { ...payload[0]!, role: 'event', origin, content: input.text }
+          else if (eventOrigin && payload[0]?.role === 'user') payload[0] = { ...payload[0]!, role: 'event', origin: eventOrigin, content: input.text }
           await appendMessages(conversationId, withSteers(payload, drainedSteers), turnLeafId)
           rescued = true
           publishChange({ resource: 'conversation', action: created ? 'created' : 'updated', id: conversationId })
@@ -418,6 +442,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // both are idempotent).
     unregisterApprovalChannel(run.id)
     releaseAbort(run.id)
+    // The segment's clocks stop and its final `used` is persisted before the run is reported
+    // finished — onSegmentFinished (queue.ts) decides the next segment from that row.
+    if (seg) await seg.end().catch(err => console.error('[agent] ending the workstream segment failed:', err))
     void channelPresence.stop(run)
     // Every frame committed before the run is reported finished (the bus writer flushes here).
     await Promise.resolve(hub.endRun(conversationId)).catch((err: unknown) => console.error('[agent] flushing run frames failed:', err))

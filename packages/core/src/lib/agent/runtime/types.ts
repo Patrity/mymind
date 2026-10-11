@@ -19,7 +19,13 @@ export interface RunInput {
   origin?: string
   /** Cycle 78: toolsets a job declared; loaded at run start. */
   toolsets?: string[]
+  /** Cycle 81: the question row persists as an EVENT row with this origin (and the model reads it
+   *  through eventModelText) instead of a user row — a workstream segment's own prompt ("continue",
+   *  "restarted", "budget exhausted") is not something Tony said. Its user-message frame is withheld. */
+  eventOrigin?: string
 }
+
+export type RunKind = 'turn' | 'workstream'
 
 /** Cycle 75: where to send this run's reply besides the web UI — set when the run was
  *  woken by an inbound iMessage, so the answer routes back to the sender's chat. */

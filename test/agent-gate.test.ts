@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { classifyForHeadless, headlessTools } from '@mymind/core/lib/agent/runtime/gate'
-import { bridgetProfile } from '@mymind/core/lib/agent/profile'
+import { bridgetProfile, workstreamProfile } from '@mymind/core/lib/agent/profile'
 import { loadToolsetsTool } from '@mymind/core/lib/agent/tools/load-toolsets'
 import type { AgentTool } from '@mymind/core/lib/agent/types'
 import type { HeadlessClass } from '@mymind/core/lib/agent/runtime/gate'
@@ -90,8 +90,15 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   exec: 'exclude',
   // decide_review (cycle 76): dangerous — refused outright in a headless run, never proposed
   // (approving a proposal via a proposal is circular)
-  decide_review: 'exclude'
+  decide_review: 'exclude',
+  // start_workstream (cycle 81, spec §5.3): creates NEW unattended work in its own thread — nothing
+  // existing is touched — so it runs (outbound: a tainted run still needs approval)
+  start_workstream: 'run'
 }
+
+// The workstream-only tools (cycle 81, spec §5.3) are not in bridgetProfile: they live only in a
+// workstream segment's registry. Pinned the same way, against workstreamProfile.
+const WORKSTREAM_ONLY_CLASS: Record<string, HeadlessClass> = { finish_workstream: 'run', ask_tony: 'run' }
 
 describe('headless gate — exhaustive table', () => {
   it('the table names EXACTLY the tools Bridget has, no more, no less', () => {
@@ -99,5 +106,17 @@ describe('headless gate — exhaustive table', () => {
   })
   it.each(bridgetProfile.tools.map(t => [t.name, t] as const))('%s classifies as pinned', (name, t) => {
     expect(classifyForHeadless(t)).toBe(EXPECTED_CLASS[name])
+  })
+})
+
+describe('workstream registry (cycle 81)', () => {
+  it('is Bridget minus start_workstream plus exactly finish_workstream and ask_tony', () => {
+    const names = workstreamProfile.tools.map(t => t.name)
+    expect(names).not.toContain('start_workstream')
+    expect(names.filter(n => !bridgetProfile.tools.some(t => t.name === n)).sort()).toEqual(Object.keys(WORKSTREAM_ONLY_CLASS).sort())
+    expect(bridgetProfile.tools.map(t => t.name).filter(n => !names.includes(n))).toEqual(['start_workstream'])
+  })
+  it.each(Object.entries(WORKSTREAM_ONLY_CLASS))('%s classifies as pinned', (name, cls) => {
+    expect(classifyForHeadless(workstreamProfile.tools.find(t => t.name === name)!)).toBe(cls)
   })
 })

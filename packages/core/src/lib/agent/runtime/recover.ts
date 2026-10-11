@@ -2,6 +2,7 @@ import { recoverOrphans, runtimeExclusive } from './runs'
 import { requeueUnconsumed } from './inbox'
 import { appendEvent } from '../../../services/conversations'
 import { onRunFinished } from '../jobs/outcome'
+import { onSegmentInterrupted } from '../workstreams/loop'
 
 /** The outcome a recovered job run records: a crash or restart is a real failure (it counts
  *  toward auto-disable), unlike Tony pressing Stop, which finishes the run as 'aborted' in its
@@ -32,6 +33,12 @@ async function recoverAndNote(opts: RecoverOpts & { takeoverForeign?: boolean } 
       .catch(err => console.error('[runtime] recovery job outcome failed:', err))
     await appendEvent(r.conversationId, 'A turn was interrupted by a restart and did not finish.', 'runtime:restart')
       .catch(err => console.error('[runtime] recovery note failed:', err))
+    // Cycle 81: an interrupted workstream segment is continued from its persisted thread (its unread
+    // steers become the next segment's prompt) — before the requeue, which would make them a chat turn.
+    if (r.kind === 'workstream') {
+      await onSegmentInterrupted(r)
+        .catch(err => console.error('[runtime] workstream recovery failed:', err))
+    }
     await requeueUnconsumed(r)
       .catch(err => console.error('[runtime] recovery requeue failed:', err))
   }

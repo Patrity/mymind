@@ -3,6 +3,7 @@
 // and its web-executes idle mode: this worker is the only executor.)
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommandHandlers } from '@mymind/core/lib/bus/commands'
+import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
 import { commandHandlers, createWorkerProcess, runWorker, type SignalName, type WorkerDeps, type WorkerTimings } from './worker'
 import { workerSettings } from './env'
 
@@ -25,6 +26,7 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
     undo: vi.fn(async () => ({ ok: true })),
     presence: vi.fn(),
     invalidate: vi.fn(),
+    workstreamControl: vi.fn(async (p: { workstreamId: string }) => ({ id: p.workstreamId, state: 'cancelled' }) as unknown as WorkstreamDTO),
     startSchedule: vi.fn(() => { calls.push('schedule:start'); return () => { calls.push('schedule:stop') } }),
     startRecorderFlush: vi.fn(() => { calls.push('flush-loop:start'); return () => { calls.push('flush-loop:stop') } }),
     flushRecorder: vi.fn(async () => { calls.push('flush') }),
@@ -115,10 +117,16 @@ describe('worker boot', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('commands not yet owned by the worker fail loudly, never silently succeed', async () => {
+  // Cycle 81 Task 5: every command type is now owned; workstream-control returns the new state and
+  // rejects a malformed payload rather than acting on it.
+  it('workstream-control reaches controlWorkstream with its payload; a bad payload is refused', async () => {
     const { deps } = fakeDeps()
     const h = commandHandlers(deps)
-    await expect(h['workstream-control']({ workstreamId: 'w', action: 'cancel' })).rejects.toThrow(/does not handle "workstream-control" yet/)
+    const p = { workstreamId: 'w1', action: 'steer' as const, text: 'look at X' }
+    expect(await h['workstream-control'](p)).toMatchObject({ id: 'w1', state: 'cancelled' })
+    expect(deps.workstreamControl).toHaveBeenCalledWith(p)
+    await expect(h['workstream-control']({ workstreamId: 'w1', action: 'explode' } as never)).rejects.toThrow(/bad payload/)
+    expect(deps.workstreamControl).toHaveBeenCalledTimes(1)
     await expect(h.abort({ runId: 'r1' })).resolves.toEqual({ settled: true })
   })
 

@@ -2,7 +2,7 @@
 import { streamText as realStreamText, stepCountIs } from 'ai'
 import { reasoningChain } from './model'
 import { buildAiTools } from './ai-tools'
-import { buildSystemPrompt as realBuildSystemPrompt } from './prompt'
+import { buildSystemPrompt as realBuildSystemPrompt, type WorkstreamPromptInfo } from './prompt'
 import { bridgetProfile, TAINTING_TOOL_NAMES, type AgentProfile } from './profile'
 import { publishActivity } from './bus'
 import { VOICE_TUNING } from '../voice/tuning'
@@ -165,10 +165,28 @@ type StreamTextFn = (args: never) => { fullStream: AsyncIterable<unknown> }
 export interface RunDeps {
   streamText?: StreamTextFn
   tools?: AgentTool[]
-  buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; wake?: { reason: string }; toolsetDirectory?: string }) => Promise<string>
+  buildSystemPrompt?: (o: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; wake?: { reason: string }; toolsetDirectory?: string; workstream?: WorkstreamPromptInfo }) => Promise<string>
   /** Test-only override for the reasoning chain (model + registry modelDefId pairs), used
    *  in place of reasoningChain() when present. */
   chain?: { model: unknown; modelDefId: string }[]
+}
+
+/** One finished model step's usage (AI SDK `finish-step`), for per-step accounting (workstreams). */
+export interface StepUsage { inputTokens?: number; outputTokens?: number; modelDefId?: string }
+
+export interface RunAgentCtx {
+  signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number
+  requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>
+  attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>
+  wake?: { reason: string }; runId?: string
+  toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] }
+  /** Cycle 81 (workstreams): checked after every step — true ends the loop THERE (after the current
+   *  step, never mid-step), and skips the forced-final follow-up (the caller asked to stop). */
+  shouldStop?: () => boolean
+  /** Cycle 81: fired once per finished model step with that step's usage. Must not throw. */
+  onStep?: (s: StepUsage) => void
+  /** Cycle 81: this run is a workstream segment — its prompt block (prompt.ts composePrompt). */
+  workstream?: WorkstreamPromptInfo
 }
 
 // Every tool in the profile is always AVAILABLE (the full ToolSet is built each run).
@@ -178,7 +196,7 @@ export interface RunDeps {
 // tool stripping.
 export async function* runAgent(
   messages: AgentMessage[],
-  ctx: { signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number; requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] } },
+  ctx: RunAgentCtx,
   deps: RunDeps = {}
 ): AsyncGenerator<AgentEvent> {
   const streamTextFn = (deps.streamText ?? realStreamText) as StreamTextFn
@@ -218,7 +236,7 @@ export async function* runAgent(
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).
   // The toolset directory is a turn-start snapshot; sets loaded mid-turn show up as tools, not lines.
-  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context, wake: ctx.wake, toolsetDirectory: ctx.toolsets ? directoryText(registry, loaded, new Set(ctx.toolsets.unavailable ?? [])) : undefined })
+  const system = await buildPrompt({ profile, speak: ctx.speak ?? false, context: ctx.context, wake: ctx.wake, ...(ctx.workstream ? { workstream: ctx.workstream } : {}), toolsetDirectory: ctx.toolsets ? directoryText(registry, loaded, new Set(ctx.toolsets.unavailable ?? [])) : undefined })
   const maxSteps = ctx.maxSteps ?? VOICE_TUNING.agent.maxSteps
 
   publishActivity({ type: 'state', state: 'thinking' })
@@ -260,7 +278,9 @@ export async function* runAgent(
         messages: modelMessages as never,
         tools,
         temperature: VOICE_TUNING.agent.temperature,
-        stopWhen: stepCountIs(maxSteps),
+        // A caller's stop (workstream cancel / ask_tony / finish / budget / drain) ends the loop after
+        // the step that just finished — the SDK checks every condition at each step boundary.
+        stopWhen: ctx.shouldStop ? [stepCountIs(maxSteps), () => ctx.shouldStop!()] : stepCountIs(maxSteps),
         // Final-step guarantee (unchanged) + steering: messages Tony sent while this turn was
         // running are drained at each step boundary and spliced in at the point they arrived.
         // (Live failure this final-step guarantee still covers: research_web burned all 10
@@ -315,7 +335,18 @@ export async function* runAgent(
     const part = item.part
     const partType = (part as { type?: unknown }).type
     if (partType === 'tool-call') sawToolCall = true
-    if (partType === 'finish-step') lastStep = (part as { usage?: { inputTokens?: number; outputTokens?: number } }).usage ?? null
+    if (partType === 'finish-step') {
+      lastStep = (part as { usage?: { inputTokens?: number; outputTokens?: number } }).usage ?? null
+      if (ctx.onStep) {
+        try {
+          ctx.onStep({
+            ...(typeof lastStep?.inputTokens === 'number' ? { inputTokens: lastStep.inputTokens } : {}),
+            ...(typeof lastStep?.outputTokens === 'number' ? { outputTokens: lastStep.outputTokens } : {}),
+            ...(chosenId ? { modelDefId: chosenId } : {})
+          })
+        } catch (err) { console.warn('[runAgent] onStep failed:', err) }
+      }
+    }
     const ev = partToEvent(part)
     if (ev) { if (ev.type === 'text-delta') { sawText = true; emittedText += ev.text } ; yield ev }
     const usageEv = partToUsageEvent(part)
@@ -329,7 +360,7 @@ export async function* runAgent(
   // <tool_call>/<function= marker when NO real tool-call fired.
   const sawTextToolCallMarker = !sawToolCall && /<tool_call>|<function\s*=/.test(emittedText)
   const needForcedFinal = !sawText && sawToolCall
-  if ((needForcedFinal || sawTextToolCallMarker) && !ctx.signal.aborted) {
+  if ((needForcedFinal || sawTextToolCallMarker) && !ctx.signal.aborted && !ctx.shouldStop?.()) {
     const started = Date.now()
     const mode = sawTextToolCallMarker ? 'recovered-textcall' : 'forced-final'
     let followupText = false
@@ -364,7 +395,16 @@ export async function* runAgent(
       for await (const item of channel.drain()) {
         if (item.kind === 'event') { yield item.ev; continue }
         if (item.kind === 'error') throw item.err
-        if ((item.part as { type?: unknown }).type === 'finish-step') followupLastStep = (item.part as { usage?: { inputTokens?: number; outputTokens?: number } }).usage ?? null
+        if ((item.part as { type?: unknown }).type === 'finish-step') {
+          followupLastStep = (item.part as { usage?: { inputTokens?: number; outputTokens?: number } }).usage ?? null
+          try {
+            ctx.onStep?.({
+              ...(typeof followupLastStep?.inputTokens === 'number' ? { inputTokens: followupLastStep.inputTokens } : {}),
+              ...(typeof followupLastStep?.outputTokens === 'number' ? { outputTokens: followupLastStep.outputTokens } : {}),
+              ...(chosenId ? { modelDefId: chosenId } : {})
+            })
+          } catch (err) { console.warn('[runAgent] onStep failed:', err) }
+        }
         const ev = partToEvent(item.part)
         if (ev) { if (ev.type === 'text-delta') followupText = true; yield ev }
         // This is a SEPARATE streamText call, so its usage does not include the aborted

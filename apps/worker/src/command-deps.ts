@@ -4,13 +4,14 @@
 import type { CommandDeps } from './worker'
 
 export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
-  const [queue, inbound, busApprovals, undo, presence, invalidate] = await Promise.all([
+  const [queue, inbound, busApprovals, undo, presence, invalidate, workstreams] = await Promise.all([
     import('@mymind/core/lib/agent/runtime/queue'),
     import('@mymind/core/lib/channels/inbound'),
     import('@mymind/core/lib/agent/runtime/bus-approvals'),
     import('@mymind/core/lib/agent/undo'),
     import('@mymind/core/lib/channels/presence'),
-    import('@mymind/core/lib/bus/invalidate')
+    import('@mymind/core/lib/bus/invalidate'),
+    import('@mymind/core/lib/agent/workstreams/loop')
   ])
   return {
     // Stop / barge-in / `/clear` (spec §3.5): the answer is honest — `/clear` writes its epoch only
@@ -24,6 +25,8 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     approvalDecision: p => busApprovals.decideBusApproval(p),
     undo: token => undo.runUndo(token),
     presence: at => presence.markActive(at),
-    invalidate: cache => invalidate.invalidateLocalCache(cache)
+    invalidate: cache => invalidate.invalidateLocalCache(cache),
+    // Cancel / resume / steer (spec §3.2, §5.5): acts on this process's segments + the DB, then kicks.
+    workstreamControl: p => workstreams.controlWorkstream(p)
   }
 }

@@ -23,7 +23,11 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   'send_message',
   // gmail_draft (cycle 79): creates an unsent draft (undo deletes it) — nothing leaves the
   // mailbox, so it runs headless; sending is gmail_send, which is dangerous and excluded.
-  'gmail_draft'
+  'gmail_draft',
+  // workstreams (cycle 81, spec §5.3): start_workstream creates new unattended work in its own thread
+  // (nothing existing is touched; outbound, so a tainted run needs approval); finish_workstream and
+  // ask_tony only report to Tony from inside a workstream.
+  'start_workstream', 'finish_workstream', 'ask_tony'
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
   // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run

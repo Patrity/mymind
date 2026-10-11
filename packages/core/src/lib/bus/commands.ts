@@ -31,6 +31,7 @@ import { useDb } from '../../db'
 import { workerCommands, workerHeartbeat } from '../../db/schema'
 import type { UndoResult } from '../agent/undo'
 import type { ImessageHealth } from '../channels/inbound'
+import type { WorkstreamDTO } from '../../shared/types/workstreams'
 import { busNotify, notifySql, onListenReady, onNotify } from './listen'
 import { busNs } from './ns'
 
@@ -65,7 +66,7 @@ export interface CommandResults {
   undo: UndoResult
   presence: void
   invalidate: void
-  'workstream-control': unknown
+  'workstream-control': WorkstreamDTO
   'imessage-health': ImessageHealth
 }
 
@@ -315,10 +316,13 @@ export async function sendPresence(lastActiveAt: number): Promise<void> {
 }
 
 /** Worker maintenance (fix round 1, M7): forget this namespace's handled commands older than
- *  `olderThanMs` (default a day) — nothing reads a result that old. Returns how many went. */
+ *  `olderThanMs` (default a day) — nothing reads a result that old — and (cycle 81 Task 5) commands
+ *  CLAIMED that long ago but never handled: the worker that claimed them died mid-command, nothing
+ *  will ever finish them, and their sender gave up after its 10s timeout. Returns how many went. */
 export async function pruneHandledCommands(olderThanMs = 24 * 60 * 60 * 1000): Promise<number> {
+  const old = (col: typeof workerCommands.handledAt | typeof workerCommands.claimedAt) => sql`${col} < now() - (${olderThanMs} * interval '1 millisecond')`
   const rows = await useDb().delete(workerCommands)
-    .where(and(eq(workerCommands.ns, busNs()), sql`${workerCommands.handledAt} < now() - (${olderThanMs} * interval '1 millisecond')`))
+    .where(and(eq(workerCommands.ns, busNs()), sql`(${old(workerCommands.handledAt)} or (${workerCommands.handledAt} is null and ${old(workerCommands.claimedAt)}))`))
     .returning({ id: workerCommands.id })
   return rows.length
 }

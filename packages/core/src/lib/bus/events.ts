@@ -311,3 +311,34 @@ export function parseRunEventNotify(payload: string): { conversationId: string; 
   const id = Number(payload.slice(i + 1))
   return Number.isSafeInteger(id) ? { conversationId: payload.slice(0, i), id } : null
 }
+
+/** Retention (spec §3.1): run_events older than this after their run finished are pruned daily. */
+export const RUN_EVENTS_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * Daily retention (spec §3.1, §5.4): delete this namespace's events of runs that finished more than
+ * `olderThanMs` ago — EXCEPT a workstream segment's, kept for as long as its workstream exists (they
+ * are its step log; the mirror rows in the origin chat share the run id and go with them). Runs still
+ * queued/running are never touched. Batched so one prune never holds a long lock. Returns rows deleted.
+ */
+export async function pruneRunEvents(olderThanMs = RUN_EVENTS_RETENTION_MS, opts: { batch?: number; onlyRunIds?: string[] } = {}): Promise<number> {
+  if (opts.onlyRunIds && !opts.onlyRunIds.length) return 0
+  const batch = opts.batch ?? 10_000
+  // Test seam: the dev DB is shared, so a test prunes only the runs it made.
+  const scope = opts.onlyRunIds ? sql`and r.id in (${sql.join(opts.onlyRunIds.map(id => sql`${id}::uuid`), sql`, `)})` : sql``
+  let total = 0
+  for (;;) {
+    const res = await useDb().execute(sql`
+      delete from run_events where id in (
+        select e.id from run_events e join agent_runs r on r.id = e.run_id
+        where e.ns = ${busNs()}
+          and r.status not in ('queued', 'running')
+          and r.finished_at < now() - (${olderThanMs} * interval '1 millisecond')
+          and not (r.kind = 'workstream' and exists (select 1 from workstreams w where w.conversation_id = r.conversation_id))
+          ${scope}
+        limit ${batch})`)
+    const n = res.rowCount ?? 0
+    total += n
+    if (n < batch) return total
+  }
+}

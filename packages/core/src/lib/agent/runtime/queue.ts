@@ -18,6 +18,8 @@ import { noteUserReply } from '../signals/write'
 import { deliveriesTick } from '../../channels/outbox'
 import { sendCommand } from '../../bus/commands'
 import { executionMode } from './execution-mode'
+import { onSegmentFinished, replyToWorkstream, sweepStalledWorkstreams, yieldAllSegments } from '../workstreams/loop'
+import { workstreamForConversation } from '../workstreams/store'
 import type { AgentRun } from '../../../db/schema'
 import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
@@ -64,6 +66,18 @@ export async function enqueue(req: EnqueueRequest, deps: { run?: RunFn; kick?: b
   const { conversationId, created } = await resolveSession(req.sessionKey, { titleHint: req.input.text })
   const at = new Date()
   let active: AgentRun | null | undefined
+  // Cycle 81 (spec §5.4): a message typed into a workstream's own thread steers its running segment,
+  // joins its queued one, or — in attention — answers and starts the next. A finished workstream's
+  // thread is an ordinary chat thread again (replyToWorkstream → null).
+  if (req.trigger === 'user' && !created) {
+    const ws = await workstreamForConversation(conversationId)
+    const r = ws ? await replyToWorkstream(ws, req.input) : null
+    if (r) {
+      noteReply(req, conversationId, at)
+      if (!r.steered && deps.kick !== false) kick(deps.run)
+      return { runId: r.runId, conversationId, steered: r.steered, created, queuedBehind: false }
+    }
+  }
   if (req.trigger === 'user' && !created) {
     active = await activeRunFor(conversationId)
     // Steer only into an INTERACTIVE run (Task 8 review ruling): a headless wake is not a
@@ -247,6 +261,10 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean, wallClockMs
     // FENCED (final review M11): the row already says 'interrupted' (recovered elsewhere while
     // this process was still running it), so recording spoke/silent here would contradict it.
     if (finished) await onRunFinished(run, outcome).catch(err => console.error('[runtime] job outcome failed:', err))
+    // Cycle 81: a workstream segment decides its successor (done / attention / budget / retry …)
+    // BEFORE the steer requeue below — Tony's unread words become the next segment's prompt, not a
+    // chat turn. Fenced like the job outcome: a recovered row is recovery's to continue.
+    if (finished && run.kind === 'workstream') await onSegmentFinished(run, outcome).catch(err => console.error('[runtime] workstream step failed:', err))
     // Every terminal outcome, not only 'aborted' (Task 8 review ruling — overrides spec §4.4's
     // abort-only wording): a steer that arrived during the last step's generation, or in the
     // gap between runFn returning and finishRun committing, is just as unread as one orphaned
@@ -312,6 +330,9 @@ let claimingStopped = false
 export function stopClaiming(): void {
   claimingStopped = true
   stopWorker()
+  // Workstream segments stop after their current step and queue their successor for the next worker
+  // (spec §2 "checkpoint workstreams") instead of being interrupted at exit.
+  yieldAllSegments()
 }
 export function claimingIsStopped(): boolean { return claimingStopped }
 export function _resumeClaimingForTests(): void { claimingStopped = false }
@@ -423,6 +444,9 @@ export async function workerTick(opts: {
       try { await sweepCrashedFires() } catch (err) { console.error('[runtime] jobs crash sweep failed:', err) }
       try { await jobsTick() } catch (err) { console.error('[runtime] jobs tick failed:', err) }
       try { await dueTaskEvents() } catch (err) { console.error('[runtime] task.due events failed:', err) }
+      // Cycle 81: a workstream that should be moving but has no segment (a crash between a segment's
+      // finish and its successor's insert) gets its next one — the kick below claims it.
+      try { await sweepStalledWorkstreams() } catch (err) { console.error('[runtime] workstream sweep failed:', err) }
       // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).
       // Started, not awaited (single-flight): a slow send never delays this tick.
       startDeliveries()

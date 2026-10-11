@@ -10,5 +10,8 @@ export function eventModelText(origin: string | null, content: string): string {
   if (kind === 'wake') return `Background wake (${detail || 'unspecified'}): ${content}`
   if (kind === 'review') return `Note (review ${detail || 'update'}): ${content}`
   if (kind === 'runtime') return `Note (${detail || 'runtime'}): ${content}`
+  // Cycle 81: a workstream's report into the chat it was started from (the detail is its id — not
+  // for the model).
+  if (kind === 'workstream') return `Workstream update: ${content}`
   return `Note: ${content}`
 }

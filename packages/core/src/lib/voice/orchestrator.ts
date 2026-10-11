@@ -1,7 +1,7 @@
 // server/lib/voice/orchestrator.ts
 import { VOICE_TUNING } from './tuning'
 import type { SttProvider } from './providers/types'
-import type { AgentMessage, AgentEvent } from '../agent/run'
+import type { AgentMessage, AgentEvent, RunAgentCtx } from '../agent/run'
 import { runAgent as realRunAgent } from '../agent/run'
 import { applyImageEmbeds, sanitizedOffset, type DisplayImage } from '../agent/image-embed'
 import { getImageBytes } from '../../services/images'
@@ -56,7 +56,13 @@ export interface TurnDeps {
    *  the runner's persistence callback, fired when runAgent loads something new mid-turn.
    *  Absent for subagents/legacy chat.post, same as runAgent's own ctx.toolsets. */
   toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] }
-  runAgent?: (m: AgentMessage[], c: { signal: AbortSignal; speak?: boolean; context?: string; modelDefId?: string | null; profile?: import('../agent/profile').AgentProfile; requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>; attachmentImageIds?: string[]; drainSteer?: () => Promise<string[]>; wake?: { reason: string }; runId?: string; toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] } }) => AsyncGenerator<AgentEvent>
+  /** Cycle 81 (workstream segments): forwarded verbatim into runAgent's ctx — the segment's step cap,
+   *  its stop-after-this-step check, per-step accounting and its prompt block. */
+  maxSteps?: number
+  shouldStop?: RunAgentCtx['shouldStop']
+  onStep?: RunAgentCtx['onStep']
+  workstream?: RunAgentCtx['workstream']
+  runAgent?: (m: AgentMessage[], c: RunAgentCtx) => AsyncGenerator<AgentEvent>
 }
 
 export interface UtteranceDeps extends TurnDeps {
@@ -107,7 +113,8 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const subagentSteps = new Map<string, SubagentStep[]>()
 
   let sawText = false
-  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId, toolsets: deps.toolsets })) {
+  const ws = { ...(deps.maxSteps !== undefined ? { maxSteps: deps.maxSteps } : {}), ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}), ...(deps.onStep ? { onStep: deps.onStep } : {}), ...(deps.workstream ? { workstream: deps.workstream } : {}) }
+  for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId, toolsets: deps.toolsets, ...ws })) {
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {
       deps.emit({ type: 'reasoning', text: ev.text })   // display only — never chunked/spoken/persisted here

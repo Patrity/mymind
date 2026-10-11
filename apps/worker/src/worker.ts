@@ -13,6 +13,7 @@
 import type { CommandHandlers, CommandPayloads, InvalidateCache, WorkerBeatStatus } from '@mymind/core/lib/bus/commands'
 import type { ImessageHealth } from '@mymind/core/lib/channels/inbound'
 import type { UndoResult } from '@mymind/core/lib/agent/undo'
+import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
 
 export interface WorkerDeps {
   /** recoverOrphans (+ seed jobs install/upgrade, revalidation) — bootAgentRuntime. `stopped` lets
@@ -33,6 +34,8 @@ export interface WorkerDeps {
   presence(lastActiveAt: number): void
   /** Drop this process's copy of a settings cache (bus/invalidate.ts). */
   invalidate(cache: InvalidateCache): void
+  /** Cancel / resume / steer a workstream (workstreams/loop.ts controlWorkstream) — its new state. */
+  workstreamControl(p: CommandPayloads['workstream-control']): Promise<WorkstreamDTO>
   startSchedule(): () => void
   startRecorderFlush(): () => void
   flushRecorder(): Promise<void>
@@ -44,7 +47,8 @@ export interface WorkerDeps {
   startLiveBridge(): () => void
   stopClaiming(): void
   waitForInFlight(timeoutMs: number): Promise<boolean>
-  /** Periodic housekeeping (fix round 1, M7): prune handled worker_commands. Never throws into the loop. */
+  /** Periodic housekeeping (fix round 1, M7): prune handled (and long-dead claimed) worker_commands,
+   *  and (cycle 81 Task 5) the daily run_events retention. Never throws into the loop. */
   prune(): Promise<unknown>
   /** Last: close the listener / flush live NOTIFYs. */
   close(): Promise<void>
@@ -61,9 +65,8 @@ export interface WorkerProcess {
 }
 
 /** Handlers for every command type. Each returns once its action has started (bus contract). */
-export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate'>
+export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl'>
 export function commandHandlers(deps: CommandDeps): CommandHandlers {
-  const later = (type: string) => async () => { throw new Error(`the agent worker does not handle "${type}" yet (cycle 81 Task 5)`) }
   return {
     kick: async () => { deps.kick() },
     abort: async p => deps.abort(p),
@@ -75,7 +78,10 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
       deps.presence(p.lastActiveAt)
     },
     invalidate: async (p) => { deps.invalidate(p.cache) },
-    'workstream-control': later('workstream-control')
+    'workstream-control': async (p) => {
+      if (!p || typeof p.workstreamId !== 'string' || !['cancel', 'resume', 'steer'].includes(p.action)) throw new Error('workstream-control: bad payload')
+      return deps.workstreamControl(p)
+    }
   }
 }
 

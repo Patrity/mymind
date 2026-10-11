@@ -45,7 +45,38 @@ export function renderSkillsIndex(skills: { name: string; description: string; w
   ].join('\n')
 }
 
-export function composePrompt(opts: { persona: string; speak: boolean; toneLine: string; nowLine?: string; profile?: string; context?: string; skillsIndex?: string; toolsetDirectory?: string; wake?: { reason: string } }): string {
+/** Cycle 81: what a workstream segment's prompt says about the work (spec §5.2). `final` = the
+ *  budget ran out (or the loop gave up) — this is the last, tool-free step: summarize. */
+export interface WorkstreamPromptInfo {
+  goal: string
+  used: { steps: number; wallMs: number }
+  budget: { maxSteps: number; maxWallMs: number }
+  final?: { reason: string }
+}
+
+const minutes = (ms: number) => Math.max(0, Math.round(ms / 60_000))
+
+/** The workstream block (replaces the chat-only confirm-first rule: nobody is there to say yes). */
+export function workstreamBlock(w: WorkstreamPromptInfo): string[] {
+  const left = `${Math.max(0, w.budget.maxSteps - w.used.steps)} of ${w.budget.maxSteps} steps, ${minutes(w.budget.maxWallMs - w.used.wallMs)} of ${minutes(w.budget.maxWallMs)} min left`
+  if (w.final) {
+    return [
+      `WORKSTREAM — goal: ${w.goal}`,
+      `It is stopping: ${w.final.reason}. You have no tools now. Write the final summary for Tony: what was done, what was found (with sources), and what is left.`,
+      ''
+    ]
+  }
+  return [
+    `WORKSTREAM — you are working on a long-running task in the background. Goal: ${w.goal}`,
+    `Budget: ${left}. Tony is not watching; this thread is your work log.`,
+    '- Work autonomously toward the goal, step by step. Do not stop to ask permission for routine steps.',
+    '- Use `ask_tony` ONLY when you are truly blocked on a decision or information only he has. The work pauses until he replies.',
+    '- When the goal is done, call `finish_workstream` with a summary (what you did, what you found, sources). Nothing else ends the work.',
+    ''
+  ]
+}
+
+export function composePrompt(opts: { persona: string; speak: boolean; toneLine: string; nowLine?: string; profile?: string; context?: string; skillsIndex?: string; toolsetDirectory?: string; wake?: { reason: string }; workstream?: WorkstreamPromptInfo }): string {
   const { persona, speak, toneLine, context } = opts
   const lines = [persona, '']
   // Right after the persona, before anything else — Tony's own definition of Bridget comes
@@ -61,6 +92,7 @@ export function composePrompt(opts: { persona: string; speak: boolean; toneLine:
       ''
     )
   }
+  if (opts.workstream) lines.push(...workstreamBlock(opts.workstream))
   if (speak) {
     lines.push(
       'You speak out loud, so keep replies short and conversational. No markdown — lists may not read right.',
@@ -82,7 +114,7 @@ export function composePrompt(opts: { persona: string; speak: boolean; toneLine:
   // Wake-mode runs are unattended: nobody is there to say yes, so the confirm-first rule
   // cannot be honoured and would just stall the turn. See the wake block above for the
   // background-safe replacement (edits/deletes are queued for /review instead).
-  if (!opts.wake) lines.push('- Before ANY change that edits or deletes existing data (edit_task, edit_project), CONFIRM with Tony first and only act after he says yes.')
+  if (!opts.wake && !opts.workstream) lines.push('- Before ANY change that edits or deletes existing data (edit_task, edit_project), CONFIRM with Tony first and only act after he says yes.')
   lines.push(
     "- After acting, state the result briefly (don't surface raw IDs).",
     '- If a search returns nothing, say so plainly and suggest a next step.',
@@ -111,7 +143,7 @@ export function composePrompt(opts: { persona: string; speak: boolean; toneLine:
 
 // NOTE: opts.profile here is run.ts's AgentProfile (personaKey/tools) — Bridget's TOOL profile,
 // unrelated to the "About Tony" profile this function loads internally below (server/services/profile.ts).
-export async function buildSystemPrompt(opts: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; now?: Date; wake?: { reason: string }; toolsetDirectory?: string }): Promise<string> {
+export async function buildSystemPrompt(opts: { profile?: { personaKey: string; id?: string }; speak: boolean; context?: string; now?: Date; wake?: { reason: string }; toolsetDirectory?: string; workstream?: WorkstreamPromptInfo }): Promise<string> {
   const persona = await loadPersona()
   const now = opts.now ?? new Date()
   // Tony's timezone (the `agent_timezone` setting), not the server's — prod runs on UTC.
@@ -134,5 +166,5 @@ export async function buildSystemPrompt(opts: { profile?: { personaKey: string; 
   } catch (err) {
     console.warn('[buildSystemPrompt] profile unavailable:', err)
   }
-  return composePrompt({ persona, speak: opts.speak, toneLine: timeOfDayTone(now, tz), nowLine: nowLine(now, tz), profile, context: opts.context, skillsIndex, toolsetDirectory: opts.toolsetDirectory, wake: opts.wake })
+  return composePrompt({ persona, speak: opts.speak, toneLine: timeOfDayTone(now, tz), nowLine: nowLine(now, tz), profile, context: opts.context, skillsIndex, toolsetDirectory: opts.toolsetDirectory, wake: opts.wake, workstream: opts.workstream })
 }

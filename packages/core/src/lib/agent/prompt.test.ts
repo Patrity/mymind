@@ -122,3 +122,35 @@ describe('composePrompt — toolset directory', () => {
     expect(p.indexOf('SHELL —')).toBeLessThan(p.indexOf('TOOLSETS — x'))
   })
 })
+
+// Cycle 81 (spec §5.2): a workstream segment's prompt = goal + budget left + the autonomy rules, and
+// no chat-only confirm-first rule (nobody is there to say yes).
+describe('composePrompt — workstream block', () => {
+  const goal = 'Compare three NAS options and write a recommendation doc'
+  const w = { goal, used: { steps: 120, wallMs: 30 * 60_000 }, budget: { maxSteps: 400, maxWallMs: 120 * 60_000 } }
+  it('carries the goal, the budget left and the rules', () => {
+    const p = composePrompt({ ...base, speak: false, workstream: w })
+    expect(p).toContain(`Goal: ${goal}`)
+    expect(p).toContain('280 of 400 steps, 90 of 120 min left')
+    expect(p).toMatch(/ask_tony.*ONLY when you are truly blocked/)
+    expect(p).toMatch(/finish_workstream.*summary/)
+    expect(p).not.toMatch(/CONFIRM with Tony first/)
+  })
+  it('the final step says it is stopping and has no tools', () => {
+    const p = composePrompt({ ...base, speak: false, workstream: { ...w, final: { reason: 'step budget used up (400 of 400 steps)' } } })
+    expect(p).toContain('It is stopping: step budget used up (400 of 400 steps)')
+    expect(p).toMatch(/no tools now/)
+    expect(p).not.toMatch(/ask_tony/)
+  })
+  it('a chat prompt has no workstream block', () => {
+    expect(composePrompt({ ...base, speak: false })).not.toMatch(/WORKSTREAM/)
+  })
+  it('stays within its own size cap (the goal aside)', () => {
+    // Deliberate, workstream-only cap (the chat cap of 5600 above is untouched): the block's fixed
+    // text measured ~400 chars over the chat prompt (2026-10-11), minus the dropped confirm-first
+    // rule. 6100 = the chat cap + 500, so a block that grows past a few lines fails here. The goal is
+    // Tony's/Bridget's own text (≤ 4000 chars, tools/workstreams.ts) and is excluded.
+    const p = composePrompt({ ...base, speak: false, workstream: w })
+    expect(p.length - goal.length).toBeLessThan(6100)
+  })
+})

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { and, desc, eq, inArray, notInArray, or, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentRuns, type AgentRun } from '../../../db/schema'
-import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger } from './types'
+import type { ReplyTo, RunInput, RunKind, RunOutcome, RunProfile, RunTrigger } from './types'
 
 export const HEADLESS_SLOTS = 1
 export const ORPHAN_STALE_MS = 60_000
@@ -28,8 +28,10 @@ export async function createRun(i: {
   conversationId: string; sessionKey: string; trigger: RunTrigger; profile: RunProfile; input: RunInput
   wakeReason?: string | null; modelDefId?: string | null; originSinkId?: string | null; jobId?: string | null
   replyTo?: ReplyTo | null
+  kind?: RunKind
 }): Promise<AgentRun> {
   const [row] = await useDb().insert(agentRuns).values({
+    kind: i.kind ?? 'turn',
     conversationId: i.conversationId, sessionKey: i.sessionKey, trigger: i.trigger, profile: i.profile,
     input: i.input, wakeReason: i.wakeReason ?? null, modelDefId: i.modelDefId ?? null, originSinkId: i.originSinkId ?? null,
     jobId: i.jobId ?? null, replyTo: i.replyTo ?? null

@@ -25,6 +25,19 @@ const [{ bootAgentRuntime, DEFAULT_BOOT_RETRY }, queue, { BOOT_ID }, { startAgen
   import('@mymind/core/lib/channels/inbound')
 ])
 const { busNs } = await import('@mymind/core/lib/bus/ns')
+const { pruneRunEvents } = await import('@mymind/core/lib/bus/events')
+
+// Hourly: handled / long-dead claimed commands. Daily (spec §3.1): run_events of runs finished
+// > 7 days ago, a workstream's kept while it exists.
+const DAY_MS = 24 * 60 * 60 * 1000
+let lastEventsPrune = 0
+async function prune(): Promise<void> {
+  await commands.pruneHandledCommands()
+  if (Date.now() - lastEventsPrune < DAY_MS) return
+  lastEventsPrune = Date.now()
+  const n = await pruneRunEvents()
+  if (n) console.info(`[worker] pruned ${n} run event(s)`)
+}
 
 console.info(`[worker] boot ${BOOT_ID} pid=${process.pid} ns=${busNs()} dev=${settings.core.dev}`)
 
@@ -45,7 +58,7 @@ const worker = createWorkerProcess({
   stopClaiming: () => queue.stopClaiming(),
   waitForInFlight: ms => queue.waitForInFlight(ms),
   // Handled commands older than a day (presence pings, decisions, aborts…) — fix round 1, M7.
-  prune: () => commands.pruneHandledCommands(),
+  prune: () => prune(),
   close: async () => { await live.flushLive(); await listen.closeListener() }
 }, settings)
 

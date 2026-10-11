@@ -29,7 +29,10 @@ export const agentRuns = pgTable('agent_runs', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   /** Cycle 75: set when this run should answer back over a channel (e.g. an iMessage that
    *  woke the agent) rather than only the web UI. See runtime/types.ts ReplyTo. */
-  replyTo: jsonb('reply_to')
+  replyTo: jsonb('reply_to'),
+  /** Cycle 81: 'turn' (a chat turn, wake or job fire) | 'workstream' (one SEGMENT of a workstream —
+   *  lib/agent/workstreams/loop.ts; its conversation is the workstream's own thread). */
+  kind: text('kind').notNull().default('turn').$type<'turn' | 'workstream'>()
 }, (t) => [
   index('agent_runs_conv_status_idx').on(t.conversationId, t.status),
   index('agent_runs_status_created_idx').on(t.status, t.createdAt),
@@ -39,7 +42,11 @@ export const agentRuns = pgTable('agent_runs', {
   uniqueIndex('agent_runs_one_active_per_job').on(t.jobId).where(sql`job_id is not null and status in ('queued', 'running')`),
   // "Any run of this job since X": the crash sweep's (not) exists checks (jobs/tick.ts) and
   // listRuns({ jobId }).
-  index('agent_runs_job_created_idx').on(t.jobId, t.createdAt)
+  index('agent_runs_job_created_idx').on(t.jobId, t.createdAt),
+  // Cycle 81: a workstream advances one segment at a time — at most one queued-or-running segment
+  // per workstream thread, so a reply, a recovery re-enqueue and the loop's own next segment can
+  // never stack up two (the loser folds into the one that exists — workstreams/loop.ts).
+  uniqueIndex('agent_runs_one_active_segment').on(t.conversationId).where(sql`kind = 'workstream' and status in ('queued', 'running')`)
 ])
 
 /** Messages that arrive while a run is busy. 'steer' rows are drained into the running turn
