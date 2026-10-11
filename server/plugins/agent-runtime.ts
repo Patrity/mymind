@@ -1,38 +1,29 @@
-import { recoverOnBoot } from '@mymind/core/lib/agent/runtime/recover'
-import { startWorker, stopWorker } from '@mymind/core/lib/agent/runtime/queue'
-import { installSeedJobs, upgradeSeedJobs, revalidateAll } from '@mymind/core/lib/agent/jobs/store'
+import { coreConfig } from '@mymind/core/config'
+import { bootAgentRuntime } from '@mymind/core/lib/agent/runtime/boot'
+import { setExecutionMode, startWorker, stopWorker } from '@mymind/core/lib/agent/runtime/queue'
+import { startAgentSchedule } from '@mymind/core/lib/agent/scheduled'
+import { startLiveBridge } from '@mymind/core/lib/bus/live'
 
-// Boot order: recover runs orphaned by the previous process, then start the worker. Recovery
-// before the worker so a stale 'running' row cannot block its conversation's queue for the 60s
-// it would take to look orphaned.
+// Cycle 81: who executes agent runs is AGENT_EXECUTOR (CoreConfig.agentExecutor, read by this web
+// process and by apps/worker from the same env — they always agree).
+//  - 'web' (default until Task 3): this process executes, exactly as before — boot recovery, the 5s
+//    pump/tick and the agent scheduled tasks (moved out of Nitro scheduledTasks into core's
+//    startAgentSchedule, so the worker can run the same ones). The worker process idles.
+//  - 'worker': this process NEVER claims a run. enqueue()'s kick becomes a `kick` command to the
+//    worker, and the live bridge carries the worker's publishChange/publishActivity to this
+//    process's SSE listeners. (Streaming frames still ride the in-process hub until Task 3, so a
+//    chat turn's live text does not reach the socket in this mode yet.)
 export default defineNitroPlugin(async (nitro) => {
   if (import.meta.prerender) return
-  try {
-    const n = await recoverOnBoot()
-    if (n) console.warn(`[runtime] recovered ${n} interrupted run(s)`)
-  } catch (err) {
-    // Boot recovery is a head start, not a precondition (Task 8 review, fix round 1): the
-    // worker's periodic tick runs this exact recover-and-note pass every 5s and will catch
-    // whatever this one-time pass missed, so a failure here must not stop turns from running
-    // at all — only this one boot-time sweep is skipped.
-    console.error('[runtime] boot recovery failed — starting the worker anyway; the periodic tick will retry shortly:', err)
+  if (coreConfig().agentExecutor === 'worker') {
+    setExecutionMode('remote')
+    const stopBridge = startLiveBridge('web')
+    nitro.hooks.hook('close', () => stopBridge())
+    console.info('[runtime] AGENT_EXECUTOR=worker — agent runs execute in apps/worker')
+    return
   }
-  try {
-    const installed = await installSeedJobs()
-    if (installed) console.info(`[runtime] installed ${installed} seed job(s), disabled`)
-    const upgraded = await upgradeSeedJobs()
-    if (upgraded) console.info(`[runtime] upgraded ${upgraded} unedited seed job(s) to the current version`)
-  } catch (err) {
-    // Same reasoning as recovery above: a head start, not a precondition. A failure here must
-    // not stop turns from running.
-    console.error('[runtime] seed job install failed:', err)
-  }
-  try {
-    const changed = await revalidateAll()
-    if (changed) console.warn(`[runtime] revalidated jobs on boot — ${changed} job(s) changed validity`)
-  } catch (err) {
-    console.error('[runtime] job revalidation failed:', err)
-  }
+  await bootAgentRuntime()
   startWorker()
-  nitro.hooks.hook('close', () => stopWorker())
+  const stopSchedule = startAgentSchedule()
+  nitro.hooks.hook('close', () => { stopWorker(); stopSchedule() })
 })

@@ -4,13 +4,15 @@
 //   tsx bus-child.ts commands        → handleCommands with echo handlers; prints READY
 //   tsx bus-child.ts live <id>       → startLiveBridge('worker'), publishChange(task <id>) once;
 //                                      prints SENT, then idles until killed
-import { initCore, type CoreConfig } from '../../../config'
+import { initCore } from '../../../config'
+import { fromEnv } from '../../../config-env'
 import { handleCommands } from '../commands'
 import { listenReady } from '../listen'
 import { flushLive, startLiveBridge } from '../live'
 import { publishChange } from '../../../utils/live-bus'
 
-initCore({ databaseUrl: process.env.DATABASE_URL } as CoreConfig)
+// The worker's own mapper: MYMIND_BUS_NS (set by the parent test) reaches busNs() through it.
+initCore(fromEnv(process.env))
 
 const [mode, arg] = process.argv.slice(2)
 

@@ -14,8 +14,17 @@
 // heartbeats — so a test's in-process worker and the dev worker on the shared DB never cross.
 //
 // Ordering: commands are claimed through one serial intake (notify and poll alike) and run on a
-// per-thread queue keyed by `conversationId` (else `runId`): an `abort` and a later `kick` of one
+// per-thread queue keyed by `conversationId` (else `runId`): a `kick` and a later `kick` of one
 // thread run in send order; commands of different threads, or with no key, run concurrently.
+// URGENT commands (`abort`, `approval-decision`) never wait in that queue: they start the moment
+// they are claimed — a Stop or an approval must not sit behind a slow handler of the same thread —
+// but later commands of the thread still wait for them (an abort then a kick: the kick runs after
+// the abort's handler returned).
+//
+// Handler contract: a handler returns once its action has STARTED (or, for commands with an answer,
+// once the answer is known) — never after a long-running consequence. `kick` returns once the pump
+// is scheduled, not when the run finishes; a handler that awaited a whole run would block every
+// later command of its thread for that long.
 import { hostname } from 'node:os'
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
@@ -48,7 +57,12 @@ export interface CommandResults {
   'workstream-control': unknown
 }
 
+/** One handler per command type. Each returns once its action has STARTED (see the header): the
+ *  thread queue waits for it, so it must never await a long-running consequence. */
 export type CommandHandlers = { [K in CommandType]: (payload: CommandPayloads[K]) => Promise<unknown> }
+
+/** Commands that bypass the per-thread queue: they must act now, never behind a slow handler. */
+export const URGENT_COMMANDS: ReadonlySet<CommandType> = new Set<CommandType>(['abort', 'approval-decision'])
 
 /** Stored in `worker_commands.result`. */
 export type CommandResult = { ok: true; value?: unknown } | { ok: false; error: string; timedOut?: true }
@@ -204,7 +218,16 @@ export function handleCommands(handlers: CommandHandlers, opts: { pollMs?: numbe
   const dispatch = (c: Claimed) => {
     const k = keyOf(c)
     if (!k) { void run(c); return }
-    const next = (queues.get(k) ?? Promise.resolve()).then(() => run(c))
+    const prev = queues.get(k) ?? Promise.resolve()
+    let next: Promise<void>
+    if (URGENT_COMMANDS.has(c.type as CommandType)) {
+      // Starts now, ahead of whatever the thread is still running; later commands of the thread
+      // wait for it AND for everything before it (it is a barrier, not a jump of the whole queue).
+      const started = run(c)
+      next = Promise.all([prev, started]).then(() => {})
+    } else {
+      next = prev.then(() => run(c))
+    }
     queues.set(k, next)
     void next.finally(() => { if (queues.get(k) === next) queues.delete(k) })
   }

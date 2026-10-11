@@ -1,0 +1,21 @@
+{
+  // Standalone check of the worker incl. tests (`pnpm typecheck` runs `tsc -p apps/worker`).
+  // Same strictness as packages/core/tsconfig.json; no Nuxt/Nitro types — the worker runs without
+  // Nitro, so a worker file that reached for them must fail here.
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ESNext", "WebWorker", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"]
+}

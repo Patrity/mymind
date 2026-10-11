@@ -13,6 +13,7 @@ import { dueTaskEvents } from '../jobs/events'
 import { onRunFinished } from '../jobs/outcome'
 import { noteUserReply } from '../signals/write'
 import { deliveriesTick } from '../../channels/outbox'
+import { sendCommand } from '../../bus/commands'
 import type { AgentRun } from '../../../db/schema'
 import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
 
@@ -121,6 +122,19 @@ export async function abortActiveAndWait(conversationId: string, timeoutMs = 10_
   return true
 }
 
+/** The worker's `abort` command (cycle 81): abort `runId` and wait (bounded) for THIS process's
+ *  execution of it to unwind. `settled` is true once it has (or when this process isn't running it —
+ *  then there is nothing here to wait for), false on timeout. */
+export async function abortRunAndWait(runId: string, timeoutMs = 10_000): Promise<{ settled: boolean }> {
+  abortRun(runId)
+  const settled = settles.get(runId)
+  if (!settled) return { settled: true }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const ok = await Promise.race([settled.then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), timeoutMs) })])
+  clearTimeout(timer)
+  return { settled: ok }
+}
+
 // Run ids this process is actively executing right now — claimed, not yet finished. This is
 // the process's own ground truth about what it owns; the periodic tick's `recoverStale` call
 // excludes these ids so it can never recover a run this same process is still running just
@@ -195,6 +209,8 @@ export async function pumpOnce(opts: { onlyConversations?: string[]; run?: RunFn
   const runFn = opts.run ?? ((r: AgentRun) => runTurn(r, { afterPersist: maybeSummarizeLater }))
   let started = 0
   for (;;) {
+    // Draining (SIGTERM): never claim another run; what is executing finishes on its own.
+    if (claimingStopped) return started
     const run = await claimNextRun({ onlyConversations: opts.onlyConversations })
     if (!run) return started
     started++
@@ -202,9 +218,60 @@ export async function pumpOnce(opts: { onlyConversations?: string[]; run?: RunFn
   }
 }
 
+// ── Cycle 81: who executes, and draining ─────────────────────────────────────────────────────
+// 'local' (default — the worker, tests, and the web while AGENT_EXECUTOR=web): a kick pumps here.
+// 'remote' (the web when AGENT_EXECUTOR=worker): this process never claims; a kick becomes a
+// `kick` command to the worker (fire-and-forget — the worker's 5s tick is the net if it is lost).
+export type ExecutionMode = 'local' | 'remote'
+let mode: ExecutionMode = 'local'
+export function setExecutionMode(m: ExecutionMode): void { mode = m }
+export function executionMode(): ExecutionMode { return mode }
+
+let claimingStopped = false
+/** Drain step 1: stop the tick and never claim again in this process (pumpOnce/kick become no-ops).
+ *  Runs already executing are untouched. Irreversible for the process (tests: _resumeClaimingForTests). */
+export function stopClaiming(): void {
+  claimingStopped = true
+  stopWorker()
+}
+export function claimingIsStopped(): boolean { return claimingStopped }
+export function _resumeClaimingForTests(): void { claimingStopped = false }
+
+/** Run ids this process is executing right now. */
+export function inFlightRunIds(): string[] { return [...settles.keys()] }
+
+/** Drain step 2: resolves true once every run executing at call time (and any started since) has
+ *  fully unwound (finishRun committed, steers requeued), or false at `timeoutMs` with some still
+ *  running — those keep their 'running' row and are recovered as interrupted by the next boot
+ *  (exclusive) or the 60s stale sweep, the existing recovery semantics. */
+export async function waitForInFlight(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const pending = [...settles.values()]
+    if (!pending.length) return true
+    const left = deadline - Date.now()
+    if (left <= 0) return false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = await Promise.race([
+      Promise.all(pending).then(() => false),
+      new Promise<boolean>((r) => { timer = setTimeout(() => r(true), left) })
+    ])
+    clearTimeout(timer)
+    if (timedOut) return settles.size === 0
+  }
+}
+
+/** Ask for an immediate pump (the `kick` worker command, enqueue). Returns at once. */
+export function kickPump(): void { kick() }
+
 let pumping = false
 let again = false
 function kick(run?: RunFn): void {
+  if (claimingStopped) return
+  if (mode === 'remote') {
+    void sendCommand('kick', {}).catch(err => console.error('[runtime] kick command failed:', err))
+    return
+  }
   if (pumping) { again = true; return }
   pumping = true
   setImmediate(async () => {
@@ -295,5 +362,6 @@ export async function workerTick(opts: {
 }
 
 let timer: ReturnType<typeof setInterval> | null = null
-export function startWorker(): void { if (!timer) { timer = setInterval(() => { void workerTick() }, 5_000); kick() } }
+export const WORKER_TICK_MS = 5_000
+export function startWorker(): void { if (!timer && !claimingStopped) { timer = setInterval(() => { void workerTick() }, WORKER_TICK_MS); kick() } }
 export function stopWorker(): void { if (timer) clearInterval(timer); timer = null }

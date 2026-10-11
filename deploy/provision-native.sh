@@ -78,8 +78,14 @@ if [ -z "$(ls -A "$APP_DIR/.data/uploads" 2>/dev/null)" ]; then
   fi
 fi
 
-# 4. systemd unit (refresh + enable; do NOT start here — the deploy restarts after build)
+# 4. systemd units (refresh + enable; do NOT start here — the deploy restarts after build)
+#    mymind         — the Nuxt/Nitro web app
+#    mymind-worker  — the agent worker (cycle 81): apps/worker/dist/worker.mjs, built by CD after the
+#                     web. Enabled here; CD (re)starts it once its bundle exists, so a first
+#                     provision never starts it against a missing file.
 install -m 644 "$APP_DIR/deploy/mymind.service" /etc/systemd/system/mymind.service
+install -m 644 "$APP_DIR/deploy/mymind-worker.service" /etc/systemd/system/mymind-worker.service
 systemctl daemon-reload
 systemctl enable mymind >/dev/null 2>&1 || true
+systemctl enable mymind-worker >/dev/null 2>&1 || true
 echo "[provision] done"

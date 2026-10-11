@@ -17,6 +17,7 @@
     "ai": "^6.0.198",
     "better-auth": "^1.6.13",
     "croner": "^10.0.1",
+    "destr": "^2.0.5",
     "drizzle-orm": "^0.45.2",
     "isomorphic-dompurify": "^3.15.0",
     "marked": "^18.0.14",
@@ -26,6 +27,7 @@
     "pdf-to-img": "^6.2.0",
     "pg": "^8.21.0",
     "sharp": "^0.34.5",
+    "yaml": "^2.9.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

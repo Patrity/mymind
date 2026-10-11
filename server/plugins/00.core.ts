@@ -10,5 +10,7 @@ import { fromRuntimeConfig } from '../utils/core-config'
 // defineNuxtPlugin (app side). Nitro 2's runner calls `plugin(nitroApp)`, so an object would
 // throw "plugin is not a function", be swallowed by captureError, and leave core uninitialised.
 export default defineNitroPlugin(() => {
-  initCore(fromRuntimeConfig(useRuntimeConfig()))
+  // `dev`: Nitro's build-time define (true only under `nuxt dev`) — core can't see import.meta.dev
+  // itself once the worker bundles it, so the host hands it over (cycle 81).
+  initCore(fromRuntimeConfig(useRuntimeConfig(), { dev: import.meta.dev === true }))
 })

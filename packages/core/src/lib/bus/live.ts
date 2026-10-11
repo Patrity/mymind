@@ -20,7 +20,7 @@ import type { LiveEvent } from '../../shared/types/live'
 import type { ActivityEvent } from '../agent/types'
 import { deliverChange, subscribeChanges } from '../../utils/live-bus'
 import { publishActivity, subscribeActivity } from '../agent/bus'
-import { busNotify, onListenReady, onNotify } from './listen'
+import { busNotify, isListenReady, onListenReady, onNotify } from './listen'
 
 /** Postgres rejects NOTIFY payloads ≥ 8000 bytes; stay clear of it. */
 export const MAX_NOTIFY_BYTES = 7_900
@@ -99,7 +99,9 @@ export function startLiveBridge(role: 'web' | 'worker'): () => void {
     if (w.k === 'change') deliverChange(w.e)
     else if (w.k === 'activity') publishActivity(w.e)
   })
-  let readies = 0
+  // Already connected when the bridge starts (another subscriber connected first): that connect
+  // counts as the first ready, so the NEXT ready is a real reconnect and must resync.
+  let readies = isListenReady() ? 1 : 0
   const offReady = onListenReady(() => {
     if (++readies === 1) return
     const e: LiveEvent = { v: 1, resource: 'resync', action: 'updated', id: 'bus-reconnect', at: Date.now() }

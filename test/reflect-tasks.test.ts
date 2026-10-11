@@ -1,14 +1,13 @@
 // test/reflect-tasks.test.ts
 //
 // Pure unit tests only (global-constraints.md: no real task body may run against the DB):
-//   - shouldRunJobsPass (server/tasks/reflect-jobs.ts), including a DST-change day
+//   - shouldRunJobsPass (packages/core/src/lib/agent/scheduled.ts — was server/tasks/reflect-jobs.ts
+//     until cycle 81 moved the agent tasks to the executing process), including a DST-change day
 //     (preflight Ruling 2, progress.md — overrides the plan's original "03:30 sharp" text).
 //   - the mode short-circuit for both cron tasks: 'off' must never call the underlying pass.
 //   - the reflect-jobs task's time gate, with useDb and getDefaultTimezone mocked so it never
 //     touches the real DB, and the system clock faked so the gate is deterministic.
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-
-vi.hoisted(() => { (globalThis as Record<string, unknown>).defineTask = (t: unknown) => t })
 
 const m = vi.hoisted(() => ({
   mode: vi.fn(async () => 'on' as 'on' | 'review_only' | 'off'),
@@ -34,8 +33,7 @@ vi.mock('@mymind/core/db', () => ({
   })
 }))
 
-import threadTask from '../server/tasks/reflect-threads'
-import jobsTask, { shouldRunJobsPass } from '../server/tasks/reflect-jobs'
+import { reflectThreadsTask as threadTask, reflectJobsTask as jobsTask, shouldRunJobsPass } from '@mymind/core/lib/agent/scheduled'
 
 type TaskResult = { result: Record<string, unknown> }
 const run = (t: unknown) => (t as { run: () => Promise<TaskResult> }).run()

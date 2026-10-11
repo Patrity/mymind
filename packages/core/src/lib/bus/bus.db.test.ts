@@ -338,6 +338,41 @@ describe('worker_commands', () => {
       expect(log.indexOf('kick:B')).toBeLessThan(log.indexOf('abort:end:A'))
     } finally { stop() }
   })
+
+  it('abort and approval-decision bypass a thread blocked by a slow handler; a later command still waits for them', async () => {
+    const log: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    const stop = handleCommands({
+      ...handlersRecording([]),
+      kick: async (p: { conversationId?: string }) => {
+        log.push(`kick:start:${p.conversationId}`)
+        if (!log.includes('slow-done')) { await gate; log.push('slow-done') }
+        log.push(`kick:end:${p.conversationId}`)
+      },
+      abort: async (p: { conversationId?: string }) => { log.push(`abort:${p.conversationId}`); return { settled: true } },
+      'approval-decision': async (p: { requestId: string }) => { log.push(`approval:${p.requestId}`) }
+    }, { pollMs: 100 })
+    try {
+      await listenReady()
+      await sendCommand('kick', { conversationId: 'A' }) // slow: holds thread A until released
+      await until(() => log.includes('kick:start:A'), 5_000)
+      const abort = sendCommand('abort', { conversationId: 'A' }, { awaitResult: true, timeoutMs: 3_000 })
+      // Task 4 will key approvals by conversation too; it must not queue behind the thread either.
+      const approval = sendCommand('approval-decision', { requestId: 'R1', approved: true, conversationId: 'A' } as unknown as { requestId: string; approved: boolean }, { awaitResult: true, timeoutMs: 3_000 })
+      await sendCommand('kick', { conversationId: 'A' }) // ordinary: waits for everything before it
+      expect(await abort).toEqual({ settled: true })
+      await approval
+      expect(log).toContain('abort:A')
+      expect(log).toContain('approval:R1')
+      expect(log).not.toContain('slow-done') // both answered while the slow kick still held A
+      await sleep(300)
+      expect(log.filter(l => l === 'kick:start:A')).toHaveLength(1) // the second kick is still queued
+      release()
+      await until(() => log.filter(l => l === 'kick:end:A').length === 2, 5_000)
+      expect(log.lastIndexOf('kick:start:A')).toBeGreaterThan(log.indexOf('slow-done'))
+    } finally { release(); stop() }
+  })
 })
 
 function handlersRecording(seen: string[]) {

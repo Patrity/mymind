@@ -5,11 +5,11 @@
 // that the summarize-threads task is actually wired to summarizeIdleThreads.
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
-vi.hoisted(() => { (globalThis as Record<string, unknown>).defineTask = (t: unknown) => t })
 const m = vi.hoisted(() => ({ sweep: vi.fn(async () => ({ summarized: 0, failed: 0 })) }))
 vi.mock('@mymind/core/lib/agent/runtime/summarize', () => ({ summarizeIdleThreads: m.sweep }))
 
-import task from '../server/tasks/summarize-threads'
+// Cycle 81: the task moved from server/tasks to core's agent schedule (run by the executing process).
+import { summarizeThreadsTask as task } from '@mymind/core/lib/agent/scheduled'
 
 const run = (task as unknown as { run: () => Promise<{ result: Record<string, unknown> }> }).run
 

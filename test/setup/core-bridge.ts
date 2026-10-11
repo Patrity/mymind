@@ -16,6 +16,7 @@
 import { vi } from 'vitest'
 import { initCore, type CoreConfig } from '@mymind/core/config'
 import { fromRuntimeConfig } from '../../server/utils/core-config'
+import { ENV_BACKED_FIELDS, envBacked } from '@mymind/core/config-env'
 
 vi.mock('ofetch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('ofetch')>()
@@ -33,6 +34,14 @@ function runtimeConfig(): Record<string, unknown> {
   return rc()
 }
 
+// Cycle 81: the env-backed fields (busNs, agentExecutor) and the `dev` host flag never came from
+// useRuntimeConfig, so they resolve without a stub: env-backed ones from process.env at each access
+// (vi.stubEnv works), `dev` false (vitest is not a dev server — as import.meta.dev was undefined).
+const envKeys: ReadonlySet<string | symbol> = new Set<string>(ENV_BACKED_FIELDS)
 initCore(new Proxy({} as CoreConfig, {
-  get: (_target, key) => (fromRuntimeConfig(runtimeConfig()) as unknown as Record<string | symbol, unknown>)[key]
+  get: (_target, key) => {
+    if (key === 'dev') return false
+    if (envKeys.has(key)) return (envBacked(process.env) as Record<string | symbol, unknown>)[key]
+    return (fromRuntimeConfig(runtimeConfig()) as unknown as Record<string | symbol, unknown>)[key]
+  }
 }))

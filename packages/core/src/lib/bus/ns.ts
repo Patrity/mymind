@@ -4,16 +4,20 @@
 // dev worker vs. a test run's in-process "worker" on the shared dev DB) never see each other's
 // commands, heartbeats, events or live changes.
 //
-// Value: `MYMIND_BUS_NS` from the environment (the web and its worker must agree), default
-// 'default'. Tests pin a unique one with `setBusNs` (and pass it to child processes via env).
-export const BUS_NS_ENV = 'MYMIND_BUS_NS'
+// Value: CoreConfig.busNs — `MYMIND_BUS_NS` from the RUNTIME env, mapped by config-env.ts for the
+// web and the worker alike (they must agree) — default 'default'. Tests pin a unique one with
+// `setBusNs` (and pass it to child processes via env, which their `fromEnv` picks up).
+import { coreConfig } from '../../config'
+import { BUS_NS_ENV_NAME } from '../../config-env'
+
+export const BUS_NS_ENV = BUS_NS_ENV_NAME
 export const DEFAULT_BUS_NS = 'default'
 const VALID = /^[A-Za-z0-9_-]{1,64}$/
 
 let override: string | null = null
 
 export function busNs(): string {
-  const ns = override ?? process.env[BUS_NS_ENV] ?? DEFAULT_BUS_NS
+  const ns = override ?? coreConfig().busNs ?? DEFAULT_BUS_NS
   if (!VALID.test(ns)) throw new Error(`invalid bus namespace "${ns}" (${BUS_NS_ENV}: [A-Za-z0-9_-]{1,64})`)
   return ns
 }

@@ -34,6 +34,17 @@ export interface CoreConfig {
   /** server/services/triage.ts — per-destination auto-apply bars. */
   triageThresholds: Record<string, number>
   triageAppendSimilarityFloor: number
+
+  // ── Cycle 81: host facts + env-backed fields (config-env.ts; not runtimeConfig keys) ──
+  /** True only in a dev server (web: Nitro's build-time `import.meta.dev`; worker: unbundled tsx
+   *  with NODE_ENV=development). Gates dev-only stubs (lib/observability/email.ts RESEND_FAKE). */
+  dev: boolean
+  /** Bus namespace from `MYMIND_BUS_NS` (lib/bus/ns.ts); undefined ⇒ 'default'. The web and its
+   *  worker must agree, so both read it from the runtime env (never baked at build). */
+  busNs: string | undefined
+  /** `AGENT_EXECUTOR` — which process claims and executes agent runs (cycle 81 Task 2 flag; Task 3
+   *  makes the worker the only executor and removes it). Anything but 'worker' ⇒ 'web'. */
+  agentExecutor: 'web' | 'worker'
 }
 
 let config: CoreConfig | undefined

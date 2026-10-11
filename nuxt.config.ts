@@ -1,6 +1,7 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
+import { coreRuntimeConfig } from './packages/core/src/config-env'
 
 // Silero VAD (client barge-in) loads its worklet + ONNX model from `baseAssetPath`
 // and the onnxruntime-web WASM from `onnxWASMBasePath`. Under a bundler both default
@@ -75,30 +76,16 @@ export default defineNuxtConfig({
   },
 
   runtimeConfig: {
-    databaseUrl: process.env.DATABASE_URL,
-    betterAuthSecret: process.env.BETTER_AUTH_SECRET,
-    betterAuthUrl: process.env.BETTER_AUTH_URL,
-    allowSignup: process.env.ALLOW_SIGNUP,
-    // Cycle 79: Google OAuth client (server-only). Overridden at runtime by
-    // NUXT_GOOGLE_CLIENT_ID / NUXT_GOOGLE_CLIENT_SECRET; empty ⇒ Google linking disabled.
-    googleClientId: '',
-    googleClientSecret: '',
+    // Cycle 81: core's keys (databaseUrl … triageAppendSimilarityFloor) are defined ONCE in
+    // packages/core/src/config-env.ts and spread here, so the agent worker (which has no build step
+    // and maps its env with the same function) gets exactly the values this build bakes.
+    ...coreRuntimeConfig(process.env),
     maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 52428800),
     public: {
       // Whether the /login page surfaces a "create account" toggle. Mirrors the
       // server-side disableSignUp gate so the UI only shows what the API allows.
       allowSignup: process.env.ALLOW_SIGNUP === 'true'
     },
-    storageDriver: process.env.STORAGE_DRIVER ?? 'local',
-    storageLocalDir: process.env.STORAGE_LOCAL_DIR ?? './.data/uploads',
-    storageS3: {
-      endpoint: process.env.STORAGE_S3_ENDPOINT,
-      region: process.env.STORAGE_S3_REGION,
-      bucket: process.env.STORAGE_S3_BUCKET,
-      accessKeyId: process.env.STORAGE_S3_ACCESS_KEY_ID,
-      secretAccessKey: process.env.STORAGE_S3_SECRET_ACCESS_KEY
-    },
-    memoryAutoReviewThreshold: Number(process.env.MEMORY_AUTO_REVIEW_THRESHOLD ?? 0.75),
     // Cosine bar above which the enrichment resolver treats a near-neighbour as the SAME
     // fact mechanically, without asking the LLM judge. Closes task f80622b9: the enrichment
     // path (memory-resolve.insertFresh) never ran dedupDecision, so after the exact-hash
@@ -111,25 +98,7 @@ export default defineNuxtConfig({
     // absorbs evidence into the incumbent and discards the new phrasing, so a false positive
     // loses a fact permanently — unrecoverable in a way a surviving duplicate is not. Every
     // pair at or above 0.96 was a genuine restatement; below it goes to the judge.
-    memoryDuplicateThreshold: Number(process.env.MEMORY_DUPLICATE_THRESHOLD ?? 0.96),
-    // Capture triage confidence bars, per destination. ALL ship at 1.1 (= never
-    // auto-apply) so the pipeline can be calibrated against real captures before it
-    // is allowed to write. Lower by hand, one destination at a time, per the spec's
-    // rollout. The memory bar is GATED on task f80622b9 (dedup under-catching).
-    triageThresholds: {
-      // Task lowered to 0.70 on 2026-08-17, the first step of the staged rollout, after a
-      // day of reading real proposals in /review. Task is the safest bar to drop first:
-      // the action is one row you can delete, and an undo now fully recovers (the courier
-      // returns to /input and "Re-triage" puts it back in the sweeper's pool).
-      task: 0.70,
-      note: 1.1,
-      // GATED on MyMind task f80622b9 (enrich-memories dedup under-catching). Triage is a
-      // second inlet to the memories table; lowering this before that closes amplifies a
-      // known defect, and bad memories degrade recall everywhere, invisibly.
-      memory: 1.1,
-      append: 1.1
-    },
-    triageAppendSimilarityFloor: 0.75
+    memoryDuplicateThreshold: Number(process.env.MEMORY_DUPLICATE_THRESHOLD ?? 0.96)
   },
 
   nitro: {
@@ -151,17 +120,16 @@ export default defineNuxtConfig({
     scheduledTasks: {
       // memory-backfill self-gates: a no-op unless Tony flipped the switch to `running` (cycle 77).
       '*/5 * * * *': ['embed-documents', 'summarize-sessions', 'memory-backfill'],
-      '*/10 * * * *': ['triage-input', 'summarize-threads'],
+      // Cycle 81: the agent's own tasks (summarize-threads, reflect-threads, reflect-jobs) left
+      // Nitro — packages/core/src/lib/agent/scheduled.ts runs them in whichever process executes
+      // agent runs (AGENT_EXECUTOR: the worker, or this web process until Task 3).
+      '*/10 * * * *': ['triage-input'],
       '*/7 * * * *': ['enrich-images'],
       // sync-model-prices runs often, but self-gates: it only hits the network when a model
       // appears that it has never attempted to price, or when the last full sync is >20h old.
       // Daily was ample for price CHANGES, but the real trigger is a NEW model showing up in
       // usage — claude-fable-5-1 read as unpriced for ~11h on 2026-09-03 awaiting the 04:00 run.
-      '*/15 * * * *': ['enrich-memories', 'sync-model-prices', 'reflect-threads'],
-      // Self-gates: does real work only once the agent-timezone hour reaches 3 and it hasn't run
-      // yet today (preflight Ruling 2, cycle 76 progress.md — Nitro cron is UTC-only, so a fixed
-      // expression can't land on 03:30 in an arbitrary, DST-shifting agent timezone).
-      '40 * * * *': ['reflect-jobs'],
+      '*/15 * * * *': ['enrich-memories', 'sync-model-prices'],
       // Runs AFTER enrich-memories on the quarter hour rather than alongside it, so a batch
       // written this cycle is scored on the next one rather than raced. Self-gates: it only
       // touches unreviewed, unscored rows, and no-ops entirely when JEV_KEY is unset.
