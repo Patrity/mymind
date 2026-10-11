@@ -353,7 +353,9 @@ export function useVoice() {
       state.value = 'idle'
       turns.disconnect()
     }
-    socket.onerror = () => { error.value = 'WebSocket error' }
+    // A drop we are already reconnecting from is not an error to show (the turn resumes); the
+    // first connect's failure still is.
+    socket.onerror = () => { if (!dropped && reconnectAttempt === 0) error.value = 'WebSocket error' }
     socket.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         state.value = 'speaking'
@@ -419,6 +421,8 @@ export function useVoice() {
         connected.value = true
         const resuming = dropped
         dropped = false
+        // The error the drop itself raised (onerror can fire before onclose marks it dropped).
+        if (resuming && error.value === 'WebSocket error') error.value = null
         reconnectAttempt = 0
         // A resume keeps the open turn (its frames continue past the last seq rendered); a turn
         // that ended meanwhile is re-read once the page goes idle.
