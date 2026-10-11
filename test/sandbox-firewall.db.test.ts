@@ -37,9 +37,14 @@ describe.skipIf(!dockerUp)('sandbox firewall (docker-in-docker, real iptables)',
   let dindIp = ''
   const probeTargets = () => [`${peerIp}:9000`, `${dindIp}:8088`, '172.31.82.1:8088', '172.31.82.1:5432', '1.1.1.1:443', '1.1.1.1:53']
 
-  /** Probe each target from a container on the sandbox network: "<target> OPEN|BLOCKED". */
+  /** Probe each target from a container on the sandbox network: "<target> OPEN|BLOCKED".
+   *  Up to 3 tries each (final fix wave — the parallel-run flake): the listeners are single-shot
+   *  `nc -l` in a respawn loop, and `<dind>:8088` and `172.31.82.1:8088` hit the SAME listener back
+   *  to back, so the second connect can land in the respawn gap (measured: 7 of 80 back-to-back
+   *  connects refused on an idle machine; more under a parallel test:db run). A retry can only turn
+   *  a refusal into OPEN — a REJECTed target fails every try, so BLOCKED stays meaningful. */
   function probe(): Record<string, 'OPEN' | 'BLOCKED'> {
-    const loop = probeTargets().map(t => `if timeout 4 nc -w 3 ${t.split(':')[0]} ${t.split(':')[1]} </dev/null >/dev/null 2>&1; then echo "${t} OPEN"; else echo "${t} BLOCKED"; fi`).join('; ')
+    const loop = probeTargets().map(t => `ok=0; for k in 1 2 3; do if timeout 4 nc -w 3 ${t.split(':')[0]} ${t.split(':')[1]} </dev/null >/dev/null 2>&1; then ok=1; break; fi; sleep 0.3; done; if [ $ok = 1 ]; then echo "${t} OPEN"; else echo "${t} BLOCKED"; fi`).join('; ')
     const r = inDind(`docker run --rm --network mymind-sandbox alpine:3.20 sh -c '${loop}'`)
     expect(r.code, r.err).toBe(0)
     return Object.fromEntries(r.out.trim().split('\n').map(l => l.split(' ') as [string, 'OPEN' | 'BLOCKED']))
