@@ -47,3 +47,5 @@ RUN groupadd --gid 10001 agent \
 USER 10001:10001
 WORKDIR /workspace
 CMD ["sleep", "infinity"]
+# build-image.sh prunes old sandbox images by this label (never one a container uses).
+LABEL mymind.sandbox=image

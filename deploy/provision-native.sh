@@ -98,31 +98,45 @@ fi
 
 # 3b. Cycle 82: the workspace sandbox — image (Debian + toolchain, ~670 MB) and its network + egress
 #     firewall (deploy/sandbox/install-network.sh: network, DOCKER-USER/INPUT rules, the
-#     mymind-sandbox-net oneshot that re-applies them at boot, /opt/mymind/.workspaces). The rebuild is
-#     layer-cached (seconds) unless deploy/sandbox/Dockerfile changed. Disk first (the box has hit 100%
-#     before): with <3 GB free the build is skipped with a warning — the worker then refuses sandbox
-#     work ("image missing") rather than run anything unconfined.
+#     mymind-sandbox-net oneshot that re-applies them at boot from its own copy in
+#     /usr/local/lib/mymind, /opt/mymind/.workspaces). The rebuild is layer-cached (seconds) unless
+#     deploy/sandbox/ changed; build-image.sh tags by content hash and prunes old sandbox images.
+#     Disk first (the box has hit 100% before): the build needs >= 6 GB free on / — the worker's
+#     watchdog stops every sandbox under 4 GB and resumes at 5 GB, so a build that leaves less would
+#     leave the sandbox refusing everything.
 #     NON-FATAL (rereview #6): a missing sandbox precondition (dockerd down, nft/legacy mismatch, no
-#     FORWARD→DOCKER-USER jump, no disk) must not block the web + worker deploy. It is logged loudly
-#     and sandbox setup is skipped; the worker stays fail-closed (no image or no firewall → every
-#     workspace command is refused with a clear error).
+#     FORWARD->DOCKER-USER jump, no disk) must not block the web + worker deploy. Every problem is a
+#     GitHub `::warning::` on the deploy run (final review I6 — CD parses workflow commands from this
+#     output) and the worker stays fail-closed: no image / no firewall -> every workspace command is
+#     refused, and the app shows "Sandbox unavailable: <reason>".
+SANDBOX_MIN_BUILD_GB=6
 sandbox_warn() {
+  echo "::warning title=Sandbox::$*"
   echo "[provision] ################################################################"
-  echo "[provision] WARNING: SANDBOX SETUP SKIPPED — $*"
-  echo "[provision] Workspace tools stay DISABLED (the worker refuses them) until fixed:"
-  echo "[provision]   bash $APP_DIR/deploy/sandbox/install-network.sh install"
+  echo "[provision] WARNING: SANDBOX — $*"
+  echo "[provision] Fix, then re-run: bash $APP_DIR/deploy/sandbox/install-network.sh install"
+  echo "[provision]                   bash $APP_DIR/deploy/sandbox/build-image.sh"
   echo "[provision] ################################################################"
+}
+# Final review M7: a failed REBUILD is not "no sandbox" — the previous image keeps working.
+sandbox_build_failed() {
+  local prev
+  prev="$(docker image inspect --format '{{.Id}}' mymind-sandbox:current 2>/dev/null | cut -c8-19 || true)"
+  if [ -n "$prev" ]; then
+    sandbox_warn "$1 — rebuild failed, previous image $prev still active (the sandbox keeps working on it)"
+  else
+    sandbox_warn "$1 — no sandbox image: workspace tools stay DISABLED (the worker refuses them)"
+  fi
 }
 if bash "$APP_DIR/deploy/sandbox/install-network.sh" install; then
   AVAIL_GB="$(df -P -BG / | awk 'NR==2 {gsub("G","",$4); print $4}' || true)"
-  if [ "${AVAIL_GB:-0}" -ge 3 ]; then
-    bash "$APP_DIR/deploy/sandbox/build-image.sh" "$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo deploy)" \
-      || sandbox_warn "the sandbox image build failed"
+  if [ "${AVAIL_GB:-0}" -ge "$SANDBOX_MIN_BUILD_GB" ]; then
+    bash "$APP_DIR/deploy/sandbox/build-image.sh" || sandbox_build_failed "the sandbox image build failed"
   else
-    sandbox_warn "only ${AVAIL_GB:-?} GB free on / — image build skipped (docker builder prune?)"
+    sandbox_build_failed "only ${AVAIL_GB:-?} GB free on / (the build needs >= ${SANDBOX_MIN_BUILD_GB} GB; docker builder prune?) — image build skipped"
   fi
 else
-  sandbox_warn "install-network.sh failed (see its ERROR line above)"
+  sandbox_warn "install-network.sh failed (see its ERROR line above) — the sandbox firewall is not in place: workspace tools stay DISABLED"
 fi
 
 # 4. systemd units (refresh + enable; do NOT start here — the deploy restarts after build)

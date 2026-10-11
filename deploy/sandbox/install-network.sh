@@ -7,6 +7,10 @@
 #   install-network.sh install   — network + rules + workspaces dir + systemd oneshot (provisioning)
 #   install-network.sh apply     — network + rules only (what the oneshot runs at every boot)
 #
+# Final review M6: `install` copies this script to /usr/local/lib/mymind/ and the oneshot runs THAT
+# copy — never the CD-managed /opt/mymind tree (a reboot during a deploy's rm -rf window, or a moved
+# script, must not leave the firewall unapplied at boot).
+#
 # Rules key on the bridge NAME (br-mymind-sbx), so they hold no matter when Docker (re)creates the
 # network. No unfiltered window, ever (review M2): our two chains are replaced in ONE
 # `iptables-restore --noflush` transaction (the kernel swaps the whole table atomically, legacy and
@@ -24,6 +28,8 @@ IN=MYMIND-SANDBOX-IN
 BLOCKED="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/4 240.0.0.0/4"
 WORKSPACES_DIR="${SANDBOX_WORKSPACES_DIR:-/opt/mymind/.workspaces}"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+LIB_DIR=/usr/local/lib/mymind
+LIB_COPY="$LIB_DIR/install-network.sh"
 
 log() { echo "[sandbox-net] $*"; }
 
@@ -83,6 +89,7 @@ apply_rules() {
 }
 
 install_unit() {
+  if [ "$SELF" != "$LIB_COPY" ]; then install -D -m 0755 "$SELF" "$LIB_COPY"; fi
   cat > /etc/systemd/system/mymind-sandbox-net.service <<EOF
 [Unit]
 Description=MyMind sandbox network + egress firewall (cycle 82)
@@ -93,7 +100,7 @@ PartOf=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash $SELF apply
+ExecStart=/bin/bash $LIB_COPY apply
 
 [Install]
 WantedBy=multi-user.target docker.service

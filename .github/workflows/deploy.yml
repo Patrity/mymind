@@ -57,7 +57,9 @@ jobs:
     needs: test
     if: github.ref == 'refs/heads/master'
     runs-on: [self-hosted, proxmox]
-    timeout-minutes: 25
+    # 40 (cycle 82 final review M8): the first sandbox image build (apt toolchain on a 2-CPU box)
+    # adds several minutes; later builds are layer-cached.
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -140,3 +142,20 @@ jobs:
             fi
             echo "waiting for worker ($i)"; sleep 5
           done; systemctl status mymind-worker --no-pager || true; journalctl -u mymind-worker -n 60 --no-pager || true; exit 1'
+
+      - name: Sandbox health (a warning, never a failure)
+        continue-on-error: true
+        run: |
+          # Cycle 82 (final review I6): the new worker preflights its sandbox (Docker, image, firewall,
+          # resource limits, disk) right after its boot reconcile and puts the result on its heartbeat
+          # (worker_heartbeat.status.sandbox). A broken sandbox must not fail the deploy — it becomes a
+          # ::warning:: on this run (and "Sandbox unavailable: <reason>" in the app).
+          # shellcheck disable=SC2016
+          pct exec 114 -- bash -lc 'for i in $(seq 1 24); do
+            s=$(docker exec -i mymind-db psql -U mymind -d mymind -Atc "select (status->'\''sandbox'\''->>'\''ok'\'') || '\''|'\'' || coalesce(status->'\''sandbox'\''->>'\''reason'\'', '\'''\'') from worker_heartbeat where started_at > now() - interval '\''5 minutes'\'' and status ? '\''sandbox'\'' order by beat_at desc limit 1" 2>/dev/null || true)
+            case "$s" in
+              "true|"*) echo "sandbox ok"; exit 0 ;;
+              "false|"*) echo "::warning title=Sandbox unavailable::${s#false|}"; exit 0 ;;
+            esac
+            echo "waiting for the sandbox preflight ($i)"; sleep 5
+          done; echo "::warning title=Sandbox::the worker reported no sandbox status within 2 minutes"; exit 0'
