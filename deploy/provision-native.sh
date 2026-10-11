@@ -48,11 +48,14 @@ fi
 # Derive each from the plain var already present in .env.native.
 ensure_nuxt_override() {
   local plain="$1" nuxt="$2" val
-  val="$(grep -E "^${plain}=" "$APP_DIR/.env.native" | head -1 | cut -d= -f2-)"
+  # `|| true`: under `set -euo pipefail` a key absent from .env.native makes grep exit 1 and would
+  # kill the whole script (cycle 81 deploy failure) — absent is the common case, not an error.
+  val="$(grep -E "^${plain}=" "$APP_DIR/.env.native" | head -1 | cut -d= -f2- || true)"
   if [ -n "$val" ] && ! grep -qE "^${nuxt}=" "$APP_DIR/.env.native"; then
     echo "[provision] adding ${nuxt} (runtime override for nuxt runtimeConfig)"
     echo "${nuxt}=${val}" >> "$APP_DIR/.env.native"
   fi
+  return 0
 }
 # Cycle 81: EVERY plain var core's config mapper reads (packages/core/src/config-env.ts
 # coreRuntimeConfig) is paired, not just the two above. The web bakes plain vars from the BUILD env
