@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { beforeAll, describe, it, expect } from 'vitest'
 import { fromRuntimeConfig } from '../server/utils/core-config'
-import { coreRuntimeConfig, ENV_BACKED_FIELDS, fromEnv } from '@mymind/core/config-env'
+import { applyRuntimeEnv, coreRuntimeConfig, ENV_BACKED_FIELDS, fromEnv } from '@mymind/core/config-env'
 
 // [CoreConfig field, runtimeConfig key the old code read, old call site]
 const ROWS: Array<[string, string, string]> = [
@@ -121,6 +121,18 @@ describe('fromEnv (worker) ≡ fromRuntimeConfig over Nitro runtimeConfig (web)'
     expect(worker).toEqual(webConfig(env))
     expect(worker).toMatchObject(expected)
     expect(worker.dev).toBe(false)
+  })
+
+  it('applyRuntimeEnv names keys exactly as Nitro does (digit and acronym boundaries a future key could hit)', () => {
+    const shape = () => ({ s3Bucket: 'a', v2Api: 1, nested: { fooBAR: 'b', aB: 'c' } })
+    const env = { NUXT_S3_BUCKET: 'S3', NUXT_V2_API: '2', NUXT_NESTED_FOO_BAR: 'FB', NITRO_NESTED_A_B: 'AB' }
+    const saved = process.env
+    process.env = { ...env }
+    let nitro: Record<string, unknown>
+    try { nitro = nitroApplyEnv(shape(), { prefix: 'NITRO_', altPrefix: 'NUXT_' }) } finally { process.env = saved }
+    const ours = applyRuntimeEnv(shape(), env)
+    expect(ours).toEqual(nitro)
+    expect(ours).toEqual({ s3Bucket: 'S3', v2Api: 2, nested: { fooBAR: 'FB', aB: 'AB' } })
   })
 
   it('fromEnv passes the host dev flag through', () => {
