@@ -152,7 +152,7 @@ describe('install-network.sh ↔ network.ts (simulated filter table)', () => {
       expect(s.length).toBeGreaterThan(0)
       for (const snap of s) expect(checkIsolation(snap, goodNet)).toEqual({ ok: true, problems: [] })
     }
-  })
+  }, 60_000) // ~60 python iptables-sim spawns: well over 5s on a loaded machine (full parallel run)
 
   it('repairs a jump that slipped below another rule or got duplicated, without a gap', () => {
     dockerdState()
