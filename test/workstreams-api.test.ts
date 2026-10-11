@@ -27,6 +27,8 @@ const steer = (await import('../server/api/workstreams/[id]/steer.post')).defaul
 const start = (await import('../server/api/workstreams/index.post')).default as H
 const list = (await import('../server/api/workstreams/index.get')).default as H
 
+const SESSION = { client: { type: 'session' } }
+const TOKEN = { client: { type: 'api-token', tokenId: 't1' } }
 const ID = '0b6f3c1e-5d2a-4f7b-9c8e-1a2b3c4d5e6f'
 const CAP = 'There are already 3 workstreams in progress (the limit is 3): "a", "b", "c". Tell Tony — one has to finish or be cancelled before another can start.'
 type HttpErr = Error & { statusCode: number; data: { code: string; message: string } }
@@ -59,19 +61,36 @@ describe('workstreamError', () => {
   })
 })
 
+describe('auth (final review I5: the wake.post precedent)', () => {
+  it('start and resume need a web session — a leaked API token cannot launch an unattended run', async () => {
+    sendCommand.mockResolvedValue({ id: ID, state: 'running' })
+    await expect(start({ context: TOKEN, body: { goal: 'list my tasks' } })).rejects.toMatchObject({ statusCode: 403 })
+    await expect(resume({ params: { id: ID }, context: TOKEN })).rejects.toMatchObject({ statusCode: 403 })
+    await expect(resume({ params: { id: ID }, context: {} })).rejects.toMatchObject({ statusCode: 403 })
+    expect(startWorkstream).not.toHaveBeenCalled()
+    expect(sendCommand).not.toHaveBeenCalled()
+  })
+  it('cancel and steer stay token-capable (stopping or talking to a run never widens it)', async () => {
+    sendCommand.mockResolvedValue({ id: ID, state: 'cancelled' })
+    await cancel({ params: { id: ID }, context: TOKEN })
+    await steer({ params: { id: ID }, context: TOKEN, body: { text: 'stop at the draft' } })
+    expect(sendCommand).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('control routes → workstream-control command (awaited)', () => {
   it('cancel / resume / steer send the command and return the worker\'s DTO', async () => {
     sendCommand.mockResolvedValue({ id: ID, state: 'cancelled' })
     expect(await cancel({ params: { id: ID } })).toEqual({ id: ID, state: 'cancelled' })
     expect(sendCommand).toHaveBeenLastCalledWith('workstream-control', { workstreamId: ID, action: 'cancel' }, { awaitResult: true })
-    await resume({ params: { id: ID } })
+    await resume({ params: { id: ID }, context: SESSION })
     expect(sendCommand).toHaveBeenLastCalledWith('workstream-control', { workstreamId: ID, action: 'resume' }, { awaitResult: true })
     await steer({ params: { id: ID }, body: { text: '  use the blue one ' } })
     expect(sendCommand).toHaveBeenLastCalledWith('workstream-control', { workstreamId: ID, action: 'steer', text: 'use the blue one' }, { awaitResult: true })
   })
   it('a resume refused at the cap is a 409 cap', async () => {
     sendCommand.mockRejectedValue(new CommandFailedError('workstream-control', 3, 'There are already 3 workstreams in progress (the limit is 3) — finish or cancel one before resuming this one.'))
-    await expect(resume({ params: { id: ID } })).rejects.toMatchObject({ statusCode: 409, data: { code: 'cap' } })
+    await expect(resume({ params: { id: ID }, context: SESSION })).rejects.toMatchObject({ statusCode: 409, data: { code: 'cap' } })
   })
   it('a worker that is down is a visible 504', async () => {
     sendCommand.mockRejectedValue(new CommandTimeoutError('workstream-control', 4, 10_000))
@@ -87,16 +106,16 @@ describe('control routes → workstream-control command (awaited)', () => {
 describe('POST /api/workstreams (start from the UI)', () => {
   it('starts with no origin conversation and the given budget', async () => {
     startWorkstream.mockResolvedValue({ id: ID })
-    await start({ body: { goal: '  list my tasks  ', budget: { maxSteps: 20, maxWallMs: 600_000 } } })
+    await start({ context: SESSION, body: { goal: '  list my tasks  ', budget: { maxSteps: 20, maxWallMs: 600_000 } } })
     expect(startWorkstream).toHaveBeenCalledWith({ goal: 'list my tasks', budget: { maxSteps: 20, maxWallMs: 600_000 }, originConversationId: null })
   })
   it('over the cap → 409 cap with readable text', async () => {
     startWorkstream.mockRejectedValue(new WorkstreamCapError(CAP))
-    await expect(start({ body: { goal: 'something' } })).rejects.toMatchObject({ statusCode: 409, data: { code: 'cap', message: expect.stringMatching(/Finish or cancel one first\.$/) } })
+    await expect(start({ context: SESSION, body: { goal: 'something' } })).rejects.toMatchObject({ statusCode: 409, data: { code: 'cap', message: expect.stringMatching(/Finish or cancel one first\.$/) } })
   })
   it('a too-short goal or an out-of-bounds budget is a 400', async () => {
-    await expect(start({ body: { goal: 'x' } })).rejects.toMatchObject({ statusCode: 400 })
-    await expect(start({ body: { goal: 'fine goal', budget: { maxSteps: 0 } } })).rejects.toMatchObject({ statusCode: 400 })
+    await expect(start({ context: SESSION, body: { goal: 'x' } })).rejects.toMatchObject({ statusCode: 400 })
+    await expect(start({ context: SESSION, body: { goal: 'fine goal', budget: { maxSteps: 0 } } })).rejects.toMatchObject({ statusCode: 400 })
     expect(startWorkstream).not.toHaveBeenCalled()
   })
 })

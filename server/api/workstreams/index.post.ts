@@ -1,4 +1,8 @@
-// Auth: session OR API token, like agent/chat.post.ts (controller ruling, Task 6 fix round 1).
+// Auth: web session only (final review I5, superseding the Task 6 ruling) — the same rule as
+// server/api/admin/agent/wake.post.ts: the auth middleware also accepts a bearer API token, and a
+// leaked token must not be able to start an unattended background run (a workstream is the largest
+// one: up to 2000 steps / 24h). Cancel and steer stay token-capable.
+import { requireSession } from '../../utils/auth-guard'
 import { z } from 'zod'
 import { startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
 import { BUDGET_LIMITS } from '@mymind/core/shared/types/workstreams'
@@ -18,6 +22,7 @@ const Body = z.object({
  * worker, which is the only executor. No origin conversation: it was started from /workstreams.
  */
 export default defineEventHandler(async (event) => {
+  requireSession(event)
   const parsed = Body.safeParse(await readBody(event))
   if (!parsed.success) {
     throw createError({ statusCode: 400, statusMessage: 'Invalid workstream', data: { message: parsed.error.issues.map(i => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ') } })
