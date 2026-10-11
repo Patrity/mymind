@@ -36,6 +36,8 @@ export interface WorkerDeps {
   invalidate(cache: InvalidateCache): void
   /** Cancel / resume / steer a workstream (workstreams/loop.ts controlWorkstream) — its new state. */
   workstreamControl(p: CommandPayloads['workstream-control']): Promise<WorkstreamDTO>
+  /** Cycle 82: kill a workspace's tainted runs, then clear its taint (lib/sandbox/manager.ts). */
+  workspaceReenableNetwork(p: CommandPayloads['workspace-reenable-network']): Promise<{ id: string; tainted: boolean }>
   startSchedule(): () => void
   startRecorderFlush(): () => void
   /** Cycle 82: sandbox housekeeping — boot reconcile, then idle-stop + quota every minute and the
@@ -68,7 +70,7 @@ export interface WorkerProcess {
 }
 
 /** Handlers for every command type. Each returns once its action has started (bus contract). */
-export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl'>
+export type CommandDeps = Pick<WorkerDeps, 'kick' | 'abort' | 'imessageHealth' | 'approvalDecision' | 'undo' | 'presence' | 'invalidate' | 'workstreamControl' | 'workspaceReenableNetwork'>
 export function commandHandlers(deps: CommandDeps): CommandHandlers {
   return {
     kick: async () => { deps.kick() },
@@ -84,6 +86,10 @@ export function commandHandlers(deps: CommandDeps): CommandHandlers {
     'workstream-control': async (p) => {
       if (!p || typeof p.workstreamId !== 'string' || !['cancel', 'resume', 'steer'].includes(p.action)) throw new Error('workstream-control: bad payload')
       return deps.workstreamControl(p)
+    },
+    'workspace-reenable-network': async (p) => {
+      if (!p || typeof p.workspaceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(p.workspaceId)) throw new Error('workspace-reenable-network: bad payload')
+      return deps.workspaceReenableNetwork(p)
     }
   }
 }

@@ -13,6 +13,7 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     import('@mymind/core/lib/bus/invalidate'),
     import('@mymind/core/lib/agent/workstreams/loop')
   ])
+  const { sandboxManager } = await import('@mymind/core/lib/sandbox/manager')
   return {
     // Stop / barge-in / `/clear` (spec §3.5): the answer is honest — `/clear` writes its epoch only
     // on settled:true.
@@ -27,6 +28,11 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     presence: at => presence.markActive(at),
     invalidate: cache => invalidate.invalidateLocalCache(cache),
     // Cancel / resume / steer (spec §3.2, §5.5): acts on this process's segments + the DB, then kicks.
-    workstreamControl: p => workstreams.controlWorkstream(p)
+    workstreamControl: p => workstreams.controlWorkstream(p),
+    // Cycle 82: the sandbox lives here — kill the workspace's tainted runs, then clear the taint.
+    workspaceReenableNetwork: async (p) => {
+      const row = await sandboxManager().reenableNetwork(p.workspaceId)
+      return { id: row.id, tainted: row.tainted }
+    }
   }
 }

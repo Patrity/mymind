@@ -18,16 +18,12 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
-vi.stubGlobal('defineEventHandler', (fn: unknown) => fn)
-vi.stubGlobal('createError', (o: { statusCode: number; statusMessage?: string }) => Object.assign(new Error(o.statusMessage ?? 'err'), o))
-vi.stubGlobal('getRouterParam', (e: { params?: Record<string, string> }, k: string) => e.params?.[k])
 import { inArray } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { workspaces } from '@mymind/core/db/schema'
 import { createSandboxManager, containerName, SandboxQuotaError, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
 import { dbWorkspaceStore } from '@mymind/core/lib/sandbox/store'
 import { execArgs, killExecArgs, parseExecStatus } from '@mymind/core/lib/sandbox/docker'
-const reenable = (await import('../server/api/workspaces/[id]/reenable-network.post')).default as unknown as (e: unknown) => Promise<{ id: string; tainted: boolean }>
 
 const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `sbx-${process.pid}-${Date.now().toString(36)}`
@@ -218,14 +214,43 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
     expect(later.tainted).toBe(true)
     expect(later.stdout.trim()).toBe('routes=0 v=')
     expect(inspect(id).State.Running).toBe(false)
-    // The re-enable API is session-only.
-    await expect(reenable({ params: { id }, context: { client: { type: 'api-token' } } })).rejects.toMatchObject({ statusCode: 403 })
-    expect((await dbWorkspaceStore.get(id))!.tainted).toBe(true)
-    expect(await reenable({ params: { id }, context: { client: { type: 'session' } } })).toMatchObject({ id, tainted: false })
-    await expect(reenable({ params: { id: '00000000-0000-4000-8000-000000000000' }, context: { client: { type: 'session' } } })).rejects.toMatchObject({ statusCode: 404 })
+    // Tony re-enables (the session-only route → worker command → this; route: workspaces-api.test.ts).
+    expect(await m.reenableNetwork(id)).toMatchObject({ id, tainted: false })
     const back = await m.exec(id, 'echo "routes=$(awk \'NR>1\' /proc/net/route | wc -l) v=$MM_T1_SECRET"', { secrets: { MM_T1_SECRET: 'yes' } })
     expect(back.tainted).toBe(false)
     expect(back.stdout.trim()).toMatch(/^routes=[1-9]\d* v=yes$/)
+  }, 180_000)
+
+  it('re-enable kills a tainted command still running BEFORE the flag clears: its late write never lands', async () => {
+    const id = await newWorkspace()
+    await m.exec(id, 'true', { tainted: true })
+    const pending = m.exec(id, 'sleep 4; echo late > /workspace/late.txt', { tainted: true })
+    await new Promise(res => setTimeout(res, 1500))
+    expect(docker('ps', '-q', '--filter', `label=mymind.workspace=${id}`, '--filter', 'label=mymind.tainted=1').out.trim()).not.toBe('')
+    const row = await m.reenableNetwork(id)
+    expect(row.tainted).toBe(false)
+    expect(docker('ps', '-aq', '--filter', `label=mymind.workspace=${id}`, '--filter', 'label=mymind.tainted=1').out.trim()).toBe('')
+    const r = await pending
+    expect(r.exitCode).not.toBe(0)
+    await new Promise(res => setTimeout(res, 4000))
+    expect((await m.exec(id, 'ls /workspace')).stdout).not.toContain('late.txt')
+  }, 120_000)
+
+  it('an abort while a fork bomb holds the pids limit ends it quickly (restart fallback), not at the 120s timeout', async () => {
+    const id = await newWorkspace()
+    const ac = new AbortController()
+    const t0 = Date.now()
+    setTimeout(() => ac.abort(), 4000)
+    const r = await m.exec(id, 'bomb() { bomb | bomb & }; bomb; sleep 300', { timeoutSec: 120, signal: ac.signal })
+    expect(r.aborted).toBe(true)
+    let pids = Number.POSITIVE_INFINITY
+    for (let i = 0; i < 30 && pids > 50; i++) {
+      await new Promise(res => setTimeout(res, 1000))
+      const p = await m.exec(id, 'cat /sys/fs/cgroup/pids.current', { timeoutSec: 10 }).catch(() => null)
+      if (p?.exitCode === 0) pids = Number(p.stdout.trim())
+    }
+    expect(pids).toBeLessThan(50)
+    expect(Date.now() - t0).toBeLessThan(60_000)
   }, 180_000)
 
   it('a symlink to an absolute host path resolves inside the container only', async () => {

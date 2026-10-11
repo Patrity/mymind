@@ -96,14 +96,3 @@ export async function ensureWorkstreamWorkspace(workstreamId: string): Promise<W
   return row
 }
 
-/**
- * Tony re-enables a tainted workspace's network (session-only API, review I1). Only flips the flag:
- * the networked container is stopped while tainted and the worker starts a fresh one on the next
- * untainted command. Returns the row, or null when there is no live workspace with that id.
- */
-export async function reenableWorkspaceNetwork(id: string): Promise<WorkspaceRow | null> {
-  const [row] = await useDb().update(workspaces).set({ tainted: false, taintedAt: null })
-    .where(and(eq(workspaces.id, id), isNull(workspaces.deletedAt))).returning()
-  if (row) publish(id)
-  return row ?? null
-}

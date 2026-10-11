@@ -15,6 +15,13 @@ export const MEASURE_TIMEOUT_SEC = 100
 export const MEASURE_COMMAND = `timeout -k 5 ${MEASURE_TIMEOUT_SEC} du -sx -B1 /workspace 2>/dev/null | cut -f1; timeout -k 5 ${MEASURE_TIMEOUT_SEC} du -sx --inodes /workspace 2>/dev/null | cut -f1`
 
 export class SandboxQuotaError extends Error {
+  /** The usage could not be measured (du failed or timed out) — treated as over quota. */
+  static unmeasurable(): SandboxQuotaError {
+    const e = new SandboxQuotaError(0, 0)
+    e.message = 'workspace usage could not be measured (too many files?) — treated as over quota: writes are refused and background shells were stopped; delete files to free space'
+    return e
+  }
+
   constructor(public bytesUsed: number, public quotaBytes: number, public inodesUsed = 0, public quotaInodes = Number.POSITIVE_INFINITY) {
     super(inodesUsed > quotaInodes && bytesUsed <= quotaBytes
       ? `workspace is over its ${quotaInodes.toLocaleString('en-US')}-file quota (${inodesUsed.toLocaleString('en-US')} files) — writes are refused and background shells were stopped; delete files to free space`
@@ -25,8 +32,10 @@ export class SandboxQuotaError extends Error {
 
 /** The host disk the workspaces live on is nearly full: every sandbox is stopped until it recovers. */
 export class SandboxDiskLowError extends Error {
-  constructor(public freeBytes: number, public minFreeBytes: number) {
-    super(`the server is low on disk (${formatBytes(freeBytes)} free, needs ${formatBytes(minFreeBytes)}) — all workspace sandboxes were stopped and commands are refused until space is freed`)
+  constructor(public freeBytes: number, public minFreeBytes: number, public freeInodes?: number) {
+    super(freeInodes !== undefined
+      ? `the server is low on free files (inodes: ${freeInodes.toLocaleString('en-US')} left) — all workspace sandboxes were stopped and commands are refused until files are deleted`
+      : `the server is low on disk (${formatBytes(freeBytes)} free, needs ${formatBytes(minFreeBytes)}) — all workspace sandboxes were stopped and commands are refused until space is freed`)
     this.name = 'SandboxDiskLowError'
   }
 }

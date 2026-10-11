@@ -52,6 +52,12 @@ export interface SandboxSettings {
   minFreeBytes: number
   /** …and commands are refused until it is back above this (hysteresis). */
   resumeFreeBytes: number
+  /** Inode floor (rereview #1): low when free inodes < max(minFreeInodes, minFreeInodesRatio × total). */
+  minFreeInodes: number
+  minFreeInodesRatio: number
+  /** Resume when free inodes ≥ max(resumeFreeInodes, resumeFreeInodesRatio × total). */
+  resumeFreeInodes: number
+  resumeFreeInodesRatio: number
   defaultTimeoutSec: number
   maxTimeoutSec: number
   outputCapBytes: number
@@ -77,6 +83,10 @@ export function sandboxSettings(env: NodeJS.ProcessEnv = process.env, platform: 
     quotaInodes: DEFAULT_QUOTA_INODES,
     minFreeBytes: 4 * 1024 ** 3,
     resumeFreeBytes: 5 * 1024 ** 3,
+    minFreeInodes: 200_000,
+    minFreeInodesRatio: 0.05,
+    resumeFreeInodes: 250_000,
+    resumeFreeInodesRatio: 0.07,
     defaultTimeoutSec: 120,
     maxTimeoutSec: 600,
     outputCapBytes: 64 * 1024
@@ -105,8 +115,18 @@ export interface ExecOptions {
   tainted?: boolean
 }
 
+export interface FsStats {
+  freeBytes: number
+  freeInodes: number
+  /** 0 when the filesystem has no fixed inode table (ZFS, btrfs): the inode floor is skipped. */
+  totalInodes: number
+}
+
 export interface DiskCheckResult {
   freeBytes: number
+  freeInodes: number
+  /** What tripped the episode: 'bytes' | 'inodes' (null when not low). */
+  reason: 'bytes' | 'inodes' | null
   low: boolean
   /** This check started a low-disk episode (containers were stopped). */
   entered: boolean
@@ -123,8 +143,8 @@ export interface SandboxManagerOptions {
   labels?: Record<string, string>
   /** `iptables -S` on the host (firewall verification). */
   iptablesS?: () => Promise<string>
-  /** Free bytes on the filesystem holding `dir` (default: statfs). */
-  freeBytes?: (dir: string) => Promise<number>
+  /** Free bytes + inodes on the filesystem holding `dir` (default: statfs). */
+  fsStats?: (dir: string) => Promise<FsStats>
   /** True while a workspace must not be idle-stopped (background shells — Task 2). */
   isBusy?: (workspaceId: string) => boolean
   /** Called when a workspace is over quota or stopped by the low-disk watchdog (Task 2 kills its
@@ -160,13 +180,13 @@ function defaultIptablesS(): Promise<string> {
   })
 }
 
-async function defaultFreeBytes(dir: string): Promise<number> {
+async function defaultFsStats(dir: string): Promise<FsStats> {
   // The workspaces dir may not exist yet: walk up to the nearest existing ancestor (same filesystem).
   let d = dir
   for (;;) {
     try {
       const s = await statfs(d)
-      return s.bavail * s.bsize
+      return { freeBytes: s.bavail * s.bsize, freeInodes: s.ffree, totalInodes: s.files }
     } catch (e) {
       const parent = path.dirname(d)
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT' || parent === d) throw e
@@ -186,13 +206,16 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   const now = opts.now ?? Date.now
   const uid = 'uid' in opts ? opts.uid : process.getuid?.()
   const platform = opts.platform ?? process.platform
-  const freeBytes = opts.freeBytes ?? defaultFreeBytes
+  const fsStats = opts.fsStats ?? defaultFsStats
+  /** Abort handles of tainted one-offs in flight, per workspace — registered under the workspace
+   *  lock by `taint()`, so a re-enable (same lock) always sees every one (rereview #5). */
+  const taintedInFlight = new Map<string, Set<AbortController>>()
   const quota = { bytes: s.quotaBytes, inodes: s.quotaInodes }
   const locks = new Map<string, Promise<unknown>>()
   const measuredAt = new Map<string, number>()
   let preflightOk: { at: number; network: boolean } | null = null
   let imageId: string | null = null
-  let lowDisk: { freeBytes: number } | null = null
+  let lowDisk: { freeBytes: number; freeInodes: number; reason: 'bytes' | 'inodes' } | null = null
 
   function hostDir(id: string): string {
     if (!UUID.test(id)) throw new Error(`invalid workspace id ${id}`)
@@ -211,7 +234,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   function assertDiskOk(): void {
-    if (lowDisk) throw new SandboxDiskLowError(lowDisk.freeBytes, s.minFreeBytes)
+    if (lowDisk) throw new SandboxDiskLowError(lowDisk.freeBytes, s.minFreeBytes, lowDisk.reason === 'inodes' ? lowDisk.freeInodes : undefined)
   }
 
   async function preflight(needNetwork: boolean): Promise<void> {
@@ -318,7 +341,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
    * networked container — every process in it dies, background ones included. Fails closed: if the
    * container can't be stopped, the tainted command does not run.
    */
-  function taint(id: string): Promise<void> {
+  function taint(id: string): Promise<AbortController> {
     return locked(id, async () => {
       const row = await liveRow(id)
       if (!row.tainted) {
@@ -331,6 +354,44 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         if (k.code !== 0 && (await inspect(c.Id))?.State.Running) throw new SandboxUnavailableError(`could not stop the networked sandbox of ${id} before a tainted command: ${k.stderr.trim()}`)
       }
       if (c || row.state !== 'stopped') await store.setContainer(id, c?.Id ?? null, 'stopped')
+      // Register the tainted run while still holding the lock (see taintedInFlight).
+      const ctrl = new AbortController()
+      let set = taintedInFlight.get(id)
+      if (!set) taintedInFlight.set(id, set = new Set())
+      set.add(ctrl)
+      return ctrl
+    })
+  }
+
+  function releaseTainted(id: string, ctrl: AbortController): void {
+    const set = taintedInFlight.get(id)
+    set?.delete(ctrl)
+    if (set && !set.size) taintedInFlight.delete(id)
+  }
+
+  /**
+   * Tony re-enables the network (rereview #5): under the workspace lock, abort every tainted run in
+   * flight and kill every tainted one-off container of the workspace, wait until none is left, and
+   * only THEN clear the flag — so no tainted write can land after the workspace is trusted again.
+   * Fails closed (flag kept) when a tainted container won't go away.
+   */
+  function reenableNetwork(id: string): Promise<WorkspaceRow> {
+    return locked(id, async () => {
+      await liveRow(id)
+      for (const ctrl of taintedInFlight.get(id) ?? []) ctrl.abort()
+      const tainted = async () => (await listLabelled()).filter(c => inScope(c) && c.Config.Labels?.[LABEL_WORKSPACE] === id && c.Config.Labels?.[LABEL_TAINTED] !== undefined)
+      for (let i = 0; i < 40; i++) {
+        const left = await tainted()
+        if (!left.length) break
+        for (const c of left) await docker(['rm', '-f', c.Id], { timeoutMs: 30_000 })
+        await sleep(250)
+      }
+      const still = await tainted()
+      if (still.length) throw new SandboxUnavailableError(`could not stop ${still.length} tainted command(s) of workspace ${id} — its network stays off`)
+      await store.setTainted(id, false)
+      const row = await liveRow(id)
+      log.info(`[sandbox] workspace ${id}: network re-enabled by Tony`)
+      return row
     })
   }
 
@@ -355,15 +416,27 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     }
   }
 
-  /** Kill an exec's process group (retrying until the wrapper has started — review M5); when even
-   *  that can't run (pids exhausted) restart the container. */
-  async function hardKill(name: string, execId: string, done: () => boolean): Promise<void> {
-    // killExecArgs drops a tombstone first, so a wrapper that starts after this still kills itself.
+  /**
+   * Kill an exec's process group. killExecArgs drops a tombstone first, so a wrapper that starts
+   * after this still kills itself (review M5). When the kill itself can't run (the container is at
+   * its pids limit) and the wrapper has not exited, the container is restarted — under the workspace
+   * lock and ONLY when the workspace is not tainted (rereview #2: a tainted workspace's networked
+   * container must never start); a tainted one is just killed.
+   */
+  async function hardKill(id: string, name: string, execId: string, wrapperExited: () => boolean): Promise<void> {
     const k = await docker(killExecArgs(name, execId), { timeoutMs: 15_000 })
-    if (k.code !== 0 && !done()) {
+    if (k.code === 0 || wrapperExited()) return
+    await locked(id, async () => {
+      const row = await store.get(id)
+      if (!row || row.tainted || row.deletedAt) {
+        log.warn(`[sandbox] could not kill exec ${execId} in ${name} (${k.stderr.trim()}) — killing the container (workspace tainted or gone)`)
+        await docker(['kill', name], { timeoutMs: 30_000 })
+        if (row) await store.setContainer(id, row.containerId, 'stopped')
+        return
+      }
       log.warn(`[sandbox] could not kill exec ${execId} in ${name} (${k.stderr.trim()}) — restarting the container`)
       await docker(['restart', '-t', '0', name], { timeoutMs: 60_000 })
-    }
+    })
   }
 
   function newExecId(): string {
@@ -395,10 +468,13 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     for (const k of Object.keys(secrets)) assertSecretName(k)
     const row = await liveRow(id)
     const runTainted = async () => {
-      await taint(id)
-      await store.touch(id)
-      const r = await execOneOff(id, command, timeoutSec, o.signal)
-      return result(r, true, r.abortedHere)
+      const ctrl = await taint(id)
+      try {
+        await store.touch(id)
+        const signal = o.signal ? AbortSignal.any([o.signal, ctrl.signal]) : ctrl.signal
+        const r = await execOneOff(id, command, timeoutSec, signal)
+        return result(r, true, r.abortedHere)
+      } finally { releaseTainted(id, ctrl) }
     }
     if (o.tainted || row.tainted) return runTainted()
 
@@ -410,8 +486,10 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     await store.touch(id)
     const execId = newExecId()
     let aborted = false
-    let finished = false
-    const onAbort = () => { aborted = true; void hardKill(name, execId, () => finished) }
+    // True once the WRAPPER has exited on its own (the CLI returned without being aborted) — not
+    // when an abort merely killed the CLI client (rereview #4).
+    let wrapperExited = false
+    const onAbort = () => { aborted = true; void hardKill(id, name, execId, () => wrapperExited) }
     o.signal?.addEventListener('abort', onAbort, { once: true })
     try {
       if (o.signal?.aborted) return result({ code: null, stdout: '', stderr: '', timedOut: false, aborted: true, truncated: false }, false, true)
@@ -419,11 +497,10 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       // by hardKill above (tombstone first, so an abort before the wrapper starts still lands).
       const r = await docker(execArgs({ container: name, command, execId, timeoutSec, secretNames: Object.keys(secrets) }),
         { timeoutMs: (timeoutSec + 15) * 1000, env: secrets, capBytes: s.outputCapBytes, signal: o.signal })
-      finished = true
-      if (r.timedOut) await hardKill(name, execId, () => false)
+      if (!r.aborted && !r.timedOut) wrapperExited = true
+      if (r.timedOut) await hardKill(id, name, execId, () => false)
       return result(r, false, aborted)
     } finally {
-      finished = true
       o.signal?.removeEventListener('abort', onAbort)
       await store.touch(id).catch(() => {})
     }
@@ -470,11 +547,13 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     if (used) {
       await store.setUsage(id, used.bytes, used.inodes)
       measuredAt.set(id, now())
-    }
+    } else measuredAt.delete(id)
     return used
   }
 
-  /** Before a write: refuse when over quota (measured within the last minute, else now). */
+  /** Before a write: refuse when over quota (measured within the last minute, else now). A
+   *  measurement that fails or times out counts as OVER (fail closed — rereview #1: `du` timing out
+   *  is exactly what millions of files look like). */
   async function checkQuota(id: string): Promise<void> {
     assertDiskOk()
     const row = await liveRow(id)
@@ -484,7 +563,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       if (!row.tainted) {
         try { await ensureContainer(id) } catch (e) { if (!(e instanceof WorkspaceTaintedError)) throw e }
       }
-      used = (await measure(id)) ?? used
+      const m = await measure(id)
+      if (!m) throw SandboxQuotaError.unmeasurable()
+      used = m
     }
     if (overQuota(used, quota)) throw new SandboxQuotaError(used.bytes, quota.bytes, used.inodes, quota.inodes)
   }
@@ -494,12 +575,13 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     const out: Array<{ id: string; bytes: number; inodes: number; over: boolean }> = []
     for (const row of await store.listRunning()) {
       try {
-        const used = await measure(row.id)
-        if (!used) continue
-        const over = overQuota(used, quota)
+        const m = await measure(row.id)
+        // Unmeasurable (du failed / timed out) = over quota: fail closed (rereview #1).
+        const used = m ?? { bytes: row.bytesUsed, inodes: Number.MAX_SAFE_INTEGER }
+        const over = !m || overQuota(used, quota)
         out.push({ id: row.id, ...used, over })
         if (over) {
-          log.warn(`[sandbox] workspace ${row.id} over quota (${used.bytes} bytes, ${used.inodes} files)`)
+          log.warn(m ? `[sandbox] workspace ${row.id} over quota (${used.bytes} bytes, ${used.inodes} files)` : `[sandbox] workspace ${row.id} could not be measured — treated as over quota`)
           await opts.onOverQuota?.(row.id, used)
         }
       } catch (err) { log.warn(`[sandbox] quota check of ${row.id} failed:`, (err as Error).message) }
@@ -537,30 +619,14 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     try { return JSON.parse(r.stdout || '[]') as Inspected[] } catch { return [] }
   }
 
-  /**
-   * Free-space watchdog (review I2), every 5s: below minFreeBytes on the workspaces filesystem →
-   * kill every sandbox container in scope (incl. tainted one-offs), mark their rows stopped, tell
-   * onOverQuota, and refuse all commands until free space is back above resumeFreeBytes.
-   */
-  async function diskCheck(): Promise<DiskCheckResult> {
-    const free = await freeBytes(s.workspacesDir)
-    if (lowDisk) {
-      lowDisk = { freeBytes: free }
-      if (free >= s.resumeFreeBytes) {
-        lowDisk = null
-        log.info(`[sandbox] disk recovered (${free} bytes free) — workspace commands allowed again`)
-        return { freeBytes: free, low: false, entered: false, recovered: true, stopped: [] }
-      }
-      return { freeBytes: free, low: true, entered: false, recovered: false, stopped: [] }
-    }
-    if (free >= s.minFreeBytes) return { freeBytes: free, low: false, entered: false, recovered: false, stopped: [] }
-    lowDisk = { freeBytes: free }
-    log.error(`[sandbox] LOW DISK: ${free} bytes free under ${s.workspacesDir} — stopping every workspace sandbox`)
+  /** Kill every running in-scope sandbox container; mark their rows stopped; tell onOverQuota. */
+  async function stopAllSandboxes(): Promise<string[]> {
     const stopped = new Set<string>()
     try {
       for (const c of (await listLabelled()).filter(inScope)) {
         if (!c.State.Running) continue
-        await docker(['kill', c.Id], { timeoutMs: 30_000 })
+        const k = await docker(['kill', c.Id], { timeoutMs: 30_000 })
+        if (k.code !== 0) log.error(`[sandbox] low-disk kill of ${c.Id} failed: ${k.stderr.trim()} (retried on the next check)`)
         const wid = c.Config.Labels?.[LABEL_WORKSPACE]
         if (wid && UUID.test(wid)) stopped.add(wid)
       }
@@ -573,7 +639,47 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
         await opts.onOverQuota?.(id, { bytes: row?.bytesUsed ?? 0, inodes: row?.inodesUsed ?? 0 })
       } catch (err) { log.warn(`[sandbox] low-disk bookkeeping of ${id} failed:`, (err as Error).message) }
     }
-    return { freeBytes: free, low: true, entered: true, recovered: false, stopped: [...stopped] }
+    return [...stopped]
+  }
+
+  function lowReason(st: FsStats, resume: boolean): 'bytes' | 'inodes' | null {
+    if (st.freeBytes < (resume ? s.resumeFreeBytes : s.minFreeBytes)) return 'bytes'
+    if (st.totalInodes > 0) {
+      const floor = resume
+        ? Math.max(s.resumeFreeInodes, s.resumeFreeInodesRatio * st.totalInodes)
+        : Math.max(s.minFreeInodes, s.minFreeInodesRatio * st.totalInodes)
+      if (st.freeInodes < floor) return 'inodes'
+    }
+    return null
+  }
+
+  /**
+   * Free-space watchdog (review I2 + rereview #1/#3), every 5s: free bytes below minFreeBytes OR
+   * free inodes below the inode floor on the workspaces filesystem → kill every sandbox container
+   * in scope (incl. tainted one-offs), mark rows stopped, tell onOverQuota, and refuse all commands
+   * until BOTH are back above their resume levels. While the episode lasts every check re-kills
+   * whatever is running (a container that slipped in or survived a failed kill).
+   */
+  async function diskCheck(): Promise<DiskCheckResult> {
+    const st = await fsStats(s.workspacesDir)
+    const base = { freeBytes: st.freeBytes, freeInodes: st.freeInodes }
+    if (lowDisk) {
+      const still = lowReason(st, true)
+      if (!still) {
+        lowDisk = null
+        log.info(`[sandbox] disk recovered (${st.freeBytes} bytes, ${st.freeInodes} inodes free) — workspace commands allowed again`)
+        return { ...base, reason: null, low: false, entered: false, recovered: true, stopped: [] }
+      }
+      lowDisk = { ...base, reason: still }
+      const stopped = await stopAllSandboxes()
+      return { ...base, reason: still, low: true, entered: false, recovered: false, stopped }
+    }
+    const reason = lowReason(st, false)
+    if (!reason) return { ...base, reason: null, low: false, entered: false, recovered: false, stopped: [] }
+    lowDisk = { ...base, reason }
+    log.error(`[sandbox] LOW DISK (${reason}): ${st.freeBytes} bytes / ${st.freeInodes} inodes free under ${s.workspacesDir} — stopping every workspace sandbox`)
+    const stopped = await stopAllSandboxes()
+    return { ...base, reason, low: true, entered: true, recovered: false, stopped }
   }
 
   /**
@@ -629,6 +735,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     ensureContainer,
     exec,
     taint,
+    reenableNetwork,
     stopContainer,
     removeContainer,
     destroyWorkspace,

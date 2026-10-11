@@ -195,3 +195,32 @@ describe('install-network.sh ↔ network.ts (simulated filter table)', () => {
     expect(src).toContain('--ipv6=false')
   })
 })
+
+describe('provision-native.sh §3b (rereview #6): sandbox setup never fails the deploy', () => {
+  const src = readFileSync(path.resolve('deploy/provision-native.sh'), 'utf8')
+  const block = src.slice(src.indexOf('sandbox_warn() {'), src.indexOf('# 4. systemd units'))
+  function runBlock(installExit: number, buildExit: number) {
+    const app = mkdtempSync(path.join(tmpdir(), 'mm-prov-'))
+    try {
+      const sbx = path.join(app, 'deploy/sandbox')
+      spawnSync('mkdir', ['-p', sbx])
+      writeFileSync(path.join(sbx, 'install-network.sh'), `echo "[sandbox-net] ERROR: stub"; exit ${installExit}\n`)
+      writeFileSync(path.join(sbx, 'build-image.sh'), `echo built; exit ${buildExit}\n`)
+      const script = `set -euo pipefail\nAPP_DIR=${JSON.stringify(app)}\n${block}\necho REACHED-UNITS\n`
+      return spawnSync('bash', ['-c', script], { encoding: 'utf8' })
+    } finally { rmSync(app, { recursive: true, force: true }) }
+  }
+  it('a failing install-network.sh logs loudly and provisioning carries on', () => {
+    const r = runBlock(1, 0)
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('WARNING: SANDBOX SETUP SKIPPED')
+    expect(r.stdout).toContain('REACHED-UNITS')
+    expect(r.stdout).not.toContain('built')
+  })
+  it('a failing image build likewise; success stays quiet', () => {
+    const fail = runBlock(0, 1)
+    expect(fail.status).toBe(0)
+    expect(fail.stdout).toMatch(/SANDBOX SETUP SKIPPED|GB free/)
+    expect(fail.stdout).toContain('REACHED-UNITS')
+  })
+})

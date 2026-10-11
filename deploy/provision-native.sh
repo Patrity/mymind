@@ -102,12 +102,27 @@ fi
 #     layer-cached (seconds) unless deploy/sandbox/Dockerfile changed. Disk first (the box has hit 100%
 #     before): with <3 GB free the build is skipped with a warning — the worker then refuses sandbox
 #     work ("image missing") rather than run anything unconfined.
-bash "$APP_DIR/deploy/sandbox/install-network.sh" install
-AVAIL_GB="$(df -P -BG / | awk 'NR==2 {gsub("G","",$4); print $4}' || true)"
-if [ "${AVAIL_GB:-0}" -ge 3 ]; then
-  bash "$APP_DIR/deploy/sandbox/build-image.sh" "$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo deploy)"
+#     NON-FATAL (rereview #6): a missing sandbox precondition (dockerd down, nft/legacy mismatch, no
+#     FORWARD→DOCKER-USER jump, no disk) must not block the web + worker deploy. It is logged loudly
+#     and sandbox setup is skipped; the worker stays fail-closed (no image or no firewall → every
+#     workspace command is refused with a clear error).
+sandbox_warn() {
+  echo "[provision] ################################################################"
+  echo "[provision] WARNING: SANDBOX SETUP SKIPPED — $*"
+  echo "[provision] Workspace tools stay DISABLED (the worker refuses them) until fixed:"
+  echo "[provision]   bash $APP_DIR/deploy/sandbox/install-network.sh install"
+  echo "[provision] ################################################################"
+}
+if bash "$APP_DIR/deploy/sandbox/install-network.sh" install; then
+  AVAIL_GB="$(df -P -BG / | awk 'NR==2 {gsub("G","",$4); print $4}' || true)"
+  if [ "${AVAIL_GB:-0}" -ge 3 ]; then
+    bash "$APP_DIR/deploy/sandbox/build-image.sh" "$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo deploy)" \
+      || sandbox_warn "the sandbox image build failed"
+  else
+    sandbox_warn "only ${AVAIL_GB:-?} GB free on / — image build skipped (docker builder prune?)"
+  fi
 else
-  echo "[provision] WARNING: only ${AVAIL_GB:-?} GB free on / — skipping the sandbox image build (docker builder prune?)"
+  sandbox_warn "install-network.sh failed (see its ERROR line above)"
 fi
 
 # 4. systemd units (refresh + enable; do NOT start here — the deploy restarts after build)

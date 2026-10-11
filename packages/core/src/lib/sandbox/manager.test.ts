@@ -222,6 +222,82 @@ describe('exec', () => {
     const r = await createSandboxManager({ docker: run, store: memStore(), uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } }).exec(WS, 'big')
     expect(r).toMatchObject({ oom: true, timedOut: false, stderr: 'Killed', exitCode: 137 })
   })
+  it('hard-kill fallback: restarts an untainted container at the pids limit, only kills a tainted one (rereview #2, #4)', async () => {
+    for (const tainted of [false, true]) {
+      const d = fakeDocker()
+      const store = memStore()
+      const m0 = mgr(d, store)
+      await m0.ensureContainer(WS)
+      const orig = d.run
+      const calls: string[][] = []
+      const run: typeof d.run = async (args, o) => {
+        calls.push(args)
+        // The kill-exec can't fork (pids limit); the exec CLI is killed by the abort signal.
+        if (args[0] === 'exec' && args.at(-1)!.includes('.abort')) return fail('OCI runtime exec failed: resource temporarily unavailable', 126)
+        if (args[0] === 'exec' && args.includes('mm-exec')) {
+          if (tainted) store.rows.get(WS)!.tainted = true // the taint landed while this exec ran
+          await new Promise<void>(r => o?.signal?.addEventListener('abort', () => r(), { once: true }))
+          return { code: null, stdout: '', stderr: '', timedOut: false, aborted: true, truncated: false }
+        }
+        return orig(args, o)
+      }
+      const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+      const ac = new AbortController()
+      const p = m.exec(WS, ':(){ :|:& };:', { signal: ac.signal })
+      await new Promise(r => setTimeout(r, 20))
+      ac.abort()
+      expect((await p).aborted).toBe(true)
+      await new Promise(r => setTimeout(r, 30))
+      expect(calls.some(c => c[0] === 'restart')).toBe(!tainted)
+      expect(calls.some(c => c[0] === 'kill' && c[1] === `mymind-ws-${WS}`)).toBe(tainted)
+    }
+  })
+  it('re-enable (rereview #5): aborts every tainted run in flight and removes tainted one-offs BEFORE clearing the flag', async () => {
+    const d = fakeDocker()
+    const store = memStore([{ id: WS, tainted: true }])
+    const orig = d.run
+    const order: string[] = []
+    let release!: () => void
+    const run: typeof d.run = async (args, o) => {
+      if (args[0] === 'run' && args.includes('mymind.tainted=1')) {
+        const name = args[args.indexOf('--name') + 1]!
+        d.containers.set(name, { Id: name, Name: `/${name}`, Image: 'sha256:img', State: { Running: true }, Config: { Labels: { 'mymind.workspace': WS, 'mymind.tainted': '1' } } })
+        await new Promise<void>((r) => { release = r; o?.signal?.addEventListener('abort', () => r(), { once: true }) })
+        d.containers.delete(name)
+        order.push('one-off ended')
+        return { code: 137, stdout: '', stderr: '', timedOut: false, aborted: true, truncated: false }
+      }
+      if (args[0] === 'kill' || args[0] === 'rm') { order.push(`${args[0]}`); const c = d.containers.get(args.at(-1)!); if (c) { d.containers.delete(args.at(-1)!); release?.() } }
+      return orig(args, o)
+    }
+    const origSet = store.setTainted
+    store.setTainted = async (id, t) => { order.push(`tainted=${t}`); return origSet(id, t) }
+    const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+    const pending = m.exec(WS, 'sleep 100 && echo evil > f')
+    await new Promise(r => setTimeout(r, 30))
+    const row = await m.reenableNetwork(WS)
+    expect(row.tainted).toBe(false)
+    const r = await pending
+    expect(r.tainted).toBe(true)
+    expect(order.indexOf('one-off ended')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('one-off ended')).toBeLessThan(order.indexOf('tainted=false'))
+  })
+  it('re-enable fails closed (flag kept) when a tainted one-off will not go away', async () => {
+    const d = fakeDocker()
+    const store = memStore([{ id: WS, tainted: true }])
+    d.containers.set('stuck', { Id: 'stuck', Name: '/mymind-wst-x', Image: 'sha256:img', State: { Running: true }, Config: { Labels: { 'mymind.workspace': WS, 'mymind.tainted': '1' } } })
+    const orig = d.run
+    const run: typeof d.run = async (args, o) => args[0] === 'rm' ? fail('device busy') : orig(args, o)
+    vi.useFakeTimers()
+    try {
+      const m = createSandboxManager({ docker: run, store, uid: 1000, platform: 'darwin', settings: { workspacesDir: '/tmp/x', firewall: 'off', dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
+      const p = m.reenableNetwork(WS)
+      const caught = p.catch(e => e as Error)
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(((await caught) as Error).message).toMatch(/network stays off/)
+    } finally { vi.useRealTimers() }
+    expect(store.rows.get(WS)!.tainted).toBe(true)
+  })
   it('passes the abort signal to the docker CLI and kills the group with a tombstone (review M5)', async () => {
     const d = fakeDocker()
     let seen: AbortSignal | undefined
@@ -264,6 +340,37 @@ describe('housekeeping', () => {
     expect(store.rows.get(WS)!.bytesUsed).toBe(6_000_000_000)
     await expect(m.checkQuota(WS)).rejects.toThrow(/over its 5\.0 GB quota/)
   })
+  it('low-inode watchdog (rereview #1): free inodes under max(200k, 5%) is an episode; recovery needs max(250k, 7%)', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    let st = { freeBytes: 50 * 1024 ** 3, freeInodes: 2_000_000, totalInodes: 10_000_000 }
+    const m = mgr(d, store, { fsStats: async () => st })
+    await m.ensureContainer(WS)
+    expect(await m.diskCheck()).toMatchObject({ low: false })
+    st = { ...st, freeInodes: 450_000 } // 4.5% of 10M: under the 5% floor though > 200k
+    expect(await m.diskCheck()).toMatchObject({ low: true, entered: true, reason: 'inodes', stopped: [WS] })
+    await expect(m.exec(WS, 'echo')).rejects.toThrow(/low on free files/)
+    st = { ...st, freeInodes: 600_000 } // 6%: above the floor, below the 7% resume level
+    expect(await m.diskCheck()).toMatchObject({ low: true, recovered: false })
+    st = { ...st, freeInodes: 800_000 }
+    expect(await m.diskCheck()).toMatchObject({ low: false, recovered: true })
+    // A filesystem without a fixed inode table (ZFS: total 0) never trips the inode floor.
+    st = { freeBytes: 50 * 1024 ** 3, freeInodes: 0, totalInodes: 0 }
+    expect(await m.diskCheck()).toMatchObject({ low: false })
+    // Small absolute floor: 150k free of 1M total (15%) is still under 200k.
+    st = { freeBytes: 50 * 1024 ** 3, freeInodes: 150_000, totalInodes: 1_000_000 }
+    expect(await m.diskCheck()).toMatchObject({ low: true, reason: 'inodes' })
+  })
+  it('a measurement that fails or times out counts as OVER quota (rereview #1, fail closed)', async () => {
+    const over = vi.fn()
+    const store = memStore()
+    const m = mgr(fakeDocker({ du: '' }), store, { onOverQuota: over })
+    await m.ensureContainer(WS)
+    const t = await m.quotaTick()
+    expect(t[0]).toMatchObject({ id: WS, over: true })
+    expect(over).toHaveBeenCalledTimes(1)
+    await expect(m.checkQuota(WS)).rejects.toThrow(/could not be measured/)
+  })
   it('quota tick: too many files is over quota too (review I2)', async () => {
     const store = memStore()
     const m = mgr(fakeDocker({ du: '1000\n250000\n' }), store)
@@ -286,7 +393,7 @@ describe('housekeeping', () => {
     const store = memStore([{ id: WS }, { id: '33333333-3333-3333-3333-333333333333' }])
     const over = vi.fn()
     let free = 50 * 1024 ** 3
-    const m = mgr(d, store, { onOverQuota: over, freeBytes: async () => free, labels: { 'mymind.test': 'r1' } })
+    const m = mgr(d, store, { onOverQuota: over, fsStats: async () => ({ freeBytes: free, freeInodes: 10_000_000, totalInodes: 20_000_000 }), labels: { 'mymind.test': 'r1' } })
     await m.ensureContainer(WS)
     await m.ensureContainer('33333333-3333-3333-3333-333333333333')
     // An out-of-scope container (another test run) is never touched.
@@ -302,8 +409,13 @@ describe('housekeeping', () => {
     expect(over).toHaveBeenCalledTimes(2)
     await expect(m.exec(WS, 'echo')).rejects.toThrow(/low on disk/)
     await expect(m.checkQuota(WS)).rejects.toThrow(/low on disk/)
-    // Still low: no second episode. Between thresholds: still refused. Above resume: allowed.
-    expect(await m.diskCheck()).toMatchObject({ low: true, entered: false })
+    // Still low: no second episode — but every check re-kills whatever slipped in (rereview #3).
+    d.containers.get(`mymind-ws-${WS}`)!.State.Running = true
+    const again = await m.diskCheck()
+    expect(again).toMatchObject({ low: true, entered: false })
+    expect(again.stopped).toContain(WS)
+    expect(d.containers.get(`mymind-ws-${WS}`)!.State.Running).toBe(false)
+    expect(d.containers.get('other')!.State.Running).toBe(true)
     free = 4.5 * 1024 ** 3
     expect(await m.diskCheck()).toMatchObject({ low: true, recovered: false })
     free = 6 * 1024 ** 3
@@ -352,7 +464,7 @@ describe('startSandboxHousekeeping', () => {
         idleStop: async () => { calls.push('idle'); return [] },
         quotaTick: async () => { calls.push('quota'); return [] },
         sweep: async () => { calls.push('sweep'); return [] },
-        diskCheck: async () => ({ freeBytes: 1, low: false, entered: false, recovered: false, stopped: [] }),
+        diskCheck: async () => ({ freeBytes: 1, freeInodes: 1, reason: null, low: false, entered: false, recovered: false, stopped: [] }),
         isDiskLow: () => false
       } as unknown as Parameters<typeof startSandboxHousekeeping>[0]
       const warn = vi.fn()
@@ -381,7 +493,7 @@ describe('startSandboxHousekeeping — disk watchdog', () => {
       let n = 0
       const fake = {
         available: async () => false,
-        diskCheck: async () => { n++; return { freeBytes: 1, low: n >= 2, entered: n === 2, recovered: false, stopped: ['a'] } },
+        diskCheck: async () => { n++; return { freeBytes: 1, freeInodes: 1, reason: 'bytes', low: n >= 2, entered: n === 2, recovered: false, stopped: ['a'] } },
         isDiskLow: () => n >= 2
       } as unknown as Parameters<typeof startSandboxHousekeeping>[0]
       const onLowDisk = vi.fn()
@@ -391,5 +503,15 @@ describe('startSandboxHousekeeping — disk watchdog', () => {
       expect(onLowDisk).toHaveBeenCalledTimes(1)
       stop()
     } finally { vi.useRealTimers() }
+  })
+})
+
+describe('diskCheck with the real statfs', () => {
+  it('reads free bytes and inodes of the workspaces filesystem (dir need not exist yet)', async () => {
+    const m = mgr(fakeDocker(), memStore(), { settings: { workspacesDir: '/tmp/mm-sbx-does-not-exist/x/y', firewall: 'off', dns: [], minFreeBytes: 1, resumeFreeBytes: 1, minFreeInodes: 1, minFreeInodesRatio: 0 } })
+    const r = await m.diskCheck()
+    expect(r.low).toBe(false)
+    expect(r.freeBytes).toBeGreaterThan(0)
+    expect(r.freeInodes).toBeGreaterThan(0)
   })
 })

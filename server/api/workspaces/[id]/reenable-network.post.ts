@@ -3,16 +3,28 @@
 // (lib/sandbox/manager.ts) — files written while tainted may be hostile (git hooks, package scripts),
 // so only Tony, deliberately, lifts it. Auth: web session only — a leaked API token (or the agent
 // over /api/mcp) must never be able to hand a tainted workspace its network back.
-// Only flips the flag: the networked container stays stopped until the worker's next command.
+// The WORKER does it (rereview #5): it first kills every tainted run of the workspace, then clears
+// the flag — so no tainted write lands after the workspace is trusted again. A dead worker → 504,
+// never a silent OK (the flag stays set).
 import { z } from 'zod'
 import { requireSession } from '../../../utils/auth-guard'
-import { reenableWorkspaceNetwork } from '@mymind/core/lib/sandbox/store'
+import { sendCommand, CommandFailedError, CommandTimeoutError } from '@mymind/core/lib/bus/commands'
 
 export default defineEventHandler(async (event) => {
   requireSession(event)
   const id = getRouterParam(event, 'id')
   if (!id || !z.uuid().safeParse(id).success) throw createError({ statusCode: 404, statusMessage: 'No such workspace', data: { message: 'No such workspace.' } })
-  const row = await reenableWorkspaceNetwork(id)
-  if (!row) throw createError({ statusCode: 404, statusMessage: 'No such workspace', data: { message: 'No such workspace.' } })
-  return { id: row.id, tainted: row.tainted, taintedAt: row.taintedAt?.toISOString() ?? null }
+  try {
+    const r = await sendCommand('workspace-reenable-network', { workspaceId: id }, { awaitResult: true })
+    if (!r) throw new Error('the agent worker returned nothing')
+    return r
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (err instanceof CommandTimeoutError) throw createError({ statusCode: 504, statusMessage: 'Agent worker did not answer', data: { message: 'The agent worker did not answer, so the network stays off. Is it running?' } })
+    if (err instanceof CommandFailedError) {
+      const notFound = /not found|has been deleted/i.test(message)
+      throw createError({ statusCode: notFound ? 404 : 409, statusMessage: notFound ? 'No such workspace' : 'Refused', data: { message } })
+    }
+    throw err
+  }
 })
