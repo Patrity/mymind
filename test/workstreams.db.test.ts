@@ -138,6 +138,9 @@ describe('workstreams', () => {
       if (seg === 0) {
         // No recursion: start_workstream is not in a workstream's registry, and refuses anyway.
         refused = (await startWorkstreamTool.handler({ goal: 'nested' }, { signal: ctx.signal, runId: ctx.runId })).result
+        // Should it ever succeed (a regression), its thread is still this file's to clean up.
+        const leaked = (refused as { conversationId?: string }).conversationId
+        if (leaked) convIds.push(leaked)
         for (let i = 0; i < 3 && !ctx.shouldStop?.(); i++) step(ctx)
         yield { type: 'text-delta', text: 'PROGRESS-ONE' }
       } else {
