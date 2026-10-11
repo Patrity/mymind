@@ -413,3 +413,35 @@ describe('Task 3 fix round 1 (M1): output cut inside the sandbox never shows hal
     expect(r.matches).toEqual(['a.env:1:TOKEN= [... omitted end of long line]'])
   })
 })
+
+describe('Task 3 fix round 2: a secret store that fails MID-call withholds the output (never a raw error)', () => {
+  const VALUE = 'ghp_SuperSecretValue123'
+  beforeEach(() => { secretStore.broken = true })
+  const withheld = async (name: string, args: Record<string, unknown>) => {
+    const ex = await tool(name).handler(args, ctx(false))
+    expect(JSON.stringify(ex)).not.toContain(VALUE)
+    expect((ex.result as Record<string, unknown>).error).toMatch(/output withheld/)
+    expect(ex.summary).toMatch(/output withheld \(secret store unreadable\)/)
+  }
+  it('read_file (valid content, line-cut path)', async () => {
+    execResult = () => res({ stdout: JSON.stringify({ content: `     1\tk=${VALUE}`, lines: 1, totalLines: 1, truncated: false }) })
+    await withheld('read_file', { path: 'a' })
+  })
+  it('grep', async () => {
+    execResult = () => res({ stdout: `a:1:${VALUE}\n` })
+    await withheld('grep', { pattern: 'x' })
+  })
+  it('diff (truncated)', async () => {
+    execResult = () => res({ stdout: `+${VALUE}\n__mm_diff_bytes__:999999\n` })
+    await withheld('diff', {})
+  })
+  it('bash (secrets lookup and the truncated-output trim)', async () => {
+    execResult = () => res({ stdout: VALUE, truncated: true })
+    await withheld('bash', { command: 'env' })
+  })
+  it('bash_output (the registry needs the values for its window)', async () => {
+    const { SecretStoreUnavailableError } = await import('../../sandbox/secrets')
+    ;(rtNow.shells.output as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new SecretStoreUnavailableError(new Error('undecryptable')))
+    await withheld('bash_output', { shellId: '44444444-4444-4444-8444-444444444444' })
+  })
+})

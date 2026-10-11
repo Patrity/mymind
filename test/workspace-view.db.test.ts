@@ -213,6 +213,18 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     expect((await killShellFromUi(ws, s.shellId)).alreadyEnded).toBe(true)
   }, 60_000)
 
+  it('fix round 2: bash_output over a real non-UTF-8 stream is contiguous across reads and masked', async () => {
+    // 40 000 ASCII bytes, then a € straddling nothing in particular, an invalid byte, the secret, an emoji.
+    const s = await rt.shells.start(ws, `python3 -c "import sys; sys.stdout.buffer.write(b'x' * 32767 + '€'.encode() + b' \\xff ' + b'${SECRET}' + ' 🙂 end'.encode())"`)
+    let st = 'running'
+    for (let i = 0; i < 40 && st === 'running'; i++) { await sleep(250); st = (await shellTail(ws, s.shellId)).state }
+    const parts: string[] = []
+    for (let i = 0; i < 10; i++) { const o = await rt.shells.output(ws, s.shellId); parts.push(o.output); if (!o.more) break }
+    const want = Buffer.concat([Buffer.from('x'.repeat(32767)), Buffer.from('€'), Buffer.from([0x20, 0xff, 0x20]), Buffer.from('«redacted»'), Buffer.from(' 🙂 end')]).toString('utf8')
+    expect(parts.length).toBeGreaterThan(1)
+    expect(parts.join('')).toBe(want)
+  }, 60_000)
+
   it('secrets: an opted-in secret is in `env` of an untainted command (value masked); reserved names never; a tainted run gets none', async () => {
     secretStore.opted = { MM_TEST_SECRET: SECRET, DOCKER_HOST: 'tcp://evil:2375', HOME: '/root' }
     try {

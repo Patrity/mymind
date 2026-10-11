@@ -15,7 +15,7 @@ import { publishChange } from '../../utils/live-bus'
 import { parseShellStatus, shellKillCommand, shellOutputCommand, shellStartCommand, shellStatusCommand, shellTailCommand, type ShellStatus } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
 import type { WorkspaceRow } from './store'
-import { maskCut, maskText, secretValues, trailingPartial } from './secrets'
+import { maskCut, maskText, secretValues } from './secrets'
 
 export type { WorkspaceShellRow }
 
@@ -80,35 +80,47 @@ export interface ShellDeps {
   secretValues?: () => Promise<string[]>
 }
 
-/** The char index where the first `bytes` UTF-8 bytes of `s` end (never inside a code point). */
-function charIndexAtByte(s: string, bytes: number): number {
-  let b = 0
-  let i = 0
-  for (const ch of s) {
-    const n = Buffer.byteLength(ch)
-    if (b + n > bytes) break
-    b += n
-    i += ch.length
+/** Where an incomplete UTF-8 sequence starts at the end of `raw` (raw.length when it ends cleanly). */
+function incompleteUtf8Tail(raw: Buffer): number {
+  for (let k = 1; k <= Math.min(3, raw.length); k++) {
+    const c = raw[raw.length - k]!
+    if ((c & 0xc0) === 0x80) continue // a continuation byte: keep looking for its lead
+    const need = c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : c >= 0xc0 ? 2 : 1
+    return need > k ? raw.length - k : raw.length
   }
-  return i
+  return raw.length
 }
 
 /**
- * Fix round 1 (M1): where a bash_output window may END without cutting a secret in half. The window
- * was read `maxLen` bytes past the chunk, so a value starting before the chunk edge is fully in it:
- * the edge moves back to its start. At the end of what the shell has written so far (it still runs),
- * a trailing piece that could be the start of a value is held back for the next call.
+ * Fix round 1 (M1) + fix round 2: where a bash_output window may END, in BYTES of the raw output
+ * (read `overlap` bytes past the chunk, so a value starting before the chunk edge is wholly in it):
+ *   - never inside a UTF-8 code point (the edge backs off over continuation bytes, ≤ 3);
+ *   - never inside a secret value (the edge moves back to the value's start);
+ *   - at the end of what a still-running shell has written so far, a trailing piece that could be
+ *     the start of a value — or an incomplete code point — is held back for the next call.
+ * The offset then advances by exactly the bytes returned, so reads are contiguous.
  */
-export function safeWindowEnd(text: string, chunkBytes: number, values: string[], atWrittenEnd: boolean): number {
-  let end = Buffer.byteLength(text) > chunkBytes ? charIndexAtByte(text, chunkBytes) : text.length
+export function safeWindowEnd(raw: Buffer, chunkBytes: number, values: string[], atWrittenEnd: boolean): number {
+  let end = Math.min(raw.length, chunkBytes)
+  if (end < raw.length) for (let k = 0; k < 3 && end > 0 && (raw[end]! & 0xc0) === 0x80; k++) end--
   for (const v of values) {
-    let i = text.indexOf(v)
+    const vb = Buffer.from(v)
+    let i = raw.indexOf(vb)
     while (i !== -1 && i < end) {
-      if (i + v.length > end) { end = i; break }
-      i = text.indexOf(v, i + 1)
+      if (i + vb.length > end) { end = i; break }
+      i = raw.indexOf(vb, i + 1)
     }
   }
-  if (atWrittenEnd) end = Math.min(end, text.length - trailingPartial(text, values))
+  if (atWrittenEnd && end === raw.length) {
+    let hold = incompleteUtf8Tail(raw)
+    for (const v of values) {
+      const vb = Buffer.from(v)
+      for (let n = Math.min(vb.length - 1, raw.length); n > 0; n--) {
+        if (raw.subarray(raw.length - n).equals(vb.subarray(0, n))) { hold = Math.min(hold, raw.length - n); break }
+      }
+    }
+    end = hold
+  }
   return end
 }
 
@@ -122,6 +134,7 @@ export const MAX_RUNNING_SHELLS = 8
 export class ShellError extends Error { override name = 'ShellError' }
 
 const TAINT_LOST = "it was stopped when this workspace's network was turned off (the workspace handled mail/calendar content)"
+
 
 export function createShellRegistry(deps: ShellDeps) {
   const store = deps.store ?? dbShellStore
@@ -176,25 +189,19 @@ export function createShellRegistry(deps: ShellDeps) {
   async function output(workspaceId: string, shellId: string, o: Pick<ExecOptions, 'tainted' | 'signal'> = {}) {
     let row = await own(workspaceId, shellId)
     const values = await maskValues()
-    const overlap = values.reduce((m, v) => Math.max(m, Buffer.byteLength(v)), 0)
+    // ≥ 4: a code point straddling the chunk edge is always wholly in the window too (fix round 2).
+    const overlap = values.reduce((m, v) => Math.max(m, Buffer.byteLength(v)), 4)
     const r = await deps.exec(workspaceId, shellOutputCommand(row.id, row.readOffset, SHELL_OUTPUT_CHUNK + overlap), { timeoutSec: 30, capBytes: (SHELL_OUTPUT_CHUNK + overlap) * 2, ...o })
     const st = parseShellStatus(r.stdout)
     if (!st) throw new ShellError(`could not read the shell's output: ${r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`}`)
     const start = row.readOffset
-    let text = st.output
-    let advance = Math.min(st.n, SHELL_OUTPUT_CHUNK)
-    // A half-written value held back at the end is not "more": nothing new to read yet.
-    let heldBack = false
-    if (Buffer.byteLength(text) === st.n) {
-      const atWrittenEnd = st.status.state === 'running' && start + st.n >= st.size
-      heldBack = atWrittenEnd && st.n <= SHELL_OUTPUT_CHUNK
-      text = text.slice(0, safeWindowEnd(text, SHELL_OUTPUT_CHUNK, values, atWrittenEnd))
-      advance = Buffer.byteLength(text)
-    } else {
-      // Not valid UTF-8 (binary output, or a code point split at the read edge): byte offsets and
-      // chars no longer line up, so return the chunk with both cut edges trimmed instead.
-      text = maskCut(Buffer.from(text).subarray(0, SHELL_OUTPUT_CHUNK).toString('utf8'), values, { start: true, end: true })
-    }
+    const raw = Buffer.from(st.output.trim(), 'base64')
+    if (raw.length !== st.n) throw new ShellError(`could not read the shell's output (got ${raw.length} of ${st.n} bytes)`)
+    // A half-written value / code point held back at the end is not "more": nothing new to read yet.
+    const atWrittenEnd = st.status.state === 'running' && start + st.n >= st.size
+    const advance = safeWindowEnd(raw, SHELL_OUTPUT_CHUNK, values, atWrittenEnd)
+    const heldBack = atWrittenEnd && st.n <= SHELL_OUTPUT_CHUNK
+    const text = raw.subarray(0, advance).toString('utf8')
     if (advance > 0) await store.setOffset(row.id, start + advance)
     row = await settle(row, st.status)
     return {

@@ -28,7 +28,8 @@ export function isSandboxSecretName(name: string): boolean {
 /** The env a sandbox command gets on top of HOME/PATH/LANG: opted-in secrets, unless tainted. */
 export async function sandboxSecretEnv(o: { tainted: boolean }): Promise<Record<string, string>> {
   if (o.tainted) return {}
-  const opted = await getSandboxOptedSecrets()
+  let opted: Record<string, string>
+  try { opted = await getSandboxOptedSecrets() } catch (err) { throw new SecretStoreUnavailableError(err) }
   return Object.fromEntries(Object.entries(opted).filter(([k, v]) => isSandboxSecretName(k) && v.length >= MIN_SANDBOX_SECRET_CHARS))
 }
 
@@ -40,10 +41,22 @@ export function maskList(all: Record<string, string>, opted: Record<string, stri
   return [...set].sort((a, b) => b.length - a.length)
 }
 
-/** The current mask list (throws when the store is unreadable — callers fail closed). */
+/** The secret store could not be read, so nothing that might hold a value can be shown. Tool
+ *  handlers turn it into the "output withheld" result (tools/workspace.ts guard). */
+export class SecretStoreUnavailableError extends Error {
+  override name = 'SecretStoreUnavailableError'
+  constructor(cause?: unknown) { super(`the secret store could not be read${cause instanceof Error ? ` (${cause.message})` : ''}, so secret values could not be masked`) }
+}
+
+/** The current mask list. Throws SecretStoreUnavailableError when the store is unreadable — every
+ *  caller fails closed on it. */
 export async function secretValues(): Promise<string[]> {
-  const [all, opted] = await Promise.all([getDecryptedSecrets(), getSandboxOptedSecrets()])
-  return maskList(all, opted)
+  try {
+    const [all, opted] = await Promise.all([getDecryptedSecrets(), getSandboxOptedSecrets()])
+    return maskList(all, opted)
+  } catch (err) {
+    throw new SecretStoreUnavailableError(err)
+  }
 }
 
 /** Replace every whole occurrence of each value (longest first). */

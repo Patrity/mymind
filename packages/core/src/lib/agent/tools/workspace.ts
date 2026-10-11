@@ -29,7 +29,7 @@ import { readWorkspaceText, workspaceRuntime, type WorkspaceRef } from '../../sa
 import { ShellError } from '../../sandbox/shells'
 import { dbWorkspaceStore } from '../../sandbox/store'
 import { WATCH_LIMITS, WatchError } from '../../sandbox/watches'
-import { maskCut, maskDeep, sandboxSecretEnv, secretValues } from '../../sandbox/secrets'
+import { maskCut, maskDeep, sandboxSecretEnv, SecretStoreUnavailableError, secretValues } from '../../sandbox/secrets'
 import { createDoc, deleteDoc, findDocByPath, getDoc, casUpdateContent, updateDoc } from '../../../services/documents'
 import { publishChange } from '../../../utils/live-bus'
 import { docReceipt, docNotFound } from '../receipt'
@@ -67,8 +67,12 @@ function withTaint<T extends Record<string, unknown>>(r: { tainted: boolean }, b
  *  summary has exec-secret VALUES masked (Task 3, spec §6: an opted-in secret is in the command's
  *  env, so `env` or a file it wrote would otherwise hand it to the model and the transcript). */
 async function guard(name: string, fn: () => Promise<ToolExecution>): Promise<ToolExecution> {
+  const withheld = (): ToolExecution => ({ result: { ok: false, error: `${name}: output withheld — the secret store is unreadable, so secret values could not be masked` }, summary: `${name}: output withheld (secret store unreadable)` })
   let ex: ToolExecution
   try { ex = await fn() } catch (err) {
+    // Fix round 2: a handler (or the shell registry) that needed the values mid-call fails closed
+    // the same way as the final mask below — never a raw error.
+    if (err instanceof SecretStoreUnavailableError) return withheld()
     const known = err instanceof SandboxUnavailableError || err instanceof SandboxQuotaError || err instanceof SandboxDiskLowError
       || err instanceof ShellError || err instanceof WatchError || (err as Error)?.name === 'WorkspaceFileError'
     if (!known) throw err
@@ -77,9 +81,7 @@ async function guard(name: string, fn: () => Promise<ToolExecution>): Promise<To
   }
   let values: string[]
   // Fail closed: when the values can't be read, nothing they might be in is shown.
-  try { values = await secretValues() } catch {
-    return { result: { ok: false, error: `${name}: output withheld — the secret store is unreadable, so secret values could not be masked` }, summary: `${name}: output withheld (secret store unreadable)` }
-  }
+  try { values = await secretValues() } catch { return withheld() }
   return { ...ex, result: maskDeep(ex.result, values), summary: maskDeep(ex.summary, values) }
 }
 

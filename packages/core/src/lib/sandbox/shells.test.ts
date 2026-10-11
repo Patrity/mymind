@@ -53,6 +53,7 @@ describe('fs-ops shell scripts', () => {
     expect(shellStartCommand('66666666-6666-4666-8666-000000000001')).toContain('cat > "$d/cmd"')
     expect(() => shellStartCommand('../../etc')).toThrow(/bad shell id/)
     expect(shellOutputCommand('66666666-6666-4666-8666-000000000001', 10, 100)).toContain('tail -c +11')
+    expect(shellOutputCommand('66666666-6666-4666-8666-000000000001', 10, 100)).toContain('| base64 -w0')
   })
   it('parseShellStatus', () => {
     expect(parseShellStatus(status('running', 12, 4, 'abcd'))).toEqual({ status: { state: 'running' }, size: 12, n: 4, output: 'abcd' })
@@ -83,10 +84,10 @@ describe('shell registry', () => {
     const { reg, store, calls, setReply } = setup()
     setReply(() => res({ stdout: '__mm_shell_pid__:1\n' }))
     const { shellId } = await reg.start(WS, 'x')
-    setReply(() => res({ stdout: status('running', 10, 4, 'abcd') }))
+    setReply(() => res({ stdout: status('running', 10, 4, Buffer.from('abcd').toString('base64')) }))
     expect(await reg.output(WS, shellId)).toMatchObject({ state: 'running', output: 'abcd', more: true })
     expect(store.rows.get(shellId)!.readOffset).toBe(4)
-    setReply(() => res({ stdout: status('exit:0', 10, 6, 'efghij') }))
+    setReply(() => res({ stdout: status('exit:0', 10, 6, Buffer.from('efghij').toString('base64')) }))
     const o = await reg.output(WS, shellId)
     expect(calls.at(-1)!.command).toContain('tail -c +5')
     expect(o).toMatchObject({ state: 'exited', exitCode: 0, output: 'efghij', more: false })
@@ -147,11 +148,14 @@ describe('Task 3 fix round 1 (M1): a secret is never split across a bash_output 
   const C = SECRET.length
 
   it('safeWindowEnd: a value straddling the chunk edge moves the edge back to its start', () => {
+    const B = (t: string) => Buffer.from(t)
     const text = 'a'.repeat(10) + SECRET + 'tail'
-    expect(safeWindowEnd(text, 15, [SECRET], false)).toBe(10)
-    expect(safeWindowEnd(text, 10 + C, [SECRET], false)).toBe(10 + C) // ends exactly after it: whole
-    expect(safeWindowEnd('abc ' + SECRET.slice(0, 7), 100, [SECRET], true)).toBe(4) // half-written, still running
-    expect(safeWindowEnd('abc ' + SECRET.slice(0, 7), 100, [SECRET], false)).toBe(11) // finished: nothing more will come
+    expect(safeWindowEnd(B(text), 15, [SECRET], false)).toBe(10)
+    expect(safeWindowEnd(B(text), 10 + C, [SECRET], false)).toBe(10 + C) // ends exactly after it: whole
+    expect(safeWindowEnd(B('abc ' + SECRET.slice(0, 7)), 100, [SECRET], true)).toBe(4) // half-written, still running
+    expect(safeWindowEnd(B('abc ' + SECRET.slice(0, 7)), 100, [SECRET], false)).toBe(11) // finished: nothing more will come
+    expect(safeWindowEnd(B('ab€cd'), 3, [], false)).toBe(2) // never inside a code point
+    expect(safeWindowEnd(Buffer.concat([B('ab'), B('€').subarray(0, 2)]), 100, [], true)).toBe(2) // half-written code point held back
   })
 
   it('two windows over a secret straddling the 32 KB edge: neither shows any part of it unmasked', async () => {
@@ -159,12 +163,7 @@ describe('Task 3 fix round 1 (M1): a secret is never split across a bash_output 
     const s = await startedShell(reg, setReply)
     const pad = 'x'.repeat(SHELL_OUTPUT_CHUNK - 5)
     const file = pad + SECRET + '\nend\n'
-    setReply((command) => {
-      const off = Number(command.match(/n=\$\(\(sz - (\d+)\)\)/)![1])
-      const max = Number(command.match(/\[ "\$n" -gt (\d+) \]/)![1])
-      const n = Math.min(max, file.length - off)
-      return res({ stdout: status('exit:0', file.length, n, file.slice(off, off + n)) })
-    })
+    setReply(streamShell(Buffer.from(file), 'exit:0'))
     const a = await reg.output(WS, s)
     const b = await reg.output(WS, s)
     const both = a.output + b.output
@@ -180,7 +179,7 @@ describe('Task 3 fix round 1 (M1): a secret is never split across a bash_output 
     const { reg, store, setReply } = setup({}, [SECRET])
     const s = await startedShell(reg, setReply)
     const file = 'log line\nAuthorization: ' + SECRET.slice(0, 9)
-    setReply(() => res({ stdout: status('running', file.length, file.length, file) }))
+    setReply(streamShell(Buffer.from(file), 'running'))
     const a = await reg.output(WS, s)
     expect(a.output).toBe('log line\nAuthorization: ')
     expect(a.more).toBe(false)
@@ -195,5 +194,58 @@ describe('Task 3 fix round 1 (M1): a secret is never split across a bash_output 
     const t = await reg.tail(WS, s)
     expect(t.output).toBe('\nok «redacted»\n')
     expect(t.truncated).toBe(true)
+  })
+})
+
+/** A faithful stand-in for the in-container output script over a real byte stream: it honours the
+ *  command's offset / max, and answers in the encoding the command asks for (raw bytes decoded as
+ *  UTF-8 the way the docker CLI's buffer does, or base64 when the command pipes through it). */
+function streamShell(bytes: Buffer, state: string) {
+  return (command: string) => {
+    const off = Number(command.match(/n=\$\(\(sz - (\d+)\)\)/)![1])
+    const max = Number(command.match(/\[ "\$n" -gt (\d+) \]/)![1])
+    const n = Math.max(0, Math.min(max, bytes.length - off))
+    const body = bytes.subarray(off, off + n)
+    return res({ stdout: status(state, bytes.length, n, n === 0 ? '' : command.includes('base64') ? body.toString('base64') : body.toString('utf8')) })
+  }
+}
+
+describe('Task 3 fix round 2: bash_output over a NON-UTF-8 stream is contiguous and masked', () => {
+  const SECRET = 'sk_live_Contiguous_42'
+  async function readAll(bytes: Buffer, values: string[], state = 'exit:0') {
+    const { reg, store, setReply } = setup({}, values)
+    const s = await startedShell(reg, setReply)
+    setReply(streamShell(bytes, state))
+    const parts: string[] = []
+    for (let i = 0; i < 20; i++) {
+      const o = await reg.output(WS, s)
+      parts.push(o.output)
+      if (!o.more) break
+    }
+    return { joined: parts.join(''), offset: store.rows.get(s)!.readOffset, reads: parts.length }
+  }
+  // ASCII, a 3-byte "€" straddling the 32 KB edge, a secret, a lone invalid byte, a 4-byte emoji
+  // straddling the second edge, then more text: N reads must rebuild the whole (masked) stream.
+  const a = Buffer.from('A'.repeat(SHELL_OUTPUT_CHUNK - 1))
+  const euro = Buffer.from('€')
+  const mid = Buffer.concat([Buffer.from(' token=' + SECRET + ' '), Buffer.from([0xff]), Buffer.from(' RESTMARKER ')])
+  const b = Buffer.from('B'.repeat(SHELL_OUTPUT_CHUNK - 1 - euro.length + 1 - mid.length))
+  const emoji = Buffer.from('🙂')
+  const tail = Buffer.from(' the end\n')
+  const stream = Buffer.concat([a, euro, mid, b, emoji, tail])
+
+  it('N reads concatenate to exactly the full masked stream (multibyte chars on both chunk edges, a secret, invalid bytes)', async () => {
+    const { joined, offset, reads } = await readAll(stream, [SECRET])
+    expect(reads).toBeGreaterThan(2)
+    expect(joined).toBe(stream.toString('utf8').split(SECRET).join('«redacted»'))
+    expect(joined).toContain('RESTMARKER')
+    expect(joined).not.toContain(SECRET.slice(0, 6))
+    expect(offset).toBe(stream.length)
+  })
+  it('the same with no secrets configured', async () => {
+    const { joined, offset, reads } = await readAll(stream, [])
+    expect(reads).toBeGreaterThan(2)
+    expect(joined).toBe(stream.toString('utf8'))
+    expect(offset).toBe(stream.length)
   })
 })

@@ -233,7 +233,9 @@ function shellStatusLines(d: string): string[] {
   ]
 }
 
-/** Status + the output from byte `offset` on (at most `max` bytes). */
+/** Status + the output from byte `offset` on (at most `max` bytes), BASE64 (Task 3 fix round 2:
+ *  bash_output cuts its window in exact bytes — never inside a UTF-8 code point or a secret — which
+ *  needs the bytes themselves, not a lossy UTF-8 decode of them). */
 export function shellOutputCommand(id: string, offset: number, max: number): string {
   const off = Math.max(0, Math.floor(offset))
   const m = Math.max(1, Math.floor(max))
@@ -241,7 +243,7 @@ export function shellOutputCommand(id: string, offset: number, max: number): str
     ...shellStatusLines(shellDir(id)),
     `n=$((sz - ${off})); [ "$n" -gt ${m} ] && n=${m}; [ "$n" -lt 0 ] && n=0`,
     `printf '${SHELL_STATUS_MARK}%s:%s:%s\\n' "$st" "$sz" "$n"`,
-    `[ "$n" -gt 0 ] && tail -c +${off + 1} "$d/out" | head -c "$n"; exit 0`
+    `[ "$n" -gt 0 ] && tail -c +${off + 1} "$d/out" | head -c "$n" | base64 -w0; exit 0`
   ].join('\n')
 }
 
