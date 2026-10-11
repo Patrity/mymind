@@ -18,7 +18,7 @@ import { noteUserReply } from '../signals/write'
 import { deliveriesTick } from '../../channels/outbox'
 import { sendCommand } from '../../bus/commands'
 import { executionMode } from './execution-mode'
-import { onSegmentFinished, replyToWorkstream, sweepStalledWorkstreams, yieldAllSegments } from '../workstreams/loop'
+import { discardSegment, nudgeWaitingWorkstreams, onSegmentFinished, onSegmentHandlerFailed, replyToWorkstream, restoreParkedApprovals, sweepStalledWorkstreams, yieldAllSegments } from '../workstreams/loop'
 import { workstreamForConversation } from '../workstreams/store'
 import type { AgentRun } from '../../../db/schema'
 import type { ReplyTo, RunInput, RunOutcome, RunProfile, RunTrigger, SessionKey } from './types'
@@ -264,7 +264,13 @@ async function execute(run: AgentRun, runFn: RunFn, rekick: boolean, wallClockMs
     // Cycle 81: a workstream segment decides its successor (done / attention / budget / retry …)
     // BEFORE the steer requeue below — Tony's unread words become the next segment's prompt, not a
     // chat turn. Fenced like the job outcome: a recovered row is recovery's to continue.
-    if (finished && run.kind === 'workstream') await onSegmentFinished(run, outcome).catch(err => console.error('[runtime] workstream step failed:', err))
+    if (finished && run.kind === 'workstream') {
+      await onSegmentFinished(run, outcome).catch(async (err) => {
+        console.error('[runtime] workstream step failed:', err)
+        // Counted toward the failure cap (review M8): a transition that throws every time must end.
+        await onSegmentHandlerFailed(run, err).catch(e => console.error('[runtime] recording the workstream failure failed:', e))
+      })
+    } else if (run.kind === 'workstream') discardSegment(run.id) // fenced: recovery continues it (review M6)
     // Every terminal outcome, not only 'aborted' (Task 8 review ruling — overrides spec §4.4's
     // abort-only wording): a steer that arrived during the last step's generation, or in the
     // gap between runFn returning and finishRun committing, is just as unread as one orphaned
@@ -447,6 +453,10 @@ export async function workerTick(opts: {
       // Cycle 81: a workstream that should be moving but has no segment (a crash between a segment's
       // finish and its successor's insert) gets its next one — the kick below claims it.
       try { await sweepStalledWorkstreams() } catch (err) { console.error('[runtime] workstream sweep failed:', err) }
+      // Approval cards parked across a drain/crash come back on this worker (review I1) — the first
+      // tick after boot — and a long wait on Tony is re-announced at most every 2h (review M1).
+      try { await restoreParkedApprovals() } catch (err) { console.error('[runtime] restoring parked approvals failed:', err) }
+      try { await nudgeWaitingWorkstreams() } catch (err) { console.error('[runtime] workstream nudge failed:', err) }
       // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).
       // Started, not awaited (single-flight): a slow send never delays this tick.
       startDeliveries()

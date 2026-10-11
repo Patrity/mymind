@@ -7,7 +7,20 @@ export interface WorkstreamBudget { maxSteps: number; maxWallMs: number }
  *  approval card — attention, queue waits and worker downtime never count (see loop.ts). */
 export interface WorkstreamUsed { steps: number; wallMs: number; inputTokens: number; outputTokens: number; costUsd: number }
 
-export interface WorkstreamAttention { kind: 'question' | 'approval'; text: string; requestId?: string }
+/** What a card needs to be shown again after a restart (review I1) — the card's own fields plus the
+ *  log summary. Args/callId stay out: a restored card is answered, then the model re-issues the call. */
+export interface StoredApprovalRequest { tool: string; command: string; proposedPattern: string; allowlistable?: boolean; title?: string; logSummary?: string }
+
+export interface WorkstreamAttention {
+  kind: 'question' | 'approval'
+  text: string
+  requestId?: string
+  /** approval: the segment run that asked, and the request (restorable). */
+  runId?: string
+  request?: StoredApprovalRequest
+  /** When Tony was last told about it (epoch ms) — the 2h "still waiting" nudge (review M1). */
+  notifiedAt?: number
+}
 
 export interface WorkstreamDTO {
   id: string

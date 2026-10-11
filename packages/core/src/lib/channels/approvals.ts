@@ -23,6 +23,9 @@ import { imessageClient, type BlueBubblesClient } from './bluebubbles/client'
 import type { TapbackEvent } from './types'
 
 export const APPROVAL_TIMEOUT_MS = 600_000
+/** Abort reason for a prompt WITHDRAWN rather than stopped (cycle 81 workstreams: the card answered
+ *  first, or the worker is restarting) — its row is closed as `expired`, not `denied`. */
+export const APPROVAL_WITHDRAWN = 'withdrawn'
 const DEFAULT_POLL_MS = 5_000
 
 type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
@@ -162,6 +165,11 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
     // and the run unwinds without waiting on the database. The audit row follows in the
     // background: denied, even over an `approved` that 👍 wrote first (nothing ran).
     const onAbort = () => {
+      if (signal?.reason === APPROVAL_WITHDRAWN) {
+        finish('expired')
+        settle(id, 'expired').catch(err => console.warn(`[channels] approval ${id} withdraw failed:`, err instanceof Error ? err.message : err))
+        return
+      }
       finish('denied')
       denyOnAbort(id)
         .catch(err => console.warn(`[channels] approval ${id} cancel failed:`, err instanceof Error ? err.message : err))

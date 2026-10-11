@@ -52,6 +52,14 @@ export function workstreamLink(id: string): string {
   return `${base}${workstreamPath(id)}`
 }
 
+/** An event row in the origin chat only (no text) — e.g. an approval card is waiting (its own
+ *  iMessage prompt covers the phone). Never throws. */
+export async function noteOrigin(ws: Pick<WorkstreamRow, 'id' | 'originConversationId'>, text: string): Promise<void> {
+  if (!ws.originConversationId) return
+  await appendEvent(ws.originConversationId, `${text}\n${workstreamPath(ws.id)}`, `workstream:${ws.id}`)
+    .catch(err => console.error('[workstreams] origin note failed:', err))
+}
+
 /**
  * Tell Tony: the origin conversation gets an event row with the link; when he is away, his phone
  * gets a text too. Never throws (a notification must not fail the workstream's own transition).

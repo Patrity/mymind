@@ -64,6 +64,19 @@ export async function openApprovalFrames(conversationId: string): Promise<Array<
     if (f.type === 'approval') open.set(f.requestId, { frame: clientApprovalFrame(f), runId: r.runId, seq: r.seq })
     else if (f.type === 'approval-resolved') open.delete(f.requestId)
   }
+  // Cycle 81 (workstreams, review I1): a card PARKED across a worker restart has no running run — its
+  // source of truth is the workstream's attention (restored by the worker, workstreams/loop.ts). Shown
+  // on the workstream's thread and the chat it was started from, while no segment is running.
+  const parked = await useDb().execute(sql`
+    select w.attention from workstreams w
+    where (w.conversation_id = ${conversationId}::uuid or w.origin_conversation_id = ${conversationId}::uuid)
+      and w.state = 'attention' and w.attention->>'kind' = 'approval' and w.attention ? 'request'
+      and not exists (select 1 from agent_runs r where r.conversation_id = w.conversation_id
+                      and r.kind = 'workstream' and r.status = 'running')`)
+  for (const { attention } of parked.rows as Array<{ attention: { requestId?: string; runId?: string; request?: Parameters<typeof clientApprovalFrame>[0] } }>) {
+    if (!attention.requestId || !attention.request || open.has(attention.requestId)) continue
+    open.set(attention.requestId, { frame: clientApprovalFrame({ ...attention.request, requestId: attention.requestId }), runId: attention.runId ?? '', seq: 0 })
+  }
   return [...open.values()]
 }
 

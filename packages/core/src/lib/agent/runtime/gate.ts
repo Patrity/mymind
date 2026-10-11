@@ -24,17 +24,19 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   // gmail_draft (cycle 79): creates an unsent draft (undo deletes it) — nothing leaves the
   // mailbox, so it runs headless; sending is gmail_send, which is dangerous and excluded.
   'gmail_draft',
-  // workstreams (cycle 81, spec §5.3): start_workstream creates new unattended work in its own thread
-  // (nothing existing is touched; outbound, so a tainted run needs approval); finish_workstream and
-  // ask_tony only report to Tony from inside a workstream.
-  'start_workstream', 'finish_workstream', 'ask_tony'
+  // workstreams (cycle 81, spec §5.3): finish_workstream and ask_tony only report to Tony from inside
+  // a workstream; answer_workstream passes his own words on (review I3 ruling).
+  'finish_workstream', 'ask_tony', 'answer_workstream'
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
   // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run
   'gmail_modify',
   // calendar_write_event (cycle 79): edits/deletes Tony's own events (no guests, nobody notified)
   // — in a headless run Tony approves it as a proposal
-  'calendar_write_event'])
+  'calendar_write_event',
+  // start_workstream (cycle 81, review I2 ruling): a background run must not spawn hours of new
+  // unattended work on its own — Tony approves it as a proposal (replay starts it).
+  'start_workstream'])
 
 // Tools that run headless DESPITE being `destructive`-kind — checked BEFORE the destructive rule
 // below, so they never fall into 'propose'. Currently just delete_job: spec D2 says job

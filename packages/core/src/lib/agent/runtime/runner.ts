@@ -180,6 +180,8 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
           liveAssistantText += e.text
         }
       }
+      // Idle-segment detection (workstreams/loop.ts, review M3) counts completed tool calls.
+      if (e.type === 'tool' && seg) seg.toolCalls++
       if (e.type === 'reasoning') reasoningText += e.text
       // Overwrite, not accumulate: at most one usage event per turn in the common
       // case, and if the rare forced-final recovery path (run.ts) yields a second

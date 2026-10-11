@@ -21,7 +21,9 @@ import { pruneHandledCommands } from '@mymind/core/lib/bus/commands'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation, appendMessages } from '@mymind/core/services/conversations'
-import { controlWorkstream, startWorkstream, sweepStalledWorkstreams } from '@mymind/core/lib/agent/workstreams/loop'
+import { controlWorkstream, nudgeWaitingWorkstreams, onSegmentHandlerFailed, restoreParkedApprovals, routeInboundAnswer, startWorkstream, sweepStalledWorkstreams, WorkstreamCapError } from '@mymind/core/lib/agent/workstreams/loop'
+import { pushSteer } from '@mymind/core/lib/agent/runtime/inbox'
+import { replayAgentAction } from '@mymind/core/lib/agent/runtime/replay'
 import { getWorkstream, patchWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
 import { startWorkstreamTool } from '@mymind/core/lib/agent/tools/workstreams'
@@ -107,7 +109,8 @@ function harness(script: Script) {
 async function newWorkstream(goal: string, budget?: { maxSteps?: number; maxWallMs?: number }) {
   const origin = await createConversation({ title: `T5 origin ${goal}` })
   convIds.push(origin.id)
-  const ws = await startWorkstream({ goal: `T5 ${goal}`, originConversationId: origin.id, budget }, { kick: false })
+  // cap: the active-workstream cap counts every workstream on the shared dev DB; the cap test sets its own.
+  const ws = await startWorkstream({ goal: `T5 ${goal}`, originConversationId: origin.id, budget }, { kick: false, cap: 1000 })
   convIds.push(ws.conversationId)
   return { ws, origin: origin.id }
 }
@@ -142,6 +145,7 @@ describe('workstreams', () => {
         const leaked = (refused as { conversationId?: string }).conversationId
         if (leaked) convIds.push(leaked)
         for (let i = 0; i < 3 && !ctx.shouldStop?.(); i++) step(ctx)
+        yield { type: 'tool-result', name: 'search_memories', summary: 'found 2' } // a real tool call: not idle
         yield { type: 'text-delta', text: 'PROGRESS-ONE' }
       } else {
         step(ctx, 20, 7)
@@ -243,7 +247,7 @@ describe('workstreams', () => {
     await drive(ws.conversationId)
     let row = (await getWorkstream(ws.id))!
     expect(row.state).toBe('attention')
-    expect(row.attention).toEqual({ kind: 'question', text: 'Synology or QNAP?' })
+    expect(row.attention).toEqual({ kind: 'question', text: 'Synology or QNAP?', notifiedAt: expect.any(Number) })
     expect(await activeSegs(ws.conversationId)).toEqual([])
     expect(seen).toHaveLength(1)
     expect(texts.join('\n')).toContain('Synology or QNAP?')
@@ -445,6 +449,257 @@ describe('workstreams', () => {
     expect(await sweepStalledWorkstreams({ onlyConversations: [ws.conversationId] })).toBe(1)
     expect((await activeSegs(ws.conversationId)).map(r => (r.input as { eventOrigin?: string }).eventOrigin)).toEqual(['segment:restarted'])
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+})
+
+// ── fix round 1 (review task-5-review.md) ─────────────────────────────────────────────────────
+
+const req1 = (): ApprovalRequest => ({ tool: 'exec', command: `t5-park-${process.pid}`, proposedPattern: 'x', allowlistable: false })
+async function waitForApproval(wsId: string) {
+  return until(async () => {
+    const r = await getWorkstream(wsId)
+    const a = r?.attention as { kind?: string; requestId?: string } | null
+    return a?.kind === 'approval' && a.requestId && pendingBusApprovals().includes(a.requestId) ? r : null
+  })
+}
+/** A dead worker's 'running' row for the workstream's current segment (or a fresh one). */
+async function killSegment(convId: string, runId?: string) {
+  const id = runId ?? (await useDb().insert(agentRuns).values({
+    conversationId: convId, sessionKey: `thread:${convId}`, trigger: 'user', profile: 'interactive', kind: 'workstream', input: { text: 'x', modality: 'text' }
+  }).returning())[0]!.id
+  await useDb().update(agentRuns).set({ status: 'running', owner: 'dead-boot', claimedAt: sql`now() - interval '5 minutes'`, aliveAt: sql`now() - interval '5 minutes'` }).where(eq(agentRuns.id, id))
+  return id
+}
+
+describe('fix round 1', () => {
+  it('I1: a drain while parked on a card PARKS it (no interruption), the next worker restores the card, and the decision resumes with that exact call pre-approved', async () => {
+    let answers: Array<{ approved: boolean }> = []
+    const { seen, runFn, drive } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) {
+        answers.push(await ctx.requestApproval!(req1()))
+        for (let i = 0; i < 3 && !ctx.shouldStop?.(); i++) step(ctx) // must never be reached on park
+      } else {
+        answers.push(await ctx.requestApproval!(req1()))   // re-issued: approved at once, no card
+        await callTool(ctx, 'finish_workstream', { summary: 'done after restart' })
+      }
+      yield { type: 'done' }
+    })
+    const { ws, origin } = await newWorkstream('park')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
+    const waitingRow = await waitForApproval(ws.id)
+    const att = waitingRow.attention as { requestId: string; runId: string; request: { command: string } }
+    expect(att.request.command).toBe(req1().command)
+    expect(iApprovals).toHaveLength(1)
+    stopClaiming()
+    try { expect(await waitForInFlight(10_000)).toBe(true) } finally { _resumeClaimingForTests() }
+    expect(iApprovals[0]!.signal.reason).toBe('withdrawn')   // the old iMessage prompt is withdrawn, not denied
+    expect(answers).toEqual([{ approved: false }])            // the dead tool call; the model never saw a step after it
+    const parked = (await getWorkstream(ws.id))!
+    expect(parked).toMatchObject({ state: 'attention', lastOutcome: 'parked', failures: 0 })
+    expect((parked.attention as { requestId: string }).requestId).toBe(att.requestId)
+    expect((await segRuns(ws.conversationId)).map(r => r.status)).toEqual(['aborted'])
+    expect((parked.used as { steps: number }).steps).toBe(1)
+
+    // The next worker: the card is back, on both threads, decided through the usual path.
+    expect(await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })).toBe(1)
+    expect(await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })).toBe(0) // idempotent
+    expect(pendingBusApprovals()).toContain(att.requestId)
+    expect((await openApprovalFrames(ws.conversationId)).map(f => f.frame.requestId)).toEqual([att.requestId])
+    expect((await openApprovalFrames(origin)).map(f => f.frame.requestId)).toEqual([att.requestId])
+    expect(iApprovals).toHaveLength(2)                       // away: a fresh iMessage prompt
+    expect(decideBusApproval({ requestId: att.requestId, approved: true })).toBe(true)
+    const next = await until(async () => (await activeSegs(ws.conversationId))[0])
+    expect(next.input).toMatchObject({ eventOrigin: 'segment:approved', preapproved: { tool: 'exec', command: req1().command } })
+    expect(iApprovals[1]!.signal.aborted).toBe(true)
+    expect(await openApprovalFrames(origin)).toEqual([])
+    await drive(ws.conversationId)
+    expect(answers).toEqual([{ approved: false }, { approved: true }])
+    expect(seen).toHaveLength(2)
+    expect((await getWorkstream(ws.id))!.state).toBe('done')
+  })
+
+  it('I1: a worker that dies while parked on a card never counts it as an interruption — four times over', async () => {
+    const { ws } = await newWorkstream('park-crash')
+    const [q] = await segRuns(ws.conversationId)
+    await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.id, q!.id))
+    for (let i = 0; i < 4; i++) {
+      const runId = await killSegment(ws.conversationId)
+      await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'approval', text: 'run it?', requestId: `00000000-0000-4000-8000-00000000000${i}`, runId, request: { tool: 'exec', command: 'x', proposedPattern: 'x' } } })
+      await recoverStale({ onlyConversations: [ws.conversationId] })
+      expect(await getWorkstream(ws.id)).toMatchObject({ state: 'attention', failures: 0, lastOutcome: 'parked' })
+    }
+    expect(await activeSegs(ws.conversationId)).toEqual([])
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M9: cancel while parked on a live card denies it, the step ends, cancelled', async () => {
+    let answer: { approved: boolean } | undefined
+    const { runFn } = harness(async function* (ctx) {
+      step(ctx)
+      answer = await ctx.requestApproval!(req1())
+      for (let i = 0; i < 3 && !ctx.shouldStop?.(); i++) step(ctx)
+      yield { type: 'done' }
+    })
+    const { ws } = await newWorkstream('cancel-card')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
+    await waitForApproval(ws.id)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    expect(await waitForInFlight(10_000)).toBe(true)
+    expect(answer).toEqual({ approved: false })
+    const row = (await getWorkstream(ws.id))!
+    expect(row.state).toBe('cancelled')
+    expect((row.used as { steps: number }).steps).toBe(1)
+    expect(iApprovals[0]!.signal.aborted).toBe(true)
+  })
+
+  it('I2: at the cap a new workstream is refused with a clear error; a headless proposal replays into a real start', async () => {
+    const open = (await useDb().select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, ['queued', 'running', 'attention']))).length
+    const { ws } = await newWorkstream('cap-1')
+    await expect(startWorkstream({ goal: 'T5 cap-2' }, { kick: false, cap: open + 1 })).rejects.toThrow(WorkstreamCapError)
+    await expect(startWorkstream({ goal: 'T5 cap-2' }, { kick: false, cap: open + 1 })).rejects.toThrow(/already \d+ workstreams in progress.*T5 cap-1/)
+    expect((await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 cap-2')))).toHaveLength(0)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    // Approving the /review proposal runs the stored call (start_workstream is profile-only).
+    const out = await replayAgentAction({ tool: 'start_workstream', args: { goal: 'T5 replayed' } })
+    const [made] = await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 replayed'))
+    if (made) convIds.push(made.conversationId)
+    expect(out).toMatchObject({ ok: true })
+    expect(made).toBeDefined()
+    await controlWorkstream({ workstreamId: made!.id, action: 'cancel' })
+  })
+
+  it('I3: an iMessage with exactly ONE workstream waiting on a question is its answer (main gets a note); with two it is not routed', async () => {
+    const { seen, drive } = harness(async function* (ctx, _m, seg) {
+      step(ctx)
+      if (seg === 0) await callTool(ctx, 'ask_tony', { question: 'Which brand?' })
+      else await callTool(ctx, 'finish_workstream', { summary: 'ok' })
+      yield { type: 'done' }
+    })
+    const a = await newWorkstream('route-a')
+    await drive(a.ws.conversationId)
+    expect(texts.join('\n')).toMatch(/Which brand\?[\s\S]*Reply to answer\./)
+    const main = await createConversation({ title: 'T5 stand-in main' })
+    convIds.push(main.id)
+    const r = await routeInboundAnswer({ text: 'Synology', modality: 'text', origin: 'imessage:chat-x' }, { mainConversationId: main.id, onlyConversations: [a.ws.conversationId] })
+    expect(r).toMatchObject({ workstreamId: a.ws.id })
+    expect((await thread(main.id)).map(m => [m.origin, m.content])).toEqual([[`workstream:${a.ws.id}`, 'answered ⚙ T5 route-a: Synology']])
+    await drive(a.ws.conversationId)
+    expect(seen[1]!.last).toBe('Synology')
+    expect((await thread(a.ws.conversationId)).find(m => m.role === 'user')).toMatchObject({ content: 'Synology', origin: 'imessage:chat-x' })
+
+    // Two waiting: not routed.
+    const b = await newWorkstream('route-b')
+    const c = await newWorkstream('route-c')
+    for (const x of [b, c]) await patchWorkstream(x.ws.id, { state: 'attention', attention: { kind: 'question', text: 'q?' } })
+    expect(await routeInboundAnswer({ text: 'hm', modality: 'text' }, { mainConversationId: main.id, onlyConversations: [b.ws.conversationId, c.ws.conversationId] })).toBeNull()
+    for (const x of [b, c]) await controlWorkstream({ workstreamId: x.ws.id, action: 'cancel' })
+  })
+
+  it('I3: answer_workstream (Bridget) passes the answer on; refused inside a workstream', async () => {
+    const { ws } = await newWorkstream('answer-tool')
+    const [q] = await segRuns(ws.conversationId)
+    await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.id, q!.id))
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'which?' } })
+    const { bridgetProfile } = await import('@mymind/core/lib/agent/profile')
+    const tool = bridgetProfile.tools.find(t => t.name === 'answer_workstream')!
+    const out = await tool.handler({ id: ws.id, text: 'the blue one' }, { signal: new AbortController().signal })
+    expect(out.result).toMatchObject({ ok: true })
+    expect((await activeSegs(ws.conversationId)).map(r => (r.input as { text: string }).text)).toEqual(['the blue one'])
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', attention: null })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M3: two idle segments in a row (no tool call, no finish) → attention "Is this done?" instead of burning the budget', async () => {
+    const { seen, drive } = harness(async function* (ctx) {
+      step(ctx)
+      yield { type: 'text-delta', text: 'I think it is done.' }
+      yield { type: 'done' }
+    })
+    const { ws } = await newWorkstream('idle')
+    await drive(ws.conversationId)
+    expect(seen).toHaveLength(2)
+    expect(seen[1]!.last).toMatch(/no tool calls in the last segment/)
+    const row = (await getWorkstream(ws.id))!
+    expect(row.state).toBe('attention')
+    expect((row.attention as { text: string }).text).toMatch(/Is this done\?/)
+    expect(texts.join('\n')).toMatch(/Is this done\?/)
+    expect(await activeSegs(ws.conversationId)).toEqual([])
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M6: a segment whose finish was fenced off (recovered elsewhere) does not blind the stalled sweep', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    let started!: () => void
+    const begun = new Promise<void>(r => { started = r })
+    const { runFn } = harness(async function* (ctx) {
+      step(ctx)
+      started()
+      await gate
+      yield { type: 'done' }
+    })
+    const { ws } = await newWorkstream('fenced')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
+    await begun
+    await useDb().update(agentRuns).set({ status: 'interrupted', finishedAt: sql`now()` }).where(eq(agentRuns.conversationId, ws.conversationId))
+    release()
+    expect(await waitForInFlight(10_000)).toBe(true)
+    expect(await sweepStalledWorkstreams({ onlyConversations: [ws.conversationId], graceMs: 0 })).toBe(1)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M7: words Tony sent to a segment that died while asking become the answer', async () => {
+    const { ws } = await newWorkstream('steer-answer')
+    const [q] = await segRuns(ws.conversationId)
+    const runId = await killSegment(ws.conversationId, q!.id)
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'which?' } })
+    await useDb().update(agentRuns).set({ aliveAt: sql`now()` }).where(eq(agentRuns.id, runId))
+    expect(await pushSteer(runId, ws.conversationId, 'the red one', 'user')).toBe(true)
+    await useDb().update(agentRuns).set({ aliveAt: sql`now() - interval '5 minutes'` }).where(eq(agentRuns.id, runId))
+    await recoverStale({ onlyConversations: [ws.conversationId] })
+    expect((await activeSegs(ws.conversationId)).map(r => (r.input as { text: string }).text)).toEqual(['the red one'])
+    expect((await useDb().select().from(agentRuns).where(and(eq(agentRuns.conversationId, ws.conversationId), eq(agentRuns.kind, 'turn')))).length).toBe(0)
+    expect(await getWorkstream(ws.id)).toMatchObject({ state: 'running', attention: null })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M8: a transition that keeps throwing counts toward the 3-failure cap', async () => {
+    const { ws } = await newWorkstream('handler-fail')
+    const [q] = await segRuns(ws.conversationId)
+    for (let i = 0; i < 3; i++) await onSegmentHandlerFailed(q!, new Error('transition broke'))
+    const row = (await getWorkstream(ws.id))!
+    expect(row).toMatchObject({ state: 'failed', failures: 3 })
+    expect(row.failureReason).toMatch(/transition broke/)
+  })
+
+  it('M1: a wait on Tony is re-announced at most every 2h through the usual channels', async () => {
+    const { ws, origin } = await newWorkstream('nudge')
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'which?', notifiedAt: Date.now() - 3 * 60 * 60 * 1000 } })
+    expect(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId] })).toBe(1)
+    expect(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId] })).toBe(0)
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toMatch(/Still waiting on you[\s\S]*which\?/)
+    expect((await thread(origin)).filter(m => m.origin === `workstream:${ws.id}`)).toHaveLength(1)
+    away = false
+    await patchWorkstream(ws.id, { attention: { kind: 'question', text: 'which?', notifiedAt: 0 } })
+    expect(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId] })).toBe(1)
+    expect(texts).toHaveLength(1)                            // present: the app note only
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('M1: an approval wait posts a note in the origin chat too', async () => {
+    const { runFn } = harness(async function* (ctx) {
+      step(ctx)
+      await ctx.requestApproval!(req1())
+      yield { type: 'done' }
+    })
+    const { ws, origin } = await newWorkstream('approval-note')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
+    await waitForApproval(ws.id)
+    await until(async () => (await thread(origin)).some(m => m.origin === `workstream:${ws.id}` && m.content.includes('waiting for your approval')))
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+    expect(await waitForInFlight(10_000)).toBe(true)
   })
 })
 

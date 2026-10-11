@@ -23,29 +23,37 @@
 // tools module is reached from here through a cycle (notify → channels → queue → runner → profile).
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
-import { agentRuns, conversationMessages, workstreams, type AgentRun } from '../../../db/schema'
-import { createConversation } from '../../../services/conversations'
+import { agentRuns, channelApprovals, conversationMessages, conversations, workstreams, type AgentRun } from '../../../db/schema'
+import { publishChange } from '../../../utils/live-bus'
 import { createRun } from '../runtime/runs'
 import { abortRun } from '../runtime/aborts'
 import { drainSteerFor, pushSteer } from '../runtime/inbox'
-import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
-import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
+import { busApprovalChannel, decideBusApproval, dropDetachedApproval, pendingBusApprovals, registerDetachedApproval } from '../runtime/bus-approvals'
+import { clientApprovalFrame, createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
+import { APPROVAL_WITHDRAWN } from '../../channels/approvals'
 import { parseToolsetIds } from '../toolsets'
 import type { ApprovalRequest } from '../types'
 import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
 import {
-  BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES,
+  BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, type StoredApprovalRequest, type WorkstreamAttention,
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
-  budgetOf, exhausted, getWorkstream, insertWorkstream, patchWorkstream, publishWorkstream, toWorkstreamDTO, usedOf,
+  budgetOf, exhausted, getWorkstream, patchWorkstream, publishWorkstream, toWorkstreamDTO, usedOf,
   workstreamForConversation, type WorkstreamRow
 } from './store'
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
-import { notifyTony, workstreamNotifyDeps } from './notify'
+import { noteOrigin, notifyTony, workstreamNotifyDeps } from './notify'
 import { stepCostUsd } from './cost'
+
+/** Non-terminal workstreams at once (review I2, controller ruling): bounds fan-out through jobs/wakes. */
+export const MAX_ACTIVE_WORKSTREAMS = 3
+export class WorkstreamCapError extends Error { override name = 'WorkstreamCapError' }
+/** A workstream still waiting on Tony is re-announced at most this often (review M1). */
+export const NUDGE_EVERY_MS = 2 * 60 * 60 * 1000
+/** Two consecutive segments with no tool call and no finish_workstream → ask Tony (review M3). */
 
 /** Model steps per segment (spec §5.2). */
 export const SEGMENT_MAX_STEPS = 40
@@ -57,7 +65,7 @@ export const WALL_HARD_GRACE_MS = 60_000
 export const FINAL_STEP_MAX_MS = 10 * 60_000
 
 type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
-type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield'
+type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield' | 'park'
 const RUNNABLE: Array<WorkstreamRow['state']> = ['queued', 'running', 'attention']
 
 function isTerminal(state: WorkstreamRow['state']): boolean { return TERMINAL_WORKSTREAM_STATES.includes(state) }
@@ -93,11 +101,17 @@ export interface Segment {
   maxSteps: number
   promptInfo: WorkstreamPromptInfo
   stop: StopReason | null
+  /** Tool calls that completed in this segment (idle-segment detection). */
+  toolCalls: number
   shouldStop(): boolean
   onStep(u: StepUsage): void
   /** The run's approval channel: the card on the workstream thread, mirrored into the origin chat,
    *  raced with the iMessage prompt when Tony is away — no timeout (spec §5.4). */
   approvalChannel(o: { publish: (f: HubFrame) => void; signal: AbortSignal }): Channel
+  /** Drain while parked on an approval card (review I1): keep the request on the workstream
+   *  (attention {approval}), withdraw the iMessage prompt, and abort the run — the next worker
+   *  restores the card (restoreParkedApprovals). False when nothing is waiting. */
+  park(): boolean
   /** Stop the clocks, persist the final `used`, close the origin mirror. Idempotent. */
   end(): Promise<void>
 }
@@ -113,7 +127,17 @@ export function segmentForRun(runId: string | undefined): Segment | undefined {
 /** Drain (SIGTERM): every segment executing here stops after its current step, ends normally, and
  *  the next segment is queued for the next worker — nothing is interrupted mid-step. */
 export function yieldAllSegments(): void {
-  for (const s of active.values()) s.stop ??= 'yield'
+  for (const s of active.values()) {
+    // Parked on a card: no step boundary is coming — park instead (it never counts as a failure).
+    if (!s.park()) s.stop ??= 'yield'
+  }
+}
+
+/** finishRun was fenced (another process recovered the row): onSegmentFinished never runs for it
+ *  here, so forget the segment — otherwise the stalled sweep would skip its workstream forever. */
+export function discardSegment(runId: string): void {
+  active.delete(runId)
+  ended.delete(runId)
 }
 
 /**
@@ -133,6 +157,9 @@ export async function beginSegment(run: AgentRun): Promise<Segment> {
   // Budget already gone (e.g. the step that used it up was the last thing before a restart): this
   // segment becomes the final summary step.
   let final = ws.failureReason ?? exhausted(ws)
+  // A card parked over a restart that this segment did not come from (Tony replied instead of
+  // deciding it): withdrawn — the model can ask again.
+  if (attentionOf(ws)?.kind === 'approval') await releaseParked(ws)
   const patched = await patchWorkstream(ws.id, {
     state: 'running', currentRunId: run.id, attention: null,
     ...(final && !ws.failureReason ? { failureReason: final } : {})
@@ -160,6 +187,10 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   const waiting = new Map<string, AbortController>()   // approval requestId → its iMessage race
   let mirror: RunEventWriter | null = null
   let done = false
+  let parking = false
+  // A decision Tony made on a PARKED card (restoreParkedApprovals): the same call, re-issued by the
+  // model in this segment, is approved without asking twice — once.
+  let preapproved = (run.input as RunInput).preapproved ?? null
 
   const wallNow = () => base.wallMs + activeMs + (activeSince !== null ? Date.now() - activeSince : 0)
   const hardLimit = o.final ? base.wallMs + FINAL_STEP_MAX_MS : budget.maxWallMs + WALL_HARD_GRACE_MS
@@ -180,6 +211,12 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   const pause = () => { if (activeSince !== null) { activeMs += Date.now() - activeSince; activeSince = null } clearHard() }
   const resume = () => { if (activeSince === null && !done) { activeSince = Date.now(); armHard() } }
 
+  /** Every write of this segment goes through ONE chain, in issue order (review M2): an attention
+   *  set can never land after the clear that followed it. */
+  const serial = (fn: () => Promise<unknown>): Promise<void> => {
+    chain = chain.then(async () => { await fn() }).catch(err => console.error('[workstreams] segment write failed:', err))
+    return chain
+  }
   /** Persist `used` (serialized; the newest snapshot wins). Reads back cancel_requested: a cancel sent
    *  from anywhere is seen at the next step even if the command never reached this process. */
   const checkpoint = (): Promise<void> => {
@@ -200,6 +237,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     maxSteps: o.final ? 1 : Math.max(1, Math.min(SEGMENT_MAX_STEPS, budget.maxSteps - base.steps)),
     promptInfo: promptInfo(ws, o.final ? ws.failureReason : null),
     stop: null,
+    toolCalls: 0,
     shouldStop() {
       if (seg.stop) return true
       if (o.final) return false
@@ -236,32 +274,53 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
             pause()
             void checkpoint()
             const text = req ? approvalText(req) : 'An action needs your approval.'
-            void patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'approval', text, requestId } }, ['running', 'attention'])
-              .catch(err => console.error('[workstreams] attention update failed:', err))
+            // The request itself is kept on the row (review I1): a drain or crash can restore the card.
+            const attention: ParkedAttention = { kind: 'approval', text, requestId, runId: run.id, notifiedAt: Date.now(), ...(req ? { request: storedRequest(req) } : {}) }
+            void serial(async () => {
+              const row = await patchWorkstream(ws.id, { state: 'attention', attention }, ['running', 'attention'])
+              // The chat it came from hears about it too (review M1), not only the card.
+              if (row) await noteOrigin(row, `⚙ Workstream waiting for your approval — ${row.goal}\n${text}`)
+            })
             // Away: the iMessage prompt too. Whichever answers first decides; the other is withdrawn.
             if (req) void startAwayApproval(run.id, requestId, req, race.signal)
           } else {
-            waiting.get(requestId)?.abort()
+            waiting.get(requestId)?.abort(APPROVAL_WITHDRAWN)
             waiting.delete(requestId)
-            if (!waiting.size) {
+            // Parking (drain): the card is being kept for the next worker — leave attention as it is.
+            if (!waiting.size && !parking) {
               resume()
-              void patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention'])
-                .catch(err => console.error('[workstreams] attention clear failed:', err))
+              void serial(() => patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention']))
             }
           }
         }
       })
-      return (req) => { current = req; return bus(req) }
+      return (req) => {
+        if (preapproved && req.tool === preapproved.tool && req.command === preapproved.command) {
+          preapproved = null
+          return Promise.resolve({ approved: true })
+        }
+        current = req
+        return bus(req)
+      }
+    },
+    park() {
+      if (!waiting.size || done) return false
+      parking = true
+      seg.stop = 'park'
+      for (const r of waiting.values()) r.abort(APPROVAL_WITHDRAWN)
+      abortRun(run.id)
+      return true
     },
     async end() {
       if (done) return
       pause()
       done = true
       clearHard()
-      for (const r of waiting.values()) r.abort()
+      for (const r of waiting.values()) r.abort(APPROVAL_WITHDRAWN)
       waiting.clear()
       await Promise.all(costs)
       if (!o.skip) await checkpoint()
+      await chain
       if (mirror) await mirror.close().catch(err => console.error('[workstreams] origin mirror flush failed:', err))
       active.delete(run.id)
       ended.set(run.id, seg)
@@ -293,9 +352,11 @@ async function startAwayApproval(runId: string, requestId: string, req: Approval
 
 /** Queue the next segment. Null when one is already queued or running (the unique index): a
  *  continuation is then redundant, and Tony's words are folded into the queued one. */
-async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOrigin?: string; attachments?: RunInput['attachments'] }): Promise<string | null> {
+async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOrigin?: string; attachments?: RunInput['attachments']; origin?: string; preapproved?: RunInput['preapproved'] }): Promise<string | null> {
   const runInput: RunInput = {
     text: input.text, modality: 'text',
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.preapproved ? { preapproved: input.preapproved } : {}),
     ...(input.eventOrigin ? { eventOrigin: input.eventOrigin } : {}),
     ...(input.attachments?.length ? { attachments: input.attachments } : {}),
     ...(ws.toolsets.length ? { toolsets: ws.toolsets } : {})
@@ -337,15 +398,28 @@ async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string |
  */
 export async function startWorkstream(i: {
   goal: string; toolsets?: string[]; budget?: Partial<WorkstreamBudget>; originConversationId?: string | null
-}, deps: { kick?: boolean } = {}): Promise<WorkstreamDTO> {
+}, deps: { kick?: boolean; /** test seam (the dev DB is shared) */ cap?: number } = {}): Promise<WorkstreamDTO> {
   const goal = i.goal.trim()
   if (!goal) throw new Error('a workstream needs a goal')
   const oneLine = goal.replace(/\s+/g, ' ')
-  const conv = await createConversation({ title: `⚙ ${oneLine.length <= 70 ? oneLine : `${oneLine.slice(0, 69).trimEnd()}…`}` })
-  const ws = await insertWorkstream({
-    conversationId: conv.id, originConversationId: i.originConversationId ?? null, goal,
-    toolsets: parseToolsetIds(i.toolsets ?? []), budget: clampBudget(i.budget)
+  const cap = deps.cap ?? MAX_ACTIVE_WORKSTREAMS
+  // The cap (review I2, controller ruling): count and insert under one advisory lock, so two starts
+  // racing (jobs/wakes firing together) can't both slip under it.
+  const ws = await useDb().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:workstreams:start'))`)
+    const open = await tx.select({ goal: workstreams.goal }).from(workstreams).where(inArray(workstreams.state, RUNNABLE))
+    if (open.length >= cap) {
+      throw new WorkstreamCapError(`There are already ${open.length} workstreams in progress (the limit is ${cap}): ${open.map(o => `"${o.goal.length > 60 ? `${o.goal.slice(0, 59)}…` : o.goal}"`).join(', ')}. Tell Tony — one has to finish or be cancelled before another can start.`)
+    }
+    const [conv] = await tx.insert(conversations).values({ title: `⚙ ${oneLine.length <= 70 ? oneLine : `${oneLine.slice(0, 69).trimEnd()}…`}` }).returning({ id: conversations.id })
+    const [row] = await tx.insert(workstreams).values({
+      conversationId: conv!.id, originConversationId: i.originConversationId ?? null, goal, state: 'queued', used: ZERO_USED,
+      toolsets: parseToolsetIds(i.toolsets ?? []), budget: clampBudget(i.budget)
+    }).returning()
+    return row!
   })
+  publishChange({ resource: 'conversation', action: 'created', id: ws.conversationId })
+  publishWorkstream(ws.id, 'created')
   await enqueueWhy(ws, 'start')
   if (deps.kick !== false) await kick()
   return toWorkstreamDTO((await getWorkstream(ws.id)) ?? ws)
@@ -372,8 +446,10 @@ export async function replyToWorkstream(ws: WorkstreamRow, input: RunInput): Pro
     }
     // No segment (attention, stalled), or attachments/skill that can't ride a steer: its own segment
     // (with one already there, enqueueSegment folds the text into a queued one instead).
-    const runId = await enqueueSegment(ws, { text: input.text, ...(input.attachments?.length ? { attachments: input.attachments } : {}) })
+    const runId = await enqueueSegment(ws, { text: input.text, ...(input.attachments?.length ? { attachments: input.attachments } : {}), ...(input.origin ? { origin: input.origin } : {}) })
     if (runId) {
+      // His message moves the work on: a card parked over a restart is withdrawn (the model can ask again).
+      if (!seg) await releaseParked(ws)
       await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
       return { runId, steered: false }
     }
@@ -388,6 +464,7 @@ async function assistantText(messageId: string | undefined): Promise<string | nu
 }
 
 async function failWorkstream(ws: WorkstreamRow, reason: string, summary: string | null, lastOutcome: string): Promise<void> {
+  await releaseParked(ws)
   const row = await patchWorkstream(ws.id, {
     state: 'failed', failureReason: reason, summary, attention: null, finishedAt: new Date(), lastOutcome
   }, RUNNABLE)
@@ -395,17 +472,32 @@ async function failWorkstream(ws: WorkstreamRow, reason: string, summary: string
 }
 
 async function cancelNow(ws: WorkstreamRow, lastOutcome?: string): Promise<void> {
+  await releaseParked(ws)
   await patchWorkstream(ws.id, { state: 'cancelled', attention: null, finishedAt: new Date(), ...(lastOutcome ? { lastOutcome } : {}) }, RUNNABLE)
 }
 
-/**
- * After a segment's run has finished (queue.ts execute, after finishRun committed). Returns the
- * next segment's run id, if one was queued (the caller's re-pump claims it).
- */
+function attentionOf(ws: Pick<WorkstreamRow, 'attention'>): WorkstreamAttention | null {
+  return (ws.attention as WorkstreamAttention | null) ?? null
+}
+
+/** Ask Tony: attention {question} + the usual notification ("reply to answer"). */
+async function askTony(ws: WorkstreamRow, question: string, lastOutcome?: string): Promise<void> {
+  const row = await patchWorkstream(ws.id, {
+    state: 'attention', attention: { kind: 'question', text: question, notifiedAt: Date.now() }, ...(lastOutcome ? { lastOutcome } : {})
+  }, ['running', 'attention'])
+  if (row) await notifyTony(row, questionNote(row.goal, question))
+}
+
+export function questionNote(goal: string, question: string): string {
+  return `⚙ Workstream needs you — ${goal}\n\n${question}\n\nReply to answer.`
+}
+
+/** After a segment's run has finished (queue.ts execute, after finishRun committed). Returns the
+ *  next segment's run id, if one was queued (the caller's re-pump claims it). */
 export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Promise<string | null> {
   const seg = ended.get(run.id) ?? active.get(run.id)
+  if (seg) await seg.end()
   ended.delete(run.id)
-  if (seg) { await seg.end(); ended.delete(run.id) }
   const ws = await workstreamForConversation(run.conversationId)
   if (!ws || isTerminal(ws.state) || seg?.skip) {
     if (ws && seg?.skip && ws.cancelRequested) await cancelNow(ws)
@@ -413,6 +505,10 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   }
   const stop = seg?.stop ?? null
   if (ws.cancelRequested || stop === 'cancel') { await cancelNow(ws, outcome.status); return null }
+
+  // Drained while parked on a card (review I1): the request stays on the row; the next worker
+  // restores the card. Not a failure, not an interruption.
+  if (stop === 'park') { await patchWorkstream(ws.id, { lastOutcome: 'parked' }); return null }
 
   // The final summary step ended (or the loop restarted into it): failed, with whatever it wrote.
   if (ws.failureReason) {
@@ -424,40 +520,77 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   const budgetGone = exhausted(ws) ?? (stop === 'budget' ? 'its budget is used up' : null)
   if (budgetGone) return finalStep(ws, budgetGone, outcome.status)
 
+  // A leftover approval attention (its card is resolved — the segment ended) is stale (review M2).
+  let current = ws
+  if (ws.state === 'attention' && attentionOf(ws)?.kind === 'approval') {
+    current = (await patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention'])) ?? ws
+  }
+
   // Waiting on Tony (ask_tony). Words he sent while the segment was wrapping up ARE the answer.
-  if (ws.state === 'attention') {
+  if (current.state === 'attention') {
     const unread = await drainSteerFor(run.id)
     await patchWorkstream(ws.id, { lastOutcome: outcome.status, failures: 0 })
     if (!unread.length) return null
-    const next = await enqueueSegment(ws, { text: unread.join('\n\n') })
+    const next = await enqueueSegment(current, { text: unread.join('\n\n') })
     if (next) await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
     return next
   }
 
-  if (outcome.status === 'failed') {
-    const failures = ws.failures + 1
-    if (failures >= MAX_CONSECUTIVE_FAILURES) {
-      await patchWorkstream(ws.id, { failures })
-      await failWorkstream(ws, `${failures} segments failed in a row (last: ${outcome.error ?? 'unknown error'})`, null, 'failed')
-      return null
-    }
-    await patchWorkstream(ws.id, { failures, lastOutcome: 'failed' })
-    return continueWith(ws, run, 'retry', outcome.error)
-  }
+  if (outcome.status === 'failed') return countFailure(current, run, outcome.error ?? 'unknown error')
 
   if (outcome.status === 'aborted') {
     // Not cancel, not budget, not a drain: Tony pressed Stop in the thread. Pause, don't lose it.
     const unread = await drainSteerFor(run.id)
     if (unread.length) {
       await patchWorkstream(ws.id, { lastOutcome: 'aborted' })
-      return enqueueSegment(ws, { text: unread.join('\n\n') })
+      return enqueueSegment(current, { text: unread.join('\n\n') })
     }
-    await patchWorkstream(ws.id, { state: 'attention', lastOutcome: 'aborted', attention: { kind: 'question', text: 'Stopped. Reply in this thread to continue, or cancel it.' } }, ['running'])
+    await patchWorkstream(ws.id, { state: 'attention', lastOutcome: 'aborted', attention: { kind: 'question', text: 'Stopped. Reply in this thread to continue, or cancel it.', notifiedAt: Date.now() } }, ['running'])
     return null
   }
 
-  await patchWorkstream(ws.id, { failures: 0, lastOutcome: 'done' })
-  return continueWith(ws, run, stop === 'yield' ? 'restarted' : 'continue')
+  // Idle segments (review M3): no tool call and no finish_workstream. The first gets a nudge prompt;
+  // a second in a row means the model believes it is done (or is stuck) — ask Tony instead of
+  // burning the budget on empty segments.
+  const idle = stop !== 'yield' && (seg?.toolCalls ?? 1) === 0
+  if (idle && current.lastOutcome === 'idle') {
+    const unread = await drainSteerFor(run.id)
+    if (unread.length) return enqueueSegment(current, { text: unread.join('\n\n') })
+    await askTony(current, 'The last two segments made no progress (no tool calls, no finish). Is this done? Reply with what to do next, or cancel it.', 'idle')
+    return null
+  }
+  await patchWorkstream(ws.id, { failures: 0, lastOutcome: idle ? 'idle' : 'done' })
+  return continueWith(current, run, stop === 'yield' ? 'restarted' : idle ? 'idle' : 'continue')
+}
+
+/** A failed segment (or a failed transition) — retried until the 3rd in a row, then failed. */
+async function countFailure(ws: WorkstreamRow, run: AgentRun | null, error: string): Promise<string | null> {
+  const failures = ws.failures + 1
+  if (failures >= MAX_CONSECUTIVE_FAILURES) {
+    await patchWorkstream(ws.id, { failures })
+    await failWorkstream(ws, `${failures} segments failed in a row (last: ${error})`, null, 'failed')
+    return null
+  }
+  await patchWorkstream(ws.id, { failures, lastOutcome: 'failed' })
+  return run ? continueWith(ws, run, 'retry', error) : enqueueWhy(ws, 'retry', error)
+}
+
+/**
+ * onSegmentFinished itself threw (review M8): the workstream would be left 'running' with no segment,
+ * and the stalled sweep would re-enqueue it forever, uncounted. Count it toward the failure cap; at
+ * the cap the workstream is failed with a plain write (no notification path that could throw again).
+ */
+export async function onSegmentHandlerFailed(run: AgentRun, err: unknown): Promise<void> {
+  discardSegment(run.id)
+  const ws = await workstreamForConversation(run.conversationId)
+  if (!ws || isTerminal(ws.state)) return
+  const failures = ws.failures + 1
+  const message = err instanceof Error ? err.message : String(err)
+  if (failures >= MAX_CONSECUTIVE_FAILURES) {
+    await patchWorkstream(ws.id, { state: 'failed', failures, failureReason: `${failures} segments failed in a row (last: ${message})`, attention: null, finishedAt: new Date(), lastOutcome: 'failed' }, RUNNABLE)
+    return
+  }
+  await patchWorkstream(ws.id, { failures, lastOutcome: 'failed' })
 }
 
 /** The next segment: Tony's unread words if there are any, else the system continuation. */
@@ -468,38 +601,180 @@ async function continueWith(ws: WorkstreamRow, run: AgentRun, why: SegmentWhy, d
 }
 
 async function finalStep(ws: WorkstreamRow, reason: string, lastOutcome: string): Promise<string | null> {
-  const row = await patchWorkstream(ws.id, { failureReason: reason, lastOutcome }, RUNNABLE)
+  await releaseParked(ws)
+  const row = await patchWorkstream(ws.id, { failureReason: reason, lastOutcome, state: 'running', attention: null }, RUNNABLE)
   if (!row) return null
   return enqueueWhy(row, 'budget', reason)
+}
+
+/** iMessage approval prompts a dead segment left pending: nothing will ever wait on them again. */
+async function expireOrphanPrompts(runId: string): Promise<void> {
+  await useDb().update(channelApprovals).set({ status: 'expired', resolvedAt: new Date() })
+    .where(and(eq(channelApprovals.runId, runId), eq(channelApprovals.status, 'pending')))
 }
 
 /**
  * Recovery (recover.ts) found this segment's run dead — the worker crashed or restarted mid-segment.
  * Re-enqueue from the persisted thread. A first interruption is free; one that follows an
  * interruption counts toward the failure streak (a segment that kills the worker every time must
- * not loop forever).
+ * not loop forever). A segment that died PARKED on a card is not an interruption at all (review I1):
+ * the card is restored by restoreParkedApprovals.
  */
 export async function onSegmentInterrupted(run: AgentRun): Promise<string | null> {
   active.delete(run.id)
   ended.delete(run.id)
+  await expireOrphanPrompts(run.id).catch(err => console.error('[workstreams] expiring orphaned prompts failed:', err))
   const ws = await workstreamForConversation(run.conversationId)
   if (!ws || isTerminal(ws.state)) return null
   if (ws.cancelRequested) { await cancelNow(ws, 'interrupted'); return null }
+  const att = attentionOf(ws)
+  const waitingOnTony = ws.state === 'attention' && (att?.kind === 'question' || (att?.kind === 'approval' && !!att.request))
+  if (waitingOnTony) {
+    // Words he sent to the dead segment are his answer (review M7).
+    const unread = await drainSteerFor(run.id)
+    if (!unread.length) {
+      await patchWorkstream(ws.id, { lastOutcome: att?.kind === 'approval' ? 'parked' : 'interrupted' })
+      return null
+    }
+    await releaseParked(ws)
+    const next = await enqueueSegment(ws, { text: unread.join('\n\n') })
+    if (next) await patchWorkstream(ws.id, { state: 'running', attention: null, lastOutcome: 'interrupted' }, RUNNABLE)
+    return next
+  }
   const failures = ws.lastOutcome === 'interrupted' ? ws.failures + 1 : ws.failures
   if (failures >= MAX_CONSECUTIVE_FAILURES) {
     await patchWorkstream(ws.id, { failures })
     await failWorkstream(ws, `${failures} segments failed in a row (interrupted by restarts)`, null, 'interrupted')
     return null
   }
-  // A question asked just before the crash stands; an approval card died with the process.
-  if (ws.state === 'attention' && (ws.attention as { kind?: string } | null)?.kind === 'question') {
-    await patchWorkstream(ws.id, { failures, lastOutcome: 'interrupted' })
-    return null
-  }
   const row = await patchWorkstream(ws.id, { failures, lastOutcome: 'interrupted', state: 'running', attention: null }, RUNNABLE)
   if (!row) return null
   if (row.failureReason) return enqueueWhy(row, 'budget', row.failureReason)
   return continueWith(row, run, 'restarted')
+}
+
+// ── Parked approval cards (review I1) ───────────────────────────────────────────────────────
+
+type Detached = { workstreamId: string; runId: string; race: AbortController }
+const detached = new Map<string, Detached>()     // requestId → a restored card this process answers
+
+function storedRequest(req: ApprovalRequest): StoredApprovalRequest {
+  return {
+    tool: req.tool, command: req.command, proposedPattern: req.proposedPattern,
+    ...(req.allowlistable !== undefined ? { allowlistable: req.allowlistable } : {}),
+    ...(req.title !== undefined ? { title: req.title } : {}),
+    ...(req.logSummary !== undefined ? { logSummary: req.logSummary } : {})
+  }
+}
+type ParkedAttention = WorkstreamAttention
+
+/** Publish card frames for a parked request on the workstream thread and its origin chat. */
+async function publishCardFrames(ws: WorkstreamRow, runId: string, frame: HubFrame): Promise<void> {
+  for (const cid of [ws.conversationId, ws.originConversationId]) {
+    if (!cid) continue
+    const w = createRunEventWriter(runId, cid)
+    w.emit(frame)
+    await w.close().catch(err => console.error('[workstreams] card frame failed:', err))
+  }
+}
+
+/** Withdraw a parked card this process holds (its iMessage prompt too) and close it in every tab. */
+async function releaseParked(ws: WorkstreamRow): Promise<void> {
+  const att = attentionOf(ws)
+  if (att?.kind !== 'approval' || !att.requestId) return
+  const d = detached.get(att.requestId)
+  detached.delete(att.requestId)
+  if (d) {
+    d.race.abort(APPROVAL_WITHDRAWN)
+    dropDetachedApproval(att.requestId)
+  }
+  if (att.runId) {
+    await publishCardFrames(ws, att.runId, { type: 'approval-resolved', requestId: att.requestId })
+    await expireOrphanPrompts(att.runId).catch(() => {})
+  }
+}
+
+/**
+ * Restore approval cards parked across a drain or a crash (review I1). For every workstream in
+ * attention {approval} with a stored request and no segment running: register the request with the
+ * SAME decision path as a live card (bus-approvals decideBusApproval ← the `approval-decision`
+ * command), re-publish the card (workstream thread + origin chat; events.ts openApprovalFrames also
+ * re-sends it on attach), and — Tony away — a fresh iMessage prompt. Approve → the next segment
+ * starts with that exact call pre-approved once; deny → the next segment is told so. Idempotent:
+ * run at boot and on every tick. `onlyConversations` is the test seam.
+ */
+export async function restoreParkedApprovals(opts: { onlyConversations?: string[] } = {}): Promise<number> {
+  if (opts.onlyConversations && !opts.onlyConversations.length) return 0
+  const scope = opts.onlyConversations
+    ? sql`and w.conversation_id in (${sql.join(opts.onlyConversations.map(id => sql`${id}::uuid`), sql`, `)})`
+    : sql``
+  const res = await useDb().execute(sql`
+    select w.id from workstreams w
+    where w.state = 'attention' and w.attention->>'kind' = 'approval' and w.attention ? 'request'
+      and not exists (select 1 from agent_runs r where r.conversation_id = w.conversation_id
+                      and r.kind = 'workstream' and r.status in ('queued', 'running'))
+      ${scope}`)
+  let n = 0
+  for (const { id } of res.rows as Array<{ id: string }>) {
+    const ws = await getWorkstream(id)
+    const att = ws ? attentionOf(ws) : null
+    if (!ws || !att?.requestId || !att.request || !att.runId || detached.has(att.requestId)) continue
+    if ([...active.values()].some(s => s.workstreamId === id)) continue
+    const requestId = att.requestId
+    const runId = att.runId
+    const req: ApprovalRequest = { ...att.request }
+    const race = new AbortController()
+    detached.set(requestId, { workstreamId: id, runId, race })
+    registerDetachedApproval(requestId, runId, req, (approved) => {
+      void onParkedDecision(id, requestId, req, approved).catch(err => console.error('[workstreams] parked decision failed:', err))
+    })
+    await publishCardFrames(ws, runId, clientApprovalFrame({ requestId, ...req }))
+    void startAwayApproval(runId, requestId, req, race.signal)
+    n++
+  }
+  return n
+}
+
+async function onParkedDecision(workstreamId: string, requestId: string, req: ApprovalRequest, approved: boolean): Promise<void> {
+  const d = detached.get(requestId)
+  detached.delete(requestId)
+  d?.race.abort(APPROVAL_WITHDRAWN)
+  const ws = await getWorkstream(workstreamId)
+  if (!ws) return
+  if (d) await publishCardFrames(ws, d.runId, { type: 'approval-resolved', requestId })
+  const att = attentionOf(ws)
+  if (ws.state !== 'attention' || att?.requestId !== requestId) return
+  const row = await patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention'])
+  if (!row) return
+  const what = req.logSummary ?? req.command
+  await enqueueSegment(row, approved
+    ? { text: `Tony approved: ${req.tool} — ${what}. Continue: make that call again now; it will go through without asking.`, eventOrigin: 'segment:approved', preapproved: { tool: req.tool, command: req.command } }
+    : { text: `Tony denied: ${req.tool} — ${what}. Continue without it.`, eventOrigin: 'segment:denied' })
+  await kick()
+}
+
+/**
+ * The "still waiting" nudge (review M1): a workstream in attention is re-announced through the usual
+ * channels (origin note; a text when Tony is away NOW) at most once per NUDGE_EVERY_MS — so a wait
+ * that began while he was at the keyboard still reaches his phone once he has left.
+ */
+export async function nudgeWaitingWorkstreams(opts: { onlyConversations?: string[]; now?: number } = {}): Promise<number> {
+  if (opts.onlyConversations && !opts.onlyConversations.length) return 0
+  const now = opts.now ?? Date.now()
+  const rows = await useDb().select().from(workstreams).where(and(
+    eq(workstreams.state, 'attention'),
+    opts.onlyConversations ? inArray(workstreams.conversationId, opts.onlyConversations) : undefined
+  ))
+  let n = 0
+  for (const ws of rows) {
+    const att = attentionOf(ws)
+    if (!att || now - (att.notifiedAt ?? 0) < NUDGE_EVERY_MS) continue
+    const row = await patchWorkstream(ws.id, { attention: { ...att, notifiedAt: now } }, ['attention'])
+    if (!row) continue
+    await notifyTony(row, `⚙ Still waiting on you — ${row.goal}\n\n${att.text}${att.kind === 'question' ? '\n\nReply to answer.' : ''}`)
+    n++
+  }
+  return n
 }
 
 /**
@@ -578,8 +853,9 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
   if (ws.state === 'failed' || ws.state === 'cancelled') {
     const used = usedOf(ws)
     const b = budgetOf(ws)
+    // Extended within the same bounds a start is held to (review M4).
     const budget = exhausted(ws)
-      ? { maxSteps: Math.max(b.maxSteps, used.steps + SEGMENT_MAX_STEPS), maxWallMs: Math.max(b.maxWallMs, used.wallMs + 30 * 60_000) }
+      ? clampBudget({ maxSteps: Math.max(b.maxSteps, used.steps + SEGMENT_MAX_STEPS), maxWallMs: Math.max(b.maxWallMs, used.wallMs + 30 * 60_000) })
       : b
     const row = await patchWorkstream(ws.id, {
       state: 'running', cancelRequested: false, failures: 0, failureReason: null, lastOutcome: null,
@@ -589,6 +865,35 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
     ws = row
   }
   if (text) { await replyToWorkstream(ws, { text, modality: 'text' }); return }
+  await releaseParked(ws)
   const row = await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
   if (row) await enqueueWhy(row, 'continue')
+}
+
+// ── Answers by iMessage (review I3, controller ruling) ──────────────────────────────────────────
+
+/**
+ * An inbound iMessage while EXACTLY ONE workstream waits on a question is that question's answer:
+ * it goes into the workstream (its next segment's prompt, origin `imessage:<chat>` kept) and main
+ * gets a short event note. With none or several waiting it returns null — the text lands in main as
+ * an ordinary turn, and Bridget can pass it on with `answer_workstream`. `onlyConversations` scopes
+ * the lookup (test seam: the dev DB is shared).
+ */
+export async function routeInboundAnswer(input: RunInput, opts: { mainConversationId?: string; onlyConversations?: string[] } = {}): Promise<{ runId: string; workstreamId: string } | null> {
+  if (opts.onlyConversations && !opts.onlyConversations.length) return null
+  const waiting = await useDb().select().from(workstreams).where(and(
+    eq(workstreams.state, 'attention'), sql`${workstreams.attention}->>'kind' = 'question'`,
+    opts.onlyConversations ? inArray(workstreams.conversationId, opts.onlyConversations) : undefined
+  )).limit(2)
+  if (waiting.length !== 1) return null
+  const ws = waiting[0]!
+  const r = await replyToWorkstream(ws, input)
+  if (!r) return null
+  const { getOrCreateMain } = await import('../runtime/sessions')
+  const { appendEvent } = await import('../../../services/conversations')
+  const main = opts.mainConversationId ?? await getOrCreateMain()
+  const said = input.text.length > 200 ? `${input.text.slice(0, 199)}…` : input.text
+  await appendEvent(main, `answered ⚙ ${ws.goal}: ${said}`, `workstream:${ws.id}`)
+    .catch(err => console.error('[workstreams] answered note failed:', err))
+  return { runId: r.runId, workstreamId: ws.id }
 }

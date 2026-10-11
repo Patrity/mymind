@@ -44,6 +44,9 @@ export interface InboundDeps {
   mainConversationId?: string
   /** STT seam; default is the `stt` failover chain. */
   transcribe?: Transcribe
+  /** Cycle 81 (review I3): route the text to the ONE workstream waiting on a question. Default: the
+   *  real router — except under the `mainConversationId` test seam, where it is off unless given. */
+  routeAnswer?: (input: import('../agent/runtime/types').RunInput, opts: { mainConversationId?: string }) => Promise<{ runId: string } | null>
 }
 
 export const CATCH_UP_INTERVAL_MS = 120_000
@@ -211,9 +214,17 @@ export async function handleInbound(ev: InboundMessage | TapbackEvent, deps: Inb
   }
 
   const replyTo: ReplyTo = { channel: 'imessage', chatGuid: ev.chatGuid, messageGuid: ev.guid }
-  let result
+  let result: { runId: string }
   try {
-    result = await (deps.enqueueFn ?? enqueue)({
+    // Cycle 81 (review I3 ruling): exactly one workstream waiting on a question → this is its answer.
+    const route = deps.routeAnswer ?? (deps.mainConversationId ? undefined
+      : async (i: Parameters<NonNullable<InboundDeps['routeAnswer']>>[0], o: { mainConversationId?: string }) => (await import('../agent/workstreams/loop')).routeInboundAnswer(i, o))
+    const routed = route ? await route({
+      text: input.text, modality: 'text',
+      ...(input.attachments.length ? { attachments: input.attachments } : {}),
+      origin: `imessage:${ev.chatGuid}`
+    }, { mainConversationId: deps.mainConversationId }) : null
+    result = routed ?? await (deps.enqueueFn ?? enqueue)({
       sessionKey: deps.mainConversationId ? `thread:${deps.mainConversationId}` : 'main',
       trigger: 'user',
       profile: 'interactive',

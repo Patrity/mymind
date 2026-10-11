@@ -21,6 +21,7 @@ process.loadEnvFile('.env')
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 
 const STORE = mkdtempSync(join(tmpdir(), 'chin-store-'))
@@ -173,8 +174,21 @@ describe('handleInbound', () => {
 
   it('without the seam it targets session `main`', async () => {
     const m = msg()
-    await handleInbound(m, deps({ mainConversationId: undefined }))
+    // The workstream router is stubbed: the real one reads every workstream on the shared dev DB.
+    await handleInbound(m, deps({ mainConversationId: undefined, routeAnswer: async () => null }))
     expect(calls[0]!.sessionKey).toBe('main')
+  })
+
+  // Cycle 81 (review I3 ruling): exactly one workstream waiting on a question takes the text as its
+  // answer — no main turn; the GUID records the workstream segment's run.
+  it('a text routed to a waiting workstream is not enqueued on main', async () => {
+    const m = msg({ text: 'Synology' })
+    const seen: unknown[] = []
+    const runId = randomUUID()
+    expect(await handleInbound(m, deps({ routeAnswer: async (i) => { seen.push(i); return { runId } } }))).toBe('enqueued')
+    expect(calls).toHaveLength(0)
+    expect(seen[0]).toMatchObject({ text: 'Synology', modality: 'text', origin: `imessage:${CHAT}` })
+    expect((await inboundRow(m.guid))!.runId).toBe(runId)
   })
 
   it('the same GUID twice: the second is a duplicate and enqueue ran once', async () => {

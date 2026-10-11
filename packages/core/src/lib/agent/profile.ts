@@ -6,7 +6,7 @@ import { subagentTools } from './subagents'
 import { loadToolsetsTool } from './tools/load-toolsets'
 import { googleDangerousTools } from './tools/gmail'
 import { calendarDangerousTools } from './tools/calendar'
-import { startWorkstreamTool, workstreamOnlyTools } from './tools/workstreams'
+import { answerWorkstreamTool, startWorkstreamTool, workstreamOnlyTools } from './tools/workstreams'
 import type { AgentTool } from './types'
 
 export interface AgentProfile { id: string; tools: AgentTool[]; personaKey: string }
@@ -26,16 +26,16 @@ export interface AgentProfile { id: string; tools: AgentTool[]; personaKey: stri
 // (run.ts), not agentTools, so on-demand loading still works from here.
 export const bridgetProfile: AgentProfile = {
   id: 'bridget',
-  tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool],
+  tools: [...agentTools, execTool, ...subagentTools, decideReviewTool, ...googleDangerousTools, ...calendarDangerousTools, loadToolsetsTool, startWorkstreamTool, answerWorkstreamTool],
   personaKey: 'agent_persona'
 }
 
 /** Cycle 81 (spec §5.3): a workstream segment's registry — Bridget's tools WITHOUT start_workstream
- *  (no workstream spawns another this step), plus finish_workstream and ask_tony, which exist only
- *  here. Same persona; interactive (approvals wait on Tony — workstreams/loop.ts). */
+ *  (no workstream spawns another this step) and answer_workstream (Bridget's, for Tony's answers),
+ *  plus finish_workstream and ask_tony, which exist only here. Same persona; interactive (approvals wait on Tony — workstreams/loop.ts). */
 export const workstreamProfile: AgentProfile = {
   id: 'workstream',
-  tools: [...bridgetProfile.tools.filter(t => t.name !== startWorkstreamTool.name), ...workstreamOnlyTools],
+  tools: [...bridgetProfile.tools.filter(t => t.name !== startWorkstreamTool.name && t.name !== answerWorkstreamTool.name), ...workstreamOnlyTools],
   personaKey: 'agent_persona'
 }
 

@@ -91,9 +91,11 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
   // decide_review (cycle 76): dangerous — refused outright in a headless run, never proposed
   // (approving a proposal via a proposal is circular)
   decide_review: 'exclude',
-  // start_workstream (cycle 81, spec §5.3): creates NEW unattended work in its own thread — nothing
-  // existing is touched — so it runs (outbound: a tainted run still needs approval)
-  start_workstream: 'run'
+  // start_workstream (cycle 81, review I2 ruling): a background run may not spawn hours of new
+  // unattended work by itself — proposed to /review, replayed on approval
+  start_workstream: 'propose',
+  // answer_workstream (cycle 81, review I3 ruling): passes Tony's own words to a waiting workstream
+  answer_workstream: 'run'
 }
 
 // The workstream-only tools (cycle 81, spec §5.3) are not in bridgetProfile: they live only in a
@@ -110,11 +112,18 @@ describe('headless gate — exhaustive table', () => {
 })
 
 describe('workstream registry (cycle 81)', () => {
-  it('is Bridget minus start_workstream plus exactly finish_workstream and ask_tony', () => {
+  it('is Bridget minus start_workstream/answer_workstream plus exactly finish_workstream and ask_tony', () => {
     const names = workstreamProfile.tools.map(t => t.name)
     expect(names).not.toContain('start_workstream')
     expect(names.filter(n => !bridgetProfile.tools.some(t => t.name === n)).sort()).toEqual(Object.keys(WORKSTREAM_ONLY_CLASS).sort())
-    expect(bridgetProfile.tools.map(t => t.name).filter(n => !names.includes(n))).toEqual(['start_workstream'])
+    expect(bridgetProfile.tools.map(t => t.name).filter(n => !names.includes(n)).sort()).toEqual(['answer_workstream', 'start_workstream'])
+  })
+  it('a headless run proposes start_workstream instead of starting it (review I2)', async () => {
+    let proposed: unknown
+    const tools = headlessTools(bridgetProfile.tools, { id: 'r', conversationId: 'c' }, async (p) => { proposed = p; return 'rev-9' })
+    const out = await tools.find(t => t.name === 'start_workstream')!.handler({ goal: 'research X' }, { signal: new AbortController().signal })
+    expect(out.result).toMatchObject({ proposed: true, reviewId: 'rev-9' })
+    expect(proposed).toMatchObject({ tool: 'start_workstream', args: { goal: 'research X' } })
   })
   it.each(Object.entries(WORKSTREAM_ONLY_CLASS))('%s classifies as pinned', (name, cls) => {
     expect(classifyForHeadless(workstreamProfile.tools.find(t => t.name === name)!)).toBe(cls)
