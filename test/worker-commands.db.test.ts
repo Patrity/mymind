@@ -28,7 +28,7 @@ import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { agentRuns, conversationMessages, conversations, tasks, workerCommands } from '@mymind/core/db/schema'
 import { resolveSession } from '@mymind/core/lib/agent/runtime/sessions'
-import { openApprovalFrames, readRunEvents, type HubFrame } from '@mymind/core/lib/bus/events'
+import { createRunEventWriter, openApprovalFrames, readRunEvents, type HubFrame } from '@mymind/core/lib/bus/events'
 import { pruneHandledCommands, sendCommand, sendPresence } from '@mymind/core/lib/bus/commands'
 import { closeListener, listenReady } from '@mymind/core/lib/bus/listen'
 import { BUS_NS_ENV, setBusNs } from '@mymind/core/lib/bus/ns'
@@ -143,6 +143,20 @@ describe('approvals across processes', () => {
     const card = fs.find(f => f.type === 'approval') as { requestId: string }
     expect(fs.some(f => f.type === 'approval-resolved' && f.requestId === card.requestId)).toBe(true)
   }, 60_000)
+})
+
+describe('open cards for a (re)attaching socket (fix round 1, I1)', () => {
+  it('a running run\'s resolved card is not re-sent; its open one is; a finished run\'s card is not', async () => {
+    const live = await socketRun('two cards')
+    const w = createRunEventWriter(live.runId, live.conversationId)
+    const card = (requestId: string) => ({ type: 'approval' as const, requestId, tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true })
+    w.emit(card('q-done')); w.emit({ type: 'approval-resolved', requestId: 'q-done' }); w.emit(card('q-open'))
+    await w.close()
+    expect((await openApprovalFrames(live.conversationId)).map(o => o.frame.requestId)).toEqual(['q-open'])
+    // The same thread's run is over: nothing of it is open any more.
+    await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, live.runId))
+    expect(await openApprovalFrames(live.conversationId)).toEqual([])
+  })
 })
 
 describe('/clear across processes', () => {
