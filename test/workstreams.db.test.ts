@@ -12,7 +12,7 @@ vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { agentInbox, agentRuns, conversationMessages, conversations, runEvents, workerCommands, workstreams, type AgentRun } from '@mymind/core/db/schema'
-import { enqueue, pumpOnce, setExecutionMode, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
+import { _resumeClaimingForTests, enqueue, pumpOnce, setExecutionMode, stopClaiming, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
 import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { recoverStale } from '@mymind/core/lib/agent/runtime/recover'
 import { decideBusApproval, pendingBusApprovals } from '@mymind/core/lib/agent/runtime/bus-approvals'
@@ -21,7 +21,7 @@ import { pruneHandledCommands } from '@mymind/core/lib/bus/commands'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation, appendMessages } from '@mymind/core/services/conversations'
-import { controlWorkstream, startWorkstream, sweepStalledWorkstreams, yieldAllSegments } from '@mymind/core/lib/agent/workstreams/loop'
+import { controlWorkstream, startWorkstream, sweepStalledWorkstreams } from '@mymind/core/lib/agent/workstreams/loop'
 import { getWorkstream, patchWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
 import { startWorkstreamTool } from '@mymind/core/lib/agent/tools/workstreams'
@@ -230,6 +230,8 @@ describe('workstreams', () => {
       step(ctx)
       if (seg === 0) await callTool(ctx, 'ask_tony', { question: 'Synology or QNAP?' })
       else await callTool(ctx, 'finish_workstream', { summary: 'went with it' })
+      // The model would go on stepping; the segment must stop right after the step that asked/finished.
+      for (let i = 0; i < 5 && !ctx.shouldStop?.(); i++) step(ctx)
       yield { type: 'done' }
     })
     const { ws, origin } = await newWorkstream('ask')
@@ -251,7 +253,9 @@ describe('workstreams', () => {
     expect(row.attention).toBeNull()
     await drive(ws.conversationId)
     expect(seen[1]!.last).toBe('Synology')
-    expect((await getWorkstream(ws.id))!.state).toBe('done')
+    row = (await getWorkstream(ws.id))!
+    expect(row.state).toBe('done')
+    expect((row.used as { steps: number }).steps).toBe(2)   // one step each: ask, then finish
     // His reply is a user row in the log.
     expect((await thread(ws.conversationId)).some(m => m.role === 'user' && m.content === 'Synology')).toBe(true)
   })
@@ -415,9 +419,11 @@ describe('workstreams', () => {
     const { ws } = await newWorkstream('drain')
     await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })
     await firstDone
-    yieldAllSegments()
-    release()
-    expect(await waitForInFlight(10_000)).toBe(true)
+    stopClaiming()                                          // the worker's SIGTERM drain, step 1
+    try {
+      release()
+      expect(await waitForInFlight(10_000)).toBe(true)
+    } finally { _resumeClaimingForTests() }
     const runs = await segRuns(ws.conversationId)
     expect(runs.map(r => r.status)).toEqual(['done', 'queued'])
     expect(runs[1]!.input).toMatchObject({ eventOrigin: 'segment:restarted' })
