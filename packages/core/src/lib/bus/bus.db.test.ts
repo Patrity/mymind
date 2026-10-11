@@ -1,9 +1,13 @@
-// Cycle 81 Task 1 — the Postgres bus against the real (shared) dev DB. Every row this file writes
-// is scoped: run_events hang off a conversation it creates (cascade-deleted in afterAll);
-// worker_commands carry this file's TAG in their payload and are deleted by it.
-// Child processes (the "worker" side) run under plain tsx and are always killed in `finally`.
+// Cycle 81 Task 1 — the Postgres bus against the real (shared) dev DB. Every test runs in its OWN
+// bus namespace (setBusNs in beforeEach; children get it via MYMIND_BUS_NS), so nothing here can
+// claim, answer, or be claimed by the dev web/worker — and its heartbeats never make the dev web
+// report "worker online". run_events hang off a conversation this file creates (cascade-deleted);
+// worker_commands / worker_heartbeat rows are deleted by namespace in afterAll.
+// Process-wide state (listener, its factory/timings, the ns) is reset in afterEach, so no test
+// depends on another's cleanup. Child processes (the "worker" side) run under plain tsx and are
+// always killed in `finally`.
 process.loadEnvFile('.env')
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
 
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -15,8 +19,9 @@ import pg from 'pg'
 import { eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { conversations, runEvents, workerCommands } from '../../db/schema'
-import { createRunEventWriter, readRunEvents, type HubFrame } from './events'
-import { closeListener, listenReady, onListenReady, onNotify, setListenClientFactory, type ListenClient } from './listen'
+import { createRunEventReader, createRunEventWriter, readRunEvents, type HubFrame } from './events'
+import { busNotify, closeListener, configureListener, listenReady, onListenReady, onNotify, setListenClientFactory, type ListenClient } from './listen'
+import { busNs, BUS_NS_ENV, setBusNs } from './ns'
 import { CommandFailedError, CommandTimeoutError, handleCommands, sendCommand, beatWorker, workerStatus } from './commands'
 import { flushLive, startLiveBridge } from './live'
 import { publishChange, subscribeChanges } from '../../utils/live-bus'
@@ -31,6 +36,9 @@ const CHILD = join(HERE, '__fixtures__/bus-child.ts')
 const TSX_ESM = pathToFileURL(createRequire(join(ROOT, 'package.json')).resolve('tsx/esm')).href
 const TAG = `bus-test-${randomUUID()}`
 const BOOT = `${TAG}-boot`
+const NS_PREFIX = `bt${randomUUID().slice(0, 8)}`
+let nsSeq = 0
+const usedNs: string[] = []
 
 let convId = ''
 const delta = (turnId: number, id: string, d: string, kind: 'text' | 'reasoning' = 'text'): HubFrame =>
@@ -47,8 +55,8 @@ async function until<T>(fn: () => T | Promise<T>, ms = 5_000, step = 25): Promis
   }
 }
 
-function spawnChild(args: string[]): { child: ChildProcess; out: () => string; ready: (marker: string) => Promise<void> } {
-  const child = spawn(process.execPath, ['--env-file-if-exists=.env', '--import', TSX_ESM, CHILD, ...args], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
+function spawnChild(args: string[], ns = busNs()): { child: ChildProcess; out: () => string; ready: (marker: string) => Promise<void> } {
+  const child = spawn(process.execPath, ['--env-file-if-exists=.env', '--import', TSX_ESM, CHILD, ...args], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, [BUS_NS_ENV]: ns } })
   let out = ''
   child.stdout!.on('data', (d) => { out += String(d) })
   child.stderr!.on('data', (d) => { out += String(d) })
@@ -70,11 +78,24 @@ beforeAll(async () => {
   convId = c!.id
 })
 
+beforeEach(() => {
+  const ns = `${NS_PREFIX}-${++nsSeq}`
+  usedNs.push(ns)
+  setBusNs(ns)
+})
+
+afterEach(async () => {
+  await closeListener()
+  setListenClientFactory(null)
+  configureListener(null)
+  setBusNs(null)
+})
+
 afterAll(async () => {
   await closeListener()
   const db = useDb()
-  await db.delete(workerCommands).where(sql`${workerCommands.payload}::text like ${`%${TAG}%`}`)
-  await db.delete(workerHeartbeat).where(eq(workerHeartbeat.bootId, BOOT))
+  await db.delete(workerCommands).where(inArray(workerCommands.ns, usedNs))
+  await db.delete(workerHeartbeat).where(inArray(workerHeartbeat.ns, usedNs))
   if (convId) await db.delete(conversations).where(eq(conversations.id, convId)) // cascades run_events
 })
 
@@ -84,7 +105,7 @@ describe('run_events', () => {
     await other.connect()
     try {
       const got: string[] = []
-      other.on('notification', m => { if (m.channel === 'run_event' && m.payload?.startsWith(convId)) got.push(m.payload) })
+      other.on('notification', m => { if (m.channel === 'run_event' && m.payload?.includes(convId)) got.push(m.payload) })
       await other.query('LISTEN run_event')
       const runId = randomUUID()
       const w = createRunEventWriter(runId, convId)
@@ -93,8 +114,8 @@ describe('run_events', () => {
       await until(() => got.length > 0)
       const rows = await readRunEvents({ runId })
       expect(rows).toHaveLength(1)
-      expect(got[0]).toBe(`${convId}:${rows[0]!.id}`)
-      expect(rows[0]).toMatchObject({ seq: 1, type: 'state', payload: { type: 'state', state: 'thinking' }, onlySink: null, conversationId: convId })
+      expect(got[0]).toBe(`${busNs()}:${convId}:${rows[0]!.id}`)
+      expect(rows[0]).toMatchObject({ ns: busNs(), seq: 1, type: 'state', payload: { type: 'state', state: 'thinking' }, onlySink: null, conversationId: convId })
     } finally {
       await other.end()
     }
@@ -147,6 +168,46 @@ describe('run_events', () => {
     await w2.close()
     expect((await readRunEvents({ runId, afterSeq: 3 })).map(r => r.seq)).toEqual([4])
     await expect(readRunEvents({})).rejects.toThrow(/conversationId or runId/)
+    // Another namespace sees none of it.
+    setBusNs(`${busNs()}-other`)
+    expect(await readRunEvents({ runId })).toEqual([])
+  })
+
+  it('two writers of one run: a real (run_id, seq) unique clash re-reads max(seq) and continues', async () => {
+    const runId = randomUUID()
+    const a = createRunEventWriter(runId, convId, { retry: { attempts: 3, baseMs: 5 } })
+    const b = createRunEventWriter(runId, convId, { retry: { attempts: 3, baseMs: 5 } })
+    a.emit({ type: 'state', state: 'thinking' }); await a.flush() // a: seq 1
+    b.emit({ type: 'state', state: 'tool' }); await b.flush()     // b: reads max → seq 2
+    a.emit({ type: 'state', state: 'idle' }); await a.close()     // a: tries 2 → 23505 → re-read → 3
+    await b.close()
+    const rows = await readRunEvents({ runId })
+    expect(rows.map(r => [r.seq, (r.payload as { state: string }).state])).toEqual([[1, 'thinking'], [2, 'tool'], [3, 'idle']])
+  })
+
+  it('createRunEventReader does not skip a lower id that commits AFTER a higher one', async () => {
+    const reader = createRunEventReader({ conversationId: convId, afterId: (await readRunEvents({ conversationId: convId, limit: 10_000 })).at(-1)?.id ?? 0 })
+    const raw = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await raw.connect()
+    try {
+      const slowRun = randomUUID()
+      await raw.query('begin')
+      await raw.query(`insert into run_events (ns, run_id, conversation_id, seq, type, payload) values ($1, $2, $3, 1, 'state', '{"type":"state","state":"thinking"}')`, [busNs(), slowRun, convId])
+      const fastRun = randomUUID()
+      const w = createRunEventWriter(fastRun, convId)
+      w.emit({ type: 'persisted', conversationId: convId })
+      await w.close()
+      const first = await reader.next()
+      expect(first.map(r => r.runId)).toEqual([fastRun])
+      await raw.query('commit')
+      const second = await reader.next()
+      expect(second.map(r => r.runId)).toEqual([slowRun])
+      expect(second[0]!.id).toBeLessThan(first[0]!.id)
+      expect(await reader.next()).toEqual([]) // deduped
+    } finally {
+      await raw.query('rollback').catch(() => {})
+      await raw.end()
+    }
   })
 })
 
@@ -164,19 +225,17 @@ describe('listen connection', () => {
       const killed = await useDb().execute(sql`select pg_terminate_backend(pid) as ok from pg_stat_activity where application_name = ${app}`)
       expect(killed.rows).toHaveLength(1)
       await until(() => readies >= 2, 10_000)
-      await useDb().execute(sql`select pg_notify('live_change', ${`{"probe":"${TAG}"}`})`)
+      await busNotify('live_change', `{"probe":"${TAG}"}`)
       await until(() => got.length === 1)
     } finally {
       off()
       offReady()
-      setListenClientFactory(null)
     }
   })
 })
 
 describe('worker_commands', () => {
   it('sendCommand(awaitResult) round-trips with a handler in a child process; a throwing handler is a typed failure', async () => {
-    await listenReady()
     const c = spawnChild(['commands'])
     try {
       await c.ready('READY')
@@ -197,6 +256,7 @@ describe('worker_commands', () => {
     const took = Date.now() - t0
     expect(err).toBeInstanceOf(CommandTimeoutError)
     expect((err as CommandTimeoutError).code).toBe('COMMAND_TIMEOUT')
+    expect((err as CommandTimeoutError).claimed).toBe(false)
     expect(took).toBeGreaterThanOrEqual(600)
     expect(took).toBeLessThan(3_000)
     const [row] = await useDb().select().from(workerCommands).where(eq(workerCommands.id, (err as CommandTimeoutError).commandId))
@@ -217,7 +277,7 @@ describe('worker_commands', () => {
     const stop = handleCommands(handlersRecording(seen), { pollMs: 150 })
     try {
       await sleep(200) // past the start-up sweep: only the interval poll can find it now
-      const [row] = await useDb().insert(workerCommands).values({ type: 'undo', payload: { token: `${TAG}-poll` } }).returning()
+      const [row] = await useDb().insert(workerCommands).values({ ns: busNs(), type: 'undo', payload: { token: `${TAG}-poll` } }).returning()
       await until(() => seen.includes(`undo:${TAG}-poll`), 3_000)
       const [after] = await useDb().select().from(workerCommands).where(eq(workerCommands.id, row!.id))
       expect(after?.handledAt).not.toBeNull()
@@ -226,13 +286,51 @@ describe('worker_commands', () => {
     } finally { stop() }
   })
 
-  it('heartbeat: beatWorker upserts; workerStatus reads the newest beat as online', async () => {
+  it('heartbeat: beatWorker upserts; workerStatus reads THIS namespace\'s boot row only', async () => {
     await beatWorker(BOOT)
     await beatWorker(BOOT)
     const rows = await useDb().select().from(workerHeartbeat).where(inArray(workerHeartbeat.bootId, [BOOT]))
     expect(rows).toHaveLength(1)
-    const s = await workerStatus()
-    expect(s.online).toBe(true)
+    expect(rows[0]!.ns).toBe(busNs())
+    expect(await workerStatus()).toMatchObject({ online: true, bootId: BOOT })
+    setBusNs(`${busNs()}-other`)
+    expect(await workerStatus()).toEqual({ online: false, beatAt: null, bootId: null })
+  })
+
+  it('namespaces isolate commands: a worker in ns A never claims ns B (notify or poll); its own ns is answered', async () => {
+    const nsA = busNs()
+    const c = spawnChild(['commands'], nsA)
+    try {
+      await c.ready('READY')
+      setBusNs(`${nsA}-b`)
+      usedNs.push(busNs())
+      const err = await sendCommand('undo', { token: `${TAG}-other-ns` }, { awaitResult: true, timeoutMs: 1_000 }).catch(e => e)
+      expect(err).toBeInstanceOf(CommandTimeoutError) // the child polls every 200ms: it had 5 chances
+      expect((err as CommandTimeoutError).claimed).toBe(false)
+      setBusNs(nsA)
+      const res = await sendCommand('undo', { token: `${TAG}-same-ns` }, { awaitResult: true, timeoutMs: 10_000 })
+      expect(res?.reason).toBe(`undone:${TAG}-same-ns:pid=${c.child.pid}`)
+    } finally {
+      kill(c.child)
+    }
+  }, 60_000)
+
+  it('commands of one thread run in send order (abort before a later kick); other threads do not wait', async () => {
+    const log: string[] = []
+    const stop = handleCommands({
+      ...handlersRecording([]),
+      abort: async (p: { conversationId?: string }) => { log.push(`abort:start:${p.conversationId}`); await sleep(300); log.push(`abort:end:${p.conversationId}`); return { settled: true } },
+      kick: async (p: { conversationId?: string }) => { log.push(`kick:${p.conversationId}`) }
+    }, { pollMs: 100 })
+    try {
+      await listenReady()
+      await sendCommand('abort', { conversationId: 'A' })
+      await sendCommand('kick', { conversationId: 'A' })
+      await sendCommand('kick', { conversationId: 'B' })
+      await until(() => log.includes('kick:A'), 5_000)
+      expect(log.indexOf('kick:A')).toBeGreaterThan(log.indexOf('abort:end:A'))
+      expect(log.indexOf('kick:B')).toBeLessThan(log.indexOf('abort:end:A'))
+    } finally { stop() }
   })
 })
 
@@ -267,7 +365,7 @@ describe('live bridge', () => {
       publishChange({ resource: 'task', action: 'updated', id: localId })
       await flushLive()
       // Our own NOTIFY comes back to us on the shared channel — give it time to arrive.
-      await useDb().execute(sql`select pg_notify('live_change', ${'{"barrier":true}'})`)
+      await busNotify('live_change', '{"barrier":true}')
       await sleep(400)
       expect(seen.filter(s => s === remoteId)).toHaveLength(1)
       expect(seen.filter(s => s === localId)).toHaveLength(1)
@@ -276,4 +374,24 @@ describe('live bridge', () => {
       stop()
     }
   }, 60_000)
+
+  it('after a listener reconnect the bridge emits ONE local resync change (missed notifies are unrecoverable)', async () => {
+    const app = `bus-resync-${TAG.slice(-12)}`
+    setListenClientFactory(() => new pg.Client({ connectionString: process.env.DATABASE_URL, application_name: app }) as unknown as ListenClient)
+    const stop = startLiveBridge('web')
+    const resyncs: string[] = []
+    const off = subscribeChanges(e => { if (e.resource === 'resync') resyncs.push(e.id) })
+    try {
+      await listenReady()
+      await sleep(50)
+      expect(resyncs).toEqual([]) // the first connect is not a gap
+      await useDb().execute(sql`select pg_terminate_backend(pid) from pg_stat_activity where application_name = ${app}`)
+      await until(() => resyncs.length === 1, 10_000)
+      await sleep(200)
+      expect(resyncs).toEqual(['bus-reconnect'])
+    } finally {
+      off()
+      stop()
+    }
+  }, 30_000)
 })

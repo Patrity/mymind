@@ -8,14 +8,19 @@
 // A process LISTENs to its own NOTIFYs too; the origin id drops those echoes, so a web-side
 // publish reaches its own SSE listeners exactly once. Re-delivered events are marked (by object
 // identity) so the bridge never forwards them back out — no ping-pong between processes.
+// Only this bus namespace's notifies are seen (listen.ts filters), so a test bridge and the dev
+// web on one database never cross-deliver.
+//
+// Reconnect gap: a `live_change` sent while the listener was reconnecting is gone for good (the
+// other channels recover from tables; this one has none). So on every listener ready AFTER the
+// first, the bridge emits one local `{ resource: 'resync' }` change — the SSE client answers it
+// by refetching everything it shows.
 import { randomUUID } from 'node:crypto'
-import { sql } from 'drizzle-orm'
-import { useDb } from '../../db'
 import type { LiveEvent } from '../../shared/types/live'
 import type { ActivityEvent } from '../agent/types'
 import { deliverChange, subscribeChanges } from '../../utils/live-bus'
 import { publishActivity, subscribeActivity } from '../agent/bus'
-import { onNotify } from './listen'
+import { busNotify, onListenReady, onNotify } from './listen'
 
 /** Postgres rejects NOTIFY payloads ≥ 8000 bytes; stay clear of it. */
 export const MAX_NOTIFY_BYTES = 7_900
@@ -65,7 +70,7 @@ async function sendNow(w: LiveWire) {
     return
   }
   try {
-    await useDb().execute(sql`select pg_notify('live_change', ${payload})`)
+    await busNotify('live_change', payload)
   } catch (err) {
     console.error('[bus] live_change notify failed', err)
   }
@@ -94,10 +99,17 @@ export function startLiveBridge(role: 'web' | 'worker'): () => void {
     if (w.k === 'change') deliverChange(w.e)
     else if (w.k === 'activity') publishActivity(w.e)
   })
+  let readies = 0
+  const offReady = onListenReady(() => {
+    if (++readies === 1) return
+    const e: LiveEvent = { v: 1, resource: 'resync', action: 'updated', id: 'bus-reconnect', at: Date.now() }
+    inbound.add(e) // local only: every process resyncs on its own reconnect
+    deliverChange(e)
+  })
   const a = {
     role,
     refs: 1,
-    stop: () => { offChange(); offActivity(); offNotify() }
+    stop: () => { offChange(); offActivity(); offNotify(); offReady() }
   }
   active = a
   return () => { if (--a.refs <= 0 && active === a) { a.stop(); active = null } }

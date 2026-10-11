@@ -101,6 +101,8 @@ const OVERRIDES: Partial<Record<ResourceName, (c: Invalidator, e: LiveEvent) => 
 }
 
 export function dispatchLiveEvent(client: Invalidator, e: LiveEvent): void {
+  // Cycle 81: the server's bus listener reconnected and may have missed changes — refetch all.
+  if (e.resource === 'resync') { client.invalidateQueries(); return }
   client.invalidateQueries({ queryKey: [e.resource, e.id] })
   client.invalidateQueries({ queryKey: [e.resource, 'list'] })
   OVERRIDES[e.resource]?.(client, e)

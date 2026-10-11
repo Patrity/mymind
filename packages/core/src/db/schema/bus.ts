@@ -7,6 +7,7 @@ import { conversations } from './conversations'
  *  `run_event` with `'<conversation_id>:<id>'` — a pointer, never the frame itself. */
 export const runEvents = pgTable('run_events', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
+  ns: text('ns').notNull().default('default'),  // bus namespace (lib/bus/ns.ts)
   // No FK to agent_runs: the log may outlive a pruned run row; retention prunes by run age.
   runId: uuid('run_id').notNull(),
   conversationId: uuid('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
@@ -17,7 +18,7 @@ export const runEvents = pgTable('run_events', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
   uniqueIndex('run_events_run_seq_idx').on(t.runId, t.seq),
-  index('run_events_conv_id_idx').on(t.conversationId, t.id)
+  index('run_events_conv_id_idx').on(t.ns, t.conversationId, t.id)
 ])
 
 /** Cycle 81 (spec §3.2): the web → worker half. NOTIFY `worker_command` with `'<id>'` on insert;
@@ -28,6 +29,7 @@ export const runEvents = pgTable('run_events', {
  *  already told failed. */
 export const workerCommands = pgTable('worker_commands', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
+  ns: text('ns').notNull().default('default'),  // bus namespace — a worker only claims its own
   type: text('type').notNull(),
   payload: jsonb('payload').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -35,17 +37,18 @@ export const workerCommands = pgTable('worker_commands', {
   handledAt: timestamp('handled_at', { withTimezone: true }),
   result: jsonb('result')                       // CommandResult once handled
 }, (t) => [
-  index('worker_commands_pending_idx').on(t.id).where(sql`handled_at is null and claimed_at is null`)
+  index('worker_commands_pending_idx').on(t.ns, t.id).where(sql`handled_at is null and claimed_at is null`)
 ])
 
 /** Cycle 81 (spec §6): one row per worker boot, `beat_at` refreshed every tick; the web shows
  *  "agent worker offline" when the newest beat is stale (> 30s). */
 export const workerHeartbeat = pgTable('worker_heartbeat', {
   bootId: text('boot_id').primaryKey(),
+  ns: text('ns').notNull().default('default'),  // the web reads only its own namespace's beats
   pid: integer('pid'),
   host: text('host'),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   beatAt: timestamp('beat_at', { withTimezone: true }).notNull().defaultNow()
 }, (t) => [
-  index('worker_heartbeat_beat_idx').on(t.beatAt)
+  index('worker_heartbeat_ns_beat_idx').on(t.ns, t.beatAt)
 ])

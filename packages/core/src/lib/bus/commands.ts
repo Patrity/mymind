@@ -8,12 +8,21 @@
 //
 // Worker: `handleCommands` claims rows atomically (`claimed_at`), on notify AND on a poll (the
 // poll is the safety net for a notify sent while the worker was down or reconnecting).
+//
+// Everything is scoped to the bus namespace (ns.ts): a worker claims only its namespace's rows, a
+// sender only hears its namespace's done-notifies, and `workerStatus` reads only its namespace's
+// heartbeats — so a test's in-process worker and the dev worker on the shared DB never cross.
+//
+// Ordering: commands are claimed through one serial intake (notify and poll alike) and run on a
+// per-thread queue keyed by `conversationId` (else `runId`): an `abort` and a later `kick` of one
+// thread run in send order; commands of different threads, or with no key, run concurrently.
 import { hostname } from 'node:os'
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { workerCommands, workerHeartbeat } from '../../db/schema'
 import type { UndoResult } from '../agent/undo'
-import { onListenReady, onNotify } from './listen'
+import { busNotify, onListenReady, onNotify } from './listen'
+import { busNs } from './ns'
 
 export type InvalidateCache = 'ai-registry' | 'channels' | 'observability' | 'persona' | 'skills' | 'search' | 'imagegen' | 'exec-secrets'
 
@@ -46,8 +55,12 @@ export type CommandResult = { ok: true; value?: unknown } | { ok: false; error: 
 
 export class CommandTimeoutError extends Error {
   readonly code = 'COMMAND_TIMEOUT' as const
-  constructor(readonly commandType: CommandType, readonly commandId: number, readonly timeoutMs: number) {
-    super(`the agent worker did not answer "${commandType}" within ${Math.round(timeoutMs / 1000)}s`)
+  /** `claimed`: a worker picked it up and may still complete it (the UI should say "still
+   *  running", not "failed"); false: it was closed unrun and never will run. */
+  constructor(readonly commandType: CommandType, readonly commandId: number, readonly timeoutMs: number, readonly claimed = false) {
+    super(claimed
+      ? `the agent worker is still running "${commandType}" after ${Math.round(timeoutMs / 1000)}s`
+      : `the agent worker did not answer "${commandType}" within ${Math.round(timeoutMs / 1000)}s`)
     this.name = 'CommandTimeoutError'
   }
 }
@@ -64,9 +77,7 @@ export const DEFAULT_COMMAND_TIMEOUT_MS = 10_000
 const RESULT_POLL_MS = 500
 const DONE_PREFIX = 'done:'
 
-async function notify(payload: string) {
-  await useDb().execute(sql`select pg_notify('worker_command', ${payload})`)
-}
+const notify = (payload: string) => busNotify('worker_command', payload)
 
 export async function sendCommand<K extends CommandType, T = CommandResults[K]>(
   type: K,
@@ -75,7 +86,7 @@ export async function sendCommand<K extends CommandType, T = CommandResults[K]>(
 ): Promise<T | undefined> {
   const db = useDb()
   if (!opts.awaitResult) {
-    const [row] = await db.insert(workerCommands).values({ type, payload }).returning({ id: workerCommands.id })
+    const [row] = await db.insert(workerCommands).values({ ns: busNs(), type, payload }).returning({ id: workerCommands.id })
     await notify(String(row!.id))
     return undefined
   }
@@ -88,7 +99,7 @@ export async function sendCommand<K extends CommandType, T = CommandResults[K]>(
     if (p.startsWith(DONE_PREFIX) && Number(p.slice(DONE_PREFIX.length)) === id) wake?.()
   })
   try {
-    const [row] = await db.insert(workerCommands).values({ type, payload }).returning({ id: workerCommands.id })
+    const [row] = await db.insert(workerCommands).values({ ns: busNs(), type, payload }).returning({ id: workerCommands.id })
     id = row!.id
     await notify(String(id))
     const read = async () => {
@@ -124,7 +135,7 @@ export async function sendCommand<K extends CommandType, T = CommandResults[K]>(
       const done = await read()
       if (done) return settle(done.result)
     }
-    throw new CommandTimeoutError(type, id, timeoutMs)
+    throw new CommandTimeoutError(type, id, timeoutMs, closed.length === 0)
   } finally {
     off()
   }
@@ -134,7 +145,7 @@ type Claimed = { id: number; type: string; payload: unknown }
 
 async function claimById(id: number): Promise<Claimed | null> {
   const rows = await useDb().update(workerCommands).set({ claimedAt: new Date() })
-    .where(and(eq(workerCommands.id, id), isNull(workerCommands.claimedAt), isNull(workerCommands.handledAt)))
+    .where(and(eq(workerCommands.ns, busNs()), eq(workerCommands.id, id), isNull(workerCommands.claimedAt), isNull(workerCommands.handledAt)))
     .returning({ id: workerCommands.id, type: workerCommands.type, payload: workerCommands.payload })
   return rows[0] ?? null
 }
@@ -144,7 +155,7 @@ async function claimPending(limit = 50): Promise<Claimed[]> {
     update worker_commands set claimed_at = now()
     where id in (
       select id from worker_commands
-      where handled_at is null and claimed_at is null
+      where ns = ${busNs()} and handled_at is null and claimed_at is null
       order by id
       limit ${limit}
       for update skip locked
@@ -179,25 +190,46 @@ export function handleCommands(handlers: CommandHandlers, opts: { pollMs?: numbe
     }
   }
 
-  const sweep = async () => {
-    if (stopped) return
-    try {
-      for (const c of await claimPending()) void run(c)
-    } catch (err) {
-      console.error('[bus] worker_commands poll failed', err)
-    }
+  // One serial intake: claims (and the hand-off to a thread queue) happen in claim order.
+  let intake: Promise<void> = Promise.resolve()
+  const queues = new Map<string, Promise<void>>()
+  const keyOf = (c: Claimed): string | null => {
+    const p = (c.payload ?? {}) as { conversationId?: unknown; runId?: unknown }
+    if (typeof p.conversationId === 'string' && p.conversationId) return `c:${p.conversationId}`
+    if (typeof p.runId === 'string' && p.runId) return `r:${p.runId}`
+    return null
   }
+  // Never skipped once claimed (even if stop() raced the claim): a claimed row nobody runs
+  // would stay claimed forever.
+  const dispatch = (c: Claimed) => {
+    const k = keyOf(c)
+    if (!k) { void run(c); return }
+    const next = (queues.get(k) ?? Promise.resolve()).then(() => run(c))
+    queues.set(k, next)
+    void next.finally(() => { if (queues.get(k) === next) queues.delete(k) })
+  }
+  const enqueue = (claim: () => Promise<Claimed[]>) => {
+    intake = intake.then(async () => {
+      if (stopped) return
+      try {
+        for (const c of await claim()) dispatch(c)
+      } catch (err) {
+        console.error('[bus] worker_commands claim failed', err)
+      }
+    })
+  }
+  const sweep = () => enqueue(() => claimPending())
 
   const offNotify = onNotify('worker_command', (p) => {
     if (stopped || p.startsWith(DONE_PREFIX)) return
     const id = Number(p)
     if (!Number.isSafeInteger(id)) return
-    claimById(id).then(c => { if (c && !stopped) void run(c) }).catch(err => console.error('[bus] claim failed', err))
+    enqueue(async () => { const c = await claimById(id); return c ? [c] : [] })
   })
-  const offReady = onListenReady(() => { void sweep() })
-  const timer = setInterval(() => { void sweep() }, pollMs)
+  const offReady = onListenReady(sweep)
+  const timer = setInterval(sweep, pollMs)
   timer.unref?.()
-  void sweep()
+  sweep()
 
   return () => {
     stopped = true
@@ -209,15 +241,15 @@ export function handleCommands(handlers: CommandHandlers, opts: { pollMs?: numbe
 
 /** Worker: refresh this boot's heartbeat row (every tick). */
 export async function beatWorker(bootId: string): Promise<void> {
-  await useDb().insert(workerHeartbeat).values({ bootId, pid: process.pid, host: hostname() })
+  await useDb().insert(workerHeartbeat).values({ bootId, ns: busNs(), pid: process.pid, host: hostname() })
     .onConflictDoUpdate({ target: workerHeartbeat.bootId, set: { beatAt: sql`now()` } })
 }
 
-/** Web: the newest worker heartbeat, and whether it is fresh (≤ staleMs old, by the DB clock). */
+/** Web: this namespace's newest worker heartbeat, and whether it is fresh (≤ staleMs old, by the DB clock). */
 export async function workerStatus(staleMs = 30_000): Promise<{ online: boolean; beatAt: Date | null; bootId: string | null }> {
   const res = await useDb().execute(sql`
     select boot_id, beat_at, (now() - beat_at) <= (${staleMs} * interval '1 millisecond') as fresh
-    from worker_heartbeat order by beat_at desc limit 1`)
+    from worker_heartbeat where ns = ${busNs()} order by beat_at desc limit 1`)
   const r = res.rows[0] as { boot_id: string; beat_at: string | Date; fresh: boolean } | undefined
   if (!r) return { online: false, beatAt: null, bootId: null }
   return { online: !!r.fresh, beatAt: new Date(r.beat_at), bootId: r.boot_id }

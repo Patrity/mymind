@@ -274,3 +274,10 @@ describe('home invalidation', () => {
     expect(homeCalls).toHaveLength(1)
   })
 })
+describe('dispatchLiveEvent — resync (cycle 81)', () => {
+  it('a resync event invalidates every query, and nothing resource-specific', () => {
+    const c = fakeClient()
+    dispatchLiveEvent(c as never, ev({ resource: 'resync', id: 'bus-reconnect' }))
+    expect(c.calls).toEqual([[undefined]])
+  })
+})

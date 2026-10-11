@@ -23,6 +23,9 @@ export type ResourceName =
   | 'channelDelivery'
   | 'memoryBackfill'
   | 'connection'
+  /** Cycle 81: not a resource — "you may have missed changes" (the bus listener reconnected);
+   *  the client refetches every active query. Emitted by lib/bus/live.ts. */
+  | 'resync'
 
 export type LiveAction = 'created' | 'updated' | 'deleted'
 
