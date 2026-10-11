@@ -68,10 +68,13 @@ describe('GET /api/workstreams + /:id', () => {
 
 describe('GET /api/agent/worker (the offline banner)', () => {
   it('offline with no heartbeat, online with a fresh one, offline once it is > 30s old', async () => {
-    expect(await worker({})).toEqual({ online: false, beatAt: null })
+    expect(await worker({})).toEqual({ online: false, beatAt: null, sandbox: null })
     const boot = `t6-boot-${randomUUID().slice(0, 8)}`
     await beatWorker(boot)
-    expect(await worker({})).toMatchObject({ online: true })
+    expect(await worker({})).toMatchObject({ online: true, sandbox: null })
+    // Cycle 82 final review I6: the worker's sandbox preflight rides on its heartbeat.
+    await beatWorker(boot, { sandbox: { ok: false, reason: 'its resource limits are not enforced on this host', checkedAt: new Date().toISOString() } })
+    expect(await worker({})).toMatchObject({ online: true, sandbox: { ok: false, reason: 'its resource limits are not enforced on this host' } })
     await db.update(workerHeartbeat).set({ beatAt: sql`now() - interval '31 seconds'` }).where(eq(workerHeartbeat.bootId, boot))
     const stale = await worker({}) as { online: boolean; beatAt: string }
     expect(stale.online).toBe(false)
