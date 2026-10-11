@@ -15,7 +15,7 @@ Cycles B2 and B3.1 added the approval gate harness and moved the app to a native
 
 What still stands between the model and a running command:
 
-**The approval gate** — exec is `dangerous: true`, so every call goes allowlist-or-approve (see below). On channels with **no approval UI** (headless SSE `/api/agent/chat`, and MCP — where exec isn't even registered), a non-allowlisted exec **auto-denies** (`buildAiTools` fail-safe). This is the safety model: availability is universal, execution is gated per command.
+**The approval gate** — exec is `dangerous: true`, so every call goes allowlist-or-approve (see below). On channels with **no approval UI** (MCP — where exec isn't even registered; the headless SSE `/api/agent/chat` was deleted in cycle 81), a non-allowlisted exec **auto-denies** (`buildAiTools` fail-safe). This is the safety model: availability is universal, execution is gated per command.
 
 **Prerequisite (fail-closed) — process running as root** — `runConstrained` calls `selectExecMode({ uid: process.getuid(), nodeEnv, unconfined })`. When the process is root (`uid === 0`), it returns `{ mode: 'native-root' }` and exec proceeds. In non-root dev, `EXEC_UNCONFINED=1` (with `NODE_ENV !== 'production'`) returns `{ mode: 'unconfined' }` (same runtime path, no privilege drop, stripped env still applies). Anything else returns `{ mode: 'disabled' }` and `ExecDisabledError` is thrown. This is not an operator-configured gate — it is a fail-closed check that prevents exec from silently working in an unexpected runtime context.
 

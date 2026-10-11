@@ -55,8 +55,8 @@ describe('buildModelMessages', () => {
   })
 
   it('a malformed record survives the whole pipeline without throwing', () => {
-    // /api/agent/chat.post.ts readBody<{messages}>s with no validation and hands the array
-    // straight to runAgent, so a `[null]` element must degrade, not 500 the turn.
+    // Malformed persisted jsonb (once also the deleted /api/agent/chat's unvalidated body) —
+    // a `[null]` element must degrade, not 500 the turn.
     const out = buildModelMessages([
       { role: 'assistant', content: 'x', toolRecords: [null as unknown as AgentToolRecord] }
     ]) as { role: string }[]

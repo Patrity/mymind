@@ -107,9 +107,9 @@ export function applyHistoryPolicy<T extends { role: string; toolRecords?: Agent
       ...m,
       toolRecords: m.toolRecords.map(r => {
         // Malformed jsonb (a null or primitive element) must not 500 the turn: `toolBlocksFor`
-        // already tolerates it, `rowToAgentMessage` promises never to throw on bad tool_calls,
-        // and /api/agent/chat.post.ts forwards an unvalidated client-supplied `messages` array
-        // straight into runAgent. Pass it through untouched — toolBlocksFor drops it later.
+        // already tolerates it, and `rowToAgentMessage` promises never to throw on bad tool_calls
+        // (the unvalidated /api/agent/chat caller was deleted in cycle 81; the tolerance stays).
+        // Pass it through untouched — toolBlocksFor drops it later.
         if (!r || typeof r !== 'object') return r
         if (!withinWindow) {
           // Out of window: keep the CALL (callId + name), shed BOTH payloads. An uncapped

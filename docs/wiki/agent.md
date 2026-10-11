@@ -29,7 +29,7 @@ Voice and text run through the **same** path: client WebSocket → `packages/cor
 | `speak`: on / off | **the sole voice/text branch** — gates TTS *and* selects prompt mode (spoken-brief/no-markdown vs. text/markdown-ok). Default: on for mic, off for typed unless "Respond in voice" is on |
 | ~~canvas: on / off~~ | **removed in cycle 60**, and the column it became was removed in cycle 65. The `agent-canvas` cookie no longer exists. The Persona still reacts to `typing` on text turns (it maps to `thinking`). |
 
-The SSE `POST /api/agent/chat` still exists but has **no caller** (stateless, unpersisted). Background work goes through `wake()` in the agent runtime — see [agent-runtime.md](agent-runtime.md).
+The callerless SSE `POST /api/agent/chat` was **deleted in cycle 81** (it ran `runAgent` inside the web process, the last exception to "the worker is the only executor"). Background work goes through `wake()` in the agent runtime — see [agent-runtime.md](agent-runtime.md).
 
 ## Entry point (`runAgent`)
 
