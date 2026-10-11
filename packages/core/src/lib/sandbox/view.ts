@@ -13,7 +13,7 @@
 import { META_DIR, shq } from './fs-ops'
 import { CHUNK_BYTES, DOWNLOAD_MAX_BYTES, workspacePathProblem } from './paths'
 export { CHUNK_BYTES, DOWNLOAD_MAX_BYTES, workspacePathProblem }
-import { maskCut, maskSecretValues, secretValues } from './secrets'
+import { maskCut, maskDeep, secretValues, SecretStoreUnavailableError } from './secrets'
 import type { SandboxExecResult } from './manager'
 import { workspaceRuntime } from './runtime'
 import type { WorkspaceFileView, WorkspaceShellTail, WorkspaceTree, WorkspaceTreeEntry } from '../../shared/types/workspaces'
@@ -144,43 +144,59 @@ function checkPath(p: string): void {
   if (why) throw new WorkspaceViewError(why, 'bad_path')
 }
 
-const exec = (id: string, script: string, o: { input?: string; capBytes?: number; timeoutSec?: number } = {}) =>
+const exec = (id: string, script: string, o: { input?: string; capBytes?: number; timeoutSec?: number; noStart?: boolean } = {}) =>
   workspaceRuntime().manager.exec(id, script, { timeoutSec: 60, ...o })
 
-export async function viewTree(workspaceId: string): Promise<WorkspaceTree> {
-  const r = await exec(workspaceId, TREE_SCRIPT, { input: '{}', capBytes: 512 * 1024, timeoutSec: 60 })
+/** `noStart` (final review M5): an API-token read never starts a stopped sandbox. */
+export interface ViewOptions { noStart?: boolean }
+
+/** Final review (parked): the mask list for a UI read — an unreadable secret store is a friendly
+ *  refusal, never a raw error. */
+export const VIEW_WITHHELD = 'Output withheld — the secret store is unavailable, so secret values could not be masked.'
+async function viewSecretValues(): Promise<string[]> {
+  try { return await secretValues() } catch (err) {
+    if (err instanceof SecretStoreUnavailableError) throw new WorkspaceViewError(VIEW_WITHHELD)
+    throw err
+  }
+}
+
+export async function viewTree(workspaceId: string, o: ViewOptions = {}): Promise<WorkspaceTree> {
+  const r = await exec(workspaceId, TREE_SCRIPT, { input: '{}', capBytes: 512 * 1024, timeoutSec: 60, noStart: o.noStart })
   let j: { entries?: WorkspaceTreeEntry[]; count?: number; truncated?: boolean; error?: string } | null = null
   try { j = r.exitCode === 0 ? JSON.parse(r.stdout) : null } catch { j = null }
   if (!j?.entries) throw new WorkspaceViewError(`could not list the workspace: ${r.timedOut ? 'timed out' : (r.stderr.trim().slice(0, 300) || `exit ${r.exitCode}`)}`)
-  return maskSecretValues({ entries: j.entries, count: j.count ?? j.entries.length, truncated: !!j.truncated })
+  return maskDeep({ entries: j.entries, count: j.count ?? j.entries.length, truncated: !!j.truncated }, await viewSecretValues())
 }
 
-export async function viewFile(workspaceId: string, path: string): Promise<WorkspaceFileView> {
+export async function viewFile(workspaceId: string, path: string, o: ViewOptions = {}): Promise<WorkspaceFileView> {
   checkPath(path)
-  const r = await exec(workspaceId, VIEW_SCRIPT, { input: JSON.stringify({ path }), capBytes: 1024 * 1024 })
+  const r = await exec(workspaceId, VIEW_SCRIPT, { input: JSON.stringify({ path }), capBytes: 1024 * 1024, noStart: o.noStart })
   const { head, body } = headerAndBody(r, `read ${path}`)
   if (head.binary) return { path, binary: true, bytes: Number(head.bytes) }
   const truncated = !!head.truncated || r.truncated
   // M1: masked whole, then — when the view stopped before the end of the file — the cut edge is
   // trimmed of anything that could be the first half of a value.
-  return { path, binary: false, bytes: Number(head.bytes), lines: Number(head.lines), truncated, content: maskCut(body, await secretValues(), { end: truncated }) }
+  return { path, binary: false, bytes: Number(head.bytes), lines: Number(head.lines), truncated, content: maskCut(body, await viewSecretValues(), { end: truncated }) }
 }
 
 export interface FileChunk { size: number; mtimeNs: string; data: string }
 
 /** `length` 0 = just the size (the web's 413 check). `data` is base64. */
-export async function readChunk(workspaceId: string, path: string, offset: number, length: number): Promise<FileChunk> {
+export async function readChunk(workspaceId: string, path: string, offset: number, length: number, o: ViewOptions = {}): Promise<FileChunk> {
   checkPath(path)
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > CHUNK_BYTES) throw new WorkspaceViewError('bad chunk range', 'bad_path')
-  const r = await exec(workspaceId, CHUNK_SCRIPT, { input: JSON.stringify({ path, offset, length }), capBytes: 1024 * 1024 })
+  const r = await exec(workspaceId, CHUNK_SCRIPT, { input: JSON.stringify({ path, offset, length }), capBytes: 1024 * 1024, noStart: o.noStart })
   if (r.truncated) throw new WorkspaceViewError('the chunk was larger than the output cap')
   const { head, body } = headerAndBody(r, `read ${path}`)
   return { size: Number(head.size), mtimeNs: String(head.mtimeNs), data: body.trim() }
 }
 
-export async function shellTail(workspaceId: string, shellId: string): Promise<WorkspaceShellTail> {
+export async function shellTail(workspaceId: string, shellId: string, o: ViewOptions = {}): Promise<WorkspaceShellTail> {
   // The registry masks the tail itself (before trimming its cut edges).
-  return workspaceRuntime().shells.tail(workspaceId, shellId)
+  try { return await workspaceRuntime().shells.tail(workspaceId, shellId, undefined, o) } catch (err) {
+    if (err instanceof SecretStoreUnavailableError) throw new WorkspaceViewError(VIEW_WITHHELD)
+    throw err
+  }
 }
 
 export async function killShellFromUi(workspaceId: string, shellId: string) {

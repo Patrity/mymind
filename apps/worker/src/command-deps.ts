@@ -40,10 +40,11 @@ export async function coreCommandDeps(): Promise<Omit<CommandDeps, 'kick'>> {
     workspaceReadText: p => readWorkspaceText(p.workspaceId, p.path, { tainted: p.tainted === true }),
     // Task 3: the Files / Shells UI (lib/sandbox/view.ts) — every read runs in the sandbox.
     workspaceView: async (p) => {
-      if (p.op === 'tree') return view.viewTree(p.workspaceId)
-      if (p.op === 'file') return view.viewFile(p.workspaceId, p.path)
-      if (p.op === 'chunk') return view.readChunk(p.workspaceId, p.path, p.offset, p.length)
-      return view.shellTail(p.workspaceId, p.shellId)
+      const o = { noStart: p.noStart === true }
+      if (p.op === 'tree') return view.viewTree(p.workspaceId, o)
+      if (p.op === 'file') return view.viewFile(p.workspaceId, p.path, o)
+      if (p.op === 'chunk') return view.readChunk(p.workspaceId, p.path, p.offset, p.length, o)
+      return view.shellTail(p.workspaceId, p.shellId, o)
     },
     workspaceKillShell: p => view.killShellFromUi(p.workspaceId, p.shellId)
   }

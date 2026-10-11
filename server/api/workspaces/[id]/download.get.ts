@@ -4,11 +4,14 @@
 // `?check=1` (fix round 1, M4) runs only the size probe and answers JSON — the UI calls it first, so a
 // 413 / 504 / 404 shows as a toast in the app instead of a browser-level "download failed".
 import { askWorker, requirePath, requireWorkspace } from '../../../utils/workspaces-http'
+import { requireSession } from '../../../utils/auth-guard'
 import { CHUNK_BYTES, DOWNLOAD_MAX_BYTES } from '@mymind/core/lib/sandbox/paths'
 
 type Chunk = { size: number; mtimeNs: string; data: string }
 
 export default defineEventHandler(async (event) => {
+  // Final review M5: a download is the raw file — web session only (never an API token).
+  requireSession(event)
   const path = requirePath(event)
   const ws = await requireWorkspace(event)
   const chunk = (offset: number, length: number) =>

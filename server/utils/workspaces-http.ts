@@ -2,8 +2,10 @@
 //
 // The web NEVER touches Docker or the workspace dirs: every read of a workspace's files or a shell's
 // output is a `workspace-view` command the agent worker runs inside the sandbox (lib/sandbox/view.ts).
-// Reads take a session or an API token (the auth middleware); writes (kill, re-enable, the secret
-// toggle) are session-only (requireSession). None of this is on /api/mcp.
+// Reads take a session or an API token (the auth middleware) — but an API-token read never STARTS a
+// stopped sandbox (final review M5: 409 "sandbox stopped — open it in the app"), and the raw
+// download is session-only. Writes (kill, re-enable, the secret toggle) are session-only
+// (requireSession). None of this is on /api/mcp.
 import { z } from 'zod'
 import type { H3Event } from 'h3'
 import { and, eq, isNull } from 'drizzle-orm'
@@ -40,6 +42,11 @@ export async function requireWorkspace(event: H3Event): Promise<WorkspaceRow> {
   const [row] = await useDb().select().from(workspaces).where(eq(workspaces.id, id)).limit(1)
   if (!row) throw fail(404, 'No such workspace.')
   return row
+}
+
+/** An API-token read must not start the sandbox (final review M5); a web session may. */
+export function readScope(event: H3Event): { noStart?: true } {
+  return isSessionClient(event.context.client as ClientContext | undefined) ? {} : { noStart: true }
 }
 
 /** Only a uuid (writes never create the home workspace). */
@@ -88,6 +95,7 @@ export async function askWorker<K extends CommandType>(type: K, payload: Command
     }
     if (err instanceof CommandFailedError) {
       if (/not found|has been deleted|no such file|no background shell/i.test(message)) throw fail(404, message)
+      if (/sandbox stopped — open it in the app/.test(message)) throw fail(409, 'sandbox stopped — open it in the app')
       if (/bad payload|must be relative|must not contain|NUL byte|leads outside|bad chunk/i.test(message)) throw fail(400, message)
       throw fail(409, message)
     }

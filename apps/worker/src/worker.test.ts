@@ -171,7 +171,16 @@ describe('worker boot', () => {
     await h['workspace-view']({ op: 'shell-tail', workspaceId: id, shellId: sh })
     expect(deps.workspaceView).toHaveBeenCalledTimes(4)
     expect(deps.workspaceView).toHaveBeenNthCalledWith(2, { op: 'file', workspaceId: id, path: 'src/a.py' })
+    // Final review M5: noStart (an API-token read) reaches the sandbox; anything but a boolean is refused.
+    await h['workspace-view']({ op: 'tree', workspaceId: id, noStart: true })
+    expect(deps.workspaceView).toHaveBeenLastCalledWith({ op: 'tree', workspaceId: id, noStart: true })
+    vi.mocked(deps.workspaceView).mockClear()
+    await h['workspace-view']({ op: 'tree', workspaceId: id })
+    await h['workspace-view']({ op: 'file', workspaceId: id, path: 'src/a.py' })
+    await h['workspace-view']({ op: 'chunk', workspaceId: id, path: 'a.bin', offset: 0, length: 10 })
+    await h['workspace-view']({ op: 'shell-tail', workspaceId: id, shellId: sh })
     const bad: unknown[] = [
+      { op: 'tree', workspaceId: id, noStart: 'yes' },
       { op: 'tree', workspaceId: '../x' },
       { op: 'file', workspaceId: id, path: '/etc/passwd' },
       { op: 'file', workspaceId: id, path: 'a/../../etc' },

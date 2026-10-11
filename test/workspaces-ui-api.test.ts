@@ -92,7 +92,8 @@ describe('path validation happens before the worker is asked (and the read runs 
   it('a good path is read by the worker (workspace-view), never on this host', async () => {
     sendCommand.mockResolvedValue({ path: 'src/a.py', binary: false, bytes: 3, lines: 1, content: 'x=1' })
     expect(await fileRoute(ev('api-token', { query: { path: 'src/a.py' } }))).toMatchObject({ content: 'x=1' })
-    expect(sendCommand).toHaveBeenCalledWith('workspace-view', { op: 'file', workspaceId: WS, path: 'src/a.py' }, expect.objectContaining({ awaitResult: true }))
+    // Final review M5: an API-token read never starts a stopped sandbox.
+    expect(sendCommand).toHaveBeenCalledWith('workspace-view', { op: 'file', workspaceId: WS, path: 'src/a.py', noStart: true }, expect.objectContaining({ awaitResult: true }))
   })
   it('tree and shell output also go to the worker', async () => {
     sendCommand.mockResolvedValue({ entries: [], count: 0, truncated: false })
@@ -101,6 +102,20 @@ describe('path validation happens before the worker is asked (and the read runs 
     sendCommand.mockResolvedValue({ shellId: SHELL, state: 'running', output: 'x' })
     await tailRoute(ev('session'))
     expect(sendCommand).toHaveBeenLastCalledWith('workspace-view', { op: 'shell-tail', workspaceId: WS, shellId: SHELL }, expect.anything())
+  })
+  it('M5: API-token reads carry noStart (a session read may start the sandbox); the worker\'s refusal is a 409 telling Tony to open the app', async () => {
+    sendCommand.mockResolvedValue({ entries: [], count: 0, truncated: false })
+    await filesRoute(ev('api-token'))
+    expect(sendCommand).toHaveBeenLastCalledWith('workspace-view', { op: 'tree', workspaceId: WS, noStart: true }, expect.anything())
+    await tailRoute(ev('api-token'))
+    expect(sendCommand).toHaveBeenLastCalledWith('workspace-view', { op: 'shell-tail', workspaceId: WS, shellId: SHELL, noStart: true }, expect.anything())
+    const { CommandFailedError } = await import('@mymind/core/lib/bus/commands')
+    sendCommand.mockRejectedValue(new CommandFailedError('workspace-view', 1, 'sandbox stopped — open it in the app'))
+    await expect(filesRoute(ev('api-token'))).rejects.toMatchObject({ statusCode: 409, data: { message: 'sandbox stopped — open it in the app' } })
+  })
+  it('M5: the raw download is session-only', async () => {
+    for (const t of ['api-token', 'oauth', undefined]) await expect(downloadRoute(ev(t as string, { query: { path: 'a.txt' } }))).rejects.toMatchObject({ statusCode: 403 })
+    expect(sendCommand).not.toHaveBeenCalled()
   })
   it('a worker refusal (outside the workspace via a symlink) is a 400; not found 404', async () => {
     const { CommandFailedError } = await import('@mymind/core/lib/bus/commands')
