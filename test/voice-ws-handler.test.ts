@@ -13,6 +13,8 @@ const m = vi.hoisted(() => ({
   enqueue: vi.fn(),
   // The worker's commands (cycle 81 Task 4). `abort` with awaitResult answers { settled }.
   sendCommand: vi.fn(async (_type: string, _payload: unknown, _o?: unknown): Promise<unknown> => undefined),
+  // The thread's still-open cards, re-sent on every attach (fix round 1, I1).
+  openCards: vi.fn(async (_cid: string): Promise<unknown[]> => []),
   transcribe: vi.fn(async () => 'spoken words'),
   clear: vi.fn(async () => {}),
   // Cycle 81: the socket subscribes through the run-event relay (frames come off the bus).
@@ -30,6 +32,9 @@ vi.mock('@mymind/core/services/voice-presets', async (importOriginal) => {
   return { ...real, resolveTurnVoice: async () => ({ preset: real.FALLBACK_PRESET, refAudio: null }) }
 })
 vi.mock('@mymind/core/lib/agent/runtime/queue', () => ({ enqueue: m.enqueue }))
+vi.mock('@mymind/core/lib/bus/events', async importOriginal => ({
+  ...(await importOriginal<typeof import('@mymind/core/lib/bus/events')>()), openApprovalFrames: m.openCards
+}))
 vi.mock('@mymind/core/lib/bus/commands', async importOriginal => ({
   ...(await importOriginal<typeof import('@mymind/core/lib/bus/commands')>()), sendCommand: m.sendCommand
 }))
@@ -60,10 +65,13 @@ const inFlight = async () => { await new Promise(r => setTimeout(r, 5)); expect(
 const types = (p: { sent: string[] }) => p.sent.map(s => JSON.parse(s) as { type: string; [k: string]: unknown })
 
 const sent = (type: string) => m.sendCommand.mock.calls.filter(c => c[0] === type).map(c => c[1])
+/** A fire-and-forget Stop carries a short expiry (M4). */
+const stop = (p: Record<string, unknown>) => ({ ...p, expiresAt: expect.any(Number) })
 
 beforeEach(() => {
   vi.clearAllMocks()
   m.sendCommand.mockImplementation(async () => undefined)
+  m.openCards.mockImplementation(async () => [])
 })
 
 describe('ws runtime socket', () => {
@@ -220,8 +228,52 @@ describe('ws runtime socket', () => {
     const sink = m.subscribe.mock.calls[0]![1] as RelaySink
     sink.deliver({ type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *' } as HubFrame, { runId: 'r1', seq: 1 })
     await h.message(p, frame({ type: 'approve', requestId: 'q1' }))
-    await new Promise(r => setTimeout(r, 5))
     expect(types(p).at(-1)).toMatchObject({ type: 'error', message: expect.stringMatching(/worker/) })
+    // M2: not delivered → the card is still answerable here; the retry goes out.
+    await h.message(p, frame({ type: 'approve', requestId: 'q1' }))
+    expect(sent('approval-decision')).toHaveLength(2)
+  })
+
+  // Fix round 1, I1: a reconnect resumes PAST the card's seq, so the relay never shows it again —
+  // every attach re-sends the thread's still-open cards, and they are answerable from this socket.
+  it('attach (a reconnect, `after` past the card) re-sends the open cards and accepts a decision for them', async () => {
+    const p = peer(); h.open(p)
+    const card = { type: 'approval', requestId: 'q9', tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true }
+    m.openCards.mockImplementation(async () => [{ frame: card, runId: 'r1', seq: 7 }])
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'attach', after: { '0b8e5a52-3f1c-4d7e-9a3b-2c1d0e9f8a7b': 40 } }))
+    await new Promise(r => setTimeout(r, 5))
+    expect(m.openCards).toHaveBeenCalledWith('c1')
+    // Re-sent without run/seq: it must not move the client's resume cursor.
+    expect(types(p)).toEqual([{ ...card, cid: 'c1' }])
+    await h.message(p, frame({ type: 'approve', requestId: 'q9' }))
+    expect(sent('approval-decision')).toEqual([{ requestId: 'q9', approved: true, remember: false }])
+  })
+
+  it('a decision the worker no longer holds (decided elsewhere, timed out, run died) closes the stale card on the page', async () => {
+    const p = peer(); h.open(p)
+    m.openCards.mockImplementation(async () => [{ frame: { type: 'approval', requestId: 'q1', tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true }, runId: 'r1', seq: 1 }])
+    m.sendCommand.mockImplementation(async (type: string) => (type === 'approval-decision' ? false : undefined))
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'attach' }))
+    await new Promise(r => setTimeout(r, 5))
+    await h.message(p, frame({ type: 'deny', requestId: 'q1' }))
+    expect(types(p).at(-1)).toEqual({ type: 'approval-resolved', requestId: 'q1', cid: 'c1' })
+  })
+
+  it('M1: cards are pruned when the socket leaves their thread and when their run\'s turn ends', async () => {
+    const p = peer(); h.open(p)
+    await h.message(p, frame({ type: 'load', conversationId: 'c1' }))
+    await h.message(p, frame({ type: 'attach' }))
+    const sink = m.subscribe.mock.calls[0]![1] as RelaySink
+    const card = (requestId: string, runId: string, seq: number) => sink.deliver({ type: 'approval', requestId, tool: 'exec', command: 'ls', proposedPattern: 'ls *', allowlistable: true } as HubFrame, { runId, seq })
+    card('qA', 'r1', 1); card('qB', 'r2', 1)
+    sink.deliver({ type: 'persisted', conversationId: 'c1' }, { runId: 'r1', seq: 2 }) // r1's turn ended (e.g. its worker died and recovery persisted it)
+    await h.message(p, frame({ type: 'approve', requestId: 'qA' }))
+    expect(sent('approval-decision')).toEqual([])
+    await h.message(p, frame({ type: 'load', conversationId: 'c2' })) // left c1: qB is no longer answerable here
+    await h.message(p, frame({ type: 'approve', requestId: 'qB' }))
+    expect(sent('approval-decision')).toEqual([])
   })
 
   it('Stop aborts the viewed thread in the worker — and only it (other threads, and their cards, are untouched)', async () => {
@@ -232,7 +284,7 @@ describe('ws runtime socket', () => {
     await h.message(p, frame({ type: 'load', conversationId: 'cB' }))
     await h.message(p, frame({ type: 'interrupt' }))
     // No runId: this socket's last run is on cA, not the thread in view.
-    expect(sent('abort')).toEqual([{ conversationId: 'cB' }])
+    expect(sent('abort')).toEqual([stop({ conversationId: 'cB' })])
     // Cards are denied by the aborted RUN (worker side), never by a blanket socket-side deny.
     expect(sent('approval-decision')).toEqual([])
   })
@@ -244,7 +296,10 @@ describe('ws runtime socket', () => {
     await h.message(p, frame({ type: 'text', text: 'queued behind something' }))
     await h.message(p, frame({ type: 'interrupt' }))
     // One urgent command: the thread's running run AND this socket's last run (maybe still queued).
-    expect(sent('abort')).toEqual([{ runId: 'rQ', conversationId: 'c1' }])
+    expect(sent('abort')).toEqual([stop({ runId: 'rQ', conversationId: 'c1' })])
+    // M4: valid for STOP_ABORT_TTL_MS from now — a worker claiming it after an outage ignores it.
+    const exp = (sent('abort')[0] as { expiresAt: number }).expiresAt - Date.now()
+    expect(exp).toBeGreaterThan(10_000); expect(exp).toBeLessThanOrEqual(15_000)
   })
 
   it('Stop during an in-flight new-thread enqueue aborts the run that enqueue creates', async () => {
@@ -257,7 +312,7 @@ describe('ws runtime socket', () => {
     expect(sent('abort')).toEqual([])
     first.resolve(result('rNew', 'cNew'))
     await a
-    expect(sent('abort')).toEqual([{ runId: 'rNew', conversationId: 'cNew' }])
+    expect(sent('abort')).toEqual([stop({ runId: 'rNew', conversationId: 'cNew' })])
   })
 
   it('a steered voice utterance returns the client to idle', async () => {
@@ -282,7 +337,7 @@ describe('ws runtime socket', () => {
     expect(types(p).filter(f => f.type === 'queued')).toEqual([{ type: 'queued', text: 'while she works', cid: 'c1' }])
     // Still a run of its own: Stop follows it like any queued turn.
     await h.message(p, frame({ type: 'interrupt' }))
-    expect(sent('abort')).toEqual([{ runId: 'rNew', conversationId: 'c1' }])
+    expect(sent('abort')).toEqual([stop({ runId: 'rNew', conversationId: 'c1' })])
   })
 
   it('a queued voice utterance returns the client to idle', async () => {

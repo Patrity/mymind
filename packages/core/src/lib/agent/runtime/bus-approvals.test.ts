@@ -29,7 +29,8 @@ describe('busApprovalChannel', () => {
     const { frames, ch, lastRequestId } = harness()
     const p = ch({ tool: 'exec', command: 'ls -la', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?', logSummary: 'ls' })
     const requestId = lastRequestId()
-    expect(frames[0]).toEqual({ type: 'approval', requestId, tool: 'exec', command: 'ls -la', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?', logSummary: 'ls' })
+    // Only what the card renders (M3): logSummary/args/callId stay in the worker.
+    expect(frames[0]).toEqual({ type: 'approval', requestId, tool: 'exec', command: 'ls -la', proposedPattern: 'ls *', allowlistable: true, title: 'Run this?' })
     expect(pendingBusApprovals('run-1')).toEqual([requestId])
     expect(decideBusApproval({ requestId, approved: true })).toBe(true)
     expect(await p).toEqual({ approved: true })
@@ -37,6 +38,15 @@ describe('busApprovalChannel', () => {
     expect(pendingBusApprovals()).toEqual([])
     // Answered once: a second decision (another tab, a retried frame) is a no-op.
     expect(decideBusApproval({ requestId, approved: false })).toBe(false)
+  })
+
+  it('M3: a huge argument never reaches the bus frame (the event log) — only the card fields do', async () => {
+    const { frames, ch, lastRequestId } = harness()
+    const p = ch({ tool: 'exec', command: 'cat', proposedPattern: 'cat *', callId: 'c', logSummary: 'cat', args: { body: 'x'.repeat(50_000) } })
+    expect(Object.keys(frames[0]!).sort()).toEqual(['allowlistable', 'command', 'proposedPattern', 'requestId', 'tool', 'type'])
+    expect(JSON.stringify(frames).length).toBeLessThan(500)
+    decideBusApproval({ requestId: lastRequestId(), approved: false })
+    await p
   })
 
   it('a deny decision denies; an unknown requestId changes nothing', async () => {

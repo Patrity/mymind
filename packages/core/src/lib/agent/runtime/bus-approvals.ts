@@ -7,9 +7,10 @@
 //
 // The frame goes to EVERY socket viewing the thread, not only the origin socket: a socket that
 // reconnects (web restart, deploy, network blip) gets a new sink id, and a card targeted at the old
-// one would be invisible while the run waits on it. The relay replays the run's frames on attach, so
-// a reloaded page shows a pending card again; `approval-resolved` (published on every outcome)
-// removes it from every tab.
+// one would be invisible while the run waits on it. On every attach the web re-sends the thread's
+// still-open cards (events.ts openApprovalFrames — a resumed socket's cursor is already past them);
+// `approval-resolved` (published on every outcome) removes a card from every tab. Only the card's
+// own fields are published (clientApprovalFrame) — args/callId/logSummary stay in this process.
 //
 // Everything security-relevant stays inside the run's process (cycle 79): the approval NONCE that
 // gmail_send / calendar pin their card to is minted by buildAiTools for the call and never leaves
@@ -22,7 +23,7 @@
 // channels/approvals.ts, chosen by the runner.
 import { randomUUID } from 'node:crypto'
 import type { ApprovalRequest } from '../types'
-import type { HubFrame } from '../../bus/events'
+import { clientApprovalFrame, type HubFrame } from '../../bus/events'
 import type { CommandPayloads } from '../../bus/commands'
 import { addApproval, approvalOutcome } from '../../exec/approvals'
 import { recordEvent } from '../../observability/record'
@@ -86,7 +87,9 @@ export function busApprovalChannel(runId: string, o: BusApprovalOptions): Channe
         finish(false)
       }, timeoutMs)
     }
-    o.publish({ type: 'approval', requestId, ...req })
+    // Only what the card renders goes on the bus / into the event log (fix round 1, M3): the args,
+    // callId and logSummary stay here — the decision is made in this process.
+    o.publish(clientApprovalFrame({ requestId, ...req }))
     // The tool part's card: capped like the tool-start frame's args, so a huge argument never
     // ships whole to the browser. Emitted into THIS run's turn stream (same process as the run).
     if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool, args: req.args && capArgs(req.args, ARGS_WRITE_CAP) })

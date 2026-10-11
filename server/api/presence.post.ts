@@ -1,5 +1,5 @@
 import { markActive } from '@mymind/core/lib/channels/presence'
-import { sendCommand } from '@mymind/core/lib/bus/commands'
+import { sendPresence } from '@mymind/core/lib/bus/commands'
 import { requireSession } from '../utils/auth-guard'
 
 // Activity ping from app/plugins/presence.client.ts (throttled client-side to 1/min). Web
@@ -12,7 +12,8 @@ export default defineEventHandler(async (event) => {
 
   const at = Date.now()
   markActive(at)
-  await sendCommand('presence', { lastActiveAt: at }).catch(err => console.error('[presence] sending presence to the worker failed:', err))
+  // One pending presence row, not one per ping (fix round 1, M7).
+  await sendPresence(at).catch(err => console.error('[presence] sending presence to the worker failed:', err))
   setResponseStatus(event, 204)
   return null
 })

@@ -44,12 +44,14 @@ export interface WorkerDeps {
   startLiveBridge(): () => void
   stopClaiming(): void
   waitForInFlight(timeoutMs: number): Promise<boolean>
+  /** Periodic housekeeping (fix round 1, M7): prune handled worker_commands. Never throws into the loop. */
+  prune(): Promise<unknown>
   /** Last: close the listener / flush live NOTIFYs. */
   close(): Promise<void>
   log?: Pick<Console, 'info' | 'warn' | 'error'>
 }
 
-export interface WorkerTimings { tickMs: number; beatMs: number; drainMs: number }
+export interface WorkerTimings { tickMs: number; beatMs: number; drainMs: number; /** default 1h */ pruneMs?: number }
 
 export interface WorkerProcess {
   /** Boot and start everything. Resolves when started (or when a drain stopped the boot early). */
@@ -104,6 +106,11 @@ export function createWorkerProcess(deps: WorkerDeps, t: WorkerTimings): WorkerP
     if (stopping) return
     stops.push(deps.handleCommands(commandHandlers(deps)))
     stops.push(deps.startLiveBridge())
+    const prune = () => { deps.prune().catch(err => log.error('[worker] prune failed:', err)) }
+    prune()
+    const pruneTimer = setInterval(prune, t.pruneMs ?? 60 * 60 * 1000)
+    pruneTimer.unref?.()
+    stops.push(() => clearInterval(pruneTimer))
     if (stopping) return
     let ticks = 0
     tickTimer = setInterval(() => {

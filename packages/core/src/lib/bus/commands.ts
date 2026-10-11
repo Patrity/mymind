@@ -31,14 +31,17 @@ import { useDb } from '../../db'
 import { workerCommands, workerHeartbeat } from '../../db/schema'
 import type { UndoResult } from '../agent/undo'
 import type { ImessageHealth } from '../channels/inbound'
-import { busNotify, onListenReady, onNotify } from './listen'
+import { busNotify, notifySql, onListenReady, onNotify } from './listen'
 import { busNs } from './ns'
 
 export type InvalidateCache = 'ai-registry' | 'channels' | 'observability' | 'persona' | 'skills' | 'search' | 'imagegen' | 'exec-secrets'
 
 export interface CommandPayloads {
   kick: { conversationId?: string }
-  abort: { runId?: string; conversationId?: string }
+  /** `expiresAt` (epoch ms, fix round 1 M4): a fire-and-forget Stop is void after it — a worker that
+   *  was down and claims it late must not abort a turn Tony started since. `/clear` (awaited, closed
+   *  on timeout by the sender) needs none. */
+  abort: { runId?: string; conversationId?: string; expiresAt?: number }
   /** Tony's answer to a card (runtime/bus-approvals.ts). `remember`/`pattern` = "always allow";
    *  the worker decides whether that may be saved (only for an allowlistable tool). */
   'approval-decision': { requestId: string; approved: boolean; remember?: boolean; pattern?: string }
@@ -56,7 +59,7 @@ export type CommandType = keyof CommandPayloads
 /** What each command resolves to (only meaningful with `awaitResult`). */
 export interface CommandResults {
   kick: void
-  abort: { settled: boolean }
+  abort: { settled: boolean; expired?: true }
   /** Whether the request was still pending in the worker (false: already resolved / unknown). */
   'approval-decision': boolean
   undo: UndoResult
@@ -290,4 +293,32 @@ export async function workerStatus(staleMs = 30_000): Promise<{ online: boolean;
   const r = res.rows[0] as { boot_id: string; beat_at: string | Date; status: WorkerBeatStatus | null; fresh: boolean } | undefined
   if (!r) return { online: false, beatAt: null, bootId: null, status: null }
   return { online: !!r.fresh, beatAt: new Date(r.beat_at), bootId: r.boot_id, status: r.status ?? null }
+}
+
+/** How long a fire-and-forget Stop stays valid (fix round 1, M4). */
+export const STOP_ABORT_TTL_MS = 15_000
+
+/**
+ * Web: Tony's last activity → the worker (spec §3.6) as ONE pending row (fix round 1, M7): the
+ * client pings once a minute per tab, and a queue row per ping would grow forever. Earlier presence
+ * rows that are handled, or still unclaimed (superseded — the worker keeps the max anyway), are
+ * deleted in the same transaction as the insert; one being handled right now is left to finish.
+ */
+export async function sendPresence(lastActiveAt: number): Promise<void> {
+  await useDb().transaction(async (tx) => {
+    await tx.delete(workerCommands).where(and(eq(workerCommands.ns, busNs()), eq(workerCommands.type, 'presence'),
+      sql`(${workerCommands.handledAt} is not null or ${workerCommands.claimedAt} is null)`))
+    const [row] = await tx.insert(workerCommands).values({ ns: busNs(), type: 'presence', payload: { lastActiveAt } satisfies CommandPayloads['presence'] })
+      .returning({ id: workerCommands.id })
+    await tx.execute(notifySql('worker_command', String(row!.id)))
+  })
+}
+
+/** Worker maintenance (fix round 1, M7): forget this namespace's handled commands older than
+ *  `olderThanMs` (default a day) — nothing reads a result that old. Returns how many went. */
+export async function pruneHandledCommands(olderThanMs = 24 * 60 * 60 * 1000): Promise<number> {
+  const rows = await useDb().delete(workerCommands)
+    .where(and(eq(workerCommands.ns, busNs()), sql`${workerCommands.handledAt} < now() - (${olderThanMs} * interval '1 millisecond')`))
+    .returning({ id: workerCommands.id })
+  return rows.length
 }

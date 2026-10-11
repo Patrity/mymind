@@ -44,6 +44,8 @@ const worker = createWorkerProcess({
   startLiveBridge: () => live.startLiveBridge('worker'),
   stopClaiming: () => queue.stopClaiming(),
   waitForInFlight: ms => queue.waitForInFlight(ms),
+  // Handled commands older than a day (presence pings, decisions, aborts…) — fix round 1, M7.
+  prune: () => commands.pruneHandledCommands(),
   close: async () => { await live.flushLive(); await listen.closeListener() }
 }, settings)
 

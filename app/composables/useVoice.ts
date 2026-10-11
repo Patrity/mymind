@@ -338,18 +338,21 @@ export function useVoice() {
     const socket = new WebSocket(`${proto}://${location.host}/api/voice/ws`)
     socket.binaryType = 'arraybuffer'
     ws = socket
-    // The server denies every approval this socket was asked when it closes (denyPendingApprovals),
-    // so no card from it can be answered any more — drop them all.
     socket.onclose = () => {
       connected.value = false
-      pendingApprovals.value = {}
       // Still the live socket of a live session: it DROPPED (web restart / deploy / network).
-      // Keep the turn on screen open and reconnect — it resumes where it left off.
+      // Keep the turn on screen open and reconnect — it resumes where it left off. Open approval
+      // cards are KEPT (cycle 81): they belong to the run in the agent worker, which a socket
+      // closing never denies; the reconnect's attach re-sends every still-open card (and the
+      // resumed frames carry any `approval-resolved` missed meanwhile), so they stay answerable.
       if (ws === socket && mySession === session) {
         dropped = true
         scheduleReconnect(mySession)
         return
       }
+      // A deliberate disconnect: this page stops answering; the worker auto-denies at 120s or
+      // another tab on the thread answers.
+      pendingApprovals.value = {}
       state.value = 'idle'
       turns.disconnect()
     }

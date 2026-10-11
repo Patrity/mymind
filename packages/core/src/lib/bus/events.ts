@@ -12,9 +12,9 @@
 // listeners see `<conversation_id>:<last id>`, the ns is stripped by listen.ts). A failed batch is
 // retried with backoff at the head of the chain (order preserved); one that fails every attempt
 // is reported (onError + the next flush/close rejects) — never dropped silently.
-import { and, asc, eq, gt, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { runEvents } from '../../db/schema'
+import { agentRuns, runEvents } from '../../db/schema'
 import type { AgentMessageFrame } from '../../shared/types/agent-ui'
 import type { ApprovalRequest } from '../agent/types'
 import { notifySql } from './listen'
@@ -29,17 +29,42 @@ export type HubFrame =
   | { type: 'conversation'; conversationId: string; title: string | null }
   | { type: 'persisted'; conversationId: string }
   | { type: 'error'; message: string }
-  // The FULL ApprovalRequest (spec §3.4): the worker's approval channel (runtime/bus-approvals.ts)
-  // publishes it to every socket viewing the thread (not origin-sink targeted: a reconnected socket
-  // has a new sink id) and answers it itself — the web only forwards approved/denied for the
-  // requestId. What reaches the browser is clientApprovalFrame's subset.
-  | ({ type: 'approval'; requestId: string } & ApprovalRequest)
+  // An approval card (spec §3.4), published by the worker's approval channel (runtime/
+  // bus-approvals.ts) to every socket viewing the thread. ONLY what the card renders is persisted
+  // (fix round 1, M3): the worker keeps the full request (args, callId, logSummary, the nonce-bound
+  // details) and decides it itself — the web only forwards approved/denied for the requestId.
+  | ApprovalCardFrame
   | { type: 'approval-resolved'; requestId: string }
 
 /** The browser's `approval` frame — exactly what ws.ts sent before cycle 81 (app/lib/voice/
- *  messages.ts reads these fields). `logSummary`, `callId` and `args` stay server-side. */
-export function clientApprovalFrame(f: Extract<HubFrame, { type: 'approval' }>) {
-  return { type: 'approval' as const, requestId: f.requestId, tool: f.tool, command: f.command, proposedPattern: f.proposedPattern, allowlistable: f.allowlistable === true, title: f.title }
+ *  messages.ts reads these fields), and exactly what the run-event log stores for a card. */
+export interface ApprovalCardFrame {
+  type: 'approval'; requestId: string; tool: string; command: string; proposedPattern: string; allowlistable: boolean; title?: string
+}
+export function clientApprovalFrame(f: { requestId: string } & Pick<ApprovalRequest, 'tool' | 'command' | 'proposedPattern' | 'allowlistable' | 'title'>): ApprovalCardFrame {
+  return { type: 'approval', requestId: f.requestId, tool: f.tool, command: f.command, proposedPattern: f.proposedPattern, allowlistable: f.allowlistable === true, ...(f.title !== undefined ? { title: f.title } : {}) }
+}
+
+/**
+ * The approval cards still OPEN on `conversationId` (fix round 1, I1): every `approval` frame of a
+ * still-running run with no `approval-resolved` after it, in order, with its run/seq. A socket that
+ * (re)attaches gets these re-sent regardless of its resume cursor — a reconnect resumes PAST the
+ * card's seq, so the relay alone would never show it again while the run waits on it. A card whose
+ * request the worker has meanwhile dropped (it died) is answered `false` and resolved then.
+ */
+export async function openApprovalFrames(conversationId: string): Promise<Array<{ frame: ApprovalCardFrame; runId: string; seq: number }>> {
+  const rows = await useDb().select({ runId: runEvents.runId, seq: runEvents.seq, type: runEvents.type, payload: runEvents.payload })
+    .from(runEvents).innerJoin(agentRuns, eq(agentRuns.id, runEvents.runId))
+    .where(and(eq(runEvents.ns, busNs()), eq(runEvents.conversationId, conversationId), eq(agentRuns.status, 'running'),
+      inArray(runEvents.type, ['approval', 'approval-resolved'])))
+    .orderBy(asc(runEvents.id))
+  const open = new Map<string, { frame: ApprovalCardFrame; runId: string; seq: number }>()
+  for (const r of rows) {
+    const f = r.payload as HubFrame
+    if (f.type === 'approval') open.set(f.requestId, { frame: clientApprovalFrame(f), runId: r.runId, seq: r.seq })
+    else if (f.type === 'approval-resolved') open.delete(f.requestId)
+  }
+  return [...open.values()]
 }
 
 export type RunEventRow = typeof runEvents.$inferSelect

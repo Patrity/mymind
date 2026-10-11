@@ -44,6 +44,7 @@ function fakeDeps(over: Partial<WorkerDeps> = {}) {
       calls.push(done ? 'settled' : 'deadline')
       return done
     }),
+    prune: vi.fn(async () => { calls.push('prune') }),
     close: vi.fn(async () => { calls.push('close') }),
     log: quiet,
     ...over
@@ -72,7 +73,7 @@ describe('worker boot', () => {
   it('beats, recovers orphans BEFORE anything can claim, then starts commands, bridge, pump, schedule, recorder flush', async () => {
     const { deps, calls } = fakeDeps()
     await startWorkerProcess(deps, T)
-    expect(calls).toEqual(['beat', 'boot', 'commands:start', 'bridge:start', 'kick', 'schedule:start', 'flush-loop:start'])
+    expect(calls).toEqual(['beat', 'boot', 'commands:start', 'bridge:start', 'prune', 'kick', 'schedule:start', 'flush-loop:start'])
   })
 
   it('ticks every tickMs and beats every beatMs; a slow tick is never overlapped', async () => {
@@ -97,6 +98,21 @@ describe('worker boot', () => {
     await handlers().kick({ conversationId: 'c1' })
     expect(deps.kick).toHaveBeenCalledTimes(1)
     expect(deps.tick).not.toHaveBeenCalled()
+  })
+
+  it('M7: handled commands are pruned once at start and then every pruneMs, and the timer stops on drain', async () => {
+    vi.useFakeTimers()
+    try {
+      const { deps } = fakeDeps()
+      const w = createWorkerProcess(deps, { ...T, pruneMs: 1_000 })
+      await w.start()
+      expect(deps.prune).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(deps.prune).toHaveBeenCalledTimes(3)
+      await w.drain()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(deps.prune).toHaveBeenCalledTimes(3)
+    } finally { vi.useRealTimers() }
   })
 
   it('commands not yet owned by the worker fail loudly, never silently succeed', async () => {

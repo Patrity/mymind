@@ -18,9 +18,9 @@ const cfg = {
 const mocks = vi.hoisted(() => ({
   load: vi.fn(), save: vi.fn(), rotate: vi.fn(), dto: vi.fn(), markActive: vi.fn(), resetHealth: vi.fn(),
   // Cycle 81: presence and the channel writes also reach apps/worker as commands.
-  sendCommand: vi.fn(async () => undefined)
+  sendCommand: vi.fn(async () => undefined), sendPresence: vi.fn(async () => undefined)
 }))
-vi.mock('@mymind/core/lib/bus/commands', async orig => ({ ...(await orig<typeof import('@mymind/core/lib/bus/commands')>()), sendCommand: mocks.sendCommand }))
+vi.mock('@mymind/core/lib/bus/commands', async orig => ({ ...(await orig<typeof import('@mymind/core/lib/bus/commands')>()), sendCommand: mocks.sendCommand, sendPresence: mocks.sendPresence }))
 vi.mock('@mymind/core/lib/channels/config', async (orig) => {
   const actual = await orig<typeof import('@mymind/core/lib/channels/config')>()
   return {
@@ -77,6 +77,7 @@ describe.each([
     expect(mocks.markActive).not.toHaveBeenCalled()
     expect(mocks.load).not.toHaveBeenCalled()
     expect(mocks.sendCommand).not.toHaveBeenCalled()
+    expect(mocks.sendPresence).not.toHaveBeenCalled()
   })
 })
 
@@ -123,11 +124,11 @@ describe('session callers', () => {
     expect(e.status).toBe(204)
     // The same instant reaches the worker, whose isAway decides deliveries (cycle 81, spec §3.6).
     const at = (mocks.markActive.mock.calls[0] as unknown as [number])[0]
-    expect(mocks.sendCommand).toHaveBeenCalledWith('presence', { lastActiveAt: at })
+    expect(mocks.sendPresence).toHaveBeenCalledWith(at)
   })
   it('presence still answers 204 when the worker command cannot be sent', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    mocks.sendCommand.mockRejectedValueOnce(new Error('db down') as never)
+    mocks.sendPresence.mockRejectedValueOnce(new Error('db down') as never)
     const e = evt(session)
     await presence(e)
     expect(e.status).toBe(204)

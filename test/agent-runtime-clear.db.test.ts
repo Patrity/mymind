@@ -133,6 +133,23 @@ describe('abortForCommand (the worker\'s abort command)', () => {
     }
   })
 
+  it('M4: an expired Stop (claimed after a worker outage) aborts nothing', async () => {
+    const run = await runningRun()
+    let aborted = false
+    const exec = _executeClaimedForTests(run, async (r) => {
+      const ac = registerAbort(r.id)
+      try {
+        await new Promise<void>((resolve) => { ac.signal.addEventListener('abort', () => { aborted = true; resolve() }, { once: true }); setTimeout(resolve, 600) })
+        return { status: 'done', suppressed: false, usage: null }
+      } finally { releaseAbort(r.id) }
+    })
+    expect(await abortForCommand({ conversationId: run.conversationId, runId: run.id, expiresAt: Date.now() - 1 })).toEqual({ settled: true, expired: true })
+    await exec
+    expect(aborted).toBe(false)
+    const [row] = await useDb().select().from(agentRuns).where(eq(agentRuns.id, run.id))
+    expect(row!.status).toBe('done')
+  })
+
   it('a runId that already finished is left alone (settled, and not parked as pre-aborted)', async () => {
     const run = await runningRun()
     await useDb().update(agentRuns).set({ status: 'done' }).where(eq(agentRuns.id, run.id))

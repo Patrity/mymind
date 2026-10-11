@@ -156,9 +156,12 @@ export const ABORT_COMMAND_WAIT_MS = 8_000
  *     false — nothing here can confirm its rescue has landed.
  */
 export async function abortForCommand(
-  p: { runId?: string; conversationId?: string },
+  p: { runId?: string; conversationId?: string; expiresAt?: number },
   timeoutMs = ABORT_COMMAND_WAIT_MS
-): Promise<{ settled: boolean }> {
+): Promise<{ settled: boolean; expired?: true }> {
+  // A Stop that waited out a worker outage is void (fix round 1, M4): the turn it meant is long
+  // over, and aborting now would hit whatever Tony started since.
+  if (p.expiresAt !== undefined && Date.now() > p.expiresAt) return { settled: true, expired: true }
   const targets = new Map<string, { status: string; owner: string | null }>()
   if (p.runId) {
     const [r] = await useDb().select({ status: agentRuns.status, owner: agentRuns.owner }).from(agentRuns).where(eq(agentRuns.id, p.runId)).limit(1)

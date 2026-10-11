@@ -28,8 +28,8 @@ import { and, eq, inArray, like, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { agentRuns, conversationMessages, conversations, tasks, workerCommands } from '@mymind/core/db/schema'
 import { resolveSession } from '@mymind/core/lib/agent/runtime/sessions'
-import { readRunEvents, type HubFrame } from '@mymind/core/lib/bus/events'
-import { sendCommand } from '@mymind/core/lib/bus/commands'
+import { openApprovalFrames, readRunEvents, type HubFrame } from '@mymind/core/lib/bus/events'
+import { pruneHandledCommands, sendCommand, sendPresence } from '@mymind/core/lib/bus/commands'
 import { closeListener, listenReady } from '@mymind/core/lib/bus/listen'
 import { BUS_NS_ENV, setBusNs } from '@mymind/core/lib/bus/ns'
 import { redeemUndo } from '@mymind/core/lib/agent/undo-remote'
@@ -109,12 +109,16 @@ describe('approvals across processes', () => {
     const { runId, conversationId } = await socketRun('send it')
     const done = ask(`run ${runId} approval`, new RegExp(`^RUNDONE ${runId}`))
     const card = await until(async () => (await frames(runId)).find(f => f.type === 'approval'))
-    expect(card).toEqual({ type: 'approval', requestId: expect.any(String), tool: 'fake_send', title: 'Send this?', command: 'send draft-v1', proposedPattern: '', logSummary: 'fake_send: draft-v1', allowlistable: false, callId: 'call-fake_send', args: {} })
+    // Only the card's fields are in the log (M3) — no args/callId/logSummary, and no nonce.
+    expect(card).toEqual({ type: 'approval', requestId: expect.any(String), tool: 'fake_send', title: 'Send this?', command: 'send draft-v1', proposedPattern: '', allowlistable: false })
     const { requestId } = card as { requestId: string }
+    // I1: what a (re)attaching socket gets re-sent — the open card, with its run and seq.
+    expect(await openApprovalFrames(conversationId)).toEqual([{ frame: card, runId, seq: expect.any(Number) }])
     expect(await sendCommand('approval-decision', { requestId, approved: true }, { awaitResult: true })).toBe(true)
     expect(await done).toBe(`RUNDONE ${runId} done`)
     expect(await replyOf(conversationId)).toContain('RESULT:{"sent":true}')
     expect((await frames(runId)).some(f => f.type === 'approval-resolved' && f.requestId === requestId)).toBe(true)
+    expect(await openApprovalFrames(conversationId)).toEqual([]) // resolved (and the run is over)
     // Answered once: a second decision (another tab) finds nothing pending.
     expect(await sendCommand('approval-decision', { requestId, approved: false }, { awaitResult: true })).toBe(false)
   }, 60_000)
@@ -201,6 +205,25 @@ describe('presence and caches', () => {
     expect(await ask('away', /^AWAY /)).toBe('AWAY true') // a fresh process has seen no activity
     await sendCommand('presence', { lastActiveAt: Date.now() }, { awaitResult: true })
     expect(await ask('away', /^AWAY /)).toBe('AWAY false')
+  })
+
+  it('M7: presence pings coalesce into one row — never one per ping', async () => {
+    for (let i = 0; i < 5; i++) {
+      await sendPresence(Date.now())
+      await sleep(150) // the child handles each one
+    }
+    const rows = await useDb().select().from(workerCommands).where(and(eq(workerCommands.ns, NS), eq(workerCommands.type, 'presence')))
+    expect(rows.length).toBeLessThanOrEqual(2) // the latest, plus at most one still being handled
+    expect(await ask('away', /^AWAY /)).toBe('AWAY false')
+  })
+
+  it('M7: pruneHandledCommands drops this namespace\'s handled commands older than a day, nothing else', async () => {
+    const db = useDb()
+    const [old] = await db.insert(workerCommands).values({ ns: NS, type: 'invalidate', payload: { cache: 'persona' }, claimedAt: sql`now() - interval '2 days'`, handledAt: sql`now() - interval '2 days'`, result: { ok: true } }).returning()
+    const [fresh] = await db.insert(workerCommands).values({ ns: NS, type: 'invalidate', payload: { cache: 'persona' }, claimedAt: sql`now()`, handledAt: sql`now()`, result: { ok: true } }).returning()
+    expect(await pruneHandledCommands()).toBe(1)
+    const left = await db.select({ id: workerCommands.id }).from(workerCommands).where(inArray(workerCommands.id, [old!.id, fresh!.id]))
+    expect(left.map(r => r.id)).toEqual([fresh!.id])
   })
 
   it('invalidate makes the worker re-read the ai-registry config', async () => {

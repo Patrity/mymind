@@ -12,10 +12,10 @@ import { withFailover } from '@mymind/core/lib/ai/registry/resolve'
 import { VOICE_TUNING } from '@mymind/core/lib/voice/tuning'
 import { routeFrame } from '../../lib/voice/ws-routing'
 import { enqueue } from '@mymind/core/lib/agent/runtime/queue'
-import { sendCommand, CommandTimeoutError } from '@mymind/core/lib/bus/commands'
+import { sendCommand, CommandTimeoutError, STOP_ABORT_TTL_MS } from '@mymind/core/lib/bus/commands'
 import { withCid, type Sink } from '@mymind/core/lib/agent/runtime/stream'
 import { runEventRelay } from '@mymind/core/lib/bus/relay'
-import { clientApprovalFrame, type HubFrame } from '@mymind/core/lib/bus/events'
+import { clientApprovalFrame, openApprovalFrames, type HubFrame } from '@mymind/core/lib/bus/events'
 import { resolveTurnVoice } from '@mymind/core/services/voice-presets'
 import { speakWithPreset } from '@mymind/core/lib/voice/speak'
 import { createSocketTts, type SocketTts } from '../../lib/voice/socket-tts'
@@ -93,10 +93,11 @@ interface ConnState {
   submitLock: Promise<unknown>
   /** The last run this socket queued — Stop aborts it too, even if it has not started yet. */
   lastRun: { id: string; conversationId: string } | null
-  /** Cards this socket has been SHOWN and that are still open (requestId → thread), from the bus's
-   *  approval / approval-resolved frames. Only these are forwarded as decisions: a socket can
-   *  answer what it was asked, never a requestId it merely names. */
-  cards: Map<string, string>
+  /** Cards this socket has been SHOWN and that are still open (requestId → its thread and run),
+   *  from the bus's approval / approval-resolved frames and the re-send on attach. Only these are
+   *  forwarded as decisions: a socket can answer what it was asked, never a requestId it merely
+   *  names. Pruned when the socket leaves the thread and when the run's turn ends. */
+  cards: Map<string, { cid: string; runId: string }>
   /** Speaks this socket's spoken runs from their streamed text (cycle 81, spec §4). */
   tts: SocketTts
 }
@@ -112,9 +113,40 @@ function toClient(f: HubFrame): object {
   return f.type === 'approval' ? clientApprovalFrame(f) : f
 }
 
+/** Keep `s.cards` in step with what this socket was shown (approval in, approval-resolved out, and
+ *  a run's end — `persisted`/`error` — closes whatever it left open, e.g. after a worker crash). */
+function trackCards(s: ConnState, cid: string, f: HubFrame, runId: string | undefined) {
+  if (f.type === 'approval' && runId) s.cards.set(f.requestId, { cid, runId })
+  else if (f.type === 'approval-resolved') s.cards.delete(f.requestId)
+  else if ((f.type === 'persisted' || f.type === 'error') && runId) {
+    for (const [id, c] of s.cards) if (c.runId === runId) s.cards.delete(id)
+  }
+}
+
+/** Re-send the thread's still-open cards to this socket (fix round 1, I1). A reconnect resumes PAST
+ *  the card's seq (`attach.after`), so the relay alone would never show it again while the worker's
+ *  run waits on it. Sent with no run/seq (a re-send must not move the client's resume cursor);
+ *  duplicates of a card the replay also delivers are idempotent client-side (keyed by requestId). */
+async function resendOpenCards(s: ConnState, cid: string) {
+  try {
+    const open = await openApprovalFrames(cid)
+    if (s.conversationId !== cid) return // left the thread meanwhile
+    for (const o of open) {
+      s.cards.set(o.frame.requestId, { cid, runId: o.runId })
+      withCid(cid, s.sink).send(JSON.stringify(o.frame))
+    }
+  } catch (err) {
+    console.error('[agent] re-sending open approval cards failed:', err)
+  }
+}
+
 function select(s: ConnState, conversationId: string | null) {
   // Leaving a thread silences its audio (the old hub stopped delivering it to a socket that left).
-  if (s.conversationId && s.conversationId !== conversationId) s.tts.abort(s.conversationId)
+  if (s.conversationId && s.conversationId !== conversationId) {
+    s.tts.abort(s.conversationId)
+    // Its cards can't be answered from here any more (M1): this socket stops hearing their outcome.
+    for (const [id, c] of s.cards) if (c.cid === s.conversationId) s.cards.delete(id)
+  }
   s.unsubscribe?.(); s.unsubscribe = null
   s.conversationId = conversationId
   s.viewSeq++
@@ -130,20 +162,21 @@ function view(s: ConnState, conversationId: string | null, after?: Record<string
     s.unsubscribe = runEventRelay().subscribe(conversationId, {
       id: s.sink.id,
       deliver: (frame, meta) => {
-        const f = frame as HubFrame
-        if (f.type === 'approval') s.cards.set(f.requestId, conversationId)
-        else if (f.type === 'approval-resolved') s.cards.delete(f.requestId)
+        trackCards(s, conversationId, frame as HubFrame, meta?.runId)
         s.tts.frame(conversationId, frame, meta)
       }
     }, { replay: true, after })
+    void resendOpenCards(s, conversationId)
   }
 }
 
 /** Stop/barge-in → the worker's `abort` command (spec §3.5). Fire-and-forget: Stop needs no answer
  *  (the run's own frames show it stopping); `abort` is urgent there, so it never waits behind the
- *  thread's other commands. Aborting the run also denies its open cards (bus-approvals.ts). */
+ *  thread's other commands. Aborting the run also denies its open cards (bus-approvals.ts). It
+ *  expires after STOP_ABORT_TTL_MS (M4): a worker that claims it after an outage ignores it rather
+ *  than abort a turn started since. */
 function abortInWorker(p: { runId?: string; conversationId?: string }) {
-  sendCommand('abort', p).catch(err => console.error('[agent] sending abort to the worker failed:', err))
+  sendCommand('abort', { ...p, expiresAt: Date.now() + STOP_ABORT_TTL_MS }).catch(err => console.error('[agent] sending abort to the worker failed:', err))
 }
 
 export default defineWebSocketHandler({
@@ -287,15 +320,21 @@ export default defineWebSocketHandler({
       // allow" from it — never from this frame). Only a card this socket was shown and that is still
       // open; `approval-decision` is urgent in the worker, so the awaiting tool unblocks at once.
       case 'approve': case 'deny': {
-        if (!s.cards.has(a.requestId)) return
-        s.cards.delete(a.requestId)
-        sendCommand('approval-decision', a.kind === 'approve'
-          ? { requestId: a.requestId, approved: true, remember: a.remember, ...(a.pattern !== undefined ? { pattern: a.pattern } : {}) }
-          : { requestId: a.requestId, approved: false }
-        ).catch((err) => {
+        const card = s.cards.get(a.requestId)
+        if (!card) return
+        try {
+          const pending = await sendCommand('approval-decision', a.kind === 'approve'
+            ? { requestId: a.requestId, approved: true, remember: a.remember, ...(a.pattern !== undefined ? { pattern: a.pattern } : {}) }
+            : { requestId: a.requestId, approved: false }, { awaitResult: true })
+          // Delivered (M2): only now is the card closed here. `false` = the worker no longer holds
+          // it (decided elsewhere, timed out, its run died) — close the stale card on the page too.
+          s.cards.delete(a.requestId)
+          if (pending === false) withCid(card.cid, s.sink).send(JSON.stringify({ type: 'approval-resolved', requestId: a.requestId }))
+        } catch (err) {
+          // Not delivered: the card stays answerable here, and the user is told (M2).
           console.error('[agent] sending an approval decision to the worker failed:', err)
-          peer.send(JSON.stringify({ type: 'error', message: 'could not reach the agent worker — the approval was not delivered' }))
-        })
+          peer.send(JSON.stringify({ type: 'error', message: 'Could not reach the agent worker — your answer was not delivered. Try again.' }))
+        }
         return
       }
       // clear: `/clear` — forgets the transcript for the MODEL only (clearConversationContext
@@ -349,8 +388,8 @@ export default defineWebSocketHandler({
     s.unsubscribe?.()
     s.tts.abort()
     // Open cards are NOT denied: they belong to the run in the worker, which other tabs on the
-    // thread — or this page once it reconnects (the relay replays the card) — can still answer,
-    // and which auto-denies at 120s.
+    // thread — or this page once it reconnects (every attach re-sends the thread's open cards,
+    // resendOpenCards) — can still answer, and which auto-denies at 120s.
     conns.delete(peer)
   }
 })
