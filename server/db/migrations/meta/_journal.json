@@ -533,6 +533,13 @@
       "when": 1791748047469,
       "tag": "0075_mysterious_sprite",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1791761277685,
+      "tag": "0076_short_ulik",
+      "breakpoints": true
     }
   ]
 }

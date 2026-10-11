@@ -25,7 +25,11 @@ export const workspaces = pgTable('workspaces', {
   taintedAt: timestamp('tainted_at', { withTimezone: true }),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }).notNull().defaultNow(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  deletedAt: timestamp('deleted_at', { withTimezone: true })
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  /** Bus namespace of the process that created it (lib/bus/ns.ts — final fix wave): the worker's
+   *  background scans (idle/quota tick, reconcile, sweep, shell/watch re-arm) only see their own
+   *  namespace, so a dev worker never picks up a test run's rows on the shared dev DB. */
+  ns: text('ns').notNull().default('default')
 }, (t) => [
   uniqueIndex('workspaces_workstream_idx').on(t.workstreamId).where(sql`${t.workstreamId} is not null`),
   // Exactly one live home workspace.

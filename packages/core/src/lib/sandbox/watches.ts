@@ -8,7 +8,11 @@
 // a pathological pattern can never block the worker's event loop.
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { workspaceWatches, type WatchUntil, type WorkspaceWatchRow } from '../../db/schema'
+import { workspaces, workspaceWatches, type WatchUntil, type WorkspaceWatchRow } from '../../db/schema'
+import { busNs } from '../bus/ns'
+
+/** The boot re-arm / re-delivery scans see only this bus namespace's workspaces (final fix wave). */
+const ownNs = () => sql`${workspaceWatches.workspaceId} in (select ${workspaces.id} from ${workspaces} where ${workspaces.ns} = ${busNs()})`
 import { publishChange } from '../../utils/live-bus'
 import { WATCH_POLL_SCRIPT, WATCH_TAIL_BYTES } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
@@ -107,7 +111,8 @@ export const dbWatchStore: WatchStore = {
     return useDb().select().from(workspaceWatches).where(and(
       eq(workspaceWatches.state, 'armed'),
       f.workspaceId ? eq(workspaceWatches.workspaceId, f.workspaceId) : undefined,
-      f.workstreamId ? eq(workspaceWatches.workstreamId, f.workstreamId) : undefined
+      f.workstreamId ? eq(workspaceWatches.workstreamId, f.workstreamId) : undefined,
+      f.workspaceId || f.workstreamId ? undefined : ownNs()
     ))
   },
   async recordPoll(id, p) {
@@ -129,7 +134,7 @@ export const dbWatchStore: WatchStore = {
     await useDb().update(workspaceWatches).set({ deliveredAt: new Date() }).where(and(eq(workspaceWatches.id, id), isNull(workspaceWatches.deliveredAt)))
   },
   async listUndelivered() {
-    return useDb().select().from(workspaceWatches).where(and(sql`${workspaceWatches.state} <> 'armed'`, isNull(workspaceWatches.deliveredAt), isNotNull(workspaceWatches.resultText)))
+    return useDb().select().from(workspaceWatches).where(and(sql`${workspaceWatches.state} <> 'armed'`, isNull(workspaceWatches.deliveredAt), isNotNull(workspaceWatches.resultText), ownNs()))
   }
 }
 

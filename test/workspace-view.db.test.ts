@@ -27,6 +27,7 @@ vi.mock('@mymind/core/utils/live-bus', async orig => {
 
 import { inArray } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
+import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { workspaces, workspaceShells } from '@mymind/core/db/schema'
 import { eq } from 'drizzle-orm'
 import { createSandboxManager, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
@@ -37,6 +38,9 @@ import type { ToolContext } from '@mymind/core/lib/agent/types'
 
 const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `wsv-${process.pid}-${Date.now().toString(36)}`
+// Final fix wave: every workspace row of this file is in its own bus namespace — a dev worker on the
+// shared DB never scans it, and afterAll removes every row of it (no orphans).
+const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
 
 function docker(...args: string[]): { code: number; out: string } {
   const r = spawnSync('docker', args, { encoding: 'utf8', timeout: 120_000 })
@@ -57,9 +61,10 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
   const bash = async (command: string) => (await workspaceTools.find(t => t.name === 'bash')!.handler({ command }, ctx())).result as Record<string, any>
 
   beforeAll(async () => {
+    setBusNs(NS)
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-wsv-')))
     m = createSandboxManager({ labels: { 'mymind.test': RUN }, settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 10, dns: [] }, log: { info: () => {}, warn: () => {}, error: () => {} } })
-    const [r] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning()
+    const [r] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning()
     rowIds.push(r!.id)
     ws = r!.id
     rt = createWorkspaceRuntime(m, { resolve: async () => ({ workspaceId: ws, kind: 'home', workstreamId: null, conversationId: null }) })
@@ -86,6 +91,8 @@ describe.skipIf(!dockerUp)('workspace UI reads + sandbox secrets (real Docker)',
     const ids = docker('ps', '-aq', '--filter', `label=mymind.test=${RUN}`).out.split('\n').filter(Boolean)
     if (ids.length) docker('rm', '-f', ...ids)
     if (rowIds.length) await useDb().delete(workspaces).where(inArray(workspaces.id, rowIds))
+    await useDb().delete(workspaces).where(eq(workspaces.ns, NS))
+    setBusNs(null)
     if (root) rmSync(root, { recursive: true, force: true })
   }, 120_000)
 

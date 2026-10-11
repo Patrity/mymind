@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "ns" text DEFAULT 'default' NOT NULL;

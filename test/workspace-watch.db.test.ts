@@ -14,13 +14,13 @@ import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation } from '@mymind/core/services/conversations'
-import { startWorkstream, WAITING_FOR_WATCH } from '@mymind/core/lib/agent/workstreams/loop'
+import { pauseWorkstreamForTony, startWorkstream, WAITING_FOR_WATCH } from '@mymind/core/lib/agent/workstreams/loop'
 import { getWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
-import { createWorkspaceRuntime, resolveWorkspace, runtimeHooks, setWorkspaceRuntime, TAINTED_REASON, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
+import { createWorkspaceRuntime, finishedWorkstreamsWithLiveWorkspaces, resolveWorkspace, runtimeHooks, setWorkspaceRuntime, startWorkspaceRuntime, TAINTED_REASON, teardownWorkstreamWorkspace, type WorkspaceRuntime } from '@mymind/core/lib/sandbox/runtime'
 import { dbShellStore } from '@mymind/core/lib/sandbox/shells'
 import { dbWatchStore, WATCH_CAPS } from '@mymind/core/lib/sandbox/watches'
-import { ensureWorkstreamWorkspace } from '@mymind/core/lib/sandbox/store'
+import { dbWorkspaceStore, ensureWorkstreamWorkspace } from '@mymind/core/lib/sandbox/store'
 import { patchWorkstream } from '@mymind/core/lib/agent/workstreams/store'
 import { WATCH_POLL_SCRIPT } from '@mymind/core/lib/sandbox/fs-ops'
 import type { SandboxManager, SandboxExecResult } from '@mymind/core/lib/sandbox/manager'
@@ -60,6 +60,7 @@ afterAll(async () => {
     await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
     await db.delete(conversations).where(inArray(conversations.id, convIds))
   }
+  await db.delete(workspaces).where(eq(workspaces.ns, NS)) // catch-all (final fix wave): no orphans
   await db.delete(runEvents).where(eq(runEvents.ns, NS))
   await db.delete(workerCommands).where(eq(workerCommands.ns, NS))
   setExecutionMode('local')
@@ -218,7 +219,7 @@ describe('watch × workstreams', () => {
   it('a chat (home) watch posts a note into its conversation when no turn is running there', async () => {
     const conv = await createConversation({ title: 'T2w chat watch' })
     convIds.push(conv.id)
-    const [home] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning() // stands in for home
+    const [home] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning() // stands in for home
     wsIds.push(home!.id)
     met = true
     const w = await rt.watches.create({ workspaceId: home!.id, workstreamId: null, conversationId: conv.id, command: 'test -f done', until: { kind: 'exit0' }, intervalSec: 600, timeoutMin: 5 })
@@ -264,7 +265,7 @@ describe('watch × workstreams', () => {
   })
 
   it('M5: the shell and watch caps hold under parallel creates (one lock per workspace in the DB)', async () => {
-    const [w] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning()
+    const [w] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning()
     wsIds.push(w!.id)
     const shells = await Promise.all(Array.from({ length: 12 }, (_, i) => dbShellStore.create(w!.id, `s${i}`, 8)))
     expect(shells.filter(Boolean)).toHaveLength(8)
@@ -286,7 +287,7 @@ describe('watch × workstreams', () => {
   it('M2: tainting a workspace cancels its armed watches (owner told why) and records its running shells as stopped', async () => {
     const conv = await createConversation({ title: 'T2w taint' })
     convIds.push(conv.id)
-    const [w] = await useDb().insert(workspaces).values({ kind: 'workstream', tainted: true }).returning()
+    const [w] = await useDb().insert(workspaces).values({ kind: 'workstream', tainted: true, ns: NS }).returning()
     wsIds.push(w!.id)
     met = false
     const watch = await rt.watches.create({ workspaceId: w!.id, workstreamId: null, conversationId: conv.id, command: 'sleep 1', until: { kind: 'exit0' }, intervalSec: 600, timeoutMin: 5 })
@@ -301,5 +302,78 @@ describe('watch × workstreams', () => {
     const [sr] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, shell!.id))
     expect(sr).toMatchObject({ state: 'killed', reason: `stopped: ${TAINTED_REASON}` })
   })
-})
 
+  it('final fix wave: a watch-cap pause never overwrites a pending ask_tony question — the note goes into the thread', async () => {
+    const ws = await newWorkstream('pause-vs-question')
+    const question = { kind: 'question', text: 'Which branch?' }
+    await patchWorkstream(ws.id, { state: 'attention', attention: question as never })
+    expect(await pauseWorkstreamForTony(undefined, ws.id, 'It reached its watch limit')).toBe(true)
+    const after = (await getWorkstream(ws.id))!
+    expect(after.state).toBe('attention')
+    expect(after.attention).toMatchObject(question)
+    const msgs = await thread(ws.conversationId)
+    expect(msgs.at(-1)).toMatchObject({ role: 'event', content: expect.stringMatching(/Paused for you — It reached its watch limit/) })
+    // A running one is paused as before.
+    await patchWorkstream(ws.id, { state: 'running', attention: null })
+    expect(await pauseWorkstreamForTony(undefined, ws.id, 'limit')).toBe(true)
+    expect((await getWorkstream(ws.id))!).toMatchObject({ state: 'paused', attention: { kind: 'paused', text: 'limit' } })
+  })
+
+  it('I2: a workstream that ends tears its workspace down at once (shells killed, watches cancelled quietly, container stopped); the minute tick catches the rest', async () => {
+    const stops: Array<[string, string]> = []
+    const mgr = { ...fakeManager, stopContainer: async (id: string, why: string) => { stops.push([id, why]); await dbWorkspaceStore.setContainer(id, null, 'stopped') } } as unknown as SandboxManager
+    const local = createWorkspaceRuntime(mgr)
+    const ws = await newWorkstream('teardown')
+    const space = await ensureWorkstreamWorkspace(ws.id)
+    await dbWorkspaceStore.setContainer(space.id, 'c-teardown', 'running')
+    const shell = await dbShellStore.create(space.id, 'python -m http.server', 8)
+    met = false
+    const watch = await local.watches.create({ workspaceId: space.id, workstreamId: ws.id, conversationId: null, command: 'false', until: { kind: 'exit0' }, intervalSec: 600, timeoutMin: 60 })
+    if ('refused' in watch) throw new Error('refused')
+    // The worker installs the hook at start (startWorkspaceRuntime) — here on this runtime.
+    setWorkspaceRuntime(local)
+    const started = startWorkspaceRuntime({ info: () => {}, warn: () => {}, error: () => {} })
+    try {
+      expect(await finishedWorkstreamsWithLiveWorkspaces()).not.toContain(ws.id)
+      await patchWorkstream(ws.id, { state: 'done', finishedAt: new Date() }, ['queued', 'running'])
+      for (let i = 0; i < 50 && !stops.length; i++) await new Promise(r => setTimeout(r, 20))
+      expect(stops).toEqual([[space.id, 'killed: its workstream has ended']])
+      const { workspaceShells } = await import('@mymind/core/db/schema')
+      const [sr] = await useDb().select().from(workspaceShells).where(eq(workspaceShells.id, shell!.id))
+      expect(sr).toMatchObject({ state: 'killed', reason: 'killed: its workstream has ended' })
+      const [wr] = await useDb().select().from(workspaceWatches).where(eq(workspaceWatches.id, watch.id))
+      expect(wr).toMatchObject({ state: 'cancelled', reason: 'its workstream has ended' })
+      expect(wr!.deliveredAt).not.toBeNull() // nobody told
+      // Backstop: a finished workstream whose workspace still has a live row (ended elsewhere).
+      await dbShellStore.create(space.id, 'sleep 99', 8)
+      expect(await finishedWorkstreamsWithLiveWorkspaces()).toContain(ws.id)
+      await started.onTick()
+      expect(await finishedWorkstreamsWithLiveWorkspaces()).not.toContain(ws.id)
+      expect(await teardownWorkstreamWorkspace(local, ws.id)).toBe(true) // idempotent
+    } finally {
+      started.stop()
+      local.watches.stop()
+      setWorkspaceRuntime(rt)
+    }
+  })
+
+  it('I7: a workstream workspace expires 30 days after its workstream FINISHED; a resumed (unfinished) one never does', async () => {
+    const before = new Date(Date.now() - 30 * 24 * 60 * 60_000)
+    const old = await newWorkstream('i7-old')
+    const fresh = await newWorkstream('i7-fresh')
+    const live = await newWorkstream('i7-live')
+    const [a, b, c] = [await ensureWorkstreamWorkspace(old.id), await ensureWorkstreamWorkspace(fresh.id), await ensureWorkstreamWorkspace(live.id)]
+    await patchWorkstream(old.id, { state: 'cancelled', finishedAt: new Date(Date.now() - 31 * 24 * 60 * 60_000) })
+    await patchWorkstream(fresh.id, { state: 'done', finishedAt: new Date(Date.now() - 29 * 24 * 60 * 60_000) })
+    const ids = (await dbWorkspaceStore.listExpired(before)).map(r => r.id)
+    expect(ids).toContain(a.id)
+    expect(ids).not.toContain(b.id)
+    expect(ids).not.toContain(c.id)
+    // Resumed: no finished_at → no longer expired.
+    await patchWorkstream(old.id, { state: 'running', finishedAt: null })
+    expect((await dbWorkspaceStore.listExpired(before)).map(r => r.id)).not.toContain(a.id)
+    // Another namespace's rows are never swept from here (the dev worker vs a test run).
+    setBusNs('t82-other-ns')
+    try { expect((await dbWorkspaceStore.listExpired(new Date())).map(r => r.id)).not.toContain(b.id) } finally { setBusNs(NS) }
+  })
+})

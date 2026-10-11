@@ -10,7 +10,8 @@
 // image, stopped by the disk watchdog, or killed when the workspace was tainted).
 import { and, eq, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
-import { workspaceShells, type WorkspaceShellRow } from '../../db/schema'
+import { workspaceShells, workspaces, type WorkspaceShellRow } from '../../db/schema'
+import { busNs } from '../bus/ns'
 import { publishChange } from '../../utils/live-bus'
 import { parseShellStatus, shellKillCommand, shellOutputCommand, shellStartCommand, shellStatusCommand, shellTailCommand, type ShellStatus } from './fs-ops'
 import type { ExecOptions, SandboxExecResult } from './manager'
@@ -54,7 +55,10 @@ export const dbShellStore: ShellStore = {
     return r ?? null
   },
   async listRunning(workspaceId) {
-    return useDb().select().from(workspaceShells).where(and(eq(workspaceShells.state, 'running'), workspaceId ? eq(workspaceShells.workspaceId, workspaceId) : undefined))
+    // Without a workspace (the boot re-attach): only this bus namespace's workspaces.
+    return useDb().select().from(workspaceShells).where(and(eq(workspaceShells.state, 'running'), workspaceId
+      ? eq(workspaceShells.workspaceId, workspaceId)
+      : sql`${workspaceShells.workspaceId} in (select ${workspaces.id} from ${workspaces} where ${workspaces.ns} = ${busNs()})`))
   },
   async list(workspaceId, limit = 50) {
     return useDb().select().from(workspaceShells).where(eq(workspaceShells.workspaceId, workspaceId)).orderBy(sql`${workspaceShells.startedAt} desc`).limit(limit)

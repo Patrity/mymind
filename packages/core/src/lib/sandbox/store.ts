@@ -5,6 +5,7 @@ import { and, eq, inArray, isNull, isNotNull, lt, or, sql } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { workspaces, workstreams, type WorkspaceRow } from '../../db/schema'
 import { publishChange } from '../../utils/live-bus'
+import { busNs } from '../bus/ns'
 
 export type { WorkspaceRow }
 
@@ -17,7 +18,7 @@ export interface WorkspaceStore {
   setUsage(id: string, bytes: number, inodes: number): Promise<void>
   /** Persistent taint on/off (review I1). */
   setTainted(id: string, tainted: boolean): Promise<void>
-  /** Live rows the DB believes are running. */
+  /** Live rows the DB believes are running (this bus namespace's — final fix wave). */
   listRunning(): Promise<WorkspaceRow[]>
   /** Workstream workspaces whose workstream is gone get `deleted_at` (the 30-day clock starts). */
   stampOrphans(): Promise<number>
@@ -60,11 +61,11 @@ export const dbWorkspaceStore: WorkspaceStore = {
     publish(id)
   },
   async listRunning() {
-    return useDb().select().from(workspaces).where(and(eq(workspaces.state, 'running'), isNull(workspaces.deletedAt)))
+    return useDb().select().from(workspaces).where(and(eq(workspaces.state, 'running'), isNull(workspaces.deletedAt), eq(workspaces.ns, busNs())))
   },
   async stampOrphans() {
     const rows = await useDb().update(workspaces).set({ deletedAt: new Date() })
-      .where(and(eq(workspaces.kind, 'workstream'), isNull(workspaces.workstreamId), isNull(workspaces.deletedAt)))
+      .where(and(eq(workspaces.kind, 'workstream'), isNull(workspaces.workstreamId), isNull(workspaces.deletedAt), eq(workspaces.ns, busNs())))
       .returning({ id: workspaces.id })
     for (const r of rows) publish(r.id)
     return rows.length
@@ -72,10 +73,10 @@ export const dbWorkspaceStore: WorkspaceStore = {
   async listExpired(before) {
     const finished = useDb().select({ id: workstreams.id }).from(workstreams)
       .where(and(inArray(workstreams.state, ['done', 'failed', 'cancelled']), isNotNull(workstreams.finishedAt), lt(workstreams.finishedAt, before)))
-    return useDb().select().from(workspaces).where(or(
+    return useDb().select().from(workspaces).where(and(eq(workspaces.ns, busNs()), or(
       and(isNotNull(workspaces.deletedAt), lt(workspaces.deletedAt, before)),
       and(eq(workspaces.kind, 'workstream'), inArray(workspaces.workstreamId, finished))
-    ))
+    )))
   },
   async remove(id) {
     await useDb().delete(workspaces).where(eq(workspaces.id, id))
@@ -89,7 +90,7 @@ export async function ensureHomeWorkspace(): Promise<WorkspaceRow> {
   const find = async () => (await db.select().from(workspaces).where(and(eq(workspaces.kind, 'home'), isNull(workspaces.deletedAt))).limit(1))[0]
   const existing = await find()
   if (existing) return existing
-  const [created] = await db.insert(workspaces).values({ kind: 'home' })
+  const [created] = await db.insert(workspaces).values({ kind: 'home', ns: busNs() })
     .onConflictDoNothing({ target: workspaces.kind, where: sql`${workspaces.kind} = 'home' and ${workspaces.deletedAt} is null` })
     .returning()
   if (created) { publish(created.id, 'created'); return created }
@@ -101,7 +102,7 @@ export async function ensureHomeWorkspace(): Promise<WorkspaceRow> {
 /** A workstream's workspace (one per workstream; created at its start). */
 export async function ensureWorkstreamWorkspace(workstreamId: string): Promise<WorkspaceRow> {
   const db = useDb()
-  const [created] = await db.insert(workspaces).values({ kind: 'workstream', workstreamId })
+  const [created] = await db.insert(workspaces).values({ kind: 'workstream', workstreamId, ns: busNs() })
     .onConflictDoNothing({ target: workspaces.workstreamId, where: sql`${workspaces.workstreamId} is not null` })
     .returning()
   if (created) { publish(created.id, 'created'); return created }

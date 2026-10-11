@@ -18,6 +18,7 @@ import { createWatchRuntime, type WatchRuntime, type WorkspaceWatchRow } from '.
 import { READ_TEXT_CAP_BYTES, READ_TEXT_SCRIPT } from './fs-ops'
 import { executionMode } from '../agent/runtime/execution-mode'
 import { setWorkstreamTerminalHook } from '../agent/workstreams/store'
+import { busNs } from '../bus/ns'
 import type { ExecOptions } from './manager'
 
 export interface WorkspaceRef {
@@ -159,6 +160,7 @@ export async function finishedWorkstreamsWithLiveWorkspaces(): Promise<string[]>
     .innerJoin(workstreams, eq(workstreams.id, workspaces.workstreamId))
     .where(and(
       isNull(workspaces.deletedAt),
+      eq(workspaces.ns, busNs()),
       inArray(workstreams.state, ['done', 'failed', 'cancelled']),
       or(
         eq(workspaces.state, 'running'),

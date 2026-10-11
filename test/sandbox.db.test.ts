@@ -18,8 +18,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
-import { inArray } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
+import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { workspaces } from '@mymind/core/db/schema'
 import { createSandboxManager, containerName, SandboxQuotaError, type SandboxManager } from '@mymind/core/lib/sandbox/manager'
 import { dbWorkspaceStore } from '@mymind/core/lib/sandbox/store'
@@ -27,6 +28,9 @@ import { execArgs, killExecArgs, parseExecStatus } from '@mymind/core/lib/sandbo
 
 const IMAGE = process.env.SANDBOX_TEST_IMAGE || 'mymind-sandbox:current'
 const RUN = `sbx-${process.pid}-${Date.now().toString(36)}`
+// Final fix wave: every workspace row of this file is in its own bus namespace — a dev worker on the
+// shared DB never scans it, and afterAll removes every row of it (no orphans).
+const NS = RUN.replace(/[^A-Za-z0-9_-]/g, '_')
 const LABELS = { 'mymind.test': RUN }
 
 function docker(...args: string[]): { code: number; out: string; err: string } {
@@ -46,7 +50,7 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
   const overQuota: Array<[string, { bytes: number; inodes: number }]> = []
 
   async function newWorkspace(): Promise<string> {
-    const [r] = await useDb().insert(workspaces).values({ kind: 'workstream' }).returning()
+    const [r] = await useDb().insert(workspaces).values({ kind: 'workstream', ns: NS }).returning()
     rowIds.push(r!.id)
     return r!.id
   }
@@ -66,8 +70,9 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
   })
 
   beforeAll(async () => {
+    setBusNs(NS)
     if (docker('image', 'inspect', IMAGE).code !== 0) {
-      execFileSync('bash', ['deploy/sandbox/build-image.sh', 'dev'], { stdio: 'inherit', timeout: 900_000 })
+      execFileSync('bash', ['deploy/sandbox/build-image.sh'], { stdio: 'inherit', timeout: 900_000 })
     }
     // realpath: on macOS tmpdir() is a /var → /private/var symlink; Docker Desktop shares /private.
     root = realpathSync(mkdtempSync(path.join(tmpdir(), 'mm-sbx-')))
@@ -78,7 +83,28 @@ describe.skipIf(!dockerUp)('workspace sandbox (real Docker)', () => {
     const ids = docker('ps', '-aq', '--filter', `label=mymind.test=${RUN}`).out.split('\n').filter(Boolean)
     if (ids.length) docker('rm', '-f', ...ids)
     if (rowIds.length) await useDb().delete(workspaces).where(inArray(workspaces.id, rowIds))
+    await useDb().delete(workspaces).where(eq(workspaces.ns, NS))
+    setBusNs(null)
     if (root) rmSync(root, { recursive: true, force: true })
+  }, 120_000)
+
+  it('final review I4: the limits probe passes on a host that enforces them (HostConfig + the container\'s own cgroup), and leaves no probe behind', async () => {
+    const strict = mk({ settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'enforce', maxRunning: 10, dns: [] } })
+    expect(await strict.health()).toMatchObject({ ok: true })
+    const id = await newWorkspace()
+    expect((await strict.exec(id, 'cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max')).stdout).toBe(`${2 * 1024 ** 3}\n512\n`)
+    expect(docker('ps', '-aq', '--filter', `label=mymind.test=${RUN}`, '--filter', 'name=mymind-wsprobe-').out.trim()).toBe('')
+  }, 120_000)
+
+  it('final review I3: with maxRunning 1 a second workspace stops the idle first one (real containers)', async () => {
+    const one = mk({ settings: { image: IMAGE, workspacesDir: root, firewall: 'off', limits: 'off', maxRunning: 1, slotWaitMs: 2000, dns: [] } })
+    const a = await newWorkspace()
+    const b = await newWorkspace()
+    await one.exec(a, 'true')
+    await one.exec(b, 'true')
+    expect(inspect(a).State.Running).toBe(false)
+    expect(inspect(b).State.Running).toBe(true)
+    await one.stopContainer(b)
   }, 120_000)
 
   it('runs as uid 10001 with exactly the spec flags', async () => {
