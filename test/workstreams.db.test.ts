@@ -18,7 +18,7 @@ vi.mock('@mymind/core/lib/google/connections', async (importOriginal) => ({
 
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
-import { agentInbox, agentRuns, channelApprovals, conversationMessages, conversations, runEvents, workerCommands, workstreams, type AgentRun } from '@mymind/core/db/schema'
+import { agentInbox, agentRuns, channelApprovals, conversationMessages, conversations, runEvents, workerCommands, workspaces, workstreams, type AgentRun } from '@mymind/core/db/schema'
 import { _resumeClaimingForTests, enqueue, pumpOnce, setExecutionMode, stopClaiming, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
 import { runTurn } from '@mymind/core/lib/agent/runtime/runner'
 import { recoverStale } from '@mymind/core/lib/agent/runtime/recover'
@@ -68,6 +68,9 @@ afterEach(() => { delete process.env.APPROVAL_TIMEOUT_MS })
 afterAll(async () => {
   Object.assign(workstreamNotifyDeps, realNotify)
   const db = useDb()
+  // Cycle 82: every workstream started here got a workspace row (in this file's bus namespace) —
+  // remove them, or deleting the workstreams below leaves orphans (workstream_id set null).
+  await db.delete(workspaces).where(eq(workspaces.ns, NS))
   if (convIds.length) {
     await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
     await db.delete(workstreams).where(inArray(workstreams.conversationId, convIds))
