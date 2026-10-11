@@ -201,6 +201,8 @@ describe('workstreams', () => {
     expect(seen).toHaveLength(2)
     expect(seen[0]!.maxSteps).toBe(5)                  // segment cap = what is left of the budget
     expect(seen[1]).toMatchObject({ maxSteps: 1, final: expect.stringMatching(/step budget/) })
+    // The loop queued the summary step itself (not a plain continuation that happened to start final).
+    expect((await segRuns(ws.conversationId)).map(r => (r.input as { eventOrigin?: string }).eventOrigin)).toEqual(['segment:start', 'segment:budget'])
     expect(await activeSegs(ws.conversationId)).toEqual([])
     expect((await thread(origin)).some(m => m.origin === `workstream:${ws.id}` && m.content.includes('SUMMARY-B'))).toBe(true)
   })
@@ -320,6 +322,8 @@ describe('workstreams', () => {
     const { ws } = await newWorkstream('cancel')
     expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn })).toBe(1)
     await started
+    // `used` is persisted every step, while the segment is still running (a crash keeps it).
+    await until(async () => ((await getWorkstream(ws.id))?.used as { steps?: number } | undefined)?.steps === 1, 3_000)
     const dto = await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
     expect(dto.state).toBe('running')                       // the step in flight finishes first
     release()
