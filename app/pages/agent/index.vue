@@ -688,6 +688,10 @@ onMounted(() => {
       </template>
 
       <template #body>
+        <!-- Cycle 81: the worker runs every turn — say so when it is gone (heartbeat > 30s), and
+             when this tab's socket has been failing to reconnect for a while. -->
+        <AgentWorkerOfflineBanner />
+        <AgentReconnectingBanner :show="voice.reconnecting.value" />
         <AgentConversation
           class="flex-1 min-h-0"
           :messages="voice.messages.value"

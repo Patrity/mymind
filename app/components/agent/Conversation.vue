@@ -10,7 +10,7 @@ import { Conversation, ConversationContent, ConversationScrollButton } from '@/c
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { subagentSteps } from '~/lib/agent/render'
-import { splitOrigin } from '@mymind/core/shared/utils/event-origin'
+import { eventDisplay } from '~/lib/workstreams/display'
 import type { MessageDeliveryDTO } from '@mymind/core/shared/types/conversation'
 import { deliveryBadge, summarizeDeliveries } from '~/lib/channels/delivery-badge'
 
@@ -36,6 +36,9 @@ const props = defineProps<{
    *  GET /api/conversations/:id/deliveries query). Wins over the `metadata.deliveries` the
    *  message was loaded with, which is only as fresh as the last transcript read. */
   deliveries?: Record<string, MessageDeliveryDTO[]>
+  /** A log, not a chat (the workstream view, cycle 81): no edit/fork/regenerate actions and no
+   *  starter empty state — those act on a thread Tony is chatting in. */
+  readonly?: boolean
 }>()
 const emit = defineEmits<{
   undo: [toolCallId: string, undoToken: string]
@@ -108,15 +111,25 @@ const badgesById = computed(() => {
   return out
 })
 
-/** An `event` row (wake, approval note, restart note) renders as a divider, not a bubble —
- *  see to-ui-messages.ts's 'event' → 'system' mapping. `origin` is `'<kind>:<detail>'` or
- *  null; unrecognised/absent kinds fall back to a generic "note" label. */
-function eventLabel(m: AgentUIMessage): string {
-  const origin = m.metadata?.event?.origin ?? ''
-  const { kind, detail } = splitOrigin(origin)
-  const text = m.parts.find(p => p.type === 'text')?.text ?? ''
-  const head = kind === 'wake' ? `woken · ${detail}` : kind === 'review' ? `review · ${detail}` : kind === 'runtime' ? 'runtime' : 'note'
-  return `${head}: ${text.length > 80 ? text.slice(0, 79) + '…' : text}`
+/** An `event` row (wake, approval note, restart note, a workstream's notes and segment marks)
+ *  renders as a divider or a workstream card, not a bubble — see to-ui-messages.ts's 'event' →
+ *  'system' mapping and lib/workstreams/display.ts's eventDisplay. Computed once per pass. */
+const eventsById = computed(() => {
+  const out: Record<string, ReturnType<typeof eventDisplay>> = {}
+  for (const m of props.messages) {
+    if (m.role !== 'system' || !m.metadata?.event) continue
+    out[m.id] = eventDisplay(m.metadata.event.origin, m.parts.find(p => p.type === 'text')?.text ?? '')
+  }
+  return out
+})
+type EventOf<K> = Extract<ReturnType<typeof eventDisplay>, { kind: K }>
+function workstreamEvent(id: string): EventOf<'workstream'> | null {
+  const e = eventsById.value[id]
+  return e?.kind === 'workstream' ? e : null
+}
+function dividerEvent(id: string): EventOf<'divider'> | null {
+  const e = eventsById.value[id]
+  return e?.kind === 'divider' ? e : null
 }
 </script>
 
@@ -127,7 +140,7 @@ function eventLabel(m: AgentUIMessage): string {
   >
     <ConversationContent>
       <AgentEmptyState
-        v-if="!messages.length"
+        v-if="!messages.length && !readonly"
         :state="state"
         :connected="connected"
         :hero="hero"
@@ -144,12 +157,18 @@ function eventLabel(m: AgentUIMessage): string {
         v-for="m in messages"
         :key="m.id"
       >
+        <WorkstreamsEventCard
+          v-if="workstreamEvent(m.id)"
+          :event="workstreamEvent(m.id)!"
+          :message-id="m.id"
+        />
         <USeparator
-          v-if="m.role === 'system' && m.metadata?.event"
+          v-else-if="dividerEvent(m.id)"
           color="neutral"
-          icon="i-lucide-alarm-clock"
-          :label="eventLabel(m)"
+          :icon="dividerEvent(m.id)!.icon"
+          :label="dividerEvent(m.id)!.label"
           class="my-3"
+          data-testid="event-divider"
         />
         <div
           v-else
@@ -262,7 +281,7 @@ function eventLabel(m: AgentUIMessage): string {
              and has no branch metadata to carry, so it falls back to 1/1 — no pager — until the
              page refetches the thread, which it does after any turn that created a branch. -->
           <AgentReplyActions
-            v-if="editingId !== m.id"
+            v-if="editingId !== m.id && !readonly"
             :message="m"
             :branch="m.metadata?.branch ?? { index: 1, total: 1 }"
             @retry="emit('retry', m.id)"

@@ -37,7 +37,7 @@ import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
 import {
-  BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, type StoredApprovalRequest, type WorkstreamAttention,
+  BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, resumeBudget, ZERO_USED, type StoredApprovalRequest, type WorkstreamAttention,
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
@@ -191,7 +191,6 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   let mirror: RunEventWriter | null = null
   let done = false
   let parking = false
-  // model in this segment, is approved without asking twice — once.
 
   const wallNow = () => base.wallMs + activeMs + (activeSince !== null ? Date.now() - activeSince : 0)
   const hardLimit = o.final ? base.wallMs + FINAL_STEP_MAX_MS : budget.maxWallMs + WALL_HARD_GRACE_MS
@@ -287,7 +286,9 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
           } else {
             waiting.get(requestId)?.abort(APPROVAL_WITHDRAWN)
             waiting.delete(requestId)
-            // Parking (drain): the card is being kept for the next worker — leave attention as it is.
+            // Parking (drain): leave attention as it is. The card is NOT carried over: the next
+            // worker's restoreParkedApprovals withdraws it and resumes with a `segment:approval-lost`
+            // note (the action did not run; the model re-issues it and Tony approves a fresh card).
             if (!waiting.size && !parking) {
               resume()
               void serial(() => patchWorkstream(ws.id, { state: 'running', attention: null }, ['attention']))
@@ -826,7 +827,7 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string, opts: {
     const b = budgetOf(ws)
     // Extended within the same bounds a start is held to (review M4).
     const budget = exhausted(ws)
-      ? clampBudget({ maxSteps: Math.max(b.maxSteps, used.steps + SEGMENT_MAX_STEPS), maxWallMs: Math.max(b.maxWallMs, used.wallMs + 30 * 60_000) })
+      ? clampBudget(resumeBudget(b, used))
       : b
     // Reactivating counts against the cap like a start (fix round 2), under the same lock.
     const row = await useDb().transaction(async (tx) => {

@@ -3,6 +3,7 @@ import type { AgentUIPart, SubagentStep, ToolEnvelope } from '@mymind/core/share
 import { approvalFor, type PendingApprovals } from '~/lib/agent/approvals'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from '@/components/ai-elements/tool'
 import { toolTitle, isRunning } from '~/lib/agent/render'
+import { startedWorkstream } from '~/lib/workstreams/display'
 
 const props = defineProps<{
   part: Extract<AgentUIPart, { type: 'dynamic-tool' }>
@@ -20,6 +21,8 @@ const emit = defineEmits<{
 const envelope = computed(() => (props.part.state === 'output-available' ? props.part.output as ToolEnvelope : null))
 const running = computed(() => isRunning(props.part))
 const pendingPart = computed(() => (props.part.state === 'approval-requested' ? props.part : null))
+// A workstream this call started gets its compact card + link (cycle 81 spec §5.5).
+const started = computed(() => (envelope.value ? startedWorkstream(props.part.toolName, props.part.input, envelope.value.value) : null))
 const approvalDetails = computed(() => (
   pendingPart.value ? approvalFor(props.approvals, pendingPart.value.approval.id) : null
 ))
@@ -66,6 +69,11 @@ const approvalDetails = computed(() => (
       class="text-xs text-muted"
     >undone</span>
   </div>
+  <WorkstreamsStartedCard
+    v-if="started"
+    :id="started.id"
+    :goal="started.goal"
+  />
   <AgentSubagentSteps
     v-if="steps?.length"
     :steps="steps"

@@ -1,0 +1,68 @@
+// Cycle 81 Task 6: workstreams (spec §5.5) — live reads keyed for the `workstream` resource
+// (default dispatch invalidates ['workstream', id] + ['workstream', 'list']), the controls (each a
+// round trip to the agent worker), and the worker heartbeat the offline banner reads.
+import type { MaybeRefOrGetter } from 'vue'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import type { WorkstreamBudget, WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
+
+/** The readable text of a failed workstream request (the routes put it in `data.message`; h3
+ *  strips non-ASCII from statusMessage). `cap` marks the "3 already in progress" refusal. */
+export function workstreamErrorOf(e: unknown): { message: string; code: string | null } {
+  const err = e as { data?: { data?: { message?: string; code?: string }; statusMessage?: string }; message?: string }
+  return {
+    message: err?.data?.data?.message ?? err?.data?.statusMessage ?? err?.message ?? 'Something went wrong',
+    code: err?.data?.data?.code ?? null
+  }
+}
+
+export function useWorkstreamList() {
+  return useQuery({
+    queryKey: ['workstream', 'list'] as const,
+    queryFn: () => $fetch<WorkstreamDTO[]>('/api/workstreams')
+  })
+}
+
+export function useWorkstream(id: MaybeRefOrGetter<string | null | undefined>) {
+  const key = computed(() => toValue(id) ?? '')
+  return useQuery({
+    queryKey: computed(() => ['workstream', key.value] as const),
+    queryFn: () => $fetch<WorkstreamDTO>(`/api/workstreams/${key.value}`),
+    enabled: computed(() => !!key.value)
+  })
+}
+
+export function useWorkstreamActions() {
+  const qc = useQueryClient()
+  const settle = (dto: WorkstreamDTO) => {
+    qc.setQueryData(['workstream', dto.id], dto)
+    void qc.invalidateQueries({ queryKey: ['workstream', 'list'] })
+  }
+  const start = useMutation({
+    mutationFn: (b: { goal: string; budget?: Partial<WorkstreamBudget> }) =>
+      $fetch<WorkstreamDTO>('/api/workstreams', { method: 'POST', body: b }),
+    onSuccess: settle
+  })
+  const control = useMutation({
+    mutationFn: (p: { id: string; action: 'cancel' | 'resume' | 'steer'; text?: string }) =>
+      $fetch<WorkstreamDTO>(`/api/workstreams/${p.id}/${p.action}`, { method: 'POST', body: p.action === 'steer' ? { text: p.text } : {} }),
+    onSuccess: settle
+  })
+  return { start, control }
+}
+
+/**
+ * The agent worker's heartbeat (spec §6): offline when its newest beat is > 30s old. Polled — the
+ * heartbeat is a timestamp, not a change anything publishes. Unknown (null) until the first read,
+ * and a failed read is NOT "offline" (the web itself may be what is down).
+ */
+export function useWorkerStatus() {
+  const { data } = useQuery({
+    queryKey: ['agent', 'worker'] as const,
+    queryFn: () => $fetch<{ online: boolean; beatAt: string | null }>('/api/agent/worker'),
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false
+  })
+  const offline = computed(() => data.value?.online === false)
+  const beatAt = computed(() => data.value?.beatAt ?? null)
+  return { offline, beatAt }
+}

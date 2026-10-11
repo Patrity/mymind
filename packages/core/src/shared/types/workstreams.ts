@@ -48,3 +48,16 @@ export const TERMINAL_WORKSTREAM_STATES: readonly WorkstreamState[] = ['done', '
 
 /** The page a workstream lives at (Task 6). */
 export function workstreamPath(id: string): string { return `/workstreams/${id}` }
+
+/** What Resume adds to a workstream whose budget is used up (one segment's worth of steps and
+ *  half an hour of active time), so it can actually move. Shared so the UI can say it up front. */
+export const RESUME_EXTENSION = { steps: 40, wallMs: 30 * 60_000 } as const
+
+/** The budget a resumed (failed/cancelled) workstream gets when its budget is used up — before the
+ *  BUDGET_LIMITS clamp the loop applies. Never shrinks a dimension. */
+export function resumeBudget(b: WorkstreamBudget, used: Pick<WorkstreamUsed, 'steps' | 'wallMs'>): WorkstreamBudget {
+  return {
+    maxSteps: Math.max(b.maxSteps, used.steps + RESUME_EXTENSION.steps),
+    maxWallMs: Math.max(b.maxWallMs, used.wallMs + RESUME_EXTENSION.wallMs)
+  }
+}

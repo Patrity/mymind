@@ -35,3 +35,30 @@ export function framesOnOpen(i: OpenFrameInput): Record<string, unknown>[] {
   }
   return frames
 }
+
+// ── Auto-reconnect pacing (cycle 81 Task 6 carry-over) ──────────────────────────────────────────
+
+export const RECONNECT_BASE_MS = 500
+export const RECONNECT_MAX_MS = 8_000
+/** After this many reconnect attempts without an open socket, the page says "Reconnecting…". */
+export const RECONNECTING_AFTER = 3
+
+/**
+ * The wait before reconnect attempt `attempt` (0-based): exponential from 500ms, capped at 8s, with
+ * jitter — a random 50–100% of that — so every tab of a restarted server does not knock at once.
+ * `rand` is Math.random() (in [0, 1)).
+ */
+export function reconnectDelay(attempt: number, rand: number): number {
+  const ceiling = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, attempt), RECONNECT_MAX_MS)
+  return Math.round(ceiling * (0.5 + 0.5 * Math.min(Math.max(rand, 0), 1)))
+}
+
+/**
+ * A browser never shows a WebSocket upgrade's 401, so after a failed reconnect the page asks the
+ * auth endpoint. Expired = the server ANSWERED and said there is no session; a failed request
+ * (server still down) is not expired — keep retrying.
+ */
+export function sessionExpired(r: { data?: { session?: unknown } | null; error?: unknown } | null | undefined): boolean {
+  if (!r || r.error) return false
+  return !r.data?.session
+}

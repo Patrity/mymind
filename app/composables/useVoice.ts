@@ -2,7 +2,8 @@
 import { createLeftThreads, isForeignFrame, mapServerMessage, queuedEchoIndex, QUEUED_ID_PREFIX } from '../lib/voice/messages'
 import { createResumeTracker } from '../lib/voice/resume'
 import { createPlaybackEpochs } from '../lib/voice/playback-epoch'
-import { framesOnOpen } from '../lib/voice/reconnect'
+import { framesOnOpen, reconnectDelay, RECONNECTING_AFTER, sessionExpired } from '../lib/voice/reconnect'
+import { authClient } from '../lib/auth-client'
 import { createClientTurns } from '../lib/agent/turn-stream'
 import { epochDividers } from '../lib/agent/dividers'
 import { addApproval, removeApproval, type PendingApprovals } from '../lib/agent/approvals'
@@ -293,17 +294,41 @@ export function useVoice() {
   let dropped = false
   let reconnectAttempt = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  const RECONNECT_MAX_MS = 8_000
+  /** True once a few reconnects in a row have failed (Task 6 carry-over): the page shows
+   *  "Reconnecting…" instead of a silently dead composer. Cleared the moment a socket opens. */
+  const reconnecting = ref(false)
+  // Captured at setup: the retry timers below run outside any component context.
+  const nuxtApp = useNuxtApp()
+  const route = useRoute()
   function scheduleReconnect(mySession: number) {
     if (reconnectTimer || mySession !== session) return
-    const delay = Math.min(500 * 2 ** reconnectAttempt++, RECONNECT_MAX_MS)
+    // Jittered (lib/voice/reconnect.ts): every tab of a restarted server must not knock at once.
+    const delay = reconnectDelay(reconnectAttempt++, Math.random())
+    if (reconnectAttempt >= RECONNECTING_AFTER) reconnecting.value = true
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       if (mySession !== session || connected.value || connecting) return
       connecting = connectInner(mySession)
-        .catch(() => { if (mySession === session) scheduleReconnect(mySession) })
+        .catch(async () => {
+          if (mySession !== session) return
+          // The upgrade's 401 is invisible to a browser: ask the auth endpoint. A session that
+          // expired while the socket was down sends Tony to log in instead of retrying forever.
+          if (await checkSessionExpired()) {
+            disconnect()
+            await nuxtApp.runWithContext(() => navigateTo({ path: '/login', query: { redirect: route.fullPath } }))
+            return
+          }
+          if (mySession === session) scheduleReconnect(mySession)
+        })
         .finally(() => { connecting = null })
     }, delay)
+  }
+  async function checkSessionExpired(): Promise<boolean> {
+    try {
+      return sessionExpired(await authClient.getSession())
+    } catch {
+      return false // the server is still down — not an answer about the session
+    }
   }
 
   async function connect() {
@@ -427,6 +452,7 @@ export function useVoice() {
         // The error the drop itself raised (onerror can fire before onclose marks it dropped).
         if (resuming && error.value === 'WebSocket error') error.value = null
         reconnectAttempt = 0
+        reconnecting.value = false
         // A resume keeps the open turn (its frames continue past the last seq rendered); a turn
         // that ended meanwhile is re-read once the page goes idle.
         const turnOpen = resuming ? turns.reattach() : false
@@ -576,6 +602,7 @@ export function useVoice() {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
     dropped = false
     reconnectAttempt = 0
+    reconnecting.value = false
     vad?.destroy()
     stopPlayback()
     ws?.close()
@@ -603,6 +630,7 @@ export function useVoice() {
   return {
     state,
     connected,
+    reconnecting,
     messages,
     error,
     /** Connect the WS + AudioContext (no mic). Text-first entry point. */
