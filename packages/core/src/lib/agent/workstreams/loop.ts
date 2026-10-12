@@ -246,6 +246,18 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
   let chain: Promise<void> = Promise.resolve()
   const costs: Array<Promise<void>> = []
   const waiting = new Map<string, AbortController>()   // approval requestId → its iMessage race
+  // Parked Task 2 item: every card waiting on Tony, in arrival order — the attention names them ALL
+  // (the newest is the primary card; the others ride in `alsoParked`), so a drain or the restore note
+  // never forgets one.
+  const waitingCards = new Map<string, { attention: ParkedAttention; judge?: ApprovalOptions['judge'] }>()
+  const waitingAttention = (): ParkedAttention | null => {
+    const cards = [...waitingCards.values()]
+    const head = cards.at(-1)
+    if (!head) return null
+    const view = head.judge?.view() ?? null
+    const others = cards.slice(0, -1).map(c => c.attention.request!).filter(Boolean)
+    return { ...head.attention, ...(view ? { judge: view } : {}), ...(others.length ? { alsoParked: others } : {}) }
+  }
   // Cycle 84 fix round 1 (C2, M2): requests the judge is still deciding (Smart-Approvals-eligible) —
   // `evaluating` lasts while ANY is in flight, and a drain parks them like a card waiting on Tony.
   const evaluating = new Map<string, ApprovalRequest>()
@@ -365,7 +377,9 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
             // The request itself is kept on the row (review I1): a drain or crash can restore the card.
             // Cycle 84: with the judge's state, kept current below as the verdict lands.
             const verdict = judge?.view() ?? null
-            const attention: ParkedAttention = { kind: 'approval', text, requestId, runId: run.id, notifiedAt: Date.now(), request: storedRequest(req), ...(verdict ? { judge: verdict } : {}) }
+            const own: ParkedAttention = { kind: 'approval', text, requestId, runId: run.id, notifiedAt: Date.now(), request: storedRequest(req), ...(verdict ? { judge: verdict } : {}) }
+            waitingCards.set(requestId, { attention: own, ...(judge ? { judge } : {}) })
+            const attention = waitingAttention() ?? own
             if (judge) judgeSubs.set(requestId, judge.onUpdate(v => void serial(() => patchAttentionJudge(ws.id, requestId, v))))
             void serial(async () => {
               const row = await patchWorkstream(ws.id, { state: 'attention', attention }, ['running', 'attention'])
@@ -390,6 +404,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
             judgeSubs.delete(requestId)
             waiting.get(requestId)?.abort(APPROVAL_WITHDRAWN)
             waiting.delete(requestId)
+            waitingCards.delete(requestId)
             // Parking (drain): leave attention as it is. The card is NOT carried over: the next
             // worker's restoreParkedApprovals withdraws it and resumes with a `segment:approval-lost`
             // note (the action did not run; the model re-issues it and Tony approves a fresh card).
@@ -397,6 +412,10 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
               resume()
               // M2: another request may still be under evaluation — keep its detail.
               void serial(() => patchWorkstream(ws.id, { state: 'running', attention: null, stateDetail: evaluating.size ? 'evaluating' : null }, ['attention']))
+            } else if (!parking) {
+              // Another card still waits: the attention now shows the ones left.
+              const left = waitingAttention()
+              if (left) void serial(() => patchWorkstream(ws.id, { attention: left }, ['attention']))
             }
           }
         }

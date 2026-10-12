@@ -214,6 +214,44 @@ describe('approval judge in a workstream (real runner + loop)', () => {
   })
 })
 
+describe('parked Task 2 item: two cards waiting at once', () => {
+  it('the attention names both; deciding one leaves the other; a drain parks both and the restore note names both', async () => {
+    const { ws } = await newWorkstream('two-cards')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('cancel', true) })   // rule high: both need Tony
+    const both = await until(async () => {
+      const a = (await getWorkstream(ws.id))?.attention as WorkstreamAttention | null
+      return a?.kind === 'approval' && a.alsoParked?.length === 1 ? a : null
+    })
+    expect([both.request!.command, both.alsoParked![0]!.command].sort()).toEqual(['cancel retro', 'cancel standup'])
+    // Tony denies the primary card: the attention now shows the other one alone.
+    expect(decideBusApproval({ requestId: both.requestId!, approved: false })).toBe(true)
+    const left = await until(async () => {
+      const a = (await getWorkstream(ws.id))?.attention as WorkstreamAttention | null
+      return a?.kind === 'approval' && a.requestId !== both.requestId ? a : null
+    })
+    expect(left.alsoParked).toBeUndefined()
+    expect(left.request!.command).toBe(both.alsoParked![0]!.command)
+    // Deny it too; the segment goes on.
+    expect(decideBusApproval({ requestId: left.requestId!, approved: false })).toBe(true)
+    expect(await waitForInFlight(15_000)).toBe(true)
+    expect(ran).toEqual([])
+  })
+
+  it('a drain with two cards waiting: the restore note names both actions', async () => {
+    const { ws } = await newWorkstream('two-cards-drain')
+    await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('cancel', true) })
+    await until(async () => ((await getWorkstream(ws.id))?.attention as WorkstreamAttention | null)?.alsoParked?.length === 1)
+    stopClaiming()
+    try { expect(await waitForInFlight(10_000)).toBe(true) } finally { _resumeClaimingForTests() }
+    expect(await restoreParkedApprovals({ onlyConversations: [ws.conversationId] })).toBe(1)
+    const queued = (await useDb().select().from(agentRuns).where(and(eq(agentRuns.conversationId, ws.conversationId), eq(agentRuns.status, 'queued'))))[0]!
+    const note = (queued.input as { text: string }).text
+    expect(note).toContain('cancel standup')
+    expect(note).toContain('cancel retro')
+    expect(ran).toEqual([])
+  })
+})
+
 describe('final fix wave M3: judge time is not wall time', () => {
   it('a segment that waited ~1.5 s on the verdict records far less wall time than that', async () => {
     const { ws } = await newWorkstream('m3-wall')
