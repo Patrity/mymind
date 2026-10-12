@@ -348,6 +348,10 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
           if (isEvaluating) evaluating.set(requestId, req)
           else evaluating.delete(requestId)
           if (parking) return
+          // Final fix wave (M3): time spent waiting on the judge is not the workstream's own work — like
+          // a wait on Tony, it does not count against the wall budget (the judge has its own deadlines).
+          if (evaluating.size) pause()
+          else if (!waiting.size) resume()
           if (before === 0 && evaluating.size === 1) void serial(() => patchWorkstream(ws.id, { stateDetail: 'evaluating' }, ['running']))
           else if (before > 0 && evaluating.size === 0) void serial(() => patchWorkstream(ws.id, { stateDetail: null }))
         },

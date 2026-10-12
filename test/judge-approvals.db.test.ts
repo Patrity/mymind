@@ -214,6 +214,20 @@ describe('approval judge in a workstream (real runner + loop)', () => {
   })
 })
 
+describe('final fix wave M3: judge time is not wall time', () => {
+  it('a segment that waited ~1.5 s on the verdict records far less wall time than that', async () => {
+    const { ws } = await newWorkstream('m3-wall')
+    expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('rsvp') })).toBe(1)
+    await until(async () => (await getWorkstream(ws.id))?.stateDetail === 'evaluating')
+    await sleep(1500)
+    release(APPROVE)
+    expect(await waitForInFlight(15_000)).toBe(true)
+    expect(ran).toEqual(['rsvp:standup'])
+    const used = (await getWorkstream(ws.id))!.used as { wallMs: number }
+    expect(used.wallMs).toBeLessThan(1000)
+  })
+})
+
 describe('approval judge on a chat card (real store)', () => {
   const tool = { name: 'calendar_rsvp', description: 'RSVP' }
   it('the verdict is persisted; chat stays manual; a late verdict after Tony\'s decision is recorded and changes nothing', async () => {
