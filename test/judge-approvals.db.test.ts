@@ -21,7 +21,7 @@ import { openApprovalFrames } from '@mymind/core/lib/bus/events'
 import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation } from '@mymind/core/services/conversations'
 import { startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
-import { getWorkstream, toWorkstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
+import { getWorkstream, patchAttentionJudge, toWorkstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
 import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
 import { runAgent, type AgentMessage, type RunAgentCtx } from '@mymind/core/lib/agent/run'
 import { approvalJudgeDeps, createApprovalJudge, defaultApprovalJudgeDeps } from '@mymind/core/lib/agent/judge/approval'
@@ -195,6 +195,9 @@ describe('approval judge in a workstream (real runner + loop)', () => {
     await sleep(50)
     expect(ran).toEqual([])                                     // the approve verdict did not run it
     expect(pendingBusApprovals()).toContain(att.requestId)
+    // Only THIS card's attention takes a verdict: another request id patches nothing.
+    expect(await patchAttentionJudge(ws.id, '00000000-0000-4000-8000-0000000000ff', { rule: null, verdict: null, pending: true, autoPossible: false })).toBe(false)
+    expect((((await getWorkstream(ws.id))!.attention) as WorkstreamAttention).judge).toMatchObject({ verdict: { recommendation: 'approve' } })
     expect(decideBusApproval({ requestId: att.requestId!, approved: true })).toBe(true)
     expect(await waitForInFlight(15_000)).toBe(true)
     expect(ran).toEqual(['cancel:standup'])
