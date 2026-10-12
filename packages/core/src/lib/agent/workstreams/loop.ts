@@ -42,7 +42,7 @@ import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
 import {
-  BUDGET_LIMITS, DEFAULT_TREE_BUDGET, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, resumeBudget, ZERO_USED, type ChildWait, type StoredApprovalRequest, type WorkstreamAttention,
+  BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, normalizeTreeBudget, resumeBudget, ZERO_USED, type ChildWait, type StoredApprovalRequest, type TreeBudget, type WorkstreamAttention,
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
@@ -492,17 +492,21 @@ type Tx = Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0]
  */
 export async function startWorkstream(i: {
   goal: string; toolsets?: string[]; budget?: Partial<WorkstreamBudget>; originConversationId?: string | null
+  /** Cycle 83 final fix wave (I1): a coordinator's tree budget (its children's steps). */
+  treeBudget?: Partial<TreeBudget>
 }, deps: { kick?: boolean } = {}): Promise<WorkstreamDTO> {
   const goal = i.goal.trim()
   if (!goal) throw new Error('a workstream needs a goal')
   const toolsets = parseToolsetIds(i.toolsets ?? [])
+  if (i.treeBudget && !toolsets.includes('coordinator')) throw new Error('treeBudget is for a coordinator — include "coordinator" in toolsets (or leave treeBudget out)')
   const ws = await useDb().transaction(async (tx) => {
     const [conv] = await tx.insert(conversations).values({ title: threadTitle(goal) }).returning({ id: conversations.id })
     const [row] = await tx.insert(workstreams).values({
       conversationId: conv!.id, originConversationId: i.originConversationId ?? null, goal, state: 'queued', used: ZERO_USED,
       toolsets, budget: clampBudget(i.budget),
-      // Cycle 83: started as a coordinator — its tree budget shows from the start (spawn sets it otherwise).
-      ...(toolsets.includes('coordinator') ? { treeBudget: DEFAULT_TREE_BUDGET } : {})
+      // Cycle 83: started as a coordinator — its tree budget shows from the start (spawn sets the
+      // default otherwise: a workstream that loads `coordinator` later).
+      ...(toolsets.includes('coordinator') ? { treeBudget: normalizeTreeBudget(i.treeBudget) } : {})
     }).returning()
     return row!
   })

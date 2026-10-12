@@ -1,8 +1,10 @@
 // Cycle 83 (spec §2, §4, §5): coordinators and their child workstreams.
 //
-//   TREE BUDGET. A coordinator's `tree_budget` caps its whole tree: what it has COMMITTED is its own
-//   budget plus, per child, the child's budget while the child runs (its reservation) or what the child
-//   actually used once it ended (the rest is refunded). Committed is computed from the rows every time
+//   TREE BUDGET. A coordinator's `tree_budget` caps its CHILDREN's steps (final fix wave I1: the
+//   coordinator's own budget is outside the tree, and wall time is not a tree dimension — each child
+//   is bounded by its own maxWallMs). What it has COMMITTED is, per child, the child's step budget
+//   while the child runs (its reservation) or what the child actually used once it ended (the rest is
+//   refunded). Committed is computed from the rows every time
 //   — never a counter — so a refund cannot be lost or doubled, and a restart recomputes nothing. A spawn
 //   checks and inserts under one advisory lock per tree (+ the coordinator row FOR UPDATE), so two spawns
 //   racing (parallel tool calls) can never both take the last of the tree.
@@ -28,7 +30,7 @@ import { agentRuns, conversations, workspaces, workstreams } from '../../../db/s
 import { publishChange } from '../../../utils/live-bus'
 import {
   BUDGET_LIMITS, DEFAULT_CHILD_BUDGET, DEFAULT_TREE_BUDGET, MAX_SPAWN_PER_CALL, TERMINAL_WORKSTREAM_STATES, ZERO_USED,
-  committedOf as committedOfMembers, type ChildWait, type TreeMember, type WorkspaceMode, type WorkstreamAttention, type WorkstreamBudget
+  committedOf as committedOfMembers, type ChildWait, type TreeBudget, type TreeMember, type WorkspaceMode, type WorkstreamAttention, type WorkstreamBudget
 } from '../../../shared/types/workstreams'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { budgetOf, childrenOf, getWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
@@ -56,23 +58,20 @@ async function lockTree(tx: Tx, coordinatorId: string): Promise<void> {
 
 // ── Tree budget ─────────────────────────────────────────────────────────────────────────────────
 
-interface Amount { maxSteps: number; maxWallMs: number }
-
 type RowMember = Pick<WorkstreamRow, 'state' | 'budget' | 'used'>
 const member = (r: RowMember): TreeMember => ({ state: r.state, budget: budgetOf(r), used: usedOf(r) })
 
-/** Committed = the coordinator's own reservation + every child's — the shared formula
- *  (shared/types/workstreams.ts, which the UI's tree meter uses too) over normalised rows. */
-function committedOf(coord: RowMember, kids: RowMember[]): Amount {
-  return committedOfMembers(member(coord), kids.map(member))
+/** Committed = every child's reservation, in steps — the shared formula (shared/types/workstreams.ts,
+ *  which the UI's tree meter uses too) over normalised rows. */
+function committedOf(kids: RowMember[]): TreeBudget {
+  return committedOfMembers(kids.map(member))
 }
 
-export function remainingOf(tree: WorkstreamBudget, committed: Amount): Amount {
-  return { maxSteps: Math.max(0, tree.maxSteps - committed.maxSteps), maxWallMs: Math.max(0, tree.maxWallMs - committed.maxWallMs) }
+export function remainingOf(tree: TreeBudget, committed: TreeBudget): TreeBudget {
+  return { maxSteps: Math.max(0, tree.maxSteps - committed.maxSteps) }
 }
 
-const minutes = (ms: number) => Math.round(ms / 60_000)
-const fmt = (a: Amount) => `${a.maxSteps} steps / ${minutes(a.maxWallMs)} min`
+const fmt = (a: TreeBudget) => `${a.maxSteps} steps`
 
 export function clampChildBudget(b: Partial<WorkstreamBudget> | undefined): WorkstreamBudget {
   const clamp = (v: unknown, lim: { min: number; max: number }, d: number) =>
@@ -84,18 +83,18 @@ export function clampChildBudget(b: Partial<WorkstreamBudget> | undefined): Work
 }
 
 /** The tree's budget and what is left of it, read now. */
-export async function treeStatus(coordinatorId: string): Promise<{ budget: WorkstreamBudget; committed: Amount; remaining: Amount } | null> {
+export async function treeStatus(coordinatorId: string): Promise<{ budget: TreeBudget; committed: TreeBudget; remaining: TreeBudget } | null> {
   const c = await getWorkstream(coordinatorId)
   if (!c) return null
   const budget = treeBudgetOf(c) ?? DEFAULT_TREE_BUDGET
-  const committed = committedOf(c, await childrenOf(c.id))
+  const committed = committedOf(await childrenOf(c.id))
   return { budget, committed, remaining: remainingOf(budget, committed) }
 }
 
 /**
  * Resuming an ended CHILD (loop.ts resumeWorkstream, inside its transaction): only while its
- * coordinator runs, and the budget it comes back with must fit what is left of the tree (the child
- * counted only what it used while it was ended).
+ * coordinator runs, and the steps it comes back with must fit what is left of the tree (the child
+ * counted only what it used while it was ended). Its wall time is its own budget's business.
  */
 export async function reserveForResume(tx: Tx, child: WorkstreamRow, budget: WorkstreamBudget): Promise<void> {
   if (!child.parentId) throw new CoordinatorError('its coordinator no longer exists — a child cannot run without it')
@@ -103,10 +102,10 @@ export async function reserveForResume(tx: Tx, child: WorkstreamRow, budget: Wor
   const [p] = await tx.select().from(workstreams).where(eq(workstreams.id, child.parentId)).for('update')
   if (!p || isTerminal(p.state)) throw new CoordinatorError('its coordinator has ended — a child cannot run without it')
   const kids = await tx.select().from(workstreams).where(eq(workstreams.parentId, p.id))
-  const left = remainingOf(treeBudgetOf(p) ?? DEFAULT_TREE_BUDGET, committedOf(p, kids))
+  const left = remainingOf(treeBudgetOf(p) ?? DEFAULT_TREE_BUDGET, committedOf(kids))
   const u = usedOf(child)
-  const need = { maxSteps: Math.max(0, budget.maxSteps - u.steps), maxWallMs: Math.max(0, budget.maxWallMs - u.wallMs) }
-  if (need.maxSteps > left.maxSteps || need.maxWallMs > left.maxWallMs) {
+  const need = { maxSteps: Math.max(0, budget.maxSteps - u.steps) }
+  if (need.maxSteps > left.maxSteps) {
     throw new CoordinatorError(`its coordinator's tree budget cannot cover it (needs ${fmt(need)}, ${fmt(left)} left)`)
   }
 }
@@ -118,10 +117,10 @@ export interface SpawnedChild { id: string; goal: string; budget: WorkstreamBudg
 
 /**
  * Spawn children of `coordinatorId` (spec §4): ≤ 50, depth 1, labels from `subagents`, every child's
- * budget reserved out of the tree — all or nothing. `labels` is the configured `subagents` labels
+ * step budget reserved out of the tree — all or nothing. `labels` is the configured `subagents` labels
  * (listSubagentModels); the tool passes them, tests pin them.
  */
-export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o: { labels: string[]; kick?: boolean; /** test seam: awaited after the check, before the insert */ _afterCheck?: () => Promise<void> }): Promise<{ children: SpawnedChild[]; tree: { budget: WorkstreamBudget; remaining: Amount } }> {
+export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o: { labels: string[]; kick?: boolean; /** test seam: awaited after the check, before the insert */ _afterCheck?: () => Promise<void> }): Promise<{ children: SpawnedChild[]; tree: { budget: TreeBudget; remaining: TreeBudget } }> {
   if (!specs.length) throw new CoordinatorError('give at least one child')
   if (specs.length > MAX_SPAWN_PER_CALL) throw new CoordinatorError(`at most ${MAX_SPAWN_PER_CALL} children per call (got ${specs.length}) — spawn the rest in another call`)
   const prepared = specs.map((c, i) => {
@@ -137,7 +136,7 @@ export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o
     const toolsets = parseToolsetIds(c.toolsets ?? []).filter((t): t is ToolsetId => t !== 'coordinator')
     return { goal, model, toolsets, budget: clampChildBudget(c.budget), workspace: (c.workspace === 'shared' ? 'shared' : 'own') as WorkspaceMode }
   })
-  const want = prepared.reduce((a, c) => ({ maxSteps: a.maxSteps + c.budget.maxSteps, maxWallMs: a.maxWallMs + c.budget.maxWallMs }), { maxSteps: 0, maxWallMs: 0 })
+  const want = { maxSteps: prepared.reduce((n, c) => n + c.budget.maxSteps, 0) }
 
   const { rows, tree, remaining } = await useDb().transaction(async (tx) => {
     await lockTree(tx, coordinatorId)
@@ -147,9 +146,9 @@ export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o
     if (isTerminal(p.state) || p.cancelRequested) throw new CoordinatorError(`the coordinator is ${p.cancelRequested ? 'being cancelled' : p.state}`)
     const tree = treeBudgetOf(p) ?? DEFAULT_TREE_BUDGET
     const kids = await tx.select().from(workstreams).where(eq(workstreams.parentId, p.id))
-    const left = remainingOf(tree, committedOf(p, kids))
-    if (want.maxSteps > left.maxSteps || want.maxWallMs > left.maxWallMs) {
-      throw new CoordinatorError(`the tree budget cannot cover these children: they need ${fmt(want)} and ${fmt(left)} is left (tree ${fmt(tree)}). Give them smaller budgets, spawn fewer, or wait for running children to end (unused budget comes back).`)
+    const left = remainingOf(tree, committedOf(kids))
+    if (want.maxSteps > left.maxSteps) {
+      throw new CoordinatorError(`the tree budget cannot cover these children: they need ${fmt(want)} and ${fmt(left)} is left (tree ${fmt(tree)}). Give them smaller step budgets, spawn fewer, or wait for running children to end (unused steps come back).`)
     }
     await o._afterCheck?.()
     if (!p.treeBudget) await tx.update(workstreams).set({ treeBudget: tree }).where(eq(workstreams.id, p.id))
@@ -162,7 +161,7 @@ export async function spawnChildren(coordinatorId: string, specs: ChildSpec[], o
       }).returning()
       rows.push(row!)
     }
-    return { rows, tree, remaining: { maxSteps: left.maxSteps - want.maxSteps, maxWallMs: left.maxWallMs - want.maxWallMs } }
+    return { rows, tree, remaining: { maxSteps: left.maxSteps - want.maxSteps } }
   })
 
   for (const r of rows) {

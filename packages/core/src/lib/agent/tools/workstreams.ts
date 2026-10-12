@@ -13,7 +13,7 @@ import { agentRuns } from '../../../db/schema'
 import type { AgentTool } from '../types'
 import { ON_DEMAND_TOOLSETS, type ToolsetId } from '../toolsets'
 import { getWorkstream, patchWorkstream } from '../workstreams/store'
-import { BUDGET_LIMITS, workstreamPath } from '../../../shared/types/workstreams'
+import { BUDGET_LIMITS, DEFAULT_TREE_BUDGET, TREE_BUDGET_LIMITS, workstreamPath } from '../../../shared/types/workstreams'
 
 const fail = (name: string, err: unknown) => {
   const message = err instanceof Error ? err.message : String(err)
@@ -42,7 +42,10 @@ export const startWorkstreamTool: AgentTool = {
     budget: z.object({
       maxSteps: z.number().int().min(BUDGET_LIMITS.maxSteps.min).max(BUDGET_LIMITS.maxSteps.max).optional(),
       maxWallMs: z.number().int().min(BUDGET_LIMITS.maxWallMs.min).max(BUDGET_LIMITS.maxWallMs.max).optional()
-    }).optional().describe('Default 400 model steps and 2 hours of active time')
+    }).optional().describe('Default 400 model steps and 2 hours of active time'),
+    treeBudget: z.object({
+      maxSteps: z.number().int().min(TREE_BUDGET_LIMITS.maxSteps.min).max(TREE_BUDGET_LIMITS.maxSteps.max).optional()
+    }).optional().describe(`Only with toolsets ["coordinator"]: the steps ALL its child workstreams may use together (default ${DEFAULT_TREE_BUDGET.maxSteps}, max ${TREE_BUDGET_LIMITS.maxSteps.max}; its own budget is separate)`)
   },
   handler: async (a, ctx) => {
     try {
@@ -59,10 +62,11 @@ export const startWorkstreamTool: AgentTool = {
         goal: a.goal as string,
         toolsets: a.toolsets as string[] | undefined,
         budget: a.budget as { maxSteps?: number; maxWallMs?: number } | undefined,
+        treeBudget: a.treeBudget as { maxSteps?: number } | undefined,
         originConversationId: origin
       })
       return {
-        result: { ok: true, id: ws.id, link: workstreamPath(ws.id), conversationId: ws.conversationId, state: ws.state, budget: ws.budget },
+        result: { ok: true, id: ws.id, link: workstreamPath(ws.id), conversationId: ws.conversationId, state: ws.state, budget: ws.budget, ...(ws.treeBudget ? { treeBudget: ws.treeBudget } : {}) },
         summary: `started workstream: ${ws.goal.length > 80 ? `${ws.goal.slice(0, 79)}…` : ws.goal}`
       }
     } catch (err) {

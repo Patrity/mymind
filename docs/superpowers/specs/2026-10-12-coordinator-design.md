@@ -31,6 +31,14 @@ Modelled on Turnstone's coordinator (spawn / wait / inspect / steer / close + ch
 | D10 | Chat Bridget starts a coordinator via `start_workstream({toolsets:['coordinator'], …})`; chat itself never fans out | chat as coordinator |
 | D11 | UI: **Children** panel on workstream detail; children nested under parents on `/workstreams` | flat list |
 
+> **Amendment 2026-10-12 (cycle 83 final fix wave, ruling I1) — D4.** The tree budget counts the **children's
+> steps only**, summed (a live child reserves its step budget, an ended one holds what it used — the rest is
+> refunded, as before). The coordinator's own budget is **not** inside the tree, and **wall time is not a tree
+> dimension**: each child is bounded by its own `maxWallMs` (default 1 h, max per `BUDGET_LIMITS`), the
+> coordinator by its own budget (parked time does not burn). `start_workstream` takes `treeBudget: { maxSteps }`
+> (default **2000**, max **10 000**) when its toolsets include `coordinator`; a workstream that loads
+> `coordinator` later gets the default. With defaults, ten 200-step children fit at once.
+
 No paid API is in use; nothing here models cost in dollars.
 
 ## 2. Data model
@@ -42,10 +50,12 @@ No paid API is in use; nothing here models cost in dollars.
 - `workspace_mode text not null default 'own'` (`own` | `shared`).
 - `tree_budget jsonb null` (coordinators only: `{ maxSteps, maxWallMs }`) and `tree_used jsonb null`
   (rolled up: own `used` + every child's `used`).
+  *Amended (final fix wave I1):* `tree_budget` is `{ maxSteps }` — the children's steps; a `maxWallMs` on a
+  row written earlier is ignored. `tree_used` is unchanged (a whole-tree roll-up for display).
 
 A child gets its own thread (`⚙ <goal>`, as today) with `origin_conversation_id` = the coordinator's
 thread. A child's budget is reserved from the parent's remaining tree budget at spawn time; unused
-child budget returns to the pool when the child ends.
+child budget returns to the pool when the child ends. *(Amended, I1: only its steps are reserved.)*
 
 > **Amendment 2026-10-12 (cycle 83 Task 2 fix round 1, rulings I2 / C3 / S1).**
 > - `is_child boolean not null default false` is set at spawn and never cleared. Every child rule (depth 1, no

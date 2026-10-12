@@ -6,8 +6,8 @@ import { useDb } from '../../../db'
 import { workstreams, type WorkstreamRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
 import {
-  DEFAULT_TREE_BUDGET, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED,
-  type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
+  DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, normalizeTreeBudget,
+  type TreeBudget, type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 
 export type { WorkstreamRow }
@@ -29,8 +29,8 @@ export function exhausted(row: Pick<WorkstreamRow, 'used' | 'budget'>): string |
 }
 
 /** A coordinator's tree budget, or null (not a coordinator). */
-export function treeBudgetOf(row: Pick<WorkstreamRow, 'treeBudget'>): WorkstreamBudget | null {
-  return row.treeBudget ? { ...DEFAULT_TREE_BUDGET, ...(row.treeBudget as Partial<WorkstreamBudget>) } : null
+export function treeBudgetOf(row: Pick<WorkstreamRow, 'treeBudget'>): TreeBudget | null {
+  return row.treeBudget ? normalizeTreeBudget(row.treeBudget) : null
 }
 
 /** `childIds`: the coordinator's children (workstreamDTOs/workstreamDTO load them); `childCount` how

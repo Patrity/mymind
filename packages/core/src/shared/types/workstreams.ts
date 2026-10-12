@@ -65,8 +65,9 @@ export interface WorkstreamDTO {
   /** A child's `subagents` model label (null = the default). */
   modelLabel: string | null
   workspaceMode: WorkspaceMode
-  /** A coordinator's tree budget and its rolled-up use (own + every child); null otherwise. */
-  treeBudget: WorkstreamBudget | null
+  /** A coordinator's tree budget (its children's steps — final fix wave I1) and its rolled-up use
+   *  (own + every child); null otherwise. */
+  treeBudget: TreeBudget | null
   treeUsed: WorkstreamUsed | null
   /** A coordinator's children, oldest first. In the `/api/workstreams` LIST only the children embedded
    *  in that response (at most CHILDREN_IN_LIST, see `childCount`); everywhere else all of them. */
@@ -80,8 +81,13 @@ export interface WorkstreamDTO {
 }
 
 export const DEFAULT_WORKSTREAM_BUDGET: WorkstreamBudget = { maxSteps: 400, maxWallMs: 7_200_000 }
-/** Cycle 83 (spec D4): a coordinator's tree — its own steps plus every child's reservation. */
-export const DEFAULT_TREE_BUDGET: WorkstreamBudget = { maxSteps: 2000, maxWallMs: 28_800_000 }
+/** Cycle 83 (spec D4, amended by the final fix wave I1): a coordinator's tree budget caps its
+ *  CHILDREN's steps only, summed — the coordinator's own budget is not inside it, and wall time is not
+ *  a tree dimension (each child is bounded by its own maxWallMs, the coordinator by its own budget). */
+export interface TreeBudget { maxSteps: number }
+export const DEFAULT_TREE_BUDGET: TreeBudget = { maxSteps: 2000 }
+/** Bounds for a `treeBudget` passed to start_workstream. */
+export const TREE_BUDGET_LIMITS = { maxSteps: { min: 1, max: 10_000 } } as const
 /** A child's budget when the coordinator gives none (reserved out of the tree at spawn). */
 export const DEFAULT_CHILD_BUDGET: WorkstreamBudget = { maxSteps: 200, maxWallMs: 3_600_000 }
 /** Children per spawn_workstreams call (a sanity limit, not a headcount cap). */
@@ -125,8 +131,21 @@ export function reservationOf(w: TreeMember): WorkstreamBudget {
   return { maxSteps: Math.max(w.budget.maxSteps, w.used.steps), maxWallMs: Math.max(w.budget.maxWallMs, w.used.wallMs) }
 }
 
-/** Committed = the coordinator's own reservation (always counted as live) + every child's. */
-export function committedOf(coord: TreeMember, kids: TreeMember[]): WorkstreamBudget {
-  const all = [{ ...coord, state: 'running' as const }, ...kids].map(reservationOf)
-  return { maxSteps: all.reduce((n, a) => n + a.maxSteps, 0), maxWallMs: all.reduce((n, a) => n + a.maxWallMs, 0) }
+/** Committed = every child's reservation, in steps (final fix wave I1: the coordinator's own budget
+ *  is outside the tree, and wall time is not a tree dimension). */
+export function committedOf(kids: TreeMember[]): TreeBudget {
+  return { maxSteps: kids.map(reservationOf).reduce((n, a) => n + a.maxSteps, 0) }
+}
+
+/** What is left of the tree for new (or resumed) children. */
+export function treeRemaining(tree: TreeBudget, kids: TreeMember[]): TreeBudget {
+  return { maxSteps: Math.max(0, tree.maxSteps - committedOf(kids).maxSteps) }
+}
+
+/** A tree budget read off a row or a request: only `maxSteps` (an older row may carry maxWallMs —
+ *  ignored), clamped to TREE_BUDGET_LIMITS, the default when absent. */
+export function normalizeTreeBudget(b: unknown): TreeBudget {
+  const v = (b as { maxSteps?: unknown } | null | undefined)?.maxSteps
+  const { min, max } = TREE_BUDGET_LIMITS.maxSteps
+  return { maxSteps: typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : DEFAULT_TREE_BUDGET.maxSteps }
 }

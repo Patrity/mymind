@@ -182,35 +182,38 @@ describe('coordinator: spawn + tree budget', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
-  it('tree budget: reservations come out of the tree, an over-ask is refused whole, and an ended child refunds what it did not use', async () => {
-    // Own budget 400 steps / 2 h + tree 2000 / 8 h → 1600 steps / 6 h left for children.
-    const { ws } = await idleCoordinator('tree')
-    expect((await getWorkstream(ws.id))!.treeBudget).toEqual({ maxSteps: 2000, maxWallMs: 28_800_000 })
+  it('tree budget (final fix wave I1): children\'s steps only — reservations come out of the tree, an over-ask is refused whole, and an ended child refunds what it did not use', async () => {
+    // The coordinator's own budget (here the maximum: 2000 steps / 24 h) is OUTSIDE the tree.
+    const { ws } = await idleCoordinator('tree', { maxSteps: 2000, maxWallMs: 24 * 3_600_000 })
+    expect((await getWorkstream(ws.id))!.treeBudget).toEqual({ maxSteps: 2000 })
     let t = (await treeStatus(ws.id))!
-    expect(t.remaining).toEqual({ maxSteps: 1600, maxWallMs: 6 * 3_600_000 })
-    const big = { maxSteps: 1000, maxWallMs: 3_600_000 }
+    expect(t.remaining).toEqual({ maxSteps: 2000 })
+    // Wall time is no tree dimension: a child's 24 h is its own business.
+    const big = { maxSteps: 1000, maxWallMs: 24 * 3_600_000 }
     const r1 = await spawnChildren(ws.id, [{ goal: 'T83 big', budget: big }], { labels: [], kick: false })
-    expect(r1.tree.remaining).toEqual({ maxSteps: 600, maxWallMs: 5 * 3_600_000 })
-    const refused = await spawnChildren(ws.id, [{ goal: 'T83 a', budget: { maxSteps: 400 } }, { goal: 'T83 b', budget: { maxSteps: 400 } }], { labels: [], kick: false }).catch(e => e)
+    expect(r1.tree.remaining).toEqual({ maxSteps: 1000 })
+    const refused = await spawnChildren(ws.id, [{ goal: 'T83 a', budget: { maxSteps: 600 } }, { goal: 'T83 b', budget: { maxSteps: 600 } }], { labels: [], kick: false }).catch(e => e)
     expect(refused).toBeInstanceOf(CoordinatorError)
-    expect((refused as Error).message).toMatch(/need 800 steps \/ 120 min and 600 steps \/ 300 min is left/)
+    expect((refused as Error).message).toMatch(/need 1200 steps and 1000 steps is left \(tree 2000 steps\)/)
     expect((await workstreamDTO((await getWorkstream(ws.id))!)).childIds).toEqual([r1.children[0]!.id]) // all or nothing
 
-    // The big child ends having used 100 steps / 10 min: 900 steps and 50 min come back.
+    // The big child ends having used 100 steps: 900 come back.
     const big1 = (await getWorkstream(r1.children[0]!.id))!
     await settleSegments(big1.conversationId)
     await useDb().update(workstreams).set({ used: { steps: 100, wallMs: 600_000, inputTokens: 7, outputTokens: 3, costUsd: 0 } }).where(eq(workstreams.id, big1.id))
     await controlWorkstream({ workstreamId: big1.id, action: 'cancel' })
     t = (await treeStatus(ws.id))!
-    expect(t.remaining).toEqual({ maxSteps: 1500, maxWallMs: 6 * 3_600_000 - 600_000 })
+    expect(t.remaining).toEqual({ maxSteps: 1900 })
     // tree_used rolled up (own 0 + the child's) and visible on the DTO with the children.
     const dto = await workstreamDTO((await getWorkstream(ws.id))!)
     expect(dto).toMatchObject({ treeBudget: { maxSteps: 2000 }, treeUsed: { steps: 100, wallMs: 600_000, inputTokens: 7 }, childIds: [big1.id], parentId: null })
     expect(await workstreamDTO(big1)).toMatchObject({ parentId: ws.id, modelLabel: null, workspaceMode: 'own', childIds: [], tainted: false })
 
-    // Resuming the ended child re-reserves out of the tree (its budget must fit what is left).
-    await useDb().update(workstreams).set({ budget: { maxSteps: 2000, maxWallMs: 3_600_000 } }).where(eq(workstreams.id, big1.id))
-    await expect(resumeWorkstream((await getWorkstream(big1.id))!)).rejects.toThrow(/tree budget cannot cover it/)
+    // Resuming the ended child re-reserves its steps out of the tree (they must fit what is left).
+    const rest = await spawnChildren(ws.id, [{ goal: 'T83 filler', budget: { maxSteps: 1700 } }], { labels: [], kick: false })
+    expect(rest.tree.remaining).toEqual({ maxSteps: 200 })
+    await useDb().update(workstreams).set({ budget: { maxSteps: 400, maxWallMs: 3_600_000 } }).where(eq(workstreams.id, big1.id))
+    await expect(resumeWorkstream((await getWorkstream(big1.id))!)).rejects.toThrow(/tree budget cannot cover it \(needs 300 steps, 200 steps left\)/)
     expect((await getWorkstream(big1.id))!.state).toBe('cancelled')
     await useDb().update(workstreams).set({ budget: { maxSteps: 300, maxWallMs: 3_600_000 } }).where(eq(workstreams.id, big1.id))
     await resumeWorkstream((await getWorkstream(big1.id))!)
@@ -220,8 +223,54 @@ describe('coordinator: spawn + tree budget', () => {
     await expect(resumeWorkstream((await getWorkstream(big1.id))!)).rejects.toThrow(/coordinator has ended/)
   })
 
+  it('I1: ten default children fit the default tree whatever the coordinator\'s own budget; the eleventh is refused until one ends', async () => {
+    // The review\'s failure scenario: a coordinator started with an 8 h budget could never spawn.
+    const { ws } = await idleCoordinator('ten', { maxSteps: 2000, maxWallMs: 8 * 3_600_000 })
+    const ten = await spawnChildren(ws.id, Array.from({ length: 10 }, (_, i) => ({ goal: `T83 ten ${i}` })), { labels: [], kick: false })
+    expect(ten.children).toHaveLength(10)
+    expect(ten.tree.remaining).toEqual({ maxSteps: 0 })
+    await expect(spawnChildren(ws.id, [{ goal: 'T83 eleventh', budget: { maxSteps: 1 } }], { labels: [], kick: false })).rejects.toThrow(/need 1 steps and 0 steps is left/)
+    // One ends having used 20 of its 200 steps: 180 come back — the eleventh fits now.
+    const first = (await getWorkstream(ten.children[0]!.id))!
+    await settleSegments(first.conversationId)
+    await useDb().update(workstreams).set({ used: { steps: 20, wallMs: 1000, inputTokens: 0, outputTokens: 0, costUsd: 0 } }).where(eq(workstreams.id, first.id))
+    await controlWorkstream({ workstreamId: first.id, action: 'cancel' })
+    expect((await treeStatus(ws.id))!.remaining).toEqual({ maxSteps: 180 })
+    expect((await spawnChildren(ws.id, [{ goal: 'T83 eleventh', budget: { maxSteps: 180 } }], { labels: [], kick: false })).tree.remaining).toEqual({ maxSteps: 0 })
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I1: start_workstream takes a treeBudget for a coordinator (bounded); it is refused without the coordinator toolset', async () => {
+    const origin = await createConversation({ title: 'T83 origin treebudget' })
+    convIds.push(origin.id)
+    const big = await startWorkstream({ goal: 'T83 wide', originConversationId: origin.id, toolsets: ['coordinator'], treeBudget: { maxSteps: 5000 } }, { kick: false })
+    convIds.push(big.conversationId)
+    expect(big.treeBudget).toEqual({ maxSteps: 5000 })
+    expect((await treeStatus(big.id))!.remaining).toEqual({ maxSteps: 5000 })
+    const capped = await startWorkstream({ goal: 'T83 wider', originConversationId: origin.id, toolsets: ['coordinator'], treeBudget: { maxSteps: 99_999 } }, { kick: false })
+    convIds.push(capped.conversationId)
+    expect(capped.treeBudget).toEqual({ maxSteps: 10_000 })
+    await expect(startWorkstream({ goal: 'T83 plain', originConversationId: origin.id, treeBudget: { maxSteps: 5000 } }, { kick: false })).rejects.toThrow(/treeBudget is for a coordinator/)
+    // The tool's schema bounds it too.
+    const { startWorkstreamTool } = await import('@mymind/core/lib/agent/tools/workstreams')
+    const { z } = await import('zod')
+    const schema = z.object(startWorkstreamTool.schema as never)
+    expect(schema.safeParse({ goal: 'x x x', treeBudget: { maxSteps: 10_001 } }).success).toBe(false)
+    expect(schema.safeParse({ goal: 'x x x', toolsets: ['coordinator'], treeBudget: { maxSteps: 10_000 } }).success).toBe(true)
+    // A workstream that loads `coordinator` later gets the default at its first spawn.
+    const later = await startWorkstream({ goal: 'T83 later', originConversationId: origin.id }, { kick: false })
+    convIds.push(later.conversationId)
+    expect((await getWorkstream(later.id))!.treeBudget).toBeNull()
+    await settleSegments(later.conversationId)
+    await patchWorkstream(later.id, { state: 'running' })
+    await spawnChildren(later.id, [{ goal: 'T83 later child' }], { labels: [], kick: false })
+    expect((await getWorkstream(later.id))!.treeBudget).toEqual({ maxSteps: 2000 })
+    for (const x of [big, capped, later]) await controlWorkstream({ workstreamId: x.id, action: 'cancel' })
+  })
+
   it('two spawns racing for the last of the tree: exactly one wins (tree lock), never both', async () => {
-    const { ws } = await idleCoordinator('race', { maxSteps: 1400 }) // 600 steps left for children
+    const { ws } = await idleCoordinator('race')
+    await patchWorkstream(ws.id, { treeBudget: { maxSteps: 600 } }) // 600 steps for children
     // Deterministic (no luck involved): each racer, having passed the check, waits at a barrier for the
     // others (≤ 1.5 s). With the tree lock only one is ever past the check at a time.
     let arrived = 0

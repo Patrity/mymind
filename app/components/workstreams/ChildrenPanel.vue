@@ -17,10 +17,12 @@ watch(error, (err) => {
 })
 
 // ── The tree budget ─────────────────────────────────────────────────────────────────────────────
+// Final fix wave (I1): the tree caps the CHILDREN's steps only (the coordinator's own budget is
+// separate, and wall time is no tree dimension — each child has its own).
 const tree = computed(() => props.coordinator.treeBudget)
-const treeUsed = computed(() => props.coordinator.treeUsed ?? props.coordinator.used)
+const childSteps = computed(() => kids.value.reduce((n, k) => n + k.used.steps, 0))
 // The core's own formula (shared/types/workstreams.ts): what spawn would see as committed.
-const committed = computed(() => committedOf(props.coordinator, kids.value))
+const committed = computed(() => committedOf(kids.value))
 const pct = (n: number, of: number) => Math.min(100, Math.round((n / Math.max(1, of)) * 100))
 const tone = (p: number) => (p >= 100 ? 'error' : p >= 80 ? 'warning' : 'primary')
 const live = computed(() => kids.value.filter(k => !isTerminal(k.state)).length)
@@ -74,40 +76,22 @@ async function sendSteer(k: WorkstreamDTO) {
         <span class="font-medium text-default">Tree budget</span>
         <span>{{ kids.length }} {{ kids.length === 1 ? 'child' : 'children' }} · {{ live }} still going</span>
       </div>
-      <div class="grid gap-3 sm:grid-cols-2">
-        <UTooltip text="Steps used by the coordinator and every child, against the tree's budget. Reserved: what live children (and the coordinator) still hold — a new child must fit in what is left.">
-          <div class="flex flex-col gap-1">
-            <div class="flex items-center justify-between text-xs text-muted">
-              <span>Steps</span>
-              <span
-                class="tabular-nums"
-                data-testid="tree-steps"
-              >{{ treeUsed.steps }} used · {{ committed.maxSteps }} reserved / {{ tree.maxSteps }}</span>
-            </div>
-            <UProgress
-              :model-value="pct(treeUsed.steps, tree.maxSteps)"
-              :color="tone(pct(committed.maxSteps, tree.maxSteps))"
-              size="sm"
-            />
+      <UTooltip text="Steps the children have used, and what they hold (a live child its whole step budget, an ended one what it used), against the tree's budget — a new child's steps must fit in what is left. The coordinator's own budget is separate.">
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center justify-between text-xs text-muted">
+            <span>Children's steps</span>
+            <span
+              class="tabular-nums"
+              data-testid="tree-steps"
+            >{{ childSteps }} used · {{ committed.maxSteps }} reserved / {{ tree.maxSteps }}</span>
           </div>
-        </UTooltip>
-        <UTooltip text="Active time summed over the coordinator and every child (parallel children each count), against the tree's budget.">
-          <div class="flex flex-col gap-1">
-            <div class="flex items-center justify-between text-xs text-muted">
-              <span>Active time</span>
-              <span
-                class="tabular-nums"
-                data-testid="tree-wall"
-              >{{ formatDuration(treeUsed.wallMs) }} used · {{ formatDuration(committed.maxWallMs) }} reserved / {{ formatDuration(tree.maxWallMs) }}</span>
-            </div>
-            <UProgress
-              :model-value="pct(treeUsed.wallMs, tree.maxWallMs)"
-              :color="tone(pct(committed.maxWallMs, tree.maxWallMs))"
-              size="sm"
-            />
-          </div>
-        </UTooltip>
-      </div>
+          <UProgress
+            :model-value="pct(childSteps, tree.maxSteps)"
+            :color="tone(pct(committed.maxSteps, tree.maxSteps))"
+            size="sm"
+          />
+        </div>
+      </UTooltip>
     </div>
 
     <p
@@ -155,7 +139,7 @@ async function sendSteer(k: WorkstreamDTO) {
           :label="childModelLabel(k)"
           data-testid="child-model"
         />
-        <UTooltip :text="isTerminal(k.state) ? 'Steps and active time it used (the rest went back to the tree).' : 'Used vs reserved from the tree.'">
+        <UTooltip :text="isTerminal(k.state) ? 'Steps and active time it used (its unused steps went back to the tree).' : 'Steps used vs reserved from the tree; active time vs its own limit.'">
           <span
             class="text-xs tabular-nums text-muted"
             data-testid="child-usage"

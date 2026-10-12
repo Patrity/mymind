@@ -37,7 +37,8 @@ export const workstreams = pgTable('workstreams', {
   modelLabel: text('model_label'),
   /** A child's workspace: its own sandbox, or its coordinator's. */
   workspaceMode: text('workspace_mode').notNull().default('own').$type<'own' | 'shared'>(),
-  /** A coordinator's tree budget ({ maxSteps, maxWallMs }) — its own steps + every child's reservation. */
+  /** A coordinator's tree budget ({ maxSteps }) — its CHILDREN's reservations, in steps (final fix
+   *  wave I1; rows written before it may also carry a maxWallMs, which is ignored). */
   treeBudget: jsonb('tree_budget'),
   /** Rolled up: own `used` + every child's `used` (refreshed at every step of any tree member). */
   treeUsed: jsonb('tree_used'),
