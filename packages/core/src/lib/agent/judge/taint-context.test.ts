@@ -79,6 +79,8 @@ function setup() {
     })
     const card = frames.find(f => f.type === 'approval') as Extract<HubFrame, { type: 'approval' }>
     const verdict = (frames.filter(f => f.type === 'approval-verdict').at(-1) as { judge: ApprovalVerdictDTO }).judge
+    // The chip is there from the first (pending) frame, not only once the verdict lands.
+    expect((frames.find(f => f.type === 'approval-verdict') as { judge: ApprovalVerdictDTO }).judge).toMatchObject({ pending: true, verdict: null, taint: verdict.taint })
     decideBusApproval({ requestId: card.requestId, approved: false })
     await p
     return { card, verdict }
