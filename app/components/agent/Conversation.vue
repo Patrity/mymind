@@ -134,6 +134,14 @@ function dividerEvent(id: string): EventOf<'divider'> | null {
   const e = eventsById.value[id]
   return e?.kind === 'divider' ? e : null
 }
+function lifecycleEvent(id: string): EventOf<'lifecycle'> | null {
+  const e = eventsById.value[id]
+  return e?.kind === 'lifecycle' ? e : null
+}
+function reportEvent(id: string): EventOf<'report'> | null {
+  const e = eventsById.value[id]
+  return e?.kind === 'report' ? e : null
+}
 </script>
 
 <template>
@@ -164,6 +172,14 @@ function dividerEvent(id: string): EventOf<'divider'> | null {
           v-if="workstreamEvent(m.id)"
           :event="workstreamEvent(m.id)!"
           :message-id="m.id"
+        />
+        <WorkstreamsLifecycleRow
+          v-else-if="lifecycleEvent(m.id)"
+          :event="lifecycleEvent(m.id)!"
+        />
+        <WorkstreamsReportCard
+          v-else-if="reportEvent(m.id)"
+          :event="reportEvent(m.id)!"
         />
         <USeparator
           v-else-if="dividerEvent(m.id)"

@@ -97,6 +97,33 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export type EventDisplay =
   | { kind: 'divider'; label: string; icon: string }
   | { kind: 'workstream'; workstreamId: string; tone: Color; icon: string; title: string; body: string }
+  /** Cycle 83: a child's state-only lifecycle note in its coordinator's thread (a compact row). */
+  | { kind: 'lifecycle'; workstreamId: string; tone: Color; icon: string; goal: string; label: string }
+  /** Cycle 83: a `segment:children` report (the wake prompt, or one steered into a running segment).
+   *  Its body holds text CHILD runs wrote — untrusted; rendered only as escaped plain text. */
+  | { kind: 'report'; title: string; body: string }
+
+/** The coordinator's lifecycle notes (coordinator.ts noteText): `Child workstream "<goal>" (id <id>) <what>`. */
+const LIFECYCLE: Array<{ test: (rest: string) => boolean; label: string; tone: Color; icon: string }> = [
+  { test: r => r === 'was spawned.', label: 'spawned', tone: 'info', icon: 'i-lucide-git-branch-plus' },
+  { test: r => r === 'finished.', label: 'finished', tone: 'success', icon: 'i-lucide-circle-check' },
+  { test: r => r === 'failed.', label: 'failed', tone: 'error', icon: 'i-lucide-circle-x' },
+  { test: r => r === 'was cancelled.', label: 'cancelled', tone: 'neutral', icon: 'i-lucide-ban' },
+  { test: r => r.startsWith('is asking you a question'), label: 'asks its coordinator a question', tone: 'warning', icon: 'i-lucide-message-circle-question' },
+  { test: r => r.startsWith('is waiting for Tony'), label: 'waits for your approval', tone: 'warning', icon: 'i-lucide-shield-question' },
+  { test: r => r === 'paused.', label: 'paused', tone: 'neutral', icon: 'i-lucide-pause' }
+]
+
+function lifecycleOf(id: string, text: string): Extract<EventDisplay, { kind: 'lifecycle' }> | null {
+  const head = 'Child workstream "'
+  const mark = `" (id ${id}) `
+  const at = text.lastIndexOf(mark)
+  if (!text.startsWith(head) || at < head.length) return null
+  const rest = text.slice(at + mark.length).trim()
+  const hit = LIFECYCLE.find(l => l.test(rest))
+  if (!hit) return null
+  return { kind: 'lifecycle', workstreamId: id, tone: hit.tone, icon: hit.icon, goal: text.slice(head.length, at), label: hit.label }
+}
 
 const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
@@ -109,6 +136,8 @@ const clip = (s: string, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : 
 export function eventDisplay(origin: string | null | undefined, text: string): EventDisplay {
   const { kind, detail } = splitOrigin(origin)
   if (kind === 'workstream' && UUID_RE.test(detail)) {
+    const life = lifecycleOf(detail, text)
+    if (life) return life
     // The notifier appends the link as its own last line; the card has a button for it.
     const lines = text.split('\n')
     if (lines.at(-1)?.trim() === `/workstreams/${detail}`) lines.pop()
@@ -124,6 +153,10 @@ export function eventDisplay(origin: string | null | undefined, text: string): E
         : answered ? 'neutral' : 'warning'
     const icon = tone === 'success' ? 'i-lucide-circle-check' : tone === 'error' ? 'i-lucide-circle-x' : tone === 'neutral' ? 'i-lucide-reply' : 'i-lucide-hand'
     return { kind: 'workstream', workstreamId: detail, tone, icon, title, body }
+  }
+  if (kind === 'segment' && detail === 'children') {
+    const [head = '', ...rest] = text.split('\n')
+    return { kind: 'report', title: clip(head.trim() || 'Child reports', 120), body: rest.join('\n').replace(/^\n+|\s+$/g, '') }
   }
   if (kind === 'segment') {
     const s = SEGMENT_LABELS[detail]
@@ -145,4 +178,45 @@ export function startedWorkstream(toolName: string, input: unknown, output: unkn
   if (!o || typeof o !== 'object' || o.ok !== true || typeof o.id !== 'string' || !UUID_RE.test(o.id)) return null
   const goal = (input as { goal?: unknown } | null)?.goal
   return { id: o.id, goal: typeof goal === 'string' ? goal : '' }
+}
+
+// ── Coordinators (cycle 83, spec §6) ─────────────────────────────────────────────────────────
+
+export type WorkstreamNode = WorkstreamDTO & { children?: WorkstreamNode[] }
+
+/**
+ * The /workstreams tree: children nested under their coordinator (oldest first, as `childIds`),
+ * top-level rows in the order given. A child whose coordinator is not in the list (an orphan, or a
+ * coordinator outside the page) stays a top-level row rather than disappearing.
+ */
+export function nestWorkstreams(rows: WorkstreamDTO[]): WorkstreamNode[] {
+  const byId = new Map(rows.map(r => [r.id, r]))
+  const out: WorkstreamNode[] = []
+  for (const r of rows) {
+    if (r.parentId && byId.has(r.parentId)) continue
+    const kids = rows.filter(k => k.parentId === r.id)
+      .sort((a, b) => (r.childIds.indexOf(a.id) + 1 || Infinity) - (r.childIds.indexOf(b.id) + 1 || Infinity))
+    out.push(kids.length ? { ...r, children: kids } : r)
+  }
+  return out
+}
+
+/** A child's model as the panel shows it: its `subagents` label, or the default resolution. */
+export function childModelLabel(ws: Pick<WorkstreamDTO, 'modelLabel'>): string {
+  return ws.modelLabel ?? 'default model'
+}
+
+type Reservable = Pick<WorkstreamDTO, 'state' | 'budget' | 'used'>
+/** What a tree member holds of its coordinator's tree budget — the core's `reservationOf`
+ *  (coordinator.ts): a live one its budget (or more, if it ran over); an ended one only what it used. */
+export function reservationOf(w: Reservable): { steps: number; wallMs: number } {
+  if (isTerminal(w.state)) return { steps: w.used.steps, wallMs: w.used.wallMs }
+  return { steps: Math.max(w.budget.maxSteps, w.used.steps), wallMs: Math.max(w.budget.maxWallMs, w.used.wallMs) }
+}
+
+/** Committed tree budget = the coordinator's own reservation (always as live) + every child's
+ *  (the core's `committedOf`), so the meter shows what spawn would see. */
+export function treeCommitted(coord: Reservable, kids: Reservable[]): { steps: number; wallMs: number } {
+  const all = [reservationOf({ ...coord, state: 'running' }), ...kids.map(reservationOf)]
+  return { steps: all.reduce((n, a) => n + a.steps, 0), wallMs: all.reduce((n, a) => n + a.wallMs, 0) }
 }

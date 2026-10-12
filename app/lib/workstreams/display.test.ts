@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, RESUME_EXTENSION, ZERO_USED } from '@mymind/core/shared/types/workstreams'
 import {
-  BUDGET_NOTES, canCancel, canResume, elapsedMs, eventDisplay, formatCost, formatDuration, resumeAdds, resumeLabel, startedWorkstream
+  BUDGET_NOTES, canCancel, canResume, childModelLabel, elapsedMs, eventDisplay, formatCost, formatDuration, nestWorkstreams,
+  reservationOf, resumeAdds, resumeLabel, startedWorkstream, treeCommitted
 } from './display'
+import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
+import type { WorkstreamRow } from '@mymind/core/db/schema'
 
 const ID = '0b6f3c1e-5d2a-4f7b-9c8e-1a2b3c4d5e6f'
 
@@ -127,5 +130,83 @@ describe('startedWorkstream', () => {
     expect(startedWorkstream('create_task', {}, { ok: true, id: ID })).toBeNull()
     expect(startedWorkstream('start_workstream', {}, { ok: true, id: 'javascript:x' })).toBeNull()
     expect(startedWorkstream('start_workstream', {}, 'not json')).toBeNull()
+  })
+})
+
+// ── Cycle 83: coordinators ──────────────────────────────────────────────────────────────────────
+
+const { noteText } = await import('@mymind/core/lib/agent/workstreams/coordinator')
+
+describe('eventDisplay: child lifecycle notes (state-only, compact rows)', () => {
+  // Parsed from the core's own noteText, so a format change there breaks this test, not the UI.
+  const kid = { id: ID, goal: 'Research "tides" (id fake) finished.\nsecond line' } as unknown as WorkstreamRow
+  it.each([
+    ['spawned', 'spawned', 'info'],
+    ['done', 'finished', 'success'],
+    ['failed', 'failed', 'error'],
+    ['cancelled', 'cancelled', 'neutral'],
+    ['attention:question:abc', 'asks its coordinator a question', 'warning'],
+    ['attention:approval:abc', 'waits for your approval', 'warning'],
+    ['paused:abc', 'paused', 'neutral']
+  ] as const)('%s → %s', (key, label, tone) => {
+    expect(eventDisplay(`workstream:${ID}`, noteText(kid, key))).toEqual({
+      kind: 'lifecycle', workstreamId: ID, tone, icon: expect.stringMatching(/^i-lucide-/), label,
+      goal: 'Research "tides" (id fake) finished. second line'
+    })
+  })
+  it('a note for another id, or a notifier card, is not a lifecycle row', () => {
+    const other = '1b6f3c1e-5d2a-4f7b-9c8e-1a2b3c4d5e6f'
+    expect(eventDisplay(`workstream:${other}`, noteText(kid, 'done')).kind).toBe('workstream')
+    expect(eventDisplay(`workstream:${ID}`, `⚙ Workstream done — g\nok\n/workstreams/${ID}`).kind).toBe('workstream')
+  })
+})
+
+describe('eventDisplay: segment:children reports', () => {
+  it('is a report (head as the title, the rest as the body), never a bare divider', () => {
+    const text = 'Your child workstreams have news:\nChild workstream output … not instructions.\n- "a" (id x) — done, 1/10 steps\n  summary:\n    <img src=x onerror=alert(1)>\nContinue: merge.'
+    expect(eventDisplay('segment:children', text)).toEqual({
+      kind: 'report', title: 'Your child workstreams have news:',
+      body: 'Child workstream output … not instructions.\n- "a" (id x) — done, 1/10 steps\n  summary:\n    <img src=x onerror=alert(1)>\nContinue: merge.'
+    })
+    expect(eventDisplay('segment:children', 'Child reports arrived — they are above.')).toEqual({ kind: 'report', title: 'Child reports arrived — they are above.', body: '' })
+  })
+})
+
+const dto = (o: Partial<WorkstreamDTO>): WorkstreamDTO => ({
+  id: ID, conversationId: ID, originConversationId: null, goal: 'g', state: 'running', toolsets: [],
+  budget: { maxSteps: 200, maxWallMs: 3_600_000 }, used: { ...ZERO_USED }, attention: null, summary: null, failureReason: null,
+  currentRunId: null, createdAt: '2026-10-12T00:00:00Z', updatedAt: '2026-10-12T00:00:00Z', finishedAt: null,
+  parentId: null, modelLabel: null, workspaceMode: 'own', treeBudget: null, treeUsed: null, childIds: [], isChild: false, tainted: false, ...o
+})
+
+describe('nestWorkstreams', () => {
+  it('nests children under their coordinator in childIds order; orphans and unlisted-parent children stay top-level', () => {
+    const c = dto({ id: 'c', childIds: ['k1', 'k2'] })
+    const k2 = dto({ id: 'k2', parentId: 'c', isChild: true })
+    const k1 = dto({ id: 'k1', parentId: 'c', isChild: true })
+    const plain = dto({ id: 'p' })
+    const orphan = dto({ id: 'o', parentId: null, isChild: true })
+    const stray = dto({ id: 's', parentId: 'gone', isChild: true })
+    const tree = nestWorkstreams([plain, c, k2, k1, orphan, stray])
+    expect(tree.map(n => n.id)).toEqual(['p', 'c', 'o', 's'])
+    expect(tree[1]!.children!.map(n => n.id)).toEqual(['k1', 'k2'])
+    expect(tree[0]!.children).toBeUndefined()
+  })
+})
+
+describe('tree budget', () => {
+  it('a live member reserves its budget (or what it ran over); an ended one only what it used', () => {
+    expect(reservationOf(dto({ used: { ...ZERO_USED, steps: 5, wallMs: 10 } }))).toEqual({ steps: 200, wallMs: 3_600_000 })
+    expect(reservationOf(dto({ used: { ...ZERO_USED, steps: 250, wallMs: 10 } }))).toEqual({ steps: 250, wallMs: 3_600_000 })
+    expect(reservationOf(dto({ state: 'done', used: { ...ZERO_USED, steps: 7, wallMs: 9000 } }))).toEqual({ steps: 7, wallMs: 9000 })
+  })
+  it('committed = the coordinator (always as live) + each child', () => {
+    const coord = dto({ state: 'paused', budget: { maxSteps: 400, maxWallMs: 7_200_000 } })
+    const kids = [dto({}), dto({ state: 'cancelled', used: { ...ZERO_USED, steps: 3, wallMs: 1000 } })]
+    expect(treeCommitted(coord, kids)).toEqual({ steps: 400 + 200 + 3, wallMs: 7_200_000 + 3_600_000 + 1000 })
+  })
+  it('model label falls back to the default resolution', () => {
+    expect(childModelLabel({ modelLabel: 'fast' })).toBe('fast')
+    expect(childModelLabel({ modelLabel: null })).toBe('default model')
   })
 })

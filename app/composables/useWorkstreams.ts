@@ -7,7 +7,7 @@ import type { WorkstreamBudget, WorkstreamDTO } from '@mymind/core/shared/types/
 import type { SandboxHealth } from '@mymind/core/shared/types/workspaces'
 
 /** The readable text of a failed workstream request (the routes put it in `data.message`; h3
- *  strips non-ASCII from statusMessage). `cap` marks the "3 already in progress" refusal. */
+ *  strips non-ASCII from statusMessage). */
 export function workstreamErrorOf(e: unknown): { message: string; code: string | null } {
   const err = e as { data?: { data?: { message?: string; code?: string }; statusMessage?: string }; message?: string }
   return {
@@ -29,6 +29,18 @@ export function useWorkstream(id: MaybeRefOrGetter<string | null | undefined>) {
     queryKey: computed(() => ['workstream', key.value] as const),
     queryFn: () => $fetch<WorkstreamDTO>(`/api/workstreams/${key.value}`),
     enabled: computed(() => !!key.value)
+  })
+}
+
+/** Cycle 83: a coordinator's children, oldest first. Keyed under ['workstream', 'list'] so the
+ *  default live dispatch (which invalidates that prefix on every workstream change) refreshes it
+ *  when any child moves — a child's change publishes the CHILD's id, not the coordinator's. */
+export function useWorkstreamChildren(id: MaybeRefOrGetter<string | null | undefined>, enabled: MaybeRefOrGetter<boolean> = true) {
+  const key = computed(() => toValue(id) ?? '')
+  return useQuery({
+    queryKey: computed(() => ['workstream', 'list', 'children', key.value] as const),
+    queryFn: () => $fetch<WorkstreamDTO[]>(`/api/workstreams/${key.value}/children`),
+    enabled: computed(() => !!key.value && toValue(enabled))
   })
 }
 

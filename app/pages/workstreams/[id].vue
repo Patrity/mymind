@@ -14,6 +14,9 @@
  * Cycle 82 Task 3: Files / Shells tabs show the workstream's sandboxed workspace (read through the
  * worker), with the tainted banner when its network is off. The log stays mounted (v-show) while
  * another tab is open; Files / Shells mount only when shown.
+ *
+ * Cycle 83 (spec §6): a coordinator gets a Children tab (its tree budget + one row per child, live),
+ * opened first; a child links back to its coordinator.
  */
 import { toUIMessages } from '~/lib/agent/to-ui-messages'
 import { MessageResponse } from '@/components/ai-elements/message'
@@ -31,6 +34,10 @@ watch(error, (err) => {
 })
 const meta = computed(() => (ws.value ? STATE_META[ws.value.state] : null))
 
+// ── Coordinator / child (cycle 83) ───────────────────────────────────────
+const isCoordinator = computed(() => !!ws.value && (!!ws.value.treeBudget || ws.value.childIds.length > 0))
+const { data: parent } = useWorkstream(() => ws.value?.parentId ?? null)
+
 // ── The workspace (Files / Shells tabs) ──────────────────────────────────
 const { data: wsRow, error: wsRowError, refetch: refetchWsRow } = useWorkstreamWorkspace(id)
 const workspaceId = computed(() => wsRow.value?.id ?? null)
@@ -44,7 +51,15 @@ const workspaceProblem = computed(() => {
   return workspaceErrorOf(e)
 })
 const tab = ref('log')
+// A coordinator opens on its children — once per workstream, never yanking a tab Tony picked.
+const openedOn = ref<string | null>(null)
+watch([() => ws.value?.id, isCoordinator], ([wid, coord]) => {
+  if (!wid || openedOn.value === wid) return
+  openedOn.value = wid
+  tab.value = coord ? 'children' : 'log'
+}, { immediate: true })
 const tabs = computed(() => [
+  ...(isCoordinator.value ? [{ label: `Children (${ws.value!.childIds.length})`, value: 'children', icon: 'i-lucide-git-fork' }] : []),
   { label: 'Log', value: 'log', icon: 'i-lucide-scroll-text' },
   { label: 'Files', value: 'files', icon: 'i-lucide-folder', disabled: !workspaceId.value },
   { label: 'Shells', value: 'shells', icon: 'i-lucide-terminal', disabled: !workspaceId.value }
@@ -123,11 +138,10 @@ async function run(action: 'cancel' | 'resume' | 'steer', text?: string): Promis
     await control.mutateAsync({ id: ws.value.id, action, text })
     return true
   } catch (e) {
-    const err = workstreamErrorOf(e)
     toast.add({
-      color: err.code === 'cap' ? 'warning' : 'error',
-      title: err.code === 'cap' ? 'Too many workstreams in progress' : action === 'cancel' ? 'Could not cancel' : action === 'resume' ? 'Could not resume' : 'Could not send',
-      description: err.message
+      color: 'error',
+      title: action === 'cancel' ? 'Could not cancel' : action === 'resume' ? 'Could not resume' : 'Could not send',
+      description: workstreamErrorOf(e).message
     })
     return false
   } finally {
@@ -218,6 +232,30 @@ async function send() {
         v-if="ws"
         class="flex shrink-0 flex-col gap-3 border-b border-default p-4"
       >
+        <p
+          v-if="ws.isChild"
+          class="flex items-center gap-1.5 text-xs text-muted"
+          data-testid="workstream-parent"
+        >
+          <UIcon
+            name="i-lucide-git-fork"
+            class="size-3.5"
+          />
+          <template v-if="ws.parentId">
+            <span class="shrink-0">Child of</span>
+            <ULink
+              :to="`/workstreams/${ws.parentId}`"
+              class="min-w-0 truncate font-medium text-toned hover:text-highlighted"
+            >{{ parent ? parent.goal.replace(/\s+/g, ' ') : 'its coordinator' }}</ULink>
+            <span
+              v-if="ws.modelLabel"
+              class="shrink-0"
+            >· model {{ ws.modelLabel }}</span>
+          </template>
+          <template v-else>
+            A child whose coordinator no longer exists.
+          </template>
+        </p>
         <WorkstreamsBudgetMeter
           :budget="ws.budget"
           :used="ws.used"
@@ -318,7 +356,11 @@ async function send() {
         class="shrink-0 px-3"
         data-testid="workstream-tabs"
       />
-      <template v-if="workspaceId && tab !== 'log'">
+      <WorkstreamsChildrenPanel
+        v-if="ws && tab === 'children'"
+        :coordinator="ws"
+      />
+      <template v-if="workspaceId && (tab === 'files' || tab === 'shells')">
         <WorkspaceFiles
           v-if="tab === 'files'"
           :workspace-id="workspaceId"

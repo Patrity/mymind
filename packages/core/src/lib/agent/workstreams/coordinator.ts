@@ -388,7 +388,8 @@ export function lifecycleKey(k: WorkstreamRow): string | null {
   return k.lifecycleNoted ? null : 'spawned'
 }
 
-function noteText(k: WorkstreamRow, key: string): string {
+/** Exported for the UI contract test (app/lib/workstreams/display.test.ts parses these). */
+export function noteText(k: WorkstreamRow, key: string): string {
   const g = k.goal.replace(/\s+/g, ' ').trim()
   const who = `Child workstream "${g.length > 120 ? `${g.slice(0, 119)}…` : g}" (id ${k.id})`
   if (key === 'spawned') return `${who} was spawned.`

@@ -20,6 +20,7 @@ const { beatWorker } = await import('@mymind/core/lib/bus/commands')
 type H = (e: unknown) => Promise<unknown>
 const list = (await import('../server/api/workstreams/index.get')).default as H
 const detail = (await import('../server/api/workstreams/[id].get')).default as H
+const children = (await import('../server/api/workstreams/[id]/children.get')).default as H
 const worker = (await import('../server/api/agent/worker.get')).default as H
 
 const NS = `t6-${randomUUID().slice(0, 8)}`
@@ -34,12 +35,12 @@ afterAll(async () => {
   setBusNs(null)
 })
 
-async function fixture(state: 'running' | 'done' = 'running') {
+async function fixture(state: 'running' | 'done' = 'running', tree: { parentId?: string | null; isChild?: boolean; treeBudget?: { maxSteps: number; maxWallMs: number } } = {}) {
   const [c] = await db.insert(conversations).values({ title: `⚙ t6 ${randomUUID().slice(0, 6)}` }).returning({ id: conversations.id })
   created.conv.push(c!.id)
   const [w] = await db.insert(workstreams).values({
     conversationId: c!.id, originConversationId: null, goal: `t6 goal ${randomUUID().slice(0, 6)}`, state,
-    used: { steps: 3, wallMs: 1000, inputTokens: 10, outputTokens: 5, costUsd: 0 }, toolsets: [], budget: { maxSteps: 400, maxWallMs: 7_200_000 }
+    used: { steps: 3, wallMs: 1000, inputTokens: 10, outputTokens: 5, costUsd: 0 }, toolsets: [], budget: { maxSteps: 400, maxWallMs: 7_200_000 }, ...tree
   }).returning()
   created.ws.push(w!.id)
   return w!
@@ -63,6 +64,39 @@ describe('GET /api/workstreams + /:id', () => {
     expect(await detail({ params: { id: a.id } })).toMatchObject({ id: a.id, goal: a.goal, state: 'running', conversationId: a.conversationId })
     await expect(detail({ params: { id: randomUUID() } })).rejects.toMatchObject({ statusCode: 404 })
     await expect(detail({ params: { id: 'not-a-uuid' } })).rejects.toMatchObject({ statusCode: 404 })
+  })
+})
+
+describe('cycle 83: children in the list and the children route', () => {
+  type D = { id: string; parentId: string | null; isChild: boolean; childIds: string[] }
+  it('a listed coordinator brings all its children, which never count toward the limit', async () => {
+    const coord = await fixture('running', { treeBudget: { maxSteps: 2000, maxWallMs: 28_800_000 } })
+    const k1 = await fixture('running', { parentId: coord.id, isChild: true })
+    const k2 = await fixture('done', { parentId: coord.id, isChild: true })
+    // The children are the NEWEST rows; the limit counts top-level workstreams only.
+    const one = await list({ query: { limit: '1' } }) as D[]
+    expect(one.map(w => w.id)).toEqual([coord.id, k1.id, k2.id])
+    expect(one[0]).toMatchObject({ childIds: [k1.id, k2.id], isChild: false })
+    expect(one[1]).toMatchObject({ parentId: coord.id, isChild: true })
+    // A state filter applies to top-level rows; a listed coordinator still brings every child.
+    const running = await list({ query: { state: 'running', limit: '200' } }) as D[]
+    expect(running.map(w => w.id)).toEqual(expect.arrayContaining([coord.id, k1.id, k2.id]))
+    expect(running.filter(w => w.parentId === null).map(w => w.id)).not.toContain(k2.id)
+  })
+  it('an orphaned child (its coordinator row gone) is listed on its own', async () => {
+    const orphan = await fixture('running', { parentId: null, isChild: true })
+    const all = await list({ query: { limit: '200' } }) as D[]
+    expect(all.filter(w => w.id === orphan.id)).toHaveLength(1)
+  })
+  it('GET /:id/children returns the children oldest first; none for a plain workstream; 404 for a bad id', async () => {
+    const coord = await fixture('running', { treeBudget: { maxSteps: 2000, maxWallMs: 28_800_000 } })
+    const k1 = await fixture('running', { parentId: coord.id, isChild: true })
+    const k2 = await fixture('running', { parentId: coord.id, isChild: true })
+    const kids = await children({ params: { id: coord.id } }) as D[]
+    expect(kids.map(k => k.id)).toEqual([k1.id, k2.id])
+    expect(kids[0]).toMatchObject({ parentId: coord.id, isChild: true })
+    expect(await children({ params: { id: k1.id } })).toEqual([])
+    await expect(children({ params: { id: 'nope' } })).rejects.toMatchObject({ statusCode: 404 })
   })
 })
 

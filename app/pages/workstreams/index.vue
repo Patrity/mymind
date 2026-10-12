@@ -2,18 +2,21 @@
 /**
  * /workstreams (cycle 81 spec §5.5) — Bridget's long-running background work: state, goal, elapsed,
  * steps, cost and where it was started. Live via the `workstream` resource. "New workstream" starts
- * one from here (the same start path as the tool, cap of 3 included).
+ * one from here (the same start path as the tool).
+ *
+ * Cycle 83 (spec §6): a coordinator's children are nested under it (UTable sub-rows, collapsed by
+ * default; the expand state is keyed by id so a live refetch never re-collapses or shifts it).
  */
 import type { TableColumn } from '@nuxt/ui'
-import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
 import { BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET } from '@mymind/core/shared/types/workstreams'
-import { BUDGET_NOTES, STATE_META, elapsedMs, formatCost, formatDuration } from '~/lib/workstreams/display'
+import { BUDGET_NOTES, STATE_META, childModelLabel, elapsedMs, formatCost, formatDuration, nestWorkstreams, type WorkstreamNode } from '~/lib/workstreams/display'
 
 definePageMeta({ title: 'Workstreams' })
 
 const toast = useToast()
 const { data, error, isPending } = useWorkstreamList()
-const rows = computed(() => data.value ?? [])
+const rows = computed(() => nestWorkstreams(data.value ?? []))
+const expanded = ref<Record<string, boolean>>({})
 watch(error, (err) => {
   if (err) toast.add({ color: 'error', title: 'Could not load workstreams', description: workstreamErrorOf(err).message })
 })
@@ -22,7 +25,7 @@ watch(error, (err) => {
 const now = ref(Date.now())
 useIntervalFn(() => { now.value = Date.now() }, 15_000)
 
-const columns: TableColumn<WorkstreamDTO>[] = [
+const columns: TableColumn<WorkstreamNode>[] = [
   { accessorKey: 'state', header: 'State' },
   { accessorKey: 'goal', header: 'Goal' },
   { id: 'elapsed', header: 'Elapsed' },
@@ -91,13 +94,17 @@ async function create() {
       <p class="text-sm text-muted">
         Long-running work Bridget does on her own, in its own thread and within a budget — across many
         steps, while you are away and across restarts. She tells you when one finishes or needs you.
-        At most three run at once.
+        A coordinator's child workstreams are listed under it.
       </p>
 
       <UTable
+        v-model:expanded="expanded"
         :data="rows"
         :columns="columns"
         :loading="isPending"
+        :get-sub-rows="(r: WorkstreamNode) => r.children"
+        :get-row-id="(r: WorkstreamNode) => r.id"
+        :ui="{ td: 'empty:p-0' }"
         data-testid="workstreams-table"
       >
         <template #state-cell="{ row }">
@@ -112,13 +119,46 @@ async function create() {
         </template>
 
         <template #goal-cell="{ row }">
-          <ULink
-            :to="`/workstreams/${row.original.id}`"
-            class="line-clamp-2 max-w-xl whitespace-normal font-medium text-highlighted"
-            :data-workstream="row.original.id"
+          <div
+            class="flex max-w-xl items-start gap-2"
+            :class="row.depth ? 'ps-6' : ''"
           >
-            {{ row.original.goal }}
-          </ULink>
+            <UButton
+              v-if="row.getCanExpand()"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              :icon="row.getIsExpanded() ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
+              :aria-label="row.getIsExpanded() ? 'Hide its children' : 'Show its children'"
+              :aria-expanded="row.getIsExpanded()"
+              class="-my-0.5 shrink-0"
+              data-testid="ws-expand"
+              @click="row.toggleExpanded()"
+            />
+            <UIcon
+              v-else-if="row.depth"
+              name="i-lucide-corner-down-right"
+              class="mt-0.5 size-4 shrink-0 text-dimmed"
+            />
+            <div class="flex min-w-0 flex-col gap-0.5">
+              <ULink
+                :to="`/workstreams/${row.original.id}`"
+                class="line-clamp-2 whitespace-normal font-medium text-highlighted"
+                :data-workstream="row.original.id"
+              >
+                {{ row.original.goal }}
+              </ULink>
+              <span
+                v-if="row.original.children?.length"
+                class="text-xs text-muted"
+                data-testid="ws-children-count"
+              >coordinator · {{ row.original.children.length }} {{ row.original.children.length === 1 ? 'child' : 'children' }}</span>
+              <span
+                v-else-if="row.original.isChild"
+                class="text-xs text-muted"
+              >child · {{ childModelLabel(row.original) }}</span>
+            </div>
+          </div>
         </template>
 
         <template #elapsed-cell="{ row }">
@@ -141,7 +181,14 @@ async function create() {
 
         <template #origin-cell="{ row }">
           <ULink
-            v-if="row.original.originConversationId"
+            v-if="row.original.isChild && row.original.parentId"
+            :to="`/workstreams/${row.original.parentId}`"
+            class="text-sm text-muted hover:text-highlighted"
+          >
+            its coordinator
+          </ULink>
+          <ULink
+            v-else-if="row.original.originConversationId"
             :to="{ path: '/agent', query: { c: row.original.originConversationId } }"
             class="text-sm text-muted hover:text-highlighted"
           >
@@ -216,10 +263,10 @@ async function create() {
             </div>
             <UAlert
               v-if="startError"
-              :color="startError.code === 'cap' ? 'warning' : 'error'"
+              color="error"
               variant="subtle"
-              :icon="startError.code === 'cap' ? 'i-lucide-octagon-pause' : 'i-lucide-circle-alert'"
-              :title="startError.code === 'cap' ? 'Too many workstreams in progress' : 'Could not start it'"
+              icon="i-lucide-circle-alert"
+              title="Could not start it"
               :description="startError.message"
               data-testid="new-workstream-error"
             />

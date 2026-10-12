@@ -116,7 +116,7 @@ describe('GET /api/workstreams ?limit', () => {
     for (const [q, want] of [['100000', 100], ['7', 7], ['abc', 100], [undefined, 100], ['-3', 100]] as const) {
       listWorkstreams.mockClear()
       await list({ query: q === undefined ? {} : { limit: q } })
-      expect(listWorkstreams).toHaveBeenCalledWith({ states: undefined, limit: want })
+      expect(listWorkstreams).toHaveBeenCalledWith({ states: undefined, limit: want, topLevel: true })
     }
   })
 })

@@ -1,7 +1,7 @@
 // Cycle 81 (spec §5.1): the workstreams table — reads, the guarded state writes, and the live
 // `workstream` resource (published on every state/used change; the Task 6 UI subscribes).
 // Transitions are decided in loop.ts; this file only persists them.
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { workstreams, type WorkstreamRow } from '../../../db/schema'
 import { publishChange } from '../../../utils/live-bus'
@@ -71,6 +71,12 @@ export async function childrenOf(parentId: string): Promise<WorkstreamRow[]> {
   return useDb().select().from(workstreams).where(eq(workstreams.parentId, parentId)).orderBy(asc(workstreams.createdAt), asc(workstreams.id))
 }
 
+/** Cycle 83 Task 3: the children of several coordinators (all states), oldest first. */
+export async function childrenOfMany(parentIds: string[]): Promise<WorkstreamRow[]> {
+  if (!parentIds.length) return []
+  return useDb().select().from(workstreams).where(inArray(workstreams.parentId, parentIds)).orderBy(asc(workstreams.createdAt), asc(workstreams.id))
+}
+
 /**
  * Cycle 83: refresh a coordinator's rolled-up `tree_used` (its own `used` + every child's) — called
  * after every step of any tree member and at spawn. A no-op for a workstream with no tree budget.
@@ -102,9 +108,11 @@ export async function workstreamForConversation(conversationId: string): Promise
   return r ?? null
 }
 
-export async function listWorkstreams(o: { states?: WorkstreamState[]; limit?: number } = {}): Promise<WorkstreamRow[]> {
+/** `topLevel`: only rows with no coordinator (`parent_id` null — so an orphaned child, whose
+ *  coordinator row is gone, is listed on its own rather than never). */
+export async function listWorkstreams(o: { states?: WorkstreamState[]; limit?: number; topLevel?: boolean } = {}): Promise<WorkstreamRow[]> {
   return useDb().select().from(workstreams)
-    .where(o.states?.length ? inArray(workstreams.state, o.states) : undefined)
+    .where(and(o.states?.length ? inArray(workstreams.state, o.states) : undefined, o.topLevel ? isNull(workstreams.parentId) : undefined))
     .orderBy(desc(workstreams.createdAt)).limit(Math.min(o.limit ?? 50, 200))
 }
 
