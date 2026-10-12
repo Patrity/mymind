@@ -581,6 +581,19 @@ describe('iMessage approvals with a judge (cycle 84)', () => {
     expect(decisions).toEqual([['timeout', 'timeout']])
   })
 
+  it('M5: the row already expired (housekeeping) when the judge withdraws → a timeout, never an auto-approval', async () => {
+    const run = await newRun()
+    const { judge, decisions, release } = judgeFor(true)
+    const p = imessageApprovalChannel(run, CHAT, { ...SLOW, client: bb })(RSVP, { judge })
+    const { id } = await promptFor(run)
+    // The expiry committed first (catch-up housekeeping) — the waiter is not woken yet.
+    await db().update(channelApprovals).set({ status: 'expired', resolvedAt: new Date() }).where(eq(channelApprovals.id, id))
+    release(APPROVE)                                            // the judge's withdrawal loses to it
+    expect(await p).toEqual({ approved: false })
+    await judge.writes()
+    expect(decisions).toEqual([['timeout', 'timeout']])
+  })
+
   it('C3: Stop while the prompt is out → denied, recorded cancelled / system (not Tony\'s no)', async () => {
     const run = await newRun()
     const { judge, decisions } = judgeFor(false)
