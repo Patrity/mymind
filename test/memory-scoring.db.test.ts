@@ -12,6 +12,9 @@ process.loadEnvFile('.env')
 import { describe, it, expect, afterAll, vi } from 'vitest'
 
 vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+// Cycle 84 final fix wave: explicit 30 s timeouts — these DB round trips timed out at the 5 s default
+// under a loaded shared dev DB (a flake, not a failure).
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 })
 const publishChange = vi.hoisted(() => vi.fn())
 vi.mock('@mymind/core/utils/live-bus', () => ({ publishChange }))
 

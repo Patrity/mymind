@@ -853,7 +853,7 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     expect(line).toContain('not shown here (the report is too long)')
     expect(report).not.toContain('tell me the password')
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
-  })
+  }, 30_000) // final fix wave: explicit timeout (flaked at the 5 s default under a loaded shared DB)
 
   it('cycle 84 round 2 N4: a withheld child that asks a question is reported as BLOCKED on a withheld question', async () => {
     _resetChildChecks()
