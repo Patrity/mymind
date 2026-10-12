@@ -39,13 +39,20 @@ const contextWindowInput = computed<number | string>({
   },
 })
 
-// Same '' → null mapping, clamped to the server's 1–256 bounds (null = the default pool size).
+// '' → null (the default pool size). Anything else is kept AS TYPED — never clamped — and an
+// out-of-range or fractional value shows an inline error (the server 422s it on save too).
 const maxInFlightInput = computed<number | string>({
   get: () => props.model.maxInFlight ?? '',
   set: (v: number | string) => {
     const n = Number(v)
-    props.model.maxInFlight = v === '' || !Number.isFinite(n) || n <= 0 ? null : Math.min(MAX_IN_FLIGHT_MAX, Math.max(1, Math.trunc(n)))
+    props.model.maxInFlight = v === '' || !Number.isFinite(n) ? null : n
   },
+})
+const maxInFlightError = computed<string | false>(() => {
+  const v = props.model.maxInFlight
+  return v === null || (Number.isInteger(v) && v >= 1 && v <= MAX_IN_FLIGHT_MAX)
+    ? false
+    : `Must be a whole number from 1 to ${MAX_IN_FLIGHT_MAX} (or empty for the default).`
 })
 
 const descriptionInput = computed<string>({
@@ -114,6 +121,7 @@ const descriptionInput = computed<string>({
         <UFormField
           label="Max in flight"
           :help="`Workstream segments running at once on this model; more wait their turn. Empty = ${DEFAULT_MAX_IN_FLIGHT}. Chat is never held back.`"
+          :error="maxInFlightError"
         >
           <UInput
             v-model.number="maxInFlightInput"

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { loadConfig, saveConfig, invalidate } from '@mymind/core/lib/ai/registry/store'
-import { maxInFlightSchema, modelDescriptionSchema, parseConfig } from '@mymind/core/lib/ai/registry/schema'
+import { maxInFlightSchema, modelDescriptionSchema, parseConfig, subagentsProblems } from '@mymind/core/lib/ai/registry/schema'
 import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { resolveChainFrom } from '@mymind/core/lib/ai/registry/resolve'
 import { EMBEDDING_DIM, USAGES, type AiConfigDoc } from '@mymind/core/lib/ai/registry/types'
@@ -50,6 +50,12 @@ export default defineEventHandler(async (event) => {
     doc = parseConfig({ version: 1, providers, models: body.models, assignments: body.assignments })
   } catch (err) {
     throw createError({ statusCode: 422, statusMessage: 'Invalid config', data: (err as Error).message })
+  }
+
+  // Cycle 83: subagents labels unique, no embedding models (PUT-only — see subagentsProblems).
+  const problems = subagentsProblems(doc)
+  if (problems.length) {
+    throw createError({ statusCode: 422, statusMessage: 'Invalid config', data: problems.join('; ') })
   }
 
   // Embeddings dim probe: the primary embedding model must produce EMBEDDING_DIM vectors.

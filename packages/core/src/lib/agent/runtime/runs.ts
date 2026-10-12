@@ -60,6 +60,9 @@ export async function claimNextRun(opts: {
   /** Model id → pool size (cycle 83, pools.ts). Omitted = read from the AI config. A model not in
    *  the map gets DEFAULT_MAX_IN_FLIGHT. */
   poolLimits?: Record<string, number>
+  /** Test seam (cycle 83 fix round 1): awaited after the row is picked, before it is marked
+   *  running — lets a test hold two claimers at that point to prove the claim lock serialises them. */
+  _afterPick?: () => Promise<void>
 } = {}): Promise<AgentRun | null> {
   const slots = opts.headlessSlots ?? HEADLESS_SLOTS
   const limits = JSON.stringify(opts.poolLimits ?? await poolLimits())
@@ -97,6 +100,7 @@ export async function claimNextRun(opts: {
         for update skip locked`)
       const id = (picked.rows[0] as { id?: string } | undefined)?.id
       if (!id) return null
+      if (opts._afterPick) await opts._afterPick()
       const [row] = await tx.update(agentRuns)
         .set({ status: 'running', claimedAt: sql`now()`, aliveAt: sql`now()`, owner: BOOT_ID })
         .where(eq(agentRuns.id, id)).returning()

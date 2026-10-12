@@ -20,8 +20,10 @@ export const EMBEDDING_DIM = 2560
  *  (cycle 83 pools). Set from the vLLM ramp (scripts/vllm-ramp.ts, 2026-10-11, dev reasoning model
  *  via LiteLLM): up to 8 concurrent streams TTFT p95 stayed under 1 s and aggregate throughput
  *  peaked (~370 tok/s); from 10 on, p95 jumped to 4.5–5.5 s (requests queue for a server slot) with
- *  no aggregate gain. The knee is 8–10, so the default is 8. */
-export const DEFAULT_MAX_IN_FLIGHT = 8
+ *  no aggregate gain — the server batches ~8 sequences. The default is 6, below that batch, so with
+ *  a model's pool full of segments there are still ~2 sequences free for chat turns (which are never
+ *  pooled) on the same model (cycle 83 ruling C1). */
+export const DEFAULT_MAX_IN_FLIGHT = 6
 /** Bounds for ModelDef.maxInFlight. */
 export const MAX_IN_FLIGHT_LIMITS = { min: 1, max: 256 } as const
 

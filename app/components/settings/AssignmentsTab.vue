@@ -8,11 +8,14 @@ onMounted(() => config.load())
 const modelLabel = (id: string) => config.draft.value.models.find(m => m.id === id)?.label ?? id
 const modelDim = (id: string) => config.draft.value.models.find(m => m.id === id)?.dim ?? null
 
-// Models selectable for a usage. Embeddings only accepts dim-2560 models.
+// Models selectable for a usage. Embeddings only accepts dim-2560 models; subagents only chat
+// models (an embedding model can't run a child workstream — the PUT rejects it too).
 function options(usage: string) {
   const assigned = new Set(config.draft.value.assignments[usage] ?? [])
   return config.draft.value.models
-    .filter(m => !assigned.has(m.id) && (usage !== 'embeddings' || m.dim === EMBEDDING_DIM))
+    .filter(m => !assigned.has(m.id)
+      && (usage !== 'embeddings' || m.dim === EMBEDDING_DIM)
+      && (usage !== 'subagents' || m.dim === null))
     .map(m => ({ label: m.label, value: m.id }))
 }
 function add(usage: string, id: string) {

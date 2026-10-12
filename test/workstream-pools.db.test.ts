@@ -16,6 +16,7 @@ import { _executeClaimedForTests, setExecutionMode } from '@mymind/core/lib/agen
 import { segmentPrimaryModelId } from '@mymind/core/lib/agent/runtime/pools'
 import { startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
 import { loadConfig } from '@mymind/core/lib/ai/registry/store'
+import { DEFAULT_MAX_IN_FLIGHT } from '@mymind/core/lib/ai/registry/types'
 import { resolveChainFrom } from '@mymind/core/lib/ai/registry/resolve'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
@@ -125,25 +126,38 @@ describe('per-model in-flight pools', () => {
   it('a model missing from the limits gets the default size; a segment with no model is not pooled', async () => {
     const X = model('default')
     const segs: AgentRun[] = []
-    for (let i = 0; i < 9; i++) segs.push(await segment(X))
+    for (let i = 0; i < DEFAULT_MAX_IN_FLIGHT + 1; i++) segs.push(await segment(X))
     let claimed = 0
     while (await claim(segs, {})) claimed++
-    expect(claimed).toBe(8) // DEFAULT_MAX_IN_FLIGHT
+    expect(claimed).toBe(DEFAULT_MAX_IN_FLIGHT)
     const free = [await segment(null), await segment(null)]
     expect(await claim(free, {})).not.toBeNull()
     expect(await claim(free, {})).not.toBeNull()
   })
 
-  it('concurrent claimers never overfill a pool', async () => {
+  it('two claimers held at the same point can never both take the last slot (the claim lock serialises them)', async () => {
+    // Deterministic, not a race: each claimer, after picking its row and BEFORE marking it running,
+    // waits at a barrier for the other (up to 1.5 s). Without the claim lock both get there, both
+    // read "1 slot free", and both commit → 2 running in a pool of 1. With the lock the second
+    // claimer is still waiting on the lock, so the first times out of the barrier and commits; the
+    // second then reads the committed count and claims nothing.
     const X = model('race')
-    const segs: AgentRun[] = []
-    for (let i = 0; i < 6; i++) segs.push(await segment(X))
-    const limits = { [X]: 2 }
-    const got = await Promise.all(segs.map(() => claim(segs, limits)))
-    expect(got.filter(Boolean)).toHaveLength(2)
+    const segs = [await segment(X), await segment(X)]
+    const limits = { [X]: 1 }
+    let arrived = 0
+    let release!: () => void
+    const both = new Promise<void>((r) => { release = r })
+    const barrier = async () => {
+      if (++arrived === 2) release()
+      await Promise.race([both, sleep(1500)])
+    }
+    const got = await Promise.all(segs.map(() =>
+      claimNextRun({ onlyConversations: segs.map(r => r.conversationId), poolLimits: limits, _afterPick: barrier })))
+    expect(arrived).toBe(1)
+    expect(got.filter(Boolean)).toHaveLength(1)
     const running = await useDb().select().from(agentRuns)
       .where(and(inArray(agentRuns.conversationId, segs.map(s => s.conversationId)), eq(agentRuns.status, 'running')))
-    expect(running).toHaveLength(2)
+    expect(running).toHaveLength(1)
   })
 
   it('failing over mid-segment takes no second slot: the pool key stays the primary model', async () => {

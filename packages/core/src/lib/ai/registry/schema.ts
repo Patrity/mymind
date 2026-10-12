@@ -71,6 +71,30 @@ const docSchema = z.object({
   }
 })
 
+/**
+ * What a SAVE of `subagents` must satisfy, beyond referential integrity (cycle 83 fix round 1):
+ *   - labels are unique within the list — the coordinator picks a child's model BY LABEL, so a
+ *     second model under the same label could never be chosen (M1);
+ *   - no embedding models (dim set) — they cannot run an agent turn (M2).
+ * Checked by the PUT only, deliberately NOT in parseConfig: a stored doc that fails to parse
+ * reads as "AI not configured" everywhere, so a rule added later must never be able to make an
+ * existing config unreadable. Returns readable problems; empty = fine.
+ */
+export function subagentsProblems(doc: AiConfigDoc): string[] {
+  const problems: string[] = []
+  const seen = new Map<string, number>()
+  for (const id of doc.assignments.subagents ?? []) {
+    const m = doc.models.find(x => x.id === id)
+    if (!m) continue
+    if (m.dim !== null) problems.push(`"${m.label}" is an embedding model and cannot be a subagents model`)
+    seen.set(m.label, (seen.get(m.label) ?? 0) + 1)
+  }
+  for (const [label, n] of seen) {
+    if (n > 1) problems.push(`subagents has ${n} models labelled "${label}" — the coordinator picks by label, so labels there must be unique`)
+  }
+  return problems
+}
+
 export function parseConfig(input: unknown): AiConfigDoc {
   return docSchema.parse(input) as AiConfigDoc
 }

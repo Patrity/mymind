@@ -111,6 +111,31 @@ describe('Settings round trip (PUT → stored → GET)', () => {
     expect(saveConfig).not.toHaveBeenCalled()
   })
 
+  it('two subagents models with the same label are a 422 naming the label; nothing is saved', async () => {
+    const b = body()
+    ;(b.models as Array<Record<string, unknown>>)[0]!.label = 'Fast'
+    await expect(put({ body: b })).rejects.toMatchObject({ statusCode: 422, data: expect.stringContaining('"Fast"') })
+    expect(saveConfig).not.toHaveBeenCalled()
+    // The same label OUTSIDE subagents is fine (only subagents is picked by label).
+    const ok = body(); (ok.models as Array<Record<string, unknown>>)[0]!.label = 'Fast'
+    ;(ok.assignments as Record<string, string[]>).subagents = ['s1']
+    await put({ body: ok })
+    expect(saveConfig).toHaveBeenCalledOnce()
+  })
+
+  it('an embedding model in subagents is a 422 naming it', async () => {
+    const b = body()
+    ;(b.models as Array<Record<string, unknown>>).push({ id: 'e1', providerId: 'p1', modelId: 'emb', label: 'Embed', dim: 2560, contextWindow: null, description: null, maxInFlight: null })
+    ;(b.assignments as Record<string, string[]>).subagents = ['s1', 'e1']
+    await expect(put({ body: b })).rejects.toMatchObject({ statusCode: 422, data: expect.stringContaining('"Embed" is an embedding model') })
+    expect(saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('a STORED config with those problems still parses (the rule is save-time only)', () => {
+    const d = doc([{ id: 's1', label: 'Same' }, { id: 's2', label: 'Same' }], { subagents: ['s1', 's2'] })
+    expect(() => parseConfig(d)).not.toThrow()
+  })
+
   it('a subagents entry naming a missing model is a 422', async () => {
     const b = body(); (b.assignments as Record<string, string[]>).subagents = ['ghost']
     await expect(put({ body: b })).rejects.toMatchObject({ statusCode: 422 })
