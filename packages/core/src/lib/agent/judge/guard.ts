@@ -131,38 +131,97 @@ export function needsLlm(source: GuardSource, textChars: number, h: Pick<Heurist
   return h.suspicious || ((source === 'web' || source === 'mail') && textChars > GUARD_WEB_LLM_MIN_CHARS)
 }
 
-/** At most `max` chars of `text`: all of it when it fits; else the head, the tail and a window
- *  around EVERY hit (fix round 1, M5), merged in document order, each cut marked. Windows shrink
- *  until everything fits the budget. */
+/** A slice boundary that never splits a surrogate pair. */
+function safeCut(text: string, i: number): number {
+  const c = text.charCodeAt(i)
+  return i > 0 && i < text.length && c >= 0xDC00 && c <= 0xDFFF ? i + 1 : i
+}
+
+/**
+ * At most `max` chars of `text` (markers included). Fix round 2 (M5), in this order:
+ *   1. the head and the tail (2k each) are reserved first;
+ *   2. windows around the hits, deduplicated and merged, take up to 60% of what is left — when
+ *      there are more than fit, the first and last hits are kept and the rest picked evenly (an
+ *      attacker's decoy hits can neither push the tail out nor overrun the budget);
+ *   3. whatever budget is left is spread as evenly spaced slices across the middle not yet shown.
+ */
 export function excerpt(text: string, hits: number[], max = GUARD_LLM_INPUT_CHARS): string {
   if (text.length <= max) return text
-  const edges = 2000
-  const budget = max - 2 * edges
-  const uniq = [...new Set(hits.filter(h => h >= 0 && h < text.length))].sort((a, b) => a - b)
-  const half = uniq.length ? Math.max(80, Math.min(1500, Math.floor(budget / (2 * uniq.length)))) : 0
-  const spans: Array<[number, number]> = [[0, edges], [text.length - edges, text.length]]
-  for (const h of uniq) spans.push([Math.max(0, h - half), Math.min(text.length, h + half)])
+  const EDGE = 2000
+  const WINDOW = 400 // each side of a hit
+  const MARK = 48 // room for one cut marker
+  const midStart = EDGE
+  const midEnd = text.length - EDGE
+  const spans: Array<[number, number]> = []
+  const room = (n: number) => max - 2 * EDGE - 80 - n * MARK // what the middle may use with n spans
+  // 2. hit windows (middle only — the head and tail are shown anyway).
+  const uniq = [...new Set(hits.filter(h => h >= midStart && h < midEnd))].sort((a, b) => a - b)
+  const size = (xs: Array<[number, number]>) => xs.reduce((n, [a, b]) => n + (b - a), 0)
+  const hitBudget = Math.floor(room(Math.min(uniq.length, 64) + 16) * 0.6)
+  // Pick the hits first — the first, the last and evenly spaced ones between, as many as fit at full
+  // width — THEN build and merge their windows (decoys packed together cannot merge into one span
+  // that hides the rest).
+  const fit = Math.max(2, Math.floor(hitBudget / (2 * WINDOW)))
+  const count = Math.min(fit, uniq.length)
+  const picked = [...new Set(Array.from({ length: count }, (_, j) => uniq[count === 1 ? 0 : Math.round((j * (uniq.length - 1)) / (count - 1))]!))]
+  const chosen: Array<[number, number]> = []
+  for (const h of picked) {
+    const w: [number, number] = [Math.max(midStart, h - WINDOW), Math.min(midEnd, h + WINDOW)]
+    const last = chosen[chosen.length - 1]
+    if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1])
+    else chosen.push(w)
+  }
+  // Two windows at most can still overrun a tiny budget: clip from the right.
+  while (size(chosen) > hitBudget && chosen.length) {
+    const lastW = chosen[chosen.length - 1]!
+    const over = size(chosen) - hitBudget
+    if (lastW[1] - lastW[0] > over) lastW[1] -= over
+    else chosen.pop()
+  }
+  spans.push(...chosen)
+  // 3. spread the spare budget evenly across the middle not yet shown.
+  const uncovered: Array<[number, number]> = []
+  let cur = midStart
+  for (const [a, b] of chosen) { if (a > cur) uncovered.push([cur, a]); cur = Math.max(cur, b) }
+  if (cur < midEnd) uncovered.push([cur, midEnd])
+  const free = size(uncovered)
+  const SLICES = 16
+  let spare = room(chosen.length + SLICES) - size(chosen)
+  if (free > 0 && spare > 0) {
+    if (spare >= free) spans.push(...uncovered)
+    else {
+      const each = Math.floor(spare / SLICES)
+      for (let k = 0; k < SLICES && each > 0; k++) {
+        // The k-th slice starts at an evenly spaced point of the concatenated uncovered middle.
+        let at = Math.floor(((k + 0.5) / SLICES) * free - each / 2)
+        at = Math.max(0, Math.min(free - each, at))
+        for (const [a, b] of uncovered) {
+          if (at < b - a) { const start = a + at; spans.push([start, Math.min(b, start + each)]); break }
+          at -= b - a
+        }
+      }
+    }
+    spare = 0
+  }
+  // 1. head + tail, then everything in document order, merged.
+  spans.push([0, EDGE], [text.length - EDGE, text.length])
   spans.sort((a, b) => a[0] - b[0])
-  const merged: Array<[number, number]> = []
+  const out: Array<[number, number]> = []
   for (const sp of spans) {
-    const last = merged[merged.length - 1]
+    const last = out[out.length - 1]
     if (last && sp[0] <= last[1]) last[1] = Math.max(last[1], sp[1])
-    else merged.push([sp[0], sp[1]])
+    else out.push([sp[0], sp[1]])
   }
-  // No hits: spend the rest of the budget from the start, after the head.
-  if (!uniq.length) merged[0] = [0, max - edges]
   const parts: string[] = []
-  let used = 0
   let prevEnd = 0
-  for (const [a, b] of merged) {
-    const room = max - used
-    if (room <= 0) break
-    const piece = text.slice(a, Math.min(b, a + room))
-    parts.push(`${a > prevEnd ? `[… ${a - prevEnd} chars skipped …]\n` : ''}${piece}`)
-    used += piece.length
-    prevEnd = a + piece.length
+  for (const [a0, b0] of out) {
+    const a = safeCut(text, a0)
+    const b = safeCut(text, b0)
+    parts.push(`${a > prevEnd ? `[… ${a - prevEnd} chars skipped …]\n` : ''}${text.slice(a, b)}`)
+    prevEnd = b
   }
-  return `${parts.join('\n')}\n[… ${text.length} chars in total]`
+  const result = `${parts.join('\n')}\n[… ${text.length} chars in total]`
+  return result.length <= max ? result : result.slice(0, safeCut(result, max))
 }
 
 export function buildGuardPrompt(i: { tool: string; source: GuardSource; text: string; h: HeuristicResult }, id = fenceId()): string {
@@ -228,9 +287,9 @@ async function classify(
     timeout.aborted ? 'guard timed out' : input.signal?.aborted ? 'guard cancelled' : `${fallback}${err ? `: ${(err as Error).message.slice(0, 200)}` : ''}`
   // M7: the settings read and the chain resolution run inside the same 15 s deadline as the call.
   let enabled: boolean
+  // N6: a settings read that fails is recorded with its real reason (never as "disabled").
   try { enabled = await beforeDeadline((deps.enabled ?? judgeEnabled)(), signal) } catch (err) {
-    if (timeout.aborted || input.signal?.aborted) return fail(why('settings unreadable', err))
-    enabled = false
+    return fail(why('settings unreadable', err))
   }
   if (!enabled) return 'disabled'
   let chain: ResolvedModel[]
@@ -258,7 +317,7 @@ export async function guardOutput(input: GuardInput, deps: GuardDeps = {}): Prom
   const now = deps.now ?? Date.now
   const started = now()
   const text = stripOwnNotes(resultText(input.result, new Set([INJECTION_WARNING_KEY])), [UNTRUSTED_NOTE, WORKSPACE_UNTRUSTED_NOTE])
-  const h = scoreText(text)
+  const h = scoreText(text, { unescapeMarkdown: input.source === 'web' })
   const base = { score: h.score, labels: h.labels, suspicious: h.suspicious, textChars: text.length }
   const done = (v: Omit<GuardVerdict, 'latencyMs' | keyof typeof base>): GuardVerdict => ({ ...base, ...v, latencyMs: now() - started })
   if (!text.trim()) return done({ flagged: false, by: null, llmSkipped: 'empty' })

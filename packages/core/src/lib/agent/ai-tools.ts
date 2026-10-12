@@ -118,7 +118,9 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     if (!v.flagged && nestedFlagged) v = { ...v, flagged: true, by: 'nested' }
     if (!v.flagged) return null
     tainted = true
-    if (t.guard === 'workspace') {
+    // N3: a Stop during classification decided nothing — the result keeps its warning (the history
+    // must not carry it unwarned), but the workspace is not tainted on a verdict that never came.
+    if (t.guard === 'workspace' && !(v.by === 'fail-closed' && hooks.signal.aborted)) {
       // The run is tainted already, so its next workspace command would taint the workspace anyway;
       // this does it now (the networked container dies with whatever the content started there).
       // M6: a failure is never silent — an activity error (the run itself stays tainted: fail closed).
@@ -132,7 +134,8 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
       kind: 'tool', name: 'judge:output-warning', severity: 'warn',
       meta: {
         tool: t.name, source: t.guard, runId: hooks.runId ?? null, by: v.by, score: v.score, labels: v.labels,
-        ...(v.llm ? { llm: { confidence: v.llm.confidence, model: v.llm.model, latencyMs: v.llm.latencyMs } } : {}),
+        ...(v.llm ? { llm: { confidence: v.llm.confidence, model: v.llm.model, latencyMs: v.llm.latencyMs, ...(v.llm.error ? { error: v.llm.error } : {}) } } : {}),
+        ...(v.llmSkipped ? { llmSkipped: v.llmSkipped } : {}),
         latencyMs: v.latencyMs
       }
     })

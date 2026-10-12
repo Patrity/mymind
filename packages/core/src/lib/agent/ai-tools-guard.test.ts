@@ -154,6 +154,29 @@ describe('output guard on the result path', () => {
     warn.mockRestore()
   })
 
+  it('N3: Stop during classification — the result keeps its warning, the workspace is NOT tainted', async () => {
+    const ac = new AbortController()
+    const stopped = async (): Promise<GuardVerdict> => { ac.abort(); return { flagged: true, by: 'fail-closed', score: 4, labels: ['override'], suspicious: true, textChars: 10, latencyMs: 5, llm: { injection: false, confidence: 0, reasons: [], model: null, latencyMs: 5, error: 'guard cancelled' } } }
+    const { call, taintWorkspace } = setup({ guard: stopped, signal: ac.signal })
+    expect(await call('read_file')).toMatchObject({ [INJECTION_WARNING_KEY]: expect.any(String) })
+    expect(taintWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('N3: a real verdict still taints the workspace even if Stop came after it', async () => {
+    const ac = new AbortController()
+    const real = async (): Promise<GuardVerdict> => { ac.abort(); return { flagged: true, by: 'llm', score: 4, labels: ['override'], suspicious: true, textChars: 10, latencyMs: 5, llm: { injection: true, confidence: 0.9, reasons: [], model: 'J', latencyMs: 5 } } }
+    const { call, taintWorkspace } = setup({ guard: real, signal: ac.signal })
+    await call('read_file')
+    expect(taintWorkspace).toHaveBeenCalledWith('run-1')
+  })
+
+  it('N6: the activity row says why the classifier did not decide', async () => {
+    page.content = INJECTED
+    const { call } = setup()
+    await call('web_fetch', { url: 'https://a.example' })
+    expect(recordEvent.mock.calls[0]![0]).toMatchObject({ meta: { by: 'fail-closed', llmSkipped: 'disabled' } })
+  })
+
   it('a tool without `guard` is never scanned, whatever it returns', async () => {
     const guard = vi.fn(heuristicGuard)
     const { call, ask } = setup({ guard })

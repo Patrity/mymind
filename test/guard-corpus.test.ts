@@ -107,7 +107,7 @@ describe('guard corpus', () => {
       const { call, deps } = oracle(s)
       await run(s, deps)
       const text = resultText(s.result, new Set(['injectionWarning'])).split(UNTRUSTED_NOTE).join(' ').split(WORKSPACE_UNTRUSTED_NOTE).join(' ')
-      const h = scoreText(text)
+      const h = scoreText(text, { unescapeMarkdown: s.source === 'web' })
       const expected = !h.flagged && needsLlm(s.source, text.length, h)
       expect(call.mock.calls.length, s.file).toBe(expected ? 1 : 0)
     }

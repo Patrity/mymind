@@ -123,7 +123,14 @@ export interface Normalized {
 /** Emoji subdivision flags (🏴 + tag letters + CANCEL TAG) are honest uses of tag characters. */
 const EMOJI_TAG_SEQ = /\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu
 
-export function normalize(input: string): Normalized {
+export interface NormalizeOptions {
+  /** Drop markdown backslash-escapes — ONLY for web content (fix round 2, N1): web_fetch's
+   *  htmlToMarkdown writes `web\\_fetch`, `<|im\\_start|>`. In code (`/<\\|eot_id\\|>/`) or a GFM table
+   *  cell (`<\\|im_start\\|>`) the backslash is real, and unescaping would invent role tokens. */
+  unescapeMarkdown?: boolean
+}
+
+export function normalize(input: string, o: NormalizeOptions = {}): Normalized {
   const text = input.length > SCAN_MAX_CHARS ? input.slice(0, SCAN_MAX_CHARS) : input
   const emojiTagAt = new Set<number>()
   for (const m of text.matchAll(EMOJI_TAG_SEQ)) for (let i = m.index! + 2; i < m.index! + m[0].length; i++) emojiTagAt.add(i)
@@ -150,9 +157,9 @@ export function normalize(input: string): Normalized {
     if (isZeroWidth(cp)) { if (cp !== 0x200D) zeroWidth++; continue }
     if (isBidi(cp)) { if (cp !== 0x200E && cp !== 0x200F && cp !== 0x061C) bidiOverrides++; continue }
     if (isVariationSelector(cp)) continue
-    // Markdown escapes (web_fetch's htmlToMarkdown writes `web\_fetch`, `<|im\_start|>`): the
-    // backslash before ASCII punctuation is dropped, so escaped text matches like the plain text.
-    if (cp === 0x5C && i < text.length && /[!-/:-@[-`{-~]/.test(text[i]!)) continue
+    // Markdown escapes (web only — see NormalizeOptions): the backslash before ASCII punctuation is
+    // dropped, so escaped text matches like the plain text.
+    if (o.unescapeMarkdown && cp === 0x5C && i < text.length && /[!-/:-@[-`{-~]/.test(text[i]!)) continue
     const raw = String.fromCodePoint(cp)
     const n = raw.normalize('NFKC')
     for (const ch of n) {
@@ -367,14 +374,14 @@ function inCode(lined: string, i: number): boolean {
   const lineStart = before.lastIndexOf('\n') + 1
   const lineBefore = before.slice(lineStart)
   if (((lineBefore.match(/`/g) ?? []).length % 2) === 1) return true
-  if (((lineBefore.match(/"/g) ?? []).length % 2) === 1) return true
+  if (((lineBefore.match(/(?<!\\)"/g) ?? []).length % 2) === 1) return true
   if (((lineBefore.match(/(?<![a-z])'|'(?![a-z])/gi) ?? []).length % 2) === 1) return true
   return false
 }
 
 /** Score `text` (pure). */
-export function scoreText(input: string): HeuristicResult {
-  const n = normalize(input)
+export function scoreText(input: string, o: NormalizeOptions = {}): HeuristicResult {
+  const n = normalize(input, o)
   const labels = new Map<GuardLabel, number[]>()
   const add = (label: GuardLabel, at: number[], map: number[]) => {
     if (!at.length) return
@@ -384,9 +391,17 @@ export function scoreText(input: string): HeuristicResult {
 
   // Role tokens flag alone — in running text. Inside code or a quoted string they only route.
   const tokens = allHits(n.lined, [ROLE_TOKEN])
-  const running = tokens.filter(i => !inCode(n.lined, i))
+  // A token that exists only once markdown escapes are dropped (`<|im\\_start|>` in the original) only
+  // routes (fix round 2, N1): the flag-alone signal needs it literally in the source.
+  const literal = (i: number) => {
+    const len = /^<\|[a-z_]+\|>/.exec(n.lined.slice(i, i + 40))?.[0].length ?? 1
+    const from = n.linedMap[i] ?? 0
+    const to = n.linedMap[i + len - 1] ?? from
+    return !input.slice(from, to + 1).includes('\\')
+  }
+  const running = tokens.filter(i => !inCode(n.lined, i) && literal(i))
   add('role-token', running, n.linedMap)
-  add('role-marker', [...tokens.filter(i => inCode(n.lined, i)), ...allHits(n.lined, ROLE_MARKER), ...allHits(n.lined, [ROLE_HEADING])], n.linedMap)
+  add('role-marker', [...tokens.filter(i => inCode(n.lined, i) || !literal(i)), ...allHits(n.lined, ROLE_MARKER), ...allHits(n.lined, [ROLE_HEADING])], n.linedMap)
 
   add('exfil-image', urlHits(n.lined, MD_IMAGE), n.linedMap)
   add('exfil-link', urlHits(n.lined, MD_LINK), n.linedMap)

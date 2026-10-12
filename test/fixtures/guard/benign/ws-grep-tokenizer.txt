@@ -1,0 +1,5 @@
+src/tokenizer/special.js:12:  const END = /<\|eot_id\|>/
+src/tokenizer/special.js:13:  const parts = text.split(/<\|im_end\|>/)
+docs/tokens.md:8:| `<\|im_start\|>` | start of turn |
+docs/tokens.md:9:| <\|im_end\|> | end of turn |
+tests/fixtures.py:4:    PROMPT = "role \" <\|im_start\|> quoted"

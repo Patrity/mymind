@@ -24,6 +24,7 @@
 //   TAINT (spec D9). Child output is untrusted. A child that read mail/calendar/contacts (`tainted`) or
 //   whose workspace is tainted taints the run that reads its output: tool results carry
 //   `workspaceTainted: true` first (ai-tools.ts), and a wake prompt withholds that child's text.
+import { createHash } from 'node:crypto'
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentRuns, conversations, workspaces, workstreams } from '../../../db/schema'
@@ -222,6 +223,11 @@ export interface ChildView {
   withheld?: true
   /** Cycle 84 fix round 1 (C3): withheld because the output guard flagged the child's own text. */
   flagged?: true
+  /** Fix round 2 (N2): withheld because the injection check could not run (judge down, timeout) —
+   *  this report only; nothing is persisted. */
+  unchecked?: true
+  /** Fix round 2 (N4): the child is blocked on a question whose text was withheld. */
+  asksWithheld?: true
 }
 
 // ── Size caps (final fix wave I3) ──────────────────────────────────────────────────────────────
@@ -300,8 +306,11 @@ function describeHead(v: ChildView): string {
 
 function describe(v: ChildView): string {
   const head = describeHead(v)
-  if (v.flagged) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here: the injection check found instructions aimed at an AI reader in it. read_workstream shows it with a warning (reading it treats this run as tainted).`
-  if (v.withheld) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here because it handled mail/calendar content — read it with read_workstream.`
+  // N4: a withheld child that is blocked on a question says so — the coordinator must answer it.
+  const asks = v.asksWithheld ? ' It is BLOCKED on a question to you, whose text is withheld too — read_workstream shows it; answer with answer_child.' : ''
+  if (v.flagged) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here: the injection check found instructions aimed at an AI reader in it. read_workstream shows it with a warning (reading it treats this run as tainted).${asks}`
+  if (v.unchecked) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here: the injection check couldn't run just now. read_workstream shows it (checked again there).${asks}`
+  if (v.withheld) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here because it handled mail/calendar content — read it with read_workstream.${asks}`
   const parts = [head]
   if (v.question) parts.push(childText('asks', v.question))
   if (v.waitingFor) parts.push(childText('waiting for', v.waitingFor))
@@ -324,26 +333,77 @@ export async function childReport(kids: WorkstreamRow[], header: string, o: { gu
   return [...lead, ...lines].join('\n')
 }
 
-/**
- * Cycle 84 fix round 1 (C3): one child as a wake report shows it. A tainted child's words are
- * withheld (as before). An untainted child's own words — summary, question, reason — go through the
- * output guard (`child` source) first: flagged, the child is marked TAINTED (so every later report
- * withholds it and a wait / read result carries `workspaceTainted`, which taints the coordinator run
- * that reads it — and read_workstream's own guard adds the warning there), the activity
- * `judge:output-warning` is recorded, and its words are withheld here too, with a note saying why.
- * A wake report is the segment's prompt (or a steer into a running one): withholding is the only
- * way to keep flagged text out of a run whose taint can no longer flip.
- */
-async function reportView(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildView> {
-  if (await childTainted(k)) return childView(k, true)
+// ── Child output guard (cycle 84: C3, fix round 2 N2/N5) ───────────────────────────────────────
+
+/** A child's own words as a report shows them (summary, question, reason, waiting-for). */
+function reportText(k: WorkstreamRow): string {
   const v = childView(k)
-  const text = [v.question, v.waitingFor, v.failureReason, v.summary].filter(Boolean).join('\n')
-  if (!text) return v
+  return [v.question, v.waitingFor, v.failureReason, v.summary].filter(Boolean).join('\n')
+}
+
+type ChildCheck = 'clean' | 'flagged' | 'unchecked'
+/** N2: definitive classifications only ('clean' / 'flagged'), per (child, text) — a wake never
+ *  re-classifies the same words, and a failed check is never remembered (it is retried). */
+const childChecks = new Map<string, Exclude<ChildCheck, 'unchecked'>>()
+const CHILD_CHECKS_MAX = 2000
+const checkKey = (k: WorkstreamRow, text: string) => `${k.id}:${createHash('sha256').update(text).digest('base64url')}`
+
+/** Test seam. */
+export function _resetChildChecks(): void { childChecks.clear() }
+
+/**
+ * Guard one child's words (`child` source). A REAL verdict — a flag-alone signal or the LLM saying
+ * injection — persists: the child is marked tainted (every later report withholds it, and a wait /
+ * read result carries `workspaceTainted`, which taints the coordinator run that reads it). A
+ * fail-closed verdict (judge down, timeout, error) applies to THIS report only (N2): withheld, never
+ * persisted, never cached. A failed taint write is recorded and the words stay withheld (N5).
+ */
+async function checkChild(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildCheck> {
+  const text = reportText(k)
+  if (!text) return 'clean'
+  const key = checkKey(k, text)
+  const known = childChecks.get(key)
+  if (known) return known
   const g = await guardOutput({ tool: 'wake_report', source: 'child', result: text }, deps)
-  if (!g.flagged) return v
-  await patchWorkstream(k.id, { tainted: true })
+  if (!g.flagged) { remember(key, 'clean'); return 'clean' }
+  if (g.by === 'fail-closed') return 'unchecked'
   recordEvent({ kind: 'tool', name: 'judge:output-warning', severity: 'warn', meta: { tool: 'wake_report', source: 'child', workstreamId: k.id, by: g.by, score: g.score, labels: g.labels, latencyMs: g.latencyMs } })
-  return { ...childView(k, true), flagged: true }
+  try {
+    await patchWorkstream(k.id, { tainted: true })
+  } catch (err) {
+    recordEvent({ kind: 'tool', name: 'judge:child-taint-failed', severity: 'error', meta: { workstreamId: k.id, error: (err as Error).message.slice(0, 300) } })
+  }
+  remember(key, 'flagged')
+  return 'flagged'
+}
+
+function remember(key: string, v: Exclude<ChildCheck, 'unchecked'>): void {
+  if (childChecks.size >= CHILD_CHECKS_MAX) childChecks.delete(childChecks.keys().next().value!)
+  childChecks.set(key, v)
+}
+
+/** N5: classify (and persist) the children a wake may report BEFORE the coordinator flips to
+ *  running — so the report built after the flip only reads the cache. Never throws. */
+export async function precheckChildren(coordinatorId: string, deps?: GuardDeps): Promise<void> {
+  try {
+    const kids = await childrenOf(coordinatorId)
+    await Promise.all(kids.filter(k => !k.tainted).map(k => checkChild(k, deps).catch(() => 'unchecked')))
+  } catch { /* the report path guards again */ }
+}
+
+/** One child as a wake report shows it (cycle 84 C3 + fix round 2). */
+async function reportView(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildView> {
+  const att = attentionOf(k)
+  const asks = k.state === 'attention' && att?.kind === 'question' ? { asksWithheld: true as const } : {}
+  const text = reportText(k)
+  if (text && childChecks.get(checkKey(k, text)) === 'flagged') return { ...childView(k, true), flagged: true, ...asks }
+  // A tainted child's words are withheld anyway — no need to classify them.
+  if (await childTainted(k)) return { ...childView(k, true), ...asks }
+  let check: ChildCheck
+  try { check = await checkChild(k, deps) } catch { check = 'unchecked' }
+  if (check === 'flagged') return { ...childView(k, true), flagged: true, ...asks }
+  if (check === 'unchecked') return { ...childView(k, true), unchecked: true, ...asks }
+  return childView(k)
 }
 
 /** The coordinator has now been shown these children's questions/pauses (never shown twice). */
@@ -386,7 +446,12 @@ export async function parkForChildren(ws: WorkstreamRow, wait: ChildWait): Promi
  * check happen under the tree lock with the coordinator row locked, so of any number of concurrent
  * wakers exactly one enqueues the segment. Null when it is not parked, or not ready.
  */
-export async function wakeCoordinatorIfReady(coordinatorId: string, o: { now?: number } = {}): Promise<string | null> {
+export async function wakeCoordinatorIfReady(coordinatorId: string, o: { now?: number; guard?: GuardDeps } = {}): Promise<string | null> {
+  // Fix round 2 (N5): a parked coordinator's children are checked (and a real flag persisted) before
+  // the transition below; the report after it reads the cache, so nothing slow or failing runs while
+  // the coordinator is already `running` without its segment.
+  const pre = await getWorkstream(coordinatorId)
+  if (pre?.state === 'paused') await precheckChildren(coordinatorId, o.guard)
   const won = await useDb().transaction(async (tx) => {
     await lockTree(tx, coordinatorId)
     const [c] = await tx.select().from(workstreams).where(eq(workstreams.id, coordinatorId)).for('update')
@@ -417,7 +482,7 @@ export async function wakeCoordinatorIfReady(coordinatorId: string, o: { now?: n
   const header = won.timedOut
     ? `wait_for_workstreams timed out after ${won.wait!.timeoutMin} min. Where your children stand:`
     : 'Your child workstreams have news:'
-  const text = await childReport(listed, header) + (missing.length ? `\nNo longer exist: ${missing.join(', ')}` : '')
+  const text = await childReport(listed, header, { guard: o.guard }) + (missing.length ? `\nNo longer exist: ${missing.join(', ')}` : '')
   // S1: the state-only lifecycle notes land first (no coordinator segment runs now).
   await flushChildNotes(coordinatorId)
   // I1 + fix round 2: the report is NEVER dropped, and never mixed with Tony's words. It is its own
