@@ -339,7 +339,13 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
               }
             })
             // Away: the iMessage prompt too. Whichever answers first decides; the other is withdrawn.
-            if (req) void startAwayApproval(run.id, requestId, req, race.signal)
+            // Cycle 83 final fix wave (M4): a CHILD's card is part of its tree's ONE away text — its own
+            // interactive prompt only when it is the only thing in the tree waiting on Tony (after
+            // the attention above is on the row).
+            if (req && ws.isChild && ws.parentId) {
+              const parentId = ws.parentId
+              void serial(async () => {}).then(() => childAwayApproval(parentId, ws.id, run.id, requestId, req, race.signal))
+            } else if (req) void startAwayApproval(run.id, requestId, req, race.signal)
           } else {
             waiting.get(requestId)?.abort(APPROVAL_WITHDRAWN)
             waiting.delete(requestId)
@@ -391,6 +397,20 @@ function approvalText(req: ApprovalRequest): string {
   const what = req.logSummary ?? req.command
   const body = what.length > 300 ? `${what.slice(0, 299)}…` : what
   return req.title ? `${req.title}: ${body}` : `Approve ${req.tool}: ${body}`
+}
+
+/** M4: a child's card while Tony is away — the tree's grouped text, or (alone in its tree) its own
+ *  interactive prompt, raced with the card like a top-level one. */
+async function childAwayApproval(parentId: string, childId: string, runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal): Promise<void> {
+  try {
+    if (signal.aborted) return
+    if ((await (await coordinator()).announceTreeAway(parentId, { approvalOf: childId })) !== 'interactive' || signal.aborted) return
+    const r = await workstreamNotifyDeps.imessageApproval(runId, req, signal)
+    if (!r || signal.aborted) return
+    decideBusApproval({ requestId, approved: r.approved })
+  } catch (err) {
+    console.error('[workstreams] iMessage approval failed:', err)
+  }
 }
 
 async function startAwayApproval(runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal): Promise<void> {
@@ -1033,11 +1053,16 @@ export async function nudgeWaitingWorkstreams(opts: { onlyConversations?: string
     opts.onlyConversations ? inArray(workstreams.conversationId, opts.onlyConversations) : undefined
   ))
   let n = 0
+  // Cycle 83 final fix wave (M4): children are nudged per TREE — one note/text listing everything a
+  // coordinator's children wait on Tony for (an unescalated question waits on the coordinator, not him).
+  const c = await coordinator()
+  n += await c.nudgeTrees(rows.filter(r => r.isChild), { now, everyMs: NUDGE_EVERY_MS, max: MAX_NUDGES })
+  // …and what a throttled moment held back of a tree's away text goes out once it may.
+  await c.sweepTreeAway({ onlyConversations: opts.onlyConversations, now })
   for (const ws of rows) {
     const att = attentionOf(ws)
+    if (ws.isChild) continue
     if (!att || att.kind === 'paused' || (att.nudges ?? 0) >= MAX_NUDGES || now - (att.notifiedAt ?? 0) < NUDGE_EVERY_MS) continue
-    // Cycle 83: a child's question waits on its COORDINATOR (unless it was escalated to Tony).
-    if (ws.isChild && att.kind === 'question' && !att.escalated) continue
     const row = await patchWorkstream(ws.id, { attention: { ...att, notifiedAt: now, nudges: (att.nudges ?? 0) + 1 } }, ['attention'])
     if (!row) continue
     const who = await tonyFacing(row)

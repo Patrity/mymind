@@ -36,7 +36,7 @@ import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { budgetOf, childrenOf, getWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
 import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, tagQuestion, threadTitle, tonyFacing, withQueuedSegment } from './loop'
 import { pushSteer } from '../runtime/inbox'
-import { notifyTony } from './notify'
+import { noteOrigin, workstreamNotifyDeps, workstreamLink } from './notify'
 import { ensureWorkstreamWorkspace } from '../../sandbox/store'
 
 type Tx = Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0]
@@ -254,7 +254,7 @@ export function childView(c: WorkstreamRow, withhold = false, o: { full?: boolea
   return v
 }
 
-const clipGoal = (g: string, n = 120) => { const one = g.replace(/\s+/g, ' ').trim(); return one.length > n ? `${one.slice(0, n - 1)}…` : one }
+const clipGoal = (g: string, n = 120): string => { const one = g.replace(/\s+/g, ' ').trim(); return one.length > n ? `${one.slice(0, n - 1)}…` : one }
 
 /** Indices of `kids` oldest first (by creation) — the ones that shrink first past the report cap. */
 function oldestFirst(kids: WorkstreamRow[]): number[] {
@@ -543,7 +543,8 @@ function heldByTony(c: WorkstreamRow): boolean {
   return c.state === 'attention' || (c.state === 'paused' && !att?.waitingForChildren && !att?.waitingForWatch)
 }
 
-/** Tell Tony about a child's question too — once per question. */
+/** Tell Tony about a child's question too — once per question: a note in his chat now, and (M4) the
+ *  tree's grouped away text (at most one per tree per TREE_AWAY_EVERY_MS — the tick sends one held back). */
 async function escalate(child: WorkstreamRow, coord: WorkstreamRow): Promise<void> {
   const att = attentionOf(child)
   if (child.state !== 'attention' || att?.kind !== 'question' || att.escalated) return
@@ -552,8 +553,141 @@ async function escalate(child: WorkstreamRow, coord: WorkstreamRow): Promise<voi
   if (!row) return
   publishWorkstream(child.id)
   const who = await tonyFacing(row, coord)
-  await notifyTony(who, questionNote(childTitle(coord.goal, child.goal), `${att.text}\n\n(Its coordinator is waiting on you too, so this came to you.)`, await tagQuestion(row.id)))
+  await noteOrigin(who, questionNote(childTitle(coord.goal, child.goal), `${att.text}\n\n(Its coordinator is waiting on you too, so this came to you.)`, await tagQuestion(row.id)))
+  await announceTreeAway(coord.id)
 }
+
+// ── Away texts per tree (final fix wave M4) ─────────────────────────────────────────────────────
+//
+// A fan-out of approval-gated children must not text Tony once per child (the old cap of 3 bounded
+// that; nothing does now). Every away iMessage about a tree's children — an approval card, an
+// escalated question, a "still waiting" nudge — is ONE text per tree listing everything that waits
+// on him, at most one per TREE_AWAY_EVERY_MS (the coordinator's `tree_away_at`). Whatever a throttled
+// moment held back goes out with the tick's next tree text (sweepTreeAway). A lone approval keeps its
+// interactive iMessage prompt (a tapback decides it) — that prompt IS the tree's text then.
+
+/** At most one away text per coordinator tree this often. */
+export const TREE_AWAY_EVERY_MS = 10 * 60_000
+
+/** A child that waits on TONY (not on its coordinator): an approval card, or an escalated question. */
+export function waitsOnTony(k: Pick<WorkstreamRow, 'state' | 'attention'>): boolean {
+  const att = attentionOf(k)
+  return k.state === 'attention' && !!att && (att.kind === 'approval' || (att.kind === 'question' && !!att.escalated))
+}
+
+/** Under the tree lock: null when the tree was texted within TREE_AWAY_EVERY_MS (or nothing waits);
+ *  else the tree is stamped and every child waiting on Tony is marked as announced — returned, oldest first. */
+async function claimTreeAway(coordinatorId: string, now: number): Promise<{ coord: WorkstreamRow; pending: WorkstreamRow[] } | null> {
+  const out = await useDb().transaction(async (tx) => {
+    await lockTree(tx, coordinatorId)
+    const [coord] = await tx.select().from(workstreams).where(eq(workstreams.id, coordinatorId)).for('update')
+    if (!coord || isTerminal(coord.state)) return null
+    if (coord.treeAwayAt && now - coord.treeAwayAt.getTime() < TREE_AWAY_EVERY_MS) return null
+    const pending = (await tx.select().from(workstreams).where(eq(workstreams.parentId, coordinatorId)))
+      .filter(waitsOnTony).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    if (!pending.length) return null
+    await tx.update(workstreams).set({ treeAwayAt: new Date(now) }).where(eq(workstreams.id, coordinatorId))
+    for (const k of pending) await tx.update(workstreams).set({ attention: { ...attentionOf(k)!, awaySent: true } }).where(eq(workstreams.id, k.id))
+    return { coord, pending }
+  })
+  for (const k of out?.pending ?? []) publishWorkstream(k.id)
+  return out
+}
+
+/** The tree's grouped text: everything its children wait on Tony for (a question with its #tag). */
+export function treeAwayText(coord: Pick<WorkstreamRow, 'id' | 'goal'>, pending: WorkstreamRow[], lead = '⚙ Waiting on you'): string {
+  const lines = pending.map((k) => {
+    const att = attentionOf(k)!
+    const who = childTitle(coord.goal, k.goal)
+    return att.kind === 'approval'
+      ? `- ${who} — approval: ${att.text}`
+      : `- ${att.tag ? `#${att.tag} ` : ''}${who} — asks: ${att.text}`
+  })
+  const asks = pending.some(k => attentionOf(k)?.kind === 'question')
+  return [
+    `${lead} — ${pending.length === 1 ? 'a child' : `${pending.length} children`} of "${clipGoal(coord.goal, 60)}":`,
+    ...lines,
+    ...(asks ? ['Reply "#<number> <answer>" to answer a question.'] : []),
+    workstreamLink(coord.id)
+  ].join('\n')
+}
+
+/**
+ * Text Tony (when he is away) about the children of `coordinatorId` that wait on him — at most once per
+ * TREE_AWAY_EVERY_MS per tree. `approvalOf`: the child whose approval card prompted this — when it is
+ * the only thing waiting, 'interactive' tells the caller to raise its own iMessage approval prompt
+ * instead (that prompt is the tree's text). 'held': throttled, the tick sends it later.
+ */
+export async function announceTreeAway(coordinatorId: string, o: { approvalOf?: string; now?: number } = {}): Promise<'interactive' | 'sent' | 'held' | 'none'> {
+  try {
+    if (!(await workstreamNotifyDeps.isAway())) return 'none'
+    const c = await claimTreeAway(coordinatorId, o.now ?? Date.now())
+    if (!c) return 'held'
+    if (o.approvalOf && c.pending.length === 1 && c.pending[0]!.id === o.approvalOf) return 'interactive'
+    await workstreamNotifyDeps.text(treeAwayText(c.coord, c.pending), c.coord.originConversationId ?? c.coord.conversationId)
+    return 'sent'
+  } catch (err) {
+    console.error('[workstreams] tree away text failed:', err)
+    return 'none'
+  }
+}
+
+/** The tick: trees with a child waiting on Tony that no text has announced yet (held back by the
+ *  throttle, or he was not away then), once the throttle allows. */
+export async function sweepTreeAway(o: { onlyConversations?: string[]; now?: number } = {}): Promise<number> {
+  if (o.onlyConversations && !o.onlyConversations.length) return 0
+  const now = o.now ?? Date.now()
+  const scope = o.onlyConversations
+    ? sql`and c.conversation_id in (${sql.join(o.onlyConversations.map(id => sql`${id}::uuid`), sql`, `)})`
+    : sql``
+  const res = await useDb().execute(sql`
+    select distinct p.id from workstreams c join workstreams p on p.id = c.parent_id
+    where c.is_child and c.state = 'attention' and not (c.attention ? 'awaySent')
+      and (c.attention->>'kind' = 'approval' or (c.attention->>'kind' = 'question' and c.attention->>'escalated' = 'true'))
+      and p.state not in ('done', 'failed', 'cancelled')
+      and (p.tree_away_at is null or p.tree_away_at < ${new Date(now - TREE_AWAY_EVERY_MS).toISOString()}::timestamptz)
+      ${scope}`)
+  let n = 0
+  for (const { id } of res.rows as Array<{ id: string }>) if ((await announceTreeAway(id, { now })) === 'sent') n++
+  return n
+}
+
+/**
+ * The "still waiting" nudge for a tree (loop.ts nudgeWaitingWorkstreams hands children here): ONE
+ * nudge per tree — a note in Tony's chat and, while he is away, one text — listing everything its
+ * children wait on him for, when any of them is due (NUDGE_EVERY_MS since he was told, under
+ * MAX_NUDGES). Every listed child counts it.
+ */
+export async function nudgeTrees(children: WorkstreamRow[], o: { now: number; everyMs: number; max: number }): Promise<number> {
+  const byTree = new Map<string, WorkstreamRow[]>()
+  for (const k of children) if (k.parentId && waitsOnTony(k)) byTree.set(k.parentId, [...(byTree.get(k.parentId) ?? []), k])
+  let n = 0
+  for (const [coordId, kids] of byTree) {
+    const open = kids.filter(k => (attentionOf(k)!.nudges ?? 0) < o.max)
+    if (!open.some(k => o.now - (attentionOf(k)!.notifiedAt ?? 0) >= o.everyMs)) continue
+    const coord = await getWorkstream(coordId)
+    if (!coord || isTerminal(coord.state)) continue
+    const nudged: WorkstreamRow[] = []
+    for (const k of open) {
+      const att = attentionOf(k)!
+      const [row] = await useDb().update(workstreams).set({ attention: { ...att, notifiedAt: o.now, nudges: (att.nudges ?? 0) + 1 } })
+        .where(and(eq(workstreams.id, k.id), eq(workstreams.state, 'attention'), sql`${workstreams.attention}->>'text' = ${att.text}`)).returning()
+      if (row) { nudged.push(row); publishWorkstream(row.id) }
+    }
+    if (!nudged.length) continue
+    const text = treeAwayText(coord, nudged, '⚙ Still waiting on you')
+    await noteOrigin({ id: coord.id, originConversationId: coord.originConversationId }, text.split('\n').slice(0, -1).join('\n'))
+    try {
+      if (await workstreamNotifyDeps.isAway()) {
+        await useDb().update(workstreams).set({ treeAwayAt: new Date(o.now) }).where(eq(workstreams.id, coord.id))
+        await workstreamNotifyDeps.text(text, coord.originConversationId ?? coord.conversationId)
+      }
+    } catch (err) { console.error('[workstreams] tree nudge text failed:', err) }
+    n++
+  }
+  return n
+}
+
 
 export async function afterTransition(row: WorkstreamRow): Promise<void> {
   if (row.isChild) {

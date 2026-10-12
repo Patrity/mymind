@@ -40,6 +40,9 @@ export interface WorkstreamAttention {
   /** Cycle 83 final fix wave (I2): a question Tony was texted about — its `#k` handle, unique among
    *  the open questions; a reply starting with `#k` answers this one. */
   tag?: number
+  /** Cycle 83 final fix wave (M4): a child's approval / escalated question was listed in a text to
+   *  Tony (its tree's grouped away iMessage, or its own interactive approval prompt). */
+  awaySent?: true
 }
 
 /** Cycle 83: what a parked coordinator waits for. */

@@ -758,6 +758,9 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
       }
       yield { type: 'done' }
     })
+    // M4: alone in its tree, the child's card keeps its own interactive iMessage prompt (once).
+    let prompts = 0
+    workstreamNotifyDeps.imessageApproval = (_runId, _req, signal) => { prompts++; return new Promise(res => signal.addEventListener('abort', () => res({ approved: false }), { once: true })) }
     const { ws, origin } = await newCoordinator('approver')
     coordConv = ws.conversationId
     expect(await pumpOnce({ onlyConversations: [coordConv], rekick: false, run: runFn })).toBe(1)
@@ -774,9 +777,13 @@ describe('coordinator: taint, approvals, workspaces, cascade', () => {
     expect(own.map(f => f.frame.requestId)).toEqual([att(row)!.requestId])
     const note = await until(async () => (await thread(origin)).find(m => m.content.includes('waiting for your approval')))
     expect(note!.content).toContain('T83 approver › T83 needs approval')
+    await until(async () => prompts === 1)
+    expect(texts).toEqual([])                                            // the prompt IS the tree's text
+    expect(att((await getWorkstream(child.id))!)).toMatchObject({ awaySent: true })
     expect(decideBusApproval({ requestId: att(row)!.requestId!, approved: true })).toBe(true)
     expect(await waitForInFlight(20_000)).toBe(true)
     expect(answer).toEqual({ approved: true })
+    expect(prompts).toBe(1)
     expect((await getWorkstream(child.id))!.state).toBe('done')
     expect((await getWorkstream(ws.id))!.state).toBe('running')          // woken by its child
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
@@ -1560,5 +1567,45 @@ describe('final fix wave', () => {
     await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.id, turn!.id))
     expect(await flushChildNotes(ws.id)).toBe(1)
     expect((await thread(ws.conversationId)).at(-1)!.content).toMatch(/T83 m5 child.* was cancelled\./)
+  })
+
+  it('M4: a tree\'s children text Tony at most once per 10 min — a lone approval keeps its interactive prompt, the rest are held and go out as ONE grouped text; nudges are one per tree', async () => {
+    const { announceTreeAway, sweepTreeAway, TREE_AWAY_EVERY_MS } = await import('@mymind/core/lib/agent/workstreams/coordinator')
+    const { ws, origin } = await idleCoordinator('m4')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 m4 a' }, { goal: 'T83 m4 b' }, { goal: 'T83 m4 c' }], { labels: [], kick: false })
+    const [a, b, c] = await Promise.all(r.children.map(async k => (await getWorkstream(k.id))!))
+    for (const k of [a!, b!, c!]) await settleSegments(k.conversationId)
+    const scope = [a!.conversationId, b!.conversationId, c!.conversationId]
+    const now = Date.now()
+    texts.length = 0
+    await patchWorkstream(a!.id, { state: 'attention', attention: { kind: 'approval', text: 'Approve exec: A', requestId: 'ra', notifiedAt: now } })
+    expect(await announceTreeAway(ws.id, { approvalOf: a!.id, now })).toBe('interactive')
+    await patchWorkstream(b!.id, { state: 'attention', attention: { kind: 'approval', text: 'Approve exec: B', requestId: 'rb', notifiedAt: now } })
+    expect(await announceTreeAway(ws.id, { approvalOf: b!.id, now: now + 1000 })).toBe('held')
+    // An escalated question (the real path: the coordinator waits on Tony) is held too — its chat note still lands.
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'coordinator asks' } })
+    await patchWorkstream(c!.id, { state: 'attention', attention: { kind: 'question', text: 'M4-Q?', notifiedAt: now } })
+    expect(att((await getWorkstream(c!.id))!)).toMatchObject({ escalated: true })
+    expect((await thread(origin)).some(m => m.content.includes('M4-Q?'))).toBe(true)
+    expect(texts.filter(t => t.includes('T83 m4'))).toEqual([])
+    expect(await sweepTreeAway({ onlyConversations: scope, now: now + 60_000 })).toBe(0)        // still throttled
+    // Past the window: ONE text, listing everything pending in the tree.
+    expect(await sweepTreeAway({ onlyConversations: scope, now: now + TREE_AWAY_EVERY_MS + 1000 })).toBe(1)
+    const mine = texts.filter(t => t.includes('T83 m4'))
+    expect(mine).toHaveLength(1)
+    expect(mine[0]).toMatch(/3 children of "T83 m4":/)
+    for (const s of ['T83 m4 › T83 m4 a — approval: Approve exec: A', 'T83 m4 › T83 m4 b — approval: Approve exec: B', 'T83 m4 › T83 m4 c — asks: M4-Q?']) expect(mine[0]).toContain(s)
+    expect(mine[0]).toMatch(/#\d+ T83 m4 › T83 m4 c/)
+    expect(await sweepTreeAway({ onlyConversations: scope, now: now + 2 * TREE_AWAY_EVERY_MS + 2000 })).toBe(0)   // nothing new
+    // Nudges: one per tree (not per child), listing all three.
+    texts.length = 0
+    const notesBefore = (await thread(origin)).filter(m => m.content.startsWith('⚙ Still waiting on you')).length
+    expect(await nudgeWaitingWorkstreams({ onlyConversations: scope, now: now + 3 * 3_600_000 })).toBe(1)
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toMatch(/^⚙ Still waiting on you — 3 children of "T83 m4":/)
+    expect((await thread(origin)).filter(m => m.content.startsWith('⚙ Still waiting on you')).length).toBe(notesBefore + 1)
+    for (const k of [a!, b!, c!]) expect(att((await getWorkstream(k.id))!)).toMatchObject({ nudges: 1 })
+    expect(await nudgeWaitingWorkstreams({ onlyConversations: scope, now: now + 3 * 3_600_000 + 1000 })).toBe(0)
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 })

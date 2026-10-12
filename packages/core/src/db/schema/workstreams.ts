@@ -52,7 +52,10 @@ export const workstreams = pgTable('workstreams', {
   isChild: boolean('is_child').notNull().default(false),
   /** Cycle 83 fix round 1 (S1): the last lifecycle event of this child written into its coordinator's
    *  thread as a state-only note (`spawned`, `attention:<kind>:<hash>`, `paused:<hash>`, `done`…). */
-  lifecycleNoted: text('lifecycle_noted')
+  lifecycleNoted: text('lifecycle_noted'),
+  /** Cycle 83 final fix wave (M4): on a COORDINATOR — when Tony was last texted about its children
+   *  (approvals, escalated questions): at most one such text per tree per 10 minutes. */
+  treeAwayAt: timestamp('tree_away_at', { withTimezone: true })
 }, (t) => [
   index('workstreams_parent_idx').on(t.parentId),
   uniqueIndex('workstreams_conversation_idx').on(t.conversationId),
