@@ -34,7 +34,7 @@ import {
 } from '../../../shared/types/workstreams'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { budgetOf, childrenOf, getWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
-import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, threadTitle, tonyFacing, withQueuedSegment } from './loop'
+import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, tagQuestion, threadTitle, tonyFacing, withQueuedSegment } from './loop'
 import { pushSteer } from '../runtime/inbox'
 import { notifyTony } from './notify'
 import { ensureWorkstreamWorkspace } from '../../sandbox/store'
@@ -550,7 +550,7 @@ async function escalate(child: WorkstreamRow, coord: WorkstreamRow): Promise<voi
   if (!row) return
   publishWorkstream(child.id)
   const who = await tonyFacing(row, coord)
-  await notifyTony(who, questionNote(childTitle(coord.goal, child.goal), `${att.text}\n\n(Its coordinator is waiting on you too, so this came to you.)`))
+  await notifyTony(who, questionNote(childTitle(coord.goal, child.goal), `${att.text}\n\n(Its coordinator is waiting on you too, so this came to you.)`, await tagQuestion(row.id)))
 }
 
 export async function afterTransition(row: WorkstreamRow): Promise<void> {

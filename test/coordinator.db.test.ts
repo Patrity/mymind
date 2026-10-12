@@ -1379,4 +1379,69 @@ describe('final fix wave', () => {
     await seg.release()
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
+
+  it('I2: coordinator ask_tony + an escalated child question both open — each text carries its #tag; "#k …" answers that one, an untagged reply the most recently notified, and Tony is told which', async () => {
+    const { parseQuestionTag } = await import('@mymind/core/lib/agent/workstreams/loop')
+    expect(parseQuestionTag('#2 go left')).toEqual({ tag: 2, rest: 'go left' })
+    expect(parseQuestionTag('  #12: yes')).toEqual({ tag: 12, rest: 'yes' })
+    expect(parseQuestionTag('#2nd option')).toBeNull()
+    expect(parseQuestionTag('use #2')).toBeNull()
+
+    const { ws, origin } = await idleCoordinator('i2')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 i2 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    const scope = [ws.conversationId, kid.conversationId]
+    // (1) The coordinator asks Tony (the real tool): its text carries its tag.
+    const seg = await segmentFor(ws.id)
+    const { workstreamOnlyTools } = await import('@mymind/core/lib/agent/tools/workstreams')
+    const ask = workstreamOnlyTools.find(t => t.name === 'ask_tony')!
+    texts.length = 0
+    expect((await ask.handler({ question: 'COORD-Q?' }, { signal: new AbortController().signal, runId: seg.runId })).result).toMatchObject({ ok: true })
+    const ct = att((await getWorkstream(ws.id))!)!.tag!
+    expect(ct).toBeGreaterThan(0)
+    expect(texts.join('\n')).toContain(`#${ct}`)
+    // (2) A child asks while it waits on Tony → escalated, with a DIFFERENT tag in its text.
+    await sleep(5)
+    await patchWorkstream(kid.id, { state: 'attention', attention: { kind: 'question', text: 'CHILD-Q?', notifiedAt: Date.now() } })
+    const kt = att((await getWorkstream(kid.id))!)!.tag!
+    expect(kt).toBeGreaterThan(0)
+    expect(kt).not.toBe(ct)
+    expect(texts.find(t => t.includes('CHILD-Q?'))).toContain(`#${kt}`)
+    // (3) "#<coordinator tag> …" answers the coordinator (the tag is stripped), not the more recent child.
+    texts.length = 0
+    const a1 = await routeInboundAnswer({ text: `#${ct} go left`, modality: 'text' }, { mainConversationId: origin, onlyConversations: scope })
+    expect(a1).toMatchObject({ workstreamId: ws.id })
+    const steered = await useDb().select().from(agentInbox).where(eq(agentInbox.runId, seg.runId))
+    expect(steered.map(x => x.content)).toEqual(['go left'])
+    // Tony is told which one it answered, and how to reach the other.
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toMatch(new RegExp(`answered #${ct} T83 i2\\.[\\s\\S]*Still waiting on you: #${kt} T83 i2 › T83 i2 child`))
+    // A #k no open question holds, with several open: not a guess — it lands in main.
+    await patchWorkstream(ws.id, { state: 'attention', attention: { kind: 'question', text: 'COORD-Q2?', notifiedAt: Date.now() - 60_000, tag: ct } })
+    expect(await routeInboundAnswer({ text: '#999 hmm', modality: 'text' }, { mainConversationId: origin, onlyConversations: scope })).toBeNull()
+    // (4) Untagged: the most recently notified question (the child's) gets it.
+    texts.length = 0
+    const a2 = await routeInboundAnswer({ text: 'blue', modality: 'text' }, { mainConversationId: origin, onlyConversations: scope })
+    expect(a2).toMatchObject({ workstreamId: kid.id })
+    expect((await activeSegs(kid.conversationId)).map(q => (q.input as { text: string }).text)).toEqual(['blue'])
+    expect(texts[0]).toMatch(new RegExp(`answered #${kt} T83 i2 › T83 i2 child`))
+    expect((await thread(origin)).some(m => m.content === 'answered ⚙ T83 i2 › T83 i2 child: blue')).toBe(true)
+    await seg.release()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I2: tags are unique among the open questions and freed when a question closes', async () => {
+    const { tagQuestion } = await import('@mymind/core/lib/agent/workstreams/loop')
+    const a = await idleCoordinator('tag-a')
+    const b = await idleCoordinator('tag-b')
+    await patchWorkstream(a.ws.id, { state: 'attention', attention: { kind: 'question', text: 'A?' } })
+    await patchWorkstream(b.ws.id, { state: 'attention', attention: { kind: 'question', text: 'B?' } })
+    const [ta, tb] = await Promise.all([tagQuestion(a.ws.id), tagQuestion(b.ws.id)])
+    expect(ta).not.toBe(tb)
+    expect(await tagQuestion(a.ws.id)).toBe(ta)          // idempotent
+    await patchWorkstream(a.ws.id, { state: 'running', attention: null })
+    expect(await tagQuestion(a.ws.id)).toBeNull()         // not a question any more
+    for (const x of [a, b]) await controlWorkstream({ workstreamId: x.ws.id, action: 'cancel' })
+  })
 })

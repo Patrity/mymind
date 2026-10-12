@@ -590,8 +590,14 @@ async function pauseWorkstream(ws: WorkstreamRow, text: string, lastOutcome: str
   if (row && note && !row.isChild) await notifyTony(row, note)
 }
 
-export function questionNote(goal: string, question: string): string {
-  return `⚙ Workstream needs you — ${goal}\n\n${question}\n\nReply to answer.`
+/** `tag` (final fix wave I2): the question's `#k` handle — a reply starting with it answers THIS one
+ *  when several questions wait on Tony. */
+export function questionNote(goal: string, question: string, tag?: number | null): string {
+  return `⚙ Workstream needs you — ${goal}\n\n${question}\n\n${replyHint(tag)}`
+}
+
+function replyHint(tag?: number | null): string {
+  return tag ? `Reply to answer (#${tag} — start your reply with #${tag} when other questions are waiting too).` : 'Reply to answer.'
 }
 
 /** After a segment's run has finished (queue.ts execute, after finishRun committed). Returns the
@@ -1002,7 +1008,8 @@ export async function nudgeWaitingWorkstreams(opts: { onlyConversations?: string
     const row = await patchWorkstream(ws.id, { attention: { ...att, notifiedAt: now, nudges: (att.nudges ?? 0) + 1 } }, ['attention'])
     if (!row) continue
     const who = await tonyFacing(row)
-    await notifyTony(who, `⚙ Still waiting on you — ${who.goal}\n\n${att.text}${att.kind === 'question' ? '\n\nReply to answer.' : ''}`)
+    const tag = att.kind === 'question' ? (att.tag ?? await tagQuestion(row.id)) : null
+    await notifyTony(who, `⚙ Still waiting on you — ${who.goal}\n\n${att.text}${att.kind === 'question' ? `\n\n${replyHint(tag)}` : ''}`)
     n++
   }
   return n
@@ -1108,34 +1115,87 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promis
   if (row) await enqueueWhy(row, 'continue')
 }
 
-// ── Answers by iMessage (review I3, controller ruling) ──────────────────────────────────────────
+// ── Answers by iMessage (review I3, controller ruling; cycle 83 final fix wave I2) ─────────────
+
+/** A question Tony's iMessage can answer: state 'attention' AND kind 'question' (a paused workstream or
+ *  an approval card never captures one). Cycle 83: a child's question is its coordinator's to answer —
+ *  Tony's text only answers it once he was asked too (escalated: the coordinator was waiting on him). */
+const OPEN_QUESTION = sql`${workstreams.state} = 'attention' and ${workstreams.attention}->>'kind' = 'question'
+  and (not ${workstreams.isChild} or ${workstreams.attention}->>'escalated' = 'true')`
 
 /**
- * An inbound iMessage while EXACTLY ONE workstream waits on a question is that question's answer
- * (state 'attention' AND kind 'question' — a paused workstream or an approval card never captures one):
- * it goes into the workstream (its next segment's prompt, origin `imessage:<chat>` kept) and main
- * gets a short event note. With none or several waiting it returns null — the text lands in main as
- * an ordinary turn, and Bridget can pass it on with `answer_workstream`. `onlyConversations` scopes
- * the lookup (test seam: the dev DB is shared).
+ * Final fix wave (I2): give an open question its `#k` handle — the smallest k no other open question
+ * holds — before Tony is texted about it, so a reply can say which question it answers. Under one
+ * advisory lock (two questions asked at once never share a k). Null when the row no longer waits on
+ * a question Tony can answer. Idempotent: a tagged question keeps its tag.
+ */
+export async function tagQuestion(workstreamId: string): Promise<number | null> {
+  const tag = await useDb().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:workstream-question-tags'))`)
+    const [row] = await tx.select().from(workstreams).where(and(eq(workstreams.id, workstreamId), OPEN_QUESTION)).for('update')
+    const att = row ? attentionOf(row) : null
+    if (!row || !att) return null
+    if (att.tag) return att.tag
+    const taken = new Set((await tx.select({ attention: workstreams.attention }).from(workstreams).where(OPEN_QUESTION))
+      .map(r => (r.attention as WorkstreamAttention | null)?.tag).filter((t): t is number => typeof t === 'number'))
+    let k = 1
+    while (taken.has(k)) k++
+    await tx.update(workstreams).set({ attention: { ...att, tag: k } }).where(eq(workstreams.id, row.id))
+    return k
+  })
+  if (tag) publishWorkstream(workstreamId)
+  return tag
+}
+
+/** `#k` at the very start of a reply (then optional punctuation): which question it answers. */
+export function parseQuestionTag(text: string): { tag: number; rest: string } | null {
+  const m = /^\s*#(\d{1,4})(?![\d\w])[\s:,.\-–—]*/.exec(text)
+  return m ? { tag: Number(m[1]), rest: text.slice(m[0].length) } : null
+}
+
+/**
+ * An inbound iMessage while a workstream waits on a question is that question's answer: it goes into
+ * the workstream (its next segment's prompt, origin `imessage:<chat>` kept) and main gets a short
+ * event note naming it. Final fix wave (I2) — with several waiting, a reply starting with `#k` answers
+ * the question tagged k (the tag is stripped); an untagged one answers the MOST RECENTLY NOTIFIED
+ * question, and Tony is texted which workstream got it (and how to reach the others). A `#k` no open
+ * question holds, or no question at all, returns null — the text lands in main as an ordinary turn,
+ * and Bridget can pass it on with `answer_workstream`. `onlyConversations` scopes the lookup (test
+ * seam: the dev DB is shared).
  */
 export async function routeInboundAnswer(input: RunInput, opts: { mainConversationId?: string; onlyConversations?: string[] } = {}): Promise<{ runId: string; workstreamId: string } | null> {
   if (opts.onlyConversations && !opts.onlyConversations.length) return null
   const waiting = await useDb().select().from(workstreams).where(and(
-    eq(workstreams.state, 'attention'), sql`${workstreams.attention}->>'kind' = 'question'`,
-    // Cycle 83: a child's question is its coordinator's to answer — Tony's text only answers it once
-    // he was asked too (escalated: the coordinator was itself waiting on him).
-    sql`(not ${workstreams.isChild} or ${workstreams.attention}->>'escalated' = 'true')`,
+    OPEN_QUESTION,
     opts.onlyConversations ? inArray(workstreams.conversationId, opts.onlyConversations) : undefined
-  )).limit(2)
-  if (waiting.length !== 1) return null
-  const ws = waiting[0]!
-  const r = await replyToWorkstream(ws, input)
+  ))
+  if (!waiting.length) return null
+  const tagged = parseQuestionTag(input.text)
+  let ws: WorkstreamRow | undefined
+  let text = input.text
+  if (tagged) {
+    const hit = waiting.find(w => attentionOf(w)?.tag === tagged.tag)
+    if (hit && tagged.rest.trim()) { ws = hit; text = tagged.rest }
+    else if (waiting.length > 1) return null // a #k no open question holds: not a guess between several
+  }
+  ws ??= [...waiting].sort((a, b) => (attentionOf(b)?.notifiedAt ?? 0) - (attentionOf(a)?.notifiedAt ?? 0))[0]!
+  const r = await replyToWorkstream(ws, { ...input, text })
   if (!r) return null
+  const who = await tonyFacing(ws)
   const { getOrCreateMain } = await import('../runtime/sessions')
   const { appendEvent } = await import('../../../services/conversations')
   const main = opts.mainConversationId ?? await getOrCreateMain()
-  const said = input.text.length > 200 ? `${input.text.slice(0, 199)}…` : input.text
-  await appendEvent(main, `answered ⚙ ${ws.goal}: ${said}`, `workstream:${ws.id}`)
+  const said = text.length > 200 ? `${text.slice(0, 199)}…` : text
+  await appendEvent(main, `answered ⚙ ${who.goal}: ${said}`, `workstream:${ws.id}`)
     .catch(err => console.error('[workstreams] answered note failed:', err))
+  // Several were waiting: say which one this reply answered, and how to answer the rest.
+  const others = waiting.filter(w => w.id !== ws.id)
+  if (others.length) {
+    const tagOf = (w: WorkstreamRow) => attentionOf(w)?.tag
+    const rest = await Promise.all(others.map(async w => `${tagOf(w) ? `#${tagOf(w)} ` : ''}${(await tonyFacing(w)).goal}`))
+    const note = `↪ Your reply answered ${tagOf(ws) ? `#${tagOf(ws)} ` : ''}${who.goal}.\nStill waiting on you: ${rest.join('; ')} — start a reply with its #number to answer it.`
+    await workstreamNotifyDeps.text(note, ws.originConversationId ?? ws.conversationId)
+      .catch(err => console.error('[workstreams] answer confirmation failed:', err))
+  }
   return { runId: r.runId, workstreamId: ws.id }
 }

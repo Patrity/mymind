@@ -117,7 +117,7 @@ export const askTonyTool: AgentTool = {
   schema: { question: z.string().min(1).max(2000).describe('One clear question, with the options if there are any') },
   handler: async (a, ctx) => {
     try {
-      const { segmentForRun, questionNote } = await loop()
+      const { segmentForRun, questionNote, tagQuestion } = await loop()
       const seg = segmentForRun(ctx.runId)
       if (!seg) return { result: { ok: false, error: `ask_tony ${NOT_IN_WORKSTREAM}` }, summary: 'ask_tony: not a workstream' }
       const question = (a.question as string).trim()
@@ -130,7 +130,7 @@ export const askTonyTool: AgentTool = {
       // Cycle 83 (spec D8): a child's question goes to its coordinator (woken by the transition —
       // coordinator.ts), and to Tony only when the coordinator is itself waiting on him.
       if (ws.isChild) return { result: { ok: true, note: 'Your coordinator has been asked. Stop here: you resume when it (or Tony) answers.' }, summary: 'asked the coordinator' }
-      await (await notify()).notifyTony(ws, questionNote(ws.goal, question))
+      await (await notify()).notifyTony(ws, questionNote(ws.goal, question, await tagQuestion(ws.id)))
       return { result: { ok: true, note: 'Tony has been asked. Stop here: the workstream resumes when he replies.' }, summary: 'asked Tony' }
     } catch (err) {
       return fail('ask_tony', err)

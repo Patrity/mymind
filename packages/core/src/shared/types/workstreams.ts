@@ -37,6 +37,9 @@ export interface WorkstreamAttention {
   reported?: true
   /** Cycle 83 (a child's question): Tony was told too (the coordinator was itself waiting on him). */
   escalated?: true
+  /** Cycle 83 final fix wave (I2): a question Tony was texted about — its `#k` handle, unique among
+   *  the open questions; a reply starting with `#k` answers this one. */
+  tag?: number
 }
 
 /** Cycle 83: what a parked coordinator waits for. */

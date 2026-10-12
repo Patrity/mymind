@@ -261,7 +261,7 @@ describe('workstreams', () => {
     await drive(ws.conversationId)
     let row = (await getWorkstream(ws.id))!
     expect(row.state).toBe('attention')
-    expect(row.attention).toEqual({ kind: 'question', text: 'Synology or QNAP?', notifiedAt: expect.any(Number) })
+    expect(row.attention).toEqual({ kind: 'question', text: 'Synology or QNAP?', notifiedAt: expect.any(Number), tag: expect.any(Number) })
     expect(await activeSegs(ws.conversationId)).toEqual([])
     expect(seen).toHaveLength(1)
     expect(texts.join('\n')).toContain('Synology or QNAP?')
@@ -626,7 +626,7 @@ describe('fix round 1', () => {
     await controlWorkstream({ workstreamId: made!.id, action: 'cancel' })
   })
 
-  it('I3: an iMessage with exactly ONE workstream waiting on a question is its answer (main gets a note); with two it is not routed', async () => {
+  it('I3: an iMessage with exactly ONE workstream waiting on a question is its answer (main gets a note); with two (cycle 83 final fix wave I2) the most recently notified one gets it', async () => {
     const { seen, drive } = harness(async function* (ctx, _m, seg) {
       step(ctx)
       if (seg === 0) await callTool(ctx, 'ask_tony', { question: 'Which brand?' })
@@ -635,7 +635,7 @@ describe('fix round 1', () => {
     })
     const a = await newWorkstream('route-a')
     await drive(a.ws.conversationId)
-    expect(texts.join('\n')).toMatch(/Which brand\?[\s\S]*Reply to answer\./)
+    expect(texts.join('\n')).toMatch(/Which brand\?[\s\S]*Reply to answer \(#\d+ — start your reply with #\d+ when other questions are waiting too\)\./)
     const main = await createConversation({ title: 'T5 stand-in main' })
     convIds.push(main.id)
     const r = await routeInboundAnswer({ text: 'Synology', modality: 'text', origin: 'imessage:chat-x' }, { mainConversationId: main.id, onlyConversations: [a.ws.conversationId] })
@@ -645,11 +645,14 @@ describe('fix round 1', () => {
     expect(seen[1]!.last).toBe('Synology')
     expect((await thread(a.ws.conversationId)).find(m => m.role === 'user')).toMatchObject({ content: 'Synology', origin: 'imessage:chat-x' })
 
-    // Two waiting: not routed.
+    // Two waiting (final fix wave I2): the most recently notified one gets it, and Tony is told which.
     const b = await newWorkstream('route-b')
     const c = await newWorkstream('route-c')
-    for (const x of [b, c]) await patchWorkstream(x.ws.id, { state: 'attention', attention: { kind: 'question', text: 'q?' } })
-    expect(await routeInboundAnswer({ text: 'hm', modality: 'text' }, { mainConversationId: main.id, onlyConversations: [b.ws.conversationId, c.ws.conversationId] })).toBeNull()
+    await patchWorkstream(b.ws.id, { state: 'attention', attention: { kind: 'question', text: 'q?', notifiedAt: Date.now() - 60_000 } })
+    await patchWorkstream(c.ws.id, { state: 'attention', attention: { kind: 'question', text: 'q?', notifiedAt: Date.now() } })
+    texts.length = 0
+    expect(await routeInboundAnswer({ text: 'hm', modality: 'text' }, { mainConversationId: main.id, onlyConversations: [b.ws.conversationId, c.ws.conversationId] })).toMatchObject({ workstreamId: c.ws.id })
+    expect(texts).toEqual([expect.stringMatching(/answered T5 route-c\.\nStill waiting on you: T5 route-b/)])
     for (const x of [b, c]) await controlWorkstream({ workstreamId: x.ws.id, action: 'cancel' })
   })
 
