@@ -406,6 +406,10 @@ Two process lessons worth keeping, both paid for in fix rounds:
 
 Carried out of the 11 cycle handovers, de-duplicated, current items only:
 
+**Workstreams (cycle 83 coordinator)**
+- `sweepCoordinators` flushes child lifecycle notes for every live coordinator every 5 s (a `getWorkstream`, a running-run probe and a full `childrenOf` each, even when nothing changed) — scales as coordinators × children per tick. Do the "pending note" test in SQL (only coordinators with a child whose lifecycle key differs from `lifecycle_noted`). (Final review M6, parked.)
+- `read_workstream` / immediate `wait_for_workstreams` results are `kind:'read'`, so a later segment replays them capped at `READ_RESULT_CAP` (1500) — the full summary is one live `read_workstream` away, but not in replayed history. (Final review I3 scenario B; not in the fix-wave ruling.)
+
 **AI quality**
 - ~~Session-summarization worker — sessions show "(untitled session)"; generate title+summary (bridget had this).~~ ✅ **shipped (cycle 13 phase 4)** — `summarize-sessions` task → title+summary+`summary_embedding`; + session/message semantic search in the palette.
 - Reranker (`:8883`) wired but OFF by default — enable + evaluate for memory/doc relevance.

@@ -2,7 +2,7 @@
 title: Workstreams (long-running background agent work)
 status: shipped
 cycle: 81 (workspace integration: cycle 82)
-updated: 2026-10-11
+updated: 2026-10-12
 mymind_id: a5fa582b-9998-41b3-a9b3-53a41c8a0642
 mymind_hash: 9ffce1a1409b822df9142338a471ec0fc37f83aa16a760fb40d92ce1ccbf3bcf
 ---
@@ -139,11 +139,20 @@ nonce and taint pins are unchanged.
 - **Nudges**: a workstream in `attention` is re-announced at most every **2 h**
   (`NUDGE_EVERY_MS`) and at most **3 times per attention episode** (`MAX_NUDGES`; a new question or
   card starts a new episode). It is never re-announced while `paused`.
-- **iMessage answers** (`routeInboundAnswer`). An inbound iMessage while **exactly one** workstream
-  waits on a **question** becomes its answer: its next segment's prompt, with origin
-  `imessage:<chat>` kept. Main gets a short "answered ⚙ …" note. With none or several waiting, the
-  text lands in main as an ordinary turn, and Bridget can pass it on with `answer_workstream`.
-  Paused and approval-waiting workstreams never capture a text.
+- **iMessage answers** (`routeInboundAnswer`; cycle 83 final fix wave I2). Every question text carries a
+  `#k` tag, unique among the open questions (`attention.tag`, `tagQuestion`). An inbound iMessage while
+  a workstream waits on a **question** becomes an answer: `#k …` answers the question tagged k (the tag
+  is stripped); an untagged text answers the **most recently notified** question. Its next segment's
+  prompt keeps origin `imessage:<chat>`; main gets a short "answered ⚙ …" note, and when several were
+  waiting Tony is texted which one got it and the others' tags. A `#k` no open question holds (with
+  several waiting), or no question at all, lands in main as an ordinary turn; Bridget can pass it on
+  with `answer_workstream`. Paused and approval-waiting workstreams never capture a text. A child's
+  question is routable only once escalated to Tony.
+- **Coordinator trees (cycle 83 final fix wave M4).** Away texts about a coordinator's children
+  (approval cards, escalated questions) are ONE text per tree listing everything waiting, at most every
+  10 min (`workstreams.tree_away_at`); a throttled moment's items go out on the tick
+  (`sweepTreeAway`). A lone child approval keeps its interactive iMessage prompt. Nudges for children
+  are one per tree.
 
 ## Tools
 
