@@ -25,7 +25,7 @@ import { busPublisher } from './bus-publisher'
 import { registerAbort, releaseAbort } from './aborts'
 import { approvalFor, hasApprovalChannel, registerApprovalChannel, registerTurnStream, releaseTurnStream, unregisterApprovalChannel } from './approvals'
 import { busApprovalChannel } from './bus-approvals'
-import { drainSteerFor } from './inbox'
+import { drainInboxFor } from './inbox'
 import { headlessTools } from './gate'
 import { eventModelText, wakeOrigin } from './event-text'
 import { groupTurns, costTurns, keepTrailingTurns, LIGHT_CONTEXT_TURNS, RUNTIME_CONTEXT_BUDGET } from './history'
@@ -97,7 +97,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
   // turn's history and the summaries all lose words Tony actually sent. Out here so the rescue
   // path persists them as well. Steers never drained are NOT here: queue.ts requeueUnconsumed
   // turns those into the next run.
-  const drainedSteers: string[] = []
+  // Cycle 83 fix round 2: a coordinator's child report steered in mid-turn rides here too — as an
+  // EVENT row (`segment:children`), never as words Tony typed.
+  const drainedSteers: Steer[] = []
   const turnStart = Date.now()
   let ttftMs: number | undefined
   // The branch this turn was actually typed into. `appendMessages` reads
@@ -286,9 +288,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       profile, requestApproval: run.profile === 'interactive' ? approvalFor(run.id) : undefined,
       attachments: turnAttachments, signal: ac.signal, emit, runAgent: deps.runAgent,
       drainSteer: async () => {
-        const fresh = await drainSteerFor(run.id)
-        drainedSteers.push(...fresh)
-        return fresh
+        const fresh = await drainInboxFor(run.id)
+        drainedSteers.push(...fresh.map((i): Steer => i.kind === 'report' ? { event: i.text, origin: REPORT_ORIGIN } : i.text))
+        // The model reads a report exactly as it will read the persisted event row on every later turn.
+        return fresh.map(i => i.kind === 'report' ? eventModelText(REPORT_ORIGIN, i.text) : i.text)
       }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined,
       runId: run.id, toolsets,
       ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {}),
@@ -422,7 +425,7 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       // question with drained steers is not that case: the reply answers the steers, so it is
       // kept, and withSteers puts the steers ahead of it. (An EMPTY question never reaches the
       // model — handleTurn returns early — so only a whitespace-only one can land here.)
-      const steered = drainedSteers.some(t => t.trim())
+      const steered = drainedSteers.some(t => (typeof t === 'string' ? t : t.event).trim())
       // A wake with no (or a suppressed) reply rescues nothing: its event row is meaningless
       // alone (cycle 74 D4, same rule as the success path).
       let rescuedMsgs: AgentMessage[]
@@ -479,8 +482,14 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
  *  event row) and before the reply, so the reply stays last — the leaf, and the row
  *  `assistantMessageId` names. Typed steers are always text. With no question row (a rescue
  *  whose question was blank), the steers lead and the reply follows them. */
-export function withSteers(payload: NewConvMessage[], steers: string[]): NewConvMessage[] {
-  const rows: NewConvMessage[] = steers.filter(t => t.trim()).map(content => ({ role: 'user', content, modality: 'text' }))
+/** A drained steer: words someone typed (a user row), or a report (an event row with its origin). */
+export type Steer = string | { event: string; origin: string }
+const REPORT_ORIGIN = 'segment:children'
+
+export function withSteers(payload: NewConvMessage[], steers: Steer[]): NewConvMessage[] {
+  const rows: NewConvMessage[] = steers
+    .filter(t => (typeof t === 'string' ? t : t.event).trim())
+    .map(t => typeof t === 'string' ? { role: 'user', content: t, modality: 'text' } : { role: 'event', content: t.event, modality: 'text', origin: t.origin })
   if (!rows.length) return payload
   const at = payload[0] && payload[0].role !== 'assistant' ? 1 : 0
   return [...payload.slice(0, at), ...rows, ...payload.slice(at)]

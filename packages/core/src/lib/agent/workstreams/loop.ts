@@ -32,7 +32,7 @@ import { agentRuns, channelApprovals, conversationMessages, conversations, works
 import { publishChange } from '../../../utils/live-bus'
 import { createRun } from '../runtime/runs'
 import { abortRun } from '../runtime/aborts'
-import { drainSteerFor, pushSteer } from '../runtime/inbox'
+import { drainReportsFor, drainSteerFor, pushSteer } from '../runtime/inbox'
 import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
 import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
 import { APPROVAL_WITHDRAWN } from '../../channels/approvals'
@@ -59,8 +59,6 @@ import { segmentPrimaryModelId } from '../runtime/pools'
 // Cycle 83: the top-level cap of 3 (MAX_ACTIVE_WORKSTREAMS) is gone (spec D3) — a tree's budget and
 // the per-model in-flight pools govern fan-out instead.
 const coordinator = () => import('./coordinator')
-/** How Tony's words read when they ride inside a queued report (coordinator.ts uses it too). */
-export const TONY_WROTE = 'Tony wrote in this thread: '
 /** A workstream still waiting on Tony is re-announced at most this often (review M1)… */
 export const NUDGE_EVERY_MS = 2 * 60 * 60 * 1000
 /** …and at most this many times per attention episode (final review I3): never all night. */
@@ -439,22 +437,48 @@ export async function enqueueWhy(ws: WorkstreamRow, why: SegmentWhy, detail?: st
   return enqueueSegment(ws, { text: segmentText(why, ws, detail), eventOrigin: segmentOrigin(why) })
 }
 
-/** Tony's words into the segment that is queued and not yet claimed: they replace a system
- *  continuation prompt (his message is the better next prompt) or are appended to his earlier one. */
-async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string | null> {
-  // Fix round 1 (I1): a queued REPORT (a coordinator's children, a fired watch) is never replaced —
-  // his words ride after it, labelled as his; a bare continuation prompt is replaced by them.
-  const res = await useDb().execute(sql`
-    update agent_runs set input = case
-        when input->>'eventOrigin' in ('segment:children', 'segment:watch')
-          then jsonb_set(input, '{text}', to_jsonb((input->>'text') || E'\n\n' || ${TONY_WROTE}::text || ${text}::text))
-        when input ? 'eventOrigin' then (input - 'eventOrigin') || jsonb_build_object('text', ${text}::text)
-        else jsonb_set(input, '{text}', to_jsonb((input->>'text') || E'\n\n' || ${text}::text))
-      end
-    where conversation_id = ${ws.conversationId}::uuid and kind = 'workstream' and status = 'queued'
-    returning id`)
-  return (res.rows[0] as { id?: string } | undefined)?.id ?? null
+/** Imported at call time, as elsewhere in this file (load order). */
+async function appendEvent(conversationId: string, content: string, origin: string): Promise<void> {
+  await (await import('../../../services/conversations')).appendEvent(conversationId, content, origin)
 }
+
+/** Tony's words into the segment that is queued and not yet claimed: they replace a system
+ *  continuation prompt (his message is the better next prompt) or are appended to his earlier one.
+ *  Cycle 83 fix round 2: a queued REPORT (a coordinator's children, a fired watch) is never replaced
+ *  and never mixed with his words — it is written to the thread as its event row NOW, and his words
+ *  become the segment's prompt, so they are persisted as HIS user row (report first, then him). */
+async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string | null> {
+  return withQueuedSegment(ws.conversationId, async (run, tx) => {
+    const input = run.input as RunInput
+    if (input.eventOrigin === 'segment:children' || input.eventOrigin === 'segment:watch') {
+      await appendEvent(ws.conversationId, input.text, input.eventOrigin)
+      const { eventOrigin: _drop, ...rest } = input
+      await tx.update(agentRuns).set({ input: { ...rest, text } }).where(eq(agentRuns.id, run.id))
+    } else if (input.eventOrigin) {
+      const { eventOrigin: _drop, ...rest } = input
+      await tx.update(agentRuns).set({ input: { ...rest, text } }).where(eq(agentRuns.id, run.id))
+    } else {
+      await tx.update(agentRuns).set({ input: { ...input, text: `${input.text}\n\n${text}` } }).where(eq(agentRuns.id, run.id))
+    }
+  })
+}
+
+/**
+ * Cycle 83 fix round 2: run `fn` against the conversation's QUEUED workstream segment while holding
+ * the claim lock (runs.ts claimNextRun takes the same one) — the segment cannot be claimed meanwhile,
+ * so a row `fn` appends to the thread lands before the turn reads its leaf. Null when none is queued.
+ */
+export async function withQueuedSegment(conversationId: string, fn: (run: AgentRun, tx: Tx) => Promise<void>): Promise<string | null> {
+  return useDb().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:agent_runs:claim'))`)
+    const [run] = await tx.select().from(agentRuns)
+      .where(and(eq(agentRuns.conversationId, conversationId), eq(agentRuns.kind, 'workstream'), eq(agentRuns.status, 'queued'))).limit(1).for('update')
+    if (!run) return null
+    await fn(run, tx)
+    return run.id
+  })
+}
+type Tx = Parameters<Parameters<ReturnType<typeof useDb>['transaction']>[0]>[0]
 
 /**
  * Start a workstream: its own thread (`⚙ <goal>`), the row, and the first segment. Used by the
@@ -569,6 +593,7 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   const ws = await workstreamForConversation(run.conversationId)
   // S1: a coordinator's child lifecycle notes that waited for this segment to end land now — before
   // anything below queues the next segment.
+  if (ws) await appendLeftoverReports(run, ws)
   if (ws?.treeBudget) await (await coordinator()).flushChildNotes(ws.id).catch(err => console.error('[workstreams] child notes failed:', err))
   if (!ws || isTerminal(ws.state) || seg?.skip) {
     if (ws && seg?.skip && ws.cancelRequested) await cancelNow(ws)
@@ -663,6 +688,14 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
   }
   await patchWorkstream(ws.id, { failures: 0, lastOutcome: idle ? 'idle' : 'done' })
   return continueWith(current, run, stop === 'yield' ? 'restarted' : idle ? 'idle' : 'continue')
+}
+
+/** Cycle 83 fix round 2: child reports steered into this segment that it ended before reading are
+ *  written to the thread as their event rows (no segment runs now) — never dropped, never Tony's. */
+async function appendLeftoverReports(run: AgentRun, ws: WorkstreamRow): Promise<void> {
+  try {
+    for (const text of await drainReportsFor(run.id)) await appendEvent(ws.conversationId, text, 'segment:children')
+  } catch (err) { console.error('[workstreams] leftover child reports failed:', err) }
 }
 
 /** What a segment waiting on a watch shows (its Resume continues now). */
@@ -815,6 +848,8 @@ async function expireOrphanPrompts(runId: string): Promise<void> {
 export async function onSegmentInterrupted(run: AgentRun): Promise<string | null> {
   active.delete(run.id)
   ended.delete(run.id)
+  const owner = await workstreamForConversation(run.conversationId)
+  if (owner) await appendLeftoverReports(run, owner)
   await expireOrphanPrompts(run.id).catch(err => console.error('[workstreams] expiring orphaned prompts failed:', err))
   const ws = await workstreamForConversation(run.conversationId)
   if (!ws || isTerminal(ws.state)) return null

@@ -32,7 +32,8 @@ import {
 } from '../../../shared/types/workstreams'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import { budgetOf, childrenOf, getWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
-import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, threadTitle, TONY_WROTE, tonyFacing } from './loop'
+import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, threadTitle, tonyFacing, withQueuedSegment } from './loop'
+import { pushSteer } from '../runtime/inbox'
 import { notifyTony } from './notify'
 import { ensureWorkstreamWorkspace } from '../../sandbox/store'
 
@@ -246,14 +247,21 @@ export async function childrenResult(kids: WorkstreamRow[], extra: Record<string
   return { ...(tainted ? { workspaceTainted: true } : {}), ok: true, note: CHILD_UNTRUSTED_NOTE, ...extra, children: kids.map(k => childView(k)) }
 }
 
+/** Fix round 2: text a CHILD wrote goes under a label, every line of it indented — no line of it
+ *  can start at column 0, so it can never pose as a label of the report (or as anyone's words). */
+function childText(label: string, text: string): string {
+  return `  ${label}:\n${text.split(/\r\n|\r|\n/).map(l => `    ${l}`).join('\n')}`
+}
+
 function describe(v: ChildView): string {
-  const head = `- "${v.goal.length > 120 ? `${v.goal.slice(0, 119)}…` : v.goal}" (id ${v.id}${v.model ? `, model ${v.model}` : ''}) — ${v.state}, ${v.used.steps}/${v.budget.maxSteps} steps`
+  const goal = v.goal.replace(/\s+/g, ' ').trim()
+  const head = `- "${goal.length > 120 ? `${goal.slice(0, 119)}…` : goal}" (id ${v.id}${v.model ? `, model ${v.model}` : ''}) — ${v.state}, ${v.used.steps}/${v.budget.maxSteps} steps`
   if (v.withheld) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here because it handled mail/calendar content — read it with read_workstream.`
   const parts = [head]
-  if (v.question) parts.push(`  asks: ${v.question}`)
-  if (v.waitingFor) parts.push(`  waiting for ${v.waitingFor}`)
-  if (v.failureReason) parts.push(`  reason: ${v.failureReason}`)
-  if (v.summary) parts.push(`  summary:\n${v.summary.split('\n').map(l => `    ${l}`).join('\n')}`)
+  if (v.question) parts.push(childText('asks', v.question))
+  if (v.waitingFor) parts.push(childText('waiting for', v.waitingFor))
+  if (v.failureReason) parts.push(childText('reason', v.failureReason))
+  if (v.summary) parts.push(childText('summary', v.summary))
   return parts.join('\n')
 }
 
@@ -337,25 +345,24 @@ export async function wakeCoordinatorIfReady(coordinatorId: string, o: { now?: n
   const text = await childReport(listed, header) + (missing.length ? `\nNo longer exist: ${missing.join(', ')}` : '')
   // S1: the state-only lifecycle notes land first (no coordinator segment runs now).
   await flushChildNotes(coordinatorId)
-  // Fix round 1 (I1): the report is NEVER dropped. A segment already queued (Tony's reply, Resume)
-  // carries it instead; questions count as shown only once the report is attached to a segment.
-  const runId = (await enqueueWhy(won.row, 'children', text)) ?? (await attachReport(won.row.conversationId, text))
+  // I1 + fix round 2: the report is NEVER dropped, and never mixed with Tony's words. It is its own
+  // segment; or, with a segment already QUEUED (Tony's reply, Resume), its event row is written to
+  // the thread now — before that segment's turn reads it; or, with one RUNNING, it is steered in
+  // (spliced and persisted as an event row). Questions count as shown only once it is in.
+  const runId = (await enqueueWhy(won.row, 'children', text))
+    ?? (await withQueuedSegment(won.row.conversationId, async () => { await (await import('../../../services/conversations')).appendEvent(won.row.conversationId, text, 'segment:children') }))
+    ?? (await steerReport(won.row.conversationId, text))
   if (runId) await markReported(listed)
   return runId
 }
 
-/** I1: attach a wake report to the coordinator's QUEUED segment (it holds its own words too). */
-async function attachReport(conversationId: string, text: string): Promise<string | null> {
-  const res = await useDb().execute(sql`
-    update agent_runs set input = case
-        when input ? 'eventOrigin' then jsonb_set(input, '{text}', to_jsonb((input->>'text') || E'\n\n' || ${text}::text))
-        else input || jsonb_build_object('eventOrigin', 'segment:children', 'text', ${text}::text || E'\n\n' || ${TONY_WROTE}::text || (input->>'text'))
-      end
-    where conversation_id = ${conversationId}::uuid and kind = 'workstream' and status = 'queued'
-    returning id`)
-  return (res.rows[0] as { id?: string } | undefined)?.id ?? null
+/** Fix round 2 (Minor 3): the report into the coordinator's RUNNING segment, as a report steer. */
+async function steerReport(conversationId: string, text: string): Promise<string | null> {
+  const [run] = await useDb().select({ id: agentRuns.id }).from(agentRuns)
+    .where(and(eq(agentRuns.conversationId, conversationId), eq(agentRuns.kind, 'workstream'), eq(agentRuns.status, 'running'))).limit(1)
+  if (!run) return null
+  return (await pushSteer(run.id, conversationId, text, 'report')) ? run.id : null
 }
-
 
 // ── Lifecycle notes (ruling S1) ─────────────────────────────────────────────────────────────────
 //
@@ -464,7 +471,13 @@ export async function sweepCoordinators(o: { onlyConversations?: string[]; now?:
 export async function cancelChildrenOfThread(conversationId: string): Promise<number> {
   const [coord] = await useDb().select().from(workstreams).where(eq(workstreams.conversationId, conversationId)).limit(1)
   if (!coord || coord.isChild) return 0
-  const live = await liveChildren(coord.id)
+  // Fix round 2: read the children under the tree lock — a spawn in flight commits first, so its
+  // children are cancelled here too. (The cancels run after the lock is released: a child's
+  // transition takes the same lock to wake its coordinator.)
+  const live = await useDb().transaction(async (tx) => {
+    await lockTree(tx, coord.id)
+    return (await tx.select().from(workstreams).where(eq(workstreams.parentId, coord.id))).filter(k => !isTerminal(k.state))
+  })
   for (const k of live) await cancelWorkstream(k)
   if (live.length) await kick()
   return live.length

@@ -549,6 +549,12 @@ export function exportUnpackCommand(dir: string, limit: number): string {
     `base64 -d | gzip -dc | head -c ${limit + 1} > "$t"`,
     `if [ "$(wc -c < "$t")" -gt ${limit} ]; then rm -f "$t"; echo "${EXPORT_TOO_LARGE}" >&2; exit 3; fi`,
     `if tar -tvf "$t" | grep -q '^[^-d]'; then rm -f "$t"; echo "the archive holds links or special files" >&2; exit 4; fi`,
+    // Fix round 2: the members' LISTED sizes count too — a sparse member lists far more than the
+    // archive holds (2 GB from a few KB) and extracts to that apparent size. A plain archive always
+    // holds every byte it lists, so listing more than the archive's own size means sparse: refused.
+    `n=$(tar -tvf "$t" | awk '{s+=$3} END {printf "%d", s}')`,
+    `if [ "$n" -gt ${limit} ]; then rm -f "$t"; echo "${EXPORT_TOO_LARGE}" >&2; exit 3; fi`,
+    `if [ "$n" -gt "$(wc -c < "$t")" ]; then rm -f "$t"; echo "the archive holds sparse files" >&2; exit 5; fi`,
     `mkdir -p ${dir} && tar -xf "$t" -C ${dir} --no-same-owner --no-same-permissions --no-overwrite-dir; s=$?; rm -f "$t"; exit $s`
   ].join('\n')
 }

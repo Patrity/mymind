@@ -161,4 +161,22 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     const ok = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/z', 10 * 1024 * 1024), { input: await b64('/tmp/big.b64'), timeoutSec: 60 })
     expect(ok.exitCode).toBe(0)
   }, 180_000)
+
+  it('fix 2 (Minor 5): a SPARSE member (lists 50 MB, holds a few KB) is refused before extraction; listed sizes are summed against the limit', async () => {
+    const coord = await workstream('T83X coordinator 5')
+    const coordWs = await ensureWorkstreamWorkspace(coord.id)
+    as = { workspaceId: coordWs.id, workstreamId: coord.id }
+    const mk = await call('bash', { command: 'mkdir -p /tmp/s && cd /tmp/s && truncate -s 50M sp && tar -cSzf - sp | base64 -w0 > /tmp/sparse.b64 && head -c 3000000 /dev/zero > a && head -c 3000000 /dev/zero > b && tar -czf - a b | base64 -w0 > /tmp/two.b64 && echo ok' })
+    expect(mk.stdout).toContain('ok')
+    const b64 = async (f: string) => (await call('bash', { command: `cat ${f}` })).stdout as string
+    const m = rt.manager
+    // Its decompressed archive is tiny (under the limit) — only the listing shows 50 MB.
+    const sparse = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/sp', 100 * 1024 * 1024), { input: await b64('/tmp/sparse.b64'), timeoutSec: 60 })
+    expect(sparse.exitCode).toBe(5)
+    // Two 3 MB files under a 5 MB limit: the decompressed stream alone (6 MB) is caught too, but the
+    // listing sum is what bites when the stream is cut exactly — both paths refuse.
+    const two = await m.exec(coordWs.id, exportUnpackCommand('/workspace/from/two', 5 * 1024 * 1024), { input: await b64('/tmp/two.b64'), timeoutSec: 60 })
+    expect(two.exitCode).toBe(3)
+    expect((await call('bash', { command: 'ls from 2>/dev/null | wc -l' })).stdout.trim()).toBe('0')
+  }, 180_000)
 })

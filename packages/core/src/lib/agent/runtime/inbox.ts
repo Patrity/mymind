@@ -1,7 +1,7 @@
 // server/lib/agent/runtime/inbox.ts
 // Messages Tony sends while a run is busy. A 'steer' is drained into the running turn at its
 // next step boundary (runAgent's prepareStep); whatever the run never read survives an abort.
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, ne, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentInbox, type AgentRun } from '../../../db/schema'
 import { createRun } from './runs'
@@ -22,7 +22,7 @@ import type { RunInput } from './types'
  * run that nothing ever drains. The share lock makes finishRun wait for this insert to commit,
  * so the requeue that follows it always sees the steer.
  */
-export async function pushSteer(runId: string, conversationId: string, text: string, source: 'user' | 'wake'): Promise<boolean> {
+export async function pushSteer(runId: string, conversationId: string, text: string, source: 'user' | 'wake' | 'report'): Promise<boolean> {
   const result = await useDb().execute(sql`
     insert into agent_inbox (run_id, conversation_id, mode, content, source)
     select ${runId}::uuid, ${conversationId}::uuid, 'steer', ${text}, ${source}
@@ -32,10 +32,33 @@ export async function pushSteer(runId: string, conversationId: string, text: str
   return result.rows.length > 0
 }
 
-/** Unconsumed steers for this run, oldest first, marked consumed in the same statement. */
+/** Unconsumed steers for this run, oldest first, marked consumed in the same statement. Only
+ *  words someone TYPED (source user/wake) — a coordinator's child report (source 'report', cycle 83)
+ *  is never Tony's words: drainInboxFor / drainReportsFor take those. */
 export async function drainSteerFor(runId: string): Promise<string[]> {
   const rows = await useDb().update(agentInbox).set({ consumedAt: sql`now()` })
+    .where(and(eq(agentInbox.runId, runId), isNull(agentInbox.consumedAt), ne(agentInbox.source, 'report')))
+    .returning({ content: agentInbox.content, createdAt: agentInbox.createdAt })
+  return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).map(r => r.content)
+}
+
+/** Cycle 83 fix round 2: a child report steered into a running coordinator segment, or Tony's words. */
+export type InboxItem = { kind: 'typed'; text: string } | { kind: 'report'; text: string }
+
+/** The runner's drain: everything unconsumed, in arrival order, typed words and reports kept apart
+ *  (a report is spliced and persisted as an EVENT row, never as a user message). */
+export async function drainInboxFor(runId: string): Promise<InboxItem[]> {
+  const rows = await useDb().update(agentInbox).set({ consumedAt: sql`now()` })
     .where(and(eq(agentInbox.runId, runId), isNull(agentInbox.consumedAt)))
+    .returning({ content: agentInbox.content, source: agentInbox.source, createdAt: agentInbox.createdAt })
+  return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    .map(r => ({ kind: r.source === 'report' ? 'report' : 'typed', text: r.content }) as InboxItem)
+}
+
+/** Reports a segment never read (it ended first) — the loop appends them to the thread as event rows. */
+export async function drainReportsFor(runId: string): Promise<string[]> {
+  const rows = await useDb().update(agentInbox).set({ consumedAt: sql`now()` })
+    .where(and(eq(agentInbox.runId, runId), isNull(agentInbox.consumedAt), eq(agentInbox.source, 'report')))
     .returning({ content: agentInbox.content, createdAt: agentInbox.createdAt })
   return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).map(r => r.content)
 }
