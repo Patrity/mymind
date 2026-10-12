@@ -52,12 +52,11 @@ afterAll(async () => {
   Object.assign(workstreamNotifyDeps, realNotify)
   const db = useDb()
   // Children's threads were created by spawnChildren: collect them through their parents.
-  if (convIds.length) {
-    const tops = await db.select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.conversationId, convIds))
-    if (tops.length) {
-      const kids = await db.select({ c: workstreams.conversationId }).from(workstreams).where(inArray(workstreams.parentId, tops.map(t => t.id)))
-      convIds.push(...kids.map(k => k.c))
-    }
+  // Every level (a mutation run that drops the depth check makes grandchildren).
+  for (let ids = convIds.length ? (await db.select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.conversationId, convIds))).map(t => t.id) : []; ids.length;) {
+    const kids = await db.select({ id: workstreams.id, c: workstreams.conversationId }).from(workstreams).where(inArray(workstreams.parentId, ids))
+    convIds.push(...kids.map(k => k.c))
+    ids = kids.map(k => k.id)
   }
   await db.delete(workspaces).where(eq(workspaces.ns, NS))
   if (convIds.length) {
