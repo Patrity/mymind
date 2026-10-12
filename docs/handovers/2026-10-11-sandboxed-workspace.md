@@ -257,8 +257,11 @@ notes for the controller.
   the ruling, not a bug, but it means "start it and walk away" no longer works for anything longer
   than 15 minutes unless something polls its output or a `watch` is armed on it.
 - **I3 cost:** every container start now does a `docker ps` + `inspect` under a single global
-  capacity lock, so starts serialize, and a start can wait up to 60 s when two workspaces both hold
-  live shells or armed watches. Not measured against real concurrent load.
+  capacity lock, so starts serialize, and a start can wait up to 60 s (from request entry, outside the
+  workspace lock, abortable) when both workstream slots hold live shells or in-flight commands.
+  Follow-up N1: home has a reserved slot outside the cap; watch-only containers are evictable; N4
+  teardown re-checks terminal state under the lock (`stopIf`). One eviction's `docker stop` can still
+  hold the capacity lock up to 30 s if Docker hangs. Not measured against real concurrent load.
 - **Prod DNS unverified.** Sandboxes resolve through Docker's embedded DNS (forwards from the
   container's own netns — a LAN resolver like the router would be rejected by the firewall by
   design), so sandboxes get `1.1.1.1`/`9.9.9.9` explicitly on Linux. Whether LXC 114's host network

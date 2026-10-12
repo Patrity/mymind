@@ -775,7 +775,7 @@ inodes**, resuming only once both recover to **≥ 5 GB / ~250k inodes** (hyster
 
 **CD.** `deploy.yml`'s tree-wipe allow-list and tar excludes preserve `.workspaces` across every
 deploy, exactly like `.worker`/`.worker-prev`. After the worker restarts, a `continue-on-error`
-**Sandbox health** step polls `worker_heartbeat.status->'sandbox'` for up to 2 minutes and turns a
+**Sandbox health** step (`timeout-minutes: 2`) polls `worker_heartbeat.status->'sandbox'` for ~100 s and turns a
 `false` into a GitHub **`::warning::`** naming the reason — a broken sandbox never fails the deploy
 (the web and chat/workstreams work fine without it; only `workspace`/`admin` tool calls are refused).
 

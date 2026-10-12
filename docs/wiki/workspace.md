@@ -86,7 +86,8 @@ aren't delegated to dockerd lets `docker create --memory 2g --pids-limit 512` su
 "Limitation discarded" warning. `verifyLimits()` creates a throwaway probe container with every
 isolation flag and `--network none`, inspects its `HostConfig.Memory`/`PidsLimit`, starts it to read
 its own `/sys/fs/cgroup/memory.max`/`pids.max` (v1 fallback), and removes it. Any mismatch is a
-fail-closed `SandboxUnavailableError` naming the controller, cached for 60 s.
+fail-closed `SandboxUnavailableError` naming the controller, cached for 60 s. The probe container
+is labelled `mymind.probe=1` (not `mymind.workspace`), so boot reconcile never removes it mid-probe.
 
 ## Image and its tag scheme
 
@@ -154,14 +155,19 @@ aren't visible to this `iptables` — a mismatch is never silently "fixed" into 
 `RLIMIT_FSIZE` 1 GiB per process (`--ulimit fsize=1073741824:1073741824` — no single file can outgrow
 1 GiB, a backstop a soft quota can't give since one command can write fast).
 
-**Capacity cap (final review I3 — `SANDBOX_MAX_RUNNING`, default 2).** At most this many **networked**
-sandbox containers run at once across all workspaces, docker-is-the-source-of-truth counted (tainted
-one-off containers take a slot too). A start that would exceed it stops the least-recently-used
-running workspace that has no command in flight, no live background shell and no armed watch; if
-none can be evicted it waits up to **60 s**, then fails with `sandbox capacity busy — N workspaces
-active`. This exists because the per-container limits alone don't bound the *aggregate*: three
-workstreams plus home each getting 2 GB / 1.5 CPU can overcommit an 8 GB / 2-CPU LXC that also runs
-Postgres, SearXNG and the two app processes.
+**Capacity cap (final review I3 + follow-up N1 — `SANDBOX_MAX_RUNNING`, default 2).** At most this
+many **networked** sandbox containers run at once across all workstream workspaces, docker-is-the-
+source-of-truth counted (tainted one-off containers take a slot too). The **home** workspace has a
+**reserved slot outside the count** and never waits, so chat `bash` and the Workspace view can't be
+starved by workstreams (worst case: 3 × 2 GB ceilings — limits are ceilings, real use is far lower).
+A start that would exceed the cap stops the least-recently-used running workspace that has no command
+in flight and no live background shell — a container pinned **only by an armed watch is evictable**
+(its next poll re-acquires a slot). The victim is re-checked under its own lock before the stop; a
+victim whose `docker stop` fails is skipped. If nothing can be evicted the request waits — **outside
+every workspace lock**, abortable (Stop ends the wait at once), with a deadline of **60 s from the
+request's entry** — then fails with `sandbox capacity busy — N workspaces active`. This exists
+because the per-container limits alone don't bound the *aggregate* on an 8 GB / 2-CPU LXC that also
+runs Postgres, SearXNG and the two app processes.
 
 **Quota.** Soft **5 GB** and **200,000 files** per workspace (`DEFAULT_QUOTA_BYTES`/
 `DEFAULT_QUOTA_INODES`, `packages/core/src/lib/sandbox/quota.ts`). Measured **inside** the sandbox —
@@ -195,7 +201,9 @@ of total)` (hysteresis — both bytes and inodes must recover). Filesystems with
 - **Terminal-state cleanup (final review I2).** The instant a workstream reaches `done`/`failed`/
   `cancelled`, `teardownWorkstreamWorkspace` fires (a hook on the workstream store): its background
   shells are killed, its watches cancelled **quietly** (marked delivered — nobody to tell), and its
-  container stopped **immediately**. A minute-tick backstop
+  container stopped **immediately** — via `manager.stopIf`, which re-checks under the workspace lock
+  that the workstream is *still* terminal (a resume in between wins), and the shell kill goes through
+  `peek` so it never starts a stopped container. A minute-tick backstop
   (`finishedWorkstreamsWithLiveWorkspaces`) catches anything that ended outside the worker process
   (e.g. in the web). Only the **files** wait out the 30 days.
 - **The 30-day sweep (daily).** `sweep()` first `stampOrphans()`s (any workspace whose
@@ -450,8 +458,8 @@ query, so there's a manual Refresh button. Shell state changes are live.
   unavailable: …" in the app).
 - CD's tree-wipe allow-list and tar excludes preserve **`.workspaces`** (the host dirs) across every
   deploy, same as `.worker`/`.worker-prev`.
-- `deploy.yml`'s **Sandbox health** step (`continue-on-error: true`) polls
-  `worker_heartbeat.status->'sandbox'` for up to 2 minutes after the worker restarts and turns a
+- `deploy.yml`'s **Sandbox health** step (`continue-on-error: true`, `timeout-minutes: 2`) polls
+  `worker_heartbeat.status->'sandbox'` for ~100 s after the worker restarts and turns a
   `false` into a GitHub `::warning::` naming the reason — the deploy stays **green** either way.
 
 ## Diagnosing "Sandbox unavailable"
