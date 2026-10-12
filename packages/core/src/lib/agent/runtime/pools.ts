@@ -13,7 +13,9 @@
 // run, so failing over to another model mid-segment does not take a second slot (bounded
 // overshoot on the fallback model, accepted by the spec).
 import { loadConfig } from '../../ai/registry/store'
-import { resolveChainFrom } from '../../ai/registry/resolve'
+import { resolveChainFrom, resolveSubagentChainFrom } from '../../ai/registry/resolve'
+import { UnknownSubagentModelError } from '../../ai/registry/errors'
+import type { ResolvedModel } from '../../ai/registry/types'
 import { DEFAULT_MAX_IN_FLIGHT, type AiConfigDoc } from '../../ai/registry/types'
 import type { WorkstreamRow } from '../workstreams/store'
 
@@ -29,14 +31,33 @@ export async function poolLimits(): Promise<Record<string, number>> {
 }
 
 /**
- * THE HOOK (Task 2): the primary model a workstream's next segment runs on — its pool key.
- * Called once per segment, when the segment is enqueued, and stamped on agent_runs.model_def_id
- * (the runner then tries that model first). Today every workstream runs on `reasoning`, so this
- * is the head of the reasoning chain. Task 2 makes a child (`ws.parentId` set) return the head of
- * `resolveSubagentModel(ws.modelLabel)` instead — and the runner must then build the child's
- * chain from resolveSubagentModel too, since reasoningChain() only reorders within `reasoning`.
+ * Cycle 83: a CHILD workstream's failover chain — its label's model, the rest of `subagents`, then
+ * `reasoning` (registry resolveSubagentChainFrom). A label removed from `subagents` since the child
+ * was spawned falls back to the default (no label) instead of failing every segment; spawn itself
+ * refuses an unknown label. Shared by the pool key below and the runner (model.ts subagentChain), so
+ * the slot a segment takes and the model it tries first are always the same.
+ */
+export function childChainFrom(doc: AiConfigDoc, label: string | null): ResolvedModel[] {
+  try { return resolveSubagentChainFrom(doc, label) } catch (err) {
+    if (err instanceof UnknownSubagentModelError) return resolveSubagentChainFrom(doc, null)
+    throw err
+  }
+}
+export async function childChain(label: string | null): Promise<ResolvedModel[]> {
+  return childChainFrom(await loadConfig(), label)
+}
+
+/**
+ * The primary model a workstream's next segment runs on — its pool key. Called once per segment,
+ * when the segment is enqueued, and stamped on agent_runs.model_def_id (the runner then tries that
+ * model first). A CHILD (`parentId` set) runs on its subagents chain (no label = the first
+ * `subagents` model, or `reasoning` when `subagents` is empty); everything else — coordinators
+ * included — on the head of `reasoning`.
  * Null (AI not configured) = unpooled; the segment then fails in the runner as it would anyway.
  */
-export async function segmentPrimaryModelId(_ws: WorkstreamRow): Promise<string | null> {
-  try { return resolveChainFrom(await loadConfig(), 'reasoning')[0]!.modelDefId } catch { return null }
+export async function segmentPrimaryModelId(ws: Pick<WorkstreamRow, 'parentId' | 'modelLabel'>): Promise<string | null> {
+  try {
+    const doc = await loadConfig()
+    return (ws.parentId ? childChainFrom(doc, ws.modelLabel) : resolveChainFrom(doc, 'reasoning'))[0]!.modelDefId
+  } catch { return null }
 }

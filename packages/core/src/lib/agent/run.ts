@@ -1,6 +1,6 @@
 // server/lib/agent/run.ts
 import { streamText as realStreamText, stepCountIs } from 'ai'
-import { reasoningChain } from './model'
+import { agentChain } from './model'
 import { buildAiTools } from './ai-tools'
 import { buildSystemPrompt as realBuildSystemPrompt, type WorkstreamPromptInfo } from './prompt'
 import { bridgetProfile, TAINTING_TOOL_NAMES, type AgentProfile } from './profile'
@@ -187,6 +187,9 @@ export interface RunAgentCtx {
   onStep?: (s: StepUsage) => void
   /** Cycle 81: this run is a workstream segment — its prompt block (prompt.ts composePrompt). */
   workstream?: WorkstreamPromptInfo
+  /** Cycle 83: a CHILD workstream's segment — its model chain is built from `subagents` (its label
+   *  first), never from `reasoning` alone (model.ts agentChain). */
+  subagent?: { label: string | null }
 }
 
 // Every tool in the profile is always AVAILABLE (the full ToolSet is built each run).
@@ -258,7 +261,7 @@ export async function* runAgent(
   // Build the stream, trying each reasoning model in priority order. If stream
   // creation throws (bad baseURL, adapter construction), fall over to the next.
   // Mid-stream failures are NOT retried.
-  const chain = deps.chain ?? (deps.streamText ? [{ model: undefined as never, modelDefId: undefined as string | undefined }] : await reasoningChain(ctx.modelDefId))
+  const chain = deps.chain ?? (deps.streamText ? [{ model: undefined as never, modelDefId: undefined as string | undefined }] : await agentChain(ctx))
   let result: ReturnType<typeof realStreamText> | undefined
   let chosen: (typeof chain)[number]['model'] | undefined
   let chosenId: string | undefined

@@ -29,7 +29,11 @@ export const APPEND_TOOLS: ReadonlySet<string> = new Set([
   'finish_workstream', 'ask_tony',
   // workspace (cycle 82, spec §4): everything happens inside Bridget's own sandbox — none of it
   // touches Tony's data (no approvals; network governed by taint, not by the gate).
-  'write_file', 'edit_file', 'bash', 'kill_shell', 'watch', 'import_document', 'delete_files'
+  'write_file', 'edit_file', 'bash', 'kill_shell', 'watch', 'import_document', 'delete_files',
+  // coordinator (cycle 83, spec §4: headless "run"): they act only on the workstream's OWN children
+  // (budget-bounded, from inside a workstream — never a chat/job run), and export_to_coordinator only
+  // copies between its own sandboxes.
+  'spawn_workstreams', 'steer_workstream', 'answer_child', 'cancel_workstreams', 'export_to_coordinator'
 ])
 export const PROPOSE_TOOLS: ReadonlySet<string> = new Set(['edit_document', 'edit_section', 'update_document', 'move_document', 'sync_document', 'edit_image', 'create_skill', 'edit_skill',
   // gmail_modify (cycle 79): archives/relabels existing mail — Tony approves it in a headless run

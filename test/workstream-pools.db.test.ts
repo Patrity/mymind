@@ -180,7 +180,7 @@ describe('per-model in-flight pools', () => {
 
   it('a workstream\'s segment is stamped with its primary model (today: the head of reasoning)', async () => {
     const origin = await conv()
-    const ws = await startWorkstream({ goal: `POOLS-TEST ${tag} stamp`, originConversationId: origin }, { kick: false, cap: 1000 })
+    const ws = await startWorkstream({ goal: `POOLS-TEST ${tag} stamp`, originConversationId: origin }, { kick: false })
     convIds.push(ws.conversationId)
     const [seg] = await useDb().select().from(agentRuns).where(and(eq(agentRuns.conversationId, ws.conversationId), eq(agentRuns.kind, 'workstream')))
     const head = resolveChainFrom(await loadConfig(), 'reasoning')[0]!.modelDefId

@@ -7,8 +7,10 @@
 //   finish_workstream called → done (the tool already posted the summary + notified);
 //   ask_tony called          → attention {question}; the next segment starts on Tony's reply;
 //   Stop pressed in the thread, or two idle segments in a row
-//                            → paused (final review I3): no iMessage capture, no nudges, still
-//                              counts toward the cap; resumes from the UI or a reply in the thread;
+//                            → paused (final review I3): no iMessage capture, no nudges; resumes
+//                              from the UI or a reply in the thread;
+//   wait_for_workstreams     → paused {waitingForChildren} (cycle 83, coordinator.ts): parked for
+//                              free until its children finish / need it, or the wait times out;
 //   cancel                   → cancelled (the segment stopped after its current step);
 //   budget used up           → one final, tool-free summary segment, then failed (reason kept);
 //   segment failed           → retried; the 3rd consecutive failure → failed (never a loop);
@@ -40,12 +42,12 @@ import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
 import {
-  BUDGET_LIMITS, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, resumeBudget, ZERO_USED, type StoredApprovalRequest, type WorkstreamAttention,
+  BUDGET_LIMITS, DEFAULT_TREE_BUDGET, DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, resumeBudget, ZERO_USED, type ChildWait, type StoredApprovalRequest, type WorkstreamAttention,
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
-  budgetOf, exhausted, getWorkstream, patchWorkstream, publishWorkstream, toWorkstreamDTO, usedOf,
-  workstreamForConversation, type WorkstreamRow
+  budgetOf, exhausted, getWorkstream, patchWorkstream, publishWorkstream, rollupTree, usedOf,
+  workstreamDTO, workstreamForConversation, type WorkstreamRow
 } from './store'
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
 import { noteOrigin, notifyTony, workstreamNotifyDeps } from './notify'
@@ -54,9 +56,9 @@ import { takeWorkstreamWatchResults, untakeWatchResults, workstreamHasArmedWatch
 import { stepCostUsd } from './cost'
 import { segmentPrimaryModelId } from '../runtime/pools'
 
-/** Non-terminal workstreams at once (review I2, controller ruling): bounds fan-out through jobs/wakes. */
-export const MAX_ACTIVE_WORKSTREAMS = 3
-export class WorkstreamCapError extends Error { override name = 'WorkstreamCapError' }
+// Cycle 83: the top-level cap of 3 (MAX_ACTIVE_WORKSTREAMS) is gone (spec D3) — a tree's budget and
+// the per-model in-flight pools govern fan-out instead.
+const coordinator = () => import('./coordinator')
 /** A workstream still waiting on Tony is re-announced at most this often (review M1)… */
 export const NUDGE_EVERY_MS = 2 * 60 * 60 * 1000
 /** …and at most this many times per attention episode (final review I3): never all night. */
@@ -73,8 +75,8 @@ export const WALL_HARD_GRACE_MS = 60_000
 export const FINAL_STEP_MAX_MS = 10 * 60_000
 
 type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
-type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield' | 'park'
-/** Non-terminal: what the cap counts and what a reply/resume may move on from. */
+type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield' | 'park' | 'wait'
+/** Non-terminal: what a reply/resume may move on from. */
 const RUNNABLE: Array<WorkstreamRow['state']> = ['queued', 'running', 'attention', 'paused']
 
 function isTerminal(state: WorkstreamRow['state']): boolean { return TERMINAL_WORKSTREAM_STATES.includes(state) }
@@ -84,7 +86,7 @@ function isUniqueViolation(err: unknown): boolean {
   return e?.code === '23505' || e?.cause?.code === '23505'
 }
 
-async function kick(): Promise<void> {
+export async function kick(): Promise<void> {
   const { kickPump } = await import('../runtime/queue')
   kickPump()
 }
@@ -125,6 +127,27 @@ export interface Segment {
   park(): boolean
   /** Stop the clocks, persist the final `used`, close the origin mirror. Idempotent. */
   end(): Promise<void>
+  /** Cycle 83: wait_for_workstreams armed this — the segment parks for it when it ends. */
+  wait: ChildWait | null
+  /** Cycle 83: this workstream is a CHILD — its model label (runner: the subagents chain). */
+  child: { modelLabel: string | null; workspaceMode: 'own' | 'shared' } | null
+  /** Cycle 83: a run of this segment read mail/calendar/contacts content (persisted once). */
+  markTainted(): void
+}
+
+/** Who Tony sees a workstream as, and where its notes go (cycle 83): a child is shown as
+ *  `<coordinator goal> › <child goal>`, and its notes go to the chat its COORDINATOR was started from
+ *  — never into the coordinator's own thread (an event row appended mid-segment forks a thread). */
+export async function tonyFacing(ws: Pick<WorkstreamRow, 'id' | 'goal' | 'originConversationId' | 'conversationId' | 'parentId'>, parent?: WorkstreamRow | null): Promise<Pick<WorkstreamRow, 'id' | 'goal' | 'originConversationId' | 'conversationId'>> {
+  if (!ws.parentId) return ws
+  const p = parent ?? await getWorkstream(ws.parentId)
+  return { id: ws.id, conversationId: ws.conversationId, goal: childTitle(p?.goal ?? 'coordinator', ws.goal), originConversationId: p?.originConversationId ?? null }
+}
+
+const clipGoal = (g: string, n = 60) => { const one = g.replace(/\s+/g, ' ').trim(); return one.length > n ? `${one.slice(0, n - 1)}…` : one }
+/** `<coordinator goal> › <child goal>` (approval card titles, Tony's notes). */
+export function childTitle(coordinatorGoal: string, childGoal: string): string {
+  return `${clipGoal(coordinatorGoal)} › ${clipGoal(childGoal)}`
 }
 
 const active = new Map<string, Segment>()      // runId → segment executing here
@@ -181,13 +204,18 @@ export async function beginSegment(run: AgentRun): Promise<Segment> {
   if (!patched) return skipped()
   ws = patched
   final = ws.failureReason
-  const seg = makeSegment(run, ws, { skip: false, final: !!final })
+  const parent = ws.parentId ? await getWorkstream(ws.parentId) : null
+  const seg = makeSegment(run, ws, { skip: false, final: !!final }, parent)
   active.set(run.id, seg)
   return seg
 }
 
-function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final: boolean }): Segment {
+function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final: boolean }, parent: WorkstreamRow | null = null): Segment {
   const base = usedOf(ws)
+  // Cycle 83: approvals always reach Tony — a child's card is mirrored into the chat its
+  // coordinator was started from (not the coordinator's thread), titled `<coordinator> › <child>`.
+  const tonyChat = ws.parentId ? parent?.originConversationId ?? null : ws.originConversationId
+  let taintMarked = ws.tainted
   const budget = budgetOf(ws)
   let steps = 0
   let inputTokens = 0
@@ -236,6 +264,8 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
         .where(eq(workstreams.id, ws.id)).returning({ cancel: workstreams.cancelRequested, state: workstreams.state })
       if (r?.cancel) seg.stop ??= 'cancel'
       publishWorkstream(ws.id)
+      // Cycle 83: the coordinator's rolled-up tree use (a no-op outside a tree).
+      await rollupTree(ws.parentId ?? ws.id)
     }).catch(err => console.error('[workstreams] checkpoint failed:', err))
     return chain
   }
@@ -246,8 +276,15 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
     skip: o.skip,
     final: o.final,
     maxSteps: o.final ? 1 : Math.max(1, Math.min(SEGMENT_MAX_STEPS, budget.maxSteps - base.steps)),
-    promptInfo: promptInfo(ws, o.final ? ws.failureReason : null),
+    promptInfo: promptInfo(ws, o.final ? ws.failureReason : null, parent),
     stop: null,
+    wait: null,
+    child: ws.parentId ? { modelLabel: ws.modelLabel, workspaceMode: ws.workspaceMode } : null,
+    markTainted() {
+      if (taintMarked) return
+      taintMarked = true
+      void serial(() => patchWorkstream(ws.id, { tainted: true }))
+    },
     toolCalls: 0,
     stepsTaken: () => steps,
     shouldStop() {
@@ -273,8 +310,8 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
           // The card shows in the chat it was started from too (spec §5.4): the same frames, on the
           // origin conversation's log under this run's id — so the web's card tracking, re-send on
           // attach (openApprovalFrames: a still-running run) and decision forwarding all just work.
-          if ((f.type === 'approval' || f.type === 'approval-resolved') && ws.originConversationId) {
-            mirror ??= createRunEventWriter(run.id, ws.originConversationId)
+          if ((f.type === 'approval' || f.type === 'approval-resolved') && tonyChat) {
+            mirror ??= createRunEventWriter(run.id, tonyChat)
             mirror.emit(f)
           }
         },
@@ -291,7 +328,10 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
             void serial(async () => {
               const row = await patchWorkstream(ws.id, { state: 'attention', attention }, ['running', 'attention'])
               // The chat it came from hears about it too (review M1), not only the card.
-              if (row) await noteOrigin(row, `⚙ Workstream waiting for your approval — ${row.goal}\n${text}`)
+              if (row) {
+                const who = await tonyFacing(row, parent)
+                await noteOrigin(who, `⚙ Workstream waiting for your approval — ${who.goal}\n${text}`)
+              }
             })
             // Away: the iMessage prompt too. Whichever answers first decides; the other is withdrawn.
             if (req) void startAwayApproval(run.id, requestId, req, race.signal)
@@ -309,6 +349,8 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
         }
       })
       return (req) => {
+        // Cycle 83: a child's card says whose it is — `<coordinator goal> › <child goal>`.
+        if (ws.parentId) req = { ...req, title: `${childTitle(parent?.goal ?? 'coordinator', ws.goal)}: ${req.title ?? `Run ${req.tool}?`}` }
         current = req
         return bus(req)
       }
@@ -362,7 +404,7 @@ async function startAwayApproval(runId: string, requestId: string, req: Approval
 
 /** Queue the next segment. Null when one is already queued or running (the unique index): a
  *  continuation is then redundant, and Tony's words are folded into the queued one. */
-async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOrigin?: string; attachments?: RunInput['attachments']; origin?: string }): Promise<string | null> {
+export async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOrigin?: string; attachments?: RunInput['attachments']; origin?: string }): Promise<string | null> {
   const runInput: RunInput = {
     text: input.text, modality: 'text',
     ...(input.origin ? { origin: input.origin } : {}),
@@ -386,7 +428,7 @@ async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOri
   }
 }
 
-async function enqueueWhy(ws: WorkstreamRow, why: SegmentWhy, detail?: string): Promise<string | null> {
+export async function enqueueWhy(ws: WorkstreamRow, why: SegmentWhy, detail?: string): Promise<string | null> {
   return enqueueSegment(ws, { text: segmentText(why, ws, detail), eventOrigin: segmentOrigin(why) })
 }
 
@@ -409,23 +451,17 @@ async function foldIntoQueued(ws: WorkstreamRow, text: string): Promise<string |
  */
 export async function startWorkstream(i: {
   goal: string; toolsets?: string[]; budget?: Partial<WorkstreamBudget>; originConversationId?: string | null
-}, deps: { kick?: boolean; /** test seam (the dev DB is shared) */ cap?: number } = {}): Promise<WorkstreamDTO> {
+}, deps: { kick?: boolean } = {}): Promise<WorkstreamDTO> {
   const goal = i.goal.trim()
   if (!goal) throw new Error('a workstream needs a goal')
-  const oneLine = goal.replace(/\s+/g, ' ')
-  const cap = deps.cap ?? MAX_ACTIVE_WORKSTREAMS
-  // The cap (review I2, controller ruling): count and insert under one advisory lock, so two starts
-  // racing (jobs/wakes firing together) can't both slip under it.
+  const toolsets = parseToolsetIds(i.toolsets ?? [])
   const ws = await useDb().transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:workstreams:start'))`)
-    const open = await tx.select({ goal: workstreams.goal }).from(workstreams).where(inArray(workstreams.state, RUNNABLE))
-    if (open.length >= cap) {
-      throw new WorkstreamCapError(`There are already ${open.length} workstreams in progress (the limit is ${cap}): ${open.map(o => `"${o.goal.length > 60 ? `${o.goal.slice(0, 59)}…` : o.goal}"`).join(', ')}. Tell Tony — one has to finish or be cancelled before another can start.`)
-    }
-    const [conv] = await tx.insert(conversations).values({ title: `⚙ ${oneLine.length <= 70 ? oneLine : `${oneLine.slice(0, 69).trimEnd()}…`}` }).returning({ id: conversations.id })
+    const [conv] = await tx.insert(conversations).values({ title: threadTitle(goal) }).returning({ id: conversations.id })
     const [row] = await tx.insert(workstreams).values({
       conversationId: conv!.id, originConversationId: i.originConversationId ?? null, goal, state: 'queued', used: ZERO_USED,
-      toolsets: parseToolsetIds(i.toolsets ?? []), budget: clampBudget(i.budget)
+      toolsets, budget: clampBudget(i.budget),
+      // Cycle 83: started as a coordinator — its tree budget shows from the start (spawn sets it otherwise).
+      ...(toolsets.includes('coordinator') ? { treeBudget: DEFAULT_TREE_BUDGET } : {})
     }).returning()
     return row!
   })
@@ -436,7 +472,13 @@ export async function startWorkstream(i: {
   await ensureWorkstreamWorkspace(ws.id).catch(err => console.error('[workstreams] creating the workspace failed:', err))
   await enqueueWhy(ws, 'start')
   if (deps.kick !== false) await kick()
-  return toWorkstreamDTO((await getWorkstream(ws.id)) ?? ws)
+  return workstreamDTO((await getWorkstream(ws.id)) ?? ws)
+}
+
+/** A workstream's own thread title: `⚙ <goal>`, one line, ≤ 70 chars. */
+export function threadTitle(goal: string): string {
+  const oneLine = goal.trim().replace(/\s+/g, ' ')
+  return `⚙ ${oneLine.length <= 70 ? oneLine : `${oneLine.slice(0, 69).trimEnd()}…`}`
 }
 
 /** What a message typed into a workstream's thread does (spec §5.4): while a segment runs it is a
@@ -482,7 +524,8 @@ async function failWorkstream(ws: WorkstreamRow, reason: string, summary: string
   const row = await patchWorkstream(ws.id, {
     state: 'failed', failureReason: reason, summary, attention: null, finishedAt: new Date(), lastOutcome
   }, RUNNABLE)
-  if (row) await notifyTony(row, `⚙ Workstream stopped — ${ws.goal}\nReason: ${reason}${summary ? `\n\n${summary}` : ''}`)
+  // Cycle 83: a child's failure goes to its coordinator (store → coordinator.ts afterTransition), which decides.
+  if (row && !row.parentId) await notifyTony(row, `⚙ Workstream stopped — ${ws.goal}\nReason: ${reason}${summary ? `\n\n${summary}` : ''}`)
 }
 
 async function cancelNow(ws: WorkstreamRow, lastOutcome?: string): Promise<void> {
@@ -498,7 +541,8 @@ function attentionOf(ws: Pick<WorkstreamRow, 'attention'>): WorkstreamAttention 
  *  here and no nudge re-announces it. `note` is told to Tony once (the idle case); Stop is his own act. */
 async function pauseWorkstream(ws: WorkstreamRow, text: string, lastOutcome: string, note?: string): Promise<void> {
   const row = await patchWorkstream(ws.id, { state: 'paused', attention: { kind: 'paused', text }, lastOutcome }, ['running', 'attention'])
-  if (row && note) await notifyTony(row, note)
+  // A paused child is its coordinator's to handle (it is woken: coordinator.ts), not Tony's.
+  if (row && note && !row.parentId) await notifyTony(row, note)
 }
 
 export function questionNote(goal: string, question: string): string {
@@ -558,6 +602,15 @@ export async function onSegmentFinished(run: AgentRun, outcome: RunOutcome): Pro
     const next = await enqueueSegment(current, { text: unread.join('\n\n') })
     if (next) await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
     return next
+  }
+
+  // Cycle 83: wait_for_workstreams ended the segment — park until the children answer (Tony's
+  // unread words first: the model can wait again after reading them).
+  if (stop === 'wait' && outcome.status === 'done' && seg?.wait) {
+    const unread = await drainSteerFor(run.id)
+    await patchWorkstream(ws.id, { failures: 0, lastOutcome: 'wait' })
+    if (unread.length) return enqueueSegment(current, { text: unread.join('\n\n') })
+    return (await coordinator()).parkForChildren(current, seg.wait)
   }
 
   if (outcome.status === 'failed') return countFailure(current, run, outcome.error ?? 'unknown error')
@@ -678,7 +731,8 @@ export async function pauseWorkstreamForTony(runId: string | undefined, workstre
     return true
   }
   if (seg) seg.stop ??= 'attention'
-  await notifyTony(row, `⚙ Workstream paused — ${row.goal}\n\n${why}`)
+  // A child's pause reaches its coordinator instead (coordinator.ts afterTransition).
+  if (!row.parentId) await notifyTony(row, `⚙ Workstream paused — ${row.goal}\n\n${why}`)
   return true
 }
 
@@ -793,7 +847,7 @@ type ParkedAttention = WorkstreamAttention
 
 /** Publish card frames for a parked request on the workstream thread and its origin chat. */
 async function publishCardFrames(ws: WorkstreamRow, runId: string, frame: HubFrame): Promise<void> {
-  for (const cid of [ws.conversationId, ws.originConversationId]) {
+  for (const cid of [ws.conversationId, (await tonyFacing(ws)).originConversationId]) {
     if (!cid) continue
     const w = createRunEventWriter(runId, cid)
     w.emit(frame)
@@ -865,9 +919,12 @@ export async function nudgeWaitingWorkstreams(opts: { onlyConversations?: string
   for (const ws of rows) {
     const att = attentionOf(ws)
     if (!att || att.kind === 'paused' || (att.nudges ?? 0) >= MAX_NUDGES || now - (att.notifiedAt ?? 0) < NUDGE_EVERY_MS) continue
+    // Cycle 83: a child's question waits on its COORDINATOR (unless it was escalated to Tony).
+    if (ws.parentId && att.kind === 'question' && !att.escalated) continue
     const row = await patchWorkstream(ws.id, { attention: { ...att, notifiedAt: now, nudges: (att.nudges ?? 0) + 1 } }, ['attention'])
     if (!row) continue
-    await notifyTony(row, `⚙ Still waiting on you — ${row.goal}\n\n${att.text}${att.kind === 'question' ? '\n\nReply to answer.' : ''}`)
+    const who = await tonyFacing(row)
+    await notifyTony(who, `⚙ Still waiting on you — ${who.goal}\n\n${att.text}${att.kind === 'question' ? '\n\nReply to answer.' : ''}`)
     n++
   }
   return n
@@ -919,7 +976,7 @@ export async function controlWorkstream(p: WorkstreamControl): Promise<Workstrea
   }
   await kick()
   ws = await getWorkstream(p.workstreamId)
-  return toWorkstreamDTO(ws!)
+  return workstreamDTO(ws!)
 }
 
 /** Cancel (spec §5.5): a running segment stops after its current step (a card it is parked on is
@@ -944,8 +1001,9 @@ export async function cancelWorkstream(ws: WorkstreamRow): Promise<void> {
 /** Resume: a failed/cancelled workstream starts again (a used-up budget is extended by one
  *  segment's worth of steps and 30 min, so it can actually move); an attention or paused one
  *  continues without an answer (or with `text` as the answer); a stalled one gets its next segment.
- *  A paused one already counts toward the cap, so it is not re-checked. */
-export async function resumeWorkstream(ws: WorkstreamRow, text?: string, opts: { /** test seam */ cap?: number } = {}): Promise<void> {
+ *  Cycle 83: a CHILD comes back only while its coordinator runs, and its budget is re-reserved out
+ *  of the coordinator's tree (coordinator.ts reserveForResume, under the tree lock). */
+export async function resumeWorkstream(ws: WorkstreamRow, text?: string): Promise<void> {
   if (ws.state === 'done') throw new Error('the workstream is already done')
   if (ws.state === 'failed' || ws.state === 'cancelled') {
     const used = usedOf(ws)
@@ -954,13 +1012,8 @@ export async function resumeWorkstream(ws: WorkstreamRow, text?: string, opts: {
     const budget = exhausted(ws)
       ? clampBudget(resumeBudget(b, used))
       : b
-    // Reactivating counts against the cap like a start (fix round 2), under the same lock.
     const row = await useDb().transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:workstreams:start'))`)
-      const open = await tx.select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, RUNNABLE))
-      if (open.length >= (opts.cap ?? MAX_ACTIVE_WORKSTREAMS)) {
-        throw new WorkstreamCapError(`There are already ${open.length} workstreams in progress (the limit is ${opts.cap ?? MAX_ACTIVE_WORKSTREAMS}) — finish or cancel one before resuming this one.`)
-      }
+      if (ws.parentId) await (await coordinator()).reserveForResume(tx, ws, budget)
       const [r] = await tx.update(workstreams).set({
         state: 'running', cancelRequested: false, failures: 0, failureReason: null, lastOutcome: null,
         finishedAt: null, attention: null, summary: null, budget, updatedAt: sql`now()`
@@ -991,6 +1044,9 @@ export async function routeInboundAnswer(input: RunInput, opts: { mainConversati
   if (opts.onlyConversations && !opts.onlyConversations.length) return null
   const waiting = await useDb().select().from(workstreams).where(and(
     eq(workstreams.state, 'attention'), sql`${workstreams.attention}->>'kind' = 'question'`,
+    // Cycle 83: a child's question is its coordinator's to answer — Tony's text only answers it once
+    // he was asked too (escalated: the coordinator was itself waiting on him).
+    sql`(${workstreams.parentId} is null or ${workstreams.attention}->>'escalated' = 'true')`,
     opts.onlyConversations ? inArray(workstreams.conversationId, opts.onlyConversations) : undefined
   )).limit(2)
   if (waiting.length !== 1) return null

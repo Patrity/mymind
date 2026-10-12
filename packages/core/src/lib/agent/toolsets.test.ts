@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { TOOLSETS, parseToolsetIds, activeToolNames, directoryText, ON_DEMAND_TOOLSETS } from './toolsets'
-import { bridgetProfile } from './profile'
+import { bridgetProfile, childWorkstreamProfile, workstreamProfile } from './profile'
 import type { AgentTool } from './types'
 
 const t = (name: string, toolset: AgentTool['toolset']): AgentTool =>
@@ -13,8 +13,23 @@ describe('toolset registry', () => {
   it('every on-demand toolset has a directory line and at least one tool', () => {
     for (const id of ON_DEMAND_TOOLSETS) {
       expect(TOOLSETS[id].description.length, id).toBeGreaterThan(10)
-      expect(bridgetProfile.tools.some(x => x.toolset === id), id).toBe(true)
+      // Cycle 83: `coordinator` exists only in a top-level workstream's registry (chat never fans out).
+      expect((id === 'coordinator' ? workstreamProfile : bridgetProfile).tools.some(x => x.toolset === id), id).toBe(true)
     }
+  })
+  it('cycle 83: the coordinator toolset is a top-level workstream\'s only — not chat, not a child (depth 1)', () => {
+    const coord = workstreamProfile.tools.filter(x => x.toolset === 'coordinator').map(x => x.name).sort()
+    expect(coord).toEqual(['answer_child', 'cancel_workstreams', 'read_workstream', 'spawn_workstreams', 'steer_workstream', 'wait_for_workstreams'])
+    expect(bridgetProfile.tools.some(x => x.toolset === 'coordinator')).toBe(false)
+    expect(childWorkstreamProfile.tools.some(x => x.toolset === 'coordinator')).toBe(false)
+    // The directory lists it only where its tools are.
+    expect(directoryText(workstreamProfile.tools, new Set())).toContain('- coordinator — ')
+    expect(directoryText(bridgetProfile.tools, new Set())).not.toContain('coordinator')
+    expect(directoryText(childWorkstreamProfile.tools, new Set())).not.toContain('coordinator')
+    // export_to_coordinator: a child's only.
+    expect(childWorkstreamProfile.tools.map(x => x.name)).toContain('export_to_coordinator')
+    expect(workstreamProfile.tools.map(x => x.name)).not.toContain('export_to_coordinator')
+    expect(bridgetProfile.tools.map(x => x.name)).not.toContain('export_to_coordinator')
   })
   it('core is ~25 tools (spec §3)', () => {
     const core = activeToolNames(bridgetProfile.tools, new Set())

@@ -14,3 +14,19 @@ export async function reasoningChain(modelDefId?: string | null): Promise<{ mode
   const chain = reorderChain(await resolveChain('reasoning'), modelDefId)
   return chain.map(m => ({ model: languageModel(m), modelDefId: m.modelDefId }))
 }
+
+/**
+ * Cycle 83 (spec §3): a CHILD workstream's chain — its `subagents` label's model, the rest of
+ * `subagents`, then `reasoning` (runtime/pools.ts childChain) — with the segment's stamped primary
+ * first. reasoningChain() only reorders WITHIN `reasoning`, so a child must never go through it.
+ */
+export async function subagentChain(label: string | null, modelDefId?: string | null): Promise<{ model: LanguageModel; modelDefId: string }[]> {
+  const { childChain } = await import('./runtime/pools')
+  return reorderChain(await childChain(label), modelDefId).map(m => ({ model: languageModel(m), modelDefId: m.modelDefId }))
+}
+
+/** The run's model chain: a child workstream's subagents chain, or the reasoning chain (chat,
+ *  jobs, coordinators — coordinators always run on `reasoning`). */
+export function agentChain(ctx: { modelDefId?: string | null; subagent?: { label: string | null } }): Promise<{ model: LanguageModel; modelDefId: string }[]> {
+  return ctx.subagent ? subagentChain(ctx.subagent.label, ctx.modelDefId) : reasoningChain(ctx.modelDefId)
+}

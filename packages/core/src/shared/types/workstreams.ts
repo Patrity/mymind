@@ -1,7 +1,8 @@
 // Cycle 81 (spec §5): the workstream wire shapes, shared by core and the app (Task 6 UI).
-/** `paused` (final review I3): Tony pressed Stop in its thread, or two idle segments in a row. Unlike
- *  `attention` it never captures an iMessage as an answer and is never nudged; it still counts toward
- *  the cap of 3 and resumes from the UI (Resume), a reply in its thread, or Bridget's answer_workstream. */
+/** `paused` (final review I3): Tony pressed Stop in its thread, or two idle segments in a row (cycle 82:
+ *  or it waits on a watch; cycle 83: or a coordinator waits on its children). Unlike `attention` it
+ *  never captures an iMessage as an answer and is never nudged; it resumes from the UI (Resume), a
+ *  reply in its thread, or Bridget's answer_workstream. */
 export type WorkstreamState = 'queued' | 'running' | 'attention' | 'paused' | 'done' | 'failed' | 'cancelled'
 
 export interface WorkstreamBudget { maxSteps: number; maxWallMs: number }
@@ -29,7 +30,19 @@ export interface WorkstreamAttention {
   /** Cycle 82: `paused` because a segment ended with a watch armed — the watch's result resumes it
    *  (a pause by Stop / idleness is never resumed by a watch). */
   waitingForWatch?: true
+  /** Cycle 83: `paused` because a coordinator called wait_for_workstreams — parked (no segment, no
+   *  budget) until the wait is satisfied or `deadlineAt` (epoch ms) passes. */
+  waitingForChildren?: ChildWait
+  /** Cycle 83 (a child's attention): its coordinator has been shown this question / pause already. */
+  reported?: true
+  /** Cycle 83 (a child's question): Tony was told too (the coordinator was itself waiting on him). */
+  escalated?: true
 }
+
+/** Cycle 83: what a parked coordinator waits for. */
+export interface ChildWait { ids: string[]; until: 'all' | 'any'; deadlineAt: number; timeoutMin: number }
+
+export type WorkspaceMode = 'own' | 'shared'
 
 export interface WorkstreamDTO {
   id: string
@@ -47,9 +60,27 @@ export interface WorkstreamDTO {
   createdAt: string
   updatedAt: string
   finishedAt: string | null
+  /** Cycle 83: the coordinator of a child; null for a top-level workstream. */
+  parentId: string | null
+  /** A child's `subagents` model label (null = the default). */
+  modelLabel: string | null
+  workspaceMode: WorkspaceMode
+  /** A coordinator's tree budget and its rolled-up use (own + every child); null otherwise. */
+  treeBudget: WorkstreamBudget | null
+  treeUsed: WorkstreamUsed | null
+  /** A coordinator's children, oldest first. */
+  childIds: string[]
+  /** A run of it read mail/calendar/contacts content. */
+  tainted: boolean
 }
 
 export const DEFAULT_WORKSTREAM_BUDGET: WorkstreamBudget = { maxSteps: 400, maxWallMs: 7_200_000 }
+/** Cycle 83 (spec D4): a coordinator's tree — its own steps plus every child's reservation. */
+export const DEFAULT_TREE_BUDGET: WorkstreamBudget = { maxSteps: 2000, maxWallMs: 28_800_000 }
+/** A child's budget when the coordinator gives none (reserved out of the tree at spawn). */
+export const DEFAULT_CHILD_BUDGET: WorkstreamBudget = { maxSteps: 200, maxWallMs: 3_600_000 }
+/** Children per spawn_workstreams call (a sanity limit, not a headcount cap). */
+export const MAX_SPAWN_PER_CALL = 50
 /** Bounds for a model- or UI-supplied budget. */
 export const BUDGET_LIMITS = { maxSteps: { min: 1, max: 2000 }, maxWallMs: { min: 60_000, max: 24 * 60 * 60 * 1000 } } as const
 export const ZERO_USED: WorkstreamUsed = { steps: 0, wallMs: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 }

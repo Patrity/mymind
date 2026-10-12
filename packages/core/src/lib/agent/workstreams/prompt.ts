@@ -6,7 +6,7 @@ import type { WorkstreamPromptInfo } from '../prompt'
 import type { WorkstreamRow } from './store'
 import { budgetOf, usedOf } from './store'
 
-export type SegmentWhy = 'start' | 'continue' | 'restarted' | 'retry' | 'budget' | 'idle' | 'watch'
+export type SegmentWhy = 'start' | 'continue' | 'restarted' | 'retry' | 'budget' | 'idle' | 'watch' | 'children'
 
 export function segmentOrigin(why: SegmentWhy): string { return `segment:${why}` }
 
@@ -20,15 +20,22 @@ export function segmentText(why: SegmentWhy, ws: Pick<WorkstreamRow, 'goal'>, de
     case 'budget': return `The workstream is stopping: ${detail ?? 'its budget is used up'}. Write the final summary now.`
     // Cycle 82: the watch results (sandbox/watches.ts watchText) — continue from them.
     case 'watch': return `${detail ?? 'A watch you set has ended.'}\nContinue working on the goal.`
+    // Cycle 83: a coordinator woken from wait_for_workstreams (coordinator.ts childReport).
+    case 'children': return `${detail ?? 'Your child workstreams have news.'}\nContinue: answer questions with answer_child, wait_for_workstreams for the ones still running, or merge the results and finish.`
   }
 }
 
-export function promptInfo(ws: WorkstreamRow, final?: string | null): WorkstreamPromptInfo {
+/** `parent`: a child's coordinator (cycle 83 — the child's rules name it). */
+export function promptInfo(ws: WorkstreamRow, final?: string | null, parent?: WorkstreamRow | null): WorkstreamPromptInfo {
   const u = usedOf(ws)
+  const role: WorkstreamPromptInfo['role'] = ws.parentId
+    ? { kind: 'child', coordinatorGoal: parent?.goal ?? 'its coordinator', workspace: ws.workspaceMode }
+    : ws.treeBudget || ws.toolsets.includes('coordinator') ? { kind: 'coordinator' } : undefined
   return {
     goal: ws.goal,
     used: { steps: u.steps, wallMs: u.wallMs },
     budget: budgetOf(ws),
-    ...(final ? { final: { reason: final } } : {})
+    ...(final ? { final: { reason: final } } : {}),
+    ...(role ? { role } : {})
   }
 }

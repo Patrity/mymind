@@ -38,7 +38,7 @@ export const startWorkstreamTool: AgentTool = {
   description: 'Start a WORKSTREAM: long-running background work (research, a multi-step build-out) that keeps going on its own — across many steps, while Tony is away, and across restarts — in its own thread, within a budget. Use it when a task needs far more steps than one reply, not for quick answers. Give a self-contained goal (it cannot see this conversation). Returns its id and link; Tony is told when it finishes or needs him.',
   schema: {
     goal: z.string().min(3).max(4000).describe('What to achieve, self-contained: the task, constraints, and what "done" looks like'),
-    toolsets: z.array(z.enum(ON_DEMAND_TOOLSETS as [ToolsetId, ...ToolsetId[]])).optional().describe('On-demand toolsets to pre-load (it can still load others)'),
+    toolsets: z.array(z.enum(ON_DEMAND_TOOLSETS as [ToolsetId, ...ToolsetId[]])).optional().describe('On-demand toolsets to pre-load (it can still load others). Include "coordinator" for work that splits into parallel parts (several research topics, a multi-part build): it then spawns and merges child workstreams itself.'),
     budget: z.object({
       maxSteps: z.number().int().min(BUDGET_LIMITS.maxSteps.min).max(BUDGET_LIMITS.maxSteps.max).optional(),
       maxWallMs: z.number().int().min(BUDGET_LIMITS.maxWallMs.min).max(BUDGET_LIMITS.maxWallMs.max).optional()
@@ -47,6 +47,7 @@ export const startWorkstreamTool: AgentTool = {
   handler: async (a, ctx) => {
     try {
       let origin: string | null = null
+      // Cycle 83 (D10): chat starts a COORDINATOR with toolsets ['coordinator'] — it then fans out itself.
       if (ctx.runId) {
         const [run] = await useDb().select({ kind: agentRuns.kind, conversationId: agentRuns.conversationId }).from(agentRuns).where(eq(agentRuns.id, ctx.runId)).limit(1)
         if (run?.kind === 'workstream' || (await loop()).segmentForRun(ctx.runId)) {
@@ -80,11 +81,20 @@ export const finishWorkstreamTool: AgentTool = {
     try {
       const seg = (await loop()).segmentForRun(ctx.runId)
       if (!seg) return { result: { ok: false, error: `finish_workstream ${NOT_IN_WORKSTREAM}` }, summary: 'finish_workstream: not a workstream' }
+      // Cycle 83 (spec §5): a coordinator finishes only once every child has ended.
+      const live = await (await import('../workstreams/coordinator')).liveChildren(seg.workstreamId)
+      if (live.length) {
+        return {
+          result: { ok: false, error: `${live.length} child workstream${live.length === 1 ? ' is' : 's are'} still going (${live.map(k => k.id).join(', ')}) — wait_for_workstreams for them, or cancel_workstreams the ones you no longer need, then finish.` },
+          summary: 'finish_workstream: children still running'
+        }
+      }
       const summary = (a.summary as string).trim()
       const ws = await patchWorkstream(seg.workstreamId, { state: 'done', summary, attention: null, finishedAt: new Date() }, ['running', 'attention'])
       if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'finish_workstream: not running' }
       seg.stop = 'finished'
-      await (await notify()).notifyTony(ws, `⚙ Workstream done — ${ws.goal}\n\n${summary}`)
+      // A child reports to its coordinator (woken by the transition: coordinator.ts), not to Tony.
+      if (!ws.parentId) await (await notify()).notifyTony(ws, `⚙ Workstream done — ${ws.goal}\n\n${summary}`)
       return { result: { ok: true, state: 'done' }, summary: 'workstream finished' }
     } catch (err) {
       return fail('finish_workstream', err)
@@ -107,6 +117,9 @@ export const askTonyTool: AgentTool = {
       const ws = await patchWorkstream(seg.workstreamId, { state: 'attention', attention: { kind: 'question', text: question, notifiedAt: Date.now() } }, ['running', 'attention'])
       if (!ws) return { result: { ok: false, error: 'the workstream is no longer running' }, summary: 'ask_tony: not running' }
       seg.stop = 'attention'
+      // Cycle 83 (spec D8): a child's question goes to its coordinator (woken by the transition —
+      // coordinator.ts), and to Tony only when the coordinator is itself waiting on him.
+      if (ws.parentId) return { result: { ok: true, note: 'Your coordinator has been asked. Stop here: you resume when it (or Tony) answers.' }, summary: 'asked the coordinator' }
       await (await notify()).notifyTony(ws, questionNote(ws.goal, question))
       return { result: { ok: true, note: 'Tony has been asked. Stop here: the workstream resumes when he replies.' }, summary: 'asked Tony' }
     } catch (err) {

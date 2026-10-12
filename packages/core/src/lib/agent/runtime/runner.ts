@@ -15,7 +15,9 @@ import { recordEvent } from '../../observability/record'
 import { assembleContext } from '../assemble'
 import { messageText } from '../run'
 import type { AgentMessage } from '../run'
-import { bridgetProfile, workstreamProfile, type AgentProfile } from '../profile'
+import { bridgetProfile, childWorkstreamProfile, coordinatorProfile, TAINTING_TOOL_NAMES, type AgentProfile } from '../profile'
+import { listSubagentModels } from '../../ai/registry/resolve'
+import { carriesWorkspaceTaint, producedContent } from '../tool-history'
 import { beginSegment, type Segment } from '../workstreams/loop'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import type { RunPublisher } from './stream'
@@ -181,7 +183,12 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         }
       }
       // Idle-segment detection (workstreams/loop.ts, review M3) counts completed tool calls.
-      if (e.type === 'tool' && seg) seg.toolCalls++
+      if (e.type === 'tool' && seg) {
+        seg.toolCalls++
+        // Cycle 83: the same rule as the run-level taint (ai-tools.ts), persisted on the workstream —
+        // a tainted child taints the coordinator run that reads its output.
+        if ((TAINTING_TOOL_NAMES.has(e.name) && producedContent(e.result)) || carriesWorkspaceTaint(e.result)) seg.markTainted()
+      }
       if (e.type === 'reasoning') reasoningText += e.text
       // Overwrite, not accumulate: at most one usage event per turn in the common
       // case, and if the rare forced-final recovery path (run.ts) yields a second
@@ -225,7 +232,11 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
     // `usage` (the ACTUAL contextTokens) for the same conversationId. recordEvent only buffers.
     recordEvent({ kind: 'tool', name: 'memory:assemble', severity: 'info', meta: { used: assembled.used, droppedTurns: assembled.droppedTurns, retrievedCount: assembled.usedMemoryIds.length, conversationId, runId: run.id } })
     const history: AgentMessage[] = keepTrailingTurns(turns, turns.length - assembled.droppedTurns)
-    const profile = run.profile === 'headless' ? headlessProfile(run) : seg ? workstreamProfile : undefined
+    // Cycle 83: a child's registry has no coordinator toolset (depth 1); a top-level segment's
+    // spawn_workstreams lists the current subagents models.
+    const profile = run.profile === 'headless' ? headlessProfile(run)
+      : seg ? (seg.child ? childWorkstreamProfile : coordinatorProfile(await listSubagentModels().catch(() => [])))
+        : undefined
 
     // Cycle 78: on-demand toolsets — what this conversation already loaded + what a job declared.
     const storedToolsets = parseToolsetIds(conv?.activeToolsets ?? [])
@@ -277,7 +288,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
         return fresh
       }, wake: isWake ? { reason: run.wakeReason ?? 'unspecified' } : undefined,
       runId: run.id, toolsets,
-      ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {})
+      ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {}),
+      // Cycle 83 (carried C2): a child runs on its subagents chain (label → rest of subagents → reasoning).
+      ...(seg?.child ? { subagent: { label: seg.child.modelLabel } } : {})
     })
     // Finalize the timing ONCE, here, and use the same object for the live chunk below and
     // for the persist further down — so the duration and tok/s the user watches appear are

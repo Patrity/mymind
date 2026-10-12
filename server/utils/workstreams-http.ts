@@ -3,7 +3,6 @@
 import { z } from 'zod'
 import type { H3Event } from 'h3'
 import { sendCommand, CommandFailedError, CommandTimeoutError } from '@mymind/core/lib/bus/commands'
-import { WorkstreamCapError } from '@mymind/core/lib/agent/workstreams/loop'
 import type { WorkstreamDTO } from '@mymind/core/shared/types/workstreams'
 
 export function requireWorkstreamId(event: H3Event): string {
@@ -14,24 +13,12 @@ export function requireWorkstreamId(event: H3Event): string {
   return id
 }
 
-/** The cap message is written for the model ("…Tell Tony — one has to finish…"); the UI shows it
- *  to Tony himself, so the instruction to tell him is dropped. */
-export function capMessage(raw: string): string {
-  return raw.replace(/\s*Tell Tony\b.*$/s, '').trim() + ' Finish or cancel one first.'
-}
-
-const CAP_RE = /workstreams in progress \(the limit is \d+\)/
-
 /**
  * An error for the UI. h3 strips non-ASCII from `statusMessage`, so the readable text rides in
- * `data.message` (the client reads that first). `data.code` lets the UI single out the cap.
+ * `data.message` (the client reads that first). Cycle 83: the top-level cap (409 `cap`) is gone.
  */
 export function workstreamError(err: unknown): Error {
   const message = err instanceof Error ? err.message : String(err)
-  if (err instanceof WorkstreamCapError || (err instanceof CommandFailedError && CAP_RE.test(message))) {
-    const text = message.includes('Tell Tony') ? capMessage(message) : message
-    return createError({ statusCode: 409, statusMessage: 'Too many workstreams in progress', data: { code: 'cap', message: text } })
-  }
   if (err instanceof CommandTimeoutError) {
     const text = err.claimed
       ? 'The agent worker took the request but has not finished it after 10s — it may still happen.'

@@ -97,7 +97,7 @@ function harness(script: Script) {
 async function newWorkstream(goal: string) {
   const origin = await createConversation({ title: `T2w origin ${goal}` })
   convIds.push(origin.id)
-  const ws = await startWorkstream({ goal: `T2w ${goal}`, originConversationId: origin.id }, { kick: false, cap: 1000 })
+  const ws = await startWorkstream({ goal: `T2w ${goal}`, originConversationId: origin.id }, { kick: false })
   convIds.push(ws.conversationId)
   return ws
 }

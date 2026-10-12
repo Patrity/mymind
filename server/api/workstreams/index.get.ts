@@ -1,4 +1,4 @@
-import { listWorkstreams, toWorkstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
+import { listWorkstreams, workstreamDTOs } from '@mymind/core/lib/agent/workstreams/store'
 import type { WorkstreamState } from '@mymind/core/shared/types/workstreams'
 
 /** Upper bound for `?limit` (a bad or huge value never becomes an unbounded scan). */
@@ -14,5 +14,5 @@ export default defineEventHandler(async (event) => {
     : undefined
   const limit = Number(q.limit)
   const rows = await listWorkstreams({ states, limit: Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), MAX_LIMIT) : MAX_LIMIT })
-  return rows.map(toWorkstreamDTO)
+  return workstreamDTOs(rows)
 })

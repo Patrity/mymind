@@ -457,6 +457,12 @@ export async function workerTick(opts: {
       // tick after boot — and a long wait on Tony is re-announced at most every 2h (review M1).
       try { await restoreParkedApprovals() } catch (err) { console.error('[runtime] restoring parked approvals failed:', err) }
       try { await nudgeWaitingWorkstreams() } catch (err) { console.error('[runtime] workstream nudge failed:', err) }
+      // Cycle 83: parked coordinators whose wait is satisfied or timed out (a restart re-arms nothing
+      // else — the wait is the row), and children whose coordinator ended without the cascade.
+      try {
+        const { sweepCoordinators } = await import('../workstreams/coordinator')
+        await sweepCoordinators()
+      } catch (err) { console.error('[runtime] coordinator sweep failed:', err) }
       // Cycle 75 outbox: send due iMessage/email deliveries (unscoped, production ticks only).
       // Started, not awaited (single-flight): a slow send never delays this tick.
       startDeliveries()

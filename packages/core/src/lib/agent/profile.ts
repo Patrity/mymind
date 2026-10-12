@@ -7,7 +7,9 @@ import { loadToolsetsTool } from './tools/load-toolsets'
 import { googleDangerousTools } from './tools/gmail'
 import { calendarDangerousTools } from './tools/calendar'
 import { answerWorkstreamTool, startWorkstreamTool, workstreamOnlyTools } from './tools/workstreams'
-import { workspaceTools } from './tools/workspace'
+import { exportToCoordinatorTool, workspaceTools } from './tools/workspace'
+import { coordinatorTools, spawnToolWithModels, spawnWorkstreamsTool } from './tools/coordinator'
+import type { SubagentModelInfo } from '../ai/registry/resolve'
 import type { AgentTool } from './types'
 
 export interface AgentProfile { id: string; tools: AgentTool[]; personaKey: string }
@@ -33,12 +35,29 @@ export const bridgetProfile: AgentProfile = {
 }
 
 /** Cycle 81 (spec §5.3): a workstream segment's registry — Bridget's tools WITHOUT start_workstream
- *  (no workstream spawns another this step) and answer_workstream (Bridget's, for Tony's answers),
- *  plus finish_workstream and ask_tony, which exist only here. Same persona; interactive (approvals wait on Tony — workstreams/loop.ts). */
+ *  and answer_workstream (Bridget's, for Tony's answers), plus finish_workstream and ask_tony, which
+ *  exist only here. Same persona; interactive (approvals wait on Tony — workstreams/loop.ts).
+ *  Cycle 83: a TOP-LEVEL workstream also has the on-demand `coordinator` toolset (it fans out by
+ *  spawning children, not by start_workstream). Chat never has it (D10). */
 export const workstreamProfile: AgentProfile = {
   id: 'workstream',
-  tools: [...bridgetProfile.tools.filter(t => t.name !== startWorkstreamTool.name && t.name !== answerWorkstreamTool.name), ...workstreamOnlyTools],
+  tools: [...bridgetProfile.tools.filter(t => t.name !== startWorkstreamTool.name && t.name !== answerWorkstreamTool.name), ...workstreamOnlyTools, ...coordinatorTools],
   personaKey: 'agent_persona'
+}
+
+/** Cycle 83 (D2, depth 1): a CHILD workstream's registry — no `coordinator` toolset; it can hand files
+ *  up with export_to_coordinator (workspace toolset; refused unless its workspace is its own). */
+export const childWorkstreamProfile: AgentProfile = {
+  id: 'workstream-child',
+  tools: [...workstreamProfile.tools.filter(t => t.toolset !== 'coordinator'), exportToCoordinatorTool],
+  personaKey: 'agent_persona'
+}
+
+/** A top-level segment's registry with the CURRENT `subagents` models in spawn_workstreams'
+ *  description (labels + descriptions — the coordinator picks a model per child by them). */
+export function coordinatorProfile(models: SubagentModelInfo[]): AgentProfile {
+  const spawn = spawnToolWithModels(models)
+  return { ...workstreamProfile, tools: workstreamProfile.tools.map(t => t.name === spawnWorkstreamsTool.name ? spawn : t) }
 }
 
 /** Cycle 79b fix round 1 (I1): every `taints` tool Bridget has, dangerous ones included. The

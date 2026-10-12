@@ -28,7 +28,7 @@ import { pruneHandledCommands } from '@mymind/core/lib/bus/commands'
 import { setBusNs } from '@mymind/core/lib/bus/ns'
 import { closeListener } from '@mymind/core/lib/bus/listen'
 import { createConversation, appendMessages } from '@mymind/core/services/conversations'
-import { controlWorkstream, nudgeWaitingWorkstreams, onSegmentHandlerFailed, restoreParkedApprovals, routeInboundAnswer, startWorkstream, sweepStalledWorkstreams, WorkstreamCapError } from '@mymind/core/lib/agent/workstreams/loop'
+import { controlWorkstream, nudgeWaitingWorkstreams, onSegmentHandlerFailed, restoreParkedApprovals, routeInboundAnswer, startWorkstream, sweepStalledWorkstreams } from '@mymind/core/lib/agent/workstreams/loop'
 import { pushSteer } from '@mymind/core/lib/agent/runtime/inbox'
 import { abortRun } from '@mymind/core/lib/agent/runtime/aborts'
 import { replayAgentAction } from '@mymind/core/lib/agent/runtime/replay'
@@ -124,8 +124,7 @@ function harness(script: Script) {
 async function newWorkstream(goal: string, budget?: { maxSteps?: number; maxWallMs?: number }) {
   const origin = await createConversation({ title: `T5 origin ${goal}` })
   convIds.push(origin.id)
-  // cap: the active-workstream cap counts every workstream on the shared dev DB; the cap test sets its own.
-  const ws = await startWorkstream({ goal: `T5 ${goal}`, originConversationId: origin.id, budget }, { kick: false, cap: 1000 })
+  const ws = await startWorkstream({ goal: `T5 ${goal}`, originConversationId: origin.id, budget }, { kick: false })
   convIds.push(ws.conversationId)
   return { ws, origin: origin.id }
 }
@@ -613,18 +612,11 @@ describe('fix round 1', () => {
     expect(iApprovals[0]!.signal.aborted).toBe(true)
   })
 
-  it('I2: at the cap a new workstream is refused with a clear error; a headless proposal replays into a real start', async () => {
-    const open = (await useDb().select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, ['queued', 'running', 'attention']))).length
-    const { ws } = await newWorkstream('cap-1')
-    const refused = await startWorkstream({ goal: 'T5 cap-2' }, { kick: false, cap: open + 1 }).catch((e: unknown) => e)
-    const leaked0 = await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 cap-2'))
-    convIds.push(...leaked0.map(l => l.conversationId))
-    expect(refused).toBeInstanceOf(WorkstreamCapError)
-    expect((refused as Error).message).toMatch(/already \d+ workstreams in progress.*T5 cap-1/)
-    const leaked = await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 cap-2'))
-    convIds.push(...leaked.map(l => l.conversationId)) // a regression must not leave rows behind
-    expect(leaked).toHaveLength(0)
-    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  it('cycle 83: no top-level cap — a 4th (and 5th) workstream starts with 3 already going; a headless proposal replays into a real start', async () => {
+    const started = [] as Awaited<ReturnType<typeof newWorkstream>>[]
+    for (let i = 1; i <= 5; i++) started.push(await newWorkstream(`nocap-${i}`))
+    for (const { ws } of started) expect(ws.state).toBe('queued')
+    for (const { ws } of started) await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
     // Approving the /review proposal runs the stored call (start_workstream is profile-only).
     const out = await replayAgentAction({ tool: 'start_workstream', args: { goal: 'T5 replayed' } })
     const [made] = await useDb().select().from(workstreams).where(eq(workstreams.goal, 'T5 replayed'))
@@ -683,14 +675,11 @@ describe('fix round 1', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
-  it('fix round 2: resuming a failed/cancelled workstream respects the active cap', async () => {
-    const { ws } = await newWorkstream('resume-cap')
+  it('cycle 83: resuming a cancelled workstream is never capped', async () => {
+    const { ws } = await newWorkstream('resume-nocap')
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
-    const open = (await useDb().select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, ['queued', 'running', 'attention']))).length
     const { resumeWorkstream } = await import('@mymind/core/lib/agent/workstreams/loop')
-    await expect(resumeWorkstream((await getWorkstream(ws.id))!, undefined, { cap: open })).rejects.toThrow(WorkstreamCapError)
-    expect((await getWorkstream(ws.id))!.state).toBe('cancelled')
-    await resumeWorkstream((await getWorkstream(ws.id))!, undefined, { cap: open + 1 })
+    await resumeWorkstream((await getWorkstream(ws.id))!)
     expect((await getWorkstream(ws.id))!.state).toBe('running')
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
@@ -715,7 +704,7 @@ describe('fix round 1', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 
-  it('final I3: Stop in the thread → paused: never captures an iMessage, never nudged, counts toward the cap, Resume continues it', async () => {
+  it('final I3: Stop in the thread → paused: never captures an iMessage, never nudged, Resume continues it', async () => {
     let stepped!: () => void
     const stepping = new Promise<void>(r => { stepped = r })
     const { seen, runFn, drive } = harness(async function* (ctx, _m, seg) {
@@ -752,9 +741,6 @@ describe('fix round 1', () => {
     await patchWorkstream(ws.id, { attention: { ...(row.attention as object), kind: 'paused', text: 'Stopped.', notifiedAt: 0 } })
     expect(await nudgeWaitingWorkstreams({ onlyConversations: [ws.conversationId] })).toBe(0)
     expect(texts).toEqual([])
-    // Still counts toward the cap.
-    const open = (await useDb().select({ id: workstreams.id }).from(workstreams).where(inArray(workstreams.state, ['queued', 'running', 'attention', 'paused']))).length
-    await expect(startWorkstream({ goal: 'T5 one too many' }, { kick: false, cap: open })).rejects.toThrow(WorkstreamCapError)
 
     // Resume (the UI's control) continues it.
     const dto = await controlWorkstream({ workstreamId: ws.id, action: 'resume' })

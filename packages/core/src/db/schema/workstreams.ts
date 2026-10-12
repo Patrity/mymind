@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { pgTable, uuid, text, integer, boolean, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, integer, boolean, jsonb, timestamp, index, uniqueIndex, type AnyPgColumn } from 'drizzle-orm/pg-core'
 import { conversations } from './conversations'
 
 /** Cycle 81 (spec §5.1): a long-running, segmented, budgeted piece of agent work. Its log is its
@@ -29,8 +29,23 @@ export const workstreams = pgTable('workstreams', {
   currentRunId: uuid('current_run_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  finishedAt: timestamp('finished_at', { withTimezone: true })
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  // Cycle 83 (coordinator, spec §2). Non-null = a CHILD of that coordinator (depth 1: a child's
+  // parent never has a parent — enforced by the spawn path under the tree lock).
+  parentId: uuid('parent_id').references((): AnyPgColumn => workstreams.id, { onDelete: 'set null' }),
+  /** The `subagents` label a child runs on (null = the default resolution). */
+  modelLabel: text('model_label'),
+  /** A child's workspace: its own sandbox, or its coordinator's. */
+  workspaceMode: text('workspace_mode').notNull().default('own').$type<'own' | 'shared'>(),
+  /** A coordinator's tree budget ({ maxSteps, maxWallMs }) — its own steps + every child's reservation. */
+  treeBudget: jsonb('tree_budget'),
+  /** Rolled up: own `used` + every child's `used` (refreshed at every step of any tree member). */
+  treeUsed: jsonb('tree_used'),
+  /** A run of this workstream read mail/calendar/contacts content (cycle 83: a tainted child taints
+   *  the coordinator run that reads its output). Never cleared. */
+  tainted: boolean('tainted').notNull().default(false)
 }, (t) => [
+  index('workstreams_parent_idx').on(t.parentId),
   uniqueIndex('workstreams_conversation_idx').on(t.conversationId),
   index('workstreams_state_idx').on(t.state, t.updatedAt)
 ])

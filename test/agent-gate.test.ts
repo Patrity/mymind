@@ -106,7 +106,11 @@ const EXPECTED_CLASS: Record<string, HeadlessClass> = {
 
 // The workstream-only tools (cycle 81, spec §5.3) are not in bridgetProfile: they live only in a
 // workstream segment's registry. Pinned the same way, against workstreamProfile.
-const WORKSTREAM_ONLY_CLASS: Record<string, HeadlessClass> = { finish_workstream: 'run', ask_tony: 'run' }
+const WORKSTREAM_ONLY_CLASS: Record<string, HeadlessClass> = {
+  finish_workstream: 'run', ask_tony: 'run',
+  // Cycle 83: the coordinator toolset (spec §4: headless "run").
+  spawn_workstreams: 'run', wait_for_workstreams: 'run', read_workstream: 'run', steer_workstream: 'run', answer_child: 'run', cancel_workstreams: 'run'
+}
 
 describe('headless gate — exhaustive table', () => {
   it('the table names EXACTLY the tools Bridget has, no more, no less', () => {
@@ -118,7 +122,7 @@ describe('headless gate — exhaustive table', () => {
 })
 
 describe('workstream registry (cycle 81)', () => {
-  it('is Bridget minus start_workstream/answer_workstream plus exactly finish_workstream and ask_tony', () => {
+  it('is Bridget minus start_workstream/answer_workstream plus finish_workstream, ask_tony and (cycle 83) the coordinator toolset', () => {
     const names = workstreamProfile.tools.map(t => t.name)
     expect(names).not.toContain('start_workstream')
     expect(names.filter(n => !bridgetProfile.tools.some(t => t.name === n)).sort()).toEqual(Object.keys(WORKSTREAM_ONLY_CLASS).sort())

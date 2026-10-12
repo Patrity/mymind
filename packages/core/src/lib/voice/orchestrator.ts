@@ -62,6 +62,8 @@ export interface TurnDeps {
   shouldStop?: RunAgentCtx['shouldStop']
   onStep?: RunAgentCtx['onStep']
   workstream?: RunAgentCtx['workstream']
+  /** Cycle 83: a child workstream's segment runs on its subagents chain. */
+  subagent?: RunAgentCtx['subagent']
   runAgent?: (m: AgentMessage[], c: RunAgentCtx) => AsyncGenerator<AgentEvent>
 }
 
@@ -113,7 +115,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const subagentSteps = new Map<string, SubagentStep[]>()
 
   let sawText = false
-  const ws = { ...(deps.maxSteps !== undefined ? { maxSteps: deps.maxSteps } : {}), ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}), ...(deps.onStep ? { onStep: deps.onStep } : {}), ...(deps.workstream ? { workstream: deps.workstream } : {}) }
+  const ws = { ...(deps.maxSteps !== undefined ? { maxSteps: deps.maxSteps } : {}), ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}), ...(deps.onStep ? { onStep: deps.onStep } : {}), ...(deps.workstream ? { workstream: deps.workstream } : {}), ...(deps.subagent ? { subagent: deps.subagent } : {}) }
   for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId, toolsets: deps.toolsets, ...ws })) {
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {

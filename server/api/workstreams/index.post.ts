@@ -18,7 +18,7 @@ const Body = z.object({
 
 /**
  * Start a workstream from the UI (cycle 81 spec §5.5). The row and its first segment are written
- * here (the same `startWorkstream` the tool uses, cap of 3 included); the kick goes to the agent
+ * here (the same `startWorkstream` the tool uses); the kick goes to the agent
  * worker, which is the only executor. No origin conversation: it was started from /workstreams.
  */
 export default defineEventHandler(async (event) => {

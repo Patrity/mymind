@@ -533,6 +533,66 @@ export const importDocumentTool: AgentTool = {
   })
 }
 
+/** Cycle 83: export_to_coordinator's limits — the archive travels base64 through the 1 MB output cap. */
+export const EXPORT_MAX_PATHS = 100
+export const EXPORT_DIR = 'from'
+
+/** null when `p` may be exported (relative, no `..`, not MyMind's bookkeeping); else why not. */
+function exportPathProblem(p: string): string | null {
+  if (!p || p.includes('\0')) return 'empty path'
+  if (p.startsWith('/')) return 'paths are relative to /workspace (no leading /)'
+  const parts = p.split('/').filter(x => x && x !== '.')
+  if (!parts.length) return 'export named files or directories, not the whole workspace'
+  if (parts.includes('..')) return 'no ..'
+  if (parts[0] === '.mymind') return '.mymind is MyMind\'s own bookkeeping'
+  return null
+}
+
+/**
+ * Cycle 83 (spec D7): a CHILD workstream with its OWN workspace hands files up to its coordinator —
+ * copied into the coordinator's workspace under /workspace/from/<childId>/. The copy is a tar of the
+ * named paths made inside the child's sandbox (symlinks and hard links dereferenced, so the archive
+ * holds plain files only) and unpacked inside the coordinator's — the worker never touches either
+ * directory. A tainted run or a tainted child workspace taints the coordinator's workspace too (its
+ * files may be mail-derived).
+ */
+export const exportToCoordinatorTool: AgentTool = {
+  name: 'export_to_coordinator',
+  toolset: 'workspace',
+  kind: 'create',
+  description: `Copy files or directories from your workspace into your coordinator's workspace (they land under ${EXPORT_DIR}/<your workstream id>/ there). Only for a child workstream with its own workspace. Paths relative to /workspace; at most ${EXPORT_MAX_PATHS}; about 700 KB compressed in total — for more, write a summary file and export that.`,
+  schema: { paths: z.array(pathArg).min(1).max(EXPORT_MAX_PATHS).describe('Relative paths to copy') },
+  handler: (a, ctx) => guard('export_to_coordinator', ctx, async (scope) => {
+    const paths = a.paths as string[]
+    for (const p of paths) {
+      const why = exportPathProblem(p)
+      if (why) return { result: { ok: false, error: `${p}: ${why}` }, summary: 'export_to_coordinator: bad path' }
+    }
+    const c = await begin(ctx, scope)
+    const { getWorkstream } = await import('../workstreams/store')
+    const child = c.ref.workstreamId ? await getWorkstream(c.ref.workstreamId) : null
+    if (!child?.parentId) return { result: { ok: false, error: 'export_to_coordinator is only for a child workstream (this run has no coordinator)' }, summary: 'export_to_coordinator: not a child' }
+    if (child.workspaceMode !== 'own') return { result: { ok: false, error: 'you share your coordinator\'s workspace already — your files are there' }, summary: 'export_to_coordinator: shared workspace' }
+    // Inside the child's sandbox: the file list on stdin (NUL-separated), a gzip'd tar out as base64.
+    // Via a temp file, not a pipe: the sandbox's sh (dash) has no pipefail, so a tar error (a missing
+    // path) would otherwise be hidden behind base64's exit 0.
+    const pack = await exec(c, 'f=$(mktemp) && tar -C /workspace --null -T - -h --hard-dereference -czf "$f" && base64 -w0 "$f"; s=$?; rm -f "$f"; exit $s', { input: paths.join('\0'), capBytes: 1024 * 1024, timeoutSec: 120 })
+    if (pack.truncated) return { result: withTaint(pack, { ok: false, error: 'too large to export (over ~700 KB compressed) — export fewer or smaller files, or write a summary file and export that' }), summary: 'export_to_coordinator: too large' }
+    if (pack.exitCode !== 0) return failed('export_to_coordinator', pack)
+    const { ensureWorkstreamWorkspace } = await import('../../sandbox/store')
+    const dest = await ensureWorkstreamWorkspace(child.parentId)
+    const tainted = c.tainted || pack.tainted
+    await workspaceRuntime().manager.checkQuota(dest.id, { tainted })
+    const dir = `/workspace/${EXPORT_DIR}/${child.id}`
+    const unpack = await workspaceRuntime().manager.exec(dest.id, `mkdir -p ${dir} && base64 -d | tar -xzf - -C ${dir} --no-same-owner --no-same-permissions`, { tainted, signal: ctx.signal, input: pack.stdout, timeoutSec: 120 })
+    if (unpack.exitCode !== 0) return failed('export_to_coordinator', { ...unpack, tainted: tainted || unpack.tainted })
+    return {
+      result: withTaint({ tainted: tainted || unpack.tainted }, { ok: true, copied: paths, to: `${EXPORT_DIR}/${child.id}/`, note: `In your coordinator's workspace under ${EXPORT_DIR}/${child.id}/ — mention the paths in your finish_workstream summary.` }),
+      summary: `exported ${paths.length} path${paths.length === 1 ? '' : 's'} to the coordinator`
+    }
+  })
+}
+
 export const workspaceTools: AgentTool[] = [
   readFileTool, writeFileTool, editFileTool, listFilesTool, grepTool, diffTool,
   bashTool, bashOutputTool, killShellTool, deleteFilesTool, watchTool, exportToDocumentTool, importDocumentTool
