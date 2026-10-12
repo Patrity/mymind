@@ -5,7 +5,7 @@
 //   3. recordDecision(nonce, …) once the approval resolves — first decision wins (a second one, e.g.
 //      a timeout racing Tony's tap, is ignored and reported as `false`).
 // Never stores the approval `command` body (cycle 79 logging rule).
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { approvalVerdicts, type ApprovalVerdictRow } from '../../../db/schema'
 import type { ApprovalDecider, ApprovalDecision, JudgeVerdict, RuleVerdict } from './types'
@@ -64,6 +64,33 @@ export async function recordDecision(nonce: string, decision: ApprovalDecision, 
     .where(and(eq(approvalVerdicts.nonce, nonce), isNull(approvalVerdicts.decision)))
     .returning({ id: approvalVerdicts.id })
   return rows.length > 0
+}
+
+/**
+ * Final fix wave (M2), at worker boot: every row still without a decision that was written before this
+ * worker started belongs to a run that died with its process (a crash — a drain records `cancelled`) —
+ * closed as `lost` / `system`, so calibration data never reads it as pending or as Tony's answer.
+ * Returns how many rows it closed.
+ */
+export async function closeLostVerdicts(before: Date, scope?: { nonces: string[] }): Promise<number> {
+  if (scope && !scope.nonces.length) return 0
+  const rows = await useDb().update(approvalVerdicts)
+    .set({ decision: 'lost', decidedBy: 'system', decidedAt: sql`now()` })
+    // `scope`: tests on the shared dev DB touch only their own rows.
+    .where(and(isNull(approvalVerdicts.decision), lt(approvalVerdicts.createdAt, before), scope ? inArray(approvalVerdicts.nonce, scope.nonces) : undefined))
+    .returning({ id: approvalVerdicts.id })
+  return rows.length
+}
+
+/** Final fix wave (M2): the audit's retention — rows older than this many days are deleted (daily). */
+export const VERDICT_RETENTION_DAYS = 180
+export async function pruneVerdicts(days = VERDICT_RETENTION_DAYS, now = new Date(), scope?: { nonces: string[] }): Promise<number> {
+  if (scope && !scope.nonces.length) return 0
+  const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
+  const rows = await useDb().delete(approvalVerdicts)
+    .where(and(lt(approvalVerdicts.createdAt, cutoff), scope ? inArray(approvalVerdicts.nonce, scope.nonces) : undefined))
+    .returning({ id: approvalVerdicts.id })
+  return rows.length
 }
 
 export async function getVerdictRecord(nonce: string): Promise<ApprovalVerdictRow | null> {

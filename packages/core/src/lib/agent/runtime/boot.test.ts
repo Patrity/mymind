@@ -38,13 +38,26 @@ describe('bootAgentRuntime recovery retry', () => {
     vi.restoreAllMocks()
   })
 
+  it('M2: closes verdicts left undecided by a crashed worker with THIS boot\'s start time; a failure there does not stop boot', async () => {
+    quiet()
+    const before = Date.now()
+    const s = steps({ closeLostVerdicts: vi.fn(async () => { throw new Error('db hiccup') }) })
+    await bootAgentRuntime(s, { maxMs: 1000, baseMs: 10, maxDelayMs: 10 })
+    const at = vi.mocked(s.closeLostVerdicts!).mock.calls[0]![0]
+    expect(at.getTime()).toBeGreaterThanOrEqual(before)
+    expect(at.getTime()).toBeLessThanOrEqual(Date.now())
+    expect(s.revalidateAll).toHaveBeenCalledTimes(1)
+    vi.restoreAllMocks()
+  })
+
   it('stops retrying (and skips the rest of boot) once a drain started', async () => {
     quiet()
     let stopped = false
-    const s = steps({ recoverOrphans: vi.fn(async () => { stopped = true; throw new Error('down') }) })
+    const s = steps({ recoverOrphans: vi.fn(async () => { stopped = true; throw new Error('down') }), closeLostVerdicts: vi.fn(async () => 0) })
     await bootAgentRuntime(s, { maxMs: 60_000, baseMs: 10, maxDelayMs: 10, stopped: () => stopped })
     expect(s.recoverOrphans).toHaveBeenCalledTimes(1)
     expect(s.installSeedJobs).not.toHaveBeenCalled()
+    expect(s.closeLostVerdicts).not.toHaveBeenCalled()
     vi.restoreAllMocks()
   })
 })

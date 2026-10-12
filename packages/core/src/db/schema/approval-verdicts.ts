@@ -24,8 +24,8 @@ export const approvalVerdicts = pgTable('approval_verdicts', {
   latencyMs: integer('latency_ms'),
   error: text('error'),
   verdictAt: timestamp('verdict_at', { withTimezone: true }),
-  decision: text('decision'),                         // 'approved' | 'denied' | 'auto' | 'timeout' | 'cancelled'
-  decidedBy: text('decided_by'),                      // 'tony' | 'judge' | 'timeout' | 'system' (Stop, /clear, drain, cancel, no channel)
+  decision: text('decision'),                         // 'approved' | 'denied' | 'auto' | 'timeout' | 'cancelled' | 'lost' (closed at boot: died with a crashed worker)
+  decidedBy: text('decided_by'),                      // 'tony' | 'judge' | 'timeout' | 'system' (Stop, /clear, drain, cancel, no channel, lost)
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   decidedAt: timestamp('decided_at', { withTimezone: true })
 }, (t) => [

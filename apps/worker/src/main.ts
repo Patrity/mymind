@@ -27,6 +27,7 @@ const [{ bootAgentRuntime, DEFAULT_BOOT_RETRY }, queue, { BOOT_ID }, { startAgen
 ])
 const { busNs } = await import('@mymind/core/lib/bus/ns')
 const { pruneRunEvents } = await import('@mymind/core/lib/bus/events')
+const { pruneVerdicts } = await import('@mymind/core/lib/agent/judge/store')
 const { startSandboxHousekeeping } = await import('@mymind/core/lib/sandbox/manager')
 const { startWorkspaceRuntime } = await import('@mymind/core/lib/sandbox/runtime')
 const { workstreamNotifyDeps } = await import('@mymind/core/lib/agent/workstreams/notify')
@@ -41,6 +42,9 @@ async function prune(): Promise<void> {
   lastEventsPrune = Date.now()
   const n = await pruneRunEvents()
   if (n) console.info(`[worker] pruned ${n} run event(s)`)
+  // Cycle 84 final fix wave (M2): the approval_verdicts audit keeps 180 days.
+  const v = await pruneVerdicts()
+  if (v) console.info(`[worker] pruned ${v} approval verdict(s) older than 180 days`)
 }
 
 let sandboxHealth: import('@mymind/core/shared/types/workspaces').SandboxHealth | null = null

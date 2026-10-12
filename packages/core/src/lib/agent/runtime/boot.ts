@@ -7,15 +7,19 @@
 // tick repeats the recover-and-note pass every 5s).
 import { recoverOnBoot } from './recover'
 import { installSeedJobs, upgradeSeedJobs, revalidateAll } from '../jobs/store'
+import { closeLostVerdicts } from '../judge/store'
 
 export interface BootSteps {
   recoverOrphans: () => Promise<number>
   installSeedJobs: () => Promise<number>
   upgradeSeedJobs: () => Promise<number>
   revalidateAll: () => Promise<number>
+  /** Cycle 84 final fix wave (M2): close approval_verdicts rows left undecided by a crashed worker
+   *  (written before `before`, this boot's start) as lost / system. */
+  closeLostVerdicts?: (before: Date) => Promise<number>
 }
 
-const realSteps: BootSteps = { recoverOrphans: () => recoverOnBoot(), installSeedJobs, upgradeSeedJobs, revalidateAll }
+const realSteps: BootSteps = { recoverOrphans: () => recoverOnBoot(), installSeedJobs, upgradeSeedJobs, revalidateAll, closeLostVerdicts }
 
 export interface BootRetry {
   /** Give up retrying recovery after this long (then the periodic stale sweep is the net). */
@@ -52,6 +56,9 @@ async function recoverWithRetry(steps: BootSteps, retry: BootRetry): Promise<num
 }
 
 export async function bootAgentRuntime(steps: BootSteps = realSteps, retry: BootRetry = DEFAULT_BOOT_RETRY): Promise<{ recovered: number }> {
+  // Before anything this process does can raise an approval: every undecided row older than this is
+  // from a previous process.
+  const bootedAt = new Date()
   let recovered = 0
   try {
     recovered = await recoverWithRetry(steps, retry)
@@ -67,6 +74,12 @@ export async function bootAgentRuntime(steps: BootSteps = realSteps, retry: Boot
     if (upgraded) console.info(`[runtime] upgraded ${upgraded} unedited seed job(s) to the current version`)
   } catch (err) {
     console.error('[runtime] seed job install failed:', err)
+  }
+  try {
+    const lost = await steps.closeLostVerdicts?.(bootedAt)
+    if (lost) console.warn(`[runtime] closed ${lost} approval verdict(s) a crashed worker left undecided (lost)`)
+  } catch (err) {
+    console.error('[runtime] closing lost approval verdicts failed:', err)
   }
   try {
     const changed = await steps.revalidateAll()

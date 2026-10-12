@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto'
 import { eq, like } from 'drizzle-orm'
 import { useDb } from '@mymind/core/db'
 import { approvalVerdicts, settings, type SettingRow } from '@mymind/core/db/schema'
-import { recordVerdict, recordDecision, getVerdictRecord } from '@mymind/core/lib/agent/judge/store'
+import { recordVerdict, recordDecision, getVerdictRecord, closeLostVerdicts, pruneVerdicts } from '@mymind/core/lib/agent/judge/store'
 import {
   AGENT_SETTINGS_KEY, getAgentSettings, getJudgeSettings, saveAgentSettings, invalidateAgentSettings, defaultAgentSettings
 } from '@mymind/core/lib/agent/agent-settings'
@@ -43,6 +43,35 @@ afterAll(async () => {
 })
 
 const verdict: JudgeVerdict = { risk: 'low', recommendation: 'approve', confidence: 0.94, reasons: ['asked for <b>it</b>'], model: 'J1', latencyMs: 812 }
+
+describe('final fix wave M2: lost rows and retention (scoped to this file\'s nonces)', () => {
+  it('at boot, an undecided row from before the boot is closed lost/system; a decided row and a row of this boot are untouched', async () => {
+    const [old, decided, mine] = [nonce(), nonce(), nonce()]
+    for (const n of [old, decided]) await recordVerdict({ nonce: n, tool: 'gmail_send', rule: { floor: 'review', reasons: [] } })
+    await recordDecision(decided, 'denied', 'tony')
+    await new Promise(r => setTimeout(r, 20))
+    const bootedAt = new Date()
+    await new Promise(r => setTimeout(r, 20))
+    await recordVerdict({ nonce: mine, tool: 'gmail_send', rule: { floor: 'review', reasons: [] } })
+    expect(await closeLostVerdicts(bootedAt, { nonces: [old, decided, mine] })).toBe(1)
+    expect(await getVerdictRecord(old)).toMatchObject({ decision: 'lost', decidedBy: 'system' })
+    expect((await getVerdictRecord(old))!.decidedAt).toBeInstanceOf(Date)
+    expect(await getVerdictRecord(decided)).toMatchObject({ decision: 'denied', decidedBy: 'tony' })
+    expect(await getVerdictRecord(mine)).toMatchObject({ decision: null })
+    // A late decision for the lost row changes nothing (first decision wins).
+    expect(await recordDecision(old, 'approved', 'tony')).toBe(false)
+  })
+
+  it('rows older than 180 days are pruned; younger ones stay', async () => {
+    const [aged, young] = [nonce(), nonce()]
+    for (const n of [aged, young]) await recordVerdict({ nonce: n, tool: 'exec', rule: { floor: 'high', reasons: [] } })
+    await useDb().update(approvalVerdicts).set({ createdAt: new Date(Date.now() - 181 * 24 * 60 * 60 * 1000) }).where(eq(approvalVerdicts.nonce, aged))
+    await useDb().update(approvalVerdicts).set({ createdAt: new Date(Date.now() - 179 * 24 * 60 * 60 * 1000) }).where(eq(approvalVerdicts.nonce, young))
+    expect(await pruneVerdicts(undefined, undefined, { nonces: [aged, young] })).toBe(1)
+    expect(await getVerdictRecord(aged)).toBeNull()
+    expect(await getVerdictRecord(young)).not.toBeNull()
+  })
+})
 
 describe('approval_verdicts store (DB)', () => {
   it('rule row → verdict → decision round trip', async () => {
@@ -105,19 +134,19 @@ describe('agent settings doc (DB)', () => {
     await useDb().delete(settings).where(eq(settings.key, AGENT_SETTINGS_KEY))
     invalidateAgentSettings()
     expect(await getAgentSettings()).toEqual(defaultAgentSettings())
-    expect(await getJudgeSettings()).toEqual({ enabled: true, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 })
+    expect(await getJudgeSettings()).toEqual({ enabled: true, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: 4 })
   })
 
   it('save merges a patch, persists it, and caches until invalidated', async () => {
     const saved = await saveAgentSettings({ judge: { smartApprovals: { chat: true }, confidence: 0.8 } })
-    expect(saved.judge).toEqual({ enabled: true, smartApprovals: { workstreams: true, chat: true }, confidence: 0.8 })
+    expect(saved.judge).toEqual({ enabled: true, smartApprovals: { workstreams: false, chat: true }, confidence: 0.8, maxInFlight: 4 })
     const [row] = await useDb().select().from(settings).where(eq(settings.key, AGENT_SETTINGS_KEY))
     expect(row!.value).toEqual(saved)
     // Another process writes behind this one's back: the cache holds until invalidated.
     await useDb().update(settings).set({ value: { judge: { enabled: false } } }).where(eq(settings.key, AGENT_SETTINGS_KEY))
     expect((await getJudgeSettings()).enabled).toBe(true)
     invalidateAgentSettings()
-    expect(await getJudgeSettings()).toEqual({ enabled: false, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 })
+    expect(await getJudgeSettings()).toEqual({ enabled: false, smartApprovals: { workstreams: false, chat: false }, confidence: 0.9, maxInFlight: 4 })
   })
 
   it('an invalid patch throws and changes nothing', async () => {
