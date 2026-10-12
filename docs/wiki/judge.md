@@ -294,16 +294,16 @@ the run. Disabling the judge is **not** a quiet off switch.
   classifier was unavailable, so the pattern check decided" — never the classifier's own free text
   (which is derived from the attacker's content and could carry its own instructions); the free text
   only reaches the UI's `output_warning` chip, rendered as escaped text.
-- **Run taint**: every flag — real or fail-closed — adds the `flagged` taint source
-  (`addTaint('flagged')`). This gates outbound tools, drops `exec`'s allowlist fast path, and (cycle
-  82) takes the sandbox off the network the next time a workspace command runs.
-- **Workspace taint only on a real verdict, or a flag-alone signal** (final fix wave, I5 —
-  `workspaceTaintingVerdict`, `by === 'heuristics' || by === 'llm'`). A *fail-closed* flag (timeout,
-  slot-wait expired, error, judge off, or Stop-cancelled) taints the **run** and shows the warning,
-  but never calls `manager.markTainted` to take the **workspace** offline. The I5 ruling's point: a
-  guard outage or routine fan-out contention must not quietly take workspaces offline; only a result
-  the guard actually classified as injection (by a real LLM call or a near-zero-FP heuristic) does
-  that.
+- **Run taint**: a **real** flag (an LLM injection verdict, or a flag-alone heuristic) adds the
+  `flagged` taint source. A **fail-closed** flag (timeout, slot-wait expired, error, judge off,
+  Stop-cancelled) adds the run-only **`unverified`** source instead (follow-up to the final fix
+  wave). Either one gates outbound tools and drops `exec`'s allowlist fast path for the rest of that
+  run.
+- **Workspace effect.** A real flag on a workspace source taints the **workspace** (cycle 82: network
+  off until Tony re-enables). A run tainted **only** by `unverified` runs its workspace commands
+  `--network none` with no secrets, but **never** marks the workspace tainted — so a guard outage or
+  fan-out contention can't quietly take workspaces offline. Any other run taint (`mail`, real
+  `flagged`) keeps the cycle-82 rule: the run's workspace commands taint the workspace.
 
 **Corpus results and latency** (final shape: 35 injection / 31 benign fixtures; real dev model Qwen
 3.8 Flash Next via LiteLLM `192.168.2.85:4000`): recall **35/35**, false positives **1/31**
@@ -323,9 +323,11 @@ longer tainted a later segment of the **same workstream**. That re-opened outbou
 pre-existing cycle-81 hole this cycle also closes) and, worse, let Smart Approvals auto-run a
 `gmail_send` or `calendar_rsvp` steered by content the workstream had genuinely read.
 
-**`workstreams.taint_sources`** (migration 0083, `text[] not null default '{}'`) holds the union of
-`'mail' | 'flagged' | 'workspace'` that have ever tainted the workstream — it only grows, it is never
-cleared. `storedTaintSources(row)` reads it (a legacy row with `tainted = true` and no sources reads
+**`workstreams.taint_sources`** (migration 0083, `text[] not null default '{}'`) holds the union of the
+**persisted** sources that have ever tainted the workstream — only `'mail'` and **real-verdict**
+`'flagged'` (`PERSISTED_TAINT_SOURCES`); it only grows, it is never cleared. `'workspace'` is **never
+persisted** (it is derived from the workspace's own flag at every segment start, so "Re-enable
+network" works), and `'unverified'` (fail-closed guard) is run-only — not persisted, not inherited. `storedTaintSources(row)` reads it (a legacy row with `tainted = true` and no sources reads
 as `mail`, the cycle-83 meaning of the bare boolean).
 
 **Seeding every segment.** `beginSegment` computes the workstream's `initialTaint` =
@@ -335,6 +337,12 @@ passed as `RunAgentCtx.taint.initial`, which `runAgent` merges with `historyTain
 run's actual seed. Because `beginSegment` is the **one** entry point for every segment — a fresh
 segment, a yield/resume, a crash restart, or a coordinator wake — taint now survives **all** of them,
 not just the in-window case.
+
+**Persist before it counts** (follow-up N3): a new persisted source is written to the row first and
+only then recorded in the run; a failed write retries ×3 and then aborts the segment as a failure, and
+`finish_workstream` / `ask_tony` refuse while a taint is unpersisted. A legacy row (tainted, no
+sources) gets `mail` alongside its first new source (N4). Children inherit only persisted sources at
+creation; a coordinator that reads a tainted child gains the child's `mail`/`flagged` (`childTaint`).
 
 **Immediate persistence**, not just at segment end. `buildAiTools` gained `RunHooks.onTaint`: it
 fires once at the very start when the run begins already tainted, and again every time the run gains

@@ -293,8 +293,11 @@ output guard's injection check, the manager taints the workspace the same way (`
 near-zero-false-positive heuristic signal (`by: 'heuristics'`) or a real LLM injection verdict
 (`by: 'llm'`). A **fail-closed** flag — the guard's LLM tier was needed but the judge was off,
 unreachable, timed out (15 s), or its call was waiting too long for a free slot in the
-`judge.maxInFlight` semaphore — still taints the **run** (outbound tools gate, the model is warned)
-but does **not** take the workspace itself offline. Before this cycle a fail-closed flag tainted the
+`judge.maxInFlight` semaphore — taints the **run** only with the run-only `unverified` source (outbound tools gate, the model is
+warned); while that is the run's only taint, its workspace commands run `--network none` with no
+secrets but the workspace itself is **not** taken offline (follow-up to the final fix wave). Workstream
+rows never persist a `workspace` taint source — it is re-derived from this flag at every segment start,
+so "Re-enable network" works for workstream workspaces. Before this cycle a fail-closed flag tainted the
 workspace too; the ruling traded that for not quietly taking workspaces offline on routine guard
 contention (six research children each guarding their own fetches) or a judge outage. See
 [judge.md § The output guard](judge.md#the-output-guard).
