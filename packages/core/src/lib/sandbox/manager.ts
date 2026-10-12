@@ -223,6 +223,19 @@ export function containerName(workspaceId: string): string {
 
 /** Thrown inside the lock when a tainted workspace would get its networked container. */
 class WorkspaceTaintedError extends Error {}
+/** A start needs a capacity slot, which is acquired outside the workspace lock (follow-up N1c). */
+class NeedSlot extends Error {}
+/** The request was aborted while it waited for a capacity slot. */
+class SlotWaitAborted extends Error {}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve()
+    const t = setTimeout(done, ms)
+    function done() { clearTimeout(t); signal?.removeEventListener('abort', done); resolve() }
+    signal?.addEventListener('abort', done, { once: true })
+  })
+}
 
 interface Inspected {
   Id: string
@@ -285,8 +298,10 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   let limitsFailed: { at: number; message: string } | null = null
   /** Commands in flight per workspace (networked container) — never idle-stopped or evicted (M1, I3). */
   const inFlight = new Map<string, number>()
-  /** Tainted one-off containers in flight (they count against maxRunning — I3). */
+  /** Tainted one-off containers in flight (reporting; they hold a reserved slot while they run). */
   let oneOffs = 0
+  /** Slots granted and not yet released: starts in progress + one-offs in flight (I3 / N1). */
+  let reserved = 0
   /** Global capacity lock: count + start happen under it, so two starts can't both take the last slot. */
   let capacityChain: Promise<unknown> = Promise.resolve()
   let imageId: string | null = null
@@ -350,7 +365,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       return new SandboxUnavailableError(message)
     }
     try {
-      const c = await docker(limitsProbeArgs({ name, image: s.image, workspaceId: 'limits-probe', hostDir: dir, labels }), { timeoutMs: 60_000 })
+      const c = await docker(limitsProbeArgs({ name, image: s.image, workspaceId: 'limits-probe', hostDir: dir, labels, probe: true }), { timeoutMs: 60_000 })
       if (c.code !== 0) throw fail(`the probe container could not be created: ${c.stderr.trim().slice(0, 200)}`)
       const hc = await docker(['container', 'inspect', '--format', '{{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}', name], { timeoutMs: 15_000 })
       const run = await docker(['start', '-a', name], { timeoutMs: 60_000 })
@@ -384,21 +399,33 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return next
   }
 
-  /** Running networked workspace containers in this manager's scope (docker is the truth). */
+  /** Kind per workspace id (it never changes) — the home workspace has its own reserved slot. */
+  const kinds = new Map<string, WorkspaceRow['kind'] | null>()
+  async function isHome(id: string): Promise<boolean> {
+    if (!kinds.has(id)) kinds.set(id, (await store.get(id))?.kind ?? null)
+    return kinds.get(id) === 'home'
+  }
+
+  /** Running networked workspace containers in this manager's scope (docker is the truth),
+   *  except the home workspace's (follow-up N1b: it has a reserved slot outside the count). */
   async function runningNetworked(): Promise<string[]> {
-    return (await listLabelled()).filter((c) => {
+    const ids = (await listLabelled()).filter((c) => {
       const wid = c.Config.Labels?.[LABEL_WORKSPACE] ?? ''
       return inScope(c) && c.State.Running && c.Config.Labels?.[LABEL_TAINTED] === undefined && UUID.test(wid) && c.Name === `/${containerName(wid)}`
     }).map(c => c.Config.Labels![LABEL_WORKSPACE]!)
+    const out: string[] = []
+    for (const id of ids) if (!await isHome(id)) out.push(id)
+    return out
   }
 
   /** The least-recently-used running workspace nothing is using right now (no command in flight, no
-   *  live background shell, no armed watch, nobody holding its lock) — or null. */
+   *  live background shell, nobody holding its lock) — or null. Follow-up N1a: an armed watch does
+   *  NOT pin it (its next poll takes a slot again); only a live shell does. */
   async function pickVictim(candidates: string[]): Promise<string | null> {
     let best: { id: string; at: number } | null = null
     for (const id of candidates) {
       if (locks.has(id) || (inFlight.get(id) ?? 0) > 0) continue
-      try { if (await hasLiveShell(id) || await isBusy(id)) continue } catch { continue }
+      try { if (await hasLiveShell(id)) continue } catch { continue }
       const row = await store.get(id)
       const at = row?.lastUsedAt.getTime() ?? 0
       if (!best || at < best.at) best = { id, at }
@@ -407,28 +434,59 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   /**
-   * Final review I3 (ruling: count cap): make room for one more running sandbox container — called
-   * under the capacity lock. Full → stop the LRU idle one; none → wait (≤ slotWaitMs) for a slot,
-   * then a clear error. `forId` (its own container is being (re)started) never counts.
+   * Stop a capacity victim — under ITS lock (follow-up N2: the pins are re-checked there, a shell
+   * may have started since it was picked). false = not evicted: something pins it now, or the
+   * container would not stop (N3 — the caller skips it; the row is not marked stopped).
    */
-  async function makeRoom(forId: string): Promise<void> {
-    const deadline = Date.now() + s.slotWaitMs
-    for (;;) {
-      const running = (await runningNetworked()).filter(id => id !== forId)
-      const used = running.length + oneOffs
-      if (used < s.maxRunning) return
-      const victim = await pickVictim(running)
-      if (victim && !locks.has(victim)) {
-        log.info(`[sandbox] capacity: ${used}/${s.maxRunning} sandboxes running — stopping the least recently used one (${victim}) for ${forId}`)
-        await locked(victim, async () => {
-          // Re-checked under its lock: a command may have started since it was picked.
-          if ((inFlight.get(victim) ?? 0) > 0) return
-          await stopUnlocked(victim, EVICTED_REASON)
-        })
-        continue
+  async function evictUnlocked(id: string): Promise<boolean> {
+    if ((inFlight.get(id) ?? 0) > 0) return false
+    try { if (await hasLiveShell(id)) return false } catch { return false }
+    const c = await inspect(containerName(id))
+    if (c?.State.Running) {
+      await docker(['stop', '-t', '3', c.Id], { timeoutMs: 30_000 })
+      if ((await inspect(c.Id))?.State.Running) {
+        log.warn(`[sandbox] capacity: ${id} would not stop — skipped as a victim`)
+        return false
       }
-      if (Date.now() >= deadline) throw new SandboxUnavailableError(`sandbox capacity busy — ${used} workspaces active (at most ${s.maxRunning} sandboxes run at once). Try again in a few minutes.`)
-      await sleep(Math.min(1000, Math.max(10, s.slotWaitMs / 20)))
+    }
+    await store.setContainer(id, c?.Id ?? null, 'stopped')
+    try { await onStopped(id, EVICTED_REASON) } catch (err) { log.warn(`[sandbox] onStopped(${id}) failed:`, (err as Error).message) }
+    return true
+  }
+
+  /**
+   * Final review I3 + follow-up N1c: a slot for one more running sandbox container (a networked
+   * start or a one-off). Waits OUTSIDE every workspace lock, until `deadline` (60s from the
+   * request's entry, never restarted) — the capacity lock is held only for one count/evict pass at
+   * a time. Full → stop the LRU unpinned one; none → poll until the deadline, then a clear error.
+   * An abort ends the wait at once (SlotWaitAborted). The home workspace never waits (N1b).
+   * Returns release() — call it once the container runs (docker counts it from then) or ends.
+   */
+  async function acquireSlot(forId: string, o: { deadline: number; signal?: AbortSignal }): Promise<() => void> {
+    if (await isHome(forId)) return () => {}
+    const skip = new Set<string>()
+    for (;;) {
+      if (o.signal?.aborted) throw new SlotWaitAborted()
+      const got = await withCapacity(async (): Promise<number | true> => {
+        for (;;) {
+          const running = (await runningNetworked()).filter(id => id !== forId)
+          const used = running.length + reserved
+          if (used < s.maxRunning) { reserved++; return true }
+          // N3: the deadline is checked on every pass, and a victim that won't stop is skipped.
+          if (Date.now() >= o.deadline || o.signal?.aborted) return used
+          const victim = await pickVictim(running.filter(id => !skip.has(id)))
+          if (!victim || locks.has(victim)) return used
+          log.info(`[sandbox] capacity: ${used}/${s.maxRunning} sandboxes running — stopping the least recently used one (${victim}) for ${forId}`)
+          if (!await locked(victim, () => evictUnlocked(victim))) skip.add(victim)
+        }
+      })
+      if (got === true) {
+        let done = false
+        return () => { if (!done) { done = true; reserved-- } }
+      }
+      if (o.signal?.aborted) throw new SlotWaitAborted()
+      if (Date.now() >= o.deadline) throw new SandboxUnavailableError(`sandbox capacity busy — ${got} workspaces active (at most ${s.maxRunning} sandboxes run at once). Try again in a few minutes.`)
+      await abortableSleep(Math.min(1000, Math.max(10, s.slotWaitMs / 20)), o.signal)
     }
   }
 
@@ -473,7 +531,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     return row
   }
 
-  async function ensureContainerUnlocked(id: string, o: { noStart?: boolean } = {}): Promise<{ containerId: string; name: string }> {
+  /** `slot`: the caller holds a capacity slot (acquireSlot) — without one, a start throws NeedSlot
+   *  and the caller acquires one OUTSIDE this workspace's lock (follow-up N1c). */
+  async function ensureContainerUnlocked(id: string, o: { noStart?: boolean; slot?: boolean } = {}): Promise<{ containerId: string; name: string }> {
     assertDiskOk()
     const row = await liveRow(id)
     // Re-read under the lock: a taint that just landed must never be raced by a networked start.
@@ -489,13 +549,10 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       return { containerId: current.Id, name }
     }
     if (o.noStart) throw new SandboxStoppedError()
-    // Starting (or recreating) one: count + start under the capacity lock (I3).
-    return withCapacity(async () => {
-      await makeRoom(id)
-      const r = await createOrStart(id, name, wantFlags)
-      await store.touch(id)
-      return r
-    })
+    if (!o.slot) throw new NeedSlot()
+    const r = await createOrStart(id, name, wantFlags)
+    await store.touch(id)
+    return r
   }
 
   async function createOrStart(id: string, name: string, wantFlags: string): Promise<{ containerId: string; name: string }> {
@@ -526,8 +583,23 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     throw new SandboxUnavailableError(`could not create the workspace sandbox for ${id} (name conflict kept recurring)`)
   }
 
-  function ensureContainer(id: string, o: { noStart?: boolean } = {}) {
-    return locked(id, () => ensureContainerUnlocked(id, o))
+  /**
+   * The workspace's networked container, running. A running one is just used (under the lock);
+   * starting one first takes a capacity slot — waited for OUTSIDE the workspace lock (N1c), so
+   * taint, re-enable, teardown and hard-kill on this workspace never queue behind a slot wait.
+   * `deadline` is fixed at the request's entry; `signal` aborts the wait.
+   */
+  async function ensureContainer(id: string, o: { noStart?: boolean; signal?: AbortSignal; deadline?: number } = {}): Promise<{ containerId: string; name: string }> {
+    const deadline = o.deadline ?? Date.now() + s.slotWaitMs
+    for (;;) {
+      try { return await locked(id, () => ensureContainerUnlocked(id, { noStart: o.noStart })) } catch (e) {
+        if (!(e instanceof NeedSlot)) throw e
+      }
+      const release = await acquireSlot(id, { deadline, signal: o.signal })
+      try {
+        return await locked(id, () => ensureContainerUnlocked(id, { slot: true }))
+      } finally { release() }
+    }
   }
 
   /**
@@ -652,12 +724,14 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   /** A command in a one-off `--network none` container (tainted run or tainted workspace). */
-  async function execOneOff(id: string, command: string, timeoutSec: number, signal?: AbortSignal, io: { input?: string; capBytes?: number } = {}): Promise<DockerResult & { abortedHere: boolean }> {
+  async function execOneOff(id: string, command: string, timeoutSec: number, signal?: AbortSignal, io: { input?: string; capBytes?: number; deadline?: number } = {}): Promise<DockerResult & { abortedHere: boolean }> {
     await preflight(false)
     await ensureDir(id)
-    // I3: a one-off takes a sandbox slot for as long as it runs.
-    await withCapacity(async () => { await makeRoom(id); oneOffs++ })
-    try { return await execOneOffInSlot(id, command, timeoutSec, signal, io) } finally { oneOffs-- }
+    // I3: a one-off takes a sandbox slot for as long as it runs (N1c: waited for here, outside any
+    // workspace lock; bounded by the request's deadline; an abort ends the wait).
+    const release = await acquireSlot(id, { deadline: io.deadline ?? Date.now() + s.slotWaitMs, signal })
+    oneOffs++
+    try { return await execOneOffInSlot(id, command, timeoutSec, signal, io) } finally { oneOffs--; release() }
   }
 
   async function execOneOffInSlot(id: string, command: string, timeoutSec: number, signal: AbortSignal | undefined, io: { input?: string; capBytes?: number }): Promise<DockerResult & { abortedHere: boolean }> {
@@ -691,6 +765,9 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   async function exec(id: string, command: string, o: ExecOptions = {}): Promise<SandboxExecResult> {
+    // N1c: a capacity wait is bounded from HERE (the request's entry), never restarted later.
+    const deadline = Date.now() + s.slotWaitMs
+    const abortedWait = () => result({ code: null, stdout: '', stderr: '', timedOut: false, aborted: true, truncated: false }, false, true)
     assertDiskOk()
     const timeoutSec = timeoutOf(o.timeoutSec)
     const capBytes = Math.min(MAX_CAP_BYTES, Math.max(1024, Math.floor(o.capBytes ?? s.outputCapBytes)))
@@ -707,8 +784,11 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
       try {
         await store.touch(id)
         const signal = o.signal ? AbortSignal.any([o.signal, ctrl.signal]) : ctrl.signal
-        const r = await execOneOff(id, command, timeoutSec, signal, io)
+        const r = await execOneOff(id, command, timeoutSec, signal, { ...io, deadline })
         return result(r, true, r.abortedHere)
+      } catch (e) {
+        if (e instanceof SlotWaitAborted) return { ...abortedWait(), tainted: true }
+        throw e
       } finally { releaseTainted(id, ctrl) }
     }
     if (o.tainted || row.tainted) return runTainted()
@@ -719,7 +799,8 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     let tainted = false
     try {
       let name: string
-      try { ({ name } = await ensureContainer(id, { noStart: o.noStart })) } catch (e) {
+      try { ({ name } = await ensureContainer(id, { noStart: o.noStart, signal: o.signal, deadline })) } catch (e) {
+        if (e instanceof SlotWaitAborted) return abortedWait()
         if (!(e instanceof WorkspaceTaintedError)) throw e
         if (o.noStart) throw new SandboxStoppedError()
         tainted = true
@@ -769,6 +850,20 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     if (c?.State.Running) await docker(['stop', '-t', '3', c.Id], { timeoutMs: 30_000 })
     await store.setContainer(id, c?.Id ?? null, 'stopped')
     try { await onStopped(id, reason) } catch (err) { log.warn(`[sandbox] onStopped(${id}) failed:`, (err as Error).message) }
+  }
+
+  /**
+   * Follow-up N4: act only if `guard()` still holds UNDER the workspace lock — then run `before`
+   * (still under it) and stop the container. Used by the workstream teardown, so a resume that
+   * lands between "it ended" and the teardown keeps its shells, watches and container.
+   */
+  async function stopIf(id: string, guard: () => Promise<boolean>, before: () => Promise<void>, reason: string): Promise<boolean> {
+    return locked(id, async () => {
+      if (!await guard()) return false
+      await before()
+      await stopUnlocked(id, reason)
+      return true
+    })
   }
 
   /** M1: the idle decision is re-made UNDER the workspace lock (a command that started since the
@@ -1038,6 +1133,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     taint,
     reenableNetwork,
     stopContainer,
+    stopIf,
     peek,
     removeContainer,
     destroyWorkspace,
@@ -1051,7 +1147,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     sweep,
     health,
     /** Commands in flight / one-offs running (tests). */
-    load: () => ({ inFlight: [...inFlight.entries()], oneOffs }),
+    load: () => ({ inFlight: [...inFlight.entries()], oneOffs, reserved }),
     available: () => dockerAvailable(docker)
   }
 }

@@ -665,7 +665,7 @@ describe('final fix wave', () => {
   const quiet = { info: () => {}, warn: () => {}, error: () => {} }
   const W2 = '33333333-3333-3333-3333-333333333333'
   const W3 = '44444444-4444-4444-4444-444444444444'
-  const three = () => memStore([{ id: WS }, { id: W2 }, { id: W3 }])
+  const three = () => memStore([{ id: WS, kind: 'workstream' }, { id: W2, kind: 'workstream' }, { id: W3, kind: 'workstream' }])
   const running = (d: ReturnType<typeof fakeDocker>) => [...d.containers.values()].filter(c => c.State.Running).map(c => c.Name.replace('/mymind-ws-', ''))
 
   it('I3: at most maxRunning sandboxes run — a third start stops the least recently used idle one', async () => {
@@ -681,12 +681,12 @@ describe('final fix wave', () => {
     expect(store.rows.get(WS)!.state).toBe('stopped')
     expect(stopped).toEqual([[WS, 'stopped: another workspace needed its sandbox slot']])
   })
-  it('I3: a workspace with a live shell, an armed watch or a command in flight is never evicted; with none free the start waits, then fails clearly', async () => {
+  it('I3: a workspace with a live shell or a command in flight is never evicted; with none free the start waits, then fails clearly', async () => {
     const d = fakeDocker()
     const store = three()
     const m = mgr(d, store, {
       settings: { workspacesDir: '/tmp/x', firewall: 'off', limits: 'off', dns: [], maxRunning: 2, slotWaitMs: 200 },
-      hasLiveShell: id => id === WS, isBusy: id => id === W2
+      hasLiveShell: id => id === WS || id === W2
     })
     await m.exec(WS, 'true')
     await m.exec(W2, 'true')
@@ -829,5 +829,92 @@ describe('final fix wave', () => {
     await m.exec(WS, 'true')
     await m.quotaTick()
     expect(refreshed).toEqual([WS])
+  })
+})
+
+describe('follow-up (re-review N1–N3)', () => {
+  const W2 = '33333333-3333-3333-3333-333333333333'
+  const W3 = '44444444-4444-4444-4444-444444444444'
+  const HOME = '55555555-5555-5555-5555-555555555555'
+  const rows = () => memStore([{ id: WS, kind: 'workstream' }, { id: W2, kind: 'workstream' }, { id: W3, kind: 'workstream' }, { id: HOME, kind: 'home' }])
+  const running = (d: ReturnType<typeof fakeDocker>) => [...d.containers.values()].filter(c => c.State.Running).map(c => c.Name.replace('/mymind-ws-', '')).sort()
+  const cfg = (o: Record<string, unknown> = {}) => ({ workspacesDir: '/tmp/x', firewall: 'off' as const, limits: 'off' as const, dns: [], maxRunning: 2, slotWaitMs: 300, ...o })
+
+  it('N1: two workstreams with armed watches block neither a home bash (reserved slot) nor a UI read (a watched container is evictable)', async () => {
+    const d = fakeDocker()
+    const store = rows()
+    const stopped: string[] = []
+    const m = mgr(d, store, { settings: cfg(), isBusy: id => id === WS || id === W2, onStopped: (id) => { stopped.push(id) } })
+    await m.exec(WS, 'true')
+    await m.exec(W2, 'true')
+    // Home never waits and never evicts: it is outside SANDBOX_MAX_RUNNING.
+    const t0 = Date.now()
+    expect((await m.exec(HOME, 'echo home')).exitCode).toBe(0)
+    expect(Date.now() - t0).toBeLessThan(250)
+    expect(running(d)).toEqual([WS, W2, HOME].sort())
+    expect(stopped).toEqual([])
+    // A read in a third workstream workspace evicts the LRU watched one (its next poll comes back).
+    store.rows.get(WS)!.lastUsedAt = new Date(Date.now() - 60_000)
+    expect((await m.exec(W3, 'ls', { capBytes: 4096 })).exitCode).toBe(0)
+    expect(running(d)).toEqual([W2, W3, HOME].sort())
+    expect(stopped).toEqual([WS])
+  })
+
+  it('N1: an aborted wait returns at once, and the waiting workspace\'s lock is never held during the wait', async () => {
+    const d = fakeDocker()
+    const store = rows()
+    const m = mgr(d, store, { settings: cfg({ slotWaitMs: 10_000 }), hasLiveShell: id => id === WS || id === W2 })
+    await m.exec(WS, 'true')
+    await m.exec(W2, 'true')
+    const ac = new AbortController()
+    const t0 = Date.now()
+    const p = m.exec(W3, 'true', { signal: ac.signal })
+    await new Promise(r => setTimeout(r, 80))
+    // While W3 waits for a slot, its own lock is free: a stop/teardown on it is not queued behind the wait.
+    const stop = m.stopContainer(W3, 'x')
+    const raced = await Promise.race([stop.then(() => 'free'), new Promise(r => setTimeout(() => r('blocked'), 500))])
+    expect(raced).toBe('free')
+    ac.abort()
+    const r = await p
+    expect(r.aborted).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(d.containers.has(`mymind-ws-${W3}`)).toBe(false)
+    expect(m.load().reserved).toBe(0)
+  })
+
+  it('N1c: the wait is bounded from the request\'s entry — queued requests do not stack their waits', async () => {
+    const d = fakeDocker()
+    const m = mgr(d, rows(), { settings: cfg({ slotWaitMs: 400 }), hasLiveShell: id => id === WS || id === W2 })
+    await m.exec(WS, 'true')
+    await m.exec(W2, 'true')
+    const t0 = Date.now()
+    const all = await Promise.allSettled([m.exec(W3, 'a'), m.exec(W3, 'b'), m.exec(W3, 'c')])
+    expect(all.every(x => x.status === 'rejected' && /capacity busy/.test(String(x.reason)))).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(1500) // not 3 × 400ms + passes
+  })
+
+  it('N2: a shell started after the victim was picked keeps it (re-checked under its lock)', async () => {
+    const d = fakeDocker()
+    const store = rows()
+    let shell = false
+    let checks = 0
+    const m = mgr(d, store, { settings: cfg({ maxRunning: 1, slotWaitMs: 200 }), hasLiveShell: (id) => { if (id === WS) { checks++; if (checks === 2) shell = true } return id === WS && shell } })
+    await m.exec(WS, 'true')
+    await expect(m.exec(W2, 'true')).rejects.toThrow(/capacity busy/)
+    expect(running(d)).toEqual([WS])
+  })
+
+  it('N3: a victim that will not stop is skipped — no spin, the request fails at its deadline', async () => {
+    const d = fakeDocker()
+    let stops = 0
+    const run: DockerRunner = async (args, o) => { if (args[0] === 'stop') { stops++; return fail('device or resource busy') } return d.run(args, o) }
+    const store = rows()
+    const m = mgr({ ...d, run }, store, { settings: cfg({ maxRunning: 1, slotWaitMs: 300 }) })
+    await m.exec(WS, 'true')
+    const t0 = Date.now()
+    await expect(m.exec(W2, 'true')).rejects.toThrow(/capacity busy/)
+    expect(Date.now() - t0).toBeLessThan(1500)
+    expect(stops).toBeLessThanOrEqual(1)
+    expect(store.rows.get(WS)!.state).toBe('running') // never marked stopped
   })
 })
