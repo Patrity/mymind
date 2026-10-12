@@ -107,15 +107,15 @@ describe.skipIf(!dockerUp)('export_to_coordinator (real Docker)', () => {
     const childWs = await ensureWorkstreamWorkspace(child.id)
 
     as = { workspaceId: coordWs.id, workstreamId: coord.id }
-    expect(await call('export_to_coordinator', { paths: ['x'] })).toMatchObject({ ok: false, error: /only for a child workstream/ })
+    expect(await call('export_to_coordinator', { paths: ['x'] })).toMatchObject({ ok: false, error: expect.stringMatching(/only for a child workstream/) })
     as = { workspaceId: coordWs.id, workstreamId: shared.id }
-    expect(await call('export_to_coordinator', { paths: ['x'] })).toMatchObject({ ok: false, error: /share your coordinator's workspace/ })
+    expect(await call('export_to_coordinator', { paths: ['x'] })).toMatchObject({ ok: false, error: expect.stringMatching(/share your coordinator's workspace/) })
     as = { workspaceId: childWs.id, workstreamId: child.id }
     for (const bad of ['../x', '/etc/passwd', '.mymind/shells', 'a/../../b', '.']) {
       expect((await call('export_to_coordinator', { paths: [bad] })).ok, bad).toBe(false)
     }
     // tar's own refusal (the missing path), not a later failure to unpack nothing.
-    expect(await call('export_to_coordinator', { paths: ['missing.txt'] })).toMatchObject({ ok: false, error: /export_to_coordinator failed: .*missing\.txt/ })
+    expect(await call('export_to_coordinator', { paths: ['missing.txt'] })).toMatchObject({ ok: false, error: expect.stringMatching(/export_to_coordinator failed: .*missing\.txt/) })
 
     // A tainted run: the copy runs with no network on both sides and taints the coordinator's workspace.
     expect((await call('bash', { command: 'echo MAIL > mail.txt' })).exitCode).toBe(0)

@@ -587,13 +587,13 @@ describe('coordinator: questions, answers and routing (spec D8)', () => {
     expect(await call('steer_workstream', { id: r.children[0]!.id, message: 'focus on X' })).toMatchObject({ ok: true })
     const q = (await activeSegs((await getWorkstream(r.children[0]!.id))!.conversationId))[0]!
     expect((q.input as { text: string }).text).toContain('Message from your coordinator: focus on X')
-    expect(await call('steer_workstream', { id: ro.children[0]!.id, message: 'x' })).toMatchObject({ ok: false, error: /not one of your child workstreams/ })
+    expect(await call('steer_workstream', { id: ro.children[0]!.id, message: 'x' })).toMatchObject({ ok: false, error: expect.stringMatching(/not one of your child workstreams/) })
     const stopped = (await getWorkstream(r.children[1]!.id))!
     await settleSegments(stopped.conversationId)
     await patchWorkstream(stopped.id, { state: 'paused', attention: { kind: 'paused', text: 'Stopped.' }, lastOutcome: 'aborted' })
-    expect(await call('steer_workstream', { id: stopped.id, message: 'go on' })).toMatchObject({ ok: false, error: /Tony stopped that child/ })
+    expect(await call('steer_workstream', { id: stopped.id, message: 'go on' })).toMatchObject({ ok: false, error: expect.stringMatching(/Tony stopped that child/) })
     await controlWorkstream({ workstreamId: stopped.id, action: 'cancel' })
-    expect(await call('steer_workstream', { id: stopped.id, message: 'go on' })).toMatchObject({ ok: false, error: /that child is cancelled/ })
+    expect(await call('steer_workstream', { id: stopped.id, message: 'go on' })).toMatchObject({ ok: false, error: expect.stringMatching(/that child is cancelled/) })
     // cancel_workstreams 'all': only its own, still-going children.
     expect(await call('cancel_workstreams', { ids: 'all' })).toMatchObject({ ok: true, cancelled: [r.children[0]!.id] })
     expect((await getWorkstream(ro.children[0]!.id))!.state).not.toBe('cancelled')
