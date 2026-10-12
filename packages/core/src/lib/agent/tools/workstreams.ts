@@ -86,7 +86,9 @@ export const finishWorkstreamTool: AgentTool = {
       const seg = (await loop()).segmentForRun(ctx.runId)
       if (!seg) return { result: { ok: false, error: `finish_workstream ${NOT_IN_WORKSTREAM}` }, summary: 'finish_workstream: not a workstream' }
       // Cycle 83 (spec §5): a coordinator finishes only once every child has ended.
-      const live = await (await import('../workstreams/coordinator')).liveChildren(seg.workstreamId)
+      // Final fix wave (M3): a child already being cancelled does not hold the finish up — it finalises
+      // in the background (its unused steps return to the tree when it ends).
+      const live = (await (await import('../workstreams/coordinator')).liveChildren(seg.workstreamId)).filter(k => !k.cancelRequested)
       if (live.length) {
         return {
           result: { ok: false, error: `${live.length} child workstream${live.length === 1 ? ' is' : 's are'} still going (${live.map(k => k.id).join(', ')}) — wait_for_workstreams for them, or cancel_workstreams the ones you no longer need, then finish.` },

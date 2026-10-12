@@ -417,7 +417,7 @@ async function steerReport(conversationId: string, text: string): Promise<string
 // Spec §5: child lifecycle events are written into the coordinator's thread as event notes. They are
 // STATE-ONLY — the child's goal (the coordinator's own words) and what happened — never the child's
 // output, so a note can never carry taint (summaries reach the model only through wait/read results).
-// A note is never appended while a coordinator segment RUNS (the runner chains its turn from the leaf
+// A note is never appended while a run in the coordinator's thread RUNS (the runner chains its turn from the leaf
 // it read at the start, so a row appended mid-turn would sit on a branch nobody sees): pending notes
 // are flushed at the segment's end, before a wake, on child transitions and by the tick sweep.
 
@@ -453,8 +453,10 @@ export function noteText(k: WorkstreamRow, key: string): string {
 export async function flushChildNotes(coordinatorId: string): Promise<number> {
   const coord = await getWorkstream(coordinatorId)
   if (!coord) return 0
+  // Final fix wave (M5): ANY run in its thread — a chat turn too (Tony typing in an ended
+  // coordinator's thread): a row appended mid-turn would sit on a branch that turn never sees.
   const [running] = await useDb().select({ id: agentRuns.id }).from(agentRuns)
-    .where(and(eq(agentRuns.conversationId, coord.conversationId), eq(agentRuns.kind, 'workstream'), eq(agentRuns.status, 'running'))).limit(1)
+    .where(and(eq(agentRuns.conversationId, coord.conversationId), eq(agentRuns.status, 'running'))).limit(1)
   if (running) return 0
   const { appendEvent } = await import('../../../services/conversations')
   let n = 0

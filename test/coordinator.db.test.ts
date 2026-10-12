@@ -1517,4 +1517,48 @@ describe('final fix wave', () => {
     await coordSeg.release()
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
+
+  it('M3: finish_workstream is allowed once every child still going is being cancelled (it finalises in the background); a child that is not still refuses it', async () => {
+    const { ws } = await idleCoordinator('m3')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 m3 a' }, { goal: 'T83 m3 b' }], { labels: [], kick: false })
+    const [a, b] = await Promise.all(r.children.map(async c => (await getWorkstream(c.id))!))
+    // Both still mid-step (their segments running elsewhere): cancel is requested, not yet done.
+    for (const k of [a!, b!]) await useDb().update(agentRuns).set({ status: 'running' }).where(and(eq(agentRuns.conversationId, k.conversationId), eq(agentRuns.kind, 'workstream')))
+    await patchWorkstream(a!.id, { state: 'running', cancelRequested: true })
+    await patchWorkstream(b!.id, { state: 'running' })
+    const seg = await segmentFor(ws.id)
+    const { workstreamOnlyTools } = await import('@mymind/core/lib/agent/tools/workstreams')
+    const finish = workstreamOnlyTools.find(t => t.name === 'finish_workstream')!
+    const call = async () => (await finish.handler({ summary: 'merged' }, { signal: new AbortController().signal, runId: seg.runId })).result as Record<string, any>
+    const refused = await call()
+    expect(refused).toMatchObject({ ok: false, error: expect.stringMatching(/1 child workstream is still going \(/) })
+    expect(refused.error).toContain(b!.id)
+    expect(refused.error).not.toContain(a!.id)
+    await patchWorkstream(b!.id, { cancelRequested: true })
+    expect(await call()).toMatchObject({ ok: true, state: 'done' })
+    expect((await getWorkstream(ws.id))!.state).toBe('done')
+    await seg.release()
+    for (const k of [a!, b!]) await settleSegments(k.conversationId)
+  })
+
+  it('M5: a terminal coordinator\'s child notes wait while ANY run (a chat turn too) is running in its thread', async () => {
+    const { ws } = await idleCoordinator('m5')
+    const r = await spawnChildren(ws.id, [{ goal: 'T83 m5 child' }], { labels: [], kick: false })
+    const kid = (await getWorkstream(r.children[0]!.id))!
+    await settleSegments(kid.conversationId)
+    await flushChildNotes(ws.id)
+    await settleSegments(ws.conversationId)
+    // Tony types in the thread of a coordinator that is ending: a chat turn runs there while the
+    // cancel cascades to its child.
+    const [turn] = await useDb().insert(agentRuns).values({ conversationId: ws.conversationId, sessionKey: `thread:${ws.conversationId}`, trigger: 'user', profile: 'interactive', kind: 'turn', status: 'running', input: { text: 'hi', modality: 'text' } }).returning()
+    const before = (await thread(ws.conversationId)).length
+    await patchWorkstream(ws.id, { state: 'cancelled', finishedAt: new Date() })
+    expect((await getWorkstream(kid.id))!.state).toBe('cancelled')
+    expect(await flushChildNotes(ws.id)).toBe(0)
+    expect(await sweepCoordinators({ onlyConversations: [ws.conversationId, kid.conversationId] })).toBe(0)
+    expect((await thread(ws.conversationId)).length).toBe(before)
+    await useDb().update(agentRuns).set({ status: 'done', finishedAt: sql`now()` }).where(eq(agentRuns.id, turn!.id))
+    expect(await flushChildNotes(ws.id)).toBe(1)
+    expect((await thread(ws.conversationId)).at(-1)!.content).toMatch(/T83 m5 child.* was cancelled\./)
+  })
 })
