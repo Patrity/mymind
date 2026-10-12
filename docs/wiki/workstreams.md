@@ -1,7 +1,7 @@
 ---
 title: Workstreams (long-running background agent work)
 status: shipped
-cycle: 81 (workspace integration: cycle 82; coordinator + child workstreams: cycle 83)
+cycle: 81 (workspace integration: cycle 82; coordinator + child workstreams: cycle 83; sticky taint: cycle 84)
 updated: 2026-10-12
 mymind_id: a5fa582b-9998-41b3-a9b3-53a41c8a0642
 mymind_hash: 661e764e2cd69d0a041a18a85ba9b4c2caf67aad15b56ee4b20c5b3c20871330
@@ -293,6 +293,22 @@ child is tainted, `workspaceTainted: true` is the **first** key of the result �
 reading run (`ai-tools.ts`) and seeds the next run's taint through history (survives
 `capResult`). A wake report **withholds** a tainted child's own words entirely (state only — "read
 it with read_workstream").
+
+**Sticky for the workstream's whole life (cycle 84 final fix wave, C1/I1).** A run's taint used to be
+seeded only from its model-visible history, so a mail read 3 tool-bearing turns back (elided by the
+history policy) no longer tainted a later segment — its outbound tools ran un-gated (a cycle-81 hole)
+and Smart Approvals could auto-run its `gmail_send`. Now:
+- `workstreams.taint_sources text[]` (migration 0083; `mail` | `flagged` | `workspace`, a union that
+  only grows) records WHY. A row `tainted` with no sources (written before 0083) reads as `mail`.
+- `beginSegment` seeds every segment's run (`RunAgentCtx.taint.initial`) with the stored sources plus
+  `workspace` when its workspace is tainted (unreadable → tainted) — across segment boundaries,
+  yield/resume, restarts and coordinator wakes alike.
+- A new source is persisted **the moment** the run gains it (`ai-tools.ts` `onTaint` →
+  `seg.markTainted(sources)` → `addWorkstreamTaint`, a SQL union), not at segment end.
+- Work a tainted run starts inherits its taint at row creation: `start_workstream`'s workstream and
+  every `spawn_workstreams` child (run taint ∪ the coordinator row's stored taint).
+- Chat conversations are unchanged (taint still decays with the history window; chat Smart Approvals
+  is off by default).
 
 ### Workspace modes
 
