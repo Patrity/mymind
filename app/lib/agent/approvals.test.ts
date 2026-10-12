@@ -131,6 +131,14 @@ describe('judge verdicts and Smart Approvals on cards (cycle 84)', () => {
     expect(resolveApproval(s0, 'r1', { ...note, decidedBy: 'tony' } as never)).toEqual({})
   })
 
+  it('the frame mapper only passes a well-formed judge note on a judge resolution', () => {
+    const fx = (m: unknown) => mapServerMessage(m as never, false, null)
+    expect(fx({ type: 'approval-resolved', requestId: 'r1', decidedBy: 'judge', auto: note })).toEqual({ approvalResolved: 'r1', approvalAuto: note })
+    expect(fx({ type: 'approval-resolved', requestId: 'r1', decidedBy: 'judge', auto: { ...note, decidedBy: 'tony' } })).toEqual({ approvalResolved: 'r1' })
+    expect(fx({ type: 'approval-resolved', requestId: 'r1', decidedBy: 'tony', auto: note })).toEqual({ approvalResolved: 'r1' })
+    expect(fx({ type: 'approval-resolved', requestId: 'r1', decidedBy: 'judge', auto: { ...note, reason: 5 } })).toEqual({ approvalResolved: 'r1' })
+  })
+
   it('an auto resolution for an unknown card is a no-op', () => {
     const s0 = apply({}, frame('r1', 'A'))
     expect(resolveApproval(s0, 'nope', note as never)).toBe(s0)
