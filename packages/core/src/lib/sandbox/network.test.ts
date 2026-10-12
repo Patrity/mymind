@@ -249,3 +249,12 @@ describe('install-network.sh install (final review M6)', () => {
     expect(src).not.toContain('ExecStart=/bin/bash $SELF')
   })
 })
+
+describe('deploy.yml sandbox health step (follow-up N7)', () => {
+  it('has its own 2-minute timeout and never fails the deploy', () => {
+    const y = readFileSync(path.resolve('.github/workflows/deploy.yml'), 'utf8')
+    const step = y.slice(y.indexOf('- name: Sandbox health'))
+    expect(step).toMatch(/continue-on-error: true/)
+    expect(step).toMatch(/^\s+timeout-minutes: 2$/m)
+  })
+})
