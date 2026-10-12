@@ -56,8 +56,10 @@ export function autoApproveBlocker(i: AutoApproveInput): AutoApproveBlocker | nu
   if (v.lenient !== undefined) return 'lenient-verdict'
   if (v.recommendation !== 'approve') return 'not-approve'
   if (!AUTO_RISKS.has(v.risk as string)) return 'risk-too-high'
-  // A stored threshold below the settings floor (never valid) is read as the floor, never lower.
-  const threshold = Number.isFinite(s.confidence) ? Math.max(s.confidence, JUDGE_CONFIDENCE_LIMITS.min) : 1
+  // Task 2 carry: an invalid stored threshold (not a finite number in the settings range) means no
+  // auto-approval at all — never a fallback threshold a verdict could still meet.
+  const threshold = s.confidence
+  if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < JUDGE_CONFIDENCE_LIMITS.min || threshold > JUDGE_CONFIDENCE_LIMITS.max) return 'low-confidence'
   if (typeof v.confidence !== 'number' || !Number.isFinite(v.confidence) || v.confidence > 1 || v.confidence < threshold) return 'low-confidence'
   return null
 }

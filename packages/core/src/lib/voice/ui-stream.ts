@@ -68,7 +68,7 @@ export function createUIChunkEncoder(messageId: string): UIChunkEncoder {
           const outcome = toolOutcome(e.result)
           if (outcome.state === 'denied') out.push({ type: 'tool-output-denied', toolCallId: e.callId })
           else if (outcome.state === 'error') out.push({ type: 'tool-output-error', toolCallId: e.callId, errorText: outcome.errorText, dynamic: true })
-          else out.push({ type: 'tool-output-available', toolCallId: e.callId, output: toolEnvelope({ result: e.result, summary: e.summary, undoToken: e.undoToken, kind: e.kind }), dynamic: true })
+          else out.push({ type: 'tool-output-available', toolCallId: e.callId, output: toolEnvelope({ result: e.result, summary: e.summary, undoToken: e.undoToken, kind: e.kind, approval: e.approval }), dynamic: true })
           return out
         }
         case 'subagent':

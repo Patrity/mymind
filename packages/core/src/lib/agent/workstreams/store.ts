@@ -9,6 +9,7 @@ import {
   DEFAULT_WORKSTREAM_BUDGET, TERMINAL_WORKSTREAM_STATES, ZERO_USED, normalizeTreeBudget,
   type TreeBudget, type WorkstreamAttention, type WorkstreamBudget, type WorkstreamDTO, type WorkstreamState, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
+import type { ApprovalVerdictDTO } from '../judge/types'
 
 export type { WorkstreamRow }
 
@@ -39,7 +40,8 @@ export function toWorkstreamDTO(r: WorkstreamRow, childIds: string[] = [], child
   return {
     id: r.id, conversationId: r.conversationId, originConversationId: r.originConversationId,
     goal: r.goal, state: r.state, toolsets: r.toolsets, budget: budgetOf(r), used: usedOf(r),
-    attention: (r.attention as WorkstreamAttention | null) ?? null, summary: r.summary, failureReason: r.failureReason,
+    attention: (r.attention as WorkstreamAttention | null) ?? null, stateDetail: r.state === 'running' ? r.stateDetail ?? null : null,
+    summary: r.summary, failureReason: r.failureReason,
     currentRunId: r.currentRunId,
     createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString(), finishedAt: r.finishedAt?.toISOString() ?? null,
     parentId: r.parentId, modelLabel: r.modelLabel, resolvedModel: r.isChild ? resolvedModel : null, workspaceMode: r.workspaceMode,
@@ -179,9 +181,22 @@ export async function insertWorkstream(v: {
 let terminalHook: ((workstreamId: string) => void) | null = null
 export function setWorkstreamTerminalHook(fn: ((workstreamId: string) => void) | null): void { terminalHook = fn }
 
+/**
+ * Cycle 84: keep an approval attention's judge state current as the verdict lands — only while the
+ * row still waits on THAT card (state 'attention', same requestId). False when it no longer does.
+ */
+export async function patchAttentionJudge(id: string, requestId: string, judge: ApprovalVerdictDTO): Promise<boolean> {
+  const rows = await useDb().update(workstreams)
+    .set({ attention: sql`jsonb_set(${workstreams.attention}, '{judge}', ${JSON.stringify(judge)}::jsonb)`, updatedAt: sql`now()` })
+    .where(and(eq(workstreams.id, id), eq(workstreams.state, 'attention'), sql`${workstreams.attention}->>'requestId' = ${requestId}`))
+    .returning({ id: workstreams.id })
+  if (rows.length) publishWorkstream(id)
+  return rows.length > 0
+}
+
 export async function patchWorkstream(
   id: string,
-  patch: Partial<Pick<WorkstreamRow, 'state' | 'used' | 'attention' | 'summary' | 'failureReason' | 'failures' | 'lastOutcome' | 'cancelRequested' | 'currentRunId' | 'finishedAt' | 'budget' | 'treeBudget' | 'tainted'>>,
+  patch: Partial<Pick<WorkstreamRow, 'state' | 'used' | 'attention' | 'stateDetail' | 'summary' | 'failureReason' | 'failures' | 'lastOutcome' | 'cancelRequested' | 'currentRunId' | 'finishedAt' | 'budget' | 'treeBudget' | 'tainted'>>,
   whenStates?: WorkstreamState[]
 ): Promise<WorkstreamRow | null> {
   const where: SQL = and(eq(workstreams.id, id), whenStates?.length ? inArray(workstreams.state, whenStates) : undefined)!

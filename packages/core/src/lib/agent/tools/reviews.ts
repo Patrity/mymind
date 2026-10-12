@@ -55,6 +55,8 @@ export const decideReviewTool: AgentTool = {
   description: "Decide one pending /review item for Tony. `choice` must be one of that item's `choices` ids from list_reviews (e.g. approve / reject, or keep-both / archive-old / archive-new / archive-both for a memory conflict). Tony confirms every call before it runs. Returns ok:true with a summary, or ok:false with a reason (not_pending, unknown_kind, invalid_choice, conflict, apply_failed) and a plain explanation — relay it rather than retrying blindly.",
   kind: 'destructive',
   dangerous: true,
+  // Cycle 84: "Tony confirms every call" — the judge shows a verdict, Smart Approvals never decides it.
+  humanOnly: true,
   toolset: 'reviews',
   schema: {
     id: z.union([z.uuid(), z.string().min(1).max(100)]).describe('The review item id from list_reviews'),

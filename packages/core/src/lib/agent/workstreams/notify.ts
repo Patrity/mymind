@@ -16,6 +16,7 @@ import { directChatGuid } from '../../channels/bluebubbles/client'
 import { insertDeliveries } from '../../channels/outbox'
 import { imessageApprovalChannel } from '../../channels/approvals'
 import type { ApprovalRequest } from '../types'
+import type { ApprovalVerdictDTO } from '../judge/types'
 import { workstreamPath } from '../../../shared/types/workstreams'
 import type { WorkstreamRow } from './store'
 
@@ -40,10 +41,11 @@ export const workstreamNotifyDeps = {
     return ids
   },
   /** The iMessage approval prompt for a workstream's card, or null when there is no chat to ask in. */
-  imessageApproval: async (runId: string, req: ApprovalRequest, signal: AbortSignal): Promise<{ approved: boolean } | null> => {
+  /** `verdict` (cycle 84): the card's judge state — its `⚖` line is texted with the prompt. */
+  imessageApproval: async (runId: string, req: ApprovalRequest, signal: AbortSignal, verdict?: () => ApprovalVerdictDTO | null): Promise<{ approved: boolean } | null> => {
     const target = await defaultChat()
     if (!target) return null
-    return imessageApprovalChannel(runId, target, { signal, timeoutMs: WORKSTREAM_IMESSAGE_APPROVAL_MS })(req)
+    return imessageApprovalChannel(runId, target, { signal, timeoutMs: WORKSTREAM_IMESSAGE_APPROVAL_MS, ...(verdict ? { verdict } : {}) })(req)
   }
 }
 

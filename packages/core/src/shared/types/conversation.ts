@@ -1,4 +1,5 @@
 import type { SubagentStep } from './agent-ui'
+import type { ToolApprovalNote } from '../../lib/agent/judge/types'
 
 export interface AttachmentRef {
   id: string
@@ -19,6 +20,8 @@ export interface ToolCallRecordDTO {
   textOffset?: number
   /** A subagent's nested calls (terminal states only). Display-only — never sent to the model. */
   steps?: SubagentStep[]
+  /** Cycle 84: the judge approved this call (Smart Approvals): "⚖ auto-approved (0.94): reason". */
+  approval?: ToolApprovalNote
 }
 
 export interface MessageUsage {

@@ -3,7 +3,7 @@
 // goes through gmailDeps.google.fetch (a fakeFetch keyed by `METHOD path`), listConnections is
 // mocked to two connections, and the token seam returns `t-<label>` so a route can tell WHICH
 // account's credentials a call carried (that is what proves a write hit the named account).
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('../../google/connections', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../google/connections')>()
@@ -31,6 +31,10 @@ import { UNTRUSTED_NOTE } from '../../google/untrusted'
 import { listConnections, type Connection } from '../../google/connections'
 import { GoogleReconnectError } from '../../google/token'
 import { fakeFetch, type FakeFetchRequest, type FakeFetchResponse } from '../../google/fake-fetch'
+import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../runtime/bus-approvals'
+import { approvalJudgeDeps, defaultApprovalJudgeDeps } from '../judge/approval'
+import { ruleVerdict } from '../judge/rules'
+import type { RecordVerdictInput } from '../judge/store'
 
 function conn(overrides: Partial<Connection>): Connection {
   return {
@@ -1001,5 +1005,61 @@ describe('contacts_search', () => {
     const r = out.result as { contacts: unknown[], warnings?: string[] }
     expect(r.contacts).toEqual([{ name: 'Alice', emails: ['alice@x.com'], phones: [], account: 'work', source: 'saved' }])
     expect(r.warnings).toEqual(['work: other contacts unavailable — Google error 400: scope missing'])
+  })
+})
+
+// Cycle 84 Task 2 (carry R3): the judge binds gmail_send's rule to the draft revision the CARD pinned —
+// it peeks the same in-process pin store describeApproval wrote. Both run inside buildAiTools, in the
+// run's process (the worker); a judge that could not see the pin (another process) floors `high`.
+describe('cycle 84: the judge and the gmail_send pin store share one process', () => {
+  const ON = { enabled: true, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 }
+  const APPROVE = { risk: 'low' as const, recommendation: 'approve' as const, confidence: 0.97, reasons: ['known recipient'], model: 'J', latencyMs: 1 }
+  const lookup = { recipients: async () => ({ messageId: 'm-j', addresses: ['ann@a.com'] }), mailedBefore: async () => true }
+  const rows: RecordVerdictInput[] = []
+  const routes = (): Record<string, Route> => ({
+    [`GET ${G}/drafts/d-j`]: () => ({
+      json: { id: 'd-j', message: { id: 'm-j', payload: { mimeType: 'text/plain', headers: [{ name: 'From', value: 'tony@work.com' }, { name: 'To', value: 'ann@a.com' }, { name: 'Subject', value: 'Hi' }], body: { data: b64('hello') } } } }
+    }),
+    [`POST ${G}/drafts/send`]: () => ({ json: { id: 'sent-j', threadId: 't-j' } })
+  })
+  beforeEach(() => {
+    _resetSendPins()
+    rows.length = 0
+    Object.assign(approvalJudgeDeps, {
+      settings: async () => ON,
+      rule: (t: { name: string }, i: Record<string, unknown>) => ruleVerdict(t, i, { gmail: lookup }),
+      verdict: async () => APPROVE,
+      recordVerdict: async (r: RecordVerdictInput) => { rows.push(r) },
+      recordDecision: async () => true,
+      ruleContextWaitMs: 10
+    })
+  })
+  afterEach(() => {
+    Object.assign(approvalJudgeDeps, defaultApprovalJudgeDeps)
+    for (const id of pendingBusApprovals()) decideBusApproval({ requestId: id, approved: false })
+  })
+  const tools = () => buildAiTools([gmailSendTool], {
+    signal: new AbortController().signal, requestApproval: busApprovalChannel('run-g', { publish: () => {}, timeoutMs: null }),
+    onEvent: () => {}, runId: 'run-g', judge: { surface: 'workstream' }
+  })
+
+  it('the judge reads the pin describeApproval wrote (the real pin store) → review floor → auto-approved → sent', async () => {
+    useRoutes(routes())
+    expect(approvalJudgeDeps.pinnedSendMessageId).toBe(pinnedSendMessageId)
+    const execute = tools().gmail_send!.execute as (input: unknown, opts: { toolCallId: string }) => Promise<unknown>
+    expect(await execute({ account: 'work', draftId: 'd-j' }, { toolCallId: 'c' })).toEqual({ sent: true, messageId: 'sent-j', threadId: 't-j' })
+    expect(rows[0]!.rule).toEqual({ floor: 'review', reasons: [], boundMessageId: 'm-j' })
+  })
+
+  it('a judge that cannot see the pin (as another process could not) floors high — never auto, Tony decides', async () => {
+    useRoutes(routes())
+    approvalJudgeDeps.pinnedSendMessageId = () => undefined
+    const execute = tools().gmail_send!.execute as (input: unknown, opts: { toolCallId: string }) => Promise<unknown>
+    const p = execute({ account: 'work', draftId: 'd-j' }, { toolCallId: 'c' })
+    for (let i = 0; i < 50 && !rows.some(r => r.verdict); i++) await new Promise(r => setTimeout(r, 5))
+    expect(rows[0]!.rule).toMatchObject({ floor: 'high', reasons: ['the draft changed after its recipients were checked'] })
+    expect(pendingBusApprovals('run-g')).toHaveLength(1)       // still on Tony
+    decideBusApproval({ requestId: pendingBusApprovals('run-g')[0]!, approved: false })
+    expect(await p).toEqual({ denied: true })
   })
 })

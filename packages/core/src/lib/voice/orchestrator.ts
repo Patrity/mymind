@@ -10,6 +10,7 @@ import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
 import { capResult, capArgs, WRITE_RESULT_CAP, ARGS_WRITE_CAP, type AgentToolRecord } from '../agent/tool-history'
 import type { ToolsetId } from '../agent/toolsets'
 import type { SubagentStep, AgentToolKind } from '../../shared/types/agent-ui'
+import type { ToolApprovalNote } from '../agent/judge/types'
 import { toolOutcome } from '../../shared/utils/agent-ui'
 
 export type VoiceEvent =
@@ -19,7 +20,7 @@ export type VoiceEvent =
   | { type: 'approval-request'; approvalId: string; callId: string; name: string; args?: Record<string, unknown> }
   // args/result are the CAPPED copies also written to the tool record, so the live UI shows
   // exactly what a resumed thread will show.
-  | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind }
+  | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind; approval?: ToolApprovalNote }
   | { type: 'subagent'; parentCallId: string; steps: SubagentStep[] }
   // The timing fields are NOT produced by the model stream (the run loop emits tokens only) —
   // ws.ts owns the turn clock and re-emits usage with them filled in once the turn ends, so the
@@ -36,7 +37,9 @@ export interface TurnDeps {
   context?: string
   modelDefId?: string | null
   profile?: import('../agent/profile').AgentProfile
-  requestApproval?: (req: import('../agent/types').ApprovalRequest) => Promise<{ approved: boolean }>
+  requestApproval?: import('../agent/types').RequestApproval
+  /** Cycle 84 Task 2: forwarded verbatim into runAgent's ctx (the approval surface + workstream). */
+  approvals?: import('../agent/run').RunAgentCtx['approvals']
   attachments?: AttachmentRef[]
   readAttachmentBytes?: (a: AttachmentRef) => Promise<{ bytes: Buffer; mime: string } | null>
   /** Per-turn proactive memory retrieval — injected at the WS boundary (ws.ts passes
@@ -115,7 +118,7 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
   const subagentSteps = new Map<string, SubagentStep[]>()
 
   let sawText = false
-  const ws = { ...(deps.maxSteps !== undefined ? { maxSteps: deps.maxSteps } : {}), ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}), ...(deps.onStep ? { onStep: deps.onStep } : {}), ...(deps.workstream ? { workstream: deps.workstream } : {}), ...(deps.subagent ? { subagent: deps.subagent } : {}) }
+  const ws = { ...(deps.maxSteps !== undefined ? { maxSteps: deps.maxSteps } : {}), ...(deps.shouldStop ? { shouldStop: deps.shouldStop } : {}), ...(deps.onStep ? { onStep: deps.onStep } : {}), ...(deps.workstream ? { workstream: deps.workstream } : {}), ...(deps.subagent ? { subagent: deps.subagent } : {}), ...(deps.approvals ? { approvals: deps.approvals } : {}) }
   for await (const ev of run(messages, { signal: deps.signal, speak: deps.speak, context, modelDefId: deps.modelDefId, profile: deps.profile, requestApproval: deps.requestApproval, attachmentImageIds: attachments.filter(a => a.kind === 'image').map(a => a.id), drainSteer: deps.drainSteer, wake: deps.wake, runId: deps.runId, toolsets: deps.toolsets, ...ws })) {
     if (deps.signal.aborted) break
     if (ev.type === 'reasoning-delta') {
@@ -163,10 +166,11 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
           // applyImageEmbeds(assistantText).content, which trims and collapses whitespace, so
           // a raw length would index a string that no longer exists (see sanitizedOffset).
           undoToken: ev.undoToken, textOffset: sanitizedOffset(assistantText),
+          ...(ev.approval ? { approval: ev.approval } : {}),
           ...(steps?.length ? { steps: steps.map(s => s.state === 'running' ? { ...s, state: 'error' as const } : s) } : {})
         })
       }
-      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images, callId: ev.callId, args, result, kind: ev.kind })
+      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images, callId: ev.callId, args, result, kind: ev.kind, ...(ev.approval ? { approval: ev.approval } : {}) })
       deps.emit({ type: 'state', state: 'thinking' })
     }
   }

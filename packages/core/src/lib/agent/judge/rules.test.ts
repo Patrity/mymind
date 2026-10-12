@@ -272,6 +272,24 @@ describe('gmailSentHistory (Gmail-backed lookup)', () => {
   it('addressesIn de-duplicates and lowercases', () => {
     expect(addressesIn(['A@x.com, a@X.com', undefined, '<b@y.org>'])).toEqual(['a@x.com', 'b@y.org'])
   })
+
+  it('N1: a quoted or commented display name is never an address — the angle-addr wins', () => {
+    expect(addressesIn(['"ann@x.com" <bob@evil.com>'])).toEqual(['bob@evil.com'])
+    expect(addressesIn(['ann@x.com <bob@evil.com>'])).toEqual(['bob@evil.com'])
+    expect(addressesIn(['bob@evil.com (ann@x.com)'])).toEqual(['bob@evil.com'])
+    expect(addressesIn(['Bob (aka (ann@x.com)) <bob@evil.com>'])).toEqual(['bob@evil.com'])
+    expect(addressesIn(['"Doe, Ann" <ann@x.com>, "x\\"y@z.com" <c@d.com>; e@f.com'])).toEqual(['ann@x.com', 'c@d.com', 'e@f.com'])
+  })
+
+  it('N1: an earlier mail to "victim" <attacker> does not vouch for the victim', async () => {
+    const d = deps({ 'ann@x.com': ['"ann@x.com" <bob@evil.com>'] })
+    expect(await gmailSentHistory(d.google).mailedBefore('work', 'ann@x.com')).toBe(false)
+  })
+
+  it('N2: an apostrophe is part of the local part, not a delimiter', () => {
+    expect(addressesIn(["x'ann@x.com"])).toEqual(["x'ann@x.com"])
+    expect(addressesIn(["O'Brien <o'brien@x.com>"])).toEqual(["o'brien@x.com"])
+  })
 })
 
 describe('calendar rule', () => {

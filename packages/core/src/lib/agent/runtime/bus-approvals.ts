@@ -21,8 +21,18 @@
 //
 // iMessage approvals (a run whose reply goes to a chat, no socket) keep their DB path:
 // channels/approvals.ts, chosen by the runner.
+//
+// Cycle 84 Task 2: a request may come with its judge (judge/approval.ts). The card goes out first;
+// then the judge starts, its state streams to the card as `approval-verdict` frames, and when Smart
+// Approvals applies it resolves the request itself (`approval-resolved` with `decidedBy: 'judge'`).
+// First decision wins — Tony, the timeout, Stop or the judge; every outcome is reported to the judge
+// (the audit). While an eligible call is still being judged the request is `evaluating`, not
+// `waiting` on Tony: onWaiting(true) (the workstream's attention + iMessage away prompt) fires only
+// once the judge says a human is needed.
 import { randomUUID } from 'node:crypto'
-import type { ApprovalRequest } from '../types'
+import type { ApprovalOptions, ApprovalRequest } from '../types'
+import type { ApprovalJudge } from '../judge/approval'
+import type { ApprovalDecider } from '../judge/types'
 import { clientApprovalFrame, type HubFrame } from '../../bus/events'
 import type { CommandPayloads } from '../../bus/commands'
 import { addApproval, approvalOutcome } from '../../exec/approvals'
@@ -30,7 +40,7 @@ import { recordEvent } from '../../observability/record'
 import { capArgs, ARGS_WRITE_CAP } from '../tool-history'
 import { turnStreamFor } from './approvals'
 
-type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
+type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
 
 /** A chat approval auto-denies after this long (APPROVAL_TIMEOUT_MS overrides, as it always has). */
 export function chatApprovalTimeoutMs(): number {
@@ -47,36 +57,55 @@ export interface BusApprovalOptions {
    *  workstreams, whose approvals wait without a timeout (spec §3.4; attention state). Default:
    *  chatApprovalTimeoutMs(). */
   timeoutMs?: number | null
-  /** Fired when a request starts / stops waiting on Tony (workstream attention state). */
-  onWaiting?: (requestId: string, waiting: boolean) => void
+  /** Fired when a request starts / stops waiting on Tony (workstream attention state). `waiting:
+   *  false` fires only for a request that fired `true`. Cycle 84: carries the request and its judge. */
+  onWaiting?: (requestId: string, waiting: boolean, ctx: { req: ApprovalRequest; judge?: ApprovalJudge }) => void
+  /** Cycle 84: fired when a Smart-Approvals-eligible request starts / stops being judged (the
+   *  workstream's `evaluating` detail). `false` fires only after `true`. */
+  onEvaluating?: (requestId: string, evaluating: boolean) => void
 }
 
 interface Pending {
   runId: string
   req: ApprovalRequest
-  finish: (approved: boolean) => void
+  finish: (approved: boolean, by?: ApprovalDecider) => void
 }
 const pending = new Map<string, Pending>()
 
 /** The approval channel of one run (see the header). */
 export function busApprovalChannel(runId: string, o: BusApprovalOptions): Channel {
-  return req => new Promise<{ approved: boolean }>((resolve) => {
+  return (req, opts) => new Promise<{ approved: boolean }>((resolve) => {
     const requestId = randomUUID()
+    const judge = opts?.judge
     let timer: ReturnType<typeof setTimeout> | null = null
     let done = false
-    const onAbort = () => finish(false)
-    function finish(approved: boolean) {
+    let waiting = false
+    let evaluating = false
+    let unsubscribe: (() => void) | null = null
+    const onAbort = () => finish(false, 'tony')
+    function finish(approved: boolean, by: ApprovalDecider = 'tony') {
       if (done) return
       done = true
       pending.delete(requestId)
       if (timer) clearTimeout(timer)
       o.signal?.removeEventListener('abort', onAbort)
-      o.publish({ type: 'approval-resolved', requestId })
-      o.onWaiting?.(requestId, false)
+      unsubscribe?.()
+      // The audit first (first decision wins there too), then the card's outcome.
+      judge?.settle(by === 'judge' ? 'auto' : by === 'timeout' ? 'timeout' : approved ? 'approved' : 'denied', by)
+      const auto = by === 'judge' ? judge?.autoNote() : null
+      o.publish({ type: 'approval-resolved', requestId, decidedBy: by, ...(auto ? { auto } : {}) })
+      if (evaluating) { evaluating = false; o.onEvaluating?.(requestId, false) }
+      if (waiting) { waiting = false; o.onWaiting?.(requestId, false, { req, judge }) }
       resolve({ approved })
     }
+    const startWaiting = () => {
+      if (done || waiting) return
+      if (evaluating) { evaluating = false; o.onEvaluating?.(requestId, false) }
+      waiting = true
+      o.onWaiting?.(requestId, true, { req, judge })
+    }
     // Stopped before it could even ask: nothing to show.
-    if (o.signal?.aborted) { done = true; resolve({ approved: false }); return }
+    if (o.signal?.aborted) { done = true; judge?.settle('denied', 'tony'); resolve({ approved: false }); return }
     pending.set(requestId, { runId, req, finish })
     o.signal?.addEventListener('abort', onAbort, { once: true })
     const timeoutMs = o.timeoutMs === undefined ? chatApprovalTimeoutMs() : o.timeoutMs
@@ -84,7 +113,7 @@ export function busApprovalChannel(runId: string, o: BusApprovalOptions): Channe
       timer = setTimeout(() => {
         if (done) return
         recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'warn', meta: { outcome: 'timeout', command: req.logSummary ?? req.command } })
-        finish(false)
+        finish(false, 'timeout')
       }, timeoutMs)
     }
     // Only what the card renders goes on the bus / into the event log (fix round 1, M3): the args,
@@ -93,7 +122,14 @@ export function busApprovalChannel(runId: string, o: BusApprovalOptions): Channe
     // The tool part's card: capped like the tool-start frame's args, so a huge argument never
     // ships whole to the browser. Emitted into THIS run's turn stream (same process as the run).
     if (req.callId) turnStreamFor(runId)?.emit({ type: 'approval-request', approvalId: requestId, callId: req.callId, name: req.tool, args: req.args && capArgs(req.args, ARGS_WRITE_CAP) })
-    o.onWaiting?.(requestId, true)
+    if (!judge) { startWaiting(); return }
+    // The card is out — now the judge (rule tier + verdict) runs behind it.
+    unsubscribe = judge.onUpdate((v) => { if (!done) o.publish({ type: 'approval-verdict', requestId, judge: v }) })
+    void judge.eligible.then((e) => {
+      if (e && !done && !waiting) { evaluating = true; o.onEvaluating?.(requestId, true) }
+    })
+    void judge.humanNeeded.then(startWaiting)
+    judge.start(() => finish(true, 'judge'))
   })
 }
 

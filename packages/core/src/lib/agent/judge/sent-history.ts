@@ -19,14 +19,54 @@ const known = new Map<string, number>() // `${connectionId}|${address}` → cach
 /** Test seam: forget the cache. */
 export function _resetSentHistoryCache(): void { known.clear() }
 
-/** Every address in To/Cc/Bcc header values, lowercased, de-duplicated. */
+/** Split one address-list header into its mailboxes: on `,`/`;` outside quoted strings, comments
+ *  and angle brackets (`"Doe, Ann" <ann@x.com>` is one mailbox). */
+function mailboxesOf(header: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let quoted = false
+  let depth = 0 // comment nesting
+  let angle = false
+  for (let i = 0; i < header.length; i++) {
+    const ch = header[i]!
+    if (ch === '\\' && (quoted || depth > 0)) { cur += ch + (header[i + 1] ?? ''); i++; continue }
+    if (quoted) { if (ch === '"') quoted = false; cur += ch; continue }
+    if (depth > 0) { if (ch === '(') depth++; else if (ch === ')') depth--; cur += ch; continue }
+    if (ch === '"') quoted = true
+    else if (ch === '(') depth = 1
+    else if (ch === '<') angle = true
+    else if (ch === '>') angle = false
+    else if ((ch === ',' || ch === ';') && !angle) { out.push(cur); cur = ''; continue }
+    cur += ch
+  }
+  out.push(cur)
+  return out
+}
+
+/** An addr-spec token (`'` is valid in a local part — Task 2 carry N2 — so it is not a delimiter). */
+const ADDR = /[^\s<>,;"()]+@[^\s<>,;"()]+/g
+
+/**
+ * Every address in To/Cc/Bcc header values, lowercased, de-duplicated. Per mailbox, quoted strings
+ * and comments are dropped first — a display name is never an address (Task 2 carry N1:
+ * `"ann@x.com" <bob@evil.com>` is bob only) — then the angle-addr wins when there is one; otherwise
+ * the bare addr-spec.
+ */
 export function addressesIn(values: Array<string | undefined>): string[] {
   const out: string[] = []
   for (const v of values) {
     if (!v) continue
-    for (const m of v.matchAll(/[^\s<>,;"'()]+@[^\s<>,;"'()]+/g)) {
-      const a = m[0].toLowerCase()
-      if (!out.includes(a)) out.push(a)
+    for (const box of mailboxesOf(v)) {
+      let plain = box.replace(/"(?:[^"\\]|\\.)*"?/g, ' ')
+      // Comments nest: strip innermost-first; an unclosed one runs to the end.
+      for (let prev = ''; prev !== plain;) { prev = plain; plain = plain.replace(/\([^()]*\)/g, ' ') }
+      plain = plain.replace(/\(.*$/, ' ')
+      const angles = [...plain.matchAll(/<([^<>]*)>/g)].map(m => m[1]!)
+      const source = angles.length ? angles.join(' ') : plain
+      for (const m of source.matchAll(ADDR)) {
+        const a = m[0].toLowerCase()
+        if (!out.includes(a)) out.push(a)
+      }
     }
   }
   return out

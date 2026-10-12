@@ -37,7 +37,8 @@ import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '../r
 import { createRunEventWriter, type HubFrame, type RunEventWriter } from '../../bus/events'
 import { APPROVAL_WITHDRAWN } from '../../channels/approvals'
 import { parseToolsetIds } from '../toolsets'
-import type { ApprovalRequest } from '../types'
+import type { ApprovalOptions, ApprovalRequest } from '../types'
+import type { ApprovalVerdictDTO } from '../judge/types'
 import type { StepUsage } from '../run'
 import type { WorkstreamPromptInfo } from '../prompt'
 import type { RunInput, RunOutcome } from '../runtime/types'
@@ -46,7 +47,7 @@ import {
   type WorkstreamBudget, type WorkstreamDTO, type WorkstreamUsed
 } from '../../../shared/types/workstreams'
 import {
-  budgetOf, exhausted, getWorkstream, patchWorkstream, publishWorkstream, rollupTree, usedOf,
+  budgetOf, exhausted, getWorkstream, patchAttentionJudge, patchWorkstream, publishWorkstream, rollupTree, usedOf,
   workstreamDTO, workstreamForConversation, type WorkstreamRow
 } from './store'
 import { promptInfo, segmentOrigin, segmentText, type SegmentWhy } from './prompt'
@@ -74,7 +75,7 @@ export const WALL_HARD_GRACE_MS = 60_000
 /** The final summary step's own hard cap. */
 export const FINAL_STEP_MAX_MS = 10 * 60_000
 
-type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
+type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
 type StopReason = 'finished' | 'attention' | 'cancel' | 'budget' | 'yield' | 'park' | 'wait'
 /** Non-terminal: what a reply/resume may move on from. */
 const RUNNABLE: Array<WorkstreamRow['state']> = ['queued', 'running', 'attention', 'paused']
@@ -205,7 +206,7 @@ export async function beginSegment(run: AgentRun): Promise<Segment> {
   // deciding it): withdrawn — the model can ask again.
   if (attentionOf(ws)?.kind === 'approval') await releaseParked(ws)
   const patched = await patchWorkstream(ws.id, {
-    state: 'running', currentRunId: run.id, attention: null,
+    state: 'running', currentRunId: run.id, attention: null, stateDetail: null,
     ...(final && !ws.failureReason ? { failureReason: final } : {})
   }, RUNNABLE)
   if (!patched) return skipped()
@@ -311,7 +312,7 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
       void checkpoint()
     },
     approvalChannel({ publish, signal }) {
-      let current: ApprovalRequest | null = null
+      const judgeSubs = new Map<string, () => void>() // requestId → its attention's verdict subscription
       const bus = busApprovalChannel(run.id, {
         signal,
         timeoutMs: null, // spec §3.4/§5.4: a workstream approval waits until decided (or the run stops)
@@ -320,21 +321,28 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
           // The card shows in the chat it was started from too (spec §5.4): the same frames, on the
           // origin conversation's log under this run's id — so the web's card tracking, re-send on
           // attach (openApprovalFrames: a still-running run) and decision forwarding all just work.
-          if ((f.type === 'approval' || f.type === 'approval-resolved') && tonyChat) {
+          if ((f.type === 'approval' || f.type === 'approval-verdict' || f.type === 'approval-resolved') && tonyChat) {
             mirror ??= createRunEventWriter(run.id, tonyChat)
             mirror.emit(f)
           }
         },
-        onWaiting: (requestId, isWaiting) => {
+        // Cycle 84: a Smart-Approvals-eligible call is `evaluating` (still running, no attention, no
+        // texts) while the judge decides; onWaiting(true) follows only when a human is needed.
+        onEvaluating: (_requestId, isEvaluating) => {
+          void serial(() => patchWorkstream(ws.id, { stateDetail: isEvaluating ? 'evaluating' : null }, isEvaluating ? ['running'] : undefined))
+        },
+        onWaiting: (requestId, isWaiting, { req, judge }) => {
           if (isWaiting) {
-            const req = current
             const race = new AbortController()
             waiting.set(requestId, race)
             pause()
             void checkpoint()
-            const text = req ? approvalText(req) : 'An action needs your approval.'
+            const text = approvalText(req)
             // The request itself is kept on the row (review I1): a drain or crash can restore the card.
-            const attention: ParkedAttention = { kind: 'approval', text, requestId, runId: run.id, notifiedAt: Date.now(), ...(req ? { request: storedRequest(req) } : {}) }
+            // Cycle 84: with the judge's state, kept current below as the verdict lands.
+            const verdict = judge?.view() ?? null
+            const attention: ParkedAttention = { kind: 'approval', text, requestId, runId: run.id, notifiedAt: Date.now(), request: storedRequest(req), ...(verdict ? { judge: verdict } : {}) }
+            if (judge) judgeSubs.set(requestId, judge.onUpdate(v => void serial(() => patchAttentionJudge(ws.id, requestId, v))))
             void serial(async () => {
               const row = await patchWorkstream(ws.id, { state: 'attention', attention }, ['running', 'attention'])
               // The chat it came from hears about it too (review M1), not only the card.
@@ -347,11 +355,15 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
             // Cycle 83 final fix wave (M4): a CHILD's card is part of its tree's ONE away text — its own
             // interactive prompt only when it is the only thing in the tree waiting on Tony (after
             // the attention above is on the row).
-            if (req && ws.isChild && ws.parentId) {
+            // Cycle 84: the prompt carries the judge's line (read when it is texted).
+            const verdictOf = () => judge?.view() ?? null
+            if (ws.isChild && ws.parentId) {
               const parentId = ws.parentId
-              void serial(async () => {}).then(() => childAwayApproval(parentId, ws.id, run.id, requestId, req, race.signal))
-            } else if (req) void startAwayApproval(run.id, requestId, req, race.signal)
+              void serial(async () => {}).then(() => childAwayApproval(parentId, ws.id, run.id, requestId, req, race.signal, verdictOf))
+            } else void startAwayApproval(run.id, requestId, req, race.signal, verdictOf)
           } else {
+            judgeSubs.get(requestId)?.()
+            judgeSubs.delete(requestId)
             waiting.get(requestId)?.abort(APPROVAL_WITHDRAWN)
             waiting.delete(requestId)
             // Parking (drain): leave attention as it is. The card is NOT carried over: the next
@@ -364,11 +376,10 @@ function makeSegment(run: AgentRun, ws: WorkstreamRow, o: { skip: boolean; final
           }
         }
       })
-      return (req) => {
+      return (req, opts) => {
         // Cycle 83: a child's card says whose it is — `<coordinator goal> › <child goal>`.
         if (ws.isChild) req = { ...req, title: `${childTitle(parent?.goal ?? 'coordinator', ws.goal)}: ${req.title ?? `Run ${req.tool}?`}` }
-        current = req
-        return bus(req)
+        return bus(req, opts)
       }
     },
     park() {
@@ -406,11 +417,11 @@ function approvalText(req: ApprovalRequest): string {
 
 /** M4: a child's card while Tony is away — the tree's grouped text, or (alone in its tree) its own
  *  interactive prompt, raced with the card like a top-level one. */
-async function childAwayApproval(parentId: string, childId: string, runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal): Promise<void> {
+async function childAwayApproval(parentId: string, childId: string, runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal, verdict?: () => ApprovalVerdictDTO | null): Promise<void> {
   try {
     if (signal.aborted) return
     if ((await (await coordinator()).announceTreeAway(parentId, { approvalOf: childId })) !== 'interactive' || signal.aborted) return
-    const r = await workstreamNotifyDeps.imessageApproval(runId, req, signal)
+    const r = await workstreamNotifyDeps.imessageApproval(runId, req, signal, verdict)
     if (!r || signal.aborted) return
     decideBusApproval({ requestId, approved: r.approved })
   } catch (err) {
@@ -418,10 +429,10 @@ async function childAwayApproval(parentId: string, childId: string, runId: strin
   }
 }
 
-async function startAwayApproval(runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal): Promise<void> {
+async function startAwayApproval(runId: string, requestId: string, req: ApprovalRequest, signal: AbortSignal, verdict?: () => ApprovalVerdictDTO | null): Promise<void> {
   try {
     if (!(await workstreamNotifyDeps.isAway()) || signal.aborted) return
-    const r = await workstreamNotifyDeps.imessageApproval(runId, req, signal)
+    const r = await workstreamNotifyDeps.imessageApproval(runId, req, signal, verdict)
     // Withdrawn because the card decided first: nothing to do (decideBusApproval would be a no-op).
     if (!r || signal.aborted) return
     decideBusApproval({ requestId, approved: r.approved })

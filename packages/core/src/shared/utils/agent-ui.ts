@@ -3,6 +3,7 @@
 import type { FileUIPart } from 'ai'
 import type { AttachmentRef } from '../types/conversation'
 import type { AgentToolKind, ToolEnvelope } from '../types/agent-ui'
+import type { ToolApprovalNote } from '../../lib/agent/judge/types'
 
 export type ToolOutcome = { state: 'ok' } | { state: 'error'; errorText: string } | { state: 'denied' }
 
@@ -17,12 +18,13 @@ export function toolOutcome(result: unknown): ToolOutcome {
   return { state: 'ok' }
 }
 
-export function toolEnvelope(o: { result: unknown; summary: string; undoToken?: string; kind?: AgentToolKind }): ToolEnvelope {
+export function toolEnvelope(o: { result: unknown; summary: string; undoToken?: string; kind?: AgentToolKind; approval?: ToolApprovalNote }): ToolEnvelope {
   return {
     value: o.result,
     summary: o.summary,
     ...(o.undoToken ? { undoToken: o.undoToken } : {}),
-    ...(o.kind ? { kind: o.kind } : {})
+    ...(o.kind ? { kind: o.kind } : {}),
+    ...(o.approval ? { approval: o.approval } : {})
   }
 }
 

@@ -1,0 +1,236 @@
+// Cycle 84 Task 2 — the approval judge through the REAL queue → runner → workstream loop → runAgent →
+// buildAiTools → workstream approval channel path, with a fake model and a fake (controllable) verdict.
+// The rule tier and the audit store are real (approval_verdicts in the shared dev DB). The dev DB is
+// shared: this file's own bus namespace, scoped pumps, every row it makes is deleted in afterAll, and
+// every outbound notification is captured by workstreamNotifyDeps.
+process.loadEnvFile('.env')
+import { describe, it, expect, afterAll, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+vi.stubGlobal('useRuntimeConfig', () => ({ databaseUrl: process.env.DATABASE_URL }))
+
+import { streamText } from 'ai'
+import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test'
+import { z } from 'zod'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { useDb } from '@mymind/core/db'
+import { agentInbox, agentRuns, approvalVerdicts, conversationMessages, conversations, runEvents, workerCommands, workspaces, workstreams, type AgentRun } from '@mymind/core/db/schema'
+import { pumpOnce, setExecutionMode, waitForInFlight } from '@mymind/core/lib/agent/runtime/queue'
+import { approvalSurface, runTurn } from '@mymind/core/lib/agent/runtime/runner'
+import { busApprovalChannel, decideBusApproval, pendingBusApprovals } from '@mymind/core/lib/agent/runtime/bus-approvals'
+import { setBusNs } from '@mymind/core/lib/bus/ns'
+import { openApprovalFrames } from '@mymind/core/lib/bus/events'
+import { closeListener } from '@mymind/core/lib/bus/listen'
+import { createConversation } from '@mymind/core/services/conversations'
+import { startWorkstream } from '@mymind/core/lib/agent/workstreams/loop'
+import { getWorkstream, toWorkstreamDTO } from '@mymind/core/lib/agent/workstreams/store'
+import { workstreamNotifyDeps } from '@mymind/core/lib/agent/workstreams/notify'
+import { runAgent, type AgentMessage, type RunAgentCtx } from '@mymind/core/lib/agent/run'
+import { approvalJudgeDeps, createApprovalJudge, defaultApprovalJudgeDeps } from '@mymind/core/lib/agent/judge/approval'
+import type { AgentTool, ApprovalRequest } from '@mymind/core/lib/agent/types'
+import type { ApprovalVerdictDTO, JudgeVerdict } from '@mymind/core/lib/agent/judge/types'
+import type { WorkstreamAttention } from '@mymind/core/shared/types/workstreams'
+
+const NS = `judge-t2-${process.pid}`
+const convIds: string[] = []
+const nonces: string[] = []
+const realNotify = { ...workstreamNotifyDeps }
+const iApprovals: Array<{ req: ApprovalRequest; verdict?: () => ApprovalVerdictDTO | null }> = []
+const texts: string[] = []
+const ran: string[] = []
+const APPROVE: JudgeVerdict = { risk: 'low', recommendation: 'approve', confidence: 0.96, reasons: ['matches the goal'], model: 'J', latencyMs: 4 }
+let release: (v: JudgeVerdict) => void = () => {}
+
+beforeAll(() => { setBusNs(NS); setExecutionMode('remote') })
+beforeEach(() => {
+  iApprovals.length = 0
+  texts.length = 0
+  ran.length = 0
+  workstreamNotifyDeps.isAway = async () => true
+  workstreamNotifyDeps.text = async (t) => { texts.push(t); return [] }
+  workstreamNotifyDeps.imessageApproval = (_runId, req, signal, verdict) => {
+    iApprovals.push({ req, verdict })
+    return new Promise(res => signal.addEventListener('abort', () => res({ approved: false }), { once: true }))
+  }
+  // Settings + verdict are faked (no agent_settings write to the shared DB, no model call); the
+  // rule tier and the audit store are the real ones.
+  const verdict = new Promise<JudgeVerdict>((r) => { release = r })
+  Object.assign(approvalJudgeDeps, {
+    settings: async () => ({ enabled: true, smartApprovals: { workstreams: true, chat: false }, confidence: 0.9 }),
+    verdict: async () => verdict,
+    ruleContextWaitMs: 50
+  })
+})
+afterEach(() => { Object.assign(approvalJudgeDeps, defaultApprovalJudgeDeps) })
+afterAll(async () => {
+  Object.assign(workstreamNotifyDeps, realNotify)
+  const db = useDb()
+  const runIds = convIds.length ? (await db.select({ id: agentRuns.id }).from(agentRuns).where(inArray(agentRuns.conversationId, convIds))).map(r => r.id) : []
+  if (runIds.length) await db.delete(approvalVerdicts).where(inArray(approvalVerdicts.runId, runIds))
+  if (nonces.length) await db.delete(approvalVerdicts).where(inArray(approvalVerdicts.nonce, nonces))
+  await db.delete(workspaces).where(eq(workspaces.ns, NS))
+  if (convIds.length) {
+    await db.delete(agentInbox).where(inArray(agentInbox.conversationId, convIds))
+    await db.delete(workstreams).where(inArray(workstreams.conversationId, convIds))
+    await db.delete(agentRuns).where(inArray(agentRuns.conversationId, convIds))
+    await db.delete(conversationMessages).where(inArray(conversationMessages.conversationId, convIds))
+    await db.delete(conversations).where(inArray(conversations.id, convIds))
+  }
+  await db.delete(runEvents).where(eq(runEvents.ns, NS))
+  await db.delete(workerCommands).where(eq(workerCommands.ns, NS))
+  const [left] = await db.select({ n: sql<number>`count(*)::int` }).from(approvalVerdicts).where(inArray(approvalVerdicts.runId, runIds.length ? runIds : ['00000000-0000-4000-8000-000000000000']))
+  expect(left!.n).toBe(0)
+  setExecutionMode('local')
+  setBusNs(null)
+  await closeListener()
+})
+
+// ── harness ─────────────────────────────────────────────────────────────────────────────────
+
+const usage = { inputTokens: { total: 1 }, outputTokens: { total: 1 } }
+const finish = (r: 'tool-calls' | 'stop') => ({ type: 'finish', finishReason: { unified: r, raw: undefined }, usage })
+const text = (s: string) => [{ type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: s }, { type: 'text-end', id: 't' }]
+const call = (id: string, toolName: string, input: unknown) => ({ type: 'tool-call', toolCallId: id, toolName, input: JSON.stringify(input) })
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+/** A dangerous tool the REAL rule tier floors per its args: `review` (an RSVP) or `high` (a cancel). */
+const guestEvent: AgentTool = {
+  name: 'calendar_guest_event', description: 'Create, update or cancel an event with guests', kind: 'create', toolset: 'calendar', dangerous: true,
+  schema: { op: z.string(), eventId: z.string() },
+  describeApproval: a => ({ tool: 'calendar_guest_event', title: 'Change this event?', command: `${String(a.op)} ${String(a.eventId)}`, proposedPattern: '' }),
+  handler: async (a) => { ran.push(`${String(a.op)}:${String(a.eventId)}`); return { result: { ok: true }, summary: 'event changed' } }
+}
+
+function runFn(op: string) {
+  return (r: AgentRun) => runTurn(r, {
+    assemble: (async () => ({ context: '', usedMemoryIds: [], used: 0, droppedTurns: 0 })) as never,
+    unavailableToolsets: async () => [],
+    runAgent: ((messages: AgentMessage[], ctx: RunAgentCtx) => {
+      const steps = [
+        // Some text with the call, so the turn persists an assistant row carrying the tool record.
+        [...text('changing the event'), call('c1', 'calendar_guest_event', { op, eventId: 'standup' }), finish('tool-calls')],
+        [call('c2', 'finish_workstream', { summary: 'done with the event' }), finish('tool-calls')],
+        [...text('done'), finish('stop')]
+      ]
+      let i = 0
+      const model = new MockLanguageModelV3({ doStream: async () => ({ stream: convertArrayToReadableStream(steps[Math.min(i++, steps.length - 1)]! as never) }) })
+      const tools = [guestEvent, ...(ctx.profile?.tools ?? []).filter(t => t.name === 'finish_workstream')]
+      return runAgent(messages, ctx, { streamText: ((a: Parameters<typeof streamText>[0]) => streamText({ ...a, model })) as never, tools, buildSystemPrompt: async () => 's' })
+    }) as never
+  })
+}
+
+async function newWorkstream(goal: string) {
+  const origin = await createConversation({ title: `judge-t2 origin ${goal}` })
+  convIds.push(origin.id)
+  const ws = await startWorkstream({ goal: `judge-t2 ${goal}`, originConversationId: origin.id }, { kick: false })
+  convIds.push(ws.conversationId)
+  return { ws, origin: origin.id }
+}
+async function until<T>(f: () => Promise<T | null | undefined | false>, ms = 10_000): Promise<T> {
+  const end = Date.now() + ms
+  for (;;) {
+    const v = await f()
+    if (v) return v
+    if (Date.now() > end) throw new Error('timed out waiting')
+    await sleep(20)
+  }
+}
+const segRun = async (convId: string) => (await useDb().select().from(agentRuns).where(and(eq(agentRuns.conversationId, convId), eq(agentRuns.kind, 'workstream'))).orderBy(asc(agentRuns.createdAt)))[0]
+const verdictRows = (runId: string) => useDb().select().from(approvalVerdicts).where(eq(approvalVerdicts.runId, runId))
+const framesOf = async (convId: string) => (await useDb().select({ type: runEvents.type, payload: runEvents.payload }).from(runEvents)
+  .where(and(eq(runEvents.ns, NS), eq(runEvents.conversationId, convId))).orderBy(asc(runEvents.id)))
+  .filter(r => r.type.startsWith('approval')).map(r => r.payload as Record<string, unknown>)
+
+// ── tests ───────────────────────────────────────────────────────────────────────────────────
+
+describe('approval judge in a workstream (real runner + loop)', () => {
+  it('Smart Approvals: evaluating (no attention, no texts) → the judge approves → the call EXECUTES; audit decided_by judge; the record carries the ⚖ note', async () => {
+    const { ws, origin } = await newWorkstream('auto')
+    expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('rsvp') })).toBe(1)
+    // While the judge thinks: still running, no attention — only the `evaluating` detail.
+    const evaluating = await until(async () => { const r = await getWorkstream(ws.id); return r?.stateDetail === 'evaluating' ? r : null })
+    expect(toWorkstreamDTO(evaluating)).toMatchObject({ state: 'running', attention: null, stateDetail: 'evaluating' })
+    const run = (await segRun(ws.conversationId))!
+    const [pendingRow] = await verdictRows(run.id)
+    expect(pendingRow).toMatchObject({ tool: 'calendar_guest_event', ruleFloor: 'review', workstreamId: ws.id, decision: null, recommendation: null })
+    release(APPROVE)
+    expect(await waitForInFlight(15_000)).toBe(true)
+    expect(ran).toEqual(['rsvp:standup'])
+    const [row] = await verdictRows(run.id)
+    expect(row).toMatchObject({ decision: 'auto', decidedBy: 'judge', risk: 'low', recommendation: 'approve', confidence: expect.closeTo(0.96, 5), reasons: ['matches the goal'], ruleFloor: 'review' })
+    expect(row!.decidedAt).not.toBeNull()
+    // The card streamed its verdict and was resolved by the judge — on the thread and in the origin chat.
+    for (const conv of [ws.conversationId, origin]) {
+      const frames = await framesOf(conv)
+      expect(frames.map(f => f.type)).toEqual(expect.arrayContaining(['approval', 'approval-verdict', 'approval-resolved']))
+      expect(frames.find(f => f.type === 'approval-resolved')).toMatchObject({ decidedBy: 'judge', auto: { decidedBy: 'judge', confidence: 0.96, reason: 'matches the goal' } })
+    }
+    // Never waited on Tony: no attention ever, no iMessage prompt.
+    expect(iApprovals).toEqual([])
+    const done = (await getWorkstream(ws.id))!
+    expect(done.state).toBe('done')
+    expect(done.stateDetail).toBeNull()
+    // The thread's "⚖ auto-approved (0.96): …" note rides on the call's persisted tool record.
+    const msgs = await useDb().select().from(conversationMessages).where(eq(conversationMessages.conversationId, ws.conversationId))
+    const rec = msgs.flatMap(m => (m.toolCalls as Array<{ name: string; approval?: unknown }> | null) ?? []).find(t => t.name === 'calendar_guest_event')
+    expect(rec?.approval).toEqual({ decidedBy: 'judge', confidence: 0.96, reason: 'matches the goal' })
+  })
+
+  it('a rule-high call (cancel with guests): attention at once with the judge state, the verdict patched in when it lands; never auto; Tony decides', async () => {
+    const { ws } = await newWorkstream('high')
+    expect(await pumpOnce({ onlyConversations: [ws.conversationId], rekick: false, run: runFn('cancel') })).toBe(1)
+    const row = await until(async () => { const r = await getWorkstream(ws.id); return (r?.attention as WorkstreamAttention | null)?.kind === 'approval' ? r : null })
+    const att = row.attention as WorkstreamAttention
+    expect(row.state).toBe('attention')
+    expect(att.judge).toMatchObject({ rule: { floor: 'high' }, verdict: null, pending: true, autoPossible: false })
+    await until(async () => iApprovals.length > 0)
+    expect(iApprovals[0]!.verdict?.()).toMatchObject({ rule: { floor: 'high' } })
+    release({ ...APPROVE, confidence: 1 })
+    const patched = await until(async () => { const r = await getWorkstream(ws.id); const j = (r?.attention as WorkstreamAttention | null)?.judge; return j?.verdict ? j : null })
+    expect(patched).toMatchObject({ verdict: { recommendation: 'approve', confidence: 1 }, pending: false, autoPossible: false })
+    // A socket that (re)attaches gets the open card AND its latest verdict (ws.ts re-sends both).
+    const open = await until(async () => { const o = await openApprovalFrames(ws.conversationId); return o[0]?.verdict?.judge.verdict ? o : null })
+    expect(open).toHaveLength(1)
+    expect(open[0]!.frame.requestId).toBe(att.requestId)
+    expect(open[0]!.verdict).toMatchObject({ type: 'approval-verdict', requestId: att.requestId, judge: { verdict: { recommendation: 'approve' } } })
+    await sleep(50)
+    expect(ran).toEqual([])                                     // the approve verdict did not run it
+    expect(pendingBusApprovals()).toContain(att.requestId)
+    expect(decideBusApproval({ requestId: att.requestId!, approved: true })).toBe(true)
+    expect(await waitForInFlight(15_000)).toBe(true)
+    expect(ran).toEqual(['cancel:standup'])
+    const run = (await segRun(ws.conversationId))!
+    await until(async () => (await verdictRows(run.id))[0]?.decision ? true : null)
+    expect((await verdictRows(run.id))[0]).toMatchObject({ ruleFloor: 'high', decision: 'approved', decidedBy: 'tony', recommendation: 'approve' })
+  })
+})
+
+describe('approval judge on a chat card (real store)', () => {
+  const tool = { name: 'calendar_rsvp', description: 'RSVP' }
+  it('the verdict is persisted; chat stays manual; a late verdict after Tony\'s decision is recorded and changes nothing', async () => {
+    const nonce = `judge-t2-${process.pid}-chat`
+    nonces.push(nonce)
+    const frames: Array<Record<string, unknown>> = []
+    const judge = createApprovalJudge({ tool, input: { eventId: 'e1', response: 'accepted' }, req: { title: 'Send RSVP?', command: 'RSVP accepted' }, nonce, surface: 'chat', isTainted: () => false })
+    const ch = busApprovalChannel('00000000-0000-4000-8000-0000000000c4', { publish: f => frames.push(f as never), timeoutMs: null })
+    const p = ch({ tool: tool.name, command: 'RSVP accepted', proposedPattern: '' }, { judge })
+    const requestId = frames[0]!.requestId as string
+    await until(async () => (await useDb().select().from(approvalVerdicts).where(eq(approvalVerdicts.nonce, nonce)))[0])
+    expect(decideBusApproval({ requestId, approved: false })).toBe(true)
+    expect(await p).toEqual({ approved: false })
+    release(APPROVE)
+    await until(async () => frames.length && (await useDb().select().from(approvalVerdicts).where(eq(approvalVerdicts.nonce, nonce)))[0]?.recommendation ? true : null)
+    await judge.writes()
+    const [row] = await useDb().select().from(approvalVerdicts).where(eq(approvalVerdicts.nonce, nonce))
+    expect(row).toMatchObject({ tool: 'calendar_rsvp', ruleFloor: 'review', decision: 'denied', decidedBy: 'tony', recommendation: 'approve', risk: 'low' })
+    expect(frames.filter(f => f.type === 'approval-resolved')).toEqual([{ type: 'approval-resolved', requestId, decidedBy: 'tony' }])
+  })
+})
+
+describe('approvalSurface (runner)', () => {
+  it('a segment is a workstream; a job or a wake is headless (never auto); anything else interactive is chat', () => {
+    expect(approvalSurface({ profile: 'interactive', trigger: 'user' }, true)).toBe('workstream')
+    expect(approvalSurface({ profile: 'headless', trigger: 'job' }, false)).toBe('headless')
+    expect(approvalSurface({ profile: 'interactive', trigger: 'wake' }, false)).toBe('headless')
+    expect(approvalSurface({ profile: 'interactive', trigger: 'user' }, false)).toBe('chat')
+  })
+})

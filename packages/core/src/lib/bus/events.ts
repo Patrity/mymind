@@ -17,6 +17,7 @@ import { useDb } from '../../db'
 import { agentRuns, runEvents } from '../../db/schema'
 import type { AgentMessageFrame } from '../../shared/types/agent-ui'
 import type { ApprovalRequest } from '../agent/types'
+import type { ApprovalDecider, ApprovalVerdictDTO, ToolApprovalNote } from '../agent/judge/types'
 import { notifySql } from './listen'
 import { busNs } from './ns'
 
@@ -34,7 +35,18 @@ export type HubFrame =
   // (fix round 1, M3): the worker keeps the full request (args, callId, logSummary, the nonce-bound
   // details) and decides it itself — the web only forwards approved/denied for the requestId.
   | ApprovalCardFrame
-  | { type: 'approval-resolved'; requestId: string }
+  | ApprovalVerdictFrame
+  | ApprovalResolvedFrame
+
+/** Cycle 84 Task 2: the judge's state for an open card (judge/approval.ts) — published when the rule
+ *  tier lands, when the verdict lands and when auto-approval is ruled out. Keyed by the card's
+ *  `requestId`, never the approval nonce (the nonce never leaves the run's process). The latest one
+ *  replaces any earlier one. Its reasons are model output: escaped text only. */
+export interface ApprovalVerdictFrame { type: 'approval-verdict'; requestId: string; judge: ApprovalVerdictDTO }
+
+/** A card is gone (every outcome). Cycle 84 Task 2: who decided it — Tony (card, iMessage, Stop),
+ *  the chat timeout, or the judge (Smart Approvals; `auto` then carries "⚖ auto-approved (0.94): reason"). */
+export interface ApprovalResolvedFrame { type: 'approval-resolved'; requestId: string; decidedBy?: ApprovalDecider; auto?: ToolApprovalNote }
 
 /** The browser's `approval` frame — exactly what ws.ts sent before cycle 81 (app/lib/voice/
  *  messages.ts reads these fields), and exactly what the run-event log stores for a card. */
@@ -51,17 +63,19 @@ export function clientApprovalFrame(f: { requestId: string } & Pick<ApprovalRequ
  * (re)attaches gets these re-sent regardless of its resume cursor — a reconnect resumes PAST the
  * card's seq, so the relay alone would never show it again while the run waits on it. A card whose
  * request the worker has meanwhile dropped (it died) is answered `false` and resolved then.
+ * Cycle 84: each with its latest `approval-verdict`, if any, to re-send right after it.
  */
-export async function openApprovalFrames(conversationId: string): Promise<Array<{ frame: ApprovalCardFrame; runId: string; seq: number }>> {
+export async function openApprovalFrames(conversationId: string): Promise<Array<{ frame: ApprovalCardFrame; runId: string; seq: number; verdict?: ApprovalVerdictFrame }>> {
   const rows = await useDb().select({ runId: runEvents.runId, seq: runEvents.seq, type: runEvents.type, payload: runEvents.payload })
     .from(runEvents).innerJoin(agentRuns, eq(agentRuns.id, runEvents.runId))
     .where(and(eq(runEvents.ns, busNs()), eq(runEvents.conversationId, conversationId), eq(agentRuns.status, 'running'),
-      inArray(runEvents.type, ['approval', 'approval-resolved'])))
+      inArray(runEvents.type, ['approval', 'approval-verdict', 'approval-resolved'])))
     .orderBy(asc(runEvents.id))
-  const open = new Map<string, { frame: ApprovalCardFrame; runId: string; seq: number }>()
+  const open = new Map<string, { frame: ApprovalCardFrame; runId: string; seq: number; verdict?: ApprovalVerdictFrame }>()
   for (const r of rows) {
     const f = r.payload as HubFrame
     if (f.type === 'approval') open.set(f.requestId, { frame: clientApprovalFrame(f), runId: r.runId, seq: r.seq })
+    else if (f.type === 'approval-verdict') { const o = open.get(f.requestId); if (o) o.verdict = f } // the latest wins
     else if (f.type === 'approval-resolved') open.delete(f.requestId)
   }
   return [...open.values()]

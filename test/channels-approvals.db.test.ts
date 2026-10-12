@@ -54,6 +54,8 @@ import type { AgentTool, ApprovalRequest } from '@mymind/core/lib/agent/types'
 import { buildAiTools } from '@mymind/core/lib/agent/ai-tools'
 import type { TapbackEvent } from '@mymind/core/lib/channels/types'
 import { startFakeBlueBubbles, type FakeBlueBubbles } from './fixtures/fake-bluebubbles'
+import { createApprovalJudge, type ApprovalJudgeDeps } from '@mymind/core/lib/agent/judge/approval'
+import type { JudgeVerdict } from '@mymind/core/lib/agent/judge/types'
 
 const db = () => useDb()
 const TAG = `chap-${Date.now().toString(36)}`
@@ -487,5 +489,92 @@ describe('replyToApprovalChannel (runner wiring)', () => {
     expect(chatGuid).toBe(CHAT)
     await resolveTapback(tapback(promptGuid))
     expect(await p).toEqual({ approved: true })
+  })
+})
+
+// Cycle 84 Task 2: a chat run that answers over iMessage — the prompt carries the judge's line
+// ("⚖ pending": the judge starts once the text is out), and Smart Approvals (when switched on for chat)
+// withdraws the prompt and approves the call; Tony's tapback, when first, still decides.
+describe('iMessage approvals with a judge (cycle 84)', () => {
+  const APPROVE: JudgeVerdict = { risk: 'low', recommendation: 'approve', confidence: 0.97, reasons: ['routine'], model: 'J', latencyMs: 1 }
+  function judgeFor(chat: boolean) {
+    const decisions: Array<[string, string]> = []
+    let release!: (v: JudgeVerdict) => void
+    const verdict = new Promise<JudgeVerdict>((r) => { release = r })
+    const deps: ApprovalJudgeDeps = {
+      settings: async () => ({ enabled: true, smartApprovals: { workstreams: true, chat }, confidence: 0.9 }),
+      rule: async () => ({ floor: 'review', reasons: [] }),
+      verdict: async () => verdict,
+      recordVerdict: async () => {},
+      recordDecision: async (_n, d, b) => { decisions.push([d, b]); return true },
+      pinnedSendMessageId: () => undefined,
+      ruleContextWaitMs: 5
+    }
+    const judge = createApprovalJudge({ tool: { name: 'calendar_rsvp', description: 'rsvp' }, input: {}, req: { command: 'RSVP' }, nonce: `${TAG}-n-${Math.random()}`, surface: 'chat', isTainted: () => false }, deps)
+    return { judge, decisions, release }
+  }
+  const RSVP: ApprovalRequest = { tool: 'calendar_rsvp', title: 'Send RSVP?', command: 'RSVP accepted', proposedPattern: '' }
+
+  it('the prompt carries "⚖ pending"; with chat Smart Approvals on, the judge withdraws it (expired) and approves', async () => {
+    const run = await newRun()
+    const { judge, decisions, release } = judgeFor(true)
+    const sentBefore = fake.sent.length
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000 })(RSVP, { judge })
+    await promptFor(run)
+    expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Send RSVP?\n\nRSVP accepted\n\n⚖ pending\n👍 to approve · 👎 to deny')
+    release(APPROVE)
+    expect(await p).toEqual({ approved: true })
+    expect(await statusOnce(run, 'expired')).toBe('expired')        // withdrawn: a later 👍 answers nothing
+    await judge.writes()
+    expect(decisions).toEqual([['auto', 'judge']])
+  })
+
+  it('chat Smart Approvals off (the default): the verdict changes nothing — Tony\'s 👍 decides', async () => {
+    const run = await newRun()
+    const { judge, decisions, release } = judgeFor(false)
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, pollMs: 50, timeoutMs: 5_000 })(RSVP, { judge })
+    const { promptGuid } = await promptFor(run)
+    release(APPROVE)
+    await new Promise(r => setTimeout(r, 30))
+    expect((await rowsFor(run))[0]!.status).toBe('pending')
+    await resolveTapback(tapback(promptGuid))
+    expect(await p).toEqual({ approved: true })
+    await judge.writes()
+    expect(decisions).toEqual([['approved', 'tony']])
+  })
+
+  it('no tapback and a judge that never approves: the prompt times out as a timeout — never as an approval', async () => {
+    const run = await newRun()
+    const { judge, decisions, release } = judgeFor(true)
+    release({ ...APPROVE, recommendation: 'review' })
+    expect(await imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(RSVP, { judge })).toEqual({ approved: false })
+    expect((await rowsFor(run))[0]!.status).toBe('expired')
+    await judge.writes()
+    expect(decisions).toEqual([['timeout', 'timeout']])
+  })
+
+  it('a judge that is off adds no line', async () => {
+    const run = await newRun()
+    const judge = createApprovalJudge({ tool: { name: 'exec', description: 'x' }, input: {}, req: { command: 'ls' }, nonce: `${TAG}-off`, surface: 'chat', isTainted: () => false },
+      { settings: async () => ({ enabled: false, smartApprovals: { workstreams: true, chat: true }, confidence: 0.9 }), rule: async () => ({ floor: 'high', reasons: [] }), verdict: async () => APPROVE, recordVerdict: async () => {}, recordDecision: async () => true, pinnedSendMessageId: () => undefined, ruleContextWaitMs: 5 })
+    const sentBefore = fake.sent.length
+    const p = imessageApprovalChannel(run, CHAT, { client: bb, ...FAST })(REQ, { judge })
+    const { promptGuid } = await promptFor(run)
+    expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Run `ls -la /tmp`?\n👍 to approve · 👎 to deny')
+    await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
+    expect(await p).toEqual({ approved: false })
+  })
+
+  it('a mirrored prompt (a workstream card judged elsewhere) texts that card\'s current verdict', async () => {
+    const run = await newRun()
+    const sentBefore = fake.sent.length
+    const p = imessageApprovalChannel(run, CHAT, {
+      client: bb, ...FAST,
+      verdict: () => ({ rule: { floor: 'high', reasons: [] }, pending: false, autoPossible: false, verdict: { risk: 'medium', recommendation: 'review', confidence: 0.7, reasons: ['new recipient'], model: 'J', latencyMs: 1 } })
+    })(REQ)
+    const { promptGuid } = await promptFor(run)
+    expect(fake.sent.slice(sentBefore)[0]!.message).toBe('Run `ls -la /tmp`?\n⚖ medium/review — new recipient\n👍 to approve · 👎 to deny')
+    await resolveTapback(tapback(promptGuid, { tapback: 'dislike' }))
+    await p
   })
 })

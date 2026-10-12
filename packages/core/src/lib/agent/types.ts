@@ -3,6 +3,8 @@ import type { ZodRawShape } from 'zod'
 import type { DisplayImage } from './image-embed'
 import type { UndoFn } from './undo'
 import type { ToolsetId } from './toolsets'
+import type { ApprovalJudge } from './judge/approval'
+import type { ToolApprovalNote } from './judge/types'
 
 /** A single content part in a multimodal agent message. */
 export type AgentContentPart =
@@ -34,11 +36,21 @@ export interface ApprovalRequest {
   logSummary?: string
 }
 
+/** Cycle 84 Task 2: in-process extras that ride with ONE approval request into its channel — never
+ *  part of the request itself (the request is persisted: channel_approvals.request, workstream
+ *  attention), so nothing here is ever serialized. */
+export interface ApprovalOptions {
+  /** The judge of this request: the channel starts it once its card is out, streams its verdict,
+   *  lets it auto-approve (Smart Approvals) and reports every outcome to it (judge/approval.ts). */
+  judge?: ApprovalJudge
+}
+export type RequestApproval = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
+
 /** Per-call context handed to every tool handler. */
 export interface ToolContext {
   signal: AbortSignal // aborts when the caller hangs up / barge-in
   // Present only on the interactive (WS) path; a dangerous tool with no channel auto-denies.
-  requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
+  requestApproval?: RequestApproval
   attachmentImageIds?: string[]  // image attachments of the current turn (edit_image source)
   /** The agent_runs row this call belongs to (runtime runner path only; absent on MCP / legacy
    *  callers). Lets a tool stamp revisions with the run and tell a job-fired run from others. */
@@ -71,7 +83,7 @@ export interface ToolContext {
 }
 
 export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }
-export type ToolResultEvent = { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: ToolKind }
+export type ToolResultEvent = { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: ToolKind; approval?: ToolApprovalNote }
 export type NestedToolEvent = ToolStartEvent | ToolResultEvent
 export type SubagentEvent = { type: 'subagent-event'; parentCallId: string; event: NestedToolEvent }
 
@@ -118,6 +130,9 @@ export interface AgentTool {
   /** Opt-in: a persisted "always allow" pattern may approve this dangerous tool without asking.
    *  Only exec sets it — decide_review (cycle 76) must be confirmed on every call. */
   allowlistable?: boolean
+  /** Cycle 84 Task 2: Tony confirms EVERY call of this dangerous tool himself (decide_review) — the
+   *  judge still shows a verdict on the card, but Smart Approvals never approves it. */
+  humanOnly?: true
   // Derive the approval request from the call args (tool-agnostic gate). Defaults
   // to a JSON-of-args command + `<name> *` pattern when omitted. May be async: a tool whose
   // card needs to show live state (gmail_send fetches the real draft rather than trusting args)

@@ -16,6 +16,9 @@ export const workstreams = pgTable('workstreams', {
   budget: jsonb('budget').notNull(),                 // WorkstreamBudget
   used: jsonb('used').notNull(),                     // WorkstreamUsed — persisted every step
   attention: jsonb('attention'),                     // WorkstreamAttention | null
+  /** Cycle 84: a detail of a `running` workstream — 'evaluating' while the judge decides whether a
+   *  call needs Tony (Smart Approvals; no new state, attention only once a human is needed). */
+  stateDetail: text('state_detail').$type<'evaluating'>(),
   summary: text('summary'),
   /** Why it failed (budget exhausted, repeated segment failure). Set while the final summary
    *  segment runs (state still 'running'), so a restart mid-summary still knows it is finishing. */

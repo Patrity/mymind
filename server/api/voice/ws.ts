@@ -134,6 +134,7 @@ async function resendOpenCards(s: ConnState, cid: string) {
     for (const o of open) {
       s.cards.set(o.frame.requestId, { cid, runId: o.runId })
       withCid(cid, s.sink).send(JSON.stringify(o.frame))
+      if (o.verdict) withCid(cid, s.sink).send(JSON.stringify(o.verdict))
     }
   } catch (err) {
     console.error('[agent] re-sending open approval cards failed:', err)

@@ -2,7 +2,10 @@
 import { randomUUID } from 'node:crypto'
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
-import type { AgentTool, ToolContext, ApprovalRequest, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
+import type { AgentTool, ToolContext, ApprovalRequest, RequestApproval, ToolStartEvent, ToolResultEvent, SubagentEvent } from './types'
+import { createApprovalJudge, type ApprovalJudge } from './judge/approval'
+import type { ApprovalSurface } from './judge/types'
+import type { JudgeMessage } from './judge/verdict'
 import { publishActivity } from './bus'
 import { registerUndo } from './undo'
 import { withSpan } from '../observability/record'
@@ -11,7 +14,7 @@ import { carriesWorkspaceTaint, producedContent } from './tool-history'
 
 export interface RunHooks {
   signal: AbortSignal
-  requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
+  requestApproval?: RequestApproval
   attachmentImageIds?: string[]
   runId?: string
   onEvent: (e: ToolStartEvent | ToolResultEvent | SubagentEvent) => void
@@ -22,6 +25,9 @@ export interface RunHooks {
   /** Cycle 79b (a): the run starts tainted — run.ts sets this when the model-visible history
    *  still carries a `taints` tool's content from an earlier turn. */
   initiallyTainted?: boolean
+  /** Cycle 84 Task 2: judge every approval request of this run (judge/approval.ts) — where it was
+   *  raised and the context the judge reads. Absent: no judge (MCP, legacy callers). */
+  judge?: { surface: ApprovalSurface; workstreamId?: string; goal?: string | null; recentMessages?: JudgeMessage[] }
 }
 
 async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, approvalNonce: string): Promise<ApprovalRequest> {
@@ -126,6 +132,7 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         // titled for it and NOT allowlistable (no "always allow" off an injected command);
         // headless has no channel → auto-deny.
         const taintedAllowlistable = tainted && t.dangerous === true && t.allowlistable === true
+        let judge: ApprovalJudge | undefined
         if (t.dangerous || outboundGated) {
           const auto = !outboundGated && !taintedAllowlistable && t.autoApprove ? await t.autoApprove(input, callCtx) : false
           if (!auto) {
@@ -134,8 +141,18 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
               : taintedAllowlistable
                 ? { ...await approvalRequestFor(t, input, approvalNonce), title: TAINTED_COMMAND_TITLE, allowlistable: false }
                 : await approvalRequestFor(t, input, approvalNonce)
+            // Cycle 84: the judge of THIS request rides with it (in-process only) — the channel
+            // starts it after publishing the card, and it may approve the call itself (Smart Approvals).
+            judge = hooks.judge && ctx.requestApproval
+              ? createApprovalJudge({
+                  tool: t, input, req, nonce: approvalNonce, surface: hooks.judge.surface, runId: hooks.runId,
+                  workstreamId: hooks.judge.workstreamId, goal: hooks.judge.goal, recentMessages: hooks.judge.recentMessages,
+                  isTainted: () => tainted, signal: hooks.signal
+                })
+              : undefined
+            const card: ApprovalRequest = { ...req, callId, args: safeArgs }
             const decision = ctx.requestApproval
-              ? await ctx.requestApproval({ ...req, callId, args: safeArgs })
+              ? await (judge ? ctx.requestApproval(card, { judge }) : ctx.requestApproval(card))
               : { approved: false } // fail-safe: no channel → auto-deny
             if (decision.approved !== true) {
               const summary = `denied: ${t.name}`
@@ -156,13 +173,17 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           if ((t.taints && producedContent(exec.result)) || carriesWorkspaceTaint(exec.result)) tainted = true
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: safeArgs, result: exec.result, kind: t.kind })
+          // The thread's "⚖ auto-approved (0.94): reason" rides on the call's own record (never an
+          // event row mid-turn — that would fork the thread).
+          const approval = judge?.autoNote() ?? undefined
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: safeArgs, result: exec.result, kind: t.kind, ...(approval ? { approval } : {}) })
           return exec.result
         } catch (err) {
           const summary = `failed: ${t.name}`
           const result = { error: (err as Error).message }
           publishActivity({ type: 'tool', name: t.name, summary })
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: safeArgs, result, kind: t.kind })
+          const approval = judge?.autoNote() ?? undefined
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary, callId, args: safeArgs, result, kind: t.kind, ...(approval ? { approval } : {}) })
           return result
         }
       }

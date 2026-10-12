@@ -1,4 +1,5 @@
 // Cycle 81 (spec §5): the workstream wire shapes, shared by core and the app (Task 6 UI).
+import type { ApprovalVerdictDTO } from '../../lib/agent/judge/types'
 /** `paused` (final review I3): Tony pressed Stop in its thread, or two idle segments in a row (cycle 82:
  *  or it waits on a watch; cycle 83: or a coordinator waits on its children). Unlike `attention` it
  *  never captures an iMessage as an answer and is never nudged; it resumes from the UI (Resume), a
@@ -43,6 +44,9 @@ export interface WorkstreamAttention {
   /** Cycle 83 final fix wave (M4): a child's approval / escalated question was listed in a text to
    *  Tony (its tree's grouped away iMessage, or its own interactive approval prompt). */
   awaySent?: true
+  /** Cycle 84: approval — the judge's state for the card (kept current as the verdict lands). Model
+   *  output: render as escaped text only. */
+  judge?: ApprovalVerdictDTO
 }
 
 /** Cycle 83: what a parked coordinator waits for. */
@@ -65,6 +69,9 @@ export interface WorkstreamDTO {
   budget: WorkstreamBudget
   used: WorkstreamUsed
   attention: WorkstreamAttention | null
+  /** Cycle 84: while `running` — 'evaluating': the judge is deciding whether a call needs Tony
+   *  (Smart Approvals). Null otherwise. */
+  stateDetail: 'evaluating' | null
   summary: string | null
   failureReason: string | null
   currentRunId: string | null

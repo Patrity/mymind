@@ -4,6 +4,7 @@
 // (app/lib/agent/turn-stream.ts) and resume (app/lib/agent/to-ui-messages.ts).
 import type { UIMessage, UIMessageChunk } from 'ai'
 import type { AttachmentRef, MessageUsage, MessageDeliveryDTO } from './conversation'
+import type { ToolApprovalNote } from '../../lib/agent/judge/types'
 
 export type AgentToolKind = 'read' | 'create' | 'destructive'
 
@@ -21,6 +22,8 @@ export interface ToolEnvelope {
   summary: string
   undoToken?: string
   kind?: AgentToolKind
+  /** Cycle 84: the judge approved this call ("⚖ auto-approved (0.94): reason") — `reason` is model output. */
+  approval?: ToolApprovalNote
 }
 
 export interface AgentMessageMetadata {

@@ -1,0 +1,1 @@
+ALTER TABLE "workstreams" ADD COLUMN "state_detail" text;

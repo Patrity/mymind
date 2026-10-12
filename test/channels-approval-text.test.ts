@@ -2,7 +2,7 @@
 // The iMessage approval question, worded per tool (cycle 76 final review m1; gmail_send branch
 // added cycle 79 review I3).
 import { describe, it, expect } from 'vitest'
-import { approvalPromptText, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX, CALENDAR_PROMPT_MAX, TITLED_PROMPT_MAX } from '@mymind/core/lib/channels/approvals'
+import { approvalPromptText, verdictLine, PROMPT_COMMAND_MAX, GMAIL_SEND_PROMPT_MAX, CALENDAR_PROMPT_MAX, TITLED_PROMPT_MAX } from '@mymind/core/lib/channels/approvals'
 
 const FOOT = '\n👍 to approve · 👎 to deny'
 
@@ -83,5 +83,34 @@ describe('approvalPromptText', () => {
   it('fix wave I3: a long outbound card is cut with the "showing N of M chars" notice', () => {
     const text = approvalPromptText({ tool: 'research_web', title: 'Web request after reading your mail', command: 'y'.repeat(TITLED_PROMPT_MAX + 10), proposedPattern: '' })
     expect(text).toContain(`[showing 1,500 of 1,510 chars — deny unless you can see the whole request]`)
+  })
+})
+
+// Cycle 84 Task 2 (spec §2.5): the judge's line in the texted prompt.
+describe('verdictLine + the prompt', () => {
+  const verdict = (o: Record<string, unknown> = {}) => ({ rule: { floor: 'review' as const, reasons: [] }, pending: false, autoPossible: false, verdict: { risk: 'low' as const, recommendation: 'approve' as const, confidence: 0.94, reasons: ['routine restart\nof a service'], model: 'J', latencyMs: 9, ...o } })
+
+  it('no judge → no line; a judge still evaluating → "⚖ pending"', () => {
+    expect(verdictLine(null)).toBeNull()
+    expect(verdictLine({ rule: null, verdict: null, pending: true, autoPossible: true })).toBe('⚖ pending')
+  })
+
+  it('⚖ <risk>/<recommendation> — <first reason>, on one line', () => {
+    expect(verdictLine(verdict())).toBe('⚖ low/approve — routine restart of a service')
+    expect(verdictLine(verdict({ reasons: [] }))).toBe('⚖ low/approve')
+    expect(verdictLine(verdict({ reasons: ['x'.repeat(400)] }))!.length).toBeLessThan(230)
+  })
+
+  it('a judge error says there is no verdict', () => {
+    expect(verdictLine(verdict({ risk: null, recommendation: 'review', confidence: 0, reasons: [], error: 'judge timed out' }))).toBe('⚖ no verdict (judge timed out) — review it yourself')
+  })
+
+  it('the line sits just above the 👍/👎 line, for every prompt shape', () => {
+    expect(approvalPromptText({ tool: 'exec', command: 'ls', proposedPattern: 'ls *' }, '⚖ pending')).toBe(`Run \`ls\`?\n⚖ pending${FOOT}`)
+    expect(approvalPromptText({ tool: 'gmail_send', command: 'To: a@b.c', proposedPattern: '' }, '⚖ pending')).toMatch(/\n⚖ pending\n👍 to send · 👎 to deny$/)
+    expect(approvalPromptText({ tool: 'calendar_rsvp', title: 'Send RSVP?', command: 'c', proposedPattern: '' }, '⚖ pending')).toMatch(/\n⚖ pending\n👍 to approve · 👎 to deny$/)
+    expect(approvalPromptText({ tool: 'web_fetch', title: 'Web request', command: 'c', proposedPattern: '' }, '⚖ pending')).toMatch(/\n⚖ pending\n👍 to approve · 👎 to deny$/)
+    // No line → byte-identical to before.
+    expect(approvalPromptText({ tool: 'exec', command: 'ls', proposedPattern: 'ls *' }, null)).toBe(`Run \`ls\`?${FOOT}`)
   })
 })

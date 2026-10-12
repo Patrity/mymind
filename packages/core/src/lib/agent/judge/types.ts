@@ -75,3 +75,29 @@ export type ApprovalSurface = 'chat' | 'workstream' | 'headless'
 /** How an approval was finally resolved, and by whom (spec §2.5). */
 export type ApprovalDecision = 'approved' | 'denied' | 'auto' | 'timeout'
 export type ApprovalDecider = 'tony' | 'judge' | 'timeout'
+
+/**
+ * Cycle 84 Task 2: what an approval card (web card, workstream attention, the `approval-verdict`
+ * frame) shows of the judge. `reasons` are MODEL OUTPUT and the rule reasons may quote call text —
+ * render both as escaped plain text only.
+ */
+export interface ApprovalVerdictDTO {
+  /** The rule tier's floor; null while it is still running. */
+  rule: { floor: RuleFloor; reasons: string[] } | null
+  /** The LLM verdict; null while the judge is still evaluating. `error` set = no usable verdict
+   *  (timeout, malformed, no model) — it reads as "review". */
+  verdict: Pick<JudgeVerdict, 'risk' | 'recommendation' | 'confidence' | 'reasons' | 'model' | 'latencyMs' | 'error'> | null
+  /** The judge is still evaluating (a spinner on the card). */
+  pending: boolean
+  /** Smart Approvals may still approve this call without Tony (the call is eligible and nothing has
+   *  ruled it out yet). False once a human is needed. */
+  autoPossible: boolean
+}
+
+/** Cycle 84 Task 2: an auto-approved call's note — on its tool record (the thread's "⚖ auto-approved
+ *  (0.94): reason") and on the card's `approval-resolved` frame. `reason` is model output. */
+export interface ToolApprovalNote {
+  decidedBy: 'judge'
+  confidence: number
+  reason: string | null
+}

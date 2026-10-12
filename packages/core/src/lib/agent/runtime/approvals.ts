@@ -7,12 +7,12 @@
 // used to live in the socket's requestApproval, so an allowlisted command from a run whose tab
 // had closed was denied. Now it applies whether or not a socket is still attached; the socket
 // channel only does the interactive prompt. Only tools marked `allowlistable` (exec) consult it.
-import type { ApprovalRequest } from '../types'
+import type { ApprovalOptions, ApprovalRequest } from '../types'
 import { loadApprovals, touchApproval, matchesApproval } from '../../exec/approvals'
 import { recordEvent } from '../../observability/record'
 import type { TurnStream } from '../../voice/turn-stream'
 
-type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
+type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
 const channels = new Map<string, Channel>()
 const streams = new Map<string, TurnStream>()
 
@@ -26,7 +26,7 @@ export function hasApprovalChannel(runId: string): boolean {
   return channels.has(runId)
 }
 export function approvalFor(runId: string): Channel {
-  return async (req) => {
+  return async (req, opts) => {
     // Opt-in per tool (Task 9 review ruling): a saved pattern for a tool that isn't allowlistable
     // (e.g. decide_review) is ignored, so every such call still reaches a human.
     const patterns = req.allowlistable === true
@@ -35,10 +35,14 @@ export function approvalFor(runId: string): Channel {
     if (patterns.length) {
       touchApproval(patterns[0]!.id).catch(() => {})
       recordEvent({ kind: 'tool', name: 'exec:approval', severity: 'info', meta: { outcome: 'allowlisted', command: req.command, pattern: patterns[0]!.pattern } })
+      // Cycle 84: an allowlisted call never reaches a card, so its judge never starts (R1: the saved
+      // allowlist is a fast path BEFORE the judge) — nothing to show, nothing to audit.
       return { approved: true }
     }
     const ch = channels.get(runId)
-    return ch ? ch(req) : { approved: false }
+    // No channel: denied at once — the judge (if any) is told, so its audit never waits on it.
+    if (!ch) { opts?.judge?.settle('denied', 'tony'); return { approved: false } }
+    return ch(req, opts)
   }
 }
 export function registerTurnStream(runId: string, ts: TurnStream): void {

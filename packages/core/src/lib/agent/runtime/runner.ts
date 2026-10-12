@@ -32,6 +32,7 @@ import { COORDINATOR_ORIGIN } from '../../../shared/types/workstreams'
 import { groupTurns, costTurns, keepTrailingTurns, LIGHT_CONTEXT_TURNS, RUNTIME_CONTEXT_BUDGET } from './history'
 import { isSuppressedReply } from './suppress'
 import type { RunInput, RunOutcome } from './types'
+import type { ApprovalSurface } from '../judge/types'
 import { planDeliveries, queueFailureNote } from '../../channels/deliver'
 import { insertDeliveries } from '../../channels/outbox'
 import { channelPresence } from '../../channels/presence'
@@ -61,6 +62,13 @@ export function nextTurnId(): number {
 // The headless gate (Task 11): every tool that edits or destroys existing data becomes a
 // /review proposal instead of running, and anything `dangerous` (exec) is excluded outright —
 // see gate.ts. Bound to THIS run so a proposal's review row can point back at it.
+/** Cycle 84: where a run's approvals are raised — Smart Approvals applies per surface (spec §2.3):
+ *  a workstream segment, a headless run (a job, a wake: never auto-approved), else chat. */
+export function approvalSurface(run: Pick<AgentRun, 'profile' | 'trigger'>, isSegment: boolean): ApprovalSurface {
+  if (isSegment) return 'workstream'
+  return run.profile === 'headless' || run.trigger === 'wake' ? 'headless' : 'chat'
+}
+
 function headlessProfile(run: AgentRun): AgentProfile {
   return { ...bridgetProfile, id: 'headless', tools: headlessTools(bridgetProfile.tools, { id: run.id, conversationId: run.conversationId }) }
 }
@@ -301,7 +309,10 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       runId: run.id, toolsets,
       ...(seg ? { maxSteps: seg.maxSteps, shouldStop: seg.shouldStop, onStep: seg.onStep, workstream: seg.promptInfo } : {}),
       // Cycle 83 (carried C2): a child runs on its subagents chain (label → rest of subagents → reasoning).
-      ...(seg?.child ? { subagent: { label: seg.child.modelLabel } } : {})
+      ...(seg?.child ? { subagent: { label: seg.child.modelLabel } } : {}),
+      // Cycle 84: where this run's approvals are raised — Smart Approvals applies per surface, never
+      // to a headless run (a job, a wake).
+      approvals: { surface: approvalSurface(run, !!seg), ...(seg ? { workstreamId: seg.workstreamId } : {}) }
     })
     // Finalize the timing ONCE, here, and use the same object for the live chunk below and
     // for the persist further down — so the duration and tok/s the user watches appear are

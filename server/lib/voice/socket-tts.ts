@@ -55,7 +55,7 @@ interface Session {
   lastSeq: number
 }
 interface Held { conversationId: string; frame: HubFrame; meta: FrameMeta }
-const NEVER_HELD = new Set(['approval', 'approval-resolved'])
+const NEVER_HELD = new Set(['approval', 'approval-verdict', 'approval-resolved'])
 
 const EXPECT_CAP = 64
 const HOLD_TIMEOUT_MS = 120_000

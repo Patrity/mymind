@@ -12,6 +12,7 @@ import { redactImageUrlsForModel } from './image-embed'
 import { applyHistoryPolicy, historyCarriesTaint, toolBlocksFor } from './tool-history'
 import { spliceSteers, type SteerMark } from './runtime/steer'
 import { activeToolNames, directoryText, parseToolsetIds, type ToolsetId } from './toolsets'
+import { JUDGE_LIMITS } from './judge/verdict'
 
 export type { AgentContentPart } from './types'
 import type { AgentContentPart } from './types'
@@ -24,6 +25,14 @@ export function messageText(content: string | AgentContentPart[]): string {
   return typeof content === 'string'
     ? content
     : content.filter(p => p.type === 'text').map(p => (p as { text: string }).text).join('\n')
+}
+
+/** The judge's view of the conversation (cycle 84 Task 2): the last JUDGE_LIMITS.messages turns as
+ *  plain text — no tool payloads. The judge fences and caps them itself. */
+export function judgeMessages(messages: AgentMessage[]): Array<{ role: string; text: string }> {
+  return messages.slice(-JUDGE_LIMITS.messages)
+    .map(m => ({ role: m.role, text: messageText(m.content) }))
+    .filter(m => m.text.trim() !== '')
 }
 
 /** Map our content → AI SDK message content for streamText. Redaction applies to text only. */
@@ -176,7 +185,11 @@ export interface StepUsage { inputTokens?: number; outputTokens?: number; modelD
 
 export interface RunAgentCtx {
   signal: AbortSignal; speak?: boolean; profile?: AgentProfile; context?: string; maxSteps?: number
-  requestApproval?: (req: import('./types').ApprovalRequest) => Promise<{ approved: boolean }>
+  requestApproval?: import('./types').RequestApproval
+  /** Cycle 84 Task 2: where this run's approvals are raised (Smart Approvals applies per surface) and
+   *  the workstream they belong to (the verdict audit). Absent → derived: a workstream segment, a
+   *  wake (headless), an interactive run (chat), else headless. */
+  approvals?: { surface?: import('./judge/types').ApprovalSurface; workstreamId?: string }
   attachmentImageIds?: string[]; modelDefId?: string | null; drainSteer?: () => Promise<string[]>
   wake?: { reason: string }; runId?: string
   toolsets?: { initial: ToolsetId[]; onChange?: (loaded: ToolsetId[]) => void | Promise<void>; unavailable?: ToolsetId[] }
@@ -234,7 +247,17 @@ export async function* runAgent(
   const initiallyTainted = historyCarriesTaint(policed, tainting)
 
   let channel = createChannel()
-  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted })
+  // Cycle 84 Task 2: every approval this run raises gets a judge — its surface decides whether Smart
+  // Approvals may apply; the goal and the conversation so far are its context (fenced by the judge).
+  const judge = ctx.requestApproval
+    ? {
+        surface: ctx.approvals?.surface ?? (ctx.workstream ? 'workstream' as const : ctx.wake ? 'headless' as const : 'chat' as const),
+        workstreamId: ctx.approvals?.workstreamId,
+        goal: ctx.workstream?.goal ?? null,
+        recentMessages: judgeMessages(messages)
+      }
+    : undefined
+  const tools = buildAiTools(registry, { signal: ctx.signal, requestApproval: ctx.requestApproval, attachmentImageIds: ctx.attachmentImageIds, runId: ctx.runId, onEvent: e => channel.push({ kind: 'event', ev: e }), onToolCalled: loadForTool, loadToolsets, initiallyTainted, judge })
 
   // Compute the system prompt ONCE before the model loop (the persona + live
   // context are stable for the turn; the loop only retries model construction).

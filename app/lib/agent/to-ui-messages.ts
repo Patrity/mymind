@@ -24,7 +24,7 @@ function recordParts(m: ResumeMessage, t: ToolCallRecordDTO, i: number): AgentUI
     ? { ...base, state: 'output-denied', approval: { id: toolCallId, approved: false } }
     : outcome.state === 'error'
       ? { ...base, state: 'output-error', errorText: outcome.errorText }
-      : { ...base, state: 'output-available', output: toolEnvelope({ result: t.result, summary: t.summary, undoToken: t.undoToken, kind: t.kind }) }
+      : { ...base, state: 'output-available', output: toolEnvelope({ result: t.result, summary: t.summary, undoToken: t.undoToken, kind: t.kind, approval: t.approval }) }
   return t.steps?.length
     ? [tool, { type: 'data-subagent', id: toolCallId, data: { steps: t.steps } }]
     : [tool]

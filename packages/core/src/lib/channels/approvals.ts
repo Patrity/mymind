@@ -14,7 +14,8 @@ import { randomUUID } from 'node:crypto'
 import { and, eq, gt, inArray, lte, type SQL } from 'drizzle-orm'
 import { useDb } from '../../db'
 import { agentRuns, channelApprovals } from '../../db/schema'
-import type { ApprovalRequest } from '../agent/types'
+import type { ApprovalOptions, ApprovalRequest } from '../agent/types'
+import type { ApprovalVerdictDTO } from '../agent/judge/types'
 import { recordEvent } from '../observability/record'
 import { loadChannelsConfig } from './config'
 import { isAllowed, isSendersDirectChat } from './handles'
@@ -29,7 +30,7 @@ export const APPROVAL_WITHDRAWN = 'withdrawn'
 const DEFAULT_POLL_MS = 5_000
 
 type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
-type Channel = (req: ApprovalRequest) => Promise<{ approved: boolean }>
+type Channel = (req: ApprovalRequest, opts?: ApprovalOptions) => Promise<{ approved: boolean }>
 
 export interface ApprovalChannelDeps {
   client?: BlueBubblesClient | null
@@ -39,6 +40,9 @@ export interface ApprovalChannelDeps {
    *  exec tool awaits the approval without racing the signal, so the wait itself must end on it
    *  (final review I1) — otherwise the run stays `running` until the 10-min expiry. */
   signal?: AbortSignal
+  /** Cycle 84: the judge's state for a prompt that MIRRORS a card judged elsewhere (a workstream's
+   *  away prompt — the card's channel owns the judge). Read when the prompt is texted. */
+  verdict?: () => ApprovalVerdictDTO | null
 }
 
 // In-process waiters keyed by approval id; resolveTapback / expireApprovals wake them directly.
@@ -80,6 +84,26 @@ function calendarPromptBody(command: string): string {
  *  exact URL/query; same ceiling-with-notice treatment, since there is nothing to "open". */
 export const TITLED_PROMPT_MAX = 1500
 
+/** One line of a verdict's text (model output): no line breaks, bounded. */
+function oneLine(s: string, max = 200): string {
+  const t = s.replace(/\s+/g, ' ').trim()
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+/**
+ * Cycle 84 (spec §2.5): the judge's line in an iMessage approval prompt —
+ * `⚖ <risk>/<recommendation> — <first reason>`, or `⚖ pending` while the judge is still evaluating.
+ * Null when there is no judge (it is off, or the call has none). Plain text: the reason is model output.
+ */
+export function verdictLine(v: ApprovalVerdictDTO | null | undefined): string | null {
+  if (!v) return null
+  if (!v.verdict) return '⚖ pending'
+  const d = v.verdict
+  if (d.error !== undefined) return `⚖ no verdict (${oneLine(d.error, 80)}) — review it yourself`
+  const reason = d.reasons[0] ? ` — ${oneLine(d.reasons[0])}` : ''
+  return `⚖ ${d.risk ?? 'unknown'}/${d.recommendation}${reason}`
+}
+
 /**
  * The texted question, worded per tool (final review m1): exec asks to run a command; a review
  * decision is not a command, so it reads as one (`command` is "<choice> — <summary>"); any other
@@ -92,22 +116,24 @@ export const TITLED_PROMPT_MAX = 1500
  * card (fix wave I3 / 79b outbound-after-a-Google-read) gets its title + body under TITLED_PROMPT_MAX.
  * Every cut states "showing N of M chars" (fix wave I2).
  */
-export function approvalPromptText(req: ApprovalRequest): string {
+export function approvalPromptText(req: ApprovalRequest, verdict?: string | null): string {
+  // Cycle 84: the judge's line sits just above the 👍/👎 line.
+  const v = verdict ? `${verdict}\n` : ''
   if (req.tool === 'gmail_send') {
-    return `Send this email?\n\n${gmailSendPromptBody(req.command)}\n\n👍 to send · 👎 to deny`
+    return `Send this email?\n\n${gmailSendPromptBody(req.command)}\n\n${v}👍 to send · 👎 to deny`
   }
   if (CALENDAR_APPROVAL_TOOLS.has(req.tool)) {
-    return `${req.title ?? 'Change this calendar event?'}\n\n${calendarPromptBody(req.command)}\n\n👍 to approve · 👎 to deny`
+    return `${req.title ?? 'Change this calendar event?'}\n\n${calendarPromptBody(req.command)}\n\n${v}👍 to approve · 👎 to deny`
   }
   if (req.title && req.tool !== 'exec' && req.tool !== 'decide_review') {
-    return `${req.title}?\n\n${truncatedPrompt(req.command, TITLED_PROMPT_MAX, 'deny unless you can see the whole request')}\n\n👍 to approve · 👎 to deny`
+    return `${req.title}?\n\n${truncatedPrompt(req.command, TITLED_PROMPT_MAX, 'deny unless you can see the whole request')}\n\n${v}👍 to approve · 👎 to deny`
   }
   const cmd = req.command.length > PROMPT_COMMAND_MAX ? `${req.command.slice(0, PROMPT_COMMAND_MAX - 1)}…` : req.command
   // 79b (I2): exec in a tainted run carries a title — say so before the command.
   const ask = req.tool === 'exec' ? `${req.title ? `${req.title} — run` : 'Run'} \`${cmd}\`?`
     : req.tool === 'decide_review' ? `Approve review decision: ${cmd}?`
       : `Allow ${req.tool}: \`${cmd}\`?`
-  return `${ask}\n👍 to approve · 👎 to deny`
+  return `${ask}\n${v}👍 to approve · 👎 to deny`
 }
 
 /** pending → `to`, only if still pending. True when this call made the transition. */
@@ -203,10 +229,13 @@ function waitFor(id: string, pollMs: number, timeoutMs: number, signal?: AbortSi
 export function imessageApprovalChannel(runId: string, chatGuid: string, deps: ApprovalChannelDeps = {}): Channel {
   const pollMs = deps.pollMs ?? DEFAULT_POLL_MS
   const timeoutMs = deps.timeoutMs ?? APPROVAL_TIMEOUT_MS
-  return async (req) => {
+  return async (req, opts) => {
+    // Cycle 84: this prompt's own judge (a chat run's request) — started once the prompt is out.
+    const judge = opts?.judge
     // Stopped before it could even ask: nothing to record, nothing to text.
     if (deps.signal?.aborted) {
       logOutcome(runId, req, 'denied', 'aborted')
+      judge?.settle('denied', 'tony')
       return { approved: false }
     }
     const db = useDb()
@@ -220,12 +249,16 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
     const id = row!.id
     if (unavailable || !client) {
       logOutcome(runId, req, 'denied', unavailable ?? undefined)
+      judge?.settle('denied', 'tony')
       return { approved: false }
     }
 
+    // The judge's line: pending for our own judge (it starts after the text goes out), or the
+    // mirrored card's current verdict.
+    const line = judge ? ((await judge.enabled()) ? verdictLine({ rule: null, verdict: null, pending: true, autoPossible: false }) : null) : verdictLine(deps.verdict?.())
     let promptGuid: string | null = null
     try {
-      promptGuid = (await client.sendText(chatGuid, approvalPromptText(req), randomUUID())).guid
+      promptGuid = (await client.sendText(chatGuid, approvalPromptText(req, line), randomUUID())).guid
     } catch (err) {
       console.warn(`[channels] approval prompt for run ${runId} failed:`, err instanceof Error ? err.message : err)
     }
@@ -233,12 +266,28 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
     if (!promptGuid) {
       await settle(id, 'denied')
       logOutcome(runId, req, 'denied', 'prompt-send-failed')
+      judge?.settle('denied', 'tony')
       return { approved: false }
     }
     await db.update(channelApprovals).set({ promptGuid }).where(eq(channelApprovals.id, id))
 
-    const status = await waitFor(id, pollMs, timeoutMs, deps.signal)
+    // Smart Approvals (cycle 84): the judge approving withdraws the prompt (row `expired`) — a later
+    // 👍/👎 then answers nothing. Stop still wins over everything (the run's own signal).
+    const withdraw = new AbortController()
+    const onStop = () => withdraw.abort(deps.signal?.reason)
+    if (deps.signal?.aborted) onStop()
+    else deps.signal?.addEventListener('abort', onStop, { once: true })
+    let judgeAsked = false
+    judge?.start(() => { judgeAsked = true; withdraw.abort(APPROVAL_WITHDRAWN) })
+    const status = await waitFor(id, pollMs, timeoutMs, withdraw.signal)
+    deps.signal?.removeEventListener('abort', onStop)
+    if (judge && judgeAsked && status === 'expired' && !deps.signal?.aborted) {
+      logOutcome(runId, req, 'approved', 'judge')
+      judge.settle('auto', 'judge')
+      return { approved: true }
+    }
     logOutcome(runId, req, status, deps.signal?.aborted ? 'aborted' : undefined)
+    judge?.settle(status === 'approved' ? 'approved' : status === 'expired' ? 'timeout' : 'denied', status === 'expired' ? 'timeout' : 'tony')
     return { approved: status === 'approved' }
   }
 }
@@ -249,11 +298,14 @@ export function imessageApprovalChannel(runId: string, chatGuid: string, deps: A
  * it names an iMessage chat, prompts there. Otherwise denies, as no channel would.
  */
 export function replyToApprovalChannel(runId: string, deps: ApprovalChannelDeps = {}): Channel {
-  return async (req) => {
+  return async (req, opts) => {
     const [fresh] = await useDb().select({ replyTo: agentRuns.replyTo }).from(agentRuns).where(eq(agentRuns.id, runId)).limit(1)
     const r = fresh?.replyTo as { channel?: unknown; chatGuid?: unknown } | null | undefined
-    if (r?.channel !== 'imessage' || typeof r.chatGuid !== 'string' || !r.chatGuid) return { approved: false }
-    return imessageApprovalChannel(runId, r.chatGuid, deps)(req)
+    if (r?.channel !== 'imessage' || typeof r.chatGuid !== 'string' || !r.chatGuid) {
+      opts?.judge?.settle('denied', 'tony')
+      return { approved: false }
+    }
+    return imessageApprovalChannel(runId, r.chatGuid, deps)(req, opts)
   }
 }
 
