@@ -8,13 +8,19 @@ export type ProviderKind = 'openai-compatible'
 export type KeyField = { apiKey: string } | { keep: true } | null
 
 export interface DraftProvider { id: string; name: string; kind: ProviderKind; baseURL: string | null; hasKey: boolean; key: KeyField }
-export interface DraftModel { id: string; providerId: string; modelId: string; label: string; dim: number | null; contextWindow: number | null }
+export interface DraftModel {
+  id: string; providerId: string; modelId: string; label: string; dim: number | null; contextWindow: number | null
+  /** Cycle 83: what the model is good at, written for the coordinator picking a child's model. */
+  description: string | null
+  /** Cycle 83: workstream segments running at once on this model (1–256); null = the default. */
+  maxInFlight: number | null
+}
 export interface DraftDoc { version: 1; providers: DraftProvider[]; models: DraftModel[]; assignments: Record<string, string[]> }
 
 // Must stay in step with USAGES in server/lib/ai/registry/types.ts — the server validates
 // the PUT against its own copy, so a usage missing here is simply invisible in Settings
 // while a usage missing THERE is a 422 on save.
-const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev'] as const
+const USAGES = ['reasoning', 'bulk', 'embeddings', 'vision', 'stt', 'tts', 'rerank', 'jev', 'subagents'] as const
 
 function uid(): string { return (globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.round(Math.random() * 1e6)}`) }
 
@@ -35,7 +41,7 @@ export function useAiConfig() {
     draft.value = {
       version: 1,
       providers: doc.providers.map(p => ({ ...p, key: p.hasKey ? { keep: true } : null })),
-      models: doc.models.map(m => ({ ...m, contextWindow: m.contextWindow ?? null })),
+      models: doc.models.map(m => ({ ...m, contextWindow: m.contextWindow ?? null, description: m.description ?? null, maxInFlight: m.maxInFlight ?? null })),
       assignments: { ...emptyAssignments(), ...doc.assignments }
     }
     loaded.value = true
@@ -50,7 +56,7 @@ export function useAiConfig() {
     draft.value.providers = draft.value.providers.filter(p => p.id !== id)
   }
   function addModel(): DraftModel {
-    const m: DraftModel = { id: uid(), providerId: draft.value.providers[0]?.id ?? '', modelId: '', label: 'New model', dim: null, contextWindow: null }
+    const m: DraftModel = { id: uid(), providerId: draft.value.providers[0]?.id ?? '', modelId: '', label: 'New model', dim: null, contextWindow: null, description: null, maxInFlight: null }
     draft.value.models.push(m)
     return m
   }

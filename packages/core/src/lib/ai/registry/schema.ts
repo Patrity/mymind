@@ -2,7 +2,7 @@
 // Zod schema for the AI config document + referential integrity (no FKs since
 // it's one JSONB doc) + a client-safe redaction that strips key ciphertext.
 import { z } from 'zod'
-import { USAGES, type AiConfigDoc, type Usage } from './types'
+import { MAX_IN_FLIGHT_LIMITS, USAGES, type AiConfigDoc, type Usage } from './types'
 
 const providerSchema = z.object({
   id: z.string().min(1),
@@ -12,13 +12,21 @@ const providerSchema = z.object({
   apiKeyEnc: z.string().nullable()
 })
 
+/** Cycle 83 fields, shared by the stored doc and the PUT body. Defaulted to null, so a config
+ *  (or an older client's PUT) written before they existed still parses. */
+export const modelDescriptionSchema = z.string().trim().max(500).nullable().default(null)
+  .transform(v => (v ? v : null))
+export const maxInFlightSchema = z.number().int().min(MAX_IN_FLIGHT_LIMITS.min).max(MAX_IN_FLIGHT_LIMITS.max).nullable().default(null)
+
 const modelSchema = z.object({
   id: z.string().min(1),
   providerId: z.string().min(1),
   modelId: z.string().min(1),
   label: z.string().min(1),
   dim: z.number().int().positive().nullable(),
-  contextWindow: z.number().int().positive().nullable().default(null)
+  contextWindow: z.number().int().positive().nullable().default(null),
+  description: modelDescriptionSchema,
+  maxInFlight: maxInFlightSchema
 })
 
 /**

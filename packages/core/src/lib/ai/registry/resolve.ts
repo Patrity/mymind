@@ -2,8 +2,8 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { LanguageModel } from 'ai'
 import { decryptSecret } from './crypto'
-import { AiNotConfiguredError, AiAllFailedError, type FailedAttempt } from './errors'
-import { EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel, type Usage } from './types'
+import { AiNotConfiguredError, AiAllFailedError, UnknownSubagentModelError, type FailedAttempt } from './errors'
+import { DEFAULT_MAX_IN_FLIGHT, EMBEDDING_DIM, type AiConfigDoc, type ResolvedModel, type Usage } from './types'
 import { recordEvent as defaultRecord } from '../../observability/record'
 import type { SpanInput } from '../../observability/types'
 
@@ -28,6 +28,13 @@ function isAbort(err: unknown): boolean {
 
 /** Pure: build the ordered, decrypted chain for a usage from a config doc. */
 export function resolveChainFrom(doc: AiConfigDoc, usage: Usage): ResolvedModel[] {
+  const chain = chainOf(doc, usage)
+  if (chain.length === 0) throw new AiNotConfiguredError(usage)
+  return chain
+}
+
+/** The chain for a usage, empty when nothing usable is assigned. */
+function chainOf(doc: AiConfigDoc, usage: Usage): ResolvedModel[] {
   const ids = doc.assignments[usage] ?? []
   const providers = new Map(doc.providers.map(p => [p.id, p]))
   let chain: ResolvedModel[] = []
@@ -45,8 +52,38 @@ export function resolveChainFrom(doc: AiConfigDoc, usage: Usage): ResolvedModel[
   }
   // Embeddings can't fail over to a different dimension — keep only 2560.
   if (usage === 'embeddings') chain = chain.filter(m => m.dim === EMBEDDING_DIM)
-  if (chain.length === 0) throw new AiNotConfiguredError(usage)
   return chain
+}
+
+/**
+ * Pure: the ordered failover chain for a child workstream (cycle 83, spec §3): the `subagents`
+ * model labelled `label` (no label = the first one), then the rest of `subagents` in order, then
+ * the `reasoning` chain. Empty `subagents` → `reasoning` alone. A model listed under both is tried
+ * once, at its first position. The head is the child's primary model — its pool key.
+ * Throws UnknownSubagentModelError for a label not in `subagents`.
+ */
+export function resolveSubagentChainFrom(doc: AiConfigDoc, label?: string | null): ResolvedModel[] {
+  let subs = chainOf(doc, 'subagents')
+  const want = label?.trim()
+  if (want) {
+    const i = subs.findIndex(m => m.label === want)
+    if (i < 0) throw new UnknownSubagentModelError(want, subs.map(m => m.label))
+    subs = [subs[i]!, ...subs.slice(0, i), ...subs.slice(i + 1)]
+  }
+  const seen = new Set<string>()
+  const chain = [...subs, ...chainOf(doc, 'reasoning')].filter(m => !seen.has(m.modelDefId) && !!seen.add(m.modelDefId))
+  if (chain.length === 0) throw new AiNotConfiguredError('reasoning')
+  return chain
+}
+
+export interface SubagentModelInfo { label: string; description: string | null; maxInFlight: number }
+
+/** Pure: the `subagents` list as the coordinator's tool description shows it, in order. */
+export function listSubagentModelsFrom(doc: AiConfigDoc): SubagentModelInfo[] {
+  return (doc.assignments.subagents ?? []).flatMap((id) => {
+    const m = doc.models.find(x => x.id === id)
+    return m ? [{ label: m.label, description: m.description ?? null, maxInFlight: m.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT }] : []
+  })
 }
 
 /** Pure: move the chosen model to the front (chosen = primary; the rest stay as failover). */
@@ -142,6 +179,16 @@ import { loadConfig } from './store'
 /** Cached: ordered decrypted chain for a usage (loads the doc once). */
 export async function resolveChain(usage: Usage): Promise<ResolvedModel[]> {
   return resolveChainFrom(await loadConfig(), usage)
+}
+
+/** Cached: a child workstream's failover chain — see resolveSubagentChainFrom. */
+export async function resolveSubagentModel(label?: string | null): Promise<ResolvedModel[]> {
+  return resolveSubagentChainFrom(await loadConfig(), label)
+}
+
+/** Cached: the `subagents` models (label, description, maxInFlight) for the coordinator's tools. */
+export async function listSubagentModels(): Promise<SubagentModelInfo[]> {
+  return listSubagentModelsFrom(await loadConfig())
 }
 
 /** Cached: run fn against the usage's chain with failover. */

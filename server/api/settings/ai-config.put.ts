@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { loadConfig, saveConfig, invalidate } from '@mymind/core/lib/ai/registry/store'
-import { parseConfig } from '@mymind/core/lib/ai/registry/schema'
+import { maxInFlightSchema, modelDescriptionSchema, parseConfig } from '@mymind/core/lib/ai/registry/schema'
 import { encryptSecret } from '@mymind/core/lib/ai/registry/crypto'
 import { resolveChainFrom } from '@mymind/core/lib/ai/registry/resolve'
 import { EMBEDDING_DIM, USAGES, type AiConfigDoc } from '@mymind/core/lib/ai/registry/types'
@@ -16,7 +16,9 @@ const Body = z.object({
   models: z.array(z.object({
     id: z.string(), providerId: z.string(), modelId: z.string(), label: z.string(),
     dim: z.number().int().positive().nullable(),
-    contextWindow: z.number().int().positive().nullable().default(null)
+    contextWindow: z.number().int().positive().nullable().default(null),
+    description: modelDescriptionSchema,
+    maxInFlight: maxInFlightSchema
   })),
   // Defaulted, not required — same reason as the stored-doc schema: an older client that
   // does not know about a newly added usage must still be able to save, rather than 422.

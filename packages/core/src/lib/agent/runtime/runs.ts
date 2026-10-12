@@ -7,6 +7,8 @@ import { and, desc, eq, inArray, notInArray, or, sql } from 'drizzle-orm'
 import { useDb } from '../../../db'
 import { agentRuns, type AgentRun } from '../../../db/schema'
 import type { ReplyTo, RunInput, RunKind, RunOutcome, RunProfile, RunTrigger } from './types'
+import { poolLimits } from './pools'
+import { DEFAULT_MAX_IN_FLIGHT } from '../../ai/registry/types'
 
 export const HEADLESS_SLOTS = 1
 export const ORPHAN_STALE_MS = 60_000
@@ -53,8 +55,14 @@ function isUniqueViolation(err: unknown): boolean {
  * `onlyConversations` is a test seam: the dev database is shared, so a test must not claim
  * another file's (or a live session's) queued run.
  */
-export async function claimNextRun(opts: { headlessSlots?: number; onlyConversations?: string[] } = {}): Promise<AgentRun | null> {
+export async function claimNextRun(opts: {
+  headlessSlots?: number; onlyConversations?: string[]
+  /** Model id → pool size (cycle 83, pools.ts). Omitted = read from the AI config. A model not in
+   *  the map gets DEFAULT_MAX_IN_FLIGHT. */
+  poolLimits?: Record<string, number>
+} = {}): Promise<AgentRun | null> {
   const slots = opts.headlessSlots ?? HEADLESS_SLOTS
+  const limits = JSON.stringify(opts.poolLimits ?? await poolLimits())
   // `undefined` (the key omitted) means "no scoping requested" — production's default, claim
   // globally. An explicit `[]` means "scoped to nothing" and must claim NOTHING, not fall
   // through to unscoped — `and false` is Postgres's plain boolean-literal way to say that
@@ -66,12 +74,23 @@ export async function claimNextRun(opts: { headlessSlots?: number; onlyConversat
       : sql`and false`
   try {
     return await useDb().transaction(async (tx) => {
+      // Claims are serialised (cycle 83): the slot counts below (headless, per-model pools) are
+      // read-then-write, so two claimers — a second process, or a scoped pump racing the tick —
+      // could otherwise both see the last free slot. Held to commit; a claim is one short query.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('mymind:agent_runs:claim'))`)
+      // Pools (cycle 83, pools.ts): a workstream segment runs only while fewer than its primary
+      // model's maxInFlight segments run on that model. Chat turns and wakes are never pooled; a
+      // segment with no model (AI unconfigured when it was queued) is not pooled either.
       const picked = await tx.execute(sql`
         select r.id from agent_runs r
         where r.status = 'queued'
           and not exists (select 1 from agent_runs x where x.conversation_id = r.conversation_id and x.status = 'running')
           and (r.profile <> 'headless'
                or (select count(*) from agent_runs h where h.status = 'running' and h.profile = 'headless') < ${slots})
+          and (r.kind <> 'workstream' or r.model_def_id is null
+               or (select count(*) from agent_runs p
+                   where p.status = 'running' and p.kind = 'workstream' and p.model_def_id = r.model_def_id)
+                  < coalesce((${limits}::jsonb ->> r.model_def_id)::int, ${DEFAULT_MAX_IN_FLIGHT}))
           ${scope}
         order by r.created_at, r.id
         limit 1

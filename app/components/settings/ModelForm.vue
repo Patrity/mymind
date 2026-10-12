@@ -38,6 +38,20 @@ const contextWindowInput = computed<number | string>({
     props.model.contextWindow = v === '' || !Number.isFinite(n) || n <= 0 ? null : Math.trunc(n)
   },
 })
+
+// Same '' → null mapping, clamped to the server's 1–256 bounds (null = the default pool size).
+const maxInFlightInput = computed<number | string>({
+  get: () => props.model.maxInFlight ?? '',
+  set: (v: number | string) => {
+    const n = Number(v)
+    props.model.maxInFlight = v === '' || !Number.isFinite(n) || n <= 0 ? null : Math.min(MAX_IN_FLIGHT_MAX, Math.max(1, Math.trunc(n)))
+  },
+})
+
+const descriptionInput = computed<string>({
+  get: () => props.model.description ?? '',
+  set: (v: string) => { props.model.description = v.trim() ? v : null },
+})
 </script>
 
 <template>
@@ -79,6 +93,34 @@ const contextWindowInput = computed<number | string>({
             type="number"
             :min="1"
             placeholder="unknown"
+            class="w-full"
+          />
+        </UFormField>
+
+        <UFormField
+          label="Description"
+          help="What this model is good at. A coordinator reads it when choosing a model for a child workstream."
+        >
+          <UTextarea
+            v-model="descriptionInput"
+            :rows="2"
+            :maxlength="500"
+            autoresize
+            placeholder="fast, long context, high concurrency: research, reading, summarizing"
+            class="w-full"
+          />
+        </UFormField>
+
+        <UFormField
+          label="Max in flight"
+          :help="`Workstream segments running at once on this model; more wait their turn. Empty = ${DEFAULT_MAX_IN_FLIGHT}. Chat is never held back.`"
+        >
+          <UInput
+            v-model.number="maxInFlightInput"
+            type="number"
+            :min="1"
+            :max="MAX_IN_FLIGHT_MAX"
+            :placeholder="String(DEFAULT_MAX_IN_FLIGHT)"
             class="w-full"
           />
         </UFormField>

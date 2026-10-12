@@ -21,3 +21,14 @@ export class AiAllFailedError extends Error {
 export class ConfigValidationError extends Error {
   constructor(message: string) { super(message); this.name = 'ConfigValidationError' }
 }
+
+/** A coordinator named a `subagents` model that is not in the list (cycle 83). Raised at spawn, so
+ *  the model reads which labels exist and can pick again. */
+export class UnknownSubagentModelError extends Error {
+  constructor(public label: string, public available: string[]) {
+    super(available.length
+      ? `There is no subagents model labelled "${label}". Available: ${available.map(l => `"${l}"`).join(', ')}.`
+      : `There is no subagents model labelled "${label}": no subagents models are configured, so children run on the reasoning model — leave the model out.`)
+    this.name = 'UnknownSubagentModelError'
+  }
+}

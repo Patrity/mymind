@@ -23,6 +23,12 @@ function remove(usage: string, id: string) {
   config.setAssignment(usage, (config.draft.value.assignments[usage] ?? []).filter(x => x !== id))
 }
 
+function helpFor(usage: string): string {
+  if (usage === 'embeddings') return 'Only 2560-dim models. Order = failover priority.'
+  if (usage === 'subagents') return 'Models a coordinator can give its child workstreams, picked by label using each model\'s description (Models page). First = default; children fall back down this list, then to reasoning. Empty = children use reasoning.'
+  return 'Drag to set failover priority (first = primary).'
+}
+
 const picker = reactive<Record<string, string | null>>({})
 function pick(usage: string, id: string) {
   add(usage, id)
@@ -36,7 +42,7 @@ function pick(usage: string, id: string) {
       v-for="usage in config.usages"
       :key="usage"
       :label="usage"
-      :help="usage === 'embeddings' ? 'Only 2560-dim models. Order = failover priority.' : 'Drag to set failover priority (first = primary).'"
+      :help="helpFor(usage)"
     >
       <SettingsAssignmentChain
         :ids="config.draft.value.assignments[usage] ?? []"

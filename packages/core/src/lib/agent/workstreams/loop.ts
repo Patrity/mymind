@@ -52,6 +52,7 @@ import { noteOrigin, notifyTony, workstreamNotifyDeps } from './notify'
 import { ensureWorkstreamWorkspace } from '../../sandbox/store'
 import { takeWorkstreamWatchResults, untakeWatchResults, workstreamHasArmedWatch, workstreamHasWatchResults } from '../../sandbox/watches'
 import { stepCostUsd } from './cost'
+import { segmentPrimaryModelId } from '../runtime/pools'
 
 /** Non-terminal workstreams at once (review I2, controller ruling): bounds fan-out through jobs/wakes. */
 export const MAX_ACTIVE_WORKSTREAMS = 3
@@ -372,7 +373,9 @@ async function enqueueSegment(ws: WorkstreamRow, input: { text: string; eventOri
   try {
     const run = await createRun({
       conversationId: ws.conversationId, sessionKey: `thread:${ws.conversationId}`, trigger: 'user', profile: 'interactive',
-      kind: 'workstream', input: runInput
+      kind: 'workstream', input: runInput,
+      // Cycle 83: the segment's primary model — its pool key (runtime/pools.ts) and the runner's first try.
+      modelDefId: await segmentPrimaryModelId(ws)
     })
     await patchWorkstream(ws.id, { currentRunId: run.id })
     return run.id

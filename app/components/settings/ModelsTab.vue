@@ -71,8 +71,19 @@ function add() {
               variant="subtle"
               size="sm"
             />
+            <UBadge
+              v-if="m.maxInFlight !== null"
+              :label="`max ${m.maxInFlight} in flight`"
+              color="neutral"
+              variant="subtle"
+              size="sm"
+            />
           </div>
           <span class="text-sm text-muted">{{ m.modelId || '—' }}</span>
+          <span
+            v-if="m.description"
+            class="text-sm text-toned"
+          >{{ m.description }}</span>
           <UBadge
             :label="providerName(m.providerId)"
             color="neutral"
