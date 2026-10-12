@@ -1303,3 +1303,80 @@ describe('fix round 1', () => {
     await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
   })
 })
+
+describe('final fix wave', () => {
+  /** Children of `ws` that ended `done` with these summaries (created oldest → newest). */
+  async function doneChildren(wsId: string, summaries: string[]) {
+    const r = await spawnChildren(wsId, summaries.map((_, i) => ({ goal: `T83 big ${i}`, budget: { maxSteps: 20 } })), { labels: [], kick: false })
+    for (const [i, c] of r.children.entries()) {
+      const k = (await getWorkstream(c.id))!
+      await settleSegments(k.conversationId)
+      // Distinct creation times, oldest first in spawn order.
+      await useDb().update(workstreams).set({ state: 'done', summary: summaries[i]!, finishedAt: new Date(), createdAt: new Date(Date.now() - (summaries.length - i) * 1000) }).where(eq(workstreams.id, c.id))
+    }
+    return Promise.all(r.children.map(async c => (await getWorkstream(c.id))!))
+  }
+
+  it('I3: 50 children × 8000-char summaries — the wake report and the wait result stay bounded; each child\'s text is capped; the oldest shrink to one line', async () => {
+    const { ws } = await idleCoordinator('caps')
+    const kids = await doneChildren(ws.id, Array.from({ length: 50 }, (_, i) => `S${i}:` + 'x'.repeat(7990)))
+    const report = await childReport(kids, 'Your child workstreams have news:')
+    expect(report.length).toBeLessThanOrEqual(24_000)
+    // The newest child keeps (capped) text; the oldest is one line.
+    expect(report).toContain('S49:')
+    expect(report).toContain('(truncated — read_workstream for the full text)')
+    expect(report).not.toContain('x'.repeat(1501))
+    const oldestLine = report.split('\n').find(l => l.includes(kids[0]!.id))!
+    expect(oldestLine).toMatch(/Its text is not shown here \(the report is too long\) — read_workstream for the full text\.$/)
+    expect(report).not.toContain('S0:')
+    // Every child is still listed (by id), none dropped.
+    for (const k of kids) expect(report).toContain(k.id)
+
+    // The immediate wait result (a tool result the model reads whole) is bounded the same way.
+    const seg = await segmentFor(ws.id)
+    const out = (await tool('wait_for_workstreams').handler({ ids: kids.map(k => k.id) }, { signal: new AbortController().signal, runId: seg.runId })).result as Record<string, any>
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(24_000)
+    expect(out.children).toHaveLength(50)
+    expect(out.children[0]).toMatchObject({ id: kids[0]!.id, note: expect.stringMatching(/read_workstream for the full text/) })
+    expect(out.children[49].summary).toMatch(/^S49:x+… \(truncated — read_workstream for the full text\)$/)
+    expect(out.children[49].summary.length).toBeLessThan(1600)
+    await seg.release()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I3: a short report is untouched; one long question is capped but its child keeps its place', async () => {
+    const { ws } = await idleCoordinator('caps-small')
+    const [a, b] = await doneChildren(ws.id, ['short A', 'short B'])
+    const report = await childReport([a!, b!], 'news:')
+    expect(report).toContain('    short A')
+    expect(report).toContain('    short B')
+    expect(report).not.toContain('truncated')
+    await patchWorkstream(b!.id, { state: 'attention', attention: { kind: 'question', text: 'Q'.repeat(2000) } })
+    const r2 = await childReport([a!, (await getWorkstream(b!.id))!], 'news:')
+    expect(r2).toContain(`${'Q'.repeat(1500)}… (truncated — read_workstream for the full text)`)
+    expect(r2).not.toContain('Q'.repeat(1501))
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+
+  it('I3: read_workstream returns the FULL summary, paged past 8000 characters', async () => {
+    const { ws } = await idleCoordinator('read-full')
+    const [k] = await doneChildren(ws.id, ['A'.repeat(8000) + 'B'.repeat(8000) + 'C'.repeat(100)])
+    const seg = await segmentFor(ws.id)
+    const read = async (args: Record<string, unknown>) => (await tool('read_workstream').handler({ id: k!.id, tail: 0, ...args }, { signal: new AbortController().signal, runId: seg.runId })).result as Record<string, any>
+    const p1 = await read({})
+    expect(p1.children[0].summary).toBe('A'.repeat(8000))
+    expect(p1.summaryPage).toEqual({ offset: 0, length: 16_100, nextOffset: 8000 })
+    const p2 = await read({ offset: 8000 })
+    expect(p2.children[0].summary).toBe('B'.repeat(8000))
+    const p3 = await read({ offset: 16_000 })
+    expect(p3.children[0].summary).toBe('C'.repeat(100))
+    expect(p3.summaryPage).toEqual({ offset: 16_000, length: 16_100 })
+    // A summary within one page comes whole, unpaged (and uncapped — no 1500 cut here).
+    const [k2] = await doneChildren(ws.id, ['D'.repeat(5000)])
+    const whole = (await tool('read_workstream').handler({ id: k2!.id, tail: 0 }, { signal: new AbortController().signal, runId: seg.runId })).result as Record<string, any>
+    expect(whole.children[0].summary).toBe('D'.repeat(5000))
+    expect(whole.summaryPage).toBeUndefined()
+    await seg.release()
+    await controlWorkstream({ workstreamId: ws.id, action: 'cancel' })
+  })
+})

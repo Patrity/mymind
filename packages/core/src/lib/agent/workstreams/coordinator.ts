@@ -220,25 +220,68 @@ export interface ChildView {
   withheld?: true
 }
 
-/** One child as a tool result / wake shows it. `withhold` drops its own words (not its state). */
-export function childView(c: WorkstreamRow, withhold = false): ChildView {
+// ── Size caps (final fix wave I3) ──────────────────────────────────────────────────────────────
+// A wake report and a wait result reach the model whole (a wake report IS the segment's prompt), so
+// a wide fan-out of long summaries must not blow the coordinator's context: each child's own text is
+// capped, and the whole report too — past it, the OLDEST children shrink to one line each. The full
+// text is always one read_workstream away (paged past READ_SUMMARY_PAGE).
+
+/** Per child, per field (summary / question / reason) in a wake report or a wait result. */
+export const CHILD_TEXT_CAP = 1500
+/** A whole wake report / wait result. */
+export const CHILD_REPORT_CAP = 24_000
+/** read_workstream returns a summary in pages of this many characters (`offset`). */
+export const READ_SUMMARY_PAGE = 8000
+export const TRUNCATED_NOTE = '(truncated — read_workstream for the full text)'
+
+export function capChildText(t: string, cap = CHILD_TEXT_CAP): string {
+  return t.length > cap ? `${t.slice(0, cap)}… ${TRUNCATED_NOTE}` : t
+}
+
+/** One child as a tool result / wake shows it. `withhold` drops its own words (not its state);
+ *  `full` keeps them whole (read_workstream — everything else caps them). */
+export function childView(c: WorkstreamRow, withhold = false, o: { full?: boolean } = {}): ChildView {
   const u = usedOf(c)
   const att = attentionOf(c)
+  const cap = (t: string) => o.full ? t : capChildText(t)
   const v: ChildView = { id: c.id, goal: c.goal, state: c.state, model: c.modelLabel, workspace: c.workspaceMode, used: { steps: u.steps, wallMs: u.wallMs }, budget: budgetOf(c) }
   if (withhold) return { ...v, withheld: true, ...(c.state === 'attention' && att?.kind === 'approval' ? { waitingFor: "Tony's approval" } : {}) }
-  if (c.summary) v.summary = c.summary
-  if (c.failureReason) v.failureReason = c.failureReason
-  if (c.state === 'attention' && att?.kind === 'question') v.question = att.text
+  if (c.summary) v.summary = cap(c.summary)
+  if (c.failureReason) v.failureReason = cap(c.failureReason)
+  if (c.state === 'attention' && att?.kind === 'question') v.question = cap(att.text)
   else if (c.state === 'attention' && att?.kind === 'approval') v.waitingFor = "Tony's approval"
-  else if (c.state === 'paused' && att) v.waitingFor = att.waitingForWatch ? 'a watch it set' : `paused: ${att.text}`
+  else if (c.state === 'paused' && att) v.waitingFor = att.waitingForWatch ? 'a watch it set' : `paused: ${cap(att.text)}`
   return v
 }
 
-/** Tool-result children: everything, flagged `workspaceTainted` first when any is tainted (that taints the reading run). */
-export async function childrenResult(kids: WorkstreamRow[], extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+const clipGoal = (g: string, n = 120) => { const one = g.replace(/\s+/g, ' ').trim(); return one.length > n ? `${one.slice(0, n - 1)}…` : one }
+
+/** Indices of `kids` oldest first (by creation) — the ones that shrink first past the report cap. */
+function oldestFirst(kids: WorkstreamRow[]): number[] {
+  return kids.map((k, i) => ({ i, t: k.createdAt.getTime() })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.i)
+}
+
+/** Shrink the oldest entries to their one-line form until the whole fits `cap` (never below that). */
+function fitReport<T>(kids: WorkstreamRow[], full: T[], short: (i: number) => T, size: (xs: T[]) => number, cap = CHILD_REPORT_CAP): T[] {
+  const out = [...full]
+  for (const i of oldestFirst(kids)) {
+    if (size(out) <= cap) break
+    out[i] = short(i)
+  }
+  return out
+}
+
+/** Tool-result children (a wait result): capped like a wake report, flagged `workspaceTainted`
+ *  first when any is tainted (that taints the reading run). `o.full`: read_workstream's one child. */
+export async function childrenResult(kids: WorkstreamRow[], extra: Record<string, unknown> = {}, o: { full?: boolean } = {}): Promise<Record<string, unknown>> {
   let tainted = false
   for (const k of kids) if (await childTainted(k)) tainted = true
-  return { ...(tainted ? { workspaceTainted: true } : {}), ok: true, note: CHILD_UNTRUSTED_NOTE, ...extra, children: kids.map(k => childView(k)) }
+  const head = { ...(tainted ? { workspaceTainted: true } : {}), ok: true, note: CHILD_UNTRUSTED_NOTE, ...extra }
+  const views: Array<ChildView | Record<string, unknown>> = kids.map(k => childView(k, false, o))
+  const children = o.full ? views : fitReport(kids, views,
+    i => ({ id: kids[i]!.id, goal: clipGoal(kids[i]!.goal), state: kids[i]!.state, note: 'Not shown here (the result is too long) — read_workstream for the full text.' }),
+    xs => JSON.stringify({ ...head, children: xs }).length)
+  return { ...head, children }
 }
 
 /** Fix round 2: text a CHILD wrote goes under a label, every line of it indented — no line of it
@@ -247,9 +290,12 @@ function childText(label: string, text: string): string {
   return `  ${label}:\n${text.split(/\r\n|\r|\n/).map(l => `    ${l}`).join('\n')}`
 }
 
+function describeHead(v: ChildView): string {
+  return `- "${clipGoal(v.goal)}" (id ${v.id}${v.model ? `, model ${v.model}` : ''}) — ${v.state}, ${v.used.steps}/${v.budget.maxSteps} steps`
+}
+
 function describe(v: ChildView): string {
-  const goal = v.goal.replace(/\s+/g, ' ').trim()
-  const head = `- "${goal.length > 120 ? `${goal.slice(0, 119)}…` : goal}" (id ${v.id}${v.model ? `, model ${v.model}` : ''}) — ${v.state}, ${v.used.steps}/${v.budget.maxSteps} steps`
+  const head = describeHead(v)
   if (v.withheld) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here because it handled mail/calendar content — read it with read_workstream.`
   const parts = [head]
   if (v.question) parts.push(childText('asks', v.question))
@@ -259,10 +305,18 @@ function describe(v: ChildView): string {
   return parts.join('\n')
 }
 
-/** The wake prompt's report (an event row on the coordinator's thread): a tainted child's words are withheld. */
+/** The one-line form of an old child once the report is over its cap (its question still flagged). */
+function describeShort(v: ChildView): string {
+  return `${describeHead(v)}${v.question ? ' — it ASKS you a question' : ''}. Its text is not shown here (the report is too long) — read_workstream for the full text.`
+}
+
+/** The wake prompt's report (an event row on the coordinator's thread): a tainted child's words are
+ *  withheld; each child's text is capped, and past CHILD_REPORT_CAP the oldest shrink to one line. */
 export async function childReport(kids: WorkstreamRow[], header: string): Promise<string> {
   const views = await Promise.all(kids.map(async k => childView(k, await childTainted(k))))
-  return [header, CHILD_UNTRUSTED_NOTE, ...views.map(describe)].join('\n')
+  const lead = [header, CHILD_UNTRUSTED_NOTE]
+  const lines = fitReport(kids, views.map(describe), i => describeShort(views[i]!), xs => [...lead, ...xs].join('\n').length)
+  return [...lead, ...lines].join('\n')
 }
 
 /** The coordinator has now been shown these children's questions/pauses (never shown twice). */
