@@ -1,7 +1,7 @@
 // Cycle 84 Task 1 — the Smart Approvals predicate, as a full truth table against an oracle written
 // straight from the global constraint:
 //   settings.judge.enabled ∧ surfaceEnabled ∧ verdict.recommendation==='approve'
-//   ∧ verdict.confidence ≥ settings.judge.confidence ∧ !verdict.error ∧ ruleFloor ∉ {critical, deny}
+//   ∧ verdict.confidence ≥ settings.judge.confidence ∧ !verdict.error ∧ ruleFloor ∉ {high, critical, deny}
 //   ∧ !(tool.outbound ∧ runTainted) ∧ nonce unchanged;  headless never.
 import { describe, it, expect } from 'vitest'
 import { autoApprovePredicate, autoApproveBlocker, type AutoApproveInput } from './auto-approve'
@@ -25,7 +25,7 @@ function oracle(i: AutoApproveInput): boolean {
   const surfaceEnabled = i.surface === 'workstream' ? s.smartApprovals.workstreams : i.surface === 'chat' ? s.smartApprovals.chat : false
   const v = i.verdict
   return s.enabled && surfaceEnabled && !!v && v.recommendation === 'approve' && v.confidence >= s.confidence
-    && !v.error && i.ruleFloor !== 'critical' && i.ruleFloor !== 'deny' && !(i.outbound && i.runTainted) && i.nonceUnchanged
+    && !v.error && i.ruleFloor !== 'high' && i.ruleFloor !== 'critical' && i.ruleFloor !== 'deny' && !(i.outbound && i.runTainted) && i.nonceUnchanged
 }
 
 function* allInputs(): Generator<[string, AutoApproveInput]> {
@@ -76,6 +76,7 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
     ['chat (default off)', { surface: 'chat' }, 'surface-disabled'],
     ['headless, even with every surface on', { surface: 'headless', settings: { ...ok.settings, smartApprovals: { workstreams: true, chat: true } } }, 'surface-disabled'],
     ['nonce changed', { nonceUnchanged: false }, 'nonce-changed'],
+    ['rule floor high (spec D6: no rule flag)', { ruleFloor: 'high' }, 'rule-floor'],
     ['rule floor critical', { ruleFloor: 'critical' }, 'rule-floor'],
     ['rule floor deny', { ruleFloor: 'deny' }, 'rule-floor'],
     ['outbound in a tainted run', { outbound: true, runTainted: true }, 'tainted-outbound'],
@@ -99,9 +100,9 @@ describe('autoApprovePredicate — each exclusion on its own (spec §2.4)', () =
     expect(autoApprovePredicate({ ...ok, surface: 'chat', settings: { ...ok.settings, smartApprovals: { workstreams: false, chat: true } } })).toBe(true)
   })
 
-  it('outbound in an untainted run and a high rule floor stay auto-approvable (the exact rule)', () => {
+  it('outbound in an untainted run, a tainted non-outbound call and a low floor stay auto-approvable', () => {
     expect(autoApprovePredicate({ ...ok, outbound: true })).toBe(true)
     expect(autoApprovePredicate({ ...ok, runTainted: true })).toBe(true)
-    expect(autoApprovePredicate({ ...ok, ruleFloor: 'high' })).toBe(true)
+    expect(autoApprovePredicate({ ...ok, ruleFloor: 'low' })).toBe(true)
   })
 })

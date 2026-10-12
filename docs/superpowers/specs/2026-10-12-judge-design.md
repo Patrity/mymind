@@ -22,7 +22,7 @@ in untrusted tool results and taints the run. Outcome judging (did the work meet
 | D1 | New AI usage **`judge`**; empty → `reasoning` (self-consistency) | hard-wired judge model |
 | D2 | Judge runs on **every approval request** (dangerous; outbound-in-tainted-run; allowlistable-in-tainted-run), worker-side, one bounded **tool-free** call, 60 s timeout | read-only judge tools (Turnstone) |
 | D3 | Judge context = the exact nonce-bound call args (as on the card), the tool's description, the run/workstream goal, the last ~20 messages trimmed; untrusted content stays fenced | full history |
-| D4 | **Rule tier** (instant) gives a floor: `critical`/`deny`/`review`/`low` per tool; rule `critical`/`deny` is **never** auto-approvable | LLM only |
+| D4 | **Rule tier** (instant) gives a floor: `critical`/`deny`/`review`/`low` per tool; rule `high`/`critical`/`deny` is **never** auto-approvable (amended 2026-10-12, see §2.4) | LLM only |
 | D5 | Verdict = risk `low|medium|high|critical`, recommendation `approve|review|deny`, confidence 0–1, 1–3 short reasons; shown on the web card (progressively), workstream attention, and one line in the iMessage approval prompt | — |
 | D6 | **Smart Approvals**: Settings toggle, **on for workstreams, off for chat** by default; auto-approve only when recommendation `approve` ∧ confidence ≥ **0.9** ∧ no rule flag ∧ **not (outbound ∧ tainted run)**; judge error/timeout → human | always-human; auto in tainted outbound |
 | D7 | Audit: `approval_verdicts` table (verdict, rule floor, human decision or `auto`, latency); thread shows "⚖ auto-approved (0.94): reason" | activity_log only |
@@ -62,8 +62,10 @@ Stored in the existing agent settings doc; `invalidate` command on save. Headles
 keep today's gate classes (propose/deny) — the judge annotates proposals but never auto-runs them.
 
 ### 2.4 Never auto-approved
-Rule floor `critical`/`deny`; `outbound` in a tainted run; judge error/timeout/malformed; confidence
+Rule floor `high`/`critical`/`deny`; `outbound` in a tainted run; judge error/timeout/malformed; confidence
 below threshold; recommendation ≠ `approve`; any call whose approval nonce changed (existing binding).
+
+> **Amendment 2026-10-12 (Task 1 review, coordinator ruling):** a `high` rule floor also blocks auto-approval — D6's "no rule flag" takes precedence over the earlier `critical`/`deny`-only wording. Only `low`/`review` floors are auto-approvable.
 
 ### 2.5 Audit + UI
 `approval_verdicts(id, approval_id/nonce, run_id, workstream_id null, tool, rule_floor, rule_reasons,

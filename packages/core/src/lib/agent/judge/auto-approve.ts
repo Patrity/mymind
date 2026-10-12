@@ -1,10 +1,11 @@
 // Cycle 84 (spec §2.3, §2.4): the Smart Approvals rule, as ONE pure function with every input
 // explicit — the only place that decides whether a call may run without Tony. Exactly:
 //   settings.enabled ∧ surfaceEnabled ∧ verdict.recommendation==='approve'
-//   ∧ verdict.confidence ≥ settings.confidence ∧ !verdict.error ∧ ruleFloor ∉ {critical, deny}
+//   ∧ verdict.confidence ≥ settings.confidence ∧ !verdict.error ∧ ruleFloor ∉ {high, critical, deny}
 //   ∧ !(outbound ∧ runTainted) ∧ nonceUnchanged
 // where surfaceEnabled is smartApprovals.workstreams for a workstream, smartApprovals.chat for chat,
 // and always false for a headless run (jobs / wakes never auto-run).
+// Amended 2026-10-12 (coordinator ruling on spec D6 "no rule flag"): a `high` rule floor blocks too.
 import { JUDGE_CONFIDENCE_LIMITS, type ApprovalSurface, type JudgeSettings, type JudgeVerdict, type RuleFloor } from './types'
 
 export interface AutoApproveInput {
@@ -35,7 +36,7 @@ export function autoApproveBlocker(i: AutoApproveInput): AutoApproveBlocker | nu
       : false
   if (!surfaceEnabled) return 'surface-disabled'
   if (i.nonceUnchanged !== true) return 'nonce-changed'
-  if (i.ruleFloor === 'critical' || i.ruleFloor === 'deny') return 'rule-floor'
+  if (i.ruleFloor === 'high' || i.ruleFloor === 'critical' || i.ruleFloor === 'deny') return 'rule-floor'
   if (i.outbound && i.runTainted) return 'tainted-outbound'
   const v = i.verdict
   if (!v) return 'no-verdict'
