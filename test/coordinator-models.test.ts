@@ -28,13 +28,14 @@ function doc(models: M[], assignments: Partial<Record<string, string[]>>) {
   }
 }
 const MODELS: M[] = [{ id: 'r1', label: 'R1' }, { id: 'r2', label: 'R2' }, { id: 's1', label: 'Fast', description: 'fast, long context: research' }, { id: 's2', label: 'Deep' }]
-const child = (modelLabel: string | null) => ({ parentId: '00000000-0000-4000-8000-0000000000c0', modelLabel })
-const top = { parentId: null, modelLabel: null }
+// Fix round 1 (I2): a child is `isChild` (set at spawn), not "has a parent_id".
+const child = (modelLabel: string | null) => ({ isChild: true, modelLabel })
+const top = { isChild: false, modelLabel: null }
 
 beforeEach(() => { stored = doc(MODELS, { reasoning: ['r1', 'r2'], subagents: ['s1', 's2'] }) })
 
 describe('pool hook: segmentPrimaryModelId', () => {
-  it('a child with a label → that subagents model; no label (parentId set) → the FIRST subagents model', async () => {
+  it('a child with a label → that subagents model; no label → the FIRST subagents model', async () => {
     expect(await segmentPrimaryModelId(child('Deep'))).toBe('s2')
     expect(await segmentPrimaryModelId(child(null))).toBe('s1')
   })
