@@ -58,7 +58,7 @@ export async function resolveWorkspace(runId: string | undefined): Promise<Works
  * boundary takes the result), or note into the chat it was set from once no turn is running there
  * (an event row appended mid-turn would hang off a branch the turn then leaves behind).
  */
-async function deliverWatch(row: WorkspaceWatchRow): Promise<'delivered' | 'pending'> {
+export async function deliverWatch(row: WorkspaceWatchRow): Promise<'delivered' | 'pending'> {
   if (row.workstreamId) {
     const { wakeWorkstreamForWatch } = await import('../agent/workstreams/loop')
     return (await wakeWorkstreamForWatch(row.workstreamId)) === 'pending' ? 'pending' : 'delivered'
@@ -68,7 +68,12 @@ async function deliverWatch(row: WorkspaceWatchRow): Promise<'delivered' | 'pend
     .where(and(eq(agentRuns.conversationId, row.conversationId), inArray(agentRuns.status, ['queued', 'running']))).limit(1)
   if (busy) return 'pending'
   const { appendEvent } = await import('../../services/conversations')
-  await appendEvent(row.conversationId, row.resultText ?? `The watch \`${row.command}\` ended (${row.state}).`, `workspace:watch:${row.state}`)
+  // Cycle 84 fix round 1 (M4): the watch's output is workspace content — guarded like a tool result.
+  const { guardDeliveredText } = await import('../agent/judge/guard')
+  const text = row.resultText
+    ? (await guardDeliveredText(row.resultText, { tool: 'watch', source: 'workspace', workspaceId: row.workspaceId })).text
+    : `The watch \`${row.command}\` ended (${row.state}).`
+  await appendEvent(row.conversationId, text, `workspace:watch:${row.state}`)
   return 'delivered'
 }
 

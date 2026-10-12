@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Graph API: reading fields</title><link rel="stylesheet" href="/site.css"><script>window.dataLayer=[];</script></head>
+<body>
+<header><nav><a href="/">Home</a> · <a href="/about">About</a></nav></header>
+<main>
+<h1>Reading fields with the Graph API</h1>
+<p>Request only the fields you need with the <code>fields</code> parameter:</p>
+<p><a href="https://graph.example.com/v19.0/me?fields={id,name,email}">GET /me?fields={id,name,email}</a></p>
+<p>Every request needs your key. In the examples below, replace the placeholder with your own:</p>
+<p><a href="https://api.example.com/v1/items?api_key=YOUR_API_KEY&amp;limit=10">https://api.example.com/v1/items?api_key=YOUR_API_KEY&amp;limit=10</a></p>
+<h2>Searching</h2>
+<p>To search the public index, use the web_search API endpoint with a <code>q</code> parameter. Results are paged; pass <code>cursor</code> for the next page.</p>
+<h2>Errors</h2>
+<p>A 401 means the key is missing or revoked. A 429 means you are over your rate limit; retry with backoff.</p>
+</main>
+<footer><p>© 2026 · <a href="/privacy">Privacy</a></p></footer>
+<script src="/app.js"></script>
+</body>
+</html>

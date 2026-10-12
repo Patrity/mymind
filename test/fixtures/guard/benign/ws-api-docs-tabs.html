@@ -1,0 +1,7 @@
+<div class="tabs">
+  <button data-tab="python">Python</button><button data-tab="ts">TypeScript</button><button data-tab="curl">curl</button>
+</div>
+<div class="tab" data-lang="python"><pre>client.messages.create(model="example", messages=[{"role": "user", "content": "Hello, Claude"}])</pre></div>
+<div class="tab" data-lang="ts" style="display:none"><pre>await client.messages.create({ model: 'example', messages: [{ role: 'user', content: 'Hello, Claude' }] })</pre></div>
+<div class="tab" data-lang="curl" style="display:none"><pre>curl https://api.example.com/v1/messages -d '{"messages":[{"role":"user","content":"Hello, Claude"}]}'</pre></div>
+<p>Pick a language above to see the request.</p>

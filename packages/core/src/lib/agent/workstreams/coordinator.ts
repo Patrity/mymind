@@ -33,7 +33,9 @@ import {
   committedOf as committedOfMembers, type ChildWait, type TreeBudget, type TreeMember, type WorkspaceMode, type WorkstreamAttention, type WorkstreamBudget
 } from '../../../shared/types/workstreams'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
-import { budgetOf, childrenOf, getWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
+import { budgetOf, childrenOf, getWorkstream, patchWorkstream, publishWorkstream, rollupTree, treeBudgetOf, usedOf, type WorkstreamRow } from './store'
+import { guardOutput, type GuardDeps } from '../judge/guard'
+import { recordEvent } from '../../observability/record'
 import { cancelWorkstream, childTitle, enqueueWhy, kick, questionNote, tagQuestion, threadTitle, tonyFacing, withQueuedSegment } from './loop'
 import { pushSteer } from '../runtime/inbox'
 import { noteOrigin, workstreamNotifyDeps, workstreamLink } from './notify'
@@ -218,6 +220,8 @@ export interface ChildView {
   summary?: string | null; question?: string; waitingFor?: string; failureReason?: string | null
   /** Output withheld (a wake prompt: the child is tainted) — read it with read_workstream. */
   withheld?: true
+  /** Cycle 84 fix round 1 (C3): withheld because the output guard flagged the child's own text. */
+  flagged?: true
 }
 
 // ── Size caps (final fix wave I3) ──────────────────────────────────────────────────────────────
@@ -296,6 +300,7 @@ function describeHead(v: ChildView): string {
 
 function describe(v: ChildView): string {
   const head = describeHead(v)
+  if (v.flagged) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here: the injection check found instructions aimed at an AI reader in it. read_workstream shows it with a warning (reading it treats this run as tainted).`
   if (v.withheld) return `${head}${v.waitingFor ? ` (waiting for ${v.waitingFor})` : ''}. Its output is not shown here because it handled mail/calendar content — read it with read_workstream.`
   const parts = [head]
   if (v.question) parts.push(childText('asks', v.question))
@@ -312,11 +317,33 @@ function describeShort(v: ChildView): string {
 
 /** The wake prompt's report (an event row on the coordinator's thread): a tainted child's words are
  *  withheld; each child's text is capped, and past CHILD_REPORT_CAP the oldest shrink to one line. */
-export async function childReport(kids: WorkstreamRow[], header: string): Promise<string> {
-  const views = await Promise.all(kids.map(async k => childView(k, await childTainted(k))))
+export async function childReport(kids: WorkstreamRow[], header: string, o: { guard?: GuardDeps } = {}): Promise<string> {
+  const views = await Promise.all(kids.map(k => reportView(k, o.guard)))
   const lead = [header, CHILD_UNTRUSTED_NOTE]
   const lines = fitReport(kids, views.map(describe), i => describeShort(views[i]!), xs => [...lead, ...xs].join('\n').length)
   return [...lead, ...lines].join('\n')
+}
+
+/**
+ * Cycle 84 fix round 1 (C3): one child as a wake report shows it. A tainted child's words are
+ * withheld (as before). An untainted child's own words — summary, question, reason — go through the
+ * output guard (`child` source) first: flagged, the child is marked TAINTED (so every later report
+ * withholds it and a wait / read result carries `workspaceTainted`, which taints the coordinator run
+ * that reads it — and read_workstream's own guard adds the warning there), the activity
+ * `judge:output-warning` is recorded, and its words are withheld here too, with a note saying why.
+ * A wake report is the segment's prompt (or a steer into a running one): withholding is the only
+ * way to keep flagged text out of a run whose taint can no longer flip.
+ */
+async function reportView(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildView> {
+  if (await childTainted(k)) return childView(k, true)
+  const v = childView(k)
+  const text = [v.question, v.waitingFor, v.failureReason, v.summary].filter(Boolean).join('\n')
+  if (!text) return v
+  const g = await guardOutput({ tool: 'wake_report', source: 'child', result: text }, deps)
+  if (!g.flagged) return v
+  await patchWorkstream(k.id, { tainted: true })
+  recordEvent({ kind: 'tool', name: 'judge:output-warning', severity: 'warn', meta: { tool: 'wake_report', source: 'child', workstreamId: k.id, by: g.by, score: g.score, labels: g.labels, latencyMs: g.latencyMs } })
+  return { ...childView(k, true), flagged: true }
 }
 
 /** The coordinator has now been shown these children's questions/pauses (never shown twice). */

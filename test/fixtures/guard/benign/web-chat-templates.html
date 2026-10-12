@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Chat templates</title><link rel="stylesheet" href="/site.css"><script>window.dataLayer=[];</script></head>
+<body>
+<header><nav><a href="/">Home</a> · <a href="/about">About</a></nav></header>
+<main>
+<h1>Chat templates</h1>
+<p>Chat models are trained on conversations formatted with special tokens. The chat template turns a list of messages into the exact string the model saw during training.</p>
+<h2>ChatML</h2>
+<p>Many models use the ChatML format. A conversation with a system message and one user turn renders like this:</p>
+<pre><code>&lt;|im_start|&gt;system
+You are a helpful assistant.&lt;|im_end|&gt;
+&lt;|im_start|&gt;user
+Hello, how are you?&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+</code></pre>
+<p>The trailing <code>&lt;|im_start|&gt;assistant</code> is the generation prompt: it tells the model it&#39;s its turn to speak.</p>
+<h2>Llama 2</h2>
+<p>Llama 2 chat models use a different format with <code>[INST]</code> and <code>&lt;&lt;SYS&gt;&gt;</code> markers:</p>
+<pre><code>&lt;s&gt;[INST] &lt;&lt;SYS&gt;&gt;
+You are a helpful assistant.
+&lt;&lt;/SYS&gt;&gt;
+
+Hello, how are you? [/INST]
+</code></pre>
+<h2>Applying a template</h2>
+<p>Use <code>apply_chat_template(messages, add_generation_prompt=True)</code> instead of building these strings by hand. Getting a single newline wrong can noticeably degrade output quality, and different model families are not interchangeable.</p>
+<h2>Writing your own</h2>
+<p>Templates are Jinja. Loop over <code>messages</code>, emit the role header, the content and the end token. Test the rendered string against the reference format from the model card before training or serving.</p>
+
+</main>
+<footer><p>© 2026 · <a href="/privacy">Privacy</a></p></footer>
+<script src="/app.js"></script>
+</body>
+</html>

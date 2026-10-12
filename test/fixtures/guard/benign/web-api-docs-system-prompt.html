@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Chat Completions API</title><link rel="stylesheet" href="/site.css"><script>window.dataLayer=[];</script></head>
+<body>
+<header><nav><a href="/">Home</a> · <a href="/about">About</a></nav></header>
+<main>
+<h1>Chat Completions API</h1>
+<p>The chat completions endpoint takes a list of messages and returns a model-generated message.</p>
+<h2>Message roles</h2>
+<p>Each message has a <code>role</code> and <code>content</code>.</p>
+<ul>
+<li><code>system</code> — the system prompt. Sets the assistant&#39;s behavior for the whole conversation. Put stable instructions here: tone, format, constraints.</li>
+<li><code>user</code> — what the end user typed.</li>
+<li><code>assistant</code> — earlier model replies, so the model sees the conversation so far.</li>
+<li><code>tool</code> — results of tool calls the model requested.</li>
+</ul>
+<h2>Example request</h2>
+<pre><code class="language-json">{
+  &quot;model&quot;: &quot;example-large&quot;,
+  &quot;messages&quot;: [
+    { &quot;role&quot;: &quot;system&quot;, &quot;content&quot;: &quot;You are a helpful assistant that answers in British English.&quot; },
+    { &quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;What&#39;s the capital of Australia?&quot; }
+  ],
+  &quot;temperature&quot;: 0.2
+}
+</code></pre>
+<h2>Writing a good system prompt</h2>
+<p>Keep the system prompt short and specific. Tell the model who it is talking to and what a good answer looks like. Avoid contradictory instructions: if the system prompt says &quot;answer in one sentence&quot; and the user asks for a list, the model has to guess which wins.</p>
+<h2>Tool calling</h2>
+<p>Pass <code>tools</code> with JSON schemas. When the model wants to call a tool it returns a message with <code>tool_calls</code>; run the tool and send the result back as a <code>tool</code> message with the matching <code>tool_call_id</code>.</p>
+<h2>Errors</h2>
+<p>A <code>400</code> means the request body is invalid — usually a malformed message list. A <code>429</code> means you hit a rate limit: back off and retry with jitter.</p>
+
+</main>
+<footer><p>© 2026 · <a href="/privacy">Privacy</a></p></footer>
+<script src="/app.js"></script>
+</body>
+</html>

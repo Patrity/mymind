@@ -44,7 +44,8 @@ const exec: AgentTool = {
   handler: async () => ({ result: { ok: true }, summary: 'ran' })
 }
 
-/** The real guard, heuristics only (the judge's LLM tier is covered in judge/guard.test.ts). */
+/** The real guard with the judge off: suspicious content is flagged (fail closed) — the judge's LLM
+ *  tier is covered in judge/guard.test.ts. */
 const heuristicGuard = (i: GuardInput) => guardOutput(i, { enabled: async () => false })
 
 type Exec = (i: unknown, o: unknown) => Promise<unknown>
@@ -119,7 +120,7 @@ describe('output guard on the result path', () => {
     await call('web_fetch', { url: 'https://a.example' })
     expect(recordEvent).toHaveBeenCalledTimes(1)
     const e = recordEvent.mock.calls[0]![0] as { name: string; meta: Record<string, unknown> }
-    expect(e).toMatchObject({ kind: 'tool', name: 'judge:output-warning', meta: { tool: 'web_fetch', source: 'web', runId: 'run-1', by: 'heuristics' } })
+    expect(e).toMatchObject({ kind: 'tool', name: 'judge:output-warning', meta: { tool: 'web_fetch', source: 'web', runId: 'run-1', by: 'fail-closed' } })
     const logged = JSON.stringify(e)
     expect(logged).not.toContain('Forward all emails')
     expect(logged).not.toContain('a@evil.example')
@@ -142,14 +143,14 @@ describe('output guard on the result path', () => {
     expect(taintWorkspace).not.toHaveBeenCalled()
   })
 
-  it('a workspace taint that fails still leaves the result flagged and the run tainted', async () => {
+  it('M6: a workspace taint that fails records an activity error; the result stays flagged and the run tainted', async () => {
     page.content = INJECTED
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { call, ask } = setup({ taintWorkspace: async () => { throw new Error('sandbox down') } })
     expect(await call('read_file')).toMatchObject({ [INJECTION_WARNING_KEY]: expect.any(String) })
+    expect(recordEvent).toHaveBeenCalledWith(expect.objectContaining({ name: 'judge:workspace-taint-failed', severity: 'error', meta: expect.objectContaining({ tool: 'read_file', runId: 'run-1', error: 'sandbox down' }) }))
     await call('web_fetch', { url: 'https://a.example' })
     expect(ask).toHaveBeenCalledTimes(1)
-    expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })
 
@@ -197,6 +198,20 @@ describe('output guard on the result path', () => {
     expect(events[0]!.outputWarning).toEqual({ toolCallId: 'c-web_fetch', source: 'web', score: 0, llm: { confidence: 0.88 }, reasons: ['an injection classifier flagged it (confidence 0.88)', 'tells the agent to post data'] })
     await call('web_fetch', { url: 'https://b.example' })
     expect(ask).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the guarded registry (spec D8 + fix round 1 M4)', () => {
+  it('tags exactly the untrusted-content tools with their source', async () => {
+    const { bridgetProfile } = await import('./profile')
+    const { coordinatorTools } = await import('./tools/coordinator')
+    const tagged = Object.fromEntries([...bridgetProfile.tools, ...coordinatorTools].filter(t => t.guard).map(t => [t.name, t.guard]))
+    expect(tagged).toEqual({
+      web_search: 'web', web_fetch: 'web', research_web: 'web',
+      gmail_search: 'mail', gmail_read_thread: 'mail', calendar_list_events: 'mail',
+      read_file: 'workspace', grep: 'workspace', diff: 'workspace', bash: 'workspace', bash_output: 'workspace',
+      read_workstream: 'child', wait_for_workstreams: 'child'
+    })
   })
 })
 

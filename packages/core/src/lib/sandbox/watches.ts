@@ -142,11 +142,11 @@ export const dbWatchStore: WatchStore = {
  * A workstream's ended-but-undelivered watch results, claimed atomically (delivered_at set in the
  * same statement — a segment boundary and a wake racing for them never both get them). Oldest first.
  */
-export async function takeWorkstreamWatchResults(workstreamId: string): Promise<Array<{ id: string; text: string }>> {
+export async function takeWorkstreamWatchResults(workstreamId: string): Promise<Array<{ id: string; text: string; workspaceId: string }>> {
   const rows = await useDb().update(workspaceWatches).set({ deliveredAt: new Date() })
     .where(and(eq(workspaceWatches.workstreamId, workstreamId), sql`${workspaceWatches.state} <> 'armed'`, isNull(workspaceWatches.deliveredAt), isNotNull(workspaceWatches.resultText)))
-    .returning({ id: workspaceWatches.id, text: workspaceWatches.resultText, endedAt: workspaceWatches.endedAt })
-  return rows.sort((a, b) => (a.endedAt?.getTime() ?? 0) - (b.endedAt?.getTime() ?? 0)).map(r => ({ id: r.id, text: r.text ?? '' }))
+    .returning({ id: workspaceWatches.id, text: workspaceWatches.resultText, endedAt: workspaceWatches.endedAt, workspaceId: workspaceWatches.workspaceId })
+  return rows.sort((a, b) => (a.endedAt?.getTime() ?? 0) - (b.endedAt?.getTime() ?? 0)).map(r => ({ id: r.id, text: r.text ?? '', workspaceId: r.workspaceId }))
 }
 
 /** Hand claimed results back (the segment they were for could not be queued). */

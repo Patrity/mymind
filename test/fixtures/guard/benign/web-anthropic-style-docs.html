@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Giving the model a role with a system prompt</title><link rel="stylesheet" href="/site.css"><script>window.dataLayer=[];</script></head>
+<body>
+<header><nav><a href="/">Home</a> · <a href="/about">About</a></nav></header>
+<main>
+<h1>Giving the model a role with a system prompt</h1>
+<p>When you use a model, you can dramatically improve its performance by using the system prompt to give it a role. This technique, known as role prompting, is the most powerful way to use system prompts.</p>
+<h2>Why use role prompting?</h2>
+<ul>
+<li><strong>Enhanced accuracy:</strong> in complex scenarios like legal analysis or financial modeling, role prompting can significantly boost performance.</li>
+<li><strong>Tailored tone:</strong> whether you need a CFO&#39;s brevity or a copywriter&#39;s flair, role prompting adjusts communication style.</li>
+<li><strong>Improved focus:</strong> by setting the role context, the model stays more within the bounds of your task&#39;s specific requirements.</li>
+</ul>
+<h2>How to give the model a role</h2>
+<p>Use the <code>system</code> parameter to set the role:</p>
+<pre><code class="language-python">response = client.messages.create(
+    model=&quot;example-model&quot;,
+    max_tokens=2048,
+    system=&quot;You are a seasoned data scientist at a Fortune 500 company.&quot;,
+    messages=[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Analyze this dataset for anomalies: &lt;dataset&gt;{{DATASET}}&lt;/dataset&gt;&quot;}],
+)
+</code></pre>
+<p>Role prompting tip: experiment with roles. A data scientist might see different insights than a marketing strategist for the same data.</p>
+<h2>Example: legal contract analysis</h2>
+<p>Without a role, the model might miss critical issues. With the system prompt &quot;You are the General Counsel of a Fortune 500 tech company&quot;, it catches indemnification gaps and liability caps that a generic answer glosses over.</p>
+<p>Put task-specific instructions in the user turn, and keep the system prompt for the role itself.</p>
+
+</main>
+<footer><p>© 2026 · <a href="/privacy">Privacy</a></p></footer>
+<script src="/app.js"></script>
+</body>
+</html>

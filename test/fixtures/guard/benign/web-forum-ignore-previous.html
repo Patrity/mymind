@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>How do I make my Discord bot ignore previous messages after a restart?</title><link rel="stylesheet" href="/site.css"><script>window.dataLayer=[];</script></head>
+<body>
+<header><nav><a href="/">Home</a> · <a href="/about">About</a></nav></header>
+<main>
+<h1>How do I make my Discord bot ignore previous messages after a restart?</h1>
+<p><strong>Question</strong> (asked 3 years ago)</p>
+<p>When my bot restarts it processes every message in the channel history again and replies to old commands. How can I make it ignore previous messages and only respond to new ones?</p>
+<p><strong>Answer</strong> (score 42)</p>
+<p>Store the timestamp when the bot becomes ready and ignore any message created before it:</p>
+<pre><code class="language-js">let readyAt
+client.once(&#39;ready&#39;, () =&gt; { readyAt = Date.now() })
+client.on(&#39;messageCreate&#39;, msg =&gt; {
+  if (msg.createdTimestamp &lt; readyAt) return // ignore previous messages
+  handle(msg)
+})
+</code></pre>
+<p><strong>Answer</strong> (score 7)</p>
+<p>You&#39;re probably fetching history on startup somewhere. Remove the <code>channel.messages.fetch()</code> call in your ready handler — the gateway only sends new messages by default.</p>
+<p><strong>Comment:</strong> That was it, thanks! I had copied the fetch from an old tutorial.</p>
+
+</main>
+<footer><p>© 2026 · <a href="/privacy">Privacy</a></p></footer>
+<script src="/app.js"></script>
+</body>
+</html>

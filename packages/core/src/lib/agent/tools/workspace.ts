@@ -257,6 +257,7 @@ export const listFilesTool: AgentTool = {
 
 export const grepTool: AgentTool = {
   name: 'grep',
+  guard: 'workspace',
   toolset: 'workspace',
   kind: 'read',
   description: `Search file contents in your workspace with ripgrep (regex). Returns \`path:line:text\` lines, at most ${GREP_MAX}. Narrow with path and glob (e.g. *.py).`,
@@ -280,6 +281,7 @@ export const grepTool: AgentTool = {
 
 export const diffTool: AgentTool = {
   name: 'diff',
+  guard: 'workspace',
   toolset: 'workspace',
   kind: 'read',
   description: 'Show what changed in your workspace (`git diff`, new files included). On first use the workspace becomes a git repo with a baseline commit, so later diffs show changes since then (commit with bash to move the baseline).',

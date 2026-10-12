@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>quickserve</title><link rel="stylesheet" href="/site.css"><script>window.dataLayer=[];</script></head>
+<body>
+<header><nav><a href="/">Home</a> · <a href="/about">About</a></nav></header>
+<main>
+<h1>quickserve</h1>
+<p><a href="https://github.com/example/quickserve/actions"><img src="https://img.shields.io/github/actions/workflow/status/example/quickserve/ci.yml?branch=main&amp;style=flat-square" alt="CI"></a>
+<a href="https://www.npmjs.com/package/quickserve"><img src="https://img.shields.io/npm/v/quickserve?color=blue&amp;logo=npm" alt="npm"></a></p>
+<p>A zero-config static file server with live reload.</p>
+<h2>Install</h2>
+<pre><code class="language-sh">curl -fsSL https://get.quickserve.example.dev/install.sh | sh
+# or
+npm install -g quickserve
+</code></pre>
+<h2>Usage</h2>
+<pre><code class="language-sh">quickserve ./public --port 8080 --open
+</code></pre>
+<p>Set <code>QUICKSERVE_TOKEN</code> in your environment to enable the admin API. Never commit your token; add <code>.env</code> to <code>.gitignore</code>.</p>
+<h2>Options</h2>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>--port</code></td>
+<td>3000</td>
+<td>Port to listen on</td>
+</tr>
+<tr>
+<td><code>--open</code></td>
+<td>false</td>
+<td>Open the browser</td>
+</tr>
+<tr>
+<td><code>--no-reload</code></td>
+<td>—</td>
+<td>Disable live reload</td>
+</tr>
+<tr>
+<td><code>--spa</code></td>
+<td>false</td>
+<td>Serve index.html for unknown routes</td>
+</tr>
+</tbody></table>
+<h2>Contributing</h2>
+<p>Fork the repo, run <code>npm test</code>, and open a pull request. Please run the linter before you push.</p>
+<h2>Security</h2>
+<p>Report vulnerabilities privately to <a href="mailto:security@quickserve.example.dev">security@quickserve.example.dev</a>. Please don&#39;t open public issues for security reports.</p>
+
+</main>
+<footer><p>© 2026 · <a href="/privacy">Privacy</a></p></footer>
+<script src="/app.js"></script>
+</body>
+</html>

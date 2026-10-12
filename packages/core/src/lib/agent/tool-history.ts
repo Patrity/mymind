@@ -216,6 +216,9 @@ export function injectionWarningOf(result: unknown): string | null {
   return typeof w === 'string' ? w : null
 }
 
+/** The output guard's warning starts with this (judge/guard.ts guardWarning). */
+export const GUARD_WARNING_LEAD = '⚠ This content appears to contain instructions aimed at you'
+
 /** A result the output guard flagged: it taints the run that reads it, like mail content does. */
 export function carriesInjectionWarning(result: unknown): boolean {
   return injectionWarningOf(result) !== null
@@ -233,11 +236,13 @@ function isElided(result: unknown): boolean {
  * legacy record with no callId (toolBlocksFor drops it) does not count; a capped preview does.
  */
 export function historyCarriesTaint(
-  policed: { role: string; toolRecords?: AgentToolRecord[] }[],
+  policed: { role: string; toolRecords?: AgentToolRecord[]; content?: unknown }[],
   tainting: ReadonlySet<string>
 ): boolean {
   for (const m of policed) {
-    if (m.role !== 'assistant') continue
+    // Fix round 1 (M4): guarded text delivered as an event (a watch's output) carries the warning in
+    // the message itself — it taints like a flagged tool result.
+    if (m.role !== 'assistant') { if (textOf(m.content).includes(GUARD_WARNING_LEAD)) return true; continue }
     for (const r of m.toolRecords ?? []) {
       if (!r || typeof r !== 'object' || !r.callId) continue
       if (isElided(r.result)) continue
@@ -247,4 +252,11 @@ export function historyCarriesTaint(
     }
   }
   return false
+}
+
+/** A message's text, whatever its shape (a string, or content parts). */
+function textOf(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.map(p => (p && typeof p === 'object' && (p as { type?: unknown }).type === 'text' ? String((p as { text?: unknown }).text ?? '') : '')).join('\n')
 }

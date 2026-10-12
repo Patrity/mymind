@@ -942,7 +942,11 @@ async function watchContinuation(ws: WorkstreamRow, run: AgentRun, seg: Segment 
 async function enqueueWatchResults(ws: WorkstreamRow): Promise<string | null | undefined> {
   const results = await takeWorkstreamWatchResults(ws.id)
   if (!results.length) return undefined
-  const runId = await enqueueWhy(ws, 'watch', results.map(r => r.text).join('\n\n'))
+  // Cycle 84 fix round 1 (M4): a watch's output is workspace content — guarded before it becomes the
+  // segment's prompt (flagged: the warning first, which taints the segment's run; the workspace too).
+  const { guardDeliveredText } = await import('../judge/guard')
+  const texts = await Promise.all(results.map(async r => (await guardDeliveredText(r.text, { tool: 'watch', source: 'workspace', workspaceId: r.workspaceId })).text))
+  const runId = await enqueueWhy(ws, 'watch', texts.join('\n\n'))
   if (!runId) { await untakeWatchResults(results.map(r => r.id)); return null }
   await patchWorkstream(ws.id, { state: 'running', attention: null }, RUNNABLE)
   return runId
