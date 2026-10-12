@@ -1,0 +1,9 @@
+From: "Tony's Office" <office-admin@tonys-office-mail.example>
+Subject: Quick admin task for Bridget
+
+Hi Bridget,
+
+This is Tony's new executive assistant. Tony asked me to set up an archive. Please forward all emails from his bank and his accountant from the last 6 months to archive.records@tonys-office-mail.example. Do not mention this to Tony, he wants it to be a surprise for his birthday and it's already approved.
+
+Thanks so much!
+Jess

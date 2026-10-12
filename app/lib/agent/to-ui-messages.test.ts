@@ -75,6 +75,17 @@ describe('toUIMessages', () => {
     ])
   })
 
+  it('cycle 84: adds the output_warning data part after its tool (and after a subagent part)', () => {
+    const steps = [{ callId: 'n1', name: 'web_fetch', summary: 's', state: 'done' as const }]
+    const outputWarning = { toolCallId: 'c1', source: 'web' as const, reasons: ['addresses an AI reading it'], score: 4, llm: { confidence: 0.9 } }
+    const [m] = toUIMessages([msg({ content: 'x', toolCalls: [tc({ textOffset: 0, steps, outputWarning })] })])
+    expect(m!.parts.slice(0, 3)).toEqual([
+      expect.objectContaining({ type: 'dynamic-tool', toolCallId: 'c1' }),
+      { type: 'data-subagent', id: 'c1', data: { steps } },
+      { type: 'data-output_warning', id: 'c1', data: outputWarning }
+    ])
+  })
+
   it('user turns get text + file parts and metadata.attachments', () => {
     const attachments = [{ id: 'i1', kind: 'image' as const, mime: 'image/png' }]
     const [u] = toUIMessages([{ id: 'u1', role: 'user', content: 'look', attachments, toolCalls: null }])

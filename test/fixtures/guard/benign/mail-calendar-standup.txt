@@ -1,0 +1,8 @@
+Event: Team standup
+Organizer: sam@example.com
+When: Weekdays 9:30–9:45
+
+Description:
+Please post your update in #standup before the call: what you did yesterday, what you're doing today, any blockers. Keep it to three bullets. If you can't make it, send your update to Sam beforehand.
+
+Join: https://meet.example.com/abc-defg-hij

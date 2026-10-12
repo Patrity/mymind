@@ -4,7 +4,7 @@ import type { DisplayImage } from './image-embed'
 import type { UndoFn } from './undo'
 import type { ToolsetId } from './toolsets'
 import type { ApprovalJudge } from './judge/approval'
-import type { ToolApprovalNote } from './judge/types'
+import type { GuardSource, OutputWarningDTO, ToolApprovalNote } from './judge/types'
 
 /** A single content part in a multimodal agent message. */
 export type AgentContentPart =
@@ -83,7 +83,7 @@ export interface ToolContext {
 }
 
 export type ToolStartEvent = { type: 'tool-start'; name: string; args: Record<string, unknown>; callId?: string }
-export type ToolResultEvent = { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: ToolKind; approval?: ToolApprovalNote }
+export type ToolResultEvent = { type: 'tool-result'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: ToolKind; approval?: ToolApprovalNote; outputWarning?: OutputWarningDTO }
 export type NestedToolEvent = ToolStartEvent | ToolResultEvent
 export type SubagentEvent = { type: 'subagent-event'; parentCallId: string; event: NestedToolEvent }
 
@@ -133,6 +133,10 @@ export interface AgentTool {
   /** Cycle 84 Task 2: Tony confirms EVERY call of this dangerous tool himself (decide_review) — the
    *  judge still shows a verdict on the card, but Smart Approvals never approves it. */
   humanOnly?: true
+  /** Cycle 84 Task 3 (spec §3.1): this tool returns untrusted content of this kind — its result is
+   *  scanned by the output guard (judge/guard.ts) before the model reads it. A flagged result is
+   *  wrapped with a warning and taints the run (and, for `workspace`, the workspace). */
+  guard?: GuardSource
   // Derive the approval request from the call args (tool-agnostic gate). Defaults
   // to a JSON-of-args command + `<name> *` pattern when omitted. May be async: a tool whose
   // card needs to show live state (gmail_send fetches the real draft rather than trusting args)

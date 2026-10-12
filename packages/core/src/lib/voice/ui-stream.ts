@@ -69,6 +69,8 @@ export function createUIChunkEncoder(messageId: string): UIChunkEncoder {
           if (outcome.state === 'denied') out.push({ type: 'tool-output-denied', toolCallId: e.callId })
           else if (outcome.state === 'error') out.push({ type: 'tool-output-error', toolCallId: e.callId, errorText: outcome.errorText, dynamic: true })
           else out.push({ type: 'tool-output-available', toolCallId: e.callId, output: toolEnvelope({ result: e.result, summary: e.summary, undoToken: e.undoToken, kind: e.kind, approval: e.approval }), dynamic: true })
+          // Cycle 84 Task 3: the `output_warning` run event — the guard flagged this call's result.
+          if (e.outputWarning) out.push({ type: 'data-output_warning', id: e.callId, data: e.outputWarning })
           return out
         }
         case 'subagent':

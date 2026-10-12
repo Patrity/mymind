@@ -52,6 +52,8 @@ export function makeSubagentTool(spec: SubagentSpec, deps: SubagentDeps = {}): A
     // nested web calls — which run in a separate, untainted run — so the subagent tool ITSELF is
     // the outbound point the parent run gates. The librarian (search_brain) stays on the box.
     ...(spec.toolNames.some(n => n === 'web_search' || n === 'web_fetch') ? { outbound: true as const } : {}),
+    // Cycle 84 Task 3: its report is written from web pages — scanned by the output guard like one.
+    ...(spec.toolNames.some(n => n === 'web_search' || n === 'web_fetch') ? { guard: 'web' as const } : {}),
     schema: {
       task: z.string().min(1).describe('A specific, self-contained task for the subagent. It cannot see this conversation — include every fact it needs.'),
       context: z.string().optional().describe('Relevant facts from the conversation the subagent needs (names, constraints, prior findings).')

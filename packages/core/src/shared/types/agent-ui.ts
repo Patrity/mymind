@@ -4,7 +4,7 @@
 // (app/lib/agent/turn-stream.ts) and resume (app/lib/agent/to-ui-messages.ts).
 import type { UIMessage, UIMessageChunk } from 'ai'
 import type { AttachmentRef, MessageUsage, MessageDeliveryDTO } from './conversation'
-import type { ToolApprovalNote } from '../../lib/agent/judge/types'
+import type { OutputWarningDTO, ToolApprovalNote } from '../../lib/agent/judge/types'
 
 export type AgentToolKind = 'read' | 'create' | 'destructive'
 
@@ -59,6 +59,8 @@ export interface AgentMessageMetadata {
 // A type alias (not an interface) so it satisfies the SDK's `UIDataTypes` index signature.
 export type AgentDataParts = {
   subagent: { steps: SubagentStep[] }
+  /** Cycle 84 Task 3: the output guard flagged this call's result (keyed by the call's id). */
+  output_warning: OutputWarningDTO
 }
 
 export type AgentUIMessage = UIMessage<AgentMessageMetadata, AgentDataParts>

@@ -10,7 +10,7 @@ import { buildUserMessageParts, type AttachmentRef } from '../agent/attachments'
 import { capResult, capArgs, WRITE_RESULT_CAP, ARGS_WRITE_CAP, type AgentToolRecord } from '../agent/tool-history'
 import type { ToolsetId } from '../agent/toolsets'
 import type { SubagentStep, AgentToolKind } from '../../shared/types/agent-ui'
-import type { ToolApprovalNote } from '../agent/judge/types'
+import type { OutputWarningDTO, ToolApprovalNote } from '../agent/judge/types'
 import { toolOutcome } from '../../shared/utils/agent-ui'
 
 export type VoiceEvent =
@@ -20,7 +20,7 @@ export type VoiceEvent =
   | { type: 'approval-request'; approvalId: string; callId: string; name: string; args?: Record<string, unknown> }
   // args/result are the CAPPED copies also written to the tool record, so the live UI shows
   // exactly what a resumed thread will show.
-  | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind; approval?: ToolApprovalNote }
+  | { type: 'tool'; name: string; summary: string; undoToken?: string; images?: DisplayImage[]; callId?: string; args?: Record<string, unknown>; result?: unknown; kind?: AgentToolKind; approval?: ToolApprovalNote; outputWarning?: OutputWarningDTO }
   | { type: 'subagent'; parentCallId: string; steps: SubagentStep[] }
   // The timing fields are NOT produced by the model stream (the run loop emits tokens only) —
   // ws.ts owns the turn clock and re-emits usage with them filled in once the turn ends, so the
@@ -167,10 +167,11 @@ export async function handleTurn(userText: string, history: AgentMessage[], deps
           // a raw length would index a string that no longer exists (see sanitizedOffset).
           undoToken: ev.undoToken, textOffset: sanitizedOffset(assistantText),
           ...(ev.approval ? { approval: ev.approval } : {}),
+          ...(ev.outputWarning ? { outputWarning: ev.outputWarning } : {}),
           ...(steps?.length ? { steps: steps.map(s => s.state === 'running' ? { ...s, state: 'error' as const } : s) } : {})
         })
       }
-      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images, callId: ev.callId, args, result, kind: ev.kind, ...(ev.approval ? { approval: ev.approval } : {}) })
+      deps.emit({ type: 'tool', name: ev.name, summary: ev.summary, undoToken: ev.undoToken, images: ev.images, callId: ev.callId, args, result, kind: ev.kind, ...(ev.approval ? { approval: ev.approval } : {}), ...(ev.outputWarning ? { outputWarning: ev.outputWarning } : {}) })
       deps.emit({ type: 'state', state: 'thinking' })
     }
   }

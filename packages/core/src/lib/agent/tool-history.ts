@@ -5,7 +5,7 @@
 // every rule below is unit-testable with plain objects.
 import type { ToolKind } from './types'
 import type { SubagentStep } from '../../shared/types/agent-ui'
-import type { ToolApprovalNote } from './judge/types'
+import type { OutputWarningDTO, ToolApprovalNote } from './judge/types'
 
 /** One tool invocation, normalized. Persisted additively onto conversation_messages.tool_calls. */
 export interface AgentToolRecord {
@@ -21,6 +21,9 @@ export interface AgentToolRecord {
   steps?: SubagentStep[]
   /** Cycle 84: the judge approved this call (Smart Approvals) — display-only, never sent to the model. */
   approval?: ToolApprovalNote
+  /** Cycle 84 Task 3: the output guard flagged this result — display-only (the model sees the
+   *  warning inside `result`). */
+  outputWarning?: OutputWarningDTO
 }
 
 /** Tool-bearing assistant turns whose results survive into model history. */
@@ -62,8 +65,14 @@ export function capResult(result: unknown, max: number): unknown {
   // and again by the history policy (READ_RESULT_CAP) — and the second cap's preview starts with the
   // FIRST cap's keys, so a "flag first in the preview" marker did not survive. The workspace-taint
   // flag is therefore lifted onto every capped shape, however often it is re-capped.
-  if (carriesWorkspaceTaint(result)) return { workspaceTainted: true, truncated: true, bytes: json.length, preview: json.slice(0, max) }
-  return { truncated: true, bytes: json.length, preview: json.slice(0, max) }
+  // Cycle 84 Task 3: the output guard's warning is lifted the same way — the model must keep reading
+  // it, and its presence taints the next run (historyCarriesTaint).
+  const warning = injectionWarningOf(result)
+  return {
+    ...(carriesWorkspaceTaint(result) ? { workspaceTainted: true } : {}),
+    ...(warning !== null ? { injectionWarning: warning } : {}),
+    truncated: true, bytes: json.length, preview: json.slice(0, max)
+  }
 }
 
 /**
@@ -199,6 +208,19 @@ export function carriesWorkspaceTaint(result: unknown): boolean {
   return r.truncated === true && typeof r.preview === 'string' && r.preview.startsWith('{"workspaceTainted":true')
 }
 
+/** Cycle 84 Task 3: the output guard's warning on a flagged result (judge/guard.ts wrapFlagged puts
+ *  it at the top level, capResult keeps it there) — null when the result was not flagged. */
+export function injectionWarningOf(result: unknown): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null
+  const w = (result as Record<string, unknown>).injectionWarning
+  return typeof w === 'string' ? w : null
+}
+
+/** A result the output guard flagged: it taints the run that reads it, like mail content does. */
+export function carriesInjectionWarning(result: unknown): boolean {
+  return injectionWarningOf(result) !== null
+}
+
 /** applyHistoryPolicy's out-of-window marker: the result is gone from the prompt. */
 function isElided(result: unknown): boolean {
   return !!result && typeof result === 'object' && (result as Record<string, unknown>).elided === true
@@ -206,8 +228,8 @@ function isElided(result: unknown): boolean {
 
 /**
  * Cycle 79b (a) cross-turn taint: does the history the model will ACTUALLY see still carry a
- * `taints` tool's content? Takes the POLICED messages (applyHistoryPolicy output) so "in context"
- * means exactly what the prompt holds: an out-of-window (elided) result, an error/denial, or a
+ * `taints` tool's content — or (cycle 82) a tainted workspace's output, or (cycle 84) a result the
+ * output guard flagged? Takes the POLICED messages (applyHistoryPolicy output) so "in context" means exactly what the prompt holds: an out-of-window (elided) result, an error/denial, or a
  * legacy record with no callId (toolBlocksFor drops it) does not count; a capped preview does.
  */
 export function historyCarriesTaint(
@@ -219,7 +241,7 @@ export function historyCarriesTaint(
     for (const r of m.toolRecords ?? []) {
       if (!r || typeof r !== 'object' || !r.callId) continue
       if (isElided(r.result)) continue
-      if (carriesWorkspaceTaint(r.result)) return true
+      if (carriesWorkspaceTaint(r.result) || carriesInjectionWarning(r.result)) return true
       if (!tainting.has(r.name) || !producedContent(r.result)) continue
       return true
     }

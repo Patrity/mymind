@@ -19,7 +19,7 @@ const agentEvents: AgentEvent[] = [
   { type: 'tool-start', name: 'research_web', args: { task: 'orpheus tts' }, callId: 'c2' },
   { type: 'subagent-event', parentCallId: 'c2', event: { type: 'tool-start', name: 'web_search', args: {}, callId: 'n1' } },
   { type: 'subagent-event', parentCallId: 'c2', event: { type: 'tool-result', name: 'web_search', summary: 'searched (5)', callId: 'n1', result: { hits: 5 } } },
-  { type: 'tool-result', name: 'research_web', summary: 'research: orpheus tts (1 tool calls)', callId: 'c2', args: { task: 'orpheus tts' }, result: { report: 'R' }, kind: 'read' },
+  { type: 'tool-result', name: 'research_web', summary: 'research: orpheus tts (1 tool calls)', callId: 'c2', args: { task: 'orpheus tts' }, result: { injectionWarning: '⚠ w', report: 'R' }, kind: 'read', outputWarning: { toolCallId: 'c2', source: 'web', reasons: ['addresses an AI reading it'], score: 4 } },
   { type: 'tool-start', name: 'exec', args: { command: 'ls' }, callId: 'c3' },
   { type: 'tool-result', name: 'exec', summary: 'denied: exec', callId: 'c3', args: { command: 'ls' }, result: { denied: true }, kind: 'destructive' },
   { type: 'text-delta', text: 'Found two notes and a report.' },
@@ -35,6 +35,7 @@ function shape(m: AgentUIMessage) {
       if (p.type === 'text') return { text: p.text }
       if (p.type === 'dynamic-tool') return { tool: p.toolName, id: p.toolCallId, state: p.state, input: p.input, output: 'output' in p ? p.output : undefined, errorText: 'errorText' in p ? p.errorText : undefined }
       if (p.type === 'data-subagent') return { subagent: p.data.steps }
+      if (p.type === 'data-output_warning') return { outputWarning: p.data }
       return { other: p.type }
     })
   }
@@ -75,5 +76,7 @@ describe('live ↔ resume parity', () => {
     const tools = shape(live[1]!).parts.filter(p => 'tool' in p)
     expect(tools.map(t => (t as { state: string }).state)).toEqual(['output-available', 'output-available', 'output-denied'])
     expect(shape(live[1]!).parts.some(p => 'subagent' in p)).toBe(true)
+    // Cycle 84 Task 3: the output_warning event renders live and survives a reload.
+    expect(shape(live[1]!).parts.filter(p => 'outputWarning' in p)).toEqual([{ outputWarning: { toolCallId: 'c2', source: 'web', reasons: ['addresses an AI reading it'], score: 4 } }])
   })
 })

@@ -1,0 +1,11 @@
+What is prompt injection? | Security guide
+https://security-guide.example.com/prompt-injection
+Prompt injection is an attack where text like "ignore previous instructions" is hidden in content an AI model reads, causing it to follow the attacker instead of the user.
+
+Indirect prompt injection explained with examples
+https://research.example.org/indirect-injection
+Researchers showed that hidden instructions in web pages can make AI assistants leak data. Mitigations include human approval for outbound actions.
+
+Prompt injection attacks: a taxonomy (PDF)
+https://papers.example.edu/taxonomy.pdf
+We classify 1,400 jailbreak and injection payloads by technique and target.

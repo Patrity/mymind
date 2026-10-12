@@ -103,3 +103,22 @@ export interface ToolApprovalNote {
   confidence: number
   reason: string | null
 }
+
+/** Cycle 84 Task 3 (spec §3.1): which kind of untrusted content a tool returns — the tools carrying
+ *  `AgentTool.guard` have their results scanned for prompt injection. */
+export type GuardSource = 'web' | 'mail' | 'workspace' | 'child'
+
+/**
+ * Cycle 84 Task 3 (spec §3.3): a tool result the output guard flagged — the `output_warning` run event
+ * (a `data-output_warning` part keyed by the call) and the same object on the call's tool record, so
+ * the chip survives a reload. `reasons` are plain text: the checker's fixed labels plus, when the
+ * classifier flagged it, its own reasons (MODEL OUTPUT — escaped text only). `llm` is present when
+ * the classifier answered.
+ */
+export interface OutputWarningDTO {
+  toolCallId: string
+  source: GuardSource
+  reasons: string[]
+  score: number
+  llm?: { confidence: number }
+}

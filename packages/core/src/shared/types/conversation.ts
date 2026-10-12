@@ -1,5 +1,5 @@
 import type { SubagentStep } from './agent-ui'
-import type { ToolApprovalNote } from '../../lib/agent/judge/types'
+import type { OutputWarningDTO, ToolApprovalNote } from '../../lib/agent/judge/types'
 
 export interface AttachmentRef {
   id: string
@@ -22,6 +22,8 @@ export interface ToolCallRecordDTO {
   steps?: SubagentStep[]
   /** Cycle 84: the judge approved this call (Smart Approvals): "⚖ auto-approved (0.94): reason". */
   approval?: ToolApprovalNote
+  /** Cycle 84 Task 3: the output guard flagged this result (the `output_warning` chip). */
+  outputWarning?: OutputWarningDTO
 }
 
 export interface MessageUsage {

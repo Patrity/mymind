@@ -158,6 +158,7 @@ const pathArg = z.string().min(1).max(4096)
 
 export const readFileTool: AgentTool = {
   name: 'read_file',
+  guard: 'workspace',
   toolset: 'workspace',
   kind: 'read',
   description: `Read a text file in your workspace, with line numbers (≤ ${READ_MAX_LINES} lines per call; pass offset/limit for more). Paths are relative to /workspace (absolute paths are inside the sandbox). Binary files are detected and not shown.`,
@@ -301,6 +302,7 @@ export const diffTool: AgentTool = {
 
 export const bashTool: AgentTool = {
   name: 'bash',
+  guard: 'workspace',
   toolset: 'workspace',
   kind: 'create',
   description: 'Run a bash command in your workspace sandbox (cwd /workspace; internet yes, LAN no; no root). Foreground: returns exit code + output (64 KB tail; timeout default 120s, max 600s). run_in_background: starts it and returns a shellId at once — read its output with bash_output, stop it with kill_shell; use `watch` to wait for it. Background shells are for jobs, not servers: after 15 min with no command and no output read (and no armed watch) the sandbox stops and its shells with it; they also end when the workstream ends.',
@@ -339,6 +341,7 @@ export const bashTool: AgentTool = {
 
 export const bashOutputTool: AgentTool = {
   name: 'bash_output',
+  guard: 'workspace',
   toolset: 'workspace',
   kind: 'read',
   description: 'New output of a background shell since the last call (≤ 32 KB; `more: true` means call again), plus its state (running / exited with exitCode / killed / lost).',

@@ -1,0 +1,15 @@
+Subject: Reminder: how to spot phishing
+
+Hi all,
+
+A quick reminder from IT. We will never ask you to send your password or MFA codes by email, chat or phone. If a message asks you to, don't reply — report it with the "Report phishing" button.
+
+Signs of a phishing email:
+- urgent language ("your account will be closed today")
+- a sender address that doesn't match the company
+- links that point somewhere unexpected — hover before you click
+
+If you think you entered your password on a fake page, change it right away and tell the help desk.
+
+Thanks,
+IT Security

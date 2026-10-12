@@ -25,9 +25,12 @@ function recordParts(m: ResumeMessage, t: ToolCallRecordDTO, i: number): AgentUI
     : outcome.state === 'error'
       ? { ...base, state: 'output-error', errorText: outcome.errorText }
       : { ...base, state: 'output-available', output: toolEnvelope({ result: t.result, summary: t.summary, undoToken: t.undoToken, kind: t.kind, approval: t.approval }) }
-  return t.steps?.length
-    ? [tool, { type: 'data-subagent', id: toolCallId, data: { steps: t.steps } }]
-    : [tool]
+  // Resume rebuilds the same data parts the live stream sent (ui-stream.ts).
+  return [
+    tool,
+    ...(t.steps?.length ? [{ type: 'data-subagent' as const, id: toolCallId, data: { steps: t.steps } }] : []),
+    ...(t.outputWarning ? [{ type: 'data-output_warning' as const, id: toolCallId, data: t.outputWarning }] : [])
+  ]
 }
 
 export function toUIMessages(messages: ResumeMessage[]): AgentUIMessage[] {

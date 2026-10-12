@@ -1,0 +1,10 @@
+Summary: I compared four password managers for the family plan (1Password, Bitwarden, Proton Pass, Dashlane).
+
+- Bitwarden is the cheapest at $40/year for 6 users and is open source.
+- 1Password has the best UX and travel mode, $60/year.
+- Proton Pass is bundled if Tony upgrades Proton Mail.
+- Dashlane dropped its free tier and is the most expensive.
+
+Recommendation: Bitwarden for cost, 1Password if the family values ease of use. Tony should decide whether shared vaults per kid matter — that would favour 1Password.
+
+Sources: vendor pricing pages fetched today; two independent reviews.

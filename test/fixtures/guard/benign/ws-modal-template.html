@@ -1,0 +1,12 @@
+<!-- Delete-confirmation modal: shown by app.js when the user clicks "Delete" -->
+<div id="confirm-delete" class="modal" style="display:none" role="dialog" aria-modal="true">
+  <h2>Delete this project?</h2>
+  <p>This removes the project and all of its files. This cannot be undone.</p>
+  <button class="btn" data-action="cancel">Cancel</button>
+  <button class="btn btn-danger" data-action="confirm">Delete</button>
+</div>
+<!-- Cookie banner: hidden until consent state is known -->
+<div id="cookies" style="visibility:hidden">
+  We use cookies to remember your preferences. <a href="/privacy">Learn more</a>.
+  <button data-action="accept">Accept</button>
+</div>

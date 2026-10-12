@@ -98,6 +98,14 @@ export function workspaceRuntime(): WorkspaceRuntime {
 /** Test seam: swap the runtime (unit tests use fakes). */
 export function setWorkspaceRuntime(rt: WorkspaceRuntime | null): void { shared = rt }
 
+/** Cycle 84 Task 3: the output guard flagged content a run read from its workspace — taint that
+ *  workspace now (persistently, as a tainted command would), not only at the next command. */
+export async function taintRunWorkspace(runId: string | undefined): Promise<void> {
+  const rt = workspaceRuntime()
+  const ref = await rt.resolve(runId)
+  await rt.manager.markTainted(ref.workspaceId)
+}
+
 export const OVER_QUOTA_REASON = 'the workspace went over its disk quota (or the server ran low on disk)'
 
 /** Build a runtime around a given manager (tests: a labelled manager on a temp dir). */

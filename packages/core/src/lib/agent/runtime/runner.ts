@@ -17,7 +17,7 @@ import { messageText } from '../run'
 import type { AgentMessage } from '../run'
 import { bridgetProfile, childWorkstreamProfile, coordinatorProfile, TAINTING_TOOL_NAMES, type AgentProfile } from '../profile'
 import { listSubagentModels } from '../../ai/registry/resolve'
-import { carriesWorkspaceTaint, producedContent } from '../tool-history'
+import { carriesInjectionWarning, carriesWorkspaceTaint, producedContent } from '../tool-history'
 import { beginSegment, type Segment } from '../workstreams/loop'
 import { parseToolsetIds, type ToolsetId } from '../toolsets'
 import type { RunPublisher } from './stream'
@@ -197,8 +197,9 @@ export async function runTurn(run: AgentRun, deps: RunnerDeps = {}): Promise<Run
       if (e.type === 'tool' && seg) {
         seg.toolCalls++
         // Cycle 83: the same rule as the run-level taint (ai-tools.ts), persisted on the workstream —
-        // a tainted child taints the coordinator run that reads its output.
-        if ((TAINTING_TOOL_NAMES.has(e.name) && producedContent(e.result)) || carriesWorkspaceTaint(e.result)) seg.markTainted()
+        // a tainted child taints the coordinator run that reads its output. Cycle 84: so does a result
+        // the output guard flagged.
+        if ((TAINTING_TOOL_NAMES.has(e.name) && producedContent(e.result)) || carriesWorkspaceTaint(e.result) || carriesInjectionWarning(e.result)) seg.markTainted()
       }
       if (e.type === 'reasoning') reasoningText += e.text
       // Overwrite, not accumulate: at most one usage event per turn in the common

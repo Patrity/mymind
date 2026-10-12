@@ -8,9 +8,11 @@ import type { ApprovalSurface } from './judge/types'
 import type { JudgeMessage } from './judge/verdict'
 import { publishActivity } from './bus'
 import { registerUndo } from './undo'
-import { withSpan } from '../observability/record'
+import { recordEvent, withSpan } from '../observability/record'
 import type { ToolsetId } from './toolsets'
-import { carriesWorkspaceTaint, producedContent } from './tool-history'
+import { carriesInjectionWarning, carriesWorkspaceTaint, producedContent } from './tool-history'
+import { guardOutput, guardReasons, guardWarning, outputWarningDTO, wrapFlagged, type GuardInput, type GuardVerdict } from './judge/guard'
+import type { OutputWarningDTO } from './judge/types'
 
 export interface RunHooks {
   signal: AbortSignal
@@ -28,6 +30,11 @@ export interface RunHooks {
   /** Cycle 84 Task 2: judge every approval request of this run (judge/approval.ts) — where it was
    *  raised and the context the judge reads. Absent: no judge (MCP, legacy callers). */
   judge?: { surface: ApprovalSurface; workstreamId?: string; goal?: string | null; recentMessages?: JudgeMessage[] }
+  /** Cycle 84 Task 3: the output guard (tests inject one). Default: judge/guard.ts guardOutput. */
+  guard?: (input: GuardInput) => Promise<GuardVerdict>
+  /** Cycle 84 Task 3: taint the run's workspace after a flagged workspace result (tests inject one).
+   *  Default: sandbox/runtime.ts taintRunWorkspace. */
+  taintWorkspace?: (runId: string | undefined) => Promise<void>
 }
 
 async function approvalRequestFor(t: AgentTool, input: Record<string, unknown>, approvalNonce: string): Promise<ApprovalRequest> {
@@ -85,6 +92,49 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
   // there's no approval channel (headless). Untainted, outbound tools run freely as always.
   let tainted = hooks.initiallyTainted === true
   const ctx: ToolContext = { signal: hooks.signal, requestApproval: hooks.requestApproval, attachmentImageIds: hooks.attachmentImageIds, runId: hooks.runId, loadToolsets: hooks.loadToolsets, isTainted: () => tainted }
+  const guard = hooks.guard ?? guardOutput
+  // Imported at call time: the sandbox runtime reaches back into the agent loop (watch wakes).
+  const taintWorkspace = hooks.taintWorkspace ?? (async (runId: string | undefined) => (await import('../sandbox/runtime')).taintRunWorkspace(runId))
+
+  /**
+   * Cycle 84 Task 3 (spec §3.3): scan a `guard` tool's result. Unflagged → null (the result is
+   * unchanged and nothing is tainted — an ordinary web read never taints). Flagged → the result
+   * wrapped with the model-visible warning (still carrying its own untrusted note), the run tainted
+   * (outbound gated, the sandbox offline, exec off its allowlist), the workspace tainted for a
+   * workspace result, the `judge:output-warning` activity (no content) and the chip's DTO.
+   */
+  async function guardResult(t: AgentTool, raw: unknown, callId: string, nestedFlagged: boolean): Promise<{ result: unknown; warning: OutputWarningDTO } | null> {
+    // A denial or a headless proposal carries no tool content.
+    if (raw && typeof raw === 'object' && ((raw as Record<string, unknown>).denied === true || (raw as Record<string, unknown>).proposed === true)) return null
+    let v: GuardVerdict
+    try {
+      v = await guard({ tool: t.name, source: t.guard!, result: raw, signal: hooks.signal })
+    } catch (err) {
+      // guardOutput never throws; an injected guard might. The tool's own result still stands.
+      console.warn(`[guard] scanning ${t.name} failed:`, (err as Error).message)
+      if (!nestedFlagged) return null
+      v = { flagged: false, by: null, score: 0, labels: [], suspicious: false, textChars: 0, latencyMs: 0 }
+    }
+    if (!v.flagged && nestedFlagged) v = { ...v, flagged: true, by: 'nested' }
+    if (!v.flagged) return null
+    tainted = true
+    if (t.guard === 'workspace') {
+      // The run is tainted already, so its next workspace command would taint the workspace anyway;
+      // this does it now (the networked container dies with whatever the content started there).
+      try { await taintWorkspace(hooks.runId) } catch (err) { console.warn(`[guard] tainting the workspace of run ${hooks.runId ?? '-'} failed:`, (err as Error).message) }
+    }
+    const warning = outputWarningDTO(callId, t.guard!, v)
+    recordEvent({
+      kind: 'tool', name: 'judge:output-warning', severity: 'warn',
+      meta: {
+        tool: t.name, source: t.guard, runId: hooks.runId ?? null, by: v.by, score: v.score, labels: v.labels,
+        ...(v.llm ? { llm: { confidence: v.llm.confidence, model: v.llm.model, latencyMs: v.llm.latencyMs } } : {}),
+        latencyMs: v.latencyMs
+      }
+    })
+    return { result: wrapFlagged(raw, guardWarning(guardReasons(v))), warning }
+  }
+
   const set: ToolSet = {}
   for (const t of registry) {
     set[t.name] = tool({
@@ -104,11 +154,17 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
         const approvalNonce = randomUUID()
         // Per-call context: a subagent's nested calls are keyed to THIS call's SDK id, which
         // only exists here — the shared `ctx` above is built once for the whole toolset.
+        // A subagent's nested result the guard flagged (research_web reading an injected page) makes
+        // this call's own result flagged too: the report was written from that page.
+        let nestedFlagged = false
         const callCtx: ToolContext = {
           ...ctx,
           callId,
           approvalNonce,
-          onNestedEvent: e => hooks.onEvent({ type: 'subagent-event', parentCallId: callId, event: e })
+          onNestedEvent: (e) => {
+            if (e.type === 'tool-result' && carriesInjectionWarning(e.result)) nestedFlagged = true
+            hooks.onEvent({ type: 'subagent-event', parentCallId: callId, event: e })
+          }
         }
         // Mask ONCE, up front, and use the masked copy for every RECORDED/EMITTED args field
         // below. Those args are persisted to conversation_messages.tool_calls and shipped to
@@ -173,13 +229,17 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
           // Cycle 82: a workspace that handled tainted content taints every run that reads from it
           // (its files may be mail-derived) — the result says so with `workspaceTainted`.
           if ((t.taints && producedContent(exec.result)) || carriesWorkspaceTaint(exec.result)) tainted = true
+          // Cycle 84 Task 3: the output guard, BEFORE the model (or the history) sees the result.
+          const guarded = t.guard ? await guardResult(t, exec.result, callId, nestedFlagged) : null
+          const result = guarded?.result ?? exec.result
           const undoToken = exec.undo ? registerUndo(exec.undo) : undefined
           publishActivity({ type: 'tool', name: t.name, summary: exec.summary, undoToken })
           // The thread's "⚖ auto-approved (0.94): reason" rides on the call's own record (never an
           // event row mid-turn — that would fork the thread).
           const approval = judge?.autoNote() ?? undefined
-          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: safeArgs, result: exec.result, kind: t.kind, ...(approval ? { approval } : {}) })
-          return exec.result
+          const outputWarning = guarded?.warning
+          hooks.onEvent({ type: 'tool-result', name: t.name, summary: exec.summary, undoToken, images: exec.display?.images, callId, args: safeArgs, result, kind: t.kind, ...(approval ? { approval } : {}), ...(outputWarning ? { outputWarning } : {}) })
+          return result
         } catch (err) {
           const summary = `failed: ${t.name}`
           const result = { error: (err as Error).message }

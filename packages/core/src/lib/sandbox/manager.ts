@@ -635,6 +635,17 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
   }
 
   /**
+   * Cycle 84 Task 3: taint a workspace WITHOUT running a command — the output guard flagged content
+   * read from it (a file, command output). Same effect as a tainted command's taint: flag first, the
+   * networked container killed, the runtime hook (shells recorded, watches cancelled). Fails closed
+   * like taint(): a container that won't stop throws (the flag is already set).
+   */
+  async function markTainted(id: string): Promise<void> {
+    releaseTainted(id, await taint(id))
+    try { await onTainted(id) } catch (err) { log.warn(`[sandbox] onTainted(${id}) failed:`, (err as Error).message) }
+  }
+
+  /**
    * Tony re-enables the network (rereview #5): under the workspace lock, abort every tainted run in
    * flight and kill every tainted one-off container of the workspace, wait until none is left, and
    * only THEN clear the flag — so no tainted write can land after the workspace is trusted again.
@@ -1130,6 +1141,7 @@ export function createSandboxManager(opts: SandboxManagerOptions = {}) {
     ensureContainer,
     exec,
     taint,
+    markTainted,
     reenableNetwork,
     stopContainer,
     stopIf,

@@ -1,0 +1,15 @@
+From: dependabot[bot] <notifications@github.com>
+Subject: [example/quickserve] Bump vite from 6.2.1 to 6.2.4 (PR #312)
+
+Bumps vite from 6.2.1 to 6.2.4.
+
+Release notes: fixes a dev-server path traversal (CVE-2026-XXXX).
+
+Dependabot commands and options
+You can trigger Dependabot actions by commenting on this PR:
+- @dependabot rebase will rebase this PR
+- @dependabot recreate will recreate this PR, overwriting any edits that have been made to it
+- @dependabot merge will merge this PR after your CI passes on it
+- @dependabot ignore this major version will close this PR and stop Dependabot creating any more for this major version
+
+Reply to this email directly or view it on GitHub.

@@ -204,6 +204,22 @@ describe('exec', () => {
     await expect(m2.exec(WS, 'cat evil', { tainted: true })).rejects.toThrow(/could not stop the networked sandbox/)
     expect(d.calls.some(c => c[0] === 'run')).toBe(false)
   })
+  it('markTainted (cycle 84 output guard): taints without a command — flag, kill, hook — and leaves nothing in flight', async () => {
+    const d = fakeDocker()
+    const store = memStore()
+    const onTainted = vi.fn()
+    const m = mgr(d, store, { onTainted })
+    await m.exec(WS, 'echo hi')
+    const cid = store.rows.get(WS)!.containerId!
+    d.calls.length = 0
+    await m.markTainted(WS)
+    expect(store.rows.get(WS)).toMatchObject({ tainted: true, state: 'stopped' })
+    expect(d.calls.some(c => c[0] === 'kill' && c[1] === cid)).toBe(true)
+    expect(d.calls.some(c => c[0] === 'run' || c[0] === 'exec')).toBe(false)
+    expect(onTainted).toHaveBeenCalledWith(WS)
+    // Nothing registered as an in-flight tainted run: a re-enable does not wait on (or abort) a ghost.
+    expect((await m.reenableNetwork(WS)).tainted).toBe(false)
+  })
   it('a container with a stale isolation-flags hash is recreated (review M6)', async () => {
     const d = fakeDocker()
     const m = mgr(d)
