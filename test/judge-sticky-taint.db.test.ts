@@ -345,6 +345,14 @@ describe('I1: work started from a tainted run starts tainted', () => {
     expect(res.ok).toBe(true)
     convIds.push(res.conversationId)
     expect(await getWorkstream(res.id)).toMatchObject({ tainted: true, taintSources: ['flagged', 'mail'] })
+    // Follow-up: only mail / real-verdict flagged are inherited — never workspace or unverified.
+    const { runTaintSources } = await import('@mymind/core/lib/agent/tools/workstreams')
+    expect(runTaintSources({ isTainted: () => true, taint: () => ({ sources: ['flagged', 'mail', 'workspace', 'unverified'], flags: [] }) })).toEqual(['flagged', 'mail'])
+    expect(runTaintSources({ isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) })).toEqual([])
+    const unv = await startWorkstreamTool.handler({ goal: 'judge-sticky I1 unverified' }, { signal: new AbortController().signal, isTainted: () => true, taint: () => ({ sources: ['unverified'], flags: [] }) })
+    const u = unv.result as { id: string; conversationId: string }
+    convIds.push(u.conversationId)
+    expect(await getWorkstream(u.id)).toMatchObject({ tainted: false, taintSources: [] })
     // A clean run starts clean.
     const clean = await startWorkstreamTool.handler({ goal: 'judge-sticky I1 clean' }, { signal: new AbortController().signal, isTainted: () => false, taint: () => ({ sources: [], flags: [] }) })
     const c = clean.result as { id: string; conversationId: string }

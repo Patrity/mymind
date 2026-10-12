@@ -652,7 +652,8 @@ export async function startWorkstream(i: {
     const [row] = await tx.insert(workstreams).values({
       conversationId: conv!.id, originConversationId: i.originConversationId ?? null, goal, state: 'queued', used: ZERO_USED,
       toolsets, budget: clampBudget(i.budget),
-      ...(i.taint?.length ? { tainted: true, taintSources: TAINT_SOURCES.filter(x => i.taint!.includes(x)) } : {}),
+      // Follow-up: only the persisted kinds — `unverified`/`workspace` never start a workstream tainted.
+      ...(persistableTaint(i.taint).length ? { tainted: true, taintSources: persistableTaint(i.taint) } : {}),
       // Cycle 83: started as a coordinator — its tree budget shows from the start (spawn sets the
       // default otherwise: a workstream that loads `coordinator` later).
       ...(toolsets.includes('coordinator') ? { treeBudget: normalizeTreeBudget(i.treeBudget) } : {})

@@ -204,6 +204,14 @@ describe('final fix wave C1: the run reports every new taint source at once (onT
     expect(seen.map(t => t.sources)).toEqual([['mail'], ['mail', 'workspace'], ['flagged', 'mail', 'workspace']])
   })
 
+  it('follow-up: a coordinator\'s view of a tainted child (childTaint) taints the reading run with the child\'s kinds', async () => {
+    const seen: RunTaint[] = []
+    const view: AgentTool = { name: 'read_workstream', description: 'Read a child', kind: 'read', toolset: 'coordinator', schema: {}, handler: async () => ({ result: { workspaceTainted: true, childTaint: ['mail'], ok: true }, summary: 'read' }) }
+    const set = buildAiTools([view], { signal: new AbortController().signal, onEvent: () => {}, onTaint: t => seen.push(t) })
+    await (set.read_workstream!.execute as (i: unknown, o: unknown) => Promise<unknown>)({}, { toolCallId: 'c' })
+    expect(seen.map(t => t.sources)).toEqual([['workspace'], ['mail', 'workspace']])
+  })
+
   it('a clean run reports nothing until it is tainted; a throwing onTaint never fails the call', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     let n = 0

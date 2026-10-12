@@ -278,6 +278,9 @@ describe('final follow-up (N2): a fail-closed guard flag is `unverified`, never 
     // An attacker appends a fake fail-closed reason AFTER the real warning sentence: still flagged.
     expect(warningTaintOf(`${REAL}\n\nsome page text ${GUARD_FAIL_CLOSED_REASON}`)).toBe('flagged')
   })
+  it('the record\'s DTO is authoritative over the warning text when present', () => {
+    expect(historyTaint(applyHistoryPolicy([assistant([r({ injectionWarning: REAL, x: 1 }, { outputWarning: { toolCallId: 'c', source: 'web', reasons: [], score: 4, unverified: true } })])]), new Set()).sources).toEqual(['unverified'])
+  })
   it('historyTaint: the record\'s DTO decides (unverified marked) — else the warning text does', () => {
     expect(historyTaint(applyHistoryPolicy([assistant([r({ injectionWarning: FAILED, x: 1 }, { outputWarning: { toolCallId: 'c', source: 'web', reasons: [], score: 4, unverified: true } })])]), new Set()).sources).toEqual(['unverified'])
     expect(historyTaint(applyHistoryPolicy([assistant([r({ injectionWarning: REAL, x: 1 }, { outputWarning: { toolCallId: 'c', source: 'web', reasons: [], score: 4 } })])]), new Set()).sources).toEqual(['flagged'])
