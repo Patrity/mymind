@@ -171,6 +171,10 @@ describe('pruneAutoApprovals (fix round 1, M3)', () => {
     const s: PendingApprovals = { a: d('a', false) }
     expect(pruneAutoApprovals(s, [{ parts: [part('a', 'output-available')] }])).toBe(s)
   })
+  it('with an auto card being dropped alongside, a non-auto card on a settled part still stays', () => {
+    const out = pruneAutoApprovals({ a: d('a'), b: d('b', false) }, [{ parts: [part('a', 'output-available'), part('b', 'output-available')] }])
+    expect(Object.keys(out)).toEqual(['b'])
+  })
   it('a denied part counts as settled too', () => {
     expect(pruneAutoApprovals({ a: d('a') }, [{ parts: [part('a', 'output-denied')] }])).toEqual({})
   })
