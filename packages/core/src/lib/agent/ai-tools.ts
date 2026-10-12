@@ -118,9 +118,11 @@ export function buildAiTools(registry: AgentTool[], hooks: RunHooks): ToolSet {
     if (!v.flagged && nestedFlagged) v = { ...v, flagged: true, by: 'nested' }
     if (!v.flagged) return null
     tainted = true
-    // N3: a Stop during classification decided nothing — the result keeps its warning (the history
-    // must not carry it unwarned), but the workspace is not tainted on a verdict that never came.
-    if (t.guard === 'workspace' && !(v.by === 'fail-closed' && hooks.signal.aborted)) {
+    // N3 + fix round 3 (NB4): a Stop that cancelled the classification decided nothing — the result
+    // keeps its warning (the history must not carry it unwarned), but the workspace is not tainted on
+    // a verdict that never came. Only that case: any other fail-closed result taints as before.
+    const stoppedMidCheck = v.by === 'fail-closed' && v.llm?.error === 'guard cancelled' && hooks.signal.aborted
+    if (t.guard === 'workspace' && !stoppedMidCheck) {
       // The run is tainted already, so its next workspace command would taint the workspace anyway;
       // this does it now (the networked container dies with whatever the content started there).
       // M6: a failure is never silent — an activity error (the run itself stays tainted: fail closed).

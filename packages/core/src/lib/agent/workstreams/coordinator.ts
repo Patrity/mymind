@@ -321,7 +321,7 @@ function describe(v: ChildView): string {
 
 /** The one-line form of an old child once the report is over its cap (its question still flagged). */
 function describeShort(v: ChildView): string {
-  return `${describeHead(v)}${v.question ? ' — it ASKS you a question' : ''}. Its text is not shown here (the report is too long) — read_workstream for the full text.`
+  return `${describeHead(v)}${v.question || v.asksWithheld ? ' — it ASKS you a question' : ''}. Its text is not shown here (the report is too long) — read_workstream for the full text.`
 }
 
 /** The wake prompt's report (an event row on the coordinator's thread): a tainted child's words are
@@ -342,31 +342,44 @@ function reportText(k: WorkstreamRow): string {
 }
 
 type ChildCheck = 'clean' | 'flagged' | 'unchecked'
-/** N2: definitive classifications only ('clean' / 'flagged'), per (child, text) — a wake never
- *  re-classifies the same words, and a failed check is never remembered (it is retried). */
-const childChecks = new Map<string, Exclude<ChildCheck, 'unchecked'>>()
+/** N2: classifications per (child, text) — a wake never re-classifies the same words. Definitive
+ *  results ('clean' / 'flagged') are kept; a failed check ('unchecked') only for
+ *  UNCHECKED_TTL_MS (fix round 3, NB1): a judge that keeps timing out is asked at most once per
+ *  child per minute, and the report after a failed pre-check reuses it instead of asking again (NB2). */
+const childChecks = new Map<string, { v: ChildCheck; at: number }>()
 const CHILD_CHECKS_MAX = 2000
+export const UNCHECKED_TTL_MS = 60_000
 const checkKey = (k: WorkstreamRow, text: string) => `${k.id}:${createHash('sha256').update(text).digest('base64url')}`
+let checkClock: () => number = Date.now
 
-/** Test seam. */
-export function _resetChildChecks(): void { childChecks.clear() }
+/** Test seams. */
+export function _resetChildChecks(): void { childChecks.clear(); checkClock = Date.now }
+export function _setChildCheckClock(now: () => number): void { checkClock = now }
+
+function known(key: string): ChildCheck | undefined {
+  const e = childChecks.get(key)
+  if (!e) return undefined
+  if (e.v === 'unchecked' && checkClock() - e.at >= UNCHECKED_TTL_MS) { childChecks.delete(key); return undefined }
+  return e.v
+}
 
 /**
  * Guard one child's words (`child` source). A REAL verdict — a flag-alone signal or the LLM saying
  * injection — persists: the child is marked tainted (every later report withholds it, and a wait /
  * read result carries `workspaceTainted`, which taints the coordinator run that reads it). A
- * fail-closed verdict (judge down, timeout, error) applies to THIS report only (N2): withheld, never
- * persisted, never cached. A failed taint write is recorded and the words stay withheld (N5).
+ * fail-closed verdict (judge down, timeout, error) applies to reports only (N2): withheld, never
+ * persisted, remembered for UNCHECKED_TTL_MS. A failed taint write is recorded and the words stay
+ * withheld (N5).
  */
 async function checkChild(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildCheck> {
   const text = reportText(k)
   if (!text) return 'clean'
   const key = checkKey(k, text)
-  const known = childChecks.get(key)
-  if (known) return known
+  const hit = known(key)
+  if (hit) return hit
   const g = await guardOutput({ tool: 'wake_report', source: 'child', result: text }, deps)
   if (!g.flagged) { remember(key, 'clean'); return 'clean' }
-  if (g.by === 'fail-closed') return 'unchecked'
+  if (g.by === 'fail-closed') { remember(key, 'unchecked'); return 'unchecked' }
   recordEvent({ kind: 'tool', name: 'judge:output-warning', severity: 'warn', meta: { tool: 'wake_report', source: 'child', workstreamId: k.id, by: g.by, score: g.score, labels: g.labels, latencyMs: g.latencyMs } })
   try {
     await patchWorkstream(k.id, { tainted: true })
@@ -377,16 +390,16 @@ async function checkChild(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildChec
   return 'flagged'
 }
 
-function remember(key: string, v: Exclude<ChildCheck, 'unchecked'>): void {
+function remember(key: string, v: ChildCheck): void {
+  childChecks.delete(key)
   if (childChecks.size >= CHILD_CHECKS_MAX) childChecks.delete(childChecks.keys().next().value!)
-  childChecks.set(key, v)
+  childChecks.set(key, { v, at: checkClock() })
 }
 
-/** N5: classify (and persist) the children a wake may report BEFORE the coordinator flips to
- *  running — so the report built after the flip only reads the cache. Never throws. */
-export async function precheckChildren(coordinatorId: string, deps?: GuardDeps): Promise<void> {
+/** N5 + fix round 3 (NB1): classify (and persist) exactly the children a READY wake will list,
+ *  before the coordinator flips to running — the report after it reads the cache. Never throws. */
+async function precheckChildren(kids: WorkstreamRow[], deps?: GuardDeps): Promise<void> {
   try {
-    const kids = await childrenOf(coordinatorId)
     await Promise.all(kids.filter(k => !k.tainted).map(k => checkChild(k, deps).catch(() => 'unchecked')))
   } catch { /* the report path guards again */ }
 }
@@ -396,7 +409,7 @@ async function reportView(k: WorkstreamRow, deps?: GuardDeps): Promise<ChildView
   const att = attentionOf(k)
   const asks = k.state === 'attention' && att?.kind === 'question' ? { asksWithheld: true as const } : {}
   const text = reportText(k)
-  if (text && childChecks.get(checkKey(k, text)) === 'flagged') return { ...childView(k, true), flagged: true, ...asks }
+  if (text && known(checkKey(k, text)) === 'flagged') return { ...childView(k, true), flagged: true, ...asks }
   // A tainted child's words are withheld anyway — no need to classify them.
   if (await childTainted(k)) return { ...childView(k, true), ...asks }
   let check: ChildCheck
@@ -446,39 +459,54 @@ export async function parkForChildren(ws: WorkstreamRow, wait: ChildWait): Promi
  * check happen under the tree lock with the coordinator row locked, so of any number of concurrent
  * wakers exactly one enqueues the segment. Null when it is not parked, or not ready.
  */
+/** The wake a coordinator row + its children are ready for, and the children its report lists —
+ *  or null (not parked, cancelled, or the wait is not satisfied). Pure: the wake transaction decides
+ *  with it under the lock, and the pre-check (fix round 3, NB1) on an unlocked read first. */
+export function readyWake(c: WorkstreamRow, kids: WorkstreamRow[], now?: number): { wait: ChildWait | undefined; timedOut: boolean; listed: WorkstreamRow[]; missing: string[] } | null {
+  if (c.state !== 'paused' || c.cancelRequested) return null
+  const att = attentionOf(c)
+  const wait = att?.waitingForChildren
+  // Ruling C6a: a coordinator parked on a WATCH is not waiting on Tony — a child's question wakes it
+  // (its watch stays armed and is delivered at the next segment boundary).
+  const onWatch = !wait && att?.waitingForWatch === true && !!c.treeBudget
+  if (!wait && !onWatch) return null
+  let timedOut = false
+  if (wait) {
+    const ev = evaluateWait(wait, kids, now)
+    if (!ev.ready) return null
+    timedOut = ev.timedOut
+  } else if (!kids.some(needsCoordinator)) return null
+  const ids = wait?.ids ?? []
+  // In the order the coordinator listed them, then any other child that needs it (a question).
+  const listed = [...ids.flatMap(id => kids.filter(k => k.id === id)), ...kids.filter(k => !ids.includes(k.id) && needsCoordinator(k))]
+  const missing = ids.filter(id => !kids.some(k => k.id === id))
+  return { wait, timedOut, listed, missing }
+}
+
 export async function wakeCoordinatorIfReady(coordinatorId: string, o: { now?: number; guard?: GuardDeps } = {}): Promise<string | null> {
-  // Fix round 2 (N5): a parked coordinator's children are checked (and a real flag persisted) before
-  // the transition below; the report after it reads the cache, so nothing slow or failing runs while
-  // the coordinator is already `running` without its segment.
+  // Fix round 2 (N5) + round 3 (NB1): only when the wake WOULD be ready (an unlocked read), the
+  // children its report will list are checked — and a real flag persisted — before the transition
+  // below; the report after it reads the cache (a failed check is remembered for a minute, NB2). A
+  // tick or a child transition never waits on the judge for a coordinator that is not ready.
   const pre = await getWorkstream(coordinatorId)
-  if (pre?.state === 'paused') await precheckChildren(coordinatorId, o.guard)
+  if (pre?.state === 'paused') {
+    const soon = readyWake(pre, await childrenOf(coordinatorId), o.now)
+    if (soon) await precheckChildren(soon.listed, o.guard)
+  }
   const won = await useDb().transaction(async (tx) => {
     await lockTree(tx, coordinatorId)
     const [c] = await tx.select().from(workstreams).where(eq(workstreams.id, coordinatorId)).for('update')
-    if (!c || c.state !== 'paused' || c.cancelRequested) return null
-    const att = attentionOf(c)
-    const wait = att?.waitingForChildren
-    // Ruling C6a: a coordinator parked on a WATCH is not waiting on Tony — a child's question wakes it
-    // (its watch stays armed and is delivered at the next segment boundary).
-    const onWatch = !wait && att?.waitingForWatch === true && !!c.treeBudget
-    if (!wait && !onWatch) return null
+    if (!c) return null
     const kids = await tx.select().from(workstreams).where(eq(workstreams.parentId, coordinatorId))
-    let timedOut = false
-    if (wait) {
-      const ev = evaluateWait(wait, kids, o.now)
-      if (!ev.ready) return null
-      timedOut = ev.timedOut
-    } else if (!kids.some(needsCoordinator)) return null
+    const ready = readyWake(c, kids, o.now)
+    if (!ready) return null
     const [row] = await tx.update(workstreams).set({ state: 'running', attention: null, updatedAt: sql`now()` })
       .where(eq(workstreams.id, coordinatorId)).returning()
-    return { row: row!, kids, wait, timedOut }
+    return { row: row!, ...ready }
   })
   if (!won) return null
   publishWorkstream(coordinatorId)
-  const ids = won.wait?.ids ?? []
-  // In the order the coordinator listed them, then any other child that needs it (a question).
-  const listed = [...ids.flatMap(id => won.kids.filter(k => k.id === id)), ...won.kids.filter(k => !ids.includes(k.id) && needsCoordinator(k))]
-  const missing = ids.filter(id => !won.kids.some(k => k.id === id))
+  const { listed, missing } = won
   const header = won.timedOut
     ? `wait_for_workstreams timed out after ${won.wait!.timeoutMin} min. Where your children stand:`
     : 'Your child workstreams have news:'

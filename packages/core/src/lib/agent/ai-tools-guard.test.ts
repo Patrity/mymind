@@ -162,6 +162,21 @@ describe('output guard on the result path', () => {
     expect(taintWorkspace).not.toHaveBeenCalled()
   })
 
+  it('NB4: a judge TIMEOUT that coincides with an abort still taints the workspace (only a cancelled check is skipped)', async () => {
+    const ac = new AbortController()
+    const timedOut = async (): Promise<GuardVerdict> => { ac.abort(); return { flagged: true, by: 'fail-closed', score: 4, labels: ['override'], suspicious: true, textChars: 10, latencyMs: 5, llm: { injection: false, confidence: 0, reasons: [], model: null, latencyMs: 15000, error: 'guard timed out' } } }
+    const { call, taintWorkspace } = setup({ guard: timedOut, signal: ac.signal })
+    await call('read_file')
+    expect(taintWorkspace).toHaveBeenCalledWith('run-1')
+  })
+
+  it('NB4: a cancelled check while the run is NOT aborted still taints', async () => {
+    const cancelled = async (): Promise<GuardVerdict> => ({ flagged: true, by: 'fail-closed', score: 4, labels: ['override'], suspicious: true, textChars: 10, latencyMs: 5, llm: { injection: false, confidence: 0, reasons: [], model: null, latencyMs: 5, error: 'guard cancelled' } })
+    const { call, taintWorkspace } = setup({ guard: cancelled })
+    await call('read_file')
+    expect(taintWorkspace).toHaveBeenCalledWith('run-1')
+  })
+
   it('N3: a real verdict still taints the workspace even if Stop came after it', async () => {
     const ac = new AbortController()
     const real = async (): Promise<GuardVerdict> => { ac.abort(); return { flagged: true, by: 'llm', score: 4, labels: ['override'], suspicious: true, textChars: 10, latencyMs: 5, llm: { injection: true, confidence: 0.9, reasons: [], model: 'J', latencyMs: 5 } } }

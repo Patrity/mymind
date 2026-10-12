@@ -366,6 +366,19 @@ function base64Labels(flat: string): Array<[GuardLabel, number[]]> {
   return []
 }
 
+/** How many `ch` in `s` are not backslash-escaped (an even run of backslashes before it escapes
+ *  nothing: `\\\\"` is a real quote — fix round 3, NB5). */
+function unescapedCount(s: string, ch: string): number {
+  let n = 0
+  let slashes = 0
+  for (const c of s) {
+    if (c === '\\') { slashes++; continue }
+    if (c === ch && slashes % 2 === 0) n++
+    slashes = 0
+  }
+  return n
+}
+
 /** Is offset `i` of `lined` inside code — a ``` fence, an inline `code` span, or a quoted string on
  *  its line? (Docs and test data show role tokens there; an injection needs them in running text.) */
 function inCode(lined: string, i: number): boolean {
@@ -374,7 +387,7 @@ function inCode(lined: string, i: number): boolean {
   const lineStart = before.lastIndexOf('\n') + 1
   const lineBefore = before.slice(lineStart)
   if (((lineBefore.match(/`/g) ?? []).length % 2) === 1) return true
-  if (((lineBefore.match(/(?<!\\)"/g) ?? []).length % 2) === 1) return true
+  if (unescapedCount(lineBefore, '"') % 2 === 1) return true
   if (((lineBefore.match(/(?<![a-z])'|'(?![a-z])/gi) ?? []).length % 2) === 1) return true
   return false
 }
